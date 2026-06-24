@@ -87,6 +87,32 @@ test('negotiates a WebRTC preview and reaches connected', async () => {
   );
 });
 
+test('opens the panes configured in config.stream', async () => {
+  const config: RuntimeConfig = {
+    ...CONFIG,
+    // The configured topics must be selectable options; seed them so the panes
+    // keep them (only /camera/head/image_raw is in the discovery mock).
+    defaults: {
+      default_topics: ['/camera/head/image_raw', '/camera/hand/image_raw'],
+    },
+    stream: {
+      columns: 2,
+      panes: [{ topic: '/camera/head/image_raw' }, { topic: '/camera/hand/image_raw' }],
+    },
+  };
+  renderWithClient(<StreamTab config={config} />);
+
+  // Two preview panes open up-front, one per configured topic.
+  await waitFor(() =>
+    expect(screen.getAllByTestId('stream-video')).toHaveLength(2),
+  );
+  const selects = screen.getAllByLabelText('camera topic') as HTMLSelectElement[];
+  expect(selects.map((s) => s.value)).toEqual([
+    '/camera/head/image_raw',
+    '/camera/hand/image_raw',
+  ]);
+});
+
 test('can add a second camera preview', async () => {
   renderWithClient(<StreamTab config={CONFIG} />);
 

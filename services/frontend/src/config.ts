@@ -41,10 +41,20 @@ export interface RuntimeDefaults {
   [key: string]: unknown;
 }
 
+/** Stream tab initial layout (from the backend STREAM_CONFIG / config/stream.yaml). */
+export interface StreamLayout {
+  /** Preview-grid column count (1–4). */
+  columns?: number;
+  /** Initial panes, each previewing one camera topic (topic may be empty). */
+  panes?: { topic?: string | null }[];
+}
+
 export interface RuntimeConfig {
   endpoints: RuntimeEndpoints;
   tabs: TabConfig[];
   defaults: RuntimeDefaults;
+  /** Stream tab initial panes (optional; absent → one empty pane). */
+  stream?: StreamLayout;
   /**
    * Backend-provided JSON Schemas (draft 2020-12). Known keys:
    *  - record_start: the record Start request body schema

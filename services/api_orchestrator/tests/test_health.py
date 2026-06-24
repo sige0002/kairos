@@ -43,6 +43,38 @@ def test_runtime_config_shape(client: TestClient) -> None:
     # default_topics is always present (empty when no RECORDING_CONFIG is loaded)
     # so the Record/Monitor tabs can rely on its shape.
     assert body["defaults"]["default_topics"] == []
+    # stream is always present (single empty pane when no STREAM_CONFIG).
+    assert body["stream"] == {"columns": 2, "panes": []}
+
+
+def test_runtime_config_surfaces_stream_config(
+    tmp_path: Path, fake_recorder, store: RunStore
+) -> None:
+    """With a STREAM_CONFIG loaded, GET /config exposes its columns + panes so
+    the Stream tab opens the configured previews."""
+    cfg = tmp_path / "stream.yaml"
+    cfg.write_text(
+        "columns: 3\n"
+        "panes:\n"
+        "  - topic: /cam/head/compressed\n"
+        "  - topic: /cam/hand/compressed\n",
+        encoding="utf-8",
+    )
+    settings = Settings(
+        recording_config="/nonexistent/recording.yaml", stream_config=str(cfg)
+    )
+    http_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(fake_recorder.handler)
+    )
+    app = create_orchestrator_app(settings, store=store, http_client=http_client)
+    with TestClient(app) as client:
+        stream = client.get("/api/v1/config").json()["stream"]
+
+    assert stream["columns"] == 3
+    assert [p["topic"] for p in stream["panes"]] == [
+        "/cam/head/compressed",
+        "/cam/hand/compressed",
+    ]
 
 
 def test_runtime_config_surfaces_recording_config(

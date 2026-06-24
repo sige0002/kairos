@@ -26,6 +26,14 @@ function asTopicList(data: TopicInfo[] | { topics?: TopicInfo[]; items?: TopicIn
   return data.topics ?? data.items ?? [];
 }
 
+// Static grid column classes (literal so Tailwind's content scan keeps them).
+const GRID_COLS: Record<number, string> = {
+  1: 'lg:grid-cols-1',
+  2: 'lg:grid-cols-2',
+  3: 'lg:grid-cols-3',
+  4: 'lg:grid-cols-4',
+};
+
 interface CameraOption {
   name: string;
   type?: string;
@@ -159,37 +167,51 @@ export function StreamTab({ config }: { config: RuntimeConfig }) {
     return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
   }, [topicsQuery.data, defaultTopics]);
 
-  const defaultTopic = (options.find((o) => o.live) ?? options[0])?.name ?? '';
+  const firstLive = (options.find((o) => o.live) ?? options[0])?.name ?? '';
 
-  // One preview pane by default; add/remove more as needed.
+  // Initial panes come from STREAM_CONFIG (config.stream.panes): how many open
+  // and what each shows. With none configured, open one empty pane. Add/remove
+  // works at runtime regardless.
   const nextId = useRef(1);
-  const [paneIds, setPaneIds] = useState<number[]>([0]);
+  const [panes, setPanes] = useState<{ id: number; topic: string }[]>(() => {
+    const configured = config.stream?.panes ?? [];
+    const init =
+      configured.length > 0
+        ? configured.map((p, i) => ({ id: i, topic: p.topic ?? '' }))
+        : [{ id: 0, topic: '' }];
+    nextId.current = init.length;
+    return init;
+  });
+
+  const gridCols = GRID_COLS[config.stream?.columns ?? 2] ?? 'lg:grid-cols-2';
 
   return (
     <div className="flex flex-col gap-3">
       <div className="flex items-center gap-3">
         <button
           type="button"
-          onClick={() => setPaneIds((ids) => [...ids, nextId.current++])}
+          onClick={() =>
+            setPanes((ps) => [...ps, { id: nextId.current++, topic: '' }])
+          }
           className="rounded bg-blue-600 px-3 py-1.5 text-sm text-white"
         >
           + Add camera
         </button>
-        <span className="text-xs text-gray-500">{paneIds.length} preview(s)</span>
+        <span className="text-xs text-gray-500">{panes.length} preview(s)</span>
       </div>
 
-      {paneIds.length === 0 ? (
+      {panes.length === 0 ? (
         <p className="text-sm text-gray-500">No previews. Add a camera.</p>
       ) : (
-        <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-          {paneIds.map((id) => (
+        <div className={`grid grid-cols-1 gap-3 ${gridCols}`}>
+          {panes.map((pane) => (
             <CameraPane
-              key={id}
+              key={pane.id}
               options={options}
-              defaultTopic={defaultTopic}
+              defaultTopic={pane.topic || firstLive}
               webrtcBase={config.endpoints.webrtc}
-              removable={paneIds.length > 1}
-              onRemove={() => setPaneIds((ids) => ids.filter((x) => x !== id))}
+              removable={panes.length > 1}
+              onRemove={() => setPanes((ps) => ps.filter((p) => p.id !== pane.id))}
             />
           ))}
         </div>

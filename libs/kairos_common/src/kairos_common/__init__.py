@@ -27,6 +27,7 @@ from kairos_common.recording_config import (
 )
 from kairos_common.settings import Settings, get_settings
 from kairos_common.states import JobState
+from kairos_common.stream_config import StreamConfig, StreamPane, load_stream_config
 from kairos_common.time import utc_now_iso8601
 
 __all__ = [
@@ -44,11 +45,14 @@ __all__ = [
     "RequiredTopic",
     "Settings",
     "Storage",
+    "StreamConfig",
+    "StreamPane",
     "TopicQosOverride",
     "ValidationConfig",
     "create_app",
     "error_response",
     "get_settings",
     "load_recording_config",
+    "load_stream_config",
     "utc_now_iso8601",
 ]

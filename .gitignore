@@ -21,6 +21,7 @@ data/*
 
 # Local staged-implementation working draft (not a committed doc)
 plan.md
+plan_ui.md
 
 # OS / editor
 .DS_Store

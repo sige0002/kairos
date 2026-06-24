@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     # orchestrator uses it to delete a run's directory; the recorder relaxes its
     # mode to 0o777 so the orchestrator (uid 1000) can remove it.
     recorded_dir: str = "/data/recorded"
+    # Stream tab layout config (initial preview panes); surfaced UI-side via
+    # GET /api/v1/config. Optional — missing file just means a single empty pane.
+    stream_config: str = "config/stream.yaml"
 
     # ---- HTTP bind + ports -------------------------------------------------
     # BIND_HOST defaults to 0.0.0.0: LAN exposure is allowed on a trusted LAN

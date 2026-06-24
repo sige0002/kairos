@@ -24,8 +24,15 @@ from pathlib import Path
 import httpx
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
-from kairos_common import Settings, create_app, get_settings, load_recording_config
+from kairos_common import (
+    Settings,
+    create_app,
+    get_settings,
+    load_recording_config,
+    load_stream_config,
+)
 from kairos_common.recording_config import RecordingConfig
+from kairos_common.stream_config import StreamConfig
 
 from api_orchestrator.dora_runner_client import DoraRunnerClient
 from api_orchestrator.events import EventHub
@@ -63,6 +70,23 @@ def _load_recording_config(settings: Settings) -> RecordingConfig | None:
         return load_recording_config(path)
     except (ValueError, OSError) as exc:
         logger.warning("RECORDING_CONFIG invalid", extra={"error": str(exc)})
+        return None
+
+
+def _load_stream_config(settings: Settings) -> StreamConfig | None:
+    """Load STREAM_CONFIG if present; tolerate its absence (UI hint only).
+
+    Surfaced via ``GET /api/v1/config`` ``stream`` so the Stream tab can open
+    its configured preview panes. Missing/invalid -> ``None`` (the UI then opens
+    a single empty pane); never blocks startup.
+    """
+    path = Path(settings.stream_config)
+    if not path.exists():
+        return None
+    try:
+        return load_stream_config(path)
+    except (ValueError, OSError) as exc:
+        logger.warning("STREAM_CONFIG invalid", extra={"error": str(exc)})
         return None
 
 
@@ -124,6 +148,7 @@ def create_orchestrator_app(
     """
     settings = settings or get_settings()
     recording_config = _load_recording_config(settings)
+    stream_config = _load_stream_config(settings)
 
     run_store = store or RunStore(DEFAULT_DB_PATH)
     owns_client = http_client is None
@@ -176,7 +201,7 @@ def create_orchestrator_app(
     app.include_router(validation_router.router)
     _override_readyz(app, recorder, monitor, streamer)
 
-    _register_root_and_config(app, settings, recording_config)
+    _register_root_and_config(app, settings, recording_config, stream_config)
     return app
 
 
@@ -206,17 +231,36 @@ def _config_defaults(recording_config: RecordingConfig | None) -> dict[str, obje
     }
 
 
+def _stream_payload(stream_config: StreamConfig | None) -> dict[str, object]:
+    """Build the ``stream`` block of ``GET /api/v1/config`` from STREAM_CONFIG.
+
+    Decides the Stream tab's initial preview panes. With no config, the UI opens
+    a single empty pane (``panes: []``), so the shape is always present.
+    """
+    if stream_config is None:
+        return {"columns": 2, "panes": []}
+    return {
+        "columns": stream_config.columns,
+        "panes": [{"topic": p.topic} for p in stream_config.panes],
+    }
+
+
 def _register_root_and_config(
-    app: FastAPI, settings: Settings, recording_config: RecordingConfig | None
+    app: FastAPI,
+    settings: Settings,
+    recording_config: RecordingConfig | None,
+    stream_config: StreamConfig | None,
 ) -> None:
     """Register the Stage 0 root + ``GET /api/v1/config``.
 
     The payload keeps its Stage 0 shape (the frontend render-gate depends on
     it) but the ``defaults`` block is now sourced from the live RECORDING_CONFIG
     so the Record / Monitor tabs can surface the configured topics instead of
-    asking the operator to type topic names by hand.
+    asking the operator to type topic names by hand. ``stream`` comes from
+    STREAM_CONFIG (the Stream tab's initial panes).
     """
     defaults = _config_defaults(recording_config)
+    stream = _stream_payload(stream_config)
 
     @app.get("/")
     async def root() -> dict[str, str]:
@@ -238,6 +282,7 @@ def _register_root_and_config(
                 {"id": "pipelines", "enabled": True},
             ],
             "defaults": defaults,
+            "stream": stream,
             "schemas": {
                 "pipeline_forms": {
                     "fast_validation": {
