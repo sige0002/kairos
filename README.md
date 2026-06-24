@@ -120,6 +120,9 @@ renders its tabs and schemas backend-driven.
    created under `/data/recorded/<run_id>/` (stop with `POST /api/v1/record/stop`). Filling in the
    Record tab's **Operator / Task** fields saves them — plus topics, message count, and start/end — to
    `/data/recorded/<run_id>/session.json` (beside the MCAP), and they also show in the Runs tab.
+   Recordings can be **deleted from the Runs tab** (removes the DB row + `/data/recorded/<run_id>`);
+   the recorder `chmod 0777`s its output so they are also deletable from the host (outside the
+   container) without sudo.
 3. **Monitor / preview**: `GET /metrics` for live health (Hz / late / gap / bandwidth), `/stream` for
    the camera WebRTC preview. The UI Monitor tab **always lists every topic on the graph** and overlays
    live Hz on the monitored ones. To get Hz for the sample bag, point at

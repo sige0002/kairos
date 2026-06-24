@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from kairos_common import (
@@ -78,11 +80,14 @@ class RunService:
         recorder: RecorderClient,
         recording_config: RecordingConfig | None,
         event_hub: EventHub | None = None,
+        recorded_dir: str | Path = "/data/recorded",
     ) -> None:
         self._store = store
         self._recorder = recorder
         self._config = recording_config
         self._event_hub = event_hub
+        # Recording output root; used to remove a run's directory on delete.
+        self._recorded_dir = Path(recorded_dir)
         # Serializes the whole start/stop lifecycle (check-active -> call
         # recorder -> update state) so concurrent requests cannot interleave
         # and orphan a row or diverge from the recorder's single session.
@@ -361,6 +366,29 @@ class RunService:
                 details={"run_id": run_id},
             )
         return run
+
+    def delete(self, run_id: str) -> None:
+        """Delete a run: its recording directory + session.json and the row.
+
+        Raises 404 if the run is unknown, 409 if it is still recording/stopping
+        (the active session must be stopped first). The recording dir is removed
+        best-effort (the recorder relaxed its mode so uid 1000 can remove it);
+        the DB row is then deleted.
+        """
+        run = self.get(run_id)  # 404 if absent
+        if run.state in (RunState.recording, RunState.stopping):
+            raise ApiError(
+                status_code=409,
+                code="run_active",
+                message="Cannot delete a run that is still recording; stop it first.",
+                details={"run_id": run_id, "state": run.state.value},
+            )
+        run_path = self._recorded_dir / run_id
+        try:
+            shutil.rmtree(run_path, ignore_errors=True)
+        except OSError:  # pragma: no cover - ignore_errors already swallows most
+            logger.warning("could not remove recording dir", extra={"run_id": run_id})
+        self._store.delete(run_id)
 
     def list_runs(self, limit: int, cursor: str | None) -> tuple[list[Run], str | None]:
         """Return one page of runs and the next cursor (opaque string)."""

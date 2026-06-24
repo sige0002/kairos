@@ -135,7 +135,13 @@ def create_orchestrator_app(
         f"http://localhost:{settings.dora_runner_port}", client
     )
     event_hub = EventHub(monitor)
-    service = RunService(run_store, recorder, recording_config, event_hub)
+    service = RunService(
+        run_store,
+        recorder,
+        recording_config,
+        event_hub,
+        recorded_dir=settings.recorded_dir,
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:

@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
 import type { RuntimeConfig } from '../../config';
@@ -85,6 +85,19 @@ test('negotiates a WebRTC preview and reaches connected', async () => {
   expect(calls.some((u) => u.includes('http://localhost:8002/stream/offer'))).toBe(
     true,
   );
+});
+
+test('can add a second camera preview', async () => {
+  renderWithClient(<StreamTab config={CONFIG} />);
+
+  await waitFor(() => expect(screen.getByTestId('stream-video')).toBeInTheDocument());
+  expect(screen.getAllByTestId('stream-video')).toHaveLength(1);
+
+  fireEvent.click(screen.getByRole('button', { name: /add camera/i }));
+
+  // A second independent preview pane (and its video surface) appears.
+  expect(screen.getAllByTestId('stream-video')).toHaveLength(2);
+  expect(screen.getAllByLabelText('camera topic')).toHaveLength(2);
 });
 
 test('shows a fallback error when WebRTC is unsupported', async () => {

@@ -135,6 +135,18 @@ def test_session_json_written_beside_mcap(
     assert final["ended_at"] is not None
 
 
+def test_run_dir_is_host_writable(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    """The run dir is chmod'd world-writable so the host/UI can delete it."""
+    session = _make_session(settings, fake_process, write_metadata)
+    session.start(_start_req("run_p"))
+    rd = run_dir(Path(settings.data_dir), "run_p")
+    assert (rd.stat().st_mode & 0o777) == 0o777
+    # The recorded root is relaxed too (so the run dir itself can be removed).
+    assert (rd.parent.stat().st_mode & 0o002)  # world-writable bit set
+
+
 def test_session_json_metadata_optional(
     settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
 ) -> None:

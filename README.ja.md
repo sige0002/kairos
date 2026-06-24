@@ -114,6 +114,8 @@ backend 駆動で描画します。
    `/data/recorded/<run_id>/` に生成される（停止は `POST /api/v1/record/stop`）。Record タブの
    **Operator（データ取得者）/ Task（タスク名）** を入れると、その内容＋トピック・件数・開始/終了が
    MCAP と同じ `/data/recorded/<run_id>/session.json` に保存され、Runs タブでも表示される。
+   収録は **Runs タブから削除**できる（DB 行＋`/data/recorded/<run_id>` を削除）。recorder は出力を
+   `chmod 0777` するので、ホスト側（コンテナ外）からも sudo なしで削除できる。
 3. **監視 / プレビュー**: `GET /metrics` でライブ健全性（Hz / 遅延 / 欠落 / 帯域）、`/stream` でカメラの
    WebRTC プレビュー。UI の Monitor タブは**グラフ上の全 topic を常時表示**し、監視対象は live Hz を重ねる。
    サンプル bag に合わせて Hz を出すには `RECORDING_CONFIG=config/airoa_hsr.yaml` を指す

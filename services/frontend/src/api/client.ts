@@ -90,3 +90,12 @@ export async function apiPost<T>(
   const text = await resp.text();
   return (text ? JSON.parse(text) : undefined) as T;
 }
+
+export async function apiDelete(path: string, opts: RequestOptions = {}): Promise<void> {
+  const resp = await fetch(joinUrl(withQuery(path, opts.query)), {
+    method: 'DELETE',
+    headers: { Accept: 'application/json' },
+    signal: opts.signal,
+  });
+  if (!resp.ok) throw await parseError(resp);
+}

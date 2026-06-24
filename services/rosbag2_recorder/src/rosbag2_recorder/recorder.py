@@ -129,6 +129,21 @@ class RecorderSession:
     def _recorded_root(self) -> Path:
         return self._data_dir / "recorded"
 
+    @staticmethod
+    def _make_host_writable(path: Path) -> None:
+        """Relax *path* (a directory) to 0o777 so it is host-deletable.
+
+        The recorder runs as root, so its ``recorded/`` root and per-run dirs are
+        root-owned. Setting the directory mode to world-writable lets the host
+        user — and the orchestrator's delete endpoint (uid 1000) — remove
+        recordings without sudo. Deleting a file only needs write on its
+        directory, so the bag files themselves need no mode change. Best-effort.
+        """
+        try:
+            path.chmod(0o777)
+        except OSError:
+            logger.warning("could not relax permissions on %s", path)
+
     def ensure_ready(self) -> None:
         """Raise if the recorder cannot serve recordings (readiness probe).
 
@@ -142,6 +157,8 @@ class RecorderSession:
         root = self._recorded_root()
         try:
             root.mkdir(parents=True, exist_ok=True)
+            # Keep the recorded root host-deletable (so run dirs can be removed).
+            self._make_host_writable(root)
         except OSError as exc:
             raise ApiError(
                 status_code=507,
@@ -669,6 +686,8 @@ class RecorderSession:
         except OSError:
             logger.exception("failed to write manifest")
         self._write_session(ended_at=ended_at)
+        # Keep the run dir host-deletable (root container -> host user / UI).
+        self._make_host_writable(run_dir(self._data_dir, self._run_id))
 
     def _write_session(self, ended_at: str | None = None) -> None:
         """Write the run's ``session.json`` beside the MCAP (best-effort).

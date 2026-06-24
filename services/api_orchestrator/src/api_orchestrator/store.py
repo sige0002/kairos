@@ -209,6 +209,12 @@ class RunStore:
                 raise KeyError(run_id)
         return self.get_or_raise(run_id)
 
+    def delete(self, run_id: str) -> bool:
+        """Delete a run row. Returns ``True`` if a row was removed."""
+        with self._conn() as conn:
+            cur = conn.execute("DELETE FROM runs WHERE run_id = ?", (run_id,))
+        return cur.rowcount > 0
+
     # ---- reads ------------------------------------------------------------
 
     def get(self, run_id: str) -> Run | None:

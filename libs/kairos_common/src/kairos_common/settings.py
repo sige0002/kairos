@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     # ---- Data / config paths ----------------------------------------------
     data_dir: str = "./data"
     recording_config: str = "config/recording.yaml"
+    # Recording output root (where the recorder writes <run_id>/...). The
+    # orchestrator uses it to delete a run's directory; the recorder relaxes its
+    # mode to 0o777 so the orchestrator (uid 1000) can remove it.
+    recorded_dir: str = "/data/recorded"
 
     # ---- HTTP bind + ports -------------------------------------------------
     # BIND_HOST defaults to 0.0.0.0: LAN exposure is allowed on a trusted LAN

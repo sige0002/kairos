@@ -3,8 +3,13 @@
 // dataset stats when present.
 
 import { useState } from 'react';
-import { keepPreviousData, useQuery } from '@tanstack/react-query';
-import { apiGet } from '../../api/client';
+import {
+  keepPreviousData,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query';
+import { apiDelete, apiGet } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
 import type { Page, RunDetail, RunSummary } from '../../api/types';
 import { ErrorMessage } from '../../components/ErrorMessage';
@@ -35,11 +40,26 @@ function JsonBlock({ label, value }: { label: string; value: unknown }) {
   );
 }
 
-function RunDetailView({ runId }: { runId: string }) {
+function RunDetailView({
+  runId,
+  onDeleted,
+}: {
+  runId: string;
+  onDeleted: () => void;
+}) {
+  const queryClient = useQueryClient();
   const detailQuery = useQuery({
     queryKey: queryKeys.run(runId),
     queryFn: ({ signal }) =>
       apiGet<RunDetail>(`/runs/${encodeURIComponent(runId)}`, { signal }),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: () => apiDelete(`/runs/${encodeURIComponent(runId)}`),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['runs'] });
+      onDeleted();
+    },
   });
 
   if (detailQuery.isPending)
@@ -49,7 +69,21 @@ function RunDetailView({ runId }: { runId: string }) {
 
   return (
     <div className="flex flex-col gap-3">
-      <h3 className="font-mono text-sm font-semibold">{run.run_id}</h3>
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="font-mono text-sm font-semibold">{run.run_id}</h3>
+        <button
+          type="button"
+          onClick={() => {
+            if (window.confirm(`Delete recording ${run.run_id}? This cannot be undone.`))
+              deleteMutation.mutate();
+          }}
+          disabled={deleteMutation.isPending}
+          className="rounded border border-red-300 px-2 py-1 text-xs text-red-700 hover:bg-red-50 disabled:opacity-50"
+        >
+          {deleteMutation.isPending ? 'Deleting…' : 'Delete'}
+        </button>
+      </div>
+      {deleteMutation.isError && <ErrorMessage error={deleteMutation.error} />}
       <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
         <dt className="text-gray-500">State</dt>
         <dd>{run.state}</dd>
@@ -157,7 +191,7 @@ export function RunsTab() {
 
       <section aria-label="run detail" className="rounded border p-3">
         {selected ? (
-          <RunDetailView runId={selected} />
+          <RunDetailView runId={selected} onDeleted={() => setSelected(null)} />
         ) : (
           <p className="text-sm text-gray-500">Select a run to see details.</p>
         )}

@@ -6,7 +6,7 @@ source of truth; these are read-only views over it.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response
 
 from api_orchestrator.deps import get_run_service
 from api_orchestrator.models import Run, RunListResponse
@@ -37,3 +37,17 @@ async def get_run(
 ) -> Run:
     """Return a single run by id (404 if absent)."""
     return service.get(run_id)
+
+
+@router.delete("/{run_id}", status_code=204)
+async def delete_run(
+    run_id: str,
+    service: RunService = Depends(get_run_service),
+) -> Response:
+    """Delete a run: its recording directory + session.json and the run row.
+
+    404 if the run does not exist; 409 if it is still recording/stopping (stop
+    it first). Returns 204 on success.
+    """
+    service.delete(run_id)
+    return Response(status_code=204)

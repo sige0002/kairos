@@ -6,9 +6,12 @@ import { RunsTab } from './RunsTab';
 
 beforeEach(() => {
   setApiBase('/api/v1');
-  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     const url = String(input);
     if (url.includes('/runs/run-1')) {
+      if ((init as RequestInit | undefined)?.method === 'DELETE') {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
       return Promise.resolve(
         jsonResponse({
           run_id: 'run-1',
@@ -51,4 +54,31 @@ test('lists runs and opens a detail view with manifest', async () => {
   expect(screen.getByText('zstd')).toBeInTheDocument();
   // Manifest is rendered in a collapsible JSON block.
   expect(screen.getByText('Manifest')).toBeInTheDocument();
+});
+
+test('deletes a run after confirm and clears the detail', async () => {
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
+  renderWithClient(<RunsTab />);
+
+  await waitFor(() => expect(screen.getByText('run-1')).toBeInTheDocument());
+  fireEvent.click(screen.getByRole('button', { name: /run-1/ }));
+  await waitFor(() => expect(screen.getByText('/tf')).toBeInTheDocument());
+
+  fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+
+  // A DELETE request is issued for the run.
+  await waitFor(() => {
+    const calls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls;
+    expect(
+      calls.some(
+        (c) =>
+          String(c[0]).includes('/runs/run-1') &&
+          (c[1] as RequestInit | undefined)?.method === 'DELETE',
+      ),
+    ).toBe(true);
+  });
+  // Detail is cleared back to the placeholder.
+  await waitFor(() =>
+    expect(screen.getByText(/Select a run to see details/)).toBeInTheDocument(),
+  );
 });
