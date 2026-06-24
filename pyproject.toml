@@ -1,0 +1,25 @@
+# Root tooling config for the kairos monorepo (Python).
+# Per-service packaging lives in each services/<svc>/pyproject.toml and
+# libs/kairos_common/pyproject.toml; this file holds only shared tool settings
+# (ruff + pytest) applied across the repo.
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+extend-exclude = ["services/frontend"]
+
+[tool.ruff.lint]
+# A pragmatic baseline: pyflakes, pycodestyle, isort, pyupgrade, bugbear.
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's dependency markers are evaluated as argument defaults by design;
+# treat them as immutable so B008 does not flag the idiomatic pattern.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Path"]
+
+[tool.pytest.ini_options]
+# Discover tests across the shared lib and every Python service.
+testpaths = ["libs", "services"]
+# importlib mode lets identically-named test modules (each service has its own
+# tests/test_health.py) coexist without sys.path/__init__.py collisions.
+addopts = "-q --import-mode=importlib"

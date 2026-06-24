@@ -1,0 +1,43 @@
+# Design diagrams (large local reference)
+fig_const
+
+# Recorded data, reports, converted datasets (from the diagrams' /data path)
+data/
+*.mcap
+
+# Secrets
+.env
+.env.*
+*.pem
+*.key
+# ...but the committed template must be tracked.
+!.env.example
+
+# Claude Code — personal settings only (shared settings.json IS committed)
+.claude/settings.local.json
+
+# Local staged-implementation working draft (not a committed doc)
+plan.md
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Python build / cache artifacts
+__pycache__/
+*.egg-info/
+.ruff_cache/
+.pytest_cache/
+.venv/
+
+# Node / frontend build artifacts
+node_modules/
+dist/
+*.tsbuildinfo
+
+# ROS 2 / colcon build dirs
+build/
+install/
+log/

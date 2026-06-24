@@ -1,0 +1,15 @@
+nodes:
+  - id: mcap_loader
+    path: dora_runner.validation:mcap_loader
+    outputs:
+      - run
+  - id: validator
+    path: dora_runner.validation:validator
+    inputs:
+      run: mcap_loader/run
+    outputs:
+      - summary
+  - id: result_writer
+    path: dora_runner.validation:result_writer
+    inputs:
+      summary: validator/summary

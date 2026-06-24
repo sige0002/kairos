@@ -1,0 +1,4 @@
+# Build output and dependencies are not source; never format them.
+dist
+node_modules
+coverage

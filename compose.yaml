@@ -1,0 +1,156 @@
+# =============================================================================
+# kairos — root docker compose entry point (Stage 0 skeleton).
+# Brings up all 6 services as runnable shells. Real service logic lands in
+# later stages; this only wires env, ports, volumes, and DDS networking.
+#
+#   cp .env.example .env   # then edit
+#   docker compose up
+#
+# ---- Networking decision (important) ----------------------------------------
+# All services use `network_mode: host`. Rationale:
+#   * The 3 ROS services (recorder/monitor/streamer) must share the host's
+#     DDS graph to discover topics — the same setup the test harness uses
+#     (deploy/test/compose.yaml: network_mode host + ROS_DOMAIN_ID=0). Bridge
+#     networking would block DDS multicast discovery.
+#   * Host networking for the ROS services means they are NOT on a compose
+#     bridge network, so the pure-Python services (orchestrator/dora_runner)
+#     could not reach them by compose service name. Putting every service on
+#     host networking removes that mixed-network split: each service reaches
+#     the others at localhost:<port>, consistent with the test harness.
+#   * Network assumption is a trusted single host / LAN with no auth
+#     (docs/specs/ja/config.md), which host networking matches.
+# Trade-off: host networking has no port mapping (ports bind directly to the
+# host) and no compose network isolation. On a multi-tenant host, switch the
+# Python services to a bridge network with explicit DDS unicast peers for the
+# ROS services (see the docker-ros2-development skill). Left as host for now.
+#
+# Each service reads its config from the root .env (env_file below). Internal
+# ports for the recorder/dora_runner (not public .env keys) default in their
+# Dockerfiles and are passed here explicitly for clarity.
+# =============================================================================
+name: kairos
+
+# Shared ROS env for the 3 ROS-based services.
+x-ros-env: &ros-env
+  ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
+  RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
+
+services:
+  # ---- ROS 2 services (host networking for the shared DDS graph) -----------
+  recorder:
+    build:
+      context: .
+      dockerfile: services/rosbag2_recorder/Dockerfile
+      args:
+        ROS_DISTRO: ${ROS_DISTRO:-jazzy}
+    image: kairos-rosbag2-recorder:${ROS_DISTRO:-jazzy}
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      <<: *ros-env
+      RECORDER_PORT: "8010"
+      RECORDING_CONFIG: ${RECORDING_CONFIG:-/config/recording.yaml}
+    network_mode: host
+    # Share the host IPC namespace so FastDDS shared-memory transport delivers
+    # data across containers (host networking carries only UDP discovery).
+    ipc: host
+    volumes:
+      - ${DATA_DIR:-./data}:/data
+      - ./deploy/config:/config:ro
+      # Optional custom-message colcon overlay (sourced by the entrypoint if it
+      # contains install/setup.bash); empty by default. See deploy/msgs_overlay.
+      - ${MSGS_OVERLAY_DIR:-./deploy/msgs_overlay}:/opt/msgs_overlay:ro
+    restart: unless-stopped
+
+  monitor:
+    build:
+      context: .
+      dockerfile: services/topic_monitor/Dockerfile
+      args:
+        ROS_DISTRO: ${ROS_DISTRO:-jazzy}
+    image: kairos-topic-monitor:${ROS_DISTRO:-jazzy}
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      <<: *ros-env
+      RECORDING_CONFIG: ${RECORDING_CONFIG:-/config/recording.yaml}
+    network_mode: host
+    ipc: host
+    volumes:
+      - ${DATA_DIR:-./data}:/data
+      - ./deploy/config:/config:ro
+    restart: unless-stopped
+
+  streamer:
+    build:
+      context: .
+      dockerfile: services/webrtc_streamer/Dockerfile
+      args:
+        ROS_DISTRO: ${ROS_DISTRO:-jazzy}
+    image: kairos-webrtc-streamer:${ROS_DISTRO:-jazzy}
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      <<: *ros-env
+    network_mode: host
+    ipc: host
+    volumes:
+      - ${DATA_DIR:-./data}:/data
+    restart: unless-stopped
+
+  # ---- Pure-Python services (no rclpy) -------------------------------------
+  orchestrator:
+    build:
+      context: .
+      dockerfile: services/api_orchestrator/Dockerfile
+    image: kairos-api-orchestrator:latest
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      RECORDING_CONFIG: ${RECORDING_CONFIG:-/config/recording.yaml}
+    # Run as the host user so the host-owned ./data mount is writable (the slim
+    # image is otherwise non-root with a different uid). Defaults to 1000:1000.
+    user: "${UID:-1000}:${GID:-1000}"
+    # Host networking so it can reach the ROS services at localhost:<port>
+    # (see the networking decision note above).
+    network_mode: host
+    volumes:
+      - ${DATA_DIR:-./data}:/data
+      - ./deploy/config:/config:ro
+    restart: unless-stopped
+
+  dora_runner:
+    build:
+      context: .
+      dockerfile: services/dora_runner/Dockerfile
+    image: kairos-dora-runner:latest
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DORA_RUNNER_PORT: "8020"
+      RECORDING_CONFIG: ${RECORDING_CONFIG:-/config/recording.yaml}
+    # Run as the host user so the host-owned ./data mount is writable.
+    user: "${UID:-1000}:${GID:-1000}"
+    network_mode: host
+    volumes:
+      - ${DATA_DIR:-./data}:/data
+      - ./deploy/config:/config:ro
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: services/frontend/Dockerfile
+    image: kairos-frontend:latest
+    env_file:
+      - path: .env
+        required: false
+    network_mode: host
+    restart: unless-stopped
+    depends_on:
+      - orchestrator

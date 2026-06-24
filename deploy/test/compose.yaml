@@ -1,0 +1,29 @@
+# Test harness: replay a recorded rosbag (MCAP) onto the ROS 2 graph (ROS_DOMAIN_ID=0)
+# so services can be exercised against real recorded data.
+#
+# Usage (from repo root):
+#   docker compose -f deploy/test/compose.yaml run --rm rosbag_player
+#   BAG=/data/airoa-moma-mcap/000730 docker compose -f deploy/test/compose.yaml run --rm rosbag_player
+#
+# ROS_DISTRO is overridable: ROS_DISTRO=humble docker compose -f deploy/test/compose.yaml build
+name: kairos-test
+services:
+  rosbag_player:
+    build:
+      context: .
+      args:
+        ROS_DISTRO: ${ROS_DISTRO:-jazzy}
+    image: kairos-rosbag-player:${ROS_DISTRO:-jazzy}
+    environment:
+      # Shared ROS 2 domain for all kairos containers/tests.
+      ROS_DOMAIN_ID: "0"
+    # Share the host's ROS 2 DDS graph so replayed topics reach services on the host/other containers.
+    network_mode: host
+    # Share host IPC so FastDDS shared-memory transport delivers data to other
+    # containers (host networking carries only UDP discovery, not the SHM data plane).
+    ipc: host
+    volumes:
+      # Share recorded bags read-only (repo data/ -> /data).
+      - ../../data:/data:ro
+    # Override BAG to pick a different recording. --clock publishes /clock for sim-time consumers.
+    command: ["ros2", "bag", "play", "${BAG:-/data/airoa-moma-mcap/235210}", "--clock"]

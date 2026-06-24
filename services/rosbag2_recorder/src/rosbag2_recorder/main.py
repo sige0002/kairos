@@ -1,0 +1,114 @@
+"""rosbag2_recorder service entry point (Stage 1).
+
+ROS 2 topics -> MCAP, the canonical recording path. This module wires the
+recording session manager (:mod:`rosbag2_recorder.recorder`) to the internal
+HTTP API consumed by ``api_orchestrator`` (not public): start/stop/status and
+metadata. Cross-cutting plumbing (health, error shape, CORS, logging) comes from
+``kairos_common.create_app``. See ``docs/specs/ja/rosbag2_recorder.md``.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from fastapi import FastAPI, Response
+from kairos_common import (
+    create_app,
+    get_settings,
+    load_recording_config,
+)
+
+from rosbag2_recorder.models import (
+    RecordStartRequest,
+    RecordStartResponse,
+    RecordStatusResponse,
+)
+from rosbag2_recorder.recorder import RecorderSession
+
+logger = logging.getLogger("kairos.rosbag2_recorder")
+
+SERVICE_NAME = "rosbag2_recorder"
+
+
+def _load_config(recording_config_path: str) -> Any:
+    """Load the RECORDING_CONFIG, tolerating its absence.
+
+    The per-topic QoS overrides come from this file; if it is missing or
+    invalid the recorder still works (rosbag2 follows each publisher's offered
+    QoS), so we log and continue rather than refusing to boot.
+    """
+    try:
+        return load_recording_config(recording_config_path)
+    except (FileNotFoundError, ValueError) as exc:
+        logger.warning("recording config unavailable: %s", exc)
+        return None
+
+
+def create_recorder_app() -> FastAPI:
+    """Build the recorder FastAPI app with the session and routes wired in."""
+    settings = get_settings()
+    config = _load_config(settings.recording_config)
+    session = RecorderSession(settings, config)
+    session.reconcile_on_startup()
+
+    app = create_app(SERVICE_NAME, settings=settings)
+    app.state.session = session
+
+    # create_app registers a default always-ready /readyz; drop it so our
+    # dependency-aware probe below is the one that serves the path (Starlette
+    # matches the first registered route, so the default would otherwise win).
+    app.router.routes = [
+        route
+        for route in app.router.routes
+        if getattr(route, "path", None) != "/readyz"
+    ]
+
+    @app.post("/record/start", status_code=201, response_model=RecordStartResponse)
+    async def record_start(request: RecordStartRequest) -> RecordStartResponse:
+        status = session.start(request)
+        return RecordStartResponse(
+            run_id=status.run_id or request.run_id,
+            state=status.state,
+            started_at=status.started_at or "",
+        )
+
+    @app.post("/record/stop", response_model=RecordStatusResponse)
+    async def record_stop() -> RecordStatusResponse:
+        return session.stop()
+
+    @app.get("/record/status", response_model=RecordStatusResponse)
+    async def record_status() -> RecordStatusResponse:
+        return session.status()
+
+    @app.get("/record/metadata")
+    async def record_metadata() -> dict[str, Any]:
+        return session.get_metadata()
+
+    # Readiness reflects that the recorder can write to /data; if the recorded
+    # root is not usable we are live but not ready.
+    @app.get("/readyz", tags=["health"])
+    async def readyz(response: Response) -> dict[str, str]:
+        try:
+            session.ensure_ready()
+        except Exception:  # noqa: BLE001 - report unready, never crash the probe
+            response.status_code = 503
+            return {"status": "not_ready"}
+        return {"status": "ready"}
+
+    return app
+
+
+app = create_recorder_app()
+
+
+def main() -> None:
+    """Run the service with uvicorn, binding host/port from config."""
+    import uvicorn
+
+    settings = get_settings()
+    uvicorn.run(app, host=settings.bind_host, port=settings.recorder_port)
+
+
+if __name__ == "__main__":
+    main()

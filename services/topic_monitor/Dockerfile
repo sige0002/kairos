@@ -1,0 +1,32 @@
+# syntax=docker/dockerfile:1
+# topic_monitor — ROS 2 node (will use rclpy for lightweight subscribe in
+# Stage 2), so it is built FROM the ROS base image. Stage 0 only runs a
+# FastAPI health shell; ROS deps are added as the monitoring logic lands.
+ARG ROS_DISTRO=jazzy
+
+# ---- builder ----------------------------------------------------------------
+FROM ros:${ROS_DISTRO}-ros-base AS builder
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3-pip python3-venv \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV VENV=/opt/venv
+RUN python3 -m venv --system-site-packages $VENV
+ENV PATH="$VENV/bin:$PATH"
+
+WORKDIR /app
+COPY libs/kairos_common /app/libs/kairos_common
+COPY services/topic_monitor /app/services/topic_monitor
+RUN pip install --no-cache-dir ./libs/kairos_common ./services/topic_monitor
+
+# ---- runtime ----------------------------------------------------------------
+FROM ros:${ROS_DISTRO}-ros-base AS runtime
+ARG ROS_DISTRO
+ENV VENV=/opt/venv
+ENV PATH="$VENV/bin:$PATH"
+COPY --from=builder /opt/venv /opt/venv
+
+# Public port from the shared .env (TOPIC_MONITOR_PORT).
+EXPOSE 8001
+
+CMD ["python", "-m", "topic_monitor.main"]
