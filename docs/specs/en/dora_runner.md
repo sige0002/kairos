@@ -86,3 +86,16 @@ MCAP → dora dataflow (validator / converter / AI nodes) → reports / converte
 - Extend as a dora dataflow (adding / swapping / chaining nodes). **Treat AI nodes as first-class citizens.**
 - backend-driven: pipeline definitions and form schemas are distributed by `api_orchestrator` to the frontend (Pipelines tab).
 - Shared configuration is in [config](config.md).
+
+## Implementation status and dev guide
+
+This document is the **canonical design (including the future vision)**. The **current
+implementation is v1**: the only enabled pipeline is `fast_validation` (a required-topic
+presence check). `full_validation` / `dataset_convert` / `dataset_validation` are interface-only
+(`enabled=false`). The Plugin/Pipeline Registry, dora dataflow (YAML), dora daemon, AI nodes, and
+job/template persistence are **not implemented**; `fast_validation` is implemented as in-process
+node functions.
+
+For how to add a validation check, how to unit-test, and how to debug locally with the CLI
+(`python -m dora_runner.cli`), see the developer guide
+[docs/dora/README.md](../../dora/README.md).

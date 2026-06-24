@@ -16,6 +16,11 @@ dependencies = [
     "uvicorn>=0.30",
 ]
 
+[project.scripts]
+# Local validation CLI: run fast_validation against a run without the HTTP
+# server (fast debug iteration). See src/dora_runner/cli.py.
+dora-validate = "dora_runner.cli:main"
+
 [project.optional-dependencies]
 test = [
     "pytest>=8.0",

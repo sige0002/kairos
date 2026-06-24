@@ -84,3 +84,13 @@ MCAP → dora dataflow（validator / converter / AI nodes）→ reports / conver
 - dora dataflow として拡張（node 追加・差し替え・連結）。**AI node を一級市民**として扱う。
 - backend-driven: pipeline 定義・フォーム schema は `api_orchestrator` が frontend に配布する（Pipelines タブ）。
 - 共有設定は [config](config.md)。
+
+## 実装状況と開発ガイド
+
+本書は**設計の正本（将来像を含む）**。**現状の実装は v1** で、有効な pipeline は `fast_validation`
+（必須トピックの過不足チェック）のみ。`full_validation` / `dataset_convert` / `dataset_validation` は
+I/F だけ（`enabled=false`）。Plugin/Pipeline Registry・dora dataflow（YAML）・dora daemon・AI node・
+job/template の永続化は**未実装**で、`fast_validation` は in-process の node 関数として実装されている。
+
+validation チェックの追加方法・単体試験・ローカル CLI（`python -m dora_runner.cli`）でのデバッグ手順は、
+開発者ガイド [docs/dora/README.ja.md](../../dora/README.ja.md) を参照。
