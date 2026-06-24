@@ -29,6 +29,17 @@ logger = logging.getLogger("kairos.webrtc_streamer")
 # Media clock for outgoing VP8/H.264: 90 kHz is the RTP video standard.
 _VIDEO_CLOCK_RATE = 90_000
 
+# On connect, wait up to this long for the first camera frame so the stream
+# STARTS at the real resolution. Starting with a placeholder frame and then
+# changing resolution forces a keyframe the browser must decode — and when that
+# is dropped/late, some browsers keep showing the (black) placeholder. Avoiding
+# the initial size change removes that intermittent "black preview" entirely.
+_FIRST_FRAME_WAIT_S = 3.0
+_FIRST_FRAME_POLL_S = 0.02
+# Black-frame fallback size when no camera frame arrives in time (a normal
+# preview size, not 2x2, so a later first frame is at most a normal resize).
+_FALLBACK_W, _FALLBACK_H = 640, 480
+
 
 @runtime_checkable
 class PeerManager(Protocol):
@@ -126,9 +137,19 @@ def _make_track(frames: LatestFrame[Any], max_fps: int) -> Any:
             self._frames = frames
             self._start = time.monotonic()
             self._count = 0
-            # 1x1 black until the first real frame arrives, so a client that
-            # connects before the camera publishes still gets a valid stream.
-            self._last = av.VideoFrame(width=2, height=2, format="bgr24")
+            # No placeholder yet: the first recv() waits for a real camera frame
+            # so the stream STARTS at the real resolution (see _FIRST_FRAME_WAIT_S).
+            self._last: Any = None
+
+        async def _first_bgr(self) -> Any:
+            """Wait (briefly) for the first camera frame, so the stream starts at
+            the real resolution instead of a placeholder size that later resizes."""
+            deadline = time.monotonic() + _FIRST_FRAME_WAIT_S
+            while True:
+                bgr = self._frames.latest_nowait()
+                if bgr is not None or time.monotonic() >= deadline:
+                    return bgr
+                await asyncio.sleep(_FIRST_FRAME_POLL_S)
 
         async def recv(self) -> Any:
             # Pace to max_fps; recv is awaited in a tight loop by aiortc.
@@ -139,8 +160,18 @@ def _make_track(frames: LatestFrame[Any], max_fps: int) -> Any:
             self._count += 1
 
             bgr = self._frames.latest_nowait()
+            if bgr is None and self._last is None:
+                # First frame not seen yet: wait so we never emit a placeholder
+                # that the real frame would resize (the resize-keyframe glitch).
+                bgr = await self._first_bgr()
             if bgr is not None:
                 self._last = av.VideoFrame.from_ndarray(bgr, format="bgr24")
+            elif self._last is None:
+                # Camera still silent after the wait: a normal-size black frame
+                # keeps the stream valid (a later first frame is at most a resize).
+                self._last = av.VideoFrame(
+                    width=_FALLBACK_W, height=_FALLBACK_H, format="bgr24"
+                )
             frame = self._last
             # Stamp the frame with a 90 kHz presentation timestamp.
             pts = int((time.monotonic() - self._start) * _VIDEO_CLOCK_RATE)

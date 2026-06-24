@@ -24,6 +24,16 @@ function joinBase(base: string, path: string): string {
   return `${base.replace(/\/$/, '')}${path}`;
 }
 
+/**
+ * Resolve the MediaStream for a received track. The streamer (aiortc) sometimes
+ * omits the stream association (msid), leaving `ev.streams` empty; without this
+ * fallback the `<video>` would get no `srcObject` and show a black preview, so
+ * wrap the track in a fresh MediaStream instead.
+ */
+export function streamFromTrackEvent(ev: RTCTrackEvent): MediaStream {
+  return ev.streams[0] ?? new MediaStream([ev.track]);
+}
+
 /** Resolve once ICE gathering completes so we can send a non-trickle SDP. */
 function waitForIceGatheringComplete(pc: RTCPeerConnection): Promise<void> {
   if (pc.iceGatheringState === 'complete') return Promise.resolve();
@@ -97,7 +107,7 @@ export function useWebRtcStream({
     pcRef.current = pc;
 
     pc.addEventListener('track', (ev) => {
-      if (!cancelled && ev.streams[0]) setStream(ev.streams[0]);
+      if (!cancelled) setStream(streamFromTrackEvent(ev));
     });
     pc.addEventListener('connectionstatechange', () => {
       if (cancelled) return;
