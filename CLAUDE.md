@@ -25,7 +25,7 @@ The current design lives in `docs/specs/ja/` (the **canonical** version, based o
 - For local verification, place sample rosbags (**MCAP**) under `data/`.
 - Example: `data/airoa-moma-mcap/<episode>/` (each with `<id>.mcap` + `metadata.yaml`). HSR robot teleoperation recordings (AIROA MOMA) — raw MCAP that serves as the canonical recording.
 - **MCAP is the canonical recording format** and the input to the validation/conversion pipeline.
-- `data/` and `*.mcap` are in `.gitignore`. Sample data is not committed (provide it locally yourself).
+- The contents of `data/` are `.gitignore`d (`data/.gitkeep` keeps only the directory tracked, so the `./data`→`/data` mount is created user-owned, avoiding a root-owned mount). `*.mcap` and sample data are not committed.
 - This is a local convenience, **not a decision on the official repository layout** (layout is TBD).
 
 ## Repository layout
@@ -42,7 +42,9 @@ kairos/
 │  ├─ dora_runner/        #   post-recording validation & conversion (dora)
 │  └─ frontend/           #   Web UI (Vite + React + TS)
 ├─ libs/                  # shared across services (API contracts / ROS msgs / common utils)
-├─ deploy/                # orchestration helpers (env / k8s, etc.)
+├─ config/                # recording/monitoring config (which topics to record · RECORDING_CONFIG)
+├─ deploy/                # orchestration helpers (env / k8s / integration test harness)
+├─ Makefile               # shortcuts for docker compose + the test harness
 ├─ compose.yaml           # root entry point (docker compose)
 ├─ docs/                  # specs & design docs
 └─ data/                  # runtime data (gitignored)
@@ -77,6 +79,13 @@ kairos/
 
 > All 6 services + the frontend are implemented (Stage 1–4). The most important section of this file.
 
+- **Make shortcuts (the recommended entry point)**: the root `Makefile` thinly wraps the commands
+  below. Run `make` for the target list. Service names are **positional** (`make build monitor`,
+  `make restart monitor orchestrator`). `RECORDING_CONFIG` is exported by `make` with a
+  `/config/airoa_hsr.yaml` default (avoiding the stale path in `.env`). Key ones: `make up` /
+  `make rebuild <svc>` / `make restart <svc>` / `make logs <svc>` / `make config-reload` (apply config
+  edits) / `make rosbag-loop` / `make table` / `make smoke[-record]` / `make test` / `make lint` /
+  `make fmt`. The rest of this section documents what each command runs.
 - **Unit tests (Python)**: inside each service / the shared library, `uv run --extra test pytest -q`.
   ```
   for d in libs/kairos_common services/rosbag2_recorder services/topic_monitor \
@@ -88,20 +97,32 @@ kairos/
 - **Unit tests (frontend)**: `cd services/frontend && npm run build && npm test && npm run lint`.
 - **Lint / format**: `uvx ruff check libs services` / `uvx ruff format libs services`.
 - **Build**: each service builds to one image from its own `Dockerfile`. Build all with `docker compose build`, start with `docker compose up`.
-- **Integration tests (real-data replay)**: a **rosbag2 replay container** is provided.
-  - Definition: `deploy/test/` (`Dockerfile` + `compose.yaml`).
+- **Integration tests (real-data replay)**: a **rosbag2 replay + visualization container** is provided.
+  - Definition: `deploy/test/` (`Dockerfile` + `compose.yaml` + `topic_table.py` + `smoke.sh`).
   - Shares `data/` as a **volume** (read-only mount at `/data`) and streams recorded MCAP onto the ROS 2 graph.
-  - **`ROS_DOMAIN_ID=0`**, `network_mode: host` (shares the host's DDS graph).
-  - Examples:
+  - **`ROS_DOMAIN_ID=0`**, `network_mode: host` / `ipc: host` (shares the host's DDS graph and SHM).
+  - Two services (**use them together in separate terminals**):
     ```
-    # play the default bag
+    # ① "see" what is flowing (periodic table of every topic's Hz/bandwidth/count)
+    docker compose -f deploy/test/compose.yaml run --rm topic_table
+    # ② play a bag once (prints `ros2 bag info` first, then plays). LOOP=--loop to repeat.
     docker compose -f deploy/test/compose.yaml run --rm rosbag_player
-    # pick a different bag
     BAG=/data/airoa-moma-mcap/000730 docker compose -f deploy/test/compose.yaml run --rm rosbag_player
     ```
+  - **Smoke test (prints PASS/FAIL)**: once the stack is up, `bash deploy/test/smoke.sh`.
+    It checks health → `GET /api/v1/config` `default_topics` → topic discovery → the monitor's live
+    metrics, in order, and prints the result (`RECORD=1` also runs record start/stop). The entry point
+    for fixing "nothing comes out."
+  - **The config entry point is `config/`** (formerly `deploy/config/`). `RECORDING_CONFIG` points at one
+    file. See [`config/README.md`](config/README.md).
   - Verified integration recipes (key points):
-    - **Stage 1 recording**: replay the bag with `--loop` **first** (so topics are established), then start the recorder → `POST /record/start {"topics":"all","run_id":...}` → ensure `--output` does not pre-exist (watch out for leftover root-owned dirs). Confirmed ~6,900 msgs / all 19 topics recorded from the sample bag.
-    - **Stage 2 monitoring**: start the monitor with `RECORDING_CONFIG=/config/airoa_hsr.yaml` to match the sample bag (the default `recording.yaml` is a generic template with `default_topics: [/joint_states]`). `GET /metrics` shows real Hz/bandwidth for `/hsrb/*`.
+    - **Stage 1 recording**: confirm topics are established with `topic_table` → `POST /record/start {"topics":"all"}`
+      to the recorder (the orchestrator assigns the run_id) → MCAP is created under `/data/recorded/<run_id>/`.
+      Recording several thousand messages from the sample bag is confirmed by `smoke.sh RECORD=1`.
+    - **Stage 2 monitoring**: start the monitor with **`RECORDING_CONFIG=/config/airoa_hsr.yaml`** to match the
+      sample bag (the default template `config/recording.yaml` has `default_topics` like `/joint_states`, which
+      do not match the HSR `/hsrb/*` topics — so as-is `GET /metrics` is empty = no Hz in the Monitor tab. The
+      Monitor tab itself always lists every topic via discovery). `GET /metrics` shows real Hz/bandwidth for `/hsrb/*`.
     - **Stage 3 validation**: run `dora_runner` standalone + `POST /jobs {pipeline:"fast_validation", run_id, params:{template}}`, or via the orchestrator `POST /api/v1/jobs`. Writes `result: pass|fail` to `/data/report/fast_validation/<run_id>/summary.json`. MCAP is read directly with `mcap` + `mcap-ros2-support` (no ROS needed).
 
 ## Specification docs

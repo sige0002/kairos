@@ -22,6 +22,8 @@ from rosbag2_recorder.models import RUN_ID_PATTERN, RunState, SplitConfig, Topic
 MANIFEST_FILENAME = "manifest.json"
 # rosbag2 writes this standard metadata file inside the run output directory.
 ROSBAG2_METADATA_FILENAME = "metadata.yaml"
+# Session sidecar (who recorded / what task + lifecycle), beside the MCAP.
+SESSION_FILENAME = "session.json"
 
 
 class Manifest(BaseModel):
@@ -108,6 +110,29 @@ def write_manifest(data_dir: str | Path, manifest: Manifest) -> Path:
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(
         json.dumps(manifest.model_dump(mode="json"), indent=2) + "\n",
+        encoding="utf-8",
+    )
+    tmp.replace(path)
+    return path
+
+
+def session_path(data_dir: str | Path, run_id: str) -> Path:
+    """Path of the run's ``session.json`` (inside the run output directory)."""
+    return run_dir(data_dir, run_id) / SESSION_FILENAME
+
+
+def write_session(data_dir: str | Path, run_id: str, payload: dict) -> Path:
+    """Write the run's ``session.json`` sidecar atomically (beside the MCAP).
+
+    Captures the operator / task plus lifecycle info so the recording is
+    self-describing on disk. The run directory must already exist (rosbag2
+    creates it on start); writes to a temp file then renames.
+    """
+    path = session_path(data_dir, run_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
     tmp.replace(path)

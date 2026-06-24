@@ -57,7 +57,7 @@ services:
     ipc: host
     volumes:
       - ${DATA_DIR:-./data}:/data
-      - ./deploy/config:/config:ro
+      - ./config:/config:ro
       # Optional custom-message colcon overlay (sourced by the entrypoint if it
       # contains install/setup.bash); empty by default. See deploy/msgs_overlay.
       - ${MSGS_OVERLAY_DIR:-./deploy/msgs_overlay}:/opt/msgs_overlay:ro
@@ -80,7 +80,7 @@ services:
     ipc: host
     volumes:
       - ${DATA_DIR:-./data}:/data
-      - ./deploy/config:/config:ro
+      - ./config:/config:ro
     restart: unless-stopped
 
   streamer:
@@ -120,7 +120,7 @@ services:
     network_mode: host
     volumes:
       - ${DATA_DIR:-./data}:/data
-      - ./deploy/config:/config:ro
+      - ./config:/config:ro
     restart: unless-stopped
 
   dora_runner:
@@ -139,7 +139,7 @@ services:
     network_mode: host
     volumes:
       - ${DATA_DIR:-./data}:/data
-      - ./deploy/config:/config:ro
+      - ./config:/config:ro
     restart: unless-stopped
 
   frontend:

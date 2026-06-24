@@ -70,6 +70,9 @@ class RecordStartRequest(BaseModel):
     split: SplitConfig | None = None
     qos_default: QosProfile | None = None
     qos_overrides: dict[str, QosProfile] | None = None
+    # Optional session metadata; written to the run's session.json sidecar.
+    operator: str | None = None
+    task: str | None = None
 
 
 class TopicEntry(BaseModel):

@@ -13,6 +13,7 @@ import { useEffect } from 'react';
 import { queryKeys } from '../api/queryKeys';
 import type {
   AlertEvent,
+  AlertSnapshot,
   JobStatus,
   MetricsSnapshot,
   RecordStatusEvent,
@@ -34,11 +35,14 @@ function applyMetrics(qc: QueryClient, data: MetricsSnapshot): void {
   qc.setQueryData(queryKeys.metrics, data);
 }
 
-function applyAlert(qc: QueryClient, data: AlertEvent): void {
-  qc.setQueryData<AlertEvent[]>(queryKeys.alerts, (prev) => {
-    const next = [data, ...(prev ?? [])];
-    return next.slice(0, MAX_ALERTS);
-  });
+function applyAlert(qc: QueryClient, data: AlertSnapshot): void {
+  // The `alert` event carries a snapshot { ts, alerts: [...] }, not a single
+  // alert. Prepend the current alerts (skip empty snapshots).
+  const incoming = data?.alerts ?? [];
+  if (incoming.length === 0) return;
+  qc.setQueryData<AlertEvent[]>(queryKeys.alerts, (prev) =>
+    [...incoming, ...(prev ?? [])].slice(0, MAX_ALERTS),
+  );
 }
 
 function applyJob(qc: QueryClient, data: JobStatus): void {
@@ -61,7 +65,7 @@ export function dispatchSseEvent(qc: QueryClient, type: string, raw: string): vo
       applyMetrics(qc, data as MetricsSnapshot);
       break;
     case 'alert':
-      applyAlert(qc, data as AlertEvent);
+      applyAlert(qc, data as AlertSnapshot);
       break;
     case 'job':
       applyJob(qc, data as JobStatus);

@@ -37,7 +37,7 @@ function TabContent({ tabId, config }: { tabId: string; config: RuntimeConfig })
     case 'record':
       return <RecordTab config={config} />;
     case 'monitor':
-      return <MonitorTab />;
+      return <MonitorTab config={config} />;
     case 'stream':
       return <StreamTab config={config} />;
     case 'runs':

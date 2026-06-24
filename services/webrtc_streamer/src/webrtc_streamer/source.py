@@ -198,8 +198,15 @@ class RosImageSource:
             history=HistoryPolicy.KEEP_LAST,
             depth=1,
         )
-        node.create_subscription(Image, self._topic, self._on_image, qos)
-        node.create_subscription(CompressedImage, self._topic, self._on_compressed, qos)
+        # A topic has exactly ONE type. Subscribing to both Image and
+        # CompressedImage on the same name creates a type conflict (rcl raises
+        # "invalid allocator"), so resolve the actual type and subscribe once.
+        if _is_compressed_topic(node, self._topic):
+            node.create_subscription(
+                CompressedImage, self._topic, self._on_compressed, qos
+            )
+        else:
+            node.create_subscription(Image, self._topic, self._on_image, qos)
 
         from rclpy.executors import SingleThreadedExecutor
 
@@ -268,3 +275,19 @@ class RosImageSource:
             "ros image source stopped",
             extra={"component": "webrtc_streamer", "topic": self._topic},
         )
+
+
+def _is_compressed_topic(node: Any, topic: str) -> bool:
+    """Decide whether *topic* carries ``CompressedImage`` (vs raw ``Image``).
+
+    Prefer the real type from the ROS 2 graph; if the topic has no publisher yet
+    (so the graph doesn't know its type), fall back to the naming convention
+    (``.../compressed`` / ``.../compressedDepth``).
+    """
+    try:
+        for name, types in node.get_topic_names_and_types():
+            if name == topic and types:
+                return any("CompressedImage" in t for t in types)
+    except Exception:  # noqa: BLE001 - discovery is best-effort; use the name.
+        pass
+    return topic.endswith("/compressed") or topic.endswith("/compressedDepth")

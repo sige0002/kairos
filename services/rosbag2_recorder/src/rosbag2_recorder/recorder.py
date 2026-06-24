@@ -39,6 +39,7 @@ from rosbag2_recorder.manifest import (
     validate_run_id,
     write_failed_start_record,
     write_manifest,
+    write_session,
 )
 from rosbag2_recorder.models import (
     QosProfile,
@@ -112,6 +113,9 @@ class RecorderSession:
         self._split: SplitConfig | None = None
         self._topics: list[TopicEntry] = []
         self._process: subprocess.Popen[bytes] | None = None
+        # Optional session metadata (written to session.json beside the MCAP).
+        self._operator: str | None = None
+        self._task: str | None = None
 
         # MAX_RECORD_BYTES auto-stop watcher. 0 disables (default).
         self._max_record_bytes: int = settings.max_record_bytes
@@ -287,6 +291,8 @@ class RecorderSession:
             self._started_at = started_at
             self._compression = request.compression
             self._split = request.split
+            self._operator = request.operator
+            self._task = request.task
             # The run dir now exists (ros2 created it), so writing the manifest
             # into it no longer races the "folder exists" check.
             self._write_manifest()
@@ -662,6 +668,33 @@ class RecorderSession:
             write_manifest(self._data_dir, manifest)
         except OSError:
             logger.exception("failed to write manifest")
+        self._write_session(ended_at=ended_at)
+
+    def _write_session(self, ended_at: str | None = None) -> None:
+        """Write the run's ``session.json`` beside the MCAP (best-effort).
+
+        Mirrors the manifest write points (start / stop / finalise) but is a
+        small, self-contained record of who recorded what, plus the current
+        topic list and counters. A failure here must not affect the recording.
+        """
+        if self._run_id is None:
+            return
+        meta = self._read_rosbag2_metadata(self._run_id)
+        payload = {
+            "run_id": self._run_id,
+            "operator": self._operator,
+            "task": self._task,
+            "state": self._state.value,
+            "started_at": self._started_at,
+            "ended_at": ended_at,
+            "topics": [t.name for t in self._topics],
+            "message_count": self._message_count(meta) if meta is not None else 0,
+            "bytes": self._recorded_bytes(self._run_id),
+        }
+        try:
+            write_session(self._data_dir, self._run_id, payload)
+        except OSError:
+            logger.exception("failed to write session.json")
 
     def get_metadata(self) -> dict[str, Any]:
         """Return the last run's rosbag2 metadata + kairos manifest (404 if none)."""

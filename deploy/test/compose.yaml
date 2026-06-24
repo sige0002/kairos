@@ -1,29 +1,65 @@
-# Test harness: replay a recorded rosbag (MCAP) onto the ROS 2 graph (ROS_DOMAIN_ID=0)
-# so services can be exercised against real recorded data.
+# Test harness: replay a recorded rosbag (MCAP) onto the ROS 2 graph
+# (ROS_DOMAIN_ID=0) so services can be exercised against real recorded data —
+# and *see* what is flowing while it plays.
 #
-# Usage (from repo root):
+# Two services:
+#   rosbag_player  — plays a bag once (single-shot). Prints `ros2 bag info`
+#                    first so you can see what it contains, then plays.
+#   topic_table    — live, refreshing table of every topic on the graph with
+#                    per-topic Hz / bandwidth / count (the observable view).
+#
+# Usage (from repo root) — run the table in one terminal, the player in another:
+#   docker compose -f deploy/test/compose.yaml run --rm topic_table
 #   docker compose -f deploy/test/compose.yaml run --rm rosbag_player
+#
+# Pick a different bag / loop it:
 #   BAG=/data/airoa-moma-mcap/000730 docker compose -f deploy/test/compose.yaml run --rm rosbag_player
+#   LOOP=--loop docker compose -f deploy/test/compose.yaml run --rm rosbag_player
 #
 # ROS_DISTRO is overridable: ROS_DISTRO=humble docker compose -f deploy/test/compose.yaml build
 name: kairos-test
+
+x-ros-common: &ros-common
+  build:
+    context: .
+    args:
+      ROS_DISTRO: ${ROS_DISTRO:-jazzy}
+  image: kairos-rosbag-player:${ROS_DISTRO:-jazzy}
+  # Share the host's ROS 2 DDS graph so replayed topics reach services on the
+  # host / other containers.
+  network_mode: host
+  # Share host IPC so FastDDS shared-memory transport delivers data to other
+  # containers (host networking carries only UDP discovery, not the SHM data plane).
+  ipc: host
+
 services:
   rosbag_player:
-    build:
-      context: .
-      args:
-        ROS_DISTRO: ${ROS_DISTRO:-jazzy}
-    image: kairos-rosbag-player:${ROS_DISTRO:-jazzy}
+    <<: *ros-common
     environment:
       # Shared ROS 2 domain for all kairos containers/tests.
       ROS_DOMAIN_ID: "0"
-    # Share the host's ROS 2 DDS graph so replayed topics reach services on the host/other containers.
-    network_mode: host
-    # Share host IPC so FastDDS shared-memory transport delivers data to other
-    # containers (host networking carries only UDP discovery, not the SHM data plane).
-    ipc: host
     volumes:
       # Share recorded bags read-only (repo data/ -> /data).
       - ../../data:/data:ro
-    # Override BAG to pick a different recording. --clock publishes /clock for sim-time consumers.
-    command: ["ros2", "bag", "play", "${BAG:-/data/airoa-moma-mcap/235210}", "--clock"]
+    # Print what the bag contains, then play it ONCE (--clock publishes /clock
+    # for sim-time consumers). Override BAG to pick a recording; set LOOP=--loop
+    # to repeat. Single-shot by default so a test run has a clear, visible end.
+    command:
+      - bash
+      - -lc
+      - 'ros2 bag info "${BAG:-/data/airoa-moma-mcap/235210}"
+         && echo "--- playing (LOOP=${LOOP:-off}) ---"
+         && ros2 bag play "${BAG:-/data/airoa-moma-mcap/235210}" --clock ${LOOP:-}'
+
+  topic_table:
+    <<: *ros-common
+    environment:
+      ROS_DOMAIN_ID: "0"
+      # REFRESH=<s> table interval; DURATION=<s> auto-exits (handy for smoke tests).
+      REFRESH: ${REFRESH:-1.0}
+      DURATION: ${DURATION:-}
+    volumes:
+      - ../../data:/data:ro
+      # The live-table script (mounted, so editing it needs no rebuild).
+      - ./topic_table.py:/topic_table.py:ro
+    command: ["python3", "/topic_table.py"]

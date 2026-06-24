@@ -1,8 +1,11 @@
 # Design diagrams (large local reference)
 fig_const
 
-# Recorded data, reports, converted datasets (from the diagrams' /data path)
-data/
+# Recorded data, reports, converted datasets (from the diagrams' /data path).
+# Keep the directory (so the ./data -> /data mount exists and is user-owned,
+# avoiding a root-owned mount), but ignore everything written into it.
+data/*
+!data/.gitkeep
 *.mcap
 
 # Secrets

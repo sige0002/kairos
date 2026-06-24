@@ -4,7 +4,7 @@
 # Concrete config for the airoa-moma-mcap sample bags under data/.
 # Topics/types/rates derived from `ros2 bag info data/airoa-moma-mcap/235210`
 # (HSR mobile manipulator; /hsrb namespace). Used for Stage 1–2 testing.
-# Set RECORDING_CONFIG=deploy/config/airoa_hsr.yaml to use this file.
+# Set RECORDING_CONFIG=config/airoa_hsr.yaml to use this file.
 # =============================================================================
 
 robot_name: hsr
@@ -28,7 +28,7 @@ expected_hz_patterns:
   - pattern: "/hsrb/wrist_wrench/raw"
     hz: 100
   - pattern: "/hsrb/joint_states"
-    hz: 50
+    hz: 25
   - pattern: "/hsrb/base_scan"
     hz: 40
   - pattern: "/hsrb/command_velocity"

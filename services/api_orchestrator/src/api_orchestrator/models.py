@@ -76,6 +76,9 @@ class Run(BaseModel):
     message_count: int | None = None
     bytes: int | None = None
     error: RunError | None = None
+    # Session metadata captured at record start (who recorded, what task).
+    operator: str | None = None
+    task: str | None = None
 
 
 class RecordStartRequest(BaseModel):
@@ -90,6 +93,10 @@ class RecordStartRequest(BaseModel):
     split: Split | None = None
     qos_default: TopicQos | None = None
     qos_overrides: dict[str, TopicQos] | None = None
+    # Optional session metadata, persisted on the run and written to the run's
+    # session.json sidecar (who collected the data, and the task being recorded).
+    operator: str | None = None
+    task: str | None = None
 
 
 class RunListResponse(BaseModel):

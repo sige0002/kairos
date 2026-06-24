@@ -16,6 +16,17 @@ const CONFIG: RuntimeConfig = {
   schemas: {},
 };
 
+// Live graph discovery returned by GET /api/v1/topics. Includes an infra topic
+// (/rosout) that the picker must hide.
+const TOPICS = {
+  topics: [
+    { name: '/hsrb/joint_states', type: 'sensor_msgs/msg/JointState' },
+    { name: '/hsrb/odom', type: 'nav_msgs/msg/Odometry' },
+    { name: '/hsrb/extra', type: 'std_msgs/msg/String' },
+    { name: '/rosout', type: 'rcl_interfaces/msg/Log' },
+  ],
+};
+
 let recordState = 'idle';
 
 beforeEach(() => {
@@ -39,6 +50,9 @@ beforeEach(() => {
         }),
       );
     }
+    if (url.includes('/topics')) {
+      return Promise.resolve(jsonResponse(TOPICS));
+    }
     void init;
     return Promise.resolve(jsonResponse({}));
   });
@@ -54,7 +68,7 @@ test('starts a recording: posts /record/start and reflects recording state', asy
     expect(screen.getByTestId('record-state')).toHaveTextContent('idle'),
   );
 
-  // The default form renders a topics selector; choose "all" then start.
+  // "Record all topics" sends topics: "all".
   fireEvent.click(screen.getByLabelText('all topics'));
   const startForm = screen.getByLabelText('start recording');
   fireEvent.click(within(startForm).getByRole('button', { name: /Start recording/i }));
@@ -73,6 +87,63 @@ test('starts a recording: posts /record/start and reflects recording state', asy
 
   // Stop button appears while active.
   expect(screen.getByRole('button', { name: /Stop recording/i })).toBeInTheDocument();
+});
+
+test('pre-selects configured topics from config and records the selected set', async () => {
+  const config: RuntimeConfig = {
+    ...CONFIG,
+    defaults: { default_topics: ['/hsrb/joint_states', '/hsrb/odom'] },
+  };
+  renderWithClient(<RecordTab config={config} />);
+
+  // Configured topics are pre-checked; the non-configured live topic appears
+  // once discovery resolves, unchecked; the infra topic is hidden entirely.
+  await waitFor(() =>
+    expect(screen.getByLabelText('/hsrb/joint_states')).toBeChecked(),
+  );
+  expect(screen.getByLabelText('/hsrb/odom')).toBeChecked();
+  const extra = await screen.findByLabelText('/hsrb/extra');
+  expect(extra).not.toBeChecked();
+  expect(screen.queryByLabelText('/rosout')).toBeNull();
+
+  // Add the extra topic, then start.
+  fireEvent.click(screen.getByLabelText('/hsrb/extra'));
+  const startForm = screen.getByLabelText('start recording');
+  fireEvent.click(within(startForm).getByRole('button', { name: /Start recording/i }));
+
+  await waitFor(() => {
+    const startCall = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.find(
+      (c) => String(c[0]).includes('/record/start'),
+    );
+    expect(startCall).toBeDefined();
+    const body = JSON.parse(String((startCall![1] as RequestInit).body));
+    expect(new Set(body.topics)).toEqual(
+      new Set(['/hsrb/joint_states', '/hsrb/odom', '/hsrb/extra']),
+    );
+  });
+});
+
+test('includes operator and task in the start request when filled', async () => {
+  renderWithClient(<RecordTab config={CONFIG} />);
+  await waitFor(() =>
+    expect(screen.getByTestId('record-state')).toHaveTextContent('idle'),
+  );
+
+  fireEvent.click(screen.getByLabelText('all topics'));
+  fireEvent.change(screen.getByLabelText('operator'), { target: { value: 'yuki' } });
+  fireEvent.change(screen.getByLabelText('task'), { target: { value: 'pick-place' } });
+  const startForm = screen.getByLabelText('start recording');
+  fireEvent.click(within(startForm).getByRole('button', { name: /Start recording/i }));
+
+  await waitFor(() => {
+    const startCall = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.find(
+      (c) => String(c[0]).includes('/record/start'),
+    );
+    expect(startCall).toBeDefined();
+    const body = JSON.parse(String((startCall![1] as RequestInit).body));
+    expect(body.operator).toBe('yuki');
+    expect(body.task).toBe('pick-place');
+  });
 });
 
 test('disables the start form while a session is active (no double start)', async () => {

@@ -20,7 +20,7 @@ The single source for configuration shared across services, and the rules for ex
 | `ROS_DISTRO` | `jazzy` | ROS 2 distro of the base image |
 | `RMW_IMPLEMENTATION` | `rmw_fastrtps_cpp` | DDS implementation |
 | `DATA_DIR` | `./data` | Host-side data root (→ container `/data`) |
-| `RECORDING_CONFIG` | `deploy/config/recording.yaml` | YAML config file for recording/monitoring (see below) |
+| `RECORDING_CONFIG` | `config/recording.yaml` | YAML config file for recording/monitoring (see below) |
 | `BIND_HOST` | `0.0.0.0` | API bind target. **Permits LAN exposure** (assumes a trusted LAN, no authentication). Do not expose directly to an untrusted network |
 | `API_ORCH_PORT` | `8000` | `api_orchestrator` public port |
 | `TOPIC_MONITOR_PORT` | `8001` | `topic_monitor` port |
@@ -52,7 +52,7 @@ expected_hz_patterns:      # pattern → expected Hz (first match wins; omit hz 
   - { pattern: "/joint_states", hz: 100 }
 topic_qos_overrides:       # pattern → QoS (applied by recorder / monitor; first match wins)
   - { pattern: "/camera/*/image_raw", reliability: best_effort, durability: volatile, depth: 1 }
-# monitor / recording / validation reference deploy/config/recording.yaml (dataset is stage3)
+# monitor / recording / validation reference config/recording.yaml (dataset is stage3)
 ```
 
 ## Runtime settings (`GET /api/v1/config`)

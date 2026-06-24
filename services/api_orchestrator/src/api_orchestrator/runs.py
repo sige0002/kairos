@@ -160,6 +160,8 @@ class RunService:
                 started_at=started_at,
                 compression=req.compression,
                 split=req.split,
+                operator=req.operator,
+                task=req.task,
             )
             try:
                 return self._store.create(run)
@@ -209,6 +211,12 @@ class RunService:
             "topics": topics,
             "compression": req.compression.value,
         }
+        # Forward session metadata so the recorder can write it into the run's
+        # session.json (beside the MCAP).
+        if req.operator is not None:
+            payload["operator"] = req.operator
+        if req.task is not None:
+            payload["task"] = req.task
         if req.split is not None:
             payload["split"] = req.split.model_dump()
         if req.qos_default is not None:

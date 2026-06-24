@@ -27,6 +27,10 @@ export interface RecordStartRequest {
   topics: string[] | 'all';
   compression?: 'none' | 'zstd';
   split?: { max_size_mb?: number | null; max_duration_s?: number | null } | null;
+  /** Who is collecting the data (free text); saved to the run + session.json. */
+  operator?: string;
+  /** Task / scenario being recorded (free text); saved likewise. */
+  task?: string;
   [key: string]: unknown;
 }
 
@@ -65,6 +69,8 @@ export interface RunDetail {
   ended_at?: string | null;
   topics: RunTopic[];
   compression?: string;
+  operator?: string | null;
+  task?: string | null;
   split?: Record<string, unknown> | null;
   error?: { code: string; message: string } | null;
   /** Optional audit manifest + stats surfaced by the orchestrator. */
@@ -84,30 +90,50 @@ export interface TopicInfo {
   last_seen?: string;
 }
 
-/** Per-topic live health metrics from topic_monitor (via the orchestrator). */
+/**
+ * Per-topic live health metrics from topic_monitor (via the orchestrator).
+ * Field names mirror the backend `TopicMetrics` model exactly (see
+ * topic_monitor/models.py). `hz` / `bandwidth_bps` / `gap_max_ms` are computed
+ * once samples arrive; the Late split (`inter_arrival_late_ratio` +
+ * `stamp_delay_ms`) and `loss_rate` are null when they can't be computed and
+ * `reason` says why.
+ */
 export interface TopicMetric {
-  topic: string;
-  hz?: number;
-  expected_hz?: number;
-  late_ms?: number;
-  gap?: number;
-  loss?: number;
-  bandwidth_bps?: number;
+  name: string;
+  type?: string | null;
+  hz?: number | null;
+  bandwidth_bps?: number | null;
+  gap_max_ms?: number | null;
+  gap_exceed_count?: number;
+  inter_arrival_late_ratio?: number | null;
+  stamp_delay_ms?: number | null;
+  loss_rate?: number | null;
+  reason?: string | null;
 }
 
 /** A periodic metrics snapshot delivered over SSE (`event: metrics`). */
 export interface MetricsSnapshot {
   ts?: string;
+  window_s?: number;
   topics: TopicMetric[];
+  paused?: boolean;
 }
 
+/** An active/cleared alert (backend `Alert` model). */
 export interface AlertEvent {
   topic: string;
   metric: AlertMetric;
-  level: AlertLevel;
-  value: number;
+  op?: 'lt' | 'gt' | 'le' | 'ge';
   threshold: number;
+  value?: number | null;
+  state?: 'firing' | 'cleared';
+  since?: string | null;
+}
+
+/** The `alert` SSE event payload: a snapshot of current alerts. */
+export interface AlertSnapshot {
   ts?: string;
+  alerts: AlertEvent[];
 }
 
 // ---- Pipelines / Jobs ---------------------------------------------------

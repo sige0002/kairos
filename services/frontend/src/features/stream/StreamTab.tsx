@@ -1,15 +1,37 @@
-// Stream tab: live WebRTC camera preview. The user picks a topic (seeded from
-// discovery / config) and we negotiate a recvonly peer connection directly to
-// the streamer. Connection state, retry, and a codec/connection fallback are
-// surfaced clearly.
+// Stream tab: live WebRTC camera preview. The camera topic is chosen from a
+// dropdown seeded from live discovery (GET /api/v1/topics) merged with the
+// configured camera topics (config.defaults.default_topics) — no hand-typing.
+// We negotiate a recvonly peer connection directly to the streamer; connection
+// state, retry, and a codec/connection fallback are surfaced clearly.
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { apiGet } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
 import type { TopicInfo } from '../../api/types';
 import type { RuntimeConfig } from '../../config';
 import { useWebRtcStream } from './useWebRtcStream';
+
+// A topic is a camera/image topic if its type is an (Compressed)Image or its
+// name looks like an image stream. `camera_info` (metadata) is intentionally
+// excluded — it carries no pixels.
+function isImageType(type?: string): boolean {
+  return !!type && /image/i.test(type);
+}
+function isImageName(name: string): boolean {
+  return /image/i.test(name);
+}
+
+function asTopicList(data: TopicInfo[] | { topics?: TopicInfo[]; items?: TopicInfo[] }) {
+  if (Array.isArray(data)) return data;
+  return data.topics ?? data.items ?? [];
+}
+
+interface CameraOption {
+  name: string;
+  type?: string;
+  live: boolean;
+}
 
 function VideoSurface({ stream }: { stream: MediaStream | null }) {
   const ref = useRef<HTMLVideoElement>(null);
@@ -29,24 +51,40 @@ function VideoSurface({ stream }: { stream: MediaStream | null }) {
 }
 
 export function StreamTab({ config }: { config: RuntimeConfig }) {
-  // Topic candidates for the preview selector come from discovery (best-effort).
+  const defaultTopics = config.defaults.default_topics ?? [];
+
   const topicsQuery = useQuery({
     queryKey: queryKeys.topics,
     queryFn: ({ signal }) =>
-      apiGet<TopicInfo[] | { items: TopicInfo[] }>('/topics', { signal }),
+      apiGet<TopicInfo[] | { topics?: TopicInfo[]; items?: TopicInfo[] }>('/topics', {
+        signal,
+      }),
+    refetchInterval: 5000,
   });
-  const topics: TopicInfo[] = Array.isArray(topicsQuery.data)
-    ? topicsQuery.data
-    : (topicsQuery.data?.items ?? []);
-  const imageTopics = topics.filter(
-    (t) => /image/i.test(t.type) || /image/i.test(t.name),
-  );
+
+  // Merge live camera topics (discovery) with configured camera topics that are
+  // not flowing yet (so they can be pre-selected), flagged live/offline.
+  const options: CameraOption[] = useMemo(() => {
+    const live = asTopicList(topicsQuery.data ?? []).filter(
+      (t) => isImageType(t.type) || isImageName(t.name),
+    );
+    const byName = new Map<string, CameraOption>();
+    for (const t of live) byName.set(t.name, { name: t.name, type: t.type, live: true });
+    for (const name of defaultTopics) {
+      if (isImageName(name) && !byName.has(name)) {
+        byName.set(name, { name, live: false });
+      }
+    }
+    return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+  }, [topicsQuery.data, defaultTopics]);
 
   const [topic, setTopic] = useState('');
-  // Default to the first discovered image topic once available.
+  // Default to the first live camera topic (or the first option) once available.
   useEffect(() => {
-    if (!topic && imageTopics[0]) setTopic(imageTopics[0].name);
-  }, [topic, imageTopics]);
+    if (topic && options.some((o) => o.name === topic)) return;
+    const first = options.find((o) => o.live) ?? options[0];
+    if (first) setTopic(first.name);
+  }, [topic, options]);
 
   const { phase, stream, error, retry } = useWebRtcStream({
     webrtcBase: config.endpoints.webrtc,
@@ -58,18 +96,27 @@ export function StreamTab({ config }: { config: RuntimeConfig }) {
       <div className="flex flex-wrap items-center gap-3">
         <label className="flex items-center gap-2 text-sm">
           <span className="font-medium">Camera topic</span>
-          <input
-            list="image-topics"
+          <select
+            aria-label="camera topic"
             className="rounded border px-2 py-1 font-mono"
             value={topic}
-            placeholder="/camera/.../image_raw"
             onChange={(e) => setTopic(e.target.value)}
-          />
-          <datalist id="image-topics">
-            {imageTopics.map((t) => (
-              <option key={t.name} value={t.name} />
-            ))}
-          </datalist>
+          >
+            {options.length === 0 ? (
+              <option value="">
+                {topicsQuery.isPending
+                  ? 'Discovering…'
+                  : 'No camera topics — start a bag/robot'}
+              </option>
+            ) : (
+              options.map((o) => (
+                <option key={o.name} value={o.name}>
+                  {o.name}
+                  {o.live ? '' : ' (offline)'}
+                </option>
+              ))
+            )}
+          </select>
         </label>
         <span
           className="rounded bg-gray-100 px-2 py-0.5 text-xs"

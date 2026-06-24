@@ -5,8 +5,8 @@
 ROS 2 のロボットデータを **収録・監視・検証・変換** するシステムです。収録の正本フォーマットは
 **MCAP** であり、ライブ映像・ライブメトリクス・事後検証はすべてこの「正本」を中心に構成されます。
 
-> **ステータス:** グリーンフィールド / 設計前。以下のアーキテクチャは `fig_const/` の図を転記した
-> ものです。実装・ディレクトリ構成・ツール類はまだ何も決まっていません。
+> **ステータス:** 全 6 サービス + frontend を実装済み（Stage 1〜4）。以下のアーキテクチャは
+> `fig_const/` の図に基づきます。
 
 ## アーキテクチャ
 
@@ -43,8 +43,93 @@ ROS 2 のロボットデータを **収録・監視・検証・変換** する�
 
 ## 始め方
 
-> ディレクトリ構成・ツール・ビルド/実行手順はまだ決まっていません。設計が固まり、各サービスの
-> 実装が入るのに合わせて追記します。
+### 必要なもの
+
+- **Docker** / **Docker Compose**（全サービスをまとめて起動する場合）。
+- ローカル検証用のサンプル rosbag（**MCAP**）を `data/` 配下に配置（例: `data/airoa-moma-mcap/<episode>/`）。`data/` と `*.mcap` は gitignore（コミットしない）。
+- 単体テストを直接走らせる場合のみ: **uv**（Python）と **Node.js + npm**（frontend）。
+
+### 全サービスの起動（Docker）
+
+```bash
+make up                       # = build + 起動（detached）。RECORDING_CONFIG 既定 /config/airoa_hsr.yaml
+# あるいは素の docker compose で:
+cp .env.example .env          # 必要に応じて編集
+docker compose build
+docker compose up
+```
+
+全サービスは host networking で起動します。ROS 2 サービス（`recorder` / `monitor` / `streamer`）は
+ホストの DDS グラフ（`ROS_DOMAIN_ID=0`）を共有し、純 Python サービス（`orchestrator` / `dora_runner`）
+と frontend は `localhost:<port>` で相互に到達します（認証なし・LAN 前提）。
+
+### Make ショートカット
+
+長いコマンドを毎回打たずに済むよう、ルートに `Makefile` を用意しています。`make` だけで全
+ターゲット一覧が出ます。サービス名は**位置引数**（複数可）、`RECORDING_CONFIG` は `make` 内で
+`/config/airoa_hsr.yaml` を既定 export（`.env` の陳腐化パスを回避）。
+
+| コマンド | 内容 |
+|---|---|
+| `make up` / `make down` / `make ps` | スタックの起動（build込み）/ 停止削除 / 状態 |
+| `make build monitor` / `make build` | サービス build（位置引数で1つ / 無指定や `all` で全部） |
+| `make rebuild frontend` | build + 強制再作成（コード変更を反映） |
+| `make restart monitor orchestrator` | サービス再起動 |
+| `make logs streamer` | ログ追従 |
+| `make config-reload` / `make config-show` | `config/*.yaml` 編集の反映（monitor+orchestrator 再起動）/ 現在の config 表示 |
+| `make rosbag` / `make rosbag-loop` / `make table` | サンプル bag 単発再生 / ループ再生 / 全 topic の Hz テーブル |
+| `make smoke` / `make smoke-record` | 通し確認（PASS/FAIL）/ 記録 start/stop 込み |
+| `make test` / `make test-py` / `make test-fe` / `make lint` / `make fmt` | テスト・lint・整形 |
+
+別ロボットを使う場合は `make up RECORDING_CONFIG=/config/myrobot.yaml`、別 bag は
+`make rosbag BAG=/data/airoa-moma-mcap/000730` のように上書きできます。
+
+### 主なエンドポイント（既定ポート）
+
+| サービス | ポート | 例 |
+|---|---|---|
+| api_orchestrator | 8000 | `GET /api/v1/config` / `POST /api/v1/record/start` / `GET /api/v1/events`（SSE）/ `POST /api/v1/jobs` |
+| topic_monitor | 8001 | `GET /metrics` / `GET /topics` / `GET /metrics/stream`（SSE） |
+| webrtc_streamer | 8002 | `POST /stream/start` / `POST /stream/offer` |
+| rosbag2_recorder | 8010 | `POST /record/start` / `POST /record/stop` / `GET /record/status` |
+| dora_runner | 8020 | `POST /jobs` / `GET /jobs/{id}/result` / `POST /validation/templates/generate` |
+
+frontend は nginx で配信（既定 `8080`）。UI は起動時に `GET /api/v1/config` を取得し、タブ構成・スキーマを
+backend 駆動で描画します。
+
+### 典型的な利用フロー
+
+1. **トピックを流す**: 実ロボット/シミュレータを接続するか、サンプル bag を再生する。
+   ```bash
+   # 流れている topic を“見える化”（全 topic の Hz/帯域/件数を定期表示）
+   docker compose -f deploy/test/compose.yaml run --rm topic_table
+   # サンプル bag を ROS 2 グラフへ再生（別ターミナル・単発再生）
+   docker compose -f deploy/test/compose.yaml run --rm rosbag_player
+   # 繰り返し再生（連続で流し続ける）
+   LOOP=--loop docker compose -f deploy/test/compose.yaml run --rm rosbag_player
+   # 別の bag を指定
+   BAG=/data/airoa-moma-mcap/000730 docker compose -f deploy/test/compose.yaml run --rm rosbag_player
+   ```
+2. **記録**: UI または `POST /api/v1/record/start {"topics":"all"}` で開始 → MCAP が
+   `/data/recorded/<run_id>/` に生成される（停止は `POST /api/v1/record/stop`）。Record タブの
+   **Operator（データ取得者）/ Task（タスク名）** を入れると、その内容＋トピック・件数・開始/終了が
+   MCAP と同じ `/data/recorded/<run_id>/session.json` に保存され、Runs タブでも表示される。
+3. **監視 / プレビュー**: `GET /metrics` でライブ健全性（Hz / 遅延 / 欠落 / 帯域）、`/stream` でカメラの
+   WebRTC プレビュー。UI の Monitor タブは**グラフ上の全 topic を常時表示**し、監視対象は live Hz を重ねる。
+   サンプル bag に合わせて Hz を出すには `RECORDING_CONFIG=config/airoa_hsr.yaml` を指す
+   （どの topic を録る/監視するかは [`config/`](config/README.ja.md) で定義。Record タブに事前選択として反映）。
+4. **収録後の検証**: `POST /api/v1/jobs {"pipeline":"fast_validation","run_id":...,"params":{...}}` で
+   必須トピックの過不足を検証 → `/data/report/fast_validation/<run_id>/summary.json` に `pass`/`fail` を出力。
+
+### テスト / 結合テスト
+
+- **単体テスト**: `make test`（= Python 各サービス `uv run --extra test pytest` + frontend `npm run build && npm test && npm run lint`）。
+- **スモークテスト（PASS/FAIL を表示）**: スタック起動後に `make smoke`（= `bash deploy/test/smoke.sh`）。
+  health → `GET /api/v1/config` の `default_topics` → topic discovery → monitor の live metrics を順に検証して
+  結果を出力します（`make smoke-record` で記録 start/stop も実行）。「テストしたのに何も出ない」を解消する入口です。
+- **可視化付き再生**: `make table`（全 topic の Hz/帯域を定期表示）と `make rosbag` / `make rosbag-loop`（再生）。
+
+詳しいコマンド・確認済みレシピは [CLAUDE.ja.md](CLAUDE.ja.md) の「ビルド / テスト / 実行コマンド」を参照してください。
 
 ## ドキュメントの言語ルール
 

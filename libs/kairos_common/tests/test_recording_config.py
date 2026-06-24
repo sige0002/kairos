@@ -16,7 +16,7 @@ from kairos_common.recording_config import Durability
 
 # The canonical template lives at repo root; resolve it relative to this file.
 REPO_ROOT = Path(__file__).resolve().parents[3]
-TEMPLATE = REPO_ROOT / "deploy" / "config" / "recording.yaml"
+TEMPLATE = REPO_ROOT / "config" / "recording.yaml"
 
 
 def test_loads_canonical_template() -> None:

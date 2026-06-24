@@ -170,16 +170,47 @@ def create_orchestrator_app(
     app.include_router(validation_router.router)
     _override_readyz(app, recorder, monitor, streamer)
 
-    _register_root_and_config(app, settings)
+    _register_root_and_config(app, settings, recording_config)
     return app
 
 
-def _register_root_and_config(app: FastAPI, settings: Settings) -> None:
-    """Keep the Stage 0 root + ``GET /api/v1/config`` stub on the app.
+def _config_defaults(recording_config: RecordingConfig | None) -> dict[str, object]:
+    """Build the ``defaults`` block of ``GET /api/v1/config`` from the loaded
+    RECORDING_CONFIG, so the UI can pre-select recording topics and seed the
+    monitor view without hardcoding anything (see the Record / Monitor tabs).
 
-    The config payload is unchanged from Stage 0 (the frontend render-gate
-    still depends on it); run-lifecycle work does not touch its shape.
+    - ``default_topics``: topics recorded / monitored by default (pre-checked in
+      the Record tab; flagged as "configured" in the Monitor tab).
+    - ``expected_hz``: pattern -> expected Hz, for the Monitor Late judgement.
+      Patterns whose ``hz`` is omitted (dynamically learned) are skipped.
+    - ``robot_name``: shown so operators can confirm which robot config is live.
     """
+    if recording_config is None:
+        return {"expected_hz": {}, "encoding": "vp8", "default_topics": []}
+    expected_hz = {
+        p.pattern: p.hz
+        for p in recording_config.expected_hz_patterns
+        if p.hz is not None
+    }
+    return {
+        "expected_hz": expected_hz,
+        "encoding": "vp8",
+        "default_topics": list(recording_config.default_topics),
+        "robot_name": recording_config.robot_name,
+    }
+
+
+def _register_root_and_config(
+    app: FastAPI, settings: Settings, recording_config: RecordingConfig | None
+) -> None:
+    """Register the Stage 0 root + ``GET /api/v1/config``.
+
+    The payload keeps its Stage 0 shape (the frontend render-gate depends on
+    it) but the ``defaults`` block is now sourced from the live RECORDING_CONFIG
+    so the Record / Monitor tabs can surface the configured topics instead of
+    asking the operator to type topic names by hand.
+    """
+    defaults = _config_defaults(recording_config)
 
     @app.get("/")
     async def root() -> dict[str, str]:
@@ -200,7 +231,7 @@ def _register_root_and_config(app: FastAPI, settings: Settings) -> None:
                 {"id": "runs", "enabled": True},
                 {"id": "pipelines", "enabled": True},
             ],
-            "defaults": {"expected_hz": {}, "encoding": "vp8"},
+            "defaults": defaults,
             "schemas": {
                 "pipeline_forms": {
                     "fast_validation": {

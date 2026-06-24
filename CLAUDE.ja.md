@@ -23,7 +23,8 @@
 - ローカルでの動作確認用に、サンプルの rosbag（**MCAP**）を `data/` 配下に置く。
 - 例: `data/airoa-moma-mcap/<episode>/`（各 `<id>.mcap` + `metadata.yaml`）。HSR ロボットのテレオペ収録（AIROA MOMA）で、収録の正本となる生の MCAP。
 - **MCAP が収録の正本フォーマット**であり、検証・変換パイプラインの入力になる。
-- `data/` と `*.mcap` は `.gitignore` 済み。サンプルデータはコミットしない（各自ローカルに用意する）。
+- `data/` の中身は `.gitignore`（`data/.gitkeep` でディレクトリだけ追跡 → `./data`→`/data` マウントが
+  user 所有で作られ、root 所有マウントを避けられる）。`*.mcap` やサンプルデータはコミットしない。
 - これはローカル作業の便宜であり、**正式なディレクトリ構成の決定ではない**（構成は TBD）。
 
 ## ディレクトリ構成
@@ -40,7 +41,9 @@ kairos/
 │  ├─ dora_runner/        #   収録後の検証・変換（dora）
 │  └─ frontend/           #   Web UI（Vite + React + TS）
 ├─ libs/                  # サービス間の共有（API 契約 / ROS msg / 共通ユーティリティ）
-├─ deploy/                # オーケストレーション補助（env / k8s など）
+├─ config/                # 収録/監視の設定（どの topic を録るか・RECORDING_CONFIG）
+├─ deploy/                # オーケストレーション補助（env / k8s / 結合テスト harness）
+├─ Makefile               # docker compose + テストハーネスのショートカット
 ├─ compose.yaml           # ルートの起動エントリ（docker compose）
 ├─ docs/                  # 仕様・設計ドキュメント
 └─ data/                  # ランタイムデータ（gitignored）
@@ -75,6 +78,12 @@ kairos/
 
 > 全 6 サービス + frontend が実装済み（Stage 1〜4）。本書で最重要の節。
 
+- **Make ショートカット（推奨入口）**: ルートの `Makefile` が下記コマンドを薄くラップする。`make` で
+  ターゲット一覧。サービス名は**位置引数**（`make build monitor`、`make restart monitor orchestrator`）。
+  `RECORDING_CONFIG` は `make` 内で `/config/airoa_hsr.yaml` を既定 export（`.env` の陳腐化パス回避）。
+  主なもの: `make up` / `make rebuild <svc>` / `make restart <svc>` / `make logs <svc>` /
+  `make config-reload`（config 反映）/ `make rosbag-loop` / `make table` / `make smoke[-record]` /
+  `make test` / `make lint` / `make fmt`。以下は各コマンドの実体。
 - **単体テスト（Python）**: 各サービス／共有ライブラリ内で `uv run --extra test pytest -q`。
   ```
   for d in libs/kairos_common services/rosbag2_recorder services/topic_monitor \
@@ -86,20 +95,31 @@ kairos/
 - **単体テスト（frontend）**: `cd services/frontend && npm run build && npm test && npm run lint`。
 - **Lint / format**: `uvx ruff check libs services` / `uvx ruff format libs services`。
 - **ビルド**: 各サービスは自身の `Dockerfile` で 1 イメージ。全体は `docker compose build`、起動は `docker compose up`。
-- **結合テスト（実データ再生）**: テスト用に **rosbag2 を再生するコンテナ**を用意済み。
-  - 定義: `deploy/test/`（`Dockerfile` + `compose.yaml`）。
+- **結合テスト（実データ再生）**: テスト用に **rosbag2 を再生 + 可視化するコンテナ**を用意済み。
+  - 定義: `deploy/test/`（`Dockerfile` + `compose.yaml` + `topic_table.py` + `smoke.sh`）。
   - `data/` を**ボリューム共有**（`/data` に read-only マウント）し、収録済み MCAP を ROS 2 グラフへ流す。
-  - **`ROS_DOMAIN_ID=0`**、`network_mode: host`（ホストの DDS グラフを共有）。
-  - 実行例:
+  - **`ROS_DOMAIN_ID=0`**、`network_mode: host` / `ipc: host`（ホストの DDS グラフ・SHM を共有）。
+  - 2 サービス（**別ターミナルで併用**）:
     ```
-    # 既定の bag を再生
+    # ① 流れている topic を“見える化”（全 topic の Hz/帯域/件数を定期表示）
+    docker compose -f deploy/test/compose.yaml run --rm topic_table
+    # ② bag を単発再生（先に `ros2 bag info` を表示してから再生）。LOOP=--loop で繰り返し。
     docker compose -f deploy/test/compose.yaml run --rm rosbag_player
-    # 別の bag を指定
     BAG=/data/airoa-moma-mcap/000730 docker compose -f deploy/test/compose.yaml run --rm rosbag_player
     ```
+  - **スモークテスト（PASS/FAIL を出力）**: スタック起動後に `bash deploy/test/smoke.sh`。
+    health → `GET /api/v1/config` の `default_topics` → topic discovery → monitor の live metrics
+    を順に検証して結果を表示（`RECORD=1` で記録 start/stop も実行）。「何も出ない」を解消する入口。
+  - **設定の入口は `config/`**（旧 `deploy/config/`）。`RECORDING_CONFIG` で 1 ファイルを指す。詳細は
+    [`config/README.ja.md`](config/README.ja.md)。
   - 検証済みの結合手順（要点）:
-    - **Stage 1 記録**: bag を `--loop` で**先行**再生（topic が確立してから）→ recorder 起動 → `POST /record/start {"topics":"all","run_id":...}` → `--output` が事前に存在しないこと（root 所有の残骸に注意）。サンプル bag で約 6,900 msg / 全 19 topic を記録できることを確認。
-    - **Stage 2 監視**: サンプル bag に合わせ `RECORDING_CONFIG=/config/airoa_hsr.yaml` で monitor を起動（既定の `recording.yaml` は汎用テンプレで `default_topics: [/joint_states]`）。`GET /metrics` で `/hsrb/*` の実 Hz/帯域を確認。
+    - **Stage 1 記録**: `topic_table` で topic 確立を確認 → recorder へ `POST /record/start {"topics":"all"}`
+      （run_id は orchestrator が採番）→ MCAP が `/data/recorded/<run_id>/` に生成。サンプル bag で
+      数千 msg を記録できることを `smoke.sh RECORD=1` で確認済み。
+    - **Stage 2 監視**: サンプル bag に合わせ **`RECORDING_CONFIG=/config/airoa_hsr.yaml`** で monitor を起動
+      （既定テンプレ `config/recording.yaml` の `default_topics` は `/joint_states` 等で HSR の `/hsrb/*` に
+      一致しないため、そのままだと `GET /metrics` が空＝Monitor タブの Hz が出ない。Monitor タブ自体は
+      discovery で全 topic を常時表示する）。`GET /metrics` で `/hsrb/*` の実 Hz/帯域を確認。
     - **Stage 3 検証**: `dora_runner` 単体起動 + `POST /jobs {pipeline:"fast_validation", run_id, params:{template}}`、または orchestrator 経由 `POST /api/v1/jobs`。`/data/report/fast_validation/<run_id>/summary.json` に `result: pass|fail` を出力。MCAP は `mcap` + `mcap-ros2-support` で直接読む（ROS 不要）。
 
 ## 仕様 docs

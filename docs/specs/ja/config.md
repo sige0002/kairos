@@ -18,7 +18,7 @@
 | `ROS_DISTRO` | `jazzy` | ベースイメージの ROS 2 ディストロ |
 | `RMW_IMPLEMENTATION` | `rmw_fastrtps_cpp` | DDS 実装 |
 | `DATA_DIR` | `./data` | ホスト側データ root（→ コンテナ `/data`） |
-| `RECORDING_CONFIG` | `deploy/config/recording.yaml` | 収録・監視の YAML 設定ファイル（下記） |
+| `RECORDING_CONFIG` | `config/recording.yaml` | 収録・監視の YAML 設定ファイル（下記） |
 | `BIND_HOST` | `0.0.0.0` | API バインド先。**LAN 公開を許容**（信頼された LAN 前提・認証なし）。非信頼ネットワークへ直接公開しない |
 | `API_ORCH_PORT` | `8000` | `api_orchestrator` 公開ポート |
 | `TOPIC_MONITOR_PORT` | `8001` | `topic_monitor` ポート |
@@ -50,7 +50,7 @@ expected_hz_patterns:      # パターン → 期待 Hz（first match wins。hz 
   - { pattern: "/joint_states", hz: 100 }
 topic_qos_overrides:       # パターン → QoS（recorder / monitor が適用。first match wins）
   - { pattern: "/camera/*/image_raw", reliability: best_effort, durability: volatile, depth: 1 }
-# monitor / recording / validation は deploy/config/recording.yaml を参照（dataset は stage3）
+# monitor / recording / validation は config/recording.yaml を参照（dataset は stage3）
 ```
 
 ## 実行時設定（`GET /api/v1/config`）

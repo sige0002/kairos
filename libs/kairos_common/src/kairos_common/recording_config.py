@@ -4,7 +4,7 @@ This is three-layer config #2 (deployment tuning) from ``config.md``: the YAML
 shared by ``rosbag2_recorder`` (default topics + per-topic QoS for recording),
 ``topic_monitor`` (expected Hz + QoS for lightweight subscribe), and
 ``dora_runner`` (validation.required_topics, stage 3). The canonical template
-is ``deploy/config/recording.yaml``.
+is ``config/recording.yaml``.
 
 The models mirror that template's schema. Topic matching is glob (fnmatch);
 pattern lists are first-match-wins (the consuming services apply that order —

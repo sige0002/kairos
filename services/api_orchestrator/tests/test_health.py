@@ -1,4 +1,4 @@
-"""Smoke tests: health endpoints, root, and the render-gate config stub.
+"""Smoke tests: health endpoints, root, and the render-gate config endpoint.
 
 Uses the wired app fixture (in-memory store + fake recorder) so importing the
 service does not touch ``/data``.
@@ -6,7 +6,13 @@ service does not touch ``/data``.
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import httpx
+from api_orchestrator.app_factory import create_orchestrator_app
+from api_orchestrator.store import RunStore
 from fastapi.testclient import TestClient
+from kairos_common import Settings
 
 
 def test_healthz(client: TestClient) -> None:
@@ -34,3 +40,44 @@ def test_runtime_config_shape(client: TestClient) -> None:
     pipelines = next(t for t in body["tabs"] if t["id"] == "pipelines")
     assert pipelines["enabled"] is True
     assert "fast_validation" in body["schemas"]["pipeline_forms"]
+    # default_topics is always present (empty when no RECORDING_CONFIG is loaded)
+    # so the Record/Monitor tabs can rely on its shape.
+    assert body["defaults"]["default_topics"] == []
+
+
+def test_runtime_config_surfaces_recording_config(
+    tmp_path: Path, fake_recorder, store: RunStore
+) -> None:
+    """With a RECORDING_CONFIG loaded, GET /config exposes its default_topics,
+    expected_hz patterns (those with a fixed Hz), and robot_name so the UI can
+    pre-select recording topics without the operator typing them by hand."""
+    cfg = tmp_path / "recording.yaml"
+    cfg.write_text(
+        "robot_name: hsr\n"
+        "default_topics:\n"
+        "  - /hsrb/joint_states\n"
+        "  - /hsrb/wrist_wrench/raw\n"
+        "expected_hz_patterns:\n"
+        "  - pattern: '**/compressed'\n"
+        "    hz: 30\n"
+        "  - pattern: /hsrb/joint_states\n"
+        "    hz: 50\n"
+        "  - pattern: /learned\n"  # no hz -> dynamically learned -> omitted
+        "\n",
+        encoding="utf-8",
+    )
+    settings = Settings(recording_config=str(cfg))
+    http_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(fake_recorder.handler)
+    )
+    app = create_orchestrator_app(settings, store=store, http_client=http_client)
+    with TestClient(app) as client:
+        defaults = client.get("/api/v1/config").json()["defaults"]
+
+    assert defaults["robot_name"] == "hsr"
+    assert defaults["default_topics"] == [
+        "/hsrb/joint_states",
+        "/hsrb/wrist_wrench/raw",
+    ]
+    # Only patterns with a fixed hz are surfaced; learned (null) ones are skipped.
+    assert defaults["expected_hz"] == {"**/compressed": 30, "/hsrb/joint_states": 50}

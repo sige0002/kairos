@@ -64,7 +64,10 @@ CREATE TABLE IF NOT EXISTS runs (
     split         TEXT,
     message_count INTEGER,
     bytes         INTEGER,
-    error         TEXT
+    error         TEXT,
+    -- Session metadata captured at record start.
+    operator      TEXT,
+    task          TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_runs_seq ON runs (seq DESC);
 
@@ -119,6 +122,19 @@ class RunStore:
             self._shared.row_factory = sqlite3.Row
         with self._conn() as conn:
             conn.executescript(_SCHEMA)
+            self._migrate(conn)
+
+    @staticmethod
+    def _migrate(conn: sqlite3.Connection) -> None:
+        """Additive migrations for DBs created before a column existed.
+
+        ``CREATE TABLE IF NOT EXISTS`` never alters an existing table, so add any
+        newly-introduced nullable columns here (idempotent: guarded by PRAGMA).
+        """
+        existing = {row["name"] for row in conn.execute("PRAGMA table_info(runs)")}
+        for column in ("operator", "task"):
+            if column not in existing:
+                conn.execute(f"ALTER TABLE runs ADD COLUMN {column} TEXT")
 
     @contextmanager
     def _conn(self) -> Iterator[sqlite3.Connection]:
@@ -163,8 +179,9 @@ class RunStore:
                     """
                     INSERT INTO runs
                         (run_id, state, started_at, ended_at, topics,
-                         compression, split, message_count, bytes, error)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         compression, split, message_count, bytes, error,
+                         operator, task)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     self._to_columns(run),
                 )
@@ -401,7 +418,15 @@ class RunStore:
         if name in {"state", "compression"}:
             # Accept either a StrEnum member or a plain string.
             return value.value if hasattr(value, "value") else str(value)
-        if name in {"started_at", "ended_at", "message_count", "bytes", "run_id"}:
+        if name in {
+            "started_at",
+            "ended_at",
+            "message_count",
+            "bytes",
+            "run_id",
+            "operator",
+            "task",
+        }:
             return value
         raise KeyError(f"Unknown run field: {name}")
 
@@ -418,6 +443,8 @@ class RunStore:
             run.message_count,
             run.bytes,
             self._encode_field("error", run.error),
+            run.operator,
+            run.task,
         )
 
     @staticmethod
@@ -426,6 +453,7 @@ class RunStore:
         topics_raw = json.loads(row["topics"]) if row["topics"] else []
         split_raw = json.loads(row["split"]) if row["split"] else None
         error_raw = json.loads(row["error"]) if row["error"] else None
+        keys = row.keys()
         return Run(
             run_id=row["run_id"],
             state=RunState(row["state"]),
@@ -437,6 +465,8 @@ class RunStore:
             message_count=row["message_count"],
             bytes=row["bytes"],
             error=RunError.model_validate(error_raw) if error_raw else None,
+            operator=row["operator"] if "operator" in keys else None,
+            task=row["task"] if "task" in keys else None,
         )
 
     @staticmethod

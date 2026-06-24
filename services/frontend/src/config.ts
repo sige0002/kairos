@@ -30,6 +30,14 @@ export interface RuntimeDefaults {
   expected_hz?: Record<string, number>;
   /** Default stream encoding. */
   encoding?: 'vp8' | 'h264';
+  /**
+   * Topics recorded / monitored by default (from the backend RECORDING_CONFIG).
+   * Pre-checked in the Record tab; flagged as "configured" in the Monitor tab.
+   * May contain glob patterns (e.g. "/camera/*&#47;compressed").
+   */
+  default_topics?: string[];
+  /** Robot name from the active RECORDING_CONFIG (shown for operator context). */
+  robot_name?: string;
   [key: string]: unknown;
 }
 

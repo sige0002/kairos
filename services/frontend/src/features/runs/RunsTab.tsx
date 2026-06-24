@@ -9,6 +9,20 @@ import { queryKeys } from '../../api/queryKeys';
 import type { Page, RunDetail, RunSummary } from '../../api/types';
 import { ErrorMessage } from '../../components/ErrorMessage';
 
+function formatWhen(iso?: string): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
+}
+
+function formatDuration(ms?: number): string {
+  if (ms === undefined || ms === null) return '';
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  return `${m}m ${s % 60}s`;
+}
+
 function JsonBlock({ label, value }: { label: string; value: unknown }) {
   if (value === undefined || value === null) return null;
   return (
@@ -39,6 +53,10 @@ function RunDetailView({ runId }: { runId: string }) {
       <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
         <dt className="text-gray-500">State</dt>
         <dd>{run.state}</dd>
+        <dt className="text-gray-500">Operator</dt>
+        <dd>{run.operator || '—'}</dd>
+        <dt className="text-gray-500">Task</dt>
+        <dd>{run.task || '—'}</dd>
         <dt className="text-gray-500">Started</dt>
         <dd>{run.started_at ?? '—'}</dd>
         <dt className="text-gray-500">Ended</dt>
@@ -86,7 +104,14 @@ export function RunsTab() {
   return (
     <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
       <section aria-label="runs list" className="flex flex-col gap-2">
-        <h2 className="font-semibold">Runs</h2>
+        <div>
+          <h2 className="font-semibold">Runs</h2>
+          <p className="text-xs text-gray-500">
+            History of recordings. Each record start/stop is one run (MCAP under
+            <span className="font-mono"> /data/recorded/&lt;run_id&gt;</span>); pick one to
+            inspect its topics, manifest, and validation / dataset results.
+          </p>
+        </div>
         {runsQuery.isError ? (
           <ErrorMessage error={runsQuery.error} />
         ) : runsQuery.isPending ? (
@@ -101,12 +126,18 @@ export function RunsTab() {
                   type="button"
                   onClick={() => setSelected(run.run_id)}
                   aria-pressed={selected === run.run_id}
-                  className={`flex w-full items-center justify-between px-3 py-2 text-left text-sm hover:bg-gray-50 ${
+                  className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm hover:bg-gray-50 ${
                     selected === run.run_id ? 'bg-blue-50' : ''
                   }`}
                 >
-                  <span className="font-mono">{run.run_id}</span>
-                  <span className="text-gray-500">{run.state}</span>
+                  <span className="min-w-0">
+                    <span className="block truncate font-mono">{run.run_id}</span>
+                    <span className="text-xs text-gray-500">
+                      {formatWhen(run.started_at)}
+                      {run.duration_ms ? ` · ${formatDuration(run.duration_ms)}` : ''}
+                    </span>
+                  </span>
+                  <span className="shrink-0 text-gray-500">{run.state}</span>
                 </button>
               </li>
             ))}

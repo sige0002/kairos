@@ -8,6 +8,7 @@ The ``ros2 bag record`` spawn and OS-signal delivery are replaced by the
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -19,6 +20,7 @@ from rosbag2_recorder.manifest import (
     Manifest,
     read_failed_start_record,
     read_manifest,
+    session_path,
     write_manifest,
 )
 from rosbag2_recorder.models import (
@@ -108,6 +110,41 @@ def test_full_lifecycle_created_recording_completed(
     final = read_manifest(settings.data_dir, "run_1")
     assert final.state is RunState.completed
     assert final.ended_at is not None
+
+
+def test_session_json_written_beside_mcap(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    """operator/task + lifecycle are written to session.json in the run dir."""
+    session = _make_session(settings, fake_process, write_metadata)
+    session.start(_start_req("run_s", operator="yuki", task="pick-and-place"))
+
+    path = session_path(settings.data_dir, "run_s")
+    assert path.exists()  # beside the MCAP, not in a separate folder
+    started = json.loads(path.read_text())
+    assert started["operator"] == "yuki"
+    assert started["task"] == "pick-and-place"
+    assert started["state"] == "recording"
+    assert started["topics"] == ["/joint_states"]
+
+    session.stop()
+    final = json.loads(path.read_text())
+    assert final["state"] == "completed"
+    assert final["operator"] == "yuki"
+    assert final["message_count"] == 42
+    assert final["ended_at"] is not None
+
+
+def test_session_json_metadata_optional(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    """Omitting operator/task writes nulls (still a session.json)."""
+    session = _make_session(settings, fake_process, write_metadata)
+    session.start(_start_req("run_n"))
+    session.stop()
+    payload = json.loads(session_path(settings.data_dir, "run_n").read_text())
+    assert payload["operator"] is None
+    assert payload["task"] is None
 
 
 def test_multi_start_while_recording_is_409(

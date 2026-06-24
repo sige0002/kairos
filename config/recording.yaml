@@ -10,7 +10,7 @@
 # Modeled on rosbag-view (config/*.yaml: default_topics / expected_hz_patterns /
 # monitor QoS) and bagel (configs/*.yaml: topic→feature mapping for LeRobot).
 # Topics support glob patterns (fnmatch); pattern lists are first-match-wins.
-# Copy this file per robot (e.g. deploy/config/airoa_hsr.yaml) and point
+# Copy this file per robot (e.g. config/airoa_hsr.yaml) and point
 # RECORDING_CONFIG at it.
 # =============================================================================
 

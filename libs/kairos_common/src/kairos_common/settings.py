@@ -44,7 +44,7 @@ class Settings(BaseSettings):
 
     # ---- Data / config paths ----------------------------------------------
     data_dir: str = "./data"
-    recording_config: str = "deploy/config/recording.yaml"
+    recording_config: str = "config/recording.yaml"
 
     # ---- HTTP bind + ports -------------------------------------------------
     # BIND_HOST defaults to 0.0.0.0: LAN exposure is allowed on a trusted LAN
