@@ -31,10 +31,20 @@ async def _emit_job(request: Request, job: JobStatus | JobCreateResponse) -> Non
 
 @router.post("", response_model=JobCreateResponse, status_code=status.HTTP_201_CREATED)
 async def create_job(request: Request, body: JobCreateRequest) -> JobCreateResponse:
-    """Create a dora_runner job and persist its initial status."""
+    """Create a dora_runner job and persist its initial status.
+
+    For a ``fast_validation`` job with no explicit ``template`` param, inject the
+    Config tab's active validation template so the operator's selection applies
+    immediately (no restart).
+    """
     client = request.app.state.dora_runner_client
     store = request.app.state.run_store
-    created = await client.create_job(body.model_dump())
+    payload = body.model_dump()
+    if body.pipeline == "fast_validation" and not body.params.get("template"):
+        active = request.app.state.config_catalog.active_validation_template()
+        if active is not None:
+            payload["params"] = {**body.params, "template": active.model_dump()}
+    created = await client.create_job(payload)
     status_body = await client.job_status(str(created["job_id"]))
     job = JobCreateResponse.model_validate(status_body)
     store.upsert_job(job)

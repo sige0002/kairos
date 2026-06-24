@@ -34,10 +34,12 @@ from kairos_common import (
 from kairos_common.recording_config import RecordingConfig
 from kairos_common.stream_config import StreamConfig
 
+from api_orchestrator.config_catalog import ConfigCatalog
 from api_orchestrator.dora_runner_client import DoraRunnerClient
 from api_orchestrator.events import EventHub
 from api_orchestrator.monitor_client import MonitorClient
 from api_orchestrator.recorder_client import RecorderClient
+from api_orchestrator.routers import config as config_router
 from api_orchestrator.routers import events as events_router
 from api_orchestrator.routers import jobs as jobs_router
 from api_orchestrator.routers import pipelines as pipelines_router
@@ -160,6 +162,9 @@ def create_orchestrator_app(
         f"http://localhost:{settings.dora_runner_port}", client
     )
     event_hub = EventHub(monitor)
+    config_catalog = ConfigCatalog(
+        settings.validation_dir, settings.validation_default
+    )
     service = RunService(
         run_store,
         recorder,
@@ -191,7 +196,9 @@ def create_orchestrator_app(
     app.state.streamer_client = streamer
     app.state.dora_runner_client = dora_runner
     app.state.event_hub = event_hub
+    app.state.config_catalog = config_catalog
 
+    app.include_router(config_router.router)
     app.include_router(record_router.router)
     app.include_router(runs_router.router)
     app.include_router(topics_router.router)
@@ -280,6 +287,7 @@ def _register_root_and_config(
                 {"id": "stream", "enabled": True},
                 {"id": "runs", "enabled": True},
                 {"id": "pipelines", "enabled": True},
+                {"id": "config", "enabled": True},
             ],
             "defaults": defaults,
             "stream": stream,

@@ -1,0 +1,13 @@
+# =============================================================================
+# config/validation/template.yaml — fast_validation template (generic starter)
+# =============================================================================
+# 新しいロボット/タスク用のコピー元。required_topics に「必須トピック」を並べる。
+# - name: トピック名（glob 可、例 "/camera/*/image_raw"）
+# - type: ROS メッセージ型（任意。指定すると型一致も要求）
+# Config タブのプルダウンに並び、選ぶと fast_validation のテンプレになる。
+# =============================================================================
+name: template
+version: 1
+required_topics:
+  - { name: /joint_states, type: sensor_msgs/msg/JointState }
+  - { name: "/camera/*/image_raw/compressed" }

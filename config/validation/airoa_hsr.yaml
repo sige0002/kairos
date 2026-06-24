@@ -1,0 +1,21 @@
+# =============================================================================
+# config/validation/airoa_hsr.yaml — fast_validation template (HSR sample)
+# =============================================================================
+# 「合格な収録に必ず含まれているべきトピック」を宣言する検証テンプレ。
+# dora_runner の fast_validation がこれと収録 MCAP の実トピックを照合し、
+# 必須トピックの過不足を pass/fail で判定する（decode 不要・短時間）。
+#
+# Config タブで選択するとアクティブになり、テンプレ未指定の fast_validation
+# ジョブに自動注入される（再起動不要）。name は glob 可、type は任意。
+# 同梱 HSR サンプル（data/airoa-moma-mcap）の主要ストリームを必須にしてある。
+# =============================================================================
+name: airoa_hsr
+version: 1
+required_topics:
+  - { name: /hsrb/joint_states, type: sensor_msgs/msg/JointState }
+  - { name: /hsrb/wrist_wrench/raw, type: geometry_msgs/msg/WrenchStamped }
+  - { name: /hsrb/odom, type: nav_msgs/msg/Odometry }
+  - { name: /hsrb/head_rgbd_sensor/rgb/image_rect_color/compressed }
+  - { name: /hsrb/hand_camera/image_raw/compressed }
+  - { name: /tf }
+  - { name: /tf_static }

@@ -12,4 +12,5 @@ export const queryKeys = {
   run: (id: string) => ['runs', 'detail', id] as const,
   pipelines: ['pipelines'] as const,
   job: (id: string) => ['jobs', id] as const,
+  configOptions: ['config', 'options'] as const,
 } as const;

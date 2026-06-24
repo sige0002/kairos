@@ -52,6 +52,11 @@ class Settings(BaseSettings):
     # Stream tab layout config (initial preview panes); surfaced UI-side via
     # GET /api/v1/config. Optional — missing file just means a single empty pane.
     stream_config: str = "config/stream.yaml"
+    # Validation templates the Config tab selects between (one *.yaml per option).
+    # The active one (default `validation_default`, by file stem) is injected into
+    # template-less fast_validation jobs. See config/validation/.
+    validation_dir: str = "config/validation"
+    validation_default: str = "airoa_hsr"
 
     # ---- HTTP bind + ports -------------------------------------------------
     # BIND_HOST defaults to 0.0.0.0: LAN exposure is allowed on a trusted LAN

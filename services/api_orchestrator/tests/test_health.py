@@ -36,7 +36,7 @@ def test_runtime_config_shape(client: TestClient) -> None:
     body = resp.json()
     assert set(body) >= {"endpoints", "tabs", "defaults", "schemas"}
     tab_ids = [t["id"] for t in body["tabs"]]
-    assert tab_ids == ["record", "monitor", "stream", "runs", "pipelines"]
+    assert tab_ids == ["record", "monitor", "stream", "runs", "pipelines", "config"]
     pipelines = next(t for t in body["tabs"] if t["id"] == "pipelines")
     assert pipelines["enabled"] is True
     assert "fast_validation" in body["schemas"]["pipeline_forms"]

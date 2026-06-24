@@ -114,6 +114,9 @@ services:
       RECORDING_CONFIG: ${RECORDING_CONFIG:-/config/recording.yaml}
       # Stream tab initial preview layout (config/stream.yaml -> /config mount).
       STREAM_CONFIG: ${STREAM_CONFIG:-/config/stream.yaml}
+      # Validation templates the Config tab selects between (config/validation/).
+      VALIDATION_DIR: ${VALIDATION_DIR:-/config/validation}
+      VALIDATION_DEFAULT: ${VALIDATION_DEFAULT:-airoa_hsr}
     # Run as the host user so the host-owned ./data mount is writable (the slim
     # image is otherwise non-root with a different uid). Defaults to 1000:1000.
     user: "${UID:-1000}:${GID:-1000}"

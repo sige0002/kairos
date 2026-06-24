@@ -15,6 +15,7 @@ import { MonitorTab } from './features/monitor/MonitorTab';
 import { StreamTab } from './features/stream/StreamTab';
 import { RunsTab } from './features/runs/RunsTab';
 import { PipelinesTab } from './features/pipelines/PipelinesTab';
+import { ConfigTab } from './features/config/ConfigTab';
 
 // Human-readable labels for the registry-driven tabs. The set of tabs and
 // their enabled state come from the backend (GET /api/v1/config); this only
@@ -25,6 +26,7 @@ const TAB_LABELS: Record<string, string> = {
   stream: 'Stream',
   runs: 'Runs',
   pipelines: 'Pipelines',
+  config: 'Config',
 };
 
 function tabLabel(tab: TabConfig): string {
@@ -44,6 +46,8 @@ function TabContent({ tabId, config }: { tabId: string; config: RuntimeConfig })
       return <RunsTab />;
     case 'pipelines':
       return <PipelinesTab config={config} />;
+    case 'config':
+      return <ConfigTab />;
     default:
       return <p className="text-sm text-gray-500">Unknown tab: {tabId}</p>;
   }

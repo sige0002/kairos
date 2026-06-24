@@ -136,6 +136,21 @@ export interface AlertSnapshot {
   alerts: AlertEvent[];
 }
 
+// ---- Config catalog (Config tab) ----------------------------------------
+
+/** One selectable validation template (a Config-tab dropdown entry). */
+export interface ValidationOption {
+  id: string;
+  name: string;
+  version: number;
+  required_topics: { name: string; type?: string | null }[];
+}
+
+/** GET /api/v1/config/options — selectable options + active per category. */
+export interface ConfigOptions {
+  validation: { active: string; options: ValidationOption[] };
+}
+
 // ---- Pipelines / Jobs ---------------------------------------------------
 
 export interface PipelineInfo {
