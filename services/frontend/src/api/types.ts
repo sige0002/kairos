@@ -157,12 +157,33 @@ export interface PipelineInfo {
   id: string;
   name?: string;
   description?: string;
+  /** Interface-only placeholders report `false`; only `true` pipelines run. */
+  enabled?: boolean;
 }
 
 export interface JobSubmitRequest {
   pipeline: string;
-  run_id?: string;
+  /** Required by the backend (JobCreateRequest.run_id); every job targets a run. */
+  run_id: string;
   params?: Record<string, unknown>;
+}
+
+/** Terminal job result (GET /api/v1/jobs/{id}/result). */
+export interface JobResult {
+  /** Pipeline-specific summary; for `fast_validation` it is a ValidationSummary. */
+  summary: ValidationSummary & Record<string, unknown>;
+  artifacts?: string[];
+}
+
+/** `fast_validation` summary shape (dora_runner validator). */
+export interface ValidationSummary {
+  template?: { name?: string; version?: number };
+  result?: 'pass' | 'fail';
+  /** Required topics that were NOT found in the recording. */
+  missing?: { name: string; type?: string | null }[];
+  /** Recorded topics not matched by any required entry (informational). */
+  extra?: { name: string; type?: string | null }[];
+  checked_at?: string;
 }
 
 export interface JobStatus {

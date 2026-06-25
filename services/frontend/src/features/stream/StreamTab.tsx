@@ -10,7 +10,15 @@ import { apiGet } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
 import type { TopicInfo } from '../../api/types';
 import type { RuntimeConfig } from '../../config';
-import { useWebRtcStream } from './useWebRtcStream';
+import { useWebRtcStream, type StreamStats } from './useWebRtcStream';
+import { Badge, Button, SectionLabel, StatusDot } from '../../components/ui';
+
+// Latency-threshold colour for the per-tile preview latency (handoff): high is
+// red, caution amber, normal teal. This is WebRTC preview latency (getStats),
+// independent of the ROS recording path.
+function latColor(ms: number): string {
+  return ms > 150 ? '#dc2626' : ms >= 85 ? '#d97706' : '#0d9488';
+}
 
 // A topic is a camera/image topic if its type is an (Compressed)Image or its
 // name looks like an image stream. `camera_info` (metadata) is excluded.
@@ -40,20 +48,61 @@ interface CameraOption {
   live: boolean;
 }
 
-function VideoSurface({ stream }: { stream: MediaStream | null }) {
+function VideoSurface({
+  stream,
+  topic,
+  live,
+  stats,
+}: {
+  stream: MediaStream | null;
+  topic: string;
+  live: boolean;
+  stats: StreamStats;
+}) {
   const ref = useRef<HTMLVideoElement>(null);
   useEffect(() => {
     if (ref.current && stream) ref.current.srcObject = stream;
   }, [stream]);
   return (
-    <video
-      ref={ref}
-      autoPlay
-      playsInline
-      muted
-      className="aspect-video w-full rounded bg-black"
-      data-testid="stream-video"
-    />
+    <div className="relative aspect-video w-full overflow-hidden rounded-control border border-gray-200 bg-[#0b0e12]">
+      <video
+        ref={ref}
+        autoPlay
+        playsInline
+        muted
+        className="h-full w-full object-contain"
+        data-testid="stream-video"
+      />
+      {/* Top-left overlay: REC dot + camera topic (handoff stream tile). */}
+      <div className="absolute left-2.5 top-2.5 flex items-center gap-1.5 rounded-chip border border-[#2c3742] bg-[rgba(11,14,18,.74)] px-2.5 py-1 backdrop-blur">
+        <StatusDot tone={live ? 'red' : 'gray'} pulse={live} className="rounded-full" />
+        <span className="font-mono text-[11px] font-semibold text-slate-100">{topic}</span>
+      </div>
+      {/* Top-right overlay: preview latency (threshold colour) + fps. */}
+      {live && (stats.latencyMs != null || stats.fps != null) && (
+        <div className="absolute right-2.5 top-2.5 flex items-center gap-1.5 rounded-chip border border-[#2c3742] bg-[rgba(11,14,18,.74)] px-2.5 py-1 font-mono text-[10.5px] backdrop-blur">
+          {stats.latencyMs != null && (
+            <span
+              className="font-semibold"
+              style={{ color: latColor(stats.latencyMs) }}
+              data-testid="stream-latency"
+            >
+              {stats.latencyMs}ms
+            </span>
+          )}
+          {stats.latencyMs != null && stats.fps != null && (
+            <span className="text-[#3a4452]">·</span>
+          )}
+          {stats.fps != null && <span className="text-slate-300">{stats.fps}fps</span>}
+        </div>
+      )}
+      {/* Bottom-left overlay: resolution. */}
+      {live && stats.width != null && stats.height != null && (
+        <div className="absolute bottom-2.5 left-2.5 rounded-chip border border-[#2c3742] bg-[rgba(11,14,18,.74)] px-2 py-0.5 font-mono text-[10px] text-slate-300 backdrop-blur">
+          {stats.width}×{stats.height}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -79,14 +128,22 @@ function CameraPane({
     if (first) setTopic(first.name);
   }, [topic, options]);
 
-  const { phase, stream, error, retry } = useWebRtcStream({ webrtcBase, topic });
+  const { phase, stream, error, stats, retry } = useWebRtcStream({ webrtcBase, topic });
+  const phaseTone =
+    phase === 'connected'
+      ? 'green'
+      : phase === 'failed'
+        ? 'red'
+        : phase === 'idle'
+          ? 'gray'
+          : 'amber';
 
   return (
-    <div className="flex flex-col gap-2 rounded border p-2">
+    <div className="flex flex-col gap-2 rounded-card border border-gray-200 bg-white p-2.5 shadow-card">
       <div className="flex flex-wrap items-center gap-2">
         <select
           aria-label="camera topic"
-          className="min-w-0 flex-1 rounded border px-2 py-1 font-mono text-sm"
+          className="min-w-0 flex-1 rounded-control border border-gray-200 px-2 py-1 font-mono text-sm focus:border-teal-500 focus:outline-none"
           value={topic}
           onChange={(e) => setTopic(e.target.value)}
         >
@@ -101,21 +158,23 @@ function CameraPane({
             ))
           )}
         </select>
-        <span
-          className="rounded bg-gray-100 px-2 py-0.5 text-xs"
-          data-testid="stream-phase"
+        <Badge tone={phaseTone} mono dot>
+          <span data-testid="stream-phase">{phase}</span>
+        </Badge>
+        <Button
+          type="button"
+          variant="ghost"
+          onClick={retry}
+          className="px-2.5 py-1 text-xs shadow-none"
         >
-          {phase}
-        </span>
-        <button type="button" onClick={retry} className="rounded border px-2 py-1 text-xs">
           Retry
-        </button>
+        </Button>
         {removable && (
           <button
             type="button"
             onClick={onRemove}
             aria-label="remove camera"
-            className="rounded border border-red-300 px-2 py-1 text-xs text-red-700 hover:bg-red-50"
+            className="rounded-control border border-red-200 px-2.5 py-1 text-xs font-semibold text-red-700 hover:bg-red-50"
           >
             Remove
           </button>
@@ -123,7 +182,7 @@ function CameraPane({
       </div>
 
       {error && (
-        <div role="alert" className="rounded bg-red-50 px-3 py-2 text-sm text-red-700">
+        <div role="alert" className="rounded-control bg-red-50 px-3 py-2 text-sm text-red-700">
           <p>{error}</p>
           <p className="mt-1 text-red-600">
             If the camera codec is unsupported by this browser or the connection cannot
@@ -133,7 +192,12 @@ function CameraPane({
       )}
 
       {topic ? (
-        <VideoSurface stream={stream} />
+        <VideoSurface
+          stream={stream}
+          topic={topic}
+          live={phase === 'connected'}
+          stats={stats}
+        />
       ) : (
         <p className="text-sm text-gray-500">Select a camera topic to start the preview.</p>
       )}
@@ -187,17 +251,19 @@ export function StreamTab({ config }: { config: RuntimeConfig }) {
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex items-center gap-3">
-        <button
+      <div className="flex flex-wrap items-center gap-3">
+        <SectionLabel>Stream</SectionLabel>
+        <span className="font-mono text-[11.5px] text-gray-400">
+          {panes.length} preview{panes.length === 1 ? '' : 's'}
+        </span>
+        <div className="flex-1" />
+        <Button
           type="button"
-          onClick={() =>
-            setPanes((ps) => [...ps, { id: nextId.current++, topic: '' }])
-          }
-          className="rounded bg-blue-600 px-3 py-1.5 text-sm text-white"
+          onClick={() => setPanes((ps) => [...ps, { id: nextId.current++, topic: '' }])}
+          className="px-3 py-1.5"
         >
           + Add camera
-        </button>
-        <span className="text-xs text-gray-500">{panes.length} preview(s)</span>
+        </Button>
       </div>
 
       {panes.length === 0 ? (

@@ -7,9 +7,50 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiGet, apiPost } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
 import type { ConfigOptions } from '../../api/types';
+import type { RuntimeConfig } from '../../config';
 import { ErrorMessage } from '../../components/ErrorMessage';
+import { Badge, SectionLabel } from '../../components/ui';
 
-export function ConfigTab() {
+/** Read-only recording profile sourced from RECORDING_CONFIG (GET /config). */
+function ProfileCard({ config }: { config: RuntimeConfig }) {
+  const robot = config.defaults.robot_name;
+  const topics = config.defaults.default_topics ?? [];
+  return (
+    <section
+      aria-label="recording profile"
+      className="rounded-card border border-gray-200 bg-white p-[18px] shadow-card"
+    >
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <SectionLabel>収録プロファイル</SectionLabel>
+        <Badge tone="gray">RECORDING_CONFIG（読み取り専用）</Badge>
+      </div>
+      <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-1.5 text-sm">
+        <dt className="text-gray-500">ロボット</dt>
+        <dd className="font-mono text-gray-800">{robot || '—'}</dd>
+        <dt className="text-gray-500">既定トピック</dt>
+        <dd className="font-mono text-gray-800">{topics.length} 件</dd>
+      </dl>
+      {topics.length > 0 && (
+        <ul className="mt-3 max-h-44 overflow-auto rounded-control border border-gray-200 text-xs">
+          {topics.map((t) => (
+            <li
+              key={t}
+              className="border-t border-gray-100 px-2 py-1.5 font-mono text-gray-700 first:border-t-0"
+            >
+              {t}
+            </li>
+          ))}
+        </ul>
+      )}
+      <p className="mt-3 text-xs text-gray-400">
+        記録/監視トピックの編集はファイル（RECORDING_CONFIG）側で行います。UI からの
+        per-topic トグルは未提供です。
+      </p>
+    </section>
+  );
+}
+
+export function ConfigTab({ config }: { config: RuntimeConfig }) {
   const queryClient = useQueryClient();
 
   const optionsQuery = useQuery({
@@ -29,12 +70,18 @@ export function ConfigTab() {
 
   return (
     <div className="flex flex-col gap-4">
-      <section aria-label="validation config" className="rounded border p-3">
-        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-          <h2 className="font-semibold">Validation</h2>
-          <span className="rounded bg-green-100 px-2 py-0.5 text-xs text-green-800">
+      <ProfileCard config={config} />
+      <section
+        aria-label="validation config"
+        className="rounded-card border border-gray-200 bg-white p-[18px] shadow-card"
+      >
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-[13px] font-semibold uppercase tracking-[0.04em] text-gray-500">
+            Validation
+          </h2>
+          <Badge tone="green" dot>
             applies immediately
-          </span>
+          </Badge>
         </div>
         <p className="mb-3 text-sm text-gray-500">
           The active template is used by <span className="font-mono">fast_validation</span>{' '}
@@ -56,7 +103,7 @@ export function ConfigTab() {
               <span className="font-medium">Active template</span>
               <select
                 aria-label="validation template"
-                className="rounded border px-2 py-1 font-mono"
+                className="rounded-control border border-gray-200 px-2 py-1 font-mono focus:border-teal-500 focus:outline-none"
                 value={active}
                 disabled={selectMutation.isPending}
                 onChange={(e) =>
@@ -78,17 +125,17 @@ export function ConfigTab() {
 
             {activeOption && (
               <div className="mt-3">
-                <h3 className="mb-1 text-sm font-medium">
+                <h3 className="mb-1.5 text-sm font-medium text-gray-700">
                   Required topics ({activeOption.required_topics.length})
                 </h3>
-                <ul className="max-h-72 overflow-auto rounded border text-xs">
+                <ul className="max-h-72 overflow-auto rounded-control border border-gray-200 text-xs">
                   {activeOption.required_topics.map((t) => (
                     <li
                       key={t.name}
-                      className="flex justify-between gap-2 border-t px-2 py-1 first:border-t-0"
+                      className="flex justify-between gap-2 border-t border-gray-100 px-2 py-1.5 first:border-t-0"
                     >
-                      <span className="font-mono">{t.name}</span>
-                      <span className="text-gray-500">{t.type ?? 'any type'}</span>
+                      <span className="font-mono text-gray-700">{t.name}</span>
+                      <span className="font-mono text-gray-400">{t.type ?? 'any type'}</span>
                     </li>
                   ))}
                 </ul>

@@ -1,3 +1,14 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer base {
+  html {
+    /* Slightly tighter tracking matches the handoff wordmark/heading feel. */
+    font-feature-settings: 'cv11', 'ss01';
+  }
+  body {
+    @apply bg-gray-50 font-sans text-gray-900 antialiased;
+  }
+  /* Status indicators are rounded squares (2px), not circles — a brand cue. */
+}

@@ -3,6 +3,14 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
 import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
 import { ConfigTab } from './ConfigTab';
+import type { RuntimeConfig } from '../../config';
+
+const CONFIG = {
+  endpoints: { api: '/api/v1', events: '/api/v1/events', webrtc: 'http://localhost:8002' },
+  tabs: [],
+  defaults: { robot_name: 'hsr', default_topics: ['/hsrb/odom'] },
+  schemas: {},
+} as RuntimeConfig;
 
 const OPTIONS = {
   validation: {
@@ -42,7 +50,7 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 test('lists validation templates and shows the active one’s required topics', async () => {
-  renderWithClient(<ConfigTab />);
+  renderWithClient(<ConfigTab config={CONFIG} />);
 
   const select = (await screen.findByLabelText(
     'validation template',
@@ -53,7 +61,7 @@ test('lists validation templates and shows the active one’s required topics', 
 });
 
 test('selecting a template posts the selection and updates active', async () => {
-  renderWithClient(<ConfigTab />);
+  renderWithClient(<ConfigTab config={CONFIG} />);
 
   const select = (await screen.findByLabelText(
     'validation template',

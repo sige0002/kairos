@@ -13,6 +13,7 @@ import { apiDelete, apiGet } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
 import type { Page, RunDetail, RunSummary } from '../../api/types';
 import { ErrorMessage } from '../../components/ErrorMessage';
+import { Badge, Button, Card, SectionLabel, cn } from '../../components/ui';
 
 function formatWhen(iso?: string): string {
   if (!iso) return '—';
@@ -31,9 +32,9 @@ function formatDuration(ms?: number): string {
 function JsonBlock({ label, value }: { label: string; value: unknown }) {
   if (value === undefined || value === null) return null;
   return (
-    <details className="rounded border p-2">
-      <summary className="cursor-pointer font-medium">{label}</summary>
-      <pre className="mt-2 max-h-80 overflow-auto rounded bg-gray-50 p-2 text-xs">
+    <details className="rounded-control border border-gray-200 p-2">
+      <summary className="cursor-pointer text-sm font-medium text-gray-700">{label}</summary>
+      <pre className="mt-2 max-h-80 overflow-auto rounded-control bg-gray-50 p-2 font-mono text-xs">
         {JSON.stringify(value, null, 2)}
       </pre>
     </details>
@@ -70,7 +71,7 @@ function RunDetailView({
   return (
     <div className="flex flex-col gap-3">
       <div className="flex items-center justify-between gap-2">
-        <h3 className="font-mono text-sm font-semibold">{run.run_id}</h3>
+        <h3 className="font-mono text-sm font-semibold text-teal-700">{run.run_id}</h3>
         <button
           type="button"
           onClick={() => {
@@ -78,7 +79,7 @@ function RunDetailView({
               deleteMutation.mutate();
           }}
           disabled={deleteMutation.isPending}
-          className="rounded border border-red-300 px-2 py-1 text-xs text-red-700 hover:bg-red-50 disabled:opacity-50"
+          className="rounded-control border border-red-200 px-2.5 py-1 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50"
         >
           {deleteMutation.isPending ? 'Deleting…' : 'Delete'}
         </button>
@@ -100,18 +101,20 @@ function RunDetailView({
       </dl>
 
       {run.error && (
-        <p className="rounded bg-red-50 px-3 py-2 text-sm text-red-700">
+        <p className="rounded-control bg-red-50 px-3 py-2 text-sm text-red-700">
           {run.error.code}: {run.error.message}
         </p>
       )}
 
       <section>
-        <h4 className="mb-1 text-sm font-medium">Topics ({run.topics.length})</h4>
-        <ul className="max-h-48 overflow-auto rounded border text-xs">
+        <h4 className="mb-1.5 text-sm font-medium text-gray-700">
+          Topics ({run.topics.length})
+        </h4>
+        <ul className="max-h-48 overflow-auto rounded-control border border-gray-200 text-xs">
           {run.topics.map((t) => (
-            <li key={t.name} className="border-t px-2 py-1 first:border-t-0">
-              <span className="font-mono">{t.name}</span>{' '}
-              <span className="text-gray-500">{t.type}</span>
+            <li key={t.name} className="border-t border-gray-100 px-2 py-1 first:border-t-0">
+              <span className="font-mono text-gray-700">{t.name}</span>{' '}
+              <span className="font-mono text-gray-400">{t.type}</span>
             </li>
           ))}
         </ul>
@@ -137,9 +140,11 @@ export function RunsTab() {
 
   return (
     <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-      <section aria-label="runs list" className="flex flex-col gap-2">
+      <section aria-label="runs list" className="flex flex-col gap-2.5">
         <div>
-          <h2 className="font-semibold">Runs</h2>
+          <h2 className="mb-1">
+            <SectionLabel>Runs</SectionLabel>
+          </h2>
           <p className="text-xs text-gray-500">
             History of recordings. Each record start/stop is one run (MCAP under
             <span className="font-mono"> /data/recorded/&lt;run_id&gt;</span>); pick one to
@@ -153,25 +158,35 @@ export function RunsTab() {
         ) : runsQuery.data.items.length === 0 ? (
           <p className="text-sm text-gray-500">No runs yet.</p>
         ) : (
-          <ul className="rounded border" role="list">
+          <ul
+            className="overflow-hidden rounded-card border border-gray-200 bg-white shadow-card"
+            role="list"
+          >
             {runsQuery.data.items.map((run) => (
-              <li key={run.run_id} className="border-t first:border-t-0">
+              <li key={run.run_id} className="border-t border-gray-100 first:border-t-0">
                 <button
                   type="button"
                   onClick={() => setSelected(run.run_id)}
                   aria-pressed={selected === run.run_id}
-                  className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm hover:bg-gray-50 ${
-                    selected === run.run_id ? 'bg-blue-50' : ''
-                  }`}
+                  className={cn(
+                    'flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left text-sm transition-colors',
+                    selected === run.run_id
+                      ? 'bg-teal-50'
+                      : 'hover:bg-gray-50',
+                  )}
                 >
                   <span className="min-w-0">
-                    <span className="block truncate font-mono">{run.run_id}</span>
-                    <span className="text-xs text-gray-500">
+                    <span className="block truncate font-mono text-teal-700">
+                      {run.run_id}
+                    </span>
+                    <span className="font-mono text-xs text-gray-400">
                       {formatWhen(run.started_at)}
                       {run.duration_ms ? ` · ${formatDuration(run.duration_ms)}` : ''}
                     </span>
                   </span>
-                  <span className="shrink-0 text-gray-500">{run.state}</span>
+                  <Badge tone="gray" className="shrink-0">
+                    {run.state}
+                  </Badge>
                 </button>
               </li>
             ))}
@@ -179,23 +194,24 @@ export function RunsTab() {
         )}
 
         {runsQuery.data?.next_cursor && (
-          <button
+          <Button
             type="button"
+            variant="ghost"
             onClick={() => setCursor(runsQuery.data.next_cursor ?? undefined)}
-            className="self-start rounded border px-3 py-1 text-sm"
+            className="self-start px-3 py-1"
           >
             Load more
-          </button>
+          </Button>
         )}
       </section>
 
-      <section aria-label="run detail" className="rounded border p-3">
+      <Card aria-label="run detail" className="p-[18px]">
         {selected ? (
           <RunDetailView runId={selected} onDeleted={() => setSelected(null)} />
         ) : (
           <p className="text-sm text-gray-500">Select a run to see details.</p>
         )}
-      </section>
+      </Card>
     </div>
   );
 }

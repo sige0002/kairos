@@ -281,12 +281,16 @@ def _register_root_and_config(
                 "events": "/api/v1/events",
                 "webrtc": settings.webrtc_public_url,
             },
+            # Tab IA (design handoff "Neutral Teal"): the operator-facing "live"
+            # tab fuses Stream + Monitor + Record; "graph" is the time-series
+            # health view; "validation" runs fast_validation; "dataset" lists
+            # dora_runner conversion outputs.
             "tabs": [
-                {"id": "record", "enabled": True},
-                {"id": "monitor", "enabled": True},
-                {"id": "stream", "enabled": True},
+                {"id": "live", "enabled": True},
+                {"id": "graph", "enabled": True},
                 {"id": "runs", "enabled": True},
-                {"id": "pipelines", "enabled": True},
+                {"id": "validation", "enabled": True},
+                {"id": "dataset", "enabled": True},
                 {"id": "config", "enabled": True},
             ],
             "defaults": defaults,

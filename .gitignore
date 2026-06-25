@@ -46,3 +46,6 @@ dist/
 build/
 install/
 log/
+
+# 参考フォルダ
+/ref

@@ -201,10 +201,15 @@ def fake_recorder() -> FakeRecorder:
 def settings() -> Settings:
     """Settings pointing the recorder client at the mocked transport.
 
-    ``recording_config`` points at a path that does not exist so the factory
-    boots with ``default_topics = None`` unless a test overrides it.
+    ``recording_config`` / ``stream_config`` point at paths that do not exist so
+    the factory boots with ``default_topics = None`` and an empty stream layout
+    regardless of the working directory (the defaults are repo-relative and would
+    otherwise be picked up when pytest runs from the repo root).
     """
-    return Settings(recording_config="/nonexistent/recording.yaml")
+    return Settings(
+        recording_config="/nonexistent/recording.yaml",
+        stream_config="/nonexistent/stream.yaml",
+    )
 
 
 @pytest.fixture

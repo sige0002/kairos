@@ -36,9 +36,9 @@ def test_runtime_config_shape(client: TestClient) -> None:
     body = resp.json()
     assert set(body) >= {"endpoints", "tabs", "defaults", "schemas"}
     tab_ids = [t["id"] for t in body["tabs"]]
-    assert tab_ids == ["record", "monitor", "stream", "runs", "pipelines", "config"]
-    pipelines = next(t for t in body["tabs"] if t["id"] == "pipelines")
-    assert pipelines["enabled"] is True
+    assert tab_ids == ["live", "graph", "runs", "validation", "dataset", "config"]
+    validation = next(t for t in body["tabs"] if t["id"] == "validation")
+    assert validation["enabled"] is True
     assert "fast_validation" in body["schemas"]["pipeline_forms"]
     # default_topics is always present (empty when no RECORDING_CONFIG is loaded)
     # so the Record/Monitor tabs can rely on its shape.

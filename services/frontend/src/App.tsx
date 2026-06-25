@@ -10,22 +10,25 @@ import {
 import { queryKeys } from './api/queryKeys';
 import { useEventStream } from './sse/useEventStream';
 import { useUiStore } from './store/uiStore';
-import { RecordTab } from './features/record/RecordTab';
-import { MonitorTab } from './features/monitor/MonitorTab';
-import { StreamTab } from './features/stream/StreamTab';
+import { LiveTab } from './features/live/LiveTab';
+import { GraphTab } from './features/graph/GraphTab';
 import { RunsTab } from './features/runs/RunsTab';
-import { PipelinesTab } from './features/pipelines/PipelinesTab';
+import { ValidationTab } from './features/validation/ValidationTab';
+import { DatasetTab } from './features/dataset/DatasetTab';
 import { ConfigTab } from './features/config/ConfigTab';
+import { Hexagon, StatusDot, cn } from './components/ui';
+import type { SseStatus } from './store/uiStore';
 
 // Human-readable labels for the registry-driven tabs. The set of tabs and
 // their enabled state come from the backend (GET /api/v1/config); this only
-// supplies default display names when the backend omits a label.
+// supplies default display names when the backend omits a label. The design
+// handoff IA: ライブ / グラフ / Runs / 検証 / データセット / Config.
 const TAB_LABELS: Record<string, string> = {
-  record: 'Record',
-  monitor: 'Monitor',
-  stream: 'Stream',
+  live: 'ライブ',
+  graph: 'グラフ',
   runs: 'Runs',
-  pipelines: 'Pipelines',
+  validation: '検証',
+  dataset: 'データセット',
   config: 'Config',
 };
 
@@ -36,18 +39,18 @@ function tabLabel(tab: TabConfig): string {
 /** Render the feature component for a given tab id. */
 function TabContent({ tabId, config }: { tabId: string; config: RuntimeConfig }) {
   switch (tabId) {
-    case 'record':
-      return <RecordTab config={config} />;
-    case 'monitor':
-      return <MonitorTab config={config} />;
-    case 'stream':
-      return <StreamTab config={config} />;
+    case 'live':
+      return <LiveTab config={config} />;
+    case 'graph':
+      return <GraphTab config={config} />;
     case 'runs':
       return <RunsTab />;
-    case 'pipelines':
-      return <PipelinesTab config={config} />;
+    case 'validation':
+      return <ValidationTab />;
+    case 'dataset':
+      return <DatasetTab />;
     case 'config':
-      return <ConfigTab />;
+      return <ConfigTab config={config} />;
     default:
       return <p className="text-sm text-gray-500">Unknown tab: {tabId}</p>;
   }
@@ -71,24 +74,40 @@ function Tabs({ config }: { config: RuntimeConfig }) {
   const active = activeTab || enabled[0]?.id || '';
 
   return (
-    <div>
-      <nav role="tablist" aria-label="kairos tabs" className="flex gap-2 border-b">
-        {ordered.map((tab) => (
-          <button
-            key={tab.id}
-            role="tab"
-            aria-selected={tab.id === active}
-            disabled={!tab.enabled}
-            onClick={() => setActiveTab(tab.id)}
-            className={`px-4 py-2 disabled:opacity-40 ${
-              tab.id === active ? 'border-b-2 border-blue-600 font-medium' : ''
-            }`}
-          >
-            {tabLabel(tab)}
-          </button>
-        ))}
+    <div className="flex flex-col gap-[18px]">
+      <nav
+        role="tablist"
+        aria-label="kairos tabs"
+        className="flex flex-wrap gap-[3px] self-start rounded-[12px] border border-gray-200 bg-gray-100 p-1"
+      >
+        {ordered.map((tab) => {
+          const on = tab.id === active;
+          return (
+            <button
+              key={tab.id}
+              id={`tab-${tab.id}`}
+              role="tab"
+              aria-selected={on}
+              aria-controls={`panel-${tab.id}`}
+              disabled={!tab.enabled}
+              onClick={() => setActiveTab(tab.id)}
+              className={cn(
+                'rounded-[9px] px-4 py-2 text-[13.5px] transition-colors disabled:opacity-40',
+                on
+                  ? 'bg-teal-600 font-semibold text-white shadow-sm'
+                  : 'font-medium text-gray-500 hover:text-gray-700',
+              )}
+            >
+              {tabLabel(tab)}
+            </button>
+          );
+        })}
       </nav>
-      <section role="tabpanel" aria-label={active} className="p-4">
+      <section
+        role="tabpanel"
+        id={active ? `panel-${active}` : undefined}
+        aria-labelledby={active ? `tab-${active}` : undefined}
+      >
         {active ? (
           <TabContent tabId={active} config={config} />
         ) : (
@@ -96,6 +115,45 @@ function Tabs({ config }: { config: RuntimeConfig }) {
         )}
       </section>
     </div>
+  );
+}
+
+/** Live DDS/SSE connection chip in the header (driven by the SSE status). */
+function ConnectionBadge() {
+  const status = useUiStore((s) => s.sseStatus);
+  const tone: Record<SseStatus, 'green' | 'amber' | 'gray'> = {
+    open: 'green',
+    connecting: 'amber',
+    reconnecting: 'amber',
+    closed: 'gray',
+  };
+  const label: Record<SseStatus, string> = {
+    open: 'DDS connected',
+    connecting: 'connecting',
+    reconnecting: 'reconnecting',
+    closed: 'disconnected',
+  };
+  const live = status === 'open';
+  return (
+    <span
+      data-testid="connection-status"
+      className={cn(
+        'inline-flex items-center gap-2 rounded-control border px-3 py-2',
+        live
+          ? 'border-teal-200 bg-teal-100'
+          : 'border-gray-200 bg-white',
+      )}
+    >
+      <StatusDot tone={tone[status]} />
+      <span
+        className={cn(
+          'font-mono text-[12.5px] font-semibold',
+          live ? 'text-teal-700' : 'text-gray-600',
+        )}
+      >
+        {label[status]}
+      </span>
+    </span>
   );
 }
 
@@ -121,20 +179,40 @@ export function App() {
   }, [config]);
 
   if (isPending) {
-    return <main className="p-4">Loading kairos…</main>;
+    return (
+      <main className="flex min-h-screen items-center gap-3 bg-gray-50 p-[22px] text-gray-500">
+        <Hexagon size={22} />
+        Loading kairos…
+      </main>
+    );
   }
   if (isError) {
     return (
-      <main className="p-4 text-red-700">
+      <main className="min-h-screen bg-gray-50 p-[22px] text-red-700">
         Failed to load configuration: {String(error)}
       </main>
     );
   }
 
   return (
-    <main className="mx-auto max-w-6xl p-4">
+    <main className="min-h-screen bg-gray-50 p-[22px]">
       <EventStreamMount url={config.endpoints.events} />
-      <h1 className="mb-4 text-xl font-semibold">kairos</h1>
+      <header className="mb-[18px] flex flex-wrap items-center gap-4">
+        <div className="flex items-center gap-[11px]">
+          <Hexagon />
+          <span className="text-[21px] font-bold tracking-[-0.02em] text-gray-900">
+            kairos
+          </span>
+        </div>
+        <div className="flex-1" />
+        <ConnectionBadge />
+        <div
+          aria-hidden
+          className="flex h-[34px] w-[34px] items-center justify-center rounded-full border border-gray-200 bg-gray-100 text-[13px] font-semibold text-gray-600"
+        >
+          K
+        </div>
+      </header>
       <Tabs config={config} />
     </main>
   );

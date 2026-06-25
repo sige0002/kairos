@@ -12,11 +12,12 @@ const STUB_CONFIG: RuntimeConfig = {
     webrtc: 'http://localhost:8002',
   },
   tabs: [
-    { id: 'record', enabled: true },
-    { id: 'monitor', enabled: true },
-    { id: 'stream', enabled: true },
+    { id: 'live', enabled: true },
+    { id: 'graph', enabled: true },
     { id: 'runs', enabled: true },
-    { id: 'pipelines', enabled: false },
+    { id: 'validation', enabled: true },
+    { id: 'dataset', enabled: false },
+    { id: 'config', enabled: true },
   ],
   defaults: {},
   schemas: {},
@@ -67,12 +68,12 @@ test('render-gates on backend config, then shows the registry-driven tabs', asyn
   expect(screen.getByText(/Loading kairos/i)).toBeInTheDocument();
 
   await waitFor(() => {
-    expect(screen.getByRole('tab', { name: 'Record' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'ライブ' })).toBeInTheDocument();
   });
   // Disabled tab from config is rendered but disabled.
-  expect(screen.getByRole('tab', { name: 'Pipelines' })).toBeDisabled();
+  expect(screen.getByRole('tab', { name: 'データセット' })).toBeDisabled();
   // First enabled tab is selected by default.
-  expect(screen.getByRole('tab', { name: 'Record' })).toHaveAttribute(
+  expect(screen.getByRole('tab', { name: 'ライブ' })).toHaveAttribute(
     'aria-selected',
     'true',
   );
@@ -80,11 +81,11 @@ test('render-gates on backend config, then shows the registry-driven tabs', asyn
 
 test('only enabled tabs are selectable; disabled tabs render but cannot activate', async () => {
   renderWithClient(<App />);
-  await waitFor(() => screen.getByRole('tab', { name: 'Record' }));
+  await waitFor(() => screen.getByRole('tab', { name: 'ライブ' }));
 
-  const enabled = ['Record', 'Monitor', 'Stream', 'Runs'];
+  const enabled = ['ライブ', 'グラフ', 'Runs', '検証', 'Config'];
   for (const name of enabled) {
     expect(screen.getByRole('tab', { name })).toBeEnabled();
   }
-  expect(screen.getByRole('tab', { name: 'Pipelines' })).toBeDisabled();
+  expect(screen.getByRole('tab', { name: 'データセット' })).toBeDisabled();
 });
