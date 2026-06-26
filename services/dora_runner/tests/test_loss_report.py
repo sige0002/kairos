@@ -12,8 +12,19 @@ import time
 from pathlib import Path
 
 import pytest
-from dora_runner.loss_report import estimate_topic_loss, run_loss_report
+from dora_runner.loss_report import (
+    estimate_topic_loss,
+    gap_exceeded,
+    run_loss_report,
+)
+from dora_runner.loss_report_config import (
+    DEFAULT_GAP_THRESHOLD_MULTIPLIER,
+    LossReportConfig,
+    coerce_target_topics,
+    load_loss_report_config,
+)
 from dora_runner.main import create_dora_app
+from dora_runner.registry import build_default_registry, loss_report_schema
 from fastapi.testclient import TestClient
 from kairos_common import Settings
 
@@ -65,6 +76,111 @@ def test_loss_report_missing_run_dir_raises(tmp_path: Path) -> None:
     (data_dir / "recorded").mkdir(parents=True)
     with pytest.raises(FileNotFoundError):
         run_loss_report(run_id="run_absent", data_dir=data_dir)
+
+
+# ---- OL-4.3: config-driven thresholds / target topics ---------------------
+
+
+def test_gap_exceeded_flag_uses_multiplier() -> None:
+    # A topic whose worst gap is 10x its median is flagged at mult=5 but not 20.
+    est = {"gap_max_ms": 1000.0, "median_interval_ms": 100.0}
+    assert gap_exceeded(est, 5.0) is True
+    assert gap_exceeded(est, 20.0) is False
+    # Missing data is never flagged.
+    assert gap_exceeded({"gap_max_ms": None, "median_interval_ms": None}, 1.0) is False
+
+
+def test_coerce_target_topics_accepts_string_or_list() -> None:
+    assert coerce_target_topics("/hsrb/*, /tf") == ["/hsrb/*", "/tf"]
+    assert coerce_target_topics(["/a", " ", "/b"]) == ["/a", "/b"]
+    assert coerce_target_topics(None) == []
+
+
+def test_load_loss_report_config_from_yaml(tmp_path: Path) -> None:
+    cfg_file = tmp_path / "loss_report.yaml"
+    cfg_file.write_text(
+        "gap_threshold_multiplier: 3.5\ntarget_topics: [/hsrb/*]\n",
+        encoding="utf-8",
+    )
+    cfg = load_loss_report_config(cfg_file)
+    assert cfg.gap_threshold_multiplier == 3.5
+    assert cfg.target_topics == ["/hsrb/*"]
+
+
+def test_load_loss_report_config_missing_file_uses_defaults(tmp_path: Path) -> None:
+    cfg = load_loss_report_config(tmp_path / "nope.yaml")
+    assert cfg.gap_threshold_multiplier == DEFAULT_GAP_THRESHOLD_MULTIPLIER
+    assert cfg.target_topics == []
+
+
+def test_loss_report_schema_embeds_config_defaults() -> None:
+    cfg = LossReportConfig(gap_threshold_multiplier=2.0, target_topics=["/hsrb/*"])
+    schema = loss_report_schema(cfg)
+    props = schema["properties"]
+    assert props["gap_threshold_multiplier"]["default"] == 2.0
+    assert props["target_topics"]["default"] == ["/hsrb/*"]
+    # The registry carries the same config-driven loss_report params_schema.
+    loss = build_default_registry(cfg).get("loss_report")
+    assert loss is not None
+    loss_props = loss.params_schema["properties"]
+    assert loss_props["gap_threshold_multiplier"]["default"] == 2.0
+    assert loss_props["target_topics"]["default"] == ["/hsrb/*"]
+
+
+def _write_minimal_mcap(path: Path, topics: dict[str, int]) -> None:
+    """Write an MCAP with *topics* -> message count (10 Hz spacing, no payload)."""
+    from mcap.writer import Writer
+
+    with path.open("wb") as fh:
+        writer = Writer(fh)
+        writer.start()
+        schema_id = writer.register_schema(
+            name="std_msgs/msg/Empty", encoding="ros2msg", data=b""
+        )
+        for topic, count in topics.items():
+            channel_id = writer.register_channel(
+                topic=topic, message_encoding="cdr", schema_id=schema_id
+            )
+            for i in range(count):
+                ts = i * 100 * _MS
+                writer.add_message(
+                    channel_id=channel_id,
+                    log_time=ts,
+                    publish_time=ts,
+                    data=b"",
+                )
+        writer.finish()
+
+
+def test_run_loss_report_filters_target_topics(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    run_dir = data_dir / "recorded" / "run_x"
+    run_dir.mkdir(parents=True)
+    _write_minimal_mcap(run_dir / "run_x_0.mcap", {"/hsrb/joint_states": 10, "/tf": 10})
+
+    # No filter -> both topics; glob filter -> only the matching one.
+    full = run_loss_report(run_id="run_x", data_dir=data_dir)
+    names_full = {t["name"] for t in full["summary"]["topics"]}
+    assert names_full == {"/hsrb/joint_states", "/tf"}
+
+    filtered = run_loss_report(
+        run_id="run_x", data_dir=data_dir, target_topics=["/hsrb/*"]
+    )
+    names = {t["name"] for t in filtered["summary"]["topics"]}
+    assert names == {"/hsrb/joint_states"}
+    assert filtered["summary"]["params"]["target_topics"] == ["/hsrb/*"]
+    # gap_exceeded is present on every reported topic (additive field).
+    assert all("gap_exceeded" in t for t in filtered["summary"]["topics"])
+
+
+def test_pipelines_endpoint_exposes_loss_report_params() -> None:
+    app = create_dora_app(Settings(data_dir="/tmp"))
+    with TestClient(app) as client:
+        items = client.get("/pipelines").json()["items"]
+        loss = next(p for p in items if p["id"] == "loss_report")
+        # Serialized under the `schema` alias with the new params present.
+        assert "target_topics" in loss["schema"]["properties"]
+        assert "gap_threshold_multiplier" in loss["schema"]["properties"]
 
 
 # ---- Integration (real sample bag, skipped when absent) -------------------
