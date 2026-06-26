@@ -144,19 +144,45 @@ class RunService:
         """
         self._config = config
 
-    async def _emit_record_status(self, run: Run) -> None:
-        """Publish a ``record_status`` SSE event for *run* (no-op without a hub)."""
+    async def _emit_record_status(
+        self, run: Run, arming: dict[str, Any] | None = None
+    ) -> None:
+        """Publish a ``record_status`` SSE event for *run* (no-op without a hub).
+
+        When *arming* is supplied (the recorder's ``--start-paused`` readiness
+        snapshot, OL-①.4) it is passed through additively so the Live UI can show
+        what matched vs is still missing. Omitted on transitions where there is no
+        arming (the field is optional in the frozen frontend contract).
+        """
         if self._event_hub is None:
             return
-        await self._event_hub.publish(
-            EVENT_RECORD_STATUS,
-            {
-                "run_id": run.run_id,
-                "state": run.state.value,
-                "message_count": run.message_count,
-                "bytes": run.bytes,
-            },
-        )
+        payload: dict[str, Any] = {
+            "run_id": run.run_id,
+            "state": run.state.value,
+            "message_count": run.message_count,
+            "bytes": run.bytes,
+        }
+        if arming is not None:
+            payload["arming"] = arming
+        await self._event_hub.publish(EVENT_RECORD_STATUS, payload)
+
+    async def _fetch_arming(self) -> dict[str, Any] | None:
+        """Best-effort read of the recorder's arming snapshot for the SSE event.
+
+        Only meaningful when ``start_paused`` is configured (otherwise no arming
+        gate runs and the recorder reports ``arming=null``); guarding on the
+        config avoids an extra ``/record/status`` round-trip on the common path.
+        Read-only and never raises: on any transport error, or when arming is
+        absent/malformed, returns ``None`` and the event simply omits it.
+        """
+        if not (self._config and self._config.recording.start_paused):
+            return None
+        try:
+            status = await self._recorder.status()
+        except ApiError:
+            return None
+        arming = status.get("arming")
+        return arming if isinstance(arming, dict) else None
 
     # ---- start ------------------------------------------------------------
 
@@ -204,7 +230,11 @@ class RunService:
             self._update(run_id, state=RunState.recording)
             # Sync resolved topics/types/QoS ("all" expansion) from the recorder.
             run = await self._sync_metadata(run_id, allow_partial=True)
-            await self._emit_record_status(run)
+            # The recorder start blocks through the --start-paused arming gate, so
+            # by here the (final) arming snapshot is settled; pass it through on
+            # the record_status event for the Live UI (OL-①.4). Best-effort.
+            arming = await self._fetch_arming()
+            await self._emit_record_status(run, arming=arming)
             return run
 
     def _create_unique_run(self, req: RecordStartRequest) -> Run:

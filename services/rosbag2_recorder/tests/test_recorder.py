@@ -525,6 +525,114 @@ def test_arm_failure_fails_the_start_and_cleans_up(
     assert not run_dir(Path(settings.data_dir), "run_arm").exists()  # cleaned up
 
 
+def test_arming_snapshot_starts_none_and_resets(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    """Without --start-paused there is no arming gate: status.arming stays None.
+
+    The default stubbed ``_arm_and_resume`` never runs (no start_paused config),
+    so a plain recording exposes ``arming=None`` (OL-①.4 is opt-in)."""
+    session = _make_session(settings, fake_process, write_metadata)
+    assert session.status().arming is None
+    session.start(_start_req("run_noarm"))
+    assert session.status().arming is None
+
+
+def test_await_subscribed_populates_arming_matched_missing(
+    settings: Settings,
+) -> None:
+    """The readiness poll refreshes matched vs missing on the arming snapshot.
+
+    Pure-logic: drive ``_await_recorder_subscribed`` with a fake ROS node so the
+    rclpy graph queries are deterministic (no ROS needed)."""
+    from types import SimpleNamespace
+
+    from rosbag2_recorder.models import RecordArming
+    from rosbag2_recorder.recorder import RECORDER_NODE_NAME
+
+    class _FakeNode:
+        def __init__(self, pubs: dict[str, int], subs: dict[str, list[str]]) -> None:
+            self._pubs = pubs
+            self._subs = subs
+
+        def count_publishers(self, topic: str) -> int:
+            return self._pubs.get(topic, 0)
+
+        def get_subscriptions_info_by_topic(self, topic: str) -> list[Any]:
+            return [SimpleNamespace(node_name=n) for n in self._subs.get(topic, [])]
+
+    class _FakeRclpy:
+        @staticmethod
+        def spin_once(node: Any, timeout_sec: float) -> None:
+            pass
+
+    session = RecorderSession(settings, None)
+    session._arming = RecordArming(active=True, missing_topics=["/a", "/b"])
+    # /a has a publisher AND the recorder subscribed; /b has a publisher but the
+    # recorder has not subscribed yet -> still missing.
+    node = _FakeNode(
+        pubs={"/a": 1, "/b": 1},
+        subs={"/a": [RECORDER_NODE_NAME], "/b": []},
+    )
+    # timeout=0 -> one poll, then the deadline check resumes (still pending /b).
+    session._await_recorder_subscribed(_FakeRclpy(), node, ["/a", "/b"], False, 0.0)
+    assert session._arming is not None
+    assert session._arming.matched_topics == ["/a"]
+    assert session._arming.missing_topics == ["/b"]
+
+
+def test_arming_snapshot_surfaced_on_status_after_start_paused(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    """With start_paused, the (final) arming snapshot is exposed on status.
+
+    The real ``_arm_and_resume`` needs ROS, so we substitute a stub that writes
+    the snapshot the gate would produce; the test asserts it flows through to
+    ``GET /record/status`` (the matched/missing fields + resolved ``active``)."""
+    from kairos_common import RecordingConfig, RecordingTuning
+    from rosbag2_recorder.models import RecordArming
+
+    cfg = RecordingConfig(robot_name="t", recording=RecordingTuning(start_paused=True))
+    session = _make_session(settings, fake_process, write_metadata, config=cfg)
+
+    def fake_arm(run_id: str, topics: list[str], all_mode: bool) -> None:
+        session._arming = RecordArming(
+            active=False,
+            matched_topics=list(topics),
+            missing_topics=[],
+            resume_at="2026-06-27T00:00:00.000Z",
+        )
+
+    session._arm_and_resume = fake_arm  # type: ignore[method-assign]
+    session.start(_start_req("run_armed", topics=["/joint_states"]))
+
+    st = session.status()
+    assert st.arming is not None
+    assert st.arming.active is False
+    assert st.arming.matched_topics == ["/joint_states"]
+    assert st.arming.missing_topics == []
+    assert st.arming.resume_at == "2026-06-27T00:00:00.000Z"
+
+
+def test_arming_snapshot_dropped_on_arm_failure(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    """A failed arm leaves no stale arming snapshot on the idle session."""
+    from kairos_common import RecordingConfig, RecordingTuning
+
+    cfg = RecordingConfig(robot_name="t", recording=RecordingTuning(start_paused=True))
+    session = _make_session(settings, fake_process, write_metadata, config=cfg)
+
+    def boom(*_a: Any, **_k: Any) -> None:
+        raise RuntimeError("resume service missing")
+
+    session._arm_and_resume = boom  # type: ignore[method-assign]
+    session._terminate_failed_start = lambda _p: None  # type: ignore[method-assign]
+    with pytest.raises(ApiError):
+        session.start(_start_req("run_armfail"))
+    assert session.status().arming is None
+
+
 def test_command_all_uses_all_flag(
     settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
 ) -> None:

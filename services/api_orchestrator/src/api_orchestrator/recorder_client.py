@@ -95,7 +95,12 @@ class RecorderClient(BaseServiceClient):
         )
 
     async def status(self) -> dict[str, Any]:
-        """Call recorder ``GET /record/status``."""
+        """Call recorder ``GET /record/status``.
+
+        Returns the recorder's status body verbatim (no response model), so any
+        additive recorder field — e.g. the ``arming`` snapshot (OL-①.4) — flows
+        straight through to callers and the ``/api/v1/record/status`` proxy.
+        """
         return await self._request("GET", "/record/status")
 
     async def metadata(self) -> dict[str, Any]:

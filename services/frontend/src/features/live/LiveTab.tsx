@@ -14,6 +14,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiGet, apiPost } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
 import type {
+  RecordArming,
   RecordStartRequest,
   RecordStatus,
   RunDetail,
@@ -140,6 +141,54 @@ interface RecordSelection {
   count: number;
   /** Whether the operator customized the picker (vs configured defaults). */
   customized: boolean;
+}
+
+// Arming progress (OL-①.4): when a `--start-paused` recording armed, the recorder
+// reports which target topics it matched on the ROS graph vs which were still
+// missing when it resumed (and the readiness auto-resume deadline). A non-empty
+// `missing` is the useful signal — the gate timed out and resumed anyway, so
+// those topics were not yet publishing. Shown as a compact strip under the hero.
+function ArmingNote({ arming }: { arming: RecordArming }) {
+  const matched = arming.matched_topics ?? [];
+  const missing = arming.missing_topics ?? [];
+  if (matched.length === 0 && missing.length === 0) return null;
+  const ok = missing.length === 0;
+  const shown = missing.slice(0, 4);
+  return (
+    <div className="w-full" data-testid="arming-note">
+      <div
+        className={cn(
+          'flex flex-wrap items-center gap-x-3 gap-y-1 rounded-control border px-3 py-2 text-[12px]',
+          ok
+            ? 'border-teal-200 bg-teal-50/60 text-teal-800'
+            : 'border-amber-200 bg-amber-50/70 text-amber-800',
+        )}
+      >
+        <span className="text-[10.5px] font-semibold uppercase tracking-[0.09em]">
+          {arming.active ? 'Arming' : 'Armed'}
+        </span>
+        <span className="font-mono">{matched.length} matched</span>
+        {missing.length > 0 && (
+          <>
+            <span className="opacity-40">·</span>
+            <span className="font-mono font-semibold">{missing.length} missing</span>
+            <span
+              className="truncate font-mono text-[11px] opacity-80"
+              title={missing.join('\n')}
+            >
+              {shown.join(', ')}
+              {missing.length > shown.length ? ' …' : ''}
+            </span>
+          </>
+        )}
+        {arming.active && arming.resume_at && (
+          <span className="ml-auto font-mono text-[11px] opacity-70">
+            auto-resume {new Date(arming.resume_at).toLocaleTimeString()}
+          </span>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function RecordHero({ selection }: { selection: RecordSelection }) {
@@ -330,6 +379,8 @@ function RecordHero({ selection }: { selection: RecordSelection }) {
           </div>
         </>
       )}
+
+      {isActive && status?.arming && <ArmingNote arming={status.arming} />}
 
       {(startMutation.isError || stopMutation.isError) && (
         <div className="w-full">
