@@ -45,6 +45,21 @@ monitor:
   qos_depth: 30
   stamp_quality: true        # use header.stamp for late/loss when safely available
   window_s: [1, 5]           # sliding-window sizes (seconds)
+  # Dynamic baseline learning (OL-②.3): for a topic with NO static expected_hz
+  # (above), learn an observed Hz baseline before judging shortfall. While
+  # learning the row stays "unknown" (never danger); topics WITH an expected_hz
+  # keep using it (static always wins). Snapshots advance the learner ~1/s, so
+  # warmup_s + min_samples set how long before a baseline appears. Defaults shown.
+  baseline_learning: true
+  baseline_warmup_s: 10.0    # min observation time before a baseline can be stable
+  baseline_stable_cv: 0.15   # adopt when stddev/mean of windowed Hz <= this
+  baseline_min_samples: 30   # min windowed-Hz samples before a baseline can be stable
+  # Monitor self-load (OL-②.4): the monitor's OWN processing health (sample-
+  # callback latency, snapshot freshness), reported separately from topic health
+  # and never from decoding payloads. Toggle off to drop all overhead.
+  self_load_metrics: true
+  callback_lag_warn_ms: 50.0 # warn when mean sample-callback processing exceeds this
+  snapshot_age_warn_s: 2.0   # warn when the served snapshot is older than this
 
 # ---- rosbag2_recorder tuning ------------------------------------------------
 recording:
