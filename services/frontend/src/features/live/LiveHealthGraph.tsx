@@ -15,7 +15,13 @@ import { Badge, Card, SectionLabel, StatusDot, cn } from '../../components/ui';
 import { queryKeys } from '../../api/queryKeys';
 import type { MetricsSnapshot } from '../../api/types';
 import type { MetricSample } from '../graph/useMetricHistory';
-import { statusTone } from '../monitor/useMonitorRows';
+import {
+  formatBaseline,
+  formatSelfLoad,
+  selfLoadTone,
+  statusTone,
+  type MonitorRow,
+} from '../monitor/useMonitorRows';
 import { DEFAULT_WARN_SHORTFALL_PCT, DEFAULT_DANGER_SHORTFALL_PCT } from '../monitor/thresholds';
 
 export interface RecMarker {
@@ -223,7 +229,22 @@ export function LiveHealthGraph({
   });
   const current = metricsQuery.data?.topics.find((t) => t.name === topic);
   const baselineHz = expected == null ? (current?.baseline_hz ?? null) : null;
-  const baselineState = expected == null ? (current?.baseline_state ?? null) : null;
+  // Reuse the table's baseline formatter (learning… / ~N Hz / ~N Hz (unstable)).
+  const baselineLabel = current
+    ? formatBaseline({
+        ...current,
+        configured: false,
+        live: true,
+        measured: true,
+        expected_hz: expected ?? undefined,
+      } as MonitorRow)
+    : null;
+
+  // Monitor self-load (OL-②.4): the monitor's OWN processing health from the same
+  // snapshot — surfaced here so the operator can tell "the topic is slow" apart
+  // from "the monitor itself is overloaded".
+  const selfLoad = metricsQuery.data?.self_load ?? null;
+  const selfLoadText = formatSelfLoad(selfLoad);
 
   // Hz chart references the configured rate when set; otherwise the learned
   // baseline (dashed teal). The shortfall chart references the 2% / 5% status
@@ -250,19 +271,22 @@ export function LiveHealthGraph({
         {expected != null && (
           <span className="font-mono text-[11px] text-gray-400">expected {expected} Hz</span>
         )}
-        {expected == null && baselineState != null && (
+        {baselineLabel && (
           <span
             className="font-mono text-[11px] text-gray-400"
             title="Learned Hz baseline (no static expected_hz). While learning the status stays unknown."
           >
-            {baselineState === 'learning'
-              ? 'baseline learning…'
-              : `baseline ~${baselineHz?.toFixed(1) ?? '—'} Hz (${baselineState})`}
+            baseline {baselineLabel}
           </span>
         )}
         {samplesLost > 0 && (
           <span title="DDS-reported dropped samples (real loss, not shortfall)">
             <Badge tone="red">{samplesLost} lost</Badge>
+          </span>
+        )}
+        {selfLoadText && (
+          <span title="Monitor self-load: its OWN processing health (callback latency · data-freshness age), not the topic's">
+            <Badge tone={selfLoadTone(selfLoad)}>monitor {selfLoadText}</Badge>
           </span>
         )}
         <div className="flex-1" />

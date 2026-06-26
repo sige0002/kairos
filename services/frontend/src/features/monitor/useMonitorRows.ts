@@ -111,14 +111,13 @@ export function selfLoadTone(s?: MonitorSelfLoad | null): Tone {
 }
 
 // One-line summary of the monitor's own processing health (OL-②.4): mean
-// callback latency, snapshot age, and any dropped/coalesced callbacks. Null when
-// self-load metrics are off (the snapshot carries no `self_load`).
+// callback latency and data-freshness age. Null when self-load metrics are off
+// (the snapshot carries no `self_load`) or there is nothing to report yet.
 export function formatSelfLoad(s?: MonitorSelfLoad | null): string | null {
   if (!s) return null;
   const parts: string[] = [];
   if (s.callback_lag_ms != null) parts.push(`${s.callback_lag_ms.toFixed(1)} ms cb`);
   if (s.snapshot_age_s != null) parts.push(`${s.snapshot_age_s.toFixed(1)} s age`);
-  if (s.dropped_callbacks) parts.push(`${s.dropped_callbacks} dropped`);
   return parts.length ? parts.join(' · ') : null;
 }
 
