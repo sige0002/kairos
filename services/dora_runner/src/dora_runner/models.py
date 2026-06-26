@@ -69,10 +69,19 @@ class JobResult(BaseModel):
 
 
 class PipelineDefinition(BaseModel):
-    """Pipeline registry entry."""
+    """Pipeline registry entry (metadata surfaced by ``GET /pipelines``).
+
+    ``schema`` is the params JSON Schema the frontend renders a form from
+    (OL-④.2). ``required_inputs`` / ``outputs`` describe the data contract, and
+    ``executor`` is where the pipeline runs (``in_process`` today; shaped so a
+    pipeline can later map to a dora node / dataflow without UI or API changes).
+    """
 
     id: str
     name: str
     description: str
     enabled: bool
     schema_: dict[str, Any] = Field(default_factory=dict, alias="schema")
+    required_inputs: list[str] = Field(default_factory=lambda: ["run_id"])
+    outputs: list[str] = Field(default_factory=list)
+    executor: str = "in_process"

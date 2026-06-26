@@ -10,8 +10,6 @@ from fastapi import FastAPI, Query, status
 from fastapi.routing import APIRoute
 from kairos_common import ApiError, JobState, Settings, create_app, get_settings
 
-from dora_runner.dataset_export import run_dataset_export
-from dora_runner.loss_report import run_loss_report
 from dora_runner.models import (
     JobCreateRequest,
     JobCreateResponse,
@@ -22,20 +20,25 @@ from dora_runner.models import (
     ValidationTemplate,
     ValidationTemplateListResponse,
 )
-from dora_runner.pipelines import PIPELINES
+from dora_runner.registry import DEFAULT_REGISTRY, RegisteredPipeline
 from dora_runner.store import JobRecord, RunnerStore
-from dora_runner.validation import generate_template, run_fast_validation
-from dora_runner.video_check import run_video_check
+from dora_runner.validation import generate_template
 
 SERVICE_NAME = "dora_runner"
 
-# Pipelines the worker can actually execute (others are interface-only).
-_IMPLEMENTED_PIPELINES = {
-    "fast_validation",
-    "dataset_export",
-    "loss_report",
-    "video_check",
-}
+
+def _to_definition(pipeline: RegisteredPipeline) -> PipelineDefinition:
+    """Project a registered pipeline to its public ``/pipelines`` metadata."""
+    return PipelineDefinition(
+        id=pipeline.id,
+        name=pipeline.name,
+        description=pipeline.description,
+        enabled=pipeline.enabled,
+        schema=pipeline.params_schema,
+        required_inputs=pipeline.required_inputs,
+        outputs=pipeline.outputs,
+        executor=pipeline.executor,
+    )
 
 
 def _override_readyz(app: FastAPI) -> None:
@@ -68,13 +71,13 @@ def create_dora_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/pipelines", response_model=dict[str, list[PipelineDefinition]])
     async def pipelines() -> dict[str, list[PipelineDefinition]]:
-        return {"items": PIPELINES}
+        return {"items": [_to_definition(p) for p in DEFAULT_REGISTRY.all()]}
 
     @app.post(
         "/jobs", response_model=JobCreateResponse, status_code=status.HTTP_201_CREATED
     )
     async def create_job(body: JobCreateRequest) -> JobCreateResponse:
-        if body.pipeline not in _IMPLEMENTED_PIPELINES:
+        if not DEFAULT_REGISTRY.runnable(body.pipeline):
             raise ApiError(
                 status_code=400,
                 code="pipeline_unavailable",
@@ -200,27 +203,6 @@ def _parse_cursor(cursor: str | None) -> int | None:
         ) from exc
 
 
-async def _resolve_template(
-    job: JobRecord, store: RunnerStore, data_dir: Path
-) -> ValidationTemplate:
-    """Resolve a fast_validation template from job params."""
-    raw = job.params.get("template")
-    if isinstance(raw, dict):
-        return ValidationTemplate.model_validate(raw)
-    if isinstance(raw, str):
-        template = await store.get_template(raw)
-        if template is not None:
-            return template
-        raise ApiError(
-            status_code=400,
-            code="template_not_found",
-            message=f"Validation template not found: {raw}",
-            details={"template": raw},
-        )
-    # If the caller omitted a template, use the run itself as a draft baseline.
-    return generate_template(job.run_id, data_dir)
-
-
 async def _execute_job(job: JobRecord, store: RunnerStore, data_dir: Path) -> None:
     """Run a queued job in the process-local async worker."""
     try:
@@ -232,41 +214,17 @@ async def _execute_job(job: JobRecord, store: RunnerStore, data_dir: Path) -> No
             job.state = JobState.running
             job.progress = 0.1
             job.logs_tail.append("Job started.")
-        if job.pipeline == "dataset_export":
-            result = await asyncio.to_thread(
-                run_dataset_export,
-                run_id=job.run_id,
-                data_dir=data_dir,
+        # Registry dispatch (OL-④): one uniform runner per pipeline, no per-type
+        # branching here. /jobs already rejected non-runnable pipelines, but guard
+        # in case a placeholder slipped through.
+        pipeline = DEFAULT_REGISTRY.get(job.pipeline)
+        if pipeline is None or pipeline.runner is None:
+            raise ApiError(
+                status_code=400,
+                code="pipeline_unavailable",
+                message=f"Pipeline is not implemented: {job.pipeline}",
             )
-        elif job.pipeline == "loss_report":
-            result = await asyncio.to_thread(
-                run_loss_report,
-                run_id=job.run_id,
-                data_dir=data_dir,
-            )
-        elif job.pipeline == "video_check":
-            topic = job.params.get("topic")
-            if not topic or not str(topic).strip():
-                raise ApiError(
-                    status_code=400,
-                    code="topic_required",
-                    message="video_check requires a camera 'topic' param.",
-                )
-            result = await asyncio.to_thread(
-                run_video_check,
-                run_id=job.run_id,
-                data_dir=data_dir,
-                topic=str(topic),
-            )
-        else:  # fast_validation
-            template = await _resolve_template(job, store, data_dir)
-            job.progress = 0.4
-            result = await asyncio.to_thread(
-                run_fast_validation,
-                run_id=job.run_id,
-                data_dir=data_dir,
-                template=template,
-            )
+        result = await pipeline.runner(job, store, data_dir)
         validated = JobResult.model_validate(result)
         async with store.lock:
             # Cancelled while the work ran in the threadpool (which can't be
