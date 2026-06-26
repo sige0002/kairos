@@ -19,7 +19,7 @@
 ## 構成コンポーネント
 
 - **Run Manager** / **Manifest Manager** / **Pipeline Registry** / **Result Aggregator** / **WebSocket・SSE Hub** / **Settings Manager**
-- feature ベースのルーター構成（`recording` / `topics` / `runs` / `events` / `pipelines` …）を推奨（`../rosbag-view` 準拠、疎結合）。
+- feature ベースのルーター構成（`recording` / `topics` / `runs` / `events` / `pipelines` …）を推奨（疎結合）。
 
 ## 公開 API（`/api/v1`、無認証）
 

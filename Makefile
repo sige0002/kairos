@@ -23,6 +23,19 @@ export RECORDING_CONFIG
 BAG ?= /data/airoa-moma-mcap/235210
 export BAG
 
+# Ports the access banner advertises (host networking -> these bind on the host).
+FRONTEND_PORT ?= 8080
+API_PORT      ?= 8000
+
+# Browser-facing base URL for camera (WebRTC) signaling. Default "/webrtc" is the
+# same-origin nginx proxy (services/frontend/nginx.conf), so the preview works
+# over any access path (LAN IP / SSH tunnel / Tailscale). Exported so it beats a
+# stale absolute value in .env (same pattern as RECORDING_CONFIG); compose reads
+# it via `environment:`, which overrides env_file. Set an absolute
+# http://<host>:8002 only for the legacy direct-connect mode.
+WEBRTC_PUBLIC_URL ?= /webrtc
+export WEBRTC_PUBLIC_URL
+
 COMPOSE      := docker compose
 TEST_COMPOSE := docker compose -f deploy/test/compose.yaml
 
@@ -37,9 +50,22 @@ PY_DIRS := libs/kairos_common services/rosbag2_recorder services/topic_monitor \
 .DEFAULT_GOAL := help
 
 # ---- compose lifecycle ------------------------------------------------------
-.PHONY: up down build rebuild restart logs ps stop
+.PHONY: up down build rebuild restart logs ps stop urls
 up: ## build + start the stack detached (RECORDING_CONFIG-aware)
 	$(COMPOSE) up -d --build $(SVC)
+	@$(MAKE) --no-print-directory urls
+
+urls: ## print the Web UI access URLs (localhost + LAN IPs)
+	@echo ""
+	@echo "kairos is up — open the Web UI:"
+	@echo "  local : http://localhost:$(FRONTEND_PORT)/"
+	@hostname -I 2>/dev/null | tr ' ' '\n' \
+		| grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$$' \
+		| grep -vE '^(127\.|169\.254\.|172\.1[6-9]\.|172\.2[0-9]\.|172\.3[01]\.)' \
+		| while read ip; do echo "  LAN   : http://$$ip:$(FRONTEND_PORT)/"; done
+	@echo "  API   : same host, port $(API_PORT)"
+	@echo "  ssh   : ssh -L $(FRONTEND_PORT):localhost:$(FRONTEND_PORT) -L $(API_PORT):localhost:$(API_PORT) <user>@<this-host>  # then http://localhost:$(FRONTEND_PORT)/"
+	@echo ""
 
 down: ## stop + remove the stack
 	$(COMPOSE) down
@@ -68,7 +94,7 @@ config-reload: ## apply config/*.yaml edits (restart monitor + orchestrator)
 	$(COMPOSE) restart monitor orchestrator
 
 config-show: ## print the live GET /api/v1/config defaults
-	@curl -fsS --max-time 5 http://localhost:8000/api/v1/config \
+	@curl -fsS --max-time 5 http://localhost:$(API_PORT)/api/v1/config \
 		| python3 -m json.tool 2>/dev/null || echo "orchestrator not reachable (make up?)"
 
 # ---- test-data replay harness ----------------------------------------------

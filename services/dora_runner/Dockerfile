@@ -23,8 +23,10 @@ COPY --from=builder /opt/venv /opt/venv
 RUN useradd --create-home --uid 10001 appuser
 USER appuser
 
-# Internal service port (reached via the compose service name "dora_runner").
-ENV DORA_RUNNER_PORT=8020
+# Internal service port. The value is sourced from settings.py (DORA_RUNNER_PORT,
+# default 8020) at runtime; EXPOSE is metadata only. Do not set ENV
+# DORA_RUNNER_PORT here — that would be a second default that can drift from
+# settings.py / compose's ${DORA_RUNNER_PORT}.
 EXPOSE 8020
 
 CMD ["python", "-m", "dora_runner.main"]

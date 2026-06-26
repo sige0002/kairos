@@ -27,7 +27,7 @@ The single source of configuration shared across services, and the rules for ext
 | `FRONTEND_PORT` | `8080` | frontend serving port (`5173` in dev) |
 | `RECORDER_PORT` | `8010` | `rosbag2_recorder` internal port (binds to the host under host networking) |
 | `DORA_RUNNER_PORT` | `8020` | `dora_runner` internal port (binds to the host under host networking) |
-| `WEBRTC_PUBLIC_URL` | `http://<host>:8002` | The URL the frontend connects to directly for video/signaling (the host IP / name on a LAN) |
+| `WEBRTC_PUBLIC_URL` | `/webrtc` | Base URL the frontend uses for camera signaling (`endpoints.webrtc` in `/api/v1/config`). The default is the same-origin relative path `/webrtc`, which the frontend's nginx reverse-proxies to `webrtc_streamer`. This makes it work from any access origin (LAN IP / SSH tunnel / Tailscale) without CORS. Set an absolute URL `http://<host>:8002` only for the legacy mode where the browser connects directly to the streamer (then add that origin to `CORS_ORIGINS`) |
 | `CORS_ORIGINS` | `http://localhost:8080,http://localhost:5173` | The origins allowed by the orchestrator and `webrtc_streamer` (served + dev; add the relevant host's origin when exposing on a LAN) |
 | `LOG_LEVEL` | `INFO` | Log level |
 | `RETENTION_DAYS` | `0` | `0`=disabled. With `>0`, old runs become deletion candidates by retention period |
@@ -49,7 +49,7 @@ In ROS 2, the two ends (the robot and the subscriber) must use the **same RMW im
 
 ## Recording/monitoring YAML (`RECORDING_CONFIG`, deployment tuning)
 
-Per-deployment tuning shared by `rosbag2_recorder` and `topic_monitor` (see `../rosbag-view` for reference). Type-validated with a pydantic model, and topics are applied by pattern (fnmatch) match.
+Per-deployment tuning shared by `rosbag2_recorder` and `topic_monitor`. Type-validated with a pydantic model, and topics are applied by pattern (fnmatch) match.
 
 ```yaml
 robot_name: hsr

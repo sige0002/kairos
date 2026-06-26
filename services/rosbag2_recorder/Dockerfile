@@ -43,8 +43,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ros-${ROS_DISTRO}-rmw-cyclonedds-cpp \
     && rm -rf /var/lib/apt/lists/*
 
-# Internal service port (reached at localhost:8010 under host networking).
-ENV RECORDER_PORT=8010
+# Internal service port (reached at localhost:8010 under host networking). The
+# value is sourced from settings.py (RECORDER_PORT, default 8010) at runtime;
+# EXPOSE is metadata only. Do not set ENV RECORDER_PORT here — that would be a
+# second default that can drift from settings.py / compose's ${RECORDER_PORT}.
 EXPOSE 8010
 
 # Default mount path for the optional custom-message colcon overlay. The

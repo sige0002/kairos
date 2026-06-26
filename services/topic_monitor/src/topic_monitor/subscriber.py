@@ -7,7 +7,7 @@ message — carrying just what lightweight, non-destructive monitoring needs:
 arrival time, serialized size, topic name/type, and ``header.stamp`` *only when
 it can be obtained safely*. Payloads are not decoded by default.
 
-This Protocol is the same idea as rosbag-view's ``TopicSubscriber`` seam: the
+This Protocol is the seam between the metric math and ROS: the
 real rclpy implementation lives in :mod:`topic_monitor.ros_subscriber` (imported
 lazily, skipped when ROS is absent), while tests drive the metric math with a
 :class:`FakeSubscriber` and synthetic samples — no live ROS graph required.

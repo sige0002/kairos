@@ -17,5 +17,3 @@ required_topics:
   - { name: /hsrb/odom, type: nav_msgs/msg/Odometry }
   - { name: /hsrb/head_rgbd_sensor/rgb/image_rect_color/compressed }
   - { name: /hsrb/hand_camera/image_raw/compressed }
-  - { name: /tf }
-  - { name: /tf_static }

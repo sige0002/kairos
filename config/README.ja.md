@@ -3,7 +3,7 @@
 **English: [README.md](README.md)**
 
 「**どの topic を録る / 監視するか**」を決める YAML を置くフォルダです。bagel の
-`configs/`、rosbag-view(OpenLUTRA) の `config/` に相当する、設定の入口です。
+`configs/` に相当する、設定の入口です。
 
 | ファイル | 役割 |
 |---|---|

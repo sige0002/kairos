@@ -5,7 +5,7 @@
 **日本語: [README.ja.md](README.ja.md)**
 
 The folder that holds the YAML deciding **which topics to record / monitor**. It is the config entry
-point, equivalent to bagel's `configs/` and rosbag-view (OpenLUTRA)'s `config/`.
+point, equivalent to bagel's `configs/`.
 
 | File | Role |
 |---|---|

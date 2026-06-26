@@ -20,7 +20,7 @@ The container that **officially records ROS 2 topics to MCAP**. The official raw
 ## Component structure
 
 - **Topic Selector** — filtering of recording targets. `"all"` expands to the list of topics at start time and fixes it in the manifest.
-- **Recorder** — actual recording via `ros2 bag record --storage mcap` (subprocess, robust and standards-compliant) or the rosbag2 Python API (`../rosbag-view` uses the former).
+- **Recorder** — actual recording via `ros2 bag record --storage mcap` (subprocess, robust and standards-compliant) or the rosbag2 Python API (kairos uses the former).
 - **MCAP Writer** — `storage_id=mcap` (the source of truth), `serialization=cdr`.
 - **metadata.yaml Writer** — rosbag2 standard metadata output.
 - **Compression / Split management** — compression (`none` / `zstd`) and splitting (by size / time).

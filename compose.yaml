@@ -24,9 +24,12 @@
 # Python services to a bridge network with explicit DDS unicast peers for the
 # ROS services (see the docker-ros2-development skill). Left as host for now.
 #
-# Each service reads its config from the root .env (env_file below). Internal
-# ports for the recorder/dora_runner (not public .env keys) default in their
-# Dockerfiles and are passed here explicitly for clarity.
+# Each service reads its config from the root .env (env_file below). All ports
+# have a single source of truth: the pydantic defaults in
+# libs/kairos_common/settings.py, overridable per key via .env. Where a port is
+# needed by two sides (e.g. the recorder's bind + the orchestrator's client, or
+# nginx's proxy_pass), it is interpolated here as ${VAR:-<default>} so one .env
+# value drives both — never hardcode a literal that can drift from settings.py.
 # =============================================================================
 name: kairos
 
@@ -55,7 +58,7 @@ services:
         required: false
     environment:
       <<: *ros-env
-      RECORDER_PORT: "8010"
+      RECORDER_PORT: ${RECORDER_PORT:-8010}
       RECORDING_CONFIG: ${RECORDING_CONFIG:-/config/recording.yaml}
     network_mode: host
     # Share the host IPC namespace so FastDDS shared-memory transport delivers
@@ -126,6 +129,13 @@ services:
       # Validation templates the Config tab selects between (config/validation/).
       VALIDATION_DIR: ${VALIDATION_DIR:-/config/validation}
       VALIDATION_DEFAULT: ${VALIDATION_DEFAULT:-airoa_hsr}
+      # Browser-facing base URL the frontend uses for camera (WebRTC) signaling,
+      # returned as endpoints.webrtc in GET /api/v1/config. Default "/webrtc" is
+      # the same-origin nginx proxy (frontend/nginx.conf), so the preview works
+      # over LAN IP / SSH tunnel / Tailscale without CORS. Listed here (overrides
+      # env_file) so a stale absolute value in .env does not win. Set an absolute
+      # http://<host>:8002 only for the legacy direct-connect mode.
+      WEBRTC_PUBLIC_URL: ${WEBRTC_PUBLIC_URL:-/webrtc}
     # Run as the host user so the host-owned ./data mount is writable (the slim
     # image is otherwise non-root with a different uid). Defaults to 1000:1000.
     user: "${UID:-1000}:${GID:-1000}"
@@ -146,7 +156,7 @@ services:
       - path: .env
         required: false
     environment:
-      DORA_RUNNER_PORT: "8020"
+      DORA_RUNNER_PORT: ${DORA_RUNNER_PORT:-8020}
       RECORDING_CONFIG: ${RECORDING_CONFIG:-/config/recording.yaml}
     # Run as the host user so the host-owned ./data mount is writable.
     user: "${UID:-1000}:${GID:-1000}"
@@ -164,6 +174,14 @@ services:
     env_file:
       - path: .env
         required: false
+    environment:
+      # Ports consumed by the nginx envsubst template (default.conf.template):
+      # FRONTEND_PORT for `listen`, API_ORCH_PORT / WEBRTC_PORT for proxy_pass.
+      # Interpolated from the same .env keys (defaults match settings.py) so the
+      # served config never drifts from where the orchestrator/streamer bind.
+      FRONTEND_PORT: ${FRONTEND_PORT:-8080}
+      API_ORCH_PORT: ${API_ORCH_PORT:-8000}
+      WEBRTC_PORT: ${WEBRTC_PORT:-8002}
     network_mode: host
     restart: unless-stopped
     depends_on:

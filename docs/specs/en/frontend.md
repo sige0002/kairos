@@ -9,7 +9,7 @@ A backend-driven lightweight Web UI (Vite + React + TypeScript). **Usability fir
 
 - Recording operations / live video / topic health / Run / validation / dataset display.
 
-## Implementation (recommended libraries, following `../rosbag-view`)
+## Implementation (recommended libraries)
 
 - Base: **Vite + React + TypeScript**.
 - Routing: **TanStack Router**.
@@ -21,7 +21,7 @@ A backend-driven lightweight Web UI (Vite + React + TypeScript). **Usability fir
 
 ## Input
 
-- WebRTC video (`webrtc_streamer`, directly to `WEBRTC_PUBLIC_URL`)
+- WebRTC video (`webrtc_streamer`; by default through the same-origin path `/webrtc`, reverse-proxied by the frontend's nginx; overridable via `WEBRTC_PUBLIC_URL`)
 - REST / SSE (`api_orchestrator` `/api/v1`)
 
 ## Screen structure (tabs)

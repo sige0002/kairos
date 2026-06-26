@@ -45,7 +45,7 @@ A container for **lightweight, non-destructive real-time monitoring** of ROS 2 t
 - `GET /topics` — ROS 2 graph discovery (`name` / `type` / `publisher_count` / `subscriber_count` / `qos` / `last_seen`). The information source for `api_orchestrator`'s `GET /api/v1/topics`.
 - `GET /metrics` — periodic snapshot (all topics).
 - `GET /metrics/stream` — SSE. Delivers **a periodic snapshot rather than topic diffs** (simpler for the UI).
-- `POST /metrics/pause` / `POST /metrics/resume` — pause / resume monitoring (to reduce load, e.g. during recording; equivalent to the pause/resume of `../rosbag-view`).
+- `POST /metrics/pause` / `POST /metrics/resume` — pause / resume monitoring (to reduce load, e.g. during recording).
 - `GET /alerts` / `GET /alerts/stream`
 - `GET /healthz` / `GET /readyz`
 - The common API conventions (error format / types / time) follow [config](config.md).

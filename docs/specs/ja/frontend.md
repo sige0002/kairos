@@ -8,7 +8,7 @@ backend-driven な軽量 Web UI（Vite + React + TypeScript）。**ユーザビ�
 
 - 記録操作 / ライブ映像 / トピック健全性 / Run・検証・データセット表示。
 
-## 実装（推奨ライブラリ、`../rosbag-view` 準拠）
+## 実装（推奨ライブラリ）
 
 - ベース: **Vite + React + TypeScript**。
 - ルーティング: **TanStack Router**。
@@ -20,7 +20,7 @@ backend-driven な軽量 Web UI（Vite + React + TypeScript）。**ユーザビ�
 
 ## 入力
 
-- WebRTC 映像（`webrtc_streamer`、`WEBRTC_PUBLIC_URL` に直接）
+- WebRTC 映像（`webrtc_streamer`。既定は同一オリジン `/webrtc` 経由で frontend の nginx がリバースプロキシ。`WEBRTC_PUBLIC_URL` で上書き可）
 - REST / SSE（`api_orchestrator` `/api/v1`）
 
 ## 画面構成（タブ）

@@ -71,7 +71,16 @@ class Settings(BaseSettings):
     dora_runner_port: Annotated[int, Field(ge=1, le=65535)] = 8020
 
     # ---- Frontend-facing URLs / CORS --------------------------------------
-    webrtc_public_url: str = "http://localhost:8002"
+    # Browser-facing base URL of the webrtc_streamer signaling endpoints
+    # (/stream/start, /stream/offer), returned as endpoints.webrtc in
+    # GET /api/v1/config. Default is the SAME-ORIGIN path "/webrtc", which the
+    # frontend's nginx reverse-proxies to the streamer on the host (see
+    # services/frontend/nginx.conf). A relative base keeps the camera preview
+    # working from any access origin (LAN IP, SSH tunnel, Tailscale) with no
+    # CORS — the browser only ever talks to the page's own origin. Override with
+    # an absolute "http://<host>:8002" to connect the browser directly to the
+    # streamer instead (then cors_origins must list that browser origin).
+    webrtc_public_url: str = "/webrtc"
     # Origins allowed by orchestrator and webrtc_streamer (served + dev).
     # NoDecode: docker compose passes a comma-separated string, not JSON, so
     # skip pydantic-settings' JSON decoding and split it in the validator.

@@ -26,7 +26,7 @@
 | `FRONTEND_PORT` | `8080` | frontend 配信ポート（dev は `5173`） |
 | `RECORDER_PORT` | `8010` | `rosbag2_recorder` 内部ポート（host networking ではホストに bind） |
 | `DORA_RUNNER_PORT` | `8020` | `dora_runner` 内部ポート（host networking ではホストに bind） |
-| `WEBRTC_PUBLIC_URL` | `http://<host>:8002` | frontend が映像/シグナリングに直接つなぐ URL（LAN ではホスト IP / 名前） |
+| `WEBRTC_PUBLIC_URL` | `/webrtc` | frontend がカメラ signaling に使うベース URL（`/api/v1/config` の `endpoints.webrtc`）。既定は同一オリジンの相対パス `/webrtc` で、frontend の nginx が `webrtc_streamer` にリバースプロキシする。これにより LAN IP / SSH トンネル / Tailscale など任意のアクセス元から CORS なしで動く。ブラウザを streamer に直接つなぐ旧方式にする場合のみ絶対 URL `http://<host>:8002` を指定する（その場合 `CORS_ORIGINS` に該当 origin を追加） |
 | `CORS_ORIGINS` | `http://localhost:8080,http://localhost:5173` | orchestrator と `webrtc_streamer` が許可する origin（served + dev。LAN 公開時は該当ホストの origin を追加） |
 | `LOG_LEVEL` | `INFO` | ログレベル |
 | `RETENTION_DAYS` | `0` | `0`=無効。`>0` で古い run を保持期間で削除候補に |
@@ -48,7 +48,7 @@ ROS 2 では**両端（ロボット側と購読側）で同じ RMW 実装**で�
 
 ## 収録・監視の YAML（`RECORDING_CONFIG`、デプロイ調整）
 
-`rosbag2_recorder` と `topic_monitor` が共有する、デプロイ単位のチューニング（`../rosbag-view` を参考）。pydantic モデルで型検証し、トピックはパターン（fnmatch）一致で適用する。
+`rosbag2_recorder` と `topic_monitor` が共有する、デプロイ単位のチューニング。pydantic モデルで型検証し、トピックはパターン（fnmatch）一致で適用する。
 
 ```yaml
 robot_name: hsr

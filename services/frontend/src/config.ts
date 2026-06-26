@@ -83,7 +83,7 @@ export const DEV_FALLBACK_CONFIG: RuntimeConfig = {
   endpoints: {
     api: '/api/v1',
     events: '/api/v1/events',
-    webrtc: 'http://localhost:8002',
+    webrtc: '/webrtc',
   },
   tabs: [
     { id: 'live', enabled: true },

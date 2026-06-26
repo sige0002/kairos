@@ -19,7 +19,7 @@ ROS 2 のトピックを **MCAP に正式記録する**コンテナ。公式の�
 ## 構成コンポーネント
 
 - **Topic Selector** — 記録対象のフィルタリング。`"all"` は start 時点の topic 一覧を展開し manifest に固定する。
-- **Recorder** — `ros2 bag record --storage mcap`（subprocess、堅牢で標準準拠）または rosbag2 Python API で実記録（`../rosbag-view` は前者）。
+- **Recorder** — `ros2 bag record --storage mcap`（subprocess、堅牢で標準準拠）または rosbag2 Python API で実記録（kairos は前者）。
 - **MCAP Writer** — `storage_id=mcap`（正本）、`serialization=cdr`。
 - **metadata.yaml Writer** — rosbag2 標準メタデータ出力。
 - **Compression / Split 管理** — 圧縮（`none` / `zstd`）・分割（サイズ / 時間）。

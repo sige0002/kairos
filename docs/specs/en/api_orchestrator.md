@@ -20,7 +20,7 @@ The **job management / state management / API hub** container. The single public
 ## Constituent components
 
 - **Run Manager** / **Manifest Manager** / **Pipeline Registry** / **Result Aggregator** / **WebSocket・SSE Hub** / **Settings Manager**
-- A feature-based router structure (`recording` / `topics` / `runs` / `events` / `pipelines` …) is recommended (following `../rosbag-view`, loosely coupled).
+- A feature-based router structure (`recording` / `topics` / `runs` / `events` / `pipelines` …) is recommended (loosely coupled).
 
 ## Public API (`/api/v1`, no auth)
 

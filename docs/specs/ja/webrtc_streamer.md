@@ -23,7 +23,7 @@ ROS 2 の image トピックをブラウザへ低遅延配信する**プレビ�
 
 ## ライブラリ
 
-- **aiortc**（WebRTC peer / offer-answer）+ **aiohttp**（signaling HTTP）+ **opencv-python-headless**（フレーム変換）を推奨（`../rosbag-view` 準拠）。
+- **aiortc**（WebRTC peer / offer-answer）+ **aiohttp**（signaling HTTP）+ **opencv-python-headless**（フレーム変換）を推奨。
 
 ## API
 
@@ -36,10 +36,10 @@ ROS 2 の image トピックをブラウザへ低遅延配信する**プレビ�
 ## 設定 / 挙動
 
 - ICE: LAN 既定は `ice_servers = []`（同一 LAN 内で到達可能）。外部越えが必要な場合のみ STUN/TURN を `/api/v1/config` で配布。
-- CORS: frontend が直接 offer するため、`CORS_ORIGINS`（[config](config.md)）を streamer にも適用する。
+- CORS: 既定（`WEBRTC_PUBLIC_URL=/webrtc`）では frontend の nginx 経由の同一オリジンになるため CORS は不要。絶対 URL を設定してブラウザから直接 offer する旧方式の場合のみ `CORS_ORIGINS`（[config](config.md)）を streamer に適用する。
 - `stream_id` は topic から決定的に生成し、同一 topic への重複 start は既存 stream を返す。
 - 無参照ストリームは `idle_timeout_s`（既定 `60`）で自動停止。client disconnect 時に cleanup。
-- frontend は `WEBRTC_PUBLIC_URL`（LAN ではホスト IP / 名前）に直接接続する（orchestrator を経由しない）。
+- frontend は既定で同一オリジンの `/webrtc`（frontend の nginx が streamer にリバースプロキシ）経由で signaling する（orchestrator は経由しない）。`WEBRTC_PUBLIC_URL` に絶対 URL を設定すると streamer へ直接接続する旧方式になる。なお signaling は同一オリジンでも、WebRTC メディア（ICE/SRTP）はブラウザ ↔ streamer ホスト間の UDP で直接流れるため、同一 LAN かホスト到達性が前提（SSH トンネルのみで UDP が通らない環境では TURN が別途必要）。
 - 複数 client: stream ごとに 1 つの映像ソース（最新フレーム）を共有し、**client ごとに PeerConnection** を作る。client 切断で当該 PC を破棄する。
 
 ## 設計ポイント

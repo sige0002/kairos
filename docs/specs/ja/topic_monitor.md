@@ -43,7 +43,7 @@ ROS 2 トピックの **軽量・非破壊なリアルタイム監視**コンテ
 - `GET /topics` — ROS 2 グラフ discovery（`name` / `type` / `publisher_count` / `subscriber_count` / `qos` / `last_seen`）。`api_orchestrator` の `GET /api/v1/topics` の情報源。
 - `GET /metrics` — 周期 snapshot（全 topic）。
 - `GET /metrics/stream` — SSE。**topic 差分ではなく周期 snapshot** を配る（UI が単純になる）。
-- `POST /metrics/pause` / `POST /metrics/resume` — 監視の一時停止 / 再開（記録中など負荷を下げる。`../rosbag-view` の pause/resume 相当）。
+- `POST /metrics/pause` / `POST /metrics/resume` — 監視の一時停止 / 再開（記録中など負荷を下げる）。
 - `GET /alerts` / `GET /alerts/stream`
 - `GET /healthz` / `GET /readyz`
 - API 共通規約（エラー形式・型・時刻）は [config](config.md) に従う。
