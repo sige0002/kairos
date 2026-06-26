@@ -143,11 +143,16 @@ interface RecordSelection {
   customized: boolean;
 }
 
-// Arming progress (OL-①.4): when a `--start-paused` recording armed, the recorder
+// Arming result (OL-①.4): when a `--start-paused` recording armed, the recorder
 // reports which target topics it matched on the ROS graph vs which were still
-// missing when it resumed (and the readiness auto-resume deadline). A non-empty
-// `missing` is the useful signal — the gate timed out and resumed anyway, so
-// those topics were not yet publishing. Shown as a compact strip under the hero.
+// missing when it resumed. A non-empty `missing` is the useful signal — the gate
+// timed out and resumed anyway, so those topics were not yet publishing.
+//
+// Only the FINAL snapshot is reachable here: /record/start holds the recorder's
+// session lock and blocks through the arming gate, so the UI never observes the
+// live `active`/`resume_at` countdown phase — we render just the matched/missing
+// summary (the `active` and `resume_at` fields are reserved for a future async
+// start that streams arming progress).
 function ArmingNote({ arming }: { arming: RecordArming }) {
   const matched = arming.matched_topics ?? [];
   const missing = arming.missing_topics ?? [];
@@ -165,7 +170,7 @@ function ArmingNote({ arming }: { arming: RecordArming }) {
         )}
       >
         <span className="text-[10.5px] font-semibold uppercase tracking-[0.09em]">
-          {arming.active ? 'Arming' : 'Armed'}
+          Armed
         </span>
         <span className="font-mono">{matched.length} matched</span>
         {missing.length > 0 && (
@@ -180,11 +185,6 @@ function ArmingNote({ arming }: { arming: RecordArming }) {
               {missing.length > shown.length ? ' …' : ''}
             </span>
           </>
-        )}
-        {arming.active && arming.resume_at && (
-          <span className="ml-auto font-mono text-[11px] opacity-70">
-            auto-resume {new Date(arming.resume_at).toLocaleTimeString()}
-          </span>
         )}
       </div>
     </div>

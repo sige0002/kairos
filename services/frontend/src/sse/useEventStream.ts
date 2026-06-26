@@ -16,6 +16,7 @@ import type {
   AlertSnapshot,
   JobStatus,
   MetricsSnapshot,
+  RecordStatus,
   RecordStatusEvent,
 } from '../api/types';
 import { useUiStore } from '../store/uiStore';
@@ -23,11 +24,21 @@ import { useUiStore } from '../store/uiStore';
 const MAX_ALERTS = 100;
 
 function applyRecordStatus(qc: QueryClient, data: RecordStatusEvent): void {
-  qc.setQueryData(queryKeys.recordStatus, {
-    run_id: data.run_id,
-    state: data.state,
-    message_count: data.message_count,
-    bytes: data.bytes,
+  // Merge onto the previous cache entry rather than replacing it. The arming
+  // snapshot (OL-①.4) rides only on the post-arming `recording` event; a later
+  // counters-only event omits it, so spreading `prev` first preserves the
+  // last-known arming instead of wiping the poll/SSE value to undefined. An
+  // explicit `null` from the backend still clears it (handled below).
+  qc.setQueryData<RecordStatus>(queryKeys.recordStatus, (prev) => {
+    const next: RecordStatus = {
+      ...prev,
+      run_id: data.run_id,
+      state: data.state,
+      message_count: data.message_count,
+      bytes: data.bytes,
+    };
+    if (data.arming !== undefined) next.arming = data.arming;
+    return next;
   });
 }
 

@@ -96,14 +96,16 @@ class FakeRecorder:
         self.topic_names = (
             ["/joint_states", "/tf"] if requested == "all" else list(requested)
         )
-        return httpx.Response(
-            201,
-            json={
-                "run_id": self.run_id,
-                "state": "recording",
-                "started_at": self.started_at,
-            },
-        )
+        start_body: dict[str, Any] = {
+            "run_id": self.run_id,
+            "state": "recording",
+            "started_at": self.started_at,
+        }
+        # The real recorder returns the settled --start-paused arming snapshot in
+        # the start body (OL-①.4); mirror that when a test opts in.
+        if self.arming is not None:
+            start_body["arming"] = self.arming
+        return httpx.Response(201, json=start_body)
 
     def _stop(self) -> httpx.Response:
         # Idempotent: stopping when idle just returns the current state. On the

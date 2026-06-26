@@ -166,22 +166,21 @@ class RunService:
             payload["arming"] = arming
         await self._event_hub.publish(EVENT_RECORD_STATUS, payload)
 
-    async def _fetch_arming(self) -> dict[str, Any] | None:
-        """Best-effort read of the recorder's arming snapshot for the SSE event.
+    def _arming_from_start_body(
+        self, start_body: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Pull the recorder's arming snapshot out of the start response body.
 
-        Only meaningful when ``start_paused`` is configured (otherwise no arming
-        gate runs and the recorder reports ``arming=null``); guarding on the
-        config avoids an extra ``/record/status`` round-trip on the common path.
-        Read-only and never raises: on any transport error, or when arming is
-        absent/malformed, returns ``None`` and the event simply omits it.
+        The recorder's ``POST /record/start`` blocks through the ``--start-paused``
+        readiness gate and returns the settled snapshot in its 201 body (OL-①.4),
+        so the value is available with no extra ``/record/status`` round-trip.
+        Only meaningful when ``start_paused`` is configured (otherwise no gate
+        runs); guarded on the config so the common path stays untouched. Tolerant:
+        a missing/malformed value degrades to ``None`` and the event omits it.
         """
         if not (self._config and self._config.recording.start_paused):
             return None
-        try:
-            status = await self._recorder.status()
-        except ApiError:
-            return None
-        arming = status.get("arming")
+        arming = start_body.get("arming")
         return arming if isinstance(arming, dict) else None
 
     # ---- start ------------------------------------------------------------
@@ -212,7 +211,7 @@ class RunService:
 
             payload = self._build_recorder_payload(run_id, topics, req)
             try:
-                await self._recorder.start(payload)
+                start_body = await self._recorder.start(payload)
             except ApiError as exc:
                 # Keep the row; record why it failed (spec: do not delete).
                 logger.warning(
@@ -230,10 +229,10 @@ class RunService:
             self._update(run_id, state=RunState.recording)
             # Sync resolved topics/types/QoS ("all" expansion) from the recorder.
             run = await self._sync_metadata(run_id, allow_partial=True)
-            # The recorder start blocks through the --start-paused arming gate, so
-            # by here the (final) arming snapshot is settled; pass it through on
-            # the record_status event for the Live UI (OL-①.4). Best-effort.
-            arming = await self._fetch_arming()
+            # The recorder's start blocks through the --start-paused arming gate
+            # and returns the settled arming snapshot in its body, so pass it
+            # straight through on the record_status event (no extra round-trip).
+            arming = self._arming_from_start_body(start_body)
             await self._emit_record_status(run, arming=arming)
             return run
 

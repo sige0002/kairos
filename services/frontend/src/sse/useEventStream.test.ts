@@ -1,7 +1,12 @@
 import { QueryClient } from '@tanstack/react-query';
 import { expect, test } from 'vitest';
 import { queryKeys } from '../api/queryKeys';
-import type { AlertEvent, MetricsSnapshot, RecordStatusEvent } from '../api/types';
+import type {
+  AlertEvent,
+  MetricsSnapshot,
+  RecordStatus,
+  RecordStatusEvent,
+} from '../api/types';
 import { dispatchSseEvent } from './useEventStream';
 
 test('metrics event writes the metrics query cache', () => {
@@ -62,6 +67,57 @@ test('record_status event writes the record status cache', () => {
     run_id: 'run-9',
     state: 'recording',
     message_count: 5,
+  });
+});
+
+// OL-①.4: the arming snapshot rides on the post-arming `recording` event and
+// must reach the recordStatus cache (the SSE half of the deliverable).
+test('record_status event carrying arming propagates it into the cache', () => {
+  const qc = new QueryClient();
+  const ev: RecordStatusEvent = {
+    run_id: 'run-9',
+    state: 'recording',
+    message_count: 0,
+    bytes: 0,
+    arming: { active: false, matched_topics: ['/a'], missing_topics: ['/b'] },
+  };
+  dispatchSseEvent(qc, 'record_status', JSON.stringify(ev));
+  const cached = qc.getQueryData<RecordStatus>(queryKeys.recordStatus);
+  expect(cached?.arming).toEqual({
+    active: false,
+    matched_topics: ['/a'],
+    missing_topics: ['/b'],
+  });
+});
+
+// Regression: a later counters-only record_status event (no arming) must NOT
+// wipe a previously-known arming value — merge, don't clobber.
+test('a record_status event without arming preserves a prior arming value', () => {
+  const qc = new QueryClient();
+  const withArming: RecordStatusEvent = {
+    run_id: 'run-9',
+    state: 'recording',
+    message_count: 0,
+    bytes: 0,
+    arming: { active: false, matched_topics: ['/a'], missing_topics: ['/b'] },
+  };
+  dispatchSseEvent(qc, 'record_status', JSON.stringify(withArming));
+
+  const countersOnly: RecordStatusEvent = {
+    run_id: 'run-9',
+    state: 'recording',
+    message_count: 42,
+    bytes: 1024,
+  };
+  dispatchSseEvent(qc, 'record_status', JSON.stringify(countersOnly));
+
+  const cached = qc.getQueryData<RecordStatus>(queryKeys.recordStatus);
+  expect(cached?.message_count).toBe(42);
+  expect(cached?.bytes).toBe(1024);
+  expect(cached?.arming).toEqual({
+    active: false,
+    matched_topics: ['/a'],
+    missing_topics: ['/b'],
   });
 });
 
