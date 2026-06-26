@@ -329,3 +329,76 @@ def test_lifecycle_emits_record_status_events(
     assert "recording" in states  # emitted on start
     assert "stopping" in states  # emitted on stop entry
     assert states[-1] in {"completed", "failed", "interrupted"}  # terminal
+
+
+def test_record_status_event_carries_arming_when_start_paused(
+    fake_recorder: FakeRecorder, store: RunStore
+) -> None:
+    """With start_paused, start()'s record_status event passes arming through.
+
+    The recorder reports an arming snapshot on /record/status (OL-①.4); the
+    orchestrator fetches it (guarded by config.start_paused) and emits it
+    additively on the ``recording`` record_status event for the Live UI.
+    """
+    from kairos_common import RecordingConfig, RecordingTuning
+
+    hub = _SpyHub()
+    fake_recorder.arming = {
+        "active": False,
+        "matched_topics": ["/tf"],
+        "missing_topics": [],
+        "resume_at": "2026-06-27T00:00:00.000Z",
+    }
+    cfg = RecordingConfig(robot_name="t", recording=RecordingTuning(start_paused=True))
+
+    async def run_it() -> None:
+        http_client = httpx.AsyncClient(
+            transport=httpx.MockTransport(fake_recorder.handler)
+        )
+        recorder = RecorderClient("http://recorder", http_client)
+        svc = RunService(store, recorder, recording_config=cfg, event_hub=hub)
+        await svc.start(RecordStartRequest(topics=["/tf"]))
+        await http_client.aclose()
+
+    asyncio.run(run_it())
+
+    recording = [
+        d
+        for (et, d) in hub.events
+        if et == "record_status" and d["state"] == "recording"
+    ]
+    assert recording, "a recording record_status event must be emitted"
+    arming = recording[-1].get("arming")
+    assert arming is not None
+    assert arming["matched_topics"] == ["/tf"]
+    assert arming["missing_topics"] == []
+    assert arming["resume_at"] == "2026-06-27T00:00:00.000Z"
+
+
+def test_record_status_event_omits_arming_without_start_paused(
+    fake_recorder: FakeRecorder, store: RunStore
+) -> None:
+    """Without start_paused, no extra status fetch happens and arming is omitted."""
+    hub = _SpyHub()
+    # Even if the recorder *would* report arming, it must not be fetched/emitted
+    # when start_paused is off (no config -> guard short-circuits).
+    fake_recorder.arming = {"active": True, "matched_topics": [], "missing_topics": []}
+
+    async def run_it() -> None:
+        http_client = httpx.AsyncClient(
+            transport=httpx.MockTransport(fake_recorder.handler)
+        )
+        recorder = RecorderClient("http://recorder", http_client)
+        svc = RunService(store, recorder, recording_config=None, event_hub=hub)
+        await svc.start(RecordStartRequest(topics=["/tf"]))
+        await http_client.aclose()
+
+    asyncio.run(run_it())
+
+    recording = [
+        d
+        for (et, d) in hub.events
+        if et == "record_status" and d["state"] == "recording"
+    ]
+    assert recording
+    assert "arming" not in recording[-1]

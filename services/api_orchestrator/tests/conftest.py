@@ -51,6 +51,9 @@ class FakeRecorder:
         # Counters reported after finalize.
         self.message_count: int = 0
         self.bytes: int = 0
+        # Optional --start-paused arming snapshot reported on /record/status
+        # (OL-①.4). None unless a test opts in.
+        self.arming: dict[str, Any] | None = None
         # Record of payloads received (for assertions).
         self.last_start_payload: dict[str, Any] | None = None
 
@@ -115,17 +118,17 @@ class FakeRecorder:
         return httpx.Response(200, json={"state": self.state, "run_id": self.run_id})
 
     def _status(self) -> httpx.Response:
-        return httpx.Response(
-            200,
-            json={
-                "state": self.state,
-                "run_id": self.run_id,
-                "started_at": self.started_at,
-                "message_count": self.message_count,
-                "bytes": self.bytes,
-                "topics": list(self.topic_names),
-            },
-        )
+        body: dict[str, Any] = {
+            "state": self.state,
+            "run_id": self.run_id,
+            "started_at": self.started_at,
+            "message_count": self.message_count,
+            "bytes": self.bytes,
+            "topics": list(self.topic_names),
+        }
+        if self.arming is not None:
+            body["arming"] = self.arming
+        return httpx.Response(200, json=body)
 
     def _metadata(self) -> httpx.Response:
         """Return the recorder's real nested metadata shape.
