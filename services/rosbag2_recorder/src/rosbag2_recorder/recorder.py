@@ -18,6 +18,7 @@ import signal
 import subprocess
 import threading
 import time
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +44,7 @@ from rosbag2_recorder.manifest import (
 )
 from rosbag2_recorder.models import (
     QosProfile,
+    RecordArming,
     RecordStartRequest,
     RecordStatusResponse,
     RunState,
@@ -96,6 +98,16 @@ def _qos_overrides_path(recorded_root: Path, run_id: str) -> Path:
     return recorded_root / f"{run_id}.qos.yaml"
 
 
+def _iso8601_after(seconds: float) -> str:
+    """ISO8601 (Z-suffixed, ms precision) *seconds* from now.
+
+    Used for the arming auto-resume deadline (``resume_at``); the format matches
+    ``kairos_common.utc_now_iso8601`` so timestamps are consistent across fields.
+    """
+    moment = datetime.now(UTC) + timedelta(seconds=seconds)
+    return moment.strftime("%Y-%m-%dT%H:%M:%S.") + f"{moment.microsecond // 1000:03d}Z"
+
+
 class RecorderSession:
     """Owns at most one ``ros2 bag record`` subprocess and its run state.
 
@@ -133,6 +145,12 @@ class RecorderSession:
         self._watcher_stop = threading.Event()
         # Reason for a pending auto-stop, surfaced in the manifest error.
         self._auto_stop_reason: str | None = None
+
+        # Observational arming snapshot (OL-①.4): the --start-paused readiness
+        # gate's matched vs missing target topics + auto-resume deadline. ``None``
+        # when start_paused is off or no arming has run for this session. Mutated
+        # only under ``self._lock`` (the readiness loop runs inside ``start``).
+        self._arming: RecordArming | None = None
 
     # -- preconditions ------------------------------------------------------
 
@@ -341,12 +359,17 @@ class RecorderSession:
             # begins with all topics subscribed (no dropped first frames during
             # DDS discovery). FAIL-SAFE: any failure here must NOT leave a paused
             # recorder silently capturing nothing — kill it and fail the start.
+            # Reset the arming snapshot for this attempt; populated below only
+            # when the --start-paused readiness gate actually runs.
+            self._arming = None
             if self._start_paused_enabled():
                 try:
                     self._arm_and_resume(run_id, selected, topics == "all")
                 except Exception as exc:  # noqa: BLE001 - convert to a clean fail
                     self._terminate_failed_start(process)
                     shutil.rmtree(run_dir(self._data_dir, run_id), ignore_errors=True)
+                    # Drop the partial arming snapshot; this session never started.
+                    self._arming = None
                     self._fail(
                         run_id, started_at, request, staged_topics, f"arming: {exc}"
                     )
@@ -514,6 +537,15 @@ class RecorderSession:
             if self._config is not None
             else 5.0
         )
+        # Seed the observational arming snapshot: active while we wait, with the
+        # auto-resume deadline (now + timeout) and every target still "missing"
+        # until the readiness poll confirms a subscription (OL-①.4).
+        self._arming = RecordArming(
+            active=True,
+            matched_topics=[],
+            missing_topics=list(topics),
+            resume_at=_iso8601_after(timeout),
+        )
         owns_rclpy = not rclpy.ok()
         if owns_rclpy:
             rclpy.init()
@@ -524,6 +556,10 @@ class RecorderSession:
             # opens past sensor/camera ramp-up rather than on warm-up frames (OL-①.2).
             self._apply_post_discovery_delay()
             self._resume_recorder(rclpy, node, Resume, IsPaused)
+            # Resumed: no longer waiting. Keep the final matched/missing snapshot
+            # (a non-empty ``missing`` means the gate timed out and resumed anyway).
+            if self._arming is not None:
+                self._arming.active = False
             logger.info("recording armed + resumed", extra={"run_id": run_id})
         finally:
             node.destroy_node()
@@ -561,12 +597,18 @@ class RecorderSession:
         timeout: float,
     ) -> None:
         """Poll the ROS graph until the recorder has subscribed to every target
-        topic that has a publisher, or until *timeout* (then resume anyway)."""
+        topic that has a publisher, or until *timeout* (then resume anyway).
+
+        Each poll refreshes the observational arming snapshot (matched vs missing)
+        so the state reflects the latest readiness view (OL-①.4)."""
         deadline = time.monotonic() + timeout
         while True:
             rclpy_mod.spin_once(node, timeout_sec=SUBSCRIPTION_POLL_S)
             targets = self._readiness_targets(node, topics, all_mode)
-            pending = [t for t in targets if not self._recorder_subscribed(node, t)]
+            subscribed = {t: self._recorder_subscribed(node, t) for t in targets}
+            matched = [t for t, ok in subscribed.items() if ok]
+            pending = [t for t, ok in subscribed.items() if not ok]
+            self._update_arming(matched, pending)
             if targets and not pending:
                 return
             if time.monotonic() >= deadline:
@@ -576,6 +618,16 @@ class RecorderSession:
                         extra={"pending_topics": pending},
                     )
                 return
+
+    def _update_arming(self, matched: list[str], missing: list[str]) -> None:
+        """Refresh the observational arming snapshot's matched/missing lists.
+
+        Called from each readiness poll (under ``self._lock``). Purely
+        observational: it never affects subscription timing or the resume path.
+        """
+        if self._arming is not None:
+            self._arming.matched_topics = matched
+            self._arming.missing_topics = missing
 
     def _resume_recorder(
         self, rclpy_mod: Any, node: Any, resume_srv: Any, is_paused_srv: Any
@@ -846,6 +898,10 @@ class RecorderSession:
             message_count=message_count,
             bytes=size,
             topics=list(self._topics),
+            # Final/last arming snapshot for this session (``None`` when the
+            # --start-paused gate did not run). Copied so a later session's
+            # in-place updates cannot mutate an already-returned status.
+            arming=self._arming.model_copy(deep=True) if self._arming else None,
         )
 
     def _write_manifest(

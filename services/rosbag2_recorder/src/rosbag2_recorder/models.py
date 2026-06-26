@@ -91,6 +91,29 @@ class RecordStartResponse(BaseModel):
     started_at: str
 
 
+class RecordArming(BaseModel):
+    """Observational state of the ``--start-paused`` readiness gate (OL-①.4).
+
+    While ``recording.start_paused`` is in effect the recorder is
+    subscribed-but-paused, waiting for the target topics to appear on the ROS
+    graph before it resumes (begins writing). This surfaces what is matched vs
+    still-missing and the instant the readiness-timeout auto-resume fires, so the
+    UI can show arming progress. Purely observational — it never changes the
+    recording behaviour, timing, or QoS. Field names match the frozen frontend
+    ``RecordArming`` contract exactly.
+    """
+
+    # True while paused and waiting for target topics (pre-resume); the final
+    # snapshot (after resume) reports ``False`` with the last matched/missing set.
+    active: bool = False
+    # Target topics already present on the graph (recorder subscribed).
+    matched_topics: list[str] = Field(default_factory=list)
+    # Target topics still missing (recorder waiting on these).
+    missing_topics: list[str] = Field(default_factory=list)
+    # ISO8601 instant the recorder auto-resumes anyway (readiness timeout).
+    resume_at: str | None = None
+
+
 class RecordStatusResponse(BaseModel):
     """Body of ``GET /record/status``."""
 
@@ -100,3 +123,6 @@ class RecordStatusResponse(BaseModel):
     message_count: int = 0
     bytes: int = 0
     topics: list[TopicEntry] = Field(default_factory=list)
+    # Present once a ``--start-paused`` arming gate has run for this session
+    # (``null`` otherwise). The final snapshot persists while ``recording``.
+    arming: RecordArming | None = None
