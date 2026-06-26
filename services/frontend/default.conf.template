@@ -47,4 +47,17 @@ server {
         proxy_set_header Host $host;
         proxy_read_timeout 1h;
     }
+
+    # Proxy the topic_probe service (OL-3.3: numeric-field live plotter) on the
+    # SAME origin, mirroring /webrtc/. The trailing slash on proxy_pass strips
+    # the prefix: /probe/stream -> /stream. /probe/stream is an SSE endpoint, so
+    # proxy_buffering must be off (like /api/) for samples to stream promptly.
+    location /probe/ {
+        proxy_pass http://127.0.0.1:${TOPIC_PROBE_PORT}/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 1h;
+    }
 }

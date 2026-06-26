@@ -19,6 +19,13 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (p) => p.replace(/^\/webrtc/, ''),
       },
+      // topic_probe (OL-3.3): same-origin /probe -> the probe service, mirroring
+      // the served build's nginx /probe/ proxy. The trailing slash is stripped.
+      '/probe': {
+        target: process.env.TOPIC_PROBE_URL ?? 'http://localhost:8003',
+        changeOrigin: true,
+        rewrite: (p) => p.replace(/^\/probe/, ''),
+      },
     },
   },
   test: {

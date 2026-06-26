@@ -118,6 +118,34 @@ services:
       - ./config:/config:ro
     restart: unless-stopped
 
+  # topic_probe — generic numeric-field live plotter (OL-3.3). A SEPARATE ROS
+  # service from monitor/recorder that DECODES one selected topic at a time to
+  # plot its numeric fields. Isolated on purpose: a probe crash can never affect
+  # recording or the non-intrusive monitor. Same DDS sharing as the other ROS
+  # services (host net + host ipc); the overlay lets it decode custom types.
+  probe:
+    build:
+      context: .
+      dockerfile: services/topic_probe/Dockerfile
+      args:
+        ROS_DISTRO: ${ROS_DISTRO:-jazzy}
+    image: kairos-topic-probe:${ROS_DISTRO:-jazzy}
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      <<: *ros-env
+      TOPIC_PROBE_PORT: ${TOPIC_PROBE_PORT:-8003}
+    network_mode: host
+    ipc: host
+    volumes:
+      - ${DATA_DIR:-./data}:/data
+      - ./config:/config:ro
+      # Custom-message overlay (same dir the recorder/monitor use): lets the
+      # probe DECODE custom message types on a live robot. Empty by default.
+      - ${MSGS_OVERLAY_DIR:-./deploy/msgs_overlay/robot}:/opt/msgs_overlay:ro
+    restart: unless-stopped
+
   # ---- Pure-Python services (no rclpy) -------------------------------------
   orchestrator:
     build:
@@ -181,12 +209,14 @@ services:
         required: false
     environment:
       # Ports consumed by the nginx envsubst template (default.conf.template):
-      # FRONTEND_PORT for `listen`, API_ORCH_PORT / WEBRTC_PORT for proxy_pass.
-      # Interpolated from the same .env keys (defaults match settings.py) so the
-      # served config never drifts from where the orchestrator/streamer bind.
+      # FRONTEND_PORT for `listen`, API_ORCH_PORT / WEBRTC_PORT / TOPIC_PROBE_PORT
+      # for proxy_pass. Interpolated from the same .env keys (defaults match
+      # settings.py) so the served config never drifts from where the
+      # orchestrator/streamer/probe bind.
       FRONTEND_PORT: ${FRONTEND_PORT:-8080}
       API_ORCH_PORT: ${API_ORCH_PORT:-8000}
       WEBRTC_PORT: ${WEBRTC_PORT:-8002}
+      TOPIC_PROBE_PORT: ${TOPIC_PROBE_PORT:-8003}
     network_mode: host
     restart: unless-stopped
     depends_on:
