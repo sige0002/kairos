@@ -7,7 +7,12 @@ and asserts the exact computed numbers.
 
 from __future__ import annotations
 
-from topic_monitor.metrics import MetricsRegistry, StatusSmoother, TopicWindow
+from topic_monitor.metrics import (
+    BaselineLearner,
+    MetricsRegistry,
+    StatusSmoother,
+    TopicWindow,
+)
 from topic_monitor.subscriber import Sample
 
 
@@ -253,6 +258,93 @@ def test_status_smoother_structural_states_are_immediate() -> None:
     s = StatusSmoother(initial="ok")
     assert s.update("inactive", now=0.0) == "inactive"  # silent: adopt at once
     assert s.update("unknown", now=0.1) == "unknown"
+
+
+# --- OL-②.3 dynamic baseline learning ------------------------------------
+
+
+def test_baseline_learner_learns_until_warmed_then_stable() -> None:
+    learner = BaselineLearner(warmup_s=10.0, stable_cv=0.15, min_samples=30)
+    # Warm-up: under warmup_s AND under min_samples -> learning, no baseline.
+    for i in range(20):  # now 0.0 .. 9.5 (< 10 s)
+        state, base = learner.update(10.0, now=i * 0.5)
+        assert state == "learning"
+        assert base is None
+    # Crossing both gates with a steady 10 Hz -> stable @ ~10 Hz.
+    state, base = "learning", None
+    for i in range(20, 30):  # now 10.0 .. 14.5, len reaches 30
+        state, base = learner.update(10.0, now=i * 0.5)
+    assert state == "stable"
+    assert base is not None and abs(base - 10.0) < 1e-9
+
+
+def test_baseline_learner_never_stabilises_on_noisy_rate() -> None:
+    learner = BaselineLearner(warmup_s=0.0, stable_cv=0.1, min_samples=4)
+    # High coefficient of variation -> stays "learning", never claims a baseline.
+    for i, hz in enumerate([2.0, 20.0, 2.0, 20.0, 2.0, 20.0]):
+        state, base = learner.update(hz, now=float(i))
+    assert state == "learning"
+    assert base is None
+
+
+def test_baseline_learner_keeps_last_good_when_destabilised() -> None:
+    learner = BaselineLearner(warmup_s=0.0, stable_cv=0.1, min_samples=3, capacity=4)
+    for i in range(3):
+        learner.update(10.0, now=float(i))
+    assert learner.state == "stable"
+    assert learner.baseline_hz == 10.0
+    # Flood the small window with high-variance values: unstable, baseline kept.
+    state, base = "stable", 10.0
+    for i, hz in enumerate([2.0, 20.0, 2.0, 20.0, 2.0], start=3):
+        state, base = learner.update(hz, now=float(i))
+    assert state == "unstable"
+    assert base == 10.0  # last good baseline retained
+
+
+def test_baseline_learner_silent_demotes_but_keeps_baseline() -> None:
+    learner = BaselineLearner(warmup_s=0.0, stable_cv=0.2, min_samples=3, capacity=4)
+    for i in range(3):
+        learner.update(10.0, now=float(i))
+    assert learner.state == "stable" and learner.baseline_hz == 10.0
+    # Window goes fully silent (mean 0) -> unstable, last good baseline kept.
+    state, base = "stable", 10.0
+    for i in range(3, 8):
+        state, base = learner.update(0.0, now=float(i))
+    assert state == "unstable"
+    assert base == 10.0
+
+
+def test_shortfall_uses_learned_baseline_when_no_static_expected() -> None:
+    win = TopicWindow(windows_s=[5.0])  # no static expected_hz
+    for i in range(25):  # 25 of 50 expected at a 10 Hz baseline over 5 s
+        win.add(_sample(i * 0.2, 100))
+    wm = win.compute(window_s=5.0, now=4.8)
+    # Without a reference: unknown, no shortfall numbers.
+    assert wm.status == "unknown"
+    assert wm.rate_shortfall is None
+    # Apply a learned baseline of 10 Hz -> 50% shortfall -> danger.
+    wm2 = win.health_with(wm, baseline_hz=10.0)
+    assert wm2.status == "danger"
+    assert wm2.rate_shortfall is not None and abs(wm2.rate_shortfall - 0.5) < 1e-9
+    assert wm2.deficit_per_s is not None and abs(wm2.deficit_per_s - 5.0) < 1e-9
+
+
+def test_health_with_baseline_does_not_override_static_expected() -> None:
+    win = TopicWindow(windows_s=[5.0], expected_hz=10.0)
+    for i in range(50):
+        win.add(_sample(i * 0.1, 100))
+    wm = win.compute(window_s=5.0, now=4.9)
+    assert wm.status == "ok"
+    # A baseline must NOT override a configured expected_hz (static always wins).
+    assert win.health_with(wm, baseline_hz=1.0) is wm
+
+
+def test_health_with_non_positive_baseline_is_ignored() -> None:
+    win = TopicWindow(windows_s=[5.0])
+    for i in range(10):
+        win.add(_sample(i * 0.2, 100))
+    wm = win.compute(window_s=5.0, now=1.8)
+    assert win.health_with(wm, baseline_hz=0.0) is wm
 
 
 def test_on_sample_lost_accumulates_per_topic() -> None:

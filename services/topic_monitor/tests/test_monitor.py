@@ -13,6 +13,7 @@ from kairos_common import (
     Reliability,
     TopicQosOverride,
 )
+from topic_monitor.metrics import SelfLoadMonitor
 from topic_monitor.models import AlertMetric, AlertOp, AlertRule
 from topic_monitor.monitor import MonitorService
 from topic_monitor.subscriber import FakeSubscriber, TopicGraphEntry
@@ -26,6 +27,23 @@ class FakeClock:
 
     def __call__(self) -> float:
         return self.t
+
+
+class StepPerf:
+    """A perf clock that advances a fixed step per call (deterministic lag).
+
+    ``_on_sample`` calls it twice per sample (before/after the registry), so a
+    constant *step* makes each measured callback latency exactly *step* seconds.
+    """
+
+    def __init__(self, step: float = 0.002) -> None:
+        self.t = 0.0
+        self.step = step
+
+    def __call__(self) -> float:
+        v = self.t
+        self.t += self.step
+        return v
 
 
 def _config() -> RecordingConfig:
@@ -132,6 +150,126 @@ def test_alert_fires_in_snapshot_when_hz_below_threshold() -> None:
     sub.feed("/cam", recv_t=0.0, size_bytes=10)
     snap = service.metrics_snapshot()
     assert any(a.topic == "/cam" for a in snap.alerts)
+
+
+# --- OL-②.4 monitor self-load metrics ------------------------------------
+
+
+def test_self_load_aggregates_mean_and_p95() -> None:
+    sl = SelfLoadMonitor(warn_lag_ms=50.0, warn_age_s=2.0)
+    for v in (10.0, 10.0, 10.0, 100.0):
+        sl.record_callback(v)
+    m = sl.build(now=0.0)
+    assert m.callback_lag_ms is not None and abs(m.callback_lag_ms - 32.5) < 1e-9
+    assert m.callback_lag_p95_ms is not None and m.callback_lag_p95_ms > 50.0
+    assert m.snapshot_age_s is None  # first build: no prior snapshot
+    assert m.dropped_callbacks == 0
+    assert m.status == "ok"  # mean 32.5 ms < 50 ms warn
+
+
+def test_self_load_status_warning_then_danger_on_lag() -> None:
+    warn = SelfLoadMonitor(warn_lag_ms=50.0, warn_age_s=2.0)
+    warn.record_callback(60.0)  # >= warn, < 2x
+    assert warn.build(now=0.0).status == "warning"
+
+    danger = SelfLoadMonitor(warn_lag_ms=50.0, warn_age_s=2.0)
+    danger.record_callback(150.0)  # >= 2x warn
+    assert danger.build(now=0.0).status == "danger"
+
+
+def test_self_load_snapshot_age_is_interval_between_builds() -> None:
+    sl = SelfLoadMonitor(warn_lag_ms=50.0, warn_age_s=2.0)
+    sl.record_callback(1.0)
+    assert sl.build(now=0.0).snapshot_age_s is None
+    m2 = sl.build(now=3.0)  # 3 s since last build: >= warn 2 s, < 4 s danger
+    assert m2.snapshot_age_s is not None and abs(m2.snapshot_age_s - 3.0) < 1e-9
+    assert m2.status == "warning"
+
+
+def test_self_load_dropped_callbacks_raise_warning() -> None:
+    sl = SelfLoadMonitor()
+    sl.mark_dropped(2)
+    sl.mark_dropped(0)  # ignored
+    sl.mark_dropped(-1)  # ignored
+    m = sl.build(now=0.0)
+    assert m.dropped_callbacks == 2
+    assert m.status == "warning"
+
+
+def test_snapshot_includes_self_load_by_default() -> None:
+    clock = FakeClock()
+    perf = StepPerf(step=0.002)  # 2 ms per callback
+    sub = FakeSubscriber()
+    service = MonitorService(sub, config=_config(), clock=clock, perf_clock=perf)
+    service.start()
+    for i in range(10):
+        clock.t = i * 0.1
+        sub.feed("/cam", recv_t=clock.t, size_bytes=100)
+    snap = service.metrics_snapshot()
+    assert snap.self_load is not None
+    assert snap.self_load.callback_lag_ms is not None
+    assert abs(snap.self_load.callback_lag_ms - 2.0) < 1e-6  # 2 ms steps
+    assert snap.self_load.status == "ok"
+
+
+def test_self_load_can_be_disabled_via_config() -> None:
+    cfg = _config()
+    cfg.monitor.self_load_metrics = False
+    service = MonitorService(FakeSubscriber(), config=cfg)
+    service.start()
+    assert service.metrics_snapshot().self_load is None
+
+
+# --- OL-②.3 dynamic baseline learning (end-to-end via the snapshot path) --
+
+
+def test_baseline_learning_for_unconfigured_topic_warmup_then_judges() -> None:
+    clock = FakeClock()
+    sub = FakeSubscriber()
+    cfg = RecordingConfig(robot_name="r", default_topics=[])
+    cfg.monitor.window_s = [5]
+    cfg.monitor.baseline_warmup_s = 3.0
+    cfg.monitor.baseline_min_samples = 10
+    cfg.monitor.baseline_stable_cv = 0.2
+    service = MonitorService(sub, config=cfg, clock=clock)
+    service.start()
+    topic = "/telemetry"  # no expected_hz pattern -> baseline-learned
+
+    def t_of(step: int) -> float:
+        return round(step * 0.1, 5)
+
+    # Phase A: fill the 5 s window at 10 Hz (no snapshots yet).
+    step = 0
+    while t_of(step) < 5.0:
+        clock.t = t_of(step)
+        sub.feed(topic, recv_t=clock.t, size_bytes=100)
+        step += 1
+
+    # Phase B: keep feeding 10 Hz, snapshot ~every 0.3 s to drive the learner.
+    learning_rows = []
+    final_row = None
+    while t_of(step) <= 14.0:
+        clock.t = t_of(step)
+        sub.feed(topic, recv_t=clock.t, size_bytes=100)
+        if step % 3 == 0:
+            snap = service.metrics_snapshot()
+            row = next((x for x in snap.topics if x.name == topic), None)
+            if row is not None:
+                if clock.t < 7.0:
+                    learning_rows.append(row)
+                final_row = row
+        step += 1
+
+    # During warm-up: state "learning", status held "unknown" (never danger).
+    assert learning_rows
+    assert all(r.baseline_state == "learning" for r in learning_rows)
+    assert all(r.status == "unknown" for r in learning_rows)
+    assert all(r.baseline_hz is None for r in learning_rows)
+    # Once warmed on a steady rate: stable baseline ~10 Hz, judged on its own rate.
+    assert final_row is not None
+    assert final_row.baseline_state == "stable"
+    assert final_row.baseline_hz is not None and abs(final_row.baseline_hz - 10.0) < 1.5
+    assert final_row.status == "ok"
 
 
 def test_is_ready_reflects_subscriber_liveness() -> None:
