@@ -61,13 +61,14 @@ ifneq ($(strip $(MSGS_OVERLAY_DIR)),)
 export MSGS_OVERLAY_DIR
 endif
 
-SERVICES := recorder monitor streamer orchestrator dora_runner frontend
+SERVICES := recorder monitor streamer probe orchestrator dora_runner frontend
 # Services named on the command line (e.g. `make build monitor`). Empty = all.
 # Override explicitly with SVC=monitor if you prefer.
 SVC ?= $(filter $(SERVICES),$(MAKECMDGOALS))
 
 PY_DIRS := libs/kairos_common services/rosbag2_recorder services/topic_monitor \
-           services/webrtc_streamer services/api_orchestrator services/dora_runner
+           services/topic_probe services/webrtc_streamer services/api_orchestrator \
+           services/dora_runner
 
 .DEFAULT_GOAL := help
 
