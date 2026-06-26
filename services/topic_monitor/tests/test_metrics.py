@@ -301,6 +301,43 @@ def test_baseline_learner_keeps_last_good_when_destabilised() -> None:
     assert base == 10.0  # last good baseline retained
 
 
+def test_baseline_frozen_once_stable_so_slow_decline_trips_shortfall() -> None:
+    # Once stable, the baseline must NOT drift down with the running mean — a slow
+    # sustained decline (10 -> 8 -> 6) that stays under the CV gate would otherwise
+    # be tracked downward and never register as shortfall (MINOR-1).
+    learner = BaselineLearner(warmup_s=0.0, stable_cv=0.5, min_samples=4, capacity=4)
+    for _ in range(4):
+        learner.update(10.0, now=0.0)
+    assert learner.state == "stable"
+    assert learner.baseline_hz == 10.0
+    state, base = "stable", 10.0
+    for hz, t in ((8.0, 1.0), (6.0, 2.0), (6.0, 3.0), (6.0, 4.0)):
+        state, base = learner.update(hz, now=t)
+    # Stayed stable (gentle decline, low CV) but the baseline is frozen at 10 — so
+    # the observed 6 Hz now reads as a real shortfall vs the learned rate.
+    assert state == "stable"
+    assert base == 10.0
+
+
+def test_baseline_relearns_after_unstable_round_trip() -> None:
+    # The baseline is re-learned only after an unstable -> stable round-trip
+    # (a genuinely new steady rate), not while continuously stable.
+    learner = BaselineLearner(warmup_s=0.0, stable_cv=0.1, min_samples=3, capacity=3)
+    for _ in range(3):
+        learner.update(10.0, now=0.0)
+    assert learner.state == "stable" and learner.baseline_hz == 10.0
+    # Destabilise with a noisy burst.
+    for hz in (2.0, 20.0, 2.0):
+        learner.update(hz, now=1.0)
+    assert learner.state == "unstable" and learner.baseline_hz == 10.0
+    # Settle on a new steady rate -> re-stabilise -> adopt the new baseline.
+    state, base = "unstable", 10.0
+    for _ in range(3):
+        state, base = learner.update(6.0, now=2.0)
+    assert state == "stable"
+    assert base is not None and abs(base - 6.0) < 1e-9
+
+
 def test_baseline_learner_silent_demotes_but_keeps_baseline() -> None:
     learner = BaselineLearner(warmup_s=0.0, stable_cv=0.2, min_samples=3, capacity=4)
     for i in range(3):

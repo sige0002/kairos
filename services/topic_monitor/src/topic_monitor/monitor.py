@@ -196,19 +196,29 @@ class MonitorService:
             topics=topics,
             alerts=alerts,
             paused=self.paused,
-            self_load=self._self_load_snapshot(now),
+            self_load=self._self_load_snapshot(now, states),
         )
 
-    def _self_load_snapshot(self, now: float) -> MonitorSelfLoad | None:
-        """Build the monitor's own-health view (OL-②.4); None when disabled."""
+    def _self_load_snapshot(
+        self, now: float, states: list[TopicState]
+    ) -> MonitorSelfLoad | None:
+        """Build the monitor's own-health view (OL-②.4); None when disabled.
+
+        Snapshot age is derived from the freshest *data* (the most recent receive
+        time across topics), not from build timing — so it does not depend on how
+        many consumers call the snapshot path.
+        """
         if self._self_load is None:
             return None
-        sl = self._self_load.build(now)
+        last_data_t = max(
+            (s.last_seen_t for s in states if s.last_seen_t is not None),
+            default=None,
+        )
+        sl = self._self_load.build(now, last_data_t)
         return MonitorSelfLoad(
             callback_lag_ms=sl.callback_lag_ms,
             callback_lag_p95_ms=sl.callback_lag_p95_ms,
             snapshot_age_s=sl.snapshot_age_s,
-            dropped_callbacks=sl.dropped_callbacks,
             status=sl.status,
         )
 

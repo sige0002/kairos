@@ -159,41 +159,37 @@ def test_self_load_aggregates_mean_and_p95() -> None:
     sl = SelfLoadMonitor(warn_lag_ms=50.0, warn_age_s=2.0)
     for v in (10.0, 10.0, 10.0, 100.0):
         sl.record_callback(v)
-    m = sl.build(now=0.0)
+    m = sl.build(now=0.0, last_data_t=None)
     assert m.callback_lag_ms is not None and abs(m.callback_lag_ms - 32.5) < 1e-9
     assert m.callback_lag_p95_ms is not None and m.callback_lag_p95_ms > 50.0
-    assert m.snapshot_age_s is None  # first build: no prior snapshot
-    assert m.dropped_callbacks == 0
+    assert m.snapshot_age_s is None  # no data received yet
     assert m.status == "ok"  # mean 32.5 ms < 50 ms warn
 
 
 def test_self_load_status_warning_then_danger_on_lag() -> None:
     warn = SelfLoadMonitor(warn_lag_ms=50.0, warn_age_s=2.0)
     warn.record_callback(60.0)  # >= warn, < 2x
-    assert warn.build(now=0.0).status == "warning"
+    assert warn.build(now=0.0, last_data_t=0.0).status == "warning"
 
     danger = SelfLoadMonitor(warn_lag_ms=50.0, warn_age_s=2.0)
     danger.record_callback(150.0)  # >= 2x warn
-    assert danger.build(now=0.0).status == "danger"
+    assert danger.build(now=0.0, last_data_t=0.0).status == "danger"
 
 
-def test_self_load_snapshot_age_is_interval_between_builds() -> None:
+def test_self_load_age_is_data_freshness_and_consumer_independent() -> None:
+    # Age is `now - last_data_t` (most recent receive time), NOT build timing —
+    # so multiple consumers calling build() do not dilute or reset it.
     sl = SelfLoadMonitor(warn_lag_ms=50.0, warn_age_s=2.0)
     sl.record_callback(1.0)
-    assert sl.build(now=0.0).snapshot_age_s is None
-    m2 = sl.build(now=3.0)  # 3 s since last build: >= warn 2 s, < 4 s danger
-    assert m2.snapshot_age_s is not None and abs(m2.snapshot_age_s - 3.0) < 1e-9
-    assert m2.status == "warning"
-
-
-def test_self_load_dropped_callbacks_raise_warning() -> None:
-    sl = SelfLoadMonitor()
-    sl.mark_dropped(2)
-    sl.mark_dropped(0)  # ignored
-    sl.mark_dropped(-1)  # ignored
-    m = sl.build(now=0.0)
-    assert m.dropped_callbacks == 2
-    assert m.status == "warning"
+    # Data last arrived at t=10; serving at t=10 -> fresh (age 0).
+    assert sl.build(now=10.0, last_data_t=10.0).snapshot_age_s == 0.0
+    # Two builds in a row at the same now/data give the SAME age (no reset).
+    a = sl.build(now=13.0, last_data_t=10.0)
+    b = sl.build(now=13.0, last_data_t=10.0)
+    assert a.snapshot_age_s == b.snapshot_age_s == 3.0
+    assert a.status == "warning"  # 3 s >= warn 2 s, < 4 s danger
+    # No data yet -> age unknown.
+    assert sl.build(now=5.0, last_data_t=None).snapshot_age_s is None
 
 
 def test_snapshot_includes_self_load_by_default() -> None:
@@ -210,6 +206,24 @@ def test_snapshot_includes_self_load_by_default() -> None:
     assert snap.self_load.callback_lag_ms is not None
     assert abs(snap.self_load.callback_lag_ms - 2.0) < 1e-6  # 2 ms steps
     assert snap.self_load.status == "ok"
+
+
+def test_self_load_age_independent_of_consumer_count() -> None:
+    # Two snapshots in a row (mimicking GET /metrics + an SSE tick) must report
+    # the SAME data-freshness age — the old build-timing age would have reset the
+    # second one to ~0 (MAJOR-3).
+    clock = FakeClock()
+    sub = FakeSubscriber()
+    service = MonitorService(sub, config=_config(), clock=clock)
+    service.start()
+    clock.t = 1.0
+    sub.feed("/cam", recv_t=1.0, size_bytes=100)
+    clock.t = 4.0  # 3 s since the last sample arrived
+    a = service.metrics_snapshot().self_load
+    b = service.metrics_snapshot().self_load
+    assert a is not None and b is not None
+    assert a.snapshot_age_s is not None and abs(a.snapshot_age_s - 3.0) < 1e-9
+    assert b.snapshot_age_s == a.snapshot_age_s  # second call did not reset it
 
 
 def test_self_load_can_be_disabled_via_config() -> None:
