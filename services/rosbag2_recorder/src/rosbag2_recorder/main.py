@@ -71,6 +71,9 @@ def create_recorder_app() -> FastAPI:
             run_id=status.run_id or request.run_id,
             state=status.state,
             started_at=status.started_at or "",
+            # Settled arming snapshot (OL-①.4) so the orchestrator can forward it
+            # on the record_status SSE event without a second /record/status call.
+            arming=status.arming,
         )
 
     @app.post("/record/stop", response_model=RecordStatusResponse)

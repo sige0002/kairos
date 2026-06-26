@@ -83,14 +83,6 @@ class TopicEntry(BaseModel):
     qos: QosProfile | None = None
 
 
-class RecordStartResponse(BaseModel):
-    """Body of a successful ``POST /record/start`` (201)."""
-
-    run_id: str
-    state: RunState
-    started_at: str
-
-
 class RecordArming(BaseModel):
     """Observational state of the ``--start-paused`` readiness gate (OL-①.4).
 
@@ -112,6 +104,18 @@ class RecordArming(BaseModel):
     missing_topics: list[str] = Field(default_factory=list)
     # ISO8601 instant the recorder auto-resumes anyway (readiness timeout).
     resume_at: str | None = None
+
+
+class RecordStartResponse(BaseModel):
+    """Body of a successful ``POST /record/start`` (201)."""
+
+    run_id: str
+    state: RunState
+    started_at: str
+    # The settled arming snapshot (OL-①.4): /record/start blocks through the
+    # --start-paused readiness gate, so its final state is known by the time this
+    # 201 returns. Lets the orchestrator pass arming through without a second GET.
+    arming: RecordArming | None = None
 
 
 class RecordStatusResponse(BaseModel):
