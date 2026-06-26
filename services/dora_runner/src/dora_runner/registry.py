@@ -24,6 +24,12 @@ from kairos_common import ApiError, ValidationTemplate
 
 from dora_runner.dataset_export import run_dataset_export
 from dora_runner.loss_report import run_loss_report
+from dora_runner.loss_report_config import (
+    LossReportConfig,
+    coerce_multiplier,
+    coerce_target_topics,
+    load_loss_report_config,
+)
 from dora_runner.store import JobRecord, RunnerStore
 from dora_runner.validation import generate_template, run_fast_validation
 from dora_runner.video_check import run_video_check
@@ -116,10 +122,41 @@ async def _run_dataset_export(
     )
 
 
-async def _run_loss_report(job: JobRecord, store: RunnerStore, data_dir: Path) -> dict:
-    return await asyncio.to_thread(
-        run_loss_report, run_id=job.run_id, data_dir=data_dir
-    )
+def _loss_report_params(params: dict, config: LossReportConfig) -> dict[str, object]:
+    """Resolve loss_report kwargs from job params, falling back to *config*.
+
+    A job param overrides the config default; an absent param uses the
+    config-driven default (which itself falls back to the code default). Keeps
+    behaviour unchanged when params are absent (OL-④.3).
+    """
+    target = params.get("target_topics")
+    multiplier = params.get("gap_threshold_multiplier")
+    return {
+        "target_topics": (
+            coerce_target_topics(target)
+            if target is not None
+            else list(config.target_topics)
+        ),
+        "gap_threshold_multiplier": (
+            coerce_multiplier(multiplier)
+            if multiplier is not None
+            else config.gap_threshold_multiplier
+        ),
+    }
+
+
+def _make_loss_report_runner(config: LossReportConfig) -> Runner:
+    """Build a loss_report runner that injects *config*-driven params (OL-④.3)."""
+
+    async def _run_loss_report(
+        job: JobRecord, store: RunnerStore, data_dir: Path
+    ) -> dict:
+        kwargs = _loss_report_params(job.params, config)
+        return await asyncio.to_thread(
+            run_loss_report, run_id=job.run_id, data_dir=data_dir, **kwargs
+        )
+
+    return _run_loss_report
 
 
 async def _run_video_check(job: JobRecord, store: RunnerStore, data_dir: Path) -> dict:
@@ -149,6 +186,40 @@ _VIDEO_CHECK_SCHEMA = {
 }
 _NO_PARAMS_SCHEMA = {"type": "object", "properties": {}}
 
+
+def loss_report_schema(config: LossReportConfig) -> dict:
+    """Build loss_report's params_schema with *config*-driven defaults (OL-④.3).
+
+    The defaults are echoed as JSON-Schema ``default`` values so the
+    orchestrator/frontend auto-form seeds the controls; an empty
+    ``target_topics`` means "every topic" (the original behaviour).
+    """
+    return {
+        "type": "object",
+        "properties": {
+            "target_topics": {
+                "type": "array",
+                "title": "Target topics",
+                "description": (
+                    "Glob patterns to restrict the report (empty = all topics)."
+                ),
+                "items": {"type": "string"},
+                "default": list(config.target_topics),
+            },
+            "gap_threshold_multiplier": {
+                "type": "number",
+                "title": "Gap threshold multiplier",
+                "description": (
+                    "Flag a topic when its worst gap exceeds "
+                    "median_interval_ms * this multiplier."
+                ),
+                "minimum": 0,
+                "default": config.gap_threshold_multiplier,
+            },
+        },
+    }
+
+
 # Interface-only placeholders (no runner yet): advertised so the registry/UI show
 # the roadmap, but POST /jobs rejects them as not-implemented.
 _PLACEHOLDERS = [
@@ -170,8 +241,16 @@ _PLACEHOLDERS = [
 ]
 
 
-def build_default_registry() -> PipelineRegistry:
-    """Construct the registry with the four implemented pipelines + placeholders."""
+def build_default_registry(
+    loss_config: LossReportConfig | None = None,
+) -> PipelineRegistry:
+    """Construct the registry with the four implemented pipelines + placeholders.
+
+    *loss_config* supplies loss_report's config-driven defaults (OL-④.3); it
+    defaults to loading ``config/validators/loss_report.yaml`` (env
+    ``LOSS_REPORT_CONFIG``), falling back to code defaults when absent.
+    """
+    config = loss_config or load_loss_report_config()
     registry = PipelineRegistry()
     registry.register(
         RegisteredPipeline(
@@ -201,9 +280,9 @@ def build_default_registry() -> PipelineRegistry:
             id="loss_report",
             name="Loss report",
             description="Per-topic gap-based loss estimate from a recorded MCAP.",
-            params_schema=_NO_PARAMS_SCHEMA,
+            params_schema=loss_report_schema(config),
             outputs=["report/loss_report/<run_id>/summary.json"],
-            runner=_run_loss_report,
+            runner=_make_loss_report_runner(config),
         )
     )
     registry.register(

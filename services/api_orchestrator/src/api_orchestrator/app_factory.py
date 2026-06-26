@@ -260,6 +260,49 @@ def _config_defaults(
     }
 
 
+# Static fallback used when dora_runner is unreachable so GET /api/v1/config
+# never 500s. Mirrors fast_validation's params_schema (the only form the UI
+# strictly needs to keep working). Dynamic forms (incl. loss_report's
+# config-driven params) come from dora_runner /pipelines when reachable.
+_FALLBACK_PIPELINE_FORMS: dict[str, object] = {
+    "fast_validation": {
+        "type": "object",
+        "required": ["template"],
+        "properties": {"template": {"type": "string"}},
+    }
+}
+
+
+async def _pipeline_forms(request: Request) -> dict[str, object]:
+    """Build ``schemas.pipeline_forms`` from dora_runner's ``/pipelines``.
+
+    Maps each pipeline ``id`` -> its JSON-Schema (``params_schema``, serialized
+    under the ``schema`` alias). The first successful result is cached on
+    ``app.state`` so we don't call dora_runner on every config read (the
+    registry is static). If dora_runner is unreachable and nothing is cached we
+    fall back to the static ``fast_validation`` shape, so ``GET /api/v1/config``
+    never 500s.
+    """
+    cached = getattr(request.app.state, "pipeline_forms_cache", None)
+    if cached:
+        return cached
+    try:
+        body = await request.app.state.dora_runner_client.pipelines()
+        items = body.get("items", []) if isinstance(body, dict) else []
+        forms = {
+            str(item["id"]): (item.get("schema") or {})
+            for item in items
+            if isinstance(item, dict) and item.get("id")
+        }
+    except Exception:  # noqa: BLE001 - config must never 500 on a dora outage.
+        logger.warning("pipeline_forms: dora_runner unreachable; using fallback")
+        forms = {}
+    if not forms:
+        return dict(_FALLBACK_PIPELINE_FORMS)
+    request.app.state.pipeline_forms_cache = forms
+    return forms
+
+
 def _stream_payload(stream_config: StreamConfig | None) -> dict[str, object]:
     """Build the ``stream`` block of ``GET /api/v1/config`` from STREAM_CONFIG.
 
@@ -318,13 +361,5 @@ def _register_root_and_config(
             ],
             "defaults": defaults,
             "stream": stream,
-            "schemas": {
-                "pipeline_forms": {
-                    "fast_validation": {
-                        "type": "object",
-                        "required": ["template"],
-                        "properties": {"template": {"type": "string"}},
-                    }
-                }
-            },
+            "schemas": {"pipeline_forms": await _pipeline_forms(request)},
         }

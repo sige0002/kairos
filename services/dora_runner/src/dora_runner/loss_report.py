@@ -5,13 +5,20 @@ canonical recording: it only READS the finished MCAP under
 ``recorded/<run_id>`` (message log_times, never decoding payloads), so it can
 never disturb an in-flight recording (it only ever runs on finished runs).
 
-The methodology is robot-independent and config-free. For each topic we take
-the message log_times (nanoseconds) and compute a robust per-topic median
-inter-arrival interval; the expected message count is then ``duration /
-median_interval`` and loss is ``1 - actual / expected``. Using the median (not
-the mean) makes the estimate robust to drop-gaps: a handful of long gaps does
-not inflate the baseline cadence, so they surface as loss instead of being
-absorbed.
+The methodology is robot-independent. For each topic we take the message
+log_times (nanoseconds) and compute a robust per-topic median inter-arrival
+interval; the expected message count is then ``duration / median_interval`` and
+loss is ``1 - actual / expected``. Using the median (not the mean) makes the
+estimate robust to drop-gaps: a handful of long gaps does not inflate the
+baseline cadence, so they surface as loss instead of being absorbed.
+
+Two thresholds/filters are config-driven (OL-4.3, see
+``loss_report_config.py``) and overridable per-job via ``params``:
+
+- ``target_topics``: glob patterns; only matching topics are reported (empty =
+  every topic, the original behaviour),
+- ``gap_threshold_multiplier``: a topic is flagged ``gap_exceeded`` when its
+  worst gap exceeds ``median_interval_ms * multiplier``.
 
 The summary is written to ``data/report/loss_report/<run_id>/summary.json`` so
 the orchestrator can surface it on the run's detail view.
@@ -19,6 +26,7 @@ the orchestrator can surface it on the run's detail view.
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import statistics
 from pathlib import Path
@@ -27,6 +35,7 @@ from typing import Any
 from kairos_common import utc_now_iso8601
 from mcap.reader import make_reader
 
+from dora_runner.loss_report_config import DEFAULT_GAP_THRESHOLD_MULTIPLIER
 from dora_runner.mcap_utils import find_mcap, validate_run_id
 
 
@@ -68,8 +77,40 @@ def estimate_topic_loss(log_times_ns: list[int]) -> dict[str, Any]:
     }
 
 
-def run_loss_report(*, run_id: str, data_dir: Path) -> dict[str, Any]:
+def _topic_matches(name: str, patterns: list[str]) -> bool:
+    """True if *name* matches any glob in *patterns* (empty list = match all)."""
+    if not patterns:
+        return True
+    return any(fnmatch.fnmatch(name, pat) for pat in patterns)
+
+
+def gap_exceeded(estimate: dict[str, Any], multiplier: float) -> bool:
+    """True when a topic's worst gap exceeds ``median_interval_ms * multiplier``.
+
+    Returns ``False`` when either figure is unavailable (too few samples), so a
+    topic is never flagged on missing data.
+    """
+    gap = estimate.get("gap_max_ms")
+    median = estimate.get("median_interval_ms")
+    if gap is None or median is None or median <= 0:
+        return False
+    return gap > median * multiplier
+
+
+def run_loss_report(
+    *,
+    run_id: str,
+    data_dir: Path,
+    target_topics: list[str] | None = None,
+    gap_threshold_multiplier: float = DEFAULT_GAP_THRESHOLD_MULTIPLIER,
+) -> dict[str, Any]:
     """Estimate per-topic loss for ``recorded/<run_id>``'s MCAP.
+
+    *target_topics* is a list of glob patterns; only matching topics are
+    reported (``None``/empty = every topic, the original behaviour).
+    *gap_threshold_multiplier* flags a topic ``gap_exceeded`` when its worst gap
+    exceeds ``median_interval_ms * multiplier``. Both default to the original
+    config-free behaviour, so callers that omit them are unaffected.
 
     Returns the ``{summary, artifacts}`` JobResult shape. Raises
     ``FileNotFoundError`` if the run dir or its MCAP is missing (mapped to a
@@ -78,6 +119,7 @@ def run_loss_report(*, run_id: str, data_dir: Path) -> dict[str, Any]:
     recording is never touched.
     """
     validate_run_id(run_id)
+    patterns = list(target_topics or [])
     run_dir = data_dir / "recorded" / run_id
     if not run_dir.is_dir():
         raise FileNotFoundError(f"No recorded run found: {run_dir}")
@@ -92,13 +134,27 @@ def run_loss_report(*, run_id: str, data_dir: Path) -> dict[str, Any]:
             if channel.topic not in types:
                 types[channel.topic] = schema.name if schema is not None else ""
 
-    topics = [
-        {"name": name, "type": types.get(name, ""), **estimate_topic_loss(times)}
-        for name, times in sorted(log_times.items())
-    ]
+    topics = []
+    for name, times in sorted(log_times.items()):
+        if not _topic_matches(name, patterns):
+            continue
+        estimate = estimate_topic_loss(times)
+        topics.append(
+            {
+                "name": name,
+                "type": types.get(name, ""),
+                **estimate,
+                "gap_exceeded": gap_exceeded(estimate, gap_threshold_multiplier),
+            }
+        )
     summary: dict[str, Any] = {
         "run_id": run_id,
         "topics": topics,
+        "params": {
+            "target_topics": patterns,
+            "gap_threshold_multiplier": gap_threshold_multiplier,
+        },
+        "flagged": [t["name"] for t in topics if t.get("gap_exceeded")],
         "checked_at": utc_now_iso8601(),
     }
     report_dir = data_dir / "report" / "loss_report" / run_id
