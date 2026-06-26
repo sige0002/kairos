@@ -15,11 +15,24 @@ import type {
   Page,
   RunSummary,
 } from '../../api/types';
+import { fetchRuntimeConfig } from '../../config';
+import type { JSONSchema } from '../../schema/jsonSchema';
+import { initialValueFor } from '../../schema/jsonSchema';
 import { ErrorMessage } from '../../components/ErrorMessage';
 import { Badge, Button, Card, SectionLabel, StatusDot } from '../../components/ui';
+import { PipelineForm } from './PipelineForm';
 
 const PIPELINE = 'fast_validation';
 const TERMINAL = new Set(['succeeded', 'failed', 'canceled']);
+
+// Fallback schema used when the backend's pipeline_forms is unavailable (e.g.
+// dora_runner down): the fast_validation form must still render its template
+// select. Mirrors the orchestrator's static fallback.
+const FALLBACK_SCHEMA: JSONSchema = {
+  type: 'object',
+  required: ['template'],
+  properties: { template: { type: 'string' } },
+};
 
 interface RequiredTopic {
   name: string;
@@ -119,7 +132,8 @@ function ResultCard({ jobId, required }: { jobId: string; required: RequiredTopi
 export function ValidationTab() {
   const queryClient = useQueryClient();
   const [runId, setRunId] = useState('');
-  const [template, setTemplate] = useState('');
+  // User edits to the auto-rendered params form (merged over schema defaults).
+  const [overrides, setOverrides] = useState<Record<string, unknown>>({});
   const [jobId, setJobId] = useState<string | null>(null);
 
   const runsQuery = useQuery({
@@ -138,12 +152,33 @@ export function ValidationTab() {
     queryFn: ({ signal }) => apiGet<ConfigOptions>('/config/options', { signal }),
   });
   const templates = optionsQuery.data?.validation.options ?? [];
-  const activeTemplate = template || optionsQuery.data?.validation.active || templates[0]?.id || '';
+
+  // The fast_validation form schema is backend-driven (GET /api/v1/config ->
+  // schemas.pipeline_forms[fast_validation]); fall back when unavailable.
+  const configQuery = useQuery({
+    queryKey: queryKeys.runtimeConfig,
+    queryFn: fetchRuntimeConfig,
+  });
+  const schema: JSONSchema =
+    configQuery.data?.schemas?.pipeline_forms?.[PIPELINE] ?? FALLBACK_SCHEMA;
+
+  // Effective form value = schema defaults, overlaid with user edits. A field
+  // named `template` defaults to the active catalog selection when untouched.
+  const seeded = useMemo(
+    () => (initialValueFor(schema) as Record<string, unknown>) ?? {},
+    [schema],
+  );
+  const params: Record<string, unknown> = { ...seeded, ...overrides };
+  if (schema.properties?.template && !params.template) {
+    params.template = optionsQuery.data?.validation.active || templates[0]?.id || '';
+  }
+
+  const activeTemplate = String(params.template ?? '');
   const requiredTopics =
     templates.find((t) => t.id === activeTemplate)?.required_topics ?? [];
 
   const submitMutation = useMutation({
-    mutationFn: (body: { run_id: string; params: { template: string } }) =>
+    mutationFn: (body: { run_id: string; params: Record<string, unknown> }) =>
       apiPost<JobStatus>('/jobs', { pipeline: PIPELINE, ...body }),
     onSuccess: (job) => {
       setJobId(job.job_id);
@@ -193,26 +228,12 @@ export function ValidationTab() {
               ))}
             </select>
           </label>
-          <label className="flex flex-col gap-1 text-sm">
-            <span className="text-[11px] font-medium text-gray-500">Template</span>
-            <select
-              aria-label="template"
-              value={activeTemplate}
-              onChange={(e) => setTemplate(e.target.value)}
-              disabled={templates.length === 0}
-              className="rounded-control border border-gray-200 px-2 py-1.5 font-mono text-sm focus:border-teal-500 focus:outline-none"
-            >
-              {templates.length === 0 ? (
-                <option value="">No templates registered</option>
-              ) : (
-                templates.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name} (v{t.version}) · {t.required_topics.length} topics
-                  </option>
-                ))
-              )}
-            </select>
-          </label>
+          <PipelineForm
+            schema={schema}
+            value={params}
+            onChange={setOverrides}
+            templateOptions={templates}
+          />
           {submitMutation.isError && <ErrorMessage error={submitMutation.error} />}
           <Button
             type="button"
@@ -220,7 +241,7 @@ export function ValidationTab() {
             onClick={() =>
               submitMutation.mutate({
                 run_id: runId,
-                params: { template: activeTemplate },
+                params,
               })
             }
           >
