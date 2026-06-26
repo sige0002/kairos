@@ -88,6 +88,7 @@ export const DEV_FALLBACK_CONFIG: RuntimeConfig = {
   tabs: [
     { id: 'live', enabled: true },
     { id: 'graph', enabled: true },
+    { id: 'probe', enabled: true },
     { id: 'runs', enabled: true },
     { id: 'validation', enabled: true },
     { id: 'dataset', enabled: true },
@@ -96,6 +97,25 @@ export const DEV_FALLBACK_CONFIG: RuntimeConfig = {
   defaults: { expected_hz: {}, encoding: 'vp8' },
   schemas: {},
 };
+
+// Tabs the frontend renders even when the backend's GET /api/v1/config omits
+// them (the tab set is normally backend-driven). The Probe tab (OL-3.3) is a
+// pure frontend + topic_probe-service feature; the orchestrator does not yet
+// list it, so we inject it client-side. Integrator note: once the orchestrator
+// adds a `probe` entry to its tabs config, this fallback simply no-ops (it only
+// appends when the id is absent), so it is safe to leave in place.
+export const CLIENT_FALLBACK_TABS: TabConfig[] = [{ id: 'probe', enabled: true }];
+
+/**
+ * Merge in client-side fallback tabs (see CLIENT_FALLBACK_TABS) that the backend
+ * config may not list yet. Existing tabs (by id) win — a backend-provided entry
+ * is never overridden, so its enabled state / order / label take precedence.
+ */
+export function ensureClientTabs(tabs: TabConfig[]): TabConfig[] {
+  const present = new Set(tabs.map((t) => t.id));
+  const extra = CLIENT_FALLBACK_TABS.filter((t) => !present.has(t.id));
+  return extra.length ? [...tabs, ...extra] : tabs;
+}
 
 export async function fetchRuntimeConfig(): Promise<RuntimeConfig> {
   let resp: Response;

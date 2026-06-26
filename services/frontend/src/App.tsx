@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { setApiBase } from './api/client';
 import {
+  ensureClientTabs,
   fetchRuntimeConfig,
   orderTabs,
   type RuntimeConfig,
@@ -12,6 +13,7 @@ import { useEventStream } from './sse/useEventStream';
 import { useUiStore } from './store/uiStore';
 import { LiveTab } from './features/live/LiveTab';
 import { GraphTab } from './features/graph/GraphTab';
+import { ProbeTab } from './features/probe/ProbeTab';
 import { RunsTab } from './features/runs/RunsTab';
 import { ValidationTab } from './features/validation/ValidationTab';
 import { DatasetTab } from './features/dataset/DatasetTab';
@@ -29,6 +31,7 @@ import type { SseStatus } from './store/uiStore';
 const TAB_LABELS: Record<string, string> = {
   live: 'Live',
   graph: 'Graph',
+  probe: 'Probe',
   runs: 'Recordings',
   validation: 'Validation',
   dataset: 'Datasets',
@@ -46,6 +49,8 @@ function TabContent({ tabId, config }: { tabId: string; config: RuntimeConfig })
       return <LiveTab config={config} />;
     case 'graph':
       return <GraphTab config={config} />;
+    case 'probe':
+      return <ProbeTab />;
     case 'runs':
       return <RunsTab />;
     case 'validation':
@@ -60,7 +65,9 @@ function TabContent({ tabId, config }: { tabId: string; config: RuntimeConfig })
 }
 
 function Tabs({ config }: { config: RuntimeConfig }) {
-  const ordered = orderTabs(config.tabs);
+  // ensureClientTabs injects frontend-only tabs (e.g. Probe / OL-3.3) that the
+  // backend config may not list yet; backend-provided tabs always win by id.
+  const ordered = orderTabs(ensureClientTabs(config.tabs));
   const enabled = ordered.filter((t) => t.enabled);
   const activeTab = useUiStore((s) => s.activeTab);
   const setActiveTab = useUiStore((s) => s.setActiveTab);
@@ -142,9 +149,7 @@ function ConnectionBadge() {
       data-testid="connection-status"
       className={cn(
         'inline-flex items-center gap-2 rounded-control border px-3 py-2',
-        live
-          ? 'border-teal-200 bg-teal-100'
-          : 'border-gray-200 bg-white',
+        live ? 'border-teal-200 bg-teal-100' : 'border-gray-200 bg-white',
       )}
     >
       <StatusDot tone={tone[status]} />
