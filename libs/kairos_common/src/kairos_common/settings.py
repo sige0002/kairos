@@ -69,6 +69,10 @@ class Settings(BaseSettings):
     # Internal service ports (not public; on host networking they bind the host).
     recorder_port: Annotated[int, Field(ge=1, le=65535)] = 8010
     dora_runner_port: Annotated[int, Field(ge=1, le=65535)] = 8020
+    # topic_probe (OL-3.3): generic numeric-field live plotter. A SEPARATE
+    # ROS 2 service that decodes only the one selected topic (sampled/throttled)
+    # so it never touches topic_monitor (raw) or the recorder.
+    topic_probe_port: Annotated[int, Field(ge=1, le=65535)] = 8003
 
     # ---- Frontend-facing URLs / CORS --------------------------------------
     # Browser-facing base URL of the webrtc_streamer signaling endpoints

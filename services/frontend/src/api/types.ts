@@ -39,11 +39,30 @@ export interface RecordStartResponse {
   state: RunState;
 }
 
+/**
+ * Recorder "arming" state (OL-①.4): while start_paused is in effect the recorder
+ * is subscribed-but-paused, waiting for the target topics to appear on the graph
+ * before it resumes (begins writing). Surfaced so the UI can show what is matched
+ * vs still-missing and when the auto-resume timeout fires.
+ */
+export interface RecordArming {
+  /** True while paused and waiting for target topics (pre-resume). */
+  active: boolean;
+  /** Target topics already present on the ROS graph (recorder subscribed). */
+  matched_topics: string[];
+  /** Target topics still missing (recorder waiting on these). */
+  missing_topics: string[];
+  /** ISO8601 instant the recorder auto-resumes anyway (readiness timeout). */
+  resume_at?: string | null;
+}
+
 export interface RecordStatus {
   run_id: string | null;
   state: RunState | 'idle';
   message_count?: number;
   bytes?: number;
+  /** Present only while arming (state stays `recording` once resumed). */
+  arming?: RecordArming | null;
 }
 
 // ---- Runs ---------------------------------------------------------------
@@ -203,6 +222,28 @@ export interface TopicMetric {
   status?: TopicStatus;
   status_reason?: string | null;
   reason?: string | null;
+  // Dynamic baseline (OL-②.3): learned Hz reference used to judge shortfall when
+  // the topic has no static expected_hz. `baseline_state` is "learning" during
+  // warm-up (status stays `unknown`), then "stable" / "unstable".
+  baseline_hz?: number | null;
+  baseline_state?: 'learning' | 'stable' | 'unstable' | null;
+}
+
+/**
+ * Monitor self-load (OL-②.4): the monitor process's OWN processing health,
+ * separate from topic health and never derived from decoding payloads. Lets the
+ * UI distinguish "the topics are slow" from "the monitor itself is overloaded".
+ */
+export interface MonitorSelfLoad {
+  /** Mean sample-callback processing time over the window (ms). */
+  callback_lag_ms?: number | null;
+  /** p95 sample-callback processing time (ms). */
+  callback_lag_p95_ms?: number | null;
+  /** Age of the snapshot being served (s); large = monitor falling behind. */
+  snapshot_age_s?: number | null;
+  /** Callbacks the monitor itself dropped/coalesced under load (cumulative). */
+  dropped_callbacks?: number;
+  status?: 'ok' | 'warning' | 'danger';
 }
 
 /** A periodic metrics snapshot delivered over SSE (`event: metrics`). */
@@ -211,6 +252,8 @@ export interface MetricsSnapshot {
   window_s?: number;
   topics: TopicMetric[];
   paused?: boolean;
+  /** Monitor's own processing health (OL-②.4); null when self-load is off. */
+  self_load?: MonitorSelfLoad | null;
 }
 
 /** An active/cleared alert (backend `Alert` model). */
@@ -314,6 +357,8 @@ export interface RecordStatusEvent {
   state: RunState;
   message_count?: number;
   bytes?: number;
+  /** Arming progress (OL-①.4); present while paused/waiting, omitted once resumed. */
+  arming?: RecordArming | null;
 }
 
 export type SseEventType = 'record_status' | 'metrics' | 'alert' | 'job' | 'resync';

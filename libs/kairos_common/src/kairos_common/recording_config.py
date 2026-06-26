@@ -84,6 +84,28 @@ class MonitorConfig(_StrictModel):
     # escalate (escalate_s), a better one to recover (recover_s) — escalate slow.
     status_escalate_s: Annotated[float, Field(ge=0)] = 2.0
     status_recover_s: Annotated[float, Field(ge=0)] = 1.0
+    # --- Dynamic baseline learning (OL-2.3) -------------------------------
+    # When a topic has NO static expected_hz, learn an observed Hz baseline
+    # before judging shortfall. While warming up, the topic reports status
+    # "unknown" (never danger) to avoid false alarms during learning. Topics
+    # with a static expected_hz keep using it (static always wins).
+    baseline_learning: bool = True
+    # Minimum observation time before a learned baseline may be declared stable.
+    baseline_warmup_s: Annotated[float, Field(ge=0)] = 10.0
+    # Coefficient of variation (stddev/mean of windowed Hz) at/under which the
+    # learned baseline is "stable" and becomes the shortfall reference.
+    baseline_stable_cv: Annotated[float, Field(ge=0)] = 0.15
+    # Minimum windowed Hz samples observed before a baseline can be stable.
+    baseline_min_samples: Annotated[int, Field(ge=1)] = 30
+    # --- Monitor self-load metrics (OL-2.4) -------------------------------
+    # Observe the monitor's OWN processing health (sample-callback latency,
+    # snapshot freshness) — reported separately from topic health, never
+    # decoding payloads. Cheap to collect; toggle off to drop all overhead.
+    self_load_metrics: bool = True
+    # Warn when mean sample-callback processing exceeds this (milliseconds).
+    callback_lag_warn_ms: Annotated[float, Field(ge=0)] = 50.0
+    # Warn when the latest metrics snapshot is older than this (seconds).
+    snapshot_age_warn_s: Annotated[float, Field(ge=0)] = 2.0
 
 
 class Storage(StrEnum):
