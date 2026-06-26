@@ -19,9 +19,12 @@
 RECORDING_CONFIG ?= /config/airoa_hsr.yaml
 export RECORDING_CONFIG
 
-# Sample bag for the replay harness; override: make rosbag BAG=/data/.../000730
-BAG ?= /data/airoa-moma-mcap/235210
-export BAG
+# Sample bag for the replay harness. Bags live UNDER data/ (the rule), so BAG is
+# a path RELATIVE to data/ — e.g. airoa-moma-mcap/000730 -> data/airoa-moma-mcap/000730
+# (an absolute /data/... path also works). Set it persistently in .env (BAG=...),
+# or per-run: make rosbag BAG=airoa-moma-mcap/000730. Empty here so .env/compose
+# supply the default (compose resolves the relative path and the fallback).
+BAG ?=
 
 # Ports the access banner advertises (host networking -> these bind on the host).
 FRONTEND_PORT ?= 8080
@@ -37,7 +40,26 @@ WEBRTC_PUBLIC_URL ?= /webrtc
 export WEBRTC_PUBLIC_URL
 
 COMPOSE      := docker compose
-TEST_COMPOSE := docker compose -f deploy/test/compose.yaml
+# Let the replay harness read the root .env too (so BAG / ROS_DISTRO / RMW set
+# there drive `make rosbag`), when a .env exists.
+TEST_COMPOSE := docker compose $(if $(wildcard .env),--env-file .env,) -f deploy/test/compose.yaml
+
+# ROS 2 distro for the images + the custom-message overlay build.
+ROS_DISTRO ?= jazzy
+export ROS_DISTRO
+
+# Custom-message overlay dir — env-driven & PER-ROBOT. Set it in .env so a robot's
+# overlay is picked automatically, e.g.:
+#   MSGS_OVERLAY_DIR=./deploy/msgs_overlay/realman      # in .env
+# `make up` reads it via compose; `make msgs-build` builds that same dir. A
+# command-line MSGS_OVERLAY_DIR=... overrides .env. MUST start with ./ (compose
+# treats a bind source without ./ as a named volume). Default (unset): the shared
+# ./deploy/msgs_overlay. Exported ONLY when explicitly set, so an unset value lets
+# compose read .env instead of being clobbered by a make default.
+MSGS_OVERLAY_DIR ?=
+ifneq ($(strip $(MSGS_OVERLAY_DIR)),)
+export MSGS_OVERLAY_DIR
+endif
 
 SERVICES := recorder monitor streamer orchestrator dora_runner frontend
 # Services named on the command line (e.g. `make build monitor`). Empty = all.
@@ -50,10 +72,28 @@ PY_DIRS := libs/kairos_common services/rosbag2_recorder services/topic_monitor \
 .DEFAULT_GOAL := help
 
 # ---- compose lifecycle ------------------------------------------------------
-.PHONY: up down build rebuild restart logs ps stop urls
+.PHONY: up down build rebuild restart logs ps stop urls msgs-build
 up: ## build + start the stack detached (RECORDING_CONFIG-aware)
 	$(COMPOSE) up -d --build $(SVC)
 	@$(MAKE) --no-print-directory urls
+
+msgs-build: ## build custom ROS msgs (dir from MSGS_OVERLAY_DIR / .env; per-robot)
+	@dir="$(MSGS_OVERLAY_DIR)"; \
+	 if [ -z "$$dir" ] && [ -f .env ]; then \
+	   dir="$$(sed -n 's/^[[:space:]]*MSGS_OVERLAY_DIR[[:space:]]*=[[:space:]]*//p' .env | tail -1)"; \
+	 fi; \
+	 dir="$${dir:-./deploy/msgs_overlay/robot}"; \
+	 if [ -z "$$(ls -A "$$dir/src" 2>/dev/null)" ]; then \
+	   echo "Put message packages in $$dir/src/<pkg>/ (each with package.xml), then re-run."; \
+	   echo "(per-robot: set MSGS_OVERLAY_DIR=./deploy/msgs_overlay/<robot> in .env or on the command line)"; \
+	   exit 1; \
+	 fi; \
+	 echo "Building $$(ls "$$dir/src") into $$dir/install (colcon, recorder image)..."; \
+	 docker run --rm -u $$(id -u):$$(id -g) -e HOME=/overlay \
+	   -v "$(CURDIR)/$$dir:/overlay" -w /overlay \
+	   --entrypoint bash kairos-rosbag2-recorder:$(ROS_DISTRO) -lc \
+	   'set -e; source /opt/ros/$(ROS_DISTRO)/setup.bash; colcon build --merge-install' \
+	 && echo "OK -> $$dir/install/setup.bash"
 
 urls: ## print the Web UI access URLs (localhost + LAN IPs)
 	@echo ""
@@ -99,11 +139,11 @@ config-show: ## print the live GET /api/v1/config defaults
 
 # ---- test-data replay harness ----------------------------------------------
 .PHONY: rosbag rosbag-loop table smoke smoke-record
-rosbag: ## replay the sample bag ONCE (BAG=... to pick another)
-	$(TEST_COMPOSE) run --rm rosbag_player
+rosbag: ## replay a bag under data/ ONCE (BAG=airoa-moma-mcap/000730 to pick another)
+	$(if $(BAG),BAG="$(BAG)") $(TEST_COMPOSE) run --rm rosbag_player
 
-rosbag-loop: ## replay the sample bag on a LOOP
-	LOOP=--loop $(TEST_COMPOSE) run --rm rosbag_player
+rosbag-loop: ## replay a bag under data/ on a LOOP (BAG=... to pick another)
+	$(if $(BAG),BAG="$(BAG)") LOOP=--loop $(TEST_COMPOSE) run --rm rosbag_player
 
 table: ## live table of every topic's Hz/bandwidth (the observable view)
 	$(TEST_COMPOSE) run --rm topic_table
@@ -140,7 +180,7 @@ help: ## show this help
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) \
 		| awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 	@echo ""
-	@echo "  RECORDING_CONFIG=$(RECORDING_CONFIG)   BAG=$(BAG)"
+	@echo "  RECORDING_CONFIG=$(RECORDING_CONFIG)   BAG=$(if $(BAG),$(BAG),airoa-moma-mcap/235210 (default, under data/))"
 
 # Positional service names (and `all`) are no-op targets so they don't error
 # when used as arguments, e.g. `make build monitor` / `make build all`.

@@ -37,4 +37,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Public port from the shared .env (TOPIC_MONITOR_PORT).
 EXPOSE 8001
 
+# Optional custom-message overlay (parity with rosbag2_recorder): mounted at
+# $MSGS_OVERLAY, the entrypoint sources its install/setup.bash if present so
+# rclpy can subscribe to custom message types on a live robot. Empty/absent
+# overlay = standard types only (not an error).
+ENV MSGS_OVERLAY=/opt/msgs_overlay
+COPY services/topic_monitor/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["python", "-m", "topic_monitor.main"]

@@ -1,18 +1,52 @@
 # Custom-message overlay (mount point)
 
-Mount a pre-built colcon **`install/`** overlay of custom ROS 2 message packages
-here so the recorder can record topics with non-standard types (e.g.
-`tmc_control_msgs/msg/ServoState` in the AIROA HSR bags).
+Custom ROS 2 message packages the **recorder** needs to record (and the monitor
+to subscribe to) topics with non-standard types — e.g. `rm_ros_interfaces/*` for
+RealMan, `tmc_control_msgs/*` for the HSR.
 
-- `compose.yaml` mounts the host dir `${MSGS_OVERLAY_DIR:-./deploy/msgs_overlay}`
-  to `/opt/msgs_overlay:ro` in the recorder; its entrypoint sources
-  `/opt/msgs_overlay/install/setup.bash` if present.
-- To populate it: build the custom msg packages in a colcon workspace, then
-  place that workspace's `install/` here so this directory contains
-  `install/setup.bash`.
+> Live ROS only. Offline analysis (`dora_runner` on **MCAP**) uses the MCAP's
+> embedded schemas and needs **none** of this. The overlay matters only for the
+> live path (`ros2 bag record` / rclpy), which loads compiled typesupport.
+
+## One command (no manual colcon)
+
+1. Drop the message package **sources** under `src/` (each a colcon package with
+   `package.xml` + `CMakeLists.txt` + `msg/`):
+   ```
+   deploy/msgs_overlay/src/rm_ros_interfaces/
+   ```
+2. Build them into `install/` using the recorder's ROS image (no host ROS):
+   ```
+   make msgs-build
+   ```
+   This colcon-builds `src/*` → `install/setup.bash`. The recorder's entrypoint
+   sources `install/setup.bash` automatically.
+
+## Multiple robots: shared vs per-robot
+
+The overlay dir is selected by **`MSGS_OVERLAY_DIR`** (default `./deploy/msgs_overlay`),
+used by both `make msgs-build` (what it builds) and `compose` (what the recorder
+mounts) — so build and runtime always agree.
+
+- **Shared (default):** put every robot's message packages in the one
+  `src/` — they coexist in one `install/` (message packages don't conflict; the
+  recorder records whatever types appear on the graph). Simplest.
+- **Per-robot (isolated / swappable):** keep each robot's packages in its own dir
+  and select it (must start with `./`):
+  ```
+  make msgs-build MSGS_OVERLAY_DIR=./deploy/msgs_overlay/realman
+  make up         MSGS_OVERLAY_DIR=./deploy/msgs_overlay/realman   # mounts the same one
+  ```
+  Set `MSGS_OVERLAY_DIR` in your `.env` to make a robot's overlay the default.
+
+## Notes
+
+- Everything under this directory (message **sources** + colcon `build/`/`install/`/
+  `log/`) is **gitignored** except this README — keeps confidential vendor message
+  packages local and out of git.
 - If empty (no `install/setup.bash`), the recorder logs a one-line warning and
-  records only standard types — no failure (per the "assume msgs present"
-  policy: provide the overlay when you need custom types).
-- `install/` build artifacts are gitignored; this README is the only tracked file.
+  records only standard types — no failure.
+- Monitoring custom-type topics live also needs the overlay on the monitor (not
+  yet wired — tracked).
 
 See `docs/specs/ja/rosbag2_recorder.md` → カスタムメッセージ対応.

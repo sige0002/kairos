@@ -68,8 +68,10 @@ services:
       - ${DATA_DIR:-./data}:/data
       - ./config:/config:ro
       # Optional custom-message colcon overlay (sourced by the entrypoint if it
-      # contains install/setup.bash); empty by default. See deploy/msgs_overlay.
-      - ${MSGS_OVERLAY_DIR:-./deploy/msgs_overlay}:/opt/msgs_overlay:ro
+      # contains install/setup.bash); the default 'robot' overlay ships empty.
+      # Override per robot: MSGS_OVERLAY_DIR=./deploy/msgs_overlay/<robot>. See
+      # deploy/msgs_overlay/README.md.
+      - ${MSGS_OVERLAY_DIR:-./deploy/msgs_overlay/robot}:/opt/msgs_overlay:ro
     restart: unless-stopped
 
   monitor:
@@ -90,6 +92,9 @@ services:
     volumes:
       - ${DATA_DIR:-./data}:/data
       - ./config:/config:ro
+      # Custom-message overlay (same dir the recorder uses): lets the monitor
+      # subscribe to custom message types on a live robot. Empty by default.
+      - ${MSGS_OVERLAY_DIR:-./deploy/msgs_overlay/robot}:/opt/msgs_overlay:ro
     restart: unless-stopped
 
   streamer:

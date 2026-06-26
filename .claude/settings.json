@@ -19,11 +19,15 @@
       "Edit(CLAUDE.md)",
       "Write(CLAUDE.md)",
       "Edit(README.md)",
-      "Write(README.md)"
+      "Write(README.md)",
+      "Read(./**/.env.example)",
+      "Edit(./**/.env.example)",
+      "Write(./**/.env.example)"
     ],
     "deny": [
       "Read(./**/.env)",
-      "Read(./**/.env.*)",
+      "Read(./**/.env.local)",
+      "Read(./**/.env.*.local)",
       "Read(./**/*.pem)",
       "Read(./**/*.key)",
       "Read(./**/secrets/**)"

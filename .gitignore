@@ -8,6 +8,15 @@ data/*
 !data/.gitkeep
 *.mcap
 
+# Local-only robot configs (UNTRACKED): RECORDING_CONFIG / validation YAML for
+# confidential robots whose names/topics must not be committed. The whole
+# config/ dir is mounted into the containers (./config:/config:ro), so a file
+# here is reachable as /config/local/<robot>.yaml without being tracked. The
+# README + .gitkeep stay tracked so the mechanism is documented.
+config/local/*
+!config/local/.gitkeep
+!config/local/README.md
+
 # Secrets
 .env
 .env.*
@@ -48,6 +57,18 @@ dist/
 build/
 install/
 log/
+
+# Custom-message overlay: ignore everything dropped here (msg package SOURCES +
+# colcon build artifacts) except the tracked README — keeps confidential message
+# packages (e.g. a robot's proprietary interfaces) local and out of git.
+/deploy/msgs_overlay/*
+!/deploy/msgs_overlay/README.md
+# Ship the empty default 'robot' overlay dir (so the default bind mount exists
+# and stays user-owned, never erroring) — but still ignore any msg sources /
+# build artifacts dropped into it.
+!/deploy/msgs_overlay/robot/
+/deploy/msgs_overlay/robot/*
+!/deploy/msgs_overlay/robot/.gitkeep
 
 # 参考フォルダ
 /ref

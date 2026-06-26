@@ -12,8 +12,10 @@
 #   docker compose -f deploy/test/compose.yaml run --rm topic_table
 #   docker compose -f deploy/test/compose.yaml run --rm rosbag_player
 #
-# Pick a different bag / loop it:
-#   BAG=/data/airoa-moma-mcap/000730 docker compose -f deploy/test/compose.yaml run --rm rosbag_player
+# Pick a different bag / loop it. BAG is a path UNDER data/ (the rule: bags live
+# in data/); an absolute /data/... path also works. Set BAG in the root .env to
+# make it persistent (the Makefile passes --env-file .env to this harness).
+#   BAG=airoa-moma-mcap/000730 docker compose -f deploy/test/compose.yaml run --rm rosbag_player
 #   LOOP=--loop docker compose -f deploy/test/compose.yaml run --rm rosbag_player
 #
 # ROS_DISTRO is overridable: ROS_DISTRO=humble docker compose -f deploy/test/compose.yaml build
@@ -44,15 +46,26 @@ services:
     volumes:
       # Share recorded bags read-only (repo data/ -> /data).
       - ../../data:/data:ro
-    # Print what the bag contains, then play it ONCE (--clock publishes /clock
-    # for sim-time consumers). Override BAG to pick a recording; set LOOP=--loop
-    # to repeat. Single-shot by default so a test run has a clear, visible end.
+      # Custom-message overlays (whole tree, read-only). `ros2 bag play` needs the
+      # typesupport to PUBLISH custom-type topics, so the player sources the same
+      # robot overlay the recorder/monitor use (selected by MSGS_OVERLAY_DIR).
+      - ../../deploy/msgs_overlay:/overlays:ro
+    # Source the selected robot's overlay (basename of MSGS_OVERLAY_DIR, default
+    # 'robot'), then print what the bag contains and play it ONCE (--clock
+    # publishes /clock). BAG is a path under data/ (resolved to /data/<BAG>); an
+    # absolute /data/... path is used as-is. Set LOOP=--loop to repeat. Without a
+    # built overlay, custom-type topics are skipped (standard types still play).
     command:
       - bash
       - -lc
-      - 'ros2 bag info "${BAG:-/data/airoa-moma-mcap/235210}"
-         && echo "--- playing (LOOP=${LOOP:-off}) ---"
-         && ros2 bag play "${BAG:-/data/airoa-moma-mcap/235210}" --clock ${LOOP:-}'
+      - 'R="$$(basename "${MSGS_OVERLAY_DIR:-robot}")";
+         OVL="/overlays/$$R/install/setup.bash";
+         if [ -f "$$OVL" ]; then . "$$OVL"; echo "rosbag_player: sourced overlay $$R"; else echo "rosbag_player: no overlay for $$R (custom-type topics skipped)"; fi;
+         BAG="${BAG:-airoa-moma-mcap/235210}";
+         case "$$BAG" in /*) P="$$BAG";; *) P="/data/$$BAG";; esac;
+         ros2 bag info "$$P"
+         && echo "--- playing $$P (overlay=$$R, LOOP=${LOOP:-off}) ---"
+         && ros2 bag play "$$P" --clock ${LOOP:-}'
 
   topic_table:
     <<: *ros-common
