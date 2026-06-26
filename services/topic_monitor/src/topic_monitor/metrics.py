@@ -225,8 +225,14 @@ class BaselineLearner:
         stdev = statistics.pstdev(self._samples) if len(self._samples) > 1 else 0.0
         cv = stdev / mean
         if cv <= self._stable_cv:
+            # Adopt the mean as the baseline ONLY when (re)entering stable from a
+            # non-stable state. Once stable, FREEZE it: a slow sustained decline
+            # (10->8->6) would otherwise be tracked downward by the running mean
+            # and never trip shortfall. It is only re-learned after an
+            # unstable -> stable round-trip (a genuinely new steady rate).
+            if self._state != "stable":
+                self._baseline_hz = mean
             self._state = "stable"
-            self._baseline_hz = mean
         elif self._baseline_hz is not None:
             self._state = "unstable"  # had a baseline; keep the last good one
         # else: noisy and never stabilised -> stay "learning".
@@ -240,19 +246,23 @@ class SelfLoadMetrics:
     callback_lag_ms: float | None
     callback_lag_p95_ms: float | None
     snapshot_age_s: float | None
-    dropped_callbacks: int
     status: str
 
 
 class SelfLoadMonitor:
     """Observe the monitor process's own load, separate from topic health (OL-②.4).
 
-    Times how long the registry takes to absorb each :class:`Sample`
-    (``record_callback``), how stale the snapshot it serves has become
-    (``build`` computes age from the previous build), and how many callbacks the
-    monitor itself dropped/coalesced (``mark_dropped``). It NEVER decodes payloads
-    — only durations and counts. Thread-safe: ``record_callback`` runs on the
-    subscriber thread while ``build`` runs on the request/snapshot path.
+    Two real signals, never from decoding payloads:
+
+    - **callback latency**: how long the registry takes to absorb each
+      :class:`Sample` (``record_callback``) — mean + p95 over a rolling window.
+    - **snapshot age**: how stale the freshest data the monitor holds is, derived
+      from the most recent *receive* time across active topics (passed into
+      ``build``), NOT from build timing — so it is independent of how many
+      consumers (``GET /metrics`` + each SSE client) call the snapshot path.
+
+    Thread-safe: ``record_callback`` runs on the subscriber thread while ``build``
+    runs on the request/snapshot path.
     """
 
     def __init__(
@@ -264,8 +274,6 @@ class SelfLoadMonitor:
         self._warn_lag_ms = warn_lag_ms
         self._warn_age_s = warn_age_s
         self._lags: deque[float] = deque(maxlen=capacity)
-        self._dropped = 0
-        self._last_built_at: float | None = None
         self._lock = threading.Lock()
 
     def record_callback(self, lag_ms: float) -> None:
@@ -273,32 +281,27 @@ class SelfLoadMonitor:
         with self._lock:
             self._lags.append(lag_ms if lag_ms > 0.0 else 0.0)
 
-    def mark_dropped(self, n: int = 1) -> None:
-        """Count callbacks the monitor dropped/coalesced under load (cumulative)."""
-        if n <= 0:
-            return
-        with self._lock:
-            self._dropped += n
+    def build(self, now: float, last_data_t: float | None) -> SelfLoadMetrics:
+        """Aggregate the rolling latency window and the data-freshness age.
 
-    def build(self, now: float) -> SelfLoadMetrics:
-        """Aggregate the current window and refresh the snapshot-age clock."""
+        ``last_data_t`` is the most recent monotonic receive time across active
+        topics (``None`` if nothing has arrived yet); the age is ``now -
+        last_data_t``. This is consumer-independent: calling ``build`` twice in a
+        row yields the same age (it does not reset on each call).
+        """
         with self._lock:
             lags = list(self._lags)
-            dropped = self._dropped
-            last = self._last_built_at
-            self._last_built_at = now
-        age = None if last is None else max(0.0, now - last)
+        age = None if last_data_t is None else max(0.0, now - last_data_t)
         mean = statistics.fmean(lags) if lags else None
         p95 = _percentile(lags, 95) if lags else None
         return SelfLoadMetrics(
             callback_lag_ms=mean,
             callback_lag_p95_ms=p95,
             snapshot_age_s=age,
-            dropped_callbacks=dropped,
-            status=self._status(mean, age, dropped),
+            status=self._status(mean, age),
         )
 
-    def _status(self, mean: float | None, age: float | None, dropped: int) -> str:
+    def _status(self, mean: float | None, age: float | None) -> str:
         sev = 0  # 0 ok, 1 warning, 2 danger
         if mean is not None:
             if mean >= 2.0 * self._warn_lag_ms:
@@ -310,8 +313,6 @@ class SelfLoadMonitor:
                 sev = max(sev, 2)
             elif age >= self._warn_age_s:
                 sev = max(sev, 1)
-        if dropped > 0:
-            sev = max(sev, 1)
         return ("ok", "warning", "danger")[sev]
 
 

@@ -239,10 +239,11 @@ export interface MonitorSelfLoad {
   callback_lag_ms?: number | null;
   /** p95 sample-callback processing time (ms). */
   callback_lag_p95_ms?: number | null;
-  /** Age of the snapshot being served (s); large = monitor falling behind. */
+  /**
+   * Staleness of the freshest data the monitor holds (s), from the most recent
+   * receive time across active topics; large = the monitor is falling behind.
+   */
   snapshot_age_s?: number | null;
-  /** Callbacks the monitor itself dropped/coalesced under load (cumulative). */
-  dropped_callbacks?: number;
   status?: 'ok' | 'warning' | 'danger';
 }
 

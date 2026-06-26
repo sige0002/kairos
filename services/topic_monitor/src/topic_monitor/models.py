@@ -130,10 +130,9 @@ class MonitorSelfLoad(BaseModel):
     # Mean / p95 sample-callback processing time over the window (milliseconds).
     callback_lag_ms: float | None = None
     callback_lag_p95_ms: float | None = None
-    # Age of the snapshot being served (s); large = the monitor is falling behind.
+    # Staleness of the freshest data the monitor holds (s), from the most recent
+    # receive time across active topics — large = the monitor is falling behind.
     snapshot_age_s: float | None = None
-    # Callbacks the monitor itself dropped/coalesced under load (cumulative).
-    dropped_callbacks: int = 0
     status: SelfLoadStatus = SelfLoadStatus.ok
 
 

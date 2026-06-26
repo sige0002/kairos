@@ -154,9 +154,8 @@ test('selfLoad helpers summarise the monitor self-load (OL-②.4)', () => {
   const sl: MonitorSelfLoad = {
     callback_lag_ms: 2.5,
     snapshot_age_s: 1.1,
-    dropped_callbacks: 3,
     status: 'warning',
   };
-  expect(formatSelfLoad(sl)).toBe('2.5 ms cb · 1.1 s age · 3 dropped');
+  expect(formatSelfLoad(sl)).toBe('2.5 ms cb · 1.1 s age');
   expect(formatSelfLoad({ status: 'ok' })).toBeNull();
 });
