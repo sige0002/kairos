@@ -10,6 +10,7 @@ import { queryKeys } from '../../api/queryKeys';
 import type {
   AlertEvent,
   MetricsSnapshot,
+  MonitorSelfLoad,
   TopicInfo,
   TopicMetric,
   TopicStatus,
@@ -32,7 +33,29 @@ export interface MonitorRow extends Partial<TopicMetric> {
 export function formatHz(m: MonitorRow): string {
   if (m.hz === undefined || m.hz === null) return m.expected_hz ? `— / ${m.expected_hz}` : '—';
   const hz = m.hz.toFixed(1);
-  return m.expected_hz ? `${hz} / ${m.expected_hz}` : hz;
+  if (m.expected_hz) return `${hz} / ${m.expected_hz}`;
+  // No static expected_hz: show the learned baseline (OL-②.3) as the reference,
+  // prefixed `~` so it never reads as a configured rate.
+  if (m.baseline_hz != null) return `${hz} / ~${m.baseline_hz.toFixed(1)}`;
+  return hz;
+}
+
+// Learned-baseline label for a topic with no static expected_hz (OL-②.3). Null
+// when a static rate is configured (it wins) or no baseline state is reported.
+export function formatBaseline(m: MonitorRow): string | null {
+  if (m.expected_hz) return null;
+  switch (m.baseline_state) {
+    case 'learning':
+      return 'learning…';
+    case 'stable':
+      return m.baseline_hz != null ? `~${m.baseline_hz.toFixed(1)} Hz` : 'baseline';
+    case 'unstable':
+      return m.baseline_hz != null
+        ? `~${m.baseline_hz.toFixed(1)} Hz (unstable)`
+        : 'unstable';
+    default:
+      return null;
+  }
 }
 
 // Late: prefer the header.stamp delay (ms); fall back to the receive-time
@@ -70,9 +93,33 @@ export function formatRateShortfall(m: MonitorRow): string | null {
   return lr >= 0.1 ? `${Math.round(lr * 100)}%` : `${(lr * 100).toFixed(1)}%`;
 }
 
-// The tooltip line for a row's health (backend reason, then late reason).
+// The tooltip line for a row's health (baseline state, then backend reason,
+// then late reason). During learning/instability the baseline state is the most
+// honest explanation (OL-②.3); otherwise the backend status reason wins.
 export function rowReason(m: MonitorRow): string | undefined {
+  if (m.baseline_state === 'learning') return 'learning baseline…';
+  if (m.baseline_state === 'unstable') return 'baseline unstable (using last good)';
   return m.status_reason ?? m.reason ?? undefined;
+}
+
+/** Tone for the monitor's own self-load health (OL-②.4). */
+export function selfLoadTone(s?: MonitorSelfLoad | null): Tone {
+  if (!s) return 'gray';
+  if (s.status === 'danger') return 'red';
+  if (s.status === 'warning') return 'amber';
+  return 'green';
+}
+
+// One-line summary of the monitor's own processing health (OL-②.4): mean
+// callback latency, snapshot age, and any dropped/coalesced callbacks. Null when
+// self-load metrics are off (the snapshot carries no `self_load`).
+export function formatSelfLoad(s?: MonitorSelfLoad | null): string | null {
+  if (!s) return null;
+  const parts: string[] = [];
+  if (s.callback_lag_ms != null) parts.push(`${s.callback_lag_ms.toFixed(1)} ms cb`);
+  if (s.snapshot_age_s != null) parts.push(`${s.snapshot_age_s.toFixed(1)} s age`);
+  if (s.dropped_callbacks) parts.push(`${s.dropped_callbacks} dropped`);
+  return parts.length ? parts.join(' · ') : null;
 }
 
 const STATUS_TONE: Record<TopicStatus, Tone> = {
@@ -122,6 +169,8 @@ export interface MonitorData {
   paused: boolean;
   alerts: AlertEvent[];
   isDiscovering: boolean;
+  /** The monitor's own processing health (OL-②.4); null when self-load is off. */
+  selfLoad: MonitorSelfLoad | null;
 }
 
 export function useMonitorRows(config?: RuntimeConfig): MonitorData {
@@ -168,6 +217,7 @@ export function useMonitorRows(config?: RuntimeConfig): MonitorData {
 
   const metrics: TopicMetric[] = metricsQuery.data?.topics ?? [];
   const paused = metricsQuery.data?.paused ?? false;
+  const selfLoad = metricsQuery.data?.self_load ?? null;
   const discovered: TopicInfo[] = asTopicList(topicsQuery.data ?? []);
 
   const rows: MonitorRow[] = useMemo(() => {
@@ -211,5 +261,6 @@ export function useMonitorRows(config?: RuntimeConfig): MonitorData {
     paused,
     alerts: alertsQuery.data ?? [],
     isDiscovering: topicsQuery.isPending,
+    selfLoad,
   };
 }

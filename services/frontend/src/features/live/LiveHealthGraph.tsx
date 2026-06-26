@@ -10,7 +10,10 @@
 // shortfall against the configured rate, not true message loss (see topic_monitor).
 
 import { useEffect, useMemo, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { Badge, Card, SectionLabel, StatusDot, cn } from '../../components/ui';
+import { queryKeys } from '../../api/queryKeys';
+import type { MetricsSnapshot } from '../../api/types';
 import type { MetricSample } from '../graph/useMetricHistory';
 import { statusTone } from '../monitor/useMonitorRows';
 import { DEFAULT_WARN_SHORTFALL_PCT, DEFAULT_DANGER_SHORTFALL_PCT } from '../monitor/thresholds';
@@ -207,11 +210,29 @@ export function LiveHealthGraph({
     [points],
   );
 
-  // Hz chart references the configured rate; the shortfall chart references the
-  // 2% / 5% status thresholds so a crossing is read directly off the line.
+  // Read the current learned baseline (OL-②.3) for THIS topic straight from the
+  // SSE-fed metrics cache (no extra subscription, no payload decode) — it is not
+  // carried on the accumulated history points. Only relevant when the topic has
+  // no static expected_hz; a static rate always wins.
+  const metricsQuery = useQuery<MetricsSnapshot>({
+    queryKey: queryKeys.metrics,
+    queryFn: () => {
+      throw new Error('SSE-only cache: written by useEventStream');
+    },
+    enabled: false,
+  });
+  const current = metricsQuery.data?.topics.find((t) => t.name === topic);
+  const baselineHz = expected == null ? (current?.baseline_hz ?? null) : null;
+  const baselineState = expected == null ? (current?.baseline_state ?? null) : null;
+
+  // Hz chart references the configured rate when set; otherwise the learned
+  // baseline (dashed teal). The shortfall chart references the 2% / 5% status
+  // thresholds so a crossing is read directly off the line.
   const hzRefs: RefLine[] = expected
     ? [{ v: expected, color: '#94a3b8', label: `expected ${expected} Hz` }]
-    : [];
+    : baselineHz != null
+      ? [{ v: baselineHz, color: '#14b8a6', label: `baseline ~${baselineHz.toFixed(1)} Hz` }]
+      : [];
   const shortfallRefs: RefLine[] = [
     { v: DEFAULT_WARN_SHORTFALL_PCT, color: '#d97706', label: 'warn 2%' },
     { v: DEFAULT_DANGER_SHORTFALL_PCT, color: '#dc2626', label: 'danger 5%' },
@@ -228,6 +249,16 @@ export function LiveHealthGraph({
         <Badge tone={statusTone(status)}>{status}</Badge>
         {expected != null && (
           <span className="font-mono text-[11px] text-gray-400">expected {expected} Hz</span>
+        )}
+        {expected == null && baselineState != null && (
+          <span
+            className="font-mono text-[11px] text-gray-400"
+            title="Learned Hz baseline (no static expected_hz). While learning the status stays unknown."
+          >
+            {baselineState === 'learning'
+              ? 'baseline learning…'
+              : `baseline ~${baselineHz?.toFixed(1) ?? '—'} Hz (${baselineState})`}
+          </span>
         )}
         {samplesLost > 0 && (
           <span title="DDS-reported dropped samples (real loss, not shortfall)">
@@ -267,7 +298,7 @@ export function LiveHealthGraph({
         select={(s) => s.hz}
         t0={t0}
         windowMs={windowMs}
-        floorMax={expected ? expected * 1.2 : 10}
+        floorMax={expected ? expected * 1.2 : baselineHz != null ? baselineHz * 1.2 : 10}
         digits={1}
         color="#0d9488"
         refs={hzRefs}
