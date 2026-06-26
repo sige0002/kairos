@@ -65,6 +65,57 @@ test('active recording (state=recording) shows Recording + a stop button', async
   expect(screen.queryByText('Idle')).not.toBeInTheDocument();
 });
 
+// OL-①.4: when a --start-paused recording armed with topics still missing, the
+// hero shows the arming strip (matched vs missing) so the operator sees the gap.
+test('active recording shows the arming strip when topics were still missing', async () => {
+  mockStatus(
+    {
+      run_id: 'run_1',
+      state: 'recording',
+      message_count: 10,
+      bytes: 2048,
+      arming: {
+        active: false,
+        matched_topics: ['/hsrb/joint_states'],
+        missing_topics: ['/hsrb/head_rgbd/depth'],
+        resume_at: '2026-06-27T00:00:00.000Z',
+      },
+    },
+    {
+      run_id: 'run_1',
+      state: 'recording',
+      operator: 'yuki',
+      task: 'pick',
+      started_at: '2026-06-26T00:00:00Z',
+      topics: [{ name: '/hsrb/joint_states', type: 't' }],
+    },
+  );
+  renderWithClient(<LiveTab config={CONFIG} />);
+
+  const note = await screen.findByTestId('arming-note');
+  expect(note).toHaveTextContent('1 matched');
+  expect(note).toHaveTextContent('1 missing');
+  expect(note).toHaveTextContent('/hsrb/head_rgbd/depth');
+});
+
+// The arming strip is absent for a plain (non-start-paused) recording: status
+// carries no arming, so nothing extra renders in the hero.
+test('no arming strip when the recorder reports no arming', async () => {
+  mockStatus(
+    { run_id: 'run_1', state: 'recording', message_count: 10, bytes: 2048 },
+    {
+      run_id: 'run_1',
+      state: 'recording',
+      started_at: '2026-06-26T00:00:00Z',
+      topics: [{ name: '/a', type: 't' }],
+    },
+  );
+  renderWithClient(<LiveTab config={CONFIG} />);
+
+  await waitFor(() => expect(screen.getByText('Recording')).toBeInTheDocument());
+  expect(screen.queryByTestId('arming-note')).not.toBeInTheDocument();
+});
+
 // Regression: typing operator/task then navigating away (Live tab unmounts)
 // and back must NOT reset them — they live in the persistent UI store.
 test('operator/task survive a remount (tab switch away and back)', async () => {
