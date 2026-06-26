@@ -213,7 +213,10 @@ def loss_report_schema(config: LossReportConfig) -> dict:
                     "Flag a topic when its worst gap exceeds "
                     "median_interval_ms * this multiplier."
                 ),
-                "minimum": 0,
+                # exclusiveMinimum (not minimum): coerce_multiplier rejects 0 and
+                # negatives back to the default, so the advertised contract must
+                # forbid them too (no silent value substitution).
+                "exclusiveMinimum": 0,
                 "default": config.gap_threshold_multiplier,
             },
         },

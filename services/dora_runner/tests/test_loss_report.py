@@ -119,6 +119,10 @@ def test_loss_report_schema_embeds_config_defaults() -> None:
     props = schema["properties"]
     assert props["gap_threshold_multiplier"]["default"] == 2.0
     assert props["target_topics"]["default"] == ["/hsrb/*"]
+    # Schema must forbid 0/negatives to match coerce_multiplier (no silent
+    # substitution): exclusiveMinimum, not minimum.
+    assert props["gap_threshold_multiplier"]["exclusiveMinimum"] == 0
+    assert "minimum" not in props["gap_threshold_multiplier"]
     # The registry carries the same config-driven loss_report params_schema.
     loss = build_default_registry(cfg).get("loss_report")
     assert loss is not None
