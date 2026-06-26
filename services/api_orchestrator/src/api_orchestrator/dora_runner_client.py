@@ -2,15 +2,24 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import httpx
+from kairos_common import ApiError, JobState
 
 from api_orchestrator.service_client import (
     DEFAULT_TIMEOUT_S,
     RETRIES,
     BaseServiceClient,
 )
+
+# Job states that mean the job has stopped (no further polling needed).
+_TERMINAL_STATES = {
+    JobState.succeeded.value,
+    JobState.failed.value,
+    JobState.canceled.value,
+}
 
 
 class DoraRunnerClient(BaseServiceClient):
@@ -47,6 +56,42 @@ class DoraRunnerClient(BaseServiceClient):
     async def job_result(self, job_id: str) -> dict[str, Any]:
         """Call ``GET /jobs/{id}/result``."""
         return await self._request("GET", f"/jobs/{job_id}/result")
+
+    async def run_job_to_completion(
+        self,
+        payload: dict[str, Any],
+        *,
+        interval: float = 0.1,
+        timeout: float = 120.0,
+    ) -> dict[str, Any]:
+        """Create a job and poll until it reaches a terminal state.
+
+        Used by synchronous orchestrator flows (e.g. dataset export) that must
+        know the outcome before responding. Creates the job, then polls
+        ``job_status`` every *interval* seconds until the state is terminal
+        (``succeeded`` / ``failed`` / ``canceled``). On ``succeeded`` it also
+        fetches ``job_result``. Returns ``{"state": <state>, "result": <result
+        dict or None>}``. Raises :class:`ApiError` 504 if *timeout* elapses
+        first (the underlying dora_runner job keeps running).
+        """
+        created = await self.create_job(payload)
+        job_id = str(created["job_id"])
+        loops = max(1, int(timeout / interval) + 1)
+        for _ in range(loops):
+            status = await self.job_status(job_id)
+            state = str(status.get("state", ""))
+            if state in _TERMINAL_STATES:
+                result: dict[str, Any] | None = None
+                if state == JobState.succeeded.value:
+                    result = await self.job_result(job_id)
+                return {"state": state, "result": result}
+            await asyncio.sleep(interval)
+        raise ApiError(
+            status_code=504,
+            code="job_timeout",
+            message="Timed out waiting for the dora_runner job to finish.",
+            details={"job_id": job_id, "timeout_s": timeout},
+        )
 
     async def cancel_job(self, job_id: str) -> dict[str, Any]:
         """Call ``POST /jobs/{id}/cancel``."""

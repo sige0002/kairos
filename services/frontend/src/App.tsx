@@ -16,19 +16,22 @@ import { RunsTab } from './features/runs/RunsTab';
 import { ValidationTab } from './features/validation/ValidationTab';
 import { DatasetTab } from './features/dataset/DatasetTab';
 import { ConfigTab } from './features/config/ConfigTab';
+import { SystemInfo } from './features/system/SystemInfo';
 import { Hexagon, StatusDot, cn } from './components/ui';
 import type { SseStatus } from './store/uiStore';
 
 // Human-readable labels for the registry-driven tabs. The set of tabs and
 // their enabled state come from the backend (GET /api/v1/config); this only
 // supplies default display names when the backend omits a label. The design
-// handoff IA: ライブ / グラフ / Runs / 検証 / データセット / Config.
+// handoff IA: Live / Graph / Recordings / Validation / Datasets / Config.
+// `runs` stays the internal tab id (backend contract); the label is the
+// operator-facing "Recordings" (the browsable history of recordings).
 const TAB_LABELS: Record<string, string> = {
-  live: 'ライブ',
-  graph: 'グラフ',
-  runs: 'Runs',
-  validation: '検証',
-  dataset: 'データセット',
+  live: 'Live',
+  graph: 'Graph',
+  runs: 'Recordings',
+  validation: 'Validation',
+  dataset: 'Datasets',
   config: 'Config',
 };
 
@@ -157,6 +160,24 @@ function ConnectionBadge() {
   );
 }
 
+/**
+ * Active ROS 2 domain id, shown as a small mono chip next to the connection
+ * badge (operator context). Hidden when the backend omits it.
+ */
+function DomainChip({ domainId }: { domainId?: number }) {
+  if (domainId === undefined) return null;
+  return (
+    <span
+      data-testid="ros-domain"
+      title={`ROS 2 domain ${domainId} (ROS_DOMAIN_ID)`}
+      className="inline-flex items-center gap-1.5 rounded-control border border-gray-200 bg-white px-3 py-2 font-mono text-[12.5px] font-semibold text-gray-600"
+    >
+      <span className="uppercase tracking-[0.04em] text-gray-400">DOMAIN</span>
+      {domainId}
+    </span>
+  );
+}
+
 /** Mounts the single SSE subscription for the app's lifetime. */
 function EventStreamMount({ url }: { url: string }) {
   useEventStream(url);
@@ -198,16 +219,28 @@ export function App() {
     <main className="min-h-screen bg-gray-50 p-[22px]">
       <EventStreamMount url={config.endpoints.events} />
       <header className="mb-[18px] flex flex-wrap items-center gap-4">
-        <div className="flex items-center gap-[11px]">
+        <a
+          href="/"
+          aria-label="kairos — recording console (home)"
+          title="kairos — recording console (home)"
+          className="flex items-center gap-[11px] rounded-control focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+        >
           <Hexagon />
           <span className="text-[21px] font-bold tracking-[-0.02em] text-gray-900">
             kairos
           </span>
-        </div>
+        </a>
         <div className="flex-1" />
-        <ConnectionBadge />
+        <div className="flex flex-col items-end gap-1.5">
+          <div className="flex flex-wrap items-center justify-end gap-3">
+            <DomainChip domainId={config.defaults.ros_domain_id} />
+            <ConnectionBadge />
+          </div>
+          <SystemInfo className="justify-end pr-1" />
+        </div>
         <div
-          aria-hidden
+          aria-label="kairos brand mark"
+          title="kairos — recording console"
           className="flex h-[34px] w-[34px] items-center justify-center rounded-full border border-gray-200 bg-gray-100 text-[13px] font-semibold text-gray-600"
         >
           K

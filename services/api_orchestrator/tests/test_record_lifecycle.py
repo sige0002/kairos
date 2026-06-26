@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import patch
 
-from api_orchestrator.models import Run, RunState
+import httpx
+from api_orchestrator.models import RecordStartRequest, Run, RunState
+from api_orchestrator.recorder_client import RecorderClient
+from api_orchestrator.runs import RunService
 from api_orchestrator.store import RunStore
 from conftest import FakeRecorder
 from fastapi.testclient import TestClient
@@ -287,3 +291,41 @@ def test_start_503_when_stale_run_and_recorder_unreachable(
     assert resp.json()["error"]["code"] == "recorder_unreachable"
     # Stale row untouched (a later start/startup with the recorder up fixes it).
     assert store.get(stale).state.value == "recording"
+
+
+class _SpyHub:
+    """Records every publish() so we can assert record_status emission."""
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict]] = []
+
+    async def publish(self, event_type: str, data: dict) -> None:
+        self.events.append((event_type, data))
+
+
+def test_lifecycle_emits_record_status_events(
+    fake_recorder: FakeRecorder, store: RunStore
+) -> None:
+    """start() and stop() must publish record_status SSE events.
+
+    Regression: ``_emit_record_status`` was defined but never called, so the
+    frontend record_status handler was dead and the Live hero only saw 5s polls.
+    """
+    hub = _SpyHub()
+
+    async def run_it() -> None:
+        http_client = httpx.AsyncClient(
+            transport=httpx.MockTransport(fake_recorder.handler)
+        )
+        recorder = RecorderClient("http://recorder", http_client)
+        svc = RunService(store, recorder, recording_config=None, event_hub=hub)
+        await svc.start(RecordStartRequest(topics=["/tf"]))
+        await svc.stop()
+        await http_client.aclose()
+
+    asyncio.run(run_it())
+
+    states = [d["state"] for (et, d) in hub.events if et == "record_status"]
+    assert "recording" in states  # emitted on start
+    assert "stopping" in states  # emitted on stop entry
+    assert states[-1] in {"completed", "failed", "interrupted"}  # terminal

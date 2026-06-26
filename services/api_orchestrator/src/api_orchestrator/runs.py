@@ -19,6 +19,7 @@ owns only the live recording session and its audit manifest.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import shutil
 from datetime import UTC, datetime
@@ -36,6 +37,7 @@ from api_orchestrator.events import EVENT_RECORD_STATUS, EventHub
 from api_orchestrator.models import (
     RecordStartRequest,
     Run,
+    RunDetail,
     RunError,
     RunState,
     RunTopic,
@@ -50,6 +52,17 @@ logger = logging.getLogger("kairos")
 # Bound on suffix-retries when an allocated run_id collides with an existing
 # row (same-second / rapid starts). Practically one retry suffices.
 _MAX_RUN_ID_ATTEMPTS = 50
+
+# Placeholders for empty session metadata. Dataset export keys directory paths
+# on operator/task (data/<operator>/<task>), so a null component must not slip
+# through — every recording stays addressable.
+_UNKNOWN_OPERATOR = "unknown_operator"
+_UNKNOWN_TASK = "unknown_task"
+
+
+def _default_meta(value: str | None, default: str) -> str:
+    """Coerce an empty/whitespace metadata field to a stable placeholder."""
+    return value.strip() if value and value.strip() else default
 
 
 def allocate_run_id(now: datetime | None = None) -> str:
@@ -81,17 +94,55 @@ class RunService:
         recording_config: RecordingConfig | None,
         event_hub: EventHub | None = None,
         recorded_dir: str | Path = "/data/recorded",
+        data_dir: str | Path | None = None,
     ) -> None:
         self._store = store
         self._recorder = recorder
         self._config = recording_config
         self._event_hub = event_hub
-        # Recording output root; used to remove a run's directory on delete.
+        # Recording output root; used to remove a run's directory on delete and
+        # to read a run's manifest sidecar for the detail view.
         self._recorded_dir = Path(recorded_dir)
+        # Data root (holds report/ alongside recorded/). Derived from the
+        # recorded dir's parent when not given (prod: /data/recorded -> /data).
+        self._data_dir = (
+            Path(data_dir) if data_dir is not None else self._recorded_dir.parent
+        )
         # Serializes the whole start/stop lifecycle (check-active -> call
         # recorder -> update state) so concurrent requests cannot interleave
         # and orphan a row or diverge from the recorder's single session.
         self._lifecycle_lock = asyncio.Lock()
+
+    @property
+    def recorded_dir(self) -> Path:
+        """Recording output root (``data/recorded``); a run dir lives under it."""
+        return self._recorded_dir
+
+    @property
+    def data_dir(self) -> Path:
+        """Shared data root (holds ``recorded/`` + ``report/`` + the dataset tree)."""
+        return self._data_dir
+
+    def list_completed_with_files(self) -> list[Run]:
+        """Return completed runs whose recording dir still exists on disk.
+
+        These are the runs eligible for dataset export (bulk "export all"): a
+        completed run whose ``recorded/<run_id>`` directory is present. A run
+        already exported (dir moved away) or never written is skipped.
+        """
+        runs = self._store.list_by_states([RunState.completed])
+        return [r for r in runs if (self._recorded_dir / r.run_id).is_dir()]
+
+    def set_recording_config(self, config: RecordingConfig | None) -> None:
+        """Swap the in-memory RECORDING_CONFIG used for next-start resolution.
+
+        Called when the Config tab persists an edited config (PUT
+        ``/api/v1/config/recording``). Only affects topic resolution for the
+        *next* ``start`` (``default_topics`` when a request omits ``topics``);
+        in-flight runs are untouched, and recorder/monitor QoS still needs a
+        service restart since those caches load at startup.
+        """
+        self._config = config
 
     async def _emit_record_status(self, run: Run) -> None:
         """Publish a ``record_status`` SSE event for *run* (no-op without a hub)."""
@@ -121,6 +172,11 @@ class RunService:
         :meth:`_verify_no_active_recording`), so a crash-left row can never
         block new recordings forever; a genuinely-active recording yields 409.
         """
+        # Normalize session metadata so every recording is keyable for dataset
+        # export: empty/whitespace operator/task become stable placeholders (the
+        # dataset path is data/<operator>/<task>; a null component is unkeyable).
+        req.operator = _default_meta(req.operator, _UNKNOWN_OPERATOR)
+        req.task = _default_meta(req.task, _UNKNOWN_TASK)
         # Resolve topics before taking the lock (pure validation, may 400/422).
         topics = self._resolve_topics(req.topics)
         async with self._lifecycle_lock:
@@ -136,16 +192,20 @@ class RunService:
                 logger.warning(
                     "recorder start failed", extra={"run_id": run_id, "code": exc.code}
                 )
-                return self._update(
+                failed = self._update(
                     run_id,
                     state=RunState.failed,
                     ended_at=utc_now_iso8601(),
                     error=RunError(code=exc.code, message=exc.message),
                 )
+                await self._emit_record_status(failed)
+                return failed
 
             self._update(run_id, state=RunState.recording)
             # Sync resolved topics/types/QoS ("all" expansion) from the recorder.
-            return await self._sync_metadata(run_id, allow_partial=True)
+            run = await self._sync_metadata(run_id, allow_partial=True)
+            await self._emit_record_status(run)
+            return run
 
     def _create_unique_run(self, req: RecordStartRequest) -> Run:
         """Allocate a unique ``run_id`` and insert the ``created`` row.
@@ -251,7 +311,8 @@ class RunService:
                 # raise 404 only if there has never been a run at all).
                 return self._last_run_or_idle()
 
-            self._update(active.run_id, state=RunState.stopping)
+            stopping = self._update(active.run_id, state=RunState.stopping)
+            await self._emit_record_status(stopping)
             await self._recorder.stop()
             # Re-sync final metadata; never fail the stop just because sync did.
             run = await self._sync_metadata(active.run_id, allow_partial=True)
@@ -262,7 +323,9 @@ class RunService:
             }
             if error is not None:
                 fields["error"] = error
-            return self._update(run.run_id, **fields)
+            final = self._update(run.run_id, **fields)
+            await self._emit_record_status(final)
+            return final
 
     async def _final_state(self, run: Run) -> tuple[RunState, RunError | None]:
         """Derive a stopped run's real terminal state from the recorder.
@@ -288,6 +351,11 @@ class RunService:
                     code=str(err["code"]),
                     message=str(err.get("message", "")),
                 )
+            elif isinstance(err, str) and err:
+                # The recorder writes manifest.error as a plain string; without
+                # this a failed recording would surface state=failed with no
+                # reason. Map it to a structured error.
+                recorder_error = RunError(code="recorder_failed", message=err)
         except ApiError:
             recorder_state = None
 
@@ -327,9 +395,29 @@ class RunService:
         )
 
     def _active_run(self) -> Run | None:
-        """Return the single run currently recording/stopping, if any."""
+        """Return the single run currently recording/stopping, if any.
+
+        ``start()`` enforces the single-session invariant, but if more than one
+        row is ever non-terminal (e.g. a crash left a ``stopping`` row and a
+        forced start created another), reconcile the older ones to
+        ``interrupted`` rather than silently ignore them (BUG-E), and return the
+        newest (``list_by_states`` is seq-ascending).
+        """
         active = self._store.list_by_states([RunState.recording, RunState.stopping])
-        return active[-1] if active else None
+        if not active:
+            return None
+        if len(active) > 1:
+            logger.warning(
+                "multiple active runs; reconciling stale ones to interrupted",
+                extra={"run_ids": [r.run_id for r in active]},
+            )
+            for stale in active[:-1]:
+                self._update(
+                    stale.run_id,
+                    state=RunState.interrupted,
+                    ended_at=utc_now_iso8601(),
+                )
+        return active[-1]
 
     def _update(self, run_id: str, **fields: Any) -> Run:
         """Update a run, mapping a missing row to a unified 404.
@@ -367,6 +455,34 @@ class RunService:
             )
         return run
 
+    def get_detail(self, run_id: str) -> RunDetail:
+        """Return a run enriched with its on-disk manifest + report sidecars.
+
+        The SQLite row stays the source of truth; the manifest / validation /
+        dataset_stats are read best-effort and are ``null`` when absent (a run
+        whose files were deleted still returns cleanly).
+        """
+        run = self.get(run_id)  # 404 if absent
+        return RunDetail(
+            **run.model_dump(),
+            manifest=self._read_json(self._recorded_dir / run_id / "manifest.json"),
+            validation=self._read_json(self._report_path("fast_validation", run_id)),
+            dataset_stats=self._read_json(self._report_path("dataset_export", run_id)),
+            loss=self._read_json(self._report_path("loss_report", run_id)),
+        )
+
+    def _report_path(self, pipeline: str, run_id: str) -> Path:
+        return self._data_dir / "report" / pipeline / run_id / "summary.json"
+
+    @staticmethod
+    def _read_json(path: Path) -> dict[str, Any] | None:
+        """Best-effort read of a JSON sidecar (``None`` on any failure)."""
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return data if isinstance(data, dict) else None
+
     def delete(self, run_id: str) -> None:
         """Delete a run: its recording directory + session.json and the row.
 
@@ -383,11 +499,20 @@ class RunService:
                 message="Cannot delete a run that is still recording; stop it first.",
                 details={"run_id": run_id, "state": run.state.value},
             )
-        run_path = self._recorded_dir / run_id
-        try:
-            shutil.rmtree(run_path, ignore_errors=True)
-        except OSError:  # pragma: no cover - ignore_errors already swallows most
-            logger.warning("could not remove recording dir", extra={"run_id": run_id})
+        # Remove the run dir (best-effort; ignore_errors covers a missing dir,
+        # e.g. a failed-start run that never created one).
+        shutil.rmtree(self._recorded_dir / run_id, ignore_errors=True)
+        # Sibling files the recorder writes next to the run dir (BUG-B): a
+        # failed-start run has ONLY these, and a crash can leak the qos file.
+        for sibling in (f"{run_id}.qos.yaml", f"{run_id}.failed.json"):
+            (self._recorded_dir / sibling).unlink(missing_ok=True)
+        # This run's post-hoc report sidecars (validation / loss / dataset /
+        # video). The exported dataset tree under data/<operator>/<task> is an
+        # intentional artifact and is deliberately NOT removed here.
+        report_root = self._data_dir / "report"
+        if report_root.is_dir():
+            for pipeline_dir in report_root.iterdir():
+                shutil.rmtree(pipeline_dir / run_id, ignore_errors=True)
         self._store.delete(run_id)
 
     def list_runs(self, limit: int, cursor: str | None) -> tuple[list[Run], str | None]:

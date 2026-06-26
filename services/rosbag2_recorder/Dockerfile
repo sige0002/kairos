@@ -34,9 +34,13 @@ ENV PATH="$VENV/bin:$PATH"
 COPY --from=builder /opt/venv /opt/venv
 
 # MCAP is the canonical recording format; install the rosbag2 MCAP storage
-# plugin so `ros2 bag record --storage mcap` works.
+# plugin so `ros2 bag record --storage mcap` works. Also bundle the Cyclone DDS
+# RMW so the image can talk to either Fast DDS (default) or Cyclone DDS robots
+# by switching RMW_IMPLEMENTATION at deploy time (ROS 2 requires the same RMW on
+# both ends; cross-vendor interop is not supported). See docs/specs/*/config.md.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ros-${ROS_DISTRO}-rosbag2-storage-mcap \
+        ros-${ROS_DISTRO}-rmw-cyclonedds-cpp \
     && rm -rf /var/lib/apt/lists/*
 
 # Internal service port (reached at localhost:8010 under host networking).

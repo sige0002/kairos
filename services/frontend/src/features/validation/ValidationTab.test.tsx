@@ -58,7 +58,7 @@ test('submits fast_validation with a run_id and renders the pass/fail result', a
     expect((screen.getByLabelText('run') as HTMLSelectElement).querySelector('option[value="run_001"]')).not.toBeNull(),
   );
   fireEvent.change(screen.getByLabelText('run'), { target: { value: 'run_001' } });
-  fireEvent.click(screen.getByRole('button', { name: '検証を起動' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Run validation' }));
 
   // Contract: the job carries a run_id (codex finding) + the chosen template.
   await waitFor(() => expect(postedBody).not.toBeNull());

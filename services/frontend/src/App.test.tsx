@@ -68,12 +68,12 @@ test('render-gates on backend config, then shows the registry-driven tabs', asyn
   expect(screen.getByText(/Loading kairos/i)).toBeInTheDocument();
 
   await waitFor(() => {
-    expect(screen.getByRole('tab', { name: 'ライブ' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Live' })).toBeInTheDocument();
   });
   // Disabled tab from config is rendered but disabled.
-  expect(screen.getByRole('tab', { name: 'データセット' })).toBeDisabled();
+  expect(screen.getByRole('tab', { name: 'Datasets' })).toBeDisabled();
   // First enabled tab is selected by default.
-  expect(screen.getByRole('tab', { name: 'ライブ' })).toHaveAttribute(
+  expect(screen.getByRole('tab', { name: 'Live' })).toHaveAttribute(
     'aria-selected',
     'true',
   );
@@ -81,11 +81,11 @@ test('render-gates on backend config, then shows the registry-driven tabs', asyn
 
 test('only enabled tabs are selectable; disabled tabs render but cannot activate', async () => {
   renderWithClient(<App />);
-  await waitFor(() => screen.getByRole('tab', { name: 'ライブ' }));
+  await waitFor(() => screen.getByRole('tab', { name: 'Live' }));
 
-  const enabled = ['ライブ', 'グラフ', 'Runs', '検証', 'Config'];
+  const enabled = ['Live', 'Graph', 'Recordings', 'Validation', 'Config'];
   for (const name of enabled) {
     expect(screen.getByRole('tab', { name })).toBeEnabled();
   }
-  expect(screen.getByRole('tab', { name: 'データセット' })).toBeDisabled();
+  expect(screen.getByRole('tab', { name: 'Datasets' })).toBeDisabled();
 });

@@ -91,6 +91,22 @@ class ConfigCatalog:
             )
         self._active[category] = option_id
 
+    def validation_template_by_id(self, option_id: str) -> ValidationTemplate | None:
+        """Load the validation template with id *option_id* (file stem).
+
+        Returns ``None`` if no such template exists or it fails to parse. Used to
+        resolve a UI-selected template *id* into the full object injected into a
+        ``fast_validation`` job (the dora_runner template store is otherwise
+        empty, so forwarding a bare id always 404s).
+        """
+        path = self._validation_files().get(option_id)
+        if path is None:
+            return None
+        try:
+            return load_validation_template(path)
+        except (ValueError, OSError):
+            return None
+
     def active_validation_template(self) -> ValidationTemplate | None:
         """Load the active validation template (falls back to any available)."""
         files = self._validation_files()

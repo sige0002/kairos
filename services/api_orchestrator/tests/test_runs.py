@@ -89,6 +89,68 @@ def test_get_missing_run_is_404(client: TestClient) -> None:
     assert resp.json()["error"]["code"] == "run_not_found"
 
 
+def _detail_service(store: RunStore, tmp_path) -> RunService:
+    """A RunService whose recorded/data roots point at *tmp_path* (no recorder
+    calls happen in get_detail, so a never-used mock transport is fine)."""
+    import httpx
+    from api_orchestrator.recorder_client import RecorderClient
+
+    http_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _req: httpx.Response(404))
+    )
+    return RunService(
+        store,
+        RecorderClient("http://recorder", http_client),
+        None,
+        recorded_dir=tmp_path / "recorded",
+        data_dir=tmp_path,
+    )
+
+
+def test_get_detail_reads_manifest_and_report_sidecars(
+    store: RunStore, tmp_path
+) -> None:
+    import json
+
+    run_dir = tmp_path / "recorded" / "run_x"
+    run_dir.mkdir(parents=True)
+    (run_dir / "manifest.json").write_text(
+        json.dumps({"state": "completed", "error": None}), encoding="utf-8"
+    )
+    val = tmp_path / "report" / "fast_validation" / "run_x"
+    val.mkdir(parents=True)
+    (val / "summary.json").write_text(json.dumps({"result": "pass"}), encoding="utf-8")
+    ds = tmp_path / "report" / "dataset_export" / "run_x"
+    ds.mkdir(parents=True)
+    (ds / "summary.json").write_text(
+        json.dumps({"index": "001", "dataset_dir": "/data/yuki/pick/001"}),
+        encoding="utf-8",
+    )
+    loss = tmp_path / "report" / "loss_report" / "run_x"
+    loss.mkdir(parents=True)
+    (loss / "summary.json").write_text(
+        json.dumps({"run_id": "run_x", "topics": [{"name": "/tf", "loss_rate": 0.0}]}),
+        encoding="utf-8",
+    )
+    store.create(Run(run_id="run_x", state=RunState.completed))
+
+    detail = _detail_service(store, tmp_path).get_detail("run_x")
+
+    assert detail.manifest is not None and detail.manifest["state"] == "completed"
+    assert detail.validation is not None and detail.validation["result"] == "pass"
+    assert detail.dataset_stats is not None and detail.dataset_stats["index"] == "001"
+    assert detail.loss is not None and detail.loss["topics"][0]["name"] == "/tf"
+
+
+def test_get_detail_missing_sidecars_are_null(store: RunStore, tmp_path) -> None:
+    store.create(Run(run_id="run_y", state=RunState.completed))
+    detail = _detail_service(store, tmp_path).get_detail("run_y")
+    assert detail.manifest is None
+    assert detail.validation is None
+    assert detail.dataset_stats is None
+    assert detail.loss is None
+
+
 def test_update_missing_run_maps_to_404(app: FastAPI) -> None:
     """Updating a non-existent run yields a unified 404, not a bare 500.
 

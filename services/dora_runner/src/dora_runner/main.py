@@ -10,6 +10,8 @@ from fastapi import FastAPI, Query, status
 from fastapi.routing import APIRoute
 from kairos_common import ApiError, JobState, Settings, create_app, get_settings
 
+from dora_runner.dataset_export import run_dataset_export
+from dora_runner.loss_report import run_loss_report
 from dora_runner.models import (
     JobCreateRequest,
     JobCreateResponse,
@@ -23,8 +25,17 @@ from dora_runner.models import (
 from dora_runner.pipelines import PIPELINES
 from dora_runner.store import JobRecord, RunnerStore
 from dora_runner.validation import generate_template, run_fast_validation
+from dora_runner.video_check import run_video_check
 
 SERVICE_NAME = "dora_runner"
+
+# Pipelines the worker can actually execute (others are interface-only).
+_IMPLEMENTED_PIPELINES = {
+    "fast_validation",
+    "dataset_export",
+    "loss_report",
+    "video_check",
+}
 
 
 def _override_readyz(app: FastAPI) -> None:
@@ -63,7 +74,7 @@ def create_dora_app(settings: Settings | None = None) -> FastAPI:
         "/jobs", response_model=JobCreateResponse, status_code=status.HTTP_201_CREATED
     )
     async def create_job(body: JobCreateRequest) -> JobCreateResponse:
-        if body.pipeline != "fast_validation":
+        if body.pipeline not in _IMPLEMENTED_PIPELINES:
             raise ApiError(
                 status_code=400,
                 code="pipeline_unavailable",
@@ -107,12 +118,16 @@ def create_dora_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/jobs/{job_id}/cancel", response_model=JobStatus)
     async def cancel_job(job_id: str) -> JobStatus:
         job = await _get_job(store, job_id)
-        if job.state in {JobState.queued, JobState.running}:
-            job.state = JobState.canceled
-            job.progress = min(job.progress, 1.0)
-            job.logs_tail.append("Job canceled.")
-            if job.task is not None:
-                job.task.cancel()
+        async with store.lock:
+            cancellable = job.state in {JobState.queued, JobState.running}
+            if cancellable:
+                job.state = JobState.canceled
+                job.progress = min(job.progress, 1.0)
+                job.logs_tail.append("Job canceled.")
+        # Signal the task outside the lock; the worker re-checks `canceled`
+        # under the lock before writing any terminal state (BUG-D).
+        if cancellable and job.task is not None:
+            job.task.cancel()
         return job.status()
 
     @app.get("/validation/templates", response_model=ValidationTemplateListResponse)
@@ -139,6 +154,13 @@ def create_dora_app(settings: Settings | None = None) -> FastAPI:
     async def generate(body: TemplateGenerateRequest) -> ValidationTemplate:
         try:
             return generate_template(body.run_id, data_dir)
+        except ValueError as exc:
+            raise ApiError(
+                status_code=400,
+                code="invalid_run_id",
+                message=str(exc),
+                details={"run_id": body.run_id},
+            ) from exc
         except FileNotFoundError as exc:
             raise ApiError(
                 status_code=404,
@@ -202,43 +224,91 @@ async def _resolve_template(
 async def _execute_job(job: JobRecord, store: RunnerStore, data_dir: Path) -> None:
     """Run a queued job in the process-local async worker."""
     try:
-        job.state = JobState.running
-        job.progress = 0.1
-        job.logs_tail.append("Job started.")
-        template = await _resolve_template(job, store, data_dir)
-        job.progress = 0.4
-        result = await asyncio.to_thread(
-            run_fast_validation,
-            run_id=job.run_id,
-            data_dir=data_dir,
-            template=template,
-        )
-        job.result = JobResult.model_validate(result)
-        job.progress = 1.0
-        job.state = JobState.succeeded
-        job.logs_tail.append("Job succeeded.")
+        async with store.lock:
+            # Cancelled before the worker started (between create and here) —
+            # honour it instead of clobbering canceled with running (BUG-D).
+            if job.state == JobState.canceled:
+                return
+            job.state = JobState.running
+            job.progress = 0.1
+            job.logs_tail.append("Job started.")
+        if job.pipeline == "dataset_export":
+            result = await asyncio.to_thread(
+                run_dataset_export,
+                run_id=job.run_id,
+                data_dir=data_dir,
+            )
+        elif job.pipeline == "loss_report":
+            result = await asyncio.to_thread(
+                run_loss_report,
+                run_id=job.run_id,
+                data_dir=data_dir,
+            )
+        elif job.pipeline == "video_check":
+            topic = job.params.get("topic")
+            if not topic or not str(topic).strip():
+                raise ApiError(
+                    status_code=400,
+                    code="topic_required",
+                    message="video_check requires a camera 'topic' param.",
+                )
+            result = await asyncio.to_thread(
+                run_video_check,
+                run_id=job.run_id,
+                data_dir=data_dir,
+                topic=str(topic),
+            )
+        else:  # fast_validation
+            template = await _resolve_template(job, store, data_dir)
+            job.progress = 0.4
+            result = await asyncio.to_thread(
+                run_fast_validation,
+                run_id=job.run_id,
+                data_dir=data_dir,
+                template=template,
+            )
+        validated = JobResult.model_validate(result)
+        async with store.lock:
+            # Cancelled while the work ran in the threadpool (which can't be
+            # interrupted): keep it canceled rather than clobber with succeeded.
+            if job.state == JobState.canceled:
+                return
+            job.result = validated
+            job.progress = 1.0
+            job.state = JobState.succeeded
+            job.logs_tail.append("Job succeeded.")
     except asyncio.CancelledError:
+        # Reached because cancel_job already set `canceled` under the lock and
+        # cancelled the task; just record it (idempotent).
         job.state = JobState.canceled
         job.logs_tail.append("Job canceled.")
     except ApiError as exc:
-        job.state = JobState.failed
-        job.progress = 1.0
-        job.logs_tail.append(exc.message)
-        job.result = JobResult(
-            summary={"result": "fail", "error": exc.to_model().model_dump()},
-            artifacts=[],
-        )
+        async with store.lock:
+            # A concurrent cancel must win over a failing worker (BUG-D): don't
+            # clobber `canceled` with `failed`.
+            if job.state == JobState.canceled:
+                return
+            job.state = JobState.failed
+            job.progress = 1.0
+            job.logs_tail.append(exc.message)
+            job.result = JobResult(
+                summary={"result": "fail", "error": exc.to_model().model_dump()},
+                artifacts=[],
+            )
     except Exception as exc:  # noqa: BLE001 - job failures are status, not 500s.
-        job.state = JobState.failed
-        job.progress = 1.0
-        job.logs_tail.append(str(exc))
-        job.result = JobResult(
-            summary={
-                "result": "fail",
-                "error": {"code": "job_failed", "message": str(exc)},
-            },
-            artifacts=[],
-        )
+        async with store.lock:
+            if job.state == JobState.canceled:
+                return
+            job.state = JobState.failed
+            job.progress = 1.0
+            job.logs_tail.append(str(exc))
+            job.result = JobResult(
+                summary={
+                    "result": "fail",
+                    "error": {"code": "job_failed", "message": str(exc)},
+                },
+                artifacts=[],
+            )
 
 
 app = create_dora_app()

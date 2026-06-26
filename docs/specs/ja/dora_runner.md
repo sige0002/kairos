@@ -40,7 +40,14 @@
 ## 実行可能パイプライン（図）
 
 - `fast_validation` / `full_validation` / `dataset_convert` / `dataset_validation`
-- **v1 実装スコープ**: まず **`fast_validation` = 必須トピックの有無チェック** + **検証テンプレートの作成**。他は I/F とプラグイン枠だけ用意し、順次実装する。
+- **実装済み（`enabled=true`）**: `fast_validation` / `dataset_export` / `loss_report` / `video_check`（下記）。`full_validation` / `dataset_convert` / `dataset_validation` は I/F とプラグイン枠のみ（`enabled=false`）。
+- すべてのジョブは `POST /jobs`（`api_orchestrator` がプロキシ）経由で起動する。各パイプラインは `run_id`（`^[A-Za-z0-9_-]+$`）を検証してパストラバーサルを防ぐ。
+
+## 実装済みパイプライン
+
+- **`dataset_export`** — `recorded/<run_id>` を `data/<operator>/<task>/<NNN>` へ**移動**する（operator / task は run の `session.json` 由来。`NNN` は 001, 002… のゼロ詰め自動採番。パスコンポーネントはサニタイズ）。同一マウント上のファイル単位リネームなので大容量 bag でも高速。**移動後は `recorded/` から収録物が消える**（オーケストレータは完了した run のみ export し、`NNN` を確保してからファイルを移すため中断時もデータ消失しない）。`recorded/<run_id>` と兄弟ファイル（`.qos.yaml` / `.failed.json`）も削除し、`<NNN>/dataset.json` に来歴を保存。レポート: `data/report/dataset_export/<run_id>/summary.json`。バルク／個別の起動はオーケストレータの `POST /api/v1/datasets/export(-all)` 経由（成功後に run 行も削除）。
+- **`loss_report`** — ロボット非依存・config 不要の per-topic ロス推定。完了した MCAP のメッセージ log_time から、トピックごとの**中央値の到着間隔**を求め、`loss ≈ 1 − actual/expected` を算出する（読み取りのみ・ペイロードを decode しない）。レポート: `data/report/loss_report/<run_id>/summary.json`。
+- **`video_check`** — オンデマンド（params `{topic}`）の `CompressedImage`→mp4 プレビュー。PyAV（`av` + `Pillow`）で生成し、これらは**遅延 import**するためパッケージ不在でもサービスは起動できる（不在時は明確な失敗ジョブになる）。出力は `data/report/video_check/<run_id>/<topic>.mp4`、`GET /api/v1/files/...` で配信。フレーム上限 900。
 
 ## 検証（v1）: 必須トピック + テンプレート
 
@@ -87,10 +94,11 @@ MCAP → dora dataflow（validator / converter / AI nodes）→ reports / conver
 
 ## 実装状況と開発ガイド
 
-本書は**設計の正本（将来像を含む）**。**現状の実装は v1** で、有効な pipeline は `fast_validation`
-（必須トピックの過不足チェック）のみ。`full_validation` / `dataset_convert` / `dataset_validation` は
-I/F だけ（`enabled=false`）。Plugin/Pipeline Registry・dora dataflow（YAML）・dora daemon・AI node・
-job/template の永続化は**未実装**で、`fast_validation` は in-process の node 関数として実装されている。
+本書は**設計の正本（将来像を含む）**。**現状の有効 pipeline は `fast_validation` / `dataset_export` /
+`loss_report` / `video_check`**（上記「実装済みパイプライン」参照）。`full_validation` / `dataset_convert` /
+`dataset_validation` は I/F だけ（`enabled=false`）。Plugin/Pipeline Registry・dora dataflow（YAML）・
+dora daemon・AI node・job/template の永続化は**未実装**で、各パイプラインは in-process の node 関数として
+実装されている（重い読込・エンコードは worker のスレッドに退避）。
 
 validation チェックの追加方法・単体試験・ローカル CLI（`python -m dora_runner.cli`）でのデバッグ手順は、
 開発者ガイド [docs/dora/README.ja.md](../../dora/README.ja.md) を参照。

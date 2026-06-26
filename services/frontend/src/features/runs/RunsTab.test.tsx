@@ -6,8 +6,45 @@ import { RunsTab } from './RunsTab';
 
 beforeEach(() => {
   setApiBase('/api/v1');
+  // Each video_check job gets a distinct id (one per camera topic) so multiple
+  // players poll independently; the result file is derived from the topic.
+  const videoJobs: Record<string, string> = {};
+  let videoCounter = 0;
   vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     const url = String(input);
+    if (url.includes('/jobs') && (init as RequestInit | undefined)?.method === 'POST') {
+      const body = String((init as RequestInit | undefined)?.body ?? '');
+      if (body.includes('video_check')) {
+        const topic = (JSON.parse(body).params?.topic as string) ?? '';
+        const jobId = `job-video-${++videoCounter}`;
+        videoJobs[jobId] = topic;
+        return Promise.resolve(
+          jsonResponse({ job_id: jobId, run_id: 'run-1', pipeline: 'video_check', state: 'queued' }),
+        );
+      }
+      return Promise.resolve(
+        jsonResponse({ job_id: 'job-loss', run_id: 'run-1', pipeline: 'loss_report', state: 'queued' }),
+      );
+    }
+    if (url.includes('/jobs/job-loss/status')) {
+      return Promise.resolve(jsonResponse({ job_id: 'job-loss', state: 'succeeded' }));
+    }
+    const vStatus = url.match(/\/jobs\/(job-video-\d+)\/status/);
+    if (vStatus) {
+      return Promise.resolve(jsonResponse({ job_id: vStatus[1], state: 'succeeded' }));
+    }
+    const vResult = url.match(/\/jobs\/(job-video-\d+)\/result/);
+    if (vResult) {
+      const topic = videoJobs[vResult[1]!] ?? '';
+      const slug = topic.replace(/^\//, '').replace(/\//g, '_');
+      const file = `report/video_check/run-1/${slug}.mp4`;
+      return Promise.resolve(
+        jsonResponse({
+          summary: { run_id: 'run-1', topic, frames: 120, fps: 15, file },
+          artifacts: [file],
+        }),
+      );
+    }
     if (url.includes('/runs/run-1')) {
       if ((init as RequestInit | undefined)?.method === 'DELETE') {
         return Promise.resolve(new Response(null, { status: 204 }));
@@ -18,9 +55,19 @@ beforeEach(() => {
           state: 'completed',
           started_at: '2026-06-24T01:00:00.000Z',
           ended_at: '2026-06-24T01:05:00.000Z',
-          topics: [{ name: '/tf', type: 'tf2_msgs/TFMessage' }],
+          topics: [
+            { name: '/tf', type: 'tf2_msgs/TFMessage' },
+            { name: '/cam/image_raw/compressed', type: 'sensor_msgs/CompressedImage' },
+            { name: '/cam2/image_raw/compressed', type: 'sensor_msgs/CompressedImage' },
+          ],
           compression: 'zstd',
           manifest: { version: 1 },
+          loss: {
+            run_id: 'run-1',
+            topics: [
+              { name: '/scan', type: 'sensor_msgs/LaserScan', hz: 10, loss_rate: 0, gap_max_ms: 105 },
+            ],
+          },
         }),
       );
     }
@@ -54,6 +101,81 @@ test('lists runs and opens a detail view with manifest', async () => {
   expect(screen.getByText('zstd')).toBeInTheDocument();
   // Manifest is rendered in a collapsible JSON block.
   expect(screen.getByText('Manifest')).toBeInTheDocument();
+});
+
+test('renders the loss table and runs a loss_report job', async () => {
+  renderWithClient(<RunsTab />);
+
+  await waitFor(() => expect(screen.getByText('run-1')).toBeInTheDocument());
+  fireEvent.click(screen.getByRole('button', { name: /run-1/ }));
+  await waitFor(() => expect(screen.getByText('/tf')).toBeInTheDocument());
+
+  // The loss section + its table (from run.loss) are present for a completed run.
+  expect(screen.getByText('Loss report')).toBeInTheDocument();
+  expect(screen.getByText('Max gap (ms)')).toBeInTheDocument();
+  expect(screen.getByText('0%')).toBeInTheDocument();
+
+  // Launching the job POSTs a loss_report job for this run.
+  fireEvent.click(screen.getByRole('button', { name: 'Run loss report' }));
+  await waitFor(() => {
+    const calls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls;
+    expect(
+      calls.some(
+        (c) =>
+          String(c[0]).includes('/jobs') &&
+          (c[1] as RequestInit | undefined)?.method === 'POST' &&
+          String((c[1] as RequestInit).body).includes('loss_report'),
+      ),
+    ).toBe(true);
+  });
+});
+
+test('renders the video-check section and plays the mp4 after a job', async () => {
+  renderWithClient(<RunsTab />);
+
+  await waitFor(() => expect(screen.getByText('run-1')).toBeInTheDocument());
+  fireEvent.click(screen.getByRole('button', { name: /run-1/ }));
+  await waitFor(() => expect(screen.getByText('/tf')).toBeInTheDocument());
+
+  // The camera topic from run.topics is offered as a <select> option.
+  expect(screen.getByText('Video check')).toBeInTheDocument();
+  const select = screen.getByLabelText('camera topic') as HTMLSelectElement;
+  expect(select.value).toBe('/cam/image_raw/compressed');
+
+  // Pressing the button POSTs a video_check job for the selected topic.
+  fireEvent.click(screen.getByRole('button', { name: 'Generate mp4' }));
+  await waitFor(() => {
+    const calls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls;
+    expect(
+      calls.some(
+        (c) =>
+          String(c[0]).includes('/jobs') &&
+          (c[1] as RequestInit | undefined)?.method === 'POST' &&
+          String((c[1] as RequestInit).body).includes('video_check') &&
+          String((c[1] as RequestInit).body).includes('/cam/image_raw/compressed'),
+      ),
+    ).toBe(true);
+  });
+
+  // On success the served mp4 is rendered in a <video> element.
+  await waitFor(() => {
+    const video = document.querySelector('video');
+    expect(video).not.toBeNull();
+    expect(video?.getAttribute('src')).toContain(
+      '/api/v1/files/report/video_check/run-1/cam_image_raw_compressed.mp4',
+    );
+  });
+});
+
+test('"All cameras" renders one player per camera topic', async () => {
+  renderWithClient(<RunsTab />);
+  await waitFor(() => expect(screen.getByText('run-1')).toBeInTheDocument());
+  fireEvent.click(screen.getByRole('button', { name: /run-1/ }));
+  await waitFor(() => expect(screen.getByText('Video check')).toBeInTheDocument());
+
+  // Two camera topics in the run -> "All cameras" generates two players.
+  fireEvent.click(screen.getByRole('button', { name: 'All cameras' }));
+  await waitFor(() => expect(document.querySelectorAll('video').length).toBe(2));
 });
 
 test('deletes a run after confirm and clears the detail', async () => {

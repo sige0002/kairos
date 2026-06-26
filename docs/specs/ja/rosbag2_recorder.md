@@ -57,12 +57,19 @@ ROS 2 のトピックを **MCAP に正式記録する**コンテナ。公式の�
 - `GET /healthz` / `GET /readyz`
 - 異常: `/data` 書込不可・空き容量不足は記録を拒否（`507` 相当）。多重 start は `409`。
 
+## 開始時の取りこぼし対策（start-paused readiness gate, 任意）
+
+`ros2 bag record` は spawn 後に DDS discovery → subscription match が済むまで対象トピックに購読が確立せず、その間の VOLATILE/best_effort メッセージは録れない（`start_delay_s` は publisher のウォームアップ用で、この lag は別物）。
+
+`recording.start_paused: true`（既定 `false`）で対策を有効化する: recorder を **`--start-paused`** で起動 → 対象トピックの購読がグラフ上で確立するまで待機（最大 `subscription_ready_timeout_s`）→ recorder の `~/resume` を呼んでから「recording」を返す。これで **resume 以降は全購読 live**。**フェイルセーフ**: resume を確認できなければ start を可視的に失敗させる（`507 record_arm_failed`）。一時停止のまま無音録画にはしない。readiness 判定と resume は rclpy + rosbag2 サービスを使い ROS イメージでのみ動く（CI 外）ため**検証後にデプロイ単位で有効化**する想定。t0 必須の単発/latched トピックは publisher 側を transient_local にするのが補完策。
+
 ## 出力 / 保存物
 
 - `/data/recorded/<run_id>/<run_id>_*.mcap`（split 時は連番）
 - `metadata.yaml`（rosbag2 標準）
 - `manifest.json`（kairos 独自）: run_id / state / 選択 topics（型・QoS）/ started_at・ended_at（UTC）/ compression / split / error?。
   - **runs の正は `api_orchestrator` の SQLite**、manifest は監査用。
+- `session.json`（MCAP と同じディレクトリ）: operator / task（省略時は `unknown_operator` / `unknown_task` を既定）＋件数等。`dora_runner` の dataset export が保存先 `data/<operator>/<task>` を決めるのに使う。
 - run 状態: `created` | `recording` | `stopping` | `completed` | `failed` | `interrupted`。
 
 ## 設定（config）

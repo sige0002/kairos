@@ -1,4 +1,4 @@
-// Validation tab (handoff 検証): runs the `fast_validation` pipeline against a
+// Validation tab (handoff "Validation"): runs the `fast_validation` pipeline against a
 // selected recording and shows the required-topic pass/fail breakdown. Layout
 // mirrors the handoff: a result card (left) + a run/run-pipeline launcher and
 // raw output (right). Every job carries a run_id (the backend requires it), so
@@ -47,8 +47,8 @@ function ResultCard({ jobId, required }: { jobId: string; required: RequiredTopi
       <Card className="p-[18px]">
         <p className="text-sm text-gray-500">
           {statusQuery.data?.state === 'running' || !terminal
-            ? '検証を実行中…'
-            : '結果を取得中…'}
+            ? 'Running validation…'
+            : 'Fetching result…'}
         </p>
       </Card>
     );
@@ -67,7 +67,7 @@ function ResultCard({ jobId, required }: { jobId: string; required: RequiredTopi
   return (
     <Card className="overflow-hidden">
       <div className="flex flex-wrap items-center gap-2.5 border-b border-gray-100 px-[18px] py-4">
-        <SectionLabel>検証結果</SectionLabel>
+        <SectionLabel>Validation result</SectionLabel>
         <span className="font-mono text-[11.5px] text-gray-400">
           {found}/{rows.length} required
         </span>
@@ -78,9 +78,9 @@ function ResultCard({ jobId, required }: { jobId: string; required: RequiredTopi
       </div>
       <div className="px-[18px] py-1.5">
         <div className="grid grid-cols-[1fr_64px_44px] gap-3 border-b border-gray-100 py-2 text-[10px] uppercase tracking-[0.05em] text-gray-400">
-          <span>必須トピック</span>
-          <span className="text-right">期待</span>
-          <span className="text-right">判定</span>
+          <span>Required topics</span>
+          <span className="text-right">Expected</span>
+          <span className="text-right">Result</span>
         </div>
         {rows.map((t) => {
           const ng = missingNames.has(t.name);
@@ -156,27 +156,27 @@ export function ValidationTab() {
   return (
     <div className="grid grid-cols-1 gap-[18px] lg:grid-cols-[1.5fr_1fr]">
       <section aria-label="validation result" className="flex flex-col gap-3">
-        <SectionLabel>検証</SectionLabel>
+        <SectionLabel>Validation</SectionLabel>
         {jobId ? (
           <ResultCard jobId={jobId} required={requiredTopics} />
         ) : (
           <Card className="p-8 text-center text-sm text-gray-500">
-            右の「検証を実行」から対象 Run とテンプレートを選んで起動してください。
+            Pick a target run and template under "Run validation" on the right, then start.
           </Card>
         )}
       </section>
 
       <section aria-label="run validation" className="flex flex-col gap-3">
         <Card className="flex flex-col gap-3 p-[18px]">
-          <SectionLabel>検証を実行</SectionLabel>
+          <SectionLabel>Run validation</SectionLabel>
           <label className="flex flex-col gap-1 text-sm">
-            <span className="text-[11px] font-medium text-gray-500">パイプライン</span>
+            <span className="text-[11px] font-medium text-gray-500">Pipeline</span>
             <span className="rounded-control border border-gray-200 bg-gray-50 px-2 py-1.5 font-mono text-sm text-gray-700">
               {PIPELINE}
             </span>
           </label>
           <label className="flex flex-col gap-1 text-sm">
-            <span className="text-[11px] font-medium text-gray-500">対象 Run</span>
+            <span className="text-[11px] font-medium text-gray-500">Target run</span>
             <select
               aria-label="run"
               value={runId}
@@ -184,7 +184,7 @@ export function ValidationTab() {
               className="rounded-control border border-gray-200 px-2 py-1.5 font-mono text-sm focus:border-teal-500 focus:outline-none"
             >
               <option value="">
-                {runsQuery.isPending ? 'Loading…' : runs.length ? '— 選択 —' : '完了した Run なし'}
+                {runsQuery.isPending ? 'Loading…' : runs.length ? '— Select —' : 'No completed runs'}
               </option>
               {runs.map((r) => (
                 <option key={r.run_id} value={r.run_id}>
@@ -194,7 +194,7 @@ export function ValidationTab() {
             </select>
           </label>
           <label className="flex flex-col gap-1 text-sm">
-            <span className="text-[11px] font-medium text-gray-500">テンプレート</span>
+            <span className="text-[11px] font-medium text-gray-500">Template</span>
             <select
               aria-label="template"
               value={activeTemplate}
@@ -203,7 +203,7 @@ export function ValidationTab() {
               className="rounded-control border border-gray-200 px-2 py-1.5 font-mono text-sm focus:border-teal-500 focus:outline-none"
             >
               {templates.length === 0 ? (
-                <option value="">テンプレート未登録</option>
+                <option value="">No templates registered</option>
               ) : (
                 templates.map((t) => (
                   <option key={t.id} value={t.id}>
@@ -224,13 +224,13 @@ export function ValidationTab() {
               })
             }
           >
-            {submitMutation.isPending ? '起動中…' : '検証を起動'}
+            {submitMutation.isPending ? 'Starting…' : 'Run validation'}
           </Button>
         </Card>
 
         {jobId && (
           <Card className="p-[18px]">
-            <SectionLabel>出力</SectionLabel>
+            <SectionLabel>Output</SectionLabel>
             <p className="mt-2 font-mono text-[11.5px] text-gray-500">
               /data/report/fast_validation/{runId}/summary.json
             </p>

@@ -22,7 +22,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.routing import APIRoute
 from kairos_common import (
     Settings,
@@ -40,11 +40,14 @@ from api_orchestrator.events import EventHub
 from api_orchestrator.monitor_client import MonitorClient
 from api_orchestrator.recorder_client import RecorderClient
 from api_orchestrator.routers import config as config_router
+from api_orchestrator.routers import datasets as datasets_router
 from api_orchestrator.routers import events as events_router
+from api_orchestrator.routers import files as files_router
 from api_orchestrator.routers import jobs as jobs_router
 from api_orchestrator.routers import pipelines as pipelines_router
 from api_orchestrator.routers import record as record_router
 from api_orchestrator.routers import runs as runs_router
+from api_orchestrator.routers import system as system_router
 from api_orchestrator.routers import topics as topics_router
 from api_orchestrator.routers import validation as validation_router
 from api_orchestrator.runs import RunService
@@ -162,15 +165,16 @@ def create_orchestrator_app(
         f"http://localhost:{settings.dora_runner_port}", client
     )
     event_hub = EventHub(monitor)
-    config_catalog = ConfigCatalog(
-        settings.validation_dir, settings.validation_default
-    )
+    config_catalog = ConfigCatalog(settings.validation_dir, settings.validation_default)
     service = RunService(
         run_store,
         recorder,
         recording_config,
         event_hub,
         recorded_dir=settings.recorded_dir,
+        # Same data root dora_runner writes report/ under, so the run-detail
+        # view can read validation/dataset_export summaries.
+        data_dir=settings.data_dir,
     )
 
     @asynccontextmanager
@@ -197,22 +201,32 @@ def create_orchestrator_app(
     app.state.dora_runner_client = dora_runner
     app.state.event_hub = event_hub
     app.state.config_catalog = config_catalog
+    # Live RECORDING_CONFIG: read at request time by GET /api/v1/config and
+    # mutated in place by PUT /api/v1/config/recording so an edit shows up
+    # without a restart (the RunService holds its own copy for next-start topic
+    # resolution; both are updated together on save).
+    app.state.recording_config = recording_config
 
     app.include_router(config_router.router)
     app.include_router(record_router.router)
     app.include_router(runs_router.router)
     app.include_router(topics_router.router)
+    app.include_router(system_router.router)
     app.include_router(events_router.router)
     app.include_router(pipelines_router.router)
     app.include_router(jobs_router.router)
     app.include_router(validation_router.router)
+    app.include_router(files_router.router)
+    app.include_router(datasets_router.router)
     _override_readyz(app, recorder, monitor, streamer)
 
-    _register_root_and_config(app, settings, recording_config, stream_config)
+    _register_root_and_config(app, settings, stream_config)
     return app
 
 
-def _config_defaults(recording_config: RecordingConfig | None) -> dict[str, object]:
+def _config_defaults(
+    recording_config: RecordingConfig | None, settings: Settings
+) -> dict[str, object]:
     """Build the ``defaults`` block of ``GET /api/v1/config`` from the loaded
     RECORDING_CONFIG, so the UI can pre-select recording topics and seed the
     monitor view without hardcoding anything (see the Record / Monitor tabs).
@@ -222,9 +236,16 @@ def _config_defaults(recording_config: RecordingConfig | None) -> dict[str, obje
     - ``expected_hz``: pattern -> expected Hz, for the Monitor Late judgement.
       Patterns whose ``hz`` is omitted (dynamically learned) are skipped.
     - ``robot_name``: shown so operators can confirm which robot config is live.
+    - ``ros_domain_id``: the active ROS 2 domain (operator context; shown in the
+      header next to the connection badge). Independent of RECORDING_CONFIG.
     """
     if recording_config is None:
-        return {"expected_hz": {}, "encoding": "vp8", "default_topics": []}
+        return {
+            "expected_hz": {},
+            "encoding": "vp8",
+            "default_topics": [],
+            "ros_domain_id": settings.ros_domain_id,
+        }
     expected_hz = {
         p.pattern: p.hz
         for p in recording_config.expected_hz_patterns
@@ -235,6 +256,7 @@ def _config_defaults(recording_config: RecordingConfig | None) -> dict[str, obje
         "encoding": "vp8",
         "default_topics": list(recording_config.default_topics),
         "robot_name": recording_config.robot_name,
+        "ros_domain_id": settings.ros_domain_id,
     }
 
 
@@ -255,18 +277,16 @@ def _stream_payload(stream_config: StreamConfig | None) -> dict[str, object]:
 def _register_root_and_config(
     app: FastAPI,
     settings: Settings,
-    recording_config: RecordingConfig | None,
     stream_config: StreamConfig | None,
 ) -> None:
     """Register the Stage 0 root + ``GET /api/v1/config``.
 
     The payload keeps its Stage 0 shape (the frontend render-gate depends on
-    it) but the ``defaults`` block is now sourced from the live RECORDING_CONFIG
-    so the Record / Monitor tabs can surface the configured topics instead of
-    asking the operator to type topic names by hand. ``stream`` comes from
-    STREAM_CONFIG (the Stream tab's initial panes).
+    it) but the ``defaults`` block is sourced from the **live** RECORDING_CONFIG
+    (``app.state.recording_config``, read at request time) so a Config-tab edit
+    (PUT /api/v1/config/recording) is reflected without a restart. ``stream``
+    comes from STREAM_CONFIG (the Stream tab's initial panes).
     """
-    defaults = _config_defaults(recording_config)
     stream = _stream_payload(stream_config)
 
     @app.get("/")
@@ -274,7 +294,10 @@ def _register_root_and_config(
         return {"service": SERVICE_NAME, "stage": "stage1"}
 
     @app.get("/api/v1/config")
-    async def runtime_config() -> dict[str, object]:
+    async def runtime_config(request: Request) -> dict[str, object]:
+        # Read the live config off app.state so an in-place edit (PUT
+        # /api/v1/config/recording) shows up here without a restart.
+        defaults = _config_defaults(request.app.state.recording_config, settings)
         return {
             "endpoints": {
                 "api": "/api/v1",

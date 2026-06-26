@@ -28,7 +28,13 @@ from api_orchestrator.service_client import (
     BaseServiceClient,
 )
 
-__all__ = ["DEFAULT_TIMEOUT_S", "RETRIES", "STOP_TIMEOUT_S", "RecorderClient"]
+__all__ = [
+    "DEFAULT_TIMEOUT_S",
+    "RETRIES",
+    "START_TIMEOUT_S",
+    "STOP_TIMEOUT_S",
+    "RecorderClient",
+]
 
 # POST /record/stop is special: the recorder's clean SIGINT flush of a large
 # bag can take up to ~30s (its STOP_TIMEOUT_S). The orchestrator must wait it
@@ -36,6 +42,12 @@ __all__ = ["DEFAULT_TIMEOUT_S", "RETRIES", "STOP_TIMEOUT_S", "RecorderClient"]
 # and the final-state re-sync would never run. Give stop a longer budget than
 # the recorder's flush, with no retry (one long attempt; stop is idempotent).
 STOP_TIMEOUT_S = 35.0
+
+# POST /record/start now blocks while the recorder applies start_delay_s AND
+# (for --start-paused) waits for subscriptions to match before resuming
+# (subscription_ready_timeout_s). Give it a budget that covers both, with NO
+# retry: a slow-but-succeeding start must not be retried into a 409.
+START_TIMEOUT_S = 25.0
 
 
 class RecorderClient(BaseServiceClient):
@@ -62,8 +74,15 @@ class RecorderClient(BaseServiceClient):
         )
 
     async def start(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Call recorder ``POST /record/start``; returns the recorder body."""
-        return await self._request("POST", "/record/start", json=payload)
+        """Call recorder ``POST /record/start``; returns the recorder body.
+
+        Uses the longer :data:`START_TIMEOUT_S` budget (no retry) because the
+        recorder blocks during the start delay + the --start-paused readiness
+        gate; retrying a slow-but-succeeding start would hit a 409.
+        """
+        return await self._request(
+            "POST", "/record/start", json=payload, timeout=START_TIMEOUT_S, retries=0
+        )
 
     async def stop(self) -> dict[str, Any]:
         """Call recorder ``POST /record/stop`` (idempotent on the recorder).

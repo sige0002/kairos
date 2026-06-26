@@ -60,6 +60,80 @@ export interface RunSummary {
   started_at?: string;
   ended_at?: string | null;
   duration_ms?: number;
+  operator?: string | null;
+  task?: string | null;
+}
+
+/** `dataset_export` job summary (dora_runner): one exported dataset directory. */
+export interface DatasetExportSummary {
+  run_id?: string;
+  operator?: string;
+  task?: string;
+  /** Zero-padded index allocated under data/<operator>/<task>/ (e.g. "001"). */
+  index?: string;
+  dataset_dir?: string;
+  files?: string[];
+  bytes?: number;
+  message_count?: number | null;
+  exported_at?: string;
+}
+
+/** One exported dataset directory under data/<operator>/<task>/<NNN> (GET /datasets). */
+export interface DatasetEntry {
+  operator: string;
+  task: string;
+  /** Zero-padded index allocated under data/<operator>/<task>/ (e.g. "001"). */
+  index: string;
+  dataset_dir: string;
+  run_id?: string;
+  bytes?: number;
+  message_count?: number | null;
+  exported_at?: string;
+}
+
+/** GET /api/v1/datasets — the flat list of exported datasets (grouped in the UI). */
+export interface DatasetsResponse {
+  datasets: DatasetEntry[];
+}
+
+/** POST /api/v1/datasets/export-all — per-run successes + failures for the batch. */
+export interface ExportAllResponse {
+  exported: DatasetExportSummary[];
+  failed: { run_id: string; error: string }[];
+  total: number;
+}
+
+/**
+ * `video_check` job summary (dora_runner): an on-demand mp4 preview of one
+ * camera topic. `file` is the path relative to data_dir (fetch it via
+ * `${apiBase}/files/${file}`); `frames === 0` means nothing decodable was found.
+ */
+export interface VideoCheckSummary {
+  run_id?: string;
+  topic?: string;
+  frames?: number;
+  fps?: number | null;
+  width?: number | null;
+  height?: number | null;
+  duration_s?: number | null;
+  truncated?: boolean;
+  total_messages?: number;
+  /** mp4 path relative to data_dir, for `${apiBase}/files/<file>`. */
+  file?: string | null;
+  mp4?: string | null;
+  note?: string;
+  checked_at?: string;
+}
+
+/** One topic's gap-based loss estimate from the `loss_report` pipeline. */
+export interface LossTopic {
+  name: string;
+  type?: string;
+  count?: number;
+  hz?: number | null;
+  loss_rate?: number | null;
+  gap_max_ms?: number | null;
+  median_interval_ms?: number | null;
 }
 
 export interface RunDetail {
@@ -77,6 +151,8 @@ export interface RunDetail {
   manifest?: Record<string, unknown> | null;
   validation?: Record<string, unknown> | null;
   dataset_stats?: Record<string, unknown> | null;
+  /** `loss_report` per-topic gap-based loss summary (when computed). */
+  loss?: { run_id?: string; topics?: LossTopic[]; checked_at?: string } | null;
 }
 
 // ---- Topics / Monitor ---------------------------------------------------
@@ -149,6 +225,17 @@ export interface ValidationOption {
 /** GET /api/v1/config/options — selectable options + active per category. */
 export interface ConfigOptions {
   validation: { active: string; options: ValidationOption[] };
+}
+
+/**
+ * GET/PUT /api/v1/config/recording — the full editable RECORDING_CONFIG.
+ * `config` is the RecordingConfig object (or null when none is loaded); `path`
+ * is the on-prem file the orchestrator persists to. The shape is intentionally
+ * opaque (`Record<string, unknown>`) because the whole config is edited as JSON.
+ */
+export interface RecordingConfigPayload {
+  config: Record<string, unknown> | null;
+  path: string;
 }
 
 // ---- Pipelines / Jobs ---------------------------------------------------

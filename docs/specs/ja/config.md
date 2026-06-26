@@ -8,7 +8,7 @@
 
 1. **インフラ設定（ルート `.env`）** — docker compose が解釈し、各サービスへ env で渡す。起動時に確定する値（ポート・ドメイン・パス等）。
 2. **デプロイ調整（YAML、`RECORDING_CONFIG`）** — 収録・監視のチューニング（対象 topic・expected_hz・QoS override 等）。pydantic で型検証して読み込む。
-3. **実行時設定（`GET /api/v1/config`）** — `api_orchestrator` が frontend に配布する値（エンドポイント・タブ構成・既定値・スキーマ）。frontend はこれを取得してから描画する（ハードコードしない）。
+3. **実行時設定（`GET /api/v1/config`）** — `api_orchestrator` が frontend に配布する値（エンドポイント・タブ構成・既定値・スキーマ）。frontend はこれを取得してから描画する（ハードコードしない）。`defaults` には `ros_domain_id`（現在の ROS 2 ドメイン。ヘッダ表示用）も含む。RECORDING_CONFIG 全体は UI から編集・永続化できる（`PUT /api/v1/config/recording`。下記）。
 
 ## ルート `.env`（インフラ設定）
 
@@ -16,7 +16,7 @@
 |---|---|---|
 | `ROS_DOMAIN_ID` | `0` | 全サービス共通の ROS 2 ドメイン |
 | `ROS_DISTRO` | `jazzy` | ベースイメージの ROS 2 ディストロ |
-| `RMW_IMPLEMENTATION` | `rmw_fastrtps_cpp` | DDS 実装 |
+| `RMW_IMPLEMENTATION` | `rmw_fastrtps_cpp` | DDS 実装。Fast DDS と Cyclone DDS の両 RMW をイメージに同梱しており、本キーで切替可能。Cyclone DDS のロボットには `rmw_cyclonedds_cpp` を指定する（後述） |
 | `DATA_DIR` | `./data` | ホスト側データ root（→ コンテナ `/data`） |
 | `RECORDING_CONFIG` | `config/recording.yaml` | 収録・監視の YAML 設定ファイル（下記） |
 | `BIND_HOST` | `0.0.0.0` | API バインド先。**LAN 公開を許容**（信頼された LAN 前提・認証なし）。非信頼ネットワークへ直接公開しない |
@@ -32,9 +32,19 @@
 | `RETENTION_DAYS` | `0` | `0`=無効。`>0` で古い run を保持期間で削除候補に |
 | `MAX_RECORD_BYTES` | `0` | `0`=無制限。`>0` で超過時に記録を自動 stop |
 | `ALERT_CONFIG_PATH` | (任意) | `topic_monitor` のアラート定義ファイル |
+| `CYCLONEDDS_URI` | (任意) | Cyclone DDS の設定ファイル URI（例 `file:///config/cyclonedds.xml`）。クロスホストで multicast discovery が通らない場合に unicast peer を明示するなどに使う。`env_file` 経由でコンテナに渡る（3 ROS サービスとも `/config` を read-only マウント済み） |
 
 - サービス間は信頼 LAN 内で通信する（既定は host networking で `localhost:<port>`。内部ポートも上表のとおり）。マルチテナント host ではブリッジ網 + DDS unicast に切替（`compose.yaml` のネットワーク注記参照）。
 - 共通の設定スキーマは `libs/` に置き（pydantic-settings 想定）、各サービスが env を型付きで読む。
+
+### DDS 実装の切替（Fast DDS ↔ Cyclone DDS）
+
+ROS 2 では**両端（ロボット側と購読側）で同じ RMW 実装**でないと相互通信できない（Fast DDS と Cyclone DDS のクロスベンダ間相互運用は ROS 2 として非対応）。ロボットが Cyclone DDS で publish している場合は、Kairos 側も Cyclone DDS に合わせる。
+
+- 3 つの ROS サービス（recorder / monitor / streamer）のイメージには Fast DDS と Cyclone DDS の**両 RMW を同梱**済み。`.env` で `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp` を指定して**リビルド不要で切替**できる（既定は `rmw_fastrtps_cpp`）。
+- 併せて **`ROS_DOMAIN_ID` をロボットと一致**させること（既定 `0`）。
+- 同一ホスト / 同一 LAN で multicast discovery が通る環境なら追加設定は不要。別ホストで discovery が通らない場合は `CYCLONEDDS_URI` で unicast peer を指定する（上表）。
+- ローカル検証用のテストハーネス（`deploy/test/`、bag 再生でロボット役）も同梱・`RMW_IMPLEMENTATION` で切替可能なので、Cyclone DDS 経路をサンプル bag で疎通確認できる。
 
 ## 収録・監視の YAML（`RECORDING_CONFIG`、デプロイ調整）
 
@@ -53,6 +63,9 @@ topic_qos_overrides:       # パターン → QoS（recorder / monitor が適用
 # monitor / recording / validation は config/recording.yaml を参照（dataset は stage3）
 ```
 
+- **`recording` チューニング**: `start_delay_s`（publisher ウォームアップ待ち）に加え、開始時の購読確立 lag 対策として `start_paused`（既定 `false`／`true` で `--start-paused`＋購読 readiness gate＋resume を有効化）と `subscription_ready_timeout_s`（既定 5.0）を持つ。詳細は [rosbag2_recorder](rosbag2_recorder.md)。
+- **UI からの編集・永続化**: この `RECORDING_CONFIG` 全体は Config タブから編集できる（`GET/PUT /api/v1/config/recording`、[api_orchestrator](api_orchestrator.md)）。`PUT` は `RecordingConfig` で型検証し（失敗は `422`）、設定ファイルへアトミックに書き込んで在メモリ設定をホットスワップする。`default_topics` / `robot_name` は即時反映、`expected_hz` / QoS は各サービスの**再起動時**に反映される。
+
 ## 実行時設定（`GET /api/v1/config`）
 
 `api_orchestrator` が frontend 向けに返す（例）:
@@ -67,7 +80,7 @@ topic_qos_overrides:       # パターン → QoS（recorder / monitor が適用
     { "id": "runs",      "enabled": true },
     { "id": "pipelines", "enabled": false }
   ],
-  "defaults": { "expected_hz": {}, "encoding": "vp8" },
+  "defaults": { "expected_hz": {}, "encoding": "vp8", "default_topics": [], "robot_name": "...", "ros_domain_id": 0 },
   "schemas": {
     "record_start": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",

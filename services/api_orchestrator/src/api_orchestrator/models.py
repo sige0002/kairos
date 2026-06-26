@@ -99,6 +99,23 @@ class RecordStartRequest(BaseModel):
     task: str | None = None
 
 
+class RunDetail(Run):
+    """A single run plus on-disk audit/report sidecars (``GET /runs/{id}``).
+
+    The base ``Run`` is the SQLite source of truth; these extra fields are read
+    best-effort from disk when present (absent -> ``null``):
+    - ``manifest``: the recorder's ``recorded/<run_id>/manifest.json`` audit.
+    - ``validation``: the latest ``fast_validation`` report summary.
+    - ``dataset_stats``: the latest ``dataset_export`` report summary.
+    - ``loss``: the latest ``loss_report`` per-topic loss summary.
+    """
+
+    manifest: dict[str, Any] | None = None
+    validation: dict[str, Any] | None = None
+    dataset_stats: dict[str, Any] | None = None
+    loss: dict[str, Any] | None = None
+
+
 class RunListResponse(BaseModel):
     """Cursor-paginated run list (``GET /api/v1/runs``)."""
 

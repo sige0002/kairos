@@ -104,18 +104,25 @@ def _captured_read_timeout(call: str, *args: object) -> float | None:
 
 
 def test_stop_uses_longer_timeout_than_status() -> None:
-    """stop gets the ~35s budget (> recorder flush); status keeps the 3s default.
+    """stop gets the ~35s budget; start gets ~25s (start delay + arming gate);
+    status keeps the 3s default.
 
     Regression guard: a 3s stop would 503 while the recorder is still correctly
-    flushing a large bag, leaving the run mid-state.
+    flushing a large bag, and a 3s start would 503 while the recorder applies
+    start_delay_s + the --start-paused readiness gate.
     """
-    from api_orchestrator.recorder_client import DEFAULT_TIMEOUT_S, STOP_TIMEOUT_S
+    from api_orchestrator.recorder_client import (
+        DEFAULT_TIMEOUT_S,
+        START_TIMEOUT_S,
+        STOP_TIMEOUT_S,
+    )
 
     assert STOP_TIMEOUT_S > 30  # must exceed the recorder's ~30s STOP_TIMEOUT_S
+    assert START_TIMEOUT_S > DEFAULT_TIMEOUT_S  # covers start delay + arming
     assert _captured_read_timeout("stop") == STOP_TIMEOUT_S
     assert _captured_read_timeout("status") == DEFAULT_TIMEOUT_S
     assert _captured_read_timeout("start", {"run_id": "r", "topics": []}) == (
-        DEFAULT_TIMEOUT_S
+        START_TIMEOUT_S
     )
 
 

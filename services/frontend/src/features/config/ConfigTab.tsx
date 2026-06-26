@@ -1,51 +1,208 @@
-// Config tab: select which config each category uses (Phase 1 = validation).
-// Picking a validation template applies immediately — the orchestrator injects
-// the active one into template-less fast_validation jobs (no restart). Other
-// categories (record / robot / stream / convert) land in later phases.
+// Config tab. Two sections:
+//  1. Recording config editor — edits the FULL RECORDING_CONFIG as JSON and
+//     PUTs it to /api/v1/config/recording, which persists it on-prem and
+//     hot-swaps the orchestrator's in-memory copy. default_topics / robot_name
+//     apply immediately (GET /api/v1/config + next start); expected_hz (monitor)
+//     and QoS (recorder) only fully apply after a service restart (those caches
+//     load at startup) — the UI says so honestly after a save.
+//  2. Validation template selector (Phase 1) — picking a template applies
+//     immediately (the orchestrator injects it into template-less
+//     fast_validation jobs; no restart).
 
+import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiGet, apiPost } from '../../api/client';
+import { ApiError, apiGet, apiPost, getApiBase } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
-import type { ConfigOptions } from '../../api/types';
+import type { ApiErrorBody, ConfigOptions, RecordingConfigPayload } from '../../api/types';
 import type { RuntimeConfig } from '../../config';
 import { ErrorMessage } from '../../components/ErrorMessage';
 import { Badge, SectionLabel } from '../../components/ui';
 
-/** Read-only recording profile sourced from RECORDING_CONFIG (GET /config). */
-function ProfileCard({ config }: { config: RuntimeConfig }) {
+// Local key (queryKeys is shared and owned elsewhere); the recording-config
+// query is Config-tab-local, so a plain stable tuple is enough.
+const RECORDING_CONFIG_KEY = ['config', 'recording'] as const;
+
+/** PUT the edited config. Inline (no apiPut helper) so client.ts is untouched. */
+async function putRecordingConfig(
+  config: Record<string, unknown>,
+): Promise<RecordingConfigPayload> {
+  const resp = await fetch(`${getApiBase()}/config/recording`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ config }),
+  });
+  if (!resp.ok) {
+    let body: ApiErrorBody | null = null;
+    try {
+      body = (await resp.json()) as ApiErrorBody;
+    } catch {
+      body = null;
+    }
+    throw new ApiError(resp.status, body, `HTTP ${resp.status} ${resp.statusText}`);
+  }
+  return (await resp.json()) as RecordingConfigPayload;
+}
+
+/** Format the 422 validation details (pydantic errors) into a readable list. */
+function formatValidationDetails(error: unknown): string[] {
+  if (!(error instanceof ApiError)) return [];
+  const errors = error.details?.errors;
+  if (!Array.isArray(errors)) return [];
+  return errors.map((e) => {
+    const rec = e as { loc?: unknown[]; msg?: string };
+    const loc = Array.isArray(rec.loc) ? rec.loc.join('.') : '';
+    return loc ? `${loc}: ${rec.msg ?? ''}` : (rec.msg ?? '');
+  });
+}
+
+/** Editable JSON editor for the full RECORDING_CONFIG. */
+function RecordingConfigEditor({ config }: { config: RuntimeConfig }) {
+  const queryClient = useQueryClient();
+
+  const recordingQuery = useQuery({
+    queryKey: RECORDING_CONFIG_KEY,
+    queryFn: ({ signal }) =>
+      apiGet<RecordingConfigPayload>('/config/recording', { signal }),
+  });
+
+  // The editable text buffer + a client-side JSON parse error (blocks submit).
+  const [text, setText] = useState('');
+  const [parseError, setParseError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  // Seed the buffer from the fetched config (pretty-printed). Re-seed only when
+  // the fetched payload identity changes, so we don't clobber in-progress edits.
+  useEffect(() => {
+    if (recordingQuery.data) {
+      const cfg = recordingQuery.data.config ?? {};
+      setText(JSON.stringify(cfg, null, 2));
+      setParseError(null);
+    }
+  }, [recordingQuery.data]);
+
+  const saveMutation = useMutation({
+    mutationFn: (parsed: Record<string, unknown>) => putRecordingConfig(parsed),
+    onSuccess: (data) => {
+      setSaved(true);
+      // Reflect the saved state: refetch the recording config and invalidate the
+      // runtime config so the Record/Monitor tabs pick up the new defaults.
+      queryClient.setQueryData(RECORDING_CONFIG_KEY, data);
+      queryClient.invalidateQueries({ queryKey: queryKeys.runtimeConfig });
+      queryClient.invalidateQueries({ queryKey: RECORDING_CONFIG_KEY });
+    },
+  });
+
+  const onSave = () => {
+    setSaved(false);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch (e) {
+      setParseError(e instanceof Error ? e.message : 'JSON parse error');
+      return;
+    }
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      setParseError('Config must be an object ({ ... }).');
+      return;
+    }
+    setParseError(null);
+    saveMutation.mutate(parsed as Record<string, unknown>);
+  };
+
+  const path = recordingQuery.data?.path;
   const robot = config.defaults.robot_name;
   const topics = config.defaults.default_topics ?? [];
+  const validationDetails = formatValidationDetails(saveMutation.error);
+
   return (
     <section
-      aria-label="recording profile"
+      aria-label="recording config editor"
       className="rounded-card border border-gray-200 bg-white p-[18px] shadow-card"
     >
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <SectionLabel>収録プロファイル</SectionLabel>
-        <Badge tone="gray">RECORDING_CONFIG（読み取り専用）</Badge>
+        <SectionLabel>Recording config (RECORDING_CONFIG)</SectionLabel>
+        <Badge tone="gray">Edit full config</Badge>
       </div>
-      <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-1.5 text-sm">
-        <dt className="text-gray-500">ロボット</dt>
+
+      <dl className="mb-3 grid grid-cols-[auto_1fr] gap-x-6 gap-y-1.5 text-sm">
+        <dt className="text-gray-500">Robot</dt>
         <dd className="font-mono text-gray-800">{robot || '—'}</dd>
-        <dt className="text-gray-500">既定トピック</dt>
-        <dd className="font-mono text-gray-800">{topics.length} 件</dd>
+        <dt className="text-gray-500">Default topics</dt>
+        <dd className="font-mono text-gray-800">{topics.length}</dd>
+        {path && (
+          <>
+            <dt className="text-gray-500">Path</dt>
+            <dd className="font-mono text-xs text-gray-500">{path}</dd>
+          </>
+        )}
       </dl>
-      {topics.length > 0 && (
-        <ul className="mt-3 max-h-44 overflow-auto rounded-control border border-gray-200 text-xs">
-          {topics.map((t) => (
-            <li
-              key={t}
-              className="border-t border-gray-100 px-2 py-1.5 font-mono text-gray-700 first:border-t-0"
+
+      {recordingQuery.isError ? (
+        <ErrorMessage error={recordingQuery.error} />
+      ) : recordingQuery.isPending ? (
+        <p className="text-sm text-gray-500">Loading…</p>
+      ) : (
+        <>
+          <label className="mb-1 block text-sm font-medium text-gray-700">
+            Config (JSON)
+          </label>
+          <textarea
+            aria-label="recording config json"
+            className="h-80 w-full rounded-control border border-gray-200 p-2 font-mono text-xs focus:border-teal-500 focus:outline-none"
+            spellCheck={false}
+            value={text}
+            disabled={saveMutation.isPending}
+            onChange={(e) => {
+              setText(e.target.value);
+              setParseError(null);
+              setSaved(false);
+            }}
+          />
+
+          {parseError && (
+            <p className="mt-2 text-sm text-red-700">JSON error: {parseError}</p>
+          )}
+
+          {saveMutation.isError && (
+            <div className="mt-2">
+              <ErrorMessage error={saveMutation.error} />
+              {validationDetails.length > 0 && (
+                <ul className="mt-1 list-disc pl-5 text-xs text-red-700">
+                  {validationDetails.map((d, i) => (
+                    <li key={i} className="font-mono">
+                      {d}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+
+          {saved && !saveMutation.isPending && (
+            <div className="mt-2 rounded-control border border-teal-200 bg-teal-50 p-2 text-sm text-teal-800">
+              <p className="font-medium">Saved</p>
+              <p className="mt-0.5 text-xs">
+                default_topics / robot_name apply immediately; expected_hz and QoS apply
+                after a service restart.
+              </p>
+            </div>
+          )}
+
+          <div className="mt-3 flex items-center gap-3">
+            <button
+              type="button"
+              onClick={onSave}
+              disabled={saveMutation.isPending}
+              className="rounded-control bg-teal-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-teal-700 disabled:opacity-50"
             >
-              {t}
-            </li>
-          ))}
-        </ul>
+              {saveMutation.isPending ? 'Saving…' : 'Save'}
+            </button>
+            <span className="text-xs text-gray-400">
+              Edit the full RecordingConfig as JSON. The server validates on save.
+            </span>
+          </div>
+        </>
       )}
-      <p className="mt-3 text-xs text-gray-400">
-        記録/監視トピックの編集はファイル（RECORDING_CONFIG）側で行います。UI からの
-        per-topic トグルは未提供です。
-      </p>
     </section>
   );
 }
@@ -70,7 +227,7 @@ export function ConfigTab({ config }: { config: RuntimeConfig }) {
 
   return (
     <div className="flex flex-col gap-4">
-      <ProfileCard config={config} />
+      <RecordingConfigEditor config={config} />
       <section
         aria-label="validation config"
         className="rounded-card border border-gray-200 bg-white p-[18px] shadow-card"

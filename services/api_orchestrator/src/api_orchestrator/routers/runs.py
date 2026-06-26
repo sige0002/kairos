@@ -9,7 +9,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query, Response
 
 from api_orchestrator.deps import get_run_service
-from api_orchestrator.models import Run, RunListResponse
+from api_orchestrator.models import RunDetail, RunListResponse
 from api_orchestrator.runs import RunService
 
 router = APIRouter(prefix="/api/v1/runs", tags=["runs"])
@@ -30,13 +30,14 @@ async def list_runs(
     return RunListResponse(items=items, next_cursor=next_cursor)
 
 
-@router.get("/{run_id}", response_model=Run)
+@router.get("/{run_id}", response_model=RunDetail)
 async def get_run(
     run_id: str,
     service: RunService = Depends(get_run_service),
-) -> Run:
-    """Return a single run by id (404 if absent)."""
-    return service.get(run_id)
+) -> RunDetail:
+    """Return a single run by id, enriched with manifest/validation/dataset
+    sidecars (404 if absent)."""
+    return service.get_detail(run_id)
 
 
 @router.delete("/{run_id}", status_code=204)

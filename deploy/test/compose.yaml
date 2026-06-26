@@ -38,6 +38,9 @@ services:
     environment:
       # Shared ROS 2 domain for all kairos containers/tests.
       ROS_DOMAIN_ID: "0"
+      # Match the kairos services' DDS implementation (default Fast DDS; set to
+      # rmw_cyclonedds_cpp to replay onto a Cyclone DDS graph).
+      RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
     volumes:
       # Share recorded bags read-only (repo data/ -> /data).
       - ../../data:/data:ro
@@ -55,6 +58,8 @@ services:
     <<: *ros-common
     environment:
       ROS_DOMAIN_ID: "0"
+      # Match the kairos services' DDS implementation (see rosbag_player above).
+      RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
       # REFRESH=<s> table interval; DURATION=<s> auto-exits (handy for smoke tests).
       REFRESH: ${REFRESH:-1.0}
       DURATION: ${DURATION:-}

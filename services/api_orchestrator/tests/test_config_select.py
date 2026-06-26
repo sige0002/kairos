@@ -120,9 +120,7 @@ def test_active_validation_injected_into_jobs(tmp_path: Path, fake_recorder) -> 
         assert dora.last_payload["params"]["template"]["name"] == "alpha_template"
 
         # After selecting beta, a new job carries beta.
-        c.post(
-            "/api/v1/config/select", json={"category": "validation", "id": "beta"}
-        )
+        c.post("/api/v1/config/select", json={"category": "validation", "id": "beta"})
         c.post(
             "/api/v1/jobs",
             json={"run_id": "run_a", "pipeline": "fast_validation", "params": {}},

@@ -31,6 +31,12 @@
 name: kairos
 
 # Shared ROS env for the 3 ROS-based services.
+# Both RMW implementations are bundled in the images (Fast DDS + Cyclone DDS), so
+# RMW_IMPLEMENTATION switches between them at deploy time — set it to
+# rmw_cyclonedds_cpp in .env to talk to a Cyclone DDS robot. ROS 2 requires the
+# SAME RMW on both ends and ROS_DOMAIN_ID must match the robot. For cross-host
+# Cyclone unicast peers, set CYCLONEDDS_URI in .env (it is loaded via env_file
+# and reaches the container; point it at an xml under the mounted /config).
 x-ros-env: &ros-env
   ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
   RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
@@ -99,6 +105,9 @@ services:
     ipc: host
     volumes:
       - ${DATA_DIR:-./data}:/data
+      # Read-only config mount (parity with recorder/monitor) so an optional
+      # CYCLONEDDS_URI=file:///config/cyclonedds.xml resolves here too.
+      - ./config:/config:ro
     restart: unless-stopped
 
   # ---- Pure-Python services (no rclpy) -------------------------------------

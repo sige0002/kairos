@@ -5,10 +5,13 @@ FROM ros:${ROS_DISTRO}-ros-base
 ARG ROS_DISTRO
 
 # MCAP is the canonical recording format; install the rosbag2 MCAP storage plugin so
-# `ros2 bag play` can read *.mcap bags.
+# `ros2 bag play` can read *.mcap bags. Also bundle the Cyclone DDS RMW so this
+# replay "robot" can publish over either Fast DDS (default) or Cyclone DDS by
+# setting RMW_IMPLEMENTATION, matching whatever the kairos services use.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ros-${ROS_DISTRO}-rosbag2-storage-mcap \
+        ros-${ROS_DISTRO}-rmw-cyclonedds-cpp \
     && rm -rf /var/lib/apt/lists/*
 
 # The base image entrypoint (ros_entrypoint.sh) sources /opt/ros/$ROS_DISTRO/setup.bash,

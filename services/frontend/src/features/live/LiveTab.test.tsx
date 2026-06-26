@@ -1,8 +1,9 @@
-import { screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
 import { renderWithClient, jsonResponse } from '../../test/renderWithClient';
 import { LiveTab } from './LiveTab';
+import { useUiStore } from '../../store/uiStore';
 import type { RuntimeConfig } from '../../config';
 
 const CONFIG = {
@@ -24,23 +25,28 @@ function mockStatus(status: Record<string, unknown>, runDetail?: Record<string, 
   });
 }
 
-beforeEach(() => setApiBase('/api/v1'));
+beforeEach(() => {
+  setApiBase('/api/v1');
+  // Reset the shared UI store so persisted operator/task don't leak between tests.
+  useUiStore.setState({ recordOperator: '', recordTask: '' });
+});
 afterEach(() => vi.restoreAllMocks());
 
 // Regression: a fresh recorder reports state="created" (run_id=null). That must
-// render the IDLE hero (operator/task inputs + 記録を開始) — NOT a stuck 収録中.
-test('fresh recorder (state=created) shows the idle hero, not 収録中', async () => {
+// render the IDLE hero (operator/task inputs + Start recording) — NOT a stuck
+// Recording state.
+test('fresh recorder (state=created) shows the idle hero, not Recording', async () => {
   mockStatus({ run_id: null, state: 'created' });
   renderWithClient(<LiveTab config={CONFIG} />);
 
-  await waitFor(() => expect(screen.getByText('待機中')).toBeInTheDocument());
-  expect(screen.queryByText('収録中')).not.toBeInTheDocument();
+  await waitFor(() => expect(screen.getByText('Idle')).toBeInTheDocument());
+  expect(screen.queryByText('Recording')).not.toBeInTheDocument();
   expect(screen.getByLabelText('operator')).toBeInTheDocument();
   expect(screen.getByLabelText('task')).toBeInTheDocument();
-  expect(screen.getByRole('button', { name: /記録を開始/ })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: /Start recording/ })).toBeInTheDocument();
 });
 
-test('active recording (state=recording) shows 収録中 + a stop button', async () => {
+test('active recording (state=recording) shows Recording + a stop button', async () => {
   mockStatus(
     { run_id: 'run_1', state: 'recording', message_count: 10, bytes: 2048 },
     {
@@ -54,7 +60,71 @@ test('active recording (state=recording) shows 収録中 + a stop button', async
   );
   renderWithClient(<LiveTab config={CONFIG} />);
 
-  await waitFor(() => expect(screen.getByText('収録中')).toBeInTheDocument());
-  expect(screen.getByRole('button', { name: /記録を停止/ })).toBeInTheDocument();
-  expect(screen.queryByText('待機中')).not.toBeInTheDocument();
+  await waitFor(() => expect(screen.getByText('Recording')).toBeInTheDocument());
+  expect(screen.getByRole('button', { name: /Stop recording/ })).toBeInTheDocument();
+  expect(screen.queryByText('Idle')).not.toBeInTheDocument();
+});
+
+// Regression: typing operator/task then navigating away (Live tab unmounts)
+// and back must NOT reset them — they live in the persistent UI store.
+test('operator/task survive a remount (tab switch away and back)', async () => {
+  mockStatus({ run_id: null, state: 'created' });
+  const { unmount } = renderWithClient(<LiveTab config={CONFIG} />);
+
+  await waitFor(() => expect(screen.getByText('Idle')).toBeInTheDocument());
+  fireEvent.change(screen.getByLabelText('operator'), { target: { value: 'yuki' } });
+  fireEvent.change(screen.getByLabelText('task'), { target: { value: 'pick' } });
+
+  unmount(); // leave the Live tab
+  renderWithClient(<LiveTab config={CONFIG} />); // come back
+
+  await waitFor(() => expect(screen.getByLabelText('operator')).toHaveValue('yuki'));
+  expect(screen.getByLabelText('task')).toHaveValue('pick');
+});
+
+// T-L3: the Monitor doubles as the next-recording topic picker. Configured
+// topics seed checked; the operator can add others; Start recording captures
+// exactly the checked set.
+test('record checkboxes seed from configured topics and drive the next start', async () => {
+  let startBody: { topics?: unknown } | null = null;
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    if (url.includes('/record/status'))
+      return Promise.resolve(jsonResponse({ run_id: null, state: 'created' }));
+    if (url.includes('/record/start')) {
+      startBody = JSON.parse(String((init as RequestInit).body));
+      return Promise.resolve(jsonResponse({ run_id: 'r1', state: 'recording' }));
+    }
+    if (url.includes('/topics'))
+      return Promise.resolve(
+        jsonResponse([
+          { name: '/hsrb/joint_states', type: 'sensor_msgs/msg/JointState', publisher_count: 1 },
+          { name: '/hsrb/odom', type: 'nav_msgs/msg/Odometry', publisher_count: 1 },
+        ]),
+      );
+    if (url.includes('/runs'))
+      return Promise.resolve(jsonResponse({ items: [], next_cursor: null }));
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  const cfg = {
+    ...CONFIG,
+    defaults: { default_topics: ['/hsrb/joint_states'] },
+  } as RuntimeConfig;
+  renderWithClient(<LiveTab config={cfg} />);
+
+  // Configured topic seeds checked; the discovered-but-unconfigured one does not.
+  const joint = await screen.findByLabelText('record /hsrb/joint_states');
+  const odom = screen.getByLabelText('record /hsrb/odom');
+  await waitFor(() => expect(joint).toBeChecked());
+  expect(odom).not.toBeChecked();
+
+  // Add odom, then start: the body carries exactly the checked set.
+  fireEvent.click(odom);
+  fireEvent.click(screen.getByRole('button', { name: /Start recording/ }));
+
+  await waitFor(() => expect(startBody).not.toBeNull());
+  expect(new Set(startBody!.topics as string[])).toEqual(
+    new Set(['/hsrb/joint_states', '/hsrb/odom']),
+  );
 });

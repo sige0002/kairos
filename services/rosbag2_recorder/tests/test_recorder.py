@@ -73,6 +73,9 @@ def _make_session(
     session._spawn_process = fake_spawn  # type: ignore[method-assign]
     # FakeProcess shares our pid; never deliver a real OS signal from a unit test.
     session._signal_and_wait = lambda _proc: None  # type: ignore[method-assign]
+    # Arming (subscription gate + resume) needs ROS; stub it to a no-op so the
+    # state machine runs without ROS. Tests that exercise arming override this.
+    session._arm_and_resume = lambda *_a, **_k: None  # type: ignore[method-assign]
     return session
 
 
@@ -144,7 +147,7 @@ def test_run_dir_is_host_writable(
     rd = run_dir(Path(settings.data_dir), "run_p")
     assert (rd.stat().st_mode & 0o777) == 0o777
     # The recorded root is relaxed too (so the run dir itself can be removed).
-    assert (rd.parent.stat().st_mode & 0o002)  # world-writable bit set
+    assert rd.parent.stat().st_mode & 0o002  # world-writable bit set
 
 
 def test_session_json_metadata_optional(
@@ -338,6 +341,37 @@ def test_start_failure_when_process_hangs_without_dir(
     assert not run_dir(Path(settings.data_dir), "run_hang").exists()
 
 
+def test_failed_start_after_completed_run_keeps_previous_status(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    """BUG-A regression: a failed start must not corrupt the previous run's
+    status. self._topics is staged and only committed on success, so a failed
+    attempt's topics never leak into /record/status (which still reports the
+    prior run_id/state)."""
+    session = _make_session(settings, fake_process, write_metadata)
+    session.start(_start_req("run_ok", topics=["/joint_states"]))
+    session.stop()
+    assert session.status().state is RunState.completed
+
+    # A second start with DIFFERENT topics that fails (process exits, no dir).
+    def failing_spawn(cmd: list[str]) -> Any:
+        return fake_process(cmd, returncode=1, alive=False)
+
+    session._spawn_process = failing_spawn  # type: ignore[method-assign]
+    with pytest.raises(ApiError) as exc:
+        session.start(_start_req("run_bad", topics=["/totally_different"]))
+    assert exc.value.code == "record_start_failed"
+
+    # Status still reflects the previous completed run, NOT the failed topics.
+    st = session.status()
+    assert st.run_id == "run_ok"
+    assert st.state is RunState.completed
+    assert [t.name for t in st.topics] == ["/joint_states"]
+    # The failed attempt's own topics live in its failed-start record.
+    failed = read_failed_start_record(settings.data_dir, "run_bad")
+    assert [t.name for t in failed.topics] == ["/totally_different"]
+
+
 def test_output_dir_absent_at_spawn_and_qos_outside_run_dir(
     settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
 ) -> None:
@@ -405,6 +439,52 @@ def test_command_has_storage_output_and_topics(
     out = cmd[cmd.index("--output") + 1]
     assert out.endswith("/recorded/run_cmd")
     assert "/joint_states" in cmd
+
+
+def test_command_includes_start_paused_when_enabled(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    """--start-paused is added only when recording.start_paused is enabled."""
+    from kairos_common import RecordingConfig, RecordingTuning
+
+    cfg = RecordingConfig(robot_name="t", recording=RecordingTuning(start_paused=True))
+    cap: list[Any] = []
+    _make_session(
+        settings, fake_process, write_metadata, config=cfg, capture=cap
+    ).start(_start_req("run_sp"))
+    assert "--start-paused" in cap[0].cmd
+
+    # No config -> not paused (the old immediate-record behavior).
+    cap2: list[Any] = []
+    _make_session(settings, fake_process, write_metadata, capture=cap2).start(
+        _start_req("run_np")
+    )
+    assert "--start-paused" not in cap2[0].cmd
+
+
+def test_arm_failure_fails_the_start_and_cleans_up(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    """A+B fail-safe: if arming/resume fails, the start fails (no silent paused
+    recorder) and the half-created run dir is removed."""
+    from kairos_common import RecordingConfig, RecordingTuning
+
+    cfg = RecordingConfig(robot_name="t", recording=RecordingTuning(start_paused=True))
+    session = _make_session(settings, fake_process, write_metadata, config=cfg)
+
+    def boom(*_a: Any, **_k: Any) -> None:
+        raise RuntimeError("resume service missing")
+
+    session._arm_and_resume = boom  # type: ignore[method-assign]
+    # The fake process shares our pid; never let the real terminate killpg the
+    # test's own process group.
+    session._terminate_failed_start = lambda _p: None  # type: ignore[method-assign]
+    with pytest.raises(ApiError) as exc:
+        session.start(_start_req("run_arm"))
+
+    assert exc.value.code == "record_arm_failed"
+    assert session.status().state is RunState.created  # not recording
+    assert not run_dir(Path(settings.data_dir), "run_arm").exists()  # cleaned up
 
 
 def test_command_all_uses_all_flag(

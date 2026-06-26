@@ -14,6 +14,12 @@ dependencies = [
     "mcap-ros2-support>=0.5.7",
     "pyyaml>=6.0.3",
     "uvicorn>=0.30",
+    # video_check mp4 encode: PyAV bundles ffmpeg (no system ffmpeg needed),
+    # Pillow decodes CompressedImage JPEG, numpy bridges frames into PyAV.
+    # Lazy-imported, so a missing wheel never breaks module import / the service.
+    "av>=12.0",
+    "Pillow>=10.0",
+    "numpy>=1.26",
 ]
 
 [project.scripts]

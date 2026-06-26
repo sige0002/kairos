@@ -25,13 +25,15 @@ backend-driven な軽量 Web UI（Vite + React + TypeScript）。**ユーザビ�
 
 ## 画面構成（タブ）
 
-各コンテナ機能 = 1 タブ。**タブはレジストリ駆動**（`GET /api/v1/config` の `tabs` 定義で、表示・順序・有効/無効を backend から差し替える）:
+**タブはレジストリ駆動**（`GET /api/v1/config` の `tabs` 定義で、表示・順序・有効/無効を backend から差し替える）。**UI 表記は英語**。現在のタブ構成は **Live / Graph / Recordings / Validation / Datasets / Config**（tab id はそれぞれ `live` / `graph` / `runs` / `validation` / `dataset` / `config`）:
 
-- **Record** — Topic 選択 / Topic Health / Alert / 記録 Start・Stop。開始前に推定帯域・保存先空き容量を表示。
-- **Monitor** — Hz / Late / Gap / Loss / Bandwidth ダッシュボード + Alert。
-- **Stream** — ライブ映像プレビュー（複数カメラ layout、接続失敗時の再試行、codec 非対応表示）。
-- **Runs** — 一覧（run_id / Status / Duration）+ 詳細（Preview / Validation / Dataset Stats、manifest の生 JSON view）。
-- **Pipelines** — schema-driven 実行フォーム（stage3。既定は無効）。
+- **Live** — Record + Stream + Monitor を融合した運用画面。上部に記録ヒーロー（Operator / Task 入力 + Start・Stop）、下に Stream プレビュー（左）と Monitor 健全性パネル（右）。
+  - Monitor は購読中トピックを列挙し、各行に **RECORD チェックボックス**を持つ。チェック集合が**次回記録**の対象トピックになる（次回 start の選択であって、記録途中の変更ではない＝`ros2 bag record` は途中変更できない）。設定済みトピックは事前チェック＆上部にソートされる。
+  - ヘッダに **ROS_DOMAIN_ID** とホストの **CPU / GPU**（`GET /api/v1/system`）を表示。
+- **Graph** — メトリクスパネルを追加・削除できる時系列ヘルスビュー（**Frequency / Bandwidth / Max gap / Rate vs expected**）。latency / loss は非破壊 monitor では測れないため**メニューから除外**（per-run の loss は Recordings の事後解析で提供）。
+- **Recordings**（旧 Runs） — 収録履歴一覧（run_id / Status / Duration）+ 詳細（`manifest` / `validation` / `dataset_stats` / `loss`）。**「Run loss report」ボタン**と、オンデマンドの **mp4「Video check」プレイヤー**。run の削除も可能。
+- **Datasets** — エクスポート済みデータセットを **operator › task › NNN のツリー**で一覧（`GET /api/v1/datasets`）。下段で完了収録を export（個別＋「Export all」で `recorded/` 全件一括）。エクスポートは**移動**で、成功すると収録は `recorded/` と Recordings 一覧から消え、Datasets ツリーに現れる。
+- **Config** — 収録設定（`RECORDING_CONFIG` 全体）を UI から編集・永続化する（`PUT /api/v1/config/recording`）。
 
 ## データフロー（SSE × キャッシュ）
 
@@ -40,7 +42,7 @@ backend-driven な軽量 Web UI（Vite + React + TypeScript）。**ユーザビ�
 
 ## 出力（呼ぶ API）
 
-- `POST /api/v1/record/start` / `stop`、`GET /api/v1/runs`、`GET /api/v1/topics/status`、`GET /api/v1/events`（SSE）、`POST /api/v1/jobs`（stage3）
+- `POST /api/v1/record/start` / `stop`、`GET /api/v1/runs` / `GET /api/v1/runs/{id}`（RunDetail）、`DELETE /api/v1/runs/{id}`、`GET /api/v1/topics/status`、`GET /api/v1/events`（SSE）、`GET /api/v1/system`、`GET/PUT /api/v1/config/recording`、`GET /api/v1/files/{path}`（video_check mp4）、`GET /api/v1/datasets`・`POST /api/v1/datasets/export(-all)`、`POST /api/v1/jobs`（`fast_validation` / `loss_report` / `video_check`）
 
 ## 設計方針
 

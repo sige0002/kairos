@@ -9,12 +9,13 @@ from typing import Any
 
 from kairos_common import utc_now_iso8601
 
-from dora_runner.mcap_utils import enumerate_topics, find_mcap
+from dora_runner.mcap_utils import enumerate_topics, find_mcap, validate_run_id
 from dora_runner.models import ValidationTemplate
 
 
 def mcap_loader(run_id: str, data_dir: Path) -> dict[str, Any]:
     """Node contract: load run paths and enumerate MCAP topics."""
+    validate_run_id(run_id)
     run_dir = data_dir / "recorded" / run_id
     mcap_path = find_mcap(run_dir)
     return {

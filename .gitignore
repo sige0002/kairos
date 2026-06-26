@@ -23,6 +23,8 @@ data/*
 plan.md
 plan_ui.md
 plan_config.md
+report.md
+task.md
 
 # OS / editor
 .DS_Store

@@ -18,8 +18,6 @@ default_topics:
   - /hsrb/arm_trajectory_controller/command
   - /hsrb/head_rgbd_sensor/rgb/image_rect_color/compressed
   - /hsrb/hand_camera/image_raw/compressed
-  - /tf
-  - /tf_static
 
 # ---- Expected Hz for monitor quality (first match wins; from bag counts) -----
 expected_hz_patterns:
@@ -36,7 +34,7 @@ expected_hz_patterns:
   - pattern: "/hsrb/arm_trajectory_controller/command"
     hz: 30
   - pattern: "/hsrb/odom"
-    hz: 26
+    hz: 25
 
 # ---- Per-topic QoS overrides (OPTIONAL; first match wins) -------------------
 # By default rosbag2 record ADAPTS to each publisher's offered QoS — the right

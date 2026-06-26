@@ -34,8 +34,8 @@ ROS 2 のロボットデータを **収録・監視・検証・変換** する�
 | [topic_monitor](docs/specs/ja/topic_monitor.md) | 軽量・非破壊なライブ健全性メトリクス（Hz / 遅延 / 欠落 / ロス / 帯域）。ペイロードは**デコードしない**。 |
 | [webrtc_streamer](docs/specs/ja/webrtc_streamer.md) | 低遅延のカメラ**プレビュー**（ROS 2 image → ブラウザ）。記録パスではない。 |
 | [api_orchestrator](docs/specs/ja/api_orchestrator.md) | 単一の API ハブ。ジョブのライフサイクル・状態・設定・結果集約を担う。 |
-| [dora_runner](docs/specs/ja/dora_runner.md) | 収録後の**検証・変換**パイプライン（dora ベース）。 |
-| [frontend](docs/specs/ja/frontend.md) | backend-driven な Web UI。記録操作・ライブ映像・トピック健全性・Run/検証/データセット表示。 |
+| [dora_runner](docs/specs/ja/dora_runner.md) | 収録後の**検証・変換**パイプライン（dora ベース）。有効: `fast_validation` / `dataset_export` / `loss_report` / `video_check`。 |
+| [frontend](docs/specs/ja/frontend.md) | backend-driven な Web UI（UI 表記は英語）。タブ構成: Live / Graph / Recordings / Validation / Datasets / Config。 |
 
 ## 仕様ドキュメント
 
@@ -110,18 +110,22 @@ backend 駆動で描画します。
    # 別の bag を指定
    BAG=/data/airoa-moma-mcap/000730 docker compose -f deploy/test/compose.yaml run --rm rosbag_player
    ```
-2. **記録**: UI または `POST /api/v1/record/start {"topics":"all"}` で開始 → MCAP が
-   `/data/recorded/<run_id>/` に生成される（停止は `POST /api/v1/record/stop`）。Record タブの
+2. **記録**: UI（Live タブ）または `POST /api/v1/record/start {"topics":"all"}` で開始 → MCAP が
+   `/data/recorded/<run_id>/` に生成される（停止は `POST /api/v1/record/stop`）。Live タブの
    **Operator（データ取得者）/ Task（タスク名）** を入れると、その内容＋トピック・件数・開始/終了が
-   MCAP と同じ `/data/recorded/<run_id>/session.json` に保存され、Runs タブでも表示される。
-   収録は **Runs タブから削除**できる（DB 行＋`/data/recorded/<run_id>` を削除）。recorder は出力を
+   MCAP と同じ `/data/recorded/<run_id>/session.json` に保存され、Recordings タブでも表示される。
+   収録は **Recordings タブから削除**できる（DB 行＋`/data/recorded/<run_id>` を削除）。recorder は出力を
    `chmod 0777` するので、ホスト側（コンテナ外）からも sudo なしで削除できる。
-3. **監視 / プレビュー**: `GET /metrics` でライブ健全性（Hz / 遅延 / 欠落 / 帯域）、`/stream` でカメラの
-   WebRTC プレビュー。UI の Monitor タブは**グラフ上の全 topic を常時表示**し、監視対象は live Hz を重ねる。
-   サンプル bag に合わせて Hz を出すには `RECORDING_CONFIG=config/airoa_hsr.yaml` を指す
-   （どの topic を録る/監視するかは [`config/`](config/README.ja.md) で定義。Record タブに事前選択として反映）。
-4. **収録後の検証**: `POST /api/v1/jobs {"pipeline":"fast_validation","run_id":...,"params":{...}}` で
-   必須トピックの過不足を検証 → `/data/report/fast_validation/<run_id>/summary.json` に `pass`/`fail` を出力。
+3. **監視 / プレビュー**: `GET /metrics` でライブ健全性（Hz / 欠落 / 帯域）、`/stream` でカメラの
+   WebRTC プレビュー。UI の Live タブは Stream プレビューと Monitor パネル（**グラフ上の全 topic を常時表示**し、
+   監視対象は live Hz を重ねる）を融合表示。サンプル bag に合わせて Hz を出すには
+   `RECORDING_CONFIG=config/airoa_hsr.yaml` を指す（どの topic を録る/監視するかは
+   [`config/`](config/README.ja.md) で定義。Live タブの RECORD チェックに事前選択として反映）。
+4. **収録後の検証・処理**（`POST /api/v1/jobs`、`dora_runner` 経由）:
+   - `fast_validation` — 必須トピックの過不足を検証 → `/data/report/fast_validation/<run_id>/summary.json` に `pass`/`fail`。
+   - `loss_report` — トピックごとのロス推定（Recordings タブの「Run loss report」）。
+   - `video_check` — カメラトピックの mp4 プレビュー（Recordings タブ。`GET /api/v1/files/...` で再生）。
+   - `dataset_export` — 完了した収録を `data/<operator>/<task>/NNN` へ export（Datasets タブ）。
 
 ### テスト / 結合テスト
 

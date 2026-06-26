@@ -43,14 +43,27 @@ def test_operator_task_round_trip_and_forwarded(fake_recorder, store: RunStore):
         assert detail["task"] == "pick-and-place"
 
 
-def test_operator_task_optional(fake_recorder, store: RunStore):
+def test_operator_task_default_when_omitted(fake_recorder, store: RunStore):
     with _client(fake_recorder, store) as client:
         run_id = client.post("/api/v1/record/start", json={"topics": "all"}).json()[
             "run_id"
         ]
-        # Omitted -> not forwarded, and null on the run.
-        assert "operator" not in fake_recorder.last_start_payload
-        assert "task" not in fake_recorder.last_start_payload
+        # Omitted/blank -> defaulted to stable placeholders (dataset export keys
+        # data/<operator>/<task>, so a null component must not slip through), and
+        # the placeholders are forwarded to the recorder for session.json.
+        assert fake_recorder.last_start_payload["operator"] == "unknown_operator"
+        assert fake_recorder.last_start_payload["task"] == "unknown_task"
         detail = client.get(f"/api/v1/runs/{run_id}").json()
-        assert detail["operator"] is None
-        assert detail["task"] is None
+        assert detail["operator"] == "unknown_operator"
+        assert detail["task"] == "unknown_task"
+
+
+def test_operator_task_blank_is_defaulted(fake_recorder, store: RunStore):
+    with _client(fake_recorder, store) as client:
+        run_id = client.post(
+            "/api/v1/record/start",
+            json={"topics": "all", "operator": "  ", "task": ""},
+        ).json()["run_id"]
+        detail = client.get(f"/api/v1/runs/{run_id}").json()
+        assert detail["operator"] == "unknown_operator"
+        assert detail["task"] == "unknown_task"

@@ -77,6 +77,16 @@ SIZE_POLL_S = 2.0
 # disk-full crash, non-zero error exit) is abnormal -> the run is ``failed``.
 _CLEAN_STOP_RETURNCODES = frozenset({0, 130, -int(signal.SIGINT)})
 
+# `ros2 bag record` registers its node under this name; its pause/resume/
+# is_paused services live at /<node>/... (rosbag2_interfaces). Used by the
+# --start-paused readiness gate.
+RECORDER_NODE_NAME = "rosbag2_recorder"
+# How often the readiness gate polls the ROS graph for the recorder's
+# subscriptions while it is paused.
+SUBSCRIPTION_POLL_S = 0.2
+# How long to wait for the recorder's resume/is_paused services to appear.
+RESUME_SERVICE_TIMEOUT_S = 5.0
+
 # States in which a session is actively holding (or finalising) the subprocess.
 _ACTIVE_STATES = frozenset({RunState.recording, RunState.stopping})
 
@@ -216,11 +226,19 @@ class RecorderSession:
                 cmd += ["--max-bag-duration", str(request.split.max_duration_s)]
         if qos_path is not None:
             cmd += ["--qos-profile-overrides-path", str(qos_path)]
+        if self._start_paused_enabled():
+            # Start paused; we resume only after subscriptions are matched (see
+            # _arm_and_resume), so the bag begins with no dropped first frames.
+            cmd.append("--start-paused")
         if topics == "all":
             cmd += ["--all"]
         else:
             cmd += list(topics)
         return cmd
+
+    def _start_paused_enabled(self) -> bool:
+        """Whether to spawn paused + run the subscription-readiness gate."""
+        return bool(self._config and self._config.recording.start_paused)
 
     def _spawn_process(self, cmd: list[str]) -> subprocess.Popen[bytes]:
         """Spawn *cmd* in a new process group (test seam).
@@ -233,26 +251,41 @@ class RecorderSession:
 
     # -- lifecycle ----------------------------------------------------------
 
+    def _raise_if_active(self) -> None:
+        """Raise 409 if a session is already recording/stopping (lock held)."""
+        if self._state in _ACTIVE_STATES:
+            raise ApiError(
+                status_code=409,
+                code="already_recording",
+                message="A recording session is already active.",
+                details={"run_id": self._run_id, "state": self._state.value},
+            )
+
     def start(self, request: RecordStartRequest) -> RecordStatusResponse:
         """Start a recording session; raise 409 if one is already active."""
         run_id = validate_run_id(request.run_id)
         with self._lock:
-            if self._state in _ACTIVE_STATES:
-                raise ApiError(
-                    status_code=409,
-                    code="already_recording",
-                    message="A recording session is already active.",
-                    details={"run_id": self._run_id, "state": self._state.value},
-                )
-
+            self._raise_if_active()
             self._check_writable_and_space()
 
+        # Let drivers/cameras ramp up so they are publishing before recording
+        # begins (RECORDING_CONFIG recording.start_delay_s). Done OUTSIDE the
+        # lock so GET /record/status is not blocked for the whole delay; the
+        # active state is re-checked after re-acquiring (the orchestrator also
+        # serializes starts, so a concurrent start is already unlikely).
+        self._apply_start_delay()
+
+        with self._lock:
+            self._raise_if_active()
+
             topics = request.topics
-            # Freeze the topic selection into the manifest. For an explicit list
-            # we record each name now; "all" is expanded by rosbag2 at the DDS
-            # layer and reconciled from metadata.yaml at finalise time.
+            # Freeze the topic selection. For an explicit list we record each
+            # name now; "all" is expanded by rosbag2 at the DDS layer and
+            # reconciled from metadata.yaml at finalise time. Staged in a local
+            # and committed to self._topics only on success, so a failed start
+            # cannot leave the previous run's status carrying these topics.
             selected = list(topics) if topics != "all" else []
-            self._topics = [
+            staged_topics = [
                 TopicEntry(name=name, qos=self._resolve_qos(name, request))
                 for name in selected
             ]
@@ -263,17 +296,11 @@ class RecorderSession:
             qos_path = self._materialise_qos(run_id, selected, request)
             cmd = self._build_command(run_id, topics, request, qos_path)
 
-            # Let drivers/cameras ramp up so they are publishing before recording
-            # begins (RECORDING_CONFIG recording.start_delay_s). Matters for the
-            # --all / camera case where a late publisher would otherwise be
-            # subscribed mid-stream.
-            self._apply_start_delay()
-
             started_at = utc_now_iso8601()
             try:
                 process = self._spawn_process(cmd)
             except (OSError, ValueError) as exc:
-                self._fail(run_id, started_at, request, str(exc))
+                self._fail(run_id, started_at, request, staged_topics, str(exc))
                 raise ApiError(
                     status_code=507,
                     code="record_spawn_failed",
@@ -293,6 +320,7 @@ class RecorderSession:
                     run_id,
                     started_at,
                     request,
+                    staged_topics,
                     f"ros2 bag record did not create the output dir (rc={returncode})",
                 )
                 raise ApiError(
@@ -302,6 +330,27 @@ class RecorderSession:
                     details={"run_id": run_id, "returncode": returncode},
                 )
 
+            # The bag process is up. When spawned --start-paused it is now
+            # waiting paused: bring subscriptions live, then resume — so the bag
+            # begins with all topics subscribed (no dropped first frames during
+            # DDS discovery). FAIL-SAFE: any failure here must NOT leave a paused
+            # recorder silently capturing nothing — kill it and fail the start.
+            if self._start_paused_enabled():
+                try:
+                    self._arm_and_resume(run_id, selected, topics == "all")
+                except Exception as exc:  # noqa: BLE001 - convert to a clean fail
+                    self._terminate_failed_start(process)
+                    shutil.rmtree(run_dir(self._data_dir, run_id), ignore_errors=True)
+                    self._fail(
+                        run_id, started_at, request, staged_topics, f"arming: {exc}"
+                    )
+                    raise ApiError(
+                        status_code=507,
+                        code="record_arm_failed",
+                        message="Recording failed to arm (subscribe + resume).",
+                        details={"run_id": run_id, "error": str(exc)},
+                    ) from exc
+
             self._process = process
             self._state = RunState.recording
             self._run_id = run_id
@@ -310,6 +359,7 @@ class RecorderSession:
             self._split = request.split
             self._operator = request.operator
             self._task = request.task
+            self._topics = staged_topics
             # The run dir now exists (ros2 created it), so writing the manifest
             # into it no longer races the "folder exists" check.
             self._write_manifest()
@@ -428,6 +478,111 @@ class RecorderSession:
         delay = self._config.recording.start_delay_s
         if delay > 0:
             time.sleep(delay)
+
+    # -- start-paused readiness gate (A+B) ---------------------------------
+
+    def _arm_and_resume(self, run_id: str, topics: list[str], all_mode: bool) -> None:
+        """Wait until ``ros2 bag record`` has subscribed to the target topics,
+        then resume it (it was spawned ``--start-paused``).
+
+        Raises on any hard failure so the caller fails the start rather than
+        leaving a paused recorder capturing nothing. rclpy + rosbag2_interfaces
+        are imported lazily so the module imports without ROS; the live path runs
+        in the ROS image (verified in Docker, like the monitor's rclpy paths).
+        """
+        import rclpy
+        from rclpy.node import Node
+        from rosbag2_interfaces.srv import IsPaused, Resume
+
+        timeout = (
+            self._config.recording.subscription_ready_timeout_s
+            if self._config is not None
+            else 5.0
+        )
+        owns_rclpy = not rclpy.ok()
+        if owns_rclpy:
+            rclpy.init()
+        node = Node("kairos_recorder_arming")
+        try:
+            self._await_recorder_subscribed(rclpy, node, topics, all_mode, timeout)
+            self._resume_recorder(rclpy, node, Resume, IsPaused)
+            logger.info("recording armed + resumed", extra={"run_id": run_id})
+        finally:
+            node.destroy_node()
+            if owns_rclpy:
+                rclpy.shutdown()
+
+    def _readiness_targets(
+        self, node: Any, topics: list[str], all_mode: bool
+    ) -> list[str]:
+        """Topics the readiness gate waits on: the explicit list, or (for
+        ``--all``) every currently-published topic at this instant."""
+        if not all_mode:
+            return list(topics)
+        return [
+            name
+            for name, _types in node.get_topic_names_and_types()
+            if node.count_publishers(name) > 0
+        ]
+
+    def _recorder_subscribed(self, node: Any, topic: str) -> bool:
+        """True once a publisher exists AND the recorder node has subscribed."""
+        if node.count_publishers(topic) == 0:
+            return False
+        return any(
+            info.node_name == RECORDER_NODE_NAME
+            for info in node.get_subscriptions_info_by_topic(topic)
+        )
+
+    def _await_recorder_subscribed(
+        self,
+        rclpy_mod: Any,
+        node: Any,
+        topics: list[str],
+        all_mode: bool,
+        timeout: float,
+    ) -> None:
+        """Poll the ROS graph until the recorder has subscribed to every target
+        topic that has a publisher, or until *timeout* (then resume anyway)."""
+        deadline = time.monotonic() + timeout
+        while True:
+            rclpy_mod.spin_once(node, timeout_sec=SUBSCRIPTION_POLL_S)
+            targets = self._readiness_targets(node, topics, all_mode)
+            pending = [t for t in targets if not self._recorder_subscribed(node, t)]
+            if targets and not pending:
+                return
+            if time.monotonic() >= deadline:
+                if pending:
+                    logger.warning(
+                        "arming timed out; resuming with topics not yet matched",
+                        extra={"pending_topics": pending},
+                    )
+                return
+
+    def _resume_recorder(
+        self, rclpy_mod: Any, node: Any, resume_srv: Any, is_paused_srv: Any
+    ) -> None:
+        """Call the recorder's ``~/resume`` service and confirm it is no longer
+        paused. Raises if the service is missing or it stays paused."""
+        resume = node.create_client(resume_srv, f"/{RECORDER_NODE_NAME}/resume")
+        if not resume.wait_for_service(timeout_sec=RESUME_SERVICE_TIMEOUT_S):
+            raise RuntimeError("recorder resume service did not appear")
+        fut = resume.call_async(resume_srv.Request())
+        rclpy_mod.spin_until_future_complete(
+            node, fut, timeout_sec=RESUME_SERVICE_TIMEOUT_S
+        )
+        if fut.result() is None:
+            raise RuntimeError("recorder resume call did not return")
+        # Confirm it actually resumed (fail-safe against a silent paused bag).
+        is_paused = node.create_client(
+            is_paused_srv, f"/{RECORDER_NODE_NAME}/is_paused"
+        )
+        if is_paused.wait_for_service(timeout_sec=2.0):
+            f2 = is_paused.call_async(is_paused_srv.Request())
+            rclpy_mod.spin_until_future_complete(node, f2, timeout_sec=3.0)
+            res = f2.result()
+            if res is not None and getattr(res, "paused", False):
+                raise RuntimeError("recorder still paused after resume")
 
     def _resolve_qos(
         self, topic: str, request: RecordStartRequest
@@ -559,6 +714,7 @@ class RecorderSession:
         run_id: str,
         started_at: str,
         request: RecordStartRequest,
+        topics: list[TopicEntry],
         error: str,
     ) -> None:
         """Record a START failure WITHOUT creating a recording run dir.
@@ -566,12 +722,14 @@ class RecorderSession:
         The session never produced a bag, so we must not leave a
         ``recorded/<run_id>/`` directory that downstream consumers would mistake
         for a recording. The failure is written to the sibling
-        ``recorded/<run_id>.failed.json`` instead.
+        ``recorded/<run_id>.failed.json`` instead. ``topics`` is the staged
+        selection for this failed attempt (NOT ``self._topics``, which still
+        reflects the previous session).
         """
         manifest = Manifest(
             run_id=run_id,
             state=RunState.failed,
-            topics=self._topics,
+            topics=topics,
             started_at=started_at,
             ended_at=utc_now_iso8601(),
             compression=request.compression,

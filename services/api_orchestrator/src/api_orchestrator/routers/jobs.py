@@ -11,9 +11,14 @@ from api_orchestrator.models import (
     JobCreateResponse,
     JobResult,
     JobStatus,
+    RunState,
 )
 
 router = APIRouter(prefix="/api/v1/jobs", tags=["jobs"])
+
+# Run states for which a dataset_export must be refused (the bag is still being
+# written; exporting it would copy a partial/active recording).
+_UNFINISHED_STATES = {RunState.created, RunState.recording, RunState.stopping}
 
 
 async def _emit_job(request: Request, job: JobStatus | JobCreateResponse) -> None:
@@ -33,17 +38,44 @@ async def _emit_job(request: Request, job: JobStatus | JobCreateResponse) -> Non
 async def create_job(request: Request, body: JobCreateRequest) -> JobCreateResponse:
     """Create a dora_runner job and persist its initial status.
 
-    For a ``fast_validation`` job with no explicit ``template`` param, inject the
-    Config tab's active validation template so the operator's selection applies
-    immediately (no restart).
+    For a ``fast_validation`` job, resolve the ``template`` param into the FULL
+    template object before forwarding. The UI sends a template *id* (file stem,
+    e.g. ``airoa_hsr``), but dora_runner's template store starts empty, so a bare
+    id always 404s — we look the id up in the Config catalog and inject the
+    object. A missing/blank id falls back to the active selection; a param that
+    is already a full object (dict) is passed through untouched.
     """
     client = request.app.state.dora_runner_client
     store = request.app.state.run_store
     payload = body.model_dump()
-    if body.pipeline == "fast_validation" and not body.params.get("template"):
-        active = request.app.state.config_catalog.active_validation_template()
-        if active is not None:
-            payload["params"] = {**body.params, "template": active.model_dump()}
+    if body.pipeline == "dataset_export":
+        # Only export a finished recording; never copy a bag mid-write.
+        run = store.get(body.run_id)
+        if run is None:
+            raise ApiError(
+                status_code=404,
+                code="run_not_found",
+                message=f"Run not found: {body.run_id}",
+                details={"run_id": body.run_id},
+            )
+        if run.state in _UNFINISHED_STATES:
+            raise ApiError(
+                status_code=409,
+                code="run_not_finished",
+                message="Cannot export a run that has not finished recording.",
+                details={"run_id": body.run_id, "state": run.state.value},
+            )
+    if body.pipeline == "fast_validation":
+        raw = body.params.get("template")
+        if not isinstance(raw, dict):
+            catalog = request.app.state.config_catalog
+            template = None
+            if isinstance(raw, str) and raw:
+                template = catalog.validation_template_by_id(raw)
+            if template is None:  # blank id, or id not in the catalog
+                template = catalog.active_validation_template()
+            if template is not None:
+                payload["params"] = {**body.params, "template": template.model_dump()}
     created = await client.create_job(payload)
     status_body = await client.job_status(str(created["job_id"]))
     job = JobCreateResponse.model_validate(status_body)

@@ -38,6 +38,8 @@ export interface RuntimeDefaults {
   default_topics?: string[];
   /** Robot name from the active RECORDING_CONFIG (shown for operator context). */
   robot_name?: string;
+  /** Active ROS 2 domain id (shown in the header next to the connection badge). */
+  ros_domain_id?: number;
   [key: string]: unknown;
 }
 

@@ -12,6 +12,14 @@ interface UiState {
 
   sseStatus: SseStatus;
   setSseStatus: (s: SseStatus) => void;
+
+  // Draft record metadata (operator/task). Kept here, not in the Live tab's
+  // local state, so it survives the tab unmounting on navigation — otherwise
+  // typing it and switching tabs would reset it.
+  recordOperator: string;
+  setRecordOperator: (v: string) => void;
+  recordTask: string;
+  setRecordTask: (v: string) => void;
 }
 
 export const useUiStore = create<UiState>((set) => ({
@@ -20,4 +28,9 @@ export const useUiStore = create<UiState>((set) => ({
 
   sseStatus: 'closed',
   setSseStatus: (sseStatus) => set({ sseStatus }),
+
+  recordOperator: '',
+  setRecordOperator: (recordOperator) => set({ recordOperator }),
+  recordTask: '',
+  setRecordTask: (recordTask) => set({ recordTask }),
 }));
