@@ -8,13 +8,18 @@ import { setApiBase } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
 import type { RuntimeConfig } from '../../config';
 import {
+  formatBaseline,
   formatHz,
   formatRateShortfall,
+  formatSelfLoad,
+  rowReason,
   rowTone,
+  selfLoadTone,
   statusTone,
   useMonitorRows,
   type MonitorRow,
 } from './useMonitorRows';
+import type { MonitorSelfLoad } from '../../api/types';
 
 const CONFIG = {
   endpoints: { api: '/api/v1', events: '/api/v1/events', webrtc: '' },
@@ -104,4 +109,54 @@ test('formatRateShortfall: badge only for notable statuses', () => {
   expect(formatRateShortfall(row({ status: 'ok', rate_shortfall: 0.01 }))).toBeNull();
   expect(formatRateShortfall(row({ status: 'ok', rate_shortfall: 0 }))).toBeNull();
   expect(formatRateShortfall(row({ status: 'unknown' }))).toBeNull();
+});
+
+test('formatHz shows a learned baseline (~) only when no static expected_hz (OL-②.3)', () => {
+  // Static expected_hz always wins.
+  expect(formatHz(row({ hz: 49.6, expected_hz: 50, baseline_hz: 12 }))).toBe('49.6 / 50');
+  // No expected_hz but a learned baseline -> tilde reference.
+  expect(formatHz(row({ hz: 11.8, baseline_hz: 12 }))).toBe('11.8 / ~12.0');
+  // No reference at all.
+  expect(formatHz(row({ hz: 11.8 }))).toBe('11.8');
+});
+
+test('formatBaseline reflects the learning state (OL-②.3)', () => {
+  expect(formatBaseline(row({ baseline_state: 'learning' }))).toBe('learning…');
+  expect(formatBaseline(row({ baseline_state: 'stable', baseline_hz: 12.3 }))).toBe('~12.3 Hz');
+  expect(formatBaseline(row({ baseline_state: 'unstable', baseline_hz: 12.3 }))).toBe(
+    '~12.3 Hz (unstable)',
+  );
+  // A configured rate wins -> no learned-baseline label.
+  expect(formatBaseline(row({ baseline_state: 'stable', baseline_hz: 12, expected_hz: 50 }))).toBeNull();
+  expect(formatBaseline(row({}))).toBeNull();
+});
+
+test('rowReason explains baseline learning/instability (OL-②.3)', () => {
+  expect(rowReason(row({ baseline_state: 'learning', status_reason: 'no expected_hz' }))).toBe(
+    'learning baseline…',
+  );
+  expect(rowReason(row({ baseline_state: 'unstable' }))).toBe(
+    'baseline unstable (using last good)',
+  );
+  // A stable baseline keeps the backend status reason (e.g. a shortfall message).
+  expect(rowReason(row({ baseline_state: 'stable', status_reason: '50% under 12 Hz' }))).toBe(
+    '50% under 12 Hz',
+  );
+});
+
+test('selfLoad helpers summarise the monitor self-load (OL-②.4)', () => {
+  expect(selfLoadTone(null)).toBe('gray');
+  expect(selfLoadTone({ status: 'ok' })).toBe('green');
+  expect(selfLoadTone({ status: 'warning' })).toBe('amber');
+  expect(selfLoadTone({ status: 'danger' })).toBe('red');
+
+  expect(formatSelfLoad(null)).toBeNull();
+  const sl: MonitorSelfLoad = {
+    callback_lag_ms: 2.5,
+    snapshot_age_s: 1.1,
+    dropped_callbacks: 3,
+    status: 'warning',
+  };
+  expect(formatSelfLoad(sl)).toBe('2.5 ms cb · 1.1 s age · 3 dropped');
+  expect(formatSelfLoad({ status: 'ok' })).toBeNull();
 });

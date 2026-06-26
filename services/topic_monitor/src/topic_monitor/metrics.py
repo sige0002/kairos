@@ -39,7 +39,7 @@ from __future__ import annotations
 import statistics
 import threading
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from topic_monitor.subscriber import Sample
 
@@ -70,6 +70,21 @@ DEFAULT_STATUS_RECOVER_S = 1.0
 # smoother adopts them immediately rather than waiting out a dwell.
 _SEVERITY = {"unknown": 0, "ok": 1, "warning": 2, "danger": 3, "inactive": 4}
 _STRUCTURAL = frozenset({"inactive", "unknown"})
+
+# Dynamic baseline learning (OL-②.3): when a topic has NO static expected_hz,
+# observe its windowed Hz for a warm-up period and, once steady (low coefficient
+# of variation), adopt the mean as a learned shortfall reference. Mirrors the
+# MonitorConfig defaults; the service overrides these from RECORDING_CONFIG.
+DEFAULT_BASELINE_WARMUP_S = 10.0
+DEFAULT_BASELINE_STABLE_CV = 0.15
+DEFAULT_BASELINE_MIN_SAMPLES = 30
+
+# Monitor self-load (OL-②.4): thresholds for the monitor's OWN processing health.
+# A warning at the configured level, a danger at twice it (sustained overload).
+DEFAULT_CALLBACK_LAG_WARN_MS = 50.0
+DEFAULT_SNAPSHOT_AGE_WARN_S = 2.0
+# How many recent sample-callback latencies to retain for mean/p95 (rolling).
+DEFAULT_SELF_LOAD_CAPACITY = 1024
 
 
 def _percentile(values: list[float], q: float) -> float | None:
@@ -136,6 +151,168 @@ class StatusSmoother:
             self._current_reason = reason
             self._candidate = self._since = None
         return self._current
+
+
+class BaselineLearner:
+    """Learn an observed Hz baseline for a topic with no static expected_hz (OL-②.3).
+
+    Fed one windowed-Hz value per snapshot via :meth:`update`. While warming up it
+    reports ``state == "learning"`` and no baseline, so the caller keeps the topic
+    ``unknown`` (never danger) during learning. Once it has observed for
+    ``warmup_s``, collected at least ``min_samples`` values, and their coefficient
+    of variation (population stddev / mean) is at/under ``stable_cv``, it declares
+    ``state == "stable"`` and exposes ``baseline_hz`` (the running mean) as the
+    shortfall reference. If a stable baseline later destabilises (CV rises above
+    the threshold, or the topic falls silent) it flips to ``state == "unstable"``
+    but keeps the last good baseline. Pure logic; not thread-safe — driven from
+    the single snapshot path.
+    """
+
+    __slots__ = (
+        "_warmup_s",
+        "_stable_cv",
+        "_min_samples",
+        "_samples",
+        "_first_t",
+        "_state",
+        "_baseline_hz",
+    )
+
+    def __init__(
+        self,
+        warmup_s: float = DEFAULT_BASELINE_WARMUP_S,
+        stable_cv: float = DEFAULT_BASELINE_STABLE_CV,
+        min_samples: int = DEFAULT_BASELINE_MIN_SAMPLES,
+        capacity: int | None = None,
+    ) -> None:
+        self._warmup_s = warmup_s
+        self._stable_cv = stable_cv
+        self._min_samples = max(1, int(min_samples))
+        # Retain enough recent samples to judge CV (and re-evaluate stability)
+        # without unbounded growth; a small multiple of min_samples is plenty.
+        cap = capacity if capacity is not None else max(self._min_samples * 4, 120)
+        self._samples: deque[float] = deque(maxlen=cap)
+        self._first_t: float | None = None
+        self._state = "learning"
+        self._baseline_hz: float | None = None
+
+    @property
+    def state(self) -> str:
+        return self._state
+
+    @property
+    def baseline_hz(self) -> float | None:
+        return self._baseline_hz
+
+    def update(self, hz: float, now: float) -> tuple[str, float | None]:
+        """Record a windowed-Hz observation; return ``(state, baseline_hz)``."""
+        if self._first_t is None:
+            self._first_t = now
+        self._samples.append(max(0.0, hz))
+        warmed = (
+            now - self._first_t >= self._warmup_s
+            and len(self._samples) >= self._min_samples
+        )
+        if not warmed:
+            return self._state, self._baseline_hz
+        mean = statistics.fmean(self._samples)
+        if mean <= 0.0:
+            # Silent over the window: cannot be a usable baseline. Demote a prior
+            # good baseline to "unstable" (kept) but never claim a fresh one.
+            if self._baseline_hz is not None:
+                self._state = "unstable"
+            return self._state, self._baseline_hz
+        stdev = statistics.pstdev(self._samples) if len(self._samples) > 1 else 0.0
+        cv = stdev / mean
+        if cv <= self._stable_cv:
+            self._state = "stable"
+            self._baseline_hz = mean
+        elif self._baseline_hz is not None:
+            self._state = "unstable"  # had a baseline; keep the last good one
+        # else: noisy and never stabilised -> stay "learning".
+        return self._state, self._baseline_hz
+
+
+@dataclass(slots=True)
+class SelfLoadMetrics:
+    """A point-in-time view of the monitor's OWN processing health (OL-②.4)."""
+
+    callback_lag_ms: float | None
+    callback_lag_p95_ms: float | None
+    snapshot_age_s: float | None
+    dropped_callbacks: int
+    status: str
+
+
+class SelfLoadMonitor:
+    """Observe the monitor process's own load, separate from topic health (OL-②.4).
+
+    Times how long the registry takes to absorb each :class:`Sample`
+    (``record_callback``), how stale the snapshot it serves has become
+    (``build`` computes age from the previous build), and how many callbacks the
+    monitor itself dropped/coalesced (``mark_dropped``). It NEVER decodes payloads
+    — only durations and counts. Thread-safe: ``record_callback`` runs on the
+    subscriber thread while ``build`` runs on the request/snapshot path.
+    """
+
+    def __init__(
+        self,
+        warn_lag_ms: float = DEFAULT_CALLBACK_LAG_WARN_MS,
+        warn_age_s: float = DEFAULT_SNAPSHOT_AGE_WARN_S,
+        capacity: int = DEFAULT_SELF_LOAD_CAPACITY,
+    ) -> None:
+        self._warn_lag_ms = warn_lag_ms
+        self._warn_age_s = warn_age_s
+        self._lags: deque[float] = deque(maxlen=capacity)
+        self._dropped = 0
+        self._last_built_at: float | None = None
+        self._lock = threading.Lock()
+
+    def record_callback(self, lag_ms: float) -> None:
+        """Record one sample-callback processing duration (milliseconds)."""
+        with self._lock:
+            self._lags.append(lag_ms if lag_ms > 0.0 else 0.0)
+
+    def mark_dropped(self, n: int = 1) -> None:
+        """Count callbacks the monitor dropped/coalesced under load (cumulative)."""
+        if n <= 0:
+            return
+        with self._lock:
+            self._dropped += n
+
+    def build(self, now: float) -> SelfLoadMetrics:
+        """Aggregate the current window and refresh the snapshot-age clock."""
+        with self._lock:
+            lags = list(self._lags)
+            dropped = self._dropped
+            last = self._last_built_at
+            self._last_built_at = now
+        age = None if last is None else max(0.0, now - last)
+        mean = statistics.fmean(lags) if lags else None
+        p95 = _percentile(lags, 95) if lags else None
+        return SelfLoadMetrics(
+            callback_lag_ms=mean,
+            callback_lag_p95_ms=p95,
+            snapshot_age_s=age,
+            dropped_callbacks=dropped,
+            status=self._status(mean, age, dropped),
+        )
+
+    def _status(self, mean: float | None, age: float | None, dropped: int) -> str:
+        sev = 0  # 0 ok, 1 warning, 2 danger
+        if mean is not None:
+            if mean >= 2.0 * self._warn_lag_ms:
+                sev = max(sev, 2)
+            elif mean >= self._warn_lag_ms:
+                sev = max(sev, 1)
+        if age is not None:
+            if age >= 2.0 * self._warn_age_s:
+                sev = max(sev, 2)
+            elif age >= self._warn_age_s:
+                sev = max(sev, 1)
+        if dropped > 0:
+            sev = max(sev, 1)
+        return ("ok", "warning", "danger")[sev]
 
 
 @dataclass(slots=True)
@@ -308,17 +485,44 @@ class TopicWindow:
             late_reason=late_reason,
         )
 
+    def health_with(self, wm: WindowMetrics, baseline_hz: float) -> WindowMetrics:
+        """Recompute shortfall/status against a learned baseline (OL-②.3).
+
+        Used only for topics with NO static expected_hz: the learned
+        ``baseline_hz`` becomes the shortfall reference so the existing
+        :meth:`_health` math applies unchanged. Static expected_hz always wins
+        (returns ``wm`` untouched); a non-positive baseline is ignored.
+        """
+        if self._expected_hz is not None or baseline_hz <= 0.0:
+            return wm
+        shortfall, deficit, status, status_reason = self._health(
+            wm.count, wm.hz or 0.0, wm.window_s, expected_override=baseline_hz
+        )
+        return replace(
+            wm,
+            rate_shortfall=shortfall,
+            deficit_per_s=deficit,
+            status=status,
+            status_reason=status_reason,
+        )
+
     def _health(
-        self, count: int, hz: float, window_s: float
+        self,
+        count: int,
+        hz: float,
+        window_s: float,
+        expected_override: float | None = None,
     ) -> tuple[float | None, float | None, str, str | None]:
         """Observed shortfall + coarse status (OL-②.1/②.2).
 
         Returns ``(rate_shortfall, deficit_per_s, status, status_reason)``.
         Precedence: ``inactive`` (silent) > ``danger`` > ``warning`` > ``ok`` >
         ``unknown`` (no expected_hz to judge against). The rate is observed
-        shortfall vs the static expected_hz — never claimed as true loss.
+        shortfall vs the expected rate — never claimed as true loss.
+        ``expected_override`` substitutes a learned baseline for the (absent)
+        static expected_hz (OL-②.3); without it the static rate is used.
         """
-        exp = self._expected_hz
+        exp = self._expected_hz if expected_override is None else expected_override
         if count == 0:
             # A silent topic is observably inactive regardless of expected_hz.
             if exp is None:
@@ -406,6 +610,9 @@ class TopicState:
     dds_samples_lost: int = 0
     # Time-based status hysteresis (OL-②.3), applied in the snapshot path.
     status_smoother: StatusSmoother = field(default_factory=StatusSmoother)
+    # Dynamic baseline learner (OL-②.3): present only when the topic has no static
+    # expected_hz and baseline learning is enabled; otherwise None (static wins).
+    baseline_learner: BaselineLearner | None = None
 
 
 class MetricsRegistry:
@@ -427,6 +634,10 @@ class MetricsRegistry:
         min_status_count: float = DEFAULT_MIN_STATUS_COUNT,
         escalate_after_s: float = DEFAULT_STATUS_ESCALATE_S,
         recover_after_s: float = DEFAULT_STATUS_RECOVER_S,
+        baseline_learning: bool = True,
+        baseline_warmup_s: float = DEFAULT_BASELINE_WARMUP_S,
+        baseline_stable_cv: float = DEFAULT_BASELINE_STABLE_CV,
+        baseline_min_samples: int = DEFAULT_BASELINE_MIN_SAMPLES,
     ) -> None:
         # expected_hz_for: callable(topic) -> float | None (first-match resolver).
         self._windows_s = [float(w) for w in windows_s]
@@ -437,6 +648,10 @@ class MetricsRegistry:
         self._min_status_count = min_status_count
         self._escalate_after_s = escalate_after_s
         self._recover_after_s = recover_after_s
+        self._baseline_learning = baseline_learning
+        self._baseline_warmup_s = baseline_warmup_s
+        self._baseline_stable_cv = baseline_stable_cv
+        self._baseline_min_samples = baseline_min_samples
         self._topics: dict[str, TopicState] = {}
         self._lock = threading.Lock()
 
@@ -456,12 +671,24 @@ class MetricsRegistry:
         with self._lock:
             state = self._topics.get(name)
             if state is None:
+                expected = self._resolve_expected_hz(name)
+                # Learn a baseline only when there's no static expected_hz (static
+                # always wins) and learning is enabled (OL-②.3).
+                learner = (
+                    BaselineLearner(
+                        self._baseline_warmup_s,
+                        self._baseline_stable_cv,
+                        self._baseline_min_samples,
+                    )
+                    if expected is None and self._baseline_learning
+                    else None
+                )
                 state = TopicState(
                     name=name,
                     type=type_,
                     window=TopicWindow(
                         self._windows_s,
-                        expected_hz=self._resolve_expected_hz(name),
+                        expected_hz=expected,
                         late_tolerance=self._late_tolerance,
                         warn_shortfall=self._warn_shortfall,
                         danger_shortfall=self._danger_shortfall,
@@ -471,6 +698,7 @@ class MetricsRegistry:
                     status_smoother=StatusSmoother(
                         self._escalate_after_s, self._recover_after_s
                     ),
+                    baseline_learner=learner,
                 )
                 self._topics[name] = state
             else:

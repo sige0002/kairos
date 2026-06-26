@@ -23,11 +23,12 @@ from kairos_common import RecordingConfig, utc_now_iso8601
 
 from topic_monitor.alerts import AlertEngine
 from topic_monitor.expected_hz import make_expected_hz_resolver
-from topic_monitor.metrics import MetricsRegistry, TopicState
+from topic_monitor.metrics import MetricsRegistry, SelfLoadMonitor, TopicState
 from topic_monitor.models import (
     Alert,
     AlertRule,
     MetricsSnapshot,
+    MonitorSelfLoad,
     QosInfo,
     TopicInfo,
     TopicMetrics,
@@ -55,10 +56,12 @@ class MonitorService:
         config: RecordingConfig | None = None,
         alert_rules: list[AlertRule] | None = None,
         clock: Callable[[], float] = time.monotonic,
+        perf_clock: Callable[[], float] = time.perf_counter,
     ) -> None:
         self._subscriber = subscriber
         self._config = config
         self._clock = clock
+        self._perf = perf_clock
         self._lock = threading.Lock()
         self._paused = False
 
@@ -66,10 +69,10 @@ class MonitorService:
         # The snapshot window is the largest configured (gives the most stable
         # rate); shorter windows stay available in the registry for future use.
         self._snapshot_window_s = windows[-1]
-        # Status thresholds + hysteresis come from the RECORDING_CONFIG monitor
-        # block (config-driven, not hardcoded); the registry defaults apply when
-        # there is no config.
-        reg_kwargs: dict[str, float] = {}
+        # Status thresholds + hysteresis + baseline learning come from the
+        # RECORDING_CONFIG monitor block (config-driven, not hardcoded); the
+        # registry defaults apply when there is no config.
+        reg_kwargs: dict[str, float | bool | int] = {}
         if config is not None:
             m = config.monitor
             reg_kwargs = {
@@ -78,6 +81,10 @@ class MonitorService:
                 "min_status_count": m.min_status_count,
                 "escalate_after_s": m.status_escalate_s,
                 "recover_after_s": m.status_recover_s,
+                "baseline_learning": m.baseline_learning,
+                "baseline_warmup_s": m.baseline_warmup_s,
+                "baseline_stable_cv": m.baseline_stable_cv,
+                "baseline_min_samples": m.baseline_min_samples,
             }
         self._registry = MetricsRegistry(
             windows,
@@ -85,9 +92,24 @@ class MonitorService:
             **reg_kwargs,
         )
         self._alerts = AlertEngine(alert_rules)
+        # Monitor self-load (OL-②.4): on by default; the monitor block can toggle
+        # it off to drop all overhead. Times sample-callback latency + snapshot age.
+        self._self_load = self._build_self_load(config)
         self._subscriber.set_sink(self._on_sample)
         # The honest "real loss" channel: DDS message_lost events (no decode).
         self._subscriber.set_lost_sink(self._registry.on_sample_lost)
+
+    @staticmethod
+    def _build_self_load(config: RecordingConfig | None) -> SelfLoadMonitor | None:
+        if config is None:
+            return SelfLoadMonitor()
+        m = config.monitor
+        if not m.self_load_metrics:
+            return None
+        return SelfLoadMonitor(
+            warn_lag_ms=m.callback_lag_warn_ms,
+            warn_age_s=m.snapshot_age_warn_s,
+        )
 
     @staticmethod
     def _resolve_windows(config: RecordingConfig | None) -> list[float]:
@@ -123,7 +145,14 @@ class MonitorService:
     # -- subscriber sink ----------------------------------------------------
 
     def _on_sample(self, sample: Sample) -> None:
+        sl = self._self_load
+        if sl is None:
+            self._registry.on_sample(sample)
+            return
+        # Time only how long the registry takes to absorb the sample (no decode).
+        t0 = self._perf()
         self._registry.on_sample(sample)
+        sl.record_callback((self._perf() - t0) * 1000.0)
 
     # -- pause / resume -----------------------------------------------------
 
@@ -167,10 +196,36 @@ class MonitorService:
             topics=topics,
             alerts=alerts,
             paused=self.paused,
+            self_load=self._self_load_snapshot(now),
+        )
+
+    def _self_load_snapshot(self, now: float) -> MonitorSelfLoad | None:
+        """Build the monitor's own-health view (OL-②.4); None when disabled."""
+        if self._self_load is None:
+            return None
+        sl = self._self_load.build(now)
+        return MonitorSelfLoad(
+            callback_lag_ms=sl.callback_lag_ms,
+            callback_lag_p95_ms=sl.callback_lag_p95_ms,
+            snapshot_age_s=sl.snapshot_age_s,
+            dropped_callbacks=sl.dropped_callbacks,
+            status=sl.status,
         )
 
     def _topic_metrics(self, state: TopicState, now: float) -> TopicMetrics:
         wm = state.window.compute(self._snapshot_window_s, now)
+        # Dynamic baseline (OL-②.3): for a topic with no static expected_hz, learn
+        # an observed Hz baseline. While learning, leave the raw status as-is
+        # (unknown/inactive — never danger); once a baseline exists, judge
+        # shortfall against it via the same _health math. Static expected_hz wins
+        # (learner is None for those), so this never overrides a configured rate.
+        baseline_hz: float | None = None
+        baseline_state: str | None = None
+        learner = state.baseline_learner
+        if learner is not None:
+            baseline_state, baseline_hz = learner.update(wm.hz or 0.0, now)
+            if baseline_hz is not None:
+                wm = state.window.health_with(wm, baseline_hz)
         # Hysteresis: smooth the raw per-window status so one bad tick / GC pause
         # never flips a row red (OL-②.3). Done here, in the single snapshot path.
         # The smoother also carries the reason so it never contradicts the status.
@@ -193,6 +248,8 @@ class MonitorService:
             deficit_per_s=wm.deficit_per_s,
             status=status,
             status_reason=status_reason,
+            baseline_hz=baseline_hz,
+            baseline_state=baseline_state,
             sensor_preview=self._coerce_preview(state.sensor_preview),
             reason=wm.late_reason,
         )

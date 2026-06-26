@@ -47,6 +47,18 @@ monitor:
   qos_depth: 30
   stamp_quality: true
   window_s: [1, 5]
+  # OL-②.3: many HSR topics (e.g. /tf, /hsrb/odom, IMU) have no expected_hz above,
+  # so the monitor learns a baseline for them. Faster than the template defaults
+  # because the sample replays are short — a baseline should appear within ~8 s
+  # (snapshots advance the learner ~1/s).
+  baseline_learning: true
+  baseline_warmup_s: 8.0
+  baseline_stable_cv: 0.2     # HSR rates are a touch noisier than a clean template
+  baseline_min_samples: 8
+  # OL-②.4: surface the monitor's own processing health (defaults are fine here).
+  self_load_metrics: true
+  callback_lag_warn_ms: 50.0
+  snapshot_age_warn_s: 2.0
 
 recording:
   discovery_timeout_s: 10
