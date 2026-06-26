@@ -48,6 +48,7 @@ function Sparkline({
   color,
   refs,
   markers,
+  smooth,
 }: {
   title: string;
   unit: string;
@@ -60,6 +61,9 @@ function Sparkline({
   color: string;
   refs: RefLine[];
   markers: RecMarker[];
+  // EWMA factor (0..1) for a de-jittered overlay line. The raw line stays (faint)
+  // so the smoothing never hides a real value. Status is NOT driven off this.
+  smooth?: number;
 }) {
   const windowed = points.filter((p) => p.t >= t0);
   const values = windowed.map(select).filter((v): v is number => v != null);
@@ -76,6 +80,21 @@ function Sparkline({
     })
     .filter(Boolean)
     .join(' ');
+
+  // Optional EWMA overlay (carries across nulls), to read the trend through jitter.
+  let ewma: number | null = null;
+  const ewmaPts =
+    smooth == null
+      ? ''
+      : windowed
+          .map((p) => {
+            const v = select(p);
+            if (v == null) return null;
+            ewma = ewma == null ? v : smooth * v + (1 - smooth) * ewma;
+            return `${x(p.t).toFixed(1)},${y(ewma).toFixed(1)}`;
+          })
+          .filter(Boolean)
+          .join(' ');
 
   const last = [...windowed].reverse().find((p) => select(p) != null);
   const lastV = last ? select(last) : null;
@@ -128,6 +147,19 @@ function Sparkline({
             fill="none"
             stroke={color}
             strokeWidth={1.5}
+            // When smoothing, the raw line is faint and the EWMA line is the bold one.
+            strokeOpacity={ewmaPts ? 0.28 : 1}
+            vectorEffect="non-scaling-stroke"
+            strokeLinejoin="round"
+            strokeLinecap="round"
+          />
+        )}
+        {ewmaPts && (
+          <polyline
+            points={ewmaPts}
+            fill="none"
+            stroke={color}
+            strokeWidth={1.75}
             vectorEffect="non-scaling-stroke"
             strokeLinejoin="round"
             strokeLinecap="round"
@@ -240,6 +272,7 @@ export function LiveHealthGraph({
         color="#0d9488"
         refs={hzRefs}
         markers={markers}
+        smooth={0.4}
       />
       <Sparkline
         title="Shortfall vs expected"

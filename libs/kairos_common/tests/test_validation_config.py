@@ -25,8 +25,10 @@ def test_loads_committed_samples() -> None:
 def test_hsr_required_topics() -> None:
     tmpl = load_validation_template(VALIDATION_DIR / "airoa_hsr.yaml")
     names = {t.name for t in tmpl.required_topics}
+    # The HSR template requires the core teleop topics (the `/hsrb/*` set the
+    # sample AIROA MOMA bags actually carry), not the generic /tf.
     assert "/hsrb/joint_states" in names
-    assert "/tf" in names
+    assert "/hsrb/odom" in names
 
 
 def test_missing_file_raises(tmp_path: Path) -> None:
