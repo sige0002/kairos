@@ -51,6 +51,11 @@ monitor:
 recording:
   discovery_timeout_s: 10
   start_delay_s: 1.0
+  # Arm by default (OL-①.1): spawn --start-paused, wait until the recorder has
+  # subscribed to the target topics, then resume — no first frames dropped.
+  start_paused: true
+  # Extra settle after subscriptions matched, before resume (camera ramp-up).
+  post_discovery_delay_s: 0.5
   storage: mcap
   compression: none
 

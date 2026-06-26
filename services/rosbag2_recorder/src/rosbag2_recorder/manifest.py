@@ -36,6 +36,10 @@ class Manifest(BaseModel):
     ended_at: str | None = None
     compression: Compression = Compression.none
     split: SplitConfig | None = None
+    # Finalised counters from the stop-time verification (OL-①.5): total recorded
+    # messages (from rosbag2 metadata) and on-disk MCAP bytes. None until known.
+    message_count: int | None = None
+    bytes: int | None = None
     error: str | None = None
 
 

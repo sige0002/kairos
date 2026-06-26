@@ -110,13 +110,20 @@ class RecordingTuning(_StrictModel):
     # subscriptions live (no first-frames dropped during DDS discovery/matching).
     # Fail-safe: if the resume can't be confirmed, the start fails visibly rather
     # than leaving a paused recorder silently capturing nothing.
-    # Opt-in (default off): the readiness gate uses rclpy + the rosbag2 resume
-    # service, which only run in the ROS image (not CI), so enable it per-deploy
-    # once verified. Set true to turn on the A+B start-lag mitigation.
+    # The ROS-graph-API readiness gate (distro/locale independent, unlike scraping
+    # "Subscribed to topic '...'" logs). OL-①.1: the shipped real-robot config
+    # profiles (config/*.yaml) set this true so live recording arms by default;
+    # the LIBRARY default stays false so a no-config process and the rclpy-free
+    # unit tests never arm. Recommended on for any live deployment.
     start_paused: bool = False
     # Max time to wait for all target topics to be subscribed before resuming
     # anyway (records whatever matched; logs the topics that didn't).
     subscription_ready_timeout_s: Annotated[float, Field(ge=0)] = 5.0
+    # Extra settle time AFTER subscriptions are established but BEFORE resume
+    # (OL-①.2): absorbs camera/sensor ramp-up so the first recorded frames are
+    # real, not warm-up. Distinct from start_delay_s, which sleeps BEFORE spawn
+    # (so it cannot see whether subscriptions actually matched). 0 disables.
+    post_discovery_delay_s: Annotated[float, Field(ge=0)] = 0.0
     storage: Storage = Storage.mcap
     compression: Compression = Compression.none
 

@@ -113,6 +113,44 @@ def test_full_lifecycle_created_recording_completed(
     final = read_manifest(settings.data_dir, "run_1")
     assert final.state is RunState.completed
     assert final.ended_at is not None
+    # Stop-time verification counters are finalised into the manifest (OL-①.5).
+    assert final.message_count == 42
+    assert final.bytes == 1024
+
+
+def test_post_discovery_delay_applied(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    """_apply_post_discovery_delay sleeps recording.post_discovery_delay_s."""
+    from unittest.mock import patch
+
+    from kairos_common import RecordingConfig, RecordingTuning
+
+    cfg = RecordingConfig(
+        robot_name="t", recording=RecordingTuning(post_discovery_delay_s=0.3)
+    )
+    session = _make_session(settings, fake_process, write_metadata, config=cfg)
+    with patch("rosbag2_recorder.recorder.time.sleep") as sleep:
+        session._apply_post_discovery_delay()
+    sleep.assert_called_once_with(0.3)
+
+
+def test_finalise_fails_when_mcap_missing(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    """metadata present but no MCAP data on disk -> failed (OL-①.3 verification)."""
+    from rosbag2_recorder.manifest import run_dir
+
+    session = _make_session(settings, fake_process, write_metadata)
+    session.start(_start_req("run_m"))
+    # Delete the bag's MCAP so finalise sees metadata but no flushed data.
+    for mcap in run_dir(settings.data_dir, "run_m").glob("*.mcap"):
+        mcap.unlink()
+    stopped = session.stop()
+    assert stopped.state is RunState.failed
+    final = read_manifest(settings.data_dir, "run_m")
+    assert final.state is RunState.failed
+    assert final.error and "MCAP" in final.error
 
 
 def test_session_json_written_beside_mcap(

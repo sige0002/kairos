@@ -246,6 +246,12 @@ class RecorderSession:
         A new session/process group lets :meth:`stop` deliver SIGINT to the
         whole ``ros2 bag record`` tree (it spawns children), which is how
         rosbag2 flushes and writes ``metadata.yaml`` cleanly.
+
+        stdout/stderr are INHERITED (go straight to the container log), NOT piped.
+        That is deliberate (OL-①.3): with no PIPE there is no OS pipe buffer for
+        the recorder's stop-time cleanup logs to fill, so they can never block the
+        final MCAP flush (the pipe-stall failure mode). The flush itself is then
+        verified at finalise by checking the MCAP data exists on disk.
         """
         return subprocess.Popen(cmd, start_new_session=True)
 
@@ -479,6 +485,15 @@ class RecorderSession:
         if delay > 0:
             time.sleep(delay)
 
+    def _apply_post_discovery_delay(self) -> None:
+        """Sleep ``recording.post_discovery_delay_s`` after subscriptions are
+        established and before resuming (OL-①.2). No-op without a config or when 0."""
+        if self._config is None:
+            return
+        delay = self._config.recording.post_discovery_delay_s
+        if delay > 0:
+            time.sleep(delay)
+
     # -- start-paused readiness gate (A+B) ---------------------------------
 
     def _arm_and_resume(self, run_id: str, topics: list[str], all_mode: bool) -> None:
@@ -505,6 +520,9 @@ class RecorderSession:
         node = Node("kairos_recorder_arming")
         try:
             self._await_recorder_subscribed(rclpy, node, topics, all_mode, timeout)
+            # Settle time after subscriptions matched, before resume, so the bag
+            # opens past sensor/camera ramp-up rather than on warm-up frames (OL-①.2).
+            self._apply_post_discovery_delay()
             self._resume_recorder(rclpy, node, Resume, IsPaused)
             logger.info("recording armed + resumed", extra={"run_id": run_id})
         finally:
@@ -683,7 +701,9 @@ class RecorderSession:
 
         meta = self._read_rosbag2_metadata(run_id) if run_id else None
         clean_exit = returncode in _CLEAN_STOP_RETURNCODES
-        if meta is not None and clean_exit:
+        # Stop-time verification (OL-①.3): a flushed bag has its MCAP data on disk.
+        mcap_present = bool(run_id) and self._recorded_bytes(run_id) > 0
+        if meta is not None and clean_exit and mcap_present:
             self._sync_topics_from_metadata(meta)
             self._state = RunState.completed
             # A MAX_RECORD_BYTES auto-stop is a *successful* completion at the
@@ -693,6 +713,10 @@ class RecorderSession:
             self._state = RunState.failed
             if meta is None:
                 error = f"recording produced no metadata.yaml (rc={returncode})"
+            elif not mcap_present:
+                # Clean metadata but no MCAP data flushed: the bag is empty/lost.
+                self._sync_topics_from_metadata(meta)
+                error = "recording produced metadata but no MCAP data file"
             else:
                 # Have metadata but the process did not shut down cleanly: still
                 # sync what we can for the audit record, but mark the run failed.
@@ -829,6 +853,7 @@ class RecorderSession:
     ) -> None:
         if self._run_id is None:
             return
+        meta = self._read_rosbag2_metadata(self._run_id)
         manifest = Manifest(
             run_id=self._run_id,
             state=self._state,
@@ -837,6 +862,9 @@ class RecorderSession:
             ended_at=ended_at,
             compression=self._compression,
             split=self._split,
+            # Finalised counters (OL-①.5): None until the bag's metadata exists.
+            message_count=self._message_count(meta) if meta is not None else None,
+            bytes=self._recorded_bytes(self._run_id),
             error=error,
         )
         try:

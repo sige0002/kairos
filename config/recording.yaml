@@ -50,13 +50,14 @@ monitor:
 recording:
   discovery_timeout_s: 10
   start_delay_s: 2.0         # wait for drivers/cameras to ramp up
-  # Start-lag mitigation (opt-in): spawn `ros2 bag record --start-paused`, wait
+  # Arm the recording (OL-①.1): spawn `ros2 bag record --start-paused`, wait
   # until the recorder has subscribed to the target topics, then resume — so the
   # bag begins with all subscriptions live (no first frames dropped during DDS
   # discovery). Fail-safe: if resume can't be confirmed the start fails visibly.
-  # Off by default (the gate runs in the ROS image only); enable once verified.
-  start_paused: false
+  # On for real-robot profiles; the gate runs in the ROS image. Set false to opt out.
+  start_paused: true
   subscription_ready_timeout_s: 5.0   # max wait for subscriptions before resuming
+  post_discovery_delay_s: 0.0   # extra settle after match, before resume (camera ramp-up)
   storage: mcap              # canonical recording format
   compression: none          # none | zstd
 
