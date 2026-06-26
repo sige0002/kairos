@@ -35,8 +35,12 @@ ROS 2 トピックの **軽量・非破壊なリアルタイム監視**コンテ
 - **Bandwidth**: serialized bytes / 秒。
 - **Gap**: 受信間隔の最大、および閾値超過回数。
 - **Late**: 2 種類に分ける — `inter_arrival_late_ratio`（`expected_hz` 由来の期待周期を超えた割合）、`stamp_delay_ms`（`header.stamp` が安全に取れる場合のみ）。
-- **Loss**: ROS 2 では一般化困難なため既定 `null`（seq が取れる特殊型のみ算出）。
-- `expected_hz` 未設定の topic は Hz / Bandwidth / Gap のみ。Late / Loss は `null` + reason。
+- **Jitter**: 受信時刻（monotonic）の間隔から `interarrival_p50_ms` / `interarrival_p95_ms`。decode 不要の「ちらつき」シグナル（p95 / 最大 gap が stall の前兆）。
+- **Loss**: ROS 2 では一般化困難なため既定 `null`（seq が取れる特殊型のみ算出）。真の loss は出さない（seq 無し、DDS の sample-lost は監視側購読の取りこぼしで publisher/rosbag のロスではない）。
+- **DDS sample-lost**: `dds_samples_lost`（rmw の `message_lost` イベントの累積数）。**seq 無しで唯一誠実に取れる「実際に落ちたサンプル数」**。decode 不要・非破壊。`rate_shortfall`（観測不足）とは別物として明示する。
+- **Observed shortfall**: `rate_shortfall`（= `max(0, 1 - count / (expected_hz × window)）`）と `deficit_per_s`（= `max(0, expected_hz - hz)`）。**真の loss ではなく**、静的 `expected_hz` に対する観測不足（監視自身の best_effort 取りこぼし・executor 遅延・publisher 停止を混ぜた量。naive な count 比と同条件）。`rosbag loss` と誤読させない命名。`expected_hz` 未設定なら `null`。
+- **Status**: 粗い topic 健全度 `status` + `status_reason`。優先度 `inactive > danger > warning > ok > unknown`。`inactive`=無受信（silent）、`unknown`=`expected_hz` 未設定で判定不能、`danger`/`warning`=`rate_shortfall` が閾値（既定 5% / 2%）超過、それ以外 `ok`。低期待レート（expected が窓あたり `min_status_count` 未満）の topic は % でなく**絶対欠落数**で判定し誤検知を防ぐ。さらに**時間ヒステリシス**（既定 escalate 2s / recover 1s）で 1 tick の悪化では赤化しない。閾値・ヒステリシスは `RECORDING_CONFIG` の monitor ブロックで設定可。observed shortfall 由来であり真の loss 判定ではない。
+- `expected_hz` 未設定の topic は Hz / Bandwidth / Gap のみ。Late / shortfall は `null` + reason、`status` は `unknown`（メッセージが無ければ `inactive`）。
 
 ## API
 
@@ -57,8 +61,11 @@ ROS 2 トピックの **軽量・非破壊なリアルタイム監視**コンテ
   "topics": [
     { "name": "/cam/image_raw", "type": "sensor_msgs/msg/Image",
       "hz": 29.8, "bandwidth_bps": 51200000, "gap_max_ms": 80,
-      "inter_arrival_late_ratio": 0.01, "stamp_delay_ms": 12, "loss_rate": null,
-      "sensor_preview": null }
+      "inter_arrival_late_ratio": 0.01, "stamp_delay_ms": 12,
+      "interarrival_p50_ms": 33, "interarrival_p95_ms": 41,
+      "loss_rate": null, "dds_samples_lost": 0,
+      "rate_shortfall": 0.007, "deficit_per_s": 0.2,
+      "status": "ok", "status_reason": null, "sensor_preview": null }
   ],
   "alerts": []
 }

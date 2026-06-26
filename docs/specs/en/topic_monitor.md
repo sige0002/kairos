@@ -37,8 +37,12 @@ A container for **lightweight, non-destructive real-time monitoring** of ROS 2 t
 - **Bandwidth**: serialized bytes / second.
 - **Gap**: maximum receive interval, and the number of times a threshold is exceeded.
 - **Late**: split into two kinds — `inter_arrival_late_ratio` (the fraction exceeding the expected period derived from `expected_hz`), `stamp_delay_ms` (only when `header.stamp` can be obtained safely).
-- **Loss**: hard to generalize in ROS 2, so `null` by default (computed only for special types where seq is available).
-- For topics with no `expected_hz` set, only Hz / Bandwidth / Gap. Late / Loss are `null` + reason.
+- **Jitter**: `interarrival_p50_ms` / `interarrival_p95_ms` from monotonic receive-time gaps. A decode-free "choppiness" signal (p95 / max gap precede a stall).
+- **Loss**: hard to generalize in ROS 2, so `null` by default (computed only for special types where seq is available). True loss is not reported (no seq; DDS sample-lost is the monitor's own subscription drop, not the publisher's/rosbag's).
+- **DDS sample-lost**: `dds_samples_lost` (cumulative count from the rmw `message_lost` event). The **only honest "samples actually dropped" count available without sequence numbers** — decode-free, non-destructive. Surfaced as distinct from `rate_shortfall` (observed deficit).
+- **Observed shortfall**: `rate_shortfall` (= `max(0, 1 - count / (expected_hz × window))`) and `deficit_per_s` (= `max(0, expected_hz - hz)`). This is **not** true loss but observed shortfall vs the static `expected_hz` (it folds together the monitor's own best_effort drops, executor lag, and a stopped publisher — same condition as a naive count ratio). Named so it never reads as `rosbag loss`. `null` without `expected_hz`.
+- **Status**: coarse per-topic health `status` + `status_reason`, with precedence `inactive > danger > warning > ok > unknown`. `inactive` = no messages (silent); `unknown` = no `expected_hz` to judge against; `danger`/`warning` = `rate_shortfall` crossed the threshold (default 5% / 2%); otherwise `ok`. Low-expected-rate topics (expected below `min_status_count` per window) are judged by an absolute message deficit rather than a percentage, to avoid false alarms; a **time hysteresis** (default escalate 2s / recover 1s) keeps one bad tick from turning a row red. Thresholds and hysteresis are configurable in the `RECORDING_CONFIG` monitor block. Derived from observed shortfall, not a true-loss verdict.
+- For topics with no `expected_hz` set, only Hz / Bandwidth / Gap. Late / shortfall are `null` + reason, and `status` is `unknown` (or `inactive` when there are no messages).
 
 ## API
 
@@ -59,8 +63,11 @@ A container for **lightweight, non-destructive real-time monitoring** of ROS 2 t
   "topics": [
     { "name": "/cam/image_raw", "type": "sensor_msgs/msg/Image",
       "hz": 29.8, "bandwidth_bps": 51200000, "gap_max_ms": 80,
-      "inter_arrival_late_ratio": 0.01, "stamp_delay_ms": 12, "loss_rate": null,
-      "sensor_preview": null }
+      "inter_arrival_late_ratio": 0.01, "stamp_delay_ms": 12,
+      "interarrival_p50_ms": 33, "interarrival_p95_ms": 41,
+      "loss_rate": null, "dds_samples_lost": 0,
+      "rate_shortfall": 0.007, "deficit_per_s": 0.2,
+      "status": "ok", "status_reason": null, "sensor_preview": null }
   ],
   "alerts": []
 }

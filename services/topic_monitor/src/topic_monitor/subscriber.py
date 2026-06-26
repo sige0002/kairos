@@ -77,6 +77,10 @@ class TopicSubscriber(Protocol):
         """Register the callback that receives every :class:`Sample`."""
         ...
 
+    def set_lost_sink(self, sink: Callable[[str, int], None]) -> None:
+        """Register the callback for DDS message_lost events ``(topic, delta)``."""
+        ...
+
     def start(self) -> None:
         """Bring subscriptions up and begin delivering samples."""
         ...
@@ -112,6 +116,7 @@ class FakeSubscriber:
 
     def __init__(self, graph: list[TopicGraphEntry] | None = None) -> None:
         self._sink: Callable[[Sample], None] | None = None
+        self._lost_sink: Callable[[str, int], None] | None = None
         self._up = False
         self._paused = False
         self._graph = list(graph or [])
@@ -119,6 +124,14 @@ class FakeSubscriber:
 
     def set_sink(self, sink: Callable[[Sample], None]) -> None:
         self._sink = sink
+
+    def set_lost_sink(self, sink: Callable[[str, int], None]) -> None:
+        self._lost_sink = sink
+
+    def emit_lost(self, topic: str, count_change: int) -> None:
+        """Push a synthetic DDS message_lost event through the lost sink."""
+        if self._lost_sink is not None:
+            self._lost_sink(topic, count_change)
 
     def start(self) -> None:
         self._up = True

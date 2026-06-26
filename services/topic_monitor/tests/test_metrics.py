@@ -7,7 +7,7 @@ and asserts the exact computed numbers.
 
 from __future__ import annotations
 
-from topic_monitor.metrics import MetricsRegistry, TopicWindow
+from topic_monitor.metrics import MetricsRegistry, StatusSmoother, TopicWindow
 from topic_monitor.subscriber import Sample
 
 
@@ -104,6 +104,166 @@ def test_empty_window_reports_zero_hz() -> None:
     assert m.hz == 0.0
     assert m.bandwidth_bps == 0.0
     assert m.gap_max_ms is None
+
+
+def test_shortfall_and_deficit_on_rate_is_ok() -> None:
+    # expected 10 Hz over 5s -> 50 expected; deliver 50 -> 0 shortfall, ok.
+    win = TopicWindow(windows_s=[5.0], expected_hz=10.0)
+    for i in range(50):
+        win.add(_sample(i * 0.1, 100))
+    m = win.compute(window_s=5.0, now=4.9)
+    assert m.rate_shortfall == 0.0
+    assert m.deficit_per_s == 0.0
+    assert m.status == "ok"
+    assert m.status_reason is None
+
+
+def test_shortfall_danger_when_half_rate() -> None:
+    # expected 10 Hz over 5s -> 50 expected; deliver 25 -> 50% shortfall, danger.
+    win = TopicWindow(windows_s=[5.0], expected_hz=10.0)
+    for i in range(25):
+        win.add(_sample(i * 0.2, 100))
+    m = win.compute(window_s=5.0, now=4.8)
+    assert m.rate_shortfall is not None
+    assert abs(m.rate_shortfall - 0.5) < 1e-9
+    assert m.deficit_per_s is not None
+    assert abs(m.deficit_per_s - 5.0) < 1e-9  # 10 expected - 5 observed Hz
+    assert m.status == "danger"
+    assert "50%" in (m.status_reason or "")
+
+
+def test_shortfall_warning_band() -> None:
+    # 3% under expected (97 of 100) -> warning (>=2%, <5%).
+    win = TopicWindow(windows_s=[10.0], expected_hz=10.0)
+    for i in range(97):
+        win.add(_sample(i * 0.1, 100))
+    m = win.compute(window_s=10.0, now=9.7)
+    assert m.status == "warning"
+    assert m.rate_shortfall is not None and 0.02 <= m.rate_shortfall < 0.05
+
+
+def test_status_unknown_without_expected_hz() -> None:
+    win = TopicWindow(windows_s=[5.0])  # no expected_hz
+    for t in (0.0, 0.1, 0.2):
+        win.add(_sample(t, 10))
+    m = win.compute(window_s=5.0, now=0.2)
+    assert m.status == "unknown"
+    assert m.rate_shortfall is None
+    assert m.deficit_per_s is None
+    assert m.status_reason == "no expected_hz"
+
+
+def test_status_inactive_when_silent() -> None:
+    # A silent topic is inactive even with an expected rate (reports full
+    # observed shortfall, rate_shortfall == 1.0 — not a true-loss claim).
+    win = TopicWindow(windows_s=[5.0], expected_hz=30.0)
+    m = win.compute(window_s=5.0, now=100.0)
+    assert m.count == 0
+    assert m.status == "inactive"
+    assert m.rate_shortfall == 1.0
+    assert m.deficit_per_s == 30.0
+
+
+def test_low_rate_topic_does_not_false_danger() -> None:
+    # 1 Hz expected over 5 s -> 5 expected (< min_status_count). One missed
+    # message (4 of 5, a 20% % shortfall) must NOT alarm — judged by absolute
+    # deficit (1 < warn 2), so status stays "ok".
+    win = TopicWindow(windows_s=[5.0], expected_hz=1.0)
+    for t in (0.0, 1.0, 2.0, 3.0):
+        win.add(_sample(t, 10))
+    m = win.compute(window_s=5.0, now=4.99)
+    assert m.count == 4
+    assert m.rate_shortfall is not None and m.rate_shortfall > 0.15
+    assert m.status == "ok"
+
+
+def test_low_rate_topic_danger_on_large_absolute_deficit() -> None:
+    # 1 Hz expected over 5 s -> 5 expected; only 2 arrive -> 3 short -> danger.
+    win = TopicWindow(windows_s=[5.0], expected_hz=1.0)
+    for t in (0.0, 1.0):
+        win.add(_sample(t, 10))
+    m = win.compute(window_s=5.0, now=4.99)
+    assert m.count == 2
+    assert m.status == "danger"
+
+
+def test_non_positive_expected_hz_is_treated_as_none() -> None:
+    win = TopicWindow(windows_s=[5.0], expected_hz=0.0)
+    assert win.expected_hz is None
+    for t in (0.0, 0.1, 0.2):
+        win.add(_sample(t, 10))
+    m = win.compute(window_s=5.0, now=0.2)
+    # No usable expectation -> unknown, no shortfall numbers, no div-by-zero.
+    assert m.status == "unknown"
+    assert m.rate_shortfall is None
+    assert m.inter_arrival_late_ratio is None
+
+
+def test_interarrival_percentiles_uniform() -> None:
+    win = TopicWindow(windows_s=[10.0])
+    # 10 gaps of 100ms -> p50 and p95 are both 100ms.
+    for i in range(11):
+        win.add(_sample(i * 0.1, 10))
+    m = win.compute(window_s=10.0, now=1.0)
+    assert m.interarrival_p50_ms is not None
+    assert abs(m.interarrival_p50_ms - 100.0) < 1e-6
+    assert m.interarrival_p95_ms is not None
+    assert abs(m.interarrival_p95_ms - 100.0) < 1e-6
+
+
+def test_interarrival_p95_above_p50_on_skew() -> None:
+    win = TopicWindow(windows_s=[20.0])
+    t = 0.0
+    win.add(_sample(t, 10))
+    for _ in range(19):  # nineteen 50ms gaps
+        t += 0.05
+        win.add(_sample(t, 10))
+    for _ in range(2):  # two 500ms gaps in the tail
+        t += 0.5
+        win.add(_sample(t, 10))
+    m = win.compute(window_s=20.0, now=t)
+    p50, p95 = m.interarrival_p50_ms, m.interarrival_p95_ms
+    assert p50 is not None and abs(p50 - 50.0) < 1.0
+    assert p95 is not None and abs(p95 - 500.0) < 1.0
+
+
+def test_status_smoother_escalates_only_after_dwell() -> None:
+    s = StatusSmoother(escalate_after_s=2.0, recover_after_s=1.0, initial="ok")
+    assert s.update("danger", now=0.0) == "ok"  # one bad tick: not yet
+    assert s.update("danger", now=1.0) == "ok"
+    assert s.update("danger", now=2.0) == "danger"  # held the 2s dwell
+
+
+def test_status_smoother_recovers_after_shorter_dwell() -> None:
+    s = StatusSmoother(escalate_after_s=2.0, recover_after_s=1.0, initial="danger")
+    assert s.update("ok", now=0.0) == "danger"
+    assert s.update("ok", now=1.0) == "ok"  # recovery only needs 1s
+
+
+def test_status_smoother_flap_restarts_dwell() -> None:
+    s = StatusSmoother(escalate_after_s=2.0, recover_after_s=1.0, initial="ok")
+    assert s.update("danger", now=0.0) == "ok"
+    assert s.update("ok", now=0.5) == "ok"  # a good tick clears the candidate
+    assert s.update("danger", now=1.0) == "ok"  # dwell restarts here
+    assert s.update("danger", now=2.9) == "ok"
+    assert s.update("danger", now=3.0) == "danger"
+
+
+def test_status_smoother_structural_states_are_immediate() -> None:
+    s = StatusSmoother(initial="ok")
+    assert s.update("inactive", now=0.0) == "inactive"  # silent: adopt at once
+    assert s.update("unknown", now=0.1) == "unknown"
+
+
+def test_on_sample_lost_accumulates_per_topic() -> None:
+    reg = MetricsRegistry(windows_s=[1.0])
+    reg.on_sample(Sample(topic="/t", type=None, recv_t=0.0, size_bytes=10))
+    reg.on_sample_lost("/t", 3)
+    reg.on_sample_lost("/t", 2)
+    reg.on_sample_lost("/t", 0)  # ignored
+    reg.on_sample_lost("/t", -1)  # ignored
+    st = reg.get("/t")
+    assert st is not None and st.dds_samples_lost == 5
 
 
 def test_registry_routes_samples_and_resolves_expected_hz() -> None:

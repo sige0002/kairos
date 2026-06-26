@@ -174,6 +174,13 @@ export interface TopicInfo {
  * `stamp_delay_ms`) and `loss_rate` are null when they can't be computed and
  * `reason` says why.
  */
+/**
+ * Coarse per-topic health (topic_monitor TopicStatus), by descending severity.
+ * `inactive` = silent; `danger`/`warning` = observed shortfall vs expected_hz;
+ * `ok` = on rate; `unknown` = no expected_hz to judge against.
+ */
+export type TopicStatus = 'inactive' | 'danger' | 'warning' | 'ok' | 'unknown';
+
 export interface TopicMetric {
   name: string;
   type?: string | null;
@@ -183,7 +190,18 @@ export interface TopicMetric {
   gap_exceed_count?: number;
   inter_arrival_late_ratio?: number | null;
   stamp_delay_ms?: number | null;
+  // Inter-arrival jitter from receive times (no decode) — the honest "choppy" signal.
+  interarrival_p50_ms?: number | null;
+  interarrival_p95_ms?: number | null;
   loss_rate?: number | null;
+  // Cumulative DDS sample-lost count (rmw message_lost) — the one honest "real loss".
+  dds_samples_lost?: number;
+  // Observed shortfall vs static expected_hz (NOT true loss). null without expected_hz.
+  rate_shortfall?: number | null;
+  deficit_per_s?: number | null;
+  // Coarse health + reason (derived from rate_shortfall).
+  status?: TopicStatus;
+  status_reason?: string | null;
   reason?: string | null;
 }
 

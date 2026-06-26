@@ -34,6 +34,22 @@ class AlertOp(StrEnum):
     ge = "ge"
 
 
+class TopicStatus(StrEnum):
+    """Coarse per-topic health, by descending severity (OL-②.2).
+
+    ``inactive`` = silent (no messages in the window); ``danger`` / ``warning`` =
+    observed shortfall vs ``expected_hz`` crossed the danger/warning threshold;
+    ``ok`` = on rate; ``unknown`` = no ``expected_hz`` to judge against. This is
+    observed shortfall (see ``rate_shortfall``), not true message loss.
+    """
+
+    inactive = "inactive"
+    danger = "danger"
+    warning = "warning"
+    ok = "ok"
+    unknown = "unknown"
+
+
 class TopicMetrics(BaseModel):
     """Windowed metrics for a single topic.
 
@@ -53,7 +69,21 @@ class TopicMetrics(BaseModel):
     gap_exceed_count: int = 0
     inter_arrival_late_ratio: float | None = None
     stamp_delay_ms: float | None = None
+    # Inter-arrival jitter from receive times (no decode): p50/p95 + max gap are
+    # the honest live "is it choppy" signal (OL-②.5-lite).
+    interarrival_p50_ms: float | None = None
+    interarrival_p95_ms: float | None = None
     loss_rate: float | None = None
+    # Cumulative DDS sample-lost count (rmw message_lost event). The ONE honest
+    # "real loss" signal without sequence numbers — distinct from rate_shortfall.
+    dds_samples_lost: int = 0
+    # Observed shortfall vs static expected_hz (OL-②.1). NOT true loss — see
+    # the metrics module docstring. ``null`` without an expected_hz.
+    rate_shortfall: float | None = None
+    deficit_per_s: float | None = None
+    # Coarse per-topic health + why (OL-②.2). Derived from rate_shortfall.
+    status: TopicStatus = TopicStatus.unknown
+    status_reason: str | None = None
     sensor_preview: dict[str, Any] | None = None
     # Why Late/Loss are null (only set when they are), e.g. "no expected_hz".
     reason: str | None = None

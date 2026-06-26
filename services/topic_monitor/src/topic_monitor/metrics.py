@@ -15,7 +15,19 @@ Metric definitions (see ``docs/specs/ja/topic_monitor.md``):
   late-intervals / total-intervals in the window. Both require ``expected_hz``.
 - **stamp_delay_ms**: median (recv_t - header.stamp), only over samples that
   carried a usable stamp. ``None`` when no stamped samples are in the window.
-- **loss_rate**: ``None`` by default (not generally computable in ROS 2).
+- **loss_rate**: ``None`` by default (true message loss is not generally
+  computable in ROS 2 — no sequence numbers, and DDS sample-lost is the
+  monitor's own subscription drop, not the publisher's/rosbag's).
+- **rate_shortfall** / **deficit_per_s**: observed shortfall vs the *static*
+  ``expected_hz`` over the window — ``max(0, 1 - count / (expected_hz*window))``
+  and ``max(0, expected_hz - hz)``. This is **not** true loss: it folds the
+  monitor's own best_effort drops, executor lag and a stopped publisher together
+  (same condition as a naive count-vs-expected). Named so it never reads as
+  rosbag loss. ``None`` without ``expected_hz``.
+- **status** / **status_reason**: coarse per-topic health derived from
+  rate_shortfall, with precedence ``inactive > danger > warning > ok >
+  unknown``. ``inactive`` = silent (0 msgs); ``unknown`` = no ``expected_hz`` to
+  judge against; ``danger``/``warning`` cross the shortfall thresholds; else ``ok``.
 
 All times are seconds. ``recv_t`` is a monotonic clock; ``stamp_s`` is POSIX
 wall-clock — the two are only subtracted when the caller provides both via the
@@ -30,6 +42,100 @@ from collections import deque
 from dataclasses import dataclass, field
 
 from topic_monitor.subscriber import Sample
+
+# Default observed-shortfall thresholds for the per-topic status (OL-②.2). A
+# topic is "warning" once it drops >=2% under its expected rate over the window,
+# "danger" at >=5%. These judge observed shortfall (module doc), not true loss.
+DEFAULT_WARN_SHORTFALL = 0.02
+DEFAULT_DANGER_SHORTFALL = 0.05
+
+# Below this many *expected* messages per window, a percentage shortfall is not
+# statistically meaningful (e.g. expected 5 msgs -> one missed = 20% "danger").
+# Such low-rate topics are judged by an ABSOLUTE message deficit instead, which
+# also absorbs most subscription warmup. Avoids false "danger" without needing
+# cross-window state (hysteresis/EWMA is a later step — OL-②.3).
+DEFAULT_MIN_STATUS_COUNT = 20.0
+DEFAULT_WARN_ABS_DEFICIT = 2.0
+DEFAULT_DANGER_ABS_DEFICIT = 3.0
+
+# Status hysteresis (OL-②.3): a worse status must persist this long before the
+# topic escalates (so one bad SSE tick / GC pause never paints a row red), and a
+# better status must persist this long before it de-escalates. Time-based (not
+# "N windows") so it is independent of how often compute()/snapshots are taken.
+DEFAULT_STATUS_ESCALATE_S = 2.0
+DEFAULT_STATUS_RECOVER_S = 1.0
+
+# Status severity ranking, used by the hysteresis smoother. ``inactive`` (silent)
+# and ``unknown`` (no expected_hz) are structural, not threshold noise, so the
+# smoother adopts them immediately rather than waiting out a dwell.
+_SEVERITY = {"unknown": 0, "ok": 1, "warning": 2, "danger": 3, "inactive": 4}
+_STRUCTURAL = frozenset({"inactive", "unknown"})
+
+
+def _percentile(values: list[float], q: float) -> float | None:
+    """Linear-interpolated q-th percentile (q in 0..100), or None if empty."""
+    if not values:
+        return None
+    s = sorted(values)
+    if len(s) == 1:
+        return s[0]
+    pos = (len(s) - 1) * (q / 100.0)
+    lo = int(pos)
+    hi = min(lo + 1, len(s) - 1)
+    return s[lo] + (s[hi] - s[lo]) * (pos - lo)
+
+
+class StatusSmoother:
+    """Time-based hysteresis over the raw per-window status (OL-②.3).
+
+    Feed the instantaneous status each snapshot via :meth:`update`; it returns
+    the smoothed status the UI should show. A more-severe raw status is only
+    adopted after it has held for ``escalate_after_s``; a less-severe one after
+    ``recover_after_s``. ``inactive`` / ``unknown`` are structural and adopted at
+    once. Not thread-safe: call it from the single snapshot path.
+    """
+
+    def __init__(
+        self,
+        escalate_after_s: float = DEFAULT_STATUS_ESCALATE_S,
+        recover_after_s: float = DEFAULT_STATUS_RECOVER_S,
+        initial: str = "unknown",
+    ) -> None:
+        self._escalate_after_s = escalate_after_s
+        self._recover_after_s = recover_after_s
+        self._current = initial
+        self._current_reason: str | None = None
+        self._candidate: str | None = None
+        self._since: float | None = None
+
+    @property
+    def current(self) -> str:
+        return self._current
+
+    @property
+    def current_reason(self) -> str | None:
+        """Reason of the currently-adopted status (kept in sync so it never
+        contradicts a held status during a dwell transition)."""
+        return self._current_reason
+
+    def update(self, raw: str, now: float, reason: str | None = None) -> str:
+        if raw in _STRUCTURAL or raw == self._current:
+            # Adopt structural states at once; refresh the reason when the raw
+            # status already matches the held one. Either way clear any candidate.
+            self._current = raw
+            self._current_reason = reason
+            self._candidate = self._since = None
+            return self._current
+        if raw != self._candidate:
+            self._candidate = raw
+            self._since = now
+        escalating = _SEVERITY[raw] > _SEVERITY[self._current]
+        dwell = self._escalate_after_s if escalating else self._recover_after_s
+        if self._since is not None and now - self._since >= dwell:
+            self._current = raw
+            self._current_reason = reason
+            self._candidate = self._since = None
+        return self._current
 
 
 @dataclass(slots=True)
@@ -53,6 +159,16 @@ class WindowMetrics:
     gap_exceed_count: int
     inter_arrival_late_ratio: float | None
     stamp_delay_ms: float | None
+    # Inter-arrival jitter from monotonic receive times (no decode): the honest
+    # live "is it getting choppy" signal. p95 + max_gap precede a stall.
+    interarrival_p50_ms: float | None = None
+    interarrival_p95_ms: float | None = None
+    # Observed shortfall vs static expected_hz (NOT true loss; see module doc).
+    rate_shortfall: float | None = None
+    deficit_per_s: float | None = None
+    # Coarse health: "inactive" > "danger" > "warning" > "ok" > "unknown".
+    status: str = "unknown"
+    status_reason: str | None = None
     # Reason Late metrics are null (only set when they are).
     late_reason: str | None = None
 
@@ -72,13 +188,30 @@ class TopicWindow:
         expected_hz: float | None = None,
         # A gap counts as "late" once it exceeds expected_period * this factor.
         late_tolerance: float = 1.5,
+        # rate_shortfall thresholds for the "warning"/"danger" status.
+        warn_shortfall: float = DEFAULT_WARN_SHORTFALL,
+        danger_shortfall: float = DEFAULT_DANGER_SHORTFALL,
+        # Low-rate gate: judge by absolute deficit below this expected count.
+        min_status_count: float = DEFAULT_MIN_STATUS_COUNT,
+        warn_abs_deficit: float = DEFAULT_WARN_ABS_DEFICIT,
+        danger_abs_deficit: float = DEFAULT_DANGER_ABS_DEFICIT,
     ) -> None:
         if not windows_s:
             raise ValueError("windows_s must be non-empty")
         self._windows_s = sorted(float(w) for w in windows_s)
         self._horizon = self._windows_s[-1]
-        self._expected_hz = expected_hz
+        # Normalize a non-positive expected_hz to None: 0/negative is "no usable
+        # expectation", not a real rate. Keeps every downstream divisor safe
+        # (_health expected_count, _late expected_period) and statuses honest.
+        self._expected_hz = (
+            expected_hz if (expected_hz is None or expected_hz > 0) else None
+        )
         self._late_tolerance = late_tolerance
+        self._warn_shortfall = warn_shortfall
+        self._danger_shortfall = danger_shortfall
+        self._min_status_count = min_status_count
+        self._warn_abs_deficit = warn_abs_deficit
+        self._danger_abs_deficit = danger_abs_deficit
         self._obs: deque[_Obs] = deque()
         self._lock = threading.Lock()
         self._last_recv_t: float | None = None
@@ -127,6 +260,7 @@ class TopicWindow:
     def _compute_from(self, window: list[_Obs], window_s: float) -> WindowMetrics:
         count = len(window)
         if count == 0:
+            shortfall, deficit, status, status_reason = self._health(0, 0.0, window_s)
             return WindowMetrics(
                 window_s=window_s,
                 count=0,
@@ -136,6 +270,10 @@ class TopicWindow:
                 gap_exceed_count=0,
                 inter_arrival_late_ratio=None,
                 stamp_delay_ms=None,
+                rate_shortfall=shortfall,
+                deficit_per_s=deficit,
+                status=status,
+                status_reason=status_reason,
                 late_reason=self._late_reason_when_empty(),
             )
 
@@ -145,9 +283,12 @@ class TopicWindow:
 
         gaps = [window[i].recv_t - window[i - 1].recv_t for i in range(1, len(window))]
         gap_max_ms = max(gaps) * 1000.0 if gaps else None
+        p50 = _percentile(gaps, 50)
+        p95 = _percentile(gaps, 95)
 
         late_ratio, exceed_count, late_reason = self._late(gaps)
         stamp_delay_ms = self._stamp_delay_ms(window)
+        shortfall, deficit, status, status_reason = self._health(count, hz, window_s)
 
         return WindowMetrics(
             window_s=window_s,
@@ -158,8 +299,72 @@ class TopicWindow:
             gap_exceed_count=exceed_count,
             inter_arrival_late_ratio=late_ratio,
             stamp_delay_ms=stamp_delay_ms,
+            interarrival_p50_ms=p50 * 1000.0 if p50 is not None else None,
+            interarrival_p95_ms=p95 * 1000.0 if p95 is not None else None,
+            rate_shortfall=shortfall,
+            deficit_per_s=deficit,
+            status=status,
+            status_reason=status_reason,
             late_reason=late_reason,
         )
+
+    def _health(
+        self, count: int, hz: float, window_s: float
+    ) -> tuple[float | None, float | None, str, str | None]:
+        """Observed shortfall + coarse status (OL-②.1/②.2).
+
+        Returns ``(rate_shortfall, deficit_per_s, status, status_reason)``.
+        Precedence: ``inactive`` (silent) > ``danger`` > ``warning`` > ``ok`` >
+        ``unknown`` (no expected_hz to judge against). The rate is observed
+        shortfall vs the static expected_hz — never claimed as true loss.
+        """
+        exp = self._expected_hz
+        if count == 0:
+            # A silent topic is observably inactive regardless of expected_hz.
+            if exp is None:
+                return None, None, "inactive", "no messages in window"
+            return 1.0, exp, "inactive", f"silent: 0 of ~{exp:g} Hz expected"
+        if exp is None:
+            return None, None, "unknown", "no expected_hz"
+        # expected_hz is normalized to >0 in __init__, so expected_count > 0.
+        expected_count = exp * window_s
+        shortfall = max(0.0, 1.0 - count / expected_count)
+        deficit_rate = max(0.0, exp - hz)
+        if expected_count < self._min_status_count:
+            # Too few expected per window to trust a % shortfall: judge by the
+            # absolute message deficit instead (avoids "1 of 5 missed = danger"
+            # and most warmup false alarms). The numbers are still reported.
+            deficit = expected_count - count
+            if deficit >= self._danger_abs_deficit:
+                return (
+                    shortfall,
+                    deficit_rate,
+                    "danger",
+                    f"{deficit:.0f}/{expected_count:.0f} msgs short",
+                )
+            if deficit >= self._warn_abs_deficit:
+                return (
+                    shortfall,
+                    deficit_rate,
+                    "warning",
+                    f"{deficit:.0f}/{expected_count:.0f} msgs short",
+                )
+            return shortfall, deficit_rate, "ok", None
+        if shortfall >= self._danger_shortfall:
+            return (
+                shortfall,
+                deficit_rate,
+                "danger",
+                f"{shortfall * 100:.0f}% under {exp:g} Hz",
+            )
+        if shortfall >= self._warn_shortfall:
+            return (
+                shortfall,
+                deficit_rate,
+                "warning",
+                f"{shortfall * 100:.0f}% under {exp:g} Hz",
+            )
+        return shortfall, deficit_rate, "ok", None
 
     def _late(self, gaps: list[float]) -> tuple[float | None, int, str | None]:
         """Late split from inter-arrival gaps vs the expected period."""
@@ -195,6 +400,12 @@ class TopicState:
     qos: object | None = None  # QosInfo; kept opaque to avoid a model import here
     last_seen_t: float | None = None
     sensor_preview: dict[str, object] | None = field(default=None)
+    # Cumulative DDS sample-lost count for this topic — the one honest "real loss"
+    # signal available without sequence numbers (rmw message_lost event, no
+    # decode). Fed by the subscriber via MetricsRegistry.on_sample_lost.
+    dds_samples_lost: int = 0
+    # Time-based status hysteresis (OL-②.3), applied in the snapshot path.
+    status_smoother: StatusSmoother = field(default_factory=StatusSmoother)
 
 
 class MetricsRegistry:
@@ -211,11 +422,21 @@ class MetricsRegistry:
         windows_s: list[float],
         expected_hz_for: object | None = None,
         late_tolerance: float = 1.5,
+        warn_shortfall: float = DEFAULT_WARN_SHORTFALL,
+        danger_shortfall: float = DEFAULT_DANGER_SHORTFALL,
+        min_status_count: float = DEFAULT_MIN_STATUS_COUNT,
+        escalate_after_s: float = DEFAULT_STATUS_ESCALATE_S,
+        recover_after_s: float = DEFAULT_STATUS_RECOVER_S,
     ) -> None:
         # expected_hz_for: callable(topic) -> float | None (first-match resolver).
         self._windows_s = [float(w) for w in windows_s]
         self._expected_hz_for = expected_hz_for
         self._late_tolerance = late_tolerance
+        self._warn_shortfall = warn_shortfall
+        self._danger_shortfall = danger_shortfall
+        self._min_status_count = min_status_count
+        self._escalate_after_s = escalate_after_s
+        self._recover_after_s = recover_after_s
         self._topics: dict[str, TopicState] = {}
         self._lock = threading.Lock()
 
@@ -242,8 +463,14 @@ class MetricsRegistry:
                         self._windows_s,
                         expected_hz=self._resolve_expected_hz(name),
                         late_tolerance=self._late_tolerance,
+                        warn_shortfall=self._warn_shortfall,
+                        danger_shortfall=self._danger_shortfall,
+                        min_status_count=self._min_status_count,
                     ),
                     qos=qos,
+                    status_smoother=StatusSmoother(
+                        self._escalate_after_s, self._recover_after_s
+                    ),
                 )
                 self._topics[name] = state
             else:
@@ -259,6 +486,19 @@ class MetricsRegistry:
         state = self.ensure_topic(sample.topic, sample.type)
         state.window.add(sample)
         state.last_seen_t = sample.recv_t
+
+    def on_sample_lost(self, topic: str, count_change: int) -> None:
+        """Accumulate DDS message_lost events for *topic* (rmw QoS event).
+
+        The one honest "real loss" count available without sequence numbers or
+        payload decode — distinct from rate_shortfall (which is observed
+        throughput deficit). Negative/zero deltas are ignored.
+        """
+        if count_change <= 0:
+            return
+        state = self.ensure_topic(topic)
+        with self._lock:
+            state.dds_samples_lost += count_change
 
     def set_sensor_preview(self, topic: str, preview: dict[str, object] | None) -> None:
         """Attach the latest decoded sensor preview for *topic* (if enabled)."""

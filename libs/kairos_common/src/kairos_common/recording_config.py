@@ -73,6 +73,17 @@ class MonitorConfig(_StrictModel):
     stamp_quality: bool = True
     # Sliding-window sizes in seconds.
     window_s: list[Annotated[int, Field(gt=0)]] = Field(default_factory=lambda: [1, 5])
+    # Observed-shortfall status thresholds (fractions of expected_hz). A topic is
+    # "warning" at >= warn_shortfall under expected, "danger" at >= danger_shortfall.
+    warn_shortfall: Annotated[float, Field(ge=0, le=1)] = 0.02
+    danger_shortfall: Annotated[float, Field(ge=0, le=1)] = 0.05
+    # Below this many expected msgs/window, judge status by absolute deficit (so a
+    # low-rate topic does not false-alarm on a single missed message).
+    min_status_count: Annotated[float, Field(ge=0)] = 20.0
+    # Status hysteresis dwell (seconds): a worse status must persist this long to
+    # escalate (escalate_s), a better one to recover (recover_s) — escalate slow.
+    status_escalate_s: Annotated[float, Field(ge=0)] = 2.0
+    status_recover_s: Annotated[float, Field(ge=0)] = 1.0
 
 
 class Storage(StrEnum):

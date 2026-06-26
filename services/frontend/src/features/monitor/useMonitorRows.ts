@@ -12,6 +12,7 @@ import type {
   MetricsSnapshot,
   TopicInfo,
   TopicMetric,
+  TopicStatus,
 } from '../../api/types';
 import type { RuntimeConfig } from '../../config';
 import { matchesTopic } from '../record/topics';
@@ -57,6 +58,36 @@ export function formatLoss(m: MonitorRow): string {
   return `${(m.loss_rate * 100).toFixed(1)}%`;
 }
 
+// Compact observed-shortfall badge text, or null when nothing is worth flagging.
+// This is observed shortfall vs expected_hz (OL-②.1) — NOT true loss. Only shown
+// for statuses the backend actually flags (inactive/warning/danger), so an "ok"
+// topic with a sub-threshold shortfall does not get a misleading green badge.
+export function formatRateShortfall(m: MonitorRow): string | null {
+  if (m.status === 'inactive') return 'silent';
+  if (m.status !== 'warning' && m.status !== 'danger') return null;
+  const lr = m.rate_shortfall;
+  if (lr === undefined || lr === null || lr <= 0) return null;
+  return lr >= 0.1 ? `${Math.round(lr * 100)}%` : `${(lr * 100).toFixed(1)}%`;
+}
+
+// The tooltip line for a row's health (backend reason, then late reason).
+export function rowReason(m: MonitorRow): string | undefined {
+  return m.status_reason ?? m.reason ?? undefined;
+}
+
+const STATUS_TONE: Record<TopicStatus, Tone> = {
+  ok: 'green',
+  warning: 'amber',
+  danger: 'red',
+  inactive: 'red',
+  unknown: 'gray',
+};
+
+/** Tone for a backend per-topic status (OL-②.2). */
+export function statusTone(status?: TopicStatus | null): Tone {
+  return status ? STATUS_TONE[status] : 'gray';
+}
+
 export function formatBandwidth(bps?: number | null): string {
   if (bps === undefined || bps === null) return '—';
   if (bps >= 1e6) return `${(bps / 1e6).toFixed(1)} Mbps`;
@@ -64,9 +95,18 @@ export function formatBandwidth(bps?: number | null): string {
   return `${bps.toFixed(0)} bps`;
 }
 
-/** Per-row health colour: unmeasured = gray, lossy = amber, otherwise green. */
-export function rowTone(m: { measured: boolean; loss_rate?: number | null }): Tone {
+/**
+ * Per-row health colour. Prefers the backend per-topic `status` (OL-②.2); for
+ * unmeasured rows (discovery only, no metrics) stays gray. The legacy
+ * loss_rate>0 branch is kept as a fallback for snapshots without `status`.
+ */
+export function rowTone(m: {
+  measured: boolean;
+  status?: TopicStatus | null;
+  loss_rate?: number | null;
+}): Tone {
   if (!m.measured) return 'gray';
+  if (m.status) return statusTone(m.status);
   if (m.loss_rate != null && m.loss_rate > 0) return 'amber';
   return 'green';
 }

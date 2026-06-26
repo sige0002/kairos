@@ -66,12 +66,28 @@ class MonitorService:
         # The snapshot window is the largest configured (gives the most stable
         # rate); shorter windows stay available in the registry for future use.
         self._snapshot_window_s = windows[-1]
+        # Status thresholds + hysteresis come from the RECORDING_CONFIG monitor
+        # block (config-driven, not hardcoded); the registry defaults apply when
+        # there is no config.
+        reg_kwargs: dict[str, float] = {}
+        if config is not None:
+            m = config.monitor
+            reg_kwargs = {
+                "warn_shortfall": m.warn_shortfall,
+                "danger_shortfall": m.danger_shortfall,
+                "min_status_count": m.min_status_count,
+                "escalate_after_s": m.status_escalate_s,
+                "recover_after_s": m.status_recover_s,
+            }
         self._registry = MetricsRegistry(
             windows,
             expected_hz_for=make_expected_hz_resolver(config),
+            **reg_kwargs,
         )
         self._alerts = AlertEngine(alert_rules)
         self._subscriber.set_sink(self._on_sample)
+        # The honest "real loss" channel: DDS message_lost events (no decode).
+        self._subscriber.set_lost_sink(self._registry.on_sample_lost)
 
     @staticmethod
     def _resolve_windows(config: RecordingConfig | None) -> list[float]:
@@ -155,6 +171,11 @@ class MonitorService:
 
     def _topic_metrics(self, state: TopicState, now: float) -> TopicMetrics:
         wm = state.window.compute(self._snapshot_window_s, now)
+        # Hysteresis: smooth the raw per-window status so one bad tick / GC pause
+        # never flips a row red (OL-②.3). Done here, in the single snapshot path.
+        # The smoother also carries the reason so it never contradicts the status.
+        status = state.status_smoother.update(wm.status, now, wm.status_reason)
+        status_reason = state.status_smoother.current_reason
         return TopicMetrics(
             name=state.name,
             type=state.type,
@@ -164,7 +185,14 @@ class MonitorService:
             gap_exceed_count=wm.gap_exceed_count,
             inter_arrival_late_ratio=wm.inter_arrival_late_ratio,
             stamp_delay_ms=wm.stamp_delay_ms,
-            loss_rate=None,  # not generally computable in ROS 2 (spec default)
+            interarrival_p50_ms=wm.interarrival_p50_ms,
+            interarrival_p95_ms=wm.interarrival_p95_ms,
+            loss_rate=None,  # true loss not generally computable in ROS 2 (spec)
+            dds_samples_lost=state.dds_samples_lost,
+            rate_shortfall=wm.rate_shortfall,
+            deficit_per_s=wm.deficit_per_s,
+            status=status,
+            status_reason=status_reason,
             sensor_preview=self._coerce_preview(state.sensor_preview),
             reason=wm.late_reason,
         )

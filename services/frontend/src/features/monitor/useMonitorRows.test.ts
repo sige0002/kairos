@@ -7,7 +7,14 @@ import { makeTestClient } from '../../test/renderWithClient';
 import { setApiBase } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
 import type { RuntimeConfig } from '../../config';
-import { formatHz, useMonitorRows } from './useMonitorRows';
+import {
+  formatHz,
+  formatRateShortfall,
+  rowTone,
+  statusTone,
+  useMonitorRows,
+  type MonitorRow,
+} from './useMonitorRows';
 
 const CONFIG = {
   endpoints: { api: '/api/v1', events: '/api/v1/events', webrtc: '' },
@@ -67,4 +74,34 @@ test('merges discovery + SSE metrics, sorts configured/measured first, counts me
   expect(odom.measured).toBe(false);
   expect(odom.live).toBe(true);
   expect(result.current.measuredCount).toBe(1);
+});
+
+const row = (p: Partial<MonitorRow>): MonitorRow =>
+  ({ name: '/t', configured: false, live: true, measured: true, ...p }) as MonitorRow;
+
+test('statusTone maps backend status to a row colour', () => {
+  expect(statusTone('ok')).toBe('green');
+  expect(statusTone('warning')).toBe('amber');
+  expect(statusTone('danger')).toBe('red');
+  expect(statusTone('inactive')).toBe('red');
+  expect(statusTone('unknown')).toBe('gray');
+  expect(statusTone(undefined)).toBe('gray');
+});
+
+test('rowTone prefers status, stays gray when unmeasured', () => {
+  expect(rowTone(row({ measured: false, status: 'danger' }))).toBe('gray');
+  expect(rowTone(row({ status: 'warning' }))).toBe('amber');
+  // Fallback for status-less snapshots: loss_rate>0 -> amber.
+  expect(rowTone(row({ status: undefined, loss_rate: 0.1 }))).toBe('amber');
+  expect(rowTone(row({ status: undefined, loss_rate: 0 }))).toBe('green');
+});
+
+test('formatRateShortfall: badge only for notable statuses', () => {
+  expect(formatRateShortfall(row({ status: 'inactive', rate_shortfall: 1 }))).toBe('silent');
+  expect(formatRateShortfall(row({ status: 'danger', rate_shortfall: 0.5 }))).toBe('50%');
+  expect(formatRateShortfall(row({ status: 'warning', rate_shortfall: 0.03 }))).toBe('3.0%');
+  // `ok` with a sub-threshold shortfall must NOT show a (misleading green) badge.
+  expect(formatRateShortfall(row({ status: 'ok', rate_shortfall: 0.01 }))).toBeNull();
+  expect(formatRateShortfall(row({ status: 'ok', rate_shortfall: 0 }))).toBeNull();
+  expect(formatRateShortfall(row({ status: 'unknown' }))).toBeNull();
 });

@@ -11,7 +11,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { queryKeys } from '../../api/queryKeys';
-import type { MetricsSnapshot } from '../../api/types';
+import type { MetricsSnapshot, TopicStatus } from '../../api/types';
 import type { RuntimeConfig } from '../../config';
 import { matchesTopic } from '../record/topics';
 
@@ -22,8 +22,16 @@ export interface MetricSample {
   bw: number | null; // MB/s
   gap: number | null; // ms (largest inter-arrival gap in the window)
   lat: number | null; // ms (header.stamp delay — unmeasured by the raw monitor)
-  loss: number | null; // % (not computable in ROS 2)
+  loss: number | null; // % true loss (not computable in ROS 2 — always null)
   rate: number | null; // % of expected_hz (only when expected_hz is configured)
+  // Observed shortfall vs expected_hz (OL-②.1) — NOT true loss. For the live
+  // health graph (OL-③.2): plot against the 2%/5% status thresholds.
+  shortfall: number | null; // % (rate_shortfall × 100)
+  deficit: number | null; // msgs/s below expected (deficit_per_s)
+  status: TopicStatus | null; // coarse per-topic health for this sample
+  expected: number | null; // expected_hz (the reference band on the Hz chart)
+  jitterP95: number | null; // ms (inter-arrival p95 — choppiness)
+  samplesLost: number | null; // cumulative DDS sample-lost count (real loss)
 }
 
 export interface MetricHistory {
@@ -91,6 +99,12 @@ export function useMetricHistory(config: RuntimeConfig, frozen: boolean): Metric
         lat: m.stamp_delay_ms ?? null,
         loss: m.loss_rate != null ? m.loss_rate * 100 : null,
         rate: m.hz != null && exp ? (m.hz / exp) * 100 : null,
+        shortfall: m.rate_shortfall != null ? m.rate_shortfall * 100 : null,
+        deficit: m.deficit_per_s ?? null,
+        status: m.status ?? null,
+        expected: exp ?? null,
+        jitterP95: m.interarrival_p95_ms ?? null,
+        samplesLost: m.dds_samples_lost ?? null,
       };
       const arr = hist.get(m.name) ?? [];
       arr.push(sample);

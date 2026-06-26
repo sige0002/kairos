@@ -54,6 +54,7 @@ class RosTopicSubscriber:
         self._config = config
         self._node_name = node_name
         self._sink: Callable[[Sample], None] | None = None
+        self._lost_sink: Callable[[str, int], None] | None = None
         self._lock = threading.Lock()
         self._paused = False
         self._up = False
@@ -65,6 +66,9 @@ class RosTopicSubscriber:
 
     def set_sink(self, sink: Callable[[Sample], None]) -> None:
         self._sink = sink
+
+    def set_lost_sink(self, sink: Callable[[str, int], None]) -> None:
+        self._lost_sink = sink
 
     def start(self) -> None:
         with self._lock:
@@ -143,6 +147,7 @@ class RosTopicSubscriber:
                 self._make_callback(topic, type_str),
                 profile,
                 raw=True,
+                event_callbacks=self._event_callbacks(topic),
             )
         except Exception:  # noqa: BLE001 - one bad topic must not stop the rest
             logger.exception("failed to subscribe", extra={"topic": topic})
@@ -165,6 +170,28 @@ class RosTopicSubscriber:
             )
 
         return _on_message
+
+    def _event_callbacks(self, topic: str) -> Any:
+        """rmw QoS event callbacks for a subscription.
+
+        ``message_lost`` is the middleware's own count of samples it dropped (a
+        full queue, etc.) — the one honest "real loss" signal available without
+        sequence numbers or payload decode. We forward each event's
+        ``total_count_change`` to the lost sink. Built lazily so importing this
+        module needs no rclpy.
+        """
+        from rclpy.event_handler import SubscriptionEventCallbacks
+
+        def _on_lost(info: Any) -> None:
+            sink = self._lost_sink
+            if sink is None:
+                return
+            # QoSMessageLostInfo: total_count (cumulative) + total_count_change.
+            delta = getattr(info, "total_count_change", 0)
+            if delta:
+                sink(topic, int(delta))
+
+        return SubscriptionEventCallbacks(message_lost=_on_lost)
 
     def pause(self) -> None:
         with self._lock:

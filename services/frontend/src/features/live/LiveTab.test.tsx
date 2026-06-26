@@ -128,3 +128,31 @@ test('record checkboxes seed from configured topics and drive the next start', a
     new Set(['/hsrb/joint_states', '/hsrb/odom']),
   );
 });
+
+// OL-③.2: clicking a topic name in the Monitor panel opens its live health graph.
+test('clicking a topic name opens its live health graph, Close dismisses it', async () => {
+  mockStatus({ run_id: null, state: 'created' });
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/record/status'))
+      return Promise.resolve(jsonResponse({ run_id: null, state: 'created' }));
+    if (url.includes('/topics'))
+      return Promise.resolve(
+        jsonResponse([{ name: '/hsrb/odom', type: 'nav_msgs/msg/Odometry', publisher_count: 1 }]),
+      );
+    if (url.includes('/runs'))
+      return Promise.resolve(jsonResponse({ items: [], next_cursor: null }));
+    return Promise.resolve(jsonResponse({}));
+  });
+  renderWithClient(<LiveTab config={CONFIG} />);
+
+  const nameButton = await screen.findByLabelText('graph /hsrb/odom health');
+  expect(screen.queryByText('Topic health')).not.toBeInTheDocument();
+
+  fireEvent.click(nameButton);
+  expect(await screen.findByText('Topic health')).toBeInTheDocument();
+  expect(screen.getByText('Shortfall vs expected')).toBeInTheDocument();
+
+  fireEvent.click(screen.getByLabelText('close health graph'));
+  await waitFor(() => expect(screen.queryByText('Topic health')).not.toBeInTheDocument());
+});

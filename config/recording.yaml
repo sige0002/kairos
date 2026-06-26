@@ -7,8 +7,8 @@
 #   - topic_monitor    : expected_hz + QoS for lightweight subscribe
 #   - dora_runner      : validation.required_topics (fast_validation, stage 3)
 #
-# Declares default_topics / expected_hz_patterns / monitor QoS. The LeRobot
-# topic->feature mapping (the dataset section) follows bagel's configs/*.yaml.
+# Declares default_topics / expected_hz_patterns / monitor QoS, plus the LeRobot
+# topic->feature mapping for the dataset section.
 # Topics support glob patterns (fnmatch); pattern lists are first-match-wins.
 # Copy this file per robot (e.g. config/airoa_hsr.yaml) and point
 # RECORDING_CONFIG at it.
@@ -70,7 +70,7 @@ validation:
 
 # ---- dataset_convert (dora_runner, stage 3) ---------------------------------
 # LeRobot feature mapping (observations[]/actions[]) lives here when stage 3
-# lands. Structure mirrors bagel configs/*.yaml: each entry has
+# lands. Each entry has
 #   key / topic / msg_type / selector / dtype / image_size / stamp_source ...
 # Left unset until stage 3.
 # dataset:

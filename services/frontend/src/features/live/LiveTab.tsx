@@ -27,10 +27,14 @@ import {
   formatBandwidth,
   formatGap,
   formatHz,
+  formatRateShortfall,
+  rowReason,
   rowTone,
   useMonitorRows,
   type MonitorData,
 } from '../monitor/useMonitorRows';
+import { useMetricHistory } from '../graph/useMetricHistory';
+import { LiveHealthGraph, type RecMarker } from './LiveHealthGraph';
 
 // Only `recording`/`stopping` are an actually-running session — matching the
 // recorder's own _ACTIVE_STATES. A fresh recorder sits in `created` (run_id=null)
@@ -69,6 +73,36 @@ function useNow(active: boolean): number {
     return () => clearInterval(id);
   }, [active]);
   return now;
+}
+
+// REC/STOP markers for the live health graph (OL-③.2): log each recording
+// start/stop transition. Shares the `/record/status` query cache with RecordHero
+// (react-query dedupes by key), so this adds no extra network. Markers older than
+// the longest graph window are trimmed.
+function useRecordMarkers(): RecMarker[] {
+  const { data } = useQuery({
+    queryKey: queryKeys.recordStatus,
+    queryFn: ({ signal }) => apiGet<RecordStatus>('/record/status', { signal }),
+    refetchInterval: 5000,
+  });
+  const markersRef = useRef<RecMarker[]>([]);
+  const prevActiveRef = useRef<boolean | null>(null);
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!data) return;
+    const active = ACTIVE_STATES.has(data.state);
+    const prev = prevActiveRef.current;
+    if (prev !== null && prev !== active) {
+      const now = Date.now();
+      markersRef.current = [
+        ...markersRef.current.filter((m) => m.t > now - 300_000),
+        { t: now, kind: active ? 'REC' : 'STOP' },
+      ];
+      setTick((n) => n + 1);
+    }
+    prevActiveRef.current = active;
+  }, [data]);
+  return markersRef.current;
 }
 
 function HeroMeta({
@@ -307,24 +341,43 @@ function RecordHero({ selection }: { selection: RecordSelection }) {
 }
 
 // Columns: record checkbox / topic / Hz (actual/expected) / Gap (max
-// inter-arrival ms) / bandwidth. Loss is intentionally NOT shown — ROS 2
-// best-effort gives no general way to compute message loss (topic_monitor
-// always reports loss_rate=None), so Gap is the real measured liveness signal.
+// inter-arrival ms) / bandwidth. True message loss is still NOT shown (ROS 2
+// best-effort has no general loss signal; topic_monitor keeps loss_rate=None).
+// Instead each row carries a status dot + an "observed shortfall" badge
+// (rate_shortfall vs expected_hz, OL-②.1/③.1) with a reason tooltip — an
+// honest "is this topic keeping up right now" cue, not a loss claim.
 const MON_COLS = 'grid-cols-[28px_1fr_66px_52px_58px]';
 
 function LiveMonitorPanel({
   monitor,
   selected,
   onToggle,
+  graphTopic,
+  onGraph,
 }: {
   monitor: MonitorData;
   selected: Set<string>;
   onToggle: (name: string) => void;
+  graphTopic: string | null;
+  onGraph: (name: string) => void;
 }) {
   const { rows, measuredCount, paused } = monitor;
   const total = rows.length;
-  const healthy = rows.filter((r) => r.measured && !(r.loss_rate && r.loss_rate > 0)).length;
-  const allHealthy = measuredCount > 0 && healthy === measuredCount;
+  // "Unhealthy" = a measured topic flagged warning/danger/inactive by the
+  // backend status (legacy loss_rate>0 kept as a fallback for status-less rows).
+  const isUnhealthy = (r: (typeof rows)[number]) =>
+    r.measured &&
+    (r.status === 'warning' ||
+      r.status === 'danger' ||
+      r.status === 'inactive' ||
+      (r.status == null && r.loss_rate != null && r.loss_rate > 0));
+  const unhealthyCount = rows.filter(isUnhealthy).length;
+  // `unknown` (no expected_hz to judge against) is NEUTRAL, not healthy — green
+  // "Healthy" requires every measured topic to be an affirmative `ok`. With only
+  // unknown rows (and nothing unhealthy) the summary stays gray "Monitoring".
+  const okCount = rows.filter((r) => r.measured && r.status === 'ok').length;
+  const allHealthy = measuredCount > 0 && unhealthyCount === 0 && okCount === measuredCount;
+  const headerTone = unhealthyCount > 0 ? 'amber' : allHealthy ? 'green' : 'gray';
 
   // To-be-recorded (checked) topics float to the top; rows are otherwise already
   // ordered (configured → measured → alphabetical) by useMonitorRows.
@@ -343,7 +396,7 @@ function LiveMonitorPanel({
         {paused ? (
           <Badge tone="amber">paused</Badge>
         ) : (
-          <Badge tone={allHealthy ? 'green' : measuredCount === 0 ? 'gray' : 'amber'} dot>
+          <Badge tone={headerTone} dot>
             {measuredCount} / {total || 0} {allHealthy ? 'Healthy' : 'Monitoring'}
           </Badge>
         )}
@@ -368,6 +421,8 @@ function LiveMonitorPanel({
             {sorted.map((m) => {
               const tone = rowTone(m);
               const on = selected.has(m.name);
+              const loss = formatRateShortfall(m);
+              const reason = rowReason(m);
               return (
                 <div
                   key={m.name}
@@ -383,16 +438,31 @@ function LiveMonitorPanel({
                     onChange={() => onToggle(m.name)}
                     className="h-3.5 w-3.5 cursor-pointer accent-teal-600"
                   />
-                  <span className="flex min-w-0 items-center gap-2.5">
+                  <span className="flex min-w-0 items-center gap-2" title={reason}>
                     <StatusDot tone={tone} />
-                    <span
+                    <button
+                      type="button"
+                      onClick={() => onGraph(m.name)}
+                      aria-label={`graph ${m.name} health`}
                       className={cn(
-                        'truncate font-mono text-[12.5px]',
-                        on ? 'font-semibold text-gray-800' : 'text-gray-700',
+                        'truncate text-left font-mono text-[12.5px] hover:text-teal-700',
+                        m.name === graphTopic
+                          ? 'font-semibold text-teal-700'
+                          : on
+                            ? 'font-semibold text-gray-800'
+                            : 'text-gray-700',
                       )}
                     >
                       {m.name}
-                    </span>
+                    </button>
+                    {loss && (
+                      <Badge
+                        tone={tone}
+                        className="shrink-0 px-1.5 py-0 text-[10px] leading-[15px]"
+                      >
+                        {loss}
+                      </Badge>
+                    )}
                   </span>
                   <span
                     className={cn(
@@ -459,6 +529,15 @@ export function LiveTab({ config }: { config: RuntimeConfig }) {
     return { topics: 'all', count: 0, customized: false };
   }, [customized, selected, defaultTopics]);
 
+  // Live health graph (OL-③.2): the operator clicks a topic in the Monitor panel
+  // to open its per-topic health graph. History accumulates from the same SSE
+  // metrics stream the panel uses (no extra subscription, no payload decode).
+  const [graphTopic, setGraphTopic] = useState<string | null>(null);
+  const metricHistory = useMetricHistory(config, false);
+  const recMarkers = useRecordMarkers();
+  const graphPoints = graphTopic ? (metricHistory.history.get(graphTopic) ?? []) : [];
+  const graphLabel = graphTopic ? (graphTopic.split('/').filter(Boolean).at(-1) ?? graphTopic) : '';
+
   return (
     <div className="flex flex-col gap-[18px]">
       <RecordHero selection={selection} />
@@ -466,8 +545,23 @@ export function LiveTab({ config }: { config: RuntimeConfig }) {
         <div className="min-w-0">
           <StreamTab config={config} />
         </div>
-        <LiveMonitorPanel monitor={monitor} selected={selected} onToggle={toggle} />
+        <LiveMonitorPanel
+          monitor={monitor}
+          selected={selected}
+          onToggle={toggle}
+          graphTopic={graphTopic}
+          onGraph={setGraphTopic}
+        />
       </div>
+      {graphTopic && (
+        <LiveHealthGraph
+          topic={graphTopic}
+          label={graphLabel}
+          points={graphPoints}
+          markers={recMarkers}
+          onClose={() => setGraphTopic(null)}
+        />
+      )}
     </div>
   );
 }
