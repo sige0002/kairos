@@ -1,12 +1,18 @@
 // Data hooks for the Probe tab: topic list + per-topic field introspection
-// (TanStack Query, keyed via the frozen queryKeys), and a live SSE sample stream
-// accumulated into a rolling client-side buffer for the plot.
+// (TanStack Query), and a multi-series live stream — one SSE per distinct topic
+// (each carrying that topic's fields), merged into one time-aligned buffer so an
+// overlay chart can plot many series (and several topics) at once.
 
 import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { queryKeys } from '../../api/queryKeys';
 import { fetchProbeFields, fetchProbeTopics, probeStreamUrl } from './api';
-import type { ProbeFieldsResponse, ProbePoint, ProbeSample, ProbeTopic } from './types';
+import type {
+  ProbeFieldsResponse,
+  ProbeMultiSample,
+  ProbeSeries,
+  ProbeTopic,
+} from './types';
 
 const MAX_POINTS = 600; // ring-buffer cap (~1m @ 10 Hz)
 
@@ -30,70 +36,94 @@ export function useProbeFields(topic: string | null) {
 
 export type ProbeStreamStatus = 'idle' | 'connecting' | 'open' | 'closed';
 
-export interface ProbeStream {
-  points: ProbePoint[];
+export interface ProbeSeriesData {
+  /** uPlot AlignedData: ``[xs, ...ysPerSeries]`` (y order matches the input series). */
+  data: (number | null)[][];
   status: ProbeStreamStatus;
-  /** Latest non-null value seen (for the headline readout). */
-  latest: number | null;
 }
 
 /**
- * Open an SSE stream of {t, value} samples for one field of one topic and
- * accumulate them into a rolling buffer. Closing/reopening on topic/field/active
- * change. A no-op when EventSource is unavailable (e.g. the test env) or when not
- * active / no field is selected.
+ * Open one SSE stream per distinct topic (each carrying that topic's fields) and
+ * merge them into a single forward-filled, time-aligned buffer for an overlay
+ * chart. Cross-topic overlay = several concurrent streams. Resets on series
+ * change; a no-op when not live, no series, or EventSource is unavailable (tests).
  */
-export function useProbeStream(
-  topic: string | null,
-  field: string | null,
-  active: boolean,
+export function useProbeSeries(
+  series: ProbeSeries[],
+  live: boolean,
   hz = 10,
-): ProbeStream {
-  const [points, setPoints] = useState<ProbePoint[]>([]);
+  cap = MAX_POINTS,
+): ProbeSeriesData {
+  const [data, setData] = useState<(number | null)[][]>([[]]);
   const [status, setStatus] = useState<ProbeStreamStatus>('idle');
-  const [latest, setLatest] = useState<number | null>(null);
-  const bufferRef = useRef<ProbePoint[]>([]);
+  const xsRef = useRef<number[]>([]);
+  const ysRef = useRef<(number | null)[][]>([]);
+  const lastRef = useRef<Map<string, number | null>>(new Map());
 
-  // Reset the buffer whenever the plotted series changes.
+  const seriesKey = series.map((s) => `${s.id}:${s.topic}::${s.field}`).join('|');
+
+  // Reset the buffer whenever the series set changes.
   useEffect(() => {
-    bufferRef.current = [];
-    setPoints([]);
-    setLatest(null);
-  }, [topic, field]);
+    xsRef.current = [];
+    ysRef.current = series.map(() => []);
+    lastRef.current = new Map();
+    setData([[]]);
+  }, [seriesKey]);
 
   useEffect(() => {
-    if (!active || !topic || !field) {
+    if (!live || series.length === 0) {
       setStatus('idle');
       return;
     }
     if (typeof EventSource === 'undefined') return; // non-browser / test env
 
+    // Group field paths by topic -> one stream per topic.
+    const byTopic = new Map<string, string[]>();
+    for (const s of series) {
+      const arr = byTopic.get(s.topic) ?? [];
+      arr.push(s.field);
+      byTopic.set(s.topic, arr);
+    }
+
     setStatus('connecting');
-    const es = new EventSource(probeStreamUrl(topic, field, hz));
-    es.onopen = () => setStatus('open');
-    es.onerror = () => {
-      setStatus(es.readyState === EventSource.CLOSED ? 'closed' : 'connecting');
-    };
-    es.onmessage = (ev: MessageEvent<string>) => {
-      let sample: ProbeSample;
-      try {
-        sample = JSON.parse(ev.data) as ProbeSample;
-      } catch {
-        return;
-      }
-      const buf = bufferRef.current;
-      buf.push({ t: Date.now(), value: sample.value });
-      if (buf.length > MAX_POINTS) buf.splice(0, buf.length - MAX_POINTS);
-      bufferRef.current = buf;
-      setPoints([...buf]);
-      if (sample.value !== null) setLatest(sample.value);
-    };
+    const sources: EventSource[] = [];
+    byTopic.forEach((fields, topic) => {
+      const es = new EventSource(probeStreamUrl(topic, fields, hz));
+      es.onopen = () => setStatus('open');
+      es.onerror = () =>
+        setStatus(es.readyState === EventSource.CLOSED ? 'closed' : 'connecting');
+      es.onmessage = (ev: MessageEvent<string>) => {
+        let m: ProbeMultiSample;
+        try {
+          m = JSON.parse(ev.data) as ProbeMultiSample;
+        } catch {
+          return;
+        }
+        // Update last-known values for this topic's series.
+        series.forEach((s) => {
+          if (s.topic === m.topic) lastRef.current.set(s.id, m.values[s.field] ?? null);
+        });
+        // Append one time-aligned column (forward-filled across all series).
+        const now = Date.now() / 1000;
+        xsRef.current.push(now);
+        series.forEach((s, i) => {
+          (ysRef.current[i] ??= []).push(lastRef.current.get(s.id) ?? null);
+        });
+        if (xsRef.current.length > cap) {
+          const drop = xsRef.current.length - cap;
+          xsRef.current.splice(0, drop);
+          ysRef.current.forEach((y) => y.splice(0, drop));
+        }
+        setData([[...xsRef.current], ...ysRef.current.map((y) => [...y])]);
+      };
+      sources.push(es);
+    });
 
     return () => {
-      es.close();
+      sources.forEach((es) => es.close());
       setStatus('closed');
     };
-  }, [active, topic, field, hz]);
+  }, [seriesKey, live, hz, cap]);
 
-  return { points, status, latest };
+  return { data, status };
 }

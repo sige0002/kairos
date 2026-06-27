@@ -41,7 +41,7 @@ class FieldsResponse(BaseModel):
 
 
 class Sample(BaseModel):
-    """One sampled value of a field (the ``/sample`` body and SSE frames).
+    """One sampled value of a field (the ``/sample`` body).
 
     ``t`` is float seconds (wall clock) for the chart x-axis; ``value`` is the
     numeric field value, or ``null`` when the field did not resolve on the most
@@ -52,3 +52,17 @@ class Sample(BaseModel):
     field: str
     t: float
     value: float | None = None
+
+
+class MultiSample(BaseModel):
+    """Multi-field sample for one topic (the ``/stream`` SSE frames).
+
+    One decoded message yields values for several fields at once, so an overlay
+    chart can plot many series of one topic (and, across connections, several
+    topics) from a single subscription. ``values`` maps each requested field path
+    to its value, or ``null`` when it did not resolve on the latest message.
+    """
+
+    topic: str
+    t: float
+    values: dict[str, float | None] = Field(default_factory=dict)

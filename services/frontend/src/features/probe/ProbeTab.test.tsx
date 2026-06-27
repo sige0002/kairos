@@ -23,48 +23,68 @@ function renderProbe() {
   return render(createElement(ProbeTab), { wrapper });
 }
 
-test('lists subscribable topics and prompts to pick one', async () => {
-  renderProbe();
-  await screen.findByLabelText('probe topic');
-  expect(screen.getByRole('option', { name: '/pose' })).toBeInstanceOf(
-    HTMLOptionElement,
-  );
-  expect(screen.getByRole('option', { name: '/hsrb/joint_states' })).toBeInstanceOf(
-    HTMLOptionElement,
-  );
-  // Empty-state guidance until a topic+field are chosen.
-  expect(screen.getByText(/Select a topic and a numeric field/i)).toBeInTheDocument();
-});
-
-test('introspects fields after selecting a topic and defaults to the first', async () => {
-  const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+function mockFields(fields: string[]) {
+  return vi.spyOn(globalThis, 'fetch').mockResolvedValue(
     jsonResponse({
       ts: '2026-06-27T00:00:00Z',
       topic: '/pose',
       type: 'geometry_msgs/msg/Pose',
-      fields: ['position.x', 'position.y', 'position.z'],
+      fields,
       reason: null,
     }),
   );
+}
+
+test('lists subscribable topics and prompts to add a series', async () => {
+  renderProbe();
+  await screen.findByLabelText('probe topic');
+  expect(screen.getByRole('option', { name: '/pose' })).toBeInstanceOf(HTMLOptionElement);
+  expect(
+    screen.getByRole('option', { name: '/hsrb/joint_states' }),
+  ).toBeInstanceOf(HTMLOptionElement);
+  // Empty-state guidance until a series is added.
+  expect(screen.getByText(/Add a topic \+ field series/i)).toBeInTheDocument();
+});
+
+test('introspects fields after selecting a topic and defaults to the first', async () => {
+  const fetchMock = mockFields(['position.x', 'position.y', 'position.z']);
   renderProbe();
 
-  const topicSelect = (await screen.findByLabelText(
-    'probe topic',
-  )) as HTMLSelectElement;
-  fireEvent.change(topicSelect, { target: { value: '/pose' } });
+  fireEvent.change(await screen.findByLabelText('probe topic'), {
+    target: { value: '/pose' },
+  });
 
-  // The field query fires against /probe/fields?topic=/pose.
   await waitFor(() => expect(fetchMock).toHaveBeenCalled());
   const url = String(fetchMock.mock.calls[0]?.[0]);
   expect(url).toContain('/probe/fields');
   expect(url).toContain('topic=%2Fpose');
 
-  // Fields populate and the first is auto-selected.
-  const fieldSelect = (await screen.findByLabelText(
-    'probe field',
-  )) as HTMLSelectElement;
+  const fieldSelect = (await screen.findByLabelText('probe field')) as HTMLSelectElement;
   await waitFor(() => expect(fieldSelect.value).toBe('position.x'));
-  expect(screen.getByRole('option', { name: 'position.z' })).toBeInstanceOf(
-    HTMLOptionElement,
+});
+
+test('adds and removes overlay series (multi-field)', async () => {
+  mockFields(['position.x', 'position.y']);
+  renderProbe();
+
+  fireEvent.change(await screen.findByLabelText('probe topic'), {
+    target: { value: '/pose' },
+  });
+  const fieldSelect = (await screen.findByLabelText('probe field')) as HTMLSelectElement;
+  await waitFor(() => expect(fieldSelect.value).toBe('position.x'));
+
+  // Add the first series -> a chip with a remove control appears.
+  fireEvent.click(screen.getByRole('button', { name: '+ Add series' }));
+  expect(await screen.findByLabelText('remove pose·position.x')).toBeInTheDocument();
+
+  // Overlay a second field of the same topic.
+  fireEvent.change(fieldSelect, { target: { value: 'position.y' } });
+  fireEvent.click(screen.getByRole('button', { name: '+ Add series' }));
+  expect(screen.getByLabelText('remove pose·position.y')).toBeInTheDocument();
+
+  // Remove the first series.
+  fireEvent.click(screen.getByLabelText('remove pose·position.x'));
+  await waitFor(() =>
+    expect(screen.queryByLabelText('remove pose·position.x')).not.toBeInTheDocument(),
   );
 });

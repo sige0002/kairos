@@ -41,7 +41,11 @@ export async function fetchProbeFields(topic: string): Promise<ProbeFieldsRespon
   return probeGet<ProbeFieldsResponse>('/fields', { topic });
 }
 
-/** URL of the SSE sample stream for one field of one topic (capped server-side). */
-export function probeStreamUrl(topic: string, field: string, hz = 10): string {
-  return buildUrl('/stream', { topic, field, hz });
+/**
+ * URL of the SSE sample stream for one topic's fields (overlay). One connection
+ * carries several fields of one topic; cross-topic overlay opens several streams.
+ * Hz is capped server-side.
+ */
+export function probeStreamUrl(topic: string, fields: string[], hz = 10): string {
+  return buildUrl('/stream', { topic, fields: fields.join(','), hz });
 }

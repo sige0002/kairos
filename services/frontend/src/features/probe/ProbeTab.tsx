@@ -1,20 +1,34 @@
-// Probe tab (OL-3.3): generic numeric-field live plotter. Flow: pick a topic ->
-// pick one of its numeric fields -> live plot. The topic_probe service (a SEPARATE
-// ROS service, isolated so its decoding can never affect recording/monitoring)
-// subscribes to the one selected topic, decodes it, and streams throttled samples.
-//
-// Robot-independent by construction: topics come from whatever is on the graph
-// and fields are introspected from the live message type — never hardcoded.
+// Probe tab (OL-3.3): generic numeric-field live plotter with OVERLAY. Add any
+// number of (topic, field) series and plot them on one chart. Series can span
+// different topics (e.g. left arm / right arm) — the topic_probe service holds a
+// ref-counted subscription per topic and streams multi-field samples; the chart
+// is uPlot (axis ticks · legend · crosshair). Decoding stays isolated in
+// topic_probe, so recording / monitoring are never affected.
 
-import { useEffect, useState } from 'react';
-import { Card, CardHeader, StatusDot, cn } from '../../components/ui';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Badge, Card, CardHeader, StatusDot, cn } from '../../components/ui';
 import type { Tone } from '../../components/ui';
-import { useProbeFields, useProbeStream, useProbeTopics } from './useProbe';
-import type { ProbePoint } from './types';
-import type { ProbeStreamStatus } from './useProbe';
+import {
+  useProbeFields,
+  useProbeSeries,
+  useProbeTopics,
+  type ProbeStreamStatus,
+} from './useProbe';
+import type { ProbeSeries } from './types';
+import { UplotChart, type UplotSeriesConf } from './UplotChart';
 
-const W = 600;
-const H = 200;
+const PALETTE = [
+  '#0d9488',
+  '#0891b2',
+  '#d97706',
+  '#fb7185',
+  '#16a34a',
+  '#7c3aed',
+  '#dc2626',
+  '#2563eb',
+];
+const HZ_OPTIONS = [1, 5, 10, 30];
+const TOPIC_WARN = 6;
 
 const STATUS_TONE: Record<ProbeStreamStatus, Tone> = {
   idle: 'gray',
@@ -23,73 +37,80 @@ const STATUS_TONE: Record<ProbeStreamStatus, Tone> = {
   closed: 'gray',
 };
 
-/** Map the value buffer to an SVG polyline that auto-fits its own min/max. */
-function chartPoints(points: ProbePoint[]): string {
-  const vals = points
-    .map((p) => p.value)
-    .filter((v): v is number => v !== null && Number.isFinite(v));
-  if (vals.length < 2) return '';
-  const min = Math.min(...vals);
-  const max = Math.max(...vals);
-  const span = max - min || 1;
-  const n = points.length;
-  const coords: string[] = [];
-  points.forEach((p, i) => {
-    if (p.value === null || !Number.isFinite(p.value)) return;
-    const x = (i / (n - 1)) * W;
-    const y = H - ((p.value - min) / span) * H;
-    coords.push(`${x.toFixed(1)},${y.toFixed(1)}`);
-  });
-  return coords.join(' ');
+function shortTopic(topic: string): string {
+  return topic.split('/').filter(Boolean).at(-1) ?? topic;
+}
+function seriesLabel(s: ProbeSeries): string {
+  return `${shortTopic(s.topic)}·${s.field}`;
 }
 
 export function ProbeTab() {
   const topicsQuery = useProbeTopics();
-  const [topic, setTopic] = useState<string | null>(null);
-  const [field, setField] = useState<string | null>(null);
-  const [live, setLive] = useState(true);
+  const topics = topicsQuery.data ?? [];
 
-  const fieldsQuery = useProbeFields(topic);
-  const stream = useProbeStream(topic, field, live);
-
-  // When the field list resolves, default to the first field if none chosen.
+  // Add-series form: pick a topic, then one of its numeric fields, then "Add".
+  const [addTopic, setAddTopic] = useState<string | null>(null);
+  const [addField, setAddField] = useState<string | null>(null);
+  const fieldsQuery = useProbeFields(addTopic);
   const fields = fieldsQuery.data?.fields ?? [];
   useEffect(() => {
-    if (field && fields.includes(field)) return;
-    setField(fields[0] ?? null);
-  }, [fields, field]);
+    if (addField && fields.includes(addField)) return;
+    setAddField(fields[0] ?? null);
+  }, [fields, addField]);
 
-  const topics = topicsQuery.data ?? [];
-  const line = chartPoints(stream.points);
-  const hasData = line !== '';
+  const [series, setSeries] = useState<ProbeSeries[]>([]);
+  const [live, setLive] = useState(true);
+  const [hz, setHz] = useState(10);
+  const idRef = useRef(0);
+
+  const addSeries = () => {
+    if (!addTopic || !addField) return;
+    if (series.some((s) => s.topic === addTopic && s.field === addField)) return; // no dupes
+    setSeries((prev) => [
+      ...prev,
+      { id: `s${idRef.current++}`, topic: addTopic, field: addField },
+    ]);
+  };
+  const removeSeries = (id: string) =>
+    setSeries((prev) => prev.filter((s) => s.id !== id));
+
+  const { data, status } = useProbeSeries(series, live, hz);
+
+  const uplotSeries: UplotSeriesConf[] = series.map((s, i) => ({
+    label: seriesLabel(s),
+    stroke: PALETTE[i % PALETTE.length]!,
+  }));
+
+  const distinctTopics = useMemo(
+    () => new Set(series.map((s) => s.topic)).size,
+    [series],
+  );
 
   return (
     <div className="flex flex-col gap-[18px]">
       <Card>
         <CardHeader
-          title="Probe"
+          title="Probe — overlay"
           right={
             <span className="flex items-center gap-2">
-              <StatusDot tone={STATUS_TONE[stream.status]} />
-              <span className="font-mono text-[11px] text-gray-500">
-                {stream.status}
-              </span>
+              <StatusDot tone={STATUS_TONE[status]} />
+              <span className="font-mono text-[11px] text-gray-500">{status}</span>
             </span>
           }
         />
-        <div className="flex flex-wrap items-end gap-4 px-[18px] py-4">
+        <div className="flex flex-wrap items-end gap-3 px-[18px] py-4">
           <label className="flex flex-col gap-1">
             <span className="text-[11px] font-semibold uppercase tracking-[0.04em] text-gray-400">
               Topic
             </span>
             <select
               aria-label="probe topic"
-              value={topic ?? ''}
+              value={addTopic ?? ''}
               onChange={(e) => {
-                setTopic(e.target.value || null);
-                setField(null);
+                setAddTopic(e.target.value || null);
+                setAddField(null);
               }}
-              className="min-w-[16rem] rounded-control border border-gray-200 px-2 py-1 text-sm font-medium text-gray-700 focus:border-teal-500 focus:outline-none"
+              className="min-w-[15rem] rounded-control border border-gray-200 px-2 py-1 text-sm font-medium text-gray-700 focus:border-teal-500 focus:outline-none"
             >
               <option value="">
                 {topicsQuery.isPending ? 'Loading topics…' : 'Select a topic…'}
@@ -108,13 +129,13 @@ export function ProbeTab() {
             </span>
             <select
               aria-label="probe field"
-              value={field ?? ''}
-              disabled={!topic || fields.length === 0}
-              onChange={(e) => setField(e.target.value || null)}
-              className="min-w-[14rem] rounded-control border border-gray-200 px-2 py-1 text-sm font-medium text-gray-700 focus:border-teal-500 focus:outline-none disabled:opacity-50"
+              value={addField ?? ''}
+              disabled={!addTopic || fields.length === 0}
+              onChange={(e) => setAddField(e.target.value || null)}
+              className="min-w-[13rem] rounded-control border border-gray-200 px-2 py-1 text-sm font-medium text-gray-700 focus:border-teal-500 focus:outline-none disabled:opacity-50"
             >
               <option value="">
-                {!topic
+                {!addTopic
                   ? 'Pick a topic first'
                   : fieldsQuery.isPending
                     ? 'Introspecting…'
@@ -132,75 +153,92 @@ export function ProbeTab() {
 
           <button
             type="button"
-            onClick={() => setLive((v) => !v)}
-            disabled={!topic || !field}
-            className={cn(
-              'rounded-control px-4 py-1.5 text-sm font-semibold transition-colors disabled:opacity-50',
-              live
-                ? 'border border-gray-200 bg-white text-gray-700 hover:bg-gray-50'
-                : 'bg-teal-600 text-white hover:bg-teal-700',
-            )}
+            onClick={addSeries}
+            disabled={!addTopic || !addField}
+            className="rounded-control bg-teal-600 px-4 py-1.5 text-sm font-semibold text-white hover:bg-teal-700 disabled:opacity-50"
           >
-            {live ? 'Pause' : 'Resume'}
+            + Add series
           </button>
 
-          <div className="ml-auto flex flex-col items-end">
-            <span className="text-[11px] font-semibold uppercase tracking-[0.04em] text-gray-400">
-              Latest
-            </span>
-            <span className="font-mono text-lg font-semibold text-gray-800">
-              {stream.latest === null ? '—' : stream.latest.toFixed(3)}
-            </span>
+          <div className="ml-auto flex items-end gap-3">
+            <label className="flex flex-col gap-1">
+              <span className="text-[11px] font-semibold uppercase tracking-[0.04em] text-gray-400">
+                Rate
+              </span>
+              <select
+                aria-label="probe rate"
+                value={hz}
+                onChange={(e) => setHz(Number(e.target.value))}
+                className="rounded-control border border-gray-200 px-2 py-1 text-sm font-medium text-gray-700 focus:border-teal-500 focus:outline-none"
+              >
+                {HZ_OPTIONS.map((h) => (
+                  <option key={h} value={h}>
+                    {h} Hz
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              type="button"
+              onClick={() => setLive((v) => !v)}
+              disabled={series.length === 0}
+              className={cn(
+                'rounded-control px-4 py-1.5 text-sm font-semibold transition-colors disabled:opacity-50',
+                live
+                  ? 'border border-gray-200 bg-white text-gray-700 hover:bg-gray-50'
+                  : 'bg-teal-600 text-white hover:bg-teal-700',
+              )}
+            >
+              {live ? 'Pause' : 'Resume'}
+            </button>
           </div>
         </div>
+
+        {series.length > 0 && (
+          <div className="flex flex-wrap gap-2 px-[18px] pb-4">
+            {series.map((s, i) => (
+              <span
+                key={s.id}
+                className="inline-flex items-center gap-1.5 rounded-chip border border-gray-200 bg-white px-2 py-1 text-[11.5px]"
+              >
+                <span
+                  className="inline-block h-[3px] w-3 rounded-sm"
+                  style={{ background: PALETTE[i % PALETTE.length] }}
+                />
+                <span className="font-mono text-gray-700" title={`${s.topic} · ${s.field}`}>
+                  {seriesLabel(s)}
+                </span>
+                <button
+                  type="button"
+                  aria-label={`remove ${seriesLabel(s)}`}
+                  onClick={() => removeSeries(s.id)}
+                  className="px-0.5 text-gray-400 hover:text-red-600"
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+
+        {distinctTopics > TOPIC_WARN && (
+          <p className="px-[18px] pb-3 text-[11px] text-amber-600">
+            <Badge tone="amber">{distinctTopics} topics</Badge> subscribed (&gt;{TOPIC_WARN}).
+            Decoding stays isolated in topic_probe (recording / monitoring unaffected), but the
+            probe preview may lag.
+          </p>
+        )}
       </Card>
 
       <Card className="px-[18px] py-4">
-        {fieldsQuery.data?.type && (
-          <p className="mb-2 font-mono text-[11px] text-gray-400">
-            {topic} · {fieldsQuery.data.type}
-            {field ? ` · ${field}` : ''}
+        {series.length === 0 ? (
+          <p className="py-8 text-center text-[11.5px] text-gray-400">
+            Add a topic + field series to start plotting. Add several — even across topics — to
+            overlay them on one chart.
           </p>
+        ) : (
+          <UplotChart data={data} series={uplotSeries} />
         )}
-        <div className="relative">
-          <svg viewBox={`0 0 ${W} ${H}`} className="w-full" preserveAspectRatio="none">
-            {[0.25, 0.5, 0.75].map((f) => (
-              <line
-                key={f}
-                x1={0}
-                x2={W}
-                y1={H * f}
-                y2={H * f}
-                stroke="#f1f3f5"
-                strokeWidth={1}
-              />
-            ))}
-            {hasData && (
-              <polyline
-                points={line}
-                fill="none"
-                stroke="#0d9488"
-                strokeWidth={1.5}
-                vectorEffect="non-scaling-stroke"
-                strokeLinejoin="round"
-                strokeLinecap="round"
-              />
-            )}
-          </svg>
-          {!hasData && (
-            <div className="absolute inset-0 flex items-center justify-center p-4">
-              <p className="max-w-[80%] text-center text-[11.5px] leading-relaxed text-gray-400">
-                {!topic
-                  ? 'Select a topic and a numeric field to start plotting.'
-                  : !field
-                    ? (fieldsQuery.data?.reason ?? 'No numeric field selected.')
-                    : !live
-                      ? 'Paused.'
-                      : 'Waiting for samples…'}
-              </p>
-            </div>
-          )}
-        </div>
       </Card>
     </div>
   );

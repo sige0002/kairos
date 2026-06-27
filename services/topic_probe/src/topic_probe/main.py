@@ -105,17 +105,23 @@ def create_probe_app(*, subscriber: ProbeSubscriber | None = None) -> FastAPI:
         topic: str = Query(..., min_length=1),
         field: str = Query(..., min_length=1),
     ) -> Sample:
-        return await asyncio.to_thread(service.sample, topic, field)
+        # One-shot: subscribe transiently, wait for a message, sample, release.
+        return await asyncio.to_thread(service.sample_blocking, topic, field)
 
     @app.get("/stream")
     async def stream(
         topic: str = Query(..., min_length=1),
-        field: str = Query(..., min_length=1),
+        fields: str | None = Query(None, description="comma-separated field paths"),
+        field: str | None = Query(None, min_length=1),
         hz: float = Query(_DEFAULT_STREAM_HZ, gt=0, le=_MAX_STREAM_HZ),
     ) -> StreamingResponse:
+        # `fields=a,b,c` overlays several fields of one topic in each SSE frame;
+        # `field=` (single) is kept for back-compat. The frontend opens one stream
+        # per topic, so cross-topic overlay = several concurrent streams.
+        field_list = _parse_fields(fields, field)
         interval = 1.0 / min(hz, _MAX_STREAM_HZ)
         return StreamingResponse(
-            _sample_sse(service, topic, field, interval),
+            _multi_sample_sse(service, topic, field_list, interval),
             media_type="text/event-stream",
         )
 
@@ -129,18 +135,32 @@ def create_probe_app(*, subscriber: ProbeSubscriber | None = None) -> FastAPI:
     return app
 
 
-async def _sample_sse(
-    service: ProbeService, topic: str, field: str, interval: float
-) -> AsyncIterator[str]:
-    """Yield throttled ``{topic, field, t, value}`` SSE frames for one field.
+def _parse_fields(fields: str | None, field: str | None) -> list[str]:
+    """Resolve the field list from `fields=a,b,c` (overlay) or `field=` (single)."""
+    if fields:
+        return [f.strip() for f in fields.split(",") if f.strip()]
+    if field:
+        return [field]
+    return []
 
-    Re-selects the topic each tick (so this plot "wins" the single active
-    subscription) and samples the latest decoded message off the event loop.
+
+async def _multi_sample_sse(
+    service: ProbeService, topic: str, fields: list[str], interval: float
+) -> AsyncIterator[str]:
+    """Yield throttled ``{topic, t, values}`` SSE frames for *fields* of *topic*.
+
+    Holds a (ref-counted) subscription for the connection's lifetime and samples
+    the latest decoded message off the event loop each tick; releases it on
+    disconnect. Cross-topic overlay = several of these streams in parallel.
     """
-    while True:
-        sample = await asyncio.to_thread(service.sample, topic, field)
-        yield f"data: {json.dumps(sample.model_dump())}\n\n"
-        await asyncio.sleep(interval)
+    await asyncio.to_thread(service.subscribe, topic)
+    try:
+        while True:
+            sample = await asyncio.to_thread(service.sample_many, topic, fields)
+            yield f"data: {json.dumps(sample.model_dump())}\n\n"
+            await asyncio.sleep(interval)
+    finally:
+        await asyncio.to_thread(service.unsubscribe, topic)
 
 
 app = create_probe_app()

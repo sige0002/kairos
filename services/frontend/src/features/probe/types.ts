@@ -39,3 +39,20 @@ export interface ProbePoint {
   t: number;
   value: number | null;
 }
+
+/** One multi-field SSE frame (GET /probe/stream?topic&fields=...): one topic's
+ * fields sampled off the same decoded message. */
+export interface ProbeMultiSample {
+  topic: string;
+  /** Wall-clock seconds. */
+  t: number;
+  /** field path -> value (null when it did not resolve on the latest message). */
+  values: Record<string, number | null>;
+}
+
+/** One overlay series in the Probe chart: a (topic, field) pair. */
+export interface ProbeSeries {
+  id: string;
+  topic: string;
+  field: string;
+}
