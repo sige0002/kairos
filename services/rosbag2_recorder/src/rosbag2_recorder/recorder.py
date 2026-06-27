@@ -98,6 +98,23 @@ def _qos_overrides_path(recorded_root: Path, run_id: str) -> Path:
     return recorded_root / f"{run_id}.qos.yaml"
 
 
+def _mcap_storage_config_path(recorded_root: Path, run_id: str) -> Path:
+    """Path of the MCAP storage-config file (a sibling of the run dir)."""
+    return recorded_root / f"{run_id}.mcap-storage.yaml"
+
+
+# MCAP storage-plugin options for zstd compression. We use MCAP-native *chunk*
+# compression (via --storage-config-file) rather than rosbag2 file-level
+# compression (--compression-mode file): file-level produces a `<run>_0.mcap.zstd`
+# that breaks every `*.mcap` glob + the MCAP reader (recorder bytes check, dora
+# fast_validation/video_check/dataset_export/loss_report). Chunk compression keeps
+# the output a normal `<run>_0.mcap` that the MCAP library transparently inflates,
+# so all readers work unchanged. `Fastest` + noChunkCRC keeps live-record CPU low.
+_MCAP_ZSTD_STORAGE_CONFIG = (
+    "compression: Zstd\ncompressionLevel: Fastest\nnoChunkCRC: true\n"
+)
+
+
 def _iso8601_after(seconds: float) -> str:
     """ISO8601 (Z-suffixed, ms precision) *seconds* from now.
 
@@ -218,6 +235,7 @@ class RecorderSession:
         topics: list[str] | str,
         request: RecordStartRequest,
         qos_path: Path | None,
+        storage_config_path: Path | None,
     ) -> list[str]:
         """Assemble the ``ros2 bag record`` argv for this run.
 
@@ -234,9 +252,11 @@ class RecorderSession:
             "--output",
             str(out),
         ]
-        if request.compression is Compression.zstd:
-            # File-level zstd compression (rosbag2 standard flags).
-            cmd += ["--compression-mode", "file", "--compression-format", "zstd"]
+        if storage_config_path is not None:
+            # MCAP-native chunk compression (zstd) — keeps the output a normal
+            # `<run>_0.mcap` (see _MCAP_ZSTD_STORAGE_CONFIG). NOT rosbag2
+            # --compression-mode file, which would emit an unreadable .mcap.zstd.
+            cmd += ["--storage-config-file", str(storage_config_path)]
         if request.split is not None:
             if request.split.max_size_mb is not None:
                 cmd += ["--max-bag-size", str(request.split.max_size_mb * 1024 * 1024)]
@@ -318,7 +338,10 @@ class RecorderSession:
             # NOT exist before spawn (ros2 bag record refuses a pre-existing
             # --output). So nothing here may create run_dir(run_id).
             qos_path = self._materialise_qos(run_id, selected, request)
-            cmd = self._build_command(run_id, topics, request, qos_path)
+            storage_config_path = self._materialise_storage_config(run_id, request)
+            cmd = self._build_command(
+                run_id, topics, request, qos_path, storage_config_path
+            )
 
             started_at = utc_now_iso8601()
             try:
@@ -693,6 +716,26 @@ class RecorderSession:
         """Remove the run's QoS overrides sibling file if it was written."""
         _qos_overrides_path(self._recorded_root(), run_id).unlink(missing_ok=True)
 
+    def _materialise_storage_config(
+        self, run_id: str, request: RecordStartRequest
+    ) -> Path | None:
+        """Write the MCAP storage-config file for zstd compression, if requested.
+
+        Like the QoS file, it is a *sibling* of the run dir (the run dir itself
+        must not exist before ``ros2 bag record`` creates it). Returns ``None``
+        when compression is off (no file written, normal uncompressed record).
+        """
+        if request.compression is not Compression.zstd:
+            return None
+        path = _mcap_storage_config_path(self._recorded_root(), run_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(_MCAP_ZSTD_STORAGE_CONFIG, encoding="utf-8")
+        return path
+
+    def _cleanup_storage_config(self, run_id: str) -> None:
+        """Remove the run's MCAP storage-config sibling file if it was written."""
+        _mcap_storage_config_path(self._recorded_root(), run_id).unlink(missing_ok=True)
+
     def stop(self) -> RecordStatusResponse:
         """Stop the active session (idempotent).
 
@@ -780,6 +823,7 @@ class RecorderSession:
         self._write_manifest(ended_at=ended_at, error=error)
         if run_id:
             self._cleanup_qos_file(run_id)
+            self._cleanup_storage_config(run_id)
         logger.info(
             "recording finalised",
             extra={"run_id": run_id, "component": "recorder"},
@@ -817,6 +861,7 @@ class RecorderSession:
         except OSError:
             logger.exception("failed to write failed-start record")
         self._cleanup_qos_file(run_id)
+        self._cleanup_storage_config(run_id)
 
     # -- metadata sync ------------------------------------------------------
 

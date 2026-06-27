@@ -655,8 +655,17 @@ def test_command_compression_and_split_flags(
         )
     )
     cmd = captured[0].cmd
-    assert "--compression-format" in cmd
-    assert cmd[cmd.index("--compression-format") + 1] == "zstd"
+    # zstd uses MCAP-native chunk compression via --storage-config-file (NOT the
+    # rosbag2 file-level --compression-mode/format, which would emit an
+    # unreadable .mcap.zstd). Output stays a normal <run>_0.mcap.
+    assert "--compression-format" not in cmd
+    assert "--compression-mode" not in cmd
+    assert "--storage-config-file" in cmd
+    storage_cfg = Path(cmd[cmd.index("--storage-config-file") + 1])
+    body = storage_cfg.read_text()
+    assert "compression: Zstd" in body
+    assert "compressionLevel: Fastest" in body
+    assert "noChunkCRC: true" in body
     # 100 MB -> bytes
     assert cmd[cmd.index("--max-bag-size") + 1] == str(100 * 1024 * 1024)
     assert cmd[cmd.index("--max-bag-duration") + 1] == "60"
