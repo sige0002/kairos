@@ -27,8 +27,17 @@ function mockStatus(status: Record<string, unknown>, runDetail?: Record<string, 
 
 beforeEach(() => {
   setApiBase('/api/v1');
-  // Reset the shared UI store so persisted operator/task don't leak between tests.
-  useUiStore.setState({ recordOperator: '', recordTask: '' });
+  // Reset the shared UI store so persisted draft state doesn't leak between tests.
+  useUiStore.setState({
+    recordOperator: '',
+    recordTask: '',
+    recordSelected: new Set(),
+    recordCustomized: false,
+    recordSeeded: false,
+    graphTopic: null,
+    recMarkers: [],
+    recMarkersPrevActive: null,
+  });
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -206,4 +215,69 @@ test('clicking a topic name opens its live health graph, Close dismisses it', as
 
   fireEvent.click(screen.getByLabelText('close health graph'));
   await waitFor(() => expect(screen.queryByText('Topic health')).not.toBeInTheDocument());
+});
+
+// Regression (L-04): a customized record-topic selection must survive the Live
+// tab unmounting on navigation. It lives in the persistent UI store, so a tab
+// round-trip can't silently revert it to the configured defaults (which would
+// start the next recording with an unintended topic set).
+test('customized record-topic selection survives a remount', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/record/status'))
+      return Promise.resolve(jsonResponse({ run_id: null, state: 'created' }));
+    if (url.includes('/topics'))
+      return Promise.resolve(
+        jsonResponse([
+          { name: '/hsrb/joint_states', type: 'sensor_msgs/msg/JointState', publisher_count: 1 },
+          { name: '/hsrb/odom', type: 'nav_msgs/msg/Odometry', publisher_count: 1 },
+        ]),
+      );
+    if (url.includes('/runs'))
+      return Promise.resolve(jsonResponse({ items: [], next_cursor: null }));
+    return Promise.resolve(jsonResponse({}));
+  });
+  const cfg = { ...CONFIG, defaults: { default_topics: ['/hsrb/joint_states'] } } as RuntimeConfig;
+  const { unmount } = renderWithClient(<LiveTab config={cfg} />);
+
+  const odom = await screen.findByLabelText('record /hsrb/odom');
+  await waitFor(() =>
+    expect(screen.getByLabelText('record /hsrb/joint_states')).toBeChecked(),
+  );
+  expect(odom).not.toBeChecked();
+  fireEvent.click(odom); // customize: add odom to the next-recording set
+
+  unmount(); // leave the Live tab
+  renderWithClient(<LiveTab config={cfg} />); // come back
+
+  await waitFor(() => expect(screen.getByLabelText('record /hsrb/odom')).toBeChecked());
+  expect(screen.getByLabelText('record /hsrb/joint_states')).toBeChecked();
+});
+
+// Regression (L-14): the open health graph (and its topic selection) survives a
+// remount — graphTopic lives in the persistent UI store, so a tab round-trip no
+// longer closes the graph.
+test('the open health graph survives a remount', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/record/status'))
+      return Promise.resolve(jsonResponse({ run_id: null, state: 'created' }));
+    if (url.includes('/topics'))
+      return Promise.resolve(
+        jsonResponse([{ name: '/hsrb/odom', type: 'nav_msgs/msg/Odometry', publisher_count: 1 }]),
+      );
+    if (url.includes('/runs'))
+      return Promise.resolve(jsonResponse({ items: [], next_cursor: null }));
+    return Promise.resolve(jsonResponse({}));
+  });
+  const { unmount } = renderWithClient(<LiveTab config={CONFIG} />);
+
+  fireEvent.click(await screen.findByLabelText('graph /hsrb/odom health'));
+  expect(await screen.findByText('Topic health')).toBeInTheDocument();
+
+  unmount(); // leave the Live tab
+  renderWithClient(<LiveTab config={CONFIG} />); // come back
+
+  // The graph is still open without re-clicking — the selection persisted.
+  expect(await screen.findByText('Topic health')).toBeInTheDocument();
 });

@@ -9,7 +9,7 @@
 // — selection for the next recording, never a mid-recording change, which
 // `ros2 bag record` can't do anyway). To-be-recorded topics sort to the top.
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiGet, apiPost } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
@@ -86,24 +86,14 @@ function useRecordMarkers(): RecMarker[] {
     queryFn: ({ signal }) => apiGet<RecordStatus>('/record/status', { signal }),
     refetchInterval: 5000,
   });
-  const markersRef = useRef<RecMarker[]>([]);
-  const prevActiveRef = useRef<boolean | null>(null);
-  const [, setTick] = useState(0);
+  // Markers + the active-edge bookkeeping live in the UI store so they survive
+  // the Live tab unmounting on navigation (the graph + its history must persist).
+  const markers = useUiStore((s) => s.recMarkers);
+  const pushMarker = useUiStore((s) => s.pushRecordMarker);
   useEffect(() => {
-    if (!data) return;
-    const active = ACTIVE_STATES.has(data.state);
-    const prev = prevActiveRef.current;
-    if (prev !== null && prev !== active) {
-      const now = Date.now();
-      markersRef.current = [
-        ...markersRef.current.filter((m) => m.t > now - 300_000),
-        { t: now, kind: active ? 'REC' : 'STOP' },
-      ];
-      setTick((n) => n + 1);
-    }
-    prevActiveRef.current = active;
-  }, [data]);
-  return markersRef.current;
+    if (data) pushMarker(data.state);
+  }, [data, pushMarker]);
+  return markers;
 }
 
 function HeroMeta({
@@ -550,25 +540,19 @@ export function LiveTab({ config }: { config: RuntimeConfig }) {
   // configured topics as discovery first arrives; the operator can then add or
   // drop any topic. Until customized, recording keeps using the configured
   // defaults (preserving glob / "all" semantics the picker can't express).
-  const [selected, setSelected] = useState<Set<string>>(() => new Set());
-  const [customized, setCustomized] = useState(false);
-  const seededRef = useRef(false);
+  // Record-topic selection lives in the UI store so a tab switch (which unmounts
+  // the Live tab) doesn't silently revert a customized set back to the configured
+  // defaults — that would start the next recording with an unintended topic set.
+  // Seeded once from the configured topics as discovery first arrives.
+  const selected = useUiStore((s) => s.recordSelected);
+  const customized = useUiStore((s) => s.recordCustomized);
+  const seedRecordTopics = useUiStore((s) => s.seedRecordTopics);
+  const toggle = useUiStore((s) => s.toggleRecordTopic);
 
   useEffect(() => {
-    if (seededRef.current || monitor.rows.length === 0) return;
-    setSelected(new Set(monitor.rows.filter((r) => r.configured).map((r) => r.name)));
-    seededRef.current = true;
-  }, [monitor.rows]);
-
-  const toggle = (name: string) => {
-    setCustomized(true);
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(name)) next.delete(name);
-      else next.add(name);
-      return next;
-    });
-  };
+    if (monitor.rows.length === 0) return;
+    seedRecordTopics(monitor.rows.filter((r) => r.configured).map((r) => r.name));
+  }, [monitor.rows, seedRecordTopics]);
 
   const selection: RecordSelection = useMemo(() => {
     if (customized) {
@@ -583,7 +567,8 @@ export function LiveTab({ config }: { config: RuntimeConfig }) {
   // Live health graph (OL-③.2): the operator clicks a topic in the Monitor panel
   // to open its per-topic health graph. History accumulates from the same SSE
   // metrics stream the panel uses (no extra subscription, no payload decode).
-  const [graphTopic, setGraphTopic] = useState<string | null>(null);
+  const graphTopic = useUiStore((s) => s.graphTopic);
+  const setGraphTopic = useUiStore((s) => s.setGraphTopic);
   const metricHistory = useMetricHistory(config, false);
   const recMarkers = useRecordMarkers();
   const graphPoints = graphTopic ? (metricHistory.history.get(graphTopic) ?? []) : [];

@@ -4,6 +4,7 @@ import { setApiBase } from '../../api/client';
 import type { RuntimeConfig } from '../../config';
 import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
 import { StreamTab } from './StreamTab';
+import { useUiStore } from '../../store/uiStore';
 
 const CONFIG: RuntimeConfig = {
   endpoints: {
@@ -45,6 +46,8 @@ class FakePeerConnection {
 
 beforeEach(() => {
   setApiBase('/api/v1');
+  // Reset the persisted stream panes so they don't leak between tests.
+  useUiStore.setState({ streamPanes: [], streamPaneSeq: 0, streamPanesSeeded: false });
   vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
   vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
@@ -124,6 +127,22 @@ test('can add a second camera preview', async () => {
   // A second independent preview pane (and its video surface) appears.
   expect(screen.getAllByTestId('stream-video')).toHaveLength(2);
   expect(screen.getAllByLabelText('camera topic')).toHaveLength(2);
+});
+
+// Regression (L-11): a camera pane added at runtime must survive the Stream tab
+// unmounting on navigation — panes live in the persistent UI store, not local
+// state, so a tab round-trip can't drop back to the configured layout.
+test('an added camera pane survives a remount', async () => {
+  const { unmount } = renderWithClient(<StreamTab config={CONFIG} />);
+  await waitFor(() => expect(screen.getByTestId('stream-video')).toBeInTheDocument());
+
+  fireEvent.click(screen.getByRole('button', { name: /add camera/i }));
+  expect(screen.getAllByTestId('stream-video')).toHaveLength(2);
+
+  unmount(); // leave the Stream/Live tab
+  renderWithClient(<StreamTab config={CONFIG} />); // come back
+
+  await waitFor(() => expect(screen.getAllByTestId('stream-video')).toHaveLength(2));
 });
 
 test('shows a fallback error when WebRTC is unsupported', async () => {

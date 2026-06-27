@@ -41,6 +41,22 @@ function formatDuration(ms?: number): string {
   return `${m}m ${s % 60}s`;
 }
 
+/** A run's duration in ms: the backend `duration_ms` when present, otherwise
+ *  derived from started_at/ended_at — the run-list payload omits duration_ms, so
+ *  without this the list would never show a duration. */
+function runDurationMs(run: {
+  duration_ms?: number;
+  started_at?: string;
+  ended_at?: string | null;
+}): number | undefined {
+  if (run.duration_ms != null) return run.duration_ms;
+  if (!run.started_at || !run.ended_at) return undefined;
+  const start = new Date(run.started_at).getTime();
+  const end = new Date(run.ended_at).getTime();
+  if (Number.isNaN(start) || Number.isNaN(end) || end < start) return undefined;
+  return end - start;
+}
+
 function JsonBlock({ label, value }: { label: string; value: unknown }) {
   if (value === undefined || value === null) return null;
   return (
@@ -114,6 +130,7 @@ function cameraTopics(topics: RunTopic[]): RunTopic[] {
 function VideoPlayer({ runId, topic }: { runId: string; topic: string }) {
   const [jobId, setJobId] = useState<string | null>(null);
   const [summary, setSummary] = useState<VideoCheckSummary | null>(null);
+  const [jobError, setJobError] = useState<string | null>(null);
   const started = useRef(false);
 
   const mutation = useMutation({
@@ -147,6 +164,26 @@ function VideoPlayer({ runId, topic }: { runId: string; topic: string }) {
             { signal },
           );
           setSummary(result.summary as VideoCheckSummary);
+        } else {
+          // failed/canceled: fetch the terminal result so the failure is shown
+          // instead of spinning on "Generating…" forever. dora_runner nests the
+          // ApiError under summary.error(.error).
+          let message = `Video check ${status.state}.`;
+          try {
+            const result = await apiGet<JobResult>(
+              `/jobs/${encodeURIComponent(jobId)}/result`,
+              { signal },
+            );
+            const err = (result.summary as Record<string, unknown>)?.error as
+              | { code?: string; message?: string; error?: { code?: string; message?: string } }
+              | undefined;
+            const code = err?.error?.code ?? err?.code;
+            const msg = err?.error?.message ?? err?.message;
+            if (msg) message = code ? `${msg} (${code})` : msg;
+          } catch {
+            // keep the generic message
+          }
+          setJobError(message);
         }
         setJobId(null);
       }
@@ -166,6 +203,10 @@ function VideoPlayer({ runId, topic }: { runId: string; topic: string }) {
       </div>
       {mutation.isError ? (
         <ErrorMessage error={mutation.error} />
+      ) : jobError ? (
+        <p role="alert" className="text-xs text-red-600">
+          {jobError}
+        </p>
       ) : summary && summary.file ? (
         <>
           <video
@@ -457,7 +498,9 @@ export function RunsTab() {
                     </span>
                     <span className="font-mono text-xs text-gray-400">
                       {formatWhen(run.started_at)}
-                      {run.duration_ms ? ` · ${formatDuration(run.duration_ms)}` : ''}
+                      {runDurationMs(run) != null
+                        ? ` · ${formatDuration(runDurationMs(run))}`
+                        : ''}
                     </span>
                   </span>
                   <Badge tone="gray" className="shrink-0">

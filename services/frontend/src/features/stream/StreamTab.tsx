@@ -4,12 +4,13 @@
 // discovery (GET /api/v1/topics) merged with the configured camera topics
 // (config.defaults.default_topics) — no hand-typing.
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { apiGet } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
 import type { TopicInfo } from '../../api/types';
 import type { RuntimeConfig } from '../../config';
+import { useUiStore } from '../../store/uiStore';
 import { useWebRtcStream, type StreamStats } from './useWebRtcStream';
 import { Badge, Button, SectionLabel, StatusDot } from '../../components/ui';
 
@@ -109,24 +110,26 @@ function VideoSurface({
 /** One independent camera preview (its own topic + peer connection). */
 function CameraPane({
   options,
-  defaultTopic,
+  topic,
+  onTopicChange,
   webrtcBase,
   removable,
   onRemove,
 }: {
   options: CameraOption[];
-  defaultTopic: string;
+  topic: string;
+  onTopicChange: (topic: string) => void;
   webrtcBase: string;
   removable: boolean;
   onRemove: () => void;
 }) {
-  const [topic, setTopic] = useState(defaultTopic);
-  // Keep a valid selection as discovery changes.
+  // Keep a valid selection as discovery changes; write back to the store so the
+  // resolved topic persists across the tab unmounting on navigation.
   useEffect(() => {
-    if (topic && options.some((o) => o.name === topic)) return;
+    if (!topic || options.some((o) => o.name === topic)) return;
     const first = options.find((o) => o.live) ?? options[0];
-    if (first) setTopic(first.name);
-  }, [topic, options]);
+    if (first) onTopicChange(first.name);
+  }, [topic, options, onTopicChange]);
 
   const { phase, stream, error, stats, retry } = useWebRtcStream({ webrtcBase, topic });
   const phaseTone =
@@ -145,7 +148,7 @@ function CameraPane({
           aria-label="camera topic"
           className="min-w-0 flex-1 rounded-control border border-gray-200 px-2 py-1 font-mono text-sm focus:border-teal-500 focus:outline-none"
           value={topic}
-          onChange={(e) => setTopic(e.target.value)}
+          onChange={(e) => onTopicChange(e.target.value)}
         >
           {options.length === 0 ? (
             <option value="">No camera topics — start a bag/robot</option>
@@ -235,17 +238,17 @@ export function StreamTab({ config }: { config: RuntimeConfig }) {
 
   // Initial panes come from STREAM_CONFIG (config.stream.panes): how many open
   // and what each shows. With none configured, open one empty pane. Add/remove
-  // works at runtime regardless.
-  const nextId = useRef(1);
-  const [panes, setPanes] = useState<{ id: number; topic: string }[]>(() => {
-    const configured = config.stream?.panes ?? [];
-    const init =
-      configured.length > 0
-        ? configured.map((p, i) => ({ id: i, topic: p.topic ?? '' }))
-        : [{ id: 0, topic: '' }];
-    nextId.current = init.length;
-    return init;
-  });
+  // works at runtime regardless. Panes live in the UI store (seeded once) so a
+  // second camera survives the tab unmounting on navigation.
+  const panes = useUiStore((s) => s.streamPanes);
+  const seedStreamPanes = useUiStore((s) => s.seedStreamPanes);
+  const addStreamPane = useUiStore((s) => s.addStreamPane);
+  const removeStreamPane = useUiStore((s) => s.removeStreamPane);
+  const setStreamPaneTopic = useUiStore((s) => s.setStreamPaneTopic);
+
+  useEffect(() => {
+    seedStreamPanes(config.stream?.panes ?? []);
+  }, [config.stream, seedStreamPanes]);
 
   const gridCols = GRID_COLS[config.stream?.columns ?? 2] ?? 'lg:grid-cols-2';
 
@@ -257,11 +260,7 @@ export function StreamTab({ config }: { config: RuntimeConfig }) {
           {panes.length} preview{panes.length === 1 ? '' : 's'}
         </span>
         <div className="flex-1" />
-        <Button
-          type="button"
-          onClick={() => setPanes((ps) => [...ps, { id: nextId.current++, topic: '' }])}
-          className="px-3 py-1.5"
-        >
+        <Button type="button" onClick={addStreamPane} className="px-3 py-1.5">
           + Add camera
         </Button>
       </div>
@@ -274,10 +273,11 @@ export function StreamTab({ config }: { config: RuntimeConfig }) {
             <CameraPane
               key={pane.id}
               options={options}
-              defaultTopic={pane.topic || firstLive}
+              topic={pane.topic || firstLive}
+              onTopicChange={(topic) => setStreamPaneTopic(pane.id, topic)}
               webrtcBase={config.endpoints.webrtc}
               removable={panes.length > 1}
-              onRemove={() => setPanes((ps) => ps.filter((p) => p.id !== pane.id))}
+              onRemove={() => removeStreamPane(pane.id)}
             />
           ))}
         </div>

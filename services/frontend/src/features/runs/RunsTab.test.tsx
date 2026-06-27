@@ -167,6 +167,65 @@ test('renders the video-check section and plays the mp4 after a job', async () =
   });
 });
 
+// Regression (KI-VAL-01): a FAILED video_check must surface its error instead of
+// spinning on "Generating…" forever (the player used to fetch the result only on
+// `succeeded`).
+test('surfaces a failed video_check instead of spinning on "Generating…"', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    const method = (init as RequestInit | undefined)?.method;
+    if (url.includes('/jobs') && method === 'POST') {
+      return Promise.resolve(
+        jsonResponse({ job_id: 'job-v-fail', run_id: 'run-1', pipeline: 'video_check', state: 'queued' }),
+      );
+    }
+    if (url.includes('/jobs/job-v-fail/status')) {
+      return Promise.resolve(jsonResponse({ job_id: 'job-v-fail', state: 'failed' }));
+    }
+    if (url.includes('/jobs/job-v-fail/result')) {
+      return Promise.resolve(
+        jsonResponse({
+          summary: {
+            result: 'fail',
+            error: {
+              error: { code: 'topic_required', message: "video_check requires a camera 'topic' param." },
+            },
+          },
+          artifacts: [],
+        }),
+      );
+    }
+    if (url.includes('/runs/run-1')) {
+      return Promise.resolve(
+        jsonResponse({
+          run_id: 'run-1',
+          state: 'completed',
+          started_at: '2026-06-24T01:00:00.000Z',
+          ended_at: '2026-06-24T01:05:00.000Z',
+          topics: [{ name: '/cam/image_raw/compressed', type: 'sensor_msgs/CompressedImage' }],
+        }),
+      );
+    }
+    if (url.includes('/runs')) {
+      return Promise.resolve(
+        jsonResponse({ items: [{ run_id: 'run-1', state: 'completed' }], next_cursor: null }),
+      );
+    }
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  renderWithClient(<RunsTab />);
+  await waitFor(() => expect(screen.getByText('run-1')).toBeInTheDocument());
+  fireEvent.click(screen.getByRole('button', { name: /run-1/ }));
+  await waitFor(() => expect(screen.getByText('Video check')).toBeInTheDocument());
+
+  fireEvent.click(screen.getByRole('button', { name: 'Generate mp4' }));
+
+  // The failure (topic_required) is shown; "Generating…" must not persist.
+  await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(/topic_required/));
+  expect(screen.queryByText('Generating…')).not.toBeInTheDocument();
+});
+
 test('"All cameras" renders one player per camera topic', async () => {
   renderWithClient(<RunsTab />);
   await waitFor(() => expect(screen.getByText('run-1')).toBeInTheDocument());

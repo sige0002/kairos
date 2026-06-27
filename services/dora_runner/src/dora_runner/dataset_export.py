@@ -41,10 +41,14 @@ def _sanitize_component(value: str | None, default: str) -> str:
     """Coerce *value* into a safe single path component (slug); else *default*.
 
     Operator/task are free text that become directory names, so they must not
-    contain separators or traversal. Non-``[A-Za-z0-9._-]`` runs collapse to
-    ``_``; empties and reserved names fall back / are suffixed.
+    contain separators or traversal. We KEEP Unicode word characters (``\\w``)
+    so non-ASCII names — e.g. Japanese operator/task — survive instead of being
+    flattened to ``unknown_*``; any run of other characters (path separators,
+    control chars, punctuation, emoji) collapses to ``_``. Data-safety is
+    preserved: ``/``, ``\\``, ``..`` and absolute paths cannot survive
+    (separators become ``_``, and ``.``/``..``/empty fall back to *default*).
     """
-    slug = re.sub(r"[^A-Za-z0-9._-]+", "_", (value or "").strip()).strip("._")
+    slug = re.sub(r"[^\w.-]+", "_", (value or "").strip(), flags=re.UNICODE).strip("._")
     if not slug or slug in {".", ".."}:
         return default
     if slug in _RESERVED:
@@ -138,6 +142,9 @@ def run_dataset_export(*, run_id: str, data_dir: Path) -> dict[str, Any]:
         "files": moved,
         "bytes": exported_bytes,
         "message_count": session.get("message_count"),
+        # Provenance: the recorded topics (names), so dataset.json is a
+        # self-contained record without needing the sibling session.json.
+        "topics": session.get("topics", []),
         "exported_at": utc_now_iso8601(),
     }
     (dataset_dir / "dataset.json").write_text(

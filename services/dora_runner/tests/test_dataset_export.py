@@ -23,7 +23,13 @@ def _make_run(data_dir: Path, run_id: str, *, operator: str, task: str) -> Path:
     (run_dir / "metadata.yaml").write_text("rosbag2: {}\n", encoding="utf-8")
     (run_dir / "session.json").write_text(
         json.dumps(
-            {"run_id": run_id, "operator": operator, "task": task, "message_count": 7}
+            {
+                "run_id": run_id,
+                "operator": operator,
+                "task": task,
+                "message_count": 7,
+                "topics": ["/hsrb/joint_states", "/hsrb/odom"],
+            }
         ),
         encoding="utf-8",
     )
@@ -47,6 +53,11 @@ def test_export_moves_run_into_operator_task_index(tmp_path: Path) -> None:
     assert (dataset_dir / "dataset.json").exists()
     assert out["summary"]["index"] == "001"
     assert out["summary"]["message_count"] == 7
+    # Provenance: dataset.json carries the recorded topics (self-contained, not
+    # only in the sibling session.json).
+    assert out["summary"]["topics"] == ["/hsrb/joint_states", "/hsrb/odom"]
+    written = json.loads((dataset_dir / "dataset.json").read_text())
+    assert written["topics"] == ["/hsrb/joint_states", "/hsrb/odom"]
     # The recording has LEFT the staging area: run dir + siblings are gone.
     assert not (data_dir / "recorded" / "run_a").exists()
     assert not (data_dir / "recorded" / "run_a.qos.yaml").exists()
@@ -91,6 +102,21 @@ def test_sanitize_component_rules() -> None:
     assert _sanitize_component("", "fallback") == "fallback"
     assert _sanitize_component("..", "fallback") == "fallback"
     assert _sanitize_component("recorded", "d") == "recorded_"  # reserved
+
+
+def test_sanitize_component_keeps_unicode_but_stays_safe() -> None:
+    # Non-ASCII (e.g. Japanese) operator/task survive as a single component
+    # instead of being flattened to the fallback (regression for O-03).
+    assert _sanitize_component("田中テスト", "unknown_operator") == "田中テスト"
+    assert _sanitize_component("ピッキング作業", "unknown_task") == "ピッキング作業"
+    # ...but path-dangerous input still cannot escape: separators/traversal/abs
+    # paths collapse to a single safe component (no "/", no "..").
+    assert _sanitize_component("../evil", "d") == "evil"
+    assert _sanitize_component("a/b/c", "d") == "a_b_c"
+    assert _sanitize_component("/etc/passwd", "d") == "etc_passwd"
+    assert "/" not in _sanitize_component("../../x", "d")
+    # Emoji (a symbol, not a word char) is still stripped to a safe slug.
+    assert _sanitize_component("🤖robot", "d") == "robot"
 
 
 def test_export_rejects_traversal_run_id(tmp_path: Path) -> None:

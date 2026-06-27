@@ -181,7 +181,11 @@ services:
     network_mode: host
     volumes:
       - ${DATA_DIR:-./data}:/data
-      - ./config:/config:ro
+      # Read-WRITE (unlike the ROS services below): the Config tab persists edits
+      # via PUT /api/v1/config/recording, which atomically writes the active
+      # config file. Runs as the host user (uid above) so the host-owned ./config
+      # is writable. Keep this on a trusted LAN only — the UI can rewrite config.
+      - ./config:/config
     restart: unless-stopped
 
   dora_runner:
