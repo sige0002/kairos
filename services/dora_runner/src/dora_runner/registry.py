@@ -250,7 +250,7 @@ def build_default_registry(
     """Construct the registry with the four implemented pipelines + placeholders.
 
     *loss_config* supplies loss_report's config-driven defaults (OL-④.3); it
-    defaults to loading ``config/validators/loss_report.yaml`` (env
+    defaults to loading ``config/<robot>/validators/loss_report.yaml`` (env
     ``LOSS_REPORT_CONFIG``), falling back to code defaults when absent.
     """
     config = loss_config or load_loss_report_config()

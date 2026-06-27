@@ -20,8 +20,8 @@ from rosbag2_recorder.qos import (
 
 
 def _config() -> RecordingConfig:
-    # Mirrors config/airoa_hsr.yaml ordering: cameras best_effort first,
-    # then a catch-all reliable. First match wins.
+    # Mirrors the airoa_hsr recording default's ordering: cameras best_effort
+    # first, then a catch-all reliable. First match wins.
     return RecordingConfig(
         robot_name="hsr",
         topic_qos_overrides=[

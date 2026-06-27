@@ -5,7 +5,7 @@ This is a small, UI-facing config (separate from the recording/monitoring
 Stream tab opens by default and which camera topic each one shows. The
 orchestrator loads it and surfaces it via ``GET /api/v1/config`` (``stream``);
 the frontend initializes its panes from it. The canonical file is
-``config/stream.yaml``.
+``config/<robot>/stream/default.yaml``.
 
 Unknown keys are rejected (``extra="forbid"``) so typos surface instead of
 silently doing nothing.

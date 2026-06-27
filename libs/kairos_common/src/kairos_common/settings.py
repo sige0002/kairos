@@ -44,19 +44,21 @@ class Settings(BaseSettings):
 
     # ---- Data / config paths ----------------------------------------------
     data_dir: str = "./data"
-    recording_config: str = "config/recording.yaml"
+    recording_config: str = "config/airoa_hsr/recording/default.yaml"
     # Recording output root (where the recorder writes <run_id>/...). The
     # orchestrator uses it to delete a run's directory; the recorder relaxes its
     # mode to 0o777 so the orchestrator (uid 1000) can remove it.
     recorded_dir: str = "/data/recorded"
     # Stream tab layout config (initial preview panes); surfaced UI-side via
     # GET /api/v1/config. Optional — missing file just means a single empty pane.
-    stream_config: str = "config/stream.yaml"
-    # Validation templates the Config tab selects between (one *.yaml per option).
-    # The active one (default `validation_default`, by file stem) is injected into
-    # template-less fast_validation jobs. See config/validation/.
-    validation_dir: str = "config/validation"
-    validation_default: str = "airoa_hsr"
+    stream_config: str = "config/airoa_hsr/stream/default.yaml"
+    # Active robot — the Config tab lists robots from config_dir + config_local_dir
+    # and selects per-aspect options (recording / stream / validation / validators)
+    # within the active one. Committed robots: config/<robot>/; gitignored ones:
+    # config/local/<robot>/. ROBOT also labels the active set in GET /api/v1/config.
+    robot: str = "airoa_hsr"
+    config_dir: str = "config"
+    config_local_dir: str = "config/local"
 
     # ---- HTTP bind + ports -------------------------------------------------
     # BIND_HOST defaults to 0.0.0.0: LAN exposure is allowed on a trusted LAN

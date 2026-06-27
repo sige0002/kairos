@@ -1,5 +1,5 @@
 # =============================================================================
-# config/validators/loss_report.yaml — loss_report validator defaults
+# config/<robot>/validators/loss_report.yaml — loss_report validator defaults
 # =============================================================================
 # loss_report の「閾値」と「対象トピック」をコードのハードコード定数から外出しした
 # 設定ファイル。dora_runner がこれを読み、(1) ジョブの params 既定値、(2) /pipelines が

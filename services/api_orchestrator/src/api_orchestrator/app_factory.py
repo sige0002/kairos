@@ -165,7 +165,9 @@ def create_orchestrator_app(
         f"http://localhost:{settings.dora_runner_port}", client
     )
     event_hub = EventHub(monitor)
-    config_catalog = ConfigCatalog(settings.validation_dir, settings.validation_default)
+    config_catalog = ConfigCatalog(
+        settings.config_dir, settings.config_local_dir, settings.robot
+    )
     service = RunService(
         run_store,
         recorder,
@@ -206,6 +208,14 @@ def create_orchestrator_app(
     # without a restart (the RunService holds its own copy for next-start topic
     # resolution; both are updated together on save).
     app.state.recording_config = recording_config
+    # The active recording-config file path (a robot/recording selection re-points
+    # it, possibly into a gitignored config/local/<robot>/...). GET/PUT
+    # /api/v1/config/recording read/write this path.
+    app.state.recording_config_path = settings.recording_config
+    # Live STREAM_CONFIG: read at request time by GET /api/v1/config and hot-swapped
+    # by a stream/robot selection, so the Stream tab's initial panes reflect a
+    # switch without a restart.
+    app.state.stream_config = stream_config
 
     app.include_router(config_router.router)
     app.include_router(record_router.router)
@@ -220,7 +230,7 @@ def create_orchestrator_app(
     app.include_router(datasets_router.router)
     _override_readyz(app, recorder, monitor, streamer)
 
-    _register_root_and_config(app, settings, stream_config)
+    _register_root_and_config(app, settings)
     return app
 
 
@@ -317,20 +327,14 @@ def _stream_payload(stream_config: StreamConfig | None) -> dict[str, object]:
     }
 
 
-def _register_root_and_config(
-    app: FastAPI,
-    settings: Settings,
-    stream_config: StreamConfig | None,
-) -> None:
+def _register_root_and_config(app: FastAPI, settings: Settings) -> None:
     """Register the Stage 0 root + ``GET /api/v1/config``.
 
-    The payload keeps its Stage 0 shape (the frontend render-gate depends on
-    it) but the ``defaults`` block is sourced from the **live** RECORDING_CONFIG
-    (``app.state.recording_config``, read at request time) so a Config-tab edit
-    (PUT /api/v1/config/recording) is reflected without a restart. ``stream``
-    comes from STREAM_CONFIG (the Stream tab's initial panes).
+    The payload keeps its Stage 0 shape (the frontend render-gate depends on it)
+    but ``defaults`` and ``stream`` are sourced from the **live** app.state at
+    request time (``recording_config`` / ``stream_config``), so a Config-tab edit
+    (PUT /api/v1/config/recording) or a selection is reflected without a restart.
     """
-    stream = _stream_payload(stream_config)
 
     @app.get("/")
     async def root() -> dict[str, str]:
@@ -341,6 +345,7 @@ def _register_root_and_config(
         # Read the live config off app.state so an in-place edit (PUT
         # /api/v1/config/recording) shows up here without a restart.
         defaults = _config_defaults(request.app.state.recording_config, settings)
+        stream = _stream_payload(getattr(request.app.state, "stream_config", None))
         return {
             "endpoints": {
                 "api": "/api/v1",

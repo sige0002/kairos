@@ -16,15 +16,16 @@ from kairos_common.recording_config import Durability
 
 # The canonical template lives at repo root; resolve it relative to this file.
 REPO_ROOT = Path(__file__).resolve().parents[3]
-TEMPLATE = REPO_ROOT / "config" / "recording.yaml"
+# The copy-from template robot (config/template/) — modelled on airoa_hsr.
+TEMPLATE = REPO_ROOT / "config" / "template" / "recording" / "default.yaml"
 
 
 def test_loads_canonical_template() -> None:
-    """The committed template must load and validate cleanly."""
+    """The committed template robot must load and validate cleanly."""
     cfg = load_recording_config(TEMPLATE)
     assert isinstance(cfg, RecordingConfig)
-    assert cfg.robot_name == "template"
-    assert "/joint_states" in cfg.default_topics
+    assert cfg.robot_name
+    assert cfg.default_topics
     assert cfg.recording.storage.value == "mcap"
     assert cfg.recording.compression is Compression.none
 

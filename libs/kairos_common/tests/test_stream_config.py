@@ -8,11 +8,11 @@ import pytest
 from kairos_common import StreamConfig, load_stream_config
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-SAMPLE = REPO_ROOT / "config" / "stream.yaml"
+SAMPLE = REPO_ROOT / "config" / "airoa_hsr" / "stream" / "default.yaml"
 
 
 def test_loads_committed_sample() -> None:
-    """The committed config/stream.yaml must load and validate cleanly."""
+    """The committed config/<robot>/stream/default.yaml must load and validate."""
     cfg = load_stream_config(SAMPLE)
     assert isinstance(cfg, StreamConfig)
     assert cfg.columns == 2

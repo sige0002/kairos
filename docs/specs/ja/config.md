@@ -18,7 +18,8 @@
 | `ROS_DISTRO` | `jazzy` | ベースイメージの ROS 2 ディストロ |
 | `RMW_IMPLEMENTATION` | `rmw_fastrtps_cpp` | DDS 実装。Fast DDS と Cyclone DDS の両 RMW をイメージに同梱しており、本キーで切替可能。Cyclone DDS のロボットには `rmw_cyclonedds_cpp` を指定する（後述） |
 | `DATA_DIR` | `./data` | ホスト側データ root（→ コンテナ `/data`） |
-| `RECORDING_CONFIG` | `config/recording.yaml` | 収録・監視の YAML 設定ファイル（下記） |
+| `ROBOT` | `airoa_hsr` | アクティブな機体。`config/<robot>/`（committed）または `config/local/<robot>/`（gitignored）を選ぶ。recording / stream / validation / validators の各パスはこれから派生する（Makefile が committed/local を解決し、`docker compose` もネスト補間で尊重）。Config タブで機体 → aspect → option を選択・編集できる |
+| `RECORDING_CONFIG` | `config/<robot>/recording/default.yaml` | 収録・監視の YAML（通常は `ROBOT` から自動導出。`.env` で直接指定すると派生より優先される）（下記） |
 | `BIND_HOST` | `0.0.0.0` | API バインド先。**LAN 公開を許容**（信頼された LAN 前提・認証なし）。非信頼ネットワークへ直接公開しない |
 | `API_ORCH_PORT` | `8000` | `api_orchestrator` 公開ポート |
 | `TOPIC_MONITOR_PORT` | `8001` | `topic_monitor` ポート |
@@ -60,7 +61,7 @@ expected_hz_patterns:      # パターン → 期待 Hz（first match wins。hz 
   - { pattern: "/joint_states", hz: 100 }
 topic_qos_overrides:       # パターン → QoS（recorder / monitor が適用。first match wins）
   - { pattern: "/camera/*/image_raw", reliability: best_effort, durability: volatile, depth: 1 }
-# monitor / recording / validation は config/recording.yaml を参照（dataset は stage3）
+# monitor / recording / validation は config/<robot>/recording/default.yaml を参照（dataset は stage3）
 ```
 
 - **`recording` チューニング**: `start_delay_s`（publisher ウォームアップ待ち）に加え、開始時の購読確立 lag 対策として `start_paused`（既定 `false`／`true` で `--start-paused`＋購読 readiness gate＋resume を有効化）と `subscription_ready_timeout_s`（既定 5.0）を持つ。詳細は [rosbag2_recorder](rosbag2_recorder.md)。

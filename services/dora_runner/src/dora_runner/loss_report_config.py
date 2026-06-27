@@ -1,8 +1,8 @@
 """Config-driven defaults for the ``loss_report`` validator (OL-4.3).
 
 The ``loss_report`` thresholds and target-topic globs used to be hardcoded code
-constants. They now live in a YAML file (``config/validators/loss_report.yaml``,
-mounted at ``/config/validators/loss_report.yaml`` in Docker) so an operator can
+constants. They now live in a YAML file (``config/<robot>/validators/loss_report.yaml``,
+mounted at ``/config/<robot>/validators/loss_report.yaml`` in Docker) so an operator can
 tune them without a code change. The values flow three ways:
 
 1. these YAML values seed the job ``params`` defaults at execution time, and
@@ -29,7 +29,19 @@ logger = logging.getLogger("kairos")
 # Env var pointing at the loss_report validator config; defaults to the Docker
 # mount path. Missing file -> code defaults (below).
 LOSS_REPORT_CONFIG_ENV = "LOSS_REPORT_CONFIG"
-DEFAULT_LOSS_REPORT_CONFIG_PATH = "/config/validators/loss_report.yaml"
+
+
+def _default_loss_report_path() -> str:
+    """Host/dev fallback when ``LOSS_REPORT_CONFIG`` is unset: the active ROBOT's
+    committed validators file. Deployments set ``LOSS_REPORT_CONFIG`` explicitly
+    (Makefile / compose derive it from ``ROBOT``, resolving gitignored
+    ``config/local/<robot>/`` too), and that always wins over this default.
+    """
+    robot = os.environ.get("ROBOT", "airoa_hsr")
+    return f"/config/{robot}/validators/loss_report.yaml"
+
+
+DEFAULT_LOSS_REPORT_CONFIG_PATH = _default_loss_report_path()
 
 # Code defaults (used when the file or a key is absent). A multiplier of 5.0
 # flags a topic whose worst gap is 5x its own median cadence; an empty target
@@ -71,7 +83,7 @@ def load_loss_report_config(path: str | Path | None = None) -> LossReportConfig:
     """Load loss_report defaults from YAML; fall back to code defaults.
 
     *path* defaults to ``$LOSS_REPORT_CONFIG`` then
-    ``/config/validators/loss_report.yaml``. A missing file is normal (dev/host
+    ``/config/<robot>/validators/loss_report.yaml``. A missing file is normal (dev/host
     runs) and yields the code defaults; a malformed file is logged and also
     falls back rather than failing service startup.
     """

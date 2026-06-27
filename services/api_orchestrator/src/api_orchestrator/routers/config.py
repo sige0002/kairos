@@ -22,11 +22,11 @@ from typing import Any
 
 import yaml
 from fastapi import APIRouter, Request
-from kairos_common import ApiError
+from kairos_common import ApiError, load_recording_config, load_stream_config
 from kairos_common.recording_config import RecordingConfig
 from pydantic import BaseModel, ValidationError
 
-from api_orchestrator.config_catalog import ConfigCatalog
+from api_orchestrator.config_catalog import ASPECTS, ConfigCatalog
 
 logger = logging.getLogger("kairos")
 
@@ -56,25 +56,82 @@ def _catalog(request: Request) -> ConfigCatalog:
 
 
 def _options_payload(catalog: ConfigCatalog) -> dict[str, Any]:
+    """Robot-first options: the active robot, all robots, and per-aspect options."""
     return {
-        "validation": {
-            "active": catalog.active_id("validation"),
-            "options": [o.model_dump() for o in catalog.list_validation()],
-        }
+        "active_robot": catalog.active_robot(),
+        "robots": [r.model_dump() for r in catalog.list_robots()],
+        "aspects": {
+            aspect: {
+                "active": catalog.active_option(aspect),
+                "options": [o.model_dump() for o in catalog.list_aspect(aspect)],
+            }
+            for aspect in ASPECTS
+        },
     }
+
+
+def _apply_recording(request: Request, catalog: ConfigCatalog) -> None:
+    """Hot-swap the live RECORDING_CONFIG to the active robot's active option."""
+    path = catalog.resolve_path("recording")
+    if path is None:
+        return
+    try:
+        config = load_recording_config(path)
+    except (ValueError, OSError) as exc:
+        raise ApiError(
+            status_code=422,
+            code="invalid_config",
+            message=f"Recording config failed to load: {path}",
+            details={"error": str(exc)},
+        ) from exc
+    request.app.state.recording_config = config
+    request.app.state.recording_config_path = str(path)
+    request.app.state.run_service.set_recording_config(config)
+    logger.info("recording config applied", extra={"path": str(path)})
+
+
+def _apply_stream(request: Request, catalog: ConfigCatalog) -> None:
+    """Hot-swap the live STREAM_CONFIG (read by GET /api/v1/config) to the active
+    robot's active option; ``None`` when the robot has no stream option."""
+    path = catalog.resolve_path("stream")
+    if path is None:
+        request.app.state.stream_config = None
+        request.app.state.stream_config_path = None
+        return
+    try:
+        config = load_stream_config(path)
+    except (ValueError, OSError) as exc:
+        raise ApiError(
+            status_code=422,
+            code="invalid_config",
+            message=f"Stream config failed to load: {path}",
+            details={"error": str(exc)},
+        ) from exc
+    request.app.state.stream_config = config
+    request.app.state.stream_config_path = str(path)
+    logger.info("stream config applied", extra={"path": str(path)})
 
 
 @router.get("/options")
 async def config_options(request: Request) -> dict[str, Any]:
-    """List selectable config options + the active selection, per category."""
+    """List selectable config options + the active selection, robot-first."""
     return _options_payload(_catalog(request))
 
 
 @router.post("/select")
 async def config_select(request: Request, body: ConfigSelectRequest) -> dict[str, Any]:
-    """Set the active option for a category (immediate-apply categories only)."""
+    """Switch the active robot or an aspect option, hot-swapping the live copies.
+
+    Recording / stream selections (and a robot switch, which re-points both) take
+    effect for ``GET /api/v1/config`` immediately; recorder QoS / monitor
+    expected_hz still load at startup, so those parts apply on restart.
+    """
     catalog = _catalog(request)
     catalog.select(body.category, body.id)
+    if body.category in ("robot", "recording"):
+        _apply_recording(request, catalog)
+    if body.category in ("robot", "stream"):
+        _apply_stream(request, catalog)
     return _options_payload(catalog)
 
 
@@ -119,7 +176,10 @@ async def get_recording_config(request: Request) -> dict[str, Any]:
     """
     settings = request.app.state.settings
     config: RecordingConfig | None = request.app.state.recording_config
-    return _recording_payload(config, settings.recording_config)
+    path = getattr(
+        request.app.state, "recording_config_path", settings.recording_config
+    )
+    return _recording_payload(config, path)
 
 
 @router.put("/recording")
@@ -146,7 +206,11 @@ async def put_recording_config(
         ) from exc
 
     settings = request.app.state.settings
-    path = Path(settings.recording_config)
+    # Write to the ACTIVE recording file (a robot selection may have re-pointed it
+    # to a gitignored config/local/<robot>/... path) — never one from the request.
+    path = Path(
+        getattr(request.app.state, "recording_config_path", settings.recording_config)
+    )
     try:
         _atomic_write_yaml(path, config.model_dump(mode="json"))
     except OSError as exc:

@@ -155,8 +155,10 @@ def test_fast_validation_resolves_template_id_to_full_object(
     full template object before forwarding, because dora_runner's template store
     starts empty and would 404 on a bare id (regression: validation always failed).
     """
-    vdir = tmp_path / "validation"
-    vdir.mkdir()
+    # Robot-first tree: the active robot's validation dir holds the template id.
+    root = tmp_path / "config"
+    vdir = root / "myrobot" / "validation"
+    vdir.mkdir(parents=True)
     (vdir / "myrobot.yaml").write_text(
         "name: myrobot\nversion: 3\n"
         "required_topics:\n  - {name: /scan, type: sensor_msgs/msg/LaserScan}\n",
@@ -165,8 +167,9 @@ def test_fast_validation_resolves_template_id_to_full_object(
     settings = Settings(
         recording_config="/nonexistent/recording.yaml",
         stream_config="/nonexistent/stream.yaml",
-        validation_dir=str(vdir),
-        validation_default="myrobot",
+        config_dir=str(root),
+        config_local_dir=str(root / "local"),
+        robot="myrobot",
     )
 
     fake_dora = FakeDoraRunner()

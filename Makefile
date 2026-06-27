@@ -12,12 +12,21 @@
 # Service names are positional: `make build monitor frontend`, `make logs streamer`.
 # `make <thing> all` is the same as `make <thing>` (every service).
 
-# ---- config -----------------------------------------------------------------
-# Default the recording/monitoring config to the bundled HSR sample so the stack
-# works out of the box (overrides the stale value in .env). Override per robot:
-#   make up RECORDING_CONFIG=/config/myrobot.yaml
-RECORDING_CONFIG ?= /config/airoa_hsr.yaml
-export RECORDING_CONFIG
+# ---- config (robot-first) ---------------------------------------------------
+# A single ROBOT selects the whole config set. compose mounts ./config -> /config,
+# so the services read /config/<robot>/{recording,stream,validation,validators}/...
+# Committed robots live under config/<robot>/; your own (gitignored) ones under
+# config/local/<robot>/ — resolved automatically. Override per robot:
+#   make up ROBOT=airoa_hsr        # bundled HSR sample (default)
+#   make up ROBOT=realman          # config/local/realman/ (gitignored)
+ROBOT ?= airoa_hsr
+export ROBOT
+# Resolve committed (config/<robot>) vs local (config/local/<robot>) -> container path.
+_ROBOT_REL := $(if $(wildcard config/$(ROBOT)),$(ROBOT),local/$(ROBOT))
+RECORDING_CONFIG   ?= /config/$(_ROBOT_REL)/recording/default.yaml
+STREAM_CONFIG      ?= /config/$(_ROBOT_REL)/stream/default.yaml
+LOSS_REPORT_CONFIG ?= /config/$(_ROBOT_REL)/validators/loss_report.yaml
+export RECORDING_CONFIG STREAM_CONFIG LOSS_REPORT_CONFIG
 
 # Sample bag for the replay harness. Bags live UNDER data/ (the rule), so BAG is
 # a path RELATIVE to data/ — e.g. airoa-moma-mcap/000730 -> data/airoa-moma-mcap/000730

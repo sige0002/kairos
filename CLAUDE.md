@@ -81,8 +81,10 @@ kairos/
 
 - **Make shortcuts (the recommended entry point)**: the root `Makefile` thinly wraps the commands
   below. Run `make` for the target list. Service names are **positional** (`make build monitor`,
-  `make restart monitor orchestrator`). `RECORDING_CONFIG` is exported by `make` with a
-  `/config/airoa_hsr.yaml` default (avoiding the stale path in `.env`). Key ones: `make up` /
+  `make restart monitor orchestrator`). A robot's config is selected with a single `ROBOT`
+  (default `airoa_hsr`); `make` resolves `config/<robot>/` (committed) / `config/local/<robot>/`
+  (gitignored) and derives the recording/stream/validation/validators paths for each service
+  (avoiding the stale path in `.env`). Key ones: `make up` /
   `make rebuild <svc>` / `make restart <svc>` / `make logs <svc>` / `make config-reload` (apply config
   edits) / `make rosbag-loop` / `make table` / `make smoke[-record]` / `make test` / `make lint` /
   `make fmt`. The rest of this section documents what each command runs.
@@ -119,10 +121,10 @@ kairos/
     - **Stage 1 recording**: confirm topics are established with `topic_table` → `POST /record/start {"topics":"all"}`
       to the recorder (the orchestrator assigns the run_id) → MCAP is created under `/data/recorded/<run_id>/`.
       Recording several thousand messages from the sample bag is confirmed by `smoke.sh RECORD=1`.
-    - **Stage 2 monitoring**: start the monitor with **`RECORDING_CONFIG=/config/airoa_hsr.yaml`** to match the
-      sample bag (the default template `config/recording.yaml` has `default_topics` like `/joint_states`, which
-      do not match the HSR `/hsrb/*` topics — so as-is `GET /metrics` is empty = no Hz in the Monitor tab. The
-      Monitor tab itself always lists every topic via discovery). `GET /metrics` shows real Hz/bandwidth for `/hsrb/*`.
+    - **Stage 2 monitoring**: the default **`ROBOT=airoa_hsr`** matches the sample bag's (HSR) `/hsrb/*`,
+      so starting the monitor as-is shows real Hz/bandwidth for `/hsrb/*` in `GET /metrics` (selecting a
+      different robot's config whose `default_topics` don't match can leave metrics empty = no Hz in the
+      Monitor tab. The Monitor tab itself always lists every topic via discovery).
     - **Stage 3 validation**: run `dora_runner` standalone + `POST /jobs {pipeline:"fast_validation", run_id, params:{template}}`, or via the orchestrator `POST /api/v1/jobs`. Writes `result: pass|fail` to `/data/report/fast_validation/<run_id>/summary.json`. MCAP is read directly with `mcap` + `mcap-ros2-support` (no ROS needed).
 
 ## Specification docs

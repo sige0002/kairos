@@ -1,5 +1,5 @@
 # =============================================================================
-# config/validation/airoa_hsr.yaml — fast_validation template (HSR sample)
+# config/airoa_hsr/validation/default.yaml — fast_validation template (HSR sample)
 # =============================================================================
 # 「合格な収録に必ず含まれているべきトピック」を宣言する検証テンプレ。
 # dora_runner の fast_validation がこれと収録 MCAP の実トピックを照合し、

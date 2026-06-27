@@ -276,17 +276,52 @@ export interface AlertSnapshot {
 
 // ---- Config catalog (Config tab) ----------------------------------------
 
-/** One selectable validation template (a Config-tab dropdown entry). */
+/** One selectable robot (a committed config/<robot>/ or gitignored local one). */
+export interface RobotOption {
+  id: string;
+  local: boolean;
+}
+
+/** Display metadata for an aspect option (aspect-specific; all optional). */
+export interface AspectOptionMeta {
+  name?: string;
+  version?: number;
+  required_topics?: { name: string; type?: string | null }[];
+  default_topics?: number;
+  columns?: number;
+  panes?: number;
+}
+
+/** One selectable `*.yaml` option within an aspect of the active robot. */
+export interface AspectOption {
+  id: string;
+  path: string;
+  local: boolean;
+  meta: AspectOptionMeta;
+}
+
+/** The four selectable config aspects of a robot. */
+export type ConfigAspect = 'recording' | 'stream' | 'validation' | 'validators';
+
+/**
+ * GET /api/v1/config/options — robot-first selectable config. Pick the active
+ * robot, then per aspect pick which option is active.
+ */
+export interface ConfigOptions {
+  active_robot: string;
+  robots: RobotOption[];
+  aspects: Record<ConfigAspect, { active: string; options: AspectOption[] }>;
+}
+
+/**
+ * A validation template, adapted from the active robot's `validation` aspect
+ * options for the fast_validation params form (PipelineForm `templateOptions`).
+ */
 export interface ValidationOption {
   id: string;
   name: string;
   version: number;
   required_topics: { name: string; type?: string | null }[];
-}
-
-/** GET /api/v1/config/options — selectable options + active per category. */
-export interface ConfigOptions {
-  validation: { active: string; options: ValidationOption[] };
 }
 
 /**

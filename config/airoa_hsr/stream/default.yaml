@@ -1,5 +1,5 @@
 # =============================================================================
-# config/stream.yaml — Stream タブの初期レイアウト（WebRTC カメラプレビュー）
+# config/<robot>/stream/default.yaml — Stream タブの初期レイアウト（WebRTC カメラプレビュー）
 # =============================================================================
 # 「最初に何枚のプレビューを、どのカメラ topic で開くか」を決める設定。
 # UI 側で消費する想定（frontend の Stream タブが GET /api/v1/config 経由でこれを
@@ -7,7 +7,7 @@
 # 流れていない topic は、ロボット/bag が publish するまで "offline" 表示になる。
 #
 # この既定値は同梱の HSR サンプル（data/airoa-moma-mcap）に合わせてある。
-# ロボットごとにコピー/編集して使う。Docker では STREAM_CONFIG=/config/stream.yaml
+# ロボットごとにコピー/編集して使う。Docker では STREAM_CONFIG=/config/<robot>/stream/default.yaml
 # で指す想定。
 #
 # 注意: 深度の .../compressedDepth は cv2 で復号できず黒画面になるため、既定の

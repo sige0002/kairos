@@ -9,6 +9,7 @@ Per-service specs. Based on each diagram in `fig_const/`, with unspecified items
 | [config](config.md) | Shared configuration (externalization of `ROS_DOMAIN_ID` / ports / paths, etc., and runtime configuration) |
 | [rosbag2_recorder](rosbag2_recorder.md) | ROS 2 topics → MCAP recording (canonical). QoS selection / image support |
 | [topic_monitor](topic_monitor.md) | Lightweight real-time monitoring (Hz / Late / Gap / Loss / bandwidth) |
+| [topic_probe](topic_probe.md) | Live plotting of numeric fields (decode isolated; cross-topic overlay) |
 | [webrtc_streamer](webrtc_streamer.md) | Low-latency streaming of camera video (preview) |
 | [api_orchestrator](api_orchestrator.md) | Job management / state management / API hub (single entry point `/api/v1`) |
 | [dora_runner](dora_runner.md) | Post-recording validation, conversion, and AI processing (dora extension, stage3. Validation v1 = required topics + template) |

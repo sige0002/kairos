@@ -43,7 +43,7 @@ export interface RuntimeDefaults {
   [key: string]: unknown;
 }
 
-/** Stream tab initial layout (from the backend STREAM_CONFIG / config/stream.yaml). */
+/** Stream tab initial layout (from the backend STREAM_CONFIG / config/<robot>/stream/default.yaml). */
 export interface StreamLayout {
   /** Preview-grid column count (1–4). */
   columns?: number;

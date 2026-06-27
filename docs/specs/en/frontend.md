@@ -26,16 +26,20 @@ A backend-driven lightweight Web UI (Vite + React + TypeScript). **Usability fir
 
 ## Screen structure (tabs)
 
-**Tabs are registry-driven** (the `tabs` definition in `GET /api/v1/config` swaps display, order, and enabled/disabled from the backend). **UI labels are in English**. The current tab structure is **Live / Graph / Recordings / Validation / Datasets / Config** (tab ids are respectively `live` / `graph` / `runs` / `validation` / `dataset` / `config`):
+**Tabs are registry-driven** (the `tabs` definition in `GET /api/v1/config` swaps display, order, and enabled/disabled from the backend). **UI labels are in English**. The current tab structure is **Live / Graph / Probe / Recordings / Validation / Datasets / Config** (tab ids are respectively `live` / `graph` / `probe` / `runs` / `validation` / `dataset` / `config`; `probe` is a frontend-only tab the client injects even when the backend's `tabs` omit it):
 
 - **Live** — an operations screen fusing Record + Stream + Monitor. At the top a recording hero (Operator / Task input + Start / Stop), below a Stream preview (left) and a Monitor health panel (right).
   - The Monitor enumerates subscribed topics, each row having a **RECORD checkbox**. The set of checked items becomes the target topics of the **next recording** (a selection for the next start, not a change mid-recording = `ros2 bag record` cannot be changed mid-way). Configured topics are pre-checked and sorted to the top. Each row shows a **status dot** (`inactive`/`danger`/`warning`/`ok`/`unknown`) and, when a threshold is crossed, a **shortfall badge** (observed shortfall — not true loss) plus a reason tooltip.
-  - Clicking a topic name in the Monitor opens its **per-topic live health graph** inside Live (**Frequency**: actual Hz with the expected_hz reference line; **Shortfall vs expected**: `rate_shortfall` against the 2% / 5% threshold lines). Recording **REC / STOP markers** are overlaid, so you can judge "should I keep this recording / did it drop right after start?". All from the raw monitor — **no payload decode**.
+  - Below the Stream + Monitor grid there is a full-width, collapsible **Scope** band. Like the Graph tab it uses **add-style panels**, and each panel can **overlay** multiple series. Series come from two sources —
+    - **Health** (from the monitor — **no decode**): **Frequency** (actual Hz with the expected_hz reference line) / **Shortfall vs expected** (`rate_shortfall` with the 2% / 5% threshold lines) / **Jitter**, etc. Clicking a topic name in the Monitor adds a Health panel.
+    - **Signal** (from `topic_probe` — **the decoded payload value**): can overlay **different topics × multiple fields** on one chart, such as right arm / left arm. Arrays are `[0..N]`-expanded; the sample rate is **selectable per panel** (default 10Hz). "+ Signal" adds a panel ([topic_probe](topic_probe.md)).
+    - Recording **REC / STOP markers** are overlaid on all panels, so you can judge "should I keep this recording / did it drop right after start?". Charts are **uPlot** (axis ticks · hover crosshair · legend · zoom). The Scope is preserved across Live's tab switches.
   - The header shows **ROS_DOMAIN_ID** and the host's **CPU / GPU** (`GET /api/v1/system`).
-- **Graph** — a time-series health view where metric panels can be added and removed (**Frequency / Bandwidth / Max gap / Rate vs expected**). Since latency / loss cannot be measured with a non-intrusive monitor, they are **excluded from the menu** (per-run loss is provided via post-hoc analysis in Recordings).
+- **Graph** — a time-series health view where metric panels can be added and removed (**Frequency / Bandwidth / Max gap / Rate vs expected**). Overlays 1 metric × multiple topics. Since latency / loss cannot be measured with a non-intrusive monitor, they are **excluded from the menu** (per-run loss is provided via post-hoc analysis in Recordings).
+- **Probe** — a generic plotter that plots **numeric fields** from `topic_probe` in add-style panels (a frontend-injected tab). Pick a topic → numeric field (arrays `[0..N]`-expanded) and **overlay different topics × multiple fields**. The sample rate is selectable per panel (default 10Hz). Decoding is handled by the isolated `topic_probe` container and **does not spill over into recording / monitoring** ([topic_probe](topic_probe.md)). Live's Scope embeds this Signal panel into the operations screen.
 - **Recordings** (formerly Runs) — a recording history list (run_id / Status / Duration) + details (`manifest` / `validation` / `dataset_stats` / `loss`). A **"Run loss report" button** and an on-demand **mp4 "Video check" player**. Run deletion is also possible.
 - **Datasets** — lists exported datasets in an **operator › task › NNN tree** (`GET /api/v1/datasets`). The lower section exports completed recordings (individually + "Export all" for a bulk export of all in `recorded/`). Export is a **move**: on success the recording disappears from `recorded/` and the Recordings list and appears in the Datasets tree.
-- **Config** — edits and persists the recording config (the entire `RECORDING_CONFIG`) from the UI (`PUT /api/v1/config/recording`).
+- **Config** — selects and edits **robot → aspect (recording / stream / validation / validators) → option** (`GET /api/v1/config/options` · `POST /api/v1/config/select`). It lists committed robots (`config/<robot>/`) and gitignored robots (`config/local/<robot>/`); selecting a robot hot-swaps recording / stream (reflected immediately in `GET /api/v1/config`; recorder QoS / monitor expected_hz after a restart). The recording config can be edited and persisted as JSON (`PUT /api/v1/config/recording`), writing back to the active (possibly local) file.
 
 ## Data flow (SSE × cache)
 
@@ -49,6 +53,7 @@ A backend-driven lightweight Web UI (Vite + React + TypeScript). **Usability fir
 ## Design policy
 
 - **Holds no real paths / does not hardcode pipelines / the backend hands over schemas and settings / show it lightly bundled together.**
+- Time-series charts are **standardized on uPlot** (the default of this spec). It provides axis ticks · crosshair · overlay · zoom out of the box. Migration leads with the Live Scope; the existing hand-rolled SVG in Graph / Probe is replaced incrementally.
 - Rendering waits until `GET /api/v1/config` retrieval completes (render gate). Hardcoded fallbacks are dev only.
 - During recording, suppress dangerous operations (double start, topic / run_id changes).
 - Shared configuration is in [config](config.md).

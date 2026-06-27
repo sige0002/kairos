@@ -1,14 +1,24 @@
-"""Selectable config catalog + runtime selections for the Config tab.
+"""Robot-first selectable config catalog for the Config tab.
 
-Phase 1 covers the **validation** category: it lists the templates under
-``config/validation/`` (one ``*.yaml`` per option, keyed by file stem) and holds
-the process-local "active" selection. The active validation template is injected
-into template-less ``fast_validation`` jobs (see ``routers/jobs.py``), so
-switching it in the UI takes effect immediately — no restart (this is the
-"validation/stream/convert apply immediately" half of the agreed design).
+The config tree is robot-first: ``config/<robot>/<aspect>/<option>.yaml`` for the
+committed robots (``airoa_hsr`` / ``template``) and ``config/local/<robot>/...``
+for the gitignored ones (e.g. ``realman``). The four aspects are ``recording`` /
+``stream`` / ``validation`` / ``validators``.
 
-The selection is in-memory: it resets to the env default on restart. Persisting
-it is future work (see plan_config).
+The Config tab flow is **robot -> aspect -> option**: pick the active robot, then
+per aspect pick which ``*.yaml`` option is active. Nothing is hardcoded — robots
+come from scanning the dirs, options from each aspect dir. Selections are
+in-memory (reset to the env defaults on restart); persisting them is future work.
+
+Apply semantics (the router does the hot-swap; see ``routers/config.py``):
+
+- ``recording`` / ``stream`` — selecting hot-swaps the orchestrator's live copy so
+  ``GET /api/v1/config`` reflects it at once; recorder QoS / monitor expected_hz
+  load at service startup, so those parts fully apply on restart.
+- ``validation`` — applies immediately (the active template is injected into
+  template-less ``fast_validation`` jobs).
+- ``validators`` — informational here; the dora_runner reads its file via
+  ``LOSS_REPORT_CONFIG`` at job time, so a switch fully applies on restart.
 """
 
 from __future__ import annotations
@@ -16,90 +26,214 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from kairos_common import ApiError, ValidationTemplate, load_validation_template
+from kairos_common import (
+    ApiError,
+    ValidationTemplate,
+    load_recording_config,
+    load_stream_config,
+    load_validation_template,
+)
 from pydantic import BaseModel
 
 logger = logging.getLogger("kairos")
 
-# Categories whose selection applies immediately (no service restart).
-IMMEDIATE_CATEGORIES = ("validation",)
+# Selectable config aspects (each a subdir of a robot's config dir).
+ASPECTS = ("recording", "stream", "validation", "validators")
+# Categories POST /config/select accepts: a robot switch, or an aspect option.
+SELECTABLE_CATEGORIES = ("robot", *ASPECTS)
+# Aspects whose selection applies without a service restart (UI hint).
+IMMEDIATE_ASPECTS = ("validation",)
+# The conventional default option stem in each aspect dir.
+DEFAULT_OPTION = "default"
 
 
-class ValidationOption(BaseModel):
-    """One selectable validation template (a Config-tab dropdown entry)."""
+class RobotOption(BaseModel):
+    """One selectable robot (a committed or gitignored config/<robot>/ dir)."""
 
-    id: str  # file stem (e.g. "airoa_hsr")
-    name: str
-    version: int
-    required_topics: list[dict]
+    id: str
+    local: bool
+
+
+class AspectOption(BaseModel):
+    """One selectable ``*.yaml`` option within an aspect of the active robot.
+
+    ``meta`` carries a few aspect-specific, display-only fields (topic counts,
+    template name/version, stream columns) so the UI can label options without a
+    second round-trip. Absent / unparseable files still appear (``meta={}``).
+    """
+
+    id: str
+    path: str
+    local: bool
+    meta: dict
 
 
 class ConfigCatalog:
-    """Lists per-category config options and holds the active selection."""
+    """Scans the robot-first config tree and holds the active selections."""
 
-    def __init__(self, validation_dir: str | Path, validation_default: str) -> None:
-        self._validation_dir = Path(validation_dir)
-        self._active: dict[str, str] = {"validation": validation_default}
+    def __init__(
+        self,
+        config_dir: str | Path,
+        config_local_dir: str | Path,
+        active_robot: str,
+    ) -> None:
+        self._root = Path(config_dir)
+        self._local_root = Path(config_local_dir)
+        self._active_robot = active_robot
+        # Per-aspect active option id; absent -> resolved to DEFAULT_OPTION / first.
+        self._active_option: dict[str, str] = {}
 
-    # ---- validation -------------------------------------------------------
+    # ---- robot scanning ---------------------------------------------------
 
-    def _validation_files(self) -> dict[str, Path]:
-        """Return ``{id (file stem): path}`` for config/validation/*.yaml."""
-        if not self._validation_dir.is_dir():
+    def _is_robot_dir(self, d: Path) -> bool:
+        return d.is_dir() and any((d / a).is_dir() for a in ASPECTS)
+
+    def _robot_dir(self, robot: str) -> tuple[Path | None, bool]:
+        """Resolve a robot id to its dir (committed first, then local)."""
+        committed = self._root / robot
+        if self._is_robot_dir(committed):
+            return committed, False
+        local = self._local_root / robot
+        if self._is_robot_dir(local):
+            return local, True
+        return None, False
+
+    def list_robots(self) -> list[RobotOption]:
+        """All robots: committed (``config/*``) then gitignored (``config/local/*``)."""
+        out: list[RobotOption] = []
+        seen: set[str] = set()
+        if self._root.is_dir():
+            for d in sorted(self._root.iterdir()):
+                if d.resolve() == self._local_root.resolve():
+                    continue  # the local container is not itself a robot
+                if self._is_robot_dir(d) and d.name not in seen:
+                    out.append(RobotOption(id=d.name, local=False))
+                    seen.add(d.name)
+        if self._local_root.is_dir():
+            for d in sorted(self._local_root.iterdir()):
+                if self._is_robot_dir(d) and d.name not in seen:
+                    out.append(RobotOption(id=d.name, local=True))
+                    seen.add(d.name)
+        return out
+
+    def active_robot(self) -> str:
+        return self._active_robot
+
+    # ---- aspect scanning --------------------------------------------------
+
+    def _aspect_files(self, robot: str, aspect: str) -> dict[str, tuple[Path, bool]]:
+        """``{option stem: (path, is_local)}`` for ``<robot>/<aspect>/*.yaml``."""
+        rdir, local = self._robot_dir(robot)
+        if rdir is None:
             return {}
-        return {p.stem: p for p in sorted(self._validation_dir.glob("*.yaml"))}
+        adir = rdir / aspect
+        if not adir.is_dir():
+            return {}
+        return {p.stem: (p, local) for p in sorted(adir.glob("*.yaml"))}
 
-    def list_validation(self) -> list[ValidationOption]:
-        """List loadable validation templates (skips any that fail to parse)."""
-        options: list[ValidationOption] = []
-        for stem, path in self._validation_files().items():
-            try:
+    def active_option(self, aspect: str) -> str:
+        """The resolved active option id for *aspect* of the active robot.
+
+        Falls back to the selected id if still present, else ``default``, else the
+        first available; ``""`` when the aspect has no options.
+        """
+        files = self._aspect_files(self._active_robot, aspect)
+        if not files:
+            return ""
+        chosen = self._active_option.get(aspect)
+        if chosen in files:
+            return chosen
+        if DEFAULT_OPTION in files:
+            return DEFAULT_OPTION
+        return next(iter(files))
+
+    def resolve_path(self, aspect: str, option_id: str | None = None) -> Path | None:
+        """File path of *option_id* (or the active option) in *aspect*."""
+        option_id = option_id or self.active_option(aspect)
+        entry = self._aspect_files(self._active_robot, aspect).get(option_id)
+        return entry[0] if entry else None
+
+    def _option_meta(self, aspect: str, path: Path) -> dict:
+        """Best-effort display metadata for an aspect option (never raises)."""
+        try:
+            if aspect == "recording":
+                cfg = load_recording_config(path)
+                return {
+                    "name": cfg.robot_name or path.stem,
+                    "default_topics": len(cfg.default_topics),
+                }
+            if aspect == "stream":
+                cfg = load_stream_config(path)
+                return {"columns": cfg.columns, "panes": len(cfg.panes)}
+            if aspect == "validation":
                 tmpl = load_validation_template(path)
-            except (ValueError, OSError) as exc:
-                logger.warning(
-                    "skipping invalid validation template",
-                    extra={"path": str(path), "error": str(exc)},
-                )
-                continue
-            options.append(
-                ValidationOption(
-                    id=stem,
-                    name=tmpl.name,
-                    version=tmpl.version,
-                    required_topics=[t.model_dump() for t in tmpl.required_topics],
-                )
+                return {
+                    "name": tmpl.name,
+                    "version": tmpl.version,
+                    "required_topics": [t.model_dump() for t in tmpl.required_topics],
+                }
+        except (ValueError, OSError) as exc:
+            logger.warning(
+                "config option failed to load",
+                extra={"path": str(path), "aspect": aspect, "error": str(exc)},
             )
-        return options
+        return {}
 
-    def active_id(self, category: str = "validation") -> str:
-        return self._active.get(category, "")
+    def list_aspect(self, aspect: str) -> list[AspectOption]:
+        """All options for *aspect* of the active robot (with display metadata)."""
+        return [
+            AspectOption(
+                id=stem,
+                path=str(path),
+                local=local,
+                meta=self._option_meta(aspect, path),
+            )
+            for stem, (path, local) in self._aspect_files(
+                self._active_robot, aspect
+            ).items()
+        ]
+
+    # ---- selection --------------------------------------------------------
 
     def select(self, category: str, option_id: str) -> None:
-        """Set the active option for *category*; 400/404 on bad input."""
-        if category not in IMMEDIATE_CATEGORIES:
+        """Switch the active robot, or an aspect option; 400/404 on bad input."""
+        if category not in SELECTABLE_CATEGORIES:
             raise ApiError(
                 status_code=400,
                 code="unknown_category",
                 message=f"Unknown or non-selectable config category: {category}",
             )
-        if option_id not in self._validation_files():
+        if category == "robot":
+            if option_id not in {r.id for r in self.list_robots()}:
+                raise ApiError(
+                    status_code=404,
+                    code="config_not_found",
+                    message=f"Robot not found: {option_id}",
+                    details={"category": category, "id": option_id},
+                )
+            self._active_robot = option_id
+            # Aspect selections re-resolve against the new robot (active_option
+            # falls back to default), so drop stale per-aspect picks.
+            self._active_option.clear()
+            return
+        if option_id not in self._aspect_files(self._active_robot, category):
             raise ApiError(
                 status_code=404,
                 code="config_not_found",
-                message=f"Validation template not found: {option_id}",
-                details={"category": category, "id": option_id},
+                message=f"Config not found: {category}/{option_id}",
+                details={
+                    "category": category,
+                    "id": option_id,
+                    "robot": self._active_robot,
+                },
             )
-        self._active[category] = option_id
+        self._active_option[category] = option_id
+
+    # ---- validation helpers (used by routers/jobs.py) ---------------------
 
     def validation_template_by_id(self, option_id: str) -> ValidationTemplate | None:
-        """Load the validation template with id *option_id* (file stem).
-
-        Returns ``None`` if no such template exists or it fails to parse. Used to
-        resolve a UI-selected template *id* into the full object injected into a
-        ``fast_validation`` job (the dora_runner template store is otherwise
-        empty, so forwarding a bare id always 404s).
-        """
-        path = self._validation_files().get(option_id)
+        """Load the active robot's validation template with id *option_id*."""
+        path = self.resolve_path("validation", option_id)
         if path is None:
             return None
         try:
@@ -108,14 +242,10 @@ class ConfigCatalog:
             return None
 
     def active_validation_template(self) -> ValidationTemplate | None:
-        """Load the active validation template (falls back to any available)."""
-        files = self._validation_files()
-        if not files:
-            return None
-        stem = self._active.get("validation")
-        path = files.get(stem) if stem else None
+        """Load the active robot's active validation template (best effort)."""
+        path = self.resolve_path("validation")
         if path is None:
-            path = next(iter(files.values()))  # default missing -> first available
+            return None
         try:
             return load_validation_template(path)
         except (ValueError, OSError):

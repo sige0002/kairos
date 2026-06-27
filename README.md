@@ -54,7 +54,7 @@ For the detailed spec of each service, see [docs/specs/en/](docs/specs/en/README
 ### Start all services (Docker)
 
 ```bash
-make up                       # = build + start (detached). RECORDING_CONFIG default /config/airoa_hsr.yaml
+make up                       # = build + start (detached). Robot selected via ROBOT (default airoa_hsr)
 # or with plain docker compose:
 cp .env.example .env          # edit as needed
 docker compose build
@@ -68,8 +68,9 @@ and the frontend reach each other at `localhost:<port>` (no authentication; LAN 
 ### Make shortcuts
 
 To avoid typing long commands every time, a `Makefile` is provided at the root. Just `make` prints the
-full list of targets. Service names are **positional** (multiple allowed); `RECORDING_CONFIG` is
-exported within `make` with a `/config/airoa_hsr.yaml` default (avoiding the stale path in `.env`).
+full list of targets. Service names are **positional** (multiple allowed). A robot's config is
+selected with a single `ROBOT` (default `airoa_hsr`); `make` resolves `config/<robot>/` (committed) /
+`config/local/<robot>/` (gitignored) and passes the paths to each service (avoiding the stale path in `.env`).
 
 | Command | What it does |
 |---|---|
@@ -121,8 +122,8 @@ renders its tab layout and schemas backend-driven.
    host side (outside the container) without sudo.
 3. **Monitor / preview**: live health (Hz / gaps / bandwidth) via `GET /metrics`, WebRTC camera preview via
    `/stream`. The UI's Live tab fuses the Stream preview and the Monitor panel (**always shows every topic on
-   the graph**, overlaying live Hz on the monitored ones). To produce Hz that matches the sample bag, point at
-   `RECORDING_CONFIG=config/airoa_hsr.yaml` (which topics to record/monitor is defined in
+   the graph**, overlaying live Hz on the monitored ones). The sample bag's Hz shows up with the default
+   `ROBOT=airoa_hsr` (which topics to record/monitor is defined per robot in
    [`config/`](config/README.md); reflected as a pre-selection in the Live tab's RECORD checks).
 4. **Post-recording validation & processing** (via `POST /api/v1/jobs`, through `dora_runner`):
    - `fast_validation` — validates the presence/absence of required topics → `pass`/`fail` in `/data/report/fast_validation/<run_id>/summary.json`.

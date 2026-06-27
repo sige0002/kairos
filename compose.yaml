@@ -43,6 +43,8 @@ name: kairos
 x-ros-env: &ros-env
   ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
   RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
+  # Active robot — config/<robot>/ (committed) or config/local/<robot>/ (gitignored).
+  ROBOT: ${ROBOT:-airoa_hsr}
 
 services:
   # ---- ROS 2 services (host networking for the shared DDS graph) -----------
@@ -59,7 +61,7 @@ services:
     environment:
       <<: *ros-env
       RECORDER_PORT: ${RECORDER_PORT:-8010}
-      RECORDING_CONFIG: ${RECORDING_CONFIG:-/config/recording.yaml}
+      RECORDING_CONFIG: ${RECORDING_CONFIG:-/config/${ROBOT:-airoa_hsr}/recording/default.yaml}
     network_mode: host
     # Share the host IPC namespace so FastDDS shared-memory transport delivers
     # data across containers (host networking carries only UDP discovery).
@@ -86,7 +88,7 @@ services:
         required: false
     environment:
       <<: *ros-env
-      RECORDING_CONFIG: ${RECORDING_CONFIG:-/config/recording.yaml}
+      RECORDING_CONFIG: ${RECORDING_CONFIG:-/config/${ROBOT:-airoa_hsr}/recording/default.yaml}
     network_mode: host
     ipc: host
     volumes:
@@ -156,12 +158,14 @@ services:
       - path: .env
         required: false
     environment:
-      RECORDING_CONFIG: ${RECORDING_CONFIG:-/config/recording.yaml}
-      # Stream tab initial preview layout (config/stream.yaml -> /config mount).
-      STREAM_CONFIG: ${STREAM_CONFIG:-/config/stream.yaml}
-      # Validation templates the Config tab selects between (config/validation/).
-      VALIDATION_DIR: ${VALIDATION_DIR:-/config/validation}
-      VALIDATION_DEFAULT: ${VALIDATION_DEFAULT:-airoa_hsr}
+      RECORDING_CONFIG: ${RECORDING_CONFIG:-/config/${ROBOT:-airoa_hsr}/recording/default.yaml}
+      # Active robot — labels the config set the Config tab edits/selects.
+      ROBOT: ${ROBOT:-airoa_hsr}
+      # Robot-first config roots the Config tab catalog scans (committed + local).
+      CONFIG_DIR: ${CONFIG_DIR:-/config}
+      CONFIG_LOCAL_DIR: ${CONFIG_LOCAL_DIR:-/config/local}
+      # Stream tab initial preview layout (config/<robot>/stream/default.yaml).
+      STREAM_CONFIG: ${STREAM_CONFIG:-/config/${ROBOT:-airoa_hsr}/stream/default.yaml}
       # Browser-facing base URL the frontend uses for camera (WebRTC) signaling,
       # returned as endpoints.webrtc in GET /api/v1/config. Default "/webrtc" is
       # the same-origin nginx proxy (frontend/nginx.conf), so the preview works
@@ -190,7 +194,10 @@ services:
         required: false
     environment:
       DORA_RUNNER_PORT: ${DORA_RUNNER_PORT:-8020}
-      RECORDING_CONFIG: ${RECORDING_CONFIG:-/config/recording.yaml}
+      ROBOT: ${ROBOT:-airoa_hsr}
+      # loss_report validator defaults (config/<robot>/validators/loss_report.yaml).
+      LOSS_REPORT_CONFIG: ${LOSS_REPORT_CONFIG:-/config/${ROBOT:-airoa_hsr}/validators/loss_report.yaml}
+      RECORDING_CONFIG: ${RECORDING_CONFIG:-/config/${ROBOT:-airoa_hsr}/recording/default.yaml}
     # Run as the host user so the host-owned ./data mount is writable.
     user: "${UID:-1000}:${GID:-1000}"
     network_mode: host

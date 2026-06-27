@@ -6,19 +6,30 @@ import { ValidationTab } from './ValidationTab';
 
 const RUNS = { items: [{ run_id: 'run_001', state: 'completed' }], next_cursor: null };
 const OPTIONS = {
-  validation: {
-    active: 'airoa_hsr',
-    options: [
-      {
-        id: 'airoa_hsr',
-        name: 'airoa_hsr',
-        version: 1,
-        required_topics: [
-          { name: '/hsrb/joint_states', type: 'sensor_msgs/msg/JointState' },
-          { name: '/wrist_wrench', type: null },
-        ],
-      },
-    ],
+  active_robot: 'airoa_hsr',
+  robots: [{ id: 'airoa_hsr', local: false }],
+  aspects: {
+    recording: { active: 'default', options: [] },
+    stream: { active: 'default', options: [] },
+    validation: {
+      active: 'airoa_hsr',
+      options: [
+        {
+          id: 'airoa_hsr',
+          path: '/config/airoa_hsr/validation/default.yaml',
+          local: false,
+          meta: {
+            name: 'airoa_hsr',
+            version: 1,
+            required_topics: [
+              { name: '/hsrb/joint_states', type: 'sensor_msgs/msg/JointState' },
+              { name: '/wrist_wrench', type: null },
+            ],
+          },
+        },
+      ],
+    },
+    validators: { active: 'loss_report', options: [] },
   },
 };
 

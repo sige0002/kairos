@@ -14,6 +14,7 @@ import type {
   JobStatus,
   Page,
   RunSummary,
+  ValidationOption,
 } from '../../api/types';
 import { fetchRuntimeConfig } from '../../config';
 import type { JSONSchema } from '../../schema/jsonSchema';
@@ -151,7 +152,16 @@ export function ValidationTab() {
     queryKey: queryKeys.configOptions,
     queryFn: ({ signal }) => apiGet<ConfigOptions>('/config/options', { signal }),
   });
-  const templates = optionsQuery.data?.validation.options ?? [];
+  // Adapt the active robot's `validation` aspect options into the template shape
+  // the fast_validation form consumes (id + name/version/required_topics).
+  const templates: ValidationOption[] = (
+    optionsQuery.data?.aspects.validation.options ?? []
+  ).map((o) => ({
+    id: o.id,
+    name: o.meta.name ?? o.id,
+    version: o.meta.version ?? 1,
+    required_topics: o.meta.required_topics ?? [],
+  }));
 
   // The fast_validation form schema is backend-driven (GET /api/v1/config ->
   // schemas.pipeline_forms[fast_validation]); fall back when unavailable.
@@ -170,7 +180,7 @@ export function ValidationTab() {
   );
   const params: Record<string, unknown> = { ...seeded, ...overrides };
   if (schema.properties?.template && !params.template) {
-    params.template = optionsQuery.data?.validation.active || templates[0]?.id || '';
+    params.template = optionsQuery.data?.aspects.validation.active || templates[0]?.id || '';
   }
 
   const activeTemplate = String(params.template ?? '');

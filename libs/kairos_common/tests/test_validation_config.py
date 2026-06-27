@@ -8,11 +8,11 @@ import pytest
 from kairos_common import ValidationTemplate, load_validation_template
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-VALIDATION_DIR = REPO_ROOT / "config" / "validation"
+VALIDATION_DIR = REPO_ROOT / "config" / "airoa_hsr" / "validation"
 
 
 def test_loads_committed_samples() -> None:
-    """Every committed config/validation/*.yaml must load and validate."""
+    """Every committed config/<robot>/validation/*.yaml must load and validate."""
     files = sorted(VALIDATION_DIR.glob("*.yaml"))
     assert files, "expected at least one validation template"
     for path in files:
@@ -23,7 +23,7 @@ def test_loads_committed_samples() -> None:
 
 
 def test_hsr_required_topics() -> None:
-    tmpl = load_validation_template(VALIDATION_DIR / "airoa_hsr.yaml")
+    tmpl = load_validation_template(VALIDATION_DIR / "default.yaml")
     names = {t.name for t in tmpl.required_topics}
     # The HSR template requires the core teleop topics (the `/hsrb/*` set the
     # sample AIROA MOMA bags actually carry), not the generic /tf.

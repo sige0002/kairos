@@ -1,24 +1,36 @@
 # config/local/ — untracked local robot configs
 
-Put `RECORDING_CONFIG` / validation YAML for **confidential robots** here (robot
-names and topic names that must not be committed). Everything in this directory
-is **gitignored** except this README and `.gitkeep`, so these files stay local.
+Put **confidential robots** here (robot names / topic names that must not be
+committed). Everything under this directory is **gitignored** except this README
+and `.gitkeep`, so these files stay local.
 
-The whole `config/` directory is mounted read-only into the containers
-(`./config:/config:ro` in `compose.yaml`), so a file here is reachable inside as
-`/config/local/<robot>.yaml` — no extra mount needed.
+The layout mirrors the committed robots, one folder per robot:
 
-## Use a local config
-
-```bash
-# point the stack at a local robot config (recording + monitoring)
-make up RECORDING_CONFIG=/config/local/realman.yaml
-# or set it persistently in your (gitignored) .env:  RECORDING_CONFIG=/config/local/realman.yaml
+```
+config/local/<robot>/
+├─ recording/<option>.yaml     # default.yaml is the active option
+├─ stream/<option>.yaml
+├─ validation/<option>.yaml
+└─ validators/<option>.yaml
 ```
 
-For validation templates, either keep the template inline under the YAML's
-`validation:` block, or point `VALIDATION_DIR=/config/local/validation` (also
-untracked) at a local templates dir.
+The whole `config/` directory is mounted read-only into the containers
+(`./config:/config:ro` in `compose.yaml`), so a robot here is reachable inside as
+`/config/local/<robot>/...` — no extra mount needed.
+
+## Use a local robot
+
+A single `ROBOT` selects the whole config set; `make` resolves committed
+(`config/<robot>/`) vs local (`config/local/<robot>/`) automatically:
+
+```bash
+make up ROBOT=realman          # uses config/local/realman/
+# or set it persistently in your (gitignored) .env:  ROBOT=realman
+```
+
+The Config tab also lists local robots (flagged `local`) so you can switch and
+edit them in the UI — edits to a local robot's recording config write back to the
+gitignored file, never to a committed one.
 
 ## Sample data goes under data/
 

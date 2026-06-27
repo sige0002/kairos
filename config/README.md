@@ -1,41 +1,56 @@
 <!-- AUTO-GENERATED from config/README.ja.md. Do not edit by hand — edit the Japanese source and run /sync-docs. -->
 
-# config — recording / monitoring config (RECORDING_CONFIG)
+# config — per-robot recording / monitoring / validation config
 
 **日本語: [README.ja.md](README.ja.md)**
 
-The folder that holds the YAML deciding **which topics to record / monitor**. It is the config entry
-point for recording / monitoring.
+A folder for the YAML that decides **which topics to record / monitor** (and more),
+organized **per robot**. The entry point for recording / monitoring / validation config.
 
-| File | Role |
-|---|---|
-| [`recording.yaml`](recording.yaml) | **Generic template (copy from here).** A starting point for a new robot, with `default_topics` / `expected_hz_patterns` / QoS / `validation`. |
-| [`airoa_hsr.yaml`](airoa_hsr.yaml) | **Concrete config** matching the bundled sample bag (HSR, `data/airoa-moma-mcap/`). For Stage 1–2 local verification. |
+## Layout (robot-first)
 
-## Usage
-
-Point the **`RECORDING_CONFIG` environment variable** at one file.
-
-```bash
-# To use the sample bag (HSR), e.g. in .env
-RECORDING_CONFIG=config/airoa_hsr.yaml
+```
+config/
+├─ <robot>/                  # one folder per robot (committed)
+│  ├─ recording/<option>.yaml     # recording/monitoring (default.yaml is active)
+│  ├─ stream/<option>.yaml        # Stream tab initial layout
+│  ├─ validation/<option>.yaml    # fast_validation template
+│  └─ validators/loss_report.yaml # validator parameters
+├─ airoa_hsr/               # bundled sample robot (HSR, data/airoa-moma-mcap/)
+├─ template/                # starting point for a new robot (copy of airoa_hsr)
+└─ local/<robot>/           # your own robots (gitignored, e.g. realman)
 ```
 
-- Under Docker, `config/` is mounted into each service at `/config` (`compose.yaml`). The default is
-  `/config/recording.yaml`. When replaying the sample bag, switch to
-  `RECORDING_CONFIG=/config/airoa_hsr.yaml` (the template's `default_topics` are `/joint_states`
-  etc., which do not match the HSR `/hsrb/*` topics, so as-is the monitor subscribes to nothing and
-  `GET /metrics` is empty).
-- **A new robot**: copy `recording.yaml`, edit the topic names / expected Hz / QoS, and point
-  `RECORDING_CONFIG` at that file.
+Each aspect can hold multiple options (`*.yaml`); `default.yaml` is the active one.
 
-## Who consumes it (this one file is shared)
+## Usage (a single ROBOT switches everything)
 
-- `rosbag2_recorder` … `default_topics` (default record targets) + recording QoS.
-- `topic_monitor` … `expected_hz_patterns` (Late judgement) + subscribe QoS.
-- `dora_runner` … `validation.required_topics` (post-record fast_validation).
-- `frontend` (UI) … via `GET /api/v1/config`'s `defaults.default_topics`, the Record tab
-  **pre-selects the topics to record** and the Monitor tab shows a **configured badge**.
+```bash
+make up ROBOT=airoa_hsr      # bundled HSR sample (default)
+make up ROBOT=realman        # config/local/realman/ (gitignored)
+```
 
-Topics support globs (fnmatch); pattern lists are first-match-wins. See each YAML's comments and
-[`docs/specs/en/config.md`](../docs/specs/en/config.md) for details.
+- Choosing `ROBOT` switches recording / stream / validation / validators **together**.
+  The Makefile resolves `config/<robot>/` (committed) vs `config/local/<robot>/`
+  (gitignored) and passes the paths to each service (`docker compose` honors `ROBOT`
+  too, via nested interpolation).
+- The **Config tab** also lets you select / edit robot → aspect → option
+  (`GET /api/v1/config/options` · `POST /api/v1/config/select`). Local robots
+  (gitignored) appear in the list too, and editing their recording config writes
+  back to the gitignored file (never a committed one).
+- **A new robot**: copy `config/template/` into `config/<robot>/` (publishable) or
+  `config/local/<robot>/` (private), then edit topic names / expected Hz / QoS.
+
+> ⚠️ If your `.env` sets `RECORDING_CONFIG=...` directly it overrides the `ROBOT`-derived
+> path. Normally set only `ROBOT=` and drop the explicit path lines (`.env.example`
+> shows the new shape).
+
+## Where it applies
+
+- `rosbag2_recorder` … recording `default_topics` (default capture set) + recording QoS.
+- `topic_monitor` … recording `expected_hz_patterns` (Late judgement) + subscription QoS.
+- `dora_runner` … validation `required_topics` (fast_validation) + validators (loss_report).
+- `frontend` (UI) … via `GET /api/v1/config`: Record/Monitor pre-selection + badges, Stream initial panes.
+
+Topics support globs (fnmatch), first-match-wins. See each YAML's comments and
+[`docs/specs/en/config.md`](../docs/specs/en/config.md), `config/local/README.md` for details.

@@ -105,7 +105,7 @@ if [ "${nmetrics:-0}" -gt 0 ]; then
 else
   bad "monitor measured 0 topics."
   info "Hint: its RECORDING_CONFIG default_topics don't match the bag (or the path"
-  info "is invalid). For the HSR sample set RECORDING_CONFIG=/config/airoa_hsr.yaml"
+  info "is invalid). For the HSR sample set RECORDING_CONFIG=/config/airoa_hsr/recording/default.yaml"
   info "and recreate: docker compose up -d --force-recreate monitor   (see config/README.md)"
 fi
 

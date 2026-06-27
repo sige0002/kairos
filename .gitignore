@@ -29,10 +29,12 @@ config/local/*
 .claude/settings.local.json
 
 # Local staged-implementation working draft (not a committed doc)
+dev_docs/
 plan.md
 plan_ui.md
 plan_config.md
 report.md
+check.md
 task.md
 
 # OS / editor

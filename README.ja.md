@@ -52,7 +52,7 @@ ROS 2 のロボットデータを **収録・監視・検証・変換** する�
 ### 全サービスの起動（Docker）
 
 ```bash
-make up                       # = build + 起動（detached）。RECORDING_CONFIG 既定 /config/airoa_hsr.yaml
+make up                       # = build + 起動（detached）。機体は ROBOT で選択（既定 airoa_hsr）
 # あるいは素の docker compose で:
 cp .env.example .env          # 必要に応じて編集
 docker compose build
@@ -66,8 +66,9 @@ docker compose up
 ### Make ショートカット
 
 長いコマンドを毎回打たずに済むよう、ルートに `Makefile` を用意しています。`make` だけで全
-ターゲット一覧が出ます。サービス名は**位置引数**（複数可）、`RECORDING_CONFIG` は `make` 内で
-`/config/airoa_hsr.yaml` を既定 export（`.env` の陳腐化パスを回避）。
+ターゲット一覧が出ます。サービス名は**位置引数**（複数可）。機体設定は単一 `ROBOT`（既定
+`airoa_hsr`）で選び、`make` が `config/<robot>/`（committed）／ `config/local/<robot>/`（gitignored）を
+解決して各サービスへ渡す（`.env` の陳腐化パスを回避）。
 
 | コマンド | 内容 |
 |---|---|
@@ -118,9 +119,9 @@ backend 駆動で描画します。
    `chmod 0777` するので、ホスト側（コンテナ外）からも sudo なしで削除できる。
 3. **監視 / プレビュー**: `GET /metrics` でライブ健全性（Hz / 欠落 / 帯域）、`/stream` でカメラの
    WebRTC プレビュー。UI の Live タブは Stream プレビューと Monitor パネル（**グラフ上の全 topic を常時表示**し、
-   監視対象は live Hz を重ねる）を融合表示。サンプル bag に合わせて Hz を出すには
-   `RECORDING_CONFIG=config/airoa_hsr.yaml` を指す（どの topic を録る/監視するかは
-   [`config/`](config/README.ja.md) で定義。Live タブの RECORD チェックに事前選択として反映）。
+   監視対象は live Hz を重ねる）を融合表示。サンプル bag の Hz は既定の `ROBOT=airoa_hsr` で出る（どの
+   topic を録る/監視するかは機体ごとに [`config/`](config/README.ja.md) で定義。Live タブの RECORD
+   チェックに事前選択として反映）。
 4. **収録後の検証・処理**（`POST /api/v1/jobs`、`dora_runner` 経由）:
    - `fast_validation` — 必須トピックの過不足を検証 → `/data/report/fast_validation/<run_id>/summary.json` に `pass`/`fail`。
    - `loss_report` — トピックごとのロス推定（Recordings タブの「Run loss report」）。

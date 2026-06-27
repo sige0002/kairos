@@ -5,7 +5,7 @@ considered valid for a robot/dataset/task. It is the input to ``dora_runner``'s
 ``fast_validation`` (it IS the dora ``ValidationTemplate`` shape: ``name`` /
 ``version`` / ``required_topics: [{name, type?}]``). Extracted from the
 recording config so it can be selected independently in the Config tab. The
-canonical files live under ``config/validation/``.
+canonical files live under ``config/<robot>/validation/``.
 
 Unknown keys are rejected (``extra="forbid"``) so typos surface.
 """

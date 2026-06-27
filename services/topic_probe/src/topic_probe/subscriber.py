@@ -2,10 +2,13 @@
 
 The probe service (:mod:`topic_probe.probe`) depends only on this Protocol,
 never on rclpy. Unlike the monitor's seam, this one DECODES: it keeps the most
-recently received, decoded message for the single *active* topic so the service
-can introspect its fields and sample a chosen field's value. Only ONE topic is
-subscribed at a time (the UI plots one field of one topic); switching topics
-tears the old subscription down.
+recently received, decoded message for each *subscribed* topic so the service
+can introspect its fields and sample chosen fields' values.
+
+**Multiple topics can be subscribed concurrently** (overlay across topics, e.g.
+left arm / right arm). Subscriptions are **ref-counted**: each ``subscribe``
+bumps a count and each ``unsubscribe`` drops it; the underlying ROS subscription
+is created on the first reference and torn down when the last one is released.
 
 The real rclpy implementation lives in :mod:`topic_probe.ros_subscriber`
 (imported lazily, skipped when ROS is absent). Tests drive the service with a
@@ -16,6 +19,7 @@ ROS graph required, and rclpy is never imported.
 from __future__ import annotations
 
 import threading
+from collections import Counter
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
@@ -30,20 +34,20 @@ class TopicMeta:
 
 @runtime_checkable
 class ProbeSubscriber(Protocol):
-    """Single-topic decoding subscriber + ROS-graph discovery.
+    """Multi-topic decoding subscriber + ROS-graph discovery.
 
-    ``set_active`` selects the one topic currently subscribed (``None`` = none);
-    ``latest`` returns the most recently decoded message object for that topic
-    (or ``None`` before the first message arrives), which the service introspects
-    and samples. ``start`` / ``stop`` manage the underlying node.
+    ``subscribe`` / ``unsubscribe`` ref-count a decoding subscription per topic;
+    ``latest`` returns the most recently decoded message object for a subscribed
+    topic (or ``None`` before its first message / when not subscribed), which the
+    service introspects and samples. ``start`` / ``stop`` manage the node.
     """
 
     def start(self) -> None:
-        """Bring the node up (no subscription until ``set_active``)."""
+        """Bring the node up (no subscriptions until ``subscribe``)."""
         ...
 
     def stop(self) -> None:
-        """Tear down the subscription and node, release resources."""
+        """Tear down all subscriptions and the node, release resources."""
         ...
 
     def is_up(self) -> bool:
@@ -54,12 +58,16 @@ class ProbeSubscriber(Protocol):
         """Return the current ROS 2 graph topics (name + type)."""
         ...
 
-    def set_active(self, topic: str | None) -> None:
-        """Subscribe to *topic* (decoding); ``None`` clears the subscription."""
+    def subscribe(self, topic: str) -> None:
+        """Add a (ref-counted) decoding subscription to *topic*."""
         ...
 
-    def active_topic(self) -> str | None:
-        """The currently-subscribed topic, or ``None``."""
+    def unsubscribe(self, topic: str) -> None:
+        """Release one reference; tear down the subscription at zero."""
+        ...
+
+    def subscribed_topics(self) -> list[str]:
+        """Topics with at least one active reference."""
         ...
 
     def latest(self, topic: str) -> object | None:
@@ -77,7 +85,7 @@ class FakeProbeSubscriber:
 
     def __init__(self, graph: list[TopicMeta] | None = None) -> None:
         self._up = False
-        self._active: str | None = None
+        self._refs: Counter[str] = Counter()
         self._graph = list(graph or [])
         self._messages: dict[str, object] = {}
         self._lock = threading.Lock()
@@ -87,7 +95,8 @@ class FakeProbeSubscriber:
 
     def stop(self) -> None:
         self._up = False
-        self._active = None
+        with self._lock:
+            self._refs.clear()
 
     def is_up(self) -> bool:
         return self._up
@@ -101,17 +110,26 @@ class FakeProbeSubscriber:
         with self._lock:
             self._graph = list(graph)
 
-    def set_active(self, topic: str | None) -> None:
-        self._active = topic
+    def subscribe(self, topic: str) -> None:
+        with self._lock:
+            self._refs[topic] += 1
 
-    def active_topic(self) -> str | None:
-        return self._active
+    def unsubscribe(self, topic: str) -> None:
+        with self._lock:
+            if self._refs[topic] <= 1:
+                del self._refs[topic]
+            else:
+                self._refs[topic] -= 1
+
+    def subscribed_topics(self) -> list[str]:
+        with self._lock:
+            return list(self._refs)
 
     def latest(self, topic: str) -> object | None:
-        # Mirror the real subscriber: only the active topic has a live message.
-        if topic != self._active:
-            return None
+        # Mirror the real subscriber: only subscribed topics have a live message.
         with self._lock:
+            if topic not in self._refs:
+                return None
             return self._messages.get(topic)
 
     def set_message(self, topic: str, message: object) -> None:

@@ -80,7 +80,9 @@ kairos/
 
 - **Make ショートカット（推奨入口）**: ルートの `Makefile` が下記コマンドを薄くラップする。`make` で
   ターゲット一覧。サービス名は**位置引数**（`make build monitor`、`make restart monitor orchestrator`）。
-  `RECORDING_CONFIG` は `make` 内で `/config/airoa_hsr.yaml` を既定 export（`.env` の陳腐化パス回避）。
+  機体設定は単一 `ROBOT`（既定 `airoa_hsr`）で選ぶ。`make` が `config/<robot>/`（committed）/
+  `config/local/<robot>/`（gitignored）を解決し、recording/stream/validation/validators の各パスを
+  派生して各サービスへ渡す（`.env` の陳腐化パス回避）。
   主なもの: `make up` / `make rebuild <svc>` / `make restart <svc>` / `make logs <svc>` /
   `make config-reload`（config 反映）/ `make rosbag-loop` / `make table` / `make smoke[-record]` /
   `make test` / `make lint` / `make fmt`。以下は各コマンドの実体。
@@ -116,10 +118,10 @@ kairos/
     - **Stage 1 記録**: `topic_table` で topic 確立を確認 → recorder へ `POST /record/start {"topics":"all"}`
       （run_id は orchestrator が採番）→ MCAP が `/data/recorded/<run_id>/` に生成。サンプル bag で
       数千 msg を記録できることを `smoke.sh RECORD=1` で確認済み。
-    - **Stage 2 監視**: サンプル bag に合わせ **`RECORDING_CONFIG=/config/airoa_hsr.yaml`** で monitor を起動
-      （既定テンプレ `config/recording.yaml` の `default_topics` は `/joint_states` 等で HSR の `/hsrb/*` に
-      一致しないため、そのままだと `GET /metrics` が空＝Monitor タブの Hz が出ない。Monitor タブ自体は
-      discovery で全 topic を常時表示する）。`GET /metrics` で `/hsrb/*` の実 Hz/帯域を確認。
+    - **Stage 2 監視**: 既定の **`ROBOT=airoa_hsr`** がサンプル bag（HSR）の `/hsrb/*` に一致するので、
+      そのまま monitor を起動すれば `GET /metrics` に `/hsrb/*` の実 Hz/帯域が出る（別機体の config を
+      選ぶと `default_topics` が合わず metrics が空になり得る＝Monitor タブの Hz が出ない。Monitor タブ
+      自体は discovery で全 topic を常時表示する）。
     - **Stage 3 検証**: `dora_runner` 単体起動 + `POST /jobs {pipeline:"fast_validation", run_id, params:{template}}`、または orchestrator 経由 `POST /api/v1/jobs`。`/data/report/fast_validation/<run_id>/summary.json` に `result: pass|fail` を出力。MCAP は `mcap` + `mcap-ros2-support` で直接読む（ROS 不要）。
 
 ## 仕様 docs

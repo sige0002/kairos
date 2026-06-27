@@ -1,15 +1,14 @@
 """The rclpy-backed :class:`~topic_probe.subscriber.ProbeSubscriber`.
 
-The real ROS seam: an rclpy node that subscribes to a SINGLE selected topic at a
-time and DECODES each message (topic_probe is isolated from the monitor/recorder
-precisely so decoding here cannot affect them). The most recent decoded message
-is held for the service to introspect / sample.
+The real ROS seam: an rclpy node that subscribes to **multiple selected topics
+concurrently** and DECODES each message (topic_probe is isolated from the
+monitor/recorder precisely so decoding here cannot affect them). The most recent
+decoded message is held per topic for the service to introspect / sample.
 
-Thread-safety: ``set_active`` is called from web threads, but rclpy node mutation
-(create/destroy subscription) is not safe to do while the executor spins on
-another thread. So ``set_active`` only records the *desired* topic; a node timer
-running ON the executor thread reconciles the actual subscription. This mirrors
-topic_monitor's discovery-timer approach.
+Thread-safety: ``subscribe`` / ``unsubscribe`` are called from web threads but
+only record the *desired* (ref-counted) topic set; a node timer running ON the
+executor thread reconciles the actual subscriptions (rclpy node mutation is not
+safe off the spin thread). This mirrors topic_monitor's discovery-timer approach.
 
 rclpy is imported lazily inside :meth:`start`, so importing this module needs no
 ROS install — the live decode path is exercised only in Docker (ROS image).
@@ -19,34 +18,35 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections import Counter
 from typing import Any
 
 from topic_probe.subscriber import TopicMeta
 
 logger = logging.getLogger("kairos.topic_probe")
 
-# How often the node reconciles the active subscription with the desired topic.
+# How often the node reconciles live subscriptions with the desired topic set.
 _RECONCILE_PERIOD_S = 0.05
 
 
 class RosProbeSubscriber:
     """rclpy implementation of the :class:`ProbeSubscriber` Protocol.
 
-    Subscribes to one topic at a time with a permissive best-effort QoS (depth 1)
+    Subscribes to each desired topic with a permissive best-effort QoS (depth 1)
     so it attaches to almost any publisher without back-pressure, decodes each
-    message, and keeps the latest for sampling.
+    message, and keeps the latest per topic for sampling.
     """
 
     def __init__(self, *, node_name: str = "topic_probe") -> None:
         self._node_name = node_name
         self._lock = threading.Lock()
         self._up = False
-        # Desired vs actually-subscribed topic (reconciled on the spin thread).
-        self._desired: str | None = None
-        self._sub_topic: str | None = None
-        self._latest_msg: object | None = None
+        # Desired (ref-counted) topics — mutated by web threads.
+        self._desired: Counter[str] = Counter()
+        # Actually-subscribed topics + latest decoded — mutated on the spin thread.
+        self._subs: dict[str, Any] = {}
+        self._latest: dict[str, object] = {}
         self._node: Any = None
-        self._subscription: Any = None
         self._executor: Any = None
         self._thread: threading.Thread | None = None
         self._reconcile_timer: Any = None
@@ -87,9 +87,9 @@ class RosProbeSubscriber:
             self._up = False
             node, executor, thread = self._node, self._executor, self._thread
             self._node = self._executor = self._thread = None
-            self._subscription = None
-            self._sub_topic = None
-            self._latest_msg = None
+            self._desired.clear()
+            self._subs.clear()
+            self._latest.clear()
         if executor is not None:
             try:
                 executor.shutdown()
@@ -118,49 +118,52 @@ class RosProbeSubscriber:
             for name, types in node.get_topic_names_and_types()
         ]
 
-    def set_active(self, topic: str | None) -> None:
+    def subscribe(self, topic: str) -> None:
         # Only record intent; the reconcile timer (spin thread) does the work.
         with self._lock:
-            self._desired = topic
+            self._desired[topic] += 1
 
-    def active_topic(self) -> str | None:
+    def unsubscribe(self, topic: str) -> None:
         with self._lock:
-            return self._desired
+            if self._desired[topic] <= 1:
+                del self._desired[topic]
+            else:
+                self._desired[topic] -= 1
+
+    def subscribed_topics(self) -> list[str]:
+        with self._lock:
+            return list(self._desired)
 
     def latest(self, topic: str) -> object | None:
         with self._lock:
-            if topic != self._sub_topic:
-                return None
-            return self._latest_msg
+            return self._latest.get(topic)
 
     # ---- spin-thread reconciliation ---------------------------------------
     def _reconcile(self) -> None:
-        """Switch the live subscription to match the desired topic.
+        """Make live subscriptions match the desired topic set.
 
         Runs on the executor thread (timer callback), so all node mutation is
-        single-threaded. No-op when already on the desired topic.
+        single-threaded. Adds subscriptions for newly-desired topics and tears
+        down ones no longer referenced.
         """
         with self._lock:
-            desired = self._desired
-            current = self._sub_topic
-        if desired == current:
-            return
-        self._teardown_subscription()
-        if desired is None:
-            return
-        self._create_subscription(desired)
+            desired = set(self._desired)
+        current = set(self._subs)
+        for topic in current - desired:
+            self._teardown_one(topic)
+        for topic in desired - current:
+            self._create_subscription(topic)
 
-    def _teardown_subscription(self) -> None:
-        node, sub = self._node, self._subscription
+    def _teardown_one(self, topic: str) -> None:
+        node = self._node
+        sub = self._subs.pop(topic, None)
         if node is not None and sub is not None:
             try:
                 node.destroy_subscription(sub)
             except Exception:  # noqa: BLE001
                 logger.exception("error destroying probe subscription")
         with self._lock:
-            self._subscription = None
-            self._sub_topic = None
-            self._latest_msg = None
+            self._latest.pop(topic, None)
 
     def _create_subscription(self, topic: str) -> None:
         node = self._node
@@ -168,6 +171,7 @@ class RosProbeSubscriber:
             return
         type_str = self._resolve_type(node, topic)
         if type_str is None:
+            # Type not on the graph yet; the next reconcile retries.
             logger.warning("probe: no type for topic %s yet", topic)
             return
         try:
@@ -178,10 +182,7 @@ class RosProbeSubscriber:
         except Exception:  # noqa: BLE001 - bad type / unknown msg: stay alive
             logger.exception("probe: failed to subscribe to %s", topic)
             return
-        with self._lock:
-            self._subscription = subscription
-            self._sub_topic = topic
-            self._latest_msg = None
+        self._subs[topic] = subscription
         logger.info("probe subscribed (decoding) to %s [%s]", topic, type_str)
 
     def _resolve_type(self, node: Any, topic: str) -> str | None:
@@ -193,9 +194,7 @@ class RosProbeSubscriber:
     def _make_callback(self, topic: str):
         def _on_message(msg: Any) -> None:
             with self._lock:
-                # Drop late deliveries from a torn-down subscription.
-                if self._sub_topic == topic:
-                    self._latest_msg = msg
+                self._latest[topic] = msg
 
         return _on_message
 

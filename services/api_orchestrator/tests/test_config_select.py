@@ -1,7 +1,10 @@
-"""Config tab catalog: list/select validation + inject the active template.
+"""Config tab catalog: robot -> aspect -> option listing/selection + apply.
 
-Selecting a validation template applies immediately — a template-less
-fast_validation job created afterwards carries the newly-active template.
+Robot-first config tree: ``config/<robot>/<aspect>/*.yaml`` (committed) and
+``config/local/<robot>/...`` (gitignored). Selecting a robot re-points the live
+recording + stream configs; selecting an aspect option switches that aspect. The
+active robot's active validation template is injected into template-less
+``fast_validation`` jobs.
 """
 
 from __future__ import annotations
@@ -16,11 +19,49 @@ from fastapi.testclient import TestClient
 from kairos_common import Settings
 
 
-def _write_template(dir_: Path, stem: str, name: str, topic: str) -> None:
-    dir_.mkdir(parents=True, exist_ok=True)
-    (dir_ / f"{stem}.yaml").write_text(
-        f"name: {name}\nversion: 1\nrequired_topics:\n  - {{ name: {topic} }}\n",
-        encoding="utf-8",
+def _write(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def _build_tree(root: Path) -> None:
+    """Two committed robots (alpha, bravo) + one gitignored local robot (charlie)."""
+    # alpha — full set, with a second recording + validation option to select.
+    _write(
+        root / "alpha/recording/default.yaml",
+        "robot_name: alpha\ndefault_topics: [/a, /b]\n",
+    )
+    _write(
+        root / "alpha/recording/minimal.yaml",
+        "robot_name: alpha\ndefault_topics: [/a]\n",
+    )
+    _write(root / "alpha/stream/default.yaml", "columns: 2\npanes: [{topic: /cam}]\n")
+    _write(
+        root / "alpha/validation/default.yaml",
+        "name: alpha_default\nversion: 1\nrequired_topics:\n  - { name: /a }\n",
+    )
+    _write(
+        root / "alpha/validation/strict.yaml",
+        "name: alpha_strict\nversion: 2\n"
+        "required_topics:\n  - { name: /a }\n  - { name: /b }\n",
+    )
+    _write(
+        root / "alpha/validators/loss_report.yaml", "gap_threshold_multiplier: 5.0\n"
+    )
+    # bravo — different topics + a 1-column stream.
+    _write(
+        root / "bravo/recording/default.yaml",
+        "robot_name: bravo\ndefault_topics: [/x]\n",
+    )
+    _write(root / "bravo/stream/default.yaml", "columns: 1\npanes: []\n")
+    _write(
+        root / "bravo/validation/default.yaml",
+        "name: bravo_default\nversion: 1\nrequired_topics:\n  - { name: /x }\n",
+    )
+    # charlie — gitignored local robot, recording only (no stream/validation).
+    _write(
+        root / "local/charlie/recording/default.yaml",
+        "robot_name: charlie\ndefault_topics: [/c]\n",
     )
 
 
@@ -53,13 +94,14 @@ class _FakeDora:
 
 
 def _client(tmp_path: Path, fake_recorder, dora: _FakeDora) -> TestClient:
-    vdir = tmp_path / "validation"
-    _write_template(vdir, "alpha", "alpha_template", "/alpha")
-    _write_template(vdir, "beta", "beta_template", "/beta")
+    root = tmp_path / "config"
+    _build_tree(root)
     settings = Settings(
-        recording_config="/nonexistent/recording.yaml",
-        validation_dir=str(vdir),
-        validation_default="alpha",
+        config_dir=str(root),
+        config_local_dir=str(root / "local"),
+        robot="alpha",
+        recording_config=str(root / "alpha/recording/default.yaml"),
+        stream_config=str(root / "alpha/stream/default.yaml"),
     )
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -79,29 +121,83 @@ def test_config_tab_is_enabled(client) -> None:
     assert "config" in tabs
 
 
-def test_options_list_and_select(tmp_path: Path, fake_recorder) -> None:
-    test_client = _client(tmp_path, fake_recorder, _FakeDora())
-    with test_client as c:
-        opts = c.get("/api/v1/config/options").json()["validation"]
-        assert opts["active"] == "alpha"
-        assert {o["id"] for o in opts["options"]} == {"alpha", "beta"}
+def test_options_are_robot_first(tmp_path: Path, fake_recorder) -> None:
+    with _client(tmp_path, fake_recorder, _FakeDora()) as c:
+        body = c.get("/api/v1/config/options").json()
+        assert body["active_robot"] == "alpha"
+        robots = {r["id"]: r["local"] for r in body["robots"]}
+        assert robots == {"alpha": False, "bravo": False, "charlie": True}
+        # Aspect options are scoped to the active robot (alpha).
+        rec = body["aspects"]["recording"]
+        assert rec["active"] == "default"
+        assert {o["id"] for o in rec["options"]} == {"default", "minimal"}
+        assert {o["id"] for o in body["aspects"]["validation"]["options"]} == {
+            "default",
+            "strict",
+        }
 
-        # Select beta -> active updates.
+
+def test_select_aspect_option_switches_and_applies(
+    tmp_path: Path, fake_recorder
+) -> None:
+    with _client(tmp_path, fake_recorder, _FakeDora()) as c:
+        # Switch the recording option -> active changes AND GET /config reflects it.
         after = c.post(
-            "/api/v1/config/select", json={"category": "validation", "id": "beta"}
+            "/api/v1/config/select", json={"category": "recording", "id": "minimal"}
         ).json()
-        assert after["validation"]["active"] == "beta"
+        assert after["aspects"]["recording"]["active"] == "minimal"
+        defaults = c.get("/api/v1/config").json()["defaults"]
+        assert defaults["default_topics"] == ["/a"]
+        # Validation switch is reflected too.
+        after = c.post(
+            "/api/v1/config/select", json={"category": "validation", "id": "strict"}
+        ).json()
+        assert after["aspects"]["validation"]["active"] == "strict"
 
-        # Unknown id -> 404; unknown category -> 400.
+
+def test_select_robot_repoints_recording_and_stream(
+    tmp_path: Path, fake_recorder
+) -> None:
+    with _client(tmp_path, fake_recorder, _FakeDora()) as c:
+        after = c.post(
+            "/api/v1/config/select", json={"category": "robot", "id": "bravo"}
+        ).json()
+        assert after["active_robot"] == "bravo"
+        # Aspects re-scope to bravo (recording has only `default`).
+        assert {o["id"] for o in after["aspects"]["recording"]["options"]} == {
+            "default"
+        }
+        cfg = c.get("/api/v1/config").json()
+        assert cfg["defaults"]["default_topics"] == ["/x"]
+        assert cfg["stream"]["columns"] == 1  # bravo's stream applied live
+
+
+def test_select_local_robot(tmp_path: Path, fake_recorder) -> None:
+    with _client(tmp_path, fake_recorder, _FakeDora()) as c:
+        c.post("/api/v1/config/select", json={"category": "robot", "id": "charlie"})
+        cfg = c.get("/api/v1/config").json()
+        assert cfg["defaults"]["default_topics"] == ["/c"]
+        # charlie has no stream option -> falls back to the empty layout.
+        assert cfg["stream"] == {"columns": 2, "panes": []}
+
+
+def test_select_bad_input(tmp_path: Path, fake_recorder) -> None:
+    with _client(tmp_path, fake_recorder, _FakeDora()) as c:
         assert (
             c.post(
-                "/api/v1/config/select", json={"category": "validation", "id": "nope"}
+                "/api/v1/config/select", json={"category": "recording", "id": "nope"}
             ).status_code
             == 404
         )
         assert (
             c.post(
-                "/api/v1/config/select", json={"category": "robot", "id": "alpha"}
+                "/api/v1/config/select", json={"category": "robot", "id": "nope"}
+            ).status_code
+            == 404
+        )
+        assert (
+            c.post(
+                "/api/v1/config/select", json={"category": "bogus", "id": "default"}
             ).status_code
             == 400
         )
@@ -109,29 +205,35 @@ def test_options_list_and_select(tmp_path: Path, fake_recorder) -> None:
 
 def test_active_validation_injected_into_jobs(tmp_path: Path, fake_recorder) -> None:
     dora = _FakeDora()
-    test_client = _client(tmp_path, fake_recorder, dora)
-    with test_client as c:
-        # Template-less fast_validation job -> active (alpha) is injected.
+    with _client(tmp_path, fake_recorder, dora) as c:
+        # Template-less fast_validation -> alpha's active (default) template injected.
         c.post(
             "/api/v1/jobs",
             json={"run_id": "run_a", "pipeline": "fast_validation", "params": {}},
         )
         assert dora.last_payload is not None
-        assert dora.last_payload["params"]["template"]["name"] == "alpha_template"
+        assert dora.last_payload["params"]["template"]["name"] == "alpha_default"
 
-        # After selecting beta, a new job carries beta.
-        c.post("/api/v1/config/select", json={"category": "validation", "id": "beta"})
+        # Selecting strict -> a new job carries it.
+        c.post("/api/v1/config/select", json={"category": "validation", "id": "strict"})
         c.post(
             "/api/v1/jobs",
             json={"run_id": "run_a", "pipeline": "fast_validation", "params": {}},
         )
-        assert dora.last_payload["params"]["template"]["name"] == "beta_template"
+        assert dora.last_payload["params"]["template"]["name"] == "alpha_strict"
+
+        # Switching robot -> bravo's template is now the active one.
+        c.post("/api/v1/config/select", json={"category": "robot", "id": "bravo"})
+        c.post(
+            "/api/v1/jobs",
+            json={"run_id": "run_a", "pipeline": "fast_validation", "params": {}},
+        )
+        assert dora.last_payload["params"]["template"]["name"] == "bravo_default"
 
 
 def test_explicit_template_is_not_overridden(tmp_path: Path, fake_recorder) -> None:
     dora = _FakeDora()
-    test_client = _client(tmp_path, fake_recorder, dora)
-    with test_client as c:
+    with _client(tmp_path, fake_recorder, dora) as c:
         explicit = {"name": "mine", "version": 1, "required_topics": []}
         c.post(
             "/api/v1/jobs",

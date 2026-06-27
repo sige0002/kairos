@@ -19,7 +19,8 @@ The single source of configuration shared across services, and the rules for ext
 | `ROS_DISTRO` | `jazzy` | The ROS 2 distro of the base image |
 | `RMW_IMPLEMENTATION` | `rmw_fastrtps_cpp` | DDS implementation. Both RMWs (Fast DDS and Cyclone DDS) are bundled in the images, so this key switches between them. For a Cyclone DDS robot, set `rmw_cyclonedds_cpp` (see below) |
 | `DATA_DIR` | `./data` | Host-side data root (→ container `/data`) |
-| `RECORDING_CONFIG` | `config/recording.yaml` | The recording/monitoring YAML config file (see below) |
+| `ROBOT` | `airoa_hsr` | The active robot. Selects `config/<robot>/` (committed) or `config/local/<robot>/` (gitignored); the recording / stream / validation / validators paths are derived from it (the Makefile resolves committed/local, and `docker compose` honors it via nested interpolation). The Config tab lets you select / edit robot → aspect → option |
+| `RECORDING_CONFIG` | `config/<robot>/recording/default.yaml` | The recording/monitoring YAML (normally derived from `ROBOT`; setting it directly in `.env` overrides the derived path) (see below) |
 | `BIND_HOST` | `0.0.0.0` | API bind target. **Permits LAN exposure** (assumes a trusted LAN, no authentication). Do not directly expose to an untrusted network |
 | `API_ORCH_PORT` | `8000` | `api_orchestrator` public port |
 | `TOPIC_MONITOR_PORT` | `8001` | `topic_monitor` port |
@@ -61,7 +62,7 @@ expected_hz_patterns:      # pattern → expected Hz (first match wins; omit hz 
   - { pattern: "/joint_states", hz: 100 }
 topic_qos_overrides:       # pattern → QoS (applied by recorder / monitor; first match wins)
   - { pattern: "/camera/*/image_raw", reliability: best_effort, durability: volatile, depth: 1 }
-# monitor / recording / validation reference config/recording.yaml (dataset is stage3)
+# monitor / recording / validation reference config/<robot>/recording/default.yaml (dataset is stage3)
 ```
 
 - **`recording` tuning**: in addition to `start_delay_s` (waiting for publisher warmup), as a measure against the subscription-establishment lag at start it has `start_paused` (default `false`; `true` enables `--start-paused` + the subscription readiness gate + resume) and `subscription_ready_timeout_s` (default 5.0). For details see [rosbag2_recorder](rosbag2_recorder.md).

@@ -84,7 +84,7 @@ function Tabs({ config }: { config: RuntimeConfig }) {
   const active = activeTab || enabled[0]?.id || '';
 
   return (
-    <div className="flex flex-col gap-[18px]">
+    <div className="flex flex-col gap-3">
       <nav
         role="tablist"
         aria-label="kairos tabs"
@@ -221,9 +221,9 @@ export function App() {
   }
 
   return (
-    <main className="min-h-screen bg-gray-50 p-[22px]">
+    <main className="min-h-screen bg-gray-50 px-[22px] pb-[22px] pt-2.5">
       <EventStreamMount url={config.endpoints.events} />
-      <header className="mb-[18px] flex flex-wrap items-center gap-4">
+      <header className="mb-2.5 flex flex-wrap items-center gap-4">
         <a
           href="/"
           aria-label="kairos — recording console (home)"
