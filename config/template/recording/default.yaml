@@ -1,0 +1,90 @@
+# =============================================================================
+# kairos recording / monitoring config — Toyota HSR (AIRoA MOMA dataset)
+# =============================================================================
+# Concrete config for the airoa-moma-mcap sample bags under data/.
+# Topics/types/rates derived from `ros2 bag info data/airoa-moma-mcap/235210`
+# (HSR mobile manipulator; /hsrb namespace). Used for Stage 1–2 testing.
+# Set RECORDING_CONFIG=config/recording/airoa_hsr.yaml to use this file.
+# =============================================================================
+
+robot_name: hsr
+
+# ---- Default topics to record / pre-select (the meaningful HSR streams) -----
+default_topics:
+  - /hsrb/joint_states
+  - /hsrb/wrist_wrench/raw
+  - /hsrb/odom
+  - /hsrb/command_velocity
+  - /hsrb/arm_trajectory_controller/command
+  - /hsrb/head_rgbd_sensor/rgb/image_rect_color/compressed
+  - /hsrb/hand_camera/image_raw/compressed
+
+# ---- Expected Hz for monitor quality (first match wins; from bag counts) -----
+expected_hz_patterns:
+  - pattern: "**/compressed"
+    hz: 30
+  - pattern: "/hsrb/wrist_wrench/raw"
+    hz: 100
+  - pattern: "/hsrb/joint_states"
+    hz: 25
+  - pattern: "/hsrb/base_scan"
+    hz: 40
+  - pattern: "/hsrb/command_velocity"
+    hz: 30
+  - pattern: "/hsrb/arm_trajectory_controller/command"
+    hz: 30
+  - pattern: "/hsrb/odom"
+    hz: 25
+
+# ---- Per-topic QoS overrides (OPTIONAL; first match wins) -------------------
+# By default rosbag2 record ADAPTS to each publisher's offered QoS — the right
+# behavior. Only override when you must force a profile; forcing `reliable` on a
+# best_effort publisher (e.g. the airoa cameras) records ZERO messages. The
+# airoa bags publish with default QoS, so leave this empty (use adaptation).
+topic_qos_overrides: []
+
+monitor:
+  qos_depth: 30
+  stamp_quality: true
+  window_s: [1, 5]
+  # OL-②.3: many HSR topics (e.g. /tf, /hsrb/odom, IMU) have no expected_hz above,
+  # so the monitor learns a baseline for them. Faster than the template defaults
+  # because the sample replays are short — a baseline should appear within ~8 s
+  # (snapshots advance the learner ~1/s).
+  baseline_learning: true
+  baseline_warmup_s: 8.0
+  baseline_stable_cv: 0.2     # HSR rates are a touch noisier than a clean template
+  baseline_min_samples: 8
+  # OL-②.4: surface the monitor's own processing health (defaults are fine here).
+  self_load_metrics: true
+  callback_lag_warn_ms: 50.0
+  snapshot_age_warn_s: 2.0
+
+recording:
+  discovery_timeout_s: 10
+  start_delay_s: 1.0
+  # Arm by default (OL-①.1): spawn --start-paused, wait until the recorder has
+  # subscribed to the target topics, then resume — no first frames dropped.
+  start_paused: true
+  # Extra settle after subscriptions matched, before resume (camera ramp-up).
+  post_discovery_delay_s: 0.5
+  storage: mcap
+  compression: none
+
+# ---- fast_validation required topics (dora_runner, stage 3) ------------------
+validation:
+  required_topics:
+    - name: /hsrb/joint_states
+      type: sensor_msgs/msg/JointState
+    - name: /hsrb/head_rgbd_sensor/rgb/image_rect_color/compressed
+      type: sensor_msgs/msg/CompressedImage
+    - name: /hsrb/hand_camera/image_raw/compressed
+      type: sensor_msgs/msg/CompressedImage
+    - name: /hsrb/command_velocity
+      type: geometry_msgs/msg/Twist
+    - name: /hsrb/arm_trajectory_controller/command
+      type: trajectory_msgs/msg/JointTrajectory
+
+# Note: /hsrb/servo_states uses a custom type (tmc_control_msgs/msg/ServoState).
+# Recorder stores it as-is (raw bytes); topic_monitor does not decode it; only
+# dataset_convert (stage 3) would need the message definition.
