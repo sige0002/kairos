@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -20,7 +21,7 @@ import threading
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
 
 import yaml
 from kairos_common import (
@@ -103,6 +104,25 @@ def _mcap_storage_config_path(recorded_root: Path, run_id: str) -> Path:
     return recorded_root / f"{run_id}.mcap-storage.yaml"
 
 
+def _recorder_log_path(recorded_root: Path, run_id: str) -> Path:
+    """Path of the recorder's captured stdout+stderr log (sibling of the run dir).
+
+    Captured to a FILE (not a PIPE) so it can never stall the stop-time MCAP
+    flush, and so finalise can scan it for rosbag2's cache-overflow drop report.
+    A sibling because the run dir must not exist before ``ros2 bag record``
+    creates it; finalise archives the log into the run dir afterwards.
+    """
+    return recorded_root / f"{run_id}.recorder.log"
+
+
+# rosbag2's in-recorder MessageCache logs the messages it dropped on cache
+# overflow at shutdown (MessageCache::log_dropped, WARN to stderr):
+#   "Cache buffers lost messages per topic:\n\t<topic>: <n>\nTotal lost: <N>"
+# Scanning the captured log for the total turns a silent in-recorder drop into a
+# visible integrity signal (OpenLUTRA does not surface this at all).
+_TOTAL_LOST_RE = re.compile(r"Total lost:\s*(\d+)")
+
+
 # MCAP storage-plugin options for zstd compression. We use MCAP-native *chunk*
 # compression (via --storage-config-file) rather than rosbag2 file-level
 # compression (--compression-mode file): file-level produces a `<run>_0.mcap.zstd`
@@ -169,6 +189,17 @@ class RecorderSession:
         # only under ``self._lock`` (the readiness loop runs inside ``start``).
         self._arming: RecordArming | None = None
 
+        # Recording-integrity fields. The recorder's stdout+stderr go to a per-run
+        # log FILE (``_log_file``); at finalise we scan it for rosbag2's
+        # cache-overflow drop count and classify the run's integrity.
+        self._log_file: IO[bytes] | None = None
+        self._pending_log_path: Path | None = None
+        # Messages dropped by the in-recorder cache this run (rosbag2 "Total
+        # lost"); ``None`` until known / when the log is unavailable.
+        self._dropped_messages: int | None = None
+        # Coarse classification: "ok" | "dropped" | "failed" | "unknown".
+        self._integrity: str = "unknown"
+
     # -- preconditions ------------------------------------------------------
 
     def _recorded_root(self) -> Path:
@@ -226,6 +257,43 @@ class RecorderSession:
                 message="Insufficient free space to start recording.",
                 details={"free_bytes": free, "required_bytes": MIN_FREE_BYTES},
             )
+        self._check_cache_ram()
+
+    def _check_cache_ram(self) -> None:
+        """Raise 507 if the configured record cache needs more RAM than is free.
+
+        rosbag2 double-buffers the message cache, so worst-case memory is ~2x
+        ``--max-cache-size``. We require that plus the disk safety margin to be
+        available so a large cache can't OOM-kill the recorder mid-run. Skipped
+        when the cache is unset (rosbag2 default) or free RAM can't be read.
+        """
+        cache_mb = self._max_cache_size_mb()
+        if cache_mb <= 0:
+            return
+        need = 2 * cache_mb * 1024 * 1024 + MIN_FREE_BYTES
+        avail = self._available_ram_bytes()
+        if avail is not None and avail < need:
+            raise ApiError(
+                status_code=507,
+                code="insufficient_memory",
+                message="Not enough free RAM for the configured record cache.",
+                details={
+                    "required_bytes": need,
+                    "available_bytes": avail,
+                    "max_cache_size_mb": cache_mb,
+                },
+            )
+
+    @staticmethod
+    def _available_ram_bytes() -> int | None:
+        """Free RAM in bytes from ``/proc/meminfo`` MemAvailable (None if absent)."""
+        try:
+            for line in Path("/proc/meminfo").read_text().splitlines():
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) * 1024
+        except (OSError, ValueError, IndexError):
+            return None
+        return None
 
     # -- command construction ----------------------------------------------
 
@@ -264,6 +332,16 @@ class RecorderSession:
                 cmd += ["--max-bag-duration", str(request.split.max_duration_s)]
         if qos_path is not None:
             cmd += ["--qos-profile-overrides-path", str(qos_path)]
+        cache_mb = self._max_cache_size_mb()
+        if cache_mb > 0:
+            # Larger in-recorder cache absorbs more burst before rosbag2 drops on
+            # overflow (RecordingTuning.max_cache_size_mb). 0 keeps the rosbag2
+            # default (100 MiB). Worst-case RAM ~2x (double buffering); preflighted.
+            cmd += ["--max-cache-size", str(cache_mb * 1024 * 1024)]
+        # We resume via the rosbag2 ~/resume SERVICE (see _arm_and_resume), never
+        # the interactive SPACE key, so the keyboard handler is pure overhead and
+        # an unwanted TTY dependency. Disable it unconditionally.
+        cmd.append("--disable-keyboard-controls")
         if self._start_paused_enabled():
             # Start paused; we resume only after subscriptions are matched (see
             # _arm_and_resume), so the bag begins with no dropped first frames.
@@ -278,6 +356,12 @@ class RecorderSession:
         """Whether to spawn paused + run the subscription-readiness gate."""
         return bool(self._config and self._config.recording.start_paused)
 
+    def _max_cache_size_mb(self) -> int:
+        """Configured rosbag2 ``--max-cache-size`` in MiB (0 = rosbag2 default)."""
+        if self._config is None:
+            return 0
+        return self._config.recording.max_cache_size_mb
+
     def _spawn_process(self, cmd: list[str]) -> subprocess.Popen[bytes]:
         """Spawn *cmd* in a new process group (test seam).
 
@@ -285,12 +369,26 @@ class RecorderSession:
         whole ``ros2 bag record`` tree (it spawns children), which is how
         rosbag2 flushes and writes ``metadata.yaml`` cleanly.
 
-        stdout/stderr are INHERITED (go straight to the container log), NOT piped.
-        That is deliberate (OL-①.3): with no PIPE there is no OS pipe buffer for
-        the recorder's stop-time cleanup logs to fill, so they can never block the
-        final MCAP flush (the pipe-stall failure mode). The flush itself is then
-        verified at finalise by checking the MCAP data exists on disk.
+        stdout/stderr are redirected to a per-run log FILE (``_pending_log_path``,
+        a sibling of the run dir), NOT a PIPE. A regular file has no fixed-size
+        buffer, so — like inheriting to the container log — the recorder's
+        stop-time cleanup-log burst can never fill a buffer and block the final
+        MCAP flush (the pipe-stall failure mode, OL-①.3). Unlike inheriting, the
+        file is then scannable at finalise for rosbag2's cache-overflow drop
+        report ("Total lost: N"), turning a silent in-recorder drop into a visible
+        integrity signal. The file is opened here and closed only after the
+        process exits (in finalise/cleanup).
         """
+        if self._pending_log_path is not None:
+            self._pending_log_path.parent.mkdir(parents=True, exist_ok=True)
+            self._log_file = self._pending_log_path.open("wb")
+            return subprocess.Popen(
+                cmd,
+                start_new_session=True,
+                stdout=self._log_file,
+                stderr=subprocess.STDOUT,
+            )
+        # No log path set (e.g. a caller that opted out): fall back to inheriting.
         return subprocess.Popen(cmd, start_new_session=True)
 
     # -- lifecycle ----------------------------------------------------------
@@ -342,6 +440,12 @@ class RecorderSession:
             cmd = self._build_command(
                 run_id, topics, request, qos_path, storage_config_path
             )
+
+            # Fresh integrity state for this attempt; _spawn_process captures the
+            # recorder's stdout+stderr here so finalise can scan it for drops.
+            self._dropped_messages = None
+            self._integrity = "unknown"
+            self._pending_log_path = _recorder_log_path(self._recorded_root(), run_id)
 
             started_at = utc_now_iso8601()
             try:
@@ -736,6 +840,76 @@ class RecorderSession:
         """Remove the run's MCAP storage-config sibling file if it was written."""
         _mcap_storage_config_path(self._recorded_root(), run_id).unlink(missing_ok=True)
 
+    # -- recording integrity (cache-overflow drop detection) ----------------
+
+    def _close_log_file(self) -> None:
+        """Close the captured stdout+stderr log handle (call after exit only).
+
+        Like OpenLUTRA's pty master, the recorder's log fd must stay open for the
+        whole run and be closed only after the process exits; closing it early
+        could disrupt the still-writing recorder.
+        """
+        if self._log_file is not None:
+            try:
+                self._log_file.close()
+            except OSError:
+                pass
+            self._log_file = None
+
+    def _scan_dropped_messages(self, run_id: str | None) -> int | None:
+        """Messages the in-recorder cache dropped this run, from the captured log.
+
+        rosbag2 logs ``Total lost: N`` once at shutdown when its MessageCache
+        overflowed. Returns that N, ``0`` when the log exists with no such line
+        (no overflow), or ``None`` when the log is unavailable/unreadable (drop
+        count unknown — e.g. a stubbed spawn in unit tests).
+        """
+        if not run_id:
+            return None
+        path = _recorder_log_path(self._recorded_root(), run_id)
+        try:
+            text = path.read_text(errors="replace")
+        except OSError:
+            return None
+        # One report per run (at shutdown); take the last match to be safe.
+        matches = _TOTAL_LOST_RE.findall(text)
+        return int(matches[-1]) if matches else 0
+
+    def _classify_integrity(self) -> str:
+        """Classify recording integrity from state + cache-drop count.
+
+        ``failed`` if the run failed; otherwise ``unknown`` when the drop count
+        could not be determined, ``dropped`` when the cache lost >0 messages, and
+        ``ok`` when a readable log reported no overflow.
+        """
+        if self._state is RunState.failed:
+            return "failed"
+        if self._dropped_messages is None:
+            return "unknown"
+        return "dropped" if self._dropped_messages > 0 else "ok"
+
+    def _archive_log(self, run_id: str | None) -> None:
+        """Move the sibling recorder log into the run dir (best-effort).
+
+        Done at finalise (the run dir now exists) so the recorder's own log ships
+        beside the bag for audit. A missing sibling (stubbed spawn) is a no-op.
+        """
+        if not run_id:
+            return
+        src = _recorder_log_path(self._recorded_root(), run_id)
+        dst = run_dir(self._data_dir, run_id) / "recorder.log"
+        try:
+            if src.exists():
+                src.replace(dst)
+        except OSError:
+            logger.warning("could not archive recorder log for %s", run_id)
+
+    def _cleanup_log_file(self, run_id: str | None) -> None:
+        """Close the log handle and drop the sibling log (failed-start paths)."""
+        self._close_log_file()
+        if run_id:
+            _recorder_log_path(self._recorded_root(), run_id).unlink(missing_ok=True)
+
     def stop(self) -> RecordStatusResponse:
         """Stop the active session (idempotent).
 
@@ -820,13 +994,26 @@ class RecorderSession:
 
         self._process = None
         self._auto_stop_reason = None
+        # Recording integrity: the process has exited, so close the captured log,
+        # scan it for rosbag2's in-recorder cache-overflow drop count, and classify
+        # the run (a clean run that still dropped messages is completed but
+        # integrity="dropped" — the bag is missing data the cache could not hold).
+        self._close_log_file()
+        self._dropped_messages = self._scan_dropped_messages(run_id)
+        self._integrity = self._classify_integrity()
         self._write_manifest(ended_at=ended_at, error=error)
         if run_id:
             self._cleanup_qos_file(run_id)
             self._cleanup_storage_config(run_id)
+            self._archive_log(run_id)
         logger.info(
             "recording finalised",
-            extra={"run_id": run_id, "component": "recorder"},
+            extra={
+                "run_id": run_id,
+                "component": "recorder",
+                "integrity": self._integrity,
+                "dropped_messages": self._dropped_messages,
+            },
         )
 
     def _fail(
@@ -862,6 +1049,7 @@ class RecorderSession:
             logger.exception("failed to write failed-start record")
         self._cleanup_qos_file(run_id)
         self._cleanup_storage_config(run_id)
+        self._cleanup_log_file(run_id)
 
     # -- metadata sync ------------------------------------------------------
 
@@ -947,6 +1135,8 @@ class RecorderSession:
             # --start-paused gate did not run). Copied so a later session's
             # in-place updates cannot mutate an already-returned status.
             arming=self._arming.model_copy(deep=True) if self._arming else None,
+            dropped_messages=self._dropped_messages,
+            integrity=self._integrity,
         )
 
     def _write_manifest(
@@ -967,6 +1157,8 @@ class RecorderSession:
             message_count=self._message_count(meta) if meta is not None else None,
             bytes=self._recorded_bytes(self._run_id),
             error=error,
+            dropped_messages=self._dropped_messages,
+            integrity=self._integrity,
         )
         try:
             write_manifest(self._data_dir, manifest)

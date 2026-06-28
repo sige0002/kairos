@@ -146,6 +146,15 @@ class RecordingTuning(_StrictModel):
     # real, not warm-up. Distinct from start_delay_s, which sleeps BEFORE spawn
     # (so it cannot see whether subscriptions actually matched). 0 disables.
     post_discovery_delay_s: Annotated[float, Field(ge=0)] = 0.0
+    # rosbag2 in-recorder message cache (--max-cache-size, in MiB). The recorder
+    # buffers incoming messages in RAM and a writer thread drains them to disk; if
+    # the cache fills (burst / slow storage / constrained CPU) rosbag2 DROPS the
+    # overflow and logs "Total lost: N". A bigger cache absorbs more burst before
+    # any drop. 0 omits the flag → rosbag2's own default (100 MiB). Worst-case RAM
+    # is ~2x this (double buffering), so the recorder preflights free RAM before
+    # honouring large values (507 insufficient_memory otherwise). The shipped
+    # real-robot profiles set 512; the LIBRARY default stays 0 (rosbag2 default).
+    max_cache_size_mb: Annotated[int, Field(ge=0, le=4096)] = 0
     storage: Storage = Storage.mcap
     compression: Compression = Compression.none
 

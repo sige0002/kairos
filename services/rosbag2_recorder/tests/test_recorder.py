@@ -825,3 +825,132 @@ def test_start_delay_honoured_from_config(
     slept.clear()
     RecorderSession(settings, None)._apply_start_delay()
     assert slept == []
+
+
+# -- recording integrity: cache tuning + cache-overflow drop detection -------
+
+
+def _cfg_cache(mb: int) -> Any:
+    from kairos_common import RecordingConfig, RecordingTuning
+
+    return RecordingConfig(
+        robot_name="t", recording=RecordingTuning(max_cache_size_mb=mb)
+    )
+
+
+def test_build_command_adds_max_cache_size_and_disable_keyboard(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    """--max-cache-size (bytes) when configured; keyboard controls always off."""
+    session = _make_session(
+        settings, fake_process, write_metadata, config=_cfg_cache(512)
+    )
+    cmd = session._build_command("run_c", ["/a"], _start_req("run_c"), None, None)
+    assert "--disable-keyboard-controls" in cmd
+    assert cmd[cmd.index("--max-cache-size") + 1] == str(512 * 1024 * 1024)
+
+
+def test_build_command_omits_cache_when_zero(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    """max_cache_size_mb=0 (and no config) omits the flag -> rosbag2 default."""
+    s0 = _make_session(settings, fake_process, write_metadata, config=_cfg_cache(0))
+    cmd0 = s0._build_command("r", ["/a"], _start_req("r"), None, None)
+    assert "--max-cache-size" not in cmd0
+    assert "--disable-keyboard-controls" in cmd0  # always, even with no cache
+
+    s1 = _make_session(settings, fake_process, write_metadata)  # no config at all
+    cmd1 = s1._build_command("r", ["/a"], _start_req("r"), None, None)
+    assert "--max-cache-size" not in cmd1
+    assert "--disable-keyboard-controls" in cmd1
+
+
+def test_scan_dropped_messages_parses_total_lost(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    """_scan_dropped_messages reads rosbag2's 'Total lost: N' from the run log."""
+    from rosbag2_recorder.recorder import _recorder_log_path
+
+    session = _make_session(settings, fake_process, write_metadata)
+    root = session._recorded_root()
+    root.mkdir(parents=True, exist_ok=True)
+    log = _recorder_log_path(root, "run_d")
+    log.write_text(
+        "[INFO] Recording...\n[WARN] Cache buffers lost messages per topic: \n"
+        "\t/exp/seq: 7\nTotal lost: 7\n"
+    )
+    assert session._scan_dropped_messages("run_d") == 7  # overflow reported
+    log.write_text("[INFO] Recording...\n[INFO] Recording stopped\n")
+    assert session._scan_dropped_messages("run_d") == 0  # log present, no overflow
+    assert session._scan_dropped_messages("run_missing") is None  # no log -> unknown
+
+
+def test_classify_integrity(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    session = _make_session(settings, fake_process, write_metadata)
+    session._state = RunState.completed
+    session._dropped_messages = 0
+    assert session._classify_integrity() == "ok"
+    session._dropped_messages = 5
+    assert session._classify_integrity() == "dropped"
+    session._dropped_messages = None
+    assert session._classify_integrity() == "unknown"
+    session._state = RunState.failed
+    session._dropped_messages = 0
+    assert session._classify_integrity() == "failed"
+
+
+def test_integrity_dropped_surfaced_in_status_and_manifest(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    """A completed run whose log reports cache drops -> integrity 'dropped'."""
+    from rosbag2_recorder.recorder import _recorder_log_path
+
+    session = _make_session(settings, fake_process, write_metadata)
+    session.start(_start_req("run_x"))
+    # The fake spawn does not write a log; simulate rosbag2 reporting an overflow.
+    _recorder_log_path(session._recorded_root(), "run_x").write_text(
+        "Cache buffers lost messages per topic: \n\t/a: 12\nTotal lost: 12\n"
+    )
+    stopped = session.stop()
+    assert stopped.state is RunState.completed  # data on disk, clean exit
+    assert stopped.dropped_messages == 12
+    assert stopped.integrity == "dropped"  # ...but incomplete
+    final = read_manifest(settings.data_dir, "run_x")
+    assert final.dropped_messages == 12
+    assert final.integrity == "dropped"
+    # The captured log is archived beside the bag for audit.
+    assert (run_dir(settings.data_dir, "run_x") / "recorder.log").exists()
+
+
+def test_cache_ram_preflight_rejects_when_insufficient(
+    settings: Settings,
+    fake_process: type,
+    write_metadata: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A large cache with too little free RAM -> 507 insufficient_memory at start."""
+    session = _make_session(
+        settings, fake_process, write_metadata, config=_cfg_cache(2048)
+    )
+    monkeypatch.setattr(session, "_available_ram_bytes", lambda: 100 * 1024 * 1024)
+    with pytest.raises(ApiError) as ei:
+        session.start(_start_req("run_oom"))
+    assert ei.value.status_code == 507
+    assert ei.value.code == "insufficient_memory"
+
+
+def test_cache_ram_preflight_passes_when_ram_unknown(
+    settings: Settings,
+    fake_process: type,
+    write_metadata: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If free RAM can't be read, don't block the start (best-effort preflight)."""
+    session = _make_session(
+        settings, fake_process, write_metadata, config=_cfg_cache(2048)
+    )
+    monkeypatch.setattr(session, "_available_ram_bytes", lambda: None)
+    started = session.start(_start_req("run_ok"))
+    assert started.state is RunState.recording

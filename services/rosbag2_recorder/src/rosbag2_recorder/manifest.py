@@ -41,6 +41,11 @@ class Manifest(BaseModel):
     message_count: int | None = None
     bytes: int | None = None
     error: str | None = None
+    # Recording integrity from rosbag2's in-recorder cache: messages dropped on
+    # cache overflow ("Total lost"; None = unknown) + a coarse classification
+    # ("ok" | "dropped" | "failed" | "unknown"). Surfaces silent in-recorder loss.
+    dropped_messages: int | None = None
+    integrity: str = "unknown"
 
 
 def validate_run_id(run_id: str) -> str:

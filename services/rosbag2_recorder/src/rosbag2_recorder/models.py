@@ -130,3 +130,9 @@ class RecordStatusResponse(BaseModel):
     # Present once a ``--start-paused`` arming gate has run for this session
     # (``null`` otherwise). The final snapshot persists while ``recording``.
     arming: RecordArming | None = None
+    # Recording integrity from rosbag2's in-recorder cache (post-finalise). The
+    # cache drops on overflow and reports "Total lost: N"; we surface that count
+    # (``null`` = not yet known / unavailable) and a coarse classification:
+    # "ok" (no overflow) | "dropped" (cache lost messages) | "failed" | "unknown".
+    dropped_messages: int | None = None
+    integrity: str = "unknown"

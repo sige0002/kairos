@@ -52,7 +52,7 @@ ROS 2 のトピックを **MCAP に正式記録する**コンテナ。公式の�
   ```
   → `201 { run_id, state, started_at }`。`topics` の型は `string[] | "all"`。
 - `POST /record/stop` — **冪等**。記録中→停止して `200`、idle→`200`（現状態を返す）。
-- `GET /record/status` — `{ state, run_id?, started_at?, message_count, bytes, topics: [] }`
+- `GET /record/status` — `{ state, run_id?, started_at?, message_count, bytes, topics: [], dropped_messages?, integrity }`（`dropped_messages` / `integrity` は[取りこぼし検出](#取りこぼし検出記録キャッシュ整合性)を参照）
 - `GET /record/metadata` — 直近 run の metadata（rosbag2 標準 + kairos manifest）
 - `GET /healthz` / `GET /readyz`
 - 異常: `/data` 書込不可・空き容量不足は記録を拒否（`507` 相当）。多重 start は `409`。
@@ -63,12 +63,23 @@ ROS 2 のトピックを **MCAP に正式記録する**コンテナ。公式の�
 
 `recording.start_paused: true`（既定 `false`）で対策を有効化する: recorder を **`--start-paused`** で起動 → 対象トピックの購読がグラフ上で確立するまで待機（最大 `subscription_ready_timeout_s`）→ recorder の `~/resume` を呼んでから「recording」を返す。これで **resume 以降は全購読 live**。**フェイルセーフ**: resume を確認できなければ start を可視的に失敗させる（`507 record_arm_failed`）。一時停止のまま無音録画にはしない。readiness 判定と resume は rclpy + rosbag2 サービスを使い ROS イメージでのみ動く（CI 外）ため**検証後にデプロイ単位で有効化**する想定。t0 必須の単発/latched トピックは publisher 側を transient_local にするのが補完策。
 
+resume は **rosbag2 の `~/resume` サービス**で行うため、対話 SPACE キー（≒擬似 TTY/pty が必要）に依存しない。recorder には常時 `--disable-keyboard-controls` を渡し、キーボード制御を無効化する（不要なオーバーヘッドと TTY 依存の排除）。
+
+## 取りこぼし検出（記録キャッシュ整合性）
+
+`ros2 bag record` は受信メッセージを **メモリ内キャッシュ**（`--max-cache-size`、既定 100 MiB）に貯め、書き込みスレッドがディスクへ吐き出す。バースト・低速ストレージ・CPU 制約などで**書き込みが追いつかないとキャッシュが溢れ、超過分は黙って捨てられる**（rosbag2 が終了時に `Total lost: N` を stderr に出す）。これは記録中の主要なデータ欠落経路。
+
+- **キャッシュ調整**: `recording.max_cache_size_mb`（MiB）で `--max-cache-size` を上書きする。`0` は flag を付けず rosbag2 既定（100 MiB）。大きいほどバースト耐性が上がる。同梱の実機プロファイルは **512** を設定。倍々バッファのため最悪 RAM は約 `2×` で、起動前に空き RAM をプリフライト（不足時 `507 insufficient_memory`）。
+- **取りこぼし検出**: recorder の stdout/stderr を**ファイル**（`<run_id>.recorder.log`、run ディレクトリの兄弟）に取り、finalise 時に `Total lost: N` を走査する。**パイプではなくファイル**なので固定長バッファによる stop 時フラッシュのストール（pipe-stall）を起こさず、かつログを後から走査できる（inherit-to-container-log では不可能）。検出結果は `dropped_messages`（落とした件数。`null` は不明）と `integrity`（`ok` / `dropped` / `failed` / `unknown`）として `manifest.json` と `GET /record/status` に出す。クリーンに完了しても溢れがあれば `completed` かつ `integrity=dropped`（=データ欠損あり）と明示する。
+- ログは finalise 後に run ディレクトリへ移動（`recorded/<run_id>/recorder.log`）し、bag と一緒に監査できる。
+
 ## 出力 / 保存物
 
 - `/data/recorded/<run_id>/<run_id>_*.mcap`（split 時は連番）
 - `metadata.yaml`（rosbag2 標準）
-- `manifest.json`（kairos 独自）: run_id / state / 選択 topics（型・QoS）/ started_at・ended_at（UTC）/ compression / split / error?。
+- `manifest.json`（kairos 独自）: run_id / state / 選択 topics（型・QoS）/ started_at・ended_at（UTC）/ compression / split / error? / `dropped_messages` / `integrity`。
   - **runs の正は `api_orchestrator` の SQLite**、manifest は監査用。
+- `recorder.log`（finalise 後に run ディレクトリへ移動）: recorder プロセスの stdout/stderr。`Total lost`（キャッシュ溢れ）等の解析元。
 - `session.json`（MCAP と同じディレクトリ）: operator / task（省略時は `unknown_operator` / `unknown_task` を既定）＋件数等。`dora_runner` の dataset export が保存先 `data/<operator>/<task>` を決めるのに使う。
 - run 状態: `created` | `recording` | `stopping` | `completed` | `failed` | `interrupted`。
 
