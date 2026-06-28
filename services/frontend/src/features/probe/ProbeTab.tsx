@@ -28,6 +28,11 @@ const PALETTE = [
   '#2563eb',
 ];
 const HZ_OPTIONS = [1, 5, 10, 30];
+const WINDOWS: { id: string; label: string; sec: number }[] = [
+  { id: '10s', label: '10s', sec: 10 },
+  { id: '30s', label: '30s', sec: 30 },
+  { id: '1m', label: '1m', sec: 60 },
+];
 const TOPIC_WARN = 6;
 
 const STATUS_TONE: Record<ProbeStreamStatus, Tone> = {
@@ -61,6 +66,8 @@ export function ProbeTab() {
   const [series, setSeries] = useState<ProbeSeries[]>([]);
   const [live, setLive] = useState(true);
   const [hz, setHz] = useState(10);
+  const [windowId, setWindowId] = useState('30s');
+  const windowSec = WINDOWS.find((w) => w.id === windowId)?.sec ?? 30;
   const idRef = useRef(0);
 
   const addSeries = () => {
@@ -74,7 +81,7 @@ export function ProbeTab() {
   const removeSeries = (id: string) =>
     setSeries((prev) => prev.filter((s) => s.id !== id));
 
-  const { data, status } = useProbeSeries(series, live, hz);
+  const { data, status } = useProbeSeries(series, live, hz, windowSec);
 
   const uplotSeries: UplotSeriesConf[] = series.map((s, i) => ({
     label: seriesLabel(s),
@@ -161,6 +168,29 @@ export function ProbeTab() {
           </button>
 
           <div className="ml-auto flex items-end gap-3">
+            <div className="flex flex-col gap-1">
+              <span className="text-[11px] font-semibold uppercase tracking-[0.04em] text-gray-400">
+                Window
+              </span>
+              <div className="flex gap-[3px] rounded-control border border-gray-200 bg-gray-100 p-1">
+                {WINDOWS.map((w) => (
+                  <button
+                    key={w.id}
+                    type="button"
+                    aria-pressed={w.id === windowId}
+                    onClick={() => setWindowId(w.id)}
+                    className={cn(
+                      'rounded-chip px-2.5 py-0.5 text-[11px] font-medium transition-colors',
+                      w.id === windowId
+                        ? 'bg-white text-teal-700 shadow-sm'
+                        : 'text-gray-500 hover:text-gray-700',
+                    )}
+                  >
+                    {w.label}
+                  </button>
+                ))}
+              </div>
+            </div>
             <label className="flex flex-col gap-1">
               <span className="text-[11px] font-semibold uppercase tracking-[0.04em] text-gray-400">
                 Rate
@@ -195,29 +225,44 @@ export function ProbeTab() {
         </div>
 
         {series.length > 0 && (
-          <div className="flex flex-wrap gap-2 px-[18px] pb-4">
-            {series.map((s, i) => (
-              <span
-                key={s.id}
-                className="inline-flex items-center gap-1.5 rounded-chip border border-gray-200 bg-white px-2 py-1 text-[11.5px]"
-              >
-                <span
-                  className="inline-block h-[3px] w-3 rounded-sm"
-                  style={{ background: PALETTE[i % PALETTE.length] }}
-                />
-                <span className="font-mono text-gray-700" title={`${s.topic} · ${s.field}`}>
-                  {seriesLabel(s)}
-                </span>
-                <button
-                  type="button"
-                  aria-label={`remove ${seriesLabel(s)}`}
-                  onClick={() => removeSeries(s.id)}
-                  className="px-0.5 text-gray-400 hover:text-red-600"
-                >
-                  ×
-                </button>
+          <div className="px-[18px] pb-4">
+            <div className="mb-1.5 flex items-center gap-2.5">
+              <span className="text-[11px] font-semibold uppercase tracking-[0.04em] text-gray-400">
+                Series ({series.length})
               </span>
-            ))}
+              <button
+                type="button"
+                onClick={() => setSeries([])}
+                className="text-[11px] font-medium text-gray-400 hover:text-red-600"
+              >
+                Clear all
+              </button>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {series.map((s, i) => (
+                <span
+                  key={s.id}
+                  className="inline-flex items-center gap-2 rounded-control border border-gray-200 bg-white py-1 pl-2 pr-1 text-[11.5px]"
+                >
+                  <span
+                    className="inline-block h-[3px] w-3 rounded-sm"
+                    style={{ background: PALETTE[i % PALETTE.length] }}
+                  />
+                  <span className="font-mono text-gray-700" title={`${s.topic} · ${s.field}`}>
+                    {seriesLabel(s)}
+                  </span>
+                  <button
+                    type="button"
+                    aria-label={`remove ${seriesLabel(s)}`}
+                    title="Remove series"
+                    onClick={() => removeSeries(s.id)}
+                    className="flex h-5 w-5 items-center justify-center rounded text-[14px] leading-none text-gray-400 hover:bg-red-50 hover:text-red-600"
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
           </div>
         )}
 

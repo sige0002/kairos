@@ -102,3 +102,6 @@ dora daemon・AI node・job/template の永続化は**未実装**で、各パイ
 
 validation チェックの追加方法・単体試験・ローカル CLI（`python -m dora_runner.cli`）でのデバッグ手順は、
 開発者ガイド [docs/dora/README.ja.md](../../dora/README.ja.md) を参照。
+
+**dora dataflow 化 & プラグイン（git submodule）システムの実装方針**は [dora_plugins.md](dora_plugins.md) に確定（全 pipeline の
+dataflow 化・`plugins/<name>` の manifest scan 自動登録・submodule ワークフロー・段階移行プラン）。

@@ -14,7 +14,8 @@ import type {
   ProbeTopic,
 } from './types';
 
-const MAX_POINTS = 600; // ring-buffer cap (~1m @ 10 Hz)
+// Hard memory bound regardless of the time window (covers 1m @ 30 Hz ≈ 1800 pts).
+const SAFETY_CAP = 3600;
 
 /** Subscribable topics (refetched periodically so a newly-published topic shows). */
 export function useProbeTopics() {
@@ -52,13 +53,16 @@ export function useProbeSeries(
   series: ProbeSeries[],
   live: boolean,
   hz = 10,
-  cap = MAX_POINTS,
+  windowSec = 30,
 ): ProbeSeriesData {
   const [data, setData] = useState<(number | null)[][]>([[]]);
   const [status, setStatus] = useState<ProbeStreamStatus>('idle');
   const xsRef = useRef<number[]>([]);
   const ysRef = useRef<(number | null)[][]>([]);
   const lastRef = useRef<Map<string, number | null>>(new Map());
+  // Window via a ref so changing it just affects trimming — no stream re-open.
+  const windowRef = useRef(windowSec);
+  windowRef.current = windowSec;
 
   const seriesKey = series.map((s) => `${s.id}:${s.topic}::${s.field}`).join('|');
 
@@ -109,12 +113,18 @@ export function useProbeSeries(
         series.forEach((s, i) => {
           (ysRef.current[i] ??= []).push(lastRef.current.get(s.id) ?? null);
         });
-        if (xsRef.current.length > cap) {
-          const drop = xsRef.current.length - cap;
-          xsRef.current.splice(0, drop);
+        // Drop points older than the selected time window (don't keep forever),
+        // with a hard safety cap so memory stays finite at very high Hz.
+        const xs = xsRef.current;
+        const cutoff = now - windowRef.current;
+        let drop = 0;
+        while (drop < xs.length && xs[drop]! < cutoff) drop++;
+        if (xs.length - drop > SAFETY_CAP) drop = xs.length - SAFETY_CAP;
+        if (drop > 0) {
+          xs.splice(0, drop);
           ysRef.current.forEach((y) => y.splice(0, drop));
         }
-        setData([[...xsRef.current], ...ysRef.current.map((y) => [...y])]);
+        setData([[...xs], ...ysRef.current.map((y) => [...y])]);
       };
       sources.push(es);
     });
@@ -123,7 +133,7 @@ export function useProbeSeries(
       sources.forEach((es) => es.close());
       setStatus('closed');
     };
-  }, [seriesKey, live, hz, cap]);
+  }, [seriesKey, live, hz]);
 
   return { data, status };
 }

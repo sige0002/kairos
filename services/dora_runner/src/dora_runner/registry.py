@@ -246,12 +246,20 @@ _PLACEHOLDERS = [
 
 def build_default_registry(
     loss_config: LossReportConfig | None = None,
+    *,
+    discover: bool = True,
+    plugins_dir: Path | None = None,
 ) -> PipelineRegistry:
     """Construct the registry with the four implemented pipelines + placeholders.
 
     *loss_config* supplies loss_report's config-driven defaults (OL-④.3); it
     defaults to loading ``config/<robot>/validators/loss_report.yaml`` (env
     ``LOSS_REPORT_CONFIG``), falling back to code defaults when absent.
+
+    When *discover* is true, drop-in plugins under *plugins_dir* (default
+    ``KAIROS_PLUGINS_DIR`` / the in-tree ``plugins/``) are scanned and registered
+    too (see ``plugin_loader.discover_plugins``). A broken plugin is skipped, not
+    fatal. Pass ``discover=False`` for hermetic unit tests of the bundled set.
     """
     config = loss_config or load_loss_report_config()
     registry = PipelineRegistry()
@@ -304,6 +312,11 @@ def build_default_registry(
                 id=pid, name=name, description=description, params_schema={}
             )
         )
+    if discover:
+        # Local import avoids a cycle: plugin_loader imports names from this module.
+        from dora_runner.plugin_loader import default_plugins_dir, discover_plugins
+
+        discover_plugins(registry, plugins_dir or default_plugins_dir())
     return registry
 
 

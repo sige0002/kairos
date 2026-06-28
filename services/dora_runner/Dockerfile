@@ -20,6 +20,14 @@ ENV VENV=/opt/venv
 ENV PATH="$VENV/bin:$PATH"
 COPY --from=builder /opt/venv /opt/venv
 
+# Drop-in plugins are loaded by path (not pip-installed into the package), so bake
+# the directory in and point discovery at it. Adding a plugin = adding a folder
+# here + rebuild (see plugins/README.md). The source-relative default in
+# plugin_loader.default_plugins_dir() only resolves in editable/local runs, hence
+# the explicit env in the image.
+COPY services/dora_runner/plugins /app/plugins
+ENV KAIROS_PLUGINS_DIR=/app/plugins
+
 RUN useradd --create-home --uid 10001 appuser
 USER appuser
 

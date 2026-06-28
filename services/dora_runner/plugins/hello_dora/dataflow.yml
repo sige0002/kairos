@@ -1,0 +1,30 @@
+# dora dataflow: mcap_loader -> summarize -> result_writer.
+#
+# Run it under the dora daemon (when the `dora` CLI is installed):
+#     dora up                       # start coordinator + daemon (once)
+#     KAIROS_RUN_ID=<run> KAIROS_DATA_DIR=/data \
+#     KAIROS_REPORT_DIR=/data/report/hello_dora/<run> \
+#     dora start dataflow.yml
+#
+# kairos runs this same graph in-process when the dora CLI is absent (a tiny
+# interpreter in plugin_loader.py topologically orders the nodes and calls each
+# node module's process()), so the example works on a CPU-only host with only the
+# dora Python bindings.
+nodes:
+  - id: mcap_loader
+    path: nodes/loader.py
+    # A source node needs a trigger; a 100 ms timer ticks it once to emit `loaded`.
+    inputs:
+      tick: dora/timer/millis/100
+    outputs: [loaded]
+
+  - id: summarize
+    path: nodes/summarize.py
+    inputs:
+      loaded: mcap_loader/loaded
+    outputs: [summary]
+
+  - id: result_writer
+    path: nodes/writer.py
+    inputs:
+      summary: summarize/summary

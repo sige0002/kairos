@@ -1,0 +1,28 @@
+# Example kairos plugin: a minimal dora dataflow that summarizes a recorded run.
+# Discovered at startup by dora_runner.plugin_loader.discover_plugins() and shown
+# in GET /pipelines (the frontend renders its form from params_schema).
+apiVersion: kairos.plugin/v1
+id: hello_dora
+name: Hello dora (topic counts)
+description: >-
+  Minimal example dora dataflow. Counts messages per topic in a recorded MCAP run
+  (decode-free) and writes a summary.json. Intended as a learning template for new
+  plugins.
+executor: dora
+version: 0.1.0
+required_inputs: [run_id]
+params_schema:
+  type: object
+  properties:
+    min_messages:
+      type: integer
+      title: Minimum messages
+      description: Result is "pass" only when the run has at least this many messages.
+      default: 1
+      minimum: 0
+outputs:
+  - "report/hello_dora/<run_id>/summary.json"
+entrypoint:
+  dataflow: dataflow.yml
+requires:
+  gpu: false
