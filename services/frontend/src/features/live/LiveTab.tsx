@@ -181,6 +181,47 @@ function ArmingNote({ arming }: { arming: RecordArming }) {
   );
 }
 
+// Recording-integrity badge (OL-①): shown after a session ends when the
+// recorder either lost messages to its in-recorder cache (`dropped`, the bag is
+// missing data even though the run "completed") or failed verification
+// (`failed`). A clean `ok`/`unknown` run renders nothing — this is a problem
+// banner, not a status line. OpenLUTRA surfaces no drop signal at all.
+function IntegrityNote({ status }: { status: RecordStatus }) {
+  const integrity = status.integrity;
+  if (integrity !== 'dropped' && integrity !== 'failed') return null;
+  const dropped = status.dropped_messages ?? null;
+  const failed = integrity === 'failed';
+  return (
+    <div className="w-full" data-testid="integrity-note">
+      <div
+        className={cn(
+          'flex flex-wrap items-center gap-x-3 gap-y-1 rounded-control border px-3 py-2 text-[12px]',
+          failed
+            ? 'border-red-200 bg-red-50/70 text-red-800'
+            : 'border-amber-200 bg-amber-50/70 text-amber-800',
+        )}
+      >
+        <span className="text-[10.5px] font-semibold uppercase tracking-[0.09em]">
+          {failed ? 'Recording failed' : 'Data dropped'}
+        </span>
+        {failed ? (
+          <span className="font-mono text-[11px]">bag unreadable / not verified</span>
+        ) : (
+          <>
+            <span className="font-mono font-semibold">
+              {dropped !== null ? dropped.toLocaleString() : '?'} messages lost
+            </span>
+            <span className="opacity-40">·</span>
+            <span className="font-mono text-[11px] opacity-80">
+              recorder cache overflowed — raise max_cache_size_mb
+            </span>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function RecordHero({ selection }: { selection: RecordSelection }) {
   const queryClient = useQueryClient();
 
@@ -371,6 +412,8 @@ function RecordHero({ selection }: { selection: RecordSelection }) {
       )}
 
       {isActive && status?.arming && <ArmingNote arming={status.arming} />}
+
+      {!isActive && status && <IntegrityNote status={status} />}
 
       {(startMutation.isError || stopMutation.isError) && (
         <div className="w-full">

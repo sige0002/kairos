@@ -56,6 +56,13 @@ export interface RecordArming {
   resume_at?: string | null;
 }
 
+/**
+ * Recording integrity (OL-①): a clean run that still lost messages to the
+ * in-recorder cache is `completed` + integrity `dropped`. `dropped_messages` is
+ * rosbag2's self-reported "Total lost" (null until known / log unavailable).
+ */
+export type RecordIntegrity = 'ok' | 'dropped' | 'failed' | 'unknown';
+
 export interface RecordStatus {
   run_id: string | null;
   state: RunState | 'idle';
@@ -63,6 +70,8 @@ export interface RecordStatus {
   bytes?: number;
   /** Present only while arming (state stays `recording` once resumed). */
   arming?: RecordArming | null;
+  integrity?: RecordIntegrity;
+  dropped_messages?: number | null;
 }
 
 // ---- Runs ---------------------------------------------------------------

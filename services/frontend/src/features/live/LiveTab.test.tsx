@@ -125,6 +125,42 @@ test('no arming strip when the recorder reports no arming', async () => {
   expect(screen.queryByTestId('arming-note')).not.toBeInTheDocument();
 });
 
+// OL-①: a finished run that lost messages to the in-recorder cache surfaces an
+// integrity badge with the dropped count (the bag is missing data even though
+// the run "completed"). OpenLUTRA reports no such signal.
+test('integrity badge shows dropped count after a run with cache drops', async () => {
+  mockStatus({
+    run_id: 'run_1',
+    state: 'completed',
+    message_count: 1800,
+    bytes: 2048,
+    integrity: 'dropped',
+    dropped_messages: 17,
+  });
+  renderWithClient(<LiveTab config={CONFIG} />);
+
+  const note = await screen.findByTestId('integrity-note');
+  expect(note).toHaveTextContent('Data dropped');
+  expect(note).toHaveTextContent('17 messages lost');
+});
+
+// A clean finished run (integrity ok) renders no integrity badge — it is a
+// problem banner, not a status line.
+test('no integrity badge for a clean (integrity=ok) run', async () => {
+  mockStatus({
+    run_id: 'run_1',
+    state: 'completed',
+    message_count: 1800,
+    bytes: 2048,
+    integrity: 'ok',
+    dropped_messages: 0,
+  });
+  renderWithClient(<LiveTab config={CONFIG} />);
+
+  await waitFor(() => expect(screen.getByText('Idle')).toBeInTheDocument());
+  expect(screen.queryByTestId('integrity-note')).not.toBeInTheDocument();
+});
+
 // Regression: typing operator/task then navigating away (Live tab unmounts)
 // and back must NOT reset them — they live in the persistent UI store.
 test('operator/task survive a remount (tab switch away and back)', async () => {
