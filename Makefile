@@ -18,7 +18,7 @@
 # Committed robots live under config/<robot>/; your own (gitignored) ones under
 # config/local/<robot>/ — resolved automatically. Override per robot:
 #   make up ROBOT=airoa_hsr        # bundled HSR sample (default)
-#   make up ROBOT=realman          # config/local/realman/ (gitignored)
+#   make up ROBOT=<robot>          # config/local/<robot>/ (gitignored)
 ROBOT ?= airoa_hsr
 export ROBOT
 # Resolve committed (config/<robot>) vs local (config/local/<robot>) -> container path.
@@ -59,7 +59,7 @@ export ROS_DISTRO
 
 # Custom-message overlay dir — env-driven & PER-ROBOT. Set it in .env so a robot's
 # overlay is picked automatically, e.g.:
-#   MSGS_OVERLAY_DIR=./deploy/msgs_overlay/realman      # in .env
+#   MSGS_OVERLAY_DIR=./deploy/msgs_overlay/<robot>      # in .env
 # `make up` reads it via compose; `make msgs-build` builds that same dir. A
 # command-line MSGS_OVERLAY_DIR=... overrides .env. MUST start with ./ (compose
 # treats a bind source without ./ as a named volume). Default (unset): the shared

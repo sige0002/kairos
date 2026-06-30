@@ -2,7 +2,7 @@
 
 The config tree is robot-first: ``config/<robot>/<aspect>/<option>.yaml`` for the
 committed robots (``airoa_hsr`` / ``template``) and ``config/local/<robot>/...``
-for the gitignored ones (e.g. ``realman``). The four aspects are ``recording`` /
+for the gitignored ones (e.g. ``<robot>``). The four aspects are ``recording`` /
 ``stream`` / ``validation`` / ``validators``.
 
 The Config tab flow is **robot -> aspect -> option**: pick the active robot, then

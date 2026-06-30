@@ -13,13 +13,13 @@ const CONFIG = {
 } as RuntimeConfig;
 
 // Robot-first options: active robot airoa_hsr, a committed `template`, a local
-// `realman`; per-aspect options for the active robot.
+// `myrobot`; per-aspect options for the active robot.
 const OPTIONS = {
   active_robot: 'airoa_hsr',
   robots: [
     { id: 'airoa_hsr', local: false },
     { id: 'template', local: false },
-    { id: 'realman', local: true },
+    { id: 'myrobot', local: true },
   ],
   aspects: {
     recording: {
@@ -102,7 +102,7 @@ test('renders robots and marks the active one', async () => {
   const active = await screen.findByLabelText('robot airoa_hsr');
   expect(active).toHaveAttribute('aria-pressed', 'true');
   // The local robot is labelled.
-  expect(screen.getByLabelText('robot realman')).toBeInTheDocument();
+  expect(screen.getByLabelText('robot myrobot')).toBeInTheDocument();
 });
 
 test('selecting a robot posts {category: robot}', async () => {
