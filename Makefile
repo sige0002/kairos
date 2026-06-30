@@ -147,15 +147,34 @@ ps: ## show container status
 COMPOSE_ROBOT     := docker compose $(if $(wildcard .env),--env-file .env,) -f compose.robot.yaml
 COMPOSE_RECORDING := docker compose $(if $(wildcard .env),--env-file .env,) -f compose.recording.yaml
 
-.PHONY: robot-up robot-down robot-logs recording-up recording-down recording-logs import-runs
+.PHONY: robot-up robot-down robot-build robot-rebuild robot-restart robot-logs robot-ps robot-config-reload \
+        recording-up recording-down recording-build recording-rebuild recording-restart recording-logs \
+        recording-ps recording-config-reload import-runs
+# All robot-* / recording-* targets take positional service names like the
+# single-host ones (e.g. `make robot-rebuild recorder`, `make robot-logs monitor`).
 robot-up: ## [ON THE ROBOT] build + start the robot-edge services (recorder/monitor/streamer/probe)
 	$(COMPOSE_ROBOT) up -d --build $(SVC)
 
 robot-down: ## [ON THE ROBOT] stop + remove the robot-edge services
 	$(COMPOSE_ROBOT) down
 
+robot-build: ## [ON THE ROBOT] build robot-edge images: `make robot-build` (all) or `make robot-build recorder`
+	$(COMPOSE_ROBOT) build $(SVC)
+
+robot-rebuild: ## [ON THE ROBOT] rebuild + recreate robot-edge service(s): `make robot-rebuild recorder`
+	$(COMPOSE_ROBOT) up -d --build --force-recreate $(SVC)
+
+robot-restart: ## [ON THE ROBOT] restart robot-edge service(s): `make robot-restart monitor`
+	$(COMPOSE_ROBOT) restart $(SVC)
+
 robot-logs: ## [ON THE ROBOT] follow robot-edge logs: `make robot-logs recorder`
 	$(COMPOSE_ROBOT) logs -f --tail=100 $(SVC)
+
+robot-ps: ## [ON THE ROBOT] show robot-edge container status
+	$(COMPOSE_ROBOT) ps
+
+robot-config-reload: ## [ON THE ROBOT] apply config/*.yaml edits (restart monitor; recorder applies on next record)
+	$(COMPOSE_ROBOT) restart monitor
 
 recording-up: ## [ON THE RECORDING PC] build + start orchestrator/dora/frontend (set *_HOST in .env)
 	$(COMPOSE_RECORDING) up -d --build $(SVC)
@@ -164,8 +183,23 @@ recording-up: ## [ON THE RECORDING PC] build + start orchestrator/dora/frontend 
 recording-down: ## [ON THE RECORDING PC] stop + remove the recording-host services
 	$(COMPOSE_RECORDING) down
 
+recording-build: ## [ON THE RECORDING PC] build recording-host images: `make recording-build` (all) or `... frontend`
+	$(COMPOSE_RECORDING) build $(SVC)
+
+recording-rebuild: ## [ON THE RECORDING PC] rebuild + recreate recording-host service(s): `make recording-rebuild frontend`
+	$(COMPOSE_RECORDING) up -d --build --force-recreate $(SVC)
+
+recording-restart: ## [ON THE RECORDING PC] restart recording-host service(s): `make recording-restart orchestrator`
+	$(COMPOSE_RECORDING) restart $(SVC)
+
 recording-logs: ## [ON THE RECORDING PC] follow recording-host logs: `make recording-logs orchestrator`
 	$(COMPOSE_RECORDING) logs -f --tail=100 $(SVC)
+
+recording-ps: ## [ON THE RECORDING PC] show recording-host container status
+	$(COMPOSE_RECORDING) ps
+
+recording-config-reload: ## [ON THE RECORDING PC] apply config-catalog edits (restart orchestrator)
+	$(COMPOSE_RECORDING) restart orchestrator
 
 import-runs: ## [ON THE RECORDING PC] rsync COMPLETED recordings from the robot into ./data/recorded
 	bash deploy/sync/import_runs.sh
