@@ -18,7 +18,7 @@ config/
 │  └─ validators/loss_report.yaml # validator parameters
 ├─ airoa_hsr/               # bundled sample robot (HSR, data/airoa-moma-mcap/)
 ├─ template/                # starting point for a new robot (copy of airoa_hsr)
-└─ local/<robot>/           # your own robots (gitignored, e.g. realman)
+└─ local/<robot>/           # your own robots (gitignored)
 ```
 
 Each aspect can hold multiple options (`*.yaml`); `default.yaml` is the active one.
@@ -27,7 +27,7 @@ Each aspect can hold multiple options (`*.yaml`); `default.yaml` is the active o
 
 ```bash
 make up ROBOT=airoa_hsr      # bundled HSR sample (default)
-make up ROBOT=realman        # config/local/realman/ (gitignored)
+make up ROBOT=<robot>        # config/local/<robot>/ (gitignored, your own robot)
 ```
 
 - Choosing `ROBOT` switches recording / stream / validation / validators **together**.

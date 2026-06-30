@@ -16,7 +16,7 @@ config/
 │  └─ validators/loss_report.yaml # validator パラメータ
 ├─ airoa_hsr/               # 同梱サンプル機体（HSR, data/airoa-moma-mcap/）
 ├─ template/                # 新機体の出発点（airoa_hsr を参考にコピー）
-└─ local/<robot>/           # 自分の機体（gitignored。例: realman）
+└─ local/<robot>/           # 自分の機体（gitignored）
 ```
 
 各 aspect は複数 option（`*.yaml`）を持て、`default.yaml` が既定のアクティブ。
@@ -25,7 +25,7 @@ config/
 
 ```bash
 make up ROBOT=airoa_hsr      # 同梱 HSR サンプル（既定）
-make up ROBOT=realman        # config/local/realman/（gitignored）
+make up ROBOT=<robot>        # config/local/<robot>/（gitignored・自分のロボット）
 ```
 
 - `ROBOT` を選ぶと recording / stream / validation / validators が**一括**で切り替わる。

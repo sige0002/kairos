@@ -24,8 +24,8 @@ A single `ROBOT` selects the whole config set; `make` resolves committed
 (`config/<robot>/`) vs local (`config/local/<robot>/`) automatically:
 
 ```bash
-make up ROBOT=realman          # uses config/local/realman/
-# or set it persistently in your (gitignored) .env:  ROBOT=realman
+make up ROBOT=<robot>          # uses config/local/<robot>/
+# or set it persistently in your (gitignored) .env:  ROBOT=<robot>
 ```
 
 The Config tab also lists local robots (flagged `local`) so you can switch and
@@ -35,7 +35,7 @@ gitignored file, never to a committed one.
 ## Sample data goes under data/
 
 Recordings/bags for a confidential robot go under `data/` (also gitignored) —
-e.g. `data/realman/<run>/`. Replay with `make rosbag BAG=realman/<run>`.
+e.g. `data/<robot>/<run>/`. Replay with `make rosbag BAG=<robot>/<run>`.
 **MCAP** is preferred (it embeds message schemas, so `dora_runner` validation /
 conversion works without building the custom-message packages). A `.db3`
 (sqlite3) bag or `ros2 bag play` of custom-type topics needs the custom messages
