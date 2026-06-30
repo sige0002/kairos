@@ -69,10 +69,12 @@ class DoraRunnerClient(BaseServiceClient):
         Used by synchronous orchestrator flows (e.g. dataset export) that must
         know the outcome before responding. Creates the job, then polls
         ``job_status`` every *interval* seconds until the state is terminal
-        (``succeeded`` / ``failed`` / ``canceled``). On ``succeeded`` it also
-        fetches ``job_result``. Returns ``{"state": <state>, "result": <result
-        dict or None>}``. Raises :class:`ApiError` 504 if *timeout* elapses
-        first (the underlying dora_runner job keeps running).
+        (``succeeded`` / ``failed`` / ``canceled``). On ANY terminal state it
+        fetches ``job_result`` — dora_runner nests its failure cause under the
+        result's ``summary.error`` for failed/canceled jobs, so the caller can
+        surface WHY it failed (not just "failed"). Returns ``{"state": <state>,
+        "result": <result dict or None>}``. Raises :class:`ApiError` 504 if
+        *timeout* elapses first (the underlying dora_runner job keeps running).
         """
         created = await self.create_job(payload)
         job_id = str(created["job_id"])
@@ -82,8 +84,15 @@ class DoraRunnerClient(BaseServiceClient):
             state = str(status.get("state", ""))
             if state in _TERMINAL_STATES:
                 result: dict[str, Any] | None = None
-                if state == JobState.succeeded.value:
+                try:
+                    # Fetch the result on success AND failure: the failed-job
+                    # result carries the cause. Best-effort on the failure path
+                    # so a result-fetch hiccup never masks the real outcome.
                     result = await self.job_result(job_id)
+                except Exception:  # noqa: BLE001
+                    if state == JobState.succeeded.value:
+                        raise
+                    result = None
                 return {"state": state, "result": result}
             await asyncio.sleep(interval)
         raise ApiError(

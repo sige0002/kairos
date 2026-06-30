@@ -4,10 +4,11 @@
 // raw output (right). Every job carries a run_id (the backend requires it), so
 // this picks a Run explicitly — unlike the old generic pipeline form.
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiGet, apiPost } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
+import { useUiStore } from '../../store/uiStore';
 import type {
   ConfigOptions,
   JobResult,
@@ -136,6 +137,17 @@ export function ValidationTab() {
   // User edits to the auto-rendered params form (merged over schema defaults).
   const [overrides, setOverrides] = useState<Record<string, unknown>>({});
   const [jobId, setJobId] = useState<string | null>(null);
+
+  // Preselect a run parked by a Recordings-tab "Validate" deep-link, then clear
+  // the marker so a later manual selection isn't overridden.
+  const pendingRun = useUiStore((s) => s.pendingRun);
+  const setPendingRun = useUiStore((s) => s.setPendingRun);
+  useEffect(() => {
+    if (pendingRun) {
+      setRunId(pendingRun);
+      setPendingRun(null);
+    }
+  }, [pendingRun, setPendingRun]);
 
   const runsQuery = useQuery({
     queryKey: queryKeys.runs(undefined),

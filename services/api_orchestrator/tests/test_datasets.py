@@ -233,8 +233,13 @@ def test_failed_export_keeps_row_and_files(
     with TestClient(app) as client:
         resp = client.post("/api/v1/datasets/export", json={"run_id": "run_f"})
 
+    error = resp.json()["error"]
     assert resp.status_code == 502
-    assert resp.json()["error"]["code"] == "export_failed"
+    assert error["code"] == "export_failed"
+    # The real cause is surfaced (fetched from the failed job's result), not just
+    # a bare "did not succeed" — the operator sees WHY it failed.
+    assert error["details"].get("reason") == "boom"
+    assert "boom" in error["message"]
     # No data lost: the recording is intact and the row remains.
     assert (data_dir / "recorded" / "run_f").exists()
     assert store.get("run_f") is not None
@@ -265,6 +270,8 @@ def test_export_all_skips_failures_and_continues(
         assert len(body["exported"]) == 2
         assert len(body["failed"]) == 1
         assert body["failed"][0]["run_id"] == "run_2"
+        # The per-run failure carries the real cause, not a generic message.
+        assert "boom" in body["failed"][0]["error"]
 
         # Successful runs left the store + recorded/; the failed one stayed.
         assert store.get("run_1") is None

@@ -11,7 +11,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiGet, apiPost } from '../../api/client';
+import { apiDelete, apiGet, apiPost } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
 import type {
   RecordArming,
@@ -21,7 +21,7 @@ import type {
 } from '../../api/types';
 import type { RuntimeConfig } from '../../config';
 import { ErrorMessage } from '../../components/ErrorMessage';
-import { Badge, Button, Card, SectionLabel, StatusDot, cn } from '../../components/ui';
+import { Badge, Button, Card, Modal, SectionLabel, StatusDot, cn } from '../../components/ui';
 import { StreamTab } from '../stream/StreamTab';
 import { useUiStore } from '../../store/uiStore';
 import {
@@ -254,6 +254,10 @@ function RecordHero({ selection }: { selection: RecordSelection }) {
   const task = useUiStore((s) => s.recordTask);
   const setTask = useUiStore((s) => s.setRecordTask);
 
+  // After Stop, prompt to keep or discard the just-finished run (its id from the
+  // stop response, falling back to the run active when Stop was pressed).
+  const [pendingReview, setPendingReview] = useState<string | null>(null);
+
   const startMutation = useMutation({
     mutationFn: (body: RecordStartRequest) => apiPost<RecordStatus>('/record/start', body),
     onSuccess: () =>
@@ -261,8 +265,21 @@ function RecordHero({ selection }: { selection: RecordSelection }) {
   });
   const stopMutation = useMutation({
     mutationFn: () => apiPost<RecordStatus>('/record/stop', {}),
-    onSuccess: () =>
-      void queryClient.invalidateQueries({ queryKey: queryKeys.recordStatus }),
+    onSuccess: (st) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.recordStatus });
+      const rid = st?.run_id ?? runId;
+      if (rid) setPendingReview(rid);
+    },
+  });
+  // "Discard" on the post-stop prompt deletes the run (dir + row); "Keep" just
+  // dismisses. Reuses the same DELETE /runs/{id} the Recordings tab uses.
+  const discardMutation = useMutation({
+    mutationFn: (rid: string) => apiDelete(`/runs/${encodeURIComponent(rid)}`),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.recordStatus });
+      void queryClient.invalidateQueries({ queryKey: ['runs'] });
+      setPendingReview(null);
+    },
   });
   const busy = startMutation.isPending || stopMutation.isPending;
 
@@ -290,6 +307,7 @@ function RecordHero({ selection }: { selection: RecordSelection }) {
       : `${selection.count} configured topics`;
 
   return (
+    <>
     <div
       className={cn(
         'flex flex-wrap items-center gap-x-7 gap-y-4 rounded-[18px] border px-6 py-[22px]',
@@ -421,6 +439,40 @@ function RecordHero({ selection }: { selection: RecordSelection }) {
         </div>
       )}
     </div>
+
+      <Modal
+        open={!!pendingReview}
+        onClose={() => setPendingReview(null)}
+        title="Recording finished"
+        footer={
+          <>
+            <Button
+              variant="danger"
+              onClick={() => pendingReview && discardMutation.mutate(pendingReview)}
+              disabled={discardMutation.isPending}
+            >
+              {discardMutation.isPending ? 'Discarding…' : 'Discard'}
+            </Button>
+            <Button
+              variant="primary"
+              onClick={() => setPendingReview(null)}
+              disabled={discardMutation.isPending}
+            >
+              Keep
+            </Button>
+          </>
+        }
+      >
+        Keep recording{' '}
+        <span className="font-mono text-gray-800">{pendingReview}</span> or discard it?
+        Discard permanently deletes this take.
+        {discardMutation.isError && (
+          <div className="mt-2">
+            <ErrorMessage error={discardMutation.error} />
+          </div>
+        )}
+      </Modal>
+    </>
   );
 }
 

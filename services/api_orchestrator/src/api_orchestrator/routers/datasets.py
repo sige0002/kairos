@@ -42,6 +42,32 @@ class DatasetExportRequest(BaseModel):
     run_id: str
 
 
+def _job_failure_reason(res: dict[str, Any]) -> str | None:
+    """Best-effort human cause from a failed ``run_job_to_completion`` result.
+
+    dora_runner nests its ApiError under ``result.summary.error`` (sometimes
+    double-wrapped as ``error.error``); fall back to a plain string error or a
+    ``note``/``message`` on the summary. ``None`` when nothing usable is found.
+    """
+    result = res.get("result")
+    if not isinstance(result, dict):
+        return None
+    summary = result.get("summary")
+    if not isinstance(summary, dict):
+        return None
+    err = summary.get("error")
+    if isinstance(err, dict):
+        inner = err.get("error") if isinstance(err.get("error"), dict) else err
+        message = inner.get("message") or err.get("message")
+        code = inner.get("code") or err.get("code")
+        if message:
+            return f"{message} ({code})" if code else str(message)
+    elif isinstance(err, str) and err.strip():
+        return err
+    note = summary.get("note") or summary.get("message")
+    return note if isinstance(note, str) and note.strip() else None
+
+
 def _read_dataset_json(path: Path) -> dict[str, Any] | None:
     """Best-effort read of a ``dataset.json`` sidecar (``None`` on any failure)."""
     try:
@@ -120,11 +146,19 @@ async def _export_one(
         {"pipeline": "dataset_export", "run_id": run_id, "params": {}}
     )
     if res.get("state") != JobState.succeeded.value:
+        reason = _job_failure_reason(res)
+        details: dict[str, Any] = {"run_id": run_id, "job_state": res.get("state")}
+        if reason:
+            details["reason"] = reason
         raise ApiError(
             status_code=502,
             code="export_failed",
-            message="The dataset_export job did not succeed.",
-            details={"run_id": run_id, "job_state": res.get("state")},
+            message=(
+                f"The dataset_export job did not succeed: {reason}"
+                if reason
+                else "The dataset_export job did not succeed."
+            ),
+            details=details,
         )
     # Success confirmed: the recording has been MOVED out of recorded/, so
     # delete the now-orphaned run row (its dir + siblings + report sidecars).

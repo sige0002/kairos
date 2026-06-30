@@ -87,11 +87,11 @@ export const DEV_FALLBACK_CONFIG: RuntimeConfig = {
   },
   tabs: [
     { id: 'live', enabled: true },
-    { id: 'graph', enabled: true },
-    { id: 'probe', enabled: true },
     { id: 'runs', enabled: true },
     { id: 'validation', enabled: true },
     { id: 'dataset', enabled: true },
+    { id: 'graph', enabled: true },
+    { id: 'probe', enabled: true },
     { id: 'config', enabled: true },
   ],
   defaults: { expected_hz: {}, encoding: 'vp8' },
@@ -137,17 +137,38 @@ export async function fetchRuntimeConfig(): Promise<RuntimeConfig> {
   return (await resp.json()) as RuntimeConfig;
 }
 
+// Canonical display order, following the operator's pipeline: capture (Live) →
+// review the take (Recordings) → validate → export to a dataset, with the
+// monitoring aids (Graph / Probe) and Config after. A backend tab without an
+// explicit `order` is placed by this rank so the UI reads top-to-bottom as the
+// workflow flows; the backend can still override per-tab with `order`.
+const CANONICAL_TAB_ORDER = [
+  'live',
+  'runs',
+  'validation',
+  'dataset',
+  'graph',
+  'probe',
+  'config',
+];
+
+function canonicalRank(id: string): number {
+  const i = CANONICAL_TAB_ORDER.indexOf(id);
+  return i === -1 ? Number.MAX_SAFE_INTEGER : i;
+}
+
 /**
  * Resolve the ordered, enabled-aware tab list. Order: explicit `order` first
- * (ascending), then config order. Disabled tabs are kept so the UI can show
- * them greyed out, but callers filter as needed.
+ * (ascending), then the canonical pipeline rank (see CANONICAL_TAB_ORDER), then
+ * config order. Disabled tabs are kept so the UI can show them greyed out, but
+ * callers filter as needed.
  */
 export function orderTabs(tabs: TabConfig[]): TabConfig[] {
   return [...tabs]
     .map((t, i) => ({ t, i }))
     .sort((a, b) => {
-      const ao = a.t.order ?? Number.MAX_SAFE_INTEGER;
-      const bo = b.t.order ?? Number.MAX_SAFE_INTEGER;
+      const ao = a.t.order ?? canonicalRank(a.t.id);
+      const bo = b.t.order ?? canonicalRank(b.t.id);
       if (ao !== bo) return ao - bo;
       return a.i - b.i;
     })

@@ -19,6 +19,13 @@ interface UiState {
   activeTab: string;
   setActiveTab: (id: string) => void;
 
+  // A run id parked when the operator deep-links from the Recordings tab to
+  // "Validate" / "Export" it: the target tab reads this once on mount to
+  // preselect / highlight the run, then clears it. Avoids the back-and-forth of
+  // switching tab and re-finding the same run in a dropdown.
+  pendingRun: string | null;
+  setPendingRun: (id: string | null) => void;
+
   sseStatus: SseStatus;
   setSseStatus: (s: SseStatus) => void;
 
@@ -65,6 +72,9 @@ interface UiState {
 export const useUiStore = create<UiState>((set) => ({
   activeTab: '',
   setActiveTab: (id) => set({ activeTab: id }),
+
+  pendingRun: null,
+  setPendingRun: (pendingRun) => set({ pendingRun }),
 
   sseStatus: 'closed',
   setSseStatus: (sseStatus) => set({ sseStatus }),

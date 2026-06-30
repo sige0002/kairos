@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
 import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
@@ -237,15 +237,39 @@ test('"All cameras" renders one player per camera topic', async () => {
   await waitFor(() => expect(document.querySelectorAll('video').length).toBe(2));
 });
 
-test('deletes a run after confirm and clears the detail', async () => {
-  vi.spyOn(window, 'confirm').mockReturnValue(true);
+test('the per-row trash icon deletes a run without selecting it first', async () => {
+  renderWithClient(<RunsTab />);
+  await waitFor(() => expect(screen.getByText('run-1')).toBeInTheDocument());
+
+  // Click the row trash icon directly (no prior row selection / detail open).
+  fireEvent.click(screen.getAllByRole('button', { name: 'Delete recording' })[0]!);
+  const dialog = await screen.findByRole('dialog');
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
+
+  await waitFor(() => {
+    const calls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls;
+    expect(
+      calls.some(
+        (c) =>
+          String(c[0]).includes('/runs/run-1') &&
+          (c[1] as RequestInit | undefined)?.method === 'DELETE',
+      ),
+    ).toBe(true);
+  });
+});
+
+test('deletes a run after confirming in the modal and clears the detail', async () => {
   renderWithClient(<RunsTab />);
 
   await waitFor(() => expect(screen.getByText('run-1')).toBeInTheDocument());
   fireEvent.click(screen.getByRole('button', { name: /run-1/ }));
   await waitFor(() => expect(screen.getByText('/tf')).toBeInTheDocument());
 
+  // The detail Delete button opens a confirm modal; the DELETE fires only after
+  // confirming inside the dialog.
   fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+  const dialog = await screen.findByRole('dialog');
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
 
   // A DELETE request is issued for the run.
   await waitFor(() => {

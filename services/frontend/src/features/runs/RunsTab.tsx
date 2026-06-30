@@ -22,7 +22,17 @@ import type {
   VideoCheckSummary,
 } from '../../api/types';
 import { ErrorMessage } from '../../components/ErrorMessage';
-import { Badge, Button, Card, SectionLabel, cn } from '../../components/ui';
+import {
+  Badge,
+  Button,
+  Card,
+  Modal,
+  SectionLabel,
+  TrashIcon,
+  cn,
+  type Tone,
+} from '../../components/ui';
+import { useUiStore } from '../../store/uiStore';
 
 // Terminal job states; while a loss_report job is non-terminal we keep polling.
 const TERMINAL = new Set(['succeeded', 'failed', 'canceled']);
@@ -55,6 +65,24 @@ function runDurationMs(run: {
   const end = new Date(run.ended_at).getTime();
   if (Number.isNaN(start) || Number.isNaN(end) || end < start) return undefined;
   return end - start;
+}
+
+// Per-state badge tone for the recordings list — color-codes the run state at a
+// glance (completed=green, failed=red, live=teal, stopping=amber, else neutral).
+function stateTone(state: string): Tone {
+  switch (state) {
+    case 'completed':
+      return 'green';
+    case 'failed':
+    case 'interrupted':
+      return 'red';
+    case 'recording':
+      return 'teal';
+    case 'stopping':
+      return 'amber';
+    default:
+      return 'gray';
+  }
 }
 
 function JsonBlock({ label, value }: { label: string; value: unknown }) {
@@ -299,10 +327,14 @@ function VideoCheckSection({ run, runId }: { run: RunDetail; runId: string }) {
 
 function RunDetailView({
   runId,
-  onDeleted,
+  onRequestDelete,
+  onValidate,
+  onExport,
 }: {
   runId: string;
-  onDeleted: () => void;
+  onRequestDelete: (runId: string) => void;
+  onValidate: (runId: string) => void;
+  onExport: (runId: string) => void;
 }) {
   const queryClient = useQueryClient();
   const [lossJobId, setLossJobId] = useState<string | null>(null);
@@ -310,14 +342,6 @@ function RunDetailView({
     queryKey: queryKeys.run(runId),
     queryFn: ({ signal }) =>
       apiGet<RunDetail>(`/runs/${encodeURIComponent(runId)}`, { signal }),
-  });
-
-  const deleteMutation = useMutation({
-    mutationFn: () => apiDelete(`/runs/${encodeURIComponent(runId)}`),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['runs'] });
-      onDeleted();
-    },
   });
 
   // Launch a loss_report job for this run; remember its id to poll below.
@@ -357,21 +381,37 @@ function RunDetailView({
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 className="font-mono text-sm font-semibold text-teal-700">{run.run_id}</h3>
-        <button
-          type="button"
-          onClick={() => {
-            if (window.confirm(`Delete recording ${run.run_id}? This cannot be undone.`))
-              deleteMutation.mutate();
-          }}
-          disabled={deleteMutation.isPending}
-          className="rounded-control border border-red-200 px-2.5 py-1 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50"
-        >
-          {deleteMutation.isPending ? 'Deleting…' : 'Delete'}
-        </button>
+        <div className="flex items-center gap-2">
+          {run.state === 'completed' && (
+            <>
+              <button
+                type="button"
+                onClick={() => onValidate(run.run_id)}
+                className="rounded-control border border-teal-200 px-2.5 py-1 text-xs font-semibold text-teal-700 hover:bg-teal-50"
+              >
+                Validate
+              </button>
+              <button
+                type="button"
+                onClick={() => onExport(run.run_id)}
+                className="rounded-control border border-teal-200 px-2.5 py-1 text-xs font-semibold text-teal-700 hover:bg-teal-50"
+              >
+                Export
+              </button>
+            </>
+          )}
+          <button
+            type="button"
+            onClick={() => onRequestDelete(run.run_id)}
+            className="inline-flex items-center gap-1 rounded-control border border-red-200 px-2.5 py-1 text-xs font-semibold text-red-700 hover:bg-red-50"
+          >
+            <TrashIcon />
+            Delete
+          </button>
+        </div>
       </div>
-      {deleteMutation.isError && <ErrorMessage error={deleteMutation.error} />}
       <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
         <dt className="text-gray-500">State</dt>
         <dd>{run.state}</dd>
@@ -445,8 +485,14 @@ function RunDetailView({
 }
 
 export function RunsTab() {
+  const queryClient = useQueryClient();
+  const setActiveTab = useUiStore((s) => s.setActiveTab);
+  const setPendingRun = useUiStore((s) => s.setPendingRun);
   const [cursor, setCursor] = useState<string | undefined>(undefined);
   const [selected, setSelected] = useState<string | null>(null);
+  // The run pending a delete-confirm modal (set from a row trash icon or the
+  // detail Delete button); null hides the modal.
+  const [pendingDelete, setPendingDelete] = useState<string | null>(null);
 
   const runsQuery = useQuery({
     queryKey: queryKeys.runs(cursor),
@@ -455,7 +501,24 @@ export function RunsTab() {
     placeholderData: keepPreviousData,
   });
 
+  const deleteMutation = useMutation({
+    mutationFn: (rid: string) => apiDelete(`/runs/${encodeURIComponent(rid)}`),
+    onSuccess: (_data, rid) => {
+      void queryClient.invalidateQueries({ queryKey: ['runs'] });
+      if (selected === rid) setSelected(null);
+      setPendingDelete(null);
+    },
+  });
+
+  // Deep-link to a sibling tab with the run preselected (Validate → Validation,
+  // Export → Datasets), so the operator doesn't switch tab and re-find the run.
+  function navigateToRun(tab: string, rid: string) {
+    setPendingRun(rid);
+    setActiveTab(tab);
+  }
+
   return (
+    <>
     <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
       <section aria-label="runs list" className="flex flex-col gap-2.5">
         <div>
@@ -480,17 +543,18 @@ export function RunsTab() {
             role="list"
           >
             {runsQuery.data.items.map((run) => (
-              <li key={run.run_id} className="border-t border-gray-100 first:border-t-0">
+              <li
+                key={run.run_id}
+                className={cn(
+                  'flex items-stretch border-t border-gray-100 transition-colors first:border-t-0',
+                  selected === run.run_id ? 'bg-teal-50' : 'hover:bg-gray-50',
+                )}
+              >
                 <button
                   type="button"
                   onClick={() => setSelected(run.run_id)}
                   aria-pressed={selected === run.run_id}
-                  className={cn(
-                    'flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left text-sm transition-colors',
-                    selected === run.run_id
-                      ? 'bg-teal-50'
-                      : 'hover:bg-gray-50',
-                  )}
+                  className="flex min-w-0 flex-1 items-center justify-between gap-2 px-3 py-2.5 text-left text-sm"
                 >
                   <span className="min-w-0">
                     <span className="block truncate font-mono text-teal-700">
@@ -503,9 +567,18 @@ export function RunsTab() {
                         : ''}
                     </span>
                   </span>
-                  <Badge tone="gray" className="shrink-0">
+                  <Badge tone={stateTone(run.state)} className="shrink-0">
                     {run.state}
                   </Badge>
+                </button>
+                <button
+                  type="button"
+                  aria-label="Delete recording"
+                  title={`Delete ${run.run_id}`}
+                  onClick={() => setPendingDelete(run.run_id)}
+                  className="flex shrink-0 items-center px-3 text-gray-300 transition-colors hover:bg-red-50 hover:text-red-600"
+                >
+                  <TrashIcon />
                 </button>
               </li>
             ))}
@@ -526,11 +599,50 @@ export function RunsTab() {
 
       <Card aria-label="run detail" className="p-[18px]">
         {selected ? (
-          <RunDetailView runId={selected} onDeleted={() => setSelected(null)} />
+          <RunDetailView
+            runId={selected}
+            onRequestDelete={setPendingDelete}
+            onValidate={(rid) => navigateToRun('validation', rid)}
+            onExport={(rid) => navigateToRun('dataset', rid)}
+          />
         ) : (
           <p className="text-sm text-gray-500">Select a run to see details.</p>
         )}
       </Card>
     </div>
+
+      <Modal
+        open={!!pendingDelete}
+        onClose={() => setPendingDelete(null)}
+        title="Delete recording"
+        footer={
+          <>
+            <Button
+              variant="ghost"
+              onClick={() => setPendingDelete(null)}
+              disabled={deleteMutation.isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              onClick={() => pendingDelete && deleteMutation.mutate(pendingDelete)}
+              disabled={deleteMutation.isPending}
+            >
+              {deleteMutation.isPending ? 'Deleting…' : 'Delete'}
+            </Button>
+          </>
+        }
+      >
+        Permanently delete{' '}
+        <span className="font-mono text-gray-800">{pendingDelete}</span>? This cannot be
+        undone.
+        {deleteMutation.isError && (
+          <div className="mt-2">
+            <ErrorMessage error={deleteMutation.error} />
+          </div>
+        )}
+      </Modal>
+    </>
   );
 }

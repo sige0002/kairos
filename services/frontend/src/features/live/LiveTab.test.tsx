@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
 import { renderWithClient, jsonResponse } from '../../test/renderWithClient';
@@ -72,6 +72,54 @@ test('active recording (state=recording) shows Recording + a stop button', async
   await waitFor(() => expect(screen.getByText('Recording')).toBeInTheDocument());
   expect(screen.getByRole('button', { name: /Stop recording/ })).toBeInTheDocument();
   expect(screen.queryByText('Idle')).not.toBeInTheDocument();
+});
+
+// After Stop, a keep/discard prompt appears for the just-finished run; "Discard"
+// deletes it via DELETE /runs/{id} so a bad take never lingers in the list.
+test('stop shows a keep/discard prompt and Discard deletes the run', async () => {
+  let deleted = false;
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    const method = (init as RequestInit | undefined)?.method;
+    if (url.includes('/record/stop')) {
+      return Promise.resolve(jsonResponse({ run_id: 'run_1', state: 'stopping' }));
+    }
+    if (url.includes('/record/status')) {
+      return Promise.resolve(
+        jsonResponse({ run_id: 'run_1', state: 'recording', message_count: 5, bytes: 1024 }),
+      );
+    }
+    if (url.match(/\/runs\/run_1$/) && method === 'DELETE') {
+      deleted = true;
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
+    if (url.match(/\/runs\/[^/]+$/)) {
+      return Promise.resolve(
+        jsonResponse({
+          run_id: 'run_1',
+          state: 'recording',
+          operator: 'yuki',
+          task: 'pick',
+          started_at: '2026-06-26T00:00:00Z',
+          topics: [{ name: '/a', type: 't' }],
+        }),
+      );
+    }
+    if (url.includes('/topics')) return Promise.resolve(jsonResponse([]));
+    if (url.includes('/runs')) return Promise.resolve(jsonResponse({ items: [], next_cursor: null }));
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  renderWithClient(<LiveTab config={CONFIG} />);
+  await waitFor(() => expect(screen.getByText('Recording')).toBeInTheDocument());
+
+  fireEvent.click(screen.getByRole('button', { name: /Stop recording/ }));
+
+  const dialog = await screen.findByRole('dialog');
+  expect(dialog).toHaveTextContent('run_1');
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Discard' }));
+
+  await waitFor(() => expect(deleted).toBe(true));
 });
 
 // OL-①.4: when a --start-paused recording armed with topics still missing, the

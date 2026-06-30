@@ -2,7 +2,7 @@
 // These are presentation-only: no data, no app state. Feature tabs compose
 // them so cards, chips, status dots and toggles stay pixel-consistent.
 
-import type { ReactNode } from 'react';
+import { useEffect, type ReactNode } from 'react';
 
 /** Tiny class-name joiner (no dependency on clsx). */
 export function cn(...parts: Array<string | false | null | undefined>): string {
@@ -172,6 +172,81 @@ export function Button({
     >
       {children}
     </button>
+  );
+}
+
+/** Inline trash-can icon — the project ships no icon library, so it's a
+ *  hand-drawn SVG that inherits `currentColor` and sizes from the caller. */
+export function TrashIcon({
+  size = 14,
+  className,
+}: {
+  size?: number;
+  className?: string;
+}) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+      className={className}
+    >
+      <path d="M3 6h18" />
+      <path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" />
+      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
+      <path d="M10 11v6M14 11v6" />
+    </svg>
+  );
+}
+
+/**
+ * Lightweight modal/dialog. No portal: the SPA has a single root and the overlay
+ * is `fixed` at a high z-index, so the DOM position of this element is
+ * irrelevant. ESC and a backdrop click both call `onClose`; `footer` holds the
+ * action buttons (render the destructive one as a `danger` Button).
+ */
+export function Modal({
+  open,
+  onClose,
+  title,
+  children,
+  footer,
+}: {
+  open: boolean;
+  onClose: () => void;
+  title?: ReactNode;
+  children?: ReactNode;
+  footer?: ReactNode;
+}) {
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [open, onClose]);
+
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div aria-hidden className="absolute inset-0 bg-gray-900/30" onClick={onClose} />
+      <div
+        role="dialog"
+        aria-modal="true"
+        className="relative z-10 w-full max-w-md rounded-card border border-gray-200 bg-white p-5 shadow-float"
+      >
+        {title && <h2 className="mb-2 text-[15px] font-semibold text-gray-900">{title}</h2>}
+        {children && <div className="text-sm text-gray-600">{children}</div>}
+        {footer && <div className="mt-5 flex justify-end gap-2">{footer}</div>}
+      </div>
+    </div>
   );
 }
 

@@ -9,6 +9,7 @@
 // success we invalidate both the runs list (so the exported run leaves the
 // Recordings list) and the datasets list (so it appears under Datasets).
 
+import { useEffect, useRef, useState } from 'react';
 import {
   keepPreviousData,
   useMutation,
@@ -17,6 +18,7 @@ import {
 } from '@tanstack/react-query';
 import { apiGet, apiPost } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
+import { useUiStore } from '../../store/uiStore';
 import type {
   DatasetEntry,
   DatasetExportSummary,
@@ -26,7 +28,7 @@ import type {
   RunSummary,
 } from '../../api/types';
 import { ErrorMessage } from '../../components/ErrorMessage';
-import { Badge, Button, Card, SectionLabel } from '../../components/ui';
+import { Badge, Button, Card, SectionLabel, cn } from '../../components/ui';
 
 function formatWhen(iso?: string | null): string {
   if (!iso) return '—';
@@ -150,8 +152,14 @@ function useInvalidateAfterExport() {
   };
 }
 
-function RunExportCard({ run }: { run: RunSummary }) {
+function RunExportCard({ run, focus = false }: { run: RunSummary; focus?: boolean }) {
   const invalidate = useInvalidateAfterExport();
+  // When deep-linked from a Recordings-tab "Export", scroll this card into view
+  // and ring it so the operator lands on the right run instead of hunting.
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (focus) ref.current?.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
+  }, [focus]);
   const mutation = useMutation({
     mutationFn: () =>
       apiPost<DatasetExportSummary>('/datasets/export', { run_id: run.run_id }),
@@ -159,7 +167,11 @@ function RunExportCard({ run }: { run: RunSummary }) {
   });
 
   return (
-    <Card className="flex flex-col gap-3 p-[18px]">
+    <div
+      ref={ref}
+      className={cn('rounded-card', focus && 'ring-2 ring-teal-400 ring-offset-2')}
+    >
+      <Card className="flex h-full flex-col gap-3 p-[18px]">
       <div className="flex items-start justify-between gap-2">
         <span className="truncate font-mono text-sm font-semibold text-teal-700">
           {run.run_id}
@@ -195,12 +207,13 @@ function RunExportCard({ run }: { run: RunSummary }) {
       >
         {mutation.isPending ? 'Exporting…' : 'Export'}
       </Button>
-      {mutation.isError && <ErrorMessage error={mutation.error} />}
-    </Card>
+        {mutation.isError && <ErrorMessage error={mutation.error} />}
+      </Card>
+    </div>
   );
 }
 
-function ExportSection() {
+function ExportSection({ focusRun }: { focusRun: string | null }) {
   const invalidate = useInvalidateAfterExport();
   const runsQuery = useQuery({
     queryKey: queryKeys.runs(undefined),
@@ -245,6 +258,18 @@ function ExportSection() {
           </span>
         )}
       </div>
+      {exportAll.isSuccess && exportAll.data.failed.length > 0 && (
+        <ul className="flex flex-col gap-1" data-testid="export-all-failures">
+          {exportAll.data.failed.map((f) => (
+            <li
+              key={f.run_id}
+              className="rounded bg-red-50 px-3 py-1.5 text-xs text-red-700"
+            >
+              <span className="font-mono font-semibold">{f.run_id}</span>: {f.error}
+            </li>
+          ))}
+        </ul>
+      )}
       {exportAll.isError && <ErrorMessage error={exportAll.error} />}
 
       {runsQuery.isError ? (
@@ -258,7 +283,7 @@ function ExportSection() {
       ) : (
         <div className="grid grid-cols-1 gap-[18px] sm:grid-cols-2 lg:grid-cols-3">
           {runs.map((run) => (
-            <RunExportCard key={run.run_id} run={run} />
+            <RunExportCard key={run.run_id} run={run} focus={run.run_id === focusRun} />
           ))}
         </div>
       )}
@@ -267,9 +292,21 @@ function ExportSection() {
 }
 
 export function DatasetTab() {
+  // Consume a run parked by a Recordings-tab "Export" deep-link: highlight it in
+  // the export grid once, then clear the marker so it doesn't re-fire.
+  const pendingRun = useUiStore((s) => s.pendingRun);
+  const setPendingRun = useUiStore((s) => s.setPendingRun);
+  const [focusRun, setFocusRun] = useState<string | null>(null);
+  useEffect(() => {
+    if (pendingRun) {
+      setFocusRun(pendingRun);
+      setPendingRun(null);
+    }
+  }, [pendingRun, setPendingRun]);
+
   return (
     <div className="flex flex-col gap-8">
-      <ExportSection />
+      <ExportSection focusRun={focusRun} />
       <DatasetsSection />
     </div>
   );
