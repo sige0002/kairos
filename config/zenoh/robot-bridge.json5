@@ -1,0 +1,48 @@
+// kairos — zenoh-bridge-ros2dds config (Option B: robot-side gateway).
+//
+// Runs ON THE ROBOT. With the robot's DDS pinned to loopback
+// (config/cyclonedds-localhost.xml), this bridge is the ONE local DDS reader;
+// heavy data crosses the LAN ONCE over a single Zenoh session instead of being
+// fanned out per remote DDS reader with RTPS retransmits. The recording PC runs
+// a peer Zenoh session (its rmw_zenoh nodes, or another bridge) to consume.
+// See docs/specs/ja/deployment_topology.md §4. SKELETON — tune for your robot.
+{
+  plugins: {
+    ros2dds: {
+      // Match the robot's ROS_DOMAIN_ID.
+      domain: 0,
+
+      // Forward ONLY the topics you actually need off-robot (keeps the bridge's
+      // local DDS reads + the LAN session minimal). Regexes. Start narrow.
+      allow: {
+        publishers: [
+          "/hsrb/joint_states",
+          "/hsrb/wrist_wrench/raw",
+          "/hsrb/odom",
+          "/hsrb/.*/compressed",   // cameras (already compressed by the robot)
+        ],
+        subscribers: [],            // off-robot -> robot control is OFF by default
+        service_servers: [],
+        action_servers: [],
+      },
+
+      // Per-topic downsample for the LAN side ONLY (the robot keeps full rate
+      // locally). Cap heavy cameras so the link/recorder sees a sane rate, e.g.
+      // 10 Hz, while light state topics pass through. This is the cheap lever —
+      // prefer it over compression (compression burns robot CPU).
+      pub_max_frequencies: [
+        "/hsrb/.*/compressed=10",
+      ],
+
+      // Keep transient_local reliability for latched topics correct over Zenoh.
+      reliable_routes_blocking: true,
+    },
+  },
+
+  // Zenoh transport. On a wired LAN, listen and let the recording PC connect as
+  // a peer/client. Leave compression OFF unless the LINK (not robot CPU) is the
+  // bottleneck; downsampling above is cheaper for robot load.
+  mode: "peer",
+  listen: { endpoints: ["tcp/0.0.0.0:7447"] },
+  // transport: { link: { tx: { compression: { enabled: false } } } },
+}

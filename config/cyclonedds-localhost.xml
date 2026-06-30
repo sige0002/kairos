@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  kairos — CycloneDDS localhost-pin (Option B: robot-side Zenoh gateway).
+
+  Pins the robot's DDS to loopback so the ONLY way data leaves the robot is the
+  Zenoh bridge (a single local reader), NOT per-remote-DDS-reader fan-out over
+  the LAN. Use this ONLY for the Option B topology (see
+  docs/specs/ja/deployment_topology.md §4). It is NOT used by the default
+  single-host deploy or by Option A (edge-record).
+
+  Apply on the ROBOT to BOTH the robot's own ROS nodes AND the zenoh bridge
+  (otherwise discovery loops / data still escapes):
+      export CYCLONEDDS_URI=file:///config/cyclonedds-localhost.xml
+      export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+
+  NOTE: loopback multicast is enabled so co-located nodes still discover each
+  other; nothing binds a routable NIC, so no DDS traffic reaches the LAN.
+-->
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain id="any">
+    <General>
+      <!-- Bind DDS to loopback only: no DDS packets on any routable interface. -->
+      <Interfaces>
+        <NetworkInterface name="lo" presence_required="false"/>
+      </Interfaces>
+      <AllowMulticast>true</AllowMulticast>
+      <EnableMulticastLoopback>true</EnableMulticastLoopback>
+    </General>
+    <Discovery>
+      <!-- Keep discovery on loopback; do not advertise to the LAN. -->
+      <ParticipantIndex>auto</ParticipantIndex>
+      <Peers>
+        <Peer address="localhost"/>
+      </Peers>
+    </Discovery>
+  </Domain>
+</CycloneDDS>

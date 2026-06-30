@@ -76,6 +76,27 @@ class Settings(BaseSettings):
     # so it never touches topic_monitor (raw) or the recorder.
     topic_probe_port: Annotated[int, Field(ge=1, le=65535)] = 8003
 
+    # ---- Inter-service hosts (multi-host / robot-edge split) ---------------
+    # Hostname/IP of each downstream service the orchestrator (and nginx) reach.
+    # Default "localhost" = the single-host co-located deployment (UNCHANGED).
+    #
+    # For the robot-edge / recording-host SPLIT — the way kairos records from a
+    # SEPARATE PC WITHOUT loading the robot's onboard system — the four
+    # DDS-reading services (recorder/monitor/streamer/probe) run ON the robot
+    # host (sharing its DDS graph via host-net + ipc SHM = zero extra network),
+    # while the orchestrator/dora_runner/frontend run on the recording PC and
+    # never join DDS. On the recording PC set RECORDER_HOST / TOPIC_MONITOR_HOST
+    # / WEBRTC_HOST / TOPIC_PROBE_HOST to the robot's LAN IP; dora_runner is
+    # CPU-heavy and runs beside the orchestrator, so DORA_RUNNER_HOST stays
+    # local. Only lightweight data crosses the boundary (monitor metrics JSON,
+    # the already-encoded WebRTC preview, recorded MCAP via file sync) — no heavy
+    # DDS flow ever leaves the robot. See docs/specs/ja/deployment_topology.md.
+    recorder_host: str = "localhost"
+    topic_monitor_host: str = "localhost"
+    webrtc_host: str = "localhost"
+    topic_probe_host: str = "localhost"
+    dora_runner_host: str = "localhost"
+
     # ---- Frontend-facing URLs / CORS --------------------------------------
     # Browser-facing base URL of the webrtc_streamer signaling endpoints
     # (/stream/start, /stream/offer), returned as endpoints.webrtc in

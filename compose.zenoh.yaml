@@ -1,0 +1,34 @@
+# =============================================================================
+# kairos — ROBOT-SIDE Zenoh gateway (Option B, ALTERNATIVE to the edge-record
+# split). Use ONLY when you must record LIVE full-data from a separate PC.
+# Option A (compose.robot.yaml + compose.recording.yaml) is the default and the
+# stronger "do not load the robot" guarantee. See
+# docs/specs/ja/deployment_topology.md §4.
+#
+# This runs the zenoh-bridge-ros2dds ON THE ROBOT. Pin the robot's DDS (its own
+# nodes AND this bridge) to loopback first, so this bridge is the ONLY local DDS
+# reader and heavy data crosses the LAN once over a single Zenoh session:
+#     export CYCLONEDDS_URI=file:///config/cyclonedds-localhost.xml
+#     export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+#     docker compose -f compose.zenoh.yaml up -d
+# The recording PC then consumes via a peer Zenoh session (rmw_zenoh nodes or a
+# second bridge). SKELETON — pin the image tag to your ROS distro and verify.
+# =============================================================================
+name: kairos-zenoh
+
+services:
+  zenoh_bridge:
+    image: eclipse/zenoh-bridge-ros2dds:latest
+    # Host networking so the bridge shares the robot's (loopback-pinned) DDS
+    # graph and can listen on the robot's LAN IP for the recording PC.
+    network_mode: host
+    ipc: host
+    environment:
+      # Must match the robot's domain; the bridge config also sets it.
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
+      RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
+      CYCLONEDDS_URI: file:///config/cyclonedds-localhost.xml
+    volumes:
+      - ./config:/config:ro
+    command: ["-c", "/config/zenoh/robot-bridge.json5"]
+    restart: unless-stopped

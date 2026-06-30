@@ -1,0 +1,42 @@
+# =============================================================================
+# kairos — RECORDING-HOST compose (the separate-PC half of the cross-host split).
+#
+# Runs the three services that do NOT touch DDS — orchestrator (httpx + SQLite),
+# dora_runner (reads MCAP via the mcap lib, CPU-heavy validation/conversion), and
+# frontend (nginx). Because NONE of these join the robot's DDS graph, running them
+# on a separate PC cannot load the robot's onboard system. They reach the
+# robot-edge services (compose.robot.yaml) over HTTP at the robot's LAN IP, set
+# via *_HOST in .env (copy .env.split.example -> .env and fill in ROBOT_IP).
+#
+# This is a STANDALONE file (not an overlay): it contains ONLY the recording-host
+# services, so you physically cannot start a DDS reader here by accident. Service
+# definitions are pulled from compose.yaml via `extends` (no drift).
+#
+#   # on the RECORDING PC:
+#   cp .env.split.example .env   # set RECORDER_HOST/TOPIC_MONITOR_HOST/WEBRTC_HOST/
+#                                #     TOPIC_PROBE_HOST/WEBRTC_HOST/PROBE_HOST = robot IP
+#   docker compose -f compose.recording.yaml up -d --build
+#   # (or:  make recording-up)
+#
+# MCAP boundary: the recorder writes bags on the ROBOT's disk. Pull COMPLETED runs
+# to this PC with `make import-runs` (rsync) BEFORE running dora — do NOT point
+# dora at robot storage over NFS (dora scanning large MCAPs would make the robot
+# serve disk/network = loading the robot). See docs/specs/ja/deployment_topology.md.
+# =============================================================================
+name: kairos-recording
+
+services:
+  orchestrator:
+    extends:
+      file: compose.yaml
+      service: orchestrator
+  dora_runner:
+    extends:
+      file: compose.yaml
+      service: dora_runner
+  frontend:
+    extends:
+      file: compose.yaml
+      service: frontend
+    # `extends` drops depends_on (cross-file ordering is meaningless); the
+    # frontend only needs the orchestrator reachable at request time, which it is.

@@ -139,6 +139,37 @@ ps: ## show container status
 	$(COMPOSE) ps
 
 # ---- config -----------------------------------------------------------------
+# ---- cross-host split (robot-edge / recording-host) -------------------------
+# Record image-heavy topics from a SEPARATE PC without loading the robot: the
+# DDS-reading services run ON the robot (compose.robot.yaml); orchestrator/dora/
+# frontend run on the recording PC (compose.recording.yaml) and never join DDS.
+# See docs/specs/ja/deployment_topology.md.
+COMPOSE_ROBOT     := docker compose $(if $(wildcard .env),--env-file .env,) -f compose.robot.yaml
+COMPOSE_RECORDING := docker compose $(if $(wildcard .env),--env-file .env,) -f compose.recording.yaml
+
+.PHONY: robot-up robot-down robot-logs recording-up recording-down recording-logs import-runs
+robot-up: ## [ON THE ROBOT] build + start the robot-edge services (recorder/monitor/streamer/probe)
+	$(COMPOSE_ROBOT) up -d --build $(SVC)
+
+robot-down: ## [ON THE ROBOT] stop + remove the robot-edge services
+	$(COMPOSE_ROBOT) down
+
+robot-logs: ## [ON THE ROBOT] follow robot-edge logs: `make robot-logs recorder`
+	$(COMPOSE_ROBOT) logs -f --tail=100 $(SVC)
+
+recording-up: ## [ON THE RECORDING PC] build + start orchestrator/dora/frontend (set *_HOST in .env)
+	$(COMPOSE_RECORDING) up -d --build $(SVC)
+	@$(MAKE) --no-print-directory urls
+
+recording-down: ## [ON THE RECORDING PC] stop + remove the recording-host services
+	$(COMPOSE_RECORDING) down
+
+recording-logs: ## [ON THE RECORDING PC] follow recording-host logs: `make recording-logs orchestrator`
+	$(COMPOSE_RECORDING) logs -f --tail=100 $(SVC)
+
+import-runs: ## [ON THE RECORDING PC] rsync COMPLETED recordings from the robot into ./data/recorded
+	bash deploy/sync/import_runs.sh
+
 .PHONY: config-reload config-show
 config-reload: ## apply config/*.yaml edits (restart monitor + orchestrator)
 	$(COMPOSE) restart monitor orchestrator

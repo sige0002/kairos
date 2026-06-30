@@ -1,0 +1,131 @@
+# デプロイ構成（配置トポロジ）— 別 PC からロボットを圧迫せずに記録する
+
+> 別 PC（録画用 PC）から、画像など重いトピックを含む rosbag（MCAP）を記録しつつ、
+> **ロボット本体のオンボードシステムを一切圧迫しない**ための配置設計。前提は**有線・同一 LAN**。
+> 既存の単一ホスト構成（`compose.yaml`）は変更なしでそのまま動く（本構成は追加の「分割デプロイ」）。
+
+## 1. 問題：リモート DDS 購読がロボットを圧迫する
+
+kairos の 4 つの ROS サービス（`rosbag2_recorder` / `topic_monitor` / `topic_probe` / `webrtc_streamer`）は
+DDS でトピックを**購読**する。これらを**ロボットとは別の PC**で動かすと、各サービスが
+ロボットの DDS グラフ上の**リモート・リーダ**になる。画像（数 MB/フレームの `sensor_msgs/Image`）や
+点群のような重いトピックでは、これがロボット側に次のコストを強いる:
+
+- **NIC を重いペイロードが通過**するだけで、カーネル/UDP/IP フラグメンテーションの CPU と割込が発生
+  （同一ホストの共有メモリ記録なら発生しない）。
+- multicast が効かない経路では**リーダごとのユニキャスト送出コピー**が増える。
+- **RELIABLE QoS のオーバーヘッド**（heartbeat / ACKNACK / 再送）が**リーダごと**に、しかも
+  **パケットロス下では青天井**で増える。画像は publisher 側が RELIABLE 既定のことが多く、最悪値を踏む。
+
+要点（codex・調査で確認）: ロボット側の主コストは「リーダ数ぶんの再シリアライズ」ではない（シリアライズは
+sample あたり 1 回で、ローカル記録と同じ）。**重いデータがロボットの NIC を出ること自体**と、
+**リーダごとの RELIABLE 再送**が効く。したがって、**重いデータがロボットの DDS から network に出る設計は
+すべてロボットを圧迫する**（素のリモート購読、重トピックの domain_bridge、ロボット側 image_transport 圧縮も同様）。
+
+> 競合 OpenLUTRA はこの問題を持つ: co-located 前提で、monitor が画像を含む全メッセージを**デコード**し、
+> QoS を publisher に合わせる（画像で RELIABLE を継承）。別 PC 化すると重ストリームを二重に引き、再送嵐を誘発する。
+> kairos の monitor は元から非侵襲（`raw=True`・非デコード・best_effort 自動整合）だが、**recorder は
+> `ros2 bag record` でトピックを購読する**ため、別 PC 化では同じ問題に晒される。これが本設計の動機。
+
+## 2. 設計方針：配置を明示して「境界」で分割する（既定 = Option A）
+
+サービスを、DDS に触れるか否かの**自然な境界**で 2 群に分ける。
+
+| サービス | DDS 購読 | 配置 | 理由 |
+|---|---|---|---|
+| `rosbag2_recorder` | ✓（`ros2 bag record`、`--all` で全トピック） | **ロボット** | 最大の負荷源。ローカル購読なら network 流出なし |
+| `webrtc_streamer` | ✓（カメラ全フレーム→再エンコード） | **ロボット** | 大帯域。ロボット内で取得し、軽量化した映像だけ送る |
+| `topic_probe` | ✓（選択トピックを decode） | **ロボット** | decode はフルペイロードを要する |
+| `topic_monitor` | ✓（`raw`・非デコード） | **ロボット** | 最軽量だが、サイズ計測のため全バイトは受信する |
+| `api_orchestrator` | ✗（httpx + SQLite + /data 読取） | **録画 PC** | DDS に一切参加しない |
+| `dora_runner` | ✗（MCAP を `mcap` ライブラリで読む。CPU 重い） | **録画 PC** | 検証/変換は重い。ロボットでは回さない |
+| `frontend` | ✗（nginx 静的 + リバプロ） | **録画 PC** | ブラウザの単一オリジン |
+
+- **ロボット側 4 サービス**は、ロボットの DDS グラフを **host-networking + ipc:host の共有メモリ**で
+  ローカル購読する（**追加の network 流出ゼロ**）。
+- **録画 PC 側 3 サービス**は **DDS に一切参加しない**。よって別 PC で動かしても**ロボットを圧迫し得ない**。
+- **境界を越えるのは軽量データだけ**: monitor のメトリクス/アラート（JSON/SSE, KB/s）、streamer の
+  **既にエンコード済みの WebRTC プレビュー**（低レート）、記録済み **MCAP のファイル同期**（DDS ではない）。
+
+> 保証の本質は「**録画 PC 側に DDS リーダを 1 つも置かない**」こと。重いデータがリモート DDS フローに
+> ならない。これは imitation-learning 用のデータ収集（フル解像度で記録し、後で確認）に最適。
+
+## 3. Option A（既定）: エッジ記録（recorder をロボットに置く）
+
+### 3.1 構成ファイル
+- `compose.robot.yaml` … ロボット側 4 サービスのみ（`compose.yaml` から `extends` で定義を再利用）。
+- `compose.recording.yaml` … 録画 PC 側 3 サービスのみ。
+- **profiles ではなく 2 ファイルに分けている**: 1 ファイル + profiles だと「DDS リーダを誤って録画 PC で
+  起動」しやすい。**録画 PC のファイルにはそもそも DDS サービスが含まれない**ので、事故が起きない。
+
+### 3.2 手順
+ロボット:
+```bash
+# ロボットに本リポジトリを配置し、ロボットの DDS に合わせて
+ROBOT=airoa_hsr ROS_DOMAIN_ID=<robot's domain> RMW_IMPLEMENTATION=<robot に一致> \
+  docker compose -f compose.robot.yaml up -d --build      # または: make robot-up
+```
+録画 PC:
+```bash
+cp .env.split.example .env
+# .env の ROBOT_IP をロボットの LAN IP に。*_HOST はそれを参照する。
+docker compose -f compose.recording.yaml up -d --build    # または: make recording-up
+```
+
+### 3.3 コード上の継ぎ目（既定 localhost、後方互換）
+- orchestrator: 下流サービスの **ホストを env 化**（`RECORDER_HOST` / `TOPIC_MONITOR_HOST` /
+  `WEBRTC_HOST` / `TOPIC_PROBE_HOST` / `DORA_RUNNER_HOST`、既定 `localhost`）。
+  実装 `libs/kairos_common/settings.py` + `services/api_orchestrator/app_factory.py`。
+- nginx: アップストリーム **ホストを env 化**（`API_HOST` / `WEBRTC_HOST` / `PROBE_HOST`、既定 `127.0.0.1`）。
+  `services/frontend/default.conf.template`。録画 PC では `WEBRTC_HOST` / `PROBE_HOST` をロボット IP に。
+- `DORA_RUNNER_HOST` は録画 PC ローカルのまま（dora は重く、orchestrator と同居）。
+
+### 3.4 MCAP の境界（重要）: NFS ではなく **記録後 rsync**
+recorder は MCAP を**ロボットのディスク**に書く。dora（CPU 重い）は録画 PC で **PC ローカルの複製**を読む。
+
+- **NFS で robot:/data をマウントして dora に直接読ませない**。dora が大きな MCAP を走査すると、
+  ロボットがディスク/network を供給することになり、**記録中ならロボットを圧迫する**（本設計の趣旨に反する）。
+- 既定は `make import-runs`（`deploy/sync/import_runs.sh`）: **finalise 済み（`metadata.yaml` がある）run のみ**を
+  ロボットから rsync（`--partial --append-verify`、`BWLIMIT` で帯域制限可）。idempotent でタイマー実行も可。
+  in-progress の run は半端にコピーされない。
+- recorder にファイル POST はさせない（アップロード失敗が記録ライフサイクルに結合するのを避ける）。
+- 注意: `dora_runner` の `dataset_export` は `recorded/` からファイルを **move** する
+  （`dataset_export.py`）。**PC ローカルの複製に対しては安全**だが、**ロボット storage や read-only NFS を
+  指すと破壊的**。必ず import 済みの PC ローカル複製に対して実行すること。
+
+## 4. Option B（代替）: ロボット側 Zenoh ゲートウェイ（別 PC からライブ全データ記録）
+
+別 PC で**ライブにフルデータ**を扱いたい（recorder を別 PC に置きたい）場合のみ。Option A より複雑で、
+ロボット側に重いリーダ/ゲートウェイを 1 つ置くトレードオフがある。
+
+- ロボットに `zenoh-bridge-ros2dds` を 1 つ置き、**ロボットの DDS を localhost に固定**する
+  （CycloneDDS の `cyclonedds.xml` で `NetworkInterfaceAddress=lo`・`AllowMulticast=false`、または
+  ROS 2 Iron+ の `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`）。
+- すると**ロボットの publisher はローカルのリーダ（ブリッジ）1 つだけ**を見る。重いデータは**単一の
+  TCP/QUIC セッションで LAN を 1 回だけ**渡る（リモート・リーダごとのファンアウトも RTPS 再送嵐も無い）。
+- ブリッジの allow/deny でトピックを絞り、`--max-frequency "<regex>=<hz>"` で**カメラだけ間引く**（例: ロボットは
+  フル、リモートは 10Hz）。圧縮は**リンクがボトルネックの時だけ**（ロボット CPU を食うので既定 off。間引きの方が安い）。
+- スケルトン: `config/zenoh/`（ブリッジ設定）と `config/cyclonedds-localhost.xml` を雛形として用意（要環境調整）。
+- **やってはいけない（隠れた圧迫）**: 重トピックの素のリモート購読 / 重トピックの domain_bridge /
+  リモート記録のためだけのロボット側 image_transport 圧縮 / republisher ノード。
+
+## 5. 注意点（pitfalls）
+
+- **時刻同期**: ロボットと PC で chrony/PTP/NTP を。メッセージ stamp はロボット由来だが、UI/イベント時刻・
+  転送・検証レポートの時刻は各ホスト時計に依存する。
+- **WebRTC**: 本設計の前提（同一 LAN・有線）では動く。nginx が中継するのは**シグナリングのみ**で、
+  RTP メディアは P2P。ブラウザは**ロボット IP に直接到達**する必要がある（同一 LAN なら満たす）。
+  NAT/VPN 越えは別途 STUN/TURN が要る（aiortc は現状 host candidate のみ）。
+- **config の同期**: orchestrator の Config タブ編集は**録画 PC の /config**に書く。一方 recorder/monitor は
+  **ロボットの /config**を読む（recorder の `start_paused` / `max_cache_size_mb` / QoS はロボット側 config 由来。
+  記録トピックの選択は start ペイロードで渡るので別）。**recorder の挙動を変えるにはロボットの config/ を
+  編集して `make config-reload` する**。config/ はデプロイ時資産として扱うのが安全。
+- **権限**: recorder が作る MCAP は root 所有。import 側（rsync ユーザ）が読めるよう UID/GID/umask を揃える。
+- **セキュリティ**: 全サービスは信頼 LAN 前提で無認証。分割で公開面が増える点に注意（インターネット非公開）。
+
+## 6. まとめ
+
+「ロボットを圧迫しない」唯一の構造的解は、**重いデータをロボットの DDS から network に出さない**こと。
+既定の **Option A（エッジ記録 + 配置分割）**は、録画 PC 側に DDS リーダを一切置かないことでこれを保証する。
+別 PC からライブ全データが必要なときだけ **Option B（ロボット側 Zenoh ゲートウェイ + DDS localhost 固定）**を使う。
+単一ホスト構成（`compose.yaml`）は従来どおり何も変えずに動く。

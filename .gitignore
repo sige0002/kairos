@@ -22,8 +22,9 @@ config/local/*
 .env.*
 *.pem
 *.key
-# ...but the committed template must be tracked.
+# ...but the committed templates must be tracked.
 !.env.example
+!.env.split.example
 
 # Claude Code — personal settings only (shared settings.json IS committed)
 .claude/settings.local.json

@@ -158,11 +158,19 @@ def create_orchestrator_app(
     run_store = store or RunStore(DEFAULT_DB_PATH)
     owns_client = http_client is None
     client = http_client or httpx.AsyncClient()
-    recorder = RecorderClient(f"http://localhost:{settings.recorder_port}", client)
-    monitor = MonitorClient(f"http://localhost:{settings.topic_monitor_port}", client)
-    streamer = StreamerClient(f"http://localhost:{settings.webrtc_port}", client)
+    # Downstream hosts default to localhost (single-host deploy); for the
+    # robot-edge split they point at the robot host (see Settings.*_host).
+    recorder = RecorderClient(
+        f"http://{settings.recorder_host}:{settings.recorder_port}", client
+    )
+    monitor = MonitorClient(
+        f"http://{settings.topic_monitor_host}:{settings.topic_monitor_port}", client
+    )
+    streamer = StreamerClient(
+        f"http://{settings.webrtc_host}:{settings.webrtc_port}", client
+    )
     dora_runner = DoraRunnerClient(
-        f"http://localhost:{settings.dora_runner_port}", client
+        f"http://{settings.dora_runner_host}:{settings.dora_runner_port}", client
     )
     event_hub = EventHub(monitor)
     config_catalog = ConfigCatalog(
