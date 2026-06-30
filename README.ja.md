@@ -82,8 +82,41 @@ docker compose up
 | `make smoke` / `make smoke-record` | 通し確認（PASS/FAIL）/ 記録 start/stop 込み |
 | `make test` / `make test-py` / `make test-fe` / `make lint` / `make fmt` | テスト・lint・整形 |
 
-別ロボットを使う場合は `make up RECORDING_CONFIG=/config/myrobot.yaml`、別 bag は
-`make rosbag BAG=/data/airoa-moma-mcap/000730` のように上書きできます。
+別ロボットを使う場合は `make up ROBOT=<robot>` のように `ROBOT` を切り替えます（`make` が
+`config/<robot>/`（committed）/ `config/local/<robot>/`（gitignored）を解決して各サービスへ渡す）。
+別 bag は `make rosbag BAG=/data/<robot>/<run>` のように上書きできます。
+
+### 追加ロボットを使う（カスタムメッセージ型を含む）
+
+新しいロボットを足す手順。標準メッセージ型だけのロボットは 1〜3 のうち overlay 部分が不要です。
+
+1. **config を用意**: `config/template/` を `config/local/<robot>/` にコピーして編集する
+   （`recording/` `stream/` `validation/` `validators/` の4 aspect。少なくとも `recording/default.yaml` の
+   `default_topics` をそのロボットの実トピックに合わせる）。詳細は [`config/`](config/README.ja.md)。
+2. **（カスタム型を使うロボットのみ）メッセージ overlay をビルド**: そのロボットの非標準メッセージ
+   パッケージ（例 `<robot>_msgs`）の typesupport が無いと、recorder / monitor / bag 再生のいずれも
+   該当トピックを**無言で取りこぼす**（標準型のみ流れる）。bag が**複数の**カスタムパッケージを使う場合は
+   **その全て**を用意する（一つでも欠けるとそのパッケージのトピックは落ちる）。ベンダ提供の msg ソースを
+   `deploy/msgs_overlay/<robot>/src/<pkg>/` に置いてからビルドする（手順は [`deploy/msgs_overlay/`](deploy/msgs_overlay/README.md)）:
+   ```bash
+   make msgs-build MSGS_OVERLAY_DIR=./deploy/msgs_overlay/<robot>
+   ```
+3. **起動**（overlay を渡す。カスタム型が無ければ `MSGS_OVERLAY_DIR` は不要）:
+   ```bash
+   make up ROBOT=<robot> MSGS_OVERLAY_DIR=./deploy/msgs_overlay/<robot>
+   ```
+4. **bag 再生にも overlay が要る**: `ros2 bag play` はカスタム型を publish するのに typesupport が必要なので、
+   再生側にも同じ overlay を渡す:
+   ```bash
+   MSGS_OVERLAY_DIR=./deploy/msgs_overlay/<robot> BAG=/data/<robot>/<run> \
+     docker compose -f deploy/test/compose.yaml run --rm rosbag_player
+   ```
+5. **スモーク**: `smoke.sh` は既定で同梱 HSR の bag を見るため、追加ロボットでは bag と overlay を明示する:
+   ```bash
+   env BAG=/data/<robot>/<run> MSGS_OVERLAY_DIR=./deploy/msgs_overlay/<robot> bash deploy/test/smoke.sh
+   ```
+   なお `make table`（topic_table）は overlay を読まないので、追加ロボットのカスタム型の Hz は表示されない。
+   確認は monitor の `GET /metrics`、または再生時に表示される `ros2 bag info` を使う。
 
 ### 主なエンドポイント（既定ポート）
 

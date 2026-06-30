@@ -84,8 +84,43 @@ selected with a single `ROBOT` (default `airoa_hsr`); `make` resolves `config/<r
 | `make smoke` / `make smoke-record` | End-to-end check (PASS/FAIL) / with record start/stop |
 | `make test` / `make test-py` / `make test-fe` / `make lint` / `make fmt` | Test, lint, format |
 
-To use a different robot, override like `make up RECORDING_CONFIG=/config/myrobot.yaml`; for a different
-bag, `make rosbag BAG=/data/airoa-moma-mcap/000730`.
+To use a different robot, switch `ROBOT` like `make up ROBOT=<robot>` (`make` resolves `config/<robot>/`
+(committed) / `config/local/<robot>/` (gitignored) and passes them to each service). For a different bag,
+override like `make rosbag BAG=/data/<robot>/<run>`.
+
+### Adding a robot (including custom message types)
+
+Steps to add a new robot. A robot with only standard message types can skip the overlay parts of 1–3.
+
+1. **Prepare config**: copy `config/template/` to `config/local/<robot>/` and edit it (the four aspects
+   `recording/` `stream/` `validation/` `validators/`; at minimum set `default_topics` in
+   `recording/default.yaml` to the robot's actual topics). Details: [`config/`](config/README.md).
+2. **(Custom-type robots only) build the message overlay**: without the typesupport of the robot's
+   non-standard message packages (e.g. `<robot>_msgs`), the recorder / monitor / bag playback all
+   **silently drop** those topics (only standard types flow). If the bag uses **several** custom
+   packages, prepare **all of them** (any one missing drops that package's topics). Place the vendor's
+   msg sources under `deploy/msgs_overlay/<robot>/src/<pkg>/`, then build (procedure:
+   [`deploy/msgs_overlay/`](deploy/msgs_overlay/README.md)):
+   ```bash
+   make msgs-build MSGS_OVERLAY_DIR=./deploy/msgs_overlay/<robot>
+   ```
+3. **Start up** (pass the overlay; `MSGS_OVERLAY_DIR` is unnecessary when there are no custom types):
+   ```bash
+   make up ROBOT=<robot> MSGS_OVERLAY_DIR=./deploy/msgs_overlay/<robot>
+   ```
+4. **Bag playback also needs the overlay**: `ros2 bag play` needs typesupport to publish custom types, so
+   pass the same overlay to the player:
+   ```bash
+   MSGS_OVERLAY_DIR=./deploy/msgs_overlay/<robot> BAG=/data/<robot>/<run> \
+     docker compose -f deploy/test/compose.yaml run --rm rosbag_player
+   ```
+5. **Smoke**: `smoke.sh` defaults to the bundled HSR bag, so for an added robot specify the bag and
+   overlay explicitly:
+   ```bash
+   env BAG=/data/<robot>/<run> MSGS_OVERLAY_DIR=./deploy/msgs_overlay/<robot> bash deploy/test/smoke.sh
+   ```
+   Note that `make table` (topic_table) does not load the overlay, so an added robot's custom-type Hz is
+   not shown. Use the monitor's `GET /metrics`, or the `ros2 bag info` printed at playback.
 
 ### Main endpoints (default ports)
 
