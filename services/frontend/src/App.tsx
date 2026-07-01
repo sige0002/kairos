@@ -42,6 +42,28 @@ function tabLabel(tab: TabConfig): string {
   return tab.label ?? TAB_LABELS[tab.id] ?? tab.id;
 }
 
+// ---- per-tab pages (deep link + pop-out) ------------------------------------
+// Each tab is addressable by URL (`?tab=<id>`); `?tab=<id>&solo=1` renders ONLY
+// that tab as a standalone page (no tab nav) so it can live in its own browser
+// window. Low-friction: a ↗ button per tab opens its solo page in a new window.
+// State-based (no router dependency) — we read/sync window.location directly.
+function readRoute(): { tab: string | null; solo: boolean } {
+  const p = new URLSearchParams(window.location.search);
+  return { tab: p.get('tab'), solo: p.get('solo') === '1' };
+}
+
+function tabUrl(id: string, solo: boolean): string {
+  const p = new URLSearchParams(window.location.search);
+  p.set('tab', id);
+  if (solo) p.set('solo', '1');
+  else p.delete('solo');
+  return `${window.location.pathname}?${p.toString()}`;
+}
+
+function openTabWindow(id: string): void {
+  window.open(tabUrl(id, true), '_blank', 'noopener,noreferrer');
+}
+
 /** Render the feature component for a given tab id. */
 function TabContent({ tabId, config }: { tabId: string; config: RuntimeConfig }) {
   switch (tabId) {
@@ -72,51 +94,85 @@ function Tabs({ config }: { config: RuntimeConfig }) {
   const activeTab = useUiStore((s) => s.activeTab);
   const setActiveTab = useUiStore((s) => s.setActiveTab);
 
-  // Default the active tab to the first enabled one, once config is known.
+  // Default the active tab: prefer a deep-linked `?tab=<id>` (if enabled), else
+  // the first enabled tab, once config is known. Also fall back if the active
+  // tab got disabled by a config change.
   useEffect(() => {
-    if (!activeTab && enabled[0]) setActiveTab(enabled[0].id);
-    // If the active tab got disabled by a config change, fall back.
-    else if (activeTab && !enabled.some((t) => t.id === activeTab) && enabled[0]) {
+    if (!activeTab) {
+      const { tab } = readRoute();
+      if (tab && enabled.some((t) => t.id === tab)) setActiveTab(tab);
+      else if (enabled[0]) setActiveTab(enabled[0].id);
+    } else if (!enabled.some((t) => t.id === activeTab) && enabled[0]) {
       setActiveTab(enabled[0].id);
     }
   }, [activeTab, enabled, setActiveTab]);
 
   const active = activeTab || enabled[0]?.id || '';
 
+  // Reflect the active tab in the URL (`?tab=<id>`) so a refresh keeps the tab
+  // and the pop-out/deep-link stays accurate. replaceState — no history spam.
+  useEffect(() => {
+    if (!active) return;
+    const p = new URLSearchParams(window.location.search);
+    if (p.get('tab') !== active || p.has('solo')) {
+      p.set('tab', active);
+      p.delete('solo');
+      window.history.replaceState(null, '', `${window.location.pathname}?${p.toString()}`);
+    }
+  }, [active]);
+
+  const activeTabConfig = ordered.find((t) => t.id === active);
   return (
-    <div className="flex flex-col gap-3">
-      <nav
-        role="tablist"
-        aria-label="kairos tabs"
-        className="flex flex-wrap gap-[3px] self-start rounded-[12px] border border-gray-200 bg-gray-100 p-1"
-      >
-        {ordered.map((tab) => {
-          const on = tab.id === active;
-          return (
-            <button
-              key={tab.id}
-              id={`tab-${tab.id}`}
-              role="tab"
-              aria-selected={on}
-              aria-controls={`panel-${tab.id}`}
-              disabled={!tab.enabled}
-              onClick={() => setActiveTab(tab.id)}
-              className={cn(
-                'rounded-[9px] px-4 py-2 text-[13.5px] transition-colors disabled:opacity-40',
-                on
-                  ? 'bg-teal-600 font-semibold text-white shadow-sm'
-                  : 'font-medium text-gray-500 hover:text-gray-700',
-              )}
-            >
-              {tabLabel(tab)}
-            </button>
-          );
-        })}
-      </nav>
+    <div className="flex flex-col gap-3 lg:min-h-0 lg:flex-1">
+      <div className="flex flex-wrap items-center gap-2 lg:shrink-0">
+        <nav
+          role="tablist"
+          aria-label="kairos tabs"
+          className="flex flex-wrap gap-[3px] self-start rounded-[12px] border border-gray-200 bg-gray-100 p-1"
+        >
+          {ordered.map((tab) => {
+            const on = tab.id === active;
+            return (
+              <button
+                key={tab.id}
+                id={`tab-${tab.id}`}
+                role="tab"
+                aria-selected={on}
+                aria-controls={`panel-${tab.id}`}
+                disabled={!tab.enabled}
+                onClick={() => setActiveTab(tab.id)}
+                className={cn(
+                  'rounded-[9px] px-4 py-2 text-[13.5px] transition-colors disabled:opacity-40',
+                  on
+                    ? 'bg-teal-600 font-semibold text-white shadow-sm'
+                    : 'font-medium text-gray-500 hover:text-gray-700',
+                )}
+              >
+                {tabLabel(tab)}
+              </button>
+            );
+          })}
+        </nav>
+        {/* Pop-out the current tab into its own window (?tab=<id>&solo=1). Kept
+            OUTSIDE the tablist so assistive tech sees only tabs there. Any tab is
+            also directly addressable by its deep-link URL. */}
+        {active && (
+          <button
+            type="button"
+            aria-label={`open ${activeTabConfig ? tabLabel(activeTabConfig) : active} in a new window`}
+            title="Open the current tab in its own window"
+            onClick={() => openTabWindow(active)}
+            className="inline-flex items-center gap-1 rounded-control border border-gray-200 px-2.5 py-1.5 text-[12.5px] text-gray-500 transition-colors hover:bg-white hover:text-teal-700"
+          >
+            ↗<span className="hidden sm:inline">Open in new window</span>
+          </button>
+        )}
+      </div>
       <section
         role="tabpanel"
         id={active ? `panel-${active}` : undefined}
         aria-labelledby={active ? `tab-${active}` : undefined}
+        className="lg:min-h-0 lg:flex-1 lg:overflow-auto"
       >
         {active ? (
           <TabContent tabId={active} config={config} />
@@ -189,6 +245,40 @@ function EventStreamMount({ url }: { url: string }) {
   return null;
 }
 
+/**
+ * Standalone single-tab page (`?tab=<id>&solo=1`): renders ONLY that tab, no tab
+ * nav — so an operator can keep e.g. the Live screen in its own window. It runs
+ * its own SSE subscription (separate document) and links back to the console.
+ */
+function SoloPage({ tabId, config }: { tabId: string; config: RuntimeConfig }) {
+  const ordered = orderTabs(ensureClientTabs(config.tabs));
+  const tab = ordered.find((t) => t.id === tabId);
+  const label = tab ? tabLabel(tab) : tabId;
+  return (
+    <main className="flex h-screen flex-col bg-gray-50 px-[22px] pb-[22px] pt-2.5">
+      <EventStreamMount url={config.endpoints.events} />
+      <header className="mb-2 flex flex-wrap items-center gap-3">
+        <a
+          href={tabUrl(tabId, false)}
+          title="Back to the kairos console"
+          className="flex items-center gap-2 rounded-control text-gray-600 hover:text-teal-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+        >
+          <Hexagon size={20} />
+          <span className="text-[15px] font-bold tracking-[-0.02em] text-gray-900">kairos</span>
+          <span className="text-gray-300">/</span>
+          <span className="text-[14px] font-semibold">{label}</span>
+        </a>
+        <div className="flex-1" />
+        <DomainChip domainId={config.defaults.ros_domain_id} />
+        <ConnectionBadge />
+      </header>
+      <section role="tabpanel" aria-label={label} className="min-h-0 flex-1 overflow-auto">
+        <TabContent tabId={tabId} config={config} />
+      </section>
+    </main>
+  );
+}
+
 export function App() {
   // Render gate: wait for the backend config before showing the UI. config.ts
   // provides a dev-only fallback so the SPA renders without a backend.
@@ -220,10 +310,18 @@ export function App() {
     );
   }
 
+  // Standalone single-tab page (`?tab=<id>&solo=1`) — render just that tab.
+  const route = readRoute();
+  if (route.solo && route.tab) {
+    const ordered = orderTabs(ensureClientTabs(config.tabs));
+    const valid = ordered.find((t) => t.id === route.tab && t.enabled);
+    if (valid) return <SoloPage tabId={valid.id} config={config} />;
+  }
+
   return (
-    <main className="min-h-screen bg-gray-50 px-[22px] pb-[22px] pt-2.5">
+    <main className="min-h-screen bg-gray-50 px-[22px] pb-[22px] pt-2.5 lg:flex lg:h-svh lg:min-h-0 lg:flex-col lg:overflow-hidden">
       <EventStreamMount url={config.endpoints.events} />
-      <header className="mb-2.5 flex flex-wrap items-center gap-4">
+      <header className="mb-2.5 flex flex-wrap items-center gap-4 lg:shrink-0">
         <a
           href="/"
           aria-label="kairos — recording console (home)"

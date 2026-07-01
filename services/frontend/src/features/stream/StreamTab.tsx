@@ -10,9 +10,9 @@ import { apiGet } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
 import type { TopicInfo } from '../../api/types';
 import type { RuntimeConfig } from '../../config';
-import { useUiStore } from '../../store/uiStore';
+import { useUiStore, MAX_STREAM_PANES } from '../../store/uiStore';
 import { useWebRtcStream, type StreamStats } from './useWebRtcStream';
-import { Badge, Button, SectionLabel, StatusDot } from '../../components/ui';
+import { Badge, Button, SectionLabel, StatusDot, cn } from '../../components/ui';
 
 // Latency-threshold colour for the per-tile preview latency (handoff): high is
 // red, caution amber, normal teal. This is WebRTC preview latency (getStats),
@@ -54,18 +54,26 @@ function VideoSurface({
   topic,
   live,
   stats,
+  fit,
 }: {
   stream: MediaStream | null;
   topic: string;
   live: boolean;
   stats: StreamStats;
+  /** Fill the parent's height (fit-to-viewport grid) instead of a 16:9 box. */
+  fit?: boolean;
 }) {
   const ref = useRef<HTMLVideoElement>(null);
   useEffect(() => {
     if (ref.current && stream) ref.current.srcObject = stream;
   }, [stream]);
   return (
-    <div className="relative aspect-video w-full overflow-hidden rounded-control border border-gray-200 bg-[#0b0e12]">
+    <div
+      className={cn(
+        'relative w-full overflow-hidden rounded-control border border-gray-200 bg-[#0b0e12]',
+        fit ? 'min-h-0 flex-1' : 'aspect-video',
+      )}
+    >
       <video
         ref={ref}
         autoPlay
@@ -115,6 +123,7 @@ function CameraPane({
   webrtcBase,
   removable,
   onRemove,
+  fit,
 }: {
   options: CameraOption[];
   topic: string;
@@ -122,6 +131,8 @@ function CameraPane({
   webrtcBase: string;
   removable: boolean;
   onRemove: () => void;
+  /** Fill the grid cell's height (Live fit-to-viewport grid). */
+  fit?: boolean;
 }) {
   // Keep a valid selection as discovery changes; write back to the store so the
   // resolved topic persists across the tab unmounting on navigation.
@@ -142,7 +153,12 @@ function CameraPane({
           : 'amber';
 
   return (
-    <div className="flex flex-col gap-2 rounded-card border border-gray-200 bg-white p-2.5 shadow-card">
+    <div
+      className={cn(
+        'flex flex-col gap-2 rounded-card border border-gray-200 bg-white p-2.5 shadow-card',
+        fit && 'h-full min-h-0',
+      )}
+    >
       <div className="flex flex-wrap items-center gap-2">
         <select
           aria-label="camera topic"
@@ -200,6 +216,7 @@ function CameraPane({
           topic={topic}
           live={phase === 'connected'}
           stats={stats}
+          fit={fit}
         />
       ) : (
         <p className="text-sm text-gray-500">Select a camera topic to start the preview.</p>
@@ -208,7 +225,7 @@ function CameraPane({
   );
 }
 
-export function StreamTab({ config }: { config: RuntimeConfig }) {
+export function StreamTab({ config, fit }: { config: RuntimeConfig; fit?: boolean }) {
   const defaultTopics = config.defaults.default_topics ?? [];
 
   const topicsQuery = useQuery({
@@ -247,26 +264,62 @@ export function StreamTab({ config }: { config: RuntimeConfig }) {
   const setStreamPaneTopic = useUiStore((s) => s.setStreamPaneTopic);
 
   useEffect(() => {
-    seedStreamPanes(config.stream?.panes ?? []);
+    const configured = config.stream?.panes ?? [];
+    // Key by the configured panes so a robot switch (different cameras) re-seeds,
+    // while tab switches / unrelated config refetches keep operator-opened panes.
+    seedStreamPanes(configured, JSON.stringify(configured));
   }, [config.stream, seedStreamPanes]);
 
   const gridCols = GRID_COLS[config.stream?.columns ?? 2] ?? 'lg:grid-cols-2';
+  const atMax = panes.length >= MAX_STREAM_PANES;
+
+  // Fit mode (Live): fill the available height with up to a 2x2 grid (no page
+  // scroll). Inline grid-template (not Tailwind classes) keeps the cell count
+  // dynamic; minmax(0,1fr) lets cells shrink so videos never overflow.
+  const cols = panes.length <= 1 ? 1 : 2;
+  const rows = Math.max(1, Math.ceil(panes.length / cols));
+  const fitGridStyle = {
+    gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
+    gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`,
+  };
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className={cn('flex flex-col gap-3', fit && 'h-full min-h-0')}>
       <div className="flex flex-wrap items-center gap-3">
         <SectionLabel>Stream</SectionLabel>
         <span className="font-mono text-[11.5px] text-gray-400">
           {panes.length} preview{panes.length === 1 ? '' : 's'}
+          {atMax ? ` · max ${MAX_STREAM_PANES}` : ''}
         </span>
         <div className="flex-1" />
-        <Button type="button" onClick={addStreamPane} className="px-3 py-1.5">
+        <Button
+          type="button"
+          onClick={addStreamPane}
+          disabled={atMax}
+          className="px-3 py-1.5"
+          title={atMax ? `Up to ${MAX_STREAM_PANES} previews` : undefined}
+        >
           + Add camera
         </Button>
       </div>
 
       {panes.length === 0 ? (
         <p className="text-sm text-gray-500">No previews. Add a camera.</p>
+      ) : fit ? (
+        <div className="grid min-h-[55vh] flex-1 gap-2 lg:min-h-0" style={fitGridStyle}>
+          {panes.map((pane) => (
+            <CameraPane
+              key={pane.id}
+              options={options}
+              topic={pane.topic || firstLive}
+              onTopicChange={(topic) => setStreamPaneTopic(pane.id, topic)}
+              webrtcBase={config.endpoints.webrtc}
+              removable={panes.length > 1}
+              onRemove={() => removeStreamPane(pane.id)}
+              fit
+            />
+          ))}
+        </div>
       ) : (
         <div className={`grid grid-cols-1 gap-3 ${gridCols}`}>
           {panes.map((pane) => (

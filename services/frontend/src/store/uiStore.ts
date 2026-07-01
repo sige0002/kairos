@@ -15,6 +15,10 @@ import type { RecMarker } from '../features/live/LiveHealthGraph';
 
 export type SseStatus = 'connecting' | 'open' | 'reconnecting' | 'closed';
 
+/** Max live stream previews: the Live grid maximizes up to a 2x2 (4) layout that
+ *  fits the viewport without page scroll. */
+export const MAX_STREAM_PANES = 4;
+
 interface UiState {
   activeTab: string;
   setActiveTab: (id: string) => void;
@@ -62,8 +66,11 @@ interface UiState {
   // camera and switching tabs doesn't drop it back to the configured layout.
   streamPanes: { id: number; topic: string }[];
   streamPaneSeq: number;
-  streamPanesSeeded: boolean;
-  seedStreamPanes: (configured: { topic?: string | null }[]) => void;
+  // Key of the config the panes were seeded from (the active robot's stream
+  // config). Re-seed when it changes (e.g. a robot switch) so the panes follow
+  // the new robot's cameras; `null` = not yet seeded.
+  streamPanesSeededKey: string | null;
+  seedStreamPanes: (configured: { topic?: string | null }[], key: string) => void;
   addStreamPane: () => void;
   removeStreamPane: (id: number) => void;
   setStreamPaneTopic: (id: number, topic: string) => void;
@@ -127,21 +134,30 @@ export const useUiStore = create<UiState>((set) => ({
 
   streamPanes: [],
   streamPaneSeq: 0,
-  streamPanesSeeded: false,
-  seedStreamPanes: (configured) =>
+  streamPanesSeededKey: null,
+  seedStreamPanes: (configured, key) =>
     set((s) => {
-      if (s.streamPanesSeeded) return {};
+      // Re-seed only when the source config changes (robot switch) — otherwise
+      // operator-opened panes persist across tab switches / config refetches.
+      if (s.streamPanesSeededKey === key) return {};
+      // Cap at MAX_STREAM_PANES (4): the Live grid maximizes up to a 2x2 layout
+      // that fits the viewport without page scroll.
       const init =
         configured.length > 0
-          ? configured.map((p, i) => ({ id: i, topic: p.topic ?? '' }))
+          ? configured.slice(0, MAX_STREAM_PANES).map((p, i) => ({ id: i, topic: p.topic ?? '' }))
           : [{ id: 0, topic: '' }];
-      return { streamPanes: init, streamPaneSeq: init.length, streamPanesSeeded: true };
+      return { streamPanes: init, streamPaneSeq: init.length, streamPanesSeededKey: key };
     }),
+  // No-op once 4 panes exist (the fit-to-viewport grid tops out at 2x2).
   addStreamPane: () =>
-    set((s) => ({
-      streamPanes: [...s.streamPanes, { id: s.streamPaneSeq, topic: '' }],
-      streamPaneSeq: s.streamPaneSeq + 1,
-    })),
+    set((s) =>
+      s.streamPanes.length >= MAX_STREAM_PANES
+        ? {}
+        : {
+            streamPanes: [...s.streamPanes, { id: s.streamPaneSeq, topic: '' }],
+            streamPaneSeq: s.streamPaneSeq + 1,
+          },
+    ),
   removeStreamPane: (id) =>
     set((s) => ({ streamPanes: s.streamPanes.filter((p) => p.id !== id) })),
   setStreamPaneTopic: (id, topic) =>

@@ -14,6 +14,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiDelete, apiGet, apiPost } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
 import type {
+  ConfigOptions,
   RecordArming,
   RecordStartRequest,
   RecordStatus,
@@ -524,7 +525,7 @@ function LiveMonitorPanel({
   }, [rows, selected]);
 
   return (
-    <Card className="flex flex-col overflow-hidden">
+    <Card className="flex h-full min-h-0 flex-col overflow-hidden">
       <div className="flex items-center gap-2.5 border-b border-gray-100 px-[18px] py-4">
         <SectionLabel>Monitor</SectionLabel>
         <span className="font-mono text-[11px] text-gray-400">{selected.size} to record</span>
@@ -537,7 +538,7 @@ function LiveMonitorPanel({
           </Badge>
         )}
       </div>
-      <div className="flex flex-1 flex-col px-[18px] pb-4 pt-1.5">
+      <div className="flex min-h-0 flex-1 flex-col px-[18px] pb-4 pt-1.5">
         <div
           className={cn(
             'grid gap-2.5 border-b border-gray-100 py-2 text-[10px] uppercase tracking-[0.05em] text-gray-400',
@@ -553,7 +554,7 @@ function LiveMonitorPanel({
         {rows.length === 0 ? (
           <p className="py-4 text-sm text-gray-500">No topics on the graph yet.</p>
         ) : (
-          <div className="max-h-[420px] overflow-y-auto">
+          <div className="min-h-0 flex-1 overflow-y-auto">
             {sorted.map((m) => {
               const tone = rowTone(m);
               const on = selected.has(m.name);
@@ -624,6 +625,67 @@ function LiveMonitorPanel({
   );
 }
 
+// Live robot/config bar: shows the active robot (= the loaded config set) and a
+// dropdown to switch it without leaving the Live screen. Reuses the same
+// GET /config/options + POST /config/select the Config tab uses; switching a
+// robot re-points the whole config, so invalidate runtimeConfig to re-render.
+function LiveRobotBar() {
+  const queryClient = useQueryClient();
+  const optionsQuery = useQuery({
+    queryKey: queryKeys.configOptions,
+    queryFn: ({ signal }) => apiGet<ConfigOptions>('/config/options', { signal }),
+  });
+  const selectMutation = useMutation({
+    mutationFn: (id: string) => apiPost<ConfigOptions>('/config/select', { category: 'robot', id }),
+    onSuccess: (data) => {
+      queryClient.setQueryData(queryKeys.configOptions, data);
+      // Robot switch changes default_topics + stream panes + the editable
+      // recording file — refresh the runtime config so the whole Live view follows.
+      void queryClient.invalidateQueries({ queryKey: queryKeys.runtimeConfig });
+    },
+  });
+  const data = optionsQuery.data;
+  const recordingOption = data?.aspects?.recording?.active;
+
+  return (
+    <div className="flex flex-wrap items-center gap-2.5" data-testid="live-robot-bar">
+      <SectionLabel>Robot</SectionLabel>
+      {optionsQuery.isError ? (
+        <span className="text-sm text-red-600">config unavailable</span>
+      ) : !data?.robots ? (
+        <span className="text-sm text-gray-500">Loading…</span>
+      ) : (
+        <>
+          <select
+            aria-label="active robot"
+            value={data.active_robot}
+            disabled={selectMutation.isPending}
+            onChange={(e) => selectMutation.mutate(e.target.value)}
+            className="rounded-control border border-gray-200 px-2.5 py-1.5 font-mono text-sm focus:border-teal-500 focus:outline-none disabled:opacity-50"
+          >
+            {data.robots.map((r) => (
+              <option key={r.id} value={r.id}>
+                {r.id}
+                {r.local ? ' (local)' : ''}
+              </option>
+            ))}
+          </select>
+          <span className="font-mono text-[11px] text-gray-400">
+            config: {data.active_robot}
+            {recordingOption ? ` · ${recordingOption}` : ''}
+          </span>
+          {selectMutation.isPending && (
+            <span className="text-[11px] text-gray-400">switching…</span>
+          )}
+          {selectMutation.isError && (
+            <span className="text-[11px] text-red-600">switch failed</span>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 export function LiveTab({ config }: { config: RuntimeConfig }) {
   const monitor = useMonitorRows(config);
   const defaultTopics = useMemo(
@@ -669,12 +731,19 @@ export function LiveTab({ config }: { config: RuntimeConfig }) {
   const graphPoints = graphTopic ? (metricHistory.history.get(graphTopic) ?? []) : [];
   const graphLabel = graphTopic ? (graphTopic.split('/').filter(Boolean).at(-1) ?? graphTopic) : '';
 
+  // No-page-scroll layout (lg+): bound the Live view to the viewport so the
+  // stream grid + monitor fit without the page scrolling. RecordHero/robot bar
+  // are natural height; the [stream | monitor] row consumes the rest (flex-1),
+  // the stream fills it (fit) and the monitor scrolls internally. Below lg it
+  // flows naturally. The health graph is a fixed bottom overlay so opening it
+  // never adds page height.
   return (
-    <div className="flex flex-col gap-[18px]">
+    <div className="flex flex-col gap-3 lg:h-full lg:min-h-0 lg:overflow-hidden">
+      <LiveRobotBar />
       <RecordHero selection={selection} />
-      <div className="grid grid-cols-1 gap-[18px] lg:grid-cols-[1.62fr_1fr]">
-        <div className="min-w-0">
-          <StreamTab config={config} />
+      <div className="grid grid-cols-1 gap-[18px] lg:min-h-0 lg:flex-1 lg:grid-cols-[1.62fr_1fr]">
+        <div className="flex min-h-0 min-w-0 flex-col">
+          <StreamTab config={config} fit />
         </div>
         <LiveMonitorPanel
           monitor={monitor}
@@ -685,13 +754,15 @@ export function LiveTab({ config }: { config: RuntimeConfig }) {
         />
       </div>
       {graphTopic && (
-        <LiveHealthGraph
-          topic={graphTopic}
-          label={graphLabel}
-          points={graphPoints}
-          markers={recMarkers}
-          onClose={() => setGraphTopic(null)}
-        />
+        <div className="fixed inset-x-0 bottom-0 z-30 mx-auto w-full max-w-[1500px] px-[22px] pb-[22px]">
+          <LiveHealthGraph
+            topic={graphTopic}
+            label={graphLabel}
+            points={graphPoints}
+            markers={recMarkers}
+            onClose={() => setGraphTopic(null)}
+          />
+        </div>
       )}
     </div>
   );

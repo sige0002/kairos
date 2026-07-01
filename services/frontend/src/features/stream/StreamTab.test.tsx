@@ -47,7 +47,7 @@ class FakePeerConnection {
 beforeEach(() => {
   setApiBase('/api/v1');
   // Reset the persisted stream panes so they don't leak between tests.
-  useUiStore.setState({ streamPanes: [], streamPaneSeq: 0, streamPanesSeeded: false });
+  useUiStore.setState({ streamPanes: [], streamPaneSeq: 0, streamPanesSeededKey: null });
   vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
   vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
@@ -143,6 +143,25 @@ test('an added camera pane survives a remount', async () => {
   renderWithClient(<StreamTab config={CONFIG} />); // come back
 
   await waitFor(() => expect(screen.getAllByTestId('stream-video')).toHaveLength(2));
+});
+
+// The Live stream grid maximizes up to a 2x2 (4) layout that fits the viewport
+// without page scroll, so previews are capped at 4: "+ Add camera" disables.
+test('caps previews at 4 (add disabled at max)', async () => {
+  useUiStore.setState({
+    streamPanes: [0, 1, 2, 3].map((id) => ({ id, topic: '' })),
+    streamPaneSeq: 4,
+    // Match the key the component computes for CONFIG (no stream) so the seed
+    // effect no-ops and preserves these 4 panes.
+    streamPanesSeededKey: JSON.stringify([]),
+  });
+  renderWithClient(<StreamTab config={CONFIG} fit />);
+
+  await waitFor(() => expect(screen.getAllByLabelText('camera topic')).toHaveLength(4));
+  const add = screen.getByRole('button', { name: /add camera/i });
+  expect(add).toBeDisabled();
+  fireEvent.click(add); // no-op at max
+  expect(screen.getAllByLabelText('camera topic')).toHaveLength(4);
 });
 
 test('shows a fallback error when WebRTC is unsupported', async () => {

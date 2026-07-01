@@ -209,6 +209,48 @@ test('no integrity badge for a clean (integrity=ok) run', async () => {
   expect(screen.queryByTestId('integrity-note')).not.toBeInTheDocument();
 });
 
+// The Live page shows the active robot/config and lets you switch it via a
+// dropdown (reusing /config/options + /config/select).
+test('robot dropdown lists robots and switching posts /config/select', async () => {
+  const options = {
+    active_robot: 'airoa_hsr',
+    robots: [
+      { id: 'airoa_hsr', local: false },
+      { id: 'myrobot', local: true },
+    ],
+    aspects: {
+      recording: { active: 'default', options: [] },
+      stream: { active: 'default', options: [] },
+      validation: { active: 'default', options: [] },
+      validators: { active: 'default', options: [] },
+    },
+  };
+  const posted: unknown[] = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    if (url.includes('/config/options')) return Promise.resolve(jsonResponse(options));
+    if (url.includes('/config/select')) {
+      posted.push(JSON.parse(String((init as RequestInit | undefined)?.body ?? '{}')));
+      return Promise.resolve(jsonResponse({ ...options, active_robot: 'myrobot' }));
+    }
+    if (url.includes('/record/status'))
+      return Promise.resolve(jsonResponse({ run_id: null, state: 'created' }));
+    if (url.includes('/runs'))
+      return Promise.resolve(jsonResponse({ items: [], next_cursor: null }));
+    return Promise.resolve(jsonResponse({}));
+  });
+  renderWithClient(<LiveTab config={CONFIG} />);
+
+  const select = (await screen.findByLabelText('active robot')) as HTMLSelectElement;
+  expect(select.value).toBe('airoa_hsr');
+  expect(screen.getByText(/config: airoa_hsr/)).toBeInTheDocument();
+
+  fireEvent.change(select, { target: { value: 'myrobot' } });
+  await waitFor(() =>
+    expect(posted).toContainEqual({ category: 'robot', id: 'myrobot' }),
+  );
+});
+
 // Regression: typing operator/task then navigating away (Live tab unmounts)
 // and back must NOT reset them — they live in the persistent UI store.
 test('operator/task survive a remount (tab switch away and back)', async () => {

@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { App } from './App';
 import type { RuntimeConfig } from './config';
@@ -59,6 +59,33 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  // Tabs sync the active tab into the URL; reset so solo/deep-link tests are isolated.
+  window.history.replaceState(null, '', '/');
+});
+
+test('the current tab has a pop-out that opens its solo page in a new window', async () => {
+  const openSpy = vi.fn();
+  vi.stubGlobal('open', openSpy);
+  renderWithClient(<App />);
+  // Default active tab is Live; the pop-out targets the current tab.
+  await waitFor(() => screen.getByRole('tab', { name: 'Live' }));
+
+  fireEvent.click(screen.getByRole('button', { name: /open Live in a new window/i }));
+  expect(openSpy).toHaveBeenCalledTimes(1);
+  const openedUrl = String(openSpy.mock.calls[0]?.[0] ?? '');
+  expect(openedUrl).toMatch(/tab=live/);
+  expect(openedUrl).toMatch(/solo=1/);
+});
+
+test('a solo URL (?tab=...&solo=1) renders only that tab, no tablist', async () => {
+  window.history.replaceState(null, '', '/?tab=graph&solo=1');
+  renderWithClient(<App />);
+  await waitFor(() =>
+    expect(screen.queryByText(/Loading kairos/i)).not.toBeInTheDocument(),
+  );
+  // Standalone page: no tab navigation; the back link to the console is present.
+  expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
+  expect(screen.getByTitle('Back to the kairos console')).toBeInTheDocument();
 });
 
 test('render-gates on backend config, then shows the registry-driven tabs', async () => {
