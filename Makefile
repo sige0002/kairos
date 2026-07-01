@@ -82,9 +82,13 @@ PY_DIRS := libs/kairos_common services/rosbag2_recorder services/topic_monitor \
 .DEFAULT_GOAL := help
 
 # ---- compose lifecycle ------------------------------------------------------
-.PHONY: up down build rebuild restart logs ps stop urls msgs-build
+.PHONY: up up-nobuild down build rebuild restart logs ps stop urls msgs-build
 up: ## build + start the stack detached (RECORDING_CONFIG-aware)
 	$(COMPOSE) up -d --build $(SVC)
+	@$(MAKE) --no-print-directory urls
+
+up-nobuild: ## start the stack detached WITHOUT rebuilding (uses existing images)
+	$(COMPOSE) up -d $(SVC)
 	@$(MAKE) --no-print-directory urls
 
 msgs-build: ## build custom ROS msgs (dir from MSGS_OVERLAY_DIR / .env; per-robot)
