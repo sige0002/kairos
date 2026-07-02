@@ -1,6 +1,8 @@
 <!-- AUTO-GENERATED from docs/specs/ja/deployment_topology.md. Do not edit by hand — edit the Japanese source and run /sync-docs. -->
 # Deployment topology — recording from a separate PC without overloading the robot
 
+> Status: design finalized (v1). Japanese is the source of truth (treat it as canonical). The English version `docs/specs/en/deployment_topology.md` is an auto-generated mirror (do not edit it directly). **No authentication required.**
+
 > A placement design for recording a rosbag (MCAP) that includes heavy topics such as images
 > from a separate PC (the recording PC), while **not overloading the robot's onboard system at all**. The premise is **wired, same LAN**.
 > The existing single-host configuration (`compose.yaml`) works as-is with no changes (this configuration is an additional "split deployment").
