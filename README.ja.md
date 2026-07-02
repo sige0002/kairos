@@ -5,21 +5,21 @@
 ROS 2 のロボットデータを **収録・監視・検証・変換** するシステムです。収録の正本フォーマットは
 **MCAP** であり、ライブ映像・ライブメトリクス・事後検証はすべてこの「正本」を中心に構成されます。
 
-> **ステータス:** 全 6 サービス + frontend を実装済み（Stage 1〜4）。以下のアーキテクチャは
+> **ステータス:** 全 7 サービス + frontend を実装済み（Stage 1〜4）。以下のアーキテクチャは
 > `fig_const/` の図に基づきます。
 
 ## アーキテクチャ
 
 ```
-                ROS 2 Robot / Sim  ──►  ROS 2 Topics
-                                          │
-        ┌──────────────┬──────────────────┼──────────────────────────┐
-        ▼              ▼                   ▼                          ▼
-  webrtc_streamer  topic_monitor    rosbag2_recorder            (選択されたトピック)
-   (ライブ映像)     (ライブ監視)      ──► MCAP  /data/recorded/run_xxxx.mcap  ◄── 正本
-        │              │                   │
-        ▼              ▼                   ▼  (収録後)
-     Browser  ◄──  api_orchestrator  ──►  dora_runner ──► レポート / 変換済みデータセット
+              ROS 2 Robot / Sim  ──►  ROS 2 Topics
+                                        │
+     ┌──────────────┬────────────┬──────┼────────────────────────┐
+     ▼              ▼            ▼       ▼                        ▼
+webrtc_streamer topic_monitor topic_probe rosbag2_recorder  (選択されたトピック)
+ (ライブ映像)    (ライブ監視)  (数値プロット) ──► MCAP  /data/recorded/run_xxxx.mcap ◄─ 正本
+     │              │            │        │
+     ▼              ▼            ▼        ▼  (収録後)
+   Browser  ◄────  api_orchestrator  ──►  dora_runner ──► レポート / 変換済みデータセット
                   (ジョブ・状態ハブ)        (検証・変換パイプライン)
                          ▲
                          │ REST / WebSocket / SSE
@@ -32,10 +32,11 @@ ROS 2 のロボットデータを **収録・監視・検証・変換** する�
 |---|---|
 | [rosbag2_recorder](docs/specs/ja/rosbag2_recorder.md) | 選択した ROS 2 トピックを **MCAP** に記録する。唯一の正本（source of truth）。 |
 | [topic_monitor](docs/specs/ja/topic_monitor.md) | 軽量・非破壊なライブ健全性メトリクス（Hz / 遅延 / 欠落 / ロス / 帯域）。ペイロードは**デコードしない**。 |
+| [topic_probe](docs/specs/ja/topic_probe.md) | 選択トピックの**数値フィールド**をライブプロットする汎用プローブ。decode は本サービスに**隔離**し、収録・監視に波及させない。 |
 | [webrtc_streamer](docs/specs/ja/webrtc_streamer.md) | 低遅延のカメラ**プレビュー**（ROS 2 image → ブラウザ）。記録パスではない。 |
 | [api_orchestrator](docs/specs/ja/api_orchestrator.md) | 単一の API ハブ。ジョブのライフサイクル・状態・設定・結果集約を担う。 |
 | [dora_runner](docs/specs/ja/dora_runner.md) | 収録後の**検証・変換**パイプライン（dora ベース）。有効: `fast_validation` / `dataset_export` / `loss_report` / `video_check`。 |
-| [frontend](docs/specs/ja/frontend.md) | backend-driven な Web UI（UI 表記は英語）。タブ構成: Live / Graph / Recordings / Validation / Datasets / Config。 |
+| [frontend](docs/specs/ja/frontend.md) | backend-driven な Web UI（UI 表記は英語）。タブ構成: Live / Graph / Probe / Recordings / Validation / Datasets / Config。 |
 
 ## 仕様ドキュメント
 
@@ -123,8 +124,9 @@ docker compose up
 | サービス | ポート | 例 |
 |---|---|---|
 | api_orchestrator | 8000 | `GET /api/v1/config` / `POST /api/v1/record/start` / `GET /api/v1/events`（SSE）/ `POST /api/v1/jobs` |
-| topic_monitor | 8001 | `GET /metrics` / `GET /topics` / `GET /metrics/stream`（SSE） |
+| topic_monitor | 8001 | `GET /metrics` / `GET /topics` / `GET /metrics/stream`（SSE）/ `GET /alerts` |
 | webrtc_streamer | 8002 | `POST /stream/start` / `POST /stream/offer` |
+| topic_probe | 8003 | `GET /topics` / `GET /fields` / `GET /stream`（SSE） |
 | rosbag2_recorder | 8010 | `POST /record/start` / `POST /record/stop` / `GET /record/status` |
 | dora_runner | 8020 | `POST /jobs` / `GET /jobs/{id}/result` / `POST /validation/templates/generate` |
 

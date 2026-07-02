@@ -14,6 +14,7 @@ config/
 ├─ <robot>/                  # one folder per robot (committed)
 │  ├─ recording/<option>.yaml     # recording/monitoring (default.yaml is active)
 │  ├─ stream/<option>.yaml        # Stream tab initial layout
+│  ├─ monitoring/alerts.yaml      # topic_monitor alert definitions (optional, ALERT_CONFIG_PATH)
 │  ├─ validation/<option>.yaml    # fast_validation template
 │  └─ validators/loss_report.yaml # validator parameters
 ├─ airoa_hsr/               # bundled sample robot (HSR, data/airoa-moma-mcap/)
@@ -48,7 +49,7 @@ make up ROBOT=<robot>        # config/local/<robot>/ (gitignored, your own robot
 ## Where it applies
 
 - `rosbag2_recorder` … recording `default_topics` (default capture set) + recording QoS.
-- `topic_monitor` … recording `expected_hz_patterns` (Late judgement) + subscription QoS.
+- `topic_monitor` … recording `expected_hz_patterns` (Late judgement) + subscription QoS + `monitoring/alerts.yaml` (alert definitions; optional; empty = alerts disabled).
 - `dora_runner` … validation `required_topics` (fast_validation) + validators (loss_report).
 - `frontend` (UI) … via `GET /api/v1/config`: Record/Monitor pre-selection + badges, Stream initial panes.
 

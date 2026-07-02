@@ -6,8 +6,9 @@ Working notes for Claude Code (and humans) in this repository.
 Project overview: [README.md](README.md) (日本語: [README.ja.md](README.ja.md)).
 The current design lives in `docs/specs/ja/` (the **canonical** version, based on the `fig_const/` diagrams). Read those for detail; do not restate them here.
 
-> Status: **greenfield, pre-design.** Code and tech stack are undecided. Directory structure is agreed only at the container level (each service's internals are TBD).
-> **Do not make design decisions** — decide them *with the user*. Leave unknowns as **TBD**.
+> Status: **implemented (v1).** All 7 services + frontend are running (Stage 1–4). The tech stack,
+> directory structure, and API contracts are settled; the canonical design lives in `docs/specs/ja/`.
+> **Decide major design changes with the user** — don't rework implemented features/behavior unilaterally. Mark unresolved points explicitly as **TBD**.
 
 ## Documentation language rule (important)
 
@@ -17,8 +18,8 @@ The current design lives in `docs/specs/ja/` (the **canonical** version, based o
 
 ## Conventions
 
-- The directory structure is **agreed only at the container level** (see below). Backends are basically **Python**, the frontend is **TS** (→ Stack). Code conventions and the test approach also have an agreed baseline (below).
-- API contracts, each service's internal details, and per-service build/run commands are **not decided yet — TBD.**
+- The directory structure is **1 folder = 1 container** (see below). Backends are **Python**, the frontend is **TS** (→ Stack). Code conventions and the test approach also have a settled baseline (below).
+- API contracts, each service's internal details, and build/run commands are implemented. See `docs/specs/ja/<service>.md` for details.
 
 ## Sample data (for local verification)
 
@@ -26,24 +27,25 @@ The current design lives in `docs/specs/ja/` (the **canonical** version, based o
 - Example: `data/airoa-moma-mcap/<episode>/` (each with `<id>.mcap` + `metadata.yaml`). HSR robot teleoperation recordings (AIROA MOMA) — raw MCAP that serves as the canonical recording.
 - **MCAP is the canonical recording format** and the input to the validation/conversion pipeline.
 - The contents of `data/` are `.gitignore`d (`data/.gitkeep` keeps only the directory tracked, so the `./data`→`/data` mount is created user-owned, avoiding a root-owned mount). `*.mcap` and sample data are not committed.
-- This is a local convenience, **not a decision on the official repository layout** (layout is TBD).
+- This is a local convenience, **not a decision on the official data layout**.
 
 ## Repository layout
 
-Agreed only at the container level (**1 folder = 1 container image**, 1:1 with the diagram boxes). Each folder's internals (`src/` / `tests/` / `Dockerfile`, etc.) and each service's stack are **TBD** (details go in `docs/`).
+**1 folder = 1 container image** (1:1 with the diagram boxes). Each folder has `src/` / `tests/` / `Dockerfile` and is implemented.
 
 ```
 kairos/
 ├─ services/              # one container each (1:1 with the diagram boxes)
 │  ├─ rosbag2_recorder/   #   ROS 2: topics → MCAP (canonical recording)
-│  ├─ topic_monitor/      #   ROS 2: live monitoring metrics
+│  ├─ topic_monitor/      #   ROS 2: live monitoring metrics (non-decoding)
 │  ├─ webrtc_streamer/    #   ROS 2: low-latency camera preview
+│  ├─ topic_probe/        #   ROS 2: live plotting of numeric fields (decode isolated)
 │  ├─ api_orchestrator/   #   API hub / job & state management
-│  ├─ dora_runner/        #   post-recording validation & conversion (dora)
+│  ├─ dora_runner/        #   post-recording validation & conversion (dora-oriented, currently in-process)
 │  └─ frontend/           #   Web UI (Vite + React + TS)
 ├─ libs/                  # shared across services (API contracts / ROS msgs / common utils)
 ├─ config/                # recording/monitoring config (which topics to record · RECORDING_CONFIG)
-├─ deploy/                # orchestration helpers (env / k8s / integration test harness)
+├─ deploy/                # orchestration helpers (env / msgs overlay / integration test harness)
 ├─ Makefile               # shortcuts for docker compose + the test harness
 ├─ compose.yaml           # root entry point (docker compose)
 ├─ docs/                  # specs & design docs
@@ -51,15 +53,14 @@ kairos/
 ```
 
 - See `docs/specs/ja/<service>.md` (English mirror: `docs/specs/en/<service>.md`) for each service spec.
-- The folders don't exist yet (this only records the agreed structure). Scaffolding will be done separately.
 
 ## Stack
 
-> Agreed baseline only. Per-service details go in `docs/` once decided.
+> Settled. See `docs/specs/ja/<service>.md` for per-service details.
 
-- **Backends are basically Python.**
-  - ROS 2 nodes (`rosbag2_recorder` / `topic_monitor` / `webrtc_streamer`): **rclpy**.
-  - `api_orchestrator` / `dora_runner`: Python (framework, etc. TBD).
+- **Backends are Python.**
+  - ROS 2 nodes (`rosbag2_recorder` / `topic_monitor` / `webrtc_streamer` / `topic_probe`): **rclpy**.
+  - `api_orchestrator` / `dora_runner`: Python (FastAPI).
 - **frontend**: Vite + React + TypeScript (decided).
 - ROS 2 distro: the test harness defaults to **Jazzy** (override with `ROS_DISTRO`).
 - Each service is self-contained (1 folder = 1 image); dependencies stay within the service.
@@ -77,7 +78,7 @@ kairos/
 
 ## Build / test / run commands
 
-> All 6 services + the frontend are implemented (Stage 1–4). The most important section of this file.
+> All 7 services + the frontend are implemented (Stage 1–4). The most important section of this file.
 
 - **Make shortcuts (the recommended entry point)**: the root `Makefile` thinly wraps the commands
   below. Run `make` for the target list. Service names are **positional** (`make build monitor`,
@@ -91,11 +92,12 @@ kairos/
 - **Unit tests (Python)**: inside each service / the shared library, `uv run --extra test pytest -q`.
   ```
   for d in libs/kairos_common services/rosbag2_recorder services/topic_monitor \
-           services/webrtc_streamer services/api_orchestrator services/dora_runner; do
+           services/topic_probe services/webrtc_streamer services/api_orchestrator \
+           services/dora_runner; do
     (cd "$d" && uv run --extra test pytest -q)
   done
   ```
-  The ROS nodes (recorder/monitor/streamer) **lazy-import** rclpy, so the pure-logic tests run even on a host without ROS (the rclpy-dependent paths are verified in Docker).
+  The ROS nodes (recorder/monitor/streamer/probe) **lazy-import** rclpy, so the pure-logic tests run even on a host without ROS (the rclpy-dependent paths are verified in Docker).
 - **Unit tests (frontend)**: `cd services/frontend && npm run build && npm test && npm run lint`.
 - **Lint / format**: `uvx ruff check libs services` / `uvx ruff format libs services`.
 - **Build**: each service builds to one image from its own `Dockerfile`. Build all with `docker compose build`, start with `docker compose up`.

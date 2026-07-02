@@ -19,25 +19,40 @@ The single source of configuration shared across services, and the rules for ext
 | `ROS_DISTRO` | `jazzy` | The ROS 2 distro of the base image |
 | `RMW_IMPLEMENTATION` | `rmw_fastrtps_cpp` | DDS implementation. Both RMWs (Fast DDS and Cyclone DDS) are bundled in the images, so this key switches between them. For a Cyclone DDS robot, set `rmw_cyclonedds_cpp` (see below) |
 | `DATA_DIR` | `./data` | Host-side data root (→ container `/data`) |
-| `ROBOT` | `airoa_hsr` | The active robot. Selects `config/<robot>/` (committed) or `config/local/<robot>/` (gitignored); the recording / stream / validation / validators paths are derived from it (the Makefile resolves committed/local, and `docker compose` honors it via nested interpolation). The Config tab lets you select / edit robot → aspect → option |
-| `RECORDING_CONFIG` | `config/<robot>/recording/default.yaml` | The recording/monitoring YAML (normally derived from `ROBOT`; setting it directly in `.env` overrides the derived path) (see below) |
+| `ROBOT` | `airoa_hsr` | The active robot. Selects `config/<robot>/` (committed) or `config/local/<robot>/` (gitignored); the recording / stream / validation / validators / monitoring paths are derived from it (the Makefile resolves committed/local, and `docker compose` honors it via nested interpolation). The Config tab lets you select / edit robot → aspect → option |
+| `RECORDING_CONFIG` | `/config/<robot>/recording/default.yaml` | The recording/monitoring YAML (normally derived from `ROBOT`; setting it directly in `.env` overrides the derived path). The path via compose is **container-absolute** (`./config`→`/config` mount) (see below) |
+| `STREAM_CONFIG` | `/config/<robot>/stream/default.yaml` | The initial pane definitions for the Stream tab. Derived from `ROBOT` automatically (container-absolute) |
+| `LOSS_REPORT_CONFIG` | `/config/<robot>/validators/loss_report.yaml` | `dora_runner`'s loss_report parameters. Derived from `ROBOT` automatically (container-absolute) |
+| `MSGS_OVERLAY_DIR` | `./deploy/msgs_overlay/robot` | The bind-mount source for the custom ROS messages overlay. Must start with `./` (avoids becoming a named volume). Mounted read-only on recorder / monitor / probe. See [`deploy/msgs_overlay/`](../../../deploy/msgs_overlay/README.md) for details |
 | `BIND_HOST` | `0.0.0.0` | API bind target. **Permits LAN exposure** (assumes a trusted LAN, no authentication). Do not directly expose to an untrusted network |
 | `API_ORCH_PORT` | `8000` | `api_orchestrator` public port |
 | `TOPIC_MONITOR_PORT` | `8001` | `topic_monitor` port |
 | `WEBRTC_PORT` | `8002` | `webrtc_streamer` signaling / http port |
+| `TOPIC_PROBE_PORT` | `8003` | `topic_probe` (the numeric-field plotter) port |
 | `FRONTEND_PORT` | `8080` | frontend serving port (`5173` in dev) |
 | `RECORDER_PORT` | `8010` | `rosbag2_recorder` internal port (binds to the host under host networking) |
 | `DORA_RUNNER_PORT` | `8020` | `dora_runner` internal port (binds to the host under host networking) |
+| `UID` / `GID` | host uid/gid | Runs the non-root `api_orchestrator` / `dora_runner` as `user: "${UID:-1000}:${GID:-1000}"` so they can write to the host-owned `./data` / `./config` bind mounts. bash does not export `UID` and has no `GID`, so `make` exports `id -u`/`id -g`. With plain `docker compose` on a host where uid≠1000, run `export UID=$(id -u) GID=$(id -g)` |
 | `WEBRTC_PUBLIC_URL` | `/webrtc` | Base URL the frontend uses for camera signaling (`endpoints.webrtc` in `/api/v1/config`). The default is the same-origin relative path `/webrtc`, which the frontend's nginx reverse-proxies to `webrtc_streamer`. This makes it work from any access origin (LAN IP / SSH tunnel / Tailscale) without CORS. Set an absolute URL `http://<host>:8002` only for the legacy mode where the browser connects directly to the streamer (then add that origin to `CORS_ORIGINS`) |
 | `CORS_ORIGINS` | `http://localhost:8080,http://localhost:5173` | The origins allowed by the orchestrator and `webrtc_streamer` (served + dev; add the relevant host's origin when exposing on a LAN) |
 | `LOG_LEVEL` | `INFO` | Log level |
 | `RETENTION_DAYS` | `0` | `0`=disabled. With `>0`, old runs become deletion candidates by retention period |
 | `MAX_RECORD_BYTES` | `0` | `0`=unlimited. With `>0`, automatically stop recording on exceeding it |
-| `ALERT_CONFIG_PATH` | (optional) | `topic_monitor`'s alert definition file |
-| `CYCLONEDDS_URI` | (optional) | Cyclone DDS config file URI (e.g. `file:///config/cyclonedds.xml`). Use it to declare unicast peers, etc., when multicast discovery does not work across hosts. Passed to the container via `env_file` (all 3 ROS services mount `/config` read-only) |
+| `ALERT_CONFIG_PATH` | (optional, default empty=disabled) | `topic_monitor`'s alert definition file (**container-absolute**; convention is `/config/<robot>/monitoring/alerts.yaml`; a `config/local/<robot>/...` override takes precedence). Empty = alerts disabled. `make` derives it from `ROBOT` automatically; with plain `docker compose` set it by hand |
+| `CYCLONEDDS_URI` | (optional) | Cyclone DDS config file URI (e.g. `file:///config/cyclonedds.xml`). Use it to declare unicast peers, etc., when multicast discovery does not work across hosts. Passed to the container via `env_file` (the ROS services mount `/config` read-only) |
+| `KAIROS_DORA_MAX_CONCURRENCY` | `2` | The cap on the number of jobs `dora_runner` runs concurrently |
+| `KAIROS_DORA_JOB_TIMEOUT_S` | `900` | The wall-clock cap (seconds) per `dora_runner` job |
+
+**`*_HOST` for cross-host split** ([deployment_topology](deployment_topology.md) Option A). Leave at the defaults on a single host:
+
+| Key | Default | Description |
+|---|---|---|
+| `RECORDER_HOST` / `TOPIC_MONITOR_HOST` / `WEBRTC_HOST` / `TOPIC_PROBE_HOST` / `DORA_RUNNER_HOST` | `localhost` | The downstream service addresses `api_orchestrator` connects to. On the recording PC side, point recorder/monitor/streamer/probe at the robot's LAN IP (dora stays co-located locally) |
+| `API_HOST` / `WEBRTC_HOST` / `PROBE_HOST` | `127.0.0.1` | The upstream targets for the frontend's nginx reverse proxy (`default.conf.template`). On the recording PC, point `WEBRTC_HOST` / `PROBE_HOST` at the robot IP |
 
 - Services communicate within the trusted LAN (the default is host networking with `localhost:<port>`; internal ports are as in the table above). On a multi-tenant host, switch to a bridge network + DDS unicast (see the network notes in `compose.yaml`).
-- The common settings schema lives in `libs/` (pydantic-settings is assumed), and each service reads env in a typed manner.
+- The common settings schema lives in `libs/kairos_common` (pydantic-settings), and each service reads env in a typed manner.
+- compose gives all 7 services a healthcheck based on `GET /healthz` (frontend uses the nginx root), and frontend waits for the orchestrator to become healthy via `depends_on: orchestrator (service_healthy)` before starting.
 
 ### Switching the DDS implementation (Fast DDS ↔ Cyclone DDS)
 
@@ -76,25 +91,16 @@ What `api_orchestrator` returns for the frontend (example):
 {
   "endpoints": { "api": "/api/v1", "events": "/api/v1/events", "webrtc": "<WEBRTC_PUBLIC_URL>" },
   "tabs": [
-    { "id": "record",    "enabled": true },
-    { "id": "monitor",   "enabled": true },
-    { "id": "stream",    "enabled": true },
-    { "id": "runs",      "enabled": true },
-    { "id": "pipelines", "enabled": false }
+    { "id": "live",       "enabled": true },
+    { "id": "graph",      "enabled": true },
+    { "id": "runs",       "enabled": true },
+    { "id": "validation", "enabled": true },
+    { "id": "dataset",    "enabled": true },
+    { "id": "config",     "enabled": true }
   ],
   "defaults": { "expected_hz": {}, "encoding": "vp8", "default_topics": [], "robot_name": "...", "ros_domain_id": 0 },
+  "stream": { "columns": 2, "panes": [{ "topic": "/camera/head/color/image_raw/compressed" }] },
   "schemas": {
-    "record_start": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "type": "object",
-      "required": ["topics"],
-      "properties": {
-        "topics": { "oneOf": [ { "type": "array", "items": { "type": "string" } }, { "const": "all" } ] },
-        "compression": { "enum": ["none", "zstd"], "default": "none" },
-        "split": { "type": ["object", "null"],
-          "properties": { "max_size_mb": { "type": ["integer", "null"] }, "max_duration_s": { "type": ["integer", "null"] } } }
-      }
-    },
     "pipeline_forms": {
       "fast_validation": {
         "type": "object", "required": ["template"],
@@ -105,8 +111,9 @@ What `api_orchestrator` returns for the frontend (example):
 }
 ```
 
-- **Tabs are registry-driven.** The backend can swap their display, order, and enabled/disabled state (the "easily reconfigurable" requirement).
-- `schemas` are **JSON Schema (draft 2020-12)**. The frontend renders forms from these (backend-driven; e.g. `record_start` and each pipeline's execution form; nullable, enum, and defaults are all fixed).
+- **Tabs are registry-driven.** The backend can swap their display, order, and enabled/disabled state (the "easily reconfigurable" requirement). The backend returns the 6 tabs above (`live` merges Stream+Monitor+Record, `graph` is time-series health, `dataset` is the list of conversion outputs). The `probe` tab is **injected client-side by the frontend** (it shows up even though it's absent from the backend's `tabs`), so the UI ends up with 7 tabs: Live / Graph / Probe / Recordings / Validation / Datasets / Config.
+- `stream` is the Stream preview's initial layout (`columns` and `panes`, sourced from `STREAM_CONFIG`).
+- `schemas` are **JSON Schema (draft 2020-12)**. The frontend renders each pipeline's execution form from these (`pipeline_forms` is built dynamically from `dora_runner`'s `/pipelines`; on unreachability it falls back to the static `fast_validation` form). The record-start form (topic selection) is built directly by the Live tab from discovery and config, and is not part of this schema.
 
 ## Common conventions
 

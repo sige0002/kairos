@@ -73,6 +73,6 @@ ROS 2 トピックの **軽量・非破壊なリアルタイム監視**コンテ
 
 ## 設計ポイント / 非機能
 
-- 非破壊・軽量を最優先。`max_topics` / `max_bytes` で負荷上限を設ける（全 topic subscribe で負荷が跳ねるのを防ぐ）。
+- 非破壊・軽量を最優先。負荷は **allowlist（監視対象の明示）**で抑える（全 topic 一括 subscribe はしない）。`max_topics` / `max_bytes` による上限は将来枠（現状未実装）。
 - メトリクスは `api_orchestrator` が集約し frontend に中継する（[api_orchestrator](api_orchestrator.md)）。
 - 共有設定は [config](config.md)。

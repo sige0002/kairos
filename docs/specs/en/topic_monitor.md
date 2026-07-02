@@ -75,6 +75,6 @@ A container for **lightweight, non-destructive real-time monitoring** of ROS 2 t
 
 ## Design points / non-functional
 
-- Prioritize non-destructiveness and lightness above all. Set load caps with `max_topics` / `max_bytes` (to prevent load spikes from subscribing to all topics).
+- Prioritize non-destructiveness and lightness above all. Load is bounded by the **allowlist** (explicitly enumerating monitored topics) rather than bulk-subscribing to all topics. Limits via `max_topics` / `max_bytes` are reserved for the future (currently unimplemented).
 - Metrics are aggregated by `api_orchestrator` and relayed to the frontend ([api_orchestrator](api_orchestrator.md)).
 - Shared configuration is in [config](config.md).

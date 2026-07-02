@@ -8,10 +8,15 @@
 > [resources.ja.md](resources.ja.md)。
 
 ## 現状（v1 実装の実態）
-- 有効な pipeline は **`fast_validation` の 1 つだけ**（`full_validation` / `dataset_convert` /
-  `dataset_validation` は `enabled=false` のプレースホルダ）。`pipelines.py` の `PIPELINES` は**静的リスト**。
-- spec が描く Plugin/Pipeline Registry・dora dataflow（YAML）・dora daemon は**未実装**。代わりに
-  `fast_validation` は**プロセス内の素の Python 関数**として実装（`validation.py`）:
+- 有効な pipeline は **`fast_validation` / `dataset_export` / `loss_report` / `video_check` の 4 本**
+  （`full_validation` / `dataset_convert` / `dataset_validation` は `enabled=false` のプレースホルダ。
+  `POST /jobs` は `pipeline_unavailable` で拒否）。
+- レジストリは **実装済み**: `registry.py` の `build_default_registry()` が同梱 4 本を登録し、
+  `plugin_loader.discover_plugins()` が `KAIROS_PLUGINS_DIR`（既定 `services/dora_runner/plugins/`）配下の
+  manifest をスキャンして自動登録する（例プラグイン `hello_dora` を同梱）。**dora dataflow の in-process
+  インタプリタも実装済み**だが、**Rust の dora CLI/daemon は未同梱**なので `executor: dora` のプラグインも
+  in-process で実行される（`/readyz` の `components.dora` と `/pipelines` の `effective_executor` が実行系を誠実に表示）。
+- 同梱の `fast_validation` は**プロセス内の素の Python 関数**として実装（`validation.py`）:
   - `mcap_loader(run_id, data_dir)` → `/data/recorded/<run_id>/*.mcap` を開き topic 一覧を列挙
     （**ROS デコード不要**、`mcap` + `mcap-ros2-support`）。
   - `validator(loaded, template)` → topic 一覧を `template.required_topics` と照合
@@ -48,11 +53,15 @@ required_topics:
 4. **テスト**: `validator()` は純関数 → **合成 `loaded` dict で単体テスト**（後述）。
 
 ### C. 新しい pipeline を足す（fast_validation 以外）
-1. `pipelines.py` の `PIPELINES` に `PipelineDefinition(id=..., enabled=True, schema=...)` を追加。
-2. executor を実装（`run_fast_validation` と**同じ in/out 契約**。`validation.py` か新モジュール）。
-3. `main.py`: `create_job` の**ガード**（今は `pipeline != "fast_validation"` を 400）を分岐に拡張し、
-   `_execute_job` で pipeline ごとに executor を選ぶ。
-4. spec の registry/dataflow に寄せる場合は別途設計（未実装）。
+1. **同梱として足す**: `registry.py` の `build_default_registry()` に `RegisteredPipeline(id=..., runner=...,
+   enabled=True, schema=...)` を追加する。`runner` は `async (job, store, data_dir) -> {"summary":…,
+   "artifacts":[…]}` の契約（`validation.py` / `loss_report.py` などと同じ in/out）。`runner=None` にすると
+   プレースホルダ（`enabled=false`）になり `POST /jobs` は `pipeline_unavailable` を返す。
+2. **プラグインとして足す**（コア改修不要）: `KAIROS_PLUGINS_DIR` 配下に manifest（`kairos_plugin.yaml`）と
+   実装を置く。`discover_plugins()` が起動時に自動登録する（`hello_dora` を参照）。
+3. summary には再現性のため `pipeline` / `version` を含める（同梱 4 本と同じ規約）。
+4. dora daemon 上で実行する dataflow 化は将来像（[dora_plugins.md](../specs/ja/dora_plugins.md)）。現状は
+   in-process インタプリタで動く。
 
 ## 単体試験の方法
 ```bash
@@ -81,6 +90,7 @@ cd services/dora_runner && uv run --extra test pytest -q
 - **注意**: job/template ストアは in-memory（再起動で消える）。永続が要るなら今後 DB 化（spec 参照）。
 
 ## 既知のギャップ（spec との差・TODO）
-- Plugin/Pipeline Registry、dora dataflow（YAML）、dora daemon は**未実装**（spec は将来像）。
+- **Rust の dora CLI/daemon（coordinator）は未同梱** — `executor: dora` のプラグインも in-process インタプリタで
+  動く（Plugin/Pipeline Registry と in-process dataflow 自体は実装済み。spec の dataflow 常駐モデルは将来像）。
 - `full_validation` / `dataset_convert` / `dataset_validation` は I/F だけ（`enabled=false`）。
 - AI node / LeRobot 変換、job/template の永続化は未実装。

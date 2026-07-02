@@ -18,25 +18,40 @@
 | `ROS_DISTRO` | `jazzy` | ベースイメージの ROS 2 ディストロ |
 | `RMW_IMPLEMENTATION` | `rmw_fastrtps_cpp` | DDS 実装。Fast DDS と Cyclone DDS の両 RMW をイメージに同梱しており、本キーで切替可能。Cyclone DDS のロボットには `rmw_cyclonedds_cpp` を指定する（後述） |
 | `DATA_DIR` | `./data` | ホスト側データ root（→ コンテナ `/data`） |
-| `ROBOT` | `airoa_hsr` | アクティブな機体。`config/<robot>/`（committed）または `config/local/<robot>/`（gitignored）を選ぶ。recording / stream / validation / validators の各パスはこれから派生する（Makefile が committed/local を解決し、`docker compose` もネスト補間で尊重）。Config タブで機体 → aspect → option を選択・編集できる |
-| `RECORDING_CONFIG` | `config/<robot>/recording/default.yaml` | 収録・監視の YAML（通常は `ROBOT` から自動導出。`.env` で直接指定すると派生より優先される）（下記） |
+| `ROBOT` | `airoa_hsr` | アクティブな機体。`config/<robot>/`（committed）または `config/local/<robot>/`（gitignored）を選ぶ。recording / stream / validation / validators / monitoring の各パスはこれから派生する（Makefile が committed/local を解決し、`docker compose` もネスト補間で尊重）。Config タブで機体 → aspect → option を選択・編集できる |
+| `RECORDING_CONFIG` | `/config/<robot>/recording/default.yaml` | 収録・監視の YAML（通常は `ROBOT` から自動導出。`.env` で直接指定すると派生より優先される）。compose 経由のパスは**コンテナ絶対**（`./config`→`/config` マウント）（下記） |
+| `STREAM_CONFIG` | `/config/<robot>/stream/default.yaml` | Stream タブの初期ペイン定義。`ROBOT` から自動導出（コンテナ絶対） |
+| `LOSS_REPORT_CONFIG` | `/config/<robot>/validators/loss_report.yaml` | `dora_runner` の loss_report パラメータ。`ROBOT` から自動導出（コンテナ絶対） |
+| `MSGS_OVERLAY_DIR` | `./deploy/msgs_overlay/robot` | カスタム ROS メッセージ overlay の bind-mount 元。`./` 始まり必須（named volume 化を避ける）。recorder / monitor / probe に read-only マウント。詳細は [`deploy/msgs_overlay/`](../../../deploy/msgs_overlay/README.md) |
 | `BIND_HOST` | `0.0.0.0` | API バインド先。**LAN 公開を許容**（信頼された LAN 前提・認証なし）。非信頼ネットワークへ直接公開しない |
 | `API_ORCH_PORT` | `8000` | `api_orchestrator` 公開ポート |
 | `TOPIC_MONITOR_PORT` | `8001` | `topic_monitor` ポート |
 | `WEBRTC_PORT` | `8002` | `webrtc_streamer` signaling / http ポート |
+| `TOPIC_PROBE_PORT` | `8003` | `topic_probe`（数値フィールドプロット）ポート |
 | `FRONTEND_PORT` | `8080` | frontend 配信ポート（dev は `5173`） |
 | `RECORDER_PORT` | `8010` | `rosbag2_recorder` 内部ポート（host networking ではホストに bind） |
 | `DORA_RUNNER_PORT` | `8020` | `dora_runner` 内部ポート（host networking ではホストに bind） |
+| `UID` / `GID` | ホスト uid/gid | 非 root の `api_orchestrator` / `dora_runner` を `user: "${UID:-1000}:${GID:-1000}"` で動かし、host 所有の `./data`・`./config` bind マウントに書けるようにする。bash は `UID` を export せず `GID` を持たないため、`make` が `id -u`/`id -g` を export する。素の `docker compose` で uid≠1000 のホストは `export UID=$(id -u) GID=$(id -g)` が必要 |
 | `WEBRTC_PUBLIC_URL` | `/webrtc` | frontend がカメラ signaling に使うベース URL（`/api/v1/config` の `endpoints.webrtc`）。既定は同一オリジンの相対パス `/webrtc` で、frontend の nginx が `webrtc_streamer` にリバースプロキシする。これにより LAN IP / SSH トンネル / Tailscale など任意のアクセス元から CORS なしで動く。ブラウザを streamer に直接つなぐ旧方式にする場合のみ絶対 URL `http://<host>:8002` を指定する（その場合 `CORS_ORIGINS` に該当 origin を追加） |
 | `CORS_ORIGINS` | `http://localhost:8080,http://localhost:5173` | orchestrator と `webrtc_streamer` が許可する origin（served + dev。LAN 公開時は該当ホストの origin を追加） |
 | `LOG_LEVEL` | `INFO` | ログレベル |
 | `RETENTION_DAYS` | `0` | `0`=無効。`>0` で古い run を保持期間で削除候補に |
 | `MAX_RECORD_BYTES` | `0` | `0`=無制限。`>0` で超過時に記録を自動 stop |
-| `ALERT_CONFIG_PATH` | (任意) | `topic_monitor` のアラート定義ファイル |
-| `CYCLONEDDS_URI` | (任意) | Cyclone DDS の設定ファイル URI（例 `file:///config/cyclonedds.xml`）。クロスホストで multicast discovery が通らない場合に unicast peer を明示するなどに使う。`env_file` 経由でコンテナに渡る（3 ROS サービスとも `/config` を read-only マウント済み） |
+| `ALERT_CONFIG_PATH` | (任意・既定は空=無効) | `topic_monitor` のアラート定義ファイル（**コンテナ絶対**、規約は `/config/<robot>/monitoring/alerts.yaml`。`config/local/<robot>/...` の override が優先）。空＝アラート無効。`make` は `ROBOT` から自動導出、素の `docker compose` では手で設定 |
+| `CYCLONEDDS_URI` | (任意) | Cyclone DDS の設定ファイル URI（例 `file:///config/cyclonedds.xml`）。クロスホストで multicast discovery が通らない場合に unicast peer を明示するなどに使う。`env_file` 経由でコンテナに渡る（ROS サービスは `/config` を read-only マウント済み） |
+| `KAIROS_DORA_MAX_CONCURRENCY` | `2` | `dora_runner` が同時実行するジョブ数の上限 |
+| `KAIROS_DORA_JOB_TIMEOUT_S` | `900` | `dora_runner` の 1 ジョブあたりの wall-clock 上限（秒） |
+
+**クロスホスト分割用の `*_HOST`**（[deployment_topology](deployment_topology.md) Option A）。単一ホストでは既定のままでよい:
+
+| キー | 既定 | 説明 |
+|---|---|---|
+| `RECORDER_HOST` / `TOPIC_MONITOR_HOST` / `WEBRTC_HOST` / `TOPIC_PROBE_HOST` / `DORA_RUNNER_HOST` | `localhost` | `api_orchestrator` が下流サービスに向ける接続先。録画 PC 側では recorder/monitor/streamer/probe をロボットの LAN IP に向ける（dora はローカル同居のまま） |
+| `API_HOST` / `WEBRTC_HOST` / `PROBE_HOST` | `127.0.0.1` | frontend の nginx リバースプロキシのアップストリーム先（`default.conf.template`）。録画 PC では `WEBRTC_HOST` / `PROBE_HOST` をロボット IP に |
 
 - サービス間は信頼 LAN 内で通信する（既定は host networking で `localhost:<port>`。内部ポートも上表のとおり）。マルチテナント host ではブリッジ網 + DDS unicast に切替（`compose.yaml` のネットワーク注記参照）。
-- 共通の設定スキーマは `libs/` に置き（pydantic-settings 想定）、各サービスが env を型付きで読む。
+- 共通の設定スキーマは `libs/kairos_common`（pydantic-settings）に置き、各サービスが env を型付きで読む。
+- compose は全 7 サービスに `GET /healthz`（frontend は nginx root）ベースの healthcheck を持ち、frontend は `depends_on: orchestrator (service_healthy)` で orchestrator の healthy を待って起動する。
 
 ### DDS 実装の切替（Fast DDS ↔ Cyclone DDS）
 
@@ -75,25 +90,16 @@ topic_qos_overrides:       # パターン → QoS（recorder / monitor が適用
 {
   "endpoints": { "api": "/api/v1", "events": "/api/v1/events", "webrtc": "<WEBRTC_PUBLIC_URL>" },
   "tabs": [
-    { "id": "record",    "enabled": true },
-    { "id": "monitor",   "enabled": true },
-    { "id": "stream",    "enabled": true },
-    { "id": "runs",      "enabled": true },
-    { "id": "pipelines", "enabled": false }
+    { "id": "live",       "enabled": true },
+    { "id": "graph",      "enabled": true },
+    { "id": "runs",       "enabled": true },
+    { "id": "validation", "enabled": true },
+    { "id": "dataset",    "enabled": true },
+    { "id": "config",     "enabled": true }
   ],
   "defaults": { "expected_hz": {}, "encoding": "vp8", "default_topics": [], "robot_name": "...", "ros_domain_id": 0 },
+  "stream": { "columns": 2, "panes": [{ "topic": "/camera/head/color/image_raw/compressed" }] },
   "schemas": {
-    "record_start": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "type": "object",
-      "required": ["topics"],
-      "properties": {
-        "topics": { "oneOf": [ { "type": "array", "items": { "type": "string" } }, { "const": "all" } ] },
-        "compression": { "enum": ["none", "zstd"], "default": "none" },
-        "split": { "type": ["object", "null"],
-          "properties": { "max_size_mb": { "type": ["integer", "null"] }, "max_duration_s": { "type": ["integer", "null"] } } }
-      }
-    },
     "pipeline_forms": {
       "fast_validation": {
         "type": "object", "required": ["template"],
@@ -104,8 +110,9 @@ topic_qos_overrides:       # パターン → QoS（recorder / monitor が適用
 }
 ```
 
-- **タブはレジストリ駆動。** 表示・順序・有効/無効を backend が差し替えられる（「簡単に組み替え可能」の要件）。
-- `schemas` は **JSON Schema（draft 2020-12）**。frontend はこれでフォームを描画する（backend-driven。`record_start` や各 pipeline の実行フォーム等。nullable・enum・既定値を含めて固定）。
+- **タブはレジストリ駆動。** 表示・順序・有効/無効を backend が差し替えられる（「簡単に組み替え可能」の要件）。backend が返すのは上記 6 タブ（`live` は Stream+Monitor+Record を融合、`graph` は時系列ヘルス、`dataset` は変換出力の一覧）。`probe` タブは **frontend がクライアント側で注入**する（backend の `tabs` に無くても表示される）ため、UI 上のタブは Live / Graph / Probe / Recordings / Validation / Datasets / Config の 7 つになる。
+- `stream` は Stream プレビューの初期レイアウト（`columns` と `panes`。`STREAM_CONFIG` 由来）。
+- `schemas` は **JSON Schema（draft 2020-12）**。frontend はこれで各 pipeline の実行フォームを描画する（`pipeline_forms` は `dora_runner` の `/pipelines` から動的に構成。到達不能時は `fast_validation` の静的フォームにフォールバック）。記録開始フォーム（トピック選択）は Live タブが discovery と config から直接構成し、この schema には含めない。
 
 ## 共通規約
 

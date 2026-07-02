@@ -18,7 +18,7 @@
 
 ## 構成コンポーネント
 
-- **Run Manager** / **Manifest Manager** / **Pipeline Registry** / **Result Aggregator** / **WebSocket・SSE Hub** / **Settings Manager**
+- **Run Manager** / **Manifest Manager** / **Pipeline Registry** / **Result Aggregator** / **WebSocket・SSE Hub**（**Settings Manager** は将来枠・未実装。現状の設定編集は `PUT /api/v1/config/recording` が担う）
 - feature ベースのルーター構成（`recording` / `topics` / `runs` / `events` / `pipelines` …）を推奨（疎結合）。
 
 ## 公開 API（`/api/v1`、無認証）
@@ -29,7 +29,7 @@
 - イベント: `GET /api/v1/events`（**SSE 集約**。契約は下記）
 - Pipeline / Job（stage3。詳細は [dora_runner](dora_runner.md)）: `GET /api/v1/pipelines`、`POST /api/v1/jobs`、`GET /api/v1/jobs/{id}/status`、`GET /api/v1/jobs/{id}/result`、`POST /api/v1/jobs/{id}/cancel`
 - 検証テンプレート: `GET/POST /api/v1/validation/templates`、`POST /api/v1/validation/templates/generate`（run から雛形生成）
-- 設定: `GET /api/v1/config`（frontend 実行時設定: endpoints / tabs / defaults（`ros_domain_id` を含む）/ stream / schemas）、`GET/POST /api/v1/settings`
+- 設定: `GET /api/v1/config`（frontend 実行時設定: endpoints / tabs / defaults（`ros_domain_id` を含む）/ stream / schemas）。〔`GET/POST /api/v1/settings` は**未実装**（将来）。現状は下の `PUT /api/v1/config/recording` が設定編集の入口〕
 - 収録設定（フル編集）: `GET /api/v1/config/recording` → `{ config: <RecordingConfig dump>|null, path }`、`PUT /api/v1/config/recording`（body `{ config }`。下記「収録設定のフル編集」参照）
 - 設定カタログ: `GET /api/v1/config/options`、`POST /api/v1/config/select`（検証テンプレート等のカテゴリ別選択肢と現在の選択）
 - システム情報: `GET /api/v1/system` → `{ cpu: { model, cores }, gpu }`（ホストの読み取り専用イントロスペクション。`nvidia-smi` 不在時は `gpu: null`。常に `200`）
@@ -86,7 +86,7 @@ UI（Config タブ）から `RECORDING_CONFIG` 全体を編集・永続化する
 
 ## 主要スキーマ（抜粋、OpenAPI 生成対象 / pydantic）
 
-- settings（`GET/POST /api/v1/settings`）: `{ defaults: { encoding: "vp8"|"h264", expected_hz: { <pattern>: number } }, alerts: [ { topic, metric, op, threshold, cooldown_s, clear_after_s } ], retention_days: int, max_record_bytes: int }`。POST は部分更新。settings は `RECORDING_CONFIG` を実行時に上書き / 補完し、**次の記録セッション / monitor の再購読から反映**（進行中の記録には遡及しない）。
+- settings（`GET/POST /api/v1/settings`。**未実装・将来枠**）: `{ defaults: { encoding: "vp8"|"h264", expected_hz: { <pattern>: number } }, alerts: [ { topic, metric, op, threshold, cooldown_s, clear_after_s } ], retention_days: int, max_record_bytes: int }`。当初設計では `RECORDING_CONFIG` を実行時に上書き / 補完し次の記録セッションから反映する想定だったが、現状は `PUT /api/v1/config/recording`（下記・アトミック書込＋ホットスワップ）で代替している。
 - 検証テンプレート:
   - `GET /api/v1/validation/templates` → `{ items: [ { name, version, required_topics: [ { name, type?: string } ] } ], next_cursor }`
   - `POST /api/v1/validation/templates` body = `{ name, version, required_topics: [ { name, type? } ] }` → `201` 同形
@@ -98,7 +98,7 @@ UI（Config タブ）から `RECORDING_CONFIG` 全体を編集・永続化する
 
 - **FastAPI + uvicorn**（推奨。OpenAPI を自動公開）。
 - 重い処理（検証・変換、stage3）は**非同期ジョブキュー**に載せ、request/response から切り離す。進捗は SSE 通知。
-- 永続: **runs / jobs / settings は SQLite を正**、ファイル manifest は監査用。片方だけ更新される事故を避ける。
+- 永続: **runs / jobs は SQLite を正**、ファイル manifest は監査用。片方だけ更新される事故を避ける（settings ストアは未実装。収録設定は `PUT /api/v1/config/recording` で設定ファイルへアトミックに永続化する）。
 - 内部サービス呼び出しは timeout（既定 `3s`）+ retry 1 回。失敗は `status` / `events` に反映（`503`）。
 
 ## エラー / 規約 / ネットワーク

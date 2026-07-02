@@ -90,16 +90,36 @@ MCAP → dora dataflow (validator / converter / AI nodes) → reports / converte
 - validator / converter / AI are dora nodes (plugins). I/O is a contract.
 - Heavy processing is asynchronous jobs. Progress is delivered via SSE `api_orchestrator` → frontend.
 - Extend as a dora dataflow (add / swap / chain nodes). Treat **AI nodes as first-class citizens**.
-- backend-driven: pipeline definitions and form schemas are distributed to the frontend by `api_orchestrator` (Pipelines tab).
+- backend-driven: pipeline definitions and form schemas are distributed to the frontend by `api_orchestrator` (the Validation tab's execution form, etc.).
 - Shared configuration is in [config](config.md).
 
 ## Implementation status and development guide
 
-This document is the **source of truth for the design (including the future vision)**. **The currently enabled pipelines are `fast_validation` / `dataset_export` /
-`loss_report` / `video_check`** (see "Implemented pipelines" above). `full_validation` / `dataset_convert` /
-`dataset_validation` are interface only (`enabled=false`). The Plugin/Pipeline Registry, dora dataflow (YAML),
-dora daemon, AI nodes, and job/template persistence are **not implemented**, and each pipeline is
-implemented as an in-process node function (heavy reads and encoding are offloaded to worker threads).
+This document is the **source of truth for the design (including the future vision)**. **The currently enabled pipelines are these four: `fast_validation` / `dataset_export` /
+`loss_report` / `video_check`** (see "Implemented pipelines" above). `full_validation` /
+`dataset_convert` / `dataset_validation` are interface only (`enabled=false`; `POST /jobs`
+rejects them with `pipeline_unavailable`).
+
+**Implemented**: the **Plugin/Pipeline Registry** (`registry.py`'s `build_default_registry()` registers the
+4 bundled pipelines, and `plugin_loader.discover_plugins()` scans manifests under `KAIROS_PLUGINS_DIR`
+(default `services/dora_runner/plugins/`) for automatic registration; an example `hello_dora` plugin is
+bundled), the **in-process dora dataflow interpreter** (plugins that declare `executor: dora` also run
+in-process, for the reasons below), and **job concurrency limits and per-job timeouts**
+(`KAIROS_DORA_MAX_CONCURRENCY` / `KAIROS_DORA_JOB_TIMEOUT_S`). Each pipeline's heavy reads and encoding
+are offloaded to worker threads.
+
+**Not implemented / not bundled**: the Rust **dora CLI/daemon (coordinator) is not bundled**. Accordingly,
+`/readyz` honestly reports the **actual execution backend** in `components.dora` (`available` if the `dora`
+binary is present, otherwise `in-process`), while `status` stays `ready` even without dora (since it runs
+in-process). Each `PipelineDefinition` returned by `/pipelines` also reports `effective_executor` (how it
+actually runs), distinct from the declared `executor`. **AI nodes** (inference / LeRobot conversion) and
+**job/template persistence** (currently in-memory, lost on process restart) are also not implemented.
 
 For how to add validation checks, unit testing, and debugging procedures via the local CLI (`python -m dora_runner.cli`),
 see the developer guide [docs/dora/README.md](../../dora/README.md).
+
+The **implementation plan for the dora dataflow conversion & plugin system** (future vision) is finalized
+in [dora_plugins.md](dora_plugins.md) (dataflow conversion for all pipelines, automatic registration via
+manifest scan of `plugins/<name>`, and the phased migration plan). The current plugins are **in-tree**
+(placed directly under `services/dora_runner/plugins/` rather than as a submodule); the dora daemon is only
+a reserved slot for a future investment.

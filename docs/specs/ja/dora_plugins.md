@@ -1,12 +1,18 @@
 # dora_runner プラグインシステム / dora dataflow 化 設計
 
-> ステータス: **設計確定（v1 方針）**。日本語が正本（英語ミラー `docs/specs/en/dora_plugins.md` は `/sync-docs` で自動生成、直接編集しない）。
-> 親仕様: [dora_runner.md](dora_runner.md)。本書はその「Plugin/Pipeline Registry・dora dataflow」将来像（同 §12〜§15）の**実装方針**を確定する。**認証は不要**（trusted LAN 前提）。
+> ステータス: **設計方針（v1）＋実装状況の注記**。日本語が正本（英語ミラー `docs/specs/en/dora_plugins.md` は `/sync-docs` で自動生成、直接編集しない）。
+> 親仕様: [dora_runner.md](dora_runner.md)。本書はその「Plugin/Pipeline Registry・dora dataflow」将来像の**実装方針**を確定する。**認証は不要**（trusted LAN 前提）。
+>
+> **実装状況（現状）**: Plugin/Pipeline Registry（`registry.py` + `plugin_loader.discover_plugins()`）と
+> **dora dataflow の in-process インタプリタ**は実装済み。ただし本書が前提とする **dora coordinator/daemon（Rust CLI）は未同梱**で、
+> `executor: dora` のプラグインも当面 in-process で実行される。プラグインは当初案の **git submodule ではなく in-tree**
+> （`services/dora_runner/plugins/<name>` 直置き）で配布し、manifest scan で自動登録する（例 `hello_dora`）。以下の
+> daemon 常駐・submodule ワークフローは**将来像**として読むこと。
 
 ## 決定事項（オーナー方針）
 
 1. **実行モデル: 全 pipeline を dora dataflow 化する**（coordinator/daemon 常駐の統一モデル）。`executor="in_process"` は移行完了後に廃止候補とし、当面は移行期の互換として残す。
-2. **プラグイン配布・発見: git submodule + manifest scan**。プラグインは独立 git リポジトリとして `services/dora_runner/plugins/<name>` に submodule で取り込み、起動時に `kairos_plugin.yaml` をスキャンして Pipeline Registry に自動登録する。**pipeline 追加 = submodule 追加（コア改修不要）**。
+2. **プラグイン配布・発見: manifest scan**。プラグインは `services/dora_runner/plugins/<name>` に置き、起動時に `kairos_plugin.yaml` をスキャンして Pipeline Registry に自動登録する。**pipeline 追加 = プラグイン追加（コア改修不要）**。〔実装注記: 当初案の git submodule ではなく **in-tree 直置き**で実装済み。submodule 化は将来の選択肢。〕
 3. GPU を使う node（自動アノテーション等）は dora node として `--gpus` 付きで実行し、CPU-only 既定から **profile 分離**する（検収レビュー（`dev_docs/arch_review.md`・ローカル作業ドラフト） A3）。
 
 ## 全体像
@@ -159,7 +165,7 @@ requires:                             # 任意。Docker build 時の検査用
   gpu: false
 ```
 
-- `params_schema` がそのまま `GET /pipelines` 経由で frontend に届き、Pipelines/Validation タブのフォームになる（backend-driven。UI 改修不要）。
+- `params_schema` がそのまま `GET /pipelines` 経由で frontend に届き、Validation タブ等の実行フォームになる（backend-driven。UI 改修不要）。
 - マニフェストの Pydantic モデル `PluginManifest` を `dora_runner` に追加し、**スキーマ検証する**（不正 manifest は登録せずログのみ。サービスは落とさない）。
 
 ### 2.3 発見と登録 `discover_plugins()`

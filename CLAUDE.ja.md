@@ -4,8 +4,9 @@
 プロジェクト概要: [README.ja.md](README.ja.md)（English: [README.md](README.md)）。
 現時点の設計は `docs/specs/ja/`（`fig_const/` の図を基にした**正本**）にある。詳細はそこを見ること。ここで設計を再記述しない。
 
-> ステータス: **グリーンフィールド / 設計前。** コード・技術スタックは未決。ディレクトリ構成はコンテナレベルのみ合意（各サービス内部は TBD）。
-> **設計判断を勝手にしない** — ユーザーと一緒に決める。未決事項は **TBD** のまま残す。
+> ステータス: **実装済み（v1）。** 全 7 サービス + frontend が動作する（Stage 1〜4）。技術スタック・
+> ディレクトリ構成・API 契約は確定済みで、設計の正本は `docs/specs/ja/` にある。
+> **大きな設計変更はユーザーと決める** — 実装済みの機能・挙動を勝手に作り替えない。未確定の論点は **TBD** と明記する。
 
 ## ドキュメントの言語ルール（重要）
 
@@ -15,8 +16,8 @@
 
 ## 規約
 
-- ディレクトリ構成は **コンテナレベルのみ合意**（下記）。バックエンドは基本 **Python**、frontend は **TS**（→ スタック）。コード規約・テスト方針もベースライン合意済み（下記）。
-- API 契約・各サービスの内部詳細・サービス個別のビルド/実行コマンドは **未決（TBD）。**
+- ディレクトリ構成は **1 フォルダ = 1 コンテナ**（下記）。バックエンドは **Python**、frontend は **TS**（→ スタック）。コード規約・テスト方針もベースライン確定済み（下記）。
+- API 契約・各サービスの内部詳細・ビルド/実行コマンドは実装済み。詳細は `docs/specs/ja/<service>.md` を参照。
 
 ## サンプルデータ（ローカル動作確認用）
 
@@ -25,24 +26,25 @@
 - **MCAP が収録の正本フォーマット**であり、検証・変換パイプラインの入力になる。
 - `data/` の中身は `.gitignore`（`data/.gitkeep` でディレクトリだけ追跡 → `./data`→`/data` マウントが
   user 所有で作られ、root 所有マウントを避けられる）。`*.mcap` やサンプルデータはコミットしない。
-- これはローカル作業の便宜であり、**正式なディレクトリ構成の決定ではない**（構成は TBD）。
+- これはローカル作業の便宜であり、**正式なデータ配置の決定ではない**。
 
 ## ディレクトリ構成
 
-コンテナレベルの構成のみ合意済み（**1 フォルダ = 1 コンテナイメージ**、図のボックスと 1:1）。各フォルダの内部（`src/` / `tests/` / `Dockerfile` など）とサービスごとのスタックは **TBD**（詳細は `docs/` に書く）。
+**1 フォルダ = 1 コンテナイメージ**（図のボックスと 1:1）。各フォルダは `src/` / `tests/` / `Dockerfile` を持ち、実装済み。
 
 ```
 kairos/
 ├─ services/              # 各コンテナ（図のボックスと 1:1）
 │  ├─ rosbag2_recorder/   #   ROS 2: topics → MCAP（収録の正本）
-│  ├─ topic_monitor/      #   ROS 2: ライブ監視メトリクス
+│  ├─ topic_monitor/      #   ROS 2: ライブ監視メトリクス（非デコード）
 │  ├─ webrtc_streamer/    #   ROS 2: カメラ低遅延プレビュー
+│  ├─ topic_probe/        #   ROS 2: 数値フィールドのライブプロット（decode 隔離）
 │  ├─ api_orchestrator/   #   API ハブ / ジョブ・状態管理
-│  ├─ dora_runner/        #   収録後の検証・変換（dora）
+│  ├─ dora_runner/        #   収録後の検証・変換（dora 想定・現状 in-process）
 │  └─ frontend/           #   Web UI（Vite + React + TS）
 ├─ libs/                  # サービス間の共有（API 契約 / ROS msg / 共通ユーティリティ）
 ├─ config/                # 収録/監視の設定（どの topic を録るか・RECORDING_CONFIG）
-├─ deploy/                # オーケストレーション補助（env / k8s / 結合テスト harness）
+├─ deploy/                # オーケストレーション補助（env / msgs overlay / 結合テスト harness）
 ├─ Makefile               # docker compose + テストハーネスのショートカット
 ├─ compose.yaml           # ルートの起動エントリ（docker compose）
 ├─ docs/                  # 仕様・設計ドキュメント
@@ -50,15 +52,14 @@ kairos/
 ```
 
 - 各サービスの仕様は `docs/specs/ja/<service>.md` を参照。
-- まだフォルダの実体は作っていない（合意した構成の記録のみ）。スキャフォールドは別途行う。
 
 ## スタック
 
-> 合意済みの基本方針のみ。サービスごとの詳細は確定時に `docs/` へ。
+> 確定済み。サービスごとの詳細は `docs/specs/ja/<service>.md` を参照。
 
-- **バックエンドは基本 Python。**
-  - ROS 2 ノード（`rosbag2_recorder` / `topic_monitor` / `webrtc_streamer`）: **rclpy**。
-  - `api_orchestrator` / `dora_runner`: Python（フレームワーク等の詳細は TBD）。
+- **バックエンドは Python。**
+  - ROS 2 ノード（`rosbag2_recorder` / `topic_monitor` / `webrtc_streamer` / `topic_probe`）: **rclpy**。
+  - `api_orchestrator` / `dora_runner`: Python（FastAPI）。
 - **frontend**: Vite + React + TypeScript（確定）。
 - ROS 2 ディストロ: テストハーネスの既定は **Jazzy**（`ROS_DISTRO` で変更可）。
 - 各サービスは自己完結（1 フォルダ = 1 イメージ）。依存はサービス内で閉じる。
@@ -76,7 +77,7 @@ kairos/
 
 ## ビルド / テスト / 実行コマンド
 
-> 全 6 サービス + frontend が実装済み（Stage 1〜4）。本書で最重要の節。
+> 全 7 サービス + frontend が実装済み（Stage 1〜4）。本書で最重要の節。
 
 - **Make ショートカット（推奨入口）**: ルートの `Makefile` が下記コマンドを薄くラップする。`make` で
   ターゲット一覧。サービス名は**位置引数**（`make build monitor`、`make restart monitor orchestrator`）。
@@ -89,11 +90,12 @@ kairos/
 - **単体テスト（Python）**: 各サービス／共有ライブラリ内で `uv run --extra test pytest -q`。
   ```
   for d in libs/kairos_common services/rosbag2_recorder services/topic_monitor \
-           services/webrtc_streamer services/api_orchestrator services/dora_runner; do
+           services/topic_probe services/webrtc_streamer services/api_orchestrator \
+           services/dora_runner; do
     (cd "$d" && uv run --extra test pytest -q)
   done
   ```
-  ROS ノード（recorder/monitor/streamer）は rclpy を**遅延 import** するため、ROS 未導入のホストでも純ロジックのテストは走る（rclpy 依存パスは Docker で検証）。
+  ROS ノード（recorder/monitor/streamer/probe）は rclpy を**遅延 import** するため、ROS 未導入のホストでも純ロジックのテストは走る（rclpy 依存パスは Docker で検証）。
 - **単体テスト（frontend）**: `cd services/frontend && npm run build && npm test && npm run lint`。
 - **Lint / format**: `uvx ruff check libs services` / `uvx ruff format libs services`。
 - **ビルド**: 各サービスは自身の `Dockerfile` で 1 イメージ。全体は `docker compose build`、起動は `docker compose up`。

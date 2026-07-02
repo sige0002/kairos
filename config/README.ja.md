@@ -12,6 +12,7 @@ config/
 ├─ <robot>/                  # 機体ごと（committed）
 │  ├─ recording/<option>.yaml     # 収録/監視（default.yaml がアクティブ）
 │  ├─ stream/<option>.yaml        # Stream タブの初期レイアウト
+│  ├─ monitoring/alerts.yaml      # topic_monitor のアラート定義（任意・ALERT_CONFIG_PATH）
 │  ├─ validation/<option>.yaml    # fast_validation テンプレ
 │  └─ validators/loss_report.yaml # validator パラメータ
 ├─ airoa_hsr/               # 同梱サンプル機体（HSR, data/airoa-moma-mcap/）
@@ -43,7 +44,7 @@ make up ROBOT=<robot>        # config/local/<robot>/（gitignored・自分のロ
 ## 反映先
 
 - `rosbag2_recorder` … recording の `default_topics`（既定の収録対象）＋ 収録 QoS。
-- `topic_monitor` … recording の `expected_hz_patterns`（Late 判定）＋ 購読 QoS。
+- `topic_monitor` … recording の `expected_hz_patterns`（Late 判定）＋ 購読 QoS ＋ `monitoring/alerts.yaml`（アラート定義。任意。空＝アラート無効）。
 - `dora_runner` … validation の `required_topics`（fast_validation）＋ validators（loss_report）。
 - `frontend`（UI）… `GET /api/v1/config` 経由で Record / Monitor の事前選択・バッジ、Stream の初期ペイン。
 

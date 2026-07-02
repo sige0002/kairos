@@ -29,7 +29,7 @@ A **preview-only** container that delivers ROS 2 image topics to the browser wit
 
 ## API
 
-- `POST /stream/start` — `{ topic, encoding?: "vp8"|"h264", max_fps?, max_width?, max_height?, bitrate_kbps? }` → `{ stream_id }`
+- `POST /stream/start` — `{ topic, encoding?: "vp8"|"h264", max_fps?, max_width?, max_height?, bitrate_kbps? }` → `{ stream_id }` (`bitrate_kbps` is accepted but currently not applied — a reserved field)
 - `POST /stream/stop` — `{ stream_id }`
 - `GET /stream/status` — `{ capabilities: { h264: bool }, streams: [ { stream_id, topic, state, clients, fps } ] }`
 - `POST /stream/offer` — `{ stream_id, sdp: { type: "offer", sdp } }` → `{ type: "answer", sdp }` (WHEP-style HTTP offer/answer. `stream_id` required. v1 exchanges a complete non-trickle SDP with candidates included. If trickle is needed, add WS.)

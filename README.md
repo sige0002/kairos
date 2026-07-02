@@ -7,21 +7,21 @@ A system that **records, monitors, validates, and converts** ROS 2 robot data. T
 recording format is **MCAP**, and live video, live metrics, and post-hoc validation are all
 organized around this "source of truth."
 
-> **Status:** All 6 services + frontend implemented (Stage 1–4). The architecture below is based on
+> **Status:** All 7 services + frontend implemented (Stage 1–4). The architecture below is based on
 > the `fig_const/` diagrams.
 
 ## Architecture
 
 ```
-                ROS 2 Robot / Sim  ──►  ROS 2 Topics
-                                          │
-        ┌──────────────┬──────────────────┼──────────────────────────┐
-        ▼              ▼                   ▼                          ▼
-  webrtc_streamer  topic_monitor    rosbag2_recorder            (selected topics)
-   (live video)    (live monitoring) ──► MCAP  /data/recorded/run_xxxx.mcap  ◄── canonical
-        │              │                   │
-        ▼              ▼                   ▼  (after recording)
-     Browser  ◄──  api_orchestrator  ──►  dora_runner ──► report / converted dataset
+              ROS 2 Robot / Sim  ──►  ROS 2 Topics
+                                        │
+     ┌──────────────┬────────────┬──────┼────────────────────────┐
+     ▼              ▼            ▼       ▼                        ▼
+webrtc_streamer topic_monitor topic_probe rosbag2_recorder  (selected topics)
+ (live video)   (live monitoring) (numeric plots) ──► MCAP  /data/recorded/run_xxxx.mcap ◄─ canonical
+     │              │            │        │
+     ▼              ▼            ▼        ▼  (after recording)
+   Browser  ◄────  api_orchestrator  ──►  dora_runner ──► report / converted dataset
                   (job & state hub)        (validation & conversion pipeline)
                          ▲
                          │ REST / WebSocket / SSE
@@ -34,10 +34,11 @@ organized around this "source of truth."
 |---|---|
 | [rosbag2_recorder](docs/specs/en/rosbag2_recorder.md) | Records selected ROS 2 topics to **MCAP**. The single source of truth. |
 | [topic_monitor](docs/specs/en/topic_monitor.md) | Lightweight, non-intrusive live health metrics (Hz / latency / gaps / loss / bandwidth). Does **not decode** payloads. |
+| [topic_probe](docs/specs/en/topic_probe.md) | A generic probe that live-plots **numeric fields** of selected topics. Decoding is **isolated** to this service so it doesn't affect recording or monitoring. |
 | [webrtc_streamer](docs/specs/en/webrtc_streamer.md) | Low-latency camera **preview** (ROS 2 image → browser). Not a recording path. |
 | [api_orchestrator](docs/specs/en/api_orchestrator.md) | The single API hub. Handles job lifecycle, state, configuration, and result aggregation. |
 | [dora_runner](docs/specs/en/dora_runner.md) | Post-recording **validation & conversion** pipeline (dora-based). Enabled: `fast_validation` / `dataset_export` / `loss_report` / `video_check`. |
-| [frontend](docs/specs/en/frontend.md) | A backend-driven Web UI (UI labels in English). Tabs: Live / Graph / Recordings / Validation / Datasets / Config. |
+| [frontend](docs/specs/en/frontend.md) | A backend-driven Web UI (UI labels in English). Tabs: Live / Graph / Probe / Recordings / Validation / Datasets / Config. |
 
 ## Specification docs
 
@@ -127,8 +128,9 @@ Steps to add a new robot. A robot with only standard message types can skip the 
 | Service | Port | Examples |
 |---|---|---|
 | api_orchestrator | 8000 | `GET /api/v1/config` / `POST /api/v1/record/start` / `GET /api/v1/events` (SSE) / `POST /api/v1/jobs` |
-| topic_monitor | 8001 | `GET /metrics` / `GET /topics` / `GET /metrics/stream` (SSE) |
+| topic_monitor | 8001 | `GET /metrics` / `GET /topics` / `GET /metrics/stream` (SSE) / `GET /alerts` |
 | webrtc_streamer | 8002 | `POST /stream/start` / `POST /stream/offer` |
+| topic_probe | 8003 | `GET /topics` / `GET /fields` / `GET /stream` (SSE) |
 | rosbag2_recorder | 8010 | `POST /record/start` / `POST /record/stop` / `GET /record/status` |
 | dora_runner | 8020 | `POST /jobs` / `GET /jobs/{id}/result` / `POST /validation/templates/generate` |
 

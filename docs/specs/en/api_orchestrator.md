@@ -19,7 +19,7 @@ The **job management / state management / API hub** container. The single public
 
 ## Constituent components
 
-- **Run Manager** / **Manifest Manager** / **Pipeline Registry** / **Result Aggregator** / **WebSocket・SSE Hub** / **Settings Manager**
+- **Run Manager** / **Manifest Manager** / **Pipeline Registry** / **Result Aggregator** / **WebSocket・SSE Hub** (**Settings Manager** is a future slot, not implemented; config editing today is handled by `PUT /api/v1/config/recording`)
 - A feature-based router structure (`recording` / `topics` / `runs` / `events` / `pipelines` …) is recommended (loosely coupled).
 
 ## Public API (`/api/v1`, no auth)
@@ -30,7 +30,7 @@ The **job management / state management / API hub** container. The single public
 - Events: `GET /api/v1/events` (**SSE aggregation**. Contract below)
 - Pipeline / Job (stage3. Details in [dora_runner](dora_runner.md)): `GET /api/v1/pipelines`, `POST /api/v1/jobs`, `GET /api/v1/jobs/{id}/status`, `GET /api/v1/jobs/{id}/result`, `POST /api/v1/jobs/{id}/cancel`
 - Validation templates: `GET/POST /api/v1/validation/templates`, `POST /api/v1/validation/templates/generate` (generate a draft from a run)
-- Settings: `GET /api/v1/config` (frontend runtime settings: endpoints / tabs / defaults (including `ros_domain_id`) / stream / schemas), `GET/POST /api/v1/settings`
+- Settings: `GET /api/v1/config` (frontend runtime settings: endpoints / tabs / defaults (including `ros_domain_id`) / stream / schemas). [`GET/POST /api/v1/settings` is **not implemented** (future); `PUT /api/v1/config/recording` below is currently the entry point for config editing]
 - Recording config (full edit): `GET /api/v1/config/recording` → `{ config: <RecordingConfig dump>|null, path }`, `PUT /api/v1/config/recording` (body `{ config }`. See "Full editing of recording config" below)
 - Settings catalog: `GET /api/v1/config/options`, `POST /api/v1/config/select` (per-category choices such as validation templates, and the current selection)
 - System info: `GET /api/v1/system` → `{ cpu: { model, cores }, gpu }` (read-only introspection of the host. When `nvidia-smi` is absent, `gpu: null`. Always `200`)
@@ -87,7 +87,7 @@ An operation that **moves a recording from the canonical staging (`recorded/`) t
 
 ## Key schemas (excerpt, OpenAPI generation targets / pydantic)
 
-- settings (`GET/POST /api/v1/settings`): `{ defaults: { encoding: "vp8"|"h264", expected_hz: { <pattern>: number } }, alerts: [ { topic, metric, op, threshold, cooldown_s, clear_after_s } ], retention_days: int, max_record_bytes: int }`. POST is a partial update. settings overrides / supplements `RECORDING_CONFIG` at runtime, and is **reflected from the next recording session / the monitor's re-subscription** (it does not apply retroactively to a recording in progress).
+- settings (`GET/POST /api/v1/settings`. **Not implemented, future slot**): `{ defaults: { encoding: "vp8"|"h264", expected_hz: { <pattern>: number } }, alerts: [ { topic, metric, op, threshold, cooldown_s, clear_after_s } ], retention_days: int, max_record_bytes: int }`. The original design intended this to override / supplement `RECORDING_CONFIG` at runtime and take effect from the next recording session, but today `PUT /api/v1/config/recording` (below; atomic write + hot-swap) substitutes for it.
 - Validation templates:
   - `GET /api/v1/validation/templates` → `{ items: [ { name, version, required_topics: [ { name, type?: string } ] } ], next_cursor }`
   - `POST /api/v1/validation/templates` body = `{ name, version, required_topics: [ { name, type? } ] }` → `201` same shape
@@ -99,7 +99,7 @@ An operation that **moves a recording from the canonical staging (`recorded/`) t
 
 - **FastAPI + uvicorn** (recommended. Auto-publishes OpenAPI).
 - Put heavy processing (validation / conversion, stage3) on an **asynchronous job queue**, decoupled from request/response. Progress is notified via SSE.
-- Persistence: **runs / jobs / settings are canonical in SQLite**, the file manifest is for auditing. Avoid accidents where only one side is updated.
+- Persistence: **runs / jobs are canonical in SQLite**, the file manifest is for auditing. Avoid accidents where only one side is updated (the settings store is not implemented; recording config is persisted atomically to the config file via `PUT /api/v1/config/recording`).
 - Internal service calls use a timeout (default `3s`) + 1 retry. Failures are reflected in `status` / `events` (`503`).
 
 ## Errors / conventions / network

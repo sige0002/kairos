@@ -89,19 +89,33 @@ MCAP → dora dataflow（validator / converter / AI nodes）→ reports / conver
 - validator / converter / AI は dora node（プラグイン）。I/O は契約。
 - 重い処理は非同期ジョブ。進捗は SSE で `api_orchestrator` → frontend。
 - dora dataflow として拡張（node 追加・差し替え・連結）。**AI node を一級市民**として扱う。
-- backend-driven: pipeline 定義・フォーム schema は `api_orchestrator` が frontend に配布する（Pipelines タブ）。
+- backend-driven: pipeline 定義・フォーム schema は `api_orchestrator` が frontend に配布する（Validation タブ等の実行フォーム）。
 - 共有設定は [config](config.md)。
 
 ## 実装状況と開発ガイド
 
 本書は**設計の正本（将来像を含む）**。**現状の有効 pipeline は `fast_validation` / `dataset_export` /
-`loss_report` / `video_check`**（上記「実装済みパイプライン」参照）。`full_validation` / `dataset_convert` /
-`dataset_validation` は I/F だけ（`enabled=false`）。Plugin/Pipeline Registry・dora dataflow（YAML）・
-dora daemon・AI node・job/template の永続化は**未実装**で、各パイプラインは in-process の node 関数として
-実装されている（重い読込・エンコードは worker のスレッドに退避）。
+`loss_report` / `video_check`** の 4 本（上記「実装済みパイプライン」参照）。`full_validation` /
+`dataset_convert` / `dataset_validation` は I/F だけ（`enabled=false`。`POST /jobs` は
+`pipeline_unavailable` で拒否）。
+
+**実装済み**: **Plugin/Pipeline Registry**（`registry.py` の `build_default_registry()` が同梱 4 本を登録し、
+`plugin_loader.discover_plugins()` が `KAIROS_PLUGINS_DIR`（既定 `services/dora_runner/plugins/`）配下の
+manifest をスキャンして自動登録する。例として `hello_dora` プラグインを同梱）、**dora dataflow の
+in-process インタプリタ**（`executor: dora` を宣言したプラグインも、後述の理由で in-process で実行）、
+**ジョブの並行度上限・per-job timeout**（`KAIROS_DORA_MAX_CONCURRENCY` / `KAIROS_DORA_JOB_TIMEOUT_S`）。
+各パイプラインの重い読込・エンコードは worker スレッドに退避する。
+
+**未実装 / 未同梱**: **Rust の dora CLI/daemon（coordinator）は同梱していない**。そのため `/readyz` は
+`components.dora` に**実際の実行系**（`dora` バイナリがあれば `available`、無ければ `in-process`）を誠実に
+返し、`status` は dora 不在でも `ready`（in-process で動くため）。`/pipelines` の各 `PipelineDefinition` も
+宣言上の `executor` とは別に `effective_executor`（実際にどう動くか）を返す。**AI node（推論・LeRobot 変換）**、
+**job/template の永続化**（現状 in-memory・プロセス再起動で消える）も未実装。
 
 validation チェックの追加方法・単体試験・ローカル CLI（`python -m dora_runner.cli`）でのデバッグ手順は、
 開発者ガイド [docs/dora/README.ja.md](../../dora/README.ja.md) を参照。
 
-**dora dataflow 化 & プラグイン（git submodule）システムの実装方針**は [dora_plugins.md](dora_plugins.md) に確定（全 pipeline の
-dataflow 化・`plugins/<name>` の manifest scan 自動登録・submodule ワークフロー・段階移行プラン）。
+**dora dataflow 化 & プラグインシステムの実装方針**（将来像）は [dora_plugins.md](dora_plugins.md) に確定
+（全 pipeline の dataflow 化・`plugins/<name>` の manifest scan 自動登録・段階移行プラン）。現状のプラグインは
+**in-tree**（submodule ではなく `services/dora_runner/plugins/` に直置き）で、dora daemon は将来の投資として
+枠だけ用意している。

@@ -10,10 +10,17 @@
 > resource list at [resources.ja.md](resources.ja.md).
 
 ## Current state (the v1 implementation, as built)
-- The only enabled pipeline is **`fast_validation`** (`full_validation` / `dataset_convert` /
-  `dataset_validation` are `enabled=false` placeholders). `pipelines.py`'s `PIPELINES` is a **static list**.
-- The Plugin/Pipeline Registry, dora dataflow (YAML), and dora daemon from the spec are **not
-  implemented**. Instead `fast_validation` is implemented as **plain in-process Python functions**
+- There are **4 enabled pipelines: `fast_validation` / `dataset_export` / `loss_report` /
+  `video_check`** (`full_validation` / `dataset_convert` / `dataset_validation` are `enabled=false`
+  placeholders; `POST /jobs` rejects them with `pipeline_unavailable`).
+- The registry is **implemented**: `registry.py`'s `build_default_registry()` registers the 4 bundled
+  pipelines, and `plugin_loader.discover_plugins()` scans manifests under `KAIROS_PLUGINS_DIR`
+  (default `services/dora_runner/plugins/`) and auto-registers them (example plugin `hello_dora`
+  included). **The in-process interpreter for dora dataflow is also implemented**, but **the Rust dora
+  CLI/daemon is not bundled**, so even `executor: dora` plugins run in-process (`/readyz`'s
+  `components.dora` and `/pipelines`'s `effective_executor` faithfully report the actual execution
+  path).
+- The bundled `fast_validation` is implemented as **plain in-process Python functions**
   (`validation.py`):
   - `mcap_loader(run_id, data_dir)` → opens `/data/recorded/<run_id>/*.mcap` and enumerates the
     topic list (**no ROS decoding**, `mcap` + `mcap-ros2-support`).
@@ -54,12 +61,18 @@ required_topics:
 4. **Test**: `validator()` is a pure function → **unit test it with a synthetic `loaded` dict** (below).
 
 ### C. Add a new pipeline (beyond fast_validation)
-1. Add a `PipelineDefinition(id=..., enabled=True, schema=...)` to `PIPELINES` in `pipelines.py`.
-2. Implement its executor (**same in/out contract** as `run_fast_validation`; in `validation.py` or
-   a new module).
-3. `main.py`: extend the `create_job` **guard** (today it 400s when `pipeline != "fast_validation"`)
-   into a branch, and pick the executor per pipeline in `_execute_job`.
-4. To move toward the spec's registry/dataflow, that is a separate design (not implemented).
+1. **As a bundled pipeline**: add a `RegisteredPipeline(id=..., runner=..., enabled=True, schema=...)`
+   to `build_default_registry()` in `registry.py`. `runner` follows the contract `async (job, store,
+   data_dir) -> {"summary":…, "artifacts":[…]}` (same in/out as `validation.py` / `loss_report.py` and
+   friends). Leaving `runner=None` makes it a placeholder (`enabled=false`) and `POST /jobs` returns
+   `pipeline_unavailable`.
+2. **As a plugin** (no core changes needed): put a manifest (`kairos_plugin.yaml`) and the
+   implementation under `KAIROS_PLUGINS_DIR`. `discover_plugins()` auto-registers it at startup (see
+   `hello_dora` for reference).
+3. For reproducibility, include `pipeline` / `version` in the summary (same convention as the 4
+   bundled pipelines).
+4. Running as a dataflow on the dora daemon is a future direction
+   ([dora_plugins.md](../specs/en/dora_plugins.md)). Today it runs via the in-process interpreter.
 
 ## How to unit test
 ```bash
@@ -90,6 +103,8 @@ cd services/dora_runner && uv run --extra test pytest -q
 - **Note**: the job/template store is in-memory (lost on restart). Persistence (a DB) is future work (see the spec).
 
 ## Known gaps (vs the spec / TODO)
-- The Plugin/Pipeline Registry, dora dataflow (YAML), and dora daemon are **not implemented** (the spec is the future vision).
+- **The Rust dora CLI/daemon (coordinator) is not bundled** — even `executor: dora` plugins run via
+  the in-process interpreter (the Plugin/Pipeline Registry and the in-process dataflow itself are
+  implemented; the spec's long-running dataflow model is a future direction).
 - `full_validation` / `dataset_convert` / `dataset_validation` are interface-only (`enabled=false`).
 - AI nodes / LeRobot conversion and job/template persistence are not implemented.
