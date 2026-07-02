@@ -1,10 +1,12 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
-import { renderWithClient, jsonResponse } from '../../test/renderWithClient';
+import { renderWithClient, makeTestClient, jsonResponse } from '../../test/renderWithClient';
+import { queryKeys } from '../../api/queryKeys';
 import { LiveTab } from './LiveTab';
 import { useUiStore } from '../../store/uiStore';
 import type { RuntimeConfig } from '../../config';
+import type { AlertEvent } from '../../api/types';
 
 const CONFIG = {
   endpoints: { api: '/api/v1', events: '/api/v1/events', webrtc: 'http://localhost:8002' },
@@ -33,8 +35,11 @@ beforeEach(() => {
     recordTask: '',
     recordSelected: new Set(),
     recordCustomized: false,
-    recordSeeded: false,
-    graphTopic: null,
+    recordSeededKey: null,
+    scopeOpen: false,
+    scopeWindowId: '1m',
+    scopePanels: [],
+    scopePanelSeq: 0,
     recMarkers: [],
     recMarkersPrevActive: null,
   });
@@ -315,8 +320,47 @@ test('record checkboxes seed from configured topics and drive the next start', a
   );
 });
 
-// OL-③.2: clicking a topic name in the Monitor panel opens its live health graph.
-test('clicking a topic name opens its live health graph, Close dismisses it', async () => {
+// MON-C1 counterpart: the Monitor panel surfaces SSE alerts as a collapsed
+// active-count badge that expands a short list. Collapsed by default (no space);
+// nothing renders when the alert buffer is empty.
+test('monitor alerts show an active-count badge that expands a list', async () => {
+  mockStatus({ run_id: null, state: 'created' });
+  const client = makeTestClient();
+  client.setQueryData(queryKeys.alerts, [
+    {
+      topic: '/hsrb/odom',
+      metric: 'hz',
+      op: 'lt',
+      threshold: 10,
+      value: 3,
+      state: 'firing',
+      since: '2026-07-02T00:00:00Z',
+    },
+  ] satisfies AlertEvent[]);
+  renderWithClient(<LiveTab config={CONFIG} />, { client });
+
+  const badge = await screen.findByLabelText('alerts');
+  expect(badge).toHaveTextContent('1 alert');
+  // Collapsed by default.
+  expect(screen.queryByTestId('alert-list')).not.toBeInTheDocument();
+
+  fireEvent.click(badge);
+  const list = await screen.findByTestId('alert-list');
+  expect(list).toHaveTextContent('/hsrb/odom');
+  expect(list).toHaveTextContent('firing');
+});
+
+// With no alerts buffered, the badge is absent entirely (takes no space).
+test('no alert badge when the alert buffer is empty', async () => {
+  mockStatus({ run_id: null, state: 'created' });
+  renderWithClient(<LiveTab config={CONFIG} />);
+  await waitFor(() => expect(screen.getByText('Idle')).toBeInTheDocument());
+  expect(screen.queryByLabelText('alerts')).not.toBeInTheDocument();
+});
+
+// OL-③.2: clicking a topic name in the Monitor panel adds a Health panel for
+// it in the Scope band (replaces the old fixed-bottom LiveHealthGraph overlay).
+test('clicking a topic name adds a Health panel for it in the Scope band', async () => {
   mockStatus({ run_id: null, state: 'created' });
   vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
@@ -333,14 +377,16 @@ test('clicking a topic name opens its live health graph, Close dismisses it', as
   renderWithClient(<LiveTab config={CONFIG} />);
 
   const nameButton = await screen.findByLabelText('graph /hsrb/odom health');
-  expect(screen.queryByText('Topic health')).not.toBeInTheDocument();
+  // Collapsed by default: no panel content rendered yet.
+  expect(screen.queryByTestId('scope-panel')).not.toBeInTheDocument();
 
   fireEvent.click(nameButton);
-  expect(await screen.findByText('Topic health')).toBeInTheDocument();
-  expect(screen.getByText('Shortfall vs expected')).toBeInTheDocument();
 
-  fireEvent.click(screen.getByLabelText('close health graph'));
-  await waitFor(() => expect(screen.queryByText('Topic health')).not.toBeInTheDocument());
+  const panel = await screen.findByTestId('scope-panel');
+  expect(within(panel).getByText('odom')).toBeInTheDocument(); // topic chip (short name)
+
+  fireEvent.click(screen.getByLabelText('remove panel'));
+  await waitFor(() => expect(screen.queryByTestId('scope-panel')).not.toBeInTheDocument());
 });
 
 // Regression (L-04): a customized record-topic selection must survive the Live
@@ -380,10 +426,10 @@ test('customized record-topic selection survives a remount', async () => {
   expect(screen.getByLabelText('record /hsrb/joint_states')).toBeChecked();
 });
 
-// Regression (L-14): the open health graph (and its topic selection) survives a
-// remount — graphTopic lives in the persistent UI store, so a tab round-trip no
-// longer closes the graph.
-test('the open health graph survives a remount', async () => {
+// Regression (L-14): the open Scope Health panel (and its topic selection)
+// survives a remount — scopePanels/scopeOpen live in the persistent UI store,
+// so a tab round-trip no longer collapses the band or drops the panel.
+test('the open Scope Health panel survives a remount', async () => {
   vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
     if (url.includes('/record/status'))
@@ -399,11 +445,12 @@ test('the open health graph survives a remount', async () => {
   const { unmount } = renderWithClient(<LiveTab config={CONFIG} />);
 
   fireEvent.click(await screen.findByLabelText('graph /hsrb/odom health'));
-  expect(await screen.findByText('Topic health')).toBeInTheDocument();
+  expect(await screen.findByTestId('scope-panel')).toBeInTheDocument();
 
   unmount(); // leave the Live tab
   renderWithClient(<LiveTab config={CONFIG} />); // come back
 
-  // The graph is still open without re-clicking — the selection persisted.
-  expect(await screen.findByText('Topic health')).toBeInTheDocument();
+  // The band is still expanded with its panel, without re-clicking — the
+  // selection persisted in the UI store.
+  expect(await screen.findByTestId('scope-panel')).toBeInTheDocument();
 });

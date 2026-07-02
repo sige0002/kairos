@@ -167,7 +167,7 @@ export function ValidationTab() {
   // Adapt the active robot's `validation` aspect options into the template shape
   // the fast_validation form consumes (id + name/version/required_topics).
   const templates: ValidationOption[] = (
-    optionsQuery.data?.aspects.validation.options ?? []
+    optionsQuery.data?.aspects?.validation?.options ?? []
   ).map((o) => ({
     id: o.id,
     name: o.meta.name ?? o.id,
@@ -192,7 +192,7 @@ export function ValidationTab() {
   );
   const params: Record<string, unknown> = { ...seeded, ...overrides };
   if (schema.properties?.template && !params.template) {
-    params.template = optionsQuery.data?.aspects.validation.active || templates[0]?.id || '';
+    params.template = optionsQuery.data?.aspects?.validation?.active || templates[0]?.id || '';
   }
 
   const activeTemplate = String(params.template ?? '');

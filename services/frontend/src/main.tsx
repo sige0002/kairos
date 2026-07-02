@@ -2,9 +2,22 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import './index.css';
 
-const queryClient = new QueryClient();
+// Defaults tuned for this app's constant SSE-fed + short-poll traffic: don't
+// refetch every query on every window focus (the SSE stream keeps caches fresh),
+// and retry a failed fetch once rather than the react-query default of 3 — a
+// single retry recovers transient blips without hammering. Individual queries
+// still override these explicitly (e.g. the SSE-only caches disable fetching).
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      refetchOnWindowFocus: false,
+      retry: 1,
+    },
+  },
+});
 
 const rootEl = document.getElementById('root');
 if (!rootEl) {
@@ -13,8 +26,10 @@ if (!rootEl) {
 
 createRoot(rootEl).render(
   <StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <App />
-    </QueryClientProvider>
+    <ErrorBoundary>
+      <QueryClientProvider client={queryClient}>
+        <App />
+      </QueryClientProvider>
+    </ErrorBoundary>
   </StrictMode>,
 );

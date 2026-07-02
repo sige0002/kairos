@@ -89,7 +89,9 @@ export function useMetricHistory(config: RuntimeConfig, frozen: boolean): Metric
     lastSeenRef.current = dataUpdatedAt;
     const now = Date.now();
     const hist = historyRef.current;
-    for (const m of snap.topics) {
+    // Defensive: a malformed snapshot could omit `topics`; treat it as empty
+    // rather than throwing (which would tear down the Graph tab).
+    for (const m of snap.topics ?? []) {
       const exp = expectedHz(m.name);
       const sample: MetricSample = {
         t: now,

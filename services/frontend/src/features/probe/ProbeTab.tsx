@@ -15,18 +15,8 @@ import {
   type ProbeStreamStatus,
 } from './useProbe';
 import type { ProbeSeries } from './types';
-import { UplotChart, type UplotSeriesConf } from './UplotChart';
+import { PALETTE, UplotChart, type UplotSeriesConf } from './UplotChart';
 
-const PALETTE = [
-  '#0d9488',
-  '#0891b2',
-  '#d97706',
-  '#fb7185',
-  '#16a34a',
-  '#7c3aed',
-  '#dc2626',
-  '#2563eb',
-];
 const HZ_OPTIONS = [1, 5, 10, 30];
 const WINDOWS: { id: string; label: string; sec: number }[] = [
   { id: '10s', label: '10s', sec: 10 },

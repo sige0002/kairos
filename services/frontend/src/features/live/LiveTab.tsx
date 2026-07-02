@@ -14,6 +14,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiDelete, apiGet, apiPost } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
 import type {
+  AlertEvent,
   ConfigOptions,
   RecordArming,
   RecordStartRequest,
@@ -36,7 +37,14 @@ import {
   type MonitorData,
 } from '../monitor/useMonitorRows';
 import { useMetricHistory } from '../graph/useMetricHistory';
-import { LiveHealthGraph, type RecMarker } from './LiveHealthGraph';
+import { ScopeBand } from './scope/ScopeBand';
+
+/** A REC/STOP recording marker, drawn on every Scope band panel. Lives here
+ *  (where `useRecordMarkers` is defined) — the uiStore imports this type. */
+export interface RecMarker {
+  t: number;
+  kind: 'REC' | 'STOP';
+}
 
 // Only `recording`/`stopping` are an actually-running session — matching the
 // recorder's own _ACTIVE_STATES. A fresh recorder sits in `created` (run_id=null)
@@ -477,6 +485,60 @@ function RecordHero({ selection }: { selection: RecordSelection }) {
   );
 }
 
+// ---- Alerts surface (MON-C1 counterpart) ------------------------------------
+// topic_monitor streams `alert` snapshots over SSE; useEventStream caches them as
+// a newest-first rolling buffer (useMonitorRows exposes it as `alerts`). Here we
+// collapse that buffer to the CURRENT state per (topic, metric) so the Monitor
+// panel can show an active-alert count and a short list without its own polling.
+
+/** One row of the collapsed alert list: the latest state for a (topic, metric). */
+interface AlertSummaryRow {
+  key: string;
+  topic: string;
+  metric: string;
+  op?: string;
+  threshold: number;
+  value?: number | null;
+  firing: boolean;
+  since?: string | null;
+}
+
+const ALERT_OP_SYMBOL: Record<string, string> = { lt: '<', le: '≤', gt: '>', ge: '≥' };
+
+function summarizeAlerts(alerts: AlertEvent[]): {
+  rows: AlertSummaryRow[];
+  activeCount: number;
+} {
+  // `alerts` is newest-first, so the first event seen for a (topic, metric) is
+  // its current state; later (older) events for the same key are ignored.
+  const byKey = new Map<string, AlertSummaryRow>();
+  for (const a of alerts) {
+    const key = `${a.topic}|${a.metric}`;
+    if (byKey.has(key)) continue;
+    byKey.set(key, {
+      key,
+      topic: a.topic,
+      metric: a.metric,
+      op: a.op,
+      threshold: a.threshold,
+      value: a.value,
+      firing: a.state !== 'cleared',
+      since: a.since,
+    });
+  }
+  // Firing rows first, then most-recent by start time.
+  const rows = [...byKey.values()].sort(
+    (x, y) => Number(y.firing) - Number(x.firing) || (y.since ?? '').localeCompare(x.since ?? ''),
+  );
+  return { rows, activeCount: rows.filter((r) => r.firing).length };
+}
+
+function formatAlertTime(iso?: string | null): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString();
+}
+
 // Columns: record checkbox / topic / Hz (actual/expected) / Gap (max
 // inter-arrival ms) / bandwidth. True message loss is still NOT shown (ROS 2
 // best-effort has no general loss signal; topic_monitor keeps loss_rate=None).
@@ -489,17 +551,22 @@ function LiveMonitorPanel({
   monitor,
   selected,
   onToggle,
-  graphTopic,
-  onGraph,
+  scopedTopics,
+  onScope,
 }: {
   monitor: MonitorData;
   selected: Set<string>;
   onToggle: (name: string) => void;
-  graphTopic: string | null;
-  onGraph: (name: string) => void;
+  /** Topics with an open Scope Health panel — highlighted in the Topic column. */
+  scopedTopics: Set<string>;
+  onScope: (name: string) => void;
 }) {
-  const { rows, measuredCount, paused } = monitor;
+  const { rows, measuredCount, paused, alerts } = monitor;
   const total = rows.length;
+  // Collapsed alert surface: an active-count badge in the header expands a short
+  // list. Default collapsed so it takes no space when nothing has fired.
+  const [alertsOpen, setAlertsOpen] = useState(false);
+  const alertSummary = useMemo(() => summarizeAlerts(alerts), [alerts]);
   // "Unhealthy" = a measured topic flagged warning/danger/inactive by the
   // backend status (legacy loss_rate>0 kept as a fallback for status-less rows).
   const isUnhealthy = (r: (typeof rows)[number]) =>
@@ -530,6 +597,24 @@ function LiveMonitorPanel({
         <SectionLabel>Monitor</SectionLabel>
         <span className="font-mono text-[11px] text-gray-400">{selected.size} to record</span>
         <div className="flex-1" />
+        {alertSummary.rows.length > 0 && (
+          <button
+            type="button"
+            aria-label="alerts"
+            aria-expanded={alertsOpen}
+            onClick={() => setAlertsOpen((v) => !v)}
+          >
+            <Badge
+              tone={alertSummary.activeCount > 0 ? 'red' : 'gray'}
+              dot
+              className="cursor-pointer"
+            >
+              {alertSummary.activeCount > 0
+                ? `${alertSummary.activeCount} alert${alertSummary.activeCount > 1 ? 's' : ''}`
+                : 'alerts'}
+            </Badge>
+          </button>
+        )}
         {paused ? (
           <Badge tone="amber">paused</Badge>
         ) : (
@@ -538,6 +623,45 @@ function LiveMonitorPanel({
           </Badge>
         )}
       </div>
+      {alertsOpen && alertSummary.rows.length > 0 && (
+        <div
+          data-testid="alert-list"
+          className="border-b border-gray-100 bg-gray-50/60 px-[18px] py-2"
+        >
+          <div className="max-h-40 overflow-y-auto">
+            {alertSummary.rows.slice(0, 12).map((r) => (
+              <div
+                key={r.key}
+                className="flex items-start gap-2 border-b border-gray-100 py-1.5 last:border-b-0"
+              >
+                <StatusDot tone={r.firing ? 'red' : 'gray'} className="mt-1" />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate font-mono text-[11.5px] text-gray-700">{r.topic}</div>
+                  <div className="font-mono text-[10.5px] text-gray-400">
+                    {r.metric} {ALERT_OP_SYMBOL[r.op ?? ''] ?? r.op ?? ''} {r.threshold}
+                    {r.value != null ? ` · ${r.value}` : ''}
+                  </div>
+                </div>
+                <div className="shrink-0 text-right">
+                  <div
+                    className={cn(
+                      'text-[10px] font-semibold uppercase',
+                      r.firing ? 'text-red-600' : 'text-gray-400',
+                    )}
+                  >
+                    {r.firing ? 'firing' : 'cleared'}
+                  </div>
+                  {formatAlertTime(r.since) && (
+                    <div className="font-mono text-[10px] text-gray-400">
+                      {formatAlertTime(r.since)}
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       <div className="flex min-h-0 flex-1 flex-col px-[18px] pb-4 pt-1.5">
         <div
           className={cn(
@@ -579,11 +703,11 @@ function LiveMonitorPanel({
                     <StatusDot tone={tone} />
                     <button
                       type="button"
-                      onClick={() => onGraph(m.name)}
+                      onClick={() => onScope(m.name)}
                       aria-label={`graph ${m.name} health`}
                       className={cn(
                         'truncate text-left font-mono text-[12.5px] hover:text-teal-700',
-                        m.name === graphTopic
+                        scopedTopics.has(m.name)
                           ? 'font-semibold text-teal-700'
                           : on
                             ? 'font-semibold text-gray-800'
@@ -706,10 +830,22 @@ export function LiveTab({ config }: { config: RuntimeConfig }) {
   const seedRecordTopics = useUiStore((s) => s.seedRecordTopics);
   const toggle = useUiStore((s) => s.toggleRecordTopic);
 
+  // Key the seed on the active robot's configured topics (stable across
+  // discovery refreshes, changes on a robot switch) — mirrors the stream panes'
+  // `streamPanesSeededKey`. A robot switch re-seeds and resets any stale
+  // customized selection so the previous robot's topics can't reach the next
+  // Start.
+  const seedKey = useMemo(
+    () => JSON.stringify(config.defaults.default_topics ?? []),
+    [config],
+  );
   useEffect(() => {
     if (monitor.rows.length === 0) return;
-    seedRecordTopics(monitor.rows.filter((r) => r.configured).map((r) => r.name));
-  }, [monitor.rows, seedRecordTopics]);
+    seedRecordTopics(
+      monitor.rows.filter((r) => r.configured).map((r) => r.name),
+      seedKey,
+    );
+  }, [monitor.rows, seedRecordTopics, seedKey]);
 
   const selection: RecordSelection = useMemo(() => {
     if (customized) {
@@ -721,22 +857,32 @@ export function LiveTab({ config }: { config: RuntimeConfig }) {
     return { topics: 'all', count: 0, customized: false };
   }, [customized, selected, defaultTopics]);
 
-  // Live health graph (OL-③.2): the operator clicks a topic in the Monitor panel
-  // to open its per-topic health graph. History accumulates from the same SSE
-  // metrics stream the panel uses (no extra subscription, no payload decode).
-  const graphTopic = useUiStore((s) => s.graphTopic);
-  const setGraphTopic = useUiStore((s) => s.setGraphTopic);
+  // Scope band (OL-③.2 successor): the operator clicks a topic in the Monitor
+  // panel to add a Health panel for it (or just open the band if one already
+  // plots that topic). History accumulates from the same SSE metrics stream
+  // the panel uses (no extra subscription, no payload decode); it keeps
+  // accumulating whether or not the band is open (a second call would restart
+  // the buffer, so the band never calls this itself).
   const metricHistory = useMetricHistory(config, false);
   const recMarkers = useRecordMarkers();
-  const graphPoints = graphTopic ? (metricHistory.history.get(graphTopic) ?? []) : [];
-  const graphLabel = graphTopic ? (graphTopic.split('/').filter(Boolean).at(-1) ?? graphTopic) : '';
+  const addHealthPanel = useUiStore((s) => s.addHealthPanel);
+  const scopePanels = useUiStore((s) => s.scopePanels);
+  // Topics with an open Health panel, for the Monitor row highlight.
+  const scopedTopics = useMemo(() => {
+    const set = new Set<string>();
+    for (const p of scopePanels) {
+      if (p.kind === 'health') for (const t of p.topics) set.add(t);
+    }
+    return set;
+  }, [scopePanels]);
+  const monitorTopicNames = useMemo(() => monitor.rows.map((r) => r.name), [monitor.rows]);
 
   // No-page-scroll layout (lg+): bound the Live view to the viewport so the
-  // stream grid + monitor fit without the page scrolling. RecordHero/robot bar
-  // are natural height; the [stream | monitor] row consumes the rest (flex-1),
-  // the stream fills it (fit) and the monitor scrolls internally. Below lg it
-  // flows naturally. The health graph is a fixed bottom overlay so opening it
-  // never adds page height.
+  // stream grid + monitor + Scope band fit without the page scrolling.
+  // RecordHero/robot bar are natural height; the [stream | monitor] row
+  // consumes the rest (flex-1) minus the Scope band's own fixed height (see
+  // ScopeBand.tsx), the stream fills it (fit) and the monitor scrolls
+  // internally. Below lg it flows naturally.
   return (
     <div className="flex flex-col gap-3 lg:h-full lg:min-h-0 lg:overflow-hidden">
       <LiveRobotBar />
@@ -749,21 +895,11 @@ export function LiveTab({ config }: { config: RuntimeConfig }) {
           monitor={monitor}
           selected={selected}
           onToggle={toggle}
-          graphTopic={graphTopic}
-          onGraph={setGraphTopic}
+          scopedTopics={scopedTopics}
+          onScope={addHealthPanel}
         />
       </div>
-      {graphTopic && (
-        <div className="fixed inset-x-0 bottom-0 z-30 mx-auto w-full max-w-[1500px] px-[22px] pb-[22px]">
-          <LiveHealthGraph
-            topic={graphTopic}
-            label={graphLabel}
-            points={graphPoints}
-            markers={recMarkers}
-            onClose={() => setGraphTopic(null)}
-          />
-        </div>
-      )}
+      <ScopeBand history={metricHistory.history} topics={monitorTopicNames} markers={recMarkers} />
     </div>
   );
 }
