@@ -152,15 +152,24 @@ async def _multi_sample_sse(
     Holds a (ref-counted) subscription for the connection's lifetime and samples
     the latest decoded message off the event loop each tick; releases it on
     disconnect. Cross-topic overlay = several of these streams in parallel.
+
+    The subscribe runs INSIDE the try so a disconnect after it bumped the
+    ref-count still reaches the finally and releases it — with subscribe outside
+    the try, a client that dropped right after subscribing would leak the
+    subscription permanently. ``subscribed`` gates the release so an early cancel
+    that never took the reference does not decrement another stream's count.
     """
-    await asyncio.to_thread(service.subscribe, topic)
+    subscribed = False
     try:
+        await asyncio.to_thread(service.subscribe, topic)
+        subscribed = True
         while True:
             sample = await asyncio.to_thread(service.sample_many, topic, fields)
             yield f"data: {json.dumps(sample.model_dump())}\n\n"
             await asyncio.sleep(interval)
     finally:
-        await asyncio.to_thread(service.unsubscribe, topic)
+        if subscribed:
+            await asyncio.to_thread(service.unsubscribe, topic)
 
 
 app = create_probe_app()

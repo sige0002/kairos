@@ -1,7 +1,8 @@
 # =============================================================================
-# kairos — root docker compose entry point (Stage 0 skeleton).
-# Brings up all 6 services as runnable shells. Real service logic lands in
-# later stages; this only wires env, ports, volumes, and DDS networking.
+# kairos — root docker compose entry point.
+# Brings up all 7 services (recorder / monitor / streamer / probe / orchestrator
+# / dora_runner / frontend). Wires env, ports, volumes, DDS networking, and a
+# per-service healthcheck.
 #
 #   cp .env.example .env   # then edit
 #   docker compose up
@@ -46,6 +47,20 @@ x-ros-env: &ros-env
   # Active robot — config/<robot>/ (committed) or config/local/<robot>/ (gitignored).
   ROBOT: ${ROBOT:-airoa_hsr}
 
+# Shared healthcheck cadence (conservative — the services are lightweight, but the
+# ROS ones need a moment to import rclpy). Each service overrides `test` with its
+# own port; the port is interpolated here as ${VAR:-default} (same single source
+# as everywhere else) so the check hits the same port the service binds. Every
+# Python service serves GET /healthz from kairos_common.create_app and every
+# image ships python3, so the check needs no extra tooling; the nginx frontend
+# has no python3, so it uses the image's busybox wget instead. On host networking
+# each service is reachable at localhost:<port>.
+x-healthcheck: &healthcheck
+  interval: 15s
+  timeout: 3s
+  retries: 3
+  start_period: 20s
+
 services:
   # ---- ROS 2 services (host networking for the shared DDS graph) -----------
   recorder:
@@ -74,6 +89,13 @@ services:
       # Override per robot: MSGS_OVERLAY_DIR=./deploy/msgs_overlay/<robot>. See
       # deploy/msgs_overlay/README.md.
       - ${MSGS_OVERLAY_DIR:-./deploy/msgs_overlay/robot}:/opt/msgs_overlay:ro
+    healthcheck:
+      <<: *healthcheck
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:${RECORDER_PORT:-8010}/healthz', timeout=2)"
     restart: unless-stopped
 
   monitor:
@@ -89,6 +111,10 @@ services:
     environment:
       <<: *ros-env
       RECORDING_CONFIG: ${RECORDING_CONFIG:-/config/${ROBOT:-airoa_hsr}/recording/default.yaml}
+      # Optional alert rules: config/<robot>/monitoring/alerts.yaml (a local
+      # override under config/local/<robot>/... wins). Empty = alerts disabled.
+      # `make` derives this from ROBOT; without make, set it in .env.
+      ALERT_CONFIG_PATH: ${ALERT_CONFIG_PATH:-}
     network_mode: host
     ipc: host
     volumes:
@@ -97,6 +123,13 @@ services:
       # Custom-message overlay (same dir the recorder uses): lets the monitor
       # subscribe to custom message types on a live robot. Empty by default.
       - ${MSGS_OVERLAY_DIR:-./deploy/msgs_overlay/robot}:/opt/msgs_overlay:ro
+    healthcheck:
+      <<: *healthcheck
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:${TOPIC_MONITOR_PORT:-8001}/healthz', timeout=2)"
     restart: unless-stopped
 
   streamer:
@@ -118,6 +151,13 @@ services:
       # Read-only config mount (parity with recorder/monitor) so an optional
       # CYCLONEDDS_URI=file:///config/cyclonedds.xml resolves here too.
       - ./config:/config:ro
+    healthcheck:
+      <<: *healthcheck
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:${WEBRTC_PORT:-8002}/healthz', timeout=2)"
     restart: unless-stopped
 
   # topic_probe — generic numeric-field live plotter (OL-3.3). A SEPARATE ROS
@@ -146,6 +186,13 @@ services:
       # Custom-message overlay (same dir the recorder/monitor use): lets the
       # probe DECODE custom message types on a live robot. Empty by default.
       - ${MSGS_OVERLAY_DIR:-./deploy/msgs_overlay/robot}:/opt/msgs_overlay:ro
+    healthcheck:
+      <<: *healthcheck
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:${TOPIC_PROBE_PORT:-8003}/healthz', timeout=2)"
     restart: unless-stopped
 
   # ---- Pure-Python services (no rclpy) -------------------------------------
@@ -195,6 +242,13 @@ services:
       # config file. Runs as the host user (uid above) so the host-owned ./config
       # is writable. Keep this on a trusted LAN only — the UI can rewrite config.
       - ./config:/config
+    healthcheck:
+      <<: *healthcheck
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:${API_ORCH_PORT:-8000}/healthz', timeout=2)"
     restart: unless-stopped
 
   dora_runner:
@@ -217,6 +271,13 @@ services:
     volumes:
       - ${DATA_DIR:-./data}:/data
       - ./config:/config:ro
+    healthcheck:
+      <<: *healthcheck
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:${DORA_RUNNER_PORT:-8020}/healthz', timeout=2)"
     restart: unless-stopped
 
   frontend:
@@ -247,6 +308,20 @@ services:
       WEBRTC_HOST: ${WEBRTC_HOST:-127.0.0.1}
       PROBE_HOST: ${PROBE_HOST:-127.0.0.1}
     network_mode: host
+    # nginx-alpine has no python3; use the image's busybox wget against the SPA
+    # root (nginx serves index.html there once it is up).
+    healthcheck:
+      <<: *healthcheck
+      test:
+        - CMD
+        - wget
+        - -q
+        - -O
+        - /dev/null
+        - "http://localhost:${FRONTEND_PORT:-8080}/"
     restart: unless-stopped
+    # Wait for the orchestrator to pass its healthcheck: the SPA's first request
+    # is GET /api/v1/config, which the frontend proxies to the orchestrator.
     depends_on:
-      - orchestrator
+      orchestrator:
+        condition: service_healthy

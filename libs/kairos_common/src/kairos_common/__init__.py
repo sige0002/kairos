@@ -1,8 +1,8 @@
 """Shared settings, config loader, and FastAPI helpers for kairos services.
 
-Stage 0 skeleton: this package holds the plumbing every service shares
-(infrastructure settings, the recording/monitoring config loader, and the
-FastAPI app factory). It contains no service-specific business logic.
+This package holds the plumbing every service shares (infrastructure settings,
+the recording/monitoring config loader, and the FastAPI app factory). It
+contains no service-specific business logic.
 
 See ``docs/specs/ja/config.md`` for the canonical three-layer config design.
 """

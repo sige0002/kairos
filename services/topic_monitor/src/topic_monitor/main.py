@@ -32,6 +32,7 @@ from kairos_common import (
 )
 from pydantic import BaseModel
 
+from topic_monitor.alert_config import load_alert_rules
 from topic_monitor.models import (
     AlertsResponse,
     MetricsSnapshot,
@@ -80,7 +81,12 @@ def create_monitor_app(*, subscriber: TopicSubscriber | None = None) -> FastAPI:
     settings = get_settings()
     config = _load_config(settings.recording_config)
     sub = subscriber if subscriber is not None else _build_subscriber(config)
-    service = MonitorService(sub, config=config)
+    # Wire the alert engine (MON-C1): without this the /alerts route is always
+    # empty because nothing ever builds the AlertRules the engine evaluates. The
+    # loader tolerates an unset/missing path (no rules) but fails loudly on a
+    # malformed file so a config typo is never silently ignored.
+    alert_rules = load_alert_rules(settings.alert_config_path)
+    service = MonitorService(sub, config=config, alert_rules=alert_rules)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:

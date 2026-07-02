@@ -64,8 +64,15 @@ def create_recorder_app() -> FastAPI:
         if getattr(route, "path", None) != "/readyz"
     ]
 
+    # These routes are declared with a plain ``def`` (not ``async def``) on
+    # purpose: ``session.start``/``stop`` block synchronously (the start delay +
+    # arming gate, and the up-to-30s wait for the bag process to exit on stop).
+    # Starlette runs a sync endpoint in its thread pool but an ``async`` one
+    # directly on the event loop, so an ``async`` handler here would freeze every
+    # request — ``/healthz`` and ``/record/status`` included — for the whole
+    # blocking span. None of these handlers await, so a plain ``def`` is correct.
     @app.post("/record/start", status_code=201, response_model=RecordStartResponse)
-    async def record_start(request: RecordStartRequest) -> RecordStartResponse:
+    def record_start(request: RecordStartRequest) -> RecordStartResponse:
         status = session.start(request)
         return RecordStartResponse(
             run_id=status.run_id or request.run_id,
@@ -77,21 +84,22 @@ def create_recorder_app() -> FastAPI:
         )
 
     @app.post("/record/stop", response_model=RecordStatusResponse)
-    async def record_stop() -> RecordStatusResponse:
+    def record_stop() -> RecordStatusResponse:
         return session.stop()
 
     @app.get("/record/status", response_model=RecordStatusResponse)
-    async def record_status() -> RecordStatusResponse:
+    def record_status() -> RecordStatusResponse:
         return session.status()
 
     @app.get("/record/metadata")
-    async def record_metadata() -> dict[str, Any]:
+    def record_metadata() -> dict[str, Any]:
         return session.get_metadata()
 
     # Readiness reflects that the recorder can write to /data; if the recorded
-    # root is not usable we are live but not ready.
+    # root is not usable we are live but not ready. Sync ``def`` for the same
+    # reason as the record routes (``ensure_ready`` may touch the filesystem).
     @app.get("/readyz", tags=["health"])
-    async def readyz(response: Response) -> dict[str, str]:
+    def readyz(response: Response) -> dict[str, str]:
         try:
             session.ensure_ready()
         except Exception:  # noqa: BLE001 - report unready, never crash the probe

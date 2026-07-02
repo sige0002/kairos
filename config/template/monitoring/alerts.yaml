@@ -1,0 +1,49 @@
+# =============================================================================
+# kairos topic_monitor alert rules (template)
+# =============================================================================
+# Optional. Copy this file per robot to config/<robot>/monitoring/alerts.yaml
+# (mounted at /config/<robot>/monitoring/alerts.yaml in the container) and point
+# ALERT_CONFIG_PATH at it. Behaviour when loading:
+#   - ALERT_CONFIG_PATH unset      -> the monitor runs with no alert rules.
+#   - path set but file missing    -> a warning is logged; no rules are loaded.
+#   - file present but malformed    -> startup FAILS loudly (a config typo is
+#     (bad YAML / schema)             never silently ignored).
+#
+# Schema: a single top-level `rules:` list. Each rule fires when, for `topic`,
+# `metric` `op` `threshold` holds, with hysteresis so a single noisy tick never
+# flaps the alert:
+#
+#   topic:         full ROS topic name the rule watches (exact match).
+#   metric:        one of: hz | bandwidth | gap | late | loss
+#                    hz        -> messages per second in the window
+#                    bandwidth -> bytes per second (bandwidth_bps)
+#                    gap       -> largest inter-arrival gap in the window (ms)
+#                    late      -> fraction of intervals over the expected period
+#                    loss      -> loss_rate (usually null in ROS 2 -> not eval'd)
+#   op:            comparison operator: lt | gt | le | ge  (metric OP threshold)
+#   threshold:     number the metric's current value is compared against.
+#   clear_after_s: seconds the condition must stay FALSE before the alert clears
+#                  (default 0 = clear immediately). Debounces recovery.
+#   cooldown_s:    seconds after clearing before the same rule may fire again
+#                  (default 0 = may re-fire at once). Debounces re-firing.
+#
+# A metric that is currently null (e.g. `late` / `loss` with no expected_hz) is
+# simply not evaluated that tick — the rule neither fires nor clears on it.
+# -----------------------------------------------------------------------------
+
+rules: []
+  # Example: warn if a camera's publish rate falls below 25 Hz for 3 s, and do
+  # not re-fire for 10 s after it recovers.
+  # - topic: /camera/image_raw/compressed
+  #   metric: hz
+  #   op: lt
+  #   threshold: 25
+  #   clear_after_s: 3
+  #   cooldown_s: 10
+  #
+  # Example: warn on a large inter-arrival gap (a choppy / stalling stream).
+  # - topic: /scan
+  #   metric: gap
+  #   op: gt
+  #   threshold: 200
+  #   clear_after_s: 2

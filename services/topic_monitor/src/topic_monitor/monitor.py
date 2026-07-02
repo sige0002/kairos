@@ -18,6 +18,7 @@ import threading
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from fnmatch import fnmatch
 
 from kairos_common import RecordingConfig, utc_now_iso8601
 
@@ -38,6 +39,15 @@ from topic_monitor.subscriber import Sample, TopicSubscriber
 
 # Default sliding windows if the RECORDING_CONFIG monitor block is unavailable.
 _DEFAULT_WINDOWS_S: list[float] = [1.0, 5.0]
+
+# Snapshot cache TTL (seconds). Within one tick many consumers may ask for the
+# snapshot at once — GET /metrics, both SSE streams (/metrics/stream +
+# /alerts/stream) and /alerts — and recomputing per consumer is CPU linear in
+# consumer count (MON-M2), against the "lightweight first" goal. A short shared
+# TTL makes the heavy build run about once per tick; it also advances the alert
+# hysteresis and the baseline learner once per tick rather than once per consumer
+# (MON-M1), so warm-up no longer depends on how many consumers poll.
+_SNAPSHOT_TTL_S = 0.25
 
 
 class MonitorService:
@@ -64,6 +74,13 @@ class MonitorService:
         self._perf = perf_clock
         self._lock = threading.Lock()
         self._paused = False
+        # Shared short-TTL snapshot cache (MON-M2/M1); see _SNAPSHOT_TTL_S.
+        self._snapshot_lock = threading.Lock()
+        self._cached_snapshot: MetricsSnapshot | None = None
+        self._cached_at: float | None = None
+        # Allowlist patterns (RECORDING_CONFIG default_topics) for the /metrics
+        # diagnostics (MON-M4); empty when there is no config.
+        self._allowlist = list(config.default_topics) if config is not None else []
 
         windows = self._resolve_windows(config)
         # The snapshot window is the largest configured (gives the most stable
@@ -181,8 +198,29 @@ class MonitorService:
     # -- snapshots ----------------------------------------------------------
 
     def metrics_snapshot(self) -> MetricsSnapshot:
-        """Build the periodic all-topics metrics snapshot (the /metrics body)."""
-        now = self._clock()
+        """Return the periodic all-topics metrics snapshot (the /metrics body).
+
+        Cached for a short TTL and shared by every consumer (/metrics, both SSE
+        streams, /alerts) so the heavy build — and, with it, the alert hysteresis
+        and the baseline-learner tick — runs about once per interval regardless
+        of how many consumers ask (MON-M2/M1). See :data:`_SNAPSHOT_TTL_S`.
+        """
+        with self._snapshot_lock:
+            now = self._clock()
+            cached = self._cached_snapshot
+            if (
+                cached is not None
+                and self._cached_at is not None
+                and now - self._cached_at < _SNAPSHOT_TTL_S
+            ):
+                return cached
+            snapshot = self._build_snapshot(now)
+            self._cached_snapshot = snapshot
+            self._cached_at = now
+            return snapshot
+
+    def _build_snapshot(self, now: float) -> MetricsSnapshot:
+        """Compute a fresh all-topics snapshot as of monotonic time *now*."""
         ts = utc_now_iso8601()
         states = self._registry.topics()
         topics = [self._topic_metrics(state, now) for state in states]
@@ -190,6 +228,7 @@ class MonitorService:
         topics_by_name = {t.name: t.model_dump() for t in topics}
         alerts = self._alerts.evaluate(topics_by_name, now, ts)
 
+        allowlist_total, allowlist_matched = self._allowlist_diag(states)
         return MetricsSnapshot(
             ts=ts,
             window_s=int(self._snapshot_window_s),
@@ -197,7 +236,29 @@ class MonitorService:
             alerts=alerts,
             paused=self.paused,
             self_load=self._self_load_snapshot(now, states),
+            allowlist_total=allowlist_total,
+            allowlist_matched=allowlist_matched,
         )
+
+    def _allowlist_diag(self, states: list[TopicState]) -> tuple[int, int]:
+        """Allowlist match diagnostics for the snapshot (MON-M4).
+
+        Returns ``(total, matched)`` where *total* is the number of configured
+        allowlist patterns (``default_topics``) and *matched* is how many of them
+        are matched by a topic that has actually received data (``last_seen_t``
+        set). ``matched == 0`` with ``total > 0`` pinpoints the "allowlist matches
+        nothing live" cause of an empty ``/metrics`` (usually the wrong robot
+        config). Pattern-centric so ``matched <= total`` even with globs, and
+        ROS-free (reads only the registry).
+        """
+        total = len(self._allowlist)
+        if total == 0:
+            return 0, 0
+        seen = [s.name for s in states if s.last_seen_t is not None]
+        matched = sum(
+            1 for pattern in self._allowlist if any(fnmatch(n, pattern) for n in seen)
+        )
+        return total, matched
 
     def _self_load_snapshot(
         self, now: float, states: list[TopicState]
@@ -317,5 +378,9 @@ class MonitorService:
         return seen.strftime("%Y-%m-%dT%H:%M:%S.") + f"{seen.microsecond // 1000:03d}Z"
 
     def alerts(self) -> list[Alert]:
-        """Evaluate alerts against the current snapshot (the /alerts body)."""
+        """Alerts firing in the current snapshot (the /alerts body).
+
+        Reads the shared snapshot cache (MON-M2), so /alerts and /alerts/stream
+        do not each re-run the full evaluation on every request.
+        """
         return self.metrics_snapshot().alerts

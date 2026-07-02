@@ -58,3 +58,39 @@ def iter_decoded_ros2_messages(
 ) -> Iterable[Any]:
     """Yield decoded ROS2 messages for future validation/conversion nodes."""
     return read_ros2_messages(str(mcap_path), topics=topics)
+
+
+def topic_message_count(mcap_path: Path, topic: str) -> int | None:
+    """Total messages on *topic* from the MCAP summary statistics (no decode).
+
+    Reads the file's summary section only (O(1), no message scan), so callers
+    can report a topic's total count without decoding every message. Returns the
+    count, ``0`` if the topic is absent, or ``None`` when the file carries no
+    summary/statistics section (unindexed MCAP), so the caller can fall back to
+    counting during a scan it already performs.
+    """
+    with mcap_path.open("rb") as stream:
+        summary = make_reader(stream).get_summary()
+    if summary is None or summary.statistics is None:
+        return None
+    channel_ids = {
+        cid for cid, channel in summary.channels.items() if channel.topic == topic
+    }
+    if not channel_ids:
+        return 0
+    counts = summary.statistics.channel_message_counts
+    return sum(counts.get(cid, 0) for cid in channel_ids)
+
+
+def iter_topic_log_times(mcap_path: Path, topic: str) -> Iterable[int]:
+    """Yield *topic*'s message log_times (ns) in order, WITHOUT decoding payloads.
+
+    Cheap relative to full ROS2 decode (reads message records only), so callers
+    that just need cadence — e.g. an fps estimate — can sample the first N
+    without paying to JPEG/CDR-decode every frame.
+    """
+    with mcap_path.open("rb") as stream:
+        for _schema, _channel, message in make_reader(stream).iter_messages(
+            topics=[topic]
+        ):
+            yield message.log_time

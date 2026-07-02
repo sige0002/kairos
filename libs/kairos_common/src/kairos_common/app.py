@@ -8,8 +8,8 @@ plumbing every service needs:
 - CORS configured from ``CORS_ORIGINS``
 - JSON-lines logging configured from ``LOG_LEVEL``
 
-Services build on top of it by adding their own routes. This is Stage 0
-plumbing only; per-service business logic lives in each service package.
+Services build on top of it by adding their own routes; per-service business
+logic lives in each service package.
 """
 
 from __future__ import annotations

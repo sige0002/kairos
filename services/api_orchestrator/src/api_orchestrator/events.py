@@ -8,7 +8,8 @@ stream per ``api_orchestrator.md``:
 - ``metrics`` — topic_monitor's periodic snapshot (proxied from its
   ``/metrics/stream``).
 - ``alert`` — topic_monitor alerts (proxied from its ``/alerts/stream``).
-- ``job`` — stage 3 (the hub supports the type; nothing emits it yet).
+- ``job`` — stage 3 pipeline job progress, emitted by the jobs router
+  (``routers/jobs.py``) on create and on observed state/progress changes.
 
 Wire format: ``id:`` (monotonic int) / ``event:`` (type) / ``data:`` (JSON).
 
@@ -125,15 +126,6 @@ class EventHub:
         for queue in subscribers:
             self._offer(queue, event)
         return event
-
-    def publish_threadsafe(self, event_type: str, data: dict[str, Any]) -> None:
-        """Schedule a publish from a sync context (best-effort, fire-and-forget).
-
-        Used where a coroutine can't be awaited directly; safe to drop if the
-        loop is gone (shutdown).
-        """
-        with contextlib.suppress(RuntimeError):
-            asyncio.get_running_loop().create_task(self.publish(event_type, data))
 
     async def subscribe(self, last_event_id: int | None = None) -> AsyncIterator[Event]:
         """Yield events: replay (per ``Last-Event-ID``) then live.

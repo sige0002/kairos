@@ -101,3 +101,17 @@ def test_sample_blocking_one_shot_subscribes_and_releases() -> None:
     assert s.value == 5.0
     # The one-shot releases its transient subscription.
     assert sub.subscribed_topics() == []
+
+
+def test_double_unsubscribe_is_noop() -> None:
+    """Unsubscribing a topic with no live reference is a no-op, not a KeyError
+    (PRB-L1) — a disconnect-cleanup path can double-release safely."""
+    service, sub = _service([TopicMeta(name="/a")])
+    service.subscribe("/a")
+    service.unsubscribe("/a")  # released
+    assert sub.subscribed_topics() == []
+    # Second release (double unsubscribe) and an unsubscribe of a never-held
+    # topic must both be no-ops.
+    service.unsubscribe("/a")
+    service.unsubscribe("/never-subscribed")
+    assert sub.subscribed_topics() == []

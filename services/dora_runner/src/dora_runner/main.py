@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import uuid
 from pathlib import Path
 
@@ -20,15 +21,46 @@ from dora_runner.models import (
     ValidationTemplate,
     ValidationTemplateListResponse,
 )
+from dora_runner.plugin_loader import dora_cli_available, effective_executor
 from dora_runner.registry import DEFAULT_REGISTRY, RegisteredPipeline
 from dora_runner.store import JobRecord, RunnerStore
 from dora_runner.validation import generate_template
 
 SERVICE_NAME = "dora_runner"
 
+# Per-job execution limits (spec §: bounded concurrency + a per-job timeout).
+# Read from the environment so a deployment can tune them; both fall back to
+# safe defaults on an unset/garbage value. dora-specific knobs follow the in-tree
+# KAIROS_* env convention (see plugin_loader's KAIROS_PLUGINS_DIR / _INPROCESS).
+_MAX_CONCURRENCY_ENV = "KAIROS_DORA_MAX_CONCURRENCY"
+_JOB_TIMEOUT_ENV = "KAIROS_DORA_JOB_TIMEOUT_S"
+_DEFAULT_MAX_CONCURRENCY = 2
+_DEFAULT_JOB_TIMEOUT_S = 900.0
+
+
+def _job_max_concurrency() -> int:
+    """Max jobs executed at once (``KAIROS_DORA_MAX_CONCURRENCY``, default 2)."""
+    try:
+        return max(1, int(os.environ.get(_MAX_CONCURRENCY_ENV, "")))
+    except ValueError:
+        return _DEFAULT_MAX_CONCURRENCY
+
+
+def _job_timeout_s() -> float:
+    """Per-job wall-clock budget (``KAIROS_DORA_JOB_TIMEOUT_S``, default 900s)."""
+    try:
+        return max(1.0, float(os.environ.get(_JOB_TIMEOUT_ENV, "")))
+    except ValueError:
+        return _DEFAULT_JOB_TIMEOUT_S
+
 
 def _to_definition(pipeline: RegisteredPipeline) -> PipelineDefinition:
-    """Project a registered pipeline to its public ``/pipelines`` metadata."""
+    """Project a registered pipeline to its public ``/pipelines`` metadata.
+
+    ``effective_executor`` reflects how the pipeline ACTUALLY runs here: a
+    ``dora``-declared pipeline degrades to ``in-process`` when the dora CLI is
+    absent, so the API is honest about dora not being bundled (DORA-M2).
+    """
     return PipelineDefinition(
         id=pipeline.id,
         name=pipeline.name,
@@ -38,11 +70,18 @@ def _to_definition(pipeline: RegisteredPipeline) -> PipelineDefinition:
         required_inputs=pipeline.required_inputs,
         outputs=pipeline.outputs,
         executor=pipeline.executor,
+        effective_executor=effective_executor(pipeline.executor),
     )
 
 
 def _override_readyz(app: FastAPI) -> None:
-    """Report dora_runner readiness."""
+    """Report dora_runner readiness, honest about dora availability (DORA-M2).
+
+    The service is READY without the dora CLI — dataflows fall back to the
+    in-process interpreter — so ``status`` stays ``ready``; the ``dora``
+    component reports the real executor mode (``available`` vs ``in-process``)
+    instead of a fixed ``ok`` that implied dora was bundled.
+    """
     app.router.routes = [
         route
         for route in app.router.routes
@@ -51,7 +90,8 @@ def _override_readyz(app: FastAPI) -> None:
 
     @app.get("/readyz", tags=["health"])
     async def readyz() -> dict[str, object]:
-        return {"status": "ready", "components": {"dora": "ok"}}
+        dora = "available" if dora_cli_available() else "in-process"
+        return {"status": "ready", "components": {"dora": dora}}
 
 
 def create_dora_app(settings: Settings | None = None) -> FastAPI:
@@ -62,6 +102,11 @@ def create_dora_app(settings: Settings | None = None) -> FastAPI:
     app = create_app(SERVICE_NAME, settings=settings)
     app.state.runner_store = store
     app.state.data_dir = data_dir
+    # Bound how many jobs execute at once, and cap each job's wall-clock budget
+    # (DORA-M1). The semaphore is per-app (bound to this app's event loop) so
+    # concurrent TestClients don't share a cross-loop primitive.
+    job_slots = asyncio.Semaphore(_job_max_concurrency())
+    job_timeout_s = _job_timeout_s()
 
     _override_readyz(app)
 
@@ -91,7 +136,9 @@ def create_dora_app(settings: Settings | None = None) -> FastAPI:
         )
         async with store.lock:
             store.jobs[job.job_id] = job
-        job.task = asyncio.create_task(_execute_job(job, store, data_dir))
+        job.task = asyncio.create_task(
+            _execute_job(job, store, data_dir, slots=job_slots, timeout_s=job_timeout_s)
+        )
         return JobCreateResponse(job_id=job.job_id)
 
     @app.get("/jobs/{job_id}/status", response_model=JobStatus)
@@ -203,8 +250,50 @@ def _parse_cursor(cursor: str | None) -> int | None:
         ) from exc
 
 
-async def _execute_job(job: JobRecord, store: RunnerStore, data_dir: Path) -> None:
-    """Run a queued job in the process-local async worker."""
+def _release_slot_when_done(task: asyncio.Task[dict], slots: asyncio.Semaphore) -> None:
+    """Release a concurrency slot when *task* truly finishes — not when the
+    awaiting coroutine is cancelled.
+
+    A job's heavy work runs in a threadpool (``asyncio.to_thread``), and those
+    threads CANNOT be cancelled: a timeout/cancel unblocks the awaiter but the
+    thread keeps running. We deliberately keep such a runaway thread's slot
+    occupied (rather than admitting fresh work on top of a thread we can't stop)
+    by releasing only from the task's done-callback, which fires on the event
+    loop once the thread actually completes. (``asyncio.Semaphore`` is not safe
+    to release from the worker thread itself, so a loop-side callback is the
+    correct equivalent of a thread-side ``finally``.)
+    """
+    if task.done():
+        slots.release()
+        return
+
+    def _release(t: asyncio.Task[dict]) -> None:
+        slots.release()
+        # Consume any exception so an abandoned (timed-out/cancelled) runner that
+        # later fails doesn't log "Task exception was never retrieved".
+        if not t.cancelled():
+            t.exception()
+
+    task.add_done_callback(_release)
+
+
+async def _execute_job(
+    job: JobRecord,
+    store: RunnerStore,
+    data_dir: Path,
+    *,
+    slots: asyncio.Semaphore | None = None,
+    timeout_s: float = _DEFAULT_JOB_TIMEOUT_S,
+) -> None:
+    """Run a queued job in the process-local async worker.
+
+    *slots* bounds how many jobs run concurrently and *timeout_s* caps each
+    job's wall-clock time (DORA-M1). A job past the timeout is failed with
+    ``reason: timeout``; since threadpool work can't be interrupted, it keeps its
+    concurrency slot until the thread finishes (see _release_slot_when_done).
+    """
+    if slots is None:
+        slots = asyncio.Semaphore(_DEFAULT_MAX_CONCURRENCY)
     try:
         async with store.lock:
             # Cancelled before the worker started (between create and here) —
@@ -224,7 +313,16 @@ async def _execute_job(job: JobRecord, store: RunnerStore, data_dir: Path) -> No
                 code="pipeline_unavailable",
                 message=f"Pipeline is not implemented: {job.pipeline}",
             )
-        result = await pipeline.runner(job, store, data_dir)
+        await slots.acquire()
+        runner_task: asyncio.Task[dict] = asyncio.ensure_future(
+            pipeline.runner(job, store, data_dir)
+        )
+        try:
+            # shield: a timeout/cancel unblocks this await but must NOT cancel the
+            # non-cancellable threadpool work running underneath the runner.
+            result = await asyncio.wait_for(asyncio.shield(runner_task), timeout_s)
+        finally:
+            _release_slot_when_done(runner_task, slots)
         validated = JobResult.model_validate(result)
         async with store.lock:
             # Cancelled while the work ran in the threadpool (which can't be
@@ -235,6 +333,25 @@ async def _execute_job(job: JobRecord, store: RunnerStore, data_dir: Path) -> No
             job.progress = 1.0
             job.state = JobState.succeeded
             job.logs_tail.append("Job succeeded.")
+    except TimeoutError:
+        async with store.lock:
+            # A concurrent cancel must win over a timeout (BUG-D).
+            if job.state == JobState.canceled:
+                return
+            job.state = JobState.failed
+            job.progress = 1.0
+            job.logs_tail.append(f"Job timed out after {timeout_s:g}s.")
+            job.result = JobResult(
+                summary={
+                    "result": "fail",
+                    "reason": "timeout",
+                    "error": {
+                        "code": "job_timeout",
+                        "message": f"Job exceeded the {timeout_s:g}s timeout.",
+                    },
+                },
+                artifacts=[],
+            )
     except asyncio.CancelledError:
         # Reached because cancel_job already set `canceled` under the lock and
         # cancelled the task; just record it (idempotent).

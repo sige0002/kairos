@@ -72,9 +72,11 @@ class PipelineDefinition(BaseModel):
     """Pipeline registry entry (metadata surfaced by ``GET /pipelines``).
 
     ``schema`` is the params JSON Schema the frontend renders a form from
-    (OL-④.2). ``required_inputs`` / ``outputs`` describe the data contract, and
-    ``executor`` is where the pipeline runs (``in_process`` today; shaped so a
-    pipeline can later map to a dora node / dataflow without UI or API changes).
+    (OL-④.2). ``required_inputs`` / ``outputs`` describe the data contract.
+    ``executor`` is the DECLARED execution target (``in_process`` today, or
+    ``dora`` for a dataflow plugin); ``effective_executor`` is how it ACTUALLY
+    runs here — a ``dora`` pipeline falls back to ``in-process`` when the dora
+    CLI is absent, so the UI isn't misled into thinking dora is bundled.
     """
 
     id: str
@@ -85,3 +87,4 @@ class PipelineDefinition(BaseModel):
     required_inputs: list[str] = Field(default_factory=lambda: ["run_id"])
     outputs: list[str] = Field(default_factory=list)
     executor: str = "in_process"
+    effective_executor: str = "in-process"

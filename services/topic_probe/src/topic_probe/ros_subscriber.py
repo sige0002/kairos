@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections import Counter
 from typing import Any
 
@@ -27,6 +28,11 @@ logger = logging.getLogger("kairos.topic_probe")
 
 # How often the node reconciles live subscriptions with the desired topic set.
 _RECONCILE_PERIOD_S = 0.05
+
+# How often (seconds) to re-emit the "no type yet" WARNING for a topic whose
+# type stays unresolved; between those it drops to DEBUG so a persistently
+# unresolvable topic can't flood the log at the reconcile rate.
+_TYPE_WARN_PERIOD_S = 30.0
 
 
 class RosProbeSubscriber:
@@ -50,6 +56,9 @@ class RosProbeSubscriber:
         self._executor: Any = None
         self._thread: threading.Thread | None = None
         self._reconcile_timer: Any = None
+        # Per-topic last-warned time for the unresolved-type rate limit. Touched
+        # only on the spin thread (reconcile / create), so it needs no lock.
+        self._type_warned_at: dict[str, float] = {}
 
     # ---- lifecycle ---------------------------------------------------------
     def start(self) -> None:
@@ -124,8 +133,15 @@ class RosProbeSubscriber:
             self._desired[topic] += 1
 
     def unsubscribe(self, topic: str) -> None:
+        # Ref-count down; a topic with no live reference (double unsubscribe, or a
+        # cleanup after a lost race) is a no-op rather than a KeyError, so a
+        # disconnect-cleanup path can never crash. ``Counter[topic]`` reads 0 for a
+        # missing key but ``del`` on it would raise, hence the explicit guard.
         with self._lock:
-            if self._desired[topic] <= 1:
+            count = self._desired.get(topic, 0)
+            if count <= 0:
+                return
+            if count <= 1:
                 del self._desired[topic]
             else:
                 self._desired[topic] -= 1
@@ -153,6 +169,11 @@ class RosProbeSubscriber:
             self._teardown_one(topic)
         for topic in desired - current:
             self._create_subscription(topic)
+        # Drop rate-limit bookkeeping for topics no longer desired (an
+        # unresolved-type topic never enters ``_subs``, so it never hits
+        # ``_teardown_one``; prune here to keep the map bounded).
+        for topic in set(self._type_warned_at) - desired:
+            del self._type_warned_at[topic]
 
     def _teardown_one(self, topic: str) -> None:
         node = self._node
@@ -171,8 +192,10 @@ class RosProbeSubscriber:
             return
         type_str = self._resolve_type(node, topic)
         if type_str is None:
-            # Type not on the graph yet; the next reconcile retries.
-            logger.warning("probe: no type for topic %s yet", topic)
+            # Type not on the graph yet; the next reconcile retries. Rate-limit
+            # the notice so a topic that stays unresolved (reconciled at 20 Hz)
+            # can't flood the log with ~20 warnings/second.
+            self._warn_unresolved_type(topic)
             return
         try:
             msg_class = _message_class(type_str)
@@ -183,7 +206,24 @@ class RosProbeSubscriber:
             logger.exception("probe: failed to subscribe to %s", topic)
             return
         self._subs[topic] = subscription
+        # Resolved now: forget any unresolved-type rate-limit state for it.
+        self._type_warned_at.pop(topic, None)
         logger.info("probe subscribed (decoding) to %s [%s]", topic, type_str)
+
+    def _warn_unresolved_type(self, topic: str) -> None:
+        """Log *topic*'s unresolved type, rate-limited per topic (WARN then DEBUG).
+
+        First sighting (or once every ``_TYPE_WARN_PERIOD_S`` thereafter) logs at
+        WARNING; the reconciles in between log at DEBUG. Runs on the spin thread,
+        so ``_type_warned_at`` needs no lock.
+        """
+        now = time.monotonic()
+        last = self._type_warned_at.get(topic)
+        if last is None or now - last >= _TYPE_WARN_PERIOD_S:
+            self._type_warned_at[topic] = now
+            logger.warning("probe: no type for topic %s yet", topic)
+        else:
+            logger.debug("probe: no type for topic %s yet", topic)
 
     def _resolve_type(self, node: Any, topic: str) -> str | None:
         for name, types in node.get_topic_names_and_types():

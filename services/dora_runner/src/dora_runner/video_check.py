@@ -30,8 +30,15 @@ from kairos_common import utc_now_iso8601
 from dora_runner.mcap_utils import (
     find_mcap,
     iter_decoded_ros2_messages,
+    iter_topic_log_times,
+    topic_message_count,
     validate_run_id,
 )
+
+# Pipeline identity stamped into the summary (reproducibility contract, shared
+# with the other bundled pipelines and the hello_dora plugin example).
+PIPELINE_ID = "video_check"
+PIPELINE_VERSION = "1.0.0"
 
 # Bound encode time/size: at ~15 fps this is ~60 s of preview, plenty to eyeball.
 MAX_FRAMES = 900
@@ -113,40 +120,86 @@ def run_video_check(*, run_id: str, data_dir: Path, topic: str) -> dict[str, Any
     out_path = out_dir / f"{sanitized}.mp4"
     rel_path = out_path.relative_to(data_dir).as_posix()
 
-    log_times: list[int] = []
-    frames: list[Any] = []
-    total_messages = 0
+    # Metadata first, without decoding any image: the authoritative total comes
+    # from the MCAP statistics (O(1)); the fps cadence comes from a bounded scan
+    # of at most MAX_FRAMES message log_times (no JPEG/CDR decode). This is what
+    # lets the decode pass below stop at the cap instead of draining the whole
+    # topic just to count it (DORA-L1).
+    total_from_stats = topic_message_count(mcap_path, topic)
+    cadence: list[int] = []
+    scanned = 0
+    for log_time in iter_topic_log_times(mcap_path, topic):
+        scanned += 1
+        if len(cadence) < MAX_FRAMES:
+            cadence.append(log_time)
+        elif total_from_stats is not None:
+            # Enough cadence samples and the total is already known — stop early.
+            break
+    total_messages = total_from_stats if total_from_stats is not None else scanned
+
     truncated = False
     unsupported = False
+    frames_encoded = 0
     width = height = 0
+    fps = 0
+    container: Any = None
+    stream: Any = None
 
-    for decoded in iter_decoded_ros2_messages(mcap_path, topics=[topic]):
-        total_messages += 1
-        msg = decoded.ros_msg
-        # Happy path: sensor_msgs/CompressedImage (JPEG) -> Pillow decode.
-        if not hasattr(msg, "data") or not hasattr(msg, "format"):
-            unsupported = True
-            continue
-        if len(frames) >= MAX_FRAMES:
-            truncated = True
-            continue
-        try:
-            image = Image.open(io.BytesIO(bytes(msg.data))).convert("RGB")
-        except Exception:  # noqa: BLE001 - skip an undecodable frame, don't crash
-            continue
-        frames.append(np.asarray(image))
-        log_times.append(decoded.log_time_ns)
+    try:
+        for decoded in iter_decoded_ros2_messages(mcap_path, topics=[topic]):
+            msg = decoded.ros_msg
+            # Happy path: sensor_msgs/CompressedImage (JPEG) -> Pillow decode.
+            if not hasattr(msg, "data") or not hasattr(msg, "format"):
+                unsupported = True
+                continue
+            if frames_encoded >= MAX_FRAMES:
+                # Cap reached: total_messages is already known, so stop decoding
+                # instead of draining the rest of the topic (DORA-L1).
+                truncated = True
+                break
+            try:
+                image = Image.open(io.BytesIO(bytes(msg.data))).convert("RGB")
+            except Exception:  # noqa: BLE001 - skip an undecodable frame, don't crash
+                continue
+            arr = np.asarray(image)
+            if container is None:
+                # First decodable frame: fix output dimensions and open the
+                # stream, then encode-and-discard each frame so at most one frame
+                # is resident (DORA-H1 — previously all MAX_FRAMES frames were
+                # accumulated in RAM before a single batch encode, ~GBs at 1080p).
+                height, width = arr.shape[0], arr.shape[1]
+                width, height = _even(width), _even(height)
+                fps = estimate_fps(cadence)
+                container = av.open(str(out_path), mode="w")
+                stream = container.add_stream("h264", rate=fps)
+                stream.width = width
+                stream.height = height
+                stream.pix_fmt = "yuv420p"
+            # Crop to the even dimensions h264/yuv420p requires.
+            cropped = arr[:height, :width]
+            video_frame = av.VideoFrame.from_ndarray(cropped, format="rgb24")
+            for packet in stream.encode(video_frame):
+                container.mux(packet)
+            frames_encoded += 1
+        if container is not None:
+            for packet in stream.encode():
+                container.mux(packet)
+    finally:
+        if container is not None:
+            container.close()
 
     summary: dict[str, Any] = {
+        "pipeline": PIPELINE_ID,
+        "version": PIPELINE_VERSION,
         "run_id": run_id,
         "topic": topic,
-        "frames": len(frames),
+        "frames": frames_encoded,
         "total_messages": total_messages,
         "truncated": truncated,
         "checked_at": utc_now_iso8601(),
     }
 
-    if not frames:
+    if frames_encoded == 0:
         summary["fps"] = None
         summary["width"] = None
         summary["height"] = None
@@ -160,31 +213,10 @@ def run_video_check(*, run_id: str, data_dir: Path, topic: str) -> dict[str, Any
         )
         return {"summary": summary, "artifacts": []}
 
-    fps = estimate_fps(log_times)
-    height, width = frames[0].shape[0], frames[0].shape[1]
-    width, height = _even(width), _even(height)
-
-    container = av.open(str(out_path), mode="w")
-    try:
-        stream = container.add_stream("h264", rate=fps)
-        stream.width = width
-        stream.height = height
-        stream.pix_fmt = "yuv420p"
-        for arr in frames:
-            # Crop to the even dimensions h264/yuv420p requires.
-            cropped = arr[:height, :width]
-            video_frame = av.VideoFrame.from_ndarray(cropped, format="rgb24")
-            for packet in stream.encode(video_frame):
-                container.mux(packet)
-        for packet in stream.encode():
-            container.mux(packet)
-    finally:
-        container.close()
-
     summary["fps"] = fps
     summary["width"] = width
     summary["height"] = height
-    summary["duration_s"] = len(frames) / fps if fps else None
+    summary["duration_s"] = frames_encoded / fps if fps else None
     summary["file"] = rel_path
     summary["mp4"] = rel_path
     return {"summary": summary, "artifacts": [rel_path, str(out_path)]}

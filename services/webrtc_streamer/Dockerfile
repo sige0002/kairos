@@ -1,8 +1,7 @@
 # syntax=docker/dockerfile:1
-# webrtc_streamer — ROS 2 node (will use rclpy to subscribe image topics in
-# Stage 2), so it is built FROM the ROS base image. Stage 0 only runs a
-# FastAPI health shell; ROS + aiortc/opencv deps are added as the streaming
-# logic lands.
+# webrtc_streamer — ROS 2 node that subscribes to image topics and streams a
+# low-latency WebRTC camera preview, so it is built FROM the ROS base image.
+# rclpy is lazy-imported, so the FastAPI health endpoints serve without ROS.
 ARG ROS_DISTRO=jazzy
 
 # ---- builder ----------------------------------------------------------------

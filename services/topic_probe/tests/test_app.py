@@ -83,3 +83,34 @@ def test_readyz_not_ready_before_start() -> None:
     resp = client.get("/readyz")
     assert resp.status_code == 503
     assert resp.json()["status"] == "not_ready"
+
+
+def test_stream_releases_subscription_on_disconnect() -> None:
+    """The SSE generator holds its subscription for the connection and releases it
+    on disconnect — even one right after subscribing (PRB-M1).
+
+    The subscribe now runs inside the generator's try/finally, so a client that
+    drops mid-stream still reaches the finally and unsubscribes (previously the
+    subscribe was outside the try and the reference leaked permanently).
+    """
+    import asyncio
+
+    from topic_probe.main import _multi_sample_sse
+    from topic_probe.probe import ProbeService
+
+    sub = FakeProbeSubscriber(
+        graph=[TopicMeta(name="/pose", type="geometry_msgs/msg/Pose")]
+    )
+    sub.set_message("/pose", SimpleNamespace(position=SimpleNamespace(x=1.0)))
+    service = ProbeService(sub)
+    service.start()
+
+    async def drive() -> None:
+        gen = _multi_sample_sse(service, "/pose", ["position.x"], interval=0.01)
+        frame = await gen.__anext__()  # first frame: subscribed + streaming
+        assert "position.x" in frame
+        assert sub.subscribed_topics() == ["/pose"]
+        await gen.aclose()  # client disconnects -> finally releases the sub
+        assert sub.subscribed_topics() == []
+
+    asyncio.run(drive())

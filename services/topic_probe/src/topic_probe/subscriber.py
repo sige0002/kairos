@@ -115,8 +115,13 @@ class FakeProbeSubscriber:
             self._refs[topic] += 1
 
     def unsubscribe(self, topic: str) -> None:
+        # Mirror the real subscriber: an unsubscribe for a topic with no live
+        # reference (double unsubscribe / lost race) is a no-op, not a KeyError.
         with self._lock:
-            if self._refs[topic] <= 1:
+            count = self._refs.get(topic, 0)
+            if count <= 0:
+                return
+            if count <= 1:
                 del self._refs[topic]
             else:
                 self._refs[topic] -= 1

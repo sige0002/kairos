@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
 import httpx
@@ -61,25 +62,31 @@ class DoraRunnerClient(BaseServiceClient):
         self,
         payload: dict[str, Any],
         *,
-        interval: float = 0.1,
+        interval: float = 0.2,
+        backoff: float = 1.5,
+        max_interval: float = 2.0,
         timeout: float = 120.0,
     ) -> dict[str, Any]:
         """Create a job and poll until it reaches a terminal state.
 
         Used by synchronous orchestrator flows (e.g. dataset export) that must
         know the outcome before responding. Creates the job, then polls
-        ``job_status`` every *interval* seconds until the state is terminal
-        (``succeeded`` / ``failed`` / ``canceled``). On ANY terminal state it
-        fetches ``job_result`` — dora_runner nests its failure cause under the
-        result's ``summary.error`` for failed/canceled jobs, so the caller can
-        surface WHY it failed (not just "failed"). Returns ``{"state": <state>,
-        "result": <result dict or None>}``. Raises :class:`ApiError` 504 if
-        *timeout* elapses first (the underlying dora_runner job keeps running).
+        ``job_status`` until the state is terminal (``succeeded`` / ``failed`` /
+        ``canceled``). The poll interval starts at *interval* and grows by
+        *backoff* each round, capped at *max_interval*, so a short job is still
+        picked up promptly while a long job doesn't hammer dora_runner with
+        hundreds of requests. On ANY terminal state it fetches ``job_result`` —
+        dora_runner nests its failure cause under the result's ``summary.error``
+        for failed/canceled jobs, so the caller can surface WHY it failed (not
+        just "failed"). Returns ``{"state": <state>, "result": <result dict or
+        None>}``. Raises :class:`ApiError` 504 if *timeout* elapses first (the
+        underlying dora_runner job keeps running).
         """
         created = await self.create_job(payload)
         job_id = str(created["job_id"])
-        loops = max(1, int(timeout / interval) + 1)
-        for _ in range(loops):
+        deadline = time.monotonic() + timeout
+        delay = interval
+        while True:
             status = await self.job_status(job_id)
             state = str(status.get("state", ""))
             if state in _TERMINAL_STATES:
@@ -94,7 +101,11 @@ class DoraRunnerClient(BaseServiceClient):
                         raise
                     result = None
                 return {"state": state, "result": result}
-            await asyncio.sleep(interval)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(delay, remaining))
+            delay = min(delay * backoff, max_interval)
         raise ApiError(
             status_code=504,
             code="job_timeout",

@@ -294,3 +294,101 @@ def test_is_ready_reflects_subscriber_liveness() -> None:
     assert service.is_ready() is True
     service.stop()
     assert service.is_ready() is False
+
+
+# --- MON-M2 shared short-TTL snapshot cache -------------------------------
+
+
+def test_snapshot_cached_within_ttl_and_shared_across_consumers() -> None:
+    # Two snapshot reads at the SAME tick (mimicking GET /metrics + an SSE tick +
+    # /alerts) must return the SAME cached object — the heavy build runs once.
+    clock = FakeClock()
+    sub = FakeSubscriber()
+    service = MonitorService(sub, config=_config(), clock=clock)
+    service.start()
+    clock.t = 1.0
+    sub.feed("/cam", recv_t=1.0, size_bytes=100)
+
+    first = service.metrics_snapshot()
+    second = service.metrics_snapshot()
+    assert first is second  # cached within the TTL, not recomputed
+    # /alerts shares the same cache (same object identity for the alert list).
+    assert service.alerts() is first.alerts
+
+    # Advancing past the TTL forces a fresh build (new object).
+    clock.t = 1.0 + 0.5  # > _SNAPSHOT_TTL_S
+    third = service.metrics_snapshot()
+    assert third is not first
+
+
+def test_baseline_learner_advances_once_per_tick_not_per_consumer() -> None:
+    # MON-M1: the baseline learner warms on ticks, not consumer count. Two
+    # snapshots per tick must feed it ONE observation (the second is cached).
+    clock = FakeClock()
+    sub = FakeSubscriber()
+    cfg = RecordingConfig(robot_name="r", default_topics=[])
+    cfg.monitor.window_s = [5]
+    service = MonitorService(sub, config=cfg, clock=clock)
+    service.start()
+    topic = "/telemetry"  # no expected_hz -> baseline-learned
+
+    ticks = 3
+    for i in range(1, ticks + 1):
+        clock.t = round(i * 0.5, 5)  # 0.5 s apart > TTL -> each first call rebuilds
+        sub.feed(topic, recv_t=clock.t, size_bytes=100)
+        service.metrics_snapshot()
+        service.metrics_snapshot()  # same tick -> cached, no extra learner update
+
+    state = service._registry.get(topic)
+    assert state is not None and state.baseline_learner is not None
+    # One learner observation per DISTINCT tick (3), not per snapshot call (6).
+    assert len(state.baseline_learner._samples) == ticks
+
+
+# --- MON-M4 allowlist match diagnostics -----------------------------------
+
+
+def test_allowlist_diag_reports_total_and_matched() -> None:
+    clock = FakeClock()
+    sub = FakeSubscriber()
+    # _config() allowlist = ["/cam", "/joint_states"].
+    service = MonitorService(sub, config=_config(), clock=clock)
+    service.start()
+
+    # Seeded but silent: total=2, matched=0 (nothing has produced data yet). This
+    # is the "allowlist matches nothing live" signal for an empty-looking Monitor.
+    snap = service.metrics_snapshot()
+    assert snap.allowlist_total == 2
+    assert snap.allowlist_matched == 0
+
+    # Feed /cam -> one allowlist pattern now matches a data-producing topic.
+    clock.t = 1.0
+    sub.feed("/cam", recv_t=1.0, size_bytes=100)
+    snap = service.metrics_snapshot()
+    assert snap.allowlist_total == 2
+    assert snap.allowlist_matched == 1
+
+
+def test_allowlist_diag_zero_without_config() -> None:
+    service = MonitorService(FakeSubscriber())  # no config -> no allowlist
+    service.start()
+    snap = service.metrics_snapshot()
+    assert snap.allowlist_total == 0
+    assert snap.allowlist_matched == 0
+
+
+def test_allowlist_diag_matched_bounded_by_total_with_globs() -> None:
+    clock = FakeClock()
+    sub = FakeSubscriber()
+    cfg = RecordingConfig(robot_name="r", default_topics=["/hsrb/*"])
+    cfg.monitor.window_s = [5]
+    service = MonitorService(sub, config=cfg, clock=clock)
+    service.start()
+    # Two distinct topics match the single glob pattern.
+    clock.t = 0.5
+    sub.feed("/hsrb/odom", recv_t=0.5, size_bytes=100)
+    sub.feed("/hsrb/joint_states", recv_t=0.5, size_bytes=100)
+    snap = service.metrics_snapshot()
+    # Pattern-centric: the one glob counts once -> matched <= total.
+    assert snap.allowlist_total == 1
+    assert snap.allowlist_matched == 1

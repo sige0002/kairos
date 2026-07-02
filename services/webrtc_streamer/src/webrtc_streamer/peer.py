@@ -90,6 +90,18 @@ class FakePeerManager:
         self._clients = 0
 
 
+def _should_discard_on_state(state: str) -> bool:
+    """Whether an ICE connection *state* warrants tearing down the PeerConnection.
+
+    Only the terminal states ``failed`` / ``closed`` do. ``disconnected`` is a
+    TRANSIENT ICE state (a brief network hiccup) that routinely recovers on its
+    own to ``connected``; discarding on it would kill the preview on every blip
+    and never let it come back (STR-M1). We keep the connection and let ICE
+    recover, escalating to a teardown only if it later reaches ``failed``.
+    """
+    return state in ("failed", "closed")
+
+
 def h264_available() -> bool:
     """Whether the runtime aiortc/PyAV build can encode H.264.
 
@@ -220,8 +232,13 @@ class AiortcPeerManager:
 
         @pc.on("connectionstatechange")
         async def _on_state() -> None:
-            if pc.connectionState in ("failed", "closed", "disconnected"):
+            state = pc.connectionState
+            if _should_discard_on_state(state):
                 await self._discard(pc)
+            elif state == "disconnected":
+                # Transient: log and wait for ICE to recover (STR-M1); do not
+                # discard, or a momentary blip would end the preview for good.
+                logger.info("peer transiently disconnected; awaiting ICE recovery")
 
         sender = pc.addTrack(_make_track(self._frames, self._max_fps))
         self._force_codec(pc, sender)

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from dora_runner.main import app
+import dora_runner.main as main
 from fastapi.testclient import TestClient
 
-client = TestClient(app)
+client = TestClient(main.app)
 
 
 def test_healthz() -> None:
@@ -22,7 +22,18 @@ def test_root_reports_stage3() -> None:
     assert body["stage"] == "stage3"
 
 
-def test_readyz_reports_dora_component() -> None:
+def test_readyz_reports_dora_in_process(monkeypatch) -> None:
+    """Without the dora CLI, the service is still ready (DORA-M2)."""
+    monkeypatch.setattr(main, "dora_cli_available", lambda: False)
     resp = client.get("/readyz")
     assert resp.status_code == 200
-    assert resp.json()["components"]["dora"] == "ok"
+    body = resp.json()
+    assert body["status"] == "ready"
+    assert body["components"]["dora"] == "in-process"
+
+
+def test_readyz_reports_dora_available(monkeypatch) -> None:
+    monkeypatch.setattr(main, "dora_cli_available", lambda: True)
+    resp = client.get("/readyz")
+    assert resp.status_code == 200
+    assert resp.json()["components"]["dora"] == "available"

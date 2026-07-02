@@ -12,11 +12,13 @@ not touch the ROS 2 graph, so it can never disturb a recording.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import subprocess
 from pathlib import Path
+from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
 logger = logging.getLogger("kairos")
@@ -25,6 +27,10 @@ router = APIRouter(prefix="/api/v1/system", tags=["system"])
 
 # Short cap so a hung/slow nvidia-smi never blocks the request.
 _NVIDIA_SMI_TIMEOUT_S = 1.5
+
+# Sentinel marking "GPU not probed yet" on app.state, so a probe that legitimately
+# returns None (no GPU) is still cached and not re-run on every request.
+_GPU_UNPROBED = object()
 
 
 class CpuInfo(BaseModel):
@@ -90,7 +96,25 @@ def _read_gpu_name() -> str | None:
     return name[0].strip() if name and name[0].strip() else None
 
 
+async def _cached_gpu_name(state: Any) -> str | None:
+    """Return the GPU name, probing ``nvidia-smi`` at most once per app.
+
+    The GPU name is immutable for the process lifetime, so the first result is
+    cached on ``app.state`` and every later request returns it without touching a
+    subprocess. The probe itself runs in a worker thread so a slow/hung
+    ``nvidia-smi`` never blocks the event loop (the first request may wait up to
+    the probe timeout; subsequent ones don't block at all).
+    """
+    cached = getattr(state, "gpu_name", _GPU_UNPROBED)
+    if cached is not _GPU_UNPROBED:
+        return cached  # type: ignore[no-any-return]
+    name = await asyncio.to_thread(_read_gpu_name)
+    state.gpu_name = name
+    return name
+
+
 @router.get("")
-async def system_info() -> SystemInfo:
+async def system_info(request: Request) -> SystemInfo:
     """Return host CPU/GPU info for the UI header. Always 200 (nulls on failure)."""
-    return SystemInfo(cpu=_read_cpu_info(), gpu=_read_gpu_name())
+    gpu = await _cached_gpu_name(request.app.state)
+    return SystemInfo(cpu=_read_cpu_info(), gpu=gpu)

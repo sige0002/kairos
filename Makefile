@@ -28,6 +28,26 @@ STREAM_CONFIG      ?= /config/$(_ROBOT_REL)/stream/default.yaml
 LOSS_REPORT_CONFIG ?= /config/$(_ROBOT_REL)/validators/loss_report.yaml
 export RECORDING_CONFIG STREAM_CONFIG LOSS_REPORT_CONFIG
 
+# Alert rules are OPTIONAL (the monitor runs fine without them). Resolve a local
+# override first, then the committed file; empty (= alerts disabled) if neither
+# exists. Container path mirrors the ./config -> /config mount (a leading "/" in
+# front of the host-relative path). Exported like the paths above so the derived
+# value beats a stale ALERT_CONFIG_PATH in .env.
+_ALERT_LOCAL     := config/local/$(ROBOT)/monitoring/alerts.yaml
+_ALERT_COMMITTED := config/$(ROBOT)/monitoring/alerts.yaml
+ALERT_CONFIG_PATH ?= $(if $(wildcard $(_ALERT_LOCAL)),/$(_ALERT_LOCAL),$(if $(wildcard $(_ALERT_COMMITTED)),/$(_ALERT_COMMITTED),))
+export ALERT_CONFIG_PATH
+
+# Host uid/gid for the non-root pure-Python services (orchestrator/dora_runner):
+# compose runs them as `user: "${UID:-1000}:${GID:-1000}"` so they can write the
+# host-owned ./data and ./config bind mounts as the invoking user. bash does NOT
+# export UID (and never sets GID), so compose would otherwise fall back to
+# 1000:1000 and silently fail to write on a host whose uid != 1000. Derive +
+# export them here so every compose invocation below inherits the real values.
+UID ?= $(shell id -u)
+GID ?= $(shell id -g)
+export UID GID
+
 # Sample bag for the replay harness. Bags live UNDER data/ (the rule), so BAG is
 # a path RELATIVE to data/ — e.g. airoa-moma-mcap/000730 -> data/airoa-moma-mcap/000730
 # (an absolute /data/... path also works). Set it persistently in .env (BAG=...),

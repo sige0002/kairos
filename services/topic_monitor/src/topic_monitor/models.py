@@ -151,6 +151,14 @@ class MetricsSnapshot(BaseModel):
     paused: bool = False
     # The monitor's own processing health (OL-②.4); null when self-load is off.
     self_load: MonitorSelfLoad | None = None
+    # Allowlist diagnostics (MON-M4): how many configured allowlist patterns
+    # (RECORDING_CONFIG default_topics) there are, and how many are matched by a
+    # topic that has actually produced data. ``allowlist_matched == 0`` while
+    # ``allowlist_total > 0`` means the allowlist matches nothing live — the usual
+    # reason ``topics`` is empty (e.g. the wrong robot's config is selected).
+    # Additive: both 0 when there is no config.
+    allowlist_total: int = 0
+    allowlist_matched: int = 0
 
 
 class QosInfo(BaseModel):

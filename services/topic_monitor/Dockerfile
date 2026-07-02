@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
-# topic_monitor — ROS 2 node (will use rclpy for lightweight subscribe in
-# Stage 2), so it is built FROM the ROS base image. Stage 0 only runs a
-# FastAPI health shell; ROS deps are added as the monitoring logic lands.
+# topic_monitor — ROS 2 node that subscribes non-intrusively (raw/no-decode) for
+# lightweight liveness metrics, so it is built FROM the ROS base image. rclpy is
+# lazy-imported, so the FastAPI health endpoints serve even before ROS spins up.
 ARG ROS_DISTRO=jazzy
 
 # ---- builder ----------------------------------------------------------------

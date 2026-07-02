@@ -12,6 +12,11 @@ from kairos_common import utc_now_iso8601
 from dora_runner.mcap_utils import enumerate_topics, find_mcap, validate_run_id
 from dora_runner.models import ValidationTemplate
 
+# Pipeline identity stamped into the summary (reproducibility contract, shared
+# with the other bundled pipelines and the hello_dora plugin example).
+PIPELINE_ID = "fast_validation"
+PIPELINE_VERSION = "1.0.0"
+
 
 def mcap_loader(run_id: str, data_dir: Path) -> dict[str, Any]:
     """Node contract: load run paths and enumerate MCAP topics."""
@@ -54,6 +59,8 @@ def validator(loaded: dict[str, Any], template: ValidationTemplate) -> dict[str,
         if name not in matched_names
     ]
     return {
+        "pipeline": PIPELINE_ID,
+        "version": PIPELINE_VERSION,
         "template": {"name": template.name, "version": template.version},
         "result": "fail" if missing else "pass",
         "missing": missing,

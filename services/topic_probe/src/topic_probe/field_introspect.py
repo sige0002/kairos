@@ -13,13 +13,15 @@ to hand us a decoded message; everything here is pure logic.
 
 Caps keep introspection bounded on pathological messages (point clouds, huge
 arrays): fixed limits on array indices walked, recursion depth, and total field
-count. Numeric = ``int`` or ``float`` (``bool`` is excluded — it is not a plot
-signal and ``isinstance(True, int)`` would otherwise smuggle it in).
+count. Numeric = any ``numbers.Real`` (``int``/``float`` and the numpy scalars
+rosidl decodes numeric leaves to), with ``bool`` excluded — it is not a plot
+signal and ``isinstance(True, numbers.Real)`` would otherwise smuggle it in.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+import numbers
+from collections.abc import Mapping
 
 # Bounds so introspecting a pathological message (e.g. a point cloud) stays cheap
 # and the field list stays usable in a dropdown.
@@ -29,8 +31,15 @@ DEFAULT_MAX_FIELDS = 256  # total numeric leaves returned
 
 
 def _is_numeric(value: object) -> bool:
-    """True for plottable numeric scalars (``int``/``float``, never ``bool``)."""
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+    """True for plottable numeric scalars (``int``/``float`` + numpy, never bool).
+
+    Uses ``numbers.Real`` rather than ``isinstance(value, (int, float))`` so the
+    numpy scalars rosidl decodes numeric leaves (and fixed-length array elements)
+    to count as numeric — ``np.float32`` is not a subclass of ``float``. Both
+    ``bool`` and ``np.bool_`` are excluded (the latter is not a ``numbers.Real``;
+    the explicit check drops Python ``bool``, which is).
+    """
+    return isinstance(value, numbers.Real) and not isinstance(value, bool)
 
 
 def _is_str_like(value: object) -> bool:
@@ -87,8 +96,18 @@ def _child_fields(obj: object) -> list[tuple[str, object]]:
 
 
 def _is_sequence(value: object) -> bool:
-    """True for indexable, non-string sequences (lists/tuples/arrays)."""
-    return isinstance(value, Sequence) and not _is_str_like(value)
+    """True for indexable, non-string array-likes (list/tuple/array.array/ndarray).
+
+    Structural ``__len__`` + ``__getitem__`` rather than
+    ``collections.abc.Sequence`` so fixed-length rosidl numeric arrays
+    (``float64[N]``, decoded to ``numpy.ndarray`` — NOT a registered Sequence)
+    are walked and indexed the same as variable-length ones (``float64[]``,
+    decoded to ``array.array`` — which is). Strings/bytes are leaves and Mappings
+    are keyed objects, so both are excluded.
+    """
+    if _is_str_like(value) or isinstance(value, Mapping):
+        return False
+    return hasattr(value, "__len__") and hasattr(value, "__getitem__")
 
 
 def iter_numeric_fields(

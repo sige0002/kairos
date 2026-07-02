@@ -93,6 +93,19 @@ RESUME_SERVICE_TIMEOUT_S = 5.0
 # States in which a session is actively holding (or finalising) the subprocess.
 _ACTIVE_STATES = frozenset({RunState.recording, RunState.stopping})
 
+# Session-metadata placeholders for a standalone recorder call. The orchestrator
+# normalizes these (the dataset path is data/<operator>/<task>, so a null
+# component is unkeyable), but the recorder must also default them so a direct
+# /record/start writes a keyable session.json. Values match the orchestrator's
+# (api_orchestrator/runs.py) so both paths yield the same placeholders.
+_UNKNOWN_OPERATOR = "unknown_operator"
+_UNKNOWN_TASK = "unknown_task"
+
+
+def _default_meta(value: str | None, default: str) -> str:
+    """Coerce an empty/whitespace metadata field to a stable placeholder."""
+    return value.strip() if value and value.strip() else default
+
 
 def _qos_overrides_path(recorded_root: Path, run_id: str) -> Path:
     """Path of the QoS overrides file (a sibling of the run dir)."""
@@ -513,8 +526,10 @@ class RecorderSession:
             self._started_at = started_at
             self._compression = request.compression
             self._split = request.split
-            self._operator = request.operator
-            self._task = request.task
+            # Default operator/task so a standalone recorder call (no orchestrator
+            # to normalize them) still writes a keyable session.json.
+            self._operator = _default_meta(request.operator, _UNKNOWN_OPERATOR)
+            self._task = _default_meta(request.task, _UNKNOWN_TASK)
             self._topics = staged_topics
             # The run dir now exists (ros2 created it), so writing the manifest
             # into it no longer races the "folder exists" check.
@@ -914,13 +929,22 @@ class RecorderSession:
         """Stop the active session (idempotent).
 
         Recording -> SIGINT the process group, wait, finalise, return the
-        terminal status. Idle -> return the current status unchanged.
+        terminal status. Any other state — idle, or a stop already in progress
+        (``stopping``) — returns the current status unchanged.
         """
         # Signal the size watcher to stop polling up front so it does not race
         # us into a second stop. (Safe if we ARE the watcher thread.)
         self._watcher_stop.set()
         with self._lock:
-            if self._state not in _ACTIVE_STATES or self._process is None:
+            # Only a live ``recording`` session transitions to ``stopping``.
+            # Gating on ``recording`` (not ``_ACTIVE_STATES``, which includes
+            # ``stopping``) makes the transition atomic, so a concurrent second
+            # stop — size-watcher vs user, or two HTTP calls now that the routes
+            # run in Starlette's thread pool — cannot re-SIGINT and re-finalise
+            # the same process. That second finalise would see ``returncode=None``
+            # and turn a clean ``completed`` run into ``failed``. finalise runs
+            # exactly once, for the caller that won this transition.
+            if self._state is not RunState.recording or self._process is None:
                 return self._status_locked()
 
             self._state = RunState.stopping

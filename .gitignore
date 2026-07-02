@@ -29,6 +29,9 @@ config/local/*
 # Claude Code — personal settings only (shared settings.json IS committed)
 .claude/settings.local.json
 
+# Issue log: local-only problem/solution notes (see .claude/skills/issue-log)
+/issue/
+
 # Local staged-implementation working draft (not a committed doc)
 dev_docs/
 plan.md

@@ -29,6 +29,11 @@ from kairos_common import utc_now_iso8601
 
 from dora_runner.mcap_utils import validate_run_id
 
+# Pipeline identity stamped into the summary (reproducibility contract, shared
+# with the other bundled pipelines and the hello_dora plugin example).
+PIPELINE_ID = "dataset_export"
+PIPELINE_VERSION = "1.0.0"
+
 # Reserved top-level names under data/ an operator/task must not shadow.
 _RESERVED = {"recorded", "report", "datasets"}
 _DEFAULT_OPERATOR = "unknown_operator"
@@ -134,6 +139,8 @@ def run_dataset_export(*, run_id: str, data_dir: Path) -> dict[str, Any]:
         if (dataset_dir / name).is_file()
     )
     summary: dict[str, Any] = {
+        "pipeline": PIPELINE_ID,
+        "version": PIPELINE_VERSION,
         "run_id": run_id,
         "operator": operator,
         "task": task,

@@ -34,6 +34,22 @@ async def _emit_job(request: Request, job: JobStatus | JobCreateResponse) -> Non
     )
 
 
+def _job_event_changed(
+    previous: JobStatus | None, job: JobStatus | JobCreateResponse
+) -> bool:
+    """Whether *job* differs from *previous* in the fields an SSE ``job`` event carries.
+
+    ``GET /{job_id}/status`` is polled, so it must not re-broadcast an identical
+    event on every poll. The emitted payload only carries ``state``/``progress``
+    (job_id/run_id/pipeline are fixed per job), so those are the only fields that
+    can change what a subscriber sees. A first sighting (``previous is None``)
+    always counts as a change.
+    """
+    if previous is None:
+        return True
+    return (previous.state, previous.progress) != (job.state, job.progress)
+
+
 @router.post("", response_model=JobCreateResponse, status_code=status.HTTP_201_CREATED)
 async def create_job(request: Request, body: JobCreateRequest) -> JobCreateResponse:
     """Create a dora_runner job and persist its initial status.
@@ -86,11 +102,19 @@ async def create_job(request: Request, body: JobCreateRequest) -> JobCreateRespo
 
 @router.get("/{job_id}/status", response_model=JobStatus)
 async def job_status(request: Request, job_id: str) -> JobStatus:
-    """Return current job status."""
+    """Return current job status.
+
+    Emits a ``job`` SSE event ONLY when the state/progress actually changed
+    versus the stored row, so polling this endpoint does not flood subscribers
+    with duplicate events. The upsert itself is idempotent and always runs.
+    """
     body = await request.app.state.dora_runner_client.job_status(job_id)
     job = JobStatus.model_validate(body)
-    request.app.state.run_store.upsert_job(job)
-    await _emit_job(request, job)
+    store = request.app.state.run_store
+    previous = store.get_job(job_id)
+    store.upsert_job(job)
+    if _job_event_changed(previous, job):
+        await _emit_job(request, job)
     return job
 
 

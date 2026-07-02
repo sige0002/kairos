@@ -1,0 +1,30 @@
+# =============================================================================
+# kairos topic_monitor alert rules — Toyota HSR (AIRoA MOMA dataset)
+# =============================================================================
+# Concrete alert rules for the airoa-moma-mcap sample bags (HSR, /hsrb/*).
+# Full schema + field docs: config/template/monitoring/alerts.yaml.
+# Wire in with ALERT_CONFIG_PATH=/config/airoa_hsr/monitoring/alerts.yaml.
+#
+# Thresholds are deliberately conservative: each is set well below the topic's
+# expected Hz (see config/airoa_hsr/recording/default.yaml -> expected_hz_
+# patterns) so a healthy replay never flaps, but a real rate collapse (roughly
+# half-rate or worse) fires. clear_after_s / cooldown_s debounce brief dips.
+# Both topics are concrete entries of that config's default_topics.
+# -----------------------------------------------------------------------------
+
+rules:
+  # Robot joint-state feed. Expected ~25 Hz; warn if it drops below 15 Hz for 3 s.
+  - topic: /hsrb/joint_states
+    metric: hz
+    op: lt
+    threshold: 15
+    clear_after_s: 3
+    cooldown_s: 10
+
+  # Head RGB-D color camera (compressed). Expected ~30 Hz; warn below 15 Hz.
+  - topic: /hsrb/head_rgbd_sensor/rgb/image_rect_color/compressed
+    metric: hz
+    op: lt
+    threshold: 15
+    clear_after_s: 3
+    cooldown_s: 10

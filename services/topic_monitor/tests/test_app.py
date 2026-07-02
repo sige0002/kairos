@@ -9,8 +9,11 @@ inject a ``FakeSubscriber`` so the full request path runs natively.
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
+from kairos_common import get_settings
 from topic_monitor.main import app, create_monitor_app
 from topic_monitor.subscriber import FakeSubscriber, TopicGraphEntry
 
@@ -78,3 +81,28 @@ def test_readyz_not_ready_before_start() -> None:
     resp = client.get("/readyz")
     assert resp.status_code == 503
     assert resp.json()["status"] == "not_ready"
+
+
+def test_alert_rules_wired_from_config_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # MON-C1 end-to-end: create_monitor_app() must load ALERT_CONFIG_PATH and
+    # inject the rules, so /alerts is no longer always empty.
+    alerts = tmp_path / "alerts.yaml"
+    alerts.write_text(
+        "rules:\n  - topic: /cam\n    metric: hz\n    op: lt\n    threshold: 5\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ALERT_CONFIG_PATH", str(alerts))
+    get_settings.cache_clear()
+    try:
+        sub = FakeSubscriber()
+        wired_app = create_monitor_app(subscriber=sub)
+        with TestClient(wired_app) as client:
+            # One sample -> hz ~ 1/window, well below the 5 Hz threshold -> fires.
+            sub.feed("/cam", recv_t=0.0, size_bytes=100)
+            resp = client.get("/alerts")
+            assert resp.status_code == 200
+            assert any(a["topic"] == "/cam" for a in resp.json()["alerts"])
+    finally:
+        get_settings.cache_clear()

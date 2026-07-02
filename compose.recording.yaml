@@ -38,5 +38,8 @@ services:
     extends:
       file: compose.yaml
       service: frontend
-    # `extends` drops depends_on (cross-file ordering is meaningless); the
-    # frontend only needs the orchestrator reachable at request time, which it is.
+    # The inherited `depends_on: orchestrator (service_healthy)` is valid here —
+    # the orchestrator is co-located on this recording PC, so the frontend waits
+    # for it to pass its healthcheck before starting (its first request proxies
+    # to the orchestrator). The robot-edge streamer/probe it also proxies to are
+    # reached lazily at request time, so they need no ordering.

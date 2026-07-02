@@ -30,15 +30,17 @@ import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 from kairos_common import ApiError
 from pydantic import BaseModel, ConfigDict, Field
 
 from dora_runner.mcap_utils import validate_run_id
-from dora_runner.registry import PipelineRegistry, RegisteredPipeline, Runner
 from dora_runner.store import JobRecord, RunnerStore
+
+if TYPE_CHECKING:
+    from dora_runner.registry import PipelineRegistry, Runner
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +115,12 @@ def discover_plugins(
     plugins and the bundled pipelines keep working. A plugin whose ``id`` clashes
     with an already-registered pipeline is rejected (first registration wins).
     """
+    # Deferred: registry imports this module at its own import time (in
+    # build_default_registry), so a module-level import here would be
+    # circular. RegisteredPipeline is defined before registry calls back in,
+    # so this always resolves.
+    from dora_runner.registry import RegisteredPipeline
+
     errors: list[PluginLoadError] = []
     if not plugins_dir.is_dir():
         return errors
@@ -179,7 +187,7 @@ def _make_dataflow_runner(manifest: PluginManifest, plugin_dir: Path) -> Runner:
             report_dir=report_dir,
         )
         job.progress = 0.4
-        if _dora_cli_available():
+        if dora_cli_available():
             await _run_via_dora_cli(dataflow_yml, ctx, job)
         else:
             await asyncio.to_thread(
@@ -209,10 +217,31 @@ def _make_callable_runner(manifest: PluginManifest, plugin_dir: Path) -> Runner:
     return _run
 
 
-def _dora_cli_available() -> bool:
+def dora_cli_available() -> bool:
+    """Whether the ``dora`` CLI/daemon path is actually usable in this process.
+
+    ``False`` when the Rust ``dora`` binary is absent (the CPU-only host case,
+    where dataflows run through the in-process interpreter) or when
+    ``KAIROS_DORA_INPROCESS`` forces the in-process path. Used both to pick the
+    execution path and to report an honest executor in ``/pipelines`` /
+    ``/readyz`` (dora is a deliberate future bet, not bundled yet).
+    """
     if os.environ.get(_FORCE_INPROCESS_ENV):
         return False
     return shutil.which("dora") is not None
+
+
+def effective_executor(declared: str) -> str:
+    """Map a pipeline's *declared* executor to how it will ACTUALLY run.
+
+    A pipeline may declare ``executor: dora``, but with no ``dora`` CLI present
+    it transparently runs through the in-process dataflow interpreter. Everything
+    that isn't genuinely dispatched to the dora daemon reports ``in-process`` so
+    the UI/operator isn't misled into thinking dora is bundled.
+    """
+    if declared == "dora" and dora_cli_available():
+        return "dora"
+    return "in-process"
 
 
 def _collect_result(plugin_id: str, report_dir: Path) -> dict:

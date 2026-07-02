@@ -57,6 +57,34 @@ def test_healthz_still_served(client: TestClient) -> None:
     assert client.get("/healthz").status_code == 200
 
 
+def test_record_routes_are_sync_offloaded(client: TestClient) -> None:
+    """The /record/* + /readyz handlers are plain ``def`` so Starlette runs them
+    in its thread pool instead of on the event loop (REC-H1).
+
+    ``session.start``/``stop`` block synchronously (start delay, arming gate, the
+    up-to-30s wait for the bag to exit); an ``async`` handler would freeze every
+    request — ``/healthz`` and ``/record/status`` included — for that whole span.
+    """
+    import inspect
+
+    offloaded = {
+        "/record/start",
+        "/record/stop",
+        "/record/status",
+        "/record/metadata",
+        "/readyz",
+    }
+    seen: set[str] = set()
+    for route in client.app.routes:
+        path = getattr(route, "path", None)
+        if path in offloaded:
+            seen.add(path)
+            assert not inspect.iscoroutinefunction(route.endpoint), (
+                f"{path} must be a sync def so Starlette offloads it"
+            )
+    assert seen == offloaded
+
+
 def test_readyz_ok_when_writable(client: TestClient) -> None:
     resp = client.get("/readyz")
     assert resp.status_code == 200

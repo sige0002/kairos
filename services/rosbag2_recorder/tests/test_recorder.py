@@ -188,16 +188,33 @@ def test_run_dir_is_host_writable(
     assert rd.parent.stat().st_mode & 0o002  # world-writable bit set
 
 
-def test_session_json_metadata_optional(
+def test_session_json_metadata_defaults_to_unknown(
     settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
 ) -> None:
-    """Omitting operator/task writes nulls (still a session.json)."""
+    """Omitting operator/task falls back to the unknown_* placeholders (REC-M2).
+
+    A standalone recorder call has no orchestrator to normalize the metadata, so
+    the recorder itself must default it — otherwise session.json carries nulls
+    that make the dataset path data/<operator>/<task> unkeyable.
+    """
     session = _make_session(settings, fake_process, write_metadata)
     session.start(_start_req("run_n"))
     session.stop()
     payload = json.loads(session_path(settings.data_dir, "run_n").read_text())
-    assert payload["operator"] is None
-    assert payload["task"] is None
+    assert payload["operator"] == "unknown_operator"
+    assert payload["task"] == "unknown_task"
+
+
+def test_session_json_blank_metadata_defaults_to_unknown(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    """Empty/whitespace operator/task are coerced to the placeholders too."""
+    session = _make_session(settings, fake_process, write_metadata)
+    session.start(_start_req("run_blank", operator="  ", task=""))
+    session.stop()
+    payload = json.loads(session_path(settings.data_dir, "run_blank").read_text())
+    assert payload["operator"] == "unknown_operator"
+    assert payload["task"] == "unknown_task"
 
 
 def test_multi_start_while_recording_is_409(
@@ -804,6 +821,65 @@ def test_max_record_bytes_zero_disables_watcher(
     assert session._size_watcher is None  # type: ignore[attr-defined]
     assert session.status().state is RunState.recording
     session.stop()
+
+
+def test_concurrent_double_stop_keeps_completed(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    """A second stop racing the first must NOT re-finalise (REC-M1).
+
+    With the record routes offloaded to a thread pool (REC-H1) two stops — or the
+    size-watcher stop vs a user stop — can run at once. The entry guard gates on
+    ``recording`` so exactly one caller transitions to ``stopping`` and finalises;
+    a clean ``completed`` run must not be flipped to ``failed`` by a second
+    finalise that sees ``returncode=None``.
+    """
+    import threading
+
+    session = _make_session(settings, fake_process, write_metadata)
+    session.start(_start_req("run_race"))
+
+    # Park the winning stop inside _signal_and_wait (outside the lock) so the
+    # loser races it while the session sits in ``stopping``.
+    entered = threading.Event()
+    release = threading.Event()
+    finalise_calls = 0
+    orig_finalise = session._finalise
+
+    def counting_finalise() -> None:
+        nonlocal finalise_calls
+        finalise_calls += 1
+        orig_finalise()
+
+    def blocking_signal(_proc: Any) -> None:
+        entered.set()
+        release.wait(5.0)
+
+    session._finalise = counting_finalise  # type: ignore[method-assign]
+    session._signal_and_wait = blocking_signal  # type: ignore[method-assign]
+
+    winner_state: list[RunState] = []
+
+    def winner() -> None:
+        winner_state.append(session.stop().state)
+
+    thread = threading.Thread(target=winner)
+    thread.start()
+    assert entered.wait(5.0)  # winner is parked in _signal_and_wait (stopping)
+
+    # Loser stop while the winner holds the session in ``stopping``: the guard
+    # returns the current status without re-signalling or re-finalising.
+    loser = session.stop()
+    assert loser.state is RunState.stopping
+
+    release.set()
+    thread.join(5.0)
+
+    assert winner_state == [RunState.completed]
+    assert finalise_calls == 1  # finalise ran exactly once
+    manifest = read_manifest(settings.data_dir, "run_race")
+    assert manifest.state is RunState.completed
+    assert manifest.integrity != "failed"
 
 
 def test_start_delay_honoured_from_config(

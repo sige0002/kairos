@@ -38,6 +38,11 @@ from mcap.reader import make_reader
 from dora_runner.loss_report_config import DEFAULT_GAP_THRESHOLD_MULTIPLIER
 from dora_runner.mcap_utils import find_mcap, validate_run_id
 
+# Pipeline identity stamped into the summary (reproducibility contract, shared
+# with the other bundled pipelines and the hello_dora plugin example).
+PIPELINE_ID = "loss_report"
+PIPELINE_VERSION = "1.0.0"
+
 
 def estimate_topic_loss(log_times_ns: list[int]) -> dict[str, Any]:
     """Estimate gap-based loss for one topic from its message log_times.
@@ -148,6 +153,8 @@ def run_loss_report(
             }
         )
     summary: dict[str, Any] = {
+        "pipeline": PIPELINE_ID,
+        "version": PIPELINE_VERSION,
         "run_id": run_id,
         "topics": topics,
         "params": {

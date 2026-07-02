@@ -7,8 +7,10 @@ dotted numeric paths and extracted values.
 
 from __future__ import annotations
 
+import array
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 from topic_probe.field_introspect import (
     extract_value,
@@ -58,6 +60,61 @@ def test_indexes_arrays_of_submessages() -> None:
     )
     fields = iter_numeric_fields(msg)
     assert fields == ["points[0].x", "points[0].y", "points[1].x", "points[1].y"]
+
+
+# ---- rosidl array/scalar shapes (PRB-H1) ------------------------------------
+def test_indexes_array_array_variable_length() -> None:
+    """Variable-length rosidl arrays (``float64[]``) decode to ``array.array``."""
+    msg = SimpleNamespace(position=array.array("d", [1.0, 2.0, 3.0]))
+    assert iter_numeric_fields(msg) == ["position[0]", "position[1]", "position[2]"]
+
+
+def test_indexes_numpy_1d_array() -> None:
+    """Fixed-length rosidl arrays (``float64[N]``) decode to ``numpy.ndarray``,
+    which is NOT a ``collections.abc.Sequence`` — they must still be indexed."""
+    msg = SimpleNamespace(covariance=np.array([0.1, 0.2, 0.3], dtype=np.float64))
+    assert iter_numeric_fields(msg) == [
+        "covariance[0]",
+        "covariance[1]",
+        "covariance[2]",
+    ]
+
+
+def test_indexes_numpy_2d_array() -> None:
+    """A 2-D ndarray is walked row by row into nested indices."""
+    msg = SimpleNamespace(m=np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32))
+    assert iter_numeric_fields(msg) == ["m[0][0]", "m[0][1]", "m[1][0]", "m[1][1]"]
+
+
+def test_numpy_scalar_leaf_is_numeric() -> None:
+    """A bare numpy scalar (``np.float32`` is not a ``float`` subclass) is numeric."""
+    msg = SimpleNamespace(temperature=np.float32(2.5), count=np.int32(7))
+    assert iter_numeric_fields(msg) == ["temperature", "count"]
+
+
+def test_numpy_bool_is_not_a_numeric_leaf() -> None:
+    """numpy bool, like Python bool, is not a plot signal."""
+    msg = SimpleNamespace(flag=np.bool_(True), value=np.int32(5))
+    assert iter_numeric_fields(msg) == ["value"]
+
+
+def test_extract_from_numpy_array_and_scalar() -> None:
+    msg = SimpleNamespace(covariance=np.array([1.0, 2.0, 3.0], dtype=np.float64))
+    assert extract_value(msg, "covariance[1]") == 2.0
+    assert isinstance(extract_value(msg, "covariance[1]"), float)
+
+    two_d = SimpleNamespace(m=np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32))
+    assert extract_value(two_d, "m[1][0]") == 3.0
+
+    scalar = SimpleNamespace(temperature=np.float32(2.5))
+    got = extract_value(scalar, "temperature")
+    assert got == 2.5  # 2.5 is exact in float32
+    assert isinstance(got, float)
+
+
+def test_extract_from_array_array() -> None:
+    msg = SimpleNamespace(position=array.array("d", [10.0, 20.0, 30.0]))
+    assert extract_value(msg, "position[2]") == 30.0
 
 
 def test_dict_messages_and_top_level_scalars() -> None:

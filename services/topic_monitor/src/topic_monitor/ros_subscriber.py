@@ -74,8 +74,34 @@ class RosTopicSubscriber:
         with self._lock:
             if self._up:
                 return
+        # MON-H1: claim readiness (_up) only AFTER the node is actually spinning.
+        # Setting it first made /readyz report 200 even when _spin_up() raised
+        # (e.g. rclpy missing / init failure) — "ready but silent". On failure we
+        # roll back any partially-built node and re-raise so the caller (the app
+        # lifespan) can log it and readiness stays false.
+        try:
+            self._spin_up()
+        except Exception:
+            self._abandon_partial()
+            raise
+        with self._lock:
             self._up = True
-        self._spin_up()
+
+    def _abandon_partial(self) -> None:
+        """Tear down a partially-constructed node after a failed :meth:`start`."""
+        with self._lock:
+            node, executor = self._node, self._executor
+            self._node = self._executor = self._thread = self._discovery_timer = None
+        if executor is not None:
+            try:
+                executor.shutdown()
+            except Exception:  # noqa: BLE001 - best-effort rollback
+                logger.exception("error shutting down executor after failed start")
+        if node is not None:
+            try:
+                node.destroy_node()
+            except Exception:  # noqa: BLE001 - best-effort rollback
+                logger.exception("error destroying node after failed start")
 
     def _spin_up(self) -> None:
         """Create the rclpy node and spin it on a background thread."""
@@ -110,16 +136,26 @@ class RosTopicSubscriber:
         return any(fnmatch(topic, pattern) for pattern in self._allowlist)
 
     def _refresh_subscriptions(self) -> None:
-        """Subscribe to any not-yet-subscribed allowlist topic on the graph."""
+        """Subscribe to any not-yet-subscribed allowlist topic on the graph.
+
+        Runs on the executor spin thread via the discovery timer. MON-H2: the
+        graph queries (``get_topic_names_and_types`` / ``get_publishers_info_by_
+        topic``) can raise an rmw error, and an unguarded raise here kills the
+        spin thread silently — metrics then stop forever while ``/readyz`` keeps
+        claiming ready. So the whole body is guarded: log and retry next tick.
+        """
         node = self._node
         if node is None:
             return
-        for name, types in node.get_topic_names_and_types():
-            if name in self._subscribed or not self._matches_allowlist(name):
-                continue
-            type_str = types[0] if types else None
-            qos = self._resolve_qos(node, name)
-            self._subscribe(node, name, type_str, qos)
+        try:
+            for name, types in node.get_topic_names_and_types():
+                if name in self._subscribed or not self._matches_allowlist(name):
+                    continue
+                type_str = types[0] if types else None
+                qos = self._resolve_qos(node, name)
+                self._subscribe(node, name, type_str, qos)
+        except Exception:  # noqa: BLE001 - must not kill the spin thread
+            logger.exception("discovery refresh failed; will retry next tick")
 
     def _resolve_qos(self, node: Any, topic: str) -> QosInfo:
         """Auto-match a subscription QoS from the topic's publishers."""
