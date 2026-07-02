@@ -1,7 +1,7 @@
 <!-- AUTO-GENERATED from README.ja.md. Do not edit by hand — edit the Japanese source and run /sync-docs. -->
 # kairos
 
-**English: [README.md](README.md)**
+**日本語: [README.ja.md](README.ja.md)**
 
 A system that **records, monitors, validates, and converts** ROS 2 robot data. The canonical
 recording format is **MCAP**, and live video, live metrics, and post-hoc validation are all
