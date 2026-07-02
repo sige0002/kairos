@@ -2,7 +2,7 @@
 
 # Specification docs (Japanese, source of truth)
 
-Per-service specs. Based on each diagram in `fig_const/`, with unspecified items finalized as recommended design — the **source of truth for the design** (treat it as canonical). **Japanese is the source of truth**; the English version is [`docs/specs/en/`](../ja/README.md) (an auto-generated mirror produced by the `/sync-docs` skill). **No authentication is required.**
+Per-service specs. Based on each diagram in `fig_const/`, with unspecified items finalized as recommended design — the **source of truth for the design** (treat it as canonical). **Japanese is the source of truth**; the English version `docs/specs/en/README.md` is an auto-generated mirror produced by `/sync-docs` (do not edit it directly). **No authentication is required.**
 
 | Document | Role |
 |---|---|
