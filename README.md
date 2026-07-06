@@ -66,6 +66,46 @@ All services start with host networking. The ROS 2 services (`recorder` / `monit
 share the host DDS graph (`ROS_DOMAIN_ID=0`), and the pure-Python services (`orchestrator` / `dora_runner`)
 and the frontend reach each other at `localhost:<port>` (no authentication; LAN assumed).
 
+### Which `.env` file do I use? (for first-time users)
+
+All settings live in a single `.env` file. There are **two** templates for it, so
+**copy the one that matches how you plan to use kairos**. You do not need to read the whole thing.
+
+| How you use it | Template to copy | The first line you touch |
+|---|---|---|
+| **① Run everything on one PC** — the normal case, and how you try the sample bag | `.env.example` | Works almost as-is. Change `ROBOT=` only when using a different robot |
+| **② Record from a separate "recording PC"** — for people who don't want to load the robot itself | `.env.split.example` | Only `ROBOT_IP=` (the robot's IP address) |
+
+> **When in doubt, pick ①.** Get it running on one PC first, then consider ② when you need it.
+> In both cases, you edit the **`.env` you copied** (not the `*.example` template).
+> `.env` is not committed to Git (it is `.gitignore`d).
+
+**① Single-PC (`.env.example`)** — most people use this.
+```bash
+cp .env.example .env     # just copy it; it runs with almost no edits
+make up
+```
+- To just try the sample bag (HSR), **no edits are needed** (the default `ROBOT=airoa_hsr` matches the sample).
+- Only when **using a different robot**, change `ROBOT=` in `.env` to that robot's name (put its config set under
+  `config/<robot>/`; see "Using additional robots" below).
+- (Advanced) Only when the robot uses Cyclone DDS, change `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`.
+  The other items (port numbers, etc.) can normally stay as they are.
+
+**② Separate recording PC (`.env.split.example`)** — for recording without loading the robot.
+```bash
+# On the "recording PC":
+cp .env.split.example .env
+# Open .env and set ROBOT_IP to the robot's LAN IP (basically the only line you touch)
+make recording-up
+# ※ On the robot, run `make robot-up` separately (the services that touch the robot — recording,
+#   monitoring, etc. — run on the robot)
+```
+- The only line you really edit is **`ROBOT_IP`** (the other destinations reference it automatically).
+- For why it is split across two machines and the caveats (time sync, permissions, video reachability, etc.),
+  see [Deployment topology](docs/specs/en/deployment_topology.md).
+
+A full reference for every `.env` key is in the [config spec](docs/specs/en/config.md) (day to day, the above is enough).
+
 ### Make shortcuts
 
 To avoid typing long commands every time, a `Makefile` is provided at the root. Just `make` prints the

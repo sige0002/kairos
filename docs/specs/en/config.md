@@ -13,6 +13,19 @@ The single source of configuration shared across services, and the rules for ext
 
 ## Root `.env` (infrastructure settings)
 
+> **Which file do I edit? (for first-time users)** All settings are consolidated into a single `.env`. There are
+> two templates for different use cases; **copy one of them to `.env`** and use that (do not edit the template
+> itself; `.env` is not committed to Git).
+>
+> - **`.env.example`** — the normal single-PC setup where everything runs on one machine. `cp .env.example .env`;
+>   it runs as-is in most cases. Change `ROBOT=` only when using a different robot.
+> - **`.env.split.example`** — the split setup that records from a separate "recording PC" instead of the robot
+>   ([deployment_topology](deployment_topology.md)). On the recording PC, `cp .env.split.example .env` and just set
+>   `ROBOT_IP` to the robot's IP.
+>
+> When in doubt, use `.env.example`. For a step-by-step walkthrough, see the [README](../../../README.md)
+> ("Which `.env` file do I use?"). **The table below is the full key reference** — day to day, you rarely touch most of it.
+
 | Key | Default | Description |
 |---|---|---|
 | `ROS_DOMAIN_ID` | `0` | The ROS 2 domain shared by all services |
