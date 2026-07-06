@@ -25,6 +25,11 @@ _env_val = $(if $(wildcard .env),$(strip $(shell sed -n 's/^[[:space:]]*$(1)[[:s
 # and compose agree on the active robot. Override per robot:
 #   make up ROBOT=airoa_hsr        # bundled HSR sample (default)
 #   make up ROBOT=<robot>          # config/local/<robot>/ (gitignored)
+# The airoa_hsr literal is the bundled-sample default, NOT a knob: its single
+# source of truth is settings.py (Settings.robot) and compose.yaml repeats it in
+# every ${ROBOT:-airoa_hsr} fallback — if the bundled default ever changes, all
+# three must move together. Select your own robot via ROBOT (.env or command
+# line), never by editing this default.
 ROBOT ?= $(or $(call _env_val,ROBOT),airoa_hsr)
 export ROBOT
 # Resolve committed (config/<robot>) vs local (config/local/<robot>) -> container path.
