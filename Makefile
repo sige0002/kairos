@@ -13,13 +13,19 @@
 # `make <thing> all` is the same as `make <thing>` (every service).
 
 # ---- config (robot-first) ---------------------------------------------------
+# Read a KEY=value from .env. `make` does not read .env by itself (compose
+# does), so without this a value set only in .env is invisible to make-derived
+# defaults. Precedence stays: command line > shell env > .env > built-in default.
+_env_val = $(if $(wildcard .env),$(strip $(shell sed -n 's/^[[:space:]]*$(1)[[:space:]]*=[[:space:]]*//p' .env | tail -1)))
+
 # A single ROBOT selects the whole config set. compose mounts ./config -> /config,
 # so the services read /config/<robot>/{recording,stream,validation,validators}/...
 # Committed robots live under config/<robot>/; your own (gitignored) ones under
-# config/local/<robot>/ — resolved automatically. Override per robot:
+# config/local/<robot>/ — resolved automatically. Also read from .env so `make`
+# and compose agree on the active robot. Override per robot:
 #   make up ROBOT=airoa_hsr        # bundled HSR sample (default)
 #   make up ROBOT=<robot>          # config/local/<robot>/ (gitignored)
-ROBOT ?= airoa_hsr
+ROBOT ?= $(or $(call _env_val,ROBOT),airoa_hsr)
 export ROBOT
 # Resolve committed (config/<robot>) vs local (config/local/<robot>) -> container path.
 _ROBOT_REL := $(if $(wildcard config/$(ROBOT)),$(ROBOT),local/$(ROBOT))
@@ -58,11 +64,8 @@ BAG ?=
 # Ports the access banner advertises (host networking -> these bind on the host).
 # Single source of truth = the pydantic defaults in libs/kairos_common/settings.py,
 # overridable per key via .env — the SAME keys compose interpolates (FRONTEND_PORT
-# / API_ORCH_PORT). Read .env here too so the banner shows the port the container
-# actually binds, not a hardcoded literal that silently drifts from .env. `make`
-# does not read .env on its own, hence the sed. Precedence matches compose:
-# command line > shell env > .env > settings.py default.
-_env_val = $(if $(wildcard .env),$(strip $(shell sed -n 's/^[[:space:]]*$(1)[[:space:]]*=[[:space:]]*//p' .env | tail -1)))
+# / API_ORCH_PORT). Read .env (via _env_val above) so the banner shows the port
+# the container actually binds, not a hardcoded literal that drifts from .env.
 FRONTEND_PORT ?= $(or $(call _env_val,FRONTEND_PORT),8080)
 API_ORCH_PORT ?= $(or $(call _env_val,API_ORCH_PORT),8000)
 
@@ -84,15 +87,18 @@ TEST_COMPOSE := docker compose $(if $(wildcard .env),--env-file .env,) -f deploy
 ROS_DISTRO ?= jazzy
 export ROS_DISTRO
 
-# Custom-message overlay dir — env-driven & PER-ROBOT. Set it in .env so a robot's
-# overlay is picked automatically, e.g.:
-#   MSGS_OVERLAY_DIR=./deploy/msgs_overlay/<robot>      # in .env
-# `make up` reads it via compose; `make msgs-build` builds that same dir. A
-# command-line MSGS_OVERLAY_DIR=... overrides .env. MUST start with ./ (compose
-# treats a bind source without ./ as a named volume). Default (unset): the shared
-# ./deploy/msgs_overlay. Exported ONLY when explicitly set, so an unset value lets
-# compose read .env instead of being clobbered by a make default.
-MSGS_OVERLAY_DIR ?=
+# Custom-message overlay dir — PER-ROBOT, derived from ROBOT like the config
+# paths above: when deploy/msgs_overlay/$(ROBOT)/ exists it is used (and beats a
+# stale value in .env, same pattern as RECORDING_CONFIG). This keeps the WHOLE
+# harness on the robot's overlay — recorder/monitor/probe mounts AND the rosbag
+# replay player: without the overlay `ros2 bag play` silently SKIPS custom-type
+# topics ("Ignoring a topic ... package not found", WARN only), so the monitor
+# honestly reports them 0 Hz / inactive and it looks like a monitor bug.
+# A command-line MSGS_OVERLAY_DIR=... still overrides. MUST start with ./
+# (compose treats a bind source without ./ as a named volume). No overlay dir for
+# ROBOT (e.g. airoa_hsr — standard types only): empty here + NOT exported, so
+# compose reads .env, then falls back to the shared ./deploy/msgs_overlay/robot.
+MSGS_OVERLAY_DIR ?= $(if $(wildcard deploy/msgs_overlay/$(ROBOT)),./deploy/msgs_overlay/$(ROBOT),)
 ifneq ($(strip $(MSGS_OVERLAY_DIR)),)
 export MSGS_OVERLAY_DIR
 endif
