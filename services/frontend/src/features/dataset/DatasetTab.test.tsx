@@ -122,8 +122,8 @@ test('selecting a dataset opens the recording-like detail view', async () => {
   await waitFor(() =>
     expect(screen.getByTestId('dataset-dir')).toHaveTextContent('/data/yuki/pick/001'),
   );
-  // Nothing selected yet: the hint is shown.
-  expect(screen.getByText('Select a dataset to see details.')).toBeInTheDocument();
+  // Nothing selected yet: no detail pane.
+  expect(screen.queryByLabelText('dataset detail')).not.toBeInTheDocument();
 
   fireEvent.click(screen.getByText('#001'));
 
@@ -137,6 +137,25 @@ test('selecting a dataset opens the recording-like detail view', async () => {
   expect(screen.getByRole('button', { name: 'Run loss report' })).toBeEnabled();
   // Validation JSON survived the export and is offered as a block.
   expect(screen.getByText('Validation')).toBeInTheDocument();
+});
+
+test('the detail pane minimizes to a slim bar and expands again', async () => {
+  renderWithClient(<DatasetTab />);
+  await waitFor(() =>
+    expect(screen.getByTestId('dataset-dir')).toHaveTextContent('/data/yuki/pick/001'),
+  );
+  fireEvent.click(screen.getByText('#001'));
+  await waitFor(() => expect(screen.getByText('Topics (2)')).toBeInTheDocument());
+
+  // Minimize: the detail pane goes away, a slim bar keeps the selection.
+  fireEvent.click(screen.getByRole('button', { name: 'Minimize dataset detail' }));
+  expect(screen.queryByText('Topics (2)')).not.toBeInTheDocument();
+  const bar = screen.getByRole('button', { name: 'Expand dataset detail' });
+  expect(bar).toHaveTextContent('yuki/pick/001');
+
+  // Expand: the same dataset's detail comes back.
+  fireEvent.click(bar);
+  await waitFor(() => expect(screen.getByText('Topics (2)')).toBeInTheDocument());
 });
 
 test('empty datasets show the empty state', async () => {

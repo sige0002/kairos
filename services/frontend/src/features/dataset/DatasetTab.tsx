@@ -181,14 +181,6 @@ function DatasetDetailView({ entry }: { entry: DatasetEntry }) {
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3 className="break-all font-mono text-sm font-semibold text-teal-700">
-          {detail.path}
-        </h3>
-        <Badge tone="gray" mono>
-          {formatBytes(detail.bytes ?? undefined)}
-        </Badge>
-      </div>
       <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
         <dt className="text-gray-500">Run</dt>
         <dd className="font-mono">{detail.run_id ?? '—'}</dd>
@@ -200,6 +192,8 @@ function DatasetDetailView({ entry }: { entry: DatasetEntry }) {
         <dd>{duration != null ? formatDuration(duration) : '—'}</dd>
         <dt className="text-gray-500">Messages</dt>
         <dd>{detail.message_count ?? '—'}</dd>
+        <dt className="text-gray-500">Size</dt>
+        <dd>{formatBytes(detail.bytes ?? undefined)}</dd>
         <dt className="text-gray-500">Exported</dt>
         <dd>{formatWhen(detail.exported_at)}</dd>
         <dt className="text-gray-500">Files</dt>
@@ -273,6 +267,9 @@ function DatasetDetailView({ entry }: { entry: DatasetEntry }) {
 function DatasetsSection() {
   // The selected dataset (opens the detail pane on the right, like Recordings).
   const [selected, setSelected] = useState<DatasetEntry | null>(null);
+  // Detail pane minimized to a slim bar: the tree gets the full width back
+  // while the selection is kept, so expanding restores the same dataset.
+  const [collapsed, setCollapsed] = useState(false);
   const datasetsQuery = useQuery({
     queryKey: queryKeys.datasets,
     queryFn: ({ signal }) => apiGet<DatasetsResponse>('/datasets', { signal }),
@@ -281,6 +278,7 @@ function DatasetsSection() {
 
   const datasets = datasetsQuery.data?.datasets ?? [];
   const groups = groupDatasets(datasets);
+  const showDetail = selected !== null && !collapsed;
 
   return (
     <section className="flex flex-col gap-3">
@@ -302,39 +300,75 @@ function DatasetsSection() {
       ) : datasets.length === 0 ? (
         <p className="text-sm text-gray-500">No datasets yet.</p>
       ) : (
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          <div className="flex flex-col gap-5">
-            {groups.map((group) => (
-              <div key={group.operator} className="flex flex-col gap-3">
-                <div className="font-mono text-sm font-semibold text-gray-700">
-                  {group.operator}
-                </div>
-                {group.tasks.map(({ task, entries }) => (
-                  <div key={task} className="flex flex-col gap-2 pl-3">
-                    <div className="font-mono text-xs text-gray-500">{task}</div>
-                    <div className="grid grid-cols-1 gap-[14px] sm:grid-cols-2">
-                      {entries.map((entry) => (
-                        <DatasetCard
-                          key={entry.dataset_dir}
-                          entry={entry}
-                          selected={selected?.dataset_dir === entry.dataset_dir}
-                          onSelect={() => setSelected(entry)}
-                        />
-                      ))}
-                    </div>
+        <>
+          {selected && collapsed && (
+            <button
+              type="button"
+              onClick={() => setCollapsed(false)}
+              aria-label="Expand dataset detail"
+              className="flex items-center justify-between gap-2 rounded-card border border-gray-200 bg-white px-3 py-2 text-left shadow-card transition-colors hover:bg-gray-50"
+            >
+              <span className="truncate font-mono text-xs font-semibold text-teal-700">
+                {selected.operator}/{selected.task}/{selected.index}
+              </span>
+              <span className="shrink-0 text-xs font-semibold text-gray-500">
+                Expand ▸
+              </span>
+            </button>
+          )}
+          <div className={cn('grid grid-cols-1 gap-4', showDetail && 'md:grid-cols-2')}>
+            <div className="flex flex-col gap-5">
+              {groups.map((group) => (
+                <div key={group.operator} className="flex flex-col gap-3">
+                  <div className="font-mono text-sm font-semibold text-gray-700">
+                    {group.operator}
                   </div>
-                ))}
-              </div>
-            ))}
-          </div>
-          <Card aria-label="dataset detail" className="p-[18px]">
-            {selected ? (
-              <DatasetDetailView entry={selected} />
-            ) : (
-              <p className="text-sm text-gray-500">Select a dataset to see details.</p>
+                  {group.tasks.map(({ task, entries }) => (
+                    <div key={task} className="flex flex-col gap-2 pl-3">
+                      <div className="font-mono text-xs text-gray-500">{task}</div>
+                      <div
+                        className={cn(
+                          'grid grid-cols-1 gap-[14px] sm:grid-cols-2',
+                          !showDetail && 'lg:grid-cols-3',
+                        )}
+                      >
+                        {entries.map((entry) => (
+                          <DatasetCard
+                            key={entry.dataset_dir}
+                            entry={entry}
+                            selected={selected?.dataset_dir === entry.dataset_dir}
+                            onSelect={() => {
+                              setSelected(entry);
+                              setCollapsed(false);
+                            }}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+            {showDetail && selected && (
+              <Card aria-label="dataset detail" className="p-[18px]">
+                <div className="mb-3 flex items-center justify-between gap-2">
+                  <h3 className="break-all font-mono text-sm font-semibold text-teal-700">
+                    {selected.operator}/{selected.task}/{selected.index}
+                  </h3>
+                  <button
+                    type="button"
+                    onClick={() => setCollapsed(true)}
+                    aria-label="Minimize dataset detail"
+                    className="shrink-0 rounded-control border border-gray-200 px-2.5 py-1 text-xs font-semibold text-gray-600 hover:bg-gray-50"
+                  >
+                    Minimize
+                  </button>
+                </div>
+                <DatasetDetailView entry={selected} />
+              </Card>
             )}
-          </Card>
-        </div>
+          </div>
+        </>
       )}
     </section>
   );
