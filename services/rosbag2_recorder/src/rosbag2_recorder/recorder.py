@@ -953,6 +953,14 @@ class RecorderSession:
                 return self._status_locked()
 
             self._state = RunState.stopping
+            # Capture-end stamp: the session ends at the operator's stop
+            # decision, HERE — not after the SIGINT flush below, which keeps
+            # running (and briefly writing already-queued messages) for however
+            # long rosbag2 takes to drain (seconds under load / SIGTERM
+            # escalation). Stamping after the wait made ended_at - started_at
+            # read longer than the session the UI timer showed; the bag's own
+            # metadata.yaml keeps the exact data span.
+            ended_at = utc_now_iso8601()
             self._write_manifest()
             process = self._process
 
@@ -961,7 +969,7 @@ class RecorderSession:
         self._signal_and_wait(process)
 
         with self._lock:
-            self._finalise()
+            self._finalise(ended_at)
             status = self._status_locked()
         # Join the watcher outside the lock (it self-skips if we are it).
         self._stop_size_watcher()
@@ -984,18 +992,22 @@ class RecorderSession:
             except (ProcessLookupError, subprocess.TimeoutExpired):
                 logger.error("bag process did not exit on SIGTERM")
 
-    def _finalise(self) -> None:
+    def _finalise(self, ended_at: str | None = None) -> None:
         """Move from ``stopping`` to a terminal state, syncing from metadata.
 
         ``completed`` requires BOTH a clean shutdown return code AND a written
         ``metadata.yaml``. Metadata presence alone is not enough: an abnormal
         exit (disk full, partial write, rosbag2 crash, SIGTERM escalation) can
         leave a stale/partial metadata.yaml, which must be reported ``failed``.
+
+        *ended_at* is the capture-end stamp taken when the stop was DECIDED
+        (see :meth:`stop`); falling back to now() here would silently re-add
+        the SIGINT flush time to the session length.
         """
         run_id = self._run_id
         process = self._process
         returncode = process.returncode if process is not None else None
-        ended_at = utc_now_iso8601()
+        ended_at = ended_at or utc_now_iso8601()
 
         meta = self._read_rosbag2_metadata(run_id) if run_id else None
         clean_exit = returncode in _CLEAN_STOP_RETURNCODES

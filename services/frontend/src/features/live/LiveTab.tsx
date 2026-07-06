@@ -256,7 +256,11 @@ function RecordHero({ selection }: { selection: RecordSelection }) {
   });
   const run = runQuery.data;
 
-  const now = useNow(isActive);
+  // Tick only while actually capturing: during `stopping` the session has
+  // already ended (the recorder stamps ended_at at the stop decision), so the
+  // display freezes at the operator's stop instead of ticking through the
+  // SIGINT flush and overshooting the duration that gets persisted.
+  const now = useNow(status?.state === 'recording');
   // Timer baseline: the recorder-stamped capture start, carried on the same
   // /record/status poll that flips the hero to red — so the timer reads ~0 the
   // moment red appears (no wait for the run-detail fetch, which is a fallback).

@@ -846,10 +846,10 @@ def test_concurrent_double_stop_keeps_completed(
     finalise_calls = 0
     orig_finalise = session._finalise
 
-    def counting_finalise() -> None:
+    def counting_finalise(ended_at: str | None = None) -> None:
         nonlocal finalise_calls
         finalise_calls += 1
-        orig_finalise()
+        orig_finalise(ended_at)
 
     def blocking_signal(_proc: Any) -> None:
         entered.set()
@@ -911,6 +911,41 @@ def test_started_at_stamped_at_capture_start_not_pre_spawn(
     assert started.started_at > stamps[0]  # strictly after the pre-spawn stamp
     # The manifest carries the same capture-start stamp.
     assert read_manifest(settings.data_dir, "run_1").started_at == started.started_at
+
+
+def test_ended_at_stamped_at_stop_decision_not_after_flush(
+    monkeypatch: pytest.MonkeyPatch,
+    settings: Settings,
+    fake_process: type,
+    write_metadata: Callable[..., Path],
+) -> None:
+    """``ended_at`` marks the operator's stop, not the end of the SIGINT flush.
+
+    rosbag2 keeps draining its cache after SIGINT (seconds under load, longer
+    on SIGTERM escalation); stamping ended_at after that wait made
+    ``ended_at - started_at`` read longer than the session the UI timer showed.
+    The stamp must be taken BEFORE ``_signal_and_wait`` runs.
+    """
+    import rosbag2_recorder.recorder as rec
+
+    events: list[str] = []
+
+    def fake_now() -> str:
+        events.append(f"2026-01-01T00:00:{len(events):02d}Z")
+        return events[-1]
+
+    monkeypatch.setattr(rec, "utc_now_iso8601", fake_now)
+    session = _make_session(settings, fake_process, write_metadata)
+    # Mark when the (stubbed) SIGINT + wait happens relative to the clock reads.
+    session._signal_and_wait = lambda _proc: events.append("FLUSH")  # type: ignore[method-assign]
+
+    session.start(_start_req())
+    stopped = session.stop()
+    assert stopped.state is RunState.completed
+
+    ended_at = read_manifest(settings.data_dir, "run_1").ended_at
+    assert ended_at in events
+    assert events.index(ended_at) < events.index("FLUSH")
 
 
 def test_start_delay_honoured_from_config(
