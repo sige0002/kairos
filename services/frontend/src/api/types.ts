@@ -154,6 +154,8 @@ export interface VideoCheckSummary {
   mp4?: string | null;
   note?: string;
   checked_at?: string;
+  /** True when served from the per-(run, topic) cache instead of re-encoding. */
+  cached?: boolean;
 }
 
 /** One topic's gap-based loss estimate from the `loss_report` pipeline. */

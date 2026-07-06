@@ -245,6 +245,7 @@ function VideoPlayer({ runId, topic }: { runId: string; topic: string }) {
           <p className="text-[10px] text-gray-400">
             {summary.frames} frames · {fmtNum(summary.fps, 0)}fps
             {summary.truncated ? ' · head only' : ''}
+            {summary.cached ? ' · cached' : ''}
           </p>
         </>
       ) : summary ? (

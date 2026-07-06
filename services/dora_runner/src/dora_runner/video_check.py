@@ -16,11 +16,19 @@ skipped with a clear note rather than crashing.
 The mp4 is written under ``data/report/video_check/<run_id>/<topic>.mp4`` and the
 summary carries the path **relative to data_dir** (``file``) so the frontend can
 build the guarded ``/api/v1/files/<file>`` URL to play it.
+
+Results are CACHED per (run_id, topic): the summary is persisted as a
+``<topic>.summary.json`` sidecar beside the mp4, and a later job for the same
+pair returns it instantly (``cached: true``) instead of re-decoding and
+re-encoding — a finished run's MCAP is immutable, so the artifact stays valid.
+Freshness is still guarded by mtime (a re-recorded run id or a deleted mp4
+regenerates) and by the pipeline version; ``params.force`` bypasses the cache.
 """
 
 from __future__ import annotations
 
 import io
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -84,7 +92,46 @@ def _even(value: int) -> int:
     return value - (value % 2)
 
 
-def run_video_check(*, run_id: str, data_dir: Path, topic: str) -> dict[str, Any]:
+def _result(summary: dict[str, Any], out_path: Path) -> dict[str, Any]:
+    """Wrap a summary in the ``{summary, artifacts}`` JobResult shape."""
+    artifacts = [summary["file"], str(out_path)] if summary.get("file") else []
+    return {"summary": summary, "artifacts": artifacts}
+
+
+def _load_cached_summary(
+    sidecar: Path, out_path: Path, mcap_path: Path, *, run_id: str, topic: str
+) -> dict[str, Any] | None:
+    """Return the persisted summary for (run_id, topic) if it is still valid.
+
+    Valid means: the sidecar parses, was produced by this pipeline version for
+    this exact (run_id, topic), is newer than the MCAP (a re-recorded run id
+    invalidates), and — when it references an mp4 — that file still exists and
+    is also newer than the MCAP. Anything else regenerates.
+    """
+    try:
+        summary = json.loads(sidecar.read_text(encoding="utf-8"))
+        mcap_mtime = mcap_path.stat().st_mtime
+        if not (
+            isinstance(summary, dict)
+            and summary.get("pipeline") == PIPELINE_ID
+            and summary.get("version") == PIPELINE_VERSION
+            and summary.get("run_id") == run_id
+            and summary.get("topic") == topic
+            and sidecar.stat().st_mtime >= mcap_mtime
+        ):
+            return None
+        if summary.get("file") is not None and not (
+            out_path.is_file() and out_path.stat().st_mtime >= mcap_mtime
+        ):
+            return None
+        return summary
+    except (OSError, ValueError):
+        return None
+
+
+def run_video_check(
+    *, run_id: str, data_dir: Path, topic: str, force: bool = False
+) -> dict[str, Any]:
     """Encode a camera *topic*'s frames from ``recorded/<run_id>`` into mp4.
 
     Returns the ``{summary, artifacts}`` JobResult shape. Raises
@@ -92,6 +139,10 @@ def run_video_check(*, run_id: str, data_dir: Path, topic: str) -> dict[str, Any
     for an unsafe run_id (both mapped to a failed job by the worker). The encode
     deps (``av`` + ``Pillow``) are lazy-imported here; their absence raises a
     clear ``RuntimeError`` (-> failed job) rather than breaking module import.
+
+    A previously generated result for this (run_id, topic) is returned from the
+    sidecar cache (marked ``cached: true``) without touching the encode deps;
+    *force* skips the cache and re-encodes.
 
     The MCAP is only read, so the canonical recording is never touched.
     """
@@ -103,6 +154,25 @@ def run_video_check(*, run_id: str, data_dir: Path, topic: str) -> dict[str, Any
         raise FileNotFoundError(f"No recorded run found: {run_dir}")
     mcap_path = find_mcap(run_dir)
 
+    out_dir = data_dir / "report" / "video_check" / run_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    sanitized = sanitize_topic(topic)
+    out_path = out_dir / f"{sanitized}.mp4"
+    rel_path = out_path.relative_to(data_dir).as_posix()
+
+    # Cache: a finished run's MCAP is immutable, so an earlier encode of this
+    # exact (run_id, topic) is still the right answer — return it instantly
+    # instead of re-decoding/re-encoding (seconds per click in the Runs tab).
+    # Checked BEFORE the encode deps below: a cache hit needs none of them.
+    sidecar = out_dir / f"{sanitized}.summary.json"
+    if not force:
+        cached = _load_cached_summary(
+            sidecar, out_path, mcap_path, run_id=run_id, topic=topic
+        )
+        if cached is not None:
+            cached["cached"] = True
+            return _result(cached, out_path)
+
     # Lazy-import the encode deps so this module imports without them (the dora
     # service still boots; a missing dep becomes a clear failed job).
     try:
@@ -113,12 +183,6 @@ def run_video_check(*, run_id: str, data_dir: Path, topic: str) -> dict[str, Any
         raise RuntimeError(
             "video encoding requires the 'av', 'numpy' and 'Pillow' packages"
         ) from exc
-
-    out_dir = data_dir / "report" / "video_check" / run_id
-    out_dir.mkdir(parents=True, exist_ok=True)
-    sanitized = sanitize_topic(topic)
-    out_path = out_dir / f"{sanitized}.mp4"
-    rel_path = out_path.relative_to(data_dir).as_posix()
 
     # Metadata first, without decoding any image: the authoritative total comes
     # from the MCAP statistics (O(1)); the fps cadence comes from a bounded scan
@@ -211,12 +275,20 @@ def run_video_check(*, run_id: str, data_dir: Path, topic: str) -> dict[str, Any
             if unsupported
             else "no frames found on this topic"
         )
-        return {"summary": summary, "artifacts": []}
+    else:
+        summary["fps"] = fps
+        summary["width"] = width
+        summary["height"] = height
+        summary["duration_s"] = frames_encoded / fps if fps else None
+        summary["file"] = rel_path
+        summary["mp4"] = rel_path
 
-    summary["fps"] = fps
-    summary["width"] = width
-    summary["height"] = height
-    summary["duration_s"] = frames_encoded / fps if fps else None
-    summary["file"] = rel_path
-    summary["mp4"] = rel_path
-    return {"summary": summary, "artifacts": [rel_path, str(out_path)]}
+    # Persist the summary beside the mp4 so the next job for this (run_id,
+    # topic) is a cache hit. Written for the no-frames case too — that verdict
+    # is just as deterministic for an immutable bag, and re-scanning the whole
+    # topic to re-learn "no frames" costs the same seconds as an encode.
+    try:
+        sidecar.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    except OSError:
+        pass  # caching is best-effort; the result itself is still returned
+    return _result(summary, out_path)

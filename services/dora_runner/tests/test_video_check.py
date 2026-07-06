@@ -16,6 +16,7 @@ regression test for that.
 from __future__ import annotations
 
 import importlib.util
+import json
 import time
 from pathlib import Path
 
@@ -23,6 +24,7 @@ import pytest
 from dora_runner.main import create_dora_app
 from dora_runner.video_check import (
     MAX_FRAMES,
+    PIPELINE_VERSION,
     estimate_fps,
     run_video_check,
     sanitize_topic,
@@ -123,6 +125,94 @@ def test_create_job_rejects_missing_topic() -> None:
         # ApiError.to_model() nests under "error"; the worker stores that whole
         # model under summary["error"], so the code is one level deeper.
         assert body["summary"]["error"]["error"]["code"] == "topic_required"
+
+
+# ---- Cache: (run_id, topic) results are reused without re-encoding ---------
+# A cache hit is decided before the lazy av/Pillow import, so these run without
+# the encode deps and without a real MCAP (the bag is never parsed on a hit).
+
+
+def _seed_cached_result(
+    data_dir: Path, run_id: str, topic: str, *, with_mp4: bool = True
+) -> dict:
+    """Create recorded/<run_id>/x.mcap + a valid sidecar (and mp4) for *topic*."""
+    (data_dir / "recorded" / run_id).mkdir(parents=True)
+    (data_dir / "recorded" / run_id / "x.mcap").write_bytes(b"not-a-real-mcap")
+    out_dir = data_dir / "report" / "video_check" / run_id
+    out_dir.mkdir(parents=True)
+    slug = sanitize_topic(topic)
+    rel = f"report/video_check/{run_id}/{slug}.mp4"
+    summary = {
+        "pipeline": "video_check",
+        "version": PIPELINE_VERSION,
+        "run_id": run_id,
+        "topic": topic,
+        "frames": 42,
+        "total_messages": 42,
+        "truncated": False,
+        "checked_at": "2026-07-06T00:00:00Z",
+        "fps": 15,
+        "width": 640,
+        "height": 480,
+        "duration_s": 2.8,
+        "file": rel,
+        "mp4": rel,
+    }
+    if with_mp4:
+        (out_dir / f"{slug}.mp4").write_bytes(b"mp4")
+    (out_dir / f"{slug}.summary.json").write_text(json.dumps(summary))
+    return summary
+
+
+def test_video_check_reuses_cached_result(tmp_path: Path) -> None:
+    """A second job for the same (run_id, topic) returns the cached summary
+    instantly — the fake MCAP would crash any real decode, proving the bag is
+    never re-parsed on a hit."""
+    seeded = _seed_cached_result(tmp_path, "run_c", "/cam/image/compressed")
+    result = run_video_check(
+        run_id="run_c", data_dir=tmp_path, topic="/cam/image/compressed"
+    )
+    assert result["summary"]["cached"] is True
+    assert result["summary"]["frames"] == seeded["frames"]
+    assert result["summary"]["file"] == seeded["file"]
+    assert seeded["file"] in result["artifacts"]
+
+
+def test_video_check_cache_invalidated_by_missing_mp4_or_version(
+    tmp_path: Path,
+) -> None:
+    """A deleted mp4 or a different pipeline version must NOT serve the cache.
+
+    The miss then proceeds to the decode path, which fails on the fake MCAP —
+    exactly the point: the stale cache was rejected and a real re-encode began.
+    """
+    slug = sanitize_topic("/cam/image/compressed")
+    # Deleted mp4.
+    _seed_cached_result(tmp_path, "run_m", "/cam/image/compressed", with_mp4=False)
+    with pytest.raises(Exception):  # noqa: B017 - any decode-path error proves the miss
+        run_video_check(
+            run_id="run_m", data_dir=tmp_path, topic="/cam/image/compressed"
+        )
+    # Version mismatch.
+    _seed_cached_result(tmp_path, "run_v", "/cam/image/compressed")
+    sidecar = tmp_path / "report" / "video_check" / "run_v" / f"{slug}.summary.json"
+    stale = json.loads(sidecar.read_text())
+    stale["version"] = "0.0.1"
+    sidecar.write_text(json.dumps(stale))
+    with pytest.raises(Exception):  # noqa: B017
+        run_video_check(
+            run_id="run_v", data_dir=tmp_path, topic="/cam/image/compressed"
+        )
+
+
+def test_video_check_force_bypasses_cache(tmp_path: Path) -> None:
+    """``force=True`` must skip a perfectly valid cache and re-encode (which
+    fails here on the fake MCAP — proving the cache was bypassed)."""
+    _seed_cached_result(tmp_path, "run_f", "/cam/image/compressed")
+    with pytest.raises(Exception):  # noqa: B017
+        run_video_check(
+            run_id="run_f", data_dir=tmp_path, topic="/cam/image/compressed", force=True
+        )
 
 
 # ---- Integration (real sample bag + encode deps, skipped when absent) ------

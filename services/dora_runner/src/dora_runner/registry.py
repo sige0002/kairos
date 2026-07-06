@@ -168,7 +168,12 @@ async def _run_video_check(job: JobRecord, store: RunnerStore, data_dir: Path) -
             message="video_check requires a camera 'topic' param.",
         )
     return await asyncio.to_thread(
-        run_video_check, run_id=job.run_id, data_dir=data_dir, topic=str(topic)
+        run_video_check,
+        run_id=job.run_id,
+        data_dir=data_dir,
+        topic=str(topic),
+        # Results are cached per (run_id, topic); force=true re-encodes anyway.
+        force=bool(job.params.get("force")),
     )
 
 
@@ -182,7 +187,11 @@ _FAST_VALIDATION_SCHEMA = {
 _VIDEO_CHECK_SCHEMA = {
     "type": "object",
     "required": ["topic"],
-    "properties": {"topic": {"type": "string"}},
+    "properties": {
+        "topic": {"type": "string"},
+        # Results are cached per (run_id, topic); true re-encodes anyway.
+        "force": {"type": "boolean", "default": False},
+    },
 }
 _NO_PARAMS_SCHEMA = {"type": "object", "properties": {}}
 
