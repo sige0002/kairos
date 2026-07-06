@@ -27,6 +27,37 @@ export interface RefLine {
   color: string;
 }
 
+/**
+ * y-scale range: the data extremes extended by any reference-line values, with a
+ * degenerate (collapsed) range padded so it still renders. A custom uPlot range
+ * fn bypasses uPlot's own padding, so FLAT data — a single constant-value series
+ * (e.g. a status/error field that sits at 0) — yields min === max, a zero-height
+ * scale, and a blank chart until a second, different-valued series widens the
+ * range. Exported for tests.
+ */
+export function yRange(
+  dataMin: number | null,
+  dataMax: number | null,
+  refValues: number[],
+): [number | null, number | null] {
+  let lo: number | null = dataMin;
+  let hi: number | null = dataMax;
+  if (refValues.length > 0) {
+    // Reference lines must stay visible even when the data sits away from them
+    // (and provide the scale when there is no data at all yet).
+    lo = Math.min(...refValues, ...(lo == null ? [] : [lo]));
+    hi = Math.max(...refValues, ...(hi == null ? [] : [hi]));
+  }
+  if (lo == null || hi == null) return [lo, hi]; // no data, no refLines
+  if (lo === hi) {
+    // Collapsed range: pad relative to the value (±1 around zero) so a flat
+    // series draws as a centred horizontal line.
+    const pad = lo === 0 ? 1 : Math.abs(lo) * 0.1;
+    return [lo - pad, hi + pad];
+  }
+  return [lo, hi];
+}
+
 // Shared overlay-series colour palette — Probe and the Live Scope band both
 // cycle through it so series stay visually consistent across the app.
 export const PALETTE = [
@@ -121,17 +152,12 @@ export function UplotChart({
       scales: {
         x: { time: true },
         y: {
-          range: (_u, initMin, initMax) => {
-            const vs = refLinesRef.current.map((r) => r.v);
-            if (vs.length === 0) return [initMin, initMax];
-            let lo = Math.min(initMin, ...vs);
-            let hi = Math.max(initMax, ...vs);
-            if (lo === hi) {
-              lo -= 1;
-              hi += 1;
-            }
-            return [lo, hi];
-          },
+          // uPlot passes the raw data extremes (null before any data arrives);
+          // yRange guards the flat-data degenerate case in EVERY path — the
+          // old inline version only padded when refLines were present, so the
+          // Probe tab (no refLines) drew nothing for a constant-value series.
+          range: (_u, dataMin, dataMax) =>
+            yRange(dataMin, dataMax, refLinesRef.current.map((r) => r.v)),
         },
       },
       series: [
