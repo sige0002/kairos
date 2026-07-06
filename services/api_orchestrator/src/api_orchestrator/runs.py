@@ -226,7 +226,20 @@ class RunService:
                 await self._emit_record_status(failed)
                 return failed
 
-            self._update(run_id, state=RunState.recording)
+            # The recorder stamps started_at at the actual capture start (post
+            # spawn/arming), while the row still carries the earlier allocation
+            # stamp. Adopt the recorder's value so the elapsed timer measures
+            # the bag, not the start overhead (seconds ahead otherwise).
+            recorder_started_at = start_body.get("started_at")
+            self._update(
+                run_id,
+                state=RunState.recording,
+                **(
+                    {"started_at": recorder_started_at}
+                    if isinstance(recorder_started_at, str) and recorder_started_at
+                    else {}
+                ),
+            )
             # Sync resolved topics/types/QoS ("all" expansion) from the recorder.
             run = await self._sync_metadata(run_id, allow_partial=True)
             # The recorder's start blocks through the --start-paused arming gate

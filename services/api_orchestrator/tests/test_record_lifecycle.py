@@ -37,6 +37,21 @@ def test_start_records_and_syncs_topics(
     assert fake_recorder.last_start_payload["run_id"] == run["run_id"]
 
 
+def test_start_adopts_recorder_started_at(
+    client: TestClient, store: RunStore, fake_recorder: FakeRecorder
+) -> None:
+    """The row's ``started_at`` is the recorder's actual-capture stamp.
+
+    The orchestrator allocates the row (with its own stamp) BEFORE calling the
+    recorder, whose start blocks through start_delay/spawn/arming — seconds in
+    which no data is captured. The recorder re-stamps at capture start and the
+    orchestrator must adopt that value, or the UI elapsed timer starts ahead.
+    """
+    run = client.post("/api/v1/record/start", json={"topics": ["/tf"]}).json()
+    assert run["started_at"] == fake_recorder.started_at
+    assert store.get(run["run_id"]).started_at == fake_recorder.started_at
+
+
 def test_start_all_expands_via_recorder(client: TestClient) -> None:
     """``topics:"all"`` is expanded by the recorder and synced into the row."""
     resp = client.post("/api/v1/record/start", json={"topics": "all"})

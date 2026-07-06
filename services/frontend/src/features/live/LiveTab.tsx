@@ -79,6 +79,9 @@ function useNow(active: boolean): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (!active) return;
+    // Re-baseline on activation: `now` may be stale from mount (the interval
+    // only runs while active), which would mis-show the first second.
+    setNow(Date.now());
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, [active]);
@@ -254,7 +257,11 @@ function RecordHero({ selection }: { selection: RecordSelection }) {
   const run = runQuery.data;
 
   const now = useNow(isActive);
-  const startedMs = run?.started_at ? new Date(run.started_at).getTime() : null;
+  // Timer baseline: the recorder-stamped capture start, carried on the same
+  // /record/status poll that flips the hero to red — so the timer reads ~0 the
+  // moment red appears (no wait for the run-detail fetch, which is a fallback).
+  const startedIso = status?.started_at ?? run?.started_at ?? null;
+  const startedMs = startedIso ? new Date(startedIso).getTime() : null;
   const elapsed = startedMs ? formatElapsed(now - startedMs) : '00:00:00';
 
   // Persisted in the UI store so navigating away and back keeps what was typed.

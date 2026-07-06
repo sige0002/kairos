@@ -882,6 +882,37 @@ def test_concurrent_double_stop_keeps_completed(
     assert manifest.integrity != "failed"
 
 
+def test_started_at_stamped_at_capture_start_not_pre_spawn(
+    monkeypatch: pytest.MonkeyPatch,
+    settings: Settings,
+    fake_process: type,
+    write_metadata: Callable[..., Path],
+) -> None:
+    """``started_at`` is stamped when capture actually begins, not pre-spawn.
+
+    The first clock read in ``start()`` is the pre-spawn attempt stamp (kept
+    for the failure records); the session/manifest stamp must be a LATER read,
+    taken once the bag process is confirmed up (and, when armed, resumed) — the
+    elapsed timer and the manifest measure the bag, not the start overhead.
+    """
+    import rosbag2_recorder.recorder as rec
+
+    stamps: list[str] = []
+
+    def fake_now() -> str:
+        stamps.append(f"2026-01-01T00:00:0{len(stamps)}Z")
+        return stamps[-1]
+
+    monkeypatch.setattr(rec, "utc_now_iso8601", fake_now)
+    session = _make_session(settings, fake_process, write_metadata)
+    started = session.start(_start_req())
+
+    assert started.started_at in stamps
+    assert started.started_at > stamps[0]  # strictly after the pre-spawn stamp
+    # The manifest carries the same capture-start stamp.
+    assert read_manifest(settings.data_dir, "run_1").started_at == started.started_at
+
+
 def test_start_delay_honoured_from_config(
     monkeypatch: pytest.MonkeyPatch, settings: Settings
 ) -> None:

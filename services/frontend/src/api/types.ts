@@ -66,6 +66,9 @@ export type RecordIntegrity = 'ok' | 'dropped' | 'failed' | 'unknown';
 export interface RecordStatus {
   run_id: string | null;
   state: RunState | 'idle';
+  /** Actual capture start (recorder-stamped, post arming/resume) — the elapsed
+   *  timer's baseline, available on the same poll that flips the UI to red. */
+  started_at?: string | null;
   message_count?: number;
   bytes?: number;
   /** Present only while arming (state stays `recording` once resumed). */

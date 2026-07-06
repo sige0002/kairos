@@ -62,7 +62,11 @@ monitor:
 
 recording:
   discovery_timeout_s: 10
-  start_delay_s: 1.0
+  # Pre-spawn blind sleep. 0 with arming below: the --start-paused gate already
+  # waits for real subscription readiness (+ post_discovery settle), so a flat
+  # delay before spawn only adds press-to-capture latency. Raise it only for a
+  # robot whose drivers need ramp-up time BEFORE the recorder even spawns.
+  start_delay_s: 0.0
   # Arm by default (OL-①.1): spawn --start-paused, wait until the recorder has
   # subscribed to the target topics, then resume — no first frames dropped.
   start_paused: true

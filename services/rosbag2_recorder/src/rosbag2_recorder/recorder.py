@@ -523,7 +523,12 @@ class RecorderSession:
             self._process = process
             self._state = RunState.recording
             self._run_id = run_id
-            self._started_at = started_at
+            # Stamp the session at the moment capture actually begins (the bag
+            # process is up and, when armed, resumed) — NOT the pre-spawn
+            # `started_at` above, which is seconds earlier (start_delay + spawn
+            # + arming). The UI elapsed timer and the manifest measure the bag,
+            # not the start overhead; the pre-spawn stamp stays for _fail().
+            self._started_at = utc_now_iso8601()
             self._compression = request.compression
             self._split = request.split
             # Default operator/task so a standalone recorder call (no orchestrator
