@@ -127,6 +127,44 @@ def test_create_job_rejects_missing_topic() -> None:
         assert body["summary"]["error"]["error"]["code"] == "topic_required"
 
 
+# ---- Post-export source (dataset_dir) --------------------------------------
+
+
+def test_video_check_rejects_unsafe_dataset_dir(tmp_path: Path) -> None:
+    """dataset_dir must be exactly <operator>/<task>/<index>, non-reserved."""
+    for bad in ("../x/y", "a/b", "a/b/c/d", "a//b", "recorded/a/b", "report/a/b"):
+        with pytest.raises(ValueError, match="invalid dataset_dir"):
+            run_video_check(
+                run_id="run_x", data_dir=tmp_path, topic="/cam", dataset_dir=bad
+            )
+
+
+def test_video_check_missing_dataset_dir_raises(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError, match="No dataset directory"):
+        run_video_check(
+            run_id="run_x", data_dir=tmp_path, topic="/cam", dataset_dir="a/b/001"
+        )
+
+
+def test_video_check_dataset_dir_serves_cache_without_recorded_run(
+    tmp_path: Path,
+) -> None:
+    """Post-export: recorded/<run_id> is gone (the export MOVED it into the
+    dataset tree), yet the pre-export (run_id, topic) cache is still served
+    when the job points at the dataset dir."""
+    topic = "/cam/image/compressed"
+    seeded = _seed_cached_result(tmp_path, "run_d", topic)
+    # Simulate the export MOVE: relocate the run dir into the dataset tree.
+    dataset = tmp_path / "yuki" / "pick" / "001"
+    dataset.parent.mkdir(parents=True)
+    (tmp_path / "recorded" / "run_d").rename(dataset)
+    result = run_video_check(
+        run_id="run_d", data_dir=tmp_path, topic=topic, dataset_dir="yuki/pick/001"
+    )
+    assert result["summary"]["cached"] is True
+    assert result["summary"]["file"] == seeded["file"]
+
+
 # ---- Cache: (run_id, topic) results are reused without re-encoding ---------
 # A cache hit is decided before the lazy av/Pillow import, so these run without
 # the encode deps and without a real MCAP (the bag is never parsed on a hit).

@@ -185,6 +185,153 @@ def test_export_moves_run_and_deletes_row(
         assert datasets[0]["run_id"] == "run_a"
 
 
+def _seed_run_sidecars(data_dir: Path, run_id: str) -> None:
+    """Enrich a recorded run: full session.json, manifest.json, report sidecars.
+
+    Mirrors what the recorder (session/manifest) and the post-hoc pipelines
+    (fast_validation / loss_report / video_check) leave on disk before an
+    export, so the dataset detail can be asserted end to end.
+    """
+    run_dir = data_dir / "recorded" / run_id
+    (run_dir / "session.json").write_text(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "operator": "yuki",
+                "task": "pick",
+                "state": "completed",
+                "started_at": "2026-07-07T00:00:00Z",
+                "ended_at": "2026-07-07T00:01:00Z",
+                "message_count": 9,
+                "topics": ["/cam/image/compressed", "/tf"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "topics": [
+                    {
+                        "name": "/cam/image/compressed",
+                        "type": "sensor_msgs/msg/CompressedImage",
+                        "qos": {
+                            "reliability": "best_effort",
+                            "durability": "volatile",
+                            "depth": 10,
+                        },
+                    },
+                    {"name": "/tf", "type": "tf2_msgs/msg/TFMessage", "qos": None},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    for pipeline, payload in (
+        ("fast_validation", {"run_id": run_id, "result": "pass"}),
+        ("loss_report", {"run_id": run_id, "topics": [{"name": "/tf"}]}),
+    ):
+        report_dir = data_dir / "report" / pipeline / run_id
+        report_dir.mkdir(parents=True)
+        (report_dir / "summary.json").write_text(json.dumps(payload), encoding="utf-8")
+    video_dir = data_dir / "report" / "video_check" / run_id
+    video_dir.mkdir(parents=True)
+    (video_dir / "cam_image_compressed.mp4").write_bytes(b"mp4")
+
+
+def test_dataset_detail_shows_sidecars_and_kept_reports(
+    tmp_path: Path, store: RunStore, fake_recorder: FakeRecorder
+) -> None:
+    """After an export, the dataset detail serves the moved sidecars AND the
+    run-keyed reports (validation / loss / video artifacts), which the export
+    deliberately keeps (delete keep_reports=True)."""
+    data_dir = tmp_path / "data"
+    _make_recorded_run(data_dir, "run_a", operator="yuki", task="pick")
+    _seed_run_sidecars(data_dir, "run_a")
+    store.create(Run(run_id="run_a", state=RunState.completed))
+    app = _build(tmp_path, store, fake_recorder, FakeDoraExporter(data_dir))
+
+    with TestClient(app) as client:
+        resp = client.post("/api/v1/datasets/export", json={"run_id": "run_a"})
+        assert resp.status_code == 200
+
+        detail = client.get("/api/v1/datasets/yuki/pick/001")
+        assert detail.status_code == 200
+        body = detail.json()
+        # Identity + the ready-to-use dataset_dir job param.
+        assert body["path"] == "yuki/pick/001"
+        assert body["run_id"] == "run_a"
+        # session.json fields (moved with the recording).
+        assert body["state"] == "completed"
+        assert body["started_at"] == "2026-07-07T00:00:00Z"
+        assert body["ended_at"] == "2026-07-07T00:01:00Z"
+        # Topics come from manifest.json with resolved types.
+        types = {t["name"]: t["type"] for t in body["topics"]}
+        assert types["/cam/image/compressed"] == "sensor_msgs/msg/CompressedImage"
+        assert types["/tf"] == "tf2_msgs/msg/TFMessage"
+        # The moved file list from dataset.json.
+        assert "run_a_0.mcap" in body["files"]
+        # Run-keyed reports SURVIVED the export (keep_reports).
+        assert body["validation"]["result"] == "pass"
+        assert body["loss"]["topics"] == [{"name": "/tf"}]
+        assert (
+            data_dir / "report" / "video_check" / "run_a" / "cam_image_compressed.mp4"
+        ).exists()
+
+
+def test_dataset_detail_topics_fall_back_to_session_names(
+    tmp_path: Path, store: RunStore, fake_recorder: FakeRecorder
+) -> None:
+    """Without a manifest.json, the detail still lists topic names (type "")."""
+    data_dir = tmp_path / "data"
+    _make_recorded_run(data_dir, "run_b", operator="yuki", task="pick")
+    run_dir = data_dir / "recorded" / "run_b"
+    (run_dir / "session.json").write_text(
+        json.dumps(
+            {"run_id": "run_b", "operator": "yuki", "task": "pick", "topics": ["/tf"]}
+        ),
+        encoding="utf-8",
+    )
+    store.create(Run(run_id="run_b", state=RunState.completed))
+    app = _build(tmp_path, store, fake_recorder, FakeDoraExporter(data_dir))
+
+    with TestClient(app) as client:
+        assert (
+            client.post("/api/v1/datasets/export", json={"run_id": "run_b"}).status_code
+            == 200
+        )
+        body = client.get("/api/v1/datasets/yuki/pick/001").json()
+        assert body["topics"] == [{"name": "/tf", "type": "", "qos": None}]
+
+
+def test_dataset_detail_missing_or_invalid_path(
+    tmp_path: Path, store: RunStore, fake_recorder: FakeRecorder
+) -> None:
+    data_dir = tmp_path / "data"
+    app = _build(tmp_path, store, fake_recorder, FakeDoraExporter(data_dir))
+
+    with TestClient(app) as client:
+        # Unknown dataset -> 404.
+        resp = client.get("/api/v1/datasets/yuki/pick/001")
+        assert resp.status_code == 404
+        assert resp.json()["error"]["code"] == "dataset_not_found"
+        # A dir without dataset.json (e.g. a pre-seeded sample) is no dataset.
+        sample = data_dir / "samples" / "demo" / "001"
+        sample.mkdir(parents=True)
+        (sample / "x.mcap").write_bytes(b"m")
+        assert client.get("/api/v1/datasets/samples/demo/001").status_code == 404
+        # Reserved top-level dirs are never dataset operators -> 400.
+        resp = client.get("/api/v1/datasets/report/fast_validation/run_a")
+        assert resp.status_code == 400
+        assert resp.json()["error"]["code"] == "invalid_dataset_path"
+        # Traversal components never reach the filesystem: either the component
+        # guard rejects them (400) or path normalization keeps the route from
+        # matching (404); both refuse the escape.
+        resp = client.get("/api/v1/datasets/%2e%2e/pick/001")
+        assert resp.status_code in (400, 404)
+
+
 def test_export_rejects_non_completed_run(
     tmp_path: Path, store: RunStore, fake_recorder: FakeRecorder
 ) -> None:

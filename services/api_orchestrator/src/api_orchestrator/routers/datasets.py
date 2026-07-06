@@ -5,6 +5,9 @@ The dataset tree lives under ``data_dir`` as ``<operator>/<task>/<NNN>/`` with a
 pipeline). These endpoints:
 
 - ``GET  /api/v1/datasets`` — browse the exported datasets (scan the tree).
+- ``GET  /api/v1/datasets/{operator}/{task}/{index}`` — inspect ONE exported
+  dataset (sidecars + surviving run-keyed reports), the post-export
+  counterpart of ``GET /runs/{id}``.
 - ``POST /api/v1/datasets/export`` — export ONE completed run: run the
   ``dataset_export`` pipeline (a MOVE) to completion, then delete the run row.
 - ``POST /api/v1/datasets/export-all`` — export EVERY completed run with files,
@@ -12,12 +15,15 @@ pipeline). These endpoints:
 
 Export MOVES the recording out of ``recorded/`` and the run row is deleted only
 AFTER a confirmed successful export, so a recording is never lost: on failure
-the run stays in ``recorded/`` and in the Recordings list.
+the run stays in ``recorded/`` and in the Recordings list. The run's report
+sidecars (validation / loss / video_check artifacts) are deliberately KEPT on
+export so the dataset detail view can keep showing them.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -26,7 +32,7 @@ from kairos_common import ApiError, JobState
 from pydantic import BaseModel
 
 from api_orchestrator.deps import get_run_service
-from api_orchestrator.models import RunState
+from api_orchestrator.models import DatasetDetail, RunState, RunTopic, TopicQos
 from api_orchestrator.runs import RunService
 
 router = APIRouter(prefix="/api/v1/datasets", tags=["datasets"])
@@ -34,6 +40,15 @@ router = APIRouter(prefix="/api/v1/datasets", tags=["datasets"])
 # Top-level dirs under data_dir that are NOT operators (they hold staging /
 # reports), so the dataset scan must skip them.
 _RESERVED_TOP = {"recorded", "report", "datasets"}
+
+# A dataset path component (operator / task / index) must be a plain single
+# directory name: no separators, no traversal, no NUL. Mirrors dora_runner's
+# _sanitize_component output charset guard.
+_COMPONENT_RE = re.compile(r"^[^/\\\x00]+$")
+
+# A run_id read from dataset.json is joined into data/report/<pipeline>/<run_id>;
+# guard its charset (mirrors the recorder's RUN_ID_PATTERN) before any join.
+_RUN_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 class DatasetExportRequest(BaseModel):
@@ -68,13 +83,80 @@ def _job_failure_reason(res: dict[str, Any]) -> str | None:
     return note if isinstance(note, str) and note.strip() else None
 
 
-def _read_dataset_json(path: Path) -> dict[str, Any] | None:
-    """Best-effort read of a ``dataset.json`` sidecar (``None`` on any failure)."""
+def _read_json(path: Path) -> dict[str, Any] | None:
+    """Best-effort read of a JSON sidecar (``None`` on any failure)."""
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) else None
+
+
+def _validate_component(value: str, field: str) -> str:
+    """Ensure a dataset path segment is a plain directory name, else 400.
+
+    ``operator``/``task``/``index`` are joined under ``data_dir``; this guard
+    (plus the reserved-top check at the call site) keeps a crafted URL from
+    escaping the dataset tree.
+    """
+    if not value or value in {".", ".."} or not _COMPONENT_RE.match(value):
+        raise ApiError(
+            status_code=400,
+            code="invalid_dataset_path",
+            message=f"Invalid dataset path component: {field}",
+            details={field: value},
+        )
+    return value
+
+
+def _dataset_topics(
+    manifest: dict[str, Any] | None,
+    session: dict[str, Any] | None,
+    meta: dict[str, Any],
+) -> list[RunTopic]:
+    """Topic list for the dataset detail view.
+
+    Prefers ``manifest.json`` (name + resolved type + QoS, same source the run
+    row was synced from); falls back to the name-only lists in ``session.json``
+    / ``dataset.json`` (type ``""``), so a dataset with a lost manifest still
+    shows its topics.
+    """
+    raw = (manifest or {}).get("topics")
+    if isinstance(raw, list):
+        topics: list[RunTopic] = []
+        for entry in raw:
+            if not (isinstance(entry, dict) and entry.get("name")):
+                continue
+            qos = entry.get("qos")
+            try:
+                parsed_qos = TopicQos.model_validate(qos) if qos else None
+            except ValueError:
+                parsed_qos = None
+            topics.append(
+                RunTopic(
+                    name=str(entry["name"]),
+                    type=str(entry.get("type") or ""),
+                    qos=parsed_qos,
+                )
+            )
+        if topics:
+            return topics
+    names = (session or {}).get("topics") or meta.get("topics") or []
+    if not isinstance(names, list):
+        return []
+    return [RunTopic(name=n, type="") for n in names if isinstance(n, str) and n]
+
+
+def _opt_str(value: Any) -> str | None:
+    """Coerce a best-effort sidecar field to ``str | None`` (never 500)."""
+    return value if isinstance(value, str) else None
+
+
+def _run_report(data_dir: Path, run_id: str | None, pipeline: str) -> dict | None:
+    """Best-effort read of a run-keyed report summary that survived export."""
+    if not (isinstance(run_id, str) and _RUN_ID_RE.match(run_id)):
+        return None
+    return _read_json(data_dir / "report" / pipeline / run_id / "summary.json")
 
 
 def _scan_datasets(data_dir: Path) -> list[dict[str, Any]]:
@@ -97,7 +179,7 @@ def _scan_datasets(data_dir: Path) -> list[dict[str, Any]]:
             for index_dir in task_dir.iterdir():
                 if not index_dir.is_dir():
                     continue
-                meta = _read_dataset_json(index_dir / "dataset.json")
+                meta = _read_json(index_dir / "dataset.json")
                 if meta is None:
                     continue
                 out.append(
@@ -161,8 +243,10 @@ async def _export_one(
             details=details,
         )
     # Success confirmed: the recording has been MOVED out of recorded/, so
-    # delete the now-orphaned run row (its dir + siblings + report sidecars).
-    service.delete(run_id)
+    # delete the now-orphaned run row (its dir + siblings). The report
+    # sidecars (validation / loss / video_check mp4 cache) are KEPT: they stay
+    # keyed by run_id and back the dataset detail view after export.
+    service.delete(run_id, keep_reports=True)
     result = res.get("result") or {}
     return result.get("summary", {})
 
@@ -172,6 +256,66 @@ async def list_datasets(request: Request) -> dict[str, Any]:
     """List exported datasets under ``data_dir`` (grouped client-side)."""
     data_dir = Path(request.app.state.settings.data_dir)
     return {"datasets": _scan_datasets(data_dir)}
+
+
+@router.get("/{operator}/{task}/{index}", response_model=DatasetDetail)
+async def dataset_detail(
+    request: Request, operator: str, task: str, index: str
+) -> DatasetDetail:
+    """Inspect one exported dataset — the post-export ``GET /runs/{id}``.
+
+    Reads the ``<operator>/<task>/<index>`` directory's sidecars
+    (``dataset.json`` required — same rule as the list scan — plus
+    ``session.json`` / ``manifest.json`` best-effort) and the run-keyed report
+    summaries that survived export (validation / loss). 404 when the directory
+    or its ``dataset.json`` is missing, 400 on an unsafe path component.
+    """
+    data_dir = Path(request.app.state.settings.data_dir)
+    _validate_component(operator, "operator")
+    _validate_component(task, "task")
+    _validate_component(index, "index")
+    if operator in _RESERVED_TOP:
+        raise ApiError(
+            status_code=400,
+            code="invalid_dataset_path",
+            message=f"Not a dataset operator directory: {operator}",
+            details={"operator": operator},
+        )
+    dataset_dir = data_dir / operator / task / index
+    meta = _read_json(dataset_dir / "dataset.json")
+    if not dataset_dir.is_dir() or meta is None:
+        raise ApiError(
+            status_code=404,
+            code="dataset_not_found",
+            message=f"No exported dataset at {operator}/{task}/{index}.",
+            details={"operator": operator, "task": task, "index": index},
+        )
+    session = _read_json(dataset_dir / "session.json")
+    manifest = _read_json(dataset_dir / "manifest.json")
+    run_id = meta.get("run_id")
+    files = meta.get("files")
+    return DatasetDetail(
+        operator=operator,
+        task=task,
+        index=index,
+        path=f"{operator}/{task}/{index}",
+        dataset_dir=str(dataset_dir),
+        run_id=_opt_str(run_id),
+        state=_opt_str((session or {}).get("state")),
+        started_at=_opt_str((session or {}).get("started_at")),
+        ended_at=_opt_str((session or {}).get("ended_at")),
+        exported_at=_opt_str(meta.get("exported_at")),
+        bytes=meta.get("bytes"),
+        message_count=meta.get("message_count"),
+        files=[f for f in files if isinstance(f, str)]
+        if isinstance(files, list)
+        else [],
+        topics=_dataset_topics(manifest, session, meta),
+        manifest=manifest,
+        dataset=meta,
+        validation=_run_report(data_dir, run_id, "fast_validation"),
+        loss=_run_report(data_dir, run_id, "loss_report"),
+    )
 
 
 @router.post("/export")

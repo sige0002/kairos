@@ -2,7 +2,10 @@
 //
 // Export (top): "Export all completed recordings" (POST /datasets/export-all)
 // plus a per-completed-run "Export" button (POST /datasets/export).
-// Datasets (below): GET /api/v1/datasets, grouped operator -> task -> [NNN].
+// Datasets (below): GET /api/v1/datasets, grouped operator -> task -> [NNN];
+// selecting a dataset opens the same inspection view as a recording
+// (GET /datasets/{op}/{task}/{index}: metadata, topics, loss report, video
+// check — the post-hoc jobs read the exported dir via the dataset_dir param).
 // Export is a
 // MOVE — the orchestrator runs the dataset_export job to completion
 // synchronously, deletes the run row, and returns the summary. On any export
@@ -20,21 +23,26 @@ import { apiGet, apiPost } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
 import { useUiStore } from '../../store/uiStore';
 import type {
+  DatasetDetail,
   DatasetEntry,
   DatasetExportSummary,
   DatasetsResponse,
   ExportAllResponse,
+  JobStatus,
   Page,
   RunSummary,
 } from '../../api/types';
 import { ErrorMessage } from '../../components/ErrorMessage';
 import { Badge, Button, Card, SectionLabel, cn } from '../../components/ui';
-
-function formatWhen(iso?: string | null): string {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
-}
+import {
+  JsonBlock,
+  LossTable,
+  TERMINAL,
+  VideoCheckSection,
+  formatDuration,
+  formatWhen,
+  spanMs,
+} from '../inspect/inspect';
 
 function formatBytes(n?: number): string {
   if (n === undefined || n === null) return '—';
@@ -68,32 +76,203 @@ function groupDatasets(datasets: DatasetEntry[]): Grouped[] {
   }));
 }
 
-function DatasetCard({ entry }: { entry: DatasetEntry }) {
+function DatasetCard({
+  entry,
+  selected,
+  onSelect,
+}: {
+  entry: DatasetEntry;
+  selected: boolean;
+  onSelect: () => void;
+}) {
   return (
-    <Card className="flex flex-col gap-2 p-[14px]">
-      <div className="flex items-center justify-between gap-2">
-        <span className="font-mono text-sm font-semibold text-teal-700">
-          #{entry.index}
-        </span>
+    <button
+      type="button"
+      onClick={onSelect}
+      aria-pressed={selected}
+      className={cn('rounded-card text-left', selected && 'ring-2 ring-teal-400')}
+    >
+      <Card
+        className={cn(
+          'flex h-full flex-col gap-2 p-[14px] transition-colors',
+          selected ? 'bg-teal-50' : 'hover:bg-gray-50',
+        )}
+      >
+        <div className="flex items-center justify-between gap-2">
+          <span className="font-mono text-sm font-semibold text-teal-700">
+            #{entry.index}
+          </span>
+          <Badge tone="gray" mono>
+            {formatBytes(entry.bytes)}
+          </Badge>
+        </div>
+        <div
+          className="break-all font-mono text-[11px] text-gray-500"
+          data-testid="dataset-dir"
+        >
+          {entry.dataset_dir}
+        </div>
+        <div className="grid grid-cols-2 gap-y-1 text-[11px] text-gray-500">
+          <div>Run: {entry.run_id ?? '—'}</div>
+          <div>Exported: {formatWhen(entry.exported_at)}</div>
+        </div>
+      </Card>
+    </button>
+  );
+}
+
+// Detail pane for one exported dataset — the post-export twin of the
+// Recordings detail view, backed by GET /datasets/{op}/{task}/{index}. The
+// loss_report / video_check jobs stay keyed by the original run_id (from
+// dataset.json) and read the moved MCAP via params.dataset_dir.
+function DatasetDetailView({ entry }: { entry: DatasetEntry }) {
+  const queryClient = useQueryClient();
+  const [lossJobId, setLossJobId] = useState<string | null>(null);
+  const detailKey = queryKeys.dataset(entry.operator, entry.task, entry.index);
+  const detailQuery = useQuery({
+    queryKey: detailKey,
+    queryFn: ({ signal }) =>
+      apiGet<DatasetDetail>(
+        `/datasets/${encodeURIComponent(entry.operator)}/${encodeURIComponent(
+          entry.task,
+        )}/${encodeURIComponent(entry.index)}`,
+        { signal },
+      ),
+  });
+  const detail = detailQuery.data;
+  const runId = detail?.run_id ?? null;
+
+  // Launch a loss_report job against the exported dir; poll until terminal,
+  // then re-fetch the detail so `loss` shows up (same flow as Recordings).
+  const lossMutation = useMutation({
+    mutationFn: () =>
+      apiPost<JobStatus>('/jobs', {
+        pipeline: 'loss_report',
+        run_id: runId ?? '',
+        params: { dataset_dir: detail?.path },
+      }),
+    onSuccess: (job) => setLossJobId(job.job_id),
+  });
+
+  useQuery({
+    queryKey: queryKeys.job(lossJobId ?? ''),
+    queryFn: ({ signal }) =>
+      apiGet<JobStatus>(`/jobs/${encodeURIComponent(lossJobId ?? '')}/status`, {
+        signal,
+      }),
+    enabled: !!lossJobId,
+    refetchInterval: (q) => {
+      const state = q.state.data?.state;
+      if (state && TERMINAL.has(state)) {
+        void queryClient.invalidateQueries({ queryKey: detailKey });
+        setLossJobId(null);
+        return false;
+      }
+      return 1500;
+    },
+  });
+
+  if (detailQuery.isPending)
+    return <p className="text-sm text-gray-500">Loading dataset…</p>;
+  if (detailQuery.isError) return <ErrorMessage error={detailQuery.error} />;
+  if (!detail) return null;
+
+  const duration = spanMs(detail.started_at, detail.ended_at);
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="break-all font-mono text-sm font-semibold text-teal-700">
+          {detail.path}
+        </h3>
         <Badge tone="gray" mono>
-          {formatBytes(entry.bytes)}
+          {formatBytes(detail.bytes ?? undefined)}
         </Badge>
       </div>
-      <div
-        className="break-all font-mono text-[11px] text-gray-500"
-        data-testid="dataset-dir"
-      >
-        {entry.dataset_dir}
-      </div>
-      <div className="grid grid-cols-2 gap-y-1 text-[11px] text-gray-500">
-        <div>Run: {entry.run_id ?? '—'}</div>
-        <div>Exported: {formatWhen(entry.exported_at)}</div>
-      </div>
-    </Card>
+      <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+        <dt className="text-gray-500">Run</dt>
+        <dd className="font-mono">{detail.run_id ?? '—'}</dd>
+        <dt className="text-gray-500">Started</dt>
+        <dd>{detail.started_at ?? '—'}</dd>
+        <dt className="text-gray-500">Ended</dt>
+        <dd>{detail.ended_at ?? '—'}</dd>
+        <dt className="text-gray-500">Duration</dt>
+        <dd>{duration != null ? formatDuration(duration) : '—'}</dd>
+        <dt className="text-gray-500">Messages</dt>
+        <dd>{detail.message_count ?? '—'}</dd>
+        <dt className="text-gray-500">Exported</dt>
+        <dd>{formatWhen(detail.exported_at)}</dd>
+        <dt className="text-gray-500">Files</dt>
+        <dd className="break-all font-mono text-xs">
+          {detail.files.length > 0 ? detail.files.join(', ') : '—'}
+        </dd>
+      </dl>
+
+      <section>
+        <h4 className="mb-1.5 text-sm font-medium text-gray-700">
+          Topics ({detail.topics.length})
+        </h4>
+        {detail.topics.length === 0 ? (
+          <p className="text-xs text-gray-500">No topic list in the sidecars.</p>
+        ) : (
+          <ul className="max-h-48 overflow-auto rounded-control border border-gray-200 text-xs">
+            {detail.topics.map((t) => (
+              <li
+                key={t.name}
+                className="border-t border-gray-100 px-2 py-1 first:border-t-0"
+              >
+                <span className="font-mono text-gray-700">{t.name}</span>{' '}
+                <span className="font-mono text-gray-400">{t.type}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <section>
+        <div className="mb-1.5 flex items-center justify-between gap-2">
+          <h4 className="text-sm font-medium text-gray-700">Loss report</h4>
+          <button
+            type="button"
+            onClick={() => lossMutation.mutate()}
+            disabled={!runId || lossMutation.isPending || !!lossJobId}
+            className="rounded-control border border-teal-200 px-2.5 py-1 text-xs font-semibold text-teal-700 hover:bg-teal-50 disabled:opacity-50"
+          >
+            {lossJobId
+              ? 'Analyzing…'
+              : lossMutation.isPending
+                ? 'Starting…'
+                : 'Run loss report'}
+          </button>
+        </div>
+        {lossMutation.isError && <ErrorMessage error={lossMutation.error} />}
+        {detail.loss?.topics ? (
+          <LossTable topics={detail.loss.topics} />
+        ) : (
+          <p className="text-xs text-gray-500">
+            Computes per-topic loss rate (gap-based estimate) from the exported MCAP.
+          </p>
+        )}
+      </section>
+
+      {runId && (
+        <VideoCheckSection
+          topics={detail.topics}
+          runId={runId}
+          datasetDir={detail.path}
+        />
+      )}
+
+      <JsonBlock label="Manifest" value={detail.manifest} />
+      <JsonBlock label="Validation" value={detail.validation} />
+      <JsonBlock label="Dataset json" value={detail.dataset} />
+    </div>
   );
 }
 
 function DatasetsSection() {
+  // The selected dataset (opens the detail pane on the right, like Recordings).
+  const [selected, setSelected] = useState<DatasetEntry | null>(null);
   const datasetsQuery = useQuery({
     queryKey: queryKeys.datasets,
     queryFn: ({ signal }) => apiGet<DatasetsResponse>('/datasets', { signal }),
@@ -111,6 +290,10 @@ function DatasetsSection() {
           {datasets.length} exported
         </span>
       </div>
+      <p className="max-w-2xl text-xs text-gray-500">
+        Select a dataset to inspect it like a recording: metadata, topics, loss
+        report, and camera previews read straight from the exported directory.
+      </p>
 
       {datasetsQuery.isError ? (
         <ErrorMessage error={datasetsQuery.error} />
@@ -119,24 +302,38 @@ function DatasetsSection() {
       ) : datasets.length === 0 ? (
         <p className="text-sm text-gray-500">No datasets yet.</p>
       ) : (
-        <div className="flex flex-col gap-5">
-          {groups.map((group) => (
-            <div key={group.operator} className="flex flex-col gap-3">
-              <div className="font-mono text-sm font-semibold text-gray-700">
-                {group.operator}
-              </div>
-              {group.tasks.map(({ task, entries }) => (
-                <div key={task} className="flex flex-col gap-2 pl-3">
-                  <div className="font-mono text-xs text-gray-500">{task}</div>
-                  <div className="grid grid-cols-1 gap-[14px] sm:grid-cols-2 lg:grid-cols-3">
-                    {entries.map((entry) => (
-                      <DatasetCard key={entry.dataset_dir} entry={entry} />
-                    ))}
-                  </div>
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          <div className="flex flex-col gap-5">
+            {groups.map((group) => (
+              <div key={group.operator} className="flex flex-col gap-3">
+                <div className="font-mono text-sm font-semibold text-gray-700">
+                  {group.operator}
                 </div>
-              ))}
-            </div>
-          ))}
+                {group.tasks.map(({ task, entries }) => (
+                  <div key={task} className="flex flex-col gap-2 pl-3">
+                    <div className="font-mono text-xs text-gray-500">{task}</div>
+                    <div className="grid grid-cols-1 gap-[14px] sm:grid-cols-2">
+                      {entries.map((entry) => (
+                        <DatasetCard
+                          key={entry.dataset_dir}
+                          entry={entry}
+                          selected={selected?.dataset_dir === entry.dataset_dir}
+                          onSelect={() => setSelected(entry)}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+          <Card aria-label="dataset detail" className="p-[18px]">
+            {selected ? (
+              <DatasetDetailView entry={selected} />
+            ) : (
+              <p className="text-sm text-gray-500">Select a dataset to see details.</p>
+            )}
+          </Card>
         </div>
       )}
     </section>

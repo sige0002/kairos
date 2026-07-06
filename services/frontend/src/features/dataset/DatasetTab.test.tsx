@@ -25,6 +25,31 @@ const DATASETS = {
   ],
 };
 
+// GET /datasets/{op}/{task}/{index} — the detail behind the inspection pane.
+const DETAIL = {
+  operator: 'yuki',
+  task: 'pick',
+  index: '001',
+  path: 'yuki/pick/001',
+  dataset_dir: '/data/yuki/pick/001',
+  run_id: 'run_000',
+  state: 'completed',
+  started_at: '2026-06-25T23:00:00.000Z',
+  ended_at: '2026-06-25T23:01:00.000Z',
+  exported_at: '2026-06-26T00:00:00.000Z',
+  bytes: 2048,
+  message_count: 9,
+  files: ['run_000_0.mcap', 'metadata.yaml'],
+  topics: [
+    { name: '/cam/image/compressed', type: 'sensor_msgs/msg/CompressedImage' },
+    { name: '/tf', type: 'tf2_msgs/msg/TFMessage' },
+  ],
+  manifest: null,
+  dataset: null,
+  validation: { result: 'pass' },
+  loss: null,
+};
+
 let exportBody: Record<string, unknown> | null = null;
 let exportAllCalled = false;
 
@@ -44,6 +69,8 @@ beforeEach(() => {
         jsonResponse({ index: '002', dataset_dir: '/data/yuki/pick/002' }),
       );
     }
+    if (url.includes('/datasets/yuki/pick/001'))
+      return Promise.resolve(jsonResponse(DETAIL));
     if (url.includes('/datasets')) return Promise.resolve(jsonResponse(DATASETS));
     if (url.includes('/runs')) return Promise.resolve(jsonResponse(RUNS));
     return Promise.resolve(jsonResponse({}));
@@ -88,6 +115,28 @@ test('export-all posts to /datasets/export-all and shows the tally', async () =>
       '1 exported, 0 failed',
     ),
   );
+});
+
+test('selecting a dataset opens the recording-like detail view', async () => {
+  renderWithClient(<DatasetTab />);
+  await waitFor(() =>
+    expect(screen.getByTestId('dataset-dir')).toHaveTextContent('/data/yuki/pick/001'),
+  );
+  // Nothing selected yet: the hint is shown.
+  expect(screen.getByText('Select a dataset to see details.')).toBeInTheDocument();
+
+  fireEvent.click(screen.getByText('#001'));
+
+  // Detail pane: metadata, topics (with types), and the inspection sections.
+  await waitFor(() => expect(screen.getByText('Topics (2)')).toBeInTheDocument());
+  expect(screen.getByText('run_000')).toBeInTheDocument();
+  expect(screen.getByText('/tf')).toBeInTheDocument();
+  expect(screen.getByText('sensor_msgs/msg/CompressedImage')).toBeInTheDocument();
+  // The camera topic enables the video check section; loss report is runnable.
+  expect(screen.getByText('Video check')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Run loss report' })).toBeEnabled();
+  // Validation JSON survived the export and is offered as a block.
+  expect(screen.getByText('Validation')).toBeInTheDocument();
 });
 
 test('empty datasets show the empty state', async () => {

@@ -1,26 +1,18 @@
 // Runs tab: cursor-paginated list (GET /api/v1/runs) on the left, detail view
 // (GET /api/v1/runs/{id}) on the right with manifest JSON and validation /
-// dataset stats when present.
+// dataset stats when present. The inspection pieces (loss table, video check,
+// JSON blocks) are shared with the Datasets tab via features/inspect.
 
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import {
   keepPreviousData,
   useMutation,
   useQuery,
   useQueryClient,
 } from '@tanstack/react-query';
-import { apiDelete, apiGet, apiPost, getApiBase } from '../../api/client';
+import { apiDelete, apiGet, apiPost } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
-import type {
-  JobResult,
-  JobStatus,
-  LossTopic,
-  Page,
-  RunDetail,
-  RunSummary,
-  RunTopic,
-  VideoCheckSummary,
-} from '../../api/types';
+import type { JobStatus, Page, RunDetail, RunSummary } from '../../api/types';
 import { ErrorMessage } from '../../components/ErrorMessage';
 import {
   Badge,
@@ -32,24 +24,16 @@ import {
   cn,
   type Tone,
 } from '../../components/ui';
+import {
+  JsonBlock,
+  LossTable,
+  TERMINAL,
+  VideoCheckSection,
+  formatDuration,
+  formatWhen,
+  spanMs,
+} from '../inspect/inspect';
 import { useUiStore } from '../../store/uiStore';
-
-// Terminal job states; while a loss_report job is non-terminal we keep polling.
-const TERMINAL = new Set(['succeeded', 'failed', 'canceled']);
-
-function formatWhen(iso?: string): string {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
-}
-
-function formatDuration(ms?: number): string {
-  if (ms === undefined || ms === null) return '';
-  const s = Math.round(ms / 1000);
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  return `${m}m ${s % 60}s`;
-}
 
 /** A run's duration in ms: the backend `duration_ms` when present, otherwise
  *  derived from started_at/ended_at — the run-list payload omits duration_ms, so
@@ -60,11 +44,7 @@ function runDurationMs(run: {
   ended_at?: string | null;
 }): number | undefined {
   if (run.duration_ms != null) return run.duration_ms;
-  if (!run.started_at || !run.ended_at) return undefined;
-  const start = new Date(run.started_at).getTime();
-  const end = new Date(run.ended_at).getTime();
-  if (Number.isNaN(start) || Number.isNaN(end) || end < start) return undefined;
-  return end - start;
+  return spanMs(run.started_at, run.ended_at);
 }
 
 // Per-state badge tone for the recordings list — color-codes the run state at a
@@ -83,247 +63,6 @@ function stateTone(state: string): Tone {
     default:
       return 'gray';
   }
-}
-
-function JsonBlock({ label, value }: { label: string; value: unknown }) {
-  if (value === undefined || value === null) return null;
-  return (
-    <details className="rounded-control border border-gray-200 p-2">
-      <summary className="cursor-pointer text-sm font-medium text-gray-700">{label}</summary>
-      <pre className="mt-2 max-h-80 overflow-auto rounded-control bg-gray-50 p-2 font-mono text-xs">
-        {JSON.stringify(value, null, 2)}
-      </pre>
-    </details>
-  );
-}
-
-function fmtNum(value?: number | null, digits = 1): string {
-  return value === undefined || value === null ? '—' : value.toFixed(digits);
-}
-
-// Loss tone: amber when any is lost, green when clean, gray when uncomputable.
-function lossTone(loss?: number | null): { text: string; cls: string } {
-  if (loss === undefined || loss === null) return { text: '—', cls: 'text-gray-400' };
-  if (loss > 0) return { text: `${(loss * 100).toFixed(1)}%`, cls: 'text-amber-600' };
-  return { text: '0%', cls: 'text-green-600' };
-}
-
-function LossTable({ topics }: { topics: LossTopic[] }) {
-  if (topics.length === 0)
-    return <p className="text-xs text-gray-500">No topics to analyze.</p>;
-  return (
-    <div className="overflow-auto rounded-control border border-gray-200">
-      <table className="w-full text-xs">
-        <thead>
-          <tr className="border-b border-gray-100 text-[10px] uppercase tracking-[0.05em] text-gray-400">
-            <th className="px-2 py-1.5 text-left font-medium">Topic</th>
-            <th className="px-2 py-1.5 text-right font-medium">Hz</th>
-            <th className="px-2 py-1.5 text-right font-medium">Loss</th>
-            <th className="px-2 py-1.5 text-right font-medium">Max gap (ms)</th>
-          </tr>
-        </thead>
-        <tbody>
-          {topics.map((t) => {
-            const tone = lossTone(t.loss_rate);
-            return (
-              <tr key={t.name} className="border-t border-gray-50">
-                <td className="truncate px-2 py-1.5 font-mono text-gray-700">{t.name}</td>
-                <td className="px-2 py-1.5 text-right font-mono text-gray-500">
-                  {fmtNum(t.hz)}
-                </td>
-                <td className={`px-2 py-1.5 text-right font-mono font-semibold ${tone.cls}`}>
-                  {tone.text}
-                </td>
-                <td className="px-2 py-1.5 text-right font-mono text-gray-500">
-                  {fmtNum(t.gap_max_ms, 0)}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-// Camera-ish topics: an image message type, or an /image/ topic name. These are
-// the only topics video_check can render (it decodes CompressedImage JPEG).
-function cameraTopics(topics: RunTopic[]): RunTopic[] {
-  return topics.filter((t) => /image/i.test(t.type) || /image/i.test(t.name));
-}
-
-// One self-contained camera preview: on mount it creates a video_check job for
-// its topic, polls to terminal, fetches the result, and plays the served mp4.
-// Event-driven only — it runs because the operator asked for this topic.
-function VideoPlayer({ runId, topic }: { runId: string; topic: string }) {
-  const [jobId, setJobId] = useState<string | null>(null);
-  const [summary, setSummary] = useState<VideoCheckSummary | null>(null);
-  const [jobError, setJobError] = useState<string | null>(null);
-  const started = useRef(false);
-
-  const mutation = useMutation({
-    mutationFn: () =>
-      apiPost<JobStatus>('/jobs', {
-        pipeline: 'video_check',
-        run_id: runId,
-        params: { topic },
-      }),
-    onSuccess: (job) => setJobId(job.job_id),
-  });
-
-  // Kick the job off once (StrictMode-safe) when this player appears.
-  useEffect(() => {
-    if (started.current) return;
-    started.current = true;
-    mutation.mutate();
-  }, [mutation]);
-
-  useQuery({
-    queryKey: queryKeys.job(jobId ?? ''),
-    queryFn: async ({ signal }) => {
-      const status = await apiGet<JobStatus>(
-        `/jobs/${encodeURIComponent(jobId ?? '')}/status`,
-        { signal },
-      );
-      if (jobId && TERMINAL.has(status.state)) {
-        if (status.state === 'succeeded') {
-          const result = await apiGet<JobResult>(
-            `/jobs/${encodeURIComponent(jobId)}/result`,
-            { signal },
-          );
-          setSummary(result.summary as VideoCheckSummary);
-        } else {
-          // failed/canceled: fetch the terminal result so the failure is shown
-          // instead of spinning on "Generating…" forever. dora_runner nests the
-          // ApiError under summary.error(.error).
-          let message = `Video check ${status.state}.`;
-          try {
-            const result = await apiGet<JobResult>(
-              `/jobs/${encodeURIComponent(jobId)}/result`,
-              { signal },
-            );
-            const err = (result.summary as Record<string, unknown>)?.error as
-              | { code?: string; message?: string; error?: { code?: string; message?: string } }
-              | undefined;
-            const code = err?.error?.code ?? err?.code;
-            const msg = err?.error?.message ?? err?.message;
-            if (msg) message = code ? `${msg} (${code})` : msg;
-          } catch {
-            // keep the generic message
-          }
-          setJobError(message);
-        }
-        setJobId(null);
-      }
-      return status;
-    },
-    enabled: !!jobId,
-    refetchInterval: (q) => {
-      const state = q.state.data?.state;
-      return state && TERMINAL.has(state) ? false : 1500;
-    },
-  });
-
-  return (
-    <div className="flex flex-col gap-1">
-      <div className="truncate font-mono text-[11px] text-gray-600" title={topic}>
-        {topic}
-      </div>
-      {mutation.isError ? (
-        <ErrorMessage error={mutation.error} />
-      ) : jobError ? (
-        <p role="alert" className="text-xs text-red-600">
-          {jobError}
-        </p>
-      ) : summary && summary.file ? (
-        <>
-          <video
-            controls
-            src={`${getApiBase()}/files/${summary.file}`}
-            className="w-full rounded-control border border-gray-200 bg-black"
-          />
-          <p className="text-[10px] text-gray-400">
-            {summary.frames} frames · {fmtNum(summary.fps, 0)}fps
-            {summary.truncated ? ' · head only' : ''}
-            {summary.cached ? ' · cached' : ''}
-          </p>
-        </>
-      ) : summary ? (
-        <p className="text-xs text-gray-500">
-          {summary.note ?? 'Could not generate video from this topic.'}
-        </p>
-      ) : (
-        <p className="text-xs text-gray-500">Generating…</p>
-      )}
-    </div>
-  );
-}
-
-// On-demand mp4 preview of camera topics. Two ways, both event-driven (a button
-// creates the video_check job(s); nothing auto-converts): generate the SELECTED
-// camera, or ALL cameras at once (one player each).
-function VideoCheckSection({ run, runId }: { run: RunDetail; runId: string }) {
-  const cameras = cameraTopics(run.topics);
-  const [topic, setTopic] = useState<string>(cameras[0]?.name ?? '');
-  // Camera topics we currently show players for (each player runs its own job).
-  const [players, setPlayers] = useState<string[]>([]);
-
-  if (cameras.length === 0)
-    return (
-      <section>
-        <h4 className="mb-1.5 text-sm font-medium text-gray-700">Video check</h4>
-        <p className="text-xs text-gray-500">No camera topics.</p>
-      </section>
-    );
-
-  return (
-    <section>
-      <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
-        <h4 className="text-sm font-medium text-gray-700">Video check</h4>
-        <div className="flex items-center gap-2">
-          <select
-            aria-label="camera topic"
-            value={topic}
-            onChange={(e) => setTopic(e.target.value)}
-            className="max-w-[180px] truncate rounded-control border border-gray-200 px-2 py-1 font-mono text-xs text-gray-700"
-          >
-            {cameras.map((t) => (
-              <option key={t.name} value={t.name}>
-                {t.name}
-              </option>
-            ))}
-          </select>
-          <button
-            type="button"
-            onClick={() => topic && setPlayers([topic])}
-            disabled={!topic}
-            className="rounded-control border border-teal-200 px-2.5 py-1 text-xs font-semibold text-teal-700 hover:bg-teal-50 disabled:opacity-50"
-          >
-            Generate mp4
-          </button>
-          <button
-            type="button"
-            onClick={() => setPlayers(cameras.map((c) => c.name))}
-            disabled={cameras.length === 0}
-            className="rounded-control border border-gray-200 px-2.5 py-1 text-xs font-semibold text-gray-600 hover:bg-gray-50 disabled:opacity-50"
-          >
-            All cameras
-          </button>
-        </div>
-      </div>
-      {players.length === 0 ? (
-        <p className="text-xs text-gray-500">
-          Preview the leading frames of a camera topic as an mp4 — one camera, or all at once.
-        </p>
-      ) : (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          {players.map((t) => (
-            <VideoPlayer key={t} runId={runId} topic={t} />
-          ))}
-        </div>
-      )}
-    </section>
-  );
 }
 
 function RunDetailView({
@@ -476,7 +215,9 @@ function RunDetailView({
         </section>
       )}
 
-      {run.state === 'completed' && <VideoCheckSection run={run} runId={runId} />}
+      {run.state === 'completed' && (
+        <VideoCheckSection topics={run.topics} runId={runId} />
+      )}
 
       <JsonBlock label="Manifest" value={run.manifest} />
       <JsonBlock label="Validation" value={run.validation} />

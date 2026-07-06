@@ -127,6 +127,38 @@ export interface DatasetsResponse {
   datasets: DatasetEntry[];
 }
 
+/**
+ * GET /api/v1/datasets/{operator}/{task}/{index} — one exported dataset plus
+ * its on-disk sidecars: the post-export counterpart of RunDetail, so the
+ * Datasets tab can show the same inspection view as Recordings. All sidecar
+ * fields are best-effort (null when the file is absent/unreadable).
+ */
+export interface DatasetDetail {
+  operator: string;
+  task: string;
+  index: string;
+  /** Relative "<operator>/<task>/<index>" under data/ — the `dataset_dir` job
+   *  param for post-export video_check / loss_report. */
+  path: string;
+  dataset_dir: string;
+  run_id?: string | null;
+  state?: string | null;
+  started_at?: string | null;
+  ended_at?: string | null;
+  exported_at?: string | null;
+  bytes?: number | null;
+  message_count?: number | null;
+  files: string[];
+  /** From manifest.json when present (name+type+QoS); else name-only (type ""). */
+  topics: RunTopic[];
+  manifest?: Record<string, unknown> | null;
+  /** The dataset.json provenance summary itself. */
+  dataset?: Record<string, unknown> | null;
+  validation?: Record<string, unknown> | null;
+  /** `loss_report` summary that survived export (or was re-run post-export). */
+  loss?: { run_id?: string; topics?: LossTopic[]; checked_at?: string } | null;
+}
+
 /** POST /api/v1/datasets/export-all — per-run successes + failures for the batch. */
 export interface ExportAllResponse {
   exported: DatasetExportSummary[];

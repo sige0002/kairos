@@ -123,6 +123,41 @@ class RunListResponse(BaseModel):
     next_cursor: str | None = None
 
 
+class DatasetDetail(BaseModel):
+    """One exported dataset dir + its on-disk sidecars.
+
+    (``GET /api/v1/datasets/{operator}/{task}/{index}``) — the post-export
+    counterpart of :class:`RunDetail`. The run row is deleted on export, so
+    everything here is read best-effort from the dataset directory
+    (``dataset.json`` / ``session.json`` / ``manifest.json``) plus the
+    run-keyed report sidecars that survive export, letting the Datasets tab
+    show the same inspection view as Recordings (absent -> ``null``).
+    """
+
+    operator: str
+    task: str
+    index: str
+    # Relative "<operator>/<task>/<index>" under data_dir — pass this as the
+    # `dataset_dir` job param for post-export video_check / loss_report.
+    path: str
+    dataset_dir: str
+    run_id: str | None = None
+    state: str | None = None
+    started_at: str | None = None
+    ended_at: str | None = None
+    exported_at: str | None = None
+    bytes: int | None = None
+    message_count: int | None = None
+    files: list[str] = Field(default_factory=list)
+    # From manifest.json when present (name+type+QoS); else the name-only list
+    # from session.json / dataset.json (type == "").
+    topics: list[RunTopic] = Field(default_factory=list)
+    manifest: dict[str, Any] | None = None
+    dataset: dict[str, Any] | None = None
+    validation: dict[str, Any] | None = None
+    loss: dict[str, Any] | None = None
+
+
 class PipelineDefinition(BaseModel):
     """Pipeline entry surfaced by dora_runner."""
 

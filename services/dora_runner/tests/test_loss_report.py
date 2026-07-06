@@ -177,6 +177,37 @@ def test_run_loss_report_filters_target_topics(tmp_path: Path) -> None:
     assert all("gap_exceeded" in t for t in filtered["summary"]["topics"])
 
 
+def test_run_loss_report_reads_exported_dataset_dir(tmp_path: Path) -> None:
+    """After dataset_export MOVED the recording, dataset_dir points the report
+    at data/<operator>/<task>/<NNN>; the summary stays keyed by run_id."""
+    data_dir = tmp_path / "data"
+    dataset = data_dir / "yuki" / "pick-place" / "001"
+    dataset.mkdir(parents=True)
+    _write_minimal_mcap(dataset / "run_x_0.mcap", {"/hsrb/joint_states": 10})
+
+    out = run_loss_report(
+        run_id="run_x", data_dir=data_dir, dataset_dir="yuki/pick-place/001"
+    )
+    names = {t["name"] for t in out["summary"]["topics"]}
+    assert names == {"/hsrb/joint_states"}
+    assert (data_dir / "report" / "loss_report" / "run_x" / "summary.json").exists()
+
+
+def test_loss_report_rejects_unsafe_dataset_dir(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    (data_dir / "recorded").mkdir(parents=True)
+    for bad in ("../x/y", "a/b", "a/b/c/d", "a//b", "recorded/a/b", "/abs/a/b"):
+        with pytest.raises(ValueError, match="invalid dataset_dir"):
+            run_loss_report(run_id="run_x", data_dir=data_dir, dataset_dir=bad)
+
+
+def test_loss_report_missing_dataset_dir_raises(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    (data_dir / "recorded").mkdir(parents=True)
+    with pytest.raises(FileNotFoundError, match="No dataset directory"):
+        run_loss_report(run_id="run_x", data_dir=data_dir, dataset_dir="a/b/001")
+
+
 def test_pipelines_endpoint_exposes_loss_report_params() -> None:
     app = create_dora_app(Settings(data_dir="/tmp"))
     with TestClient(app) as client:

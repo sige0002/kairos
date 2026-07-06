@@ -27,6 +27,52 @@ def validate_run_id(run_id: str) -> str:
     return run_id
 
 
+# Reserved top-level names under data/ that can never be a dataset operator dir
+# (mirrors dataset_export's reserved set; kept in sync by test_dataset_export).
+_DATASET_RESERVED_TOP = {"recorded", "report", "datasets"}
+
+
+def validate_dataset_dir(dataset_dir: str) -> str:
+    """Return *dataset_dir* if it is a safe ``<operator>/<task>/<NNN>`` path.
+
+    Post-export pipelines (video_check / loss_report) accept a ``dataset_dir``
+    job param that is joined under ``data/``; this guard keeps it to exactly
+    three plain components (no absolute path, no ``.``/``..``, no empty parts,
+    no backslashes) and rejects the reserved top-level dirs, so a
+    caller-supplied value can never escape the dataset tree.
+    """
+    parts = dataset_dir.split("/")
+    if len(parts) != 3 or any(
+        not p or p in {".", ".."} or "\\" in p or "\x00" in p for p in parts
+    ):
+        raise ValueError(
+            f"invalid dataset_dir (must be <operator>/<task>/<index>): {dataset_dir!r}"
+        )
+    if parts[0] in _DATASET_RESERVED_TOP:
+        raise ValueError(f"invalid dataset_dir (reserved top-level): {dataset_dir!r}")
+    return dataset_dir
+
+
+def resolve_source_dir(data_dir: Path, run_id: str, dataset_dir: str | None) -> Path:
+    """Resolve the directory holding a job's MCAP: recorded run or dataset.
+
+    Default is the canonical ``recorded/<run_id>``; with *dataset_dir* set the
+    job reads an exported ``<operator>/<task>/<NNN>`` instead (the recording was
+    MOVED there by ``dataset_export``, so the run dir no longer exists). Raises
+    ``ValueError`` for an unsafe path and ``FileNotFoundError`` when the
+    resolved directory is missing.
+    """
+    if dataset_dir is not None:
+        source = data_dir / validate_dataset_dir(dataset_dir)
+        if not source.is_dir():
+            raise FileNotFoundError(f"No dataset directory found: {source}")
+        return source
+    source = data_dir / "recorded" / run_id
+    if not source.is_dir():
+        raise FileNotFoundError(f"No recorded run found: {source}")
+    return source
+
+
 def find_mcap(run_dir: Path) -> Path:
     """Return the first MCAP in a run directory."""
     mcaps = sorted(run_dir.glob("*.mcap"))

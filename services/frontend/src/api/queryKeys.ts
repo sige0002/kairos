@@ -15,6 +15,8 @@ export const queryKeys = {
   jobResult: (id: string) => ['jobs', id, 'result'] as const,
   configOptions: ['config', 'options'] as const,
   datasets: ['datasets'] as const,
+  dataset: (operator: string, task: string, index: string) =>
+    ['datasets', 'detail', operator, task, index] as const,
   // topic_probe (OL-③.3): topic list + per-topic numeric field introspection.
   probeTopics: ['probe', 'topics'] as const,
   probeFields: (topic: string) => ['probe', 'fields', topic] as const,

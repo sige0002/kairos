@@ -36,7 +36,7 @@ from kairos_common import utc_now_iso8601
 from mcap.reader import make_reader
 
 from dora_runner.loss_report_config import DEFAULT_GAP_THRESHOLD_MULTIPLIER
-from dora_runner.mcap_utils import find_mcap, validate_run_id
+from dora_runner.mcap_utils import find_mcap, resolve_source_dir, validate_run_id
 
 # Pipeline identity stamped into the summary (reproducibility contract, shared
 # with the other bundled pipelines and the hello_dora plugin example).
@@ -108,8 +108,15 @@ def run_loss_report(
     data_dir: Path,
     target_topics: list[str] | None = None,
     gap_threshold_multiplier: float = DEFAULT_GAP_THRESHOLD_MULTIPLIER,
+    dataset_dir: str | None = None,
 ) -> dict[str, Any]:
-    """Estimate per-topic loss for ``recorded/<run_id>``'s MCAP.
+    """Estimate per-topic loss for the run's MCAP.
+
+    The MCAP comes from ``recorded/<run_id>`` by default, or — when
+    *dataset_dir* (``<operator>/<task>/<NNN>``) is given — from the exported
+    dataset directory, so the report stays computable after ``dataset_export``
+    MOVED the recording. The summary is written under
+    ``report/loss_report/<run_id>/`` either way.
 
     *target_topics* is a list of glob patterns; only matching topics are
     reported (``None``/empty = every topic, the original behaviour).
@@ -118,17 +125,15 @@ def run_loss_report(
     config-free behaviour, so callers that omit them are unaffected.
 
     Returns the ``{summary, artifacts}`` JobResult shape. Raises
-    ``FileNotFoundError`` if the run dir or its MCAP is missing (mapped to a
-    failed job by the worker); ``ValueError`` for an unsafe run_id. The MCAP is
-    only read (message log_times, no payload decode), so the canonical
-    recording is never touched.
+    ``FileNotFoundError`` if the source dir or its MCAP is missing (mapped to a
+    failed job by the worker); ``ValueError`` for an unsafe run_id /
+    dataset_dir. The MCAP is only read (message log_times, no payload decode),
+    so the canonical recording is never touched.
     """
     validate_run_id(run_id)
     patterns = list(target_topics or [])
-    run_dir = data_dir / "recorded" / run_id
-    if not run_dir.is_dir():
-        raise FileNotFoundError(f"No recorded run found: {run_dir}")
-    mcap_path = find_mcap(run_dir)
+    source_dir = resolve_source_dir(data_dir, run_id, dataset_dir)
+    mcap_path = find_mcap(source_dir)
 
     # Per-topic collected log_times + the topic's message type (schema name).
     log_times: dict[str, list[int]] = {}

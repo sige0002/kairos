@@ -525,13 +525,18 @@ class RunService:
             return None
         return data if isinstance(data, dict) else None
 
-    def delete(self, run_id: str) -> None:
+    def delete(self, run_id: str, *, keep_reports: bool = False) -> None:
         """Delete a run: its recording directory + session.json and the row.
 
         Raises 404 if the run is unknown, 409 if it is still recording/stopping
         (the active session must be stopped first). The recording dir is removed
         best-effort (the recorder relaxed its mode so uid 1000 can remove it);
         the DB row is then deleted.
+
+        *keep_reports* preserves the run-keyed ``data/report/*/<run_id>``
+        sidecars (validation / loss / video_check mp4 cache). Used after a
+        successful dataset export: the row goes away but the reports keep
+        backing the exported dataset's detail view.
         """
         run = self.get(run_id)  # 404 if absent
         if run.state in (RunState.recording, RunState.stopping):
@@ -549,12 +554,14 @@ class RunService:
         for sibling in (f"{run_id}.qos.yaml", f"{run_id}.failed.json"):
             (self._recorded_dir / sibling).unlink(missing_ok=True)
         # This run's post-hoc report sidecars (validation / loss / dataset /
-        # video). The exported dataset tree under data/<operator>/<task> is an
+        # video), unless the caller wants them kept (post-export detail view).
+        # The exported dataset tree under data/<operator>/<task> is an
         # intentional artifact and is deliberately NOT removed here.
-        report_root = self._data_dir / "report"
-        if report_root.is_dir():
-            for pipeline_dir in report_root.iterdir():
-                shutil.rmtree(pipeline_dir / run_id, ignore_errors=True)
+        if not keep_reports:
+            report_root = self._data_dir / "report"
+            if report_root.is_dir():
+                for pipeline_dir in report_root.iterdir():
+                    shutil.rmtree(pipeline_dir / run_id, ignore_errors=True)
         self._store.delete(run_id)
 
     def list_runs(self, limit: int, cursor: str | None) -> tuple[list[Run], str | None]:

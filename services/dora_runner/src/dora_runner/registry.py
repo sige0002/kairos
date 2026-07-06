@@ -122,6 +122,12 @@ async def _run_dataset_export(
     )
 
 
+def _dataset_dir_param(params: dict) -> str | None:
+    """Optional ``dataset_dir`` job param (post-export source), ``None`` if unset."""
+    raw = params.get("dataset_dir")
+    return str(raw) if isinstance(raw, str) and raw.strip() else None
+
+
 def _loss_report_params(params: dict, config: LossReportConfig) -> dict[str, object]:
     """Resolve loss_report kwargs from job params, falling back to *config*.
 
@@ -142,6 +148,9 @@ def _loss_report_params(params: dict, config: LossReportConfig) -> dict[str, obj
             if multiplier is not None
             else config.gap_threshold_multiplier
         ),
+        # Post-export source: read the exported dataset dir instead of
+        # recorded/<run_id> (the recording was MOVED there by dataset_export).
+        "dataset_dir": _dataset_dir_param(params),
     }
 
 
@@ -174,6 +183,9 @@ async def _run_video_check(job: JobRecord, store: RunnerStore, data_dir: Path) -
         topic=str(topic),
         # Results are cached per (run_id, topic); force=true re-encodes anyway.
         force=bool(job.params.get("force")),
+        # Post-export source: read the exported dataset dir instead of
+        # recorded/<run_id> (the recording was MOVED there by dataset_export).
+        dataset_dir=_dataset_dir_param(job.params),
     )
 
 
@@ -191,6 +203,9 @@ _VIDEO_CHECK_SCHEMA = {
         "topic": {"type": "string"},
         # Results are cached per (run_id, topic); true re-encodes anyway.
         "force": {"type": "boolean", "default": False},
+        # Post-export source: "<operator>/<task>/<NNN>" under data/ (the
+        # exported dataset dir); omitted = read recorded/<run_id>.
+        "dataset_dir": {"type": "string"},
     },
 }
 _NO_PARAMS_SCHEMA = {"type": "object", "properties": {}}
@@ -227,6 +242,14 @@ def loss_report_schema(config: LossReportConfig) -> dict:
                 # forbid them too (no silent value substitution).
                 "exclusiveMinimum": 0,
                 "default": config.gap_threshold_multiplier,
+            },
+            "dataset_dir": {
+                "type": "string",
+                "title": "Dataset directory",
+                "description": (
+                    "Post-export source: <operator>/<task>/<NNN> under data/; "
+                    "omitted = read recorded/<run_id>."
+                ),
             },
         },
     }
@@ -287,8 +310,8 @@ def build_default_registry(
             id="dataset_export",
             name="Dataset export",
             description=(
-                "Copy a recorded run into data/<operator>/<task>/<NNN> (from "
-                "session.json). Read-only on the canonical recording."
+                "MOVE a recorded run into data/<operator>/<task>/<NNN> (from "
+                "session.json); the recording leaves recorded/ after export."
             ),
             params_schema=_NO_PARAMS_SCHEMA,
             outputs=["data/<operator>/<task>/<NNN>/"],

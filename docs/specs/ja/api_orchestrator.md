@@ -34,7 +34,7 @@
 - 設定カタログ: `GET /api/v1/config/options`、`POST /api/v1/config/select`（検証テンプレート等のカテゴリ別選択肢と現在の選択）
 - システム情報: `GET /api/v1/system` → `{ cpu: { model, cores }, gpu }`（ホストの読み取り専用イントロスペクション。`nvidia-smi` 不在時は `gpu: null`。常に `200`）
 - ファイル配信: `GET /api/v1/files/{path}` — `data_dir` からの**相対パス**でファイルを配信（トラバーサルガード: `data_dir` 配下のみ。それ以外・不在は `404`）。`video_check` の mp4 プレビュー取得に使う
-- データセット: `GET /api/v1/datasets`（`data/<operator>/<task>/<NNN>/dataset.json` を走査した一覧。`data_dir` 配下のみ読む）、`POST /api/v1/datasets/export`（body `{ run_id }`。下記「データセットエクスポート」参照）、`POST /api/v1/datasets/export-all`（`recorded/` 内の完了 run を**一括** export）
+- データセット: `GET /api/v1/datasets`（`data/<operator>/<task>/<NNN>/dataset.json` を走査した一覧。`data_dir` 配下のみ読む）、`GET /api/v1/datasets/{operator}/{task}/{index}`（**エクスポート済みデータセットの詳細**。下記「データセットエクスポート」参照）、`POST /api/v1/datasets/export`（body `{ run_id }`）、`POST /api/v1/datasets/export-all`（`recorded/` 内の完了 run を**一括** export）
 - `GET /healthz` / `GET /readyz`（`components: { recorder, monitor, streamer }` の疎通も返す）
 - `GET /openapi.json`（OpenAPI。frontend は Orval でクライアントを自動生成）
 
@@ -70,9 +70,10 @@ UI（Config タブ）から `RECORDING_CONFIG` 全体を編集・永続化する
 
 収録を**正本ステージング（`recorded/`）からデータセットツリー（`data/<operator>/<task>/<NNN>`）へ移動**する操作。`POST /jobs` の直接呼び出しではなく、orchestrator が `dataset_export` ジョブの完了を待ち、**run のライフサイクルまで含めて**面倒を見る。
 
-- `POST /api/v1/datasets/export`（body `{ run_id }`）: 対象が `completed` でなければ **`409`**、`recorded/<run_id>` が無ければ **`409`**（export 済み等）。`dataset_export`（移動）を完了まで実行し、**成功した場合のみ run 行を削除**（移動済みなので `recorded/` のディレクトリ・兄弟ファイル・レポートサイドカーも掃除）。失敗（`502`）・タイムアウト（`504`）時は run を `recorded/` と一覧に残す。
+- `POST /api/v1/datasets/export`（body `{ run_id }`）: 対象が `completed` でなければ **`409`**、`recorded/<run_id>` が無ければ **`409`**（export 済み等）。`dataset_export`（移動）を完了まで実行し、**成功した場合のみ run 行を削除**（移動済みなので `recorded/` のディレクトリ・兄弟ファイルも掃除）。**run キーのレポートサイドカー（`data/report/*/<run_id>`: validation / loss / video_check の mp4 キャッシュ）は意図的に残す** — エクスポート後もデータセット詳細ビューがそれらを表示し続けられるようにするため（`DELETE /api/v1/runs/{id}` による明示削除では従来どおり掃除される）。失敗（`502`）・タイムアウト（`504`）時は run を `recorded/` と一覧に残す。
 - `POST /api/v1/datasets/export-all`: `recorded/` にファイルが残る完了 run を**全件** export。1 件の失敗でバッチは止めず、`{ exported: [...], failed: [{ run_id, error }], total }` を返す。
 - 結果として**エクスポート済みの収録は Recordings 一覧から消える**（来歴は `<NNN>/dataset.json` に保存）。`GET /api/v1/datasets` で operator › task › NNN を一覧できる。
+- **`GET /api/v1/datasets/{operator}/{task}/{index}` はエクスポート後の RunDetail 相当**（DatasetDetail）を返す: `dataset.json`（来歴・`files` / `bytes` / `message_count`）に加え、移動された `session.json`（state / started_at / ended_at）・`manifest.json`（topics の name / type / QoS。無ければ session / dataset.json の名前のみへフォールバック）と、エクスポートを生き残った run キーのレポート（`validation` / `loss`）を best-effort で同梱する。応答の `path`（`<operator>/<task>/<index>` 相対パス）は、エクスポート後に `video_check` / `loss_report` ジョブを実行する際の `params.dataset_dir` にそのまま使える。パスコンポーネントは単一ディレクトリ名のみ許可（トラバーサル・予約名 `recorded`/`report`/`datasets` は `400`）、ディレクトリまたは `dataset.json` 不在は `404`。
 
 ## SSE イベント契約（`GET /api/v1/events`）
 
