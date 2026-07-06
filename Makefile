@@ -56,8 +56,15 @@ export UID GID
 BAG ?=
 
 # Ports the access banner advertises (host networking -> these bind on the host).
-FRONTEND_PORT ?= 8080
-API_PORT      ?= 8000
+# Single source of truth = the pydantic defaults in libs/kairos_common/settings.py,
+# overridable per key via .env — the SAME keys compose interpolates (FRONTEND_PORT
+# / API_ORCH_PORT). Read .env here too so the banner shows the port the container
+# actually binds, not a hardcoded literal that silently drifts from .env. `make`
+# does not read .env on its own, hence the sed. Precedence matches compose:
+# command line > shell env > .env > settings.py default.
+_env_val = $(if $(wildcard .env),$(strip $(shell sed -n 's/^[[:space:]]*$(1)[[:space:]]*=[[:space:]]*//p' .env | tail -1)))
+FRONTEND_PORT ?= $(or $(call _env_val,FRONTEND_PORT),8080)
+API_ORCH_PORT ?= $(or $(call _env_val,API_ORCH_PORT),8000)
 
 # Browser-facing base URL for camera (WebRTC) signaling. Default "/webrtc" is the
 # same-origin nginx proxy (services/frontend/nginx.conf), so the preview works
@@ -137,8 +144,8 @@ urls: ## print the Web UI access URLs (localhost + LAN IPs)
 		| grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$$' \
 		| grep -vE '^(127\.|169\.254\.|172\.1[6-9]\.|172\.2[0-9]\.|172\.3[01]\.)' \
 		| while read ip; do echo "  LAN   : http://$$ip:$(FRONTEND_PORT)/"; done
-	@echo "  API   : same host, port $(API_PORT)"
-	@echo "  ssh   : ssh -L $(FRONTEND_PORT):localhost:$(FRONTEND_PORT) -L $(API_PORT):localhost:$(API_PORT) <user>@<this-host>  # then http://localhost:$(FRONTEND_PORT)/"
+	@echo "  API   : same host, port $(API_ORCH_PORT)"
+	@echo "  ssh   : ssh -L $(FRONTEND_PORT):localhost:$(FRONTEND_PORT) -L $(API_ORCH_PORT):localhost:$(API_ORCH_PORT) <user>@<this-host>  # then http://localhost:$(FRONTEND_PORT)/"
 	@echo ""
 
 down: ## stop + remove the stack
@@ -233,7 +240,7 @@ config-reload: ## apply config/*.yaml edits (restart monitor + orchestrator)
 	$(COMPOSE) restart monitor orchestrator
 
 config-show: ## print the live GET /api/v1/config defaults
-	@curl -fsS --max-time 5 http://localhost:$(API_PORT)/api/v1/config \
+	@curl -fsS --max-time 5 http://localhost:$(API_ORCH_PORT)/api/v1/config \
 		| python3 -m json.tool 2>/dev/null || echo "orchestrator not reachable (make up?)"
 
 # ---- test-data replay harness ----------------------------------------------
