@@ -50,6 +50,7 @@ export interface ScopePanelPatch {
   hz?: number;
 }
 export type ScopeWindowId = '30s' | '1m' | '5m';
+export type ProbeWindowId = '10s' | '30s' | '1m';
 
 interface UiState {
   activeTab: string;
@@ -106,6 +107,21 @@ interface UiState {
   recMarkers: RecMarker[];
   recMarkersPrevActive: boolean | null;
   pushRecordMarker: (state: string) => void;
+
+  // Probe tab overlay: the added (topic, field) series plus the plot controls
+  // (rate / time window). Persisted so a tab round-trip doesn't silently drop a
+  // built-up overlay — the same unmount-on-navigation lifetime problem as the
+  // Live tab drafts above. Pause state stays component-local: a remount reopens
+  // the streams anyway, so restoring a stale "paused" would just look broken.
+  probeSeries: ProbeSeries[];
+  probeSeriesSeq: number;
+  addProbeSeries: (topic: string, field: string) => void;
+  removeProbeSeries: (id: string) => void;
+  clearProbeSeries: () => void;
+  probeHz: number;
+  setProbeHz: (hz: number) => void;
+  probeWindowId: ProbeWindowId;
+  setProbeWindow: (id: ProbeWindowId) => void;
 
   // Stream camera previews: how many panes and what each shows. Seeded once from
   // config.stream.panes; add/remove/topic edits persist so opening a second
@@ -226,6 +242,28 @@ export const useUiStore = create<UiState>((set) => ({
         ? { recMarkersPrevActive: active }
         : {};
     }),
+
+  probeSeries: [],
+  probeSeriesSeq: 0,
+  addProbeSeries: (topic, field) =>
+    set((s) =>
+      s.probeSeries.some((p) => p.topic === topic && p.field === field)
+        ? {} // no dupes — same guard the ProbeTab add button had
+        : {
+            probeSeries: [
+              ...s.probeSeries,
+              { id: `s${s.probeSeriesSeq}`, topic, field },
+            ],
+            probeSeriesSeq: s.probeSeriesSeq + 1,
+          },
+    ),
+  removeProbeSeries: (id) =>
+    set((s) => ({ probeSeries: s.probeSeries.filter((p) => p.id !== id) })),
+  clearProbeSeries: () => set({ probeSeries: [] }),
+  probeHz: 10,
+  setProbeHz: (probeHz) => set({ probeHz }),
+  probeWindowId: '30s',
+  setProbeWindow: (probeWindowId) => set({ probeWindowId }),
 
   streamPanes: [],
   streamPaneSeq: 0,

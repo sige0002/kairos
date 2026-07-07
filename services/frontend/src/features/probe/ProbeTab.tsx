@@ -5,9 +5,10 @@
 // is uPlot (axis ticks · legend · crosshair). Decoding stays isolated in
 // topic_probe, so recording / monitoring are never affected.
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Badge, Card, CardHeader, StatusDot, cn } from '../../components/ui';
 import type { Tone } from '../../components/ui';
+import { useUiStore, type ProbeWindowId } from '../../store/uiStore';
 import {
   useProbeFields,
   useProbeSeries,
@@ -18,7 +19,7 @@ import type { ProbeSeries } from './types';
 import { PALETTE, UplotChart, type UplotSeriesConf } from './UplotChart';
 
 const HZ_OPTIONS = [1, 5, 10, 30];
-const WINDOWS: { id: string; label: string; sec: number }[] = [
+const WINDOWS: { id: ProbeWindowId; label: string; sec: number }[] = [
   { id: '10s', label: '10s', sec: 10 },
   { id: '30s', label: '30s', sec: 30 },
   { id: '1m', label: '1m', sec: 60 },
@@ -53,23 +54,25 @@ export function ProbeTab() {
     setAddField(fields[0] ?? null);
   }, [fields, addField]);
 
-  const [series, setSeries] = useState<ProbeSeries[]>([]);
+  // Series + rate/window live in the persistent UI store so the built-up
+  // overlay survives the tab unmounting on navigation (the same lifetime
+  // problem as the Live tab's operator/task drafts). Pause stays local: a
+  // remount reopens the streams anyway.
+  const series = useUiStore((s) => s.probeSeries);
+  const addProbeSeries = useUiStore((s) => s.addProbeSeries);
+  const removeSeries = useUiStore((s) => s.removeProbeSeries);
+  const clearSeries = useUiStore((s) => s.clearProbeSeries);
+  const hz = useUiStore((s) => s.probeHz);
+  const setHz = useUiStore((s) => s.setProbeHz);
+  const windowId = useUiStore((s) => s.probeWindowId);
+  const setWindowId = useUiStore((s) => s.setProbeWindow);
   const [live, setLive] = useState(true);
-  const [hz, setHz] = useState(10);
-  const [windowId, setWindowId] = useState('30s');
   const windowSec = WINDOWS.find((w) => w.id === windowId)?.sec ?? 30;
-  const idRef = useRef(0);
 
   const addSeries = () => {
     if (!addTopic || !addField) return;
-    if (series.some((s) => s.topic === addTopic && s.field === addField)) return; // no dupes
-    setSeries((prev) => [
-      ...prev,
-      { id: `s${idRef.current++}`, topic: addTopic, field: addField },
-    ]);
+    addProbeSeries(addTopic, addField);
   };
-  const removeSeries = (id: string) =>
-    setSeries((prev) => prev.filter((s) => s.id !== id));
 
   const { data, status } = useProbeSeries(series, live, hz, windowSec);
 
@@ -222,7 +225,7 @@ export function ProbeTab() {
               </span>
               <button
                 type="button"
-                onClick={() => setSeries([])}
+                onClick={clearSeries}
                 className="text-[11px] font-medium text-gray-400 hover:text-red-600"
               >
                 Clear all

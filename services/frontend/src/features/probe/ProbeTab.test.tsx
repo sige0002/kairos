@@ -5,9 +5,19 @@ import { createElement } from 'react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { jsonResponse, makeTestClient } from '../../test/renderWithClient';
 import { queryKeys } from '../../api/queryKeys';
+import { useUiStore } from '../../store/uiStore';
 import { ProbeTab } from './ProbeTab';
 
-beforeEach(() => vi.restoreAllMocks());
+beforeEach(() => {
+  vi.restoreAllMocks();
+  // The series/controls live in the shared UI store — reset between tests.
+  useUiStore.setState({
+    probeSeries: [],
+    probeSeriesSeq: 0,
+    probeHz: 10,
+    probeWindowId: '30s',
+  });
+});
 afterEach(() => vi.restoreAllMocks());
 
 function renderProbe() {
@@ -87,4 +97,26 @@ test('adds and removes overlay series (multi-field)', async () => {
   await waitFor(() =>
     expect(screen.queryByLabelText('remove pose·position.x')).not.toBeInTheDocument(),
   );
+});
+
+// The overlay lives in the persistent UI store: switching tabs unmounts the
+// ProbeTab (like every tab), and the built-up series set must survive the
+// round-trip instead of reverting to the empty placeholder.
+test('added series survive a remount (tab switch away and back)', async () => {
+  mockFields(['position.x']);
+  const { unmount } = renderProbe();
+
+  fireEvent.change(await screen.findByLabelText('probe topic'), {
+    target: { value: '/pose' },
+  });
+  const fieldSelect = (await screen.findByLabelText('probe field')) as HTMLSelectElement;
+  await waitFor(() => expect(fieldSelect.value).toBe('position.x'));
+  fireEvent.click(screen.getByRole('button', { name: '+ Add series' }));
+  expect(await screen.findByLabelText('remove pose·position.x')).toBeInTheDocument();
+
+  unmount(); // leave the Probe tab
+  renderProbe(); // come back
+
+  expect(await screen.findByLabelText('remove pose·position.x')).toBeInTheDocument();
+  expect(screen.queryByText(/Add a topic \+ field series/i)).not.toBeInTheDocument();
 });
