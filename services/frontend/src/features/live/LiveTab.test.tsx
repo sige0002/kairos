@@ -127,6 +127,92 @@ test('stop shows a keep/discard prompt and Discard deletes the run', async () =>
   await waitFor(() => expect(deleted).toBe(true));
 });
 
+// A recorder-rejected start comes back as HTTP 200 with the run row in `failed`
+// (the orchestrator keeps the row). The hero must surface that as an error
+// banner — before this, the button just snapped back to Idle with no hint that
+// the recording silently never started.
+test('a start returned as failed (HTTP 200) surfaces the start-failed banner', async () => {
+  let startCalls = 0;
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/record/start')) {
+      startCalls += 1;
+      // Second attempt stays in flight so the cleared-banner state is stable
+      // to assert (a resolved retry would immediately re-set the banner).
+      if (startCalls > 1) return new Promise<Response>(() => {});
+      return Promise.resolve(
+        jsonResponse({
+          run_id: 'run_f1',
+          state: 'failed',
+          topics: [],
+          error: {
+            code: 'record_arm_failed',
+            message: 'Recording failed to arm (subscribe + resume).',
+          },
+        }),
+      );
+    }
+    if (url.includes('/record/status'))
+      return Promise.resolve(jsonResponse({ run_id: null, state: 'created' }));
+    if (url.includes('/topics')) return Promise.resolve(jsonResponse([]));
+    if (url.includes('/runs'))
+      return Promise.resolve(jsonResponse({ items: [], next_cursor: null }));
+    return Promise.resolve(jsonResponse({}));
+  });
+  renderWithClient(<LiveTab config={CONFIG} />);
+
+  await waitFor(() => expect(screen.getByTestId('record-state')).toHaveTextContent('Idle'));
+  fireEvent.click(screen.getByRole('button', { name: /Start recording/ }));
+
+  const note = await screen.findByTestId('start-failed-note');
+  expect(note).toHaveTextContent('Start failed');
+  expect(note).toHaveTextContent('run_f1');
+  expect(note).toHaveTextContent('record_arm_failed');
+  // The hero is back to Idle — failed means capture never began.
+  expect(screen.getByTestId('record-state')).toHaveTextContent('Idle');
+  // A new start attempt clears the stale banner immediately.
+  fireEvent.click(screen.getByRole('button', { name: /Start recording/ }));
+  await waitFor(() =>
+    expect(screen.queryByTestId('start-failed-note')).not.toBeInTheDocument(),
+  );
+});
+
+// While POST /record/start blocks through the recorder's arming gate (1–4+ s),
+// the hero must show a distinct Starting state (amber, with the arming strip)
+// instead of sitting on Idle as if the click did nothing.
+test('a pending start shows the Starting hero state and the arming strip', async () => {
+  let resolveStart: ((r: Response) => void) | null = null;
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/record/start'))
+      return new Promise<Response>((res) => {
+        resolveStart = res;
+      });
+    if (url.includes('/record/status'))
+      return Promise.resolve(jsonResponse({ run_id: null, state: 'created' }));
+    if (url.includes('/topics')) return Promise.resolve(jsonResponse([]));
+    if (url.includes('/runs'))
+      return Promise.resolve(jsonResponse({ items: [], next_cursor: null }));
+    return Promise.resolve(jsonResponse({}));
+  });
+  renderWithClient(<LiveTab config={CONFIG} />);
+
+  await waitFor(() => expect(screen.getByTestId('record-state')).toHaveTextContent('Idle'));
+  fireEvent.click(screen.getByRole('button', { name: /Start recording/ }));
+
+  await waitFor(() =>
+    expect(screen.getByTestId('record-state')).toHaveTextContent('Starting…'),
+  );
+  expect(screen.getByTestId('starting-note')).toBeInTheDocument();
+  expect(screen.queryByTestId('start-failed-note')).not.toBeInTheDocument();
+
+  // Settle the in-flight POST so nothing leaks into the next test.
+  resolveStart!(jsonResponse({ run_id: 'r1', state: 'recording', topics: [] }));
+  await waitFor(() =>
+    expect(screen.queryByTestId('starting-note')).not.toBeInTheDocument(),
+  );
+});
+
 // OL-①.4: when a --start-paused recording armed with topics still missing, the
 // hero shows the arming strip (matched vs missing) so the operator sees the gap.
 test('active recording shows the arming strip when topics were still missing', async () => {

@@ -145,6 +145,25 @@ interface RecordSelection {
   customized: boolean;
 }
 
+// Shown while POST /record/start blocks through the recorder's arming gate.
+// The strip says why the click "hangs" for a few seconds — a selected topic
+// with no publisher waits out the full subscription-readiness timeout.
+function StartingNote() {
+  return (
+    <div className="w-full" data-testid="starting-note">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-control border border-amber-200 bg-amber-50/70 px-3 py-2 text-[12px] text-amber-800">
+        <span className="text-[10.5px] font-semibold uppercase tracking-[0.09em]">
+          Arming
+        </span>
+        <span className="font-mono text-[11px] opacity-80">
+          subscribing to the selected topics before capture starts — topics with
+          no publisher hold the gate until its readiness timeout
+        </span>
+      </div>
+    </div>
+  );
+}
+
 // Arming result (OL-①.4): when a `--start-paused` recording armed, the recorder
 // reports which target topics it matched on the ROS graph vs which were still
 // missing when it resumed. A non-empty `missing` is the useful signal — the gate
@@ -278,13 +297,22 @@ function RecordHero({ selection }: { selection: RecordSelection }) {
   // stop response, falling back to the run active when Stop was pressed).
   const [pendingReview, setPendingReview] = useState<string | null>(null);
 
+  // A recorder-rejected start comes back as HTTP 200 with the kept run row in
+  // `failed` (the orchestrator preserves the row as the audit trail), so the
+  // response BODY — not the HTTP status — says whether capture began. Without
+  // checking it, a failed start just snaps the hero back to Idle with no
+  // explanation (the "recording silently never happened" report).
+  const [startFailure, setStartFailure] = useState<RunDetail | null>(null);
   const startMutation = useMutation({
-    mutationFn: (body: RecordStartRequest) => apiPost<RecordStatus>('/record/start', body),
-    onSuccess: () =>
-      void queryClient.invalidateQueries({ queryKey: queryKeys.recordStatus }),
+    mutationFn: (body: RecordStartRequest) => apiPost<RunDetail>('/record/start', body),
+    onMutate: () => setStartFailure(null),
+    onSuccess: (run) => {
+      if (run?.state === 'failed') setStartFailure(run);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.recordStatus });
+    },
   });
   const stopMutation = useMutation({
-    mutationFn: () => apiPost<RecordStatus>('/record/stop', {}),
+    mutationFn: () => apiPost<RunDetail>('/record/stop', {}),
     onSuccess: (st) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.recordStatus });
       const rid = st?.run_id ?? runId;
@@ -302,6 +330,11 @@ function RecordHero({ selection }: { selection: RecordSelection }) {
     },
   });
   const busy = startMutation.isPending || stopMutation.isPending;
+  // POST /record/start blocks through the recorder's --start-paused arming gate
+  // (spawn → subscribe to every target → resume), typically 1–4+ s. The hero
+  // shows a distinct amber Starting state for that window so the wait reads as
+  // progress, not as an unresponsive button.
+  const isStarting = startMutation.isPending;
 
   // Disable start only when the operator explicitly cleared every topic.
   const noSelection =
@@ -333,32 +366,39 @@ function RecordHero({ selection }: { selection: RecordSelection }) {
         'flex flex-wrap items-center gap-x-7 gap-y-4 rounded-[18px] border px-6 py-[22px]',
         isActive
           ? 'border-red-200 bg-gradient-to-r from-red-50 via-rose-50 to-white shadow-float'
-          : 'border-green-200 bg-gradient-to-r from-green-50 via-emerald-50 to-white shadow-card',
+          : isStarting
+            ? 'border-amber-200 bg-gradient-to-r from-amber-50 via-yellow-50 to-white shadow-card'
+            : 'border-green-200 bg-gradient-to-r from-green-50 via-emerald-50 to-white shadow-card',
       )}
     >
       <div className="flex items-center gap-4">
         <span
           className={cn(
             'flex h-[46px] w-[46px] items-center justify-center rounded-full',
-            isActive ? 'bg-red-50' : 'bg-green-100',
+            isActive ? 'bg-red-50' : isStarting ? 'bg-amber-100' : 'bg-green-100',
           )}
         >
           <span
             className={cn(
               'h-[15px] w-[15px] rounded-full',
-              isActive ? 'animate-recpulse bg-red-600' : 'bg-green-500',
+              isActive
+                ? 'animate-recpulse bg-red-600'
+                : isStarting
+                  ? 'animate-recpulse bg-amber-500'
+                  : 'bg-green-500',
             )}
           />
         </span>
         <div>
           <div className="flex items-center gap-2.5">
             <span
+              data-testid="record-state"
               className={cn(
                 'text-[12px] font-semibold uppercase tracking-[0.13em]',
-                isActive ? 'text-red-600' : 'text-green-700',
+                isActive ? 'text-red-600' : isStarting ? 'text-amber-600' : 'text-green-700',
               )}
             >
-              {isActive ? 'Recording' : 'Idle'}
+              {isActive ? 'Recording' : isStarting ? 'Starting…' : 'Idle'}
             </span>
             {isActive && runId && (
               <span className="rounded-[5px] bg-red-50 px-1.5 py-0.5 font-mono text-[12px] text-red-700">
@@ -383,7 +423,13 @@ function RecordHero({ selection }: { selection: RecordSelection }) {
           <div className="flex flex-wrap gap-x-8 gap-y-3">
             <HeroMeta label="Operator" value={run?.operator || '—'} />
             <HeroMeta label="Task" value={run?.task || '—'} />
-            <HeroMeta label="Messages" value={(status?.message_count ?? 0).toLocaleString()} mono />
+            {/* The recorder only counts messages at finalise; during capture the
+                status reports 0, so a dash beats a misleading zero. */}
+            <HeroMeta
+              label="Messages"
+              value={status?.message_count ? status.message_count.toLocaleString() : '—'}
+              mono
+            />
             <HeroMeta label="Size" value={formatBytes(status?.bytes)} mono />
             <HeroMeta label="Topics" value={`${topicCount}`} mono teal />
           </div>
@@ -449,9 +495,30 @@ function RecordHero({ selection }: { selection: RecordSelection }) {
         </>
       )}
 
+      {isStarting && <StartingNote />}
+
       {isActive && status?.arming && <ArmingNote arming={status.arming} />}
 
       {!isActive && status && <IntegrityNote status={status} />}
+
+      {!isActive && !isStarting && startFailure && (
+        <div className="w-full" data-testid="start-failed-note">
+          <div
+            role="alert"
+            className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-control border border-red-200 bg-red-50/70 px-3 py-2 text-[12px] text-red-800"
+          >
+            <span className="text-[10.5px] font-semibold uppercase tracking-[0.09em]">
+              Start failed
+            </span>
+            <span className="font-mono">{startFailure.run_id}</span>
+            <span className="font-mono text-[11px] opacity-80">
+              {startFailure.error
+                ? `${startFailure.error.code}: ${startFailure.error.message}`
+                : 'the recorder rejected the start'}
+            </span>
+          </div>
+        </div>
+      )}
 
       {(startMutation.isError || stopMutation.isError) && (
         <div className="w-full">
@@ -483,9 +550,9 @@ function RecordHero({ selection }: { selection: RecordSelection }) {
           </>
         }
       >
-        Keep recording{' '}
+        Keep this take{' '}
         <span className="font-mono text-gray-800">{pendingReview}</span> or discard it?
-        Discard permanently deletes this take.
+        Discard permanently deletes it.
         {discardMutation.isError && (
           <div className="mt-2">
             <ErrorMessage error={discardMutation.error} />
