@@ -16,3 +16,15 @@ Reviewed but NOT installed (off-scope for this data pipeline): `ros1`, `robot-pe
 Not installed (marketplace-only — scripts unverifiable, or redundant with built-in /code-review): skills.rest `ros2-skill`, `awesome-skills/code-review-skill`, `harunkurtdev/ros2-claude-code-template` (no license).
 
 Apache-2.0 applies; see the source repo's LICENSE.
+
+---
+
+# Authored in-house
+
+- `dora-rs` — NOT copied from a third-party pack. Authored 2026-07-07 against verified current sources
+  (github.com/dora-rs/dora `main`: README/CLAUDE.md/AGENTS.md/docs/examples, the shipped
+  `dora/__init__.pyi`, PyPI/crates.io release metadata) plus kairos's own `services/dora_runner`
+  plugin contract (`plugin_loader.py`, `plugins/README.md`, `docs/specs/ja/dora_plugins.md`). The
+  community `ZhangHanDong/dora-skills` (mirrored at `dora-rs/dora-skills`, MIT/Apache) was reviewed as
+  prior art but is stale (~2026-01, pre-1.0 CLI, no Node Hub / adora→dora) and was NOT copied. Markdown
+  only, no `scripts/`.
