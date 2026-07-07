@@ -230,8 +230,19 @@ export function UplotChart({
 
   // Markers change independently of the series set (new REC/STOP events) — just
   // redraw the existing plot rather than tearing it down and losing zoom/state.
+  //
+  // NEVER redraw() a plot whose buffer is still empty. A no-arg redraw() forces
+  // uPlot's shouldConvergeSize=false, so the next (microtask) _commit draws axes
+  // whose tick ranges (`axis._found`) were never computed and throws — and the
+  // throw skips `queuedCommit = false`, PERMANENTLY bricking the instance:
+  // every later setData()/redraw() no-ops and the chart stays blank forever.
+  // This effect also runs on mount, when the first-added probe series has no
+  // samples yet — that was the "first series never renders until a second is
+  // added" bug (adding one recreated the plot with a warm buffer).
   useEffect(() => {
-    plotRef.current?.redraw();
+    const plot = plotRef.current;
+    if (!plot || (plot.data[0]?.length ?? 0) === 0) return;
+    plot.redraw();
   }, [markers]);
 
   return <div ref={hostRef} className="w-full" />;
