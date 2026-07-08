@@ -126,3 +126,14 @@ test('malformed payloads are ignored', () => {
   dispatchSseEvent(qc, 'metrics', 'not json');
   expect(qc.getQueryData(queryKeys.metrics)).toBeUndefined();
 });
+
+test('bridge events drive the monitorBridge ui state', async () => {
+  const { useUiStore } = await import('../store/uiStore');
+  const qc = new QueryClient();
+  expect(useUiStore.getState().monitorBridge).toBeNull();
+  dispatchSseEvent(qc, 'bridge', JSON.stringify({ monitor: 'down' }));
+  expect(useUiStore.getState().monitorBridge).toBe('down');
+  dispatchSseEvent(qc, 'bridge', JSON.stringify({ monitor: 'up' }));
+  expect(useUiStore.getState().monitorBridge).toBe('up');
+  useUiStore.getState().setMonitorBridge(null);
+});

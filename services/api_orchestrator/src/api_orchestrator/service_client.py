@@ -23,6 +23,12 @@ from kairos_common import ApiError
 # Default internal-call policy: a 3s timeout and exactly one retry.
 DEFAULT_TIMEOUT_S = 3.0
 RETRIES = 1
+# Separate, shorter CONNECT budget: on a healthy LAN a TCP connect completes in
+# milliseconds, so 1s only ever bites when the peer host is gone (robot powered
+# off in the cross-host split) — turning each proxied call's failure from a
+# ~3s-per-attempt hang into ~1s, while a slow RESPONSE still gets the full
+# read timeout.
+CONNECT_TIMEOUT_S = 1.0
 
 
 class BaseServiceClient:
@@ -49,7 +55,9 @@ class BaseServiceClient:
         self._name = name
         self._base_url = base_url.rstrip("/")
         self._client = client
-        self._timeout = timeout_s
+        self._timeout = httpx.Timeout(
+            timeout_s, connect=min(CONNECT_TIMEOUT_S, timeout_s)
+        )
         self._retries = retries
 
     @property
@@ -74,7 +82,7 @@ class BaseServiceClient:
         path: str,
         *,
         json: dict[str, Any] | None = None,
-        timeout: float | None = None,
+        timeout: float | httpx.Timeout | None = None,
         retries: int | None = None,
     ) -> dict[str, Any]:
         """Send a request with retry, mapping failures to a unified error.

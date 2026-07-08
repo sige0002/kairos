@@ -56,6 +56,10 @@ server {
         proxy_pass http://${WEBRTC_HOST}:${WEBRTC_PORT}/;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
+        # Fail fast when the upstream host is down (robot powered off in the
+        # cross-host split): nginx's 60s default would leave the camera pane
+        # "negotiating" for a minute before it errors.
+        proxy_connect_timeout 3s;
         proxy_read_timeout 1h;
     }
 
@@ -69,6 +73,8 @@ server {
         proxy_set_header Host $host;
         proxy_buffering off;
         proxy_cache off;
+        # Fail fast when the upstream host is down (see /webrtc/ above).
+        proxy_connect_timeout 3s;
         proxy_read_timeout 1h;
     }
 }

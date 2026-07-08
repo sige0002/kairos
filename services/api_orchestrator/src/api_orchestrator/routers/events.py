@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Header, Query, Request
@@ -48,6 +49,14 @@ async def events(
     resume_from = _parse_last_event_id(last_event_id_header, last_event_id)
 
     async def stream() -> AsyncIterator[str]:
+        # Tell a fresh subscriber the CURRENT monitor-bridge state up front —
+        # transitions are only published when they happen, so a client that
+        # connects while the robot is already off would otherwise never learn.
+        # No ``id:`` line: this is per-connection state, not a ring event.
+        status = hub.monitor_status
+        if status is not None:
+            payload = json.dumps({"monitor": status}, separators=(",", ":"))
+            yield f"event: bridge\ndata: {payload}\n\n"
         subscription = hub.subscribe(resume_from)
         try:
             while True:

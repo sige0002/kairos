@@ -53,6 +53,11 @@ EVENT_RECORD_STATUS = "record_status"
 EVENT_METRICS = "metrics"
 EVENT_ALERT = "alert"
 EVENT_JOB = "job"
+# Bridge connectivity: emitted on up/down transitions of the monitor SSE legs
+# so the UI can show an honest "robot offline" instead of a green badge that
+# only proves the LOCAL pipe to the orchestrator is open (the cross-host split
+# runs the monitor on the robot — a powered-off robot must be visible).
+EVENT_BRIDGE = "bridge"
 
 
 @dataclass(frozen=True)
@@ -86,6 +91,17 @@ class EventHub:
         self._lock = asyncio.Lock()
         self._tasks: list[asyncio.Task[None]] = []
         self._closing = False
+        # Per-leg monitor SSE connectivity; the aggregate transitions publish
+        # EVENT_BRIDGE. None = no attempt has resolved yet.
+        self._legs_up: dict[str, bool] = {}
+        self._monitor_up: bool | None = None
+
+    @property
+    def monitor_status(self) -> str | None:
+        """Current monitor-bridge state: ``"up"`` / ``"down"`` / ``None``."""
+        if self._monitor_up is None:
+            return None
+        return "up" if self._monitor_up else "down"
 
     # ---- lifecycle --------------------------------------------------------
 
@@ -199,24 +215,45 @@ class EventHub:
         """Subscribe to one monitor SSE leg and republish into the hub.
 
         Reconnects with backoff on any failure (the monitor may be down or
-        restart). Cancelled on shutdown.
+        restart). Cancelled on shutdown. Up/down transitions feed the
+        aggregated EVENT_BRIDGE state; only the FIRST failure of an outage is
+        a warning — with the robot powered off the retry loop otherwise spams
+        the log every backoff interval, forever.
         """
+        logged_down = False
         while not self._closing:
             try:
                 async for _evt, data in self._monitor.stream_sse(path):
+                    if not self._legs_up.get(path):
+                        logged_down = False
+                        await self._set_leg(path, up=True)
                     parsed = self._parse_json(data)
                     if parsed is not None:
                         await self.publish(event_type, parsed)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - keep the bridge alive.
-                logger.warning(
+                log = logger.debug if logged_down else logger.warning
+                log(
                     "monitor SSE bridge error",
                     extra={"path": path, "error": str(exc)},
                 )
+                logged_down = True
+            # Mark the leg down on failure OR on a first attempt that never
+            # connected (robot off from startup must still publish "down").
+            if self._legs_up.get(path, True):
+                await self._set_leg(path, up=False)
             if self._closing:
                 break
             await asyncio.sleep(RECONNECT_BACKOFF_S)
+
+    async def _set_leg(self, path: str, *, up: bool) -> None:
+        """Record one leg's state; publish EVENT_BRIDGE on aggregate change."""
+        self._legs_up[path] = up
+        aggregate = any(self._legs_up.values())
+        if aggregate != self._monitor_up:
+            self._monitor_up = aggregate
+            await self.publish(EVENT_BRIDGE, {"monitor": "up" if aggregate else "down"})
 
     @staticmethod
     def _parse_json(data: str) -> dict[str, Any] | None:

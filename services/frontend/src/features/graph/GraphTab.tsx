@@ -13,6 +13,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { RuntimeConfig } from '../../config';
 import { Card, SectionLabel, cn } from '../../components/ui';
+import { useUiStore } from '../../store/uiStore';
 import { useMetricHistory, type MetricSample } from './useMetricHistory';
 
 // Distinct line colours, assigned per panel by series order (so every chart's
@@ -228,6 +229,8 @@ function GraphPanel({
   onRemove: () => void;
 }) {
   const metric = METRICS.find((m) => m.key === panel.metric) ?? METRICS[0]!;
+  // Robot-edge reachability: explain an empty topic list when the robot is off.
+  const monitorBridge = useUiStore((s) => s.monitorBridge);
 
   const selected = useMemo(
     () =>
@@ -300,7 +303,11 @@ function GraphPanel({
       {/* Series toggles: every flowing topic; selected ones carry their line
           colour (or grey when beyond the {MAX_SERIES}-line display cap). */}
       {availableTopics.length === 0 ? (
-        <p className="text-[11.5px] text-gray-400">Waiting for metrics.</p>
+        <p className="text-[11.5px] text-gray-400">
+          {monitorBridge === 'down'
+            ? 'Robot offline — no metrics arriving (the monitor on the robot side is unreachable).'
+            : 'Waiting for metrics.'}
+        </p>
       ) : (
         <div className="flex max-h-[78px] flex-wrap gap-1.5 overflow-y-auto">
           {availableTopics.map((t) => {

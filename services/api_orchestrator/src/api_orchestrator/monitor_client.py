@@ -44,9 +44,9 @@ class MonitorClient(BaseServiceClient):
         blank-line dispatch). ``data:`` lines accumulate (multi-line allowed);
         a blank line dispatches the buffered event (default type ``message``).
         ``timeout=None`` disables the read timeout for the long-lived stream
-        (connect still applies via the client default).
+        (connect/write/pool still follow the client policy).
         """
-        read_timeout = httpx.Timeout(self._timeout, read=timeout)
+        read_timeout = self._stream_timeout(timeout)
         async with self._client.stream(
             "GET", f"{self._base_url}{path}", timeout=read_timeout
         ) as resp:
@@ -70,3 +70,16 @@ class MonitorClient(BaseServiceClient):
                 elif field == "data":
                     data_lines.append(value)
                 # id/retry fields are not needed for the upstream legs.
+
+    def _stream_timeout(self, read: float | None) -> httpx.Timeout:
+        """The base policy with only ``read`` swapped (None = endless stream).
+
+        Built field-by-field: ``httpx.Timeout(<Timeout>, read=...)`` asserts —
+        an instance base and per-field overrides cannot be combined.
+        """
+        return httpx.Timeout(
+            connect=self._timeout.connect,
+            read=read,
+            write=self._timeout.write,
+            pool=self._timeout.pool,
+        )

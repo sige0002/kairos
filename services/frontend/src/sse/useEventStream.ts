@@ -81,6 +81,13 @@ export function dispatchSseEvent(qc: QueryClient, type: string, raw: string): vo
     case 'job':
       applyJob(qc, data as JobStatus);
       break;
+    case 'bridge': {
+      // Orchestrator <-> monitor connectivity (the monitor runs ON the robot
+      // in the cross-host split). Drives the header badge + offline notes.
+      const bridge = data as { monitor?: string };
+      useUiStore.getState().setMonitorBridge(bridge?.monitor === 'up' ? 'up' : 'down');
+      break;
+    }
     case 'resync':
       // Server signalled the client fell outside the ring buffer; refetch all.
       void qc.invalidateQueries();
@@ -90,7 +97,14 @@ export function dispatchSseEvent(qc: QueryClient, type: string, raw: string): vo
   }
 }
 
-const EVENT_TYPES = ['record_status', 'metrics', 'alert', 'job', 'resync'] as const;
+const EVENT_TYPES = [
+  'record_status',
+  'metrics',
+  'alert',
+  'job',
+  'bridge',
+  'resync',
+] as const;
 
 /**
  * Subscribe to the orchestrator SSE stream for the lifetime of the component.

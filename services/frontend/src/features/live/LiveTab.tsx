@@ -641,6 +641,9 @@ function LiveMonitorPanel({
 }) {
   const { rows, measuredCount, paused, alerts } = monitor;
   const total = rows.length;
+  // Robot-edge reachability (orchestrator's monitor bridge): with the robot
+  // powered off, say so instead of the misleading empty "no topics yet".
+  const monitorBridge = useUiStore((s) => s.monitorBridge);
   // Collapsed alert surface: an active-count badge in the header expands a short
   // list. Default collapsed so it takes no space when nothing has fired.
   const [alertsOpen, setAlertsOpen] = useState(false);
@@ -756,7 +759,13 @@ function LiveMonitorPanel({
           <span className="text-right">Bandwidth</span>
         </div>
         {rows.length === 0 ? (
-          <p className="py-4 text-sm text-gray-500">No topics on the graph yet.</p>
+          <p className="py-4 text-sm text-gray-500">
+            {monitorBridge === 'down'
+              ? 'Robot offline — topic discovery and live metrics are unavailable ' +
+                '(the monitor on the robot side is unreachable). Recordings / ' +
+                'Validation / Datasets still work.'
+              : 'No topics on the graph yet.'}
+          </p>
         ) : (
           <div className="min-h-0 flex-1 overflow-y-auto">
             {sorted.map((m) => {

@@ -184,9 +184,15 @@ function Tabs({ config }: { config: RuntimeConfig }) {
   );
 }
 
-/** Live DDS/SSE connection chip in the header (driven by the SSE status). */
+/** Live DDS/SSE connection chip in the header.
+ *
+ * Two signals combine: the SSE pipe to the (local) orchestrator, and the
+ * orchestrator's own bridge to the monitor — which runs ON the robot in the
+ * cross-host split. A green "DDS connected" therefore requires BOTH; an open
+ * pipe with the bridge down reads "robot offline" instead of a false green. */
 function ConnectionBadge() {
   const status = useUiStore((s) => s.sseStatus);
+  const bridge = useUiStore((s) => s.monitorBridge);
   const tone: Record<SseStatus, 'green' | 'amber' | 'gray'> = {
     open: 'green',
     connecting: 'amber',
@@ -199,23 +205,33 @@ function ConnectionBadge() {
     reconnecting: 'reconnecting',
     closed: 'disconnected',
   };
-  const live = status === 'open';
+  const robotOffline = status === 'open' && bridge === 'down';
+  const live = status === 'open' && !robotOffline;
   return (
     <span
       data-testid="connection-status"
+      title={
+        robotOffline
+          ? 'The orchestrator is up, but the monitor (robot-edge) is unreachable — check the robot / ROBOT_IP.'
+          : undefined
+      }
       className={cn(
         'inline-flex items-center gap-2 rounded-control border px-3 py-2',
-        live ? 'border-teal-200 bg-teal-100' : 'border-gray-200 bg-white',
+        live
+          ? 'border-teal-200 bg-teal-100'
+          : robotOffline
+            ? 'border-amber-200 bg-amber-50'
+            : 'border-gray-200 bg-white',
       )}
     >
-      <StatusDot tone={tone[status]} />
+      <StatusDot tone={robotOffline ? 'amber' : tone[status]} />
       <span
         className={cn(
           'font-mono text-[12.5px] font-semibold',
-          live ? 'text-teal-700' : 'text-gray-600',
+          live ? 'text-teal-700' : robotOffline ? 'text-amber-700' : 'text-gray-600',
         )}
       >
-        {label[status]}
+        {robotOffline ? 'robot offline' : label[status]}
       </span>
     </span>
   );

@@ -17,6 +17,13 @@ import type { ProbeSeries } from '../features/probe/types';
 
 export type SseStatus = 'connecting' | 'open' | 'reconnecting' | 'closed';
 
+/** Monitor-bridge connectivity relayed by the orchestrator's `bridge` SSE
+ *  event: whether the orchestrator can reach the monitor (which runs ON the
+ *  robot in the cross-host split). `null` = not reported yet. Lets the header
+ *  distinguish "my pipe to the orchestrator is open" from "the robot-edge
+ *  services are actually reachable". */
+export type MonitorBridge = 'up' | 'down' | null;
+
 /** Max live stream previews: the Live grid maximizes up to a 2x2 (4) layout that
  *  fits the viewport without page scroll. */
 export const MAX_STREAM_PANES = 4;
@@ -65,6 +72,9 @@ interface UiState {
 
   sseStatus: SseStatus;
   setSseStatus: (s: SseStatus) => void;
+
+  monitorBridge: MonitorBridge;
+  setMonitorBridge: (s: MonitorBridge) => void;
 
   // Draft record metadata (operator/task). Kept here, not in the Live tab's
   // local state, so it survives the tab unmounting on navigation — otherwise
@@ -147,6 +157,9 @@ export const useUiStore = create<UiState>((set) => ({
 
   sseStatus: 'closed',
   setSseStatus: (sseStatus) => set({ sseStatus }),
+
+  monitorBridge: null,
+  setMonitorBridge: (monitorBridge) => set({ monitorBridge }),
 
   recordOperator: '',
   setRecordOperator: (recordOperator) => set({ recordOperator }),
