@@ -64,10 +64,23 @@ Divide the services into two groups along the **natural boundary** of whether or
 ### 3.2 Procedure
 Robot:
 ```bash
-# Place this repository on the robot, matching the robot's DDS
-ROBOT=airoa_hsr ROS_DOMAIN_ID=<robot's domain> RMW_IMPLEMENTATION=<matches the robot> \
-  docker compose -f compose.robot.yaml up -d --build      # or: make robot-up
+# Place this repository on the robot; match the robot's ROS 2 graph via .env
+cp .env.split.example .env   # edit ROS_DOMAIN_ID / RMW_IMPLEMENTATION / ROS_DISTRO
+make robot-up                # or: docker compose --env-file .env -f compose.robot.yaml up -d --build
 ```
+- `.env.split.example` has a **"ROS 2 graph (robot side)" section** where you set `ROS_DOMAIN_ID` /
+  `RMW_IMPLEMENTATION` / `ROS_DISTRO` (and optionally `CYCLONEDDS_URI` / `FASTRTPS_DEFAULT_PROFILES_FILE` /
+  `MSGS_OVERLAY_DIR` / `BIND_HOST`). For `ROS_DISTRO`, **the .env value beats the Makefile default
+  (jazzy)** (the image tag/base switches too).
+- Networking: all four robot-side services run with `network_mode: host` + `ipc: host` (inherited via
+  `extends` from `compose.yaml`). The HTTP APIs bind `BIND_HOST` (default `0.0.0.0`) and must be
+  reachable from the recording PC across the LAN (trusted-LAN premise; narrow it to the robot's LAN
+  interface IP if you must).
+- A robot using the gitignored `config/local/<robot>/` resolves even under plain `docker compose`
+  (without `make`): each service **resolves the given path committed → local at startup**. If the
+  robot's clone lacks the local tree itself, publish it from the recording PC with `make push-config`
+  (below).
+
 Recording PC:
 ```bash
 cp .env.split.example .env
@@ -121,7 +134,21 @@ the trade-off of placing one heavy reader/gateway on the robot side.
 - **config synchronization**: editing the orchestrator's Config tab writes to **the recording PC's /config**. Meanwhile recorder/monitor read
   **the robot's /config** (the recorder's `start_paused` / `max_cache_size_mb` / QoS come from the robot-side config;
   the selection of topics to record is passed in the start payload, so it is separate). **To change the recorder's behavior, edit the robot's config/
-  and `make config-reload`**. It is safe to treat config/ as a deploy-time asset.
+  and `make robot-config-reload`**. The gitignored `config/local/<robot>/` does not travel with git, so publish the
+  recording PC's copy to the robot's clone with **`make push-config`** (`deploy/sync/push_config.sh`, one-way
+  PC→robot rsync; `DELETE=1` also syncs deletions). It is safe to treat config/ as a deploy-time asset.
+- **Proxy**: when the recording PC sits behind a corporate proxy, Docker injects `HTTP(S)_PROXY` into every
+  container, and LAN calls to the robot plus healthchecks get sucked into the proxy and fail. All kairos HTTP is
+  LAN-internal, so compose hands every service `NO_PROXY` (default `localhost,127.0.0.1`; `.env.split.example`
+  also includes `ROBOT_IP`), and the orchestrator's internal httpx client runs with `trust_env=False`, never
+  reading the proxy environment variables at all.
+- **Robot power-off**: the host (recording PC) side does not go down. Recordings / Validation / Datasets / Config
+  keep working entirely locally, and Live/Graph explicitly say "robot offline" (the orchestrator relays its
+  monitor-SSE-bridge up/down as a `bridge` event to the UI; the header's green "DDS connected" requires the bridge
+  to be up). Robot-bound calls fail fast with a 1s connect budget (/topics 503s in about 2s; nginx's /webrtc and
+  /probe use `proxy_connect_timeout 3s`). This supports taking a laptop away and reviewing data later.
+  Caveat: the Recordings list reads the DB, so a run **recorded by a different orchestrator** does not appear
+  even after `make import-runs` brings its files in (runs recorded by this same PC's orchestrator do).
 - **Permissions**: the MCAP the recorder creates is owned by root. Align UID/GID/umask so the import side (the rsync user) can read it.
 - **Security**: all services are unauthenticated on the premise of a trusted LAN. Note that splitting increases the exposed surface (not exposed to the internet).
 

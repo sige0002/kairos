@@ -29,10 +29,10 @@ The single source of configuration shared across services, and the rules for ext
 | Key | Default | Description |
 |---|---|---|
 | `ROS_DOMAIN_ID` | `0` | The ROS 2 domain shared by all services |
-| `ROS_DISTRO` | `jazzy` | The ROS 2 distro of the base image |
+| `ROS_DISTRO` | `jazzy` | The ROS 2 distro of the base image. The `.env` value beats the Makefile's built-in default (`make` reads `.env` and exports it) |
 | `RMW_IMPLEMENTATION` | `rmw_fastrtps_cpp` | DDS implementation. Both RMWs (Fast DDS and Cyclone DDS) are bundled in the images, so this key switches between them. For a Cyclone DDS robot, set `rmw_cyclonedds_cpp` (see below) |
 | `DATA_DIR` | `./data` | Host-side data root (→ container `/data`) |
-| `ROBOT` | `airoa_hsr` | The active robot. Selects `config/<robot>/` (committed) or `config/local/<robot>/` (gitignored); the recording / stream / validation / validators / monitoring paths are derived from it (the Makefile resolves committed/local, and `docker compose` honors it via nested interpolation). The Config tab lets you select / edit robot → aspect → option |
+| `ROBOT` | `airoa_hsr` | The active robot. Selects `config/<robot>/` (committed) or `config/local/<robot>/` (gitignored); the recording / stream / validation / validators / monitoring paths are derived from it (the Makefile resolves committed/local, and `docker compose` honors it via nested interpolation; additionally each service re-resolves a given committed-shaped path to the `config/local/` side **at startup** when the former does not exist — `kairos_common.resolve_config_path` — so a local robot resolves even under plain `docker compose`). The Config tab lets you select / edit robot → aspect → option |
 | `RECORDING_CONFIG` | `/config/<robot>/recording/default.yaml` | The recording/monitoring YAML (normally derived from `ROBOT`; setting it directly in `.env` overrides the derived path). The path via compose is **container-absolute** (`./config`→`/config` mount) (see below) |
 | `STREAM_CONFIG` | `/config/<robot>/stream/default.yaml` | The initial pane definitions for the Stream tab. Derived from `ROBOT` automatically (container-absolute) |
 | `LOSS_REPORT_CONFIG` | `/config/<robot>/validators/loss_report.yaml` | `dora_runner`'s loss_report parameters. Derived from `ROBOT` automatically (container-absolute) |
@@ -53,6 +53,7 @@ The single source of configuration shared across services, and the rules for ext
 | `MAX_RECORD_BYTES` | `0` | `0`=unlimited. With `>0`, automatically stop recording on exceeding it |
 | `ALERT_CONFIG_PATH` | (optional, default empty=disabled) | `topic_monitor`'s alert definition file (**container-absolute**; convention is `/config/<robot>/monitoring/alerts.yaml`; a `config/local/<robot>/...` override takes precedence). Empty = alerts disabled. `make` derives it from `ROBOT` automatically; with plain `docker compose` set it by hand |
 | `CYCLONEDDS_URI` | (optional) | Cyclone DDS config file URI (e.g. `file:///config/cyclonedds.xml`). Use it to declare unicast peers, etc., when multicast discovery does not work across hosts. Passed to the container via `env_file` (the ROS services mount `/config` read-only) |
+| `NO_PROXY` | `localhost,127.0.0.1` | Proxy exemption for in-container HTTP (the same value is handed out as `no_proxy` too). On a host behind a corporate proxy, Docker injects `HTTP(S)_PROXY` into every container; without this, healthchecks and service-to-service LAN calls get sucked into the proxy and fail. On the cross-host split add the robot IP (see `.env.split.example`). The orchestrator's internal httpx client is `trust_env=False` to begin with |
 | `KAIROS_DORA_MAX_CONCURRENCY` | `2` | The cap on the number of jobs `dora_runner` runs concurrently |
 | `KAIROS_DORA_JOB_TIMEOUT_S` | `900` | The wall-clock cap (seconds) per `dora_runner` job |
 

@@ -63,10 +63,22 @@ sample あたり 1 回で、ローカル記録と同じ）。**重いデータ�
 ### 3.2 手順
 ロボット:
 ```bash
-# ロボットに本リポジトリを配置し、ロボットの DDS に合わせて
-ROBOT=airoa_hsr ROS_DOMAIN_ID=<robot's domain> RMW_IMPLEMENTATION=<robot に一致> \
-  docker compose -f compose.robot.yaml up -d --build      # または: make robot-up
+# ロボットに本リポジトリを配置し、.env でロボットの ROS 2 グラフに合わせる
+cp .env.split.example .env   # ROS_DOMAIN_ID / RMW_IMPLEMENTATION / ROS_DISTRO を編集
+make robot-up                # または: docker compose --env-file .env -f compose.robot.yaml up -d --build
 ```
+- `.env.split.example` に **「ROS 2 graph (robot side)」セクション**があり、`ROS_DOMAIN_ID` /
+  `RMW_IMPLEMENTATION` / `ROS_DISTRO`（および任意の `CYCLONEDDS_URI` / `FASTRTPS_DEFAULT_PROFILES_FILE` /
+  `MSGS_OVERLAY_DIR` / `BIND_HOST`）をここで設定する。`ROS_DISTRO` は **.env の値が Makefile 既定
+  （jazzy）に勝つ**（イメージのタグ/ベースも切り替わる）。
+- ネットワークはロボット側 4 サービスとも `network_mode: host` + `ipc: host`（`compose.yaml` から
+  `extends` 継承）。HTTP API は `BIND_HOST`（既定 `0.0.0.0`）で bind し、録画 PC から LAN 越しに
+  届く必要がある（信頼 LAN 前提。絞る場合はロボットの LAN インタフェース IP に）。
+- gitignored な `config/local/<robot>/` を使うロボットは、各サービスが**起動時に committed →
+  local の順で実在パスへ解決**するため、`make` を介さない素の `docker compose` でも解決される。
+  ただしロボットのクローンに local ツリーそのものが無い場合は、録画 PC から `make push-config` で
+  配布する（下記）。
+
 録画 PC:
 ```bash
 cp .env.split.example .env
@@ -121,7 +133,21 @@ recorder は MCAP を**ロボットのディスク**に書く。dora（CPU 重�
 - **config の同期**: orchestrator の Config タブ編集は**録画 PC の /config**に書く。一方 recorder/monitor は
   **ロボットの /config**を読む（recorder の `start_paused` / `max_cache_size_mb` / QoS はロボット側 config 由来。
   記録トピックの選択は start ペイロードで渡るので別）。**recorder の挙動を変えるにはロボットの config/ を
-  編集して `make config-reload` する**。config/ はデプロイ時資産として扱うのが安全。
+  編集して `make robot-config-reload` する**。gitignored な `config/local/<robot>/` は git で運ばれないため、
+  録画 PC のコピーを **`make push-config`**（`deploy/sync/push_config.sh`、PC→ロボットの一方向 rsync、
+  `DELETE=1` で削除も同期）でロボットのクローンへ配布する。config/ はデプロイ時資産として扱うのが安全。
+- **プロキシ**: 録画 PC が corporate proxy 配下だと、Docker が全コンテナに `HTTP(S)_PROXY` を注入し、
+  ロボット向け LAN 呼び出しやヘルスチェックがプロキシへ吸われて失敗する。kairos の HTTP は全て LAN 内部
+  なので、compose が全サービスに `NO_PROXY`（既定 `localhost,127.0.0.1`、`.env.split.example` は
+  `ROBOT_IP` も含む）を配り、orchestrator の内部 httpx クライアントは `trust_env=False` でプロキシ環境
+  変数を一切見ない。
+- **ロボットの電源断**: ホスト（録画 PC）側は落ちない。Recordings / Validation / Datasets / Config は
+  ローカル完結で動き続け、Live/Graph は「robot offline」を明示する（orchestrator が monitor SSE ブリッジの
+  up/down を `bridge` イベントとして UI に流す。ヘッダーの緑「DDS connected」はブリッジ up が条件）。
+  ロボット向き呼び出しは connect 1s の fail-fast（/topics は約 2s で 503、nginx の /webrtc・/probe は
+  `proxy_connect_timeout 3s`）。ノート PC を持ち出して後からデータ確認する運用を想定している。
+  注意: Recordings 一覧は DB 参照のため、**別の orchestrator が録画した run** を `make import-runs` で
+  持ち込んでも一覧には出ない（同じ PC の orchestrator で録画した run は出る）。
 - **権限**: recorder が作る MCAP は root 所有。import 側（rsync ユーザ）が読めるよう UID/GID/umask を揃える。
 - **セキュリティ**: 全サービスは信頼 LAN 前提で無認証。分割で公開面が増える点に注意（インターネット非公開）。
 

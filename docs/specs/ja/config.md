@@ -26,10 +26,10 @@
 | キー | 既定 | 説明 |
 |---|---|---|
 | `ROS_DOMAIN_ID` | `0` | 全サービス共通の ROS 2 ドメイン |
-| `ROS_DISTRO` | `jazzy` | ベースイメージの ROS 2 ディストロ |
+| `ROS_DISTRO` | `jazzy` | ベースイメージの ROS 2 ディストロ。`.env` の値が Makefile 組み込み既定に勝つ（`make` が `.env` を読んで export する） |
 | `RMW_IMPLEMENTATION` | `rmw_fastrtps_cpp` | DDS 実装。Fast DDS と Cyclone DDS の両 RMW をイメージに同梱しており、本キーで切替可能。Cyclone DDS のロボットには `rmw_cyclonedds_cpp` を指定する（後述） |
 | `DATA_DIR` | `./data` | ホスト側データ root（→ コンテナ `/data`） |
-| `ROBOT` | `airoa_hsr` | アクティブな機体。`config/<robot>/`（committed）または `config/local/<robot>/`（gitignored）を選ぶ。recording / stream / validation / validators / monitoring の各パスはこれから派生する（Makefile が committed/local を解決し、`docker compose` もネスト補間で尊重）。Config タブで機体 → aspect → option を選択・編集できる |
+| `ROBOT` | `airoa_hsr` | アクティブな機体。`config/<robot>/`（committed）または `config/local/<robot>/`（gitignored）を選ぶ。recording / stream / validation / validators / monitoring の各パスはこれから派生する（Makefile が committed/local を解決し、`docker compose` もネスト補間で尊重。さらに各サービスは**起動時**に、与えられた committed 形のパスが実在しなければ `config/local/` 側へ解決し直す — `kairos_common.resolve_config_path` — ため、素の `docker compose` でも local 機体が解決される）。Config タブで機体 → aspect → option を選択・編集できる |
 | `RECORDING_CONFIG` | `/config/<robot>/recording/default.yaml` | 収録・監視の YAML（通常は `ROBOT` から自動導出。`.env` で直接指定すると派生より優先される）。compose 経由のパスは**コンテナ絶対**（`./config`→`/config` マウント）（下記） |
 | `STREAM_CONFIG` | `/config/<robot>/stream/default.yaml` | Stream タブの初期ペイン定義。`ROBOT` から自動導出（コンテナ絶対） |
 | `LOSS_REPORT_CONFIG` | `/config/<robot>/validators/loss_report.yaml` | `dora_runner` の loss_report パラメータ。`ROBOT` から自動導出（コンテナ絶対） |
@@ -50,6 +50,7 @@
 | `MAX_RECORD_BYTES` | `0` | `0`=無制限。`>0` で超過時に記録を自動 stop |
 | `ALERT_CONFIG_PATH` | (任意・既定は空=無効) | `topic_monitor` のアラート定義ファイル（**コンテナ絶対**、規約は `/config/<robot>/monitoring/alerts.yaml`。`config/local/<robot>/...` の override が優先）。空＝アラート無効。`make` は `ROBOT` から自動導出、素の `docker compose` では手で設定 |
 | `CYCLONEDDS_URI` | (任意) | Cyclone DDS の設定ファイル URI（例 `file:///config/cyclonedds.xml`）。クロスホストで multicast discovery が通らない場合に unicast peer を明示するなどに使う。`env_file` 経由でコンテナに渡る（ROS サービスは `/config` を read-only マウント済み） |
+| `NO_PROXY` | `localhost,127.0.0.1` | コンテナ内 HTTP のプロキシ除外（`no_proxy` にも同値を配布）。corporate proxy 配下のホストでは Docker が `HTTP(S)_PROXY` を全コンテナへ注入するため、これが無いとヘルスチェックやサービス間 LAN 呼び出しがプロキシへ吸われて失敗する。クロスホスト分割ではロボット IP を追加する（`.env.split.example` 参照）。orchestrator の内部 httpx クライアントはそもそも `trust_env=False` |
 | `KAIROS_DORA_MAX_CONCURRENCY` | `2` | `dora_runner` が同時実行するジョブ数の上限 |
 | `KAIROS_DORA_JOB_TIMEOUT_S` | `900` | `dora_runner` の 1 ジョブあたりの wall-clock 上限（秒） |
 
