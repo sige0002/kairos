@@ -65,6 +65,23 @@ ROS 2 のトピックを **MCAP に正式記録する**コンテナ。公式の�
 
 resume は **rosbag2 の `~/resume` サービス**で行うため、対話 SPACE キー（≒擬似 TTY/pty が必要）に依存しない。recorder には常時 `--disable-keyboard-controls` を渡し、キーボード制御を無効化する（不要なオーバーヘッドと TTY 依存の排除）。
 
+### 録画開始レイテンシ（多トピック時）と two-phase start — **TBD**
+
+**現象**: トピック数が多い構成（例: カメラ 4 + 数値 27 = 31 topics）では、`POST /record/start` から実際の書き込み開始まで数秒かかる。内訳は ① `ros2 bag record` の**サブプロセス spawn**（Python CLI + rclcpp 初期化で 1〜3 秒）、② 新規 DDS participant の **discovery + 対象トピックの購読マッチング**（トピック数・グラフ規模に比例。グラフが混んでいるほど延びる）、③ writer 初期化。UI の「recording（赤）」は start 受理で点くため、`start_paused` 無効時は「**赤いのにまだ録れていない**」時間として現れる（有効時は同じ時間が start 応答待ちとして現れる — 見え方が違うだけで根は同じ）。
+
+**TBD（推奨案・要ユーザ判断）: two-phase start（prepare → resume）。** 既存の start-paused readiness gate をそのまま土台に、spawn とマッチングを**操作より前**に済ませる:
+
+1. `POST /record/prepare`（新設）— recorder を `--start-paused` で spawn し、購読マッチングまで済ませて **armed** で待機。matched/missing は既存の arming 観測スナップショットを流用。run_id は prepare 時に採番（rosbag2 は spawn 時に出力先を開くため）。
+2. `POST /record/start` — armed なら `~/resume` を呼ぶだけ。**開始は実測ミリ秒オーダー**になり、「resume 以降は全購読 live」という現行ゲートの保証も維持。
+3. **auto-disarm** — armed のまま一定時間（例 120 秒）start が来なければ破棄し、空の run ディレクトリも削除（下記コスト対策として必須）。
+
+トレードオフ（明示）:
+
+- **armed 中も購読は live** = 記録と同じ DDS リーダ負荷がかかり続ける（paused の rosbag2 は受信して捨てる）。SHM が効かない構成（[deployment_topology](deployment_topology.md) の「単一ホスト SHM の成立条件」）ではフルコピー負荷なので、arm 窓は短く保ち、UI の操作意図（記録準備の明示操作）に連動させる。
+- prepare/armed/disarm の API・状態機械が増える（orchestrator / frontend の変更を伴う設計変更）。よって **TBD** とし、実装判断はユーザと行う。
+
+**代替案（比較済み）**: 常駐 recorder ノード（rosbag2_py で participant/購読を温存）は spawn コストを恒久に消せるが、実績ある `ros2 bag record` サブプロセスの挙動（cache 溢れの `Total lost` 検出・split・SIGINT での flush）を自前実装で置き換えることになり、リスク対効果が悪く**非推奨**。DDS discovery チューニング（initial announcements 等）は短縮効果が小さく単独では解決しない（加点程度）。
+
 ## 取りこぼし検出（記録キャッシュ整合性）
 
 `ros2 bag record` は受信メッセージを **メモリ内キャッシュ**（`--max-cache-size`、既定 100 MiB）に貯め、書き込みスレッドがディスクへ吐き出す。バースト・低速ストレージ・CPU 制約などで**書き込みが追いつかないとキャッシュが溢れ、超過分は黙って捨てられる**（rosbag2 が終了時に `Total lost: N` を stderr に出す）。これは記録中の主要なデータ欠落経路。

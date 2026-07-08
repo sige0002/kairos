@@ -76,6 +76,7 @@ In ROS 2, the two ends (the robot and the subscriber) must use the **same RMW im
 - Also make sure **`ROS_DOMAIN_ID` matches the robot** (default `0`).
 - No extra setup is needed when multicast discovery works on the same host / same LAN. When discovery does not work across hosts, declare unicast peers via `CYCLONEDDS_URI` (see the table above).
 - The local-verification test harness (`deploy/test/`, which plays back a bag to act as the robot) also bundles both RMWs and is switchable via `RMW_IMPLEMENTATION`, so you can verify the Cyclone DDS path with the sample bag.
+- **Same-host shared memory (SHM) is vendor-dependent**: Fast DDS enables it by default with `ipc: host` (already configured). **Cyclone DDS additionally requires Iceoryx (not bundled)**, so even on the same host every reader receives a full loopback-UDP copy. If large messages (images) hit fragment-loss errors, raise the host's `net.core.rmem_max` and enlarge the receive buffer via `<Internal><SocketReceiveBufferSize min="16MB"/></Internal>` in the `CYCLONEDDS_URI` XML. Details and the empirical check procedure: "Conditions for single-host SHM" in [deployment_topology](deployment_topology.md).
 
 ## Recording/monitoring YAML (`RECORDING_CONFIG`, deployment tuning)
 

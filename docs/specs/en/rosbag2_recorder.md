@@ -67,6 +67,23 @@ Enable the mitigation with `recording.start_paused: true` (default `false`): sta
 
 Resume is done via the **rosbag2 `~/resume` service**, so it does not depend on the interactive SPACE key (which requires a pseudo-TTY/pty). The recorder is always passed `--disable-keyboard-controls` to disable keyboard control (removing needless overhead and the TTY dependency).
 
+### Recording-start latency (many topics) and two-phase start — **TBD**
+
+**Symptom**: with many topics (e.g. 4 cameras + 27 numeric = 31 topics), it takes several seconds from `POST /record/start` until writing actually begins. The breakdown: ① the **subprocess spawn** of `ros2 bag record` (Python CLI + rclcpp init, 1–3 s), ② the new DDS participant's **discovery + subscription matching for the target topics** (proportional to topic count and graph size; longer on a busy graph), ③ writer init. The UI's "recording (red)" lights on start acceptance, so with `start_paused` disabled this appears as time where it is "**red but not yet recording**" (with it enabled, the same time appears as the start-response wait — a different presentation of the same root cause).
+
+**TBD (recommended proposal — user decision required): two-phase start (prepare → resume).** Build directly on the existing start-paused readiness gate, finishing the spawn and matching **before** the operator's action:
+
+1. `POST /record/prepare` (new) — spawn the recorder with `--start-paused`, complete subscription matching, and wait **armed**. matched/missing reuses the existing arming observational snapshot. The run_id is assigned at prepare time (rosbag2 opens its output at spawn).
+2. `POST /record/start` — when armed, just call `~/resume`. **Starting becomes millisecond-order in practice**, and the current gate's guarantee — "all subscriptions live from resume onward" — is preserved.
+3. **auto-disarm** — if no start arrives within a fixed window (e.g. 120 s) while armed, tear down and delete the empty run directory (mandatory as the cost mitigation below).
+
+Trade-offs (explicit):
+
+- **Subscriptions are live while armed** = the same DDS reader load as recording continues the whole time (a paused rosbag2 receives and discards). In setups where SHM is not effective (see "Conditions for single-host SHM" in [deployment_topology](deployment_topology.md)), that is full-copy load — keep the arm window short and tie it to explicit operator intent in the UI (an explicit prepare-to-record action).
+- It adds a prepare/armed/disarm API and state machine (a design change touching the orchestrator / frontend). Hence **TBD**; the implementation decision is made with the user.
+
+**Alternatives (compared)**: a resident recorder node (keeping the participant/subscriptions warm via rosbag2_py) would permanently remove the spawn cost, but it replaces the proven `ros2 bag record` subprocess behaviour (the `Total lost` cache-overflow detection, split, SIGINT flush) with a hand-rolled implementation — poor risk/benefit, **not recommended**. DDS discovery tuning (initial announcements etc.) shaves little and does not solve it alone (marginal gain).
+
 ## Drop detection (recording cache integrity)
 
 `ros2 bag record` accumulates received messages in an **in-memory cache** (`--max-cache-size`, default 100 MiB) that a writer thread flushes to disk. Under bursts, slow storage, or CPU constraints, **if writing cannot keep up the cache overflows and the excess is silently discarded** (rosbag2 prints `Total lost: N` to stderr at shutdown). This is the main data-loss path during recording.

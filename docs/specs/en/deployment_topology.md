@@ -53,6 +53,22 @@ Divide the services into two groups along the **natural boundary** of whether or
 > The essence of the guarantee is "**do not place a single DDS reader on the recording-PC side**". Heavy data does not become
 > a remote DDS flow. This is ideal for data collection for imitation learning (record at full resolution, check later).
 
+### 2.1 Conditions for single-host SHM (important / partly **TBD**)
+
+The claim above — "local subscription via ipc:host shared memory = zero additional network egress" — holds **only when SHM is actually in effect**. Whether it is depends on the RMW vendor:
+
+- **Fast DDS (kairos default `rmw_fastrtps_cpp`)**: the SHM transport is enabled by default. If the robot-side publishers are also Fast DDS, single-host subscriptions ride SHM with `ipc: host` (already configured). **No extra work.**
+- **Cyclone DDS (when switched to `rmw_cyclonedds_cpp`)**: Cyclone's SHM **additionally requires Iceoryx (a resident iox-roudi + `<SharedMemory>` configuration, and generally an SHM-enabled source build)**, which **kairos does not bundle**. On a Cyclone robot, therefore, **every local reader receives a full loopback-UDP copy even on the same host**, and large samples (images etc.) are IP-fragmented. When fragments are lost under load, the receiving side's decode can raise errors like `sequence size exceeds remaining buffer` (CDR length overrun).
+- Verifying empirically: with kairos up and subscribing, watch the receive bandwidth on `lo` on the host (e.g. `sar -n DEV 1`). If it grows by camera bandwidth × N as you add subscribing services, SHM is not in effect. Fast DDS SHM segments can be checked with `ls /dev/shm`.
+
+**Mitigating while staying on Cyclone (without SHM) — possible with kairos alone:**
+
+1. **Enlarge receive buffers** (the first move against fragment loss): on the host, `sysctl -w net.core.rmem_max=67108864` (raise `rmem_default` too) + specify `<Internal><SocketReceiveBufferSize min="16MB"/></Internal>` in the `CYCLONEDDS_URI` XML (it reaches every ROS service via the `/config` mount; see `CYCLONEDDS_URI` in [config](config.md)).
+2. **Reduce concurrent readers**: while load is critical (e.g. during teleop), reduce readers other than the recorder (the monitor's `POST /metrics/pause`, close previews — they auto-stop after 60 s idle — and don't use the probe). This cuts the number of full copies itself.
+3. **Subscribe to compressed camera topics only** (the default). Don't drag in raw sibling topics via `--all` etc.
+
+**TBD**: full Cyclone + Iceoryx support (bundling iox-roudi in compose and preparing the XML; note **the robot-side nodes also need SHM enabled**, so kairos alone cannot complete it) is undecided due to the high effort. Where both sides can be unified on Fast DDS, that is the lowest-effort way to make SHM work.
+
 ## 3. Option A (default): edge recording (place the recorder on the robot)
 
 ### 3.1 Configuration files

@@ -52,6 +52,22 @@ sample あたり 1 回で、ローカル記録と同じ）。**重いデータ�
 > 保証の本質は「**録画 PC 側に DDS リーダを 1 つも置かない**」こと。重いデータがリモート DDS フローに
 > ならない。これは imitation-learning 用のデータ収集（フル解像度で記録し、後で確認）に最適。
 
+### 2.1 単一ホスト SHM の成立条件（重要 / 一部 **TBD**）
+
+上の「ipc:host の共有メモリでローカル購読＝追加 network 流出ゼロ」は、**SHM が実際に効いているときだけ**成立する。効くかどうかは RMW ベンダで決まる:
+
+- **Fast DDS（kairos 既定 `rmw_fastrtps_cpp`）**: SHM トランスポートが既定で有効。ロボット側 publisher も Fast DDS なら、`ipc: host`（設定済み）で同一ホスト購読は SHM に乗る。**追加作業なし。**
+- **Cyclone DDS（`rmw_cyclonedds_cpp` に切替時）**: Cyclone の SHM は **Iceoryx（iox-roudi 常駐 + `<SharedMemory>` 設定、一般に SHM 有効のソースビルド）が別途必要**で、**kairos には同梱していない**。したがって Cyclone のロボットでは、**同一ホストでも各ローカルリーダが loopback UDP のフルコピー**を受け、大きなサンプル（画像等）は IP フラグメント化される。負荷でフラグメントが欠けると、受信側の decode で `sequence size exceeds remaining buffer`（CDR 長超過）系のエラーが出得る。
+- 実測での確認: kairos 起動＋購読中にホストで `lo` の受信帯域を見る（例 `sar -n DEV 1`）。購読サービスを増やすたびにカメラ帯域×N で増えるなら SHM は効いていない。Fast DDS の SHM セグメントは `ls /dev/shm` で確認できる。
+
+**Cyclone のまま（SHM なしで）緩和する — kairos 単独で可能:**
+
+1. **受信バッファの拡大**（フラグメント欠落対策の第一手）: ホストで `sysctl -w net.core.rmem_max=67108864`（`rmem_default` も引き上げ）＋ `CYCLONEDDS_URI` の XML で `<Internal><SocketReceiveBufferSize min="16MB"/></Internal>` を指定（`/config` マウント経由で全 ROS サービスに届く。[config](config.md) の `CYCLONEDDS_URI`）。
+2. **同時リーダの削減**: teleop など負荷が厳しい間は recorder 以外のリーダを減らす（monitor の `POST /metrics/pause`・プレビューを閉じる〔60s idle で自動停止〕・probe を使わない）。フルコピーの本数そのものを減らす。
+3. **カメラは compressed のみ購読**（既定どおり）。raw の兄弟トピックを `--all` 等で巻き込まない。
+
+**TBD**: Cyclone + Iceoryx の正式対応（iox-roudi の compose 同梱・XML 整備。ただし**ロボット側ノードにも SHM 有効化が必要**で kairos 単独では完結しない）は高工数のため未定。両側を Fast DDS に統一できる環境では、それが最小工数で SHM を成立させる。
+
 ## 3. Option A（既定）: エッジ記録（recorder をロボットに置く）
 
 ### 3.1 構成ファイル

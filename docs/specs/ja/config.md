@@ -73,6 +73,7 @@ ROS 2 では**両端（ロボット側と購読側）で同じ RMW 実装**で�
 - 併せて **`ROS_DOMAIN_ID` をロボットと一致**させること（既定 `0`）。
 - 同一ホスト / 同一 LAN で multicast discovery が通る環境なら追加設定は不要。別ホストで discovery が通らない場合は `CYCLONEDDS_URI` で unicast peer を指定する（上表）。
 - ローカル検証用のテストハーネス（`deploy/test/`、bag 再生でロボット役）も同梱・`RMW_IMPLEMENTATION` で切替可能なので、Cyclone DDS 経路をサンプル bag で疎通確認できる。
+- **同一ホストの共有メモリ（SHM）はベンダ依存**: Fast DDS は `ipc: host`（設定済み）で既定有効。**Cyclone DDS は Iceoryx が別途必要（未同梱）**のため、同一ホストでも各リーダが loopback UDP のフルコピーを受ける。大きなメッセージ（画像）でフラグメント欠落によるエラーが出る場合は、ホスト `net.core.rmem_max` を引き上げ、`CYCLONEDDS_URI` の XML に `<Internal><SocketReceiveBufferSize min="16MB"/></Internal>` を指定して受信バッファを拡大する。詳細と実測確認手順は [deployment_topology](deployment_topology.md) の「単一ホスト SHM の成立条件」。
 
 ## 収録・監視の YAML（`RECORDING_CONFIG`、デプロイ調整）
 
