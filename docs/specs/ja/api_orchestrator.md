@@ -29,6 +29,7 @@
 - イベント: `GET /api/v1/events`（**SSE 集約**。契約は下記）
 - Pipeline / Job（stage3。詳細は [dora_runner](dora_runner.md)）: `GET /api/v1/pipelines`、`POST /api/v1/jobs`、`GET /api/v1/jobs/{id}/status`、`GET /api/v1/jobs/{id}/result`、`POST /api/v1/jobs/{id}/cancel`
 - 検証テンプレート: `GET/POST /api/v1/validation/templates`、`POST /api/v1/validation/templates/generate`（run から雛形生成）
+- ワンクリック検証プリセット: `GET /api/v1/validation/presets`（config 定義のプリセット＋未検証 run 一覧）
 - 設定: `GET /api/v1/config`（frontend 実行時設定: endpoints / tabs / defaults（`ros_domain_id` を含む）/ stream / schemas）。〔`GET/POST /api/v1/settings` は**未実装**（将来）。現状は下の `PUT /api/v1/config/recording` が設定編集の入口〕
 - 収録設定（フル編集）: `GET /api/v1/config/recording` → `{ config: <RecordingConfig dump>|null, path }`、`PUT /api/v1/config/recording`（body `{ config }`。下記「収録設定のフル編集」参照）
 - 設定カタログ: `GET /api/v1/config/options`、`POST /api/v1/config/select`（検証テンプレート等のカテゴリ別選択肢と現在の選択）
@@ -92,6 +93,8 @@ UI（Config タブ）から `RECORDING_CONFIG` 全体を編集・永続化する
   - `GET /api/v1/validation/templates` → `{ items: [ { name, version, required_topics: [ { name, type?: string } ] } ], next_cursor }`
   - `POST /api/v1/validation/templates` body = `{ name, version, required_topics: [ { name, type? } ] }` → `201` 同形
   - `POST /api/v1/validation/templates/generate` body = `{ run_id }` → `{ name, version, required_topics: [ ... ] }`（雛形）
+- ワンクリック検証プリセット:
+  - `GET /api/v1/validation/presets` → `{ items: [ { id, name, description, pipeline, params, total, pending, pending_run_ids: [ run_id ] } ] }`。静的フィールド（`id` / `name` / `description` / `pipeline` / `params`）は機体の `validation_presets.yaml`（[config](config.md)）由来。動的フィールドはリクエスト毎に算出＝完了収録（`recorded/` に残る run）のうち **その pipeline の `report/<pipeline>/<run_id>/summary.json` がまだ無い**もの（`pending_run_ids`）。UI はこれを 1 クリックで一括実行する（`POST /api/v1/jobs` を run ごと）。読み取り専用（状態は変えない）。
 - run（`GET /api/v1/runs/{id}` = RunDetail）: `{ run_id, state, started_at, ended_at?: string|null, operator?, task?, topics: [ { name, type, qos } ], compression, split?: object|null, error?: { code, message }|null, manifest?: object|null, validation?: object|null, dataset_stats?: object|null, loss?: object|null }`（末尾 4 つはディスク上サイドカー由来。不在で `null`）。
 - job（`GET /api/v1/jobs/{id}/status`）: `{ job_id, run_id, pipeline, state, progress, logs_tail }`（[dora_runner](dora_runner.md)）。
 

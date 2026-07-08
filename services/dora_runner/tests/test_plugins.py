@@ -238,3 +238,57 @@ def test_hello_dora_job_via_api(tmp_path: Path) -> None:
 
         body = client.get(f"/jobs/{job_id}/result").json()
         assert body["summary"]["metrics"]["message_count"] == 4
+
+
+# ---- bundled hello_kairos template plugin -------------------------------------
+
+
+def test_hello_kairos_is_registered_with_metadata() -> None:
+    registry = build_default_registry(plugins_dir=REAL_PLUGINS)
+    pipe = registry.get("hello_kairos")
+    assert pipe is not None
+    assert pipe.enabled  # has a runner
+    assert pipe.executor == "dora"
+    assert "subject" in pipe.params_schema["properties"]
+    assert pipe.outputs  # advertises an output contract
+
+
+def test_hello_kairos_greets_from_the_subject_param(tmp_path: Path) -> None:
+    # No MCAP needed: this template plugin ignores the recording and only echoes
+    # its input param, so a bare (valid) run_id is enough to form the report path.
+    data_dir = tmp_path / "data"
+    registry = build_default_registry(plugins_dir=REAL_PLUGINS)
+    pipe = registry.get("hello_kairos")
+    assert pipe is not None and pipe.runner is not None
+
+    job = JobRecord(
+        job_id="j1",
+        run_id="run_hello",
+        pipeline="hello_kairos",
+        params={"subject": "kairos"},
+    )
+    result = asyncio.run(pipe.runner(job, RunnerStore(), data_dir))
+
+    summary = result["summary"]
+    assert summary["pipeline"] == "hello_kairos"
+    assert summary["result"] == "pass"
+    assert summary["message"] == "hello kairos!"
+    assert summary["metrics"]["subject"] == "kairos"
+
+    summary_path = data_dir / "report" / "hello_kairos" / "run_hello" / "summary.json"
+    assert summary_path.exists()
+    assert json.loads(summary_path.read_text())["message"] == "hello kairos!"
+
+
+def test_hello_kairos_shout_and_default_subject(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    registry = build_default_registry(plugins_dir=REAL_PLUGINS)
+    pipe = registry.get("hello_kairos")
+    assert pipe is not None and pipe.runner is not None
+
+    # Empty params -> default subject "kairos"; shout upper-cases the greeting.
+    job = JobRecord(
+        job_id="j2", run_id="run_shout", pipeline="hello_kairos", params={"shout": True}
+    )
+    result = asyncio.run(pipe.runner(job, RunnerStore(), data_dir))
+    assert result["summary"]["message"] == "HELLO KAIROS!"

@@ -11,6 +11,7 @@ export const queryKeys = {
   runs: (cursor?: string) => ['runs', cursor ?? null] as const,
   run: (id: string) => ['runs', 'detail', id] as const,
   pipelines: ['pipelines'] as const,
+  validationPresets: ['validation', 'presets'] as const,
   job: (id: string) => ['jobs', id] as const,
   jobResult: (id: string) => ['jobs', id, 'result'] as const,
   configOptions: ['config', 'options'] as const,

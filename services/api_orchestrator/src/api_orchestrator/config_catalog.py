@@ -25,7 +25,9 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Any
 
+import yaml
 from kairos_common import (
     ApiError,
     ValidationTemplate,
@@ -33,7 +35,7 @@ from kairos_common import (
     load_stream_config,
     load_validation_template,
 )
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, ValidationError
 
 logger = logging.getLogger("kairos")
 
@@ -45,6 +47,9 @@ SELECTABLE_CATEGORIES = ("robot", *ASPECTS)
 IMMEDIATE_ASPECTS = ("validation",)
 # The conventional default option stem in each aspect dir.
 DEFAULT_OPTION = "default"
+# Robot-level file (sibling to the aspect dirs) listing one-click validation
+# presets for the Validation tab. Not an aspect (not selectable) — a flat list.
+PRESETS_FILE = "validation_presets.yaml"
 
 
 class RobotOption(BaseModel):
@@ -66,6 +71,22 @@ class AspectOption(BaseModel):
     path: str
     local: bool
     meta: dict
+
+
+class ValidationPreset(BaseModel):
+    """A one-click validation defined in ``<robot>/validation_presets.yaml``.
+
+    A preset binds a dora_runner ``pipeline`` to fixed ``params`` under a stable
+    ``id``, so the Validation tab can run it against every recording that has not
+    been validated by it yet, with no per-preset UI code. ``params`` is passed to
+    ``POST /jobs`` verbatim (e.g. ``{template: airoa_hsr}`` for fast_validation).
+    """
+
+    id: str = Field(pattern=r"^[a-z0-9_]+$")
+    name: str
+    description: str = ""
+    pipeline: str
+    params: dict[str, Any] = Field(default_factory=dict)
 
 
 class ConfigCatalog:
@@ -250,3 +271,50 @@ class ConfigCatalog:
             return load_validation_template(path)
         except (ValueError, OSError):
             return None
+
+    # ---- validation presets (one-click validations) -----------------------
+
+    def _presets_path(self) -> Path | None:
+        """Path to the active robot's ``validation_presets.yaml`` (or ``None``)."""
+        rdir, _ = self._robot_dir(self._active_robot)
+        if rdir is None:
+            return None
+        path = rdir / PRESETS_FILE
+        return path if path.is_file() else None
+
+    def list_validation_presets(self) -> list[ValidationPreset]:
+        """Load the active robot's one-click validation presets (best effort).
+
+        Reads ``<robot>/validation_presets.yaml`` (``presets:`` list). A missing
+        file yields ``[]``; a single malformed entry is skipped with a warning so
+        one typo never hides the rest (mirrors plugin discovery's failure
+        isolation). Returns them in file order.
+        """
+        path = self._presets_path()
+        if path is None:
+            return []
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError) as exc:
+            logger.warning(
+                "validation presets failed to load",
+                extra={"path": str(path), "error": str(exc)},
+            )
+            return []
+        out: list[ValidationPreset] = []
+        seen: set[str] = set()
+        for raw in data.get("presets", []) or []:
+            try:
+                preset = ValidationPreset.model_validate(raw)
+            except ValidationError as exc:
+                logger.warning(
+                    "skipping invalid validation preset",
+                    extra={"path": str(path), "error": str(exc)},
+                )
+                continue
+            if preset.id in seen:  # first wins, like the aspect/plugin registries
+                logger.warning("duplicate validation preset id: %s", preset.id)
+                continue
+            seen.add(preset.id)
+            out.append(preset)
+        return out

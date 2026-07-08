@@ -30,6 +30,7 @@ The **job management / state management / API hub** container. The single public
 - Events: `GET /api/v1/events` (**SSE aggregation**. Contract below)
 - Pipeline / Job (stage3. Details in [dora_runner](dora_runner.md)): `GET /api/v1/pipelines`, `POST /api/v1/jobs`, `GET /api/v1/jobs/{id}/status`, `GET /api/v1/jobs/{id}/result`, `POST /api/v1/jobs/{id}/cancel`
 - Validation templates: `GET/POST /api/v1/validation/templates`, `POST /api/v1/validation/templates/generate` (generate a draft from a run)
+- One-click validation presets: `GET /api/v1/validation/presets` (config-defined presets + their not-yet-validated runs)
 - Settings: `GET /api/v1/config` (frontend runtime settings: endpoints / tabs / defaults (including `ros_domain_id`) / stream / schemas). [`GET/POST /api/v1/settings` is **not implemented** (future); `PUT /api/v1/config/recording` below is currently the entry point for config editing]
 - Recording config (full edit): `GET /api/v1/config/recording` → `{ config: <RecordingConfig dump>|null, path }`, `PUT /api/v1/config/recording` (body `{ config }`. See "Full editing of recording config" below)
 - Settings catalog: `GET /api/v1/config/options`, `POST /api/v1/config/select` (per-category choices such as validation templates, and the current selection)
@@ -93,6 +94,8 @@ An operation that **moves a recording from the canonical staging (`recorded/`) t
   - `GET /api/v1/validation/templates` → `{ items: [ { name, version, required_topics: [ { name, type?: string } ] } ], next_cursor }`
   - `POST /api/v1/validation/templates` body = `{ name, version, required_topics: [ { name, type? } ] }` → `201` same shape
   - `POST /api/v1/validation/templates/generate` body = `{ run_id }` → `{ name, version, required_topics: [ ... ] }` (a draft)
+- One-click validation presets:
+  - `GET /api/v1/validation/presets` → `{ items: [ { id, name, description, pipeline, params, total, pending, pending_run_ids: [ run_id ] } ] }`. The static fields (`id` / `name` / `description` / `pipeline` / `params`) come from the robot's `validation_presets.yaml` ([config](config.md)). The dynamic fields are computed per request = the completed recordings (runs still in `recorded/`) for which **that pipeline's `report/<pipeline>/<run_id>/summary.json` does not exist yet** (`pending_run_ids`). The UI runs them in one click (`POST /api/v1/jobs` per run). Read-only (does not change state).
 - run (`GET /api/v1/runs/{id}` = RunDetail): `{ run_id, state, started_at, ended_at?: string|null, operator?, task?, topics: [ { name, type, qos } ], compression, split?: object|null, error?: { code, message }|null, manifest?: object|null, validation?: object|null, dataset_stats?: object|null, loss?: object|null }` (the last 4 come from on-disk sidecars. `null` when absent).
 - job (`GET /api/v1/jobs/{id}/status`): `{ job_id, run_id, pipeline, state, progress, logs_tail }` ([dora_runner](dora_runner.md)).
 

@@ -1,0 +1,24 @@
+# dora dataflow: greet -> result_writer.
+#
+# Run it under the dora daemon (when the `dora` CLI is installed):
+#     dora up                       # start coordinator + daemon (once)
+#     KAIROS_RUN_ID=<run> KAIROS_DATA_DIR=/data \
+#     KAIROS_REPORT_DIR=/data/report/hello_kairos/<run> \
+#     KAIROS_PARAMS_JSON='{"subject":"kairos"}' \
+#     dora start dataflow.yml
+#
+# kairos runs this same graph in-process when the dora CLI is absent (a tiny
+# interpreter in plugin_loader.py topologically orders the nodes and calls each
+# node module's process()), so this works on a CPU-only host with no dora binary.
+nodes:
+  - id: greet
+    path: nodes/greet.py
+    # A source node needs a trigger; a 100 ms timer ticks it once to emit `summary`.
+    inputs:
+      tick: dora/timer/millis/100
+    outputs: [summary]
+
+  - id: result_writer
+    path: nodes/writer.py
+    inputs:
+      summary: greet/summary

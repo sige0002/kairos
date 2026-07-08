@@ -5,8 +5,10 @@ Drop-in pipelines for `dora_runner`. Each subdirectory here is one plugin: a
 `dora_runner.plugin_loader.discover_plugins()` scans every
 `*/kairos_plugin.yaml`, validates it, and registers it as a pipeline — so it
 shows up in `GET /pipelines` and `POST /jobs` with **no core code change** and
-**no frontend change** (the UI renders the job form from the manifest's
-`params_schema`).
+**no frontend change**. The Validation tab is pipeline-agnostic: it renders the
+job form from the manifest's `params_schema` **and** renders the result from the
+job's `summary.json` generically, so a plugin author never edits the UI (see
+[`docs/specs/ja/dora_plugins.md` §2.5](../../../docs/specs/ja/dora_plugins.md)).
 
 Design spec: [`docs/specs/ja/dora_plugins.md`](../../../docs/specs/ja/dora_plugins.md).
 
@@ -14,12 +16,18 @@ Design spec: [`docs/specs/ja/dora_plugins.md`](../../../docs/specs/ja/dora_plugi
 
 ```
 plugins/
-└─ hello_dora/                 # example plugin (this folder)
-   ├─ kairos_plugin.yaml       # manifest (required) — id / params_schema / entrypoint
-   ├─ dataflow.yml             # dora dataflow: mcap_loader -> summarize -> result_writer
-   └─ nodes/                   # dora nodes (one file per node)
-      ├─ loader.py
-      ├─ summarize.py
+├─ hello_dora/                 # example: count messages per topic in an MCAP
+│  ├─ kairos_plugin.yaml       #   manifest (required) — id / params_schema / entrypoint
+│  ├─ dataflow.yml             #   dora dataflow: mcap_loader -> summarize -> result_writer
+│  └─ nodes/                   #   dora nodes (one file per node)
+│     ├─ loader.py
+│     ├─ summarize.py
+│     └─ writer.py
+└─ hello_kairos/               # template: take an input, emit "hello kairos!"
+   ├─ kairos_plugin.yaml       #   copy-me starting point for a new plugin
+   ├─ dataflow.yml             #   dora dataflow: greet -> result_writer
+   └─ nodes/                   #   decode-free — ignores the MCAP, just greets
+      ├─ greet.py
       └─ writer.py
 ```
 

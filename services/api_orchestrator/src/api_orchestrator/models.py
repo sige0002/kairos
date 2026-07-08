@@ -231,3 +231,30 @@ class TemplateGenerateRequest(BaseModel):
     """Body for ``POST /api/v1/validation/templates/generate``."""
 
     run_id: str
+
+
+class ValidationPresetInfo(BaseModel):
+    """A one-click validation preset plus its live not-yet-validated targets.
+
+    (``GET /api/v1/validation/presets``) The static fields (``id`` / ``name`` /
+    ``description`` / ``pipeline`` / ``params``) come from the active robot's
+    ``validation_presets.yaml``; the dynamic ones are computed per request:
+    ``total`` completed recordings eligible, of which ``pending`` (listed in
+    ``pending_run_ids``) have no report for this preset's pipeline yet. The
+    Validation tab runs the preset over ``pending_run_ids`` with a single click.
+    """
+
+    id: str
+    name: str
+    description: str = ""
+    pipeline: str
+    params: dict[str, Any] = Field(default_factory=dict)
+    total: int
+    pending: int
+    pending_run_ids: list[str] = Field(default_factory=list)
+
+
+class ValidationPresetListResponse(BaseModel):
+    """List of one-click validation presets (``GET /api/v1/validation/presets``)."""
+
+    items: list[ValidationPresetInfo] = Field(default_factory=list)

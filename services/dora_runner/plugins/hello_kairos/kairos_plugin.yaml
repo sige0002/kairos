@@ -1,0 +1,38 @@
+# Template kairos plugin: take a text input, emit a greeting into summary.json.
+#
+# This is the smallest possible "input -> output" plugin: it does NOT decode the
+# MCAP at all, it just echoes the `subject` param into "hello <subject>!". Copy
+# this folder as the starting point for a real validation/conversion pipeline.
+#
+# A plugin author writes ONLY this manifest + the dataflow + nodes. The frontend
+# renders the input form from `params_schema` AND the result from summary.json,
+# with no UI change (see docs/specs/ja/dora_plugins.md §「UI 非依存の契約」).
+apiVersion: kairos.plugin/v1
+id: hello_kairos
+name: Hello kairos (greeting)
+description: >-
+  Template plugin. Takes a text input (`subject`) and writes a greeting —
+  "hello kairos!" by default — into summary.json. Decode-free (ignores the
+  recording); intended as the copy-me starting point for a new plugin.
+executor: dora
+version: 0.1.0
+required_inputs: [run_id]
+params_schema:
+  type: object
+  properties:
+    subject:
+      type: string
+      title: Greeting subject
+      description: Who to greet. "kairos" yields "hello kairos!".
+      default: kairos
+    shout:
+      type: boolean
+      title: Shout
+      description: Upper-case the greeting.
+      default: false
+outputs:
+  - "report/hello_kairos/<run_id>/summary.json"
+entrypoint:
+  dataflow: dataflow.yml
+requires:
+  gpu: false

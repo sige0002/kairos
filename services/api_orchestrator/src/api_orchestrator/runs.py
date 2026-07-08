@@ -516,6 +516,30 @@ class RunService:
     def _report_path(self, pipeline: str, run_id: str) -> Path:
         return self._data_dir / "report" / pipeline / run_id / "summary.json"
 
+    def has_report(self, pipeline: str, run_id: str) -> bool:
+        """Whether *pipeline* has already produced a report for *run_id*.
+
+        This is the "already validated by X" signal for one-click presets: a
+        pipeline writes ``report/<pipeline>/<run_id>/summary.json`` on success,
+        so its presence means the run was validated by that pipeline. Presets
+        that share a pipeline therefore share this state (keyed by pipeline, not
+        by preset).
+        """
+        return self._report_path(pipeline, run_id).is_file()
+
+    def pending_run_ids(self, pipeline: str) -> list[str]:
+        """Completed-with-files runs that *pipeline* has not validated yet.
+
+        The target set is un-exported completed recordings (their
+        ``recorded/<run_id>`` still on disk); a run already validated by
+        *pipeline* (its report exists) is excluded.
+        """
+        return [
+            run.run_id
+            for run in self.list_completed_with_files()
+            if not self.has_report(pipeline, run.run_id)
+        ]
+
     @staticmethod
     def _read_json(path: Path) -> dict[str, Any] | None:
         """Best-effort read of a JSON sidecar (``None`` on any failure)."""

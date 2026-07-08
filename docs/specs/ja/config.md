@@ -93,6 +93,26 @@ topic_qos_overrides:       # パターン → QoS（recorder / monitor が適用
 - **`recording` チューニング**: `start_delay_s`（publisher ウォームアップ待ち）に加え、開始時の購読確立 lag 対策として `start_paused`（既定 `false`／`true` で `--start-paused`＋購読 readiness gate＋resume を有効化）と `subscription_ready_timeout_s`（既定 5.0）を持つ。詳細は [rosbag2_recorder](rosbag2_recorder.md)。
 - **UI からの編集・永続化**: この `RECORDING_CONFIG` 全体は Config タブから編集できる（`GET/PUT /api/v1/config/recording`、[api_orchestrator](api_orchestrator.md)）。`PUT` は `RecordingConfig` で型検証し（失敗は `422`）、設定ファイルへアトミックに書き込んで在メモリ設定をホットスワップする。`default_topics` / `robot_name` は即時反映、`expected_hz` / QoS は各サービスの**再起動時**に反映される。
 
+## ワンクリック検証プリセット（`config/<robot>/validation_presets.yaml`）
+
+Validation タブの「ワンクリック検証ボタン」を機体単位で定義するファイル（aspect ではなく機体ルート直下のフラットな一覧。committed / gitignored 両対応）。各プリセットは dora_runner の `pipeline` を固定 `params` で束ねたもの。
+
+```yaml
+presets:
+  - id: hsr_required_topics        # ^[a-z0-9_]+$。プリセットの安定キー
+    name: HSR required topics      # ボタン表示名
+    description: ...               # 任意。ボタンの補足
+    pipeline: fast_validation      # dora_runner の pipeline id（GET /api/v1/pipelines）
+    params: { template: airoa_hsr }# POST /jobs にそのまま渡す（任意）
+  - id: loss_scan
+    name: Loss scan
+    pipeline: loss_report
+```
+
+- `GET /api/v1/validation/presets`（[api_orchestrator](api_orchestrator.md)）が各プリセットに、**その pipeline がまだ検証していない完了収録**（`pending_run_ids`）を付けて返す。ボタン押下でその run すべてに一括実行する（実行対象＝未検証データ）。
+- **「未検証」判定は pipeline 単位**（`report/<pipeline>/<run_id>/summary.json` の有無）。同じ pipeline を使う複数プリセットは「検証済み」状態を共有する（**1 pipeline = 1 preset を推奨**）。
+- 壊れたエントリ 1 個は skip + warn（他は生きる）。ファイルが無ければプリセット無し。plugin を足したら、その id をここに書くだけで押せる（UI 改修不要）。ひな形は `config/template/validation_presets.yaml`。
+
 ## 実行時設定（`GET /api/v1/config`）
 
 `api_orchestrator` が frontend 向けに返す（例）:

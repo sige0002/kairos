@@ -96,6 +96,26 @@ topic_qos_overrides:       # pattern → QoS (applied by recorder / monitor; fir
 - **`recording` tuning**: in addition to `start_delay_s` (waiting for publisher warmup), as a measure against the subscription-establishment lag at start it has `start_paused` (default `false`; `true` enables `--start-paused` + the subscription readiness gate + resume) and `subscription_ready_timeout_s` (default 5.0). For details see [rosbag2_recorder](rosbag2_recorder.md).
 - **Editing/persisting from the UI**: this entire `RECORDING_CONFIG` can be edited from the Config tab (`GET/PUT /api/v1/config/recording`, [api_orchestrator](api_orchestrator.md)). `PUT` is type-validated with `RecordingConfig` (failure is `422`), written atomically to the config file, and the in-memory settings are hot-swapped. `default_topics` / `robot_name` take effect immediately; `expected_hz` / QoS take effect on **restart** of each service.
 
+## One-click validation presets (`config/<robot>/validation_presets.yaml`)
+
+Defines the Validation tab's "one-click validation buttons" per robot (a flat list at the robot root, not an aspect; committed and gitignored both work). Each preset bundles a dora_runner `pipeline` with fixed `params`.
+
+```yaml
+presets:
+  - id: hsr_required_topics        # ^[a-z0-9_]+$. stable key for the preset
+    name: HSR required topics      # button label
+    description: ...               # optional. button subtext
+    pipeline: fast_validation      # a dora_runner pipeline id (GET /api/v1/pipelines)
+    params: { template: airoa_hsr }# forwarded to POST /jobs verbatim (optional)
+  - id: loss_scan
+    name: Loss scan
+    pipeline: loss_report
+```
+
+- `GET /api/v1/validation/presets` ([api_orchestrator](api_orchestrator.md)) returns each preset annotated with the **completed recordings that pipeline has not validated yet** (`pending_run_ids`). Clicking a button runs over all of them (target = not-yet-validated data).
+- **"Not yet validated" is keyed per pipeline** (presence of `report/<pipeline>/<run_id>/summary.json`). Presets sharing a pipeline share that state (**one pipeline = one preset recommended**).
+- A single broken entry is skipped with a warning (the rest keep working); a missing file means no presets. Add a plugin and just reference its id here to get a button (no UI change). The template is `config/template/validation_presets.yaml`.
+
 ## Runtime settings (`GET /api/v1/config`)
 
 What `api_orchestrator` returns for the frontend (example):

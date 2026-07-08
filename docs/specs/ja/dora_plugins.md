@@ -6,7 +6,8 @@
 > **実装状況（現状）**: Plugin/Pipeline Registry（`registry.py` + `plugin_loader.discover_plugins()`）と
 > **dora dataflow の in-process インタプリタ**は実装済み。ただし本書が前提とする **dora coordinator/daemon（Rust CLI）は未同梱**で、
 > `executor: dora` のプラグインも当面 in-process で実行される。プラグインは当初案の **git submodule ではなく in-tree**
-> （`services/dora_runner/plugins/<name>` 直置き）で配布し、manifest scan で自動登録する（例 `hello_dora`）。以下の
+> （`services/dora_runner/plugins/<name>` 直置き）で配布し、manifest scan で自動登録する（同梱例:
+> `hello_dora`＝MCAP のトピック件数集計、`hello_kairos`＝入力を受け取り `hello kairos!` を返す **copy-me な最小テンプレート**）。以下の
 > daemon 常駐・submodule ワークフローは**将来像**として読むこと。
 
 ## 決定事項（オーナー方針）
@@ -205,6 +206,32 @@ def discover_plugins(registry: PipelineRegistry, plugins_dir: Path) -> list[Plug
 
 > `kairos_common` に **plugin SDK**（loader・summary スキーマ・`send_summary()` ヘルパ）を切り出し、プラグイン作者が定型を書かなくて済むようにする（TBD: SDK の公開 API を確定）。
 
+### 2.5 UI 非依存の契約（プラグイン作者は frontend を触らない）★実装済み
+
+**プラグイン作者が書くのは manifest（`kairos_plugin.yaml`）＋ `dataflow.yml` ＋ `nodes/` だけ**で、frontend には一切触れない。
+入力フォームも結果表示も **backend-driven** で自動生成されるため、pipeline を 1 本足すのは「フォルダを置いて `make rebuild dora`」で完結する（**コア改修も UI 改修も不要**）。方向で整理すると：
+
+- **入力（実行フォーム）**: manifest の `params_schema`（JSON Schema）が `GET /pipelines` → `GET /api/v1/config` の
+  `schemas.pipeline_forms[<id>]` を経て frontend に届き、汎用フォーム `PipelineForm` がレンダリングする
+  （string / number / integer / boolean / enum / array-of-string の実用サブセット）。作者は UI コンポーネントを書かない。
+- **パイプライン選択**: Validation タブは `GET /pipelines` の **enabled な全 pipeline** を選択肢に出す。プラグインを追加すれば
+  そのまま選択肢に現れる（**pipeline id はハードコードしない**＝[frontend.md](frontend.md) の設計方針）。placeholder（`enabled=false`）は出さない。
+- **出力（結果表示）**: ジョブの `summary.json` を **汎用レンダラ `SummaryResult`** が shape を知らずにそのまま描く——
+  `result`（PASS/FAIL バッジ）/ `message`（見出し行）/ `metrics`・その他フィールド（key-value ツリー、ネスト・配列対応）/
+  `artifacts` / raw JSON。**新 pipeline 固有の結果ビューを frontend に足す必要はない**。
+- **唯一の例外（同梱 fast_validation のみ）**: 必須トピックの pass/fail は template の必須トピック一覧に対して見せた方が分かりやすいため、
+  fast_validation だけ専用カードを保持する。それ以外（`loss_report` / `video_check` / **全プラグイン**）は `SummaryResult` に載る。
+
+したがってプラグイン作者の責務は次の 2 点に限られる:
+
+1. **manifest の `params_schema` を書く**（＝入力 UI が生える）。
+2. **終端 node が `summary.json` を [§2.4 の contract](#24-node-io-契約プラグイン作者向け) 通りに書く**（＝結果 UI が生える）。
+   緩い規約として、`message`(str) を入れれば結果カードに見出しとして出る／`metrics`(obj) を入れれば表になる。
+
+> 実装: `services/frontend/src/features/validation/ValidationTab.tsx`（pipeline 選択＋dispatch）、
+> `SummaryResult.tsx`（汎用結果レンダラ）。契約テスト: `ValidationTab.test.tsx`
+> の "runs a plugin pipeline and renders its generic summary result"。テンプレートは同梱 `plugins/hello_kairos`。
+
 ## 3. submodule ワークフロー
 
 ### 3.1 追加・更新・固定
@@ -262,9 +289,11 @@ ENV KAIROS_PLUGINS_DIR=/app/plugins
 
 ## 6. 未決事項（TBD）
 
+- ~~**UI 非依存の実行フォーム／結果表示**~~ → **解決済み（§2.5）**。pipeline 選択（`GET /pipelines` 駆動）＋
+  汎用結果レンダラ `SummaryResult`（`summary.json` を shape 非依存で描画）を実装。プラグイン追加時に frontend を触らない。
 - **plugin SDK の公開 API**（`kairos_common` 側 loader / summary スキーマ / ヘルパの確定）。
 - **動的 params の渡し方**: 大きい params や run 中の対話が要る場合の dora dynamic node 採用可否。
 - **plugin 信頼境界**: submodule は任意コードを実行する。署名・許可リスト等を入れるか（trusted LAN 前提なら据置でも可）。
 - **drop-in（再ビルド不要）方式**の要否（本 v1 は submodule baked-in のみ）。
-- **`/pipelines` の `load_errors` 露出**と UI 表示の有無。
+- **`/pipelines` の `load_errors` 露出**と UI 表示の有無（読めなかったプラグインの可視化。結果表示の汎用化とは別課題）。
 - **in_process executor の廃止時期**（移行完了の判定基準）。

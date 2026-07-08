@@ -1,4 +1,4 @@
-"""Validation template endpoints."""
+"""Validation template + one-click preset endpoints."""
 
 from __future__ import annotations
 
@@ -7,11 +7,47 @@ from kairos_common import ApiError
 
 from api_orchestrator.models import (
     TemplateGenerateRequest,
+    ValidationPresetInfo,
+    ValidationPresetListResponse,
     ValidationTemplate,
     ValidationTemplateListResponse,
 )
 
 router = APIRouter(prefix="/api/v1/validation/templates", tags=["validation"])
+
+# Presets live one level up (/api/v1/validation/presets), so they get their own
+# router; both are registered by app_factory.
+presets_router = APIRouter(prefix="/api/v1/validation", tags=["validation"])
+
+
+@presets_router.get("/presets", response_model=ValidationPresetListResponse)
+async def list_presets(request: Request) -> ValidationPresetListResponse:
+    """List one-click validation presets with their not-yet-validated targets.
+
+    Presets come from the active robot's ``validation_presets.yaml``; for each,
+    the completed-recording target set and the subset still missing that
+    pipeline's report are computed live (so the UI can show "N pending" and run
+    exactly those). Nothing here mutates state.
+    """
+    catalog = request.app.state.config_catalog
+    service = request.app.state.run_service
+    total = len(service.list_completed_with_files())
+    items = []
+    for preset in catalog.list_validation_presets():
+        pending_run_ids = service.pending_run_ids(preset.pipeline)
+        items.append(
+            ValidationPresetInfo(
+                id=preset.id,
+                name=preset.name,
+                description=preset.description,
+                pipeline=preset.pipeline,
+                params=preset.params,
+                total=total,
+                pending=len(pending_run_ids),
+                pending_run_ids=pending_run_ids,
+            )
+        )
+    return ValidationPresetListResponse(items=items)
 
 
 @router.get("", response_model=ValidationTemplateListResponse)

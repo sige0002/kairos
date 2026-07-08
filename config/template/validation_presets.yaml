@@ -1,0 +1,29 @@
+# =============================================================================
+# config/template/validation_presets.yaml — one-click validations (template)
+# =============================================================================
+# Copy this into config/<robot>/ (or config/local/<robot>/) and edit. Each preset
+# is a one-click button on the Validation tab: it runs `pipeline` with `params`
+# against every completed recording that has not been validated by that pipeline
+# yet (target = not-yet-validated data).
+#
+# Fields:
+#   id          required. ^[a-z0-9_]+$. stable key for the preset.
+#   name        required. button label.
+#   description optional. button subtext.
+#   pipeline    required. a dora_runner pipeline id (see GET /api/v1/pipelines).
+#   params      optional. forwarded to POST /jobs verbatim.
+#
+# "Not yet validated" is keyed per pipeline (presence of
+# report/<pipeline>/<run_id>/summary.json), so presets sharing a pipeline share
+# that state. Adding a plugin? Just reference its id here — no UI change.
+# =============================================================================
+presets:
+  - id: required_topics
+    name: Required topics
+    description: Required-topic presence check (fast_validation, active template).
+    pipeline: fast_validation
+
+  - id: loss_scan
+    name: Loss scan
+    description: Per-topic gap-based loss estimate.
+    pipeline: loss_report

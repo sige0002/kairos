@@ -389,6 +389,8 @@ export interface PipelineInfo {
   description?: string;
   /** Interface-only placeholders report `false`; only `true` pipelines run. */
   enabled?: boolean;
+  /** Declared output contract, e.g. `report/<id>/<run_id>/summary.json`. */
+  outputs?: string[];
 }
 
 export interface JobSubmitRequest {
@@ -396,6 +398,23 @@ export interface JobSubmitRequest {
   /** Required by the backend (JobCreateRequest.run_id); every job targets a run. */
   run_id: string;
   params?: Record<string, unknown>;
+}
+
+/**
+ * A one-click validation preset (`GET /api/v1/validation/presets`). Static
+ * fields come from the robot's `validation_presets.yaml`; `total`/`pending`/
+ * `pending_run_ids` are computed per request — `pending_run_ids` are the
+ * completed recordings this preset's pipeline has not validated yet.
+ */
+export interface ValidationPreset {
+  id: string;
+  name: string;
+  description?: string;
+  pipeline: string;
+  params?: Record<string, unknown>;
+  total: number;
+  pending: number;
+  pending_run_ids: string[];
 }
 
 /** Terminal job result (GET /api/v1/jobs/{id}/result). */

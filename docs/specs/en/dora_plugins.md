@@ -8,7 +8,8 @@
 > **Implementation status (current)**: The Plugin/Pipeline Registry (`registry.py` + `plugin_loader.discover_plugins()`) and the
 > **in-process interpreter for dora dataflow** are implemented. However, the **dora coordinator/daemon (Rust CLI)** that this document assumes is **not bundled**, and
 > `executor: dora` plugins also run in-process for now. Plugins are distributed **in-tree rather than as the originally proposed git submodule**
-> (placed directly under `services/dora_runner/plugins/<name>`), and are auto-registered via manifest scan (e.g. `hello_dora`). Read the
+> (placed directly under `services/dora_runner/plugins/<name>`), and are auto-registered via manifest scan (bundled examples:
+> `hello_dora` = per-topic message counts from an MCAP; `hello_kairos` = a **copy-me minimal template** that takes an input and returns `hello kairos!`). Read the
 > daemon-resident / submodule workflow below as a **future vision**.
 
 ## Decisions (owner direction)
@@ -207,6 +208,32 @@ Follows the [dora_runner.md](dora_runner.md) contract. Plugin-side nodes:
 
 > Carve out a **plugin SDK** in `kairos_common` (loader / summary schema / `send_summary()` helper) so that plugin authors don't have to write boilerplate (TBD: finalize the SDK's public API).
 
+### 2.5 The UI-agnostic contract (plugin authors don't touch the frontend) ★implemented
+
+**A plugin author writes only the manifest (`kairos_plugin.yaml`) + `dataflow.yml` + `nodes/`** and never touches the frontend.
+Both the input form and the result view are auto-generated **backend-driven**, so adding a pipeline is "drop in a folder and `make rebuild dora`" (**no core change and no UI change**). Broken down by direction:
+
+- **Input (the run form)**: the manifest's `params_schema` (JSON Schema) reaches the frontend via `GET /pipelines` → the
+  `schemas.pipeline_forms[<id>]` of `GET /api/v1/config`, and the generic form `PipelineForm` renders it
+  (the practical subset of string / number / integer / boolean / enum / array-of-string). The author writes no UI component.
+- **Pipeline selection**: the Validation tab lists **every enabled pipeline** from `GET /pipelines` as options. Add a plugin and it
+  appears in the list (**pipeline ids are not hardcoded** = the design policy of [frontend.md](frontend.md)). Placeholders (`enabled=false`) are not shown.
+- **Output (the result view)**: the generic renderer `SummaryResult` draws the job's `summary.json` without knowing its shape —
+  `result` (a PASS/FAIL badge) / `message` (a headline) / `metrics` and other fields (a key/value tree with nesting and array support) /
+  `artifacts` / raw JSON. **There is no need to add a pipeline-specific result view to the frontend.**
+- **The one exception (bundled fast_validation only)**: the pass/fail of required topics reads better against the template's required-topic
+  list, so fast_validation alone keeps a bespoke card. Everything else (`loss_report` / `video_check` / **all plugins**) lands in `SummaryResult`.
+
+So a plugin author's responsibilities are limited to two things:
+
+1. **Write the manifest's `params_schema`** (= the input UI grows).
+2. **Have the terminal node write `summary.json` per the [§2.4 contract](#24-node-io-contract-for-plugin-authors)** (= the result UI grows).
+   As a loose convention, adding `message` (str) shows a headline on the result card / adding `metrics` (obj) shows a table.
+
+> Implementation: `services/frontend/src/features/validation/ValidationTab.tsx` (pipeline selection + dispatch),
+> `SummaryResult.tsx` (the generic result renderer). Contract test: the
+> "runs a plugin pipeline and renders its generic summary result" case in `ValidationTab.test.tsx`. The template is the bundled `plugins/hello_kairos`.
+
 ## 3. submodule workflow
 
 ### 3.1 Add / update / pin
@@ -264,9 +291,11 @@ ENV KAIROS_PLUGINS_DIR=/app/plugins
 
 ## 6. Open items (TBD)
 
+- ~~**The UI-agnostic run form / result view**~~ → **resolved (§2.5)**. Pipeline selection (driven by `GET /pipelines`) plus the
+  generic result renderer `SummaryResult` (which draws `summary.json` shape-independently) are implemented; adding a plugin does not touch the frontend.
 - **The plugin SDK's public API** (finalizing the `kairos_common`-side loader / summary schema / helpers).
 - **How to pass dynamic params**: whether to adopt dora dynamic nodes when large params or in-run interaction is required.
 - **Plugin trust boundary**: a submodule executes arbitrary code. Whether to add signing, allow-lists, etc. (may be deferred given the trusted-LAN premise).
 - **The need for a drop-in (no-rebuild) approach** (v1 is submodule baked-in only).
-- **Whether to expose `/pipelines`'s `load_errors`** and whether to display it in the UI.
+- **Whether to expose `/pipelines`'s `load_errors`** and whether to display it in the UI (making unreadable plugins visible; separate from generalizing the result view).
 - **When to remove the in_process executor** (the criteria for judging migration complete).
