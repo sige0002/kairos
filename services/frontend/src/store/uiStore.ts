@@ -136,7 +136,7 @@ interface UiState {
   // Stream camera previews: how many panes and what each shows. Seeded once from
   // config.stream.panes; add/remove/topic edits persist so opening a second
   // camera and switching tabs doesn't drop it back to the configured layout.
-  streamPanes: { id: number; topic: string }[];
+  streamPanes: { id: number; topic: string; maxWidth?: number | null; maxHeight?: number | null }[];
   streamPaneSeq: number;
   // Key of the config the panes were seeded from (the active robot's stream
   // config). Re-seed when it changes (e.g. a robot switch) so the panes follow
@@ -146,6 +146,8 @@ interface UiState {
   addStreamPane: () => void;
   removeStreamPane: (id: number) => void;
   setStreamPaneTopic: (id: number, topic: string) => void;
+  /** Per-pane preview resolution cap (null/null = Source, no downscale). */
+  setStreamPaneResolution: (id: number, maxWidth: number | null, maxHeight: number | null) => void;
 }
 
 export const useUiStore = create<UiState>((set) => ({
@@ -309,5 +311,11 @@ export const useUiStore = create<UiState>((set) => ({
   setStreamPaneTopic: (id, topic) =>
     set((s) => ({
       streamPanes: s.streamPanes.map((p) => (p.id === id ? { ...p, topic } : p)),
+    })),
+  setStreamPaneResolution: (id, maxWidth, maxHeight) =>
+    set((s) => ({
+      streamPanes: s.streamPanes.map((p) =>
+        p.id === id ? { ...p, maxWidth, maxHeight } : p,
+      ),
     })),
 }));

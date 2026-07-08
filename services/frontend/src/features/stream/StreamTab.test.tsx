@@ -42,6 +42,27 @@ class FakePeerConnection {
     return [];
   }
   close() {}
+  // Report a 640x480 (4:3) inbound video frame so the stats poll populates
+  // width/height (drives the pane's aspect-ratio fit and the resolution overlay).
+  getStats() {
+    return Promise.resolve(
+      new Map<string, Record<string, unknown>>([
+        [
+          'inbound',
+          {
+            type: 'inbound-rtp',
+            kind: 'video',
+            framesPerSecond: 15,
+            frameWidth: 640,
+            frameHeight: 480,
+            framesDecoded: 100,
+            jitterBufferDelay: 0.1,
+            jitterBufferEmittedCount: 10,
+          },
+        ],
+      ]),
+    );
+  }
 }
 
 beforeEach(() => {
@@ -87,6 +108,47 @@ test('negotiates a WebRTC preview and reaches connected', async () => {
   );
   expect(calls.some((u) => u.includes('http://localhost:8002/stream/offer'))).toBe(
     true,
+  );
+});
+
+test('lowering the preview resolution stops then restarts at the new cap', async () => {
+  renderWithClient(<StreamTab config={CONFIG} />);
+  await waitFor(() =>
+    expect(screen.getByTestId('stream-phase')).toHaveTextContent('connected'),
+  );
+
+  const fetchMock = globalThis.fetch as ReturnType<typeof vi.fn>;
+  fetchMock.mockClear();
+
+  fireEvent.change(screen.getByTestId('stream-resolution'), {
+    target: { value: '360p' },
+  });
+
+  // The streamer keys a stream by topic and ignores new caps on an existing one,
+  // so the pane stops the shared stream, then re-starts carrying 360p (640x360).
+  await waitFor(() => {
+    const startBodies = fetchMock.mock.calls
+      .filter((c) => String(c[0]).includes('/stream/start'))
+      .map((c) => JSON.parse(String((c[1] as RequestInit).body)) as Record<string, unknown>);
+    expect(startBodies.some((b) => b.max_width === 640 && b.max_height === 360)).toBe(true);
+  });
+  expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/stream/stop'))).toBe(true);
+});
+
+test('fits the pane to the video aspect ratio (drops the 16:9 box, no pillarbox)', async () => {
+  renderWithClient(<StreamTab config={CONFIG} />);
+  await waitFor(() =>
+    expect(screen.getByTestId('stream-phase')).toHaveTextContent('connected'),
+  );
+  // Once the stats poll reports a 640x480 frame, the surface drops its fixed
+  // `aspect-video` (16:9) box and takes the real 4:3 ratio so there are no bars.
+  await waitFor(
+    () => {
+      const surface = screen.getByTestId('stream-video').parentElement as HTMLElement;
+      expect(surface.className).not.toContain('aspect-video');
+      expect(surface.style.aspectRatio).toMatch(/^1\.33/);
+    },
+    { timeout: 3000 },
   );
 });
 

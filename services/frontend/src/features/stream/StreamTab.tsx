@@ -43,6 +43,20 @@ const GRID_COLS: Record<number, string> = {
   4: 'lg:grid-cols-4',
 };
 
+// Preview resolution caps. The streamer downscales aspect-preserved to fit
+// within (w x h); "Source" = no cap (native camera resolution). A lower cap cuts
+// the robot's VP8/H.264 encode CPU and the WebRTC egress — the bandwidth lever.
+const RES_PRESETS: { label: string; w: number | null; h: number | null }[] = [
+  { label: 'Source', w: null, h: null },
+  { label: '720p', w: 1280, h: 720 },
+  { label: '480p', w: 854, h: 480 },
+  { label: '360p', w: 640, h: 360 },
+  { label: '240p', w: 426, h: 240 },
+];
+function resLabel(w?: number | null, h?: number | null): string {
+  return RES_PRESETS.find((p) => p.w === (w ?? null) && p.h === (h ?? null))?.label ?? 'Source';
+}
+
 interface CameraOption {
   name: string;
   type?: string;
@@ -67,12 +81,18 @@ function VideoSurface({
   useEffect(() => {
     if (ref.current && stream) ref.current.srcObject = stream;
   }, [stream]);
+  // Match the pane to the video's real aspect ratio (from getStats) so a 4:3
+  // camera in a 16:9 box no longer shows black pillarbox bars. Fall back to 16:9
+  // until the first frame reports dimensions. In `fit` mode the grid cell drives
+  // the size, so we keep object-contain there.
+  const aspect = stats.width && stats.height ? stats.width / stats.height : null;
   return (
     <div
       className={cn(
         'relative w-full overflow-hidden rounded-control border border-gray-200 bg-[#0b0e12]',
-        fit ? 'min-h-0 flex-1' : 'aspect-video',
+        fit ? 'min-h-0 flex-1' : aspect ? '' : 'aspect-video',
       )}
+      style={!fit && aspect ? { aspectRatio: String(aspect) } : undefined}
     >
       <video
         ref={ref}
@@ -124,6 +144,9 @@ function CameraPane({
   removable,
   onRemove,
   fit,
+  maxWidth,
+  maxHeight,
+  onResolutionChange,
 }: {
   options: CameraOption[];
   topic: string;
@@ -133,6 +156,10 @@ function CameraPane({
   onRemove: () => void;
   /** Fill the grid cell's height (Live fit-to-viewport grid). */
   fit?: boolean;
+  /** Per-pane preview resolution cap (null/null = Source). */
+  maxWidth?: number | null;
+  maxHeight?: number | null;
+  onResolutionChange: (w: number | null, h: number | null) => void;
 }) {
   // Keep a valid selection as discovery changes; write back to the store so the
   // resolved topic persists across the tab unmounting on navigation.
@@ -142,7 +169,12 @@ function CameraPane({
     if (first) onTopicChange(first.name);
   }, [topic, options, onTopicChange]);
 
-  const { phase, stream, error, stats, retry } = useWebRtcStream({ webrtcBase, topic });
+  const { phase, stream, error, stats, retry } = useWebRtcStream({
+    webrtcBase,
+    topic,
+    maxWidth,
+    maxHeight,
+  });
   const phaseTone =
     phase === 'connected'
       ? 'green'
@@ -176,6 +208,23 @@ function CameraPane({
               </option>
             ))
           )}
+        </select>
+        <select
+          aria-label="preview resolution"
+          data-testid="stream-resolution"
+          className="rounded-control border border-gray-200 px-2 py-1 text-xs focus:border-teal-500 focus:outline-none"
+          value={resLabel(maxWidth, maxHeight)}
+          onChange={(e) => {
+            const p = RES_PRESETS.find((r) => r.label === e.target.value);
+            onResolutionChange(p?.w ?? null, p?.h ?? null);
+          }}
+          title="Preview resolution cap — lower = less encode CPU + bandwidth on the robot"
+        >
+          {RES_PRESETS.map((p) => (
+            <option key={p.label} value={p.label}>
+              {p.label}
+            </option>
+          ))}
         </select>
         <Badge tone={phaseTone} mono dot>
           <span data-testid="stream-phase">{phase}</span>
@@ -262,6 +311,7 @@ export function StreamTab({ config, fit }: { config: RuntimeConfig; fit?: boolea
   const addStreamPane = useUiStore((s) => s.addStreamPane);
   const removeStreamPane = useUiStore((s) => s.removeStreamPane);
   const setStreamPaneTopic = useUiStore((s) => s.setStreamPaneTopic);
+  const setStreamPaneResolution = useUiStore((s) => s.setStreamPaneResolution);
 
   useEffect(() => {
     const configured = config.stream?.panes ?? [];
@@ -316,6 +366,9 @@ export function StreamTab({ config, fit }: { config: RuntimeConfig; fit?: boolea
               webrtcBase={config.endpoints.webrtc}
               removable={panes.length > 1}
               onRemove={() => removeStreamPane(pane.id)}
+              maxWidth={pane.maxWidth}
+              maxHeight={pane.maxHeight}
+              onResolutionChange={(w, h) => setStreamPaneResolution(pane.id, w, h)}
               fit
             />
           ))}
@@ -331,6 +384,9 @@ export function StreamTab({ config, fit }: { config: RuntimeConfig; fit?: boolea
               webrtcBase={config.endpoints.webrtc}
               removable={panes.length > 1}
               onRemove={() => removeStreamPane(pane.id)}
+              maxWidth={pane.maxWidth}
+              maxHeight={pane.maxHeight}
+              onResolutionChange={(w, h) => setStreamPaneResolution(pane.id, w, h)}
             />
           ))}
         </div>
