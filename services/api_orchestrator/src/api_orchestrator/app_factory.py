@@ -158,7 +158,10 @@ def create_orchestrator_app(
 
     run_store = store or RunStore(DEFAULT_DB_PATH)
     owns_client = http_client is None
-    client = http_client or httpx.AsyncClient()
+    # trust_env=False: every downstream is LAN-internal (localhost or the
+    # robot's LAN IP), so a host-injected HTTP(S)_PROXY must never be used —
+    # behind a corporate proxy it would black-hole the robot-edge calls.
+    client = http_client or httpx.AsyncClient(trust_env=False)
     # Downstream hosts default to localhost (single-host deploy); for the
     # robot-edge split they point at the robot host (see Settings.*_host).
     recorder = RecorderClient(

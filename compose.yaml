@@ -47,6 +47,16 @@ x-ros-env: &ros-env
   # Active robot — config/<robot>/ (committed) or config/local/<robot>/ (gitignored).
   ROBOT: ${ROBOT:-airoa_hsr}
 
+# Every kairos HTTP call is LAN-internal (localhost or the robot's LAN IP) and
+# must never go through a corporate proxy: a host whose Docker client/daemon
+# has HTTP(S)_PROXY configured silently injects those vars into every
+# container, and then healthchecks (python urllib honors the proxy vars) and
+# service-to-service calls fail. NO_PROXY exempts them; on the cross-host
+# split extend it with the robot's IP in .env (see .env.split.example).
+x-no-proxy: &no-proxy
+  NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
+  no_proxy: ${NO_PROXY:-localhost,127.0.0.1}
+
 # Shared healthcheck cadence (conservative — the services are lightweight, but the
 # ROS ones need a moment to import rclpy). Each service overrides `test` with its
 # own port; the port is interpolated here as ${VAR:-default} (same single source
@@ -74,7 +84,7 @@ services:
       - path: .env
         required: false
     environment:
-      <<: *ros-env
+      <<: [*ros-env, *no-proxy]
       RECORDER_PORT: ${RECORDER_PORT:-8010}
       RECORDING_CONFIG: ${RECORDING_CONFIG:-/config/${ROBOT:-airoa_hsr}/recording/default.yaml}
     network_mode: host
@@ -109,7 +119,7 @@ services:
       - path: .env
         required: false
     environment:
-      <<: *ros-env
+      <<: [*ros-env, *no-proxy]
       RECORDING_CONFIG: ${RECORDING_CONFIG:-/config/${ROBOT:-airoa_hsr}/recording/default.yaml}
       # Optional alert rules: config/<robot>/monitoring/alerts.yaml (a local
       # override under config/local/<robot>/... wins). Empty = alerts disabled.
@@ -143,7 +153,7 @@ services:
       - path: .env
         required: false
     environment:
-      <<: *ros-env
+      <<: [*ros-env, *no-proxy]
     network_mode: host
     ipc: host
     volumes:
@@ -176,7 +186,7 @@ services:
       - path: .env
         required: false
     environment:
-      <<: *ros-env
+      <<: [*ros-env, *no-proxy]
       TOPIC_PROBE_PORT: ${TOPIC_PROBE_PORT:-8003}
     network_mode: host
     ipc: host
@@ -205,6 +215,7 @@ services:
       - path: .env
         required: false
     environment:
+      <<: *no-proxy
       RECORDING_CONFIG: ${RECORDING_CONFIG:-/config/${ROBOT:-airoa_hsr}/recording/default.yaml}
       # Active robot — labels the config set the Config tab edits/selects.
       ROBOT: ${ROBOT:-airoa_hsr}
@@ -260,6 +271,7 @@ services:
       - path: .env
         required: false
     environment:
+      <<: *no-proxy
       DORA_RUNNER_PORT: ${DORA_RUNNER_PORT:-8020}
       ROBOT: ${ROBOT:-airoa_hsr}
       # loss_report validator defaults (config/<robot>/validators/loss_report.yaml).
@@ -289,6 +301,12 @@ services:
       - path: .env
         required: false
     environment:
+      <<: *no-proxy
+      # busybox wget (the healthcheck below) honors http_proxy but NOT no_proxy,
+      # so also neutralize the proxy vars a proxied Docker client would inject.
+      # nginx itself never reads the proxy env.
+      http_proxy: ""
+      HTTP_PROXY: ""
       # Ports consumed by the nginx envsubst template (default.conf.template):
       # FRONTEND_PORT for `listen`, API_ORCH_PORT / WEBRTC_PORT / TOPIC_PROBE_PORT
       # for proxy_pass. Interpolated from the same .env keys (defaults match
