@@ -28,6 +28,7 @@ from kairos_common import (
     create_app,
     get_settings,
     load_recording_config,
+    resolve_config_path,
     utc_now_iso8601,
 )
 from pydantic import BaseModel
@@ -79,13 +80,13 @@ def create_monitor_app(*, subscriber: TopicSubscriber | None = None) -> FastAPI:
             ``FakeSubscriber``); defaults to the rclpy-backed implementation.
     """
     settings = get_settings()
-    config = _load_config(settings.recording_config)
+    config = _load_config(resolve_config_path(settings.recording_config))
     sub = subscriber if subscriber is not None else _build_subscriber(config)
     # Wire the alert engine (MON-C1): without this the /alerts route is always
     # empty because nothing ever builds the AlertRules the engine evaluates. The
     # loader tolerates an unset/missing path (no rules) but fails loudly on a
     # malformed file so a config typo is never silently ignored.
-    alert_rules = load_alert_rules(settings.alert_config_path)
+    alert_rules = load_alert_rules(resolve_config_path(settings.alert_config_path))
     service = MonitorService(sub, config=config, alert_rules=alert_rules)
 
     @asynccontextmanager

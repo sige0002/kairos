@@ -10,6 +10,7 @@ See ``docs/specs/ja/config.md`` for the canonical three-layer config design.
 from __future__ import annotations
 
 from kairos_common.app import create_app, error_response
+from kairos_common.config_path import resolve_config_path
 from kairos_common.errors import ApiError, ErrorBody, ErrorModel
 from kairos_common.recording_config import (
     Compression,
@@ -64,5 +65,6 @@ __all__ = [
     "load_recording_config",
     "load_stream_config",
     "load_validation_template",
+    "resolve_config_path",
     "utc_now_iso8601",
 ]

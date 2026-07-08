@@ -17,6 +17,7 @@ from kairos_common import (
     create_app,
     get_settings,
     load_recording_config,
+    resolve_config_path,
 )
 
 from rosbag2_recorder.models import (
@@ -48,7 +49,7 @@ def _load_config(recording_config_path: str) -> Any:
 def create_recorder_app() -> FastAPI:
     """Build the recorder FastAPI app with the session and routes wired in."""
     settings = get_settings()
-    config = _load_config(settings.recording_config)
+    config = _load_config(resolve_config_path(settings.recording_config))
     session = RecorderSession(settings, config)
     session.reconcile_on_startup()
 

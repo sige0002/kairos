@@ -30,6 +30,7 @@ from kairos_common import (
     get_settings,
     load_recording_config,
     load_stream_config,
+    resolve_config_path,
 )
 from kairos_common.recording_config import RecordingConfig
 from kairos_common.stream_config import StreamConfig
@@ -67,7 +68,7 @@ def _load_recording_config(settings: Settings) -> RecordingConfig | None:
     if the file is missing or invalid we log and continue with ``None`` so the
     service still boots (an omitted-topics start then returns a clear 400).
     """
-    path = Path(settings.recording_config)
+    path = Path(resolve_config_path(settings.recording_config))
     if not path.exists():
         logger.warning("RECORDING_CONFIG not found", extra={"path": str(path)})
         return None
@@ -85,7 +86,7 @@ def _load_stream_config(settings: Settings) -> StreamConfig | None:
     its configured preview panes. Missing/invalid -> ``None`` (the UI then opens
     a single empty pane); never blocks startup.
     """
-    path = Path(settings.stream_config)
+    path = Path(resolve_config_path(settings.stream_config))
     if not path.exists():
         return None
     try:
@@ -218,8 +219,9 @@ def create_orchestrator_app(
     app.state.recording_config = recording_config
     # The active recording-config file path (a robot/recording selection re-points
     # it, possibly into a gitignored config/local/<robot>/...). GET/PUT
-    # /api/v1/config/recording read/write this path.
-    app.state.recording_config_path = settings.recording_config
+    # /api/v1/config/recording read/write this path — store the resolved path so
+    # a PUT writes the same local-tree file the startup load read.
+    app.state.recording_config_path = resolve_config_path(settings.recording_config)
     # Live STREAM_CONFIG: read at request time by GET /api/v1/config and hot-swapped
     # by a stream/robot selection, so the Stream tab's initial panes reflect a
     # switch without a restart.

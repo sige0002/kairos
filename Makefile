@@ -195,7 +195,7 @@ COMPOSE_RECORDING := docker compose $(if $(wildcard .env),--env-file .env,) -f c
 
 .PHONY: robot-up robot-down robot-build robot-rebuild robot-restart robot-logs robot-ps robot-config-reload \
         recording-up recording-down recording-build recording-rebuild recording-restart recording-logs \
-        recording-ps recording-config-reload import-runs
+        recording-ps recording-config-reload import-runs push-config
 # All robot-* / recording-* targets take positional service names like the
 # single-host ones (e.g. `make robot-rebuild recorder`, `make robot-logs monitor`).
 robot-up: ## [ON THE ROBOT] build + start the robot-edge services (recorder/monitor/streamer/probe)
@@ -249,6 +249,9 @@ recording-config-reload: ## [ON THE RECORDING PC] apply config-catalog edits (re
 
 import-runs: ## [ON THE RECORDING PC] rsync COMPLETED recordings from the robot into ./data/recorded
 	bash deploy/sync/import_runs.sh
+
+push-config: ## [ON THE RECORDING PC] rsync config/local/<ROBOT>/ to the robot's clone (gitignored tree)
+	bash deploy/sync/push_config.sh
 
 .PHONY: config-reload config-show
 config-reload: ## apply config/*.yaml edits (restart monitor + orchestrator)

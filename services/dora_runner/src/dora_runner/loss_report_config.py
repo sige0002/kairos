@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
+from kairos_common import resolve_config_path
 
 logger = logging.getLogger("kairos")
 
@@ -87,11 +88,14 @@ def load_loss_report_config(path: str | Path | None = None) -> LossReportConfig:
     runs) and yields the code defaults; a malformed file is logged and also
     falls back rather than failing service startup.
     """
-    resolved = Path(
-        path
+    given = (
+        str(path)
         if path is not None
         else os.environ.get(LOSS_REPORT_CONFIG_ENV, DEFAULT_LOSS_REPORT_CONFIG_PATH)
     )
+    # Fall back to the gitignored config/local/<robot>/ tree when only that
+    # exists (raw compose cannot derive local-aware paths the way make does).
+    resolved = Path(resolve_config_path(given))
     if not resolved.is_file():
         return LossReportConfig()
     try:
