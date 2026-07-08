@@ -88,8 +88,12 @@ COMPOSE      := docker compose
 # there drive `make rosbag`), when a .env exists.
 TEST_COMPOSE := docker compose $(if $(wildcard .env),--env-file .env,) -f deploy/test/compose.yaml
 
-# ROS 2 distro for the images + the custom-message overlay build.
-ROS_DISTRO ?= jazzy
+# ROS 2 distro for the images + the custom-message overlay build. Read from
+# .env (like ROBOT above) so a robot that needs a different distro can set it
+# there once: make exports the value, and an exported value is what compose's
+# ${ROS_DISTRO:-jazzy} interpolation sees — without this read, make would
+# always export the built-in default and silently beat the .env setting.
+ROS_DISTRO ?= $(or $(call _env_val,ROS_DISTRO),jazzy)
 export ROS_DISTRO
 
 # Custom-message overlay dir — PER-ROBOT, derived from ROBOT like the config
