@@ -158,7 +158,9 @@ function ValidationResultCard({ jobId, required }: { jobId: string; required: Re
             >
               <span className="flex min-w-0 items-center gap-2.5">
                 <StatusDot tone={ng ? 'red' : 'green'} />
-                <span className="truncate font-mono text-[12.5px] text-gray-700">{t.name}</span>
+                <span className="truncate font-mono text-[12.5px] text-gray-700" title={t.name}>
+                  {t.name}
+                </span>
               </span>
               <span className="truncate text-right font-mono text-[10.5px] text-gray-400">
                 {t.type ?? 'any'}

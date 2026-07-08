@@ -714,7 +714,9 @@ function LiveMonitorPanel({
               >
                 <StatusDot tone={r.firing ? 'red' : 'gray'} className="mt-1" />
                 <div className="min-w-0 flex-1">
-                  <div className="truncate font-mono text-[11.5px] text-gray-700">{r.topic}</div>
+                  <div className="truncate font-mono text-[11.5px] text-gray-700" title={r.topic}>
+                    {r.topic}
+                  </div>
                   <div className="font-mono text-[10.5px] text-gray-400">
                     {r.metric} {ALERT_OP_SYMBOL[r.op ?? ''] ?? r.op ?? ''} {r.threshold}
                     {r.value != null ? ` · ${r.value}` : ''}
@@ -783,6 +785,7 @@ function LiveMonitorPanel({
                       type="button"
                       onClick={() => onScope(m.name)}
                       aria-label={`graph ${m.name} health`}
+                      title={reason ? `${m.name}\n${reason}` : m.name}
                       className={cn(
                         'truncate text-left font-mono text-[12.5px] hover:text-teal-700',
                         scopedTopics.has(m.name)

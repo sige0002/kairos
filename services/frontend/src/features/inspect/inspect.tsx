@@ -86,7 +86,9 @@ export function LossTable({ topics }: { topics: LossTopic[] }) {
             const tone = lossTone(t.loss_rate);
             return (
               <tr key={t.name} className="border-t border-gray-50">
-                <td className="truncate px-2 py-1.5 font-mono text-gray-700">{t.name}</td>
+                <td className="truncate px-2 py-1.5 font-mono text-gray-700" title={t.name}>
+                  {t.name}
+                </td>
                 <td className="px-2 py-1.5 text-right font-mono text-gray-500">
                   {fmtNum(t.hz)}
                 </td>
