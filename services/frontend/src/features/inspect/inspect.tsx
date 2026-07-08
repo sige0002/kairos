@@ -133,14 +133,28 @@ export function VideoPlayer({
   const started = useRef(false);
 
   const mutation = useMutation({
-    mutationFn: () =>
+    // `extra` carries the re-encode knobs (force + max_frames); the initial
+    // mount job sends none and gets the cached/short preview semantics.
+    mutationFn: (extra: { force?: boolean; max_frames?: number } | void) =>
       apiPost<JobStatus>('/jobs', {
         pipeline: 'video_check',
         run_id: runId,
-        params: datasetDir ? { topic, dataset_dir: datasetDir } : { topic },
+        params: {
+          topic,
+          ...(datasetDir ? { dataset_dir: datasetDir } : {}),
+          ...(extra ?? {}),
+        },
       }),
     onSuccess: (job) => setJobId(job.job_id),
   });
+
+  // Re-encode the WHOLE episode (force bypasses the cache; 0 = no frame cap).
+  // The old mp4 keeps playing elsewhere until the new encode atomically lands.
+  const reencodeFull = () => {
+    setSummary(null);
+    setJobError(null);
+    mutation.mutate({ force: true, max_frames: 0 });
+  };
 
   // Kick the job off once (StrictMode-safe) when this player appears.
   useEffect(() => {
@@ -215,8 +229,19 @@ export function VideoPlayer({
           />
           <p className="text-[10px] text-gray-400">
             {summary.frames} frames · {fmtNum(summary.fps, 0)}fps
-            {summary.truncated ? ' · head only' : ''}
+            {summary.truncated
+              ? ` · head only (${summary.total_messages ?? '?'} msgs in the episode)`
+              : ''}
             {summary.cached ? ' · cached' : ''}
+            {summary.truncated && (
+              <button
+                type="button"
+                onClick={reencodeFull}
+                className="ml-1.5 font-semibold text-teal-700 hover:underline"
+              >
+                Re-encode full episode
+              </button>
+            )}
           </p>
         </>
       ) : summary ? (

@@ -171,7 +171,14 @@ def test_video_check_dataset_dir_serves_cache_without_recorded_run(
 
 
 def _seed_cached_result(
-    data_dir: Path, run_id: str, topic: str, *, with_mp4: bool = True
+    data_dir: Path,
+    run_id: str,
+    topic: str,
+    *,
+    with_mp4: bool = True,
+    frames: int = 42,
+    truncated: bool = False,
+    max_frames: int = MAX_FRAMES,
 ) -> dict:
     """Create recorded/<run_id>/x.mcap + a valid sidecar (and mp4) for *topic*."""
     (data_dir / "recorded" / run_id).mkdir(parents=True)
@@ -185,9 +192,10 @@ def _seed_cached_result(
         "version": PIPELINE_VERSION,
         "run_id": run_id,
         "topic": topic,
-        "frames": 42,
-        "total_messages": 42,
-        "truncated": False,
+        "frames": frames,
+        "total_messages": frames,
+        "truncated": truncated,
+        "max_frames": max_frames,
         "checked_at": "2026-07-06T00:00:00Z",
         "fps": 15,
         "width": 640,
@@ -253,6 +261,68 @@ def test_video_check_force_bypasses_cache(tmp_path: Path) -> None:
         )
 
 
+def test_video_check_truncated_cache_misses_on_a_different_cap(
+    tmp_path: Path,
+) -> None:
+    """A head-only (truncated) cache must NOT satisfy a full-episode request —
+    that is the whole point of the "re-encode full" path. The miss proceeds to
+    the decode path, which fails on the fake MCAP, proving the rejection."""
+    _seed_cached_result(
+        tmp_path,
+        "run_h",
+        "/cam/image/compressed",
+        frames=MAX_FRAMES,
+        truncated=True,
+        max_frames=MAX_FRAMES,
+    )
+    with pytest.raises(Exception):  # noqa: B017
+        run_video_check(
+            run_id="run_h",
+            data_dir=tmp_path,
+            topic="/cam/image/compressed",
+            max_frames=0,
+        )
+
+
+def test_video_check_complete_cache_satisfies_a_larger_cap(tmp_path: Path) -> None:
+    """An UNTRUNCATED cache that fits the requested cap is byte-identical to a
+    fresh capped encode, so it is served regardless of the cap it was made
+    with (here: a full-episode encode answering the default capped request)."""
+    seeded = _seed_cached_result(
+        tmp_path, "run_full", "/cam/image/compressed", frames=42, max_frames=0
+    )
+    result = run_video_check(
+        run_id="run_full", data_dir=tmp_path, topic="/cam/image/compressed"
+    )
+    assert result["summary"]["cached"] is True
+    assert result["summary"]["file"] == seeded["file"]
+
+
+def test_video_check_complete_cache_misses_when_over_the_cap(tmp_path: Path) -> None:
+    """An untruncated cache LONGER than the requested cap is not the capped
+    artifact — it must regenerate (decode fails on the fake MCAP = miss)."""
+    _seed_cached_result(
+        tmp_path, "run_big", "/cam/image/compressed", frames=42, max_frames=0
+    )
+    with pytest.raises(Exception):  # noqa: B017
+        run_video_check(
+            run_id="run_big",
+            data_dir=tmp_path,
+            topic="/cam/image/compressed",
+            max_frames=10,
+        )
+
+
+def test_video_check_rejects_negative_max_frames(tmp_path: Path) -> None:
+    with pytest.raises(ValueError):
+        run_video_check(
+            run_id="run_x",
+            data_dir=tmp_path,
+            topic="/cam/image/compressed",
+            max_frames=-1,
+        )
+
+
 # ---- Integration (real sample bag + encode deps, skipped when absent) ------
 
 DATA_DIR = Path(__file__).resolve().parents[3] / "data"
@@ -295,3 +365,27 @@ def test_video_check_job_encodes_mp4() -> None:
         rel = summary["file"]
         assert rel and (DATA_DIR / rel).exists()
         assert summary["frames"] > 0
+
+
+@pytest.mark.skipif(
+    not _HAS_ENCODE_DEPS,
+    reason="needs the 'av' and 'Pillow' packages installed",
+)
+@pytest.mark.skipif(
+    not (DATA_DIR / "recorded" / RUN_ID).is_dir(),
+    reason=f"needs a local sample recording at data/recorded/{RUN_ID}",
+)
+def test_video_check_max_frames_caps_the_encode() -> None:
+    """A tiny explicit cap stops the encode early and marks the truncation."""
+    result = run_video_check(
+        run_id=RUN_ID,
+        data_dir=DATA_DIR,
+        topic=CAMERA_TOPIC,
+        force=True,
+        max_frames=3,
+    )
+    summary = result["summary"]
+    assert summary["frames"] == 3
+    assert summary["truncated"] is True
+    assert summary["max_frames"] == 3
+    assert (DATA_DIR / summary["file"]).exists()

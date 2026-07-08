@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -49,9 +50,11 @@ from dora_runner.mcap_utils import (
 # Pipeline identity stamped into the summary (reproducibility contract, shared
 # with the other bundled pipelines and the hello_dora plugin example).
 PIPELINE_ID = "video_check"
-PIPELINE_VERSION = "1.0.0"
+PIPELINE_VERSION = "1.1.0"
 
-# Bound encode time/size: at ~15 fps this is ~60 s of preview, plenty to eyeball.
+# DEFAULT encode cap (params.max_frames overrides; 0 = the full episode):
+# bounds encode time/size — at ~15 fps this is ~60 s of preview, plenty to
+# eyeball. It also bounds the fps-estimate cadence sample either way.
 MAX_FRAMES = 900
 # fps is estimated from frame timestamps then clamped to a sane playback range.
 _FPS_MIN = 1
@@ -102,14 +105,23 @@ def _result(summary: dict[str, Any], out_path: Path) -> dict[str, Any]:
 
 
 def _load_cached_summary(
-    sidecar: Path, out_path: Path, mcap_path: Path, *, run_id: str, topic: str
+    sidecar: Path,
+    out_path: Path,
+    mcap_path: Path,
+    *,
+    run_id: str,
+    topic: str,
+    max_frames: int,
 ) -> dict[str, Any] | None:
     """Return the persisted summary for (run_id, topic) if it is still valid.
 
     Valid means: the sidecar parses, was produced by this pipeline version for
     this exact (run_id, topic), is newer than the MCAP (a re-recorded run id
     invalidates), and — when it references an mp4 — that file still exists and
-    is also newer than the MCAP. Anything else regenerates.
+    is also newer than the MCAP. A different *max_frames* is a miss UNLESS the
+    cached encode is complete (untruncated) and fits within the requested cap —
+    then it is exactly what a fresh capped encode would produce. Anything else
+    regenerates.
     """
     try:
         summary = json.loads(sidecar.read_text(encoding="utf-8"))
@@ -127,6 +139,11 @@ def _load_cached_summary(
             out_path.is_file() and out_path.stat().st_mtime >= mcap_mtime
         ):
             return None
+        if summary.get("max_frames") != max_frames:
+            frames = summary.get("frames") or 0
+            complete = not summary.get("truncated")
+            if not (complete and (max_frames == 0 or frames <= max_frames)):
+                return None
         return summary
     except (OSError, ValueError):
         return None
@@ -139,6 +156,7 @@ def run_video_check(
     topic: str,
     force: bool = False,
     dataset_dir: str | None = None,
+    max_frames: int = MAX_FRAMES,
 ) -> dict[str, Any]:
     """Encode a camera *topic*'s frames from the run's MCAP into mp4.
 
@@ -160,11 +178,19 @@ def run_video_check(
     sidecar cache (marked ``cached: true``) without touching the encode deps;
     *force* skips the cache and re-encodes.
 
+    *max_frames* caps the encode (default keeps previews short); ``0`` means
+    the FULL episode — that is the "regenerate the whole video" path the UI
+    offers on a truncated preview. The new mp4 is written to a temp file and
+    atomically renamed over the old one, so a failed re-encode never corrupts
+    a preview that was already being served.
+
     The MCAP is only read, so the canonical recording is never touched.
     """
     validate_run_id(run_id)
     if not topic or not topic.strip():
         raise ValueError("topic is required for video_check")
+    if max_frames < 0:
+        raise ValueError("max_frames must be >= 0 (0 = the full episode)")
     source_dir = resolve_source_dir(data_dir, run_id, dataset_dir)
     mcap_path = find_mcap(source_dir)
 
@@ -181,7 +207,12 @@ def run_video_check(
     sidecar = out_dir / f"{sanitized}.summary.json"
     if not force:
         cached = _load_cached_summary(
-            sidecar, out_path, mcap_path, run_id=run_id, topic=topic
+            sidecar,
+            out_path,
+            mcap_path,
+            run_id=run_id,
+            topic=topic,
+            max_frames=max_frames,
         )
         if cached is not None:
             cached["cached"] = True
@@ -222,49 +253,60 @@ def run_video_check(
     fps = 0
     container: Any = None
     stream: Any = None
+    # Encode into a temp file and publish with an atomic rename below, so a
+    # force re-encode that dies midway never corrupts an mp4 already served.
+    tmp_path = out_path.with_name(out_path.name + ".tmp")
 
     try:
-        for decoded in iter_decoded_ros2_messages(mcap_path, topics=[topic]):
-            msg = decoded.ros_msg
-            # Happy path: sensor_msgs/CompressedImage (JPEG) -> Pillow decode.
-            if not hasattr(msg, "data") or not hasattr(msg, "format"):
-                unsupported = True
-                continue
-            if frames_encoded >= MAX_FRAMES:
-                # Cap reached: total_messages is already known, so stop decoding
-                # instead of draining the rest of the topic (DORA-L1).
-                truncated = True
-                break
-            try:
-                image = Image.open(io.BytesIO(bytes(msg.data))).convert("RGB")
-            except Exception:  # noqa: BLE001 - skip an undecodable frame, don't crash
-                continue
-            arr = np.asarray(image)
-            if container is None:
-                # First decodable frame: fix output dimensions and open the
-                # stream, then encode-and-discard each frame so at most one frame
-                # is resident (DORA-H1 — previously all MAX_FRAMES frames were
-                # accumulated in RAM before a single batch encode, ~GBs at 1080p).
-                height, width = arr.shape[0], arr.shape[1]
-                width, height = _even(width), _even(height)
-                fps = estimate_fps(cadence)
-                container = av.open(str(out_path), mode="w")
-                stream = container.add_stream("h264", rate=fps)
-                stream.width = width
-                stream.height = height
-                stream.pix_fmt = "yuv420p"
-            # Crop to the even dimensions h264/yuv420p requires.
-            cropped = arr[:height, :width]
-            video_frame = av.VideoFrame.from_ndarray(cropped, format="rgb24")
-            for packet in stream.encode(video_frame):
-                container.mux(packet)
-            frames_encoded += 1
-        if container is not None:
-            for packet in stream.encode():
-                container.mux(packet)
-    finally:
-        if container is not None:
-            container.close()
+        try:
+            for decoded in iter_decoded_ros2_messages(mcap_path, topics=[topic]):
+                msg = decoded.ros_msg
+                # Happy path: sensor_msgs/CompressedImage (JPEG) -> Pillow decode.
+                if not hasattr(msg, "data") or not hasattr(msg, "format"):
+                    unsupported = True
+                    continue
+                if max_frames and frames_encoded >= max_frames:
+                    # Cap reached: total_messages is already known, so stop
+                    # decoding instead of draining the rest of the topic (DORA-L1).
+                    truncated = True
+                    break
+                try:
+                    image = Image.open(io.BytesIO(bytes(msg.data))).convert("RGB")
+                except Exception:  # noqa: BLE001 - skip an undecodable frame, don't crash
+                    continue
+                arr = np.asarray(image)
+                if container is None:
+                    # First decodable frame: fix output dimensions and open the
+                    # stream, then encode-and-discard each frame so at most one
+                    # frame is resident (DORA-H1 — previously all capped frames
+                    # were accumulated in RAM before a single batch encode,
+                    # ~GBs at 1080p).
+                    height, width = arr.shape[0], arr.shape[1]
+                    width, height = _even(width), _even(height)
+                    fps = estimate_fps(cadence)
+                    container = av.open(str(tmp_path), mode="w", format="mp4")
+                    stream = container.add_stream("h264", rate=fps)
+                    stream.width = width
+                    stream.height = height
+                    stream.pix_fmt = "yuv420p"
+                # Crop to the even dimensions h264/yuv420p requires.
+                cropped = arr[:height, :width]
+                video_frame = av.VideoFrame.from_ndarray(cropped, format="rgb24")
+                for packet in stream.encode(video_frame):
+                    container.mux(packet)
+                frames_encoded += 1
+            if container is not None:
+                for packet in stream.encode():
+                    container.mux(packet)
+        finally:
+            if container is not None:
+                container.close()
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+    if frames_encoded > 0:
+        os.replace(tmp_path, out_path)
 
     summary: dict[str, Any] = {
         "pipeline": PIPELINE_ID,
@@ -274,6 +316,7 @@ def run_video_check(
         "frames": frames_encoded,
         "total_messages": total_messages,
         "truncated": truncated,
+        "max_frames": max_frames,
         "checked_at": utc_now_iso8601(),
     }
 

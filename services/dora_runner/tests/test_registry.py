@@ -46,3 +46,20 @@ def test_register_is_idempotent_by_id() -> None:
     )
     assert len(reg.all()) == 1
     assert reg.get("x").name == "X2"
+
+
+def test_max_frames_param_defaults_coerces_and_rejects() -> None:
+    """video_check's max_frames param: absent -> the default cap, 0 = full
+    episode, numeric strings coerce, negatives/garbage -> a 400 ApiError."""
+    import pytest
+    from dora_runner.registry import _max_frames_param
+    from dora_runner.video_check import MAX_FRAMES
+    from kairos_common import ApiError
+
+    assert _max_frames_param({}) == MAX_FRAMES
+    assert _max_frames_param({"max_frames": 0}) == 0
+    assert _max_frames_param({"max_frames": "12"}) == 12
+    with pytest.raises(ApiError):
+        _max_frames_param({"max_frames": -1})
+    with pytest.raises(ApiError):
+        _max_frames_param({"max_frames": "full"})

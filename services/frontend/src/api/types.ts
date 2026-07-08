@@ -181,6 +181,8 @@ export interface VideoCheckSummary {
   duration_s?: number | null;
   truncated?: boolean;
   total_messages?: number;
+  /** Encode cap the summary was produced with; 0 = the full episode. */
+  max_frames?: number;
   /** mp4 path relative to data_dir, for `${apiBase}/files/<file>`. */
   file?: string | null;
   mp4?: string | null;

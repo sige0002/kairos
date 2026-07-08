@@ -32,7 +32,7 @@ from dora_runner.loss_report_config import (
 )
 from dora_runner.store import JobRecord, RunnerStore
 from dora_runner.validation import generate_template, run_fast_validation
-from dora_runner.video_check import run_video_check
+from dora_runner.video_check import MAX_FRAMES, run_video_check
 
 # A pipeline runner: takes the job + shared store + data root, returns the raw
 # result dict (validated as JobResult by the worker). May raise ApiError for a
@@ -168,6 +168,24 @@ def _make_loss_report_runner(config: LossReportConfig) -> Runner:
     return _run_loss_report
 
 
+def _max_frames_param(params: dict) -> int:
+    """Optional ``max_frames`` job param: encode cap, ``0`` = the full episode."""
+    raw = params.get("max_frames")
+    if raw is None:
+        return MAX_FRAMES
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = -1
+    if value < 0:
+        raise ApiError(
+            status_code=400,
+            code="invalid_max_frames",
+            message="max_frames must be an integer >= 0 (0 = the full episode).",
+        )
+    return value
+
+
 async def _run_video_check(job: JobRecord, store: RunnerStore, data_dir: Path) -> dict:
     topic = job.params.get("topic")
     if not topic or not str(topic).strip():
@@ -186,6 +204,8 @@ async def _run_video_check(job: JobRecord, store: RunnerStore, data_dir: Path) -
         # Post-export source: read the exported dataset dir instead of
         # recorded/<run_id> (the recording was MOVED there by dataset_export).
         dataset_dir=_dataset_dir_param(job.params),
+        # Encode cap; 0 = full episode (the UI's "re-encode full" path).
+        max_frames=_max_frames_param(job.params),
     )
 
 
@@ -206,6 +226,9 @@ _VIDEO_CHECK_SCHEMA = {
         # Post-export source: "<operator>/<task>/<NNN>" under data/ (the
         # exported dataset dir); omitted = read recorded/<run_id>.
         "dataset_dir": {"type": "string"},
+        # Encode cap: default keeps previews short; 0 = the full episode
+        # (pair with force to regenerate a truncated preview at full length).
+        "max_frames": {"type": "integer", "minimum": 0, "default": MAX_FRAMES},
     },
 }
 _NO_PARAMS_SCHEMA = {"type": "object", "properties": {}}
