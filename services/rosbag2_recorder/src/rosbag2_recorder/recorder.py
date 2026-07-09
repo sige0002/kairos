@@ -762,6 +762,12 @@ class RecorderSession:
         self._topics = armed.staged_topics
         self._log_file = armed.log_file
         self._pending_log_path = armed.pending_log_path
+        # Fresh integrity state for this run. prepare() already reset these
+        # before spawn (nothing mutates them while armed), but resetting here
+        # too keeps this commit point locally correct on its own, matching the
+        # full synchronous start() path's commit.
+        self._dropped_messages = None
+        self._integrity = "unknown"
 
         # The node/clients are no longer needed: the subprocess now runs
         # unattended (like any other recording) until stop().

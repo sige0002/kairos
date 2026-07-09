@@ -1161,6 +1161,20 @@ def test_prepare_then_start_fast_path_resumes_without_respawn(
     assert stopped.state is RunState.completed
 
 
+def test_prepare_then_start_fast_path_matches_on_all_topics(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    """topics="all" at prepare matches topics="all" at start (both normalise to
+    the "all" sentinel, never to an equivalent explicit list)."""
+    captured: list[Any] = []
+    session = _make_session(settings, fake_process, write_metadata, capture=captured)
+    session.prepare(RecordStartRequest(topics="all", run_id="run_all_p"))
+    started = session.start(RecordStartRequest(topics="all", run_id="run_all_s"))
+    assert started.state is RunState.recording
+    assert started.run_id == "run_all_p"  # armed run_id, fixed at prepare time
+    assert len(captured) == 1  # fast path: no second spawn
+
+
 def test_start_uses_armed_run_id_even_if_request_run_id_differs(
     settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
 ) -> None:
