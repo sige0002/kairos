@@ -26,6 +26,13 @@ class RunState(StrEnum):
     ``created -> recording -> stopping -> completed`` on the happy path, or to
     ``failed`` on error. ``interrupted`` marks a run that a previous process
     started but never finalized (e.g. the container was restarted mid-record).
+
+    ``armed`` is the two-phase start state: ``POST /record/prepare`` spawned
+    the recorder ``--start-paused`` and confirmed subscription matching, but a
+    matching ``POST /record/start`` has not (yet) resumed it. Deliberately NOT
+    a member of the recorder's "active" set (``_ACTIVE_STATES``): an armed
+    session must not 409-block ``start()`` — the whole point is that ``start``
+    *consumes* it (or disarms + falls through if it does not match).
     """
 
     created = "created"
@@ -34,6 +41,7 @@ class RunState(StrEnum):
     completed = "completed"
     failed = "failed"
     interrupted = "interrupted"
+    armed = "armed"
 
 
 class QosProfile(BaseModel):
@@ -104,6 +112,41 @@ class RecordArming(BaseModel):
     missing_topics: list[str] = Field(default_factory=list)
     # ISO8601 instant the recorder auto-resumes anyway (readiness timeout).
     resume_at: str | None = None
+    # ISO8601 instant an ``armed`` (two-phase ``prepare()``) session auto-
+    # disarms if no matching ``start()`` claims it (``recording.
+    # prepare_disarm_timeout_s``). A DIFFERENT concept from ``resume_at``
+    # (the single-call gate's own readiness-timeout auto-resume deadline):
+    # ``None`` unless this snapshot came from an active/former ``prepare()``.
+    disarm_at: str | None = None
+
+
+class RecordPrepareRequest(RecordStartRequest):
+    """Body of ``POST /record/prepare``. Same shape as ``RecordStartRequest``.
+
+    ``run_id`` is still allocated by the caller (``api_orchestrator``) and
+    supplied here; it becomes the recording's run_id if a later matching
+    ``POST /record/start`` claims this armed session (run_id is fixed at
+    prepare time — the subprocess is already writing into that output dir).
+    """
+
+
+class RecordPrepareResponse(BaseModel):
+    """Body of a successful ``POST /record/prepare`` (201).
+
+    The session is now ``armed``: ``ros2 bag record --start-paused`` has been
+    spawned and its subscriptions matched (or the readiness timeout elapsed),
+    but it has NOT been resumed. A matching ``POST /record/start`` resumes it
+    (near-instant); a non-matching one disarms it and falls back to a full
+    synchronous start.
+    """
+
+    run_id: str
+    state: RunState
+    arming: RecordArming | None = None
+    # ISO8601 instant this armed session auto-disarms if unclaimed. Mirrors
+    # ``arming.disarm_at`` at the top level for a caller that only wants the
+    # deadline (see ``recording.prepare_disarm_timeout_s``).
+    disarm_at: str | None = None
 
 
 class RecordStartResponse(BaseModel):

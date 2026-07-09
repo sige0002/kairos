@@ -21,6 +21,8 @@ from kairos_common import (
 )
 
 from rosbag2_recorder.models import (
+    RecordPrepareRequest,
+    RecordPrepareResponse,
     RecordStartRequest,
     RecordStartResponse,
     RecordStatusResponse,
@@ -72,6 +74,10 @@ def create_recorder_app() -> FastAPI:
     # directly on the event loop, so an ``async`` handler here would freeze every
     # request — ``/healthz`` and ``/record/status`` included — for the whole
     # blocking span. None of these handlers await, so a plain ``def`` is correct.
+    @app.post("/record/prepare", status_code=201, response_model=RecordPrepareResponse)
+    def record_prepare(request: RecordPrepareRequest) -> RecordPrepareResponse:
+        return session.prepare(request)
+
     @app.post("/record/start", status_code=201, response_model=RecordStartResponse)
     def record_start(request: RecordStartRequest) -> RecordStartResponse:
         status = session.start(request)
