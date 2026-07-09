@@ -65,10 +65,12 @@ def _real_peer_factory(request: StreamStartRequest, source: FrameSource) -> Peer
     """Build the aiortc-backed peer manager (imports aiortc inside its methods)."""
     from webrtc_streamer.peer import AiortcPeerManager
 
+    settings = get_settings()
     return AiortcPeerManager(
         source.frames,
         encoding=request.encoding,
         max_fps=request.max_fps,
+        ice_servers=settings.webrtc_ice_servers,
     )
 
 

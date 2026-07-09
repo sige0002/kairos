@@ -210,12 +210,41 @@ class AiortcPeerManager:
         *,
         encoding: Encoding = Encoding.vp8,
         max_fps: int = 15,
+        ice_servers: list[dict[str, Any]] | None = None,
     ) -> None:
         self._frames = frames
         self._encoding = encoding
         self._max_fps = max_fps
+        # RTCIceServer JSON dicts (from WEBRTC_ICE_SERVERS via config). Empty =
+        # LAN/direct, host candidates only. Kept raw; turned into RTCIceServer
+        # objects lazily in handle_offer so this module imports without aiortc.
+        self._ice_server_cfgs = ice_servers or []
         self._lock = threading.Lock()
         self._pcs: set[Any] = set()
+
+    def _build_ice_servers(self) -> list[Any]:
+        """Turn the configured RTCIceServer dicts into aiortc ``RTCIceServer``s.
+
+        Skips entries without ``urls`` so a partial/malformed config degrades to
+        fewer (or no) ICE servers rather than failing the offer.
+        """
+        from aiortc import RTCIceServer
+
+        servers: list[Any] = []
+        for entry in self._ice_server_cfgs:
+            if not isinstance(entry, dict):
+                continue
+            urls = entry.get("urls")
+            if not urls:
+                continue
+            servers.append(
+                RTCIceServer(
+                    urls=urls,
+                    username=entry.get("username"),
+                    credential=entry.get("credential"),
+                )
+            )
+        return servers
 
     def client_count(self) -> int:
         with self._lock:
@@ -224,9 +253,10 @@ class AiortcPeerManager:
     async def handle_offer(self, sdp: str, sdp_type: str) -> tuple[str, str]:
         from aiortc import RTCConfiguration, RTCPeerConnection, RTCSessionDescription
 
-        # LAN default: no ICE servers (peers are directly reachable). STUN/TURN
-        # would be distributed via /api/v1/config only for cross-network use.
-        pc = RTCPeerConnection(RTCConfiguration(iceServers=[]))
+        # STUN/TURN come from WEBRTC_ICE_SERVERS (the same RTCIceServer JSON the
+        # browser gets via /api/v1/config), so both peers agree. Empty [] = LAN/
+        # direct with host candidates only (unchanged default behavior).
+        pc = RTCPeerConnection(RTCConfiguration(iceServers=self._build_ice_servers()))
         with self._lock:
             self._pcs.add(pc)
 

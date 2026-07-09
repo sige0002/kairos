@@ -141,6 +141,7 @@ function CameraPane({
   topic,
   onTopicChange,
   webrtcBase,
+  iceServers,
   removable,
   onRemove,
   fit,
@@ -152,6 +153,8 @@ function CameraPane({
   topic: string;
   onTopicChange: (topic: string) => void;
   webrtcBase: string;
+  /** STUN/TURN for cross-network preview (config.ice_servers); [] on same-LAN. */
+  iceServers?: RTCIceServer[];
   removable: boolean;
   onRemove: () => void;
   /** Fill the grid cell's height (Live fit-to-viewport grid). */
@@ -172,6 +175,7 @@ function CameraPane({
   const { phase, stream, error, stats, retry } = useWebRtcStream({
     webrtcBase,
     topic,
+    iceServers,
     maxWidth,
     maxHeight,
   });
@@ -364,6 +368,7 @@ export function StreamTab({ config, fit }: { config: RuntimeConfig; fit?: boolea
               topic={pane.topic || firstLive}
               onTopicChange={(topic) => setStreamPaneTopic(pane.id, topic)}
               webrtcBase={config.endpoints.webrtc}
+              iceServers={config.ice_servers ?? []}
               removable={panes.length > 1}
               onRemove={() => removeStreamPane(pane.id)}
               maxWidth={pane.maxWidth}
@@ -382,6 +387,7 @@ export function StreamTab({ config, fit }: { config: RuntimeConfig; fit?: boolea
               topic={pane.topic || firstLive}
               onTopicChange={(topic) => setStreamPaneTopic(pane.id, topic)}
               webrtcBase={config.endpoints.webrtc}
+              iceServers={config.ice_servers ?? []}
               removable={panes.length > 1}
               onRemove={() => removeStreamPane(pane.id)}
               maxWidth={pane.maxWidth}

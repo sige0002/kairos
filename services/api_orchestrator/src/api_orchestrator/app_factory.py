@@ -366,6 +366,10 @@ def _register_root_and_config(app: FastAPI, settings: Settings) -> None:
                 "events": "/api/v1/events",
                 "webrtc": settings.webrtc_public_url,
             },
+            # STUN/TURN for the WebRTC camera preview (WEBRTC_ICE_SERVERS). The
+            # browser passes these to RTCPeerConnection; the streamer uses the
+            # same set. Empty [] on same-LAN/direct (host candidates only).
+            "ice_servers": settings.webrtc_ice_servers,
             # Tab IA (design handoff "Neutral Teal"): the operator-facing "live"
             # tab fuses Stream + Monitor + Record; "graph" is the time-series
             # health view; "validation" runs fast_validation; "dataset" lists

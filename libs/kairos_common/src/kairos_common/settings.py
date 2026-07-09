@@ -14,6 +14,7 @@ Usage::
 
 from __future__ import annotations
 
+import json
 from functools import lru_cache
 from typing import Annotated
 
@@ -115,6 +116,17 @@ class Settings(BaseSettings):
         "http://localhost:8080",
         "http://localhost:5173",
     ]
+    # ---- WebRTC ICE servers (STUN/TURN for cross-network preview) -----------
+    # The browser AND aiortc both consume the RTCIceServer JSON shape, so ONE
+    # value feeds both (returned as ice_servers in GET /api/v1/config). A JSON
+    # array, e.g. [{"urls":["stun:stun.l.google.com:19302"]},
+    # {"urls":["turn:HOST:3478"],"username":"u","credential":"p"}]. Default [] =
+    # LAN/direct (host candidates only, UNCHANGED); set only to cross NAT / WiFi
+    # client isolation / the internet (TBD T02/T22; see .env.example). NoDecode +
+    # the validator below mean a blank or malformed WEBRTC_ICE_SERVERS degrades
+    # to [] (no ICE) instead of raising — this field lives in the SHARED Settings
+    # every service loads, so a parse error here must not crash the whole stack.
+    webrtc_ice_servers: Annotated[list[dict[str, object]], NoDecode] = []
 
     # ---- Operational -------------------------------------------------------
     log_level: str = "INFO"
@@ -135,6 +147,29 @@ class Settings(BaseSettings):
         """
         if isinstance(value, str):
             return [origin.strip() for origin in value.split(",") if origin.strip()]
+        return value
+
+    @field_validator("webrtc_ice_servers", mode="before")
+    @classmethod
+    def _parse_ice_servers(cls, value: object) -> object:
+        """Parse WEBRTC_ICE_SERVERS (a JSON array of RTCIceServer dicts) safely.
+
+        NoDecode hands us the raw env string; we parse it here so a blank or
+        malformed value becomes ``[]`` (no ICE) rather than raising and taking
+        down EVERY service that loads Settings. A real list (from code) passes
+        through untouched.
+        """
+        if value is None or value == "":
+            return []
+        if isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return []
+            try:
+                parsed = json.loads(raw)
+            except (ValueError, TypeError):
+                return []
+            return parsed if isinstance(parsed, list) else []
         return value
 
 

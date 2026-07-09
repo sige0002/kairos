@@ -58,6 +58,12 @@ export interface RuntimeConfig {
   /** Stream tab initial panes (optional; absent → one empty pane). */
   stream?: StreamLayout;
   /**
+   * STUN/TURN servers for the WebRTC camera preview, in browser RTCIceServer
+   * shape (from WEBRTC_ICE_SERVERS). Empty/absent on same-LAN/direct; set to
+   * cross NAT / WiFi client isolation / the internet.
+   */
+  ice_servers?: RTCIceServer[];
+  /**
    * Backend-provided JSON Schemas (draft 2020-12). Known keys:
    *  - record_start: the record Start request body schema
    *  - pipeline_forms: { <pipeline_id>: schema } for the Pipelines tab
