@@ -47,18 +47,30 @@ def test_prepare_then_matching_start_reuses_prepared_run_id(
 
     This is the whole point of the feature: the recorder recognizes its own
     armed session by the run_id the orchestrator hands back on start.
+    ``allocate_run_id`` is patched to two distinct values so the assertion is
+    not vacuous: without the patch, prepare() and start() would legitimately
+    draw the identical timestamp-based id in the same wall-clock second even
+    if the matching logic were disabled entirely, making "run_id equal" true
+    either way. Patching proves the *fresh* id (the second one) was never
+    drawn — i.e. the prepared entry was actually reused, not coincidentally
+    identical.
     """
-    prepared = client.post(
-        "/api/v1/record/prepare", json={"topics": ["/tf"], "compression": "none"}
-    ).json()
+    with patch(
+        "api_orchestrator.runs.allocate_run_id",
+        side_effect=["run_20260624_090300", "run_20260624_090301"],
+    ):
+        prepared = client.post(
+            "/api/v1/record/prepare", json={"topics": ["/tf"], "compression": "none"}
+        ).json()
 
-    resp = client.post(
-        "/api/v1/record/start", json={"topics": ["/tf"], "compression": "none"}
-    )
+        resp = client.post(
+            "/api/v1/record/start", json={"topics": ["/tf"], "compression": "none"}
+        )
     assert resp.status_code == 200
     run = resp.json()
 
-    assert run["run_id"] == prepared["run_id"]
+    assert prepared["run_id"] == "run_20260624_090300"
+    assert run["run_id"] == "run_20260624_090300"  # prepared id, not the fresh one
     assert run["state"] == "recording"
     # The recorder's /record/start received the SAME run_id it was armed with.
     assert fake_recorder.last_start_payload["run_id"] == prepared["run_id"]
@@ -69,19 +81,27 @@ def test_prepare_then_matching_start_reuses_prepared_run_id(
 def test_prepare_match_ignores_operator_task_differences(
     client: TestClient, fake_recorder: FakeRecorder
 ) -> None:
-    """operator/task are session metadata, not part of the prepare/start match."""
-    prepared = client.post(
-        "/api/v1/record/prepare",
-        json={"topics": ["/tf"], "operator": "alice", "task": "pickup"},
-    ).json()
+    """operator/task are session metadata, not part of the prepare/start match.
 
-    resp = client.post(
-        "/api/v1/record/start",
-        json={"topics": ["/tf"], "operator": "bob", "task": "sort"},
-    )
+    See the previous test's docstring for why ``allocate_run_id`` must be
+    patched to distinct values for the id-reuse assertion to mean anything.
+    """
+    with patch(
+        "api_orchestrator.runs.allocate_run_id",
+        side_effect=["run_20260624_090400", "run_20260624_090401"],
+    ):
+        prepared = client.post(
+            "/api/v1/record/prepare",
+            json={"topics": ["/tf"], "operator": "alice", "task": "pickup"},
+        ).json()
+
+        resp = client.post(
+            "/api/v1/record/start",
+            json={"topics": ["/tf"], "operator": "bob", "task": "sort"},
+        )
     run = resp.json()
 
-    assert run["run_id"] == prepared["run_id"]
+    assert run["run_id"] == prepared["run_id"] == "run_20260624_090400"
     assert run["operator"] == "bob"
     assert run["task"] == "sort"
 
