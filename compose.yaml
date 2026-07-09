@@ -57,6 +57,16 @@ x-no-proxy: &no-proxy
   NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
   no_proxy: ${NO_PROXY:-localhost,127.0.0.1}
 
+# Build-time proxy passthrough for the 4 ROS service images: their builder
+# stage runs `uv pip install` against PyPI, which needs the same corporate
+# proxy the host uses (empty defaults are a no-op off-proxy). Paired with
+# `build: network: host` below so DNS resolution uses the host's resolver
+# instead of Docker's isolated build-bridge network.
+x-build-proxy-args: &build-proxy-args
+  HTTP_PROXY: ${HTTP_PROXY:-}
+  HTTPS_PROXY: ${HTTPS_PROXY:-}
+  NO_PROXY: ${NO_PROXY:-}
+
 # Shared healthcheck cadence (conservative — the services are lightweight, but the
 # ROS ones need a moment to import rclpy). Each service overrides `test` with its
 # own port; the port is interpolated here as ${VAR:-default} (same single source
@@ -77,7 +87,9 @@ services:
     build:
       context: .
       dockerfile: services/rosbag2_recorder/Dockerfile
+      network: host
       args:
+        <<: *build-proxy-args
         ROS_DISTRO: ${ROS_DISTRO:-jazzy}
     image: kairos-rosbag2-recorder:${ROS_DISTRO:-jazzy}
     env_file:
@@ -112,7 +124,9 @@ services:
     build:
       context: .
       dockerfile: services/topic_monitor/Dockerfile
+      network: host
       args:
+        <<: *build-proxy-args
         ROS_DISTRO: ${ROS_DISTRO:-jazzy}
     image: kairos-topic-monitor:${ROS_DISTRO:-jazzy}
     env_file:
@@ -146,7 +160,9 @@ services:
     build:
       context: .
       dockerfile: services/webrtc_streamer/Dockerfile
+      network: host
       args:
+        <<: *build-proxy-args
         ROS_DISTRO: ${ROS_DISTRO:-jazzy}
     image: kairos-webrtc-streamer:${ROS_DISTRO:-jazzy}
     env_file:
@@ -179,7 +195,9 @@ services:
     build:
       context: .
       dockerfile: services/topic_probe/Dockerfile
+      network: host
       args:
+        <<: *build-proxy-args
         ROS_DISTRO: ${ROS_DISTRO:-jazzy}
     image: kairos-topic-probe:${ROS_DISTRO:-jazzy}
     env_file:

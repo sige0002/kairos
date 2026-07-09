@@ -5,19 +5,24 @@
 ARG ROS_DISTRO=jazzy
 
 # ---- builder ----------------------------------------------------------------
+# Uses uv rather than apt's python3-pip/python3-venv: the ros:*-ros-base images
+# only enable the Ubuntu "main" component, so that apt install 404s on mirrors
+# without "universe" (seen on a real-robot network). UV_PYTHON_PREFERENCE=
+# only-system + a bare "python3" interpreter name keep uv from trying to
+# download a standalone Python build (also DNS-blocked on the same networks).
 FROM ros:${ROS_DISTRO}-ros-base AS builder
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3-pip python3-venv \
-    && rm -rf /var/lib/apt/lists/*
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
-ENV VENV=/opt/venv
-RUN python3 -m venv --system-site-packages $VENV
+ENV VENV=/opt/venv UV_PYTHON_PREFERENCE=only-system
+RUN uv venv --python python3 --system-site-packages $VENV
 ENV PATH="$VENV/bin:$PATH"
 
 WORKDIR /app
 COPY libs/kairos_common /app/libs/kairos_common
 COPY services/webrtc_streamer /app/services/webrtc_streamer
-RUN pip install --no-cache-dir ./libs/kairos_common ./services/webrtc_streamer
+# --no-editable: a plain uv pip install of a local path defaults to editable,
+# whose .pth points at this builder stage's /app — absent in the runtime stage.
+RUN uv pip install --no-cache-dir --no-editable ./libs/kairos_common ./services/webrtc_streamer
 
 # ---- runtime ----------------------------------------------------------------
 FROM ros:${ROS_DISTRO}-ros-base AS runtime

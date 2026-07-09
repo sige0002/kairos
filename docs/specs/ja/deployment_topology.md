@@ -68,6 +68,13 @@ sample あたり 1 回で、ローカル記録と同じ）。**重いデータ�
 
 **TBD**: Cyclone + Iceoryx の正式対応（iox-roudi の compose 同梱・XML 整備。ただし**ロボット側ノードにも SHM 有効化が必要**で kairos 単独では完結しない）は高工数のため未定。両側を Fast DDS に統一できる環境では、それが最小工数で SHM を成立させる。
 
+**決定（要実装・2026-07-09 追記）: Iceoryx は追わず、`rmw_zenoh_cpp` を 3 つ目の RMW 選択肢として一般化する。** ロボット側の汎用化（機種ごとに RMW ベンダが異なりうる）を優先し、Cyclone + Iceoryx 統合ではなく、Zenoh 自前の共有メモリトランスポートで同一ホスト SHM を狙う方針に決定。
+- パッケージは Jazzy（Noble）向けに apt から入手可能と確認済み（`ros-jazzy-rmw-zenoh-cpp`, packages.ros.org、`ros-jazzy-zenoh-cpp-vendor` 同梱）。既存の `rmw_fastrtps_cpp` / `rmw_cyclonedds_cpp` と同列の `RMW_IMPLEMENTATION` 選択肢として、ROS 側 4 サービスの Dockerfile に追加する必要がある（現状 Cyclone のみ同梱、`services/*/Dockerfile` の `ros-${ROS_DISTRO}-rmw-cyclonedds-cpp` 相当行）。
+- **Zenoh も「env 切替だけ」では済まない**: DDS と異なり自動ピア探索ではなく、Iceoryx の `iox-roudi` に相当する**ルータプロセス（`rmw_zenohd`）が別途常駐している必要がある**。compose に 1 サービス追加する規模の作業で、Iceoryx（外部ソースビルド + XML 整備）よりは軽いが「追加作業なし」ではない。
+- 上記§4 の Option B で使っている `zenoh-bridge-ros2dds`（DDS↔Zenoh の**ゲートウェイ**、クロスホスト用）とは別物。今回追加するのは `rmw_zenoh_cpp`（**RMW 実装そのもの**、DDS を介さない同一ホスト内トランスポート）で、両者は独立に共存できる。
+- 未確認（実装前に潰す）: kairos のコンテナ構成（`network_mode: host` / `ipc: host`）で Zenoh の SHM プラグインが実際にゼロコピーに乗るか、ルータをどのコンテナに同梱するか、`RMW_IMPLEMENTATION=rmw_zenoh_cpp` 時に既存の `CYCLONEDDS_URI` / `FASTRTPS_DEFAULT_PROFILES_FILE` 相当の設定点（`ZENOH_ROUTER_CONFIG_URI` 等）をどう `.env`/`config/` に載せるか。
+- 検証計画: [[record_start_two_phase_report]] の再現実験を拡張し、airoa サンプル bag をスケール（新規 OSS bag は探さない）した上で、Fast DDS / Cyclone DDS / Zenoh の 3 方式を横並びで計測する（Iceoryx は対象外のまま）。
+
 **TBD（構成変更・要ユーザ判断・2026-07-09 追記）: kairos 自身の重複購読を 1 本に集約する。** 上の②「同時リーダの削減」は負荷が厳しい間だけ一部リーダを止める運用対策だが、恒常的な対策として recorder / topic_monitor / webrtc_streamer / topic_probe が同じ画像トピックを個別に購読している構成そのものを、1 プロセスが 1 回だけ購読しプロセス内で 4 用途に配る設計に変えれば、SHM の有無に関わらず kairos 側のフルコピー本数を最大 1/4 に減らせる（Iceoryx 対応を待たずに効く、kairos 単独で完結する）。ただし現行の「1 folder = 1 container」（4 コンテナ独立、[README](../../../README.md) 参照）を崩す規模の変更になるため要ユーザ判断。**ROS 2 コンポジション（`rclcpp_components` / component container）はこの用途には使えない**（調査済み: rclpy はコンポジション/intra-process comms 未実装〔`ros2/rclpy#575`, `#599`〕。また仮に対応していても、コンポジションは publisher と subscriber を同一プロセスに置ける場合にのみゼロコピーが効く仕組みで、publisher であるロボット側カメラドライバは kairos の管轄外の既存プロセスのため、そもそも合流できない）。
 
 ## 3. Option A（既定）: エッジ記録（recorder をロボットに置く）
