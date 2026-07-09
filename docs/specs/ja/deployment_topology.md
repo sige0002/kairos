@@ -68,6 +68,8 @@ sample あたり 1 回で、ローカル記録と同じ）。**重いデータ�
 
 **TBD**: Cyclone + Iceoryx の正式対応（iox-roudi の compose 同梱・XML 整備。ただし**ロボット側ノードにも SHM 有効化が必要**で kairos 単独では完結しない）は高工数のため未定。両側を Fast DDS に統一できる環境では、それが最小工数で SHM を成立させる。
 
+**TBD（構成変更・要ユーザ判断・2026-07-09 追記）: kairos 自身の重複購読を 1 本に集約する。** 上の②「同時リーダの削減」は負荷が厳しい間だけ一部リーダを止める運用対策だが、恒常的な対策として recorder / topic_monitor / webrtc_streamer / topic_probe が同じ画像トピックを個別に購読している構成そのものを、1 プロセスが 1 回だけ購読しプロセス内で 4 用途に配る設計に変えれば、SHM の有無に関わらず kairos 側のフルコピー本数を最大 1/4 に減らせる（Iceoryx 対応を待たずに効く、kairos 単独で完結する）。ただし現行の「1 folder = 1 container」（4 コンテナ独立、[README](../../../README.md) 参照）を崩す規模の変更になるため要ユーザ判断。**ROS 2 コンポジション（`rclcpp_components` / component container）はこの用途には使えない**（調査済み: rclpy はコンポジション/intra-process comms 未実装〔`ros2/rclpy#575`, `#599`〕。また仮に対応していても、コンポジションは publisher と subscriber を同一プロセスに置ける場合にのみゼロコピーが効く仕組みで、publisher であるロボット側カメラドライバは kairos の管轄外の既存プロセスのため、そもそも合流できない）。
+
 ## 3. Option A（既定）: エッジ記録（recorder をロボットに置く）
 
 ### 3.1 構成ファイル

@@ -80,7 +80,7 @@ resume は **rosbag2 の `~/resume` サービス**で行うため、対話 SPACE
 - **armed 中も購読は live** = 記録と同じ DDS リーダ負荷がかかり続ける（paused の rosbag2 は受信して捨てる）。SHM が効かない構成（[deployment_topology](deployment_topology.md) の「単一ホスト SHM の成立条件」）ではフルコピー負荷なので、arm 窓は短く保ち、UI の操作意図（記録準備の明示操作）に連動させる。
 - prepare/armed/disarm の API・状態機械が増える（orchestrator / frontend の変更を伴う設計変更）。よって **TBD** とし、実装判断はユーザと行う。
 
-**代替案（比較済み）**: 常駐 recorder ノード（rosbag2_py で participant/購読を温存）は spawn コストを恒久に消せるが、実績ある `ros2 bag record` サブプロセスの挙動（cache 溢れの `Total lost` 検出・split・SIGINT での flush）を自前実装で置き換えることになり、リスク対効果が悪く**非推奨**。DDS discovery チューニング（initial announcements 等）は短縮効果が小さく単独では解決しない（加点程度）。
+**代替案 — `rosbag2_py.Recorder` による同一プロセス実装 — TBD（2026-07-09 追記・要再検討）**: 常駐 recorder（rosbag2_py で participant/購読を温存し spawn コストを恒久に消す）は、従来「実績ある `ros2 bag record` サブプロセスの挙動を自前実装で置き換えることになりリスク対効果が悪い」として非推奨としていた。しかし調査の結果、`ros2 bag record` CLI 自体が中身では `rosbag2_py.Recorder`（C++ `rosbag2_transport::Recorder` の pybind11 バインディング）を直接呼ぶ薄いラッパーであることを確認した（`ros2bag/ros2bag/verb/record.py`, jazzy ブランチ）。つまり `rosbag2_py.Recorder` を kairos の自プロセス内から直接呼んでも、cache 溢れ検出・split・SIGINT 相当の flush（`stop()`）は CLI と同一の実装を素通しで使えるだけで、「自前実装への置き換え」には当たらない。`pause()` / `resume()` / `is_paused()` もネイティブメソッド・オプションとして既にあり、上記 two-phase start の実装コストを下げる副次効果もある。サブプロセス spawn（1〜3 秒）を消せるため開始レイテンシの一部には効くが、DDS discovery/購読マッチングの待ち時間そのものは変わらない（two-phase start とは直交し併用可）。**新たな未検証点**: Jazzy でのこの API 対応はごく最近（`rosbag2_py` 0.26.8/0.26.9, 2025-07〜08）で枯れていない点、および `Recorder` のコンストラクタが自前で `rclcpp::init()` するため、既存の readiness gate（`_arm_and_resume()`）が持つ rclpy コンテキストと**同一プロセス内で 2 つの ROS コンテキストが共存**することになり動作未確認、の 2 点。よって非推奨の決定を覆すには実機検証が要る — **TBD** とし、実装判断はユーザと行う。DDS discovery チューニング（initial announcements 等）は短縮効果が小さく単独では解決しない（加点程度）。
 
 ## 取りこぼし検出（記録キャッシュ整合性）
 
