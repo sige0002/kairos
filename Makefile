@@ -190,8 +190,13 @@ ps: ## show container status
 # DDS-reading services run ON the robot (compose.robot.yaml); orchestrator/dora/
 # frontend run on the recording PC (compose.recording.yaml) and never join DDS.
 # See docs/specs/ja/deployment_topology.md.
-COMPOSE_ROBOT     := docker compose $(if $(wildcard .env),--env-file .env,) -f compose.robot.yaml
-COMPOSE_RECORDING := docker compose $(if $(wildcard .env),--env-file .env,) -f compose.recording.yaml
+# Split modes read .env.split when it exists (so the single-PC .env stays
+# untouched — no clobber-to-switch), else fall back to .env. KAIROS_ENV_FILE is
+# exported so compose.yaml's per-service `env_file: ${KAIROS_ENV_FILE:-.env}`
+# injects the SAME file into the containers; --env-file feeds ${VAR} interpolation.
+SPLIT_ENV := $(if $(wildcard .env.split),.env.split,$(if $(wildcard .env),.env,))
+COMPOSE_ROBOT     := $(if $(SPLIT_ENV),KAIROS_ENV_FILE=$(SPLIT_ENV),) docker compose $(if $(SPLIT_ENV),--env-file $(SPLIT_ENV),) -f compose.robot.yaml
+COMPOSE_RECORDING := $(if $(SPLIT_ENV),KAIROS_ENV_FILE=$(SPLIT_ENV),) docker compose $(if $(SPLIT_ENV),--env-file $(SPLIT_ENV),) -f compose.recording.yaml
 
 .PHONY: robot-up robot-down robot-build robot-rebuild robot-restart robot-logs robot-ps robot-config-reload \
         recording-up recording-down recording-build recording-rebuild recording-restart recording-logs \

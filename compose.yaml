@@ -93,7 +93,7 @@ services:
         ROS_DISTRO: ${ROS_DISTRO:-jazzy}
     image: kairos-rosbag2-recorder:${ROS_DISTRO:-jazzy}
     env_file:
-      - path: .env
+      - path: ${KAIROS_ENV_FILE:-.env}
         required: false
     environment:
       <<: [*ros-env, *no-proxy]
@@ -130,7 +130,7 @@ services:
         ROS_DISTRO: ${ROS_DISTRO:-jazzy}
     image: kairos-topic-monitor:${ROS_DISTRO:-jazzy}
     env_file:
-      - path: .env
+      - path: ${KAIROS_ENV_FILE:-.env}
         required: false
     environment:
       <<: [*ros-env, *no-proxy]
@@ -166,7 +166,7 @@ services:
         ROS_DISTRO: ${ROS_DISTRO:-jazzy}
     image: kairos-webrtc-streamer:${ROS_DISTRO:-jazzy}
     env_file:
-      - path: .env
+      - path: ${KAIROS_ENV_FILE:-.env}
         required: false
     environment:
       <<: [*ros-env, *no-proxy]
@@ -201,7 +201,7 @@ services:
         ROS_DISTRO: ${ROS_DISTRO:-jazzy}
     image: kairos-topic-probe:${ROS_DISTRO:-jazzy}
     env_file:
-      - path: .env
+      - path: ${KAIROS_ENV_FILE:-.env}
         required: false
     environment:
       <<: [*ros-env, *no-proxy]
@@ -230,7 +230,7 @@ services:
       dockerfile: services/api_orchestrator/Dockerfile
     image: kairos-api-orchestrator:latest
     env_file:
-      - path: .env
+      - path: ${KAIROS_ENV_FILE:-.env}
         required: false
     environment:
       <<: *no-proxy
@@ -286,7 +286,7 @@ services:
       dockerfile: services/dora_runner/Dockerfile
     image: kairos-dora-runner:latest
     env_file:
-      - path: .env
+      - path: ${KAIROS_ENV_FILE:-.env}
         required: false
     environment:
       <<: *no-proxy
@@ -316,7 +316,7 @@ services:
       dockerfile: services/frontend/Dockerfile
     image: kairos-frontend:latest
     env_file:
-      - path: .env
+      - path: ${KAIROS_ENV_FILE:-.env}
         required: false
     environment:
       <<: *no-proxy
