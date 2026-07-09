@@ -61,6 +61,13 @@
 | `RECORDER_HOST` / `TOPIC_MONITOR_HOST` / `WEBRTC_HOST` / `TOPIC_PROBE_HOST` / `DORA_RUNNER_HOST` | `localhost` | `api_orchestrator` が下流サービスに向ける接続先。録画 PC 側では recorder/monitor/streamer/probe をロボットの LAN IP に向ける（dora はローカル同居のまま） |
 | `API_HOST` / `WEBRTC_HOST` / `PROBE_HOST` | `127.0.0.1` | frontend の nginx リバースプロキシのアップストリーム先（`default.conf.template`）。録画 PC では `WEBRTC_HOST` / `PROBE_HOST` をロボット IP に |
 
+**サンプルbag再生ハーネス用**（`deploy/test/compose.yaml`。`make rosbag` / `make rosbag-loop` が読む。本体の 7 サービスには渡らない）:
+
+| キー | 既定 | 説明 |
+|---|---|---|
+| `BAG` | `airoa-moma-mcap/235210` | 再生する bag。`data/` からの相対パス（例 `airoa-moma-mcap/000730`）。絶対パス（`/data/...`）も可。コマンドライン優先指定は `make rosbag BAG=...` |
+| `LOOP` | (空=1 回のみ) | `--loop` を指定するとループ再生（`make rosbag-loop` と同じ効果） |
+
 - サービス間は信頼 LAN 内で通信する（既定は host networking で `localhost:<port>`。内部ポートも上表のとおり）。マルチテナント host ではブリッジ網 + DDS unicast に切替（`compose.yaml` のネットワーク注記参照）。
 - 共通の設定スキーマは `libs/kairos_common`（pydantic-settings）に置き、各サービスが env を型付きで読む。
 - compose は全 7 サービスに `GET /healthz`（frontend は nginx root）ベースの healthcheck を持ち、frontend は `depends_on: orchestrator (service_healthy)` で orchestrator の healthy を待って起動する。

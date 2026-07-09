@@ -64,6 +64,13 @@ The single source of configuration shared across services, and the rules for ext
 | `RECORDER_HOST` / `TOPIC_MONITOR_HOST` / `WEBRTC_HOST` / `TOPIC_PROBE_HOST` / `DORA_RUNNER_HOST` | `localhost` | The downstream service addresses `api_orchestrator` connects to. On the recording PC side, point recorder/monitor/streamer/probe at the robot's LAN IP (dora stays co-located locally) |
 | `API_HOST` / `WEBRTC_HOST` / `PROBE_HOST` | `127.0.0.1` | The upstream targets for the frontend's nginx reverse proxy (`default.conf.template`). On the recording PC, point `WEBRTC_HOST` / `PROBE_HOST` at the robot IP |
 
+**For the sample-bag replay harness** (`deploy/test/compose.yaml`, read by `make rosbag` / `make rosbag-loop`; not passed to the 7 core services):
+
+| Key | Default | Description |
+|---|---|---|
+| `BAG` | `airoa-moma-mcap/235210` | The bag to replay. A path relative to `data/` (e.g. `airoa-moma-mcap/000730`); an absolute path (`/data/...`) also works. Override per-run with `make rosbag BAG=...` |
+| `LOOP` | (empty = play once) | Set to `--loop` to replay on a loop (same effect as `make rosbag-loop`) |
+
 - Services communicate within the trusted LAN (the default is host networking with `localhost:<port>`; internal ports are as in the table above). On a multi-tenant host, switch to a bridge network + DDS unicast (see the network notes in `compose.yaml`).
 - The common settings schema lives in `libs/kairos_common` (pydantic-settings), and each service reads env in a typed manner.
 - compose gives all 7 services a healthcheck based on `GET /healthz` (frontend uses the nginx root), and frontend waits for the orchestrator to become healthy via `depends_on: orchestrator (service_healthy)` before starting.
