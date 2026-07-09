@@ -99,6 +99,25 @@ class RecordStartRequest(BaseModel):
     task: str | None = None
 
 
+class RecordPrepareResponse(BaseModel):
+    """Response for ``POST /api/v1/record/prepare`` (two-phase start).
+
+    No ``Run`` row exists yet at this point — prepare state lives only in
+    memory on the orchestrator (``RunService._prepared``) until a matching
+    ``POST /api/v1/record/start`` actually persists a row — so this is a
+    distinct shape from :class:`Run`, not a partial/optional-field version of
+    it. ``arming`` is a permissive pass-through of the recorder's readiness
+    snapshot (matched/missing topics, etc.) rather than a tightly-coupled
+    submodel, so a minor field-name difference on the recorder side does not
+    hard-fail this response.
+    """
+
+    run_id: str
+    state: Literal["armed"] = "armed"
+    arming: dict[str, Any] = Field(default_factory=dict)
+    disarm_at: str | None = None
+
+
 class RunDetail(Run):
     """A single run plus on-disk audit/report sidecars (``GET /runs/{id}``).
 

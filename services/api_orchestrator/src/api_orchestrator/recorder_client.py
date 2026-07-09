@@ -31,6 +31,7 @@ from api_orchestrator.service_client import (
 __all__ = [
     "DEFAULT_TIMEOUT_S",
     "RETRIES",
+    "PREPARE_TIMEOUT_S",
     "START_TIMEOUT_S",
     "STOP_TIMEOUT_S",
     "RecorderClient",
@@ -48,6 +49,16 @@ STOP_TIMEOUT_S = 35.0
 # (subscription_ready_timeout_s). Give it a budget that covers both, with NO
 # retry: a slow-but-succeeding start must not be retried into a 409.
 START_TIMEOUT_S = 25.0
+
+# POST /record/prepare spawns the recorder subprocess ahead of the operator's
+# start action and blocks through the same spawn + DDS discovery/subscription
+# match latency that /record/start absorbs today (see START_TIMEOUT_S), so it
+# shares that budget. NO retry, and deliberately not attempted automatically
+# even on a slow prepare: retrying would just spawn and arm a second session
+# for no benefit — an abandoned prepare (this one, or the one being retried
+# over) auto-disarms on the recorder's own timeout regardless, so there is
+# nothing a client-side retry here would recover.
+PREPARE_TIMEOUT_S = START_TIMEOUT_S
 
 
 class RecorderClient(BaseServiceClient):
@@ -82,6 +93,22 @@ class RecorderClient(BaseServiceClient):
         """
         return await self._request(
             "POST", "/record/start", json=payload, timeout=START_TIMEOUT_S, retries=0
+        )
+
+    async def prepare(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Call recorder ``POST /record/prepare``; returns the recorder body.
+
+        Same body shape as :meth:`start`. Returns ``{run_id, state: "armed",
+        arming, disarm_at}`` (or the recorder's own error, e.g. ``409`` if it
+        is already actively recording). Uses :data:`PREPARE_TIMEOUT_S` with no
+        retry — see that constant's docstring for why retrying is not done.
+        """
+        return await self._request(
+            "POST",
+            "/record/prepare",
+            json=payload,
+            timeout=PREPARE_TIMEOUT_S,
+            retries=0,
         )
 
     async def stop(self) -> dict[str, Any]:
