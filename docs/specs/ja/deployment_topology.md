@@ -201,6 +201,11 @@ C が正当化されるのは A が構造的に供給できない別要件（ラ
   p99 100〜222ms を許容できる場合のみ。
 - **「終着点 = B native」は源が zenoh の時のみ到達可能**。DDS publisher のロボットにおける終着点は
   「ゲートウェイ（best_effort ingress）＋ PC 側 native rmw_zenoh ピア（DDS-42 全廃）」（same-RMW-both-ends 制約）。
+  **⚠ Stage-0 実測（2026-07-10、G4）による但し書き**: rmw_zenoh_cpp 0.2.9 の購読者を
+  zenoh-bridge-ros2dds v1.9.0 のセッションに直結しても**受信 0（非互換）**。現行バージョン組では
+  この「PC native ピア」終着形は直結不能で、PC 側消費は当面**第 2 ブリッジ（ingress 再パブリッシュ）
+  経由が唯一形態**。bridge↔rmw_zenoh 互換が上流で入るまで、DDS-42 相当は「撤去可能なシム」ではなく
+  構造的に必要。バージョン更新ごとに互換プローブ（下記ハーネス G4 セル）を再走すること。
 - **ライブ重データ経路のインフラ前提を名指しする**: survival=1.0 の条件は「リンク帯域 > 持続ペイロード」。
   300MB/s なら 10GbE 級 or 送信元圧縮が硬前提。ベンチの 10MB@30Hz フル配送は loopback 値であり、
   実 NIC 越しは Stage-0 で実測するまで未実証。
@@ -251,7 +256,13 @@ C が正当化されるのは A が構造的に供給できない別要件（ラ
 
 ### 5.5 Stage ごとの go/no-go
 
-- **Stage 0（ラボ特性評価、本番なし）**: GO = ブリッジ best_effort 固定＋**reliable ingress 不在（assertion）**で
+- **Stage 0（ラボ特性評価、本番なし）**: 計測ハーネスは
+  [ros2-transport-bench/stage0/](https://github.com/sige0002/ros2-transport-bench/tree/main/stage0)
+  として実装済み（netns 疑似 LAN と 2 ホスト実 LAN の 2 モード、ゲート G1〜G4 を実行可能セル化）。
+  netns 予備実測（2026-07-10、GO 判定には不可）: ブリッジチェーンは 300MB/s を F=1.000 で通過・
+  境界 1 コピー厳守・KEEP_LAST writer は 200Mbit 制限下でも絞られず（R_pub 不変、ただし KEEP_ALL
+  変種は未測）・既定カーネルでは**ロボット上 1 ホップ recorder ですら F=0.168**（rmem ノブ必須の実証）。
+  GO = ブリッジ best_effort 固定＋**reliable ingress 不在（assertion）**で
   source-integrity guard 合格／実部品（zenoh-bridge-ros2dds）・**実 NIC・実スイッチ越し**・実ペイロードで
   through-bridge と native クロスホストの**両経路** F≥0.99（分母は独立 R_pub）／「リンク帯域 > 持続ペイロード」充足
   ／ロボット DDS の loopback 固定をバイトカウンタで検証／rollback を各ホスト 1 コマンドで実演。
