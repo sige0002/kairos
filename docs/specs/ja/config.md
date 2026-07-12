@@ -45,6 +45,9 @@
 | `UID` / `GID` | ホスト uid/gid | 非 root の `api_orchestrator` / `dora_runner` を `user: "${UID:-1000}:${GID:-1000}"` で動かし、host 所有の `./data`・`./config` bind マウントに書けるようにする。bash は `UID` を export せず `GID` を持たないため、`make` が `id -u`/`id -g` を export する。素の `docker compose` で uid≠1000 のホストは `export UID=$(id -u) GID=$(id -g)` が必要 |
 | `WEBRTC_PUBLIC_URL` | `/webrtc` | frontend がカメラ signaling に使うベース URL（`/api/v1/config` の `endpoints.webrtc`）。既定は同一オリジンの相対パス `/webrtc` で、frontend の nginx が `webrtc_streamer` にリバースプロキシする。これにより LAN IP / SSH トンネル / Tailscale など任意のアクセス元から CORS なしで動く。ブラウザを streamer に直接つなぐ旧方式にする場合のみ絶対 URL `http://<host>:8002` を指定する（その場合 `CORS_ORIGINS` に該当 origin を追加） |
 | `CORS_ORIGINS` | `http://localhost:8080,http://localhost:5173` | orchestrator と `webrtc_streamer` が許可する origin（served + dev。LAN 公開時は該当ホストの origin を追加） |
+| `WEBRTC_ICE_SERVERS` | `[]` | カメラプレビューの STUN/TURN。ブラウザ RTCIceServer 形の JSON 配列（`/api/v1/config` の `ice_servers` としてブラウザ＋streamer 両方へ配布）。既定 `[]`=同一 LAN 直結（host candidate のみ）。NAT / WiFi クライアント分離 / インターネット越えのときだけ設定する。空/不正値は「ICE なし」に安全縮退（サービスは落とさない） |
+| `WEBRTC_PACKET_MAX` | `1150` | RTP ペイロード上限（B）。既定 `1150` は MTU 1280 のトンネル（Tailscale/WireGuard）で断片化しないよう aiortc の 1300B 固定を縮小したもの。MTU 1500 の同一 LAN のみ `1300` に戻して overhead を減らせる |
+| `WEBRTC_KEEP_IPV6` | （未設定） | `1` で answer SDP の IPv6 ICE 候補除外を無効化。既定（未設定）では v6 候補を落とす（断片化 IPv6 が WireGuard/Tailscale でブラックホール化しプレビューが黒くなるのを防ぐ）。v6 でしか到達できない網でだけ `1` にする |
 | `LOG_LEVEL` | `INFO` | ログレベル |
 | `RETENTION_DAYS` | `0` | `0`=無効。`>0` で古い run を保持期間で削除候補に |
 | `MAX_RECORD_BYTES` | `0` | `0`=無制限。`>0` で超過時に記録を自動 stop |

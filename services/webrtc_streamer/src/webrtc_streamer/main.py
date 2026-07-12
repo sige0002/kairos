@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -48,6 +49,43 @@ SERVICE_NAME = "webrtc_streamer"
 
 # How often the background task reaps streams that have been idle too long.
 _IDLE_REAP_PERIOD_S = 5.0
+
+# aiortc hardcodes the RTP payload cap at 1300 B, yielding ~1350 B (IPv4) /
+# ~1370 B (IPv6) datagrams. Over a reduced-MTU tunnel (Tailscale/WireGuard =
+# 1280) every max-size media packet then fragments, and fragmented IPv6
+# datagrams are black-holed by WireGuard — so a preview crossing Tailscale goes
+# black whenever ICE nominates the v6 pair. Capping the payload so the whole
+# datagram fits 1280 (1150 + RTP/SRTP/UDP/IPv6 headers = ~1220 < 1280) removes
+# all fragmentation. WEBRTC_PACKET_MAX lets a same-LAN (MTU 1500) deployment
+# restore 1300 if it prefers the ~12% lower header overhead.
+_DEFAULT_PACKET_MAX = 1150
+
+
+def _apply_rtp_packet_max() -> None:
+    """Cap aiortc's RTP payload size to fit a reduced-MTU (e.g. Tailscale) path."""
+    raw = os.getenv("WEBRTC_PACKET_MAX", str(_DEFAULT_PACKET_MAX))
+    try:
+        packet_max = int(raw)
+    except ValueError:
+        logger.warning(
+            "invalid WEBRTC_PACKET_MAX %r; using %d", raw, _DEFAULT_PACKET_MAX
+        )
+        packet_max = _DEFAULT_PACKET_MAX
+    patched: list[str] = []
+    for mod_name in ("vpx", "h264"):
+        try:
+            mod = __import__(f"aiortc.codecs.{mod_name}", fromlist=["PACKET_MAX"])
+        except Exception:  # noqa: BLE001 - aiortc absent (pure-logic unit-test host)
+            continue
+        if hasattr(mod, "PACKET_MAX"):
+            mod.PACKET_MAX = packet_max
+            patched.append(mod_name)
+    if patched:
+        logger.info(
+            "capped RTP PACKET_MAX to %d for %s (fits reduced-MTU tunnels)",
+            packet_max,
+            ", ".join(patched),
+        )
 
 
 def _real_source_factory(request: StreamStartRequest) -> FrameSource:
@@ -87,6 +125,7 @@ def create_streamer_app(
         peer_factory: builds a :class:`PeerManager` per start (tests inject a
             fake that needs no aiortc).
     """
+    _apply_rtp_packet_max()  # before any PeerConnection packetizes media
     settings = get_settings()
     h264 = h264_available()
     registry = StreamRegistry(
