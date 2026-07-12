@@ -58,7 +58,7 @@ export function DatasetDetail({ state }: { state: DatasetsState }) {
             onKeyDown={(e) => {
               if (e.key === 'Enter') state.toastEditRecipe();
             }}
-            className="cursor-pointer text-xs font-semibold text-gray-900 hover:text-teal-700"
+            className="cursor-pointer text-xs font-semibold text-teal-700 hover:text-teal-800"
           >
             Edit recipe →
           </a>
