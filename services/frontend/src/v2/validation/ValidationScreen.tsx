@@ -1,14 +1,313 @@
-// Validation tab (v2 IA) — Standard/Candidate/Experimental pipeline runs.
-// Layout only for now; root mirrors the design mock's 290px / 1fr two-column
-// grid (pipeline list, pipeline detail with parameters + latest run).
+// Validation screen (v2 IA): a re-layout of the existing ValidationTab, not a
+// rewrite. The pipeline list, schema-driven params form, job submission/poll
+// and the generic result renderer are all real, reusing
+// features/validation/PipelineForm + SummaryResult and the same GET
+// /pipelines · GET /runs · GET /config/options · POST /jobs ·
+// GET /jobs/{id}/status|result wiring as ValidationTab (see
+// docs/specs/ja/dora_plugins.md §"UI 非依存の契約"). Pipeline lifecycle,
+// version/owner metadata, presets and diff-vs-previous-version are Phase 2
+// backend concepts the orchestrator doesn't expose yet — those render as
+// clearly-commented mock/static content (lifecycle.ts, mockMeta.ts,
+// ParamsPanel's Preset/Diff cards).
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
+import { apiGet, apiPost } from '../../api/client';
+import { queryKeys } from '../../api/queryKeys';
+import { fetchRuntimeConfig } from '../../config';
+import type { JSONSchema } from '../../schema/jsonSchema';
+import { initialValueFor } from '../../schema/jsonSchema';
+import type {
+  ConfigOptions,
+  JobState,
+  JobStatus,
+  Page,
+  PipelineInfo,
+  RunSummary,
+  ValidationOption,
+} from '../../api/types';
+import type { Summary } from '../../features/validation/SummaryResult';
+import { Card } from '../../components/ui';
+import { PipelineRail } from './PipelineRail';
+import { DetailHeader } from './DetailHeader';
+import { ParamsPanel, ALL_RUNS } from './ParamsPanel';
+import { ResultsPanel, type ActiveOutcome } from './ResultsPanel';
+import { Toast } from './Toast';
+import { useJobResult } from './useJobResult';
 
-import { WipPanel } from '../WipPanel';
+const EMPTY_SCHEMA: JSONSchema = { type: 'object', properties: {} };
+const FALLBACK_SCHEMA: JSONSchema = {
+  type: 'object',
+  required: ['template'],
+  properties: { template: { type: 'string' } },
+};
+const FAST_VALIDATION = 'fast_validation';
+
+interface JobRef {
+  run_id: string;
+  job_id: string;
+}
+
+interface ActiveRun {
+  pipeline: string;
+  jobs: JobRef[];
+}
+
+interface JobProbeUpdate {
+  jobId: string;
+  runId: string;
+  state: JobState;
+  progress: number;
+  terminal: boolean;
+  summary?: Summary;
+  artifacts?: string[];
+  resultErrored: boolean;
+}
+
+/** Invisible per-job poller: reports status/result changes to the parent. */
+function JobProbe({ job, onUpdate }: { job: JobRef; onUpdate: (u: JobProbeUpdate) => void }) {
+  const { statusQuery, terminal, resultQuery } = useJobResult(job.job_id);
+  useEffect(() => {
+    if (!statusQuery.data) return;
+    onUpdate({
+      jobId: job.job_id,
+      runId: job.run_id,
+      state: statusQuery.data.state,
+      progress: statusQuery.data.progress ?? 0,
+      terminal,
+      summary: terminal ? resultQuery.data?.summary : undefined,
+      artifacts: terminal ? resultQuery.data?.artifacts : undefined,
+      resultErrored: terminal && resultQuery.isError,
+    });
+  }, [statusQuery.data, terminal, resultQuery.data, resultQuery.isError, job.job_id, job.run_id]);
+  return null;
+}
 
 export function ValidationScreen() {
+  const queryClient = useQueryClient();
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  const [overrides, setOverrides] = useState<Record<string, unknown>>({});
+  const [targetRunId, setTargetRunId] = useState('');
+  const [active, setActive] = useState<ActiveRun | null>(null);
+  const [jobStates, setJobStates] = useState<Record<string, JobProbeUpdate>>({});
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [toast, setToast] = useState('');
+  const toastTimer = useRef<number | undefined>(undefined);
+
+  const showToast = useCallback((message: string) => {
+    setToast(message);
+    window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToast(''), 2400);
+  }, []);
+  useEffect(() => () => window.clearTimeout(toastTimer.current), []);
+
+  const pipelinesQuery = useQuery({
+    queryKey: queryKeys.pipelines,
+    queryFn: ({ signal }) => apiGet<{ items: PipelineInfo[] }>('/pipelines', { signal }),
+  });
+  const pipelines = useMemo(
+    () => (pipelinesQuery.data?.items ?? []).filter((p) => p.enabled),
+    [pipelinesQuery.data],
+  );
+  const selectedPipeline = pipelines[selectedIndex] ?? pipelines[0];
+
+  const runsQuery = useQuery({
+    queryKey: queryKeys.runs(undefined),
+    queryFn: ({ signal }) => apiGet<Page<RunSummary>>('/runs', { signal, query: { limit: 50 } }),
+    placeholderData: keepPreviousData,
+  });
+  const runs = useMemo(
+    () => (runsQuery.data?.items ?? []).filter((r) => r.state === 'completed'),
+    [runsQuery.data],
+  );
+  // Default target = the latest completed run (GET /runs is newest-first).
+  useEffect(() => {
+    if (!targetRunId && runs.length > 0) setTargetRunId(runs[0]!.run_id);
+  }, [runs, targetRunId]);
+
+  const optionsQuery = useQuery({
+    queryKey: queryKeys.configOptions,
+    queryFn: ({ signal }) => apiGet<ConfigOptions>('/config/options', { signal }),
+  });
+  const templates: ValidationOption[] = (
+    optionsQuery.data?.aspects?.validation?.options ?? []
+  ).map((o) => ({
+    id: o.id,
+    name: o.meta.name ?? o.id,
+    version: o.meta.version ?? 1,
+    required_topics: o.meta.required_topics ?? [],
+  }));
+
+  const configQuery = useQuery({
+    queryKey: queryKeys.runtimeConfig,
+    queryFn: fetchRuntimeConfig,
+  });
+  const isFastValidation = selectedPipeline?.id === FAST_VALIDATION;
+  const schema: JSONSchema =
+    (selectedPipeline && configQuery.data?.schemas?.pipeline_forms?.[selectedPipeline.id]) ??
+    (isFastValidation ? FALLBACK_SCHEMA : EMPTY_SCHEMA);
+
+  const seeded = useMemo(
+    () => (initialValueFor(schema) as Record<string, unknown>) ?? {},
+    [schema],
+  );
+  const params: Record<string, unknown> = { ...seeded, ...overrides };
+  if (schema.properties?.template && !params.template) {
+    params.template = optionsQuery.data?.aspects?.validation?.active || templates[0]?.id || '';
+  }
+
+  const onJobUpdate = useCallback((u: JobProbeUpdate) => {
+    setJobStates((prev) => {
+      const cur = prev[u.jobId];
+      if (
+        cur &&
+        cur.state === u.state &&
+        cur.progress === u.progress &&
+        cur.terminal === u.terminal &&
+        cur.summary === u.summary
+      )
+        return prev;
+      return { ...prev, [u.jobId]: u };
+    });
+  }, []);
+
+  const allSettled = !active || active.jobs.every((j) => jobStates[j.job_id]?.terminal);
+  useEffect(() => {
+    if (active && allSettled) {
+      queryClient.invalidateQueries({ queryKey: queryKeys.runs(undefined) });
+    }
+  }, [active, allSettled, queryClient]);
+
+  const submitMutation = useMutation({
+    mutationFn: async (arg: {
+      pipeline: string;
+      params: Record<string, unknown>;
+      runIds: string[];
+    }): Promise<ActiveRun> => {
+      const jobs: JobRef[] = [];
+      for (const rid of arg.runIds) {
+        const job = await apiPost<JobStatus>('/jobs', {
+          pipeline: arg.pipeline,
+          run_id: rid,
+          params: arg.params,
+        });
+        queryClient.setQueryData(queryKeys.job(job.job_id), job);
+        jobs.push({ run_id: rid, job_id: job.job_id });
+      }
+      return { pipeline: arg.pipeline, jobs };
+    },
+    onSuccess: (run) => {
+      setJobStates({});
+      setActive(run);
+      setSelectedRunId(run.jobs[0]?.run_id ?? null);
+    },
+  });
+
+  const selectPipeline = (i: number) => {
+    setSelectedIndex(i);
+    setOverrides({});
+  };
+
+  const runOnSelection = () => {
+    if (!selectedPipeline) return;
+    const runIds = targetRunId === ALL_RUNS ? runs.map((r) => r.run_id) : [targetRunId];
+    submitMutation.mutate({ pipeline: selectedPipeline.id, params, runIds });
+  };
+
+  const targetCount = targetRunId === ALL_RUNS ? runs.length : targetRunId ? 1 : 0;
+  const canRun = !!selectedPipeline && targetCount > 0 && !submitMutation.isPending;
+  const running = (!!active && !allSettled) || submitMutation.isPending;
+
+  const progressPct = active
+    ? Math.round(
+        (active.jobs.reduce((sum, j) => sum + (jobStates[j.job_id]?.progress ?? 0), 0) /
+          active.jobs.length) *
+          100,
+      )
+    : 0;
+  const progressLabel = submitMutation.isPending
+    ? 'Starting…'
+    : active && active.jobs.length > 1
+      ? `Running on ${active.jobs.length} runs…`
+      : `Running on ${active?.jobs[0]?.run_id ?? ''}…`;
+
+  const activeOutcome: ActiveOutcome | null = active
+    ? {
+        pipeline: active.pipeline,
+        allSettled,
+        outcomes: active.jobs.map((j) => ({
+          runId: j.run_id,
+          orchestrationFailed:
+            jobStates[j.job_id]?.state === 'failed' || jobStates[j.job_id]?.resultErrored,
+          summary: jobStates[j.job_id]?.summary,
+        })),
+        artifacts:
+          active.jobs.length === 1 ? (jobStates[active.jobs[0]!.job_id]?.artifacts ?? []) : [],
+      }
+    : null;
+
+  if (!selectedPipeline) {
+    return (
+      <div className="grid grid-cols-1 gap-2.5 lg:h-full lg:min-h-0 lg:grid-cols-[290px_1fr]">
+        <PipelineRail
+          pipelines={pipelines}
+          selectedIndex={0}
+          onSelect={selectPipeline}
+          onNewRun={() => showToast('New run — pick pipeline, targets, parameters')}
+        />
+        <Card className="flex items-center justify-center p-8 text-sm text-gray-500">
+          {pipelinesQuery.isPending ? 'Loading pipelines…' : 'No enabled pipelines.'}
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div className="grid grid-cols-1 gap-2.5 lg:h-full lg:min-h-0 lg:grid-cols-[290px_1fr]">
-      <WipPanel label="Validation — pipelines column (WIP)" />
-      <WipPanel label="Validation — pipeline detail column (WIP)" />
+      {active?.jobs.map((job) => <JobProbe key={job.job_id} job={job} onUpdate={onJobUpdate} />)}
+
+      <PipelineRail
+        pipelines={pipelines}
+        selectedIndex={selectedIndex}
+        onSelect={selectPipeline}
+        onNewRun={() => showToast('New run — pick pipeline, targets, parameters')}
+      />
+
+      <Card className="flex min-h-0 flex-col overflow-auto">
+        <DetailHeader
+          pipeline={selectedPipeline}
+          index={selectedIndex}
+          onPromote={() =>
+            showToast(`${selectedPipeline.id} promoted to Standard — applies to new episodes`)
+          }
+        />
+        <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[300px_1fr]">
+          <ParamsPanel
+            schema={schema}
+            params={params}
+            onParamsChange={setOverrides}
+            templateOptions={templates}
+            runs={runs}
+            runsLoading={runsQuery.isPending}
+            targetRunId={targetRunId}
+            onTargetRunChange={setTargetRunId}
+            onRun={runOnSelection}
+            canRun={canRun}
+            running={running}
+            progressPct={progressPct}
+            progressLabel={progressLabel}
+            onCompareRuns={() => showToast('Compare view — parameter & result diff')}
+            submitError={submitMutation.isError ? submitMutation.error : undefined}
+          />
+          <ResultsPanel
+            active={activeOutcome}
+            onExportCsv={() => showToast('CSV exported')}
+            selectedRunId={selectedRunId}
+            onSelectRun={setSelectedRunId}
+          />
+        </div>
+      </Card>
+
+      <Toast message={toast} />
     </div>
   );
 }
