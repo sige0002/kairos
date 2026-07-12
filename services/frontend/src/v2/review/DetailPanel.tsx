@@ -273,6 +273,11 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
           >
             Open in Validation →
           </button>
+          <div className="flex-1" />
+          {/* Static mock text (Phase 1) — no override-history model exists yet. */}
+          <span data-testid="review-override-history" className="text-[11.5px] text-gray-400">
+            override history (1)
+          </span>
         </div>
       </div>
     </div>
