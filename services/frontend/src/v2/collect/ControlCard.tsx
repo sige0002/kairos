@@ -3,7 +3,14 @@
 // Exactly one renders at a time, keyed off `machine.phase`.
 
 import { Card, cn } from '../../components/ui';
-import { EPISODES_PER_BATCH, FAIL_REASONS, MB_PER_S, type BatchMachine } from './useBatchMachine';
+import {
+  describeQuality,
+  describeTaskOutcome,
+  EPISODES_PER_BATCH,
+  FAIL_REASONS,
+  MB_PER_S,
+  type BatchMachine,
+} from './useBatchMachine';
 
 function formatElapsed(ms: number): string {
   const s = Math.max(0, Math.floor(ms / 1000));
@@ -140,7 +147,9 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
     return (
       <Card className="flex shrink-0 flex-col gap-3 border-2 border-teal-200 p-4">
         <div className="flex items-center gap-2">
-          <span className="text-[15px] font-bold text-gray-900">Episode {stats.epNext} result</span>
+          <span data-testid="phase-title" className="text-[15px] font-bold text-gray-900">
+            Episode {stats.epNext} result
+          </span>
           <div className="flex-1" />
           <span
             className={cn(
@@ -211,6 +220,22 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
             </div>
           </div>
         )}
+        {machine.pendingTask && (
+          <div
+            data-testid="episode-summary"
+            className="flex flex-col gap-1 rounded-control border border-gray-200 bg-gray-50 px-3 py-2.5 text-xs leading-relaxed text-gray-600"
+          >
+            <span>
+              <span className="font-semibold text-gray-700">Task outcome:</span>{' '}
+              {describeTaskOutcome(machine.pendingTask, machine.failReason)}
+            </span>
+            <span>
+              <span className="font-semibold text-gray-700">Recording quality:</span>{' '}
+              {describeQuality(machine.recWarning)}
+            </span>
+            <span className="text-gray-500">Saved safely — visible in Review either way.</span>
+          </div>
+        )}
         <button
           type="button"
           onClick={machine.confirmEpisode}
@@ -252,7 +277,7 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
     );
   }
 
-  const endSummary = `${stats.nRecorded} recorded (${stats.nGood} good · ${stats.nReview} review · ${stats.nFail} not usable), ${stats.nRemaining} not recorded`;
+  const endSummary = `${stats.nRecorded} recorded (${stats.nGood} good · ${stats.nReview} review · ${stats.nTaskFailed} task failed), ${stats.nRemaining} not recorded`;
 
   if (phase === 'ended') {
     return (

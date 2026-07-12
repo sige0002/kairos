@@ -28,14 +28,40 @@ export type Phase =
   | 'ended'
   | 'completed';
 
-export type EpisodeResult = 'good' | 'review' | 'fail';
+// Two independent axes — NOT one merged bucket. A failed task still produced
+// a usable, labeled recording (see docs/specs: Datasets "include failures:
+// yes, labeled"); collapsing them into a single "not usable" result would
+// contradict that. `quality` has no 'bad'/'not usable' value yet in Phase 1 —
+// that would come from full (post-recording) validation, which doesn't exist
+// here — so the only quality signal available live is the review flag.
+export type Quality = 'good' | 'review';
+export type TaskResult = 'ok' | 'fail';
 
 export interface EpisodeRecord {
   index: number;
-  result: EpisodeResult;
+  /** Recording/data quality — independent of whether the task succeeded. */
+  quality: Quality;
+  /** Whether the demonstrated task succeeded — independent of data quality. */
+  taskResult: TaskResult;
   /** The run_id returned by /record/start for this episode's capture, if any. */
   runId?: string;
   failReason?: string;
+}
+
+/** Plain-language "Task outcome: …" line for the episode-result summary. */
+export function describeTaskOutcome(pendingTask: 'ok' | 'fail' | null, failReason: string): string {
+  if (pendingTask === 'ok') return 'Success.';
+  if (pendingTask === 'fail') {
+    return failReason ? `Failed — ${failReason.toLowerCase()}.` : 'Failed — choose a reason below.';
+  }
+  return '—';
+}
+
+/** Plain-language "Recording quality: …" line for the episode-result summary. */
+export function describeQuality(recWarning: boolean): string {
+  return recWarning
+    ? 'Needs review — camera rate dropped during recording.'
+    : 'Good — no issues detected.';
 }
 
 export interface PlanTask {
@@ -240,13 +266,15 @@ function reducer(state: MachineState, action: Action): MachineState {
     case 'CONFIRM_EPISODE': {
       if (state.phase !== 'result' || !state.pendingTask) return state;
       if (state.pendingTask === 'fail' && !state.failReason) return state;
-      const result: EpisodeResult =
-        state.pendingTask === 'fail' ? 'fail' : state.recWarning ? 'review' : 'good';
+      // Independent axes: a failed task can still be good-quality, usable data.
+      const taskResult: TaskResult = state.pendingTask === 'fail' ? 'fail' : 'ok';
+      const quality: Quality = state.recWarning ? 'review' : 'good';
       const episode: EpisodeRecord = {
         index: state.episodes.length + 1,
-        result,
+        quality,
+        taskResult,
         runId: state.currentRunId ?? undefined,
-        failReason: result === 'fail' ? state.failReason : undefined,
+        failReason: taskResult === 'fail' ? state.failReason : undefined,
       };
       const episodes = [...state.episodes, episode];
       const done = episodes.length >= EPISODES_PER_BATCH;
@@ -311,9 +339,13 @@ export { reducer as batchMachineReducer, createInitialState as createBatchMachin
 
 export interface BatchStats {
   nRecorded: number;
+  /** quality === 'good' (independent of task outcome). */
   nGood: number;
+  /** quality === 'review' (independent of task outcome). */
   nReview: number;
-  nFail: number;
+  /** taskResult === 'fail' — a separate axis, NOT a quality bucket. Can
+   *  overlap with nGood or nReview (a failed task can still be good data). */
+  nTaskFailed: number;
   nRemaining: number;
   epNext: number;
 }
@@ -519,13 +551,19 @@ export function useBatchMachine({ recordTopics }: UseBatchMachineArgs): BatchMac
     const willComplete = nextIndex >= EPISODES_PER_BATCH;
     const isFail = state.pendingTask === 'fail';
     const reason = state.failReason;
+    const needsReview = state.recWarning;
     dispatch({ type: 'CONFIRM_EPISODE' });
     if (!willComplete) {
-      showToast(
-        `Episode ${nextIndex} saved${isFail ? ` (failure: ${reason})` : ''} — ready for #${nextIndex + 1}`,
-      );
+      // Report both axes when either is notable — a failed task and/or a
+      // review-flagged recording — so the toast never implies "not usable"
+      // for data that's actually saved and labeled.
+      const notes: string[] = [];
+      if (isFail) notes.push(`task failed${reason ? ` (${reason})` : ''}`);
+      if (needsReview) notes.push('quality needs review');
+      const detail = notes.length ? ` — ${notes.join(', ')}` : '';
+      showToast(`Episode ${nextIndex} saved${detail} — ready for #${nextIndex + 1}`);
     }
-  }, [state.phase, state.pendingTask, state.failReason, state.episodes.length, showToast]);
+  }, [state.phase, state.pendingTask, state.failReason, state.recWarning, state.episodes.length, showToast]);
 
   const retryEpisode = useCallback(() => {
     if (state.phase !== 'result') return;
@@ -662,14 +700,14 @@ export function useBatchMachine({ recordTopics }: UseBatchMachineArgs): BatchMac
 
   const stats: BatchStats = useMemo(() => {
     const nRecorded = state.episodes.length;
-    const nGood = state.episodes.filter((e) => e.result === 'good').length;
-    const nReview = state.episodes.filter((e) => e.result === 'review').length;
-    const nFail = state.episodes.filter((e) => e.result === 'fail').length;
+    const nGood = state.episodes.filter((e) => e.quality === 'good').length;
+    const nReview = state.episodes.filter((e) => e.quality === 'review').length;
+    const nTaskFailed = state.episodes.filter((e) => e.taskResult === 'fail').length;
     return {
       nRecorded,
       nGood,
       nReview,
-      nFail,
+      nTaskFailed,
       nRemaining: EPISODES_PER_BATCH - nRecorded,
       epNext: Math.min(nRecorded + 1, EPISODES_PER_BATCH),
     };

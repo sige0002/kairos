@@ -63,21 +63,49 @@ test('CONFIRM_EPISODE requires a fail reason when the result is Failure', () => 
   const confirmed = reducer(s, { type: 'CONFIRM_EPISODE' });
   expect(confirmed.phase).toBe('ready');
   expect(confirmed.episodes).toEqual([
-    { index: 1, result: 'fail', runId: undefined, failReason: 'Grasp missed' },
+    { index: 1, quality: 'good', taskResult: 'fail', runId: undefined, failReason: 'Grasp missed' },
   ]);
 });
 
-test('CONFIRM_EPISODE with pendingTask=ok and a warning during recording files as review, not good', () => {
+test('quality and task result are independent axes, not one merged bucket', () => {
+  // A clean recording (no warning) whose TASK still failed: quality stays
+  // 'good' — a failed task is not "bad data", it's still usable/labeled
+  // (this is the P1 fix: task outcome must never collapse into a quality
+  // "not usable" bucket).
   let s = createState();
-  s = { ...s, phase: 'result', recWarning: true };
-  s = reducer(s, { type: 'PICK_RESULT', result: 'ok' });
+  s = { ...s, phase: 'result', recWarning: false };
+  s = reducer(s, { type: 'PICK_RESULT', result: 'fail' });
+  s = reducer(s, { type: 'PICK_FAIL_REASON', reason: 'Object dropped' });
   s = reducer(s, { type: 'CONFIRM_EPISODE' });
-  expect(s.episodes[0]?.result).toBe('review');
+  expect(s.episodes[0]).toEqual({
+    index: 1,
+    quality: 'good',
+    taskResult: 'fail',
+    runId: undefined,
+    failReason: 'Object dropped',
+  });
+
+  // Conversely, a review-flagged recording whose task SUCCEEDED: taskResult
+  // stays 'ok', quality is 'review' — the two dimensions don't leak into
+  // each other in either direction.
+  let s2 = createState();
+  s2 = { ...s2, phase: 'result', recWarning: true };
+  s2 = reducer(s2, { type: 'PICK_RESULT', result: 'ok' });
+  s2 = reducer(s2, { type: 'CONFIRM_EPISODE' });
+  expect(s2.episodes[0]?.quality).toBe('review');
+  expect(s2.episodes[0]?.taskResult).toBe('ok');
 });
 
 test('recording the 30th episode completes the batch', () => {
   let s = createState();
-  s = { ...s, episodes: Array.from({ length: EPISODES_PER_BATCH - 1 }, (_, i) => ({ index: i + 1, result: 'good' as const })) };
+  s = {
+    ...s,
+    episodes: Array.from({ length: EPISODES_PER_BATCH - 1 }, (_, i) => ({
+      index: i + 1,
+      quality: 'good' as const,
+      taskResult: 'ok' as const,
+    })),
+  };
   s = { ...s, phase: 'result' };
   s = reducer(s, { type: 'PICK_RESULT', result: 'ok' });
   s = reducer(s, { type: 'CONFIRM_EPISODE' });
@@ -97,7 +125,7 @@ test('end-batch-early requires a reason, then moves to ended', () => {
 
 test('START_NEXT_BATCH resets episodes and bumps the batch number from ended or completed', () => {
   let s = createState();
-  s = { ...s, phase: 'ended', episodes: [{ index: 1, result: 'good' }], batchNum: 1 };
+  s = { ...s, phase: 'ended', episodes: [{ index: 1, quality: 'good', taskResult: 'ok' }], batchNum: 1 };
   s = reducer(s, { type: 'START_NEXT_BATCH' });
   expect(s.phase).toBe('ready');
   expect(s.episodes).toEqual([]);

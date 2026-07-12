@@ -83,3 +83,36 @@ test('Stop recording moves to SAVING', async () => {
   fireEvent.click(screen.getByRole('button', { name: /Stop recording/ }));
   await waitFor(() => expect(phaseTitle()).toHaveTextContent('SAVING…'));
 });
+
+// Persona finding P1/P4: a failed TASK must not read as "not usable" data,
+// and the operator must see both dimensions in plain language before saving.
+test('a failed task with no quality warning shows the plain-language summary and keeps good quality in the stats', async () => {
+  mockFetch({ run_id: 'run_1', state: 'recording' });
+  renderWithClient(<CollectScreen />);
+
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
+  fireEvent.click(screen.getByRole('button', { name: /Start recording/ }));
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('RECORDING'));
+  // Stop well before the 6s review-warning threshold, so quality stays 'good'.
+  fireEvent.click(screen.getByRole('button', { name: /Stop recording/ }));
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('Episode 1 result'), { timeout: 4000 });
+
+  fireEvent.click(screen.getByRole('button', { name: /Failure/ }));
+  // No summary until a fail reason is picked (Save stays disabled either way).
+  expect(screen.getByTestId('episode-summary')).toHaveTextContent(
+    'Task outcome: Failed — choose a reason below.',
+  );
+  fireEvent.click(screen.getByRole('button', { name: 'Object dropped' }));
+
+  const summary = screen.getByTestId('episode-summary');
+  expect(summary).toHaveTextContent('Task outcome: Failed — object dropped.');
+  expect(summary).toHaveTextContent('Recording quality: Good — no issues detected.');
+
+  fireEvent.click(screen.getByRole('button', { name: /Save & ready for #2/ }));
+
+  // The core P1 fix: a failed task still counts as good-quality, usable data —
+  // never lumped into a quality "not usable"/fail bucket.
+  await waitFor(() => expect(screen.getByTestId('stat-good')).toHaveTextContent('1'));
+  expect(screen.getByTestId('stat-review')).toHaveTextContent('0');
+  expect(screen.getByTestId('stat-task-failed')).toHaveTextContent('1');
+});
