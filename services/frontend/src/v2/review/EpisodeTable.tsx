@@ -3,10 +3,36 @@
 // (useReviewState); Quality/Task result render the *effective* (post-override)
 // value, matching the mock's `effQuality`/`effTask`.
 
-import { Badge, TrashIcon, cn, type Tone } from '../../components/ui';
+import { Badge, cn, type Tone } from '../../components/ui';
 import { formatHms, formatTimeOfDay } from './format';
 import type { DecoratedEpisode, Quality, TaskResult } from './types';
 import type { ReviewState } from './useReviewState';
+
+// A trash can reads as permanent deletion — this action never deletes
+// anything (the recording is kept and restorable), so it gets its own glyph
+// rather than the shared TrashIcon: a closed archive box, the same visual
+// vocabulary as "archive" actions elsewhere (mail, docs, etc.), so it reads as
+// "set aside" rather than "destroy". Matches TrashIcon's own hand-drawn-SVG
+// convention (24x24 viewBox, stroke currentColor) for a consistent look.
+function ArchiveIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <rect x="3" y="4" width="18" height="4" rx="1" />
+      <path d="M5 8v11a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8" />
+      <path d="M10 13h4" />
+    </svg>
+  );
+}
 
 function qualityTone(q: Quality): Tone {
   if (q === 'Good') return 'green';
@@ -59,7 +85,7 @@ function Row({ row, isSelected, rv }: { row: DecoratedEpisode; isSelected: boole
       <span className="font-mono text-[13px] font-semibold text-gray-900">#{row.ep}</span>
       <span className="font-mono text-[12.5px] text-gray-500">{row.batch}</span>
       <Badge tone={row.isArchived ? 'red' : qualityTone(row.effectiveQuality)} className="w-fit">
-        {row.isArchived ? 'DELETE CANDIDATE' : row.effectiveQuality.toUpperCase()}
+        {row.isArchived ? 'EXCLUDED' : row.effectiveQuality.toUpperCase()}
       </Badge>
       <Badge tone={taskTone(row.effectiveTask)} className="w-fit">
         {row.effectiveTask.toUpperCase()}
@@ -79,10 +105,10 @@ function Row({ row, isSelected, rv }: { row: DecoratedEpisode; isSelected: boole
           e.stopPropagation();
           rv.requestArchive(row.runId);
         }}
-        title={row.isArchived ? 'Restore from delete candidates' : 'Mark not usable → delete candidate'}
+        title={row.isArchived ? 'Restore to dataset use' : 'Exclude from dataset use (recording is kept)'}
         className="flex h-[26px] w-[26px] items-center justify-center rounded-[7px] text-gray-300 transition-colors hover:bg-red-50 hover:text-red-600"
       >
-        {row.isArchived ? <span className="text-sm text-teal-700">↺</span> : <TrashIcon />}
+        {row.isArchived ? <span className="text-sm text-teal-700">↺</span> : <ArchiveIcon />}
       </button>
     </div>
   );
@@ -103,7 +129,7 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
             onClick={rv.toggleArchived}
             className="rounded-control border border-gray-200 bg-white px-3 py-1.5 text-[12.5px] font-semibold text-gray-500 transition-colors hover:bg-gray-50"
           >
-            {rv.showArchived ? 'Hide' : 'Show'} delete candidates ({rv.nArchived})
+            {rv.showArchived ? 'Hide' : 'Show'} excluded ({rv.nArchived})
           </button>
         )}
         {rv.splitMode && (

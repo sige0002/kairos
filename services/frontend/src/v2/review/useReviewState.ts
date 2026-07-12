@@ -157,6 +157,12 @@ export function useReviewState(): ReviewState {
   const selected = decorated.find((r) => r.runId === selectedRunId);
 
   // ---- archive (with confirm) ------------------------------------------
+  // "Archive" is this file's internal name for what the UI presents as
+  // "Exclude" — non-destructive (persona test P3: the mock's own "delete
+  // candidate" wording read as actual deletion and scared operators away from
+  // the control). Nothing here ever removes a recording; it only reclassifies
+  // quality/decision and hides the row from the default view. Every surface
+  // (tooltip, modal, toast) says so explicitly.
   const [pendingArchiveRunId, setPendingArchiveRunId] = useState<string | null>(null);
   const requestArchive = useCallback(
     (runId: string) => {
@@ -168,7 +174,7 @@ export function useReviewState(): ReviewState {
           delete next[runId];
           return next;
         });
-        showToast(`Episode #${row.ep} removed from delete candidates`);
+        showToast(`Episode #${row.ep} restored — no longer excluded`);
         return;
       }
       setPendingArchiveRunId(runId);
@@ -184,7 +190,7 @@ export function useReviewState(): ReviewState {
       [pendingArchiveRunId]: { ...prev[pendingArchiveRunId], quality: 'Not usable' },
     }));
     setDecisions((prev) => ({ ...prev, [pendingArchiveRunId]: 'excluded' }));
-    showToast(`Episode #${row?.ep ?? '?'} → Not usable · Excluded · delete candidate`);
+    showToast(`Episode #${row?.ep ?? '?'} → Not usable · Excluded (recording kept, restorable)`);
     setPendingArchiveRunId(null);
   }, [pendingArchiveRunId, decorated, showToast]);
   const cancelArchive = useCallback(() => setPendingArchiveRunId(null), []);

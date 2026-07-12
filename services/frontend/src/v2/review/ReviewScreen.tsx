@@ -28,21 +28,20 @@ export function ReviewScreen() {
       <Modal
         open={rv.pendingArchiveEp !== null}
         onClose={rv.cancelArchive}
-        title="Mark episode not usable?"
+        title={`Exclude episode #${rv.pendingArchiveEp}?`}
         footer={
           <>
             <Button variant="ghost" onClick={rv.cancelArchive}>
               Cancel
             </Button>
             <Button variant="danger" onClick={rv.confirmArchive}>
-              Mark not usable
+              Exclude
             </Button>
           </>
         }
       >
-        Mark episode #{rv.pendingArchiveEp} as NOT USABLE? It is reclassified (not deleted):
-        quality → Not usable, review → Excluded, and it joins the delete candidates list.
-        Episode numbers are never reassigned. Actual deletion is a separate engineer action.
+        The recording itself is kept and can be restored at any time. It&apos;s reclassified as
+        Not usable / Excluded — episode numbers are never reassigned.
       </Modal>
     </div>
   );
