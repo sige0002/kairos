@@ -108,6 +108,33 @@ node ../../.claude/skills/v2-screen-work/ui-check.mjs \
   screen that must not scroll and treat a warning from the plain run as a
   finding too).
 
+## 6. Blind persona test (functional/UX)
+
+Only once steps 1-5 pass — this is a real, expensive end-to-end run, don't
+burn it on a screen that still has scope violations or a broken build.
+
+```
+.dev/persona-tests/run-persona-test.sh <story.md> [port]
+```
+
+- Runs codex (gpt-5.6-terra, high reasoning) against the real running dev
+  server via the Playwright MCP, headless, 1920×1080. The tester model has
+  **zero implementation knowledge** — no source access, no API calls, only a
+  persona + a step-by-step story, exactly like an actual end user reading the
+  screen. Point `[port]` at your running dev server (script defaults to 5190).
+- `.dev/persona-tests/operator-collect-story.md` is the template: a
+  persona (who they are, what they don't know) + a numbered shift narrative
+  to act out in the UI + a structured report request at the end. Write a new
+  story file per screen/flow under review (a Review-focused ML-engineer
+  persona, a Settings-focused robot-engineer persona, etc.) — don't reuse
+  Collect's story for a different screen.
+- Redirect output to `.dev/persona-tests/results/` and read it for concrete
+  friction: wrong clicks before finding a control, confusing or misleading
+  text, moments of "could they tell if it was actually recording?". These are
+  UX/functional findings — fold them into the verdict below (file:line where
+  it's a clear copy/element fix; otherwise name the flow and quote what
+  confused the tester).
+
 ## Verdict
 
 Report back to the owning agent (`SendMessage`) in this format:

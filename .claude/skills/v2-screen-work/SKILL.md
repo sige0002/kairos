@@ -125,9 +125,12 @@ Before reporting a screen done or committing:
 
 ## Team protocol
 
-- Send a progress report to `main` roughly every 10 minutes via
-  `SendMessage`.
-- Report any blocker that's lasted more than 5 minutes immediately — don't
-  sit on it hoping to resolve it solo.
-- Completion report to `main` includes: commit hash, screenshot paths, and
-  the gate results (build/test/lint pass or fail, with the failure if any).
+- Send a progress ping to `main` roughly every 10 minutes via `SendMessage`
+  — **one line, max** (user mandate). E.g. "Review: EpisodeTable + detail
+  panel done, wiring transfer column next." Save the detail for the
+  completion report.
+- Report any blocker that's lasted more than 5 minutes immediately — still
+  one line; expand only if `main` asks a follow-up.
+- Completion report to `main` is the one exception and may be detailed: commit
+  hash, screenshot paths, and the gate results (build/test/lint pass or fail,
+  with the failure if any).
