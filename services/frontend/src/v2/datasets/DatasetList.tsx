@@ -1,10 +1,15 @@
-// Left column: dataset catalog. Selecting a card switches the center/right
-// columns' content (useDatasetsState owns the selection).
+// Left column: the real exported-dataset catalog (GET /api/v1/datasets),
+// grouped operator -> [task #index] (see data.ts). Selecting a card switches
+// the center/right columns' content (useDatasetsState owns the selection).
+// Renders an honest empty state both when there are genuinely no exports yet
+// and when the backend is unreachable — never a blank panel.
 
 import { Badge, cn } from '../../components/ui';
+import { formatCount } from './data';
 import type { DatasetsState } from './useDatasetsState';
 
 export function DatasetList({ state }: { state: DatasetsState }) {
+  const hasAny = state.groups.length > 0;
   return (
     <div className="flex flex-col overflow-auto rounded-card border border-gray-200 bg-white shadow-card">
       <div className="flex items-center gap-2.5 border-b border-gray-100 px-4 py-[13px]">
@@ -21,34 +26,60 @@ export function DatasetList({ state }: { state: DatasetsState }) {
           + New
         </button>
       </div>
-      <div className="flex flex-col gap-[7px] p-3">
-        {state.datasets.map((d, i) => {
-          const selected = i === state.selectedIndex;
-          return (
-            <div
-              key={d.name}
-              data-testid={`dataset-card-${i}`}
-              role="button"
-              tabIndex={0}
-              onClick={() => state.select(i)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') state.select(i);
-              }}
-              className={cn(
-                'flex cursor-pointer flex-col gap-[5px] rounded-[11px] border px-[13px] py-[11px]',
-                selected ? 'border-teal-200 bg-teal-50' : 'border-gray-100',
-              )}
-            >
-              <span className="text-[13px] font-semibold text-gray-900">{d.name}</span>
-              <div className="flex items-center gap-2">
-                <span className="font-mono text-[11.5px] text-gray-500">{d.eps} episodes</span>
-                <div className="flex-1" />
-                <Badge tone={selected ? 'teal' : 'gray'}>{d.ver}</Badge>
-              </div>
+
+      {state.isLoading ? (
+        <div className="px-4 py-6 text-sm text-gray-400">Loading datasets…</div>
+      ) : !hasAny ? (
+        <div data-testid="dataset-list-empty" className="flex flex-col gap-1 px-4 py-6">
+          <span className="text-sm text-gray-500">No datasets yet.</span>
+          <span className="text-xs leading-relaxed text-gray-400">
+            Exported datasets will appear here. Recipe-based builds arrive in Phase 2.
+          </span>
+          {state.isError && (
+            <span className="text-xs text-amber-600">Couldn&apos;t reach the backend just now.</span>
+          )}
+        </div>
+      ) : (
+        <div className="flex flex-col gap-3 overflow-auto p-3">
+          {state.groups.map((group) => (
+            <div key={group.operator} className="flex flex-col gap-[7px]">
+              <span className="px-1 font-mono text-[11px] font-semibold text-gray-500">
+                {group.operator}
+              </span>
+              {group.entries.map((entry) => {
+                const selected = state.isSelected(entry);
+                return (
+                  <div
+                    key={entry.dataset_dir}
+                    data-testid={`dataset-card-${entry.dataset_dir}`}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => state.select(entry)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') state.select(entry);
+                    }}
+                    className={cn(
+                      'flex cursor-pointer flex-col gap-[5px] rounded-[11px] border px-[13px] py-[11px]',
+                      selected ? 'border-teal-200 bg-teal-50' : 'border-gray-100',
+                    )}
+                  >
+                    <span className="text-[13px] font-semibold text-gray-900">{entry.task}</span>
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-[11.5px] text-gray-500">
+                        {formatCount(entry.message_count)} msgs
+                      </span>
+                      <div className="flex-1" />
+                      <Badge tone={selected ? 'teal' : 'gray'} mono>
+                        #{entry.index}
+                      </Badge>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
-          );
-        })}
-      </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

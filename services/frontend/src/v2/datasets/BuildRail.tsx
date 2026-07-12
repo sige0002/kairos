@@ -1,75 +1,70 @@
-// Right column: recipe & output summary plus the build/rebuild actions.
-// "Build" is a mock progress animation (see useDatasetsState) — the actual
-// LeRobot v3 conversion has no backend yet.
+// Right column: the selected dataset's real export details (run/state/
+// exported-at, from the same GET /api/v1/datasets/{operator}/{task}/{index}
+// the center column reads) plus the recipe-based "build" action. There is no
+// backend endpoint yet for building a LeRobot v3 artifact from a recipe, so
+// "Build dataset" just explains that (no fake progress animation — see the
+// 2026-07-13 user directive that dropped it along with the fabricated
+// PickPlace_* recipe rows).
 
-import { recipeRows } from './data';
+import { formatWhen } from './data';
 import type { DatasetsState } from './useDatasetsState';
 
 export function BuildRail({ state }: { state: DatasetsState }) {
-  const rows = recipeRows(state.ds);
+  const { selected, detail, detailLoading, detailError } = state;
+
   return (
     <div className="flex flex-col overflow-auto rounded-card border border-gray-200 bg-white shadow-card">
       <div className="border-b border-gray-100 px-[18px] py-[13px]">
         <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
-          Recipe &amp; output
+          Export &amp; build
         </span>
       </div>
       <div className="flex flex-col gap-[11px] px-[18px] py-[14px]">
-        {rows.map((r) => (
-          <div key={r.label} className="flex items-center gap-2">
-            <span className="text-[12.5px] text-gray-500">{r.label}</span>
-            <div className="flex-1 border-b border-dotted border-gray-200" />
-            <span className="font-mono text-[12.5px] font-medium text-gray-900">{r.value}</span>
+        {!selected ? (
+          <span className="text-[12.5px] text-gray-400">
+            Select a dataset to see its export details.
+          </span>
+        ) : detailLoading ? (
+          <span className="text-[12.5px] text-gray-400">Loading…</span>
+        ) : detailError ? (
+          <span className="text-[12.5px] text-amber-600">Couldn&apos;t load export details.</span>
+        ) : detail ? (
+          <div data-testid="export-details" className="flex flex-col gap-[11px]">
+            <Row label="Run" value={detail.run_id ?? '—'} />
+            <Row label="State" value={detail.state ?? '—'} />
+            <Row label="Exported" value={formatWhen(detail.exported_at)} />
           </div>
-        ))}
+        ) : null}
 
         <div className="rounded-[10px] border border-gray-100 bg-gray-50 px-3 py-[10px] text-xs leading-relaxed text-gray-500">
-          Source episodes stay in Review — building a dataset never removes originals. Every episode
-          links back to its MCAP.
+          Export moves a completed recording&apos;s MCAP into{' '}
+          <span className="font-mono">data/&lt;operator&gt;/&lt;task&gt;/NNN</span> — the recording
+          leaves Recordings once exported.
         </div>
-
-        {state.building ? (
-          <div className="flex flex-col gap-1.5" data-testid="build-progress">
-            <div className="flex text-xs text-gray-500">
-              <span>Building…</span>
-              <div className="flex-1" />
-              <span className="font-mono font-semibold" data-testid="build-pct">
-                {state.buildPct}%
-              </span>
-            </div>
-            <div className="h-2 overflow-hidden rounded-sm bg-gray-100">
-              <span
-                className="block h-full rounded-sm bg-teal-600"
-                style={{ width: `${state.buildPct}%` }}
-              />
-            </div>
-          </div>
-        ) : (
-          <>
-            <button
-              type="button"
-              data-testid="build-dataset-btn"
-              onClick={state.build}
-              className="h-11 rounded-[11px] bg-teal-600 text-sm font-bold text-white shadow-btn hover:bg-teal-700"
-            >
-              Build dataset (LeRobot v3)
-            </button>
-            <span className="text-center text-[11.5px] leading-relaxed text-gray-400">
-              Runs the external LeRobot v3 converter on all matching episodes and writes a new
-              versioned artifact. Sources are never modified.
-            </span>
-          </>
-        )}
 
         <button
           type="button"
-          data-testid="rebuild-btn"
-          onClick={state.toastRebuild}
-          className="h-[38px] rounded-[10px] border border-gray-200 bg-white text-[13px] font-semibold text-gray-700 hover:bg-gray-50"
+          data-testid="build-dataset-btn"
+          onClick={state.toastBuild}
+          className="h-11 rounded-[11px] bg-teal-600 text-sm font-bold text-white shadow-btn hover:bg-teal-700"
         >
-          Rebuild as v2…
+          Build dataset (LeRobot v3)
         </button>
+        <span className="text-center text-[11.5px] leading-relaxed text-gray-400">
+          Recipe-based builds convert matching episodes into a versioned LeRobot v3 artifact — this
+          arrives with the Phase 2 recipe/episode model.
+        </span>
       </div>
+    </div>
+  );
+}
+
+function Row({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center gap-2">
+      <span className="text-[12.5px] text-gray-500">{label}</span>
+      <div className="flex-1 border-b border-dotted border-gray-200" />
+      <span className="font-mono text-[12.5px] font-medium text-gray-900">{value}</span>
     </div>
   );
 }
