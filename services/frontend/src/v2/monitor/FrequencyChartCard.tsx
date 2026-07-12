@@ -73,7 +73,15 @@ export function FrequencyChartCard({
       </div>
       <div className="min-h-0 flex-1 px-[18px] py-2.5">
         {topic ? (
-          <UplotChart data={data} series={SERIES} refLines={refLines} height={240} />
+          // uPlot's own bottom legend ("Time: -- observed: --") duplicates the
+          // custom header legend above and isn't in the mock — scoped away here
+          // (not in UplotChart itself, which is shared and never rewritten; see
+          // the file header) rather than passed as a construction option, since
+          // UplotChart's props don't expose raw uPlot options.
+          <div className="monitor-freq-chart">
+            <style>{'.monitor-freq-chart .u-legend { display: none; }'}</style>
+            <UplotChart data={data} series={SERIES} refLines={refLines} height={240} />
+          </div>
         ) : (
           <p className="flex h-full items-center justify-center text-center text-[12px] text-gray-400">
             No topic to chart yet — pick one from the table below once topics are discovered.
