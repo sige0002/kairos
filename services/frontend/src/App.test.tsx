@@ -11,15 +11,10 @@ const STUB_CONFIG: RuntimeConfig = {
     events: '/api/v1/events',
     webrtc: 'http://localhost:8002',
   },
-  tabs: [
-    { id: 'live', enabled: true },
-    { id: 'graph', enabled: true },
-    { id: 'runs', enabled: true },
-    { id: 'validation', enabled: true },
-    { id: 'dataset', enabled: false },
-    { id: 'config', enabled: true },
-  ],
-  defaults: {},
+  // The v2 tab set is fixed client-side (see src/v2/tabs.ts) — the backend's
+  // `tabs` field is no longer consulted for the nav, so it's left empty here.
+  tabs: [],
+  defaults: { ros_domain_id: 42 },
   schemas: {},
 };
 
@@ -63,22 +58,77 @@ afterEach(() => {
   window.history.replaceState(null, '', '/');
 });
 
+test('defaults to Collect and shows all six v2 tabs', async () => {
+  renderWithClient(<App />);
+  await waitFor(() => screen.getByRole('tab', { name: 'Collect' }));
+
+  for (const name of [
+    'Collect',
+    'Review',
+    'Datasets',
+    'Validation',
+    'Monitor',
+    'Settings',
+  ]) {
+    expect(screen.getByRole('tab', { name })).toBeInTheDocument();
+  }
+  expect(screen.getByRole('tab', { name: 'Collect' })).toHaveAttribute(
+    'aria-selected',
+    'true',
+  );
+  // Header context chips: ROS domain (from config.defaults) + SSE status.
+  expect(screen.getByTestId('ros-domain')).toHaveTextContent('42');
+  expect(screen.getByTestId('connection-status')).toBeInTheDocument();
+});
+
+test('clicking a tab switches the active panel', async () => {
+  renderWithClient(<App />);
+  await waitFor(() => screen.getByRole('tab', { name: 'Collect' }));
+
+  fireEvent.click(screen.getByRole('tab', { name: 'Review' }));
+  await waitFor(() =>
+    expect(screen.getByRole('tab', { name: 'Review' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    ),
+  );
+  expect(screen.getByRole('tab', { name: 'Collect' })).toHaveAttribute(
+    'aria-selected',
+    'false',
+  );
+});
+
+test('a legacy deep link (?tab=graph) redirects to its v2 home (Monitor)', async () => {
+  window.history.replaceState(null, '', '/?tab=graph');
+  renderWithClient(<App />);
+
+  await waitFor(() =>
+    expect(screen.getByRole('tab', { name: 'Monitor' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    ),
+  );
+  expect(window.location.search).toMatch(/tab=monitor/);
+});
+
 test('the current tab has a pop-out that opens its solo page in a new window', async () => {
   const openSpy = vi.fn();
   vi.stubGlobal('open', openSpy);
   renderWithClient(<App />);
-  // Default active tab is Live; the pop-out targets the current tab.
-  await waitFor(() => screen.getByRole('tab', { name: 'Live' }));
+  // Default active tab is Collect; the pop-out targets the current tab.
+  await waitFor(() => screen.getByRole('tab', { name: 'Collect' }));
 
-  fireEvent.click(screen.getByRole('button', { name: /open Live in a new window/i }));
+  fireEvent.click(
+    screen.getByRole('button', { name: /open Collect in a new window/i }),
+  );
   expect(openSpy).toHaveBeenCalledTimes(1);
   const openedUrl = String(openSpy.mock.calls[0]?.[0] ?? '');
-  expect(openedUrl).toMatch(/tab=live/);
+  expect(openedUrl).toMatch(/tab=collect/);
   expect(openedUrl).toMatch(/solo=1/);
 });
 
-test('a solo URL (?tab=...&solo=1) renders only that tab, no tablist', async () => {
-  window.history.replaceState(null, '', '/?tab=graph&solo=1');
+test('a solo URL (?tab=...&solo=1) renders only that tab, no tab nav', async () => {
+  window.history.replaceState(null, '', '/?tab=monitor&solo=1');
   renderWithClient(<App />);
   await waitFor(() =>
     expect(screen.queryByText(/Loading kairos/i)).not.toBeInTheDocument(),
@@ -88,31 +138,13 @@ test('a solo URL (?tab=...&solo=1) renders only that tab, no tablist', async () 
   expect(screen.getByTitle('Back to the kairos console')).toBeInTheDocument();
 });
 
-test('render-gates on backend config, then shows the registry-driven tabs', async () => {
+test('a legacy solo deep link (?tab=probe&solo=1) redirects and rewrites the URL', async () => {
+  window.history.replaceState(null, '', '/?tab=probe&solo=1');
   renderWithClient(<App />);
-
-  // The render gate shows a loading state until the config resolves.
-  expect(screen.getByText(/Loading kairos/i)).toBeInTheDocument();
-
-  await waitFor(() => {
-    expect(screen.getByRole('tab', { name: 'Live' })).toBeInTheDocument();
-  });
-  // Disabled tab from config is rendered but disabled.
-  expect(screen.getByRole('tab', { name: 'Datasets' })).toBeDisabled();
-  // First enabled tab is selected by default.
-  expect(screen.getByRole('tab', { name: 'Live' })).toHaveAttribute(
-    'aria-selected',
-    'true',
+  await waitFor(() =>
+    expect(screen.queryByText(/Loading kairos/i)).not.toBeInTheDocument(),
   );
-});
-
-test('only enabled tabs are selectable; disabled tabs render but cannot activate', async () => {
-  renderWithClient(<App />);
-  await waitFor(() => screen.getByRole('tab', { name: 'Live' }));
-
-  const enabled = ['Live', 'Graph', 'Recordings', 'Validation', 'Config'];
-  for (const name of enabled) {
-    expect(screen.getByRole('tab', { name })).toBeEnabled();
-  }
-  expect(screen.getByRole('tab', { name: 'Datasets' })).toBeDisabled();
+  expect(screen.getByText('Monitor')).toBeInTheDocument();
+  expect(window.location.search).toMatch(/tab=monitor/);
+  expect(window.location.search).toMatch(/solo=1/);
 });

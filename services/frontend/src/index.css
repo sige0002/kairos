@@ -12,3 +12,16 @@
   }
   /* Status indicators are rounded squares (2px), not circles — a brand cue. */
 }
+
+/* Slim scrollbars (v2 console mock: 8px, gray-300 thumb, transparent track). */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  @apply bg-gray-300;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
