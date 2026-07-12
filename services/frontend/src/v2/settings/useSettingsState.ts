@@ -1,0 +1,171 @@
+// Local state for the Settings screen: menu selection, robot profile
+// selection, and the plans (project/task/condition) editor. Everything here
+// is frontend-only — editing a robot profile and the plans catalog itself are
+// both Phase 2 backend features (see SettingsScreen.tsx); this hook exists so
+// the mock's interactions (select, add, rename, remove) are demoable now.
+
+import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  ACTIVE_ROBOT_INDEX,
+  clonePlans,
+  INITIAL_PLANS,
+  type PlanProjectData,
+} from './data';
+
+const TOAST_MS = 2400;
+
+export interface SettingsState {
+  menuIdx: number;
+  selectMenu: (i: number) => void;
+
+  selectedRobotIndex: number;
+  selectRobot: (i: number) => void;
+
+  plans: PlanProjectData[];
+  planProjIdx: number;
+  planTaskIdx: number;
+  selectProject: (i: number) => void;
+  selectTask: (i: number) => void;
+  addProject: () => void;
+  renameProject: () => void;
+  addTask: () => void;
+  renameTask: () => void;
+  removeTask: (i: number) => void;
+  addCondition: () => void;
+  renameCondition: (i: number) => void;
+  removeCondition: (i: number) => void;
+
+  toast: string;
+  showToast: (message: string) => void;
+}
+
+export function useSettingsState(): SettingsState {
+  const [menuIdx, setMenuIdx] = useState(0);
+  const [selectedRobotIndex, setSelectedRobotIndex] = useState(ACTIVE_ROBOT_INDEX);
+  const [plans, setPlans] = useState<PlanProjectData[]>(INITIAL_PLANS);
+  const [planProjIdx, setPlanProjIdx] = useState(0);
+  const [planTaskIdx, setPlanTaskIdx] = useState(0);
+  const [toast, setToast] = useState('');
+
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (toastTimerRef.current) clearTimeout(toastTimerRef.current); }, []);
+
+  const showToast = useCallback((message: string) => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    setToast(message);
+    toastTimerRef.current = setTimeout(() => setToast(''), TOAST_MS);
+  }, []);
+
+  const selectMenu = useCallback((i: number) => setMenuIdx(i), []);
+  const selectRobot = useCallback((i: number) => setSelectedRobotIndex(i), []);
+
+  // Projects can only be added, never removed, so `plans[ppIdx]` always exists.
+  const ppIdx = Math.min(planProjIdx, plans.length - 1);
+  const planProj = plans[ppIdx]!;
+
+  const selectProject = useCallback((i: number) => {
+    setPlanProjIdx(i);
+    setPlanTaskIdx(0);
+  }, []);
+  const selectTask = useCallback((i: number) => setPlanTaskIdx(i), []);
+
+  const addProject = useCallback(() => {
+    const v = window.prompt('New project name', '');
+    if (!v) return;
+    const next = clonePlans(plans);
+    next.push({ name: v, tasks: [] });
+    setPlans(next);
+    setPlanProjIdx(next.length - 1);
+    setPlanTaskIdx(0);
+    showToast(`Project "${v}" added`);
+  }, [plans, showToast]);
+
+  const renameProject = useCallback(() => {
+    const current = plans[ppIdx];
+    if (!current) return;
+    const v = window.prompt('Project name', current.name);
+    if (!v) return;
+    const next = clonePlans(plans);
+    next[ppIdx]!.name = v;
+    setPlans(next);
+    showToast('Project renamed');
+  }, [plans, ppIdx, showToast]);
+
+  const addTask = useCallback(() => {
+    const v = window.prompt('New task name', '');
+    if (!v) return;
+    const next = clonePlans(plans);
+    next[ppIdx]!.tasks.push({ name: v, conditions: [] });
+    setPlans(next);
+    setPlanTaskIdx(next[ppIdx]!.tasks.length - 1);
+    showToast(`Task "${v}" added`);
+  }, [plans, ppIdx, showToast]);
+
+  const renameTask = useCallback(() => {
+    const task = plans[ppIdx]?.tasks[planTaskIdx];
+    if (!task) return;
+    const v = window.prompt('Task name', task.name);
+    if (!v) return;
+    const next = clonePlans(plans);
+    next[ppIdx]!.tasks[planTaskIdx]!.name = v;
+    setPlans(next);
+    showToast('Task renamed');
+  }, [plans, ppIdx, planTaskIdx, showToast]);
+
+  const removeTask = useCallback((i: number) => {
+    const next = clonePlans(plans);
+    next[ppIdx]!.tasks.splice(i, 1);
+    setPlans(next);
+    setPlanTaskIdx(0);
+    showToast('Task removed from plan');
+  }, [plans, ppIdx, showToast]);
+
+  const addCondition = useCallback(() => {
+    const v = window.prompt('New condition (e.g. "Object: Left → Tray: Center")', '');
+    if (!v) return;
+    const next = clonePlans(plans);
+    next[ppIdx]!.tasks[planTaskIdx]!.conditions.push(v);
+    setPlans(next);
+    showToast('Condition added');
+  }, [plans, ppIdx, planTaskIdx, showToast]);
+
+  const renameCondition = useCallback((i: number) => {
+    const label = plans[ppIdx]?.tasks[planTaskIdx]?.conditions[i];
+    if (label === undefined) return;
+    const v = window.prompt('Condition', label);
+    if (!v) return;
+    const next = clonePlans(plans);
+    next[ppIdx]!.tasks[planTaskIdx]!.conditions[i] = v;
+    setPlans(next);
+    showToast('Condition updated');
+  }, [plans, ppIdx, planTaskIdx, showToast]);
+
+  const removeCondition = useCallback((i: number) => {
+    const next = clonePlans(plans);
+    next[ppIdx]!.tasks[planTaskIdx]!.conditions.splice(i, 1);
+    setPlans(next);
+    showToast('Condition removed');
+  }, [plans, ppIdx, planTaskIdx, showToast]);
+
+  return {
+    menuIdx,
+    selectMenu,
+    selectedRobotIndex,
+    selectRobot,
+    plans,
+    planProjIdx: ppIdx,
+    planTaskIdx: Math.min(planTaskIdx, Math.max(0, planProj.tasks.length - 1)),
+    selectProject,
+    selectTask,
+    addProject,
+    renameProject,
+    addTask,
+    renameTask,
+    removeTask,
+    addCondition,
+    renameCondition,
+    removeCondition,
+    toast,
+    showToast,
+  };
+}
