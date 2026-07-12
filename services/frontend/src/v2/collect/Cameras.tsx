@@ -1,7 +1,18 @@
-// Right column, top: main camera (real WebRTC preview, reusing
-// useWebRtcStream — the MTU/black-preview workarounds live there and are not
-// duplicated here) + two sub tiles. Sub tiles stay mock placeholders per the
-// Collect task brief; clicking one swaps it into the main slot.
+// Right column, top: camera tiles derived from the robot's actually
+// configured stream panes (config.stream.panes — the same source StreamTab
+// seeds its panes from). This is NOT a fixed mock 'top/left/right' layout:
+// only as many tiles render as the robot has cameras, redistributing the
+// space rather than showing empty frames for cameras that don't exist (a
+// 2-camera robot like the HSR sample rig gets exactly 2 tiles).
+//
+// Only the MAIN tile carries a live WebRTC stream, reusing useWebRtcStream
+// directly (the MTU/black-preview workarounds live there and are not
+// duplicated here). Each stream is its own robot-side encode pipeline plus a
+// PeerConnection per viewer (webrtc_streamer: "multiple cameras = multiple
+// streams"), so keeping every OTHER tile a static placeholder bounds the
+// robot's encode/network cost to one full-resolution stream at a time. In
+// Phase 1 the only way to view a sub camera live is to click it, which swaps
+// its topic into the main slot.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { cn } from '../../components/ui';
@@ -9,21 +20,18 @@ import { useWebRtcStream } from '../../features/stream/useWebRtcStream';
 import type { RuntimeConfig } from '../../config';
 import type { BatchMachine } from './useBatchMachine';
 
-function isImageName(name: string): boolean {
-  return /image/i.test(name);
-}
-
-/** Best-effort match of a mock camera id ('top'/'left'/'right') to a real
- *  configured image topic, e.g. "top" -> "/camera/top/image_raw". Empty when
- *  no such topic is configured for this robot — the caller then falls back to
- *  the placeholder tile (useWebRtcStream stays idle with no topic). */
-function resolveCameraTopic(camId: string, defaultTopics: string[]): string {
-  const lower = camId.toLowerCase();
-  return (
-    defaultTopics.find((t) => isImageName(t) && t.toLowerCase().includes(`/${lower}/`)) ??
-    defaultTopics.find((t) => isImageName(t) && t.toLowerCase().includes(lower)) ??
-    ''
-  );
+/** Short, human camera name derived from its ROS topic, e.g.
+ *  "/hsrb/head_rgbd_sensor/rgb/image_rect_color/compressed" -> "head",
+ *  "/hsrb/hand_camera/image_raw/compressed" -> "hand". Falls back to the
+ *  topic's first path segment if nothing looks camera-shaped. */
+export function shortCameraLabel(topic: string): string {
+  const segments = topic.split('/').filter(Boolean);
+  const candidate = segments.find((s) => /cam|sensor/i.test(s)) ?? segments[0] ?? topic;
+  const cleaned = candidate
+    .replace(/_?(rgbd?|rgb|depth|color)?_?(sensor|camera|cam)s?$/i, '')
+    .replace(/[_-]+/g, ' ')
+    .trim();
+  return cleaned || candidate;
 }
 
 function formatElapsed(ms: number): string {
@@ -48,23 +56,25 @@ const RES_PRESETS: { label: string; w: number; h: number }[] = [
 function PlaceholderTile({ label, className }: { label: string; className?: string }) {
   return (
     <div
-      className={cn(
-        'flex items-center justify-center border border-gray-200',
-        className,
-      )}
+      className={cn('flex items-center justify-center border border-gray-200', className)}
       style={{
         backgroundImage:
           'repeating-linear-gradient(45deg,#1f2937 0px,#1f2937 14px,#243042 14px,#243042 28px)',
       }}
     >
-      <span className="font-mono text-xs text-gray-500">{label}</span>
+      <span className="truncate px-3 font-mono text-xs text-gray-500">{label}</span>
     </div>
   );
 }
 
 function OverlayBadge({ className, children }: { className: string; children: React.ReactNode }) {
   return (
-    <span className={cn('absolute rounded-chip bg-gray-900/75 px-2.5 py-1 font-mono text-[11px] text-gray-300', className)}>
+    <span
+      className={cn(
+        'absolute rounded-chip bg-gray-900/75 px-2.5 py-1 font-mono text-[11px] text-gray-300',
+        className,
+      )}
+    >
       {children}
     </span>
   );
@@ -80,16 +90,30 @@ export function Cameras({
   /** Reports whether the main camera stream is healthy (System status card). */
   onHealthChange?: (ok: boolean) => void;
 }) {
-  const [mainCam, setMainCam] = useState('top');
-  const [altCams, setAltCams] = useState<[string, string]>(['left', 'right']);
-  const [res, setRes] = useState(RES_PRESETS[1]!); // 480p, matches the design mock's default
+  // The robot's actual configured cameras, in configured order, deduped.
+  const cameraTopics = useMemo(() => {
+    const panes = config.stream?.panes ?? [];
+    const topics = panes.map((p) => p.topic).filter((t): t is string => !!t);
+    return Array.from(new Set(topics));
+  }, [config.stream]);
 
-  const defaultTopics = useMemo(() => config.defaults.default_topics ?? [], [config]);
-  const mainTopic = resolveCameraTopic(mainCam, defaultTopics);
+  const [mainTopic, setMainTopic] = useState<string | undefined>(cameraTopics[0]);
+  useEffect(() => {
+    // Re-seed if the configured list changed (e.g. a robot switch) and the
+    // current pick is no longer in it; otherwise keep the operator's choice.
+    setMainTopic((prev) => (prev && cameraTopics.includes(prev) ? prev : cameraTopics[0]));
+  }, [cameraTopics]);
+
+  const subTopics = useMemo(
+    () => cameraTopics.filter((t) => t !== mainTopic),
+    [cameraTopics, mainTopic],
+  );
+
+  const [res, setRes] = useState(RES_PRESETS[1]!); // 480p, matches the design mock's default
 
   const { phase, stream, stats } = useWebRtcStream({
     webrtcBase: config.endpoints.webrtc,
-    topic: mainTopic,
+    topic: mainTopic ?? '',
     iceServers: config.ice_servers ?? [],
     maxWidth: res.w,
     maxHeight: res.h,
@@ -106,32 +130,59 @@ export function Cameras({
 
   const recording = machine.phase === 'recording';
   const elapsedText = formatElapsed(machine.elapsedMs);
-  const camWarn = machine.recWarning && recording;
+  const connected = phase === 'connected' && !!mainTopic;
+  const mainLabel = mainTopic ? shortCameraLabel(mainTopic) : 'none';
+  const topicLine = mainTopic
+    ? `${mainTopic} · ${res.label}${
+        connected ? ` · ${stats.fps ?? '—'} fps · ${stats.latencyMs ?? '—'} ms` : ' · waiting for stream…'
+      }`
+    : 'no camera configured for this robot';
 
-  function swapTo(slot: 0 | 1) {
-    setAltCams((prev) => {
-      const next: [string, string] = [...prev] as [string, string];
-      next[slot] = mainCam;
-      return next;
-    });
-    setMainCam(altCams[slot]);
+  if (cameraTopics.length === 0) {
+    return (
+      <div className="flex flex-1 items-center justify-center rounded-card border border-gray-200 bg-[#1f2937]">
+        <span className="font-mono text-xs text-gray-500">No cameras configured for this robot.</span>
+      </div>
+    );
   }
 
-  const connected = phase === 'connected' && !!mainTopic;
-  const camStatsText = connected
-    ? `${res.label} · ${stats.fps ?? '—'} fps · ${stats.latencyMs ?? '—'} ms`
-    : `${res.label} · waiting for stream…`;
+  const hasSubs = subTopics.length > 0;
+  const rows = Math.max(1, subTopics.length);
 
   return (
-    <div className="grid flex-1 grid-cols-[2fr_1fr] grid-rows-2 gap-2">
-      <div className="relative col-start-1 row-span-2 overflow-hidden rounded-card border border-gray-200 bg-[#1f2937]">
-        {connected ? (
-          <video ref={videoRef} autoPlay playsInline muted className="h-full w-full object-contain" data-testid="main-camera-video" />
-        ) : (
-          <PlaceholderTile className="h-full w-full" label={`live camera preview — /camera/${mainTopic || mainCam}`} />
+    <div
+      className="grid flex-1 gap-2"
+      style={{
+        gridTemplateColumns: hasSubs ? '2fr 1fr' : '1fr',
+        gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`,
+      }}
+    >
+      <div
+        className="relative overflow-hidden rounded-card border border-gray-200 bg-[#1f2937]"
+        style={{ gridColumn: 1, gridRow: `1 / span ${rows}` }}
+      >
+        {/* The <video> element must stay mounted across phase changes — it
+            was previously swapped in only once `connected`, so its ref was
+            still null when the srcObject-assignment effect (keyed on
+            `stream`) had already fired, and the element never got the
+            stream. Always render it (as StreamTab's VideoSurface does) and
+            overlay the placeholder on top until frames actually connect. */}
+        <video
+          ref={videoRef}
+          autoPlay
+          playsInline
+          muted
+          className="h-full w-full object-contain"
+          data-testid="main-camera-video"
+        />
+        {!connected && (
+          <PlaceholderTile
+            className="absolute inset-0"
+            label={`live camera preview — ${mainTopic ?? '—'}`}
+          />
         )}
         <OverlayBadge className="left-3 top-3 bg-gray-900/75 font-sans text-xs font-semibold text-white">
-          Main camera · {mainCam}
+          Main camera · {mainLabel}
         </OverlayBadge>
         <span
           className={cn(
@@ -144,7 +195,7 @@ export function Cameras({
           />
           {recording ? `REC ${elapsedText}` : 'STANDBY'}
         </span>
-        <OverlayBadge className="bottom-3 left-3">{camStatsText}</OverlayBadge>
+        <OverlayBadge className="bottom-3 left-3 max-w-[75%] truncate">{topicLine}</OverlayBadge>
         <div className="absolute bottom-3 right-3 flex items-center gap-0.5 rounded-chip bg-gray-900/80 p-[3px]">
           <span className="px-1.5 text-[10px] font-semibold tracking-[0.04em] text-gray-400">RES</span>
           {RES_PRESETS.map((p) => (
@@ -163,36 +214,22 @@ export function Cameras({
         </div>
       </div>
 
-      <button
-        type="button"
-        onClick={() => swapTo(0)}
-        title="Click to make this the main camera"
-        className="relative col-start-2 row-start-1 overflow-hidden rounded-card border border-gray-200 hover:border-teal-500"
-      >
-        <PlaceholderTile className="h-full w-full" label={`camera — ${altCams[0]}`} />
-        <OverlayBadge className="bottom-2 left-2 px-2 py-0.5 text-[10px]">
-          {wobble(machine.elapsedMs, recording ? 29.5 : 29.6, recording ? 0.4 : 0, 1)} fps · 142 ms
-        </OverlayBadge>
-      </button>
-
-      <button
-        type="button"
-        onClick={() => swapTo(1)}
-        title="Click to make this the main camera"
-        className="relative col-start-2 row-start-2 overflow-hidden rounded-card border border-gray-200 hover:border-teal-500"
-      >
-        <PlaceholderTile className="h-full w-full" label={`camera — ${altCams[1]}`} />
-        <span
-          className={cn(
-            'absolute bottom-2 left-2 rounded-chip px-2 py-0.5 font-mono text-[10px]',
-            camWarn ? 'bg-amber-800/90 text-amber-200' : 'bg-gray-900/80 text-gray-400',
-          )}
+      {subTopics.map((topic, i) => (
+        <button
+          key={topic}
+          type="button"
+          onClick={() => setMainTopic(topic)}
+          title={`${topic} — click to make this the main camera`}
+          data-testid="sub-camera-tile"
+          className="relative overflow-hidden rounded-card border border-gray-200 hover:border-teal-500"
+          style={{ gridColumn: 2, gridRow: i + 1 }}
         >
-          {camWarn
-            ? `${wobble(machine.elapsedMs, 22.1, 0.8, 2)} fps · 210 ms`
-            : `${wobble(machine.elapsedMs, recording ? 30.0 : 30.1, recording ? 0.4 : 0, 2)} fps · 138 ms`}
-        </span>
-      </button>
+          <PlaceholderTile className="h-full w-full" label={`camera — ${shortCameraLabel(topic)}`} />
+          <OverlayBadge className="bottom-2 left-2 max-w-[90%] truncate px-2 py-0.5 text-[10px]">
+            {wobble(machine.elapsedMs, 29.5, recording ? 0.4 : 0, i + 1)} fps
+          </OverlayBadge>
+        </button>
+      ))}
     </div>
   );
 }
