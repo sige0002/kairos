@@ -159,8 +159,8 @@ recorder は MCAP を**ロボットのディスク**に書く。dora（CPU 重�
 > **「rosbag 記録中に、周囲の機能の影響で記録トピック周波数が落ちないこと」**に固定し、
 > 敵対的レビュアー / 設計擁護者 / 裁定者（運用視点）の 3 エージェント討論で審査した。
 > 定量根拠は単一ホスト・トランスポート実測 330+ セル
-> （[sige0002/ros2-transport-bench](https://github.com/sige0002/ros2-transport-bench) の REPORT.md / REVIEW.md、
-> および `dev_docs/performance_reports.md` §C）。討論の完全な結論のみをここに固定する。
+> （[sige0002/ros2-transport-bench](https://github.com/sige0002/ros2-transport-bench) の REPORT.md / REVIEW.md）。
+> 討論の完全な結論のみをここに固定する。
 
 ### 5.1 原提案（審査対象）
 
@@ -284,7 +284,7 @@ C が正当化されるのは A が構造的に供給できない別要件（ラ
 - **WebRTC**: 本設計の前提（同一 LAN・有線）では動く。nginx が中継するのは**シグナリングのみ**で、
   RTP メディアは P2P。ブラウザは**ロボット IP に直接到達**する必要がある（同一 LAN なら満たす）。
   NAT/VPN 越えは別途 STUN/TURN が要る（aiortc は現状 host candidate のみ）。
-- **config の同期**: orchestrator の Config タブ編集は**録画 PC の /config**に書く。一方 recorder/monitor は
+- **config の同期**: orchestrator の Settings タブ編集は**録画 PC の /config**に書く。一方 recorder/monitor は
   **ロボットの /config**を読む（recorder の `start_paused` / `max_cache_size_mb` / QoS はロボット側 config 由来。
   記録トピックの選択は start ペイロードで渡るので別）。**recorder の挙動を変えるにはロボットの config/ を
   編集して `make robot-config-reload` する**。gitignored な `config/local/<robot>/` は git で運ばれないため、
@@ -295,12 +295,12 @@ C が正当化されるのは A が構造的に供給できない別要件（ラ
   なので、compose が全サービスに `NO_PROXY`（既定 `localhost,127.0.0.1`、`.env.split.example` は
   `ROBOT_IP` も含む）を配り、orchestrator の内部 httpx クライアントは `trust_env=False` でプロキシ環境
   変数を一切見ない。
-- **ロボットの電源断**: ホスト（録画 PC）側は落ちない。Recordings / Validation / Datasets / Config は
-  ローカル完結で動き続け、Live/Graph は「robot offline」を明示する（orchestrator が monitor SSE ブリッジの
+- **ロボットの電源断**: ホスト（録画 PC）側は落ちない。Review / Validation / Datasets / Settings は
+  ローカル完結で動き続け、Collect/Monitor は「robot offline」を明示する（orchestrator が monitor SSE ブリッジの
   up/down を `bridge` イベントとして UI に流す。ヘッダーの緑「DDS connected」はブリッジ up が条件）。
   ロボット向き呼び出しは connect 1s の fail-fast（/topics は約 2s で 503、nginx の /webrtc・/probe は
   `proxy_connect_timeout 3s`）。ノート PC を持ち出して後からデータ確認する運用を想定している。
-  注意: Recordings 一覧は DB 参照のため、**別の orchestrator が録画した run** を `make import-runs` で
+  注意: 収録一覧（Review）は DB 参照のため、**別の orchestrator が録画した run** を `make import-runs` で
   持ち込んでも一覧には出ない（同じ PC の orchestrator で録画した run は出る）。
 - **権限**: recorder が作る MCAP は root 所有。import 側（rsync ユーザ）が読めるよう UID/GID/umask を揃える。
 - **セキュリティ**: 全サービスは信頼 LAN 前提で無認証。分割で公開面が増える点に注意（インターネット非公開）。

@@ -38,7 +38,7 @@ webrtc_streamer topic_monitor topic_probe rosbag2_recorder  (selected topics)
 | [webrtc_streamer](docs/specs/en/webrtc_streamer.md) | Low-latency camera **preview** (ROS 2 image → browser). Not a recording path. |
 | [api_orchestrator](docs/specs/en/api_orchestrator.md) | The single API hub. Handles job lifecycle, state, configuration, and result aggregation. |
 | [dora_runner](docs/specs/en/dora_runner.md) | Post-recording **validation & conversion** pipeline (dora-based). Enabled: `fast_validation` / `dataset_export` / `loss_report` / `video_check`. |
-| [frontend](docs/specs/en/frontend.md) | A backend-driven Web UI (UI labels in English). Tabs: Live / Graph / Probe / Recordings / Validation / Datasets / Config. |
+| [frontend](docs/specs/en/frontend.md) | A backend-driven Web UI (UI labels in English). Role tabs (Console v2): Collect / Review / Datasets / Validation / Monitor / Settings. |
 
 ## Specification docs
 
@@ -175,7 +175,8 @@ Steps to add a new robot. A robot with only standard message types can skip the 
 | dora_runner | 8020 | `POST /jobs` / `GET /jobs/{id}/result` / `POST /validation/templates/generate` |
 
 The frontend is served by nginx (default `8080`). On startup the UI fetches `GET /api/v1/config` and
-renders its tab layout and schemas backend-driven.
+renders its schemas and runtime settings backend-driven (the tabs are the fixed Console v2 role tabs:
+Collect / Review / Datasets / Validation / Monitor / Settings).
 
 ### Typical usage flow
 
@@ -190,23 +191,23 @@ renders its tab layout and schemas backend-driven.
    # specify a different bag
    BAG=/data/airoa-moma-mcap/000730 docker compose -f deploy/test/compose.yaml run --rm rosbag_player
    ```
-2. **Record**: start from the UI (Live tab) or `POST /api/v1/record/start {"topics":"all"}` → an MCAP is
-   created under `/data/recorded/<run_id>/` (stop with `POST /api/v1/record/stop`). If you fill in the Live
-   tab's **Operator / Task**, that content plus the topics, count, and start/end are saved to
-   `/data/recorded/<run_id>/session.json` in the same directory as the MCAP, and are also shown in the
-   Recordings tab. A recording can be **deleted from the Recordings tab** (deletes the DB row +
-   `/data/recorded/<run_id>`). The recorder `chmod 0777`s its output, so it can also be deleted from the
-   host side (outside the container) without sudo.
+2. **Record**: start from the UI (Collect tab) or `POST /api/v1/record/start {"topics":"all"}` → an MCAP is
+   created under `/data/recorded/<run_id>/` (stop with `POST /api/v1/record/stop`). If you fill in the
+   header's **OP chip (operator)** and Collect's **Task**, that content plus the topics, count, and start/end
+   are saved to `/data/recorded/<run_id>/session.json` in the same directory as the MCAP, and are also shown
+   in the Review tab. A recording can be **deleted from the Review tab** (two steps: Exclude → Delete from
+   disk; deletes the DB row + `/data/recorded/<run_id>`). The recorder `chmod 0777`s its output, so it can
+   also be deleted from the host side (outside the container) without sudo.
 3. **Monitor / preview**: live health (Hz / gaps / bandwidth) via `GET /metrics`, WebRTC camera preview via
-   `/stream`. The UI's Live tab fuses the Stream preview and the Monitor panel (**always shows every topic on
-   the graph**, overlaying live Hz on the monitored ones). The sample bag's Hz shows up with the default
-   `ROBOT=airoa_hsr` (which topics to record/monitor is defined per robot in
-   [`config/`](config/README.md); reflected as a pre-selection in the Live tab's RECORD checks).
+   `/stream`. In the UI, the Collect tab owns the camera previews and recording controls, and the Monitor tab
+   owns topic health (**always shows every topic on the graph**, overlaying live Hz on the monitored ones).
+   The sample bag's Hz shows up with the default `ROBOT=airoa_hsr` (which topics to record/monitor is defined
+   per robot in [`config/`](config/README.md); reflected as a pre-selection in the Monitor tab's Rec checks).
 4. **Post-recording validation & processing** (via `POST /api/v1/jobs`, through `dora_runner`):
    - `fast_validation` — validates the presence/absence of required topics → `pass`/`fail` in `/data/report/fast_validation/<run_id>/summary.json`.
-   - `loss_report` — per-topic loss estimation (Recordings tab's "Run loss report").
-   - `video_check` — mp4 preview of camera topics (Recordings tab; play via `GET /api/v1/files/...`).
-   - `dataset_export` — export a completed recording to `data/<operator>/<task>/NNN` (Datasets tab).
+   - `loss_report` — per-topic loss estimation (the Review tab's "Run loss report").
+   - `video_check` — mp4 preview of camera topics (Review tab; play via `GET /api/v1/files/...`).
+   - `dataset_export` — export a completed recording to `data/<operator>/<task>/NNN` (in the UI: the Review tab's "Export ready"; listed in the Datasets tab).
 
 ### Tests / integration tests
 

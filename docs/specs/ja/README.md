@@ -12,4 +12,4 @@
 | [webrtc_streamer](webrtc_streamer.md) | カメラ映像の低遅延配信（プレビュー） |
 | [api_orchestrator](api_orchestrator.md) | ジョブ管理 / 状態管理 / API ハブ（単一入口 `/api/v1`） |
 | [dora_runner](dora_runner.md) | 記録後の検証・変換・AI 処理（dora 拡張、stage3。検証 v1 = 必須トピック + テンプレ） |
-| [frontend](frontend.md) | タブ化 Web UI（backend-driven、組み替え可能） |
+| [frontend](frontend.md) | 役割タブ Web UI（Console v2: Collect / Review / Datasets / Validation / Monitor / Settings） |

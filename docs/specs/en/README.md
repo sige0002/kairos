@@ -14,4 +14,4 @@ Per-service specs. Based on each diagram in `fig_const/`, with unspecified items
 | [webrtc_streamer](webrtc_streamer.md) | Low-latency streaming of camera video (preview) |
 | [api_orchestrator](api_orchestrator.md) | Job management / state management / API hub (single entry point `/api/v1`) |
 | [dora_runner](dora_runner.md) | Post-recording validation, conversion, and AI processing (dora extension, stage3. Validation v1 = required topics + template) |
-| [frontend](frontend.md) | Tabbed Web UI (backend-driven, recomposable) |
+| [frontend](frontend.md) | Role-tab Web UI (Console v2: Collect / Review / Datasets / Validation / Monitor / Settings) |

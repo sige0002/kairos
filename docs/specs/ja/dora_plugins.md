@@ -276,7 +276,7 @@ ENV KAIROS_PLUGINS_DIR=/app/plugins
 
 - daemon 常駐は 1 プロセス。軽量 validator dataflow は短命 node のみで CPU-only PC に収まる。
 - **GPU node**（自動アノテーション等）は manifest `requires.gpu: true` を宣言し、dora node を `--gpus` 付きで起動する別 compose profile（`profiles: [gpu]`）に隔離。**CPU-only 既定構成には GPU プラグインを含めない**。
-- 重い job（`video_check` / 将来の `dataset_convert`）を録画中に走らせない運用は試験/検収の受け入れ条件（`dev_docs/check.md` / `dev_docs/arch_review.md`・ローカル）に従う。job ごと timeout・並行度上限を Executor に持たせる。
+- 重い job（`video_check` / 将来の `dataset_convert`）を録画中に走らせない運用は検収の受け入れ条件（`dev_docs/arch_review.md`・ローカル作業ドラフト）に従う。job ごと timeout・並行度上限を Executor に持たせる。
 
 ## 5. 段階移行プラン
 

@@ -29,7 +29,7 @@
 | `ROS_DISTRO` | `jazzy` | ベースイメージの ROS 2 ディストロ。`.env` の値が Makefile 組み込み既定に勝つ（`make` が `.env` を読んで export する） |
 | `RMW_IMPLEMENTATION` | `rmw_fastrtps_cpp` | DDS 実装。Fast DDS と Cyclone DDS の両 RMW をイメージに同梱しており、本キーで切替可能。Cyclone DDS のロボットには `rmw_cyclonedds_cpp` を指定する（後述） |
 | `DATA_DIR` | `./data` | ホスト側データ root（→ コンテナ `/data`） |
-| `ROBOT` | `airoa_hsr` | アクティブな機体。`config/<robot>/`（committed）または `config/local/<robot>/`（gitignored）を選ぶ。recording / stream / validation / validators / monitoring の各パスはこれから派生する（Makefile が committed/local を解決し、`docker compose` もネスト補間で尊重。さらに各サービスは**起動時**に、与えられた committed 形のパスが実在しなければ `config/local/` 側へ解決し直す — `kairos_common.resolve_config_path` — ため、素の `docker compose` でも local 機体が解決される）。Config タブで機体 → aspect → option を選択・編集できる |
+| `ROBOT` | `airoa_hsr` | アクティブな機体。`config/<robot>/`（committed）または `config/local/<robot>/`（gitignored）を選ぶ。recording / stream / validation / validators / monitoring の各パスはこれから派生する（Makefile が committed/local を解決し、`docker compose` もネスト補間で尊重。さらに各サービスは**起動時**に、与えられた committed 形のパスが実在しなければ `config/local/` 側へ解決し直す — `kairos_common.resolve_config_path` — ため、素の `docker compose` でも local 機体が解決される）。Settings タブで機体 → aspect → option を選択・編集できる |
 | `RECORDING_CONFIG` | `/config/<robot>/recording/default.yaml` | 収録・監視の YAML（通常は `ROBOT` から自動導出。`.env` で直接指定すると派生より優先される）。compose 経由のパスは**コンテナ絶対**（`./config`→`/config` マウント）（下記） |
 | `STREAM_CONFIG` | `/config/<robot>/stream/default.yaml` | Stream タブの初期ペイン定義。`ROBOT` から自動導出（コンテナ絶対） |
 | `LOSS_REPORT_CONFIG` | `/config/<robot>/validators/loss_report.yaml` | `dora_runner` の loss_report パラメータ。`ROBOT` から自動導出（コンテナ絶対） |
@@ -103,7 +103,7 @@ topic_qos_overrides:       # パターン → QoS（recorder / monitor が適用
 ```
 
 - **`recording` チューニング**: `start_delay_s`（publisher ウォームアップ待ち）に加え、開始時の購読確立 lag 対策として `start_paused`（既定 `false`／`true` で `--start-paused`＋購読 readiness gate＋resume を有効化）と `subscription_ready_timeout_s`（既定 5.0）を持つ。詳細は [rosbag2_recorder](rosbag2_recorder.md)。
-- **UI からの編集・永続化**: この `RECORDING_CONFIG` 全体は Config タブから編集できる（`GET/PUT /api/v1/config/recording`、[api_orchestrator](api_orchestrator.md)）。`PUT` は `RecordingConfig` で型検証し（失敗は `422`）、設定ファイルへアトミックに書き込んで在メモリ設定をホットスワップする。`default_topics` / `robot_name` は即時反映、`expected_hz` / QoS は各サービスの**再起動時**に反映される。
+- **UI からの編集・永続化**: この `RECORDING_CONFIG` 全体は Settings タブから編集できる（`GET/PUT /api/v1/config/recording`、[api_orchestrator](api_orchestrator.md)）。`PUT` は `RecordingConfig` で型検証し（失敗は `422`）、設定ファイルへアトミックに書き込んで在メモリ設定をホットスワップする。`default_topics` / `robot_name` は即時反映、`expected_hz` / QoS は各サービスの**再起動時**に反映される。
 
 ## ワンクリック検証プリセット（`config/<robot>/validation_presets.yaml`）
 
@@ -153,9 +153,9 @@ presets:
 }
 ```
 
-- **タブはレジストリ駆動。** 表示・順序・有効/無効を backend が差し替えられる（「簡単に組み替え可能」の要件）。backend が返すのは上記 6 タブ（`live` は Stream+Monitor+Record を融合、`graph` は時系列ヘルス、`dataset` は変換出力の一覧）。`probe` タブは **frontend がクライアント側で注入**する（backend の `tabs` に無くても表示される）ため、UI 上のタブは Live / Graph / Probe / Recordings / Validation / Datasets / Config の 7 つになる。
-- `stream` は Stream プレビューの初期レイアウト（`columns` と `panes`。`STREAM_CONFIG` 由来）。
-- `schemas` は **JSON Schema（draft 2020-12）**。frontend はこれで各 pipeline の実行フォームを描画する（`pipeline_forms` は `dora_runner` の `/pipelines` から動的に構成。到達不能時は `fast_validation` の静的フォームにフォールバック）。記録開始フォーム（トピック選択）は Live タブが discovery と config から直接構成し、この schema には含めない。
+- **`tabs` は v1 legacy。** v1 では表示・順序・有効/無効を backend が差し替えるレジストリだったが、**Console v2 のタブは frontend 固定の 6 枚**（Collect / Review / Datasets / Validation / Monitor / Settings。旧タブ id はリダイレクト — [frontend.md](frontend.md)）で、このフィールドは表示に使われない。互換のため payload には残る。
+- `stream` はカメラプレビューの初期レイアウト（`columns` と `panes`。`STREAM_CONFIG` 由来。Collect のカメラペインはこれで初期化される）。
+- `schemas` は **JSON Schema（draft 2020-12）**。frontend はこれで各 pipeline の実行フォームを描画する（`pipeline_forms` は `dora_runner` の `/pipelines` から動的に構成。到達不能時は `fast_validation` の静的フォームにフォールバック）。記録開始のトピック選択は Collect / Monitor タブが discovery と config から直接構成し、この schema には含めない。
 
 ## 共通規約
 

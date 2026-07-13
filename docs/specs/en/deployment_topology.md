@@ -149,7 +149,7 @@ the trade-off of placing one heavy reader/gateway on the robot side.
 - **WebRTC**: it works under this design's premise (same LAN, wired). What nginx relays is **only signaling**;
   RTP media is P2P. The browser must **reach the robot IP directly** (satisfied on the same LAN).
   Crossing NAT/VPN requires STUN/TURN separately (aiortc currently offers host candidates only).
-- **config synchronization**: editing the orchestrator's Config tab writes to **the recording PC's /config**. Meanwhile recorder/monitor read
+- **config synchronization**: editing the orchestrator's Settings tab writes to **the recording PC's /config**. Meanwhile recorder/monitor read
   **the robot's /config** (the recorder's `start_paused` / `max_cache_size_mb` / QoS come from the robot-side config;
   the selection of topics to record is passed in the start payload, so it is separate). **To change the recorder's behavior, edit the robot's config/
   and `make robot-config-reload`**. The gitignored `config/local/<robot>/` does not travel with git, so publish the
@@ -160,12 +160,12 @@ the trade-off of placing one heavy reader/gateway on the robot side.
   LAN-internal, so compose hands every service `NO_PROXY` (default `localhost,127.0.0.1`; `.env.split.example`
   also includes `ROBOT_IP`), and the orchestrator's internal httpx client runs with `trust_env=False`, never
   reading the proxy environment variables at all.
-- **Robot power-off**: the host (recording PC) side does not go down. Recordings / Validation / Datasets / Config
-  keep working entirely locally, and Live/Graph explicitly say "robot offline" (the orchestrator relays its
+- **Robot power-off**: the host (recording PC) side does not go down. Review / Validation / Datasets / Settings
+  keep working entirely locally, and Collect/Monitor explicitly say "robot offline" (the orchestrator relays its
   monitor-SSE-bridge up/down as a `bridge` event to the UI; the header's green "DDS connected" requires the bridge
   to be up). Robot-bound calls fail fast with a 1s connect budget (/topics 503s in about 2s; nginx's /webrtc and
   /probe use `proxy_connect_timeout 3s`). This supports taking a laptop away and reviewing data later.
-  Caveat: the Recordings list reads the DB, so a run **recorded by a different orchestrator** does not appear
+  Caveat: the recordings list (Review) reads the DB, so a run **recorded by a different orchestrator** does not appear
   even after `make import-runs` brings its files in (runs recorded by this same PC's orchestrator do).
 - **Permissions**: the MCAP the recorder creates is owned by root. Align UID/GID/umask so the import side (the rsync user) can read it.
 - **Security**: all services are unauthenticated on the premise of a trusted LAN. Note that splitting increases the exposed surface (not exposed to the internet).

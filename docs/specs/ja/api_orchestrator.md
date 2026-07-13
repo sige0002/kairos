@@ -7,7 +7,7 @@
 ## 役割
 
 - Run / ジョブのライフサイクル一元管理。
-- backend-driven config（設定・スキーマ・タブ構成をバックエンドが提供）。
+- backend-driven config（設定・スキーマをバックエンドが提供。`tabs` フィールドは v1 legacy — Console v2 のタブは frontend 固定で、表示には使われない）。
 - 各サービスへの指示と結果集約・通知のハブ。
 
 ## 入力
@@ -43,7 +43,7 @@
 - ファイル配信: `GET /api/v1/files/{path}` — `data_dir` からの**相対パス**でファイルを配信（トラバーサルガード: `data_dir` 配下のみ。それ以外・不在は `404`）。`video_check` の mp4 プレビュー取得に使う
 - データセット: `GET /api/v1/datasets`（`data/<operator>/<task>/<NNN>/dataset.json` を走査した一覧。`data_dir` 配下のみ読む）、`GET /api/v1/datasets/{operator}/{task}/{index}`（**エクスポート済みデータセットの詳細**。下記「データセットエクスポート」参照）、`DELETE /api/v1/datasets/{operator}/{task}/{index}`（**エクスポート済みデータセットの削除**。同節参照）、`POST /api/v1/datasets/export`（body `{ run_id }`）、`POST /api/v1/datasets/export-all`（`recorded/` 内の完了 run を**一括** export）
 - `GET /healthz` / `GET /readyz`（`components: { recorder, monitor, streamer }` の疎通も返す）
-- `GET /openapi.json`（OpenAPI。frontend は Orval でクライアントを自動生成）
+- `GET /openapi.json`（OpenAPI を自動公開。クライアント自動生成に使える — 現状の frontend は手書きの型付きクライアント）
 
 ## Run ライフサイクル（orchestrator が一元管理）
 
@@ -83,7 +83,7 @@ Collect の Batch/Episode 進行・タスク結果・品質判断を orchestrato
 
 ## 収録設定のフル編集（`GET/PUT /api/v1/config/recording`）
 
-UI（Config タブ）から `RECORDING_CONFIG` 全体を編集・永続化する。
+UI（Settings タブ）から `RECORDING_CONFIG` 全体を編集・永続化する。
 
 - `GET` — ライブの収録設定（`app.state` 上の現値。直前の PUT を再起動なしで反映）と、そのファイルパスを `{ config, path }` で返す（未ロード時は `config: null`）。
 - `PUT` — body `{ config }`。`config` を `RecordingConfig`（[config](config.md)）で型検証し、失敗時は **`422`**（違反フィールドを `details.errors` に返す）。成功時は **`RECORDING_CONFIG` のファイルへ YAML をアトミックに書き込み**（temp + `os.replace`。書き込み先は常に設定ファイルで、リクエスト由来のパスは使わない）、**メモリ上の設定をホットスワップ**する。
@@ -101,7 +101,7 @@ UI（Config タブ）から `RECORDING_CONFIG` 全体を編集・永続化する
 - `POST /api/v1/datasets/export`（body `{ run_id }`）: 対象が `completed` でなければ **`409`**、`recorded/<run_id>` が無ければ **`409`**（export 済み等）。`dataset_export`（移動）を完了まで実行し、**成功した場合のみ run 行を削除**（移動済みなので `recorded/` のディレクトリ・兄弟ファイルも掃除）。**run キーのレポートサイドカー（`data/report/*/<run_id>`: validation / loss / video_check の mp4 キャッシュ）は意図的に残す** — エクスポート後もデータセット詳細ビューがそれらを表示し続けられるようにするため（`DELETE /api/v1/runs/{id}` による明示削除では従来どおり掃除される）。失敗（`502`）・タイムアウト（`504`）時は run を `recorded/` と一覧に残す。
 - `POST /api/v1/datasets/export-all`: `recorded/` にファイルが残る完了 run を**全件** export。1 件の失敗でバッチは止めず、`{ exported: [...], failed: [{ run_id, error }], total }` を返す。
 - **ラベルはエクスポートを生き残る（`episode.json`）** — Console v2 Phase 2: run 行の削除は episode を CASCADE で消すため、export 時に **run 行を削除する前**に該当 episode（あれば）とそのバッチを読み、`dataset.json` の隣に `episode.json`（tmp+rename でアトミック書込）を書き出す。内容 = `episode_id` / `batch_id` / `batch_seq` / `index_in_batch` / `task_result` / `failure_reason?` / `quality` / `quality_source` / `review_status`＋バッチコンテキスト `batch: { batch_id, batch_seq, project, task, condition, operator, robot }`＋`exported_at`。**これがないと、失敗ラベル付きデータが未ラベルとして export されてしまう**。episode を持たない run は `episode.json` を書かない（空ファイルも作らない）。single / export-all の両経路が同じ処理を通る。
-- 結果として**エクスポート済みの収録は Recordings 一覧から消える**（来歴は `<NNN>/dataset.json` に保存）。`GET /api/v1/datasets` で operator › task › NNN を一覧できる。一覧の各行には `episode.json` の**軽量サブセット**（`task_result` / `quality` / `review_status` / `batch_seq` / `index_in_batch`。無ければ `null`）をカード表示用に同梱する（`dataset.json` と同じく行ごとに読む）。
+- 結果として**エクスポート済みの収録は収録一覧（Review タブ）から消える**（来歴は `<NNN>/dataset.json` に保存）。`GET /api/v1/datasets` で operator › task › NNN を一覧できる。一覧の各行には `episode.json` の**軽量サブセット**（`task_result` / `quality` / `review_status` / `batch_seq` / `index_in_batch`。無ければ `null`）をカード表示用に同梱する（`dataset.json` と同じく行ごとに読む）。
 - **`GET /api/v1/datasets/{operator}/{task}/{index}` はエクスポート後の RunDetail 相当**（DatasetDetail）を返す: `dataset.json`（来歴・`files` / `bytes` / `message_count`）に加え、移動された `session.json`（state / started_at / ended_at）・`manifest.json`（topics の name / type / QoS。無ければ session / dataset.json の名前のみへフォールバック）・**`episode.json`（`episode` フィールドとして同梱。無ければ `null`）**と、エクスポートを生き残った run キーのレポート（`validation` / `loss`）を best-effort で同梱する。応答の `path`（`<operator>/<task>/<index>` 相対パス）は、エクスポート後に `video_check` / `loss_report` ジョブを実行する際の `params.dataset_dir` にそのまま使える。パスコンポーネントは単一ディレクトリ名のみ許可（トラバーサル・予約名 `recorded`/`report`/`datasets` は `400`）、ディレクトリまたは `dataset.json` 不在は `404`。
 - **`DELETE /api/v1/datasets/{operator}/{task}/{index}` はエクスポート後の `DELETE /runs/{id}` 相当**（`204`）: データセットディレクトリ（`episode.json` などのサイドカーごと）を削除し、空になった `<task>` / `<operator>` 親ディレクトリを掃除、さらにエクスポート時に意図的に残した run キーのレポートサイドカー（`data/report/*/<run_id>`）も**孤児になるためここで削除**する（同じ run_id の run 行がまだ存在する場合は残す）。パス規則は詳細と同じ（不正コンポーネント・予約名は `400`、ディレクトリまたは `dataset.json` 不在は `404` — `dataset.json` の無いディレクトリは削除対象にならない）。削除に失敗した場合は `500`（`dataset_delete_failed`）。
 
@@ -143,6 +143,6 @@ UI（Config タブ）から `RECORDING_CONFIG` 全体を編集・永続化する
 
 ## 設計ポイント
 
-- **backend-driven**: pipeline 定義・フォーム schema・タブ構成を orchestrator が提供する（frontend はハードコードしない）。
+- **backend-driven**: pipeline 定義・フォーム schema・実行時設定を orchestrator が提供する（frontend はハードコードしない。タブ構成のみ Console v2 で frontend 固定に変更）。
 - 映像（WebRTC）は frontend が `webrtc_streamer` に直接接続。それ以外は orchestrator が集約する。
 - 共有設定は [config](config.md)。

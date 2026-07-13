@@ -8,7 +8,7 @@ The **job management / state management / API hub** container. The single public
 ## Role
 
 - Centralized management of the Run / job lifecycle.
-- backend-driven config (settings, schemas, and tab structure provided by the backend).
+- backend-driven config (settings and schemas provided by the backend; the `tabs` field is v1 legacy — Console v2's tabs are fixed in the frontend and not driven by it).
 - A hub that directs each service and aggregates / notifies results.
 
 ## Input
@@ -44,7 +44,7 @@ The **job management / state management / API hub** container. The single public
 - File serving: `GET /api/v1/files/{path}` — serves a file by a **relative path** from `data_dir` (traversal guard: only under `data_dir`; otherwise / absent is `404`). Used to retrieve `video_check` mp4 previews
 - Datasets: `GET /api/v1/datasets` (a list scanned from `data/<operator>/<task>/<NNN>/dataset.json`. Reads only under `data_dir`), `GET /api/v1/datasets/{operator}/{task}/{index}` (**detail of an exported dataset**. See "Dataset export" below), `DELETE /api/v1/datasets/{operator}/{task}/{index}` (**delete an exported dataset**. See the same section), `POST /api/v1/datasets/export` (body `{ run_id }`), `POST /api/v1/datasets/export-all` (**bulk** export of completed runs in `recorded/`)
 - `GET /healthz` / `GET /readyz` (also returns connectivity of `components: { recorder, monitor, streamer }`)
-- `GET /openapi.json` (OpenAPI. The frontend auto-generates a client with Orval)
+- `GET /openapi.json` (OpenAPI, published automatically; usable for client generation — the current frontend uses a hand-written typed client)
 
 ## Run lifecycle (centrally managed by the orchestrator)
 
@@ -84,7 +84,7 @@ The **job management / state management / API hub** container. The single public
 
 ## Full editing of recording config (`GET/PUT /api/v1/config/recording`)
 
-Edit and persist the entire `RECORDING_CONFIG` from the UI (Config tab).
+Edit and persist the entire `RECORDING_CONFIG` from the UI (Settings tab).
 
 - `GET` — returns the live recording config (the current value on `app.state`, reflecting the previous PUT without a restart) and its file path as `{ config, path }` (`config: null` when not loaded).
 - `PUT` — body `{ config }`. Type-validates `config` against `RecordingConfig` ([config](config.md)); on failure, **`422`** (returns the violating fields in `details.errors`). On success, **atomically writes the YAML to the `RECORDING_CONFIG` file** (temp + `os.replace`. The write target is always the settings file; the path from the request is not used), and **hot-swaps the in-memory settings**.
@@ -102,7 +102,7 @@ An operation that **moves a recording from the canonical staging (`recorded/`) t
 - `POST /api/v1/datasets/export` (body `{ run_id }`): if the target is not `completed`, **`409`**; if `recorded/<run_id>` is absent, **`409`** (already exported, etc.). Runs `dataset_export` (the move) to completion, and **deletes the run row only on success** (since it has been moved, also cleans up the `recorded/` directory and sibling files). **The run-keyed report sidecars (`data/report/*/<run_id>`: validation / loss / the video_check mp4 cache) are deliberately kept** — so the dataset detail view can keep showing them after export (an explicit `DELETE /api/v1/runs/{id}` still cleans them up as before). On failure (`502`) / timeout (`504`), the run is left in `recorded/` and in the list.
 - `POST /api/v1/datasets/export-all`: exports **all** completed runs whose files remain in `recorded/`. A single failure does not stop the batch; returns `{ exported: [...], failed: [{ run_id, error }], total }`.
 - **Labels survive the export (`episode.json`)** — Console v2 Phase 2: since deleting the run row cascades away the episode, the export reads the run's episode (if any) and its batch **before deleting the run row** and writes `episode.json` next to `dataset.json` (atomic tmp+rename write). Contents = `episode_id` / `batch_id` / `batch_seq` / `index_in_batch` / `task_result` / `failure_reason?` / `quality` / `quality_source` / `review_status` + the batch context `batch: { batch_id, batch_seq, project, task, condition, operator, robot }` + `exported_at`. **Without this, failure-labelled data would be exported as unlabelled.** A run with no episode writes no `episode.json` (no empty file either). The single and export-all paths go through the same logic.
-- As a result, **exported recordings disappear from the Recordings list** (provenance is saved to `<NNN>/dataset.json`). `GET /api/v1/datasets` lists operator › task › NNN. Each list row bundles a **lightweight subset** of `episode.json` (`task_result` / `quality` / `review_status` / `batch_seq` / `index_in_batch`; `null` when absent) for card display (read per row, like `dataset.json`).
+- As a result, **exported recordings disappear from the recordings list (the Review tab)** (provenance is saved to `<NNN>/dataset.json`). `GET /api/v1/datasets` lists operator › task › NNN. Each list row bundles a **lightweight subset** of `episode.json` (`task_result` / `quality` / `review_status` / `batch_seq` / `index_in_batch`; `null` when absent) for card display (read per row, like `dataset.json`).
 - **`GET /api/v1/datasets/{operator}/{task}/{index}` returns the post-export equivalent of RunDetail** (DatasetDetail): on top of `dataset.json` (provenance · `files` / `bytes` / `message_count`), it best-effort bundles the moved `session.json` (state / started_at / ended_at), `manifest.json` (topics with name / type / QoS; falls back to the name-only lists in session / dataset.json when absent), **`episode.json` (bundled as the `episode` field; `null` when absent)**, plus the run-keyed reports that survived the export (`validation` / `loss`). The response's `path` (the relative `<operator>/<task>/<index>`) can be used as-is as `params.dataset_dir` when running `video_check` / `loss_report` jobs after export. Path components must be plain single directory names (traversal and the reserved names `recorded`/`report`/`datasets` are `400`); a missing directory or `dataset.json` is `404`.
 - **`DELETE /api/v1/datasets/{operator}/{task}/{index}` is the post-export equivalent of `DELETE /runs/{id}`** (`204`): it removes the dataset directory (with its sidecars such as `episode.json`), cleans up the now-empty `<task>` / `<operator>` parent directories, and **also deletes the run-keyed report sidecars (`data/report/*/<run_id>`) deliberately kept at export, since they become orphans here** (they are kept if a run row with the same run_id still exists). The path rules are the same as the detail view (an unsafe component or a reserved name is `400`; a missing directory or `dataset.json` is `404` — a directory without `dataset.json` is never a delete target). A failed removal is `500` (`dataset_delete_failed`).
 
@@ -144,6 +144,6 @@ An operation that **moves a recording from the canonical staging (`recorded/`) t
 
 ## Design points
 
-- **backend-driven**: the orchestrator provides pipeline definitions, form schemas, and tab structure (the frontend does not hardcode them).
+- **backend-driven**: the orchestrator provides pipeline definitions, form schemas, and runtime settings (the frontend does not hardcode them; only the tab structure became frontend-fixed with Console v2).
 - Video (WebRTC) is connected by the frontend directly to `webrtc_streamer`. Everything else is aggregated by the orchestrator.
 - Shared configuration is in [config](config.md).

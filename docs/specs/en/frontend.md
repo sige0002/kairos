@@ -1,62 +1,139 @@
-<!-- AUTO-GENERATED from docs/specs/ja/frontend.md. Do not edit by hand — edit the Japanese source and run /sync-docs. -->
+<!-- Mirror of docs/specs/ja/frontend.md (the Japanese file is canonical). Keep this file in sync by hand — the sync-docs skill was retired. -->
 # frontend specification
 
-> Status: design finalized (v1). Based on `fig_const/frontend.png`, with unspecified items fixed as recommended designs. Japanese is the source of truth (treat it as canonical). The English version `docs/specs/en/frontend.md` is an auto-generated mirror (do not edit it directly). **No authentication required.**
+> Status: design settled (**v2 = Console v2**, merged 2026-07-13). Fully reorganized from v1 (feature tabs) into **role tabs**. The Japanese version is canonical (treat it as the source of truth). This English file is a manually maintained mirror (keep it in sync with the Japanese). **No authentication.**
 
-A backend-driven lightweight Web UI (Vite + React + TypeScript). **Usability first**. Each container's functionality is made into a **tab** and is **easily reconfigurable**.
+A backend-driven, lightweight Web UI (Vite + React + TypeScript). Tabs are organized not by technical function (v1: Live / Graph / Probe / Recordings / Validation / Datasets / Config) but by **"whose job is it"** — 6 tabs: **Collect / Review / Datasets / Validation / Monitor / Settings**.
 
-## Role
+## Roles
 
-- Recording operations / live video / topic health / Run / validation / dataset display.
+| Tab | Whose job | What it does |
+|---|---|---|
+| Collect | Operator | Run recordings, judge immediately, improve |
+| Review | ML engineer | Judge recording quality and labels, ship to datasets |
+| Datasets | ML engineer | Catalog of exported datasets, (future) dataset building |
+| Validation | Robot engineer | Run pipelines, standardize validation |
+| Monitor | Robot engineer | Communication, signal and system diagnostics |
+| Settings | Robot engineer | Robot configuration, plans, and their scope of effect |
 
-## Implementation (recommended libraries)
+Core concepts: **recording quality and task result are separate axes** (a failed task ≠ bad data; failures are kept, labeled, and used for training). Recording proceeds in a **Batch > Episode** hierarchy persisted by the orchestrator ([api_orchestrator.md](api_orchestrator.md) "Batch / Episode"; the Session level is **TBD**: Phase 2.5).
+
+## Implementation
 
 - Base: **Vite + React + TypeScript**.
-- Routing: **TanStack Router**.
-- State management: **Zustand** (UI state such as tabs/layout) + **TanStack Query** (server state. SSE events are reflected into the cache via `setQueryData`).
-- API client: **Orval** (auto-generates typed hooks from the orchestrator's OpenAPI).
-- Charts: **uPlot** (lightweight time series). UI: **Tailwind CSS + radix-ui / shadcn + lucide**.
-- Live video: **WebRTC Player** (connects to `webrtc_streamer`'s `/stream/offer`).
-- Tests: **Vitest + Testing Library + MSW**.
+- State: **Zustand** (UI state) + **TanStack Query** (server state; SSE events are folded into the cache). Routing is URL-query based (`?tab=<id>`).
+- Charts: unified on **uPlot** (axis ticks, crosshair, series overlay, zoom). UI: **Tailwind CSS** (components are hand-rolled).
+- Live video: **WebRTC** (connects to `webrtc_streamer`'s `/stream/offer`).
+- Tests: **Vitest + Testing Library**.
 
-## Input
+## Inputs
 
-- WebRTC video (`webrtc_streamer`; by default through the same-origin path `/webrtc`, reverse-proxied by the frontend's nginx; overridable via `WEBRTC_PUBLIC_URL`)
+- WebRTC video (`webrtc_streamer`; by default same-origin via `/webrtc`, reverse-proxied by the frontend's nginx; override with `WEBRTC_PUBLIC_URL`)
+- Numeric-field sample streams (`topic_probe`; same-origin via `/probe`; used by Monitor's Signals view)
 - REST / SSE (`api_orchestrator` `/api/v1`)
 
-## Screen structure (tabs)
+## Tabs and navigation
 
-**Tabs are registry-driven** (the `tabs` definition in `GET /api/v1/config` swaps display, order, and enabled/disabled from the backend). **UI labels are in English**. The current tab structure is **Live / Graph / Probe / Recordings / Validation / Datasets / Config** (tab ids are respectively `live` / `graph` / `probe` / `runs` / `validation` / `dataset` / `config`; `probe` is a frontend-only tab the client injects even when the backend's `tabs` omit it):
+- **The 6 tabs are fixed in the frontend** (`V2_TABS`). v1's "backend `tabs` registry-driven" mechanism is **retired** — the `tabs` field of `GET /api/v1/config` remains for compatibility but v2 does not use it for display or ordering.
+- **All legacy tab ids redirect** to preserve deep links: `live`→`collect`, `graph`/`probe`→`monitor`, `runs`→`review`, `dataset`→`datasets`, `config`→`settings`.
+- Every tab is URL-addressable (`?tab=<id>`). **`?tab=<id>&solo=1` renders only that tab with no tab bar** (a ↗ button per tab opens its solo page in a new window — the multi-window way to see several charts at once).
+- **Header (shared by all tabs)**: the 6 tabs, a **ROS_DOMAIN_ID badge**, a **connection chip** (SSE connection state), and an **OP chip** — click to set the operator name (persisted in localStorage; sent as `operator` on every subsequent `/record/start`).
 
-- **Live** — an operations screen fusing Record + Stream + Monitor. At the top a recording hero (Operator / Task input + Start / Stop), below a Stream preview (left) and a Monitor health panel (right).
-  - The Monitor enumerates subscribed topics, each row having a **RECORD checkbox**. The set of checked items becomes the target topics of the **next recording** (a selection for the next start, not a change mid-recording = `ros2 bag record` cannot be changed mid-way). Configured topics are pre-checked and sorted to the top. Each row shows a **status dot** (`inactive`/`danger`/`warning`/`ok`/`unknown`) and, when a threshold is crossed, a **shortfall badge** (observed shortfall — not true loss) plus a reason tooltip.
-  - Below the Stream + Monitor grid there is a full-width, collapsible **Scope** band. Like the Graph tab it uses **add-style panels**, and each panel can **overlay** multiple series. Series come from two sources —
-    - **Health** (from the monitor — **no decode**): **Frequency** (actual Hz with the expected_hz reference line) / **Shortfall vs expected** (`rate_shortfall` with the 2% / 5% threshold lines) / **Jitter**, etc. Clicking a topic name in the Monitor adds a Health panel.
-    - **Signal** (from `topic_probe` — **the decoded payload value**): can overlay **different topics × multiple fields** on one chart, such as right arm / left arm. Arrays are `[0..N]`-expanded; the sample rate is **selectable per panel** (default 10Hz). "+ Signal" adds a panel ([topic_probe](topic_probe.md)).
-    - Recording **REC / STOP markers** are overlaid on all panels, so you can judge "should I keep this recording / did it drop right after start?". Charts are **uPlot** (axis ticks · hover crosshair · legend · zoom). The Scope is preserved across Live's tab switches.
-  - The header shows **ROS_DOMAIN_ID** and the host's **CPU / GPU** (`GET /api/v1/system`).
-- **Graph** — a time-series health view where metric panels can be added and removed (**Frequency / Bandwidth / Max gap / Rate vs expected**). Overlays 1 metric × multiple topics. Since latency / loss cannot be measured with a non-intrusive monitor, they are **excluded from the menu** (per-run loss is provided via post-hoc analysis in Recordings).
-- **Probe** — a generic plotter that plots **numeric fields** from `topic_probe` in add-style panels (a frontend-injected tab). Pick a topic → numeric field (arrays `[0..N]`-expanded) and **overlay different topics × multiple fields**. The sample rate is selectable per panel (default 10Hz). Decoding is handled by the isolated `topic_probe` container and **does not spill over into recording / monitoring** ([topic_probe](topic_probe.md)). Live's Scope embeds this Signal panel into the operations screen.
-- **Recordings** (formerly Runs) — a recording history list (run_id / Status / Duration) + details (`manifest` / `validation` / `dataset_stats` / `loss`). A **"Run loss report" button** and an on-demand **mp4 "Video check" player**. Run deletion is also possible.
-- **Validation** — a **pipeline-agnostic** dora_runner run tab. **Pipeline selection** (every enabled pipeline from `GET /api/v1/pipelines`) → **target run selection** → **params form** (auto-generated from `schemas.pipeline_forms[<id>]`) → run (`POST /api/v1/jobs`). The result is drawn by a **generic renderer** that shows the job's `summary.json` shape-independently (a PASS/FAIL badge for `result`, a `message` headline, a key/value tree for `metrics` and other fields, `artifacts`, and raw JSON). Only the bundled `fast_validation` has a bespoke checklist against the template's required-topic list. **Adding a plugin requires no edit to this tab** ([dora_plugins.md §2.5](dora_plugins.md)).
-  - **Batch run**: the target-run options include **"All completed runs"**, which fans the selected pipeline out over every completed recording (one `POST /api/v1/jobs` per run). In batch mode the left pane shows a **per-run progress list** (each row: run_id + live state, then PASS/FAIL when done); clicking a row opens that run's detail card.
-  - **One-click validations (pre-defined)**: config-defined preset buttons across the top (`GET /api/v1/validation/presets`). Each preset is a bundle of a `pipeline` + fixed `params`; clicking it runs over **every completed recording that pipeline has not validated yet** (`pending_run_ids`). Buttons show "N pending" and are disabled ("up to date") at 0. Presets live in the robot config `config/<robot>/validation_presets.yaml` ([config.md](config.md)).
-- **Datasets** — lists exported datasets in an **operator › task › NNN tree** (`GET /api/v1/datasets`); **selecting a card shows a detail view equivalent to Recordings** (`GET /api/v1/datasets/{op}/{task}/{index}`: metadata / topic list / "Run loss report" / the mp4 "Video check" / JSON blocks for Manifest · Validation · dataset.json) in the right pane. The detail pane can be **minimized to a slim bar / expanded again** (the selection is kept; with nothing selected or while minimized the tree gets the full width back). The detail pane's **Delete button** (with a confirm modal, the same UX as the Recordings delete) calls `DELETE /api/v1/datasets/{op}/{task}/{index}` to delete the exported dataset from disk. The loss / video jobs stay keyed by the run_id from dataset.json and read the exported MCAP via `params.dataset_dir` (an mp4 cache generated before export is reused as-is). The upper section exports completed recordings (individually + "Export all" for a bulk export of all in `recorded/`). Export is a **move**: on success the recording disappears from `recorded/` and the Recordings list and appears in the Datasets tree.
-- **Config** — selects and edits **robot → aspect (recording / stream / validation / validators) → option** (`GET /api/v1/config/options` · `POST /api/v1/config/select`). It lists committed robots (`config/<robot>/`) and gitignored robots (`config/local/<robot>/`); selecting a robot hot-swaps recording / stream (reflected immediately in `GET /api/v1/config`; recorder QoS / monitor expected_hz after a restart). The recording config can be edited and persisted as JSON (`PUT /api/v1/config/recording`), writing back to the active (possibly local) file.
+## Screens
+
+### Collect — run recordings and judge immediately
+
+- **Context bar**: Robot (real selection; same robot catalog as Settings) / Project · Task · Condition (pickers fed by Plans, plus Custom free input) / **Batch number** / episode progress "n / target".
+  - The batch number is the **server-issued `batch_seq`** (per robot × local date, restarting from 1 each morning). Before a batch exists, show a **prediction** — "next #N · assigned on first recording" (today's max seq + 1) — which settles to the server value on the first recording. There is no "planned batch count" denominator (it has no real referent).
+- **Batch / Episode progress is server-persisted**: the batch is created lazily on the first recording (`POST /api/v1/batches`). An empty batch has no row and consumes no number. Reloads / tab switches restore via `GET /api/v1/batches?status=active`.
+- **Batch menu** semantics (End early / Reset **never delete recordings**):
+  - Pause / Resume (currently local only; server-side is **TBD**: Phase 2.5) / End batch early (`status=ended_early` + reason) / Reset (a **complete no-op** for an empty batch; with recordings it closes the current batch and the next recording starts a new number) / Change condition (PATCH) / Report issue.
+- **Recording controls**: Start / Stop. Arming gate (waits for subscription establishment; "N matched · N missing" note), failed-start banner, **recorder cache/drop detection banner** (`dropped_messages` + a cache-setting hint, gated to the current run). Record-topic resolution matches v1 (selected / configured / all; the selection is shared with Monitor's Rec column, a "REC N topics" chip links to Monitor; Start is disabled on an empty selection).
+- **Saving an episode**: after stop, attach Task result (success / failure + failure reason) and Quality (good / needs_review / not_usable), then Save → `POST /api/v1/episodes`. Discard is a **real delete** behind a confirm modal (`DELETE /api/v1/runs/{id}`). After saving, show a plain three-line summary (Task / Quality / saved).
+- The "n / target" count is the **monotone counter `episodes_recorded`** (what was recorded is the truth; deletions in Review do not decrease it; if it diverges from the quality tallies, a footnote says so honestly).
+- **Cameras**: WebRTC previews. Panes can be added/removed (max 4). The main pane has resolution presets; sub panes are force-capped to low resolution (240/360p). **Latency / fps live in an overlay chip at the top-right inside the preview video** (per-tile measured values, threshold colors; never placed outside the video). Pre-connect placeholders state the reason (an empty tile must not read as a failure).
+- **Quick check** (the post-stop quality summary) is a display shell only — **real evaluation is TBD (Phase 3)**. The settled design: a "settlement of monitoring statistics accumulated during recording", two layers — Layer 0 = statistics the monitor/recorder already hold during recording (counts, drops, gaps, expected_hz ratio; final at stop), Layer 1 = read only the MCAP summary section (O(index)). Must complete in **≤5 s with zero transfer even in the split deployment**.
+- **Advice** is a single fixed mock (hold still ~1s). **Generation logic is TBD (Phase 3)**. Only the approach is settled: live advice consumes the orchestrator's aggregated SSE metrics; deep advice consumes the transferred MCAP (dora never touches DDS).
+- Fits **without scrolling** from 1920×1080 down to 1366×768 (compact density).
+
+### Review — judge quality and labels, export
+
+- List + detail of completed recordings. Each row joins run and episode (`GET /api/v1/runs`) and shows **Batch "MM/DD · #N" / Task result / Quality / lane** chips. Filterable by operator etc.
+- **Exception-review model**: episodes with good quality (or operator-confirmed) are **READY** with zero extra clicks. Only **NEEDS CHECK** (quality not good and still pending) forms the work queue — resolved with "Mark OK — include" or Exclude. Default order is NEEDS CHECK → READY → EXCLUDED. Decisions go through `PATCH /api/v1/episodes/{id}` (`review_status`).
+- **Export lives only on this tab** (one function, one place): "**Export ready (n)…**" bulk-exports all READY completed recordings (a **move**; see [api_orchestrator.md](api_orchestrator.md) dataset export). The "Include task-failed (labeled)" toggle defaults to ON (failure data is not excluded wholesale). A **pipeline strip** (Recorded → Reviewed → Ready → Export → In dataset) shows the current position and next action, with an inline Export CTA right after READY is reached.
+- **Deletion is two-step**: Exclude = "Excluded — kept on disk" (non-destructive, label only) → only excluded items offer "Delete from disk…" (confirms run_id, size, irreversibility; bulk "Delete excluded (n)…" runs sequentially and reports failures honestly). EXCLUDED items and confirmed exceptions offer "↩ Return to review" back to pending (reversible).
+- **Detail inspection**: manifest / validation / loss_report table / on-demand mp4 "Video check" player / JSON blocks. `fast_validation` can be run from the detail.
+- The **MCAP transfer column / "transfer to recording PC" button** for the split deployment is implemented but **disabled behind a flag** (off by default; never shown in the single-PC deployment). **TBD**: a signal by which the orchestrator self-reports split mode (from referencing a remote recorder), plus the transfer job (the recorder's read-only serving endpoints `GET /runs` · `GET /runs/{id}/files/{name}` + orchestrator pull / checksum / DB registration / SSE progress). Settled: transfer is **manual pull only** (no auto-transfer scheduler) and **transfer and validation are separate buttons** (no auto-chain).
+
+### Datasets — catalog of exported datasets
+
+- **Catalog only**. No export operations here (only a pointer: "Recordings are reviewed and exported in Review → Go to Review"). v1's judgment-free bulk dump (Export all) is **deliberately retired** in favor of the Review path.
+- List: the operator › task › NNN tree from `GET /api/v1/datasets`. Each card shows **episode label chips** (from `episode.json`: batch / task result / quality / review status). **Exports without labels render as muted "legacy (pre-label)"** (nothing is fabricated).
+- Detail = DatasetDetail (metadata / topic list / loss report / mp4 Video check / dataset.json, episode.json and other JSON). Loss / video jobs read the exported MCAP via `params.dataset_dir`.
+- **Delete** (confirm modal, same UX as deleting a recording) calls `DELETE /api/v1/datasets/{op}/{task}/{index}`.
+- **Build** (conversion to LeRobot v3 etc.) and **Recipe-based dataset construction are unimplemented (TBD: Phase 3)** — the UI shows muted shells that do not pretend to be working controls.
+
+### Validation — pipeline execution, standardized
+
+Keeps v1's functionality as-is; only the layout is v2.
+
+- **Pipeline-agnostic**: pick a pipeline (all enabled from `GET /api/v1/pipelines`) → pick target runs → **parameter form** (auto-generated from `schemas.pipeline_forms[<id>]`) → run (`POST /api/v1/jobs`). Results are drawn by a **generic renderer** that renders `summary.json` shape-independently (PASS/FAIL badge, message, metrics key-value tree, artifacts, raw JSON). **Adding a plugin requires no changes to this tab** ([dora_plugins.md §2.5](dora_plugins.md)).
+- Only the bundled `fast_validation` has a dedicated checklist against the template's required topics. Results can be downloaded as CSV.
+- **Batch execution**: "All completed runs" submits the selected pipeline to every completed recording (`POST /api/v1/jobs` per run), with a per-run progress list (live state; PASS/FAIL on completion).
+- **One-click validation presets**: preset buttons from `GET /api/v1/validation/presets` (`pipeline` + fixed `params`), bulk-run against **not-yet-validated completed recordings** (`pending_run_ids`). Shows "N pending"; disabled as "up to date" at zero. Defined in per-robot config `config/<robot>/validation_presets.yaml` ([config.md](config.md)).
+- The `dataset_export` pipeline remains as the programmatic equivalent of Review's Export (the same **move**).
+- Lifecycle chips (Experimental → Standard promotion) are **visual only (TBD: substance later)**.
+
+### Monitor — communication, signal and system diagnostics
+
+The merge target of v1's Graph / Probe / Live health panels.
+
+- **Context strip**: REC · run_id · elapsed while recording, STANDBY otherwise (real, from `record_status`).
+- **Topics view**:
+  - **Add / remove chart panels (max 4)**. Per panel: metric (**Frequency / Bandwidth / Max gap / Rate vs expected**) and topic overlay (max 6). Time window (30s / 1m / 5m) and Pause are global (Pause also freezes the window anchor). **Recording REC / STOP markers** overlay every panel. Frequency shows the expected_hz reference line. **Latency / loss are not on the menu** — a non-intrusive monitor cannot measure them (per-run loss is provided by Review's post-hoc analysis).
+  - **Topics table**: all discovered topics + live metrics (Hz / bandwidth / gap, status dot `inactive`/`danger`/`warning`/`ok`/`unknown`, shortfall badge with reason tooltip on threshold breach; shortfall is observed, not true loss). **Rec checkbox column** = the topic selection for the next recording (not a mid-recording change). Configured topics are pre-checked; reseeded from config on robot switch; independent of chart series selection.
+- **Signals view** (v1 Probe, ported): a generic plotter for **numeric fields** from `topic_probe`, overlaid per (topic, field). Pick topic → numeric field (arrays expand to `[0..N]`), **overlay fields across different topics**. Sample-rate selection (1/5/10/30 Hz, default 10), window, Pause. **Decoding is isolated in the `topic_probe` container and never affects recording or monitoring** ([topic_probe.md](topic_probe.md)).
+- **Events card**: the real SSE `alert` history (firing / cleared, metric, threshold, value, time).
+- **System card**: real CPU% / GPU% / disk usage (`GET /api/v1/system`). Unavailable values show "—" (never fabricated).
+
+### Settings — robot configuration and plans
+
+- **Robots**: robot list (committed `config/<robot>/` and gitignored `config/local/<robot>/`) and selection (`POST /api/v1/config/select` hot-swaps recording / stream; recorder QoS / monitor expected_hz apply on next restart — the UI says so). **Aspect** (recording / stream / validation / validators) option selection. The recording config is editable and persisted as JSON (`PUT /api/v1/config/recording`). Creating a new robot is not possible (no API; the button honestly says so).
+- **Plans**: edit Project / Task / Condition definitions. Shared store with Collect's pickers, reflected immediately (currently localStorage; **TBD**: server persistence in Phase 2.5).
 
 ## Data flow (SSE × cache)
 
-- Subscribes to a single SSE stream (`GET /api/v1/events`) and reflects it into the TanStack Query cache by event kind. Components subscribe to keys and re-render.
-- SSE disconnection is shown explicitly in the UI, and it reconnects automatically (`Last-Event-ID`).
+- Subscribe to the single SSE stream (`GET /api/v1/events`) and fold each event type into the TanStack Query cache; components subscribe to keys and re-render.
+- SSE disconnection is surfaced in the UI (the header connection chip) with automatic reconnection (`Last-Event-ID`).
 
-## Output (APIs called)
+## Outputs (APIs called)
 
-- `POST /api/v1/record/start` / `stop`, `GET /api/v1/runs` / `GET /api/v1/runs/{id}` (RunDetail), `DELETE /api/v1/runs/{id}`, `GET /api/v1/topics/status`, `GET /api/v1/events` (SSE), `GET /api/v1/system`, `GET/PUT /api/v1/config/recording`, `GET /api/v1/files/{path}` (video_check mp4), `GET /api/v1/datasets`・`GET /api/v1/datasets/{op}/{task}/{index}` (DatasetDetail)・`DELETE /api/v1/datasets/{op}/{task}/{index}`・`POST /api/v1/datasets/export(-all)`, `POST /api/v1/jobs` (`fast_validation` / `loss_report` / `video_check`; the latter two with `params.dataset_dir` after export)
+- Recording: `POST /api/v1/record/start` / `stop`
+- Batch / Episode: `POST /api/v1/batches`, `PATCH /api/v1/batches/{id}`, `GET /api/v1/batches?status=active`, `POST /api/v1/episodes`, `PATCH /api/v1/episodes/{id}`
+- Runs: `GET /api/v1/runs` (with the episode JOIN), `GET /api/v1/runs/{id}` (RunDetail), `DELETE /api/v1/runs/{id}`
+- Topics / system: `GET /api/v1/topics/status`, `GET /api/v1/events` (SSE), `GET /api/v1/system`
+- Config: `GET /api/v1/config`, `GET/PUT /api/v1/config/recording`, `GET /api/v1/config/options`, `POST /api/v1/config/select`
+- Files: `GET /api/v1/files/{path}` (video_check mp4)
+- Datasets: `GET /api/v1/datasets`, `GET/DELETE /api/v1/datasets/{op}/{task}/{index}`, `POST /api/v1/datasets/export(-all)` (the UI entry point is Review's Export ready)
+- Jobs: `GET /api/v1/pipelines`, `POST /api/v1/jobs` (`fast_validation` / `loss_report` / `video_check`; with `params.dataset_dir` after export), `GET/POST /api/v1/validation/templates`, `GET /api/v1/validation/presets`
+- Probes (the only two direct, non-orchestrator connections): `/probe` (topics / fields / SSE sample streams), `/webrtc` (offer / ICE)
 
-## Design policy
+## Design principles
 
-- **Holds no real paths / does not hardcode pipelines / the backend hands over schemas and settings / show it lightly bundled together.**
-- Time-series charts are **standardized on uPlot** (the default of this spec). It provides axis ticks · crosshair · overlay · zoom out of the box. Migration leads with the Live Scope; the existing hand-rolled SVG in Graph / Probe is replaced incrementally.
-- Rendering waits until `GET /api/v1/config` retrieval completes (render gate). Hardcoded fallbacks are dev only.
-- During recording, suppress dangerous operations (double start, topic / run_id changes).
-- Shared configuration is in [config](config.md).
+- **Honesty principle**: never display what cannot be measured (no fake latency / loss; shortfall ≠ loss). Never fabricate values — unavailable values and unimplemented evaluations show "—" or an explicit mock label. Never conflate quality with task result.
+- **Non-intrusive**: monitoring display comes from the monitor's raw / no-decode + best_effort path. Payload decoding is isolated in `topic_probe`.
+- **Per-screen image-subscription budget**: previews subscribe only while their tab is visible and release on leave; sub cameras are forced to low resolution; aggregate cards (System etc.) use orchestrator API values only and never open new subscriptions. At most one full-resolution stream at a time.
+- No real paths in the frontend / no hardcoded pipelines / schemas and settings come from the backend.
+- Endpoints wait for `GET /api/v1/config` before rendering (render gate). Hardcoded fallbacks are dev-only.
+- Dangerous operations are suppressed while recording (double start, topic / run_id changes). Destructive operations (Discard / Delete / Reset / End early) always get a confirm modal with Cancel.
+- Time-series charts are unified on uPlot.
+- Shared conventions: [config](config.md).
+
+## TBD list
+
+- Real Quick check evaluation (two-layer design settled; Phase 3) / Advice generation logic (Phase 3)
+- Dataset Recipe · Build (Phase 3)
+- Substance for the Validation lifecycle (Experimental → Standard)
+- Real wiring of the split transfer job and Review's transfer UI (including the split self-report signal)
+- Session level, server-side Plans persistence, server-side batch Pause (Phase 2.5)
+- Accessibility (WCAG 2.2 AA)

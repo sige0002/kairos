@@ -32,7 +32,7 @@ The single source of configuration shared across services, and the rules for ext
 | `ROS_DISTRO` | `jazzy` | The ROS 2 distro of the base image. The `.env` value beats the Makefile's built-in default (`make` reads `.env` and exports it) |
 | `RMW_IMPLEMENTATION` | `rmw_fastrtps_cpp` | DDS implementation. Both RMWs (Fast DDS and Cyclone DDS) are bundled in the images, so this key switches between them. For a Cyclone DDS robot, set `rmw_cyclonedds_cpp` (see below) |
 | `DATA_DIR` | `./data` | Host-side data root (→ container `/data`) |
-| `ROBOT` | `airoa_hsr` | The active robot. Selects `config/<robot>/` (committed) or `config/local/<robot>/` (gitignored); the recording / stream / validation / validators / monitoring paths are derived from it (the Makefile resolves committed/local, and `docker compose` honors it via nested interpolation; additionally each service re-resolves a given committed-shaped path to the `config/local/` side **at startup** when the former does not exist — `kairos_common.resolve_config_path` — so a local robot resolves even under plain `docker compose`). The Config tab lets you select / edit robot → aspect → option |
+| `ROBOT` | `airoa_hsr` | The active robot. Selects `config/<robot>/` (committed) or `config/local/<robot>/` (gitignored); the recording / stream / validation / validators / monitoring paths are derived from it (the Makefile resolves committed/local, and `docker compose` honors it via nested interpolation; additionally each service re-resolves a given committed-shaped path to the `config/local/` side **at startup** when the former does not exist — `kairos_common.resolve_config_path` — so a local robot resolves even under plain `docker compose`). The Settings tab lets you select / edit robot → aspect → option |
 | `RECORDING_CONFIG` | `/config/<robot>/recording/default.yaml` | The recording/monitoring YAML (normally derived from `ROBOT`; setting it directly in `.env` overrides the derived path). The path via compose is **container-absolute** (`./config`→`/config` mount) (see below) |
 | `STREAM_CONFIG` | `/config/<robot>/stream/default.yaml` | The initial pane definitions for the Stream tab. Derived from `ROBOT` automatically (container-absolute) |
 | `LOSS_REPORT_CONFIG` | `/config/<robot>/validators/loss_report.yaml` | `dora_runner`'s loss_report parameters. Derived from `ROBOT` automatically (container-absolute) |
@@ -106,7 +106,7 @@ topic_qos_overrides:       # pattern → QoS (applied by recorder / monitor; fir
 ```
 
 - **`recording` tuning**: in addition to `start_delay_s` (waiting for publisher warmup), as a measure against the subscription-establishment lag at start it has `start_paused` (default `false`; `true` enables `--start-paused` + the subscription readiness gate + resume) and `subscription_ready_timeout_s` (default 5.0). For details see [rosbag2_recorder](rosbag2_recorder.md).
-- **Editing/persisting from the UI**: this entire `RECORDING_CONFIG` can be edited from the Config tab (`GET/PUT /api/v1/config/recording`, [api_orchestrator](api_orchestrator.md)). `PUT` is type-validated with `RecordingConfig` (failure is `422`), written atomically to the config file, and the in-memory settings are hot-swapped. `default_topics` / `robot_name` take effect immediately; `expected_hz` / QoS take effect on **restart** of each service.
+- **Editing/persisting from the UI**: this entire `RECORDING_CONFIG` can be edited from the Settings tab (`GET/PUT /api/v1/config/recording`, [api_orchestrator](api_orchestrator.md)). `PUT` is type-validated with `RecordingConfig` (failure is `422`), written atomically to the config file, and the in-memory settings are hot-swapped. `default_topics` / `robot_name` take effect immediately; `expected_hz` / QoS take effect on **restart** of each service.
 
 ## One-click validation presets (`config/<robot>/validation_presets.yaml`)
 
@@ -156,9 +156,9 @@ What `api_orchestrator` returns for the frontend (example):
 }
 ```
 
-- **Tabs are registry-driven.** The backend can swap their display, order, and enabled/disabled state (the "easily reconfigurable" requirement). The backend returns the 6 tabs above (`live` merges Stream+Monitor+Record, `graph` is time-series health, `dataset` is the list of conversion outputs). The `probe` tab is **injected client-side by the frontend** (it shows up even though it's absent from the backend's `tabs`), so the UI ends up with 7 tabs: Live / Graph / Probe / Recordings / Validation / Datasets / Config.
-- `stream` is the Stream preview's initial layout (`columns` and `panes`, sourced from `STREAM_CONFIG`).
-- `schemas` are **JSON Schema (draft 2020-12)**. The frontend renders each pipeline's execution form from these (`pipeline_forms` is built dynamically from `dora_runner`'s `/pipelines`; on unreachability it falls back to the static `fast_validation` form). The record-start form (topic selection) is built directly by the Live tab from discovery and config, and is not part of this schema.
+- **`tabs` is v1 legacy.** In v1 it was a registry through which the backend swapped display, order and enabled state, but **Console v2's tabs are the 6 fixed in the frontend** (Collect / Review / Datasets / Validation / Monitor / Settings; legacy tab ids redirect — [frontend.md](frontend.md)) and this field no longer drives the display. It remains in the payload for compatibility.
+- `stream` is the camera preview's initial layout (`columns` and `panes`, sourced from `STREAM_CONFIG`; Collect's camera panes initialize from it).
+- `schemas` are **JSON Schema (draft 2020-12)**. The frontend renders each pipeline's execution form from these (`pipeline_forms` is built dynamically from `dora_runner`'s `/pipelines`; on unreachability it falls back to the static `fast_validation` form). Record-start topic selection is built directly by the Collect / Monitor tabs from discovery and config, and is not part of this schema.
 
 ## Common conventions
 

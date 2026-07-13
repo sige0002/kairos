@@ -278,7 +278,7 @@ ENV KAIROS_PLUGINS_DIR=/app/plugins
 
 - The resident daemon is a single process. A lightweight validator dataflow uses only short-lived nodes and fits on a CPU-only PC.
 - **GPU nodes** (auto-annotation, etc.) declare `requires.gpu: true` in the manifest, and are isolated into a separate compose profile (`profiles: [gpu]`) that launches the dora node with `--gpus`. **Do not include GPU plugins in the CPU-only default configuration**.
-- The operational rule of not running heavy jobs (`video_check` / the future `dataset_convert`) during recording follows the test/acceptance criteria (`dev_docs/check.md` / `dev_docs/arch_review.md` / local). Give the Executor per-job timeouts and a concurrency cap.
+- The operational rule of not running heavy jobs (`video_check` / the future `dataset_convert`) during recording follows the acceptance-review criteria (`dev_docs/arch_review.md` / local working draft). Give the Executor per-job timeouts and a concurrency cap.
 
 ## 5. Phased migration plan
 
