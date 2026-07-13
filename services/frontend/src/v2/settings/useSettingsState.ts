@@ -1,25 +1,17 @@
-// Local state for the Settings screen: menu selection, robot profile
-// selection, and the plans (project/task/condition) editor. Everything here
-// is frontend-only — editing a robot profile and the plans catalog itself are
-// both Phase 2 backend features (see SettingsScreen.tsx); this hook exists so
-// the mock's interactions (select, add, rename, remove) are demoable now.
+// Local state for the Settings screen: menu selection and the plans
+// (project/task/condition) editor. Robot selection is real and lives in
+// RobotsSection (GET /api/v1/config/options). The plans catalog itself is still
+// a Phase 2 backend feature (see SettingsScreen.tsx); this hook keeps its
+// interactions (select, add, rename, remove) demoable, frontend-only.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import {
-  ACTIVE_ROBOT_INDEX,
-  clonePlans,
-  INITIAL_PLANS,
-  type PlanProjectData,
-} from './data';
+import { clonePlans, INITIAL_PLANS, type PlanProjectData } from './data';
 
 const TOAST_MS = 2400;
 
 export interface SettingsState {
   menuIdx: number;
   selectMenu: (i: number) => void;
-
-  selectedRobotIndex: number;
-  selectRobot: (i: number) => void;
 
   plans: PlanProjectData[];
   planProjIdx: number;
@@ -41,7 +33,6 @@ export interface SettingsState {
 
 export function useSettingsState(): SettingsState {
   const [menuIdx, setMenuIdx] = useState(0);
-  const [selectedRobotIndex, setSelectedRobotIndex] = useState(ACTIVE_ROBOT_INDEX);
   const [plans, setPlans] = useState<PlanProjectData[]>(INITIAL_PLANS);
   const [planProjIdx, setPlanProjIdx] = useState(0);
   const [planTaskIdx, setPlanTaskIdx] = useState(0);
@@ -57,7 +48,6 @@ export function useSettingsState(): SettingsState {
   }, []);
 
   const selectMenu = useCallback((i: number) => setMenuIdx(i), []);
-  const selectRobot = useCallback((i: number) => setSelectedRobotIndex(i), []);
 
   // Projects can only be added, never removed, so `plans[ppIdx]` always exists.
   const ppIdx = Math.min(planProjIdx, plans.length - 1);
@@ -150,8 +140,6 @@ export function useSettingsState(): SettingsState {
   return {
     menuIdx,
     selectMenu,
-    selectedRobotIndex,
-    selectRobot,
     plans,
     planProjIdx: ppIdx,
     planTaskIdx: Math.min(planTaskIdx, Math.max(0, planProj.tasks.length - 1)),

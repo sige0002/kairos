@@ -25,7 +25,7 @@ import { Badge, SectionLabel, cn } from '../../components/ui';
 
 // Local key (queryKeys is shared and owned elsewhere); the recording-config
 // query is Config-tab-local, so a plain stable tuple is enough.
-const RECORDING_CONFIG_KEY = ['config', 'recording'] as const;
+export const RECORDING_CONFIG_KEY = ['config', 'recording'] as const;
 
 const ASPECTS: ConfigAspect[] = ['recording', 'stream', 'validation', 'validators'];
 const ASPECT_LABEL: Record<ConfigAspect, string> = {
@@ -76,7 +76,7 @@ function formatValidationDetails(error: unknown): string[] {
 }
 
 /** Editable JSON editor for the active robot's active RECORDING_CONFIG. */
-function RecordingConfigEditor({ config }: { config: RuntimeConfig }) {
+export function RecordingConfigEditor({ config }: { config: RuntimeConfig }) {
   const queryClient = useQueryClient();
 
   const recordingQuery = useQuery({
@@ -206,7 +206,7 @@ function RecordingConfigEditor({ config }: { config: RuntimeConfig }) {
 }
 
 /** A human label for an aspect option, using its display metadata. */
-function optionLabel(aspect: ConfigAspect, o: AspectOption): string {
+export function optionLabel(aspect: ConfigAspect, o: AspectOption): string {
   const m = o.meta;
   if (aspect === 'recording') return `${o.id} · ${m.default_topics ?? 0} topics`;
   if (aspect === 'stream') return `${o.id} · ${m.columns ?? '?'} col / ${m.panes ?? 0} panes`;

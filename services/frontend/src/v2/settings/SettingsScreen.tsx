@@ -3,10 +3,11 @@
 // 216px / 250px / 1fr three-column grid (settings menu, a list panel whose
 // contents depend on the selected menu item, and its detail).
 //
-// Only Robots and Plans are implemented (the mock's own scope, see
-// .dev/kairos-console-v2.dc.html "Settings" section); the other 6 menu items
-// render a placeholder. See RobotsSection.tsx / PlansSection.tsx for what's
-// wired to the real backend vs. mock.
+// Robots is wired to the real backend — robot select + per-aspect option
+// pickers + the recording-config editor, at parity with the legacy Config tab
+// (see RobotsSection.tsx). Plans is a Phase-2 frontend mock; the other 6 menu
+// items render a placeholder (the mock's own scope, see
+// .dev/kairos-console-v2.dc.html "Settings" section).
 
 import { useQuery } from '@tanstack/react-query';
 import { fetchRuntimeConfig } from '../../config';
