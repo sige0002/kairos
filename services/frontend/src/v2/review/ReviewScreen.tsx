@@ -143,37 +143,38 @@ export function ReviewScreen() {
         )}
       </Modal>
 
-      {/* Export adopted → Datasets (Adopt = label · Export = MOVE). */}
+      {/* Export ready → Datasets (exception-review: READY set, one click, MOVE). */}
       <Modal
-        open={rv.exportAdoptedOpen}
-        onClose={rv.cancelExportAdopted}
-        title={`Export ${rv.adoptedExportable.length} adopted recording${rv.adoptedExportable.length === 1 ? '' : 's'} to Datasets?`}
+        open={rv.exportReadyOpen}
+        onClose={rv.cancelExportReady}
+        title={`Export ${rv.readyExportable.length} ready recording${rv.readyExportable.length === 1 ? '' : 's'} to Datasets?`}
         footer={
           <>
-            <Button variant="ghost" onClick={rv.cancelExportAdopted} disabled={rv.exportRunning}>
+            <Button variant="ghost" onClick={rv.cancelExportReady} disabled={rv.exportRunning}>
               {rv.exportFailures.length > 0 && !rv.exportRunning ? 'Close' : 'Cancel'}
             </Button>
             <Button
-              onClick={rv.confirmExportAdopted}
-              disabled={rv.exportRunning || rv.adoptedExportable.length === 0}
+              onClick={rv.confirmExportReady}
+              disabled={rv.exportRunning || rv.readyExportable.length === 0}
             >
               {rv.exportRunning
-                ? `Exporting… (${rv.exportDone}/${rv.adoptedExportable.length})`
-                : `Export ${rv.adoptedExportable.length}`}
+                ? `Exporting… (${rv.exportDone}/${rv.readyExportable.length})`
+                : `Export ${rv.readyExportable.length}`}
             </Button>
           </>
         }
       >
         <p>
-          Export <strong>moves</strong> each adopted recording into the dataset tree
+          Export <strong>moves</strong> each READY recording into the dataset tree
           (<span className="font-mono text-gray-800">data/&lt;operator&gt;/&lt;task&gt;/NNN</span>):
           it <strong>leaves Review</strong> and appears under Datasets.
+          {!rv.includeFailed && ' Task-failed recordings are excluded (toggle above).'}
         </p>
         <ul
           data-testid="review-export-list"
           className="mt-2 max-h-48 overflow-auto rounded-control border border-gray-200 text-xs"
         >
-          {rv.adoptedExportable.map((r) => {
+          {rv.readyExportable.map((r) => {
             const failure = rv.exportFailures.find((f) => f.runId === r.runId);
             return (
               <li
@@ -188,15 +189,15 @@ export function ReviewScreen() {
             );
           })}
         </ul>
-        {rv.adoptedSkipped.length > 0 && (
+        {rv.readySkipped.length > 0 && (
           <div
             data-testid="review-export-skipped"
             className="mt-2 rounded-control border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-800"
           >
-            {rv.adoptedSkipped.length} adopted recording{rv.adoptedSkipped.length === 1 ? '' : 's'}{' '}
+            {rv.readySkipped.length} ready recording{rv.readySkipped.length === 1 ? '' : 's'}{' '}
             skipped — only <strong>completed</strong> runs can be exported:
             <ul className="mt-1 flex flex-col gap-0.5">
-              {rv.adoptedSkipped.map((r) => (
+              {rv.readySkipped.map((r) => (
                 <li key={r.runId} className="truncate font-mono">
                   #{r.ep} {r.runId} · {r.state}
                 </li>

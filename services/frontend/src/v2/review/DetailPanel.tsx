@@ -8,9 +8,8 @@
 import type { ReactNode } from 'react';
 import { Badge, cn, type Tone } from '../../components/ui';
 import { RunInspection } from './RunInspection';
-import type { Quality, ReviewStatus } from './types';
+import type { Quality, ReviewLane } from './types';
 import type { ReviewState } from './useReviewState';
-import type { RunState } from '../../api/types';
 
 function qualityTone(q: Quality): Tone {
   if (q === 'Good') return 'green';
@@ -18,26 +17,13 @@ function qualityTone(q: Quality): Tone {
   return 'red';
 }
 
-function stateTone(state: RunState): Tone {
-  if (state === 'failed' || state === 'interrupted') return 'red';
-  if (state === 'completed') return 'gray';
-  return 'gray';
-}
 
-// Header badge: the adopt/exclude status (from the server episode + the
-// operator's session override) wins, then their quality override / the real
-// "Not usable" verdict, then the raw run state as an honest fallback. Reflecting
-// the status here (not only a local decision) means a fresh load of an
-// already-adopted run reads "ADOPTED", and clicking Adopt flips it at once.
-function headerBadge(
-  reviewStatus: ReviewStatus,
-  quality: Quality | null,
-  state: RunState,
-): { label: string; tone: Tone } {
-  if (reviewStatus === 'adopted') return { label: 'ADOPTED', tone: 'green' };
-  if (reviewStatus === 'excluded') return { label: 'EXCLUDED', tone: 'red' };
-  if (quality) return { label: quality.toUpperCase(), tone: qualityTone(quality) };
-  return { label: state.toUpperCase(), tone: stateTone(state) };
+// Header badge: the exception-review lane (READY / NEEDS CHECK / EXCLUDED) — the
+// same vocabulary as the row chip, so the detail header and the list agree.
+function headerBadge(lane: ReviewLane): { label: string; tone: Tone } {
+  if (lane === 'ready') return { label: 'READY', tone: 'green' };
+  if (lane === 'excluded') return { label: 'EXCLUDED', tone: 'red' };
+  return { label: 'NEEDS CHECK', tone: 'amber' };
 }
 
 // The Collect → Review → Datasets pipeline for this episode, so the operator can
@@ -45,15 +31,15 @@ function headerBadge(
 // complaint). Export / In dataset aren't observable from Review, so they stay
 // upcoming; the current step is highlighted.
 type StepState = 'done' | 'current' | 'todo' | 'off';
-function PipelineStrip({ status }: { status: ReviewStatus }) {
-  const reviewed = status !== 'pending'; // a decision (adopt/exclude) was made
-  const adopted = status === 'adopted';
-  const excluded = status === 'excluded';
+function PipelineStrip({ lane }: { lane: ReviewLane }) {
+  const ready = lane === 'ready';
+  const excluded = lane === 'excluded';
   const steps: { label: string; state: StepState }[] = [
     { label: 'Recorded', state: 'done' },
-    { label: 'Reviewed', state: reviewed ? 'done' : 'current' },
-    { label: 'Adopted', state: adopted ? 'done' : excluded ? 'off' : 'todo' },
-    { label: 'Export', state: adopted ? 'current' : 'todo' },
+    // NEEDS CHECK is the current review step; READY/EXCLUDED are past it.
+    { label: 'Reviewed', state: lane === 'needs_check' ? 'current' : 'done' },
+    { label: 'Ready', state: ready ? 'done' : excluded ? 'off' : 'todo' },
+    { label: 'Export', state: ready ? 'current' : 'todo' },
     { label: 'In dataset', state: 'todo' },
   ];
   const glyph: Record<StepState, string> = { done: '✓', current: '●', todo: '○', off: '✕' };
@@ -81,13 +67,13 @@ function PipelineStrip({ status }: { status: ReviewStatus }) {
 }
 
 function DecisionButton({
-  active,
+  active = false,
   tone,
   onClick,
   children,
   testId,
 }: {
-  active: boolean;
+  active?: boolean;
   tone: 'adopt' | 'review' | 'exclude';
   onClick: () => void;
   children: ReactNode;
@@ -140,7 +126,7 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
     );
   }
 
-  const badge = headerBadge(sel.effectiveReviewStatus, sel.effectiveQuality, sel.state);
+  const badge = headerBadge(sel.reviewLane);
   const showInspection = !rv.splitMode || sel.transferSlot.phase === 'transferred';
 
   return (
@@ -234,58 +220,41 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
           </div>
         </div>
 
-        <PipelineStrip status={sel.effectiveReviewStatus} />
+        <PipelineStrip lane={sel.reviewLane} />
 
-        <div className="flex gap-1.5">
-          <DecisionButton
-            active={sel.decision === 'adopted'}
-            tone="adopt"
-            testId="review-decision-adopt"
-            onClick={() => rv.decide('adopted')}
-          >
-            Adopt
-          </DecisionButton>
-          <DecisionButton
-            active={sel.decision === 'review'}
-            tone="review"
-            testId="review-decision-review"
-            onClick={() => rv.decide('review')}
-          >
-            {/* When already adopted, "Keep in review" is effectively un-adopt. */}
-            {sel.effectiveReviewStatus === 'adopted' ? 'Un-adopt (review)' : 'Keep in review'}
-          </DecisionButton>
-          <DecisionButton
-            active={sel.decision === 'excluded'}
-            tone="exclude"
-            testId="review-decision-exclude"
-            onClick={() => rv.decide('excluded')}
-          >
-            Exclude
-          </DecisionButton>
+        {/* Exception-review actions: READY (good or confirmed) needs no click;
+            you only resolve a NEEDS CHECK exception (Mark OK / Exclude). */}
+        <div className="flex flex-wrap gap-1.5">
+          {sel.reviewLane === 'needs_check' && (
+            <DecisionButton tone="adopt" testId="review-mark-ok" onClick={rv.markOk}>
+              Mark OK — include
+            </DecisionButton>
+          )}
+          {sel.reviewLane !== 'excluded' && (
+            <DecisionButton tone="exclude" testId="review-decision-exclude" onClick={() => rv.decide('excluded')}>
+              Exclude
+            </DecisionButton>
+          )}
+          {/* Return to review (reversible, non-scary): an excluded item goes back
+              to pending; a confirmed EXCEPTION (adopted but not good-quality) can
+              be sent back to the queue. Hidden for good-quality READY (no-op). */}
+          {(sel.reviewLane === 'excluded' ||
+            (sel.effectiveReviewStatus === 'adopted' && sel.effectiveQuality !== 'Good')) && (
+            <DecisionButton tone="review" testId="review-return-to-review" onClick={() => rv.decide('review')}>
+              {sel.reviewLane === 'excluded' ? '↩ Return to review' : '↩ Reset to needs check'}
+            </DecisionButton>
+          )}
         </div>
 
-        {/* Adopted → the next pipeline step, right where the operator just acted. */}
-        {sel.effectiveReviewStatus === 'adopted' && (
+        {/* READY → the next pipeline step (export), right where the operator is. */}
+        {sel.reviewLane === 'ready' && sel.state === 'completed' && (
           <button
             type="button"
             data-testid="review-export-cta"
-            onClick={rv.requestExportAdopted}
+            onClick={rv.requestExportReady}
             className="flex items-center justify-center gap-1.5 rounded-control bg-teal-600 px-3 py-2 text-[12.5px] font-bold text-white transition-colors hover:bg-teal-700"
           >
-            Adopted — Export now ({rv.adoptedRows.length}) →
-          </button>
-        )}
-
-        {/* Return to review (reversible, non-scary): puts an adopted/excluded
-            episode back to Pending via the existing decide('review') PATCH. */}
-        {(sel.effectiveReviewStatus === 'adopted' || sel.effectiveReviewStatus === 'excluded') && (
-          <button
-            type="button"
-            data-testid="review-return-to-review"
-            onClick={() => rv.decide('review')}
-            className="flex items-center justify-center gap-1.5 rounded-control border border-gray-200 bg-white px-3 py-1.5 text-[12px] font-semibold text-gray-600 transition-colors hover:bg-gray-50"
-          >
-            ↩ Return to review
+            Ready — Export now ({rv.readyExportable.length}) →
           </button>
         )}
 

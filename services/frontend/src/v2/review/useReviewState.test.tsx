@@ -158,38 +158,21 @@ test('overrides are counted per run as real session history', async () => {
   expect(result.current.selectedOverrideCount).toBe(2);
 });
 
-test('adoptAllGood only adopts undecided Good episodes; decide() sets a specific decision', async () => {
-  // Both runs are `failed`, so mapRuns deterministically starts them at "Not
-  // usable" — no dependency on any quality guess.
+test('decide() sets a specific decision on the selected episode', async () => {
   mockRuns([
-    { run_id: 'ep-a', state: 'failed', started_at: '2026-07-13T09:00:00Z' },
-    { run_id: 'ep-b', state: 'failed', started_at: '2026-07-13T09:05:00Z' },
+    { run_id: 'ep-a', state: 'completed', started_at: '2026-07-13T09:00:00Z' },
+    { run_id: 'ep-b', state: 'completed', started_at: '2026-07-13T09:05:00Z' },
   ]);
   const { result } = renderHook(() => useReviewState(), { wrapper });
   await waitFor(() => expect(result.current.rows).toHaveLength(2));
 
-  const [epB, epA] = result.current.rows; // sorted newest (highest ep) first
-  expect(epA!.runId).toBe('ep-a');
-  expect(epB!.runId).toBe('ep-b');
-
-  // Force ep-a to "Good" (one cycle: Not usable -> Good) so adoptAllGood has
-  // something undecided to pick up.
-  act(() => result.current.select(epA!.runId));
-  act(() => result.current.cycleFinalQuality());
-  expect(result.current.selected!.effectiveQuality).toBe('Good');
-  expect(result.current.nUndecidedGood).toBe(1);
-
-  act(() => result.current.adoptAllGood());
-  const rowA = result.current.rows.find((r) => r.runId === 'ep-a');
-  expect(rowA?.decision).toBe('adopted');
-  expect(result.current.nUndecidedGood).toBe(0);
-
-  // decide() applies to the currently-selected episode only.
-  act(() => result.current.select(epB!.runId));
+  act(() => result.current.select('ep-b'));
   act(() => result.current.decide('excluded'));
   const rowB = result.current.rows.find((r) => r.runId === 'ep-b');
   expect(rowB?.decision).toBe('excluded');
-  expect(rowA?.runId).not.toBe(rowB?.runId);
+  expect(rowB?.reviewLane).toBe('excluded');
+  // ep-a is untouched.
+  expect(result.current.rows.find((r) => r.runId === 'ep-a')?.decision).toBeNull();
 });
 
 test('requestArchive opens a pending confirm; confirming reclassifies as Not usable/Excluded/archived', async () => {
@@ -524,40 +507,48 @@ test('adopting a run flips its effectiveReviewStatus immediately', async () => {
   expect(result.current.rows[0]?.effectiveReviewStatus).toBe('adopted');
 });
 
-test('export-adopted separates completed (exportable) from a non-completed adopted run (skipped)', async () => {
+test('READY lanes: good is ready with zero clicks; needs_check + toggle behavior', async () => {
   mockRunsWithExport([
-    { run_id: 'done', state: 'completed', started_at: '2026-07-13T09:00:00Z', episode: episode('adopted') },
-    // A failed run the operator adopts by hand — not exportable.
-    { run_id: 'bad', state: 'failed', started_at: '2026-07-13T09:05:00Z' },
+    // Good quality → READY automatically (no click).
+    { run_id: 'good', state: 'completed', started_at: '2026-07-13T09:00:00Z', episode: episode('pending', { quality: 'good' }) },
+    // Needs-review + failure → NEEDS CHECK until resolved.
+    { run_id: 'chk', state: 'completed', started_at: '2026-07-13T09:05:00Z', episode: episode('pending', { quality: 'needs_review', task_result: 'failure' }) },
   ]);
   const { result } = renderHook(() => useReviewState(), { wrapper });
   await waitFor(() => expect(result.current.rows).toHaveLength(2));
+  const lane = (id: string) => result.current.rows.find((r) => r.runId === id)?.reviewLane;
+  expect(lane('good')).toBe('ready');
+  expect(lane('chk')).toBe('needs_check');
+  expect(result.current.nNeedsCheck).toBe(1);
+  // Only 'good' is ready-exportable (default include-failed on, but 'chk' isn't ready).
+  expect(result.current.readyExportable.map((r) => r.runId)).toEqual(['good']);
 
-  act(() => result.current.select('bad'));
-  act(() => result.current.decide('adopted'));
+  // Mark the exception OK → it becomes READY (adopted).
+  act(() => result.current.select('chk'));
+  act(() => result.current.markOk());
+  expect(lane('chk')).toBe('ready');
+  expect(result.current.readyExportable.map((r) => r.runId).sort()).toEqual(['chk', 'good']);
 
-  expect(result.current.adoptedRows.map((r) => r.runId).sort()).toEqual(['bad', 'done']);
-  // Only the completed run is exportable; the failed one is listed as skipped.
-  expect(result.current.adoptedExportable.map((r) => r.runId)).toEqual(['done']);
-  expect(result.current.adoptedSkipped.map((r) => r.runId)).toEqual(['bad']);
+  // Toggle include-failed OFF → the task-failed READY run drops out of the set.
+  act(() => result.current.setIncludeFailed(false));
+  expect(result.current.readyExportable.map((r) => r.runId)).toEqual(['good']);
 });
 
-test('confirmExportAdopted POSTs completed adopted runs and double-invalidates (runs + datasets)', async () => {
+test('confirmExportReady POSTs the READY completed runs and double-invalidates (runs + datasets)', async () => {
   const { exportCalls } = mockRunsWithExport([
-    { run_id: 'a', state: 'completed', started_at: '2026-07-13T09:00:00Z', episode: episode('adopted') },
+    { run_id: 'a', state: 'completed', started_at: '2026-07-13T09:00:00Z', episode: episode('pending', { quality: 'good' }) },
   ]);
   const invalidate = vi.spyOn(QueryClient.prototype, 'invalidateQueries');
   const { result } = renderHook(() => useReviewState(), { wrapper });
-  await waitFor(() => expect(result.current.adoptedExportable).toHaveLength(1));
+  await waitFor(() => expect(result.current.readyExportable).toHaveLength(1));
 
-  act(() => result.current.requestExportAdopted());
+  act(() => result.current.requestExportReady());
   await act(async () => {
-    await result.current.confirmExportAdopted();
+    await result.current.confirmExportReady();
   });
 
   expect(exportCalls).toEqual(['a']);
   expect(result.current.exportFailures).toHaveLength(0);
-  // MOVE semantics: invalidates the runs list AND the datasets list.
   const keys = invalidate.mock.calls.map((c) => JSON.stringify(c[0]?.queryKey));
   expect(keys).toContain(JSON.stringify(['runs', null]));
   expect(keys).toContain(JSON.stringify(['datasets']));
@@ -573,7 +564,7 @@ test('a failed export keeps the run in Review with an honest per-run note', asyn
       return Promise.resolve(
         jsonResponse({
           items: [
-            { run_id: 'a', state: 'completed', started_at: '2026-07-13T09:00:00Z', episode: episode('adopted') },
+            { run_id: 'a', state: 'completed', started_at: '2026-07-13T09:00:00Z', episode: episode('pending', { quality: 'good' }) },
           ],
           next_cursor: null,
         }),
@@ -582,15 +573,15 @@ test('a failed export keeps the run in Review with an honest per-run note', asyn
     return Promise.resolve(jsonResponse({}));
   });
   const { result } = renderHook(() => useReviewState(), { wrapper });
-  await waitFor(() => expect(result.current.adoptedExportable).toHaveLength(1));
+  await waitFor(() => expect(result.current.readyExportable).toHaveLength(1));
 
-  act(() => result.current.requestExportAdopted());
+  act(() => result.current.requestExportReady());
   await act(async () => {
-    await result.current.confirmExportAdopted();
+    await result.current.confirmExportReady();
   });
 
   expect(result.current.exportFailures.map((f) => f.runId)).toEqual(['a']);
-  // The dialog stays open so the failure is visible; the run is still adopted.
-  expect(result.current.exportAdoptedOpen).toBe(true);
-  expect(result.current.adoptedRows).toHaveLength(1);
+  // The dialog stays open so the failure is visible; the run is still READY.
+  expect(result.current.exportReadyOpen).toBe(true);
+  expect(result.current.readyExportable).toHaveLength(1);
 });

@@ -15,6 +15,10 @@ export type TaskResult = 'Success' | 'Failure';
 export type Decision = 'adopted' | 'review' | 'excluded';
 /** Server-facing adopt/exclude state shown as a status chip on each row. */
 export type ReviewStatus = 'pending' | 'adopted' | 'excluded';
+/** Exception-review lane (the operator's mental model): READY episodes export
+ *  with zero clicks; NEEDS CHECK is the exception queue to look at; EXCLUDED is
+ *  set aside. READY = not excluded AND (quality Good OR confirmed/adopted). */
+export type ReviewLane = 'ready' | 'needs_check' | 'excluded';
 
 /** MCAP transfer status for a split deployment: the episode's MCAP lives on
  *  the robot PC until explicitly transferred to the recording PC. */
@@ -76,8 +80,10 @@ export interface DecoratedEpisode extends EpisodeRow {
   effectiveTask: TaskResult | null;
   isArchived: boolean;
   decision: Decision | null;
-  /** Adopt/exclude state shown as the row's status chip: the session decision
-   *  wins, else the server episode's review_status, else 'pending'. */
+  /** Adopt/exclude state: the session decision wins, else the server episode's
+   *  review_status, else 'pending'. */
   effectiveReviewStatus: ReviewStatus;
+  /** The exception-review lane derived from status + quality (the row's chip). */
+  reviewLane: ReviewLane;
   transferSlot: TransferSlot;
 }

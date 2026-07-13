@@ -30,6 +30,7 @@ import type {
   DecoratedEpisode,
   EpisodeRow,
   Quality,
+  ReviewLane,
   ReviewStatus,
   TaskResult,
   TransferSlot,
@@ -42,6 +43,9 @@ const REVIEW_RUNS_KEY = ['runs', 'review-list'] as const;
 const REVIEW_PAGE_LIMIT = 200;
 
 const QUALITY_ORDER: Quality[] = ['Good', 'Needs review', 'Not usable'];
+
+// Default work-queue order: NEEDS CHECK first (exceptions), then READY, EXCLUDED.
+const LANE_ORDER: Record<ReviewLane, number> = { needs_check: 0, ready: 1, excluded: 2 };
 
 // ---- Review display value → Phase 2 server enum (for PATCH /episodes) ------
 function toServerQuality(q: Quality): EpisodeQuality {
@@ -66,8 +70,9 @@ export interface ReviewState {
   isError: boolean;
   errorMessage: string | null;
 
-  rows: DecoratedEpisode[]; // visible (filtered + sorted, newest first)
-  nUndecidedGood: number;
+  rows: DecoratedEpisode[]; // visible (NEEDS CHECK → READY → EXCLUDED, newest-first)
+  /** Count of NEEDS CHECK exceptions — the operator's work queue. */
+  nNeedsCheck: number;
   hasArchived: boolean;
   nArchived: number;
   showArchived: boolean;
@@ -111,22 +116,25 @@ export interface ReviewState {
   confirmBulkDelete: () => void;
   cancelBulkDelete: () => void;
 
-  // ---- export adopted → Datasets (Adopt = label · Export = move) ----------
-  /** Adopted episodes (any state) — the count on the "Export adopted" action. */
-  adoptedRows: DecoratedEpisode[];
-  /** Adopted AND 'completed' — the runs the export will actually move. */
-  adoptedExportable: DecoratedEpisode[];
-  /** Adopted but not 'completed' — listed as skipped (with the reason). */
-  adoptedSkipped: DecoratedEpisode[];
-  requestExportAdopted: () => void;
-  exportAdoptedOpen: boolean;
+  // ---- export READY → Datasets (exception-review, one click) --------------
+  /** READY AND 'completed' — the runs "Export ready (n)" will actually move
+   *  (respects the include-failed toggle). */
+  readyExportable: DecoratedEpisode[];
+  /** READY but not 'completed' — listed as skipped (with the reason). */
+  readySkipped: DecoratedEpisode[];
+  /** Include labeled task-failures in the export set (default true). */
+  includeFailed: boolean;
+  setIncludeFailed: (v: boolean) => void;
+  requestExportReady: () => void;
+  exportReadyOpen: boolean;
   exportRunning: boolean;
   exportDone: number;
   exportFailures: { runId: string; error: string }[];
-  confirmExportAdopted: () => void;
-  cancelExportAdopted: () => void;
+  confirmExportReady: () => void;
+  cancelExportReady: () => void;
 
-  adoptAllGood: () => void;
+  /** Resolve a NEEDS CHECK exception into READY (server: review_status adopted). */
+  markOk: () => void;
   decide: (d: Decision) => void;
   cycleFinalQuality: () => void;
   cycleTaskResult: () => void;
@@ -241,13 +249,24 @@ export function useReviewState(): ReviewState {
               : decision === 'review'
                 ? 'pending'
                 : (e.reviewStatus ?? 'pending');
+        const effectiveQuality = ov?.quality ?? e.quality;
+        // Exception-review lane: READY by default when the recording is good or
+        // the operator confirmed it; NEEDS CHECK is the exception queue (not
+        // good AND still pending); EXCLUDED is set aside.
+        const reviewLane: ReviewLane =
+          effectiveReviewStatus === 'excluded'
+            ? 'excluded'
+            : effectiveQuality === 'Good' || effectiveReviewStatus === 'adopted'
+              ? 'ready'
+              : 'needs_check';
         return {
           ...e,
-          effectiveQuality: ov?.quality ?? e.quality,
+          effectiveQuality,
           effectiveTask: ov?.task ?? e.task,
           isArchived,
           decision,
           effectiveReviewStatus,
+          reviewLane,
           transferSlot: transfers[e.runId] ?? initialTransferSlot(e.transfer),
         };
       }),
@@ -281,12 +300,12 @@ export function useReviewState(): ReviewState {
         if (!q) return true;
         return `#${r.ep}`.toLowerCase().includes(q) || r.runId.toLowerCase().includes(q);
       })
-      .sort((a, b) => b.ep - a.ep);
+      .sort((a, b) => LANE_ORDER[a.reviewLane] - LANE_ORDER[b.reviewLane] || b.ep - a.ep);
   }, [decorated, search, operatorFilter, showArchived]);
 
   const nArchived = useMemo(() => decorated.filter((r) => r.isArchived).length, [decorated]);
-  const nUndecidedGood = useMemo(
-    () => decorated.filter((r) => !r.isArchived && r.effectiveQuality === 'Good' && !r.decision).length,
+  const nNeedsCheck = useMemo(
+    () => decorated.filter((r) => r.reviewLane === 'needs_check').length,
     [decorated],
   );
 
@@ -474,45 +493,45 @@ export function useReviewState(): ReviewState {
     }
   }, [decorated, purgeLocal, queryClient, showToast]);
 
-  // ---- export adopted → Datasets (the Adopt→Datasets bridge) ---------------
-  // Adopt is a label; Export MOVEs the recording into the dataset tree. Only
-  // 'completed' runs are exportable — an adopted run that isn't completed is
-  // listed as skipped with the reason. Sequential POST /datasets/export with
-  // live progress + honest per-run failures, then invalidate the review list,
-  // the runs list, and the datasets list (same MOVE invalidation as v1).
-  const adoptedRows = useMemo(
-    () => decorated.filter((r) => r.effectiveReviewStatus === 'adopted'),
-    [decorated],
+  // ---- export READY → Datasets (exception-review: no per-item adopt) --------
+  // READY episodes export with zero clicks (good quality, or the operator
+  // confirmed an exception). "Include task-failed (labeled)" defaults ON — a
+  // labeled failure is still useful data; OFF drops task_result==='failure' from
+  // the set. Only 'completed' runs move; a READY run not yet completed is
+  // skipped. Sequential POST /datasets/export, live progress + honest failures,
+  // then the same MOVE invalidation (review list + runs + datasets).
+  const [includeFailed, setIncludeFailed] = useState(true);
+  const readyRows = useMemo(() => decorated.filter((r) => r.reviewLane === 'ready'), [decorated]);
+  const readyExportable = useMemo(
+    () =>
+      readyRows.filter(
+        (r) => r.state === 'completed' && (includeFailed || r.effectiveTask !== 'Failure'),
+      ),
+    [readyRows, includeFailed],
   );
-  const adoptedExportable = useMemo(
-    () => adoptedRows.filter((r) => r.state === 'completed'),
-    [adoptedRows],
+  const readySkipped = useMemo(
+    () => readyRows.filter((r) => r.state !== 'completed'),
+    [readyRows],
   );
-  const adoptedSkipped = useMemo(
-    () => adoptedRows.filter((r) => r.state !== 'completed'),
-    [adoptedRows],
-  );
-  const [exportAdoptedOpen, setExportAdoptedOpen] = useState(false);
+  const [exportReadyOpen, setExportReadyOpen] = useState(false);
   const [exportRunning, setExportRunning] = useState(false);
   const [exportDone, setExportDone] = useState(0);
   const [exportFailures, setExportFailures] = useState<{ runId: string; error: string }[]>([]);
-  const requestExportAdopted = useCallback(() => {
+  const requestExportReady = useCallback(() => {
     setExportFailures([]);
     setExportDone(0);
-    setExportAdoptedOpen(true);
+    setExportReadyOpen(true);
   }, []);
-  const cancelExportAdopted = useCallback(() => {
+  const cancelExportReady = useCallback(() => {
     if (exportRunning) return;
-    setExportAdoptedOpen(false);
+    setExportReadyOpen(false);
     setExportFailures([]);
     setExportDone(0);
   }, [exportRunning]);
-  const confirmExportAdopted = useCallback(async () => {
-    const targets = decorated.filter(
-      (r) => r.effectiveReviewStatus === 'adopted' && r.state === 'completed',
-    );
+  const confirmExportReady = useCallback(async () => {
+    const targets = readyExportable;
     if (!targets.length) {
-      setExportAdoptedOpen(false);
+      setExportReadyOpen(false);
       return;
     }
     setExportRunning(true);
@@ -538,43 +557,15 @@ export function useReviewState(): ReviewState {
     setExportRunning(false);
     if (failures.length === 0) {
       showToast(
-        `Exported ${succeeded.length} adopted episode${succeeded.length === 1 ? '' : 's'} to Datasets`,
+        `Exported ${succeeded.length} ready episode${succeeded.length === 1 ? '' : 's'} to Datasets`,
       );
-      setExportAdoptedOpen(false);
+      setExportReadyOpen(false);
     } else {
       showToast(`Exported ${succeeded.length}, ${failures.length} failed`);
     }
-  }, [decorated, purgeLocal, queryClient, showToast]);
+  }, [readyExportable, purgeLocal, queryClient, showToast]);
 
   // ---- decisions / overrides ---------------------------------------------
-  const clearDecision = useCallback((runId: string) => {
-    setDecisions((prev) => {
-      const next = { ...prev };
-      delete next[runId];
-      return next;
-    });
-  }, []);
-
-  const adoptAllGood = useCallback(() => {
-    const candidates = decorated.filter((r) => !r.isArchived && r.effectiveQuality === 'Good' && !r.decision);
-    if (!candidates.length) {
-      showToast('No episodes marked Good to adopt');
-      return;
-    }
-    setDecisions((prev) => {
-      const next = { ...prev };
-      candidates.forEach((c) => {
-        next[c.runId] = 'adopted';
-      });
-      return next;
-    });
-    showToast(`${candidates.length} good episode${candidates.length === 1 ? '' : 's'} adopted — needs-review items left untouched`);
-    // Persist each server-backed adoption; revert just the ones that fail.
-    candidates.forEach((c) =>
-      syncEpisode(c.episodeId, { review_status: 'adopted' }, () => clearDecision(c.runId)),
-    );
-  }, [decorated, showToast, syncEpisode, clearDecision]);
-
   const decide = useCallback(
     (d: Decision) => {
       if (!selected) return;
@@ -588,6 +579,18 @@ export function useReviewState(): ReviewState {
     },
     [selected, decisions, showToast, syncEpisode, restoreDecision],
   );
+
+  // "Mark OK — include": resolve a NEEDS CHECK exception into READY. Same server
+  // effect as an adopt (review_status:'adopted'), but the operator vocabulary is
+  // "include", not "adopt" — good episodes are already READY without any click.
+  const markOk = useCallback(() => {
+    if (!selected) return;
+    const runId = selected.runId;
+    const prev = decisions[runId];
+    setDecisions((prevD) => ({ ...prevD, [runId]: 'adopted' }));
+    showToast(`Episode #${selected.ep} marked OK — included in the export`);
+    syncEpisode(selected.episodeId, { review_status: 'adopted' }, () => restoreDecision(runId, prev));
+  }, [selected, decisions, showToast, syncEpisode, restoreDecision]);
 
   const bumpOverrideCount = useCallback((runId: string) => {
     setOverrideCounts((prev) => ({ ...prev, [runId]: (prev[runId] ?? 0) + 1 }));
@@ -697,7 +700,7 @@ export function useReviewState(): ReviewState {
     errorMessage,
 
     rows,
-    nUndecidedGood,
+    nNeedsCheck,
     hasArchived: nArchived > 0,
     nArchived,
     showArchived,
@@ -735,18 +738,19 @@ export function useReviewState(): ReviewState {
     confirmBulkDelete,
     cancelBulkDelete,
 
-    adoptedRows,
-    adoptedExportable,
-    adoptedSkipped,
-    requestExportAdopted,
-    exportAdoptedOpen,
+    readyExportable,
+    readySkipped,
+    includeFailed,
+    setIncludeFailed,
+    requestExportReady,
+    exportReadyOpen,
     exportRunning,
     exportDone,
     exportFailures,
-    confirmExportAdopted,
-    cancelExportAdopted,
+    confirmExportReady,
+    cancelExportReady,
 
-    adoptAllGood,
+    markOk,
     decide,
     cycleFinalQuality,
     cycleTaskResult,

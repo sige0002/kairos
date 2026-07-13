@@ -210,62 +210,59 @@ test('SPLIT_MODE on: transfer UI appears and a transfer can be started', async (
 });
 
 // ---------------------------------------------------------------------------
-// Adopt visibility (status chip) + export-adopted dialog.
+// Exception-review lanes (READY / NEEDS CHECK / EXCLUDED) + one-click export.
 // ---------------------------------------------------------------------------
 
-function ep(review_status: string) {
+function ep(review_status: string, quality = 'good', task_result = 'success') {
   return {
-    episode_id: `ep_${review_status}`,
+    episode_id: `ep_${review_status}_${quality}`,
     batch_id: 'b1',
     index_in_batch: 1,
-    task_result: 'success',
-    quality: 'good',
+    task_result,
+    quality,
     review_status,
+    batch_seq: 3,
   };
 }
 
-test('the row + detail header show a status chip from the server review_status', async () => {
+test('a good-quality run is READY with zero clicks (row + detail header chip)', async () => {
   mockApi([
-    { run_id: 'ep-a', state: 'completed', started_at: '2026-07-13T09:00:00Z', episode: ep('adopted') },
+    { run_id: 'ep-a', state: 'completed', started_at: '2026-07-13T09:00:00Z', episode: ep('pending', 'good') },
   ]);
   renderWithClient(<ReviewScreen />);
   await waitFor(() => expect(screen.getByTestId('review-row-1')).toBeInTheDocument());
-
-  expect(screen.getByTestId('review-status-1')).toHaveTextContent('ADOPTED');
-  await waitFor(() =>
-    expect(screen.getByTestId('review-detail-status')).toHaveTextContent('ADOPTED'),
-  );
+  expect(screen.getByTestId('review-status-1')).toHaveTextContent('READY');
+  await waitFor(() => expect(screen.getByTestId('review-detail-status')).toHaveTextContent('READY'));
 });
 
-test('adopting a run updates its status chip immediately', async () => {
+test('a needs-review run is NEEDS CHECK until "Mark OK — include" flips it to READY', async () => {
   mockApi([
-    { run_id: 'ep-a', state: 'completed', started_at: '2026-07-13T09:00:00Z', episode: ep('pending') },
+    { run_id: 'ep-a', state: 'completed', started_at: '2026-07-13T09:00:00Z', episode: ep('pending', 'needs_review') },
   ]);
   renderWithClient(<ReviewScreen />);
-  await waitFor(() => expect(screen.getByTestId('review-status-1')).toHaveTextContent('PENDING'));
+  await waitFor(() => expect(screen.getByTestId('review-status-1')).toHaveTextContent('NEEDS CHECK'));
 
-  fireEvent.click(screen.getByTestId('review-decision-adopt'));
-  expect(screen.getByTestId('review-status-1')).toHaveTextContent('ADOPTED');
-  expect(screen.getByTestId('review-detail-status')).toHaveTextContent('ADOPTED');
+  fireEvent.click(screen.getByTestId('review-mark-ok'));
+  expect(screen.getByTestId('review-status-1')).toHaveTextContent('READY');
+  expect(screen.getByTestId('review-detail-status')).toHaveTextContent('READY');
 });
 
-test('Export adopted opens a dialog listing only adopted runs + the explainer', async () => {
+test('Export ready lists the READY completed runs + the include-failed toggle', async () => {
   mockApi([
-    { run_id: 'ep-a', state: 'completed', started_at: '2026-07-13T09:00:00Z', episode: ep('adopted') },
-    { run_id: 'ep-b', state: 'completed', started_at: '2026-07-13T09:05:00Z', episode: ep('pending') },
+    { run_id: 'ep-a', state: 'completed', started_at: '2026-07-13T09:00:00Z', episode: ep('pending', 'good') },
+    { run_id: 'ep-b', state: 'completed', started_at: '2026-07-13T09:05:00Z', episode: ep('pending', 'needs_review') },
   ]);
   renderWithClient(<ReviewScreen />);
   await waitFor(() => expect(screen.getByTestId('review-episodes-count')).toHaveTextContent('2 shown'));
 
-  // The Adopt = label · Export = move explainer is present near the action.
-  expect(screen.getByTestId('review-adopt-explainer')).toHaveTextContent(/Adopt.*label.*Export.*Datasets/);
+  expect(screen.getByTestId('review-adopt-explainer')).toHaveTextContent(/READY.*NEEDS CHECK.*Datasets/);
+  expect(screen.getByTestId('review-include-failed')).toBeInTheDocument();
 
-  const exportBtn = screen.getByTestId('review-export-adopted');
-  expect(exportBtn).toHaveTextContent('Export adopted (1)');
+  const exportBtn = screen.getByTestId('review-export-ready');
+  expect(exportBtn).toHaveTextContent('Export ready (1)'); // only the good (READY) run
   fireEvent.click(exportBtn);
 
   const list = await screen.findByTestId('review-export-list');
-  // Only the adopted run is listed; the pending one is not.
   expect(within(list).getByText('ep-a')).toBeInTheDocument();
   expect(within(list).queryByText('ep-b')).toBeNull();
 
@@ -274,41 +271,32 @@ test('Export adopted opens a dialog listing only adopted runs + the explainer', 
   await waitFor(() => expect(screen.queryByTestId('review-export-list')).toBeNull());
 });
 
-// ---------------------------------------------------------------------------
-// Pipeline strip + inline Export CTA + Return to review (Q4/Q6).
-// ---------------------------------------------------------------------------
-
-test('the detail panel shows the pipeline strip; adopting reveals the Export CTA', async () => {
+test('the pipeline strip is present; a READY run shows the inline Export CTA', async () => {
   mockApi([
-    { run_id: 'ep-a', state: 'completed', started_at: '2026-07-13T09:00:00Z', episode: ep('pending') },
+    { run_id: 'ep-a', state: 'completed', started_at: '2026-07-13T09:00:00Z', episode: ep('pending', 'good') },
   ]);
   renderWithClient(<ReviewScreen />);
   await waitFor(() => expect(screen.getByTestId('review-pipeline-strip')).toBeInTheDocument());
-  // Pending → no Export CTA yet.
-  expect(screen.queryByTestId('review-export-cta')).toBeNull();
-
-  fireEvent.click(screen.getByTestId('review-decision-adopt'));
-  // Adopted → the inline "Export now" CTA appears right where the operator acted.
+  // Good → READY → the inline CTA + the Ready/Export strip steps are present.
   expect(screen.getByTestId('review-export-cta')).toHaveTextContent(/Export now \(1\)/);
-  // The strip reflects the adopted state.
-  expect(screen.getByTestId('review-pipeline-strip')).toHaveTextContent('Adopted');
+  expect(screen.getByTestId('review-pipeline-strip')).toHaveTextContent('Ready');
 });
 
-test('Return to review PATCHes review_status=pending and hides the CTA', async () => {
+test('Return to review PATCHes review_status=pending (from an excluded run)', async () => {
   const patchBodies: Record<string, unknown>[] = [];
   vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     const url = String(input);
     const method = (init?.method ?? 'GET').toUpperCase();
     if (url.includes('/episodes/') && method === 'PATCH') {
       patchBodies.push(JSON.parse(String(init?.body)));
-      return Promise.resolve(jsonResponse({ episode_id: 'ep_adopted' }));
+      return Promise.resolve(jsonResponse({ episode_id: 'ep_excluded' }));
     }
     if (url.match(/\/runs\/[^/?]+(\?|$)/)) return Promise.resolve(jsonResponse({ run_id: 'ep-a', state: 'completed', topics: [] }));
     if (url.includes('/config/options')) return Promise.resolve(jsonResponse(CONFIG_OPTIONS));
     if (url.includes('/runs')) {
       return Promise.resolve(
         jsonResponse({
-          items: [{ run_id: 'ep-a', state: 'completed', started_at: '2026-07-13T09:00:00Z', episode: ep('adopted') }],
+          items: [{ run_id: 'ep-a', state: 'completed', started_at: '2026-07-13T09:00:00Z', episode: ep('excluded', 'not_usable') }],
           next_cursor: null,
         }),
       );
@@ -316,14 +304,9 @@ test('Return to review PATCHes review_status=pending and hides the CTA', async (
     return Promise.resolve(jsonResponse({}));
   });
   renderWithClient(<ReviewScreen />);
-  // Server says adopted → the Return-to-review button is present.
+  // An excluded run shows Return-to-review.
   await waitFor(() => expect(screen.getByTestId('review-return-to-review')).toBeInTheDocument());
 
   fireEvent.click(screen.getByTestId('review-return-to-review'));
-  // Back to pending: chip flips and the CTA/return button disappear.
-  await waitFor(() => expect(screen.getByTestId('review-status-1')).toHaveTextContent('PENDING'));
-  expect(screen.queryByTestId('review-export-cta')).toBeNull();
-  await waitFor(() =>
-    expect(patchBodies.some((b) => b.review_status === 'pending')).toBe(true),
-  );
+  await waitFor(() => expect(patchBodies.some((b) => b.review_status === 'pending')).toBe(true));
 });

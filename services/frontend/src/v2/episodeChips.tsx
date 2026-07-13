@@ -3,7 +3,26 @@
 // pipeline UX). Honesty: a missing value renders "—", never a fabricated label.
 
 import { Badge, type Tone } from '../components/ui';
-import type { Quality, ReviewStatus, TaskResult } from './review/types';
+import type { Quality, ReviewLane, ReviewStatus, TaskResult } from './review/types';
+
+const LANE_TONE: Record<ReviewLane, Tone> = { ready: 'green', needs_check: 'amber', excluded: 'red' };
+const LANE_LABEL: Record<ReviewLane, string> = {
+  ready: 'READY',
+  needs_check: 'NEEDS CHECK',
+  excluded: 'EXCLUDED',
+};
+
+/** Exception-review lane chip (READY / NEEDS CHECK / EXCLUDED) — the primary
+ *  status vocabulary shared across Review and Datasets. */
+export function LaneChip({ lane, testId }: { lane: ReviewLane; testId?: string }) {
+  return (
+    <span data-testid={testId} className="w-fit">
+      <Badge tone={LANE_TONE[lane]} className="w-fit whitespace-nowrap">
+        {LANE_LABEL[lane]}
+      </Badge>
+    </span>
+  );
+}
 
 function qualityTone(q: Quality): Tone {
   if (q === 'Good') return 'green';

@@ -4,7 +4,7 @@
 // value, matching the mock's `effQuality`/`effTask`.
 
 import { Badge, cn, type Tone } from '../../components/ui';
-import { QualityChip, ReviewStatusChip, TaskResultChip } from '../episodeChips';
+import { LaneChip, QualityChip, TaskResultChip } from '../episodeChips';
 import { formatHms, formatTimeOfDay } from './format';
 import type { DecoratedEpisode } from './types';
 import type { ReviewState } from './useReviewState';
@@ -96,7 +96,9 @@ function Row({ row, isSelected, rv }: { row: DecoratedEpisode; isSelected: boole
           {transfer.label}
         </Badge>
       )}
-      <ReviewStatusChip status={row.effectiveReviewStatus} testId={`review-status-${row.ep}`} />
+      <span className="justify-self-end">
+        <LaneChip lane={row.reviewLane} testId={`review-status-${row.ep}`} />
+      </span>
       <button
         type="button"
         data-testid={`review-archive-${row.ep}`}
@@ -152,23 +154,28 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
             Transfer untransferred ({rv.nUntransferred})
           </button>
         )}
-        <button
-          type="button"
-          data-testid="review-adopt-all"
-          onClick={rv.adoptAllGood}
-          className="rounded-control border border-teal-200 bg-teal-50 px-3 py-1.5 text-[12.5px] font-semibold text-teal-700 transition-colors hover:bg-teal-100"
+        <label
+          data-testid="review-include-failed"
+          title="Task-failed recordings are still labeled, useful data"
+          className="flex items-center gap-1.5 text-[11.5px] font-medium text-gray-500"
         >
-          Adopt all good ({rv.nUndecidedGood})
-        </button>
+          <input
+            type="checkbox"
+            checked={rv.includeFailed}
+            onChange={(e) => rv.setIncludeFailed(e.target.checked)}
+            className="h-3.5 w-3.5 accent-teal-600"
+          />
+          Include task-failed (labeled)
+        </label>
         <button
           type="button"
-          data-testid="review-export-adopted"
-          onClick={rv.requestExportAdopted}
-          disabled={rv.adoptedRows.length === 0}
-          title="Move the adopted recordings into the Datasets tree"
+          data-testid="review-export-ready"
+          onClick={rv.requestExportReady}
+          disabled={rv.readyExportable.length === 0}
+          title="Move every READY recording into the Datasets tree"
           className="rounded-control bg-teal-600 px-3 py-1.5 text-[12.5px] font-semibold text-white transition-colors hover:bg-teal-700 disabled:opacity-50"
         >
-          Export adopted ({rv.adoptedRows.length})…
+          Export ready ({rv.readyExportable.length})…
         </button>
         <input
           type="text"
@@ -176,17 +183,17 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
           onChange={(e) => rv.setSearch(e.target.value)}
           placeholder="Search episodes…"
           data-testid="review-search"
-          className="w-[170px] rounded-control border border-gray-200 px-2.5 py-1.5 text-[12.5px] text-gray-700 placeholder:text-gray-400"
+          className="w-[150px] rounded-control border border-gray-200 px-2.5 py-1.5 text-[12.5px] text-gray-700 placeholder:text-gray-400"
         />
       </div>
-      {/* Make the two verbs distinct: adopting only labels; exporting moves. */}
+      {/* Exception-review: good takes zero clicks; you only check the exceptions. */}
       <p
         data-testid="review-adopt-explainer"
         className="border-b border-gray-100 px-[18px] py-1.5 text-[11px] text-gray-400"
       >
-        <span className="font-semibold text-teal-700">Adopt</span> = label ·{' '}
-        <span className="font-semibold text-teal-700">Export</span> = moves the recording into
-        Datasets.
+        <span className="font-semibold text-teal-700">READY</span> episodes export as-is —{' '}
+        you only resolve the <span className="font-semibold text-amber-700">NEEDS CHECK</span>{' '}
+        exceptions. Export moves the recording into Datasets.
       </p>
       <div
         className={cn(
