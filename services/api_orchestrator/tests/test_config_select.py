@@ -116,9 +116,11 @@ def _client(tmp_path: Path, fake_recorder, dora: _FakeDora) -> TestClient:
     return TestClient(app)
 
 
-def test_config_tab_is_enabled(client) -> None:
-    tabs = [t["id"] for t in client.get("/api/v1/config").json()["tabs"]]
-    assert "config" in tabs
+def test_tabs_registry_is_retired(client) -> None:
+    """Console v2 fixes its tabs in the frontend; the legacy backend registry
+    stays as an EMPTY list so old clients deserialize cleanly but nothing is
+    advertised (Google review F6: dead v1 contract removed)."""
+    assert client.get("/api/v1/config").json()["tabs"] == []
 
 
 def test_options_are_robot_first(tmp_path: Path, fake_recorder) -> None:

@@ -38,6 +38,13 @@ from api_orchestrator.models import (
     ValidationTemplate,
 )
 
+# SQLite ``PRAGMA user_version`` marker for the current schema generation.
+# Bump this AND add the corresponding step in :meth:`RunStore._migrate` whenever
+# the schema changes (columns/indexes/tables). ``_migrate`` stays idempotent
+# (guarded by PRAGMA table_info), and user_version records which generation a DB
+# was last brought up to — a hook for gating future one-way migrations.
+_USER_VERSION = 1
+
 
 class RunExistsError(Exception):
     """Raised by :meth:`RunStore.create` when ``run_id`` already exists.
@@ -224,8 +231,17 @@ class RunStore:
             self._shared = sqlite3.connect(self._path, check_same_thread=False)
             self._shared.row_factory = sqlite3.Row
         with self._conn() as conn:
+            if self._shared is None:
+                # File DB: WAL persists in the file header (set once here) and
+                # lets readers run concurrently with the single writer, so a long
+                # GET /runs never blocks a record-state write. Not meaningful for
+                # the shared in-memory connection (no file, no cross-conn WAL).
+                conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(_SCHEMA)
             self._migrate(conn)
+            # Stamp the schema generation AFTER migrations have brought the DB up
+            # to date (see _USER_VERSION for the bump discipline).
+            conn.execute(f"PRAGMA user_version = {_USER_VERSION}")
 
     @staticmethod
     def _migrate(conn: sqlite3.Connection) -> None:
@@ -322,6 +338,11 @@ class RunStore:
                 return
             conn = sqlite3.connect(self._path)
             conn.row_factory = sqlite3.Row
+            # Per-connection (busy_timeout is not persisted): wait up to 5s for a
+            # competing writer to release its lock instead of raising "database
+            # is locked" at once. WAL keeps writes single-writer, so under load a
+            # brief queue is expected rather than an error.
+            conn.execute("PRAGMA busy_timeout = 5000")
             try:
                 yield conn
                 conn.commit()

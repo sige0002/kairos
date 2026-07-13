@@ -18,6 +18,7 @@ import type {
   EpisodeReviewStatus,
   EpisodeTaskResult,
   Page,
+  RetentionInfo,
   RunSummary,
 } from '../../api/types';
 import { useUiStore } from '../../store/uiStore';
@@ -142,6 +143,28 @@ export interface ReviewState {
   goMonitor: () => void;
   goValidation: () => void;
 
+  // ---- retention (advisory: surface old, un-exported recordings) ----------
+  // A read-only nudge for the operator to reclaim disk. It NEVER deletes: the
+  // banner applies a filter over the existing rows; deletion still goes through
+  // the confirmed Exclude -> Delete flow above.
+  /** Active RETENTION_DAYS window (0 = feature off, banner never shows). */
+  retentionDays: number;
+  /** How many loaded runs are old-and-unexported candidates. */
+  retentionCandidateCount: number;
+  /** Combined best-effort size of those candidates (bytes). */
+  retentionTotalBytes: number;
+  /** Whether the table is currently filtered to the retention candidates. */
+  retentionFilterActive: boolean;
+  /** Whether to render the advisory banner (candidates exist + not dismissed,
+   *  or the filter is active so there's always a way back to "show all"). */
+  showRetentionBanner: boolean;
+  /** Filter the table down to the retention candidates (banner CTA). */
+  applyRetentionFilter: () => void;
+  /** Leave the retention-only view (show every row again). */
+  clearRetentionFilter: () => void;
+  /** Dismiss the advisory banner for this session (no state changed). */
+  dismissRetentionBanner: () => void;
+
   splitMode: boolean;
   nUntransferred: number;
   transferOne: (runId: string) => void;
@@ -174,6 +197,14 @@ export function useReviewState(): ReviewState {
       return { items, next_cursor: cursor ?? null };
     },
   });
+  // Advisory retention candidates (old, un-exported recordings). A separate,
+  // best-effort read: a failure just hides the banner (never blocks Review).
+  const retentionQuery = useQuery({
+    queryKey: queryKeys.retention,
+    queryFn: ({ signal }) => apiGet<RetentionInfo>('/retention', { signal }),
+  });
+  const retention = retentionQuery.data;
+
   const isError = runsQuery.isError;
   const errorMessage = runsQuery.error instanceof Error ? runsQuery.error.message : null;
   const baseEpisodes: EpisodeRow[] = useMemo(
@@ -295,9 +326,32 @@ export function useReviewState(): ReviewState {
   const toggleArchived = useCallback(() => setShowArchived((v) => !v), []);
   const [search, setSearch] = useState('');
   const [operatorFilter, setOperatorFilter] = useState<string>(ALL_OPERATORS);
+
+  // ---- retention (advisory) -----------------------------------------------
+  const [retentionFilterActive, setRetentionFilterActive] = useState(false);
+  const [retentionBannerDismissed, setRetentionBannerDismissed] = useState(false);
+  const retentionCandidateRunIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const c of retention?.candidates ?? []) ids.add(c.run_id);
+    return ids;
+  }, [retention]);
+  const retentionDays = retention?.days ?? 0;
+  const retentionCandidateCount = retention?.candidates?.length ?? 0;
+  const retentionTotalBytes = retention?.total_bytes ?? 0;
+  const applyRetentionFilter = useCallback(() => setRetentionFilterActive(true), []);
+  const clearRetentionFilter = useCallback(() => setRetentionFilterActive(false), []);
+  const dismissRetentionBanner = useCallback(() => setRetentionBannerDismissed(true), []);
+  // Show when there are candidates and the window is on; stay visible while the
+  // filter is active (even if dismissed) so "Show all" is always reachable.
+  const showRetentionBanner =
+    retentionDays > 0 &&
+    retentionCandidateCount > 0 &&
+    (!retentionBannerDismissed || retentionFilterActive);
+
   const clearFilters = useCallback(() => {
     setSearch('');
     setOperatorFilter(ALL_OPERATORS);
+    setRetentionFilterActive(false);
   }, []);
 
   // Distinct real operators across the loaded runs — the one filter with a real
@@ -313,12 +367,13 @@ export function useReviewState(): ReviewState {
     return decorated
       .filter((r) => showArchived || !r.isArchived)
       .filter((r) => operatorFilter === ALL_OPERATORS || r.operator === operatorFilter)
+      .filter((r) => !retentionFilterActive || retentionCandidateRunIds.has(r.runId))
       .filter((r) => {
         if (!q) return true;
         return `#${r.ep}`.toLowerCase().includes(q) || r.runId.toLowerCase().includes(q);
       })
       .sort((a, b) => LANE_ORDER[a.reviewLane] - LANE_ORDER[b.reviewLane] || b.ep - a.ep);
-  }, [decorated, search, operatorFilter, showArchived]);
+  }, [decorated, search, operatorFilter, showArchived, retentionFilterActive, retentionCandidateRunIds]);
 
   const nArchived = useMemo(() => decorated.filter((r) => r.isArchived).length, [decorated]);
   const nNeedsCheck = useMemo(
@@ -774,6 +829,15 @@ export function useReviewState(): ReviewState {
 
     goMonitor,
     goValidation,
+
+    retentionDays,
+    retentionCandidateCount,
+    retentionTotalBytes,
+    retentionFilterActive,
+    showRetentionBanner,
+    applyRetentionFilter,
+    clearRetentionFilter,
+    dismissRetentionBanner,
 
     splitMode,
     nUntransferred,

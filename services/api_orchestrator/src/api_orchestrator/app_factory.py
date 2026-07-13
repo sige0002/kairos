@@ -48,6 +48,7 @@ from api_orchestrator.routers import files as files_router
 from api_orchestrator.routers import jobs as jobs_router
 from api_orchestrator.routers import pipelines as pipelines_router
 from api_orchestrator.routers import record as record_router
+from api_orchestrator.routers import retention as retention_router
 from api_orchestrator.routers import runs as runs_router
 from api_orchestrator.routers import system as system_router
 from api_orchestrator.routers import topics as topics_router
@@ -245,6 +246,7 @@ def create_orchestrator_app(
     app.include_router(validation_router.presets_router)
     app.include_router(files_router.router)
     app.include_router(datasets_router.router)
+    app.include_router(retention_router.router)
     _override_readyz(app, recorder, monitor, streamer)
 
     _register_root_and_config(app, settings)
@@ -373,18 +375,11 @@ def _register_root_and_config(app: FastAPI, settings: Settings) -> None:
             # browser passes these to RTCPeerConnection; the streamer uses the
             # same set. Empty [] on same-LAN/direct (host candidates only).
             "ice_servers": settings.webrtc_ice_servers,
-            # Tab IA (design handoff "Neutral Teal"): the operator-facing "live"
-            # tab fuses Stream + Monitor + Record; "graph" is the time-series
-            # health view; "validation" runs fast_validation; "dataset" lists
-            # dora_runner conversion outputs.
-            "tabs": [
-                {"id": "live", "enabled": True},
-                {"id": "graph", "enabled": True},
-                {"id": "runs", "enabled": True},
-                {"id": "validation", "enabled": True},
-                {"id": "dataset", "enabled": True},
-                {"id": "config", "enabled": True},
-            ],
+            # v1's backend-driven tab registry is retired: Console v2 fixes its
+            # six role tabs in the frontend (src/v2/tabs.ts) and never reads
+            # this. The empty list stays as a tolerated legacy key so an old
+            # client deserializes cleanly; it advertises nothing.
+            "tabs": [],
             "defaults": defaults,
             "stream": stream,
             "schemas": {"pipeline_forms": await _pipeline_forms(request)},

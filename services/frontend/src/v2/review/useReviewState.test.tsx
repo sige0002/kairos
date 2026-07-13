@@ -554,6 +554,82 @@ test('confirmExportReady POSTs the READY completed runs and double-invalidates (
   expect(keys).toContain(JSON.stringify(['datasets']));
 });
 
+// ---------------------------------------------------------------------------
+// Retention (advisory): the banner fields + the candidate-only filter.
+// ---------------------------------------------------------------------------
+
+function mockRunsAndRetention(
+  items: Record<string, unknown>[],
+  retention: Record<string, unknown>,
+) {
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/retention')) return Promise.resolve(jsonResponse(retention));
+    if (url.includes('/runs')) return Promise.resolve(jsonResponse({ items, next_cursor: null }));
+    return Promise.resolve(jsonResponse({}));
+  });
+}
+
+test('retention: banner fields reflect GET /retention and the filter narrows rows to candidates', async () => {
+  mockRunsAndRetention(
+    [
+      { run_id: 'old1', state: 'completed', started_at: '2020-01-01T00:00:00Z' },
+      { run_id: 'old2', state: 'completed', started_at: '2020-01-02T00:00:00Z' },
+      { run_id: 'fresh', state: 'completed', started_at: '2026-07-13T09:00:00Z' },
+    ],
+    {
+      days: 30,
+      total_bytes: 140,
+      candidates: [
+        { run_id: 'old1', state: 'completed', has_episode: false, bytes: 100 },
+        { run_id: 'old2', state: 'completed', has_episode: false, bytes: 40 },
+      ],
+    },
+  );
+  const { result } = renderHook(() => useReviewState(), { wrapper });
+  await waitFor(() => expect(result.current.rows).toHaveLength(3));
+  await waitFor(() => expect(result.current.showRetentionBanner).toBe(true));
+  expect(result.current.retentionDays).toBe(30);
+  expect(result.current.retentionCandidateCount).toBe(2);
+  expect(result.current.retentionTotalBytes).toBe(140);
+
+  // Applying the filter narrows the table to just the candidates.
+  act(() => result.current.applyRetentionFilter());
+  expect(result.current.retentionFilterActive).toBe(true);
+  expect(result.current.rows.map((r) => r.runId).sort()).toEqual(['old1', 'old2']);
+
+  // The FiltersRail "Clear" (clearFilters) also exits the retention-only view.
+  act(() => result.current.clearFilters());
+  expect(result.current.retentionFilterActive).toBe(false);
+  expect(result.current.rows).toHaveLength(3);
+});
+
+test('retention: disabled (days 0) never shows the banner', async () => {
+  mockRunsAndRetention(
+    [{ run_id: 'a', state: 'completed', started_at: '2020-01-01T00:00:00Z' }],
+    { days: 0, total_bytes: 0, candidates: [] },
+  );
+  const { result } = renderHook(() => useReviewState(), { wrapper });
+  await waitFor(() => expect(result.current.rows).toHaveLength(1));
+  expect(result.current.showRetentionBanner).toBe(false);
+});
+
+test('retention: dismiss hides the banner, but an active filter keeps it visible for "show all"', async () => {
+  mockRunsAndRetention(
+    [{ run_id: 'old1', state: 'completed', started_at: '2020-01-01T00:00:00Z' }],
+    { days: 14, total_bytes: 10, candidates: [{ run_id: 'old1', state: 'completed', has_episode: false, bytes: 10 }] },
+  );
+  const { result } = renderHook(() => useReviewState(), { wrapper });
+  await waitFor(() => expect(result.current.showRetentionBanner).toBe(true));
+
+  act(() => result.current.dismissRetentionBanner());
+  expect(result.current.showRetentionBanner).toBe(false);
+
+  // With the filter active there is always a way back, so the banner returns.
+  act(() => result.current.applyRetentionFilter());
+  expect(result.current.showRetentionBanner).toBe(true);
+});
+
 test('a failed export keeps the run in Review with an honest per-run note', async () => {
   vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     const url = String(input);

@@ -9,9 +9,10 @@ See ``docs/specs/ja/config.md`` for the canonical three-layer config design.
 
 from __future__ import annotations
 
-from kairos_common.app import create_app, error_response
+from kairos_common.app import REQUEST_ID_HEADER, create_app, error_response
 from kairos_common.config_path import resolve_config_path
 from kairos_common.errors import ApiError, ErrorBody, ErrorModel
+from kairos_common.logging import get_request_id, reset_request_id, set_request_id
 from kairos_common.recording_config import (
     Compression,
     Durability,
@@ -47,6 +48,7 @@ __all__ = [
     "ExpectedHzPattern",
     "JobState",
     "MonitorConfig",
+    "REQUEST_ID_HEADER",
     "RecordingConfig",
     "RecordingTuning",
     "Reliability",
@@ -61,10 +63,13 @@ __all__ = [
     "ValidationTemplate",
     "create_app",
     "error_response",
+    "get_request_id",
     "get_settings",
     "load_recording_config",
     "load_stream_config",
     "load_validation_template",
+    "reset_request_id",
     "resolve_config_path",
+    "set_request_id",
     "utc_now_iso8601",
 ]

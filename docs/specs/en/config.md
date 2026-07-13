@@ -167,8 +167,8 @@ What `api_orchestrator` returns for the frontend (example):
 - Timestamps are **UTC ISO8601** (e.g. `2026-06-24T01:23:45.123Z`).
 - The error format is common to all APIs: `{ "error": { "code": "...", "message": "...", "details": {} } }`.
 - Each service has `GET /healthz` (liveness) / `GET /readyz` (readiness).
-- Logs are JSON lines (include `run_id` / `component` / `request_id`).
-- The backend exposes OpenAPI (`/openapi.json`). The frontend auto-generates a client from it (Orval, [frontend](frontend.md)).
+- Logs are JSON lines (include `run_id` / `component` / `request_id`). A shared request-id middleware (`kairos_common`) adopts the incoming `X-Request-ID` (or generates a uuid4 when absent), tags every log line emitted while handling the request with that `request_id`, and echoes it back as the `X-Request-ID` response header (usable for caller-side correlation).
+- The backend exposes OpenAPI (`/openapi.json`). The frontend currently uses a **hand-written typed client** (`src/api/client.ts` + `types.ts`); client generation from OpenAPI (Orval etc.) is **not adopted** (a future contract-gate candidate, [frontend](frontend.md)).
 
 ## Common API conventions (all HTTP services)
 
@@ -182,3 +182,29 @@ What `api_orchestrator` returns for the frontend (example):
   - alert metric: `hz` | `bandwidth` | `gap` | `late` | `loss`
   - alert op: `lt` | `gt` | `le` | `ge`
 - Times are UTC ISO8601. Durations and sizes are numeric, with the unit indicated by a suffix (`*_ms` / `*_bytes` / `*_bps`, etc.).
+
+## Operations (data lifecycle)
+
+### Retention period (`RETENTION_DAYS`)
+
+- `RETENTION_DAYS` is **advisory only** — it never auto-deletes (2026-07-14 adjudication). `GET /api/v1/retention` returns the runs it marks as deletion candidates: **not exported** (a run row still exists — export deletes the row), **terminal state** (`completed` / `failed` / `interrupted`; an active recording is never a candidate), and **started more than N days ago** (`{ days, candidates: [{ run_id, started_at, bytes, state, has_episode }], total_bytes }`). Sizes are best-effort directory sums, computed per request. `RETENTION_DAYS<=0` disables it (candidates are always empty).
+- Actual deletion goes only through the existing **confirmed** `DELETE /api/v1/runs/{id}` path. When candidates exist the Review screen shows a dismissible banner whose button filters the table down to them (it does not delete). Exported datasets are artifacts and are untouchable.
+
+### Dataset catalog (`data/index.jsonl`)
+
+- A **derived, rebuildable** flat catalog of the exported datasets (one JSON line per dataset). The **sidecars on the tree** (`dataset.json` / `episode.json`) stay canonical; the catalog is only an optimization to avoid walking the tree.
+- Appended one line on a successful export, and rewritten without a row on dataset delete (atomic tmp+rename). `dataset_dir` is stored relative to `data_dir` (robust to a moved/restored tree).
+- `GET /api/v1/datasets` serves from the catalog when it exists and parses, with **automatic fallback to a tree scan when it is absent or corrupt** (identical response shape). `POST /api/v1/datasets/index/rebuild` regenerates the catalog wholly from the sidecars (returns `{ count }`). `schema_version: 1` (also stamped on `episode.json`; readers default to 1 when absent).
+
+### Backup / restore
+
+- `make backup` writes a consistent snapshot to `backups/<timestamp>.tar.gz`:
+  - `data/kairos.db` copied consistently via **`sqlite3 .backup`** (WAL included; if `sqlite3` is unavailable, best-effort copy of the db + `-wal` / `-shm`).
+  - `data/index.jsonl` / `data/recorded/` / `data/report/` and the exported datasets (`data/<operator>/<task>/<NNN>/`), plus `config/`.
+  - **Not included**: raw sample rosbag inputs (top-level sample dirs under `data/`, named by `BACKUP_SAMPLE_DIRS`, default `airoa-moma-mcap realman` — override to match your sample names), the mp4 preview cache (`data/report/video_check/`), and repo-external secrets such as `.env`. Recordings/reports can change under a live stack, so for a fully consistent snapshot run it while stopped (`make down`).
+- **Restore runbook**:
+  1. Stop the stack: `make down`.
+  2. Extract at the repo root (`<restore_root>`): `tar xzf backups/<timestamp>.tar.gz -C <restore_root>`.
+  3. Put the DB snapshot in place: move the extracted `kairos.db` to `data/kairos.db` (overwrite; delete any stale `data/kairos.db-wal` / `-shm`). `config/` and `data/{index.jsonl,recorded,report,<datasets>}` go straight to their paths.
+  4. `make up` to restart. Startup reconciliation settles any run left mid-recording to `interrupted`.
+  5. If the catalog is suspected to have drifted from the tree, regenerate it with `POST /api/v1/datasets/index/rebuild` (the sidecars are canonical).

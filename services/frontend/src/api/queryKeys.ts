@@ -19,6 +19,9 @@ export const queryKeys = {
   datasets: ['datasets'] as const,
   dataset: (operator: string, task: string, index: string) =>
     ['datasets', 'detail', operator, task, index] as const,
+  // Advisory retention candidates (old, un-exported recordings) for the Review
+  // banner. Cheap read; recomputed on request.
+  retention: ['retention'] as const,
   // topic_probe (OL-③.3): topic list + per-topic numeric field introspection.
   probeTopics: ['probe', 'topics'] as const,
   probeFields: (topic: string) => ['probe', 'fields', topic] as const,

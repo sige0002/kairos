@@ -99,6 +99,31 @@ def test_file_db_persists_across_instances(tmp_path: Path) -> None:
     assert reopened.get("run_persist") is not None
 
 
+def test_file_db_sets_wal_and_user_version(tmp_path: Path) -> None:
+    """A file-backed store enables WAL and stamps the schema user_version."""
+    import sqlite3
+
+    db = tmp_path / "kairos.db"
+    RunStore(db)  # init applies the pragmas
+
+    conn = sqlite3.connect(db)
+    try:
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
+def test_memory_db_skips_wal(tmp_path: Path) -> None:
+    """An in-memory store never claims WAL (no file); it must still work."""
+    store = RunStore(":memory:")
+    with store._conn() as conn:  # noqa: SLF001 - assert the pragma outcome
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() != "wal"
+    store.create(Run(run_id="mem", state=RunState.completed))
+    assert store.get("mem") is not None
+    store.close()
+
+
 def test_migrate_adds_and_backfills_episodes_recorded(tmp_path: Path) -> None:
     """A DB created before `episodes_recorded` existed gets the column added and
     backfilled from its current episode count when the store reopens."""

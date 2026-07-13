@@ -99,6 +99,24 @@ export interface RunSummary {
   episode?: RunEpisode | null;
 }
 
+/** One recording surfaced by `GET /api/v1/retention` as old-and-unexported.
+ *  Advisory only — a candidate for the operator to review, never auto-deleted. */
+export interface RetentionCandidate {
+  run_id: string;
+  started_at?: string | null;
+  bytes?: number | null;
+  state: RunState;
+  has_episode: boolean;
+}
+
+/** `GET /api/v1/retention`: deletion candidates by retention period. `days` is
+ *  the active `RETENTION_DAYS` (0 = feature off → always empty candidates). */
+export interface RetentionInfo {
+  days: number;
+  candidates: RetentionCandidate[];
+  total_bytes: number;
+}
+
 /** `dataset_export` job summary (dora_runner): one exported dataset directory. */
 export interface DatasetExportSummary {
   run_id?: string;

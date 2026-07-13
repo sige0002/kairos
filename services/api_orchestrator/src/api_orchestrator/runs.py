@@ -24,7 +24,7 @@ import logging
 import os
 import shutil
 import tempfile
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +39,7 @@ from api_orchestrator.events import EVENT_RECORD_STATUS, EventHub
 from api_orchestrator.models import (
     Episode,
     RecordStartRequest,
+    RetentionCandidate,
     Run,
     RunDetail,
     RunEpisode,
@@ -67,6 +68,23 @@ _UNKNOWN_TASK = "unknown_task"
 def _default_meta(value: str | None, default: str) -> str:
     """Coerce an empty/whitespace metadata field to a stable placeholder."""
     return value.strip() if value and value.strip() else default
+
+
+def _parse_iso8601(value: str | None) -> datetime | None:
+    """Parse a UTC ISO8601 timestamp to an aware datetime (``None`` on failure).
+
+    Run timestamps are stored as ``2026-06-24T00:00:00.000Z``;
+    ``datetime.fromisoformat`` accepts the ``Z`` suffix on 3.11+. A naive value
+    (no tz) is assumed UTC so comparisons stay tz-aware. Unparseable input
+    yields ``None`` so a bad timestamp is simply skipped, never a 500.
+    """
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed
 
 
 def _run_episode(
@@ -180,6 +198,64 @@ class RunService:
         """
         runs = self._store.list_by_states([RunState.completed])
         return [r for r in runs if (self._recorded_dir / r.run_id).is_dir()]
+
+    # ---- retention --------------------------------------------------------
+
+    def retention_candidates(
+        self, retention_days: int, *, now: datetime | None = None
+    ) -> tuple[list[RetentionCandidate], int]:
+        """Old, still-unexported recordings the operator may want to reclaim.
+
+        A candidate is a run whose row still exists (an export deletes the row,
+        so a surviving row means it was NOT exported), whose state is terminal
+        (``completed`` / ``failed`` / ``interrupted`` — an active recording is
+        never a candidate), and whose ``started_at`` is older than
+        ``retention_days``. This only SURFACES candidates for the Review UI; it
+        deletes nothing (deletion goes through the confirmed
+        ``DELETE /runs/{id}`` path). ``retention_days <= 0`` disables the feature
+        (empty result). Sizes are best-effort directory sums (``None`` when the
+        dir is gone). Returns ``(candidates, total_bytes)``.
+        """
+        if retention_days <= 0:
+            return [], 0
+        cutoff = (now or datetime.now(UTC)) - timedelta(days=retention_days)
+        runs = self._store.list_by_states(
+            [RunState.completed, RunState.failed, RunState.interrupted]
+        )
+        episodes = self._store.episodes_by_run_ids([r.run_id for r in runs])
+        candidates: list[RetentionCandidate] = []
+        total = 0
+        for run in runs:
+            started = _parse_iso8601(run.started_at)
+            if started is None or started >= cutoff:
+                continue
+            size = self._run_dir_bytes(run.run_id)
+            if size is not None:
+                total += size
+            candidates.append(
+                RetentionCandidate(
+                    run_id=run.run_id,
+                    started_at=run.started_at,
+                    bytes=size,
+                    state=run.state,
+                    has_episode=run.run_id in episodes,
+                )
+            )
+        return candidates, total
+
+    def _run_dir_bytes(self, run_id: str) -> int | None:
+        """Best-effort on-disk size of ``recorded/<run_id>`` (``None`` if gone)."""
+        run_dir = self._recorded_dir / run_id
+        if not run_dir.is_dir():
+            return None
+        total = 0
+        for path in run_dir.rglob("*"):
+            try:
+                if path.is_file():
+                    total += path.stat().st_size
+            except OSError:
+                continue
+        return total
 
     def set_recording_config(self, config: RecordingConfig | None) -> None:
         """Swap the in-memory RECORDING_CONFIG used for next-start resolution.
@@ -688,6 +764,9 @@ class RunService:
             if batch
             else None,
             "exported_at": utc_now_iso8601(),
+            # Sidecar schema generation (additive; readers default to 1 when
+            # absent). Bump alongside datasets_index.INDEX_SCHEMA_VERSION.
+            "schema_version": 1,
         }
         try:
             _atomic_write_json(Path(dataset_dir) / "episode.json", payload)

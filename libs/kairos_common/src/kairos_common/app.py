@@ -15,8 +15,10 @@ logic lives in each service package.
 from __future__ import annotations
 
 import logging
+import uuid
+from collections.abc import Awaitable, Callable
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,10 +26,13 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from kairos_common.errors import ApiError, ErrorBody, ErrorModel
-from kairos_common.logging import configure_logging
+from kairos_common.logging import configure_logging, reset_request_id, set_request_id
 from kairos_common.settings import Settings, get_settings
 
 logger = logging.getLogger("kairos")
+
+# Response/request header carrying the per-request correlation id.
+REQUEST_ID_HEADER = "X-Request-ID"
 
 
 def error_response(
@@ -88,6 +93,30 @@ def _install_exception_handlers(app: FastAPI) -> None:
         )
 
 
+def _install_request_id_middleware(app: FastAPI) -> None:
+    """Adopt/generate a request id and expose it to logs + the response.
+
+    Every service reads an incoming ``X-Request-ID`` (so a correlation id set by
+    an upstream proxy or the orchestrator's own downstream calls flows through)
+    or mints a uuid4 when absent. The id is bound to the logging contextvar for
+    the duration of the request — so every JSON log line carries it — and echoed
+    back as the ``X-Request-ID`` response header for the caller to record.
+    """
+
+    @app.middleware("http")
+    async def _request_id(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        request_id = request.headers.get(REQUEST_ID_HEADER) or str(uuid.uuid4())
+        token = set_request_id(request_id)
+        try:
+            response = await call_next(request)
+        finally:
+            reset_request_id(token)
+        response.headers[REQUEST_ID_HEADER] = request_id
+        return response
+
+
 def create_app(title: str, settings: Settings | None = None) -> FastAPI:
     """Create a FastAPI app with kairos cross-cutting concerns wired in.
 
@@ -115,6 +144,7 @@ def create_app(title: str, settings: Settings | None = None) -> FastAPI:
     )
 
     _install_exception_handlers(app)
+    _install_request_id_middleware(app)
 
     @app.get("/healthz", tags=["health"])
     async def healthz() -> dict[str, str]:

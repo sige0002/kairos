@@ -164,8 +164,8 @@ presets:
 - タイムスタンプは **UTC ISO8601**（例 `2026-06-24T01:23:45.123Z`）。
 - エラー形式は全 API 共通: `{ "error": { "code": "...", "message": "...", "details": {} } }`。
 - 各サービスは `GET /healthz`（liveness）/ `GET /readyz`（readiness）を持つ。
-- ログは JSON lines（`run_id` / `component` / `request_id` を含める）。
-- backend は OpenAPI を公開（`/openapi.json`）。frontend はそこからクライアントを自動生成する（Orval、[frontend](frontend.md)）。
+- ログは JSON lines（`run_id` / `component` / `request_id` を含める）。全サービス共通の request-id middleware（`kairos_common`）が、受信リクエストの `X-Request-ID` を採用（無ければ uuid4 を生成）し、処理中の全ログ行にその `request_id` を付与、応答ヘッダ `X-Request-ID` で返す（呼び出し側での相関に使える）。
+- backend は OpenAPI を公開（`/openapi.json`）。frontend は現状**手書きの型付きクライアント**（`src/api/client.ts` + `types.ts`）で、OpenAPI からの自動生成（Orval 等）は**未採用**（将来の契約ゲート候補、[frontend](frontend.md)）。
 
 ## API 共通規約（全 HTTP サービス）
 
@@ -179,3 +179,29 @@ presets:
   - alert metric: `hz` | `bandwidth` | `gap` | `late` | `loss`
   - alert op: `lt` | `gt` | `le` | `ge`
 - 時刻は UTC ISO8601。期間・サイズは数値とし、接尾辞で単位を示す（`*_ms` / `*_bytes` / `*_bps` など）。
+
+## 運用（データライフサイクル）
+
+### 保持期間（`RETENTION_DAYS`）
+
+- `RETENTION_DAYS` は**助言のみ**で、自動削除は一切行わない（2026-07-14 裁定）。`GET /api/v1/retention` が、**未エクスポート**（run 行が残る＝export で行は消える）・**終端状態**（`completed` / `failed` / `interrupted`。録画中は対象外）・**開始が N 日超**の run を「削除候補」として返す（`{ days, candidates: [{ run_id, started_at, bytes, state, has_episode }], total_bytes }`）。サイズはディレクトリの best-effort 合計、候補は都度計算。`RETENTION_DAYS<=0` で無効（候補は常に空）。
+- 実際の削除は既存の**確認付き** `DELETE /api/v1/runs/{id}` のみを経由する。Review 画面は候補があると却下可能なバナーを出し、ボタンで対象のみに絞り込む（そこから先の削除はしない）。エクスポート済みデータセットは成果物なので不可侵。
+
+### データセットカタログ（`data/index.jsonl`）
+
+- エクスポート済みデータセットの**派生・再構築可能**なフラットカタログ（1 行 1 データセット、JSON lines）。**正本はツリー上のサイドカー**（`dataset.json` / `episode.json`）で、カタログはツリー走査を省くための最適化に過ぎない。
+- export 成功時に 1 行追記、データセット削除時に該当行を除いて再書き込み（tmp+rename でアトミック）。`dataset_dir` は `data_dir` 相対で保存（ツリー移動・リストアに強い）。
+- `GET /api/v1/datasets` はカタログが存在し解釈可能ならそこから返し、**不在・破損時はツリー走査へ自動フォールバック**（応答形は同一）。`POST /api/v1/datasets/index/rebuild` でサイドカーからカタログを丸ごと再生成する（`{ count }` を返す）。`schema_version: 1`（`episode.json` にも付与。読み手は欠落時 1 とみなす）。
+
+### バックアップ / リストア
+
+- `make backup` で一貫スナップショットを `backups/<timestamp>.tar.gz` に作成する:
+  - `data/kairos.db` を **`sqlite3 .backup`** で一貫コピー（WAL 込み。`sqlite3` が無ければ db + `-wal` / `-shm` を best-effort コピー）。
+  - `data/index.jsonl` / `data/recorded/` / `data/report/` とエクスポート済みデータセット（`data/<operator>/<task>/<NNN>/`）、および `config/`。
+  - **含まれないもの**: 生サンプル rosbag 入力（`data/` 直下のサンプルディレクトリ。`BACKUP_SAMPLE_DIRS` で指定、既定 `airoa-moma-mcap realman` — 自分のサンプル名に合わせて上書きする）、mp4 プレビューキャッシュ（`data/report/video_check/`）、`.env` などリポジトリ外の秘密情報。稼働中は録画/レポートが書き換わり得るため、完全な一貫性が要るときは停止中（`make down`）に実行する。
+- **リストア手順**:
+  1. スタックを停止: `make down`。
+  2. リポジトリルート（`<restore_root>`）で展開: `tar xzf backups/<timestamp>.tar.gz -C <restore_root>`。
+  3. DB スナップショットを所定位置へ: 展開された `kairos.db` を `data/kairos.db` に置く（既存を上書き。古い `data/kairos.db-wal` / `-shm` は削除）。`config/` と `data/{index.jsonl,recorded,report,<datasets>}` はそのまま所定パスへ。
+  4. `make up` で再起動。起動時の reconcile が「録画中のまま残った run」を `interrupted` に整合する。
+  5. カタログがツリーとずれている疑いがあれば `POST /api/v1/datasets/index/rebuild` で再生成（サイドカーが正本）。

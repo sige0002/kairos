@@ -1,4 +1,4 @@
-<!-- AUTO-GENERATED from CLAUDE.ja.md. Do not edit by hand — edit the Japanese source and run /sync-docs. -->
+<!-- Mirror of CLAUDE.ja.md (the Japanese file is canonical). Keep this file in sync by hand — the sync-docs skill was retired. -->
 
 # CLAUDE.md
 
@@ -13,7 +13,7 @@ The current design lives in `docs/specs/ja/` (the **canonical** version, based o
 ## Documentation language rule (important)
 
 - Documentation is authored in **Japanese as the source of truth.** The author edits only the Japanese files (`*.ja.md`).
-- English files (`*.md`) are **auto-generated mirrors** — do not edit them by hand. Regenerate them from the Japanese with `/sync-docs`.
+- English files (`*.md`) are **mirrors of the Japanese sources** — edit content on the Japanese side only, then update the English by hand to match (the /sync-docs skill was retired on 2026-07-13; mirror updates are faithful translations of the Japanese diff).
 - **Code, comments, identifiers, and commit messages are in English.**
 
 ## Conventions

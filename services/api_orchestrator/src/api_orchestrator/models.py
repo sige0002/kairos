@@ -157,6 +157,36 @@ class RunListResponse(BaseModel):
     next_cursor: str | None = None
 
 
+class RetentionCandidate(BaseModel):
+    """One recording surfaced by ``GET /api/v1/retention`` as old-and-unexported.
+
+    A *candidate*, never an action: the retention feature only SURFACES runs the
+    operator may want to reclaim (terminal state, still in ``recorded/`` — i.e.
+    not exported — and older than ``RETENTION_DAYS``). Nothing here is deleted
+    automatically; the operator deletes through the existing confirmed
+    ``DELETE /api/v1/runs/{id}`` path. Exported datasets are never candidates.
+    """
+
+    run_id: str
+    started_at: str | None = None
+    bytes: int | None = None
+    state: RunState
+    has_episode: bool = False
+
+
+class RetentionResponse(BaseModel):
+    """``GET /api/v1/retention`` — deletion candidates by retention period.
+
+    ``days`` echoes the active ``RETENTION_DAYS`` (``0`` = feature off, always an
+    empty candidate set). ``total_bytes`` sums the candidates' best-effort sizes
+    so the UI can show how much storage reviewing them could reclaim.
+    """
+
+    days: int
+    candidates: list[RetentionCandidate] = Field(default_factory=list)
+    total_bytes: int = 0
+
+
 class DatasetDetail(BaseModel):
     """One exported dataset dir + its on-disk sidecars.
 

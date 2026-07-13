@@ -23,6 +23,49 @@ export function ReviewScreen() {
 
   return (
     <div className="grid grid-cols-1 gap-2.5 lg:h-full lg:min-h-0 lg:grid-cols-[216px_1fr_400px]">
+      {rv.showRetentionBanner && (
+        <div
+          role="status"
+          data-testid="review-retention-banner"
+          className="flex flex-wrap items-center justify-between gap-2 rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 lg:col-span-3"
+        >
+          {rv.retentionFilterActive ? (
+            <>
+              <span data-testid="review-retention-message">
+                Showing {rv.retentionCandidateCount} recording
+                {rv.retentionCandidateCount === 1 ? '' : 's'} older than {rv.retentionDays} days
+                (<span className="font-mono">{formatBytes(rv.retentionTotalBytes)}</span>).
+              </span>
+              <Button variant="ghost" data-testid="review-retention-show-all" onClick={rv.clearRetentionFilter}>
+                Show all
+              </Button>
+            </>
+          ) : (
+            <>
+              <span data-testid="review-retention-message">
+                {rv.retentionCandidateCount} recording
+                {rv.retentionCandidateCount === 1 ? '' : 's'} older than {rv.retentionDays} days
+                (<span className="font-mono">{formatBytes(rv.retentionTotalBytes)}</span>) — review
+                and delete what you no longer need.
+              </span>
+              <div className="flex items-center gap-1.5">
+                <Button data-testid="review-retention-review" onClick={rv.applyRetentionFilter}>
+                  Review these ({rv.retentionCandidateCount})
+                </Button>
+                <button
+                  type="button"
+                  aria-label="Dismiss retention notice"
+                  data-testid="review-retention-dismiss"
+                  className="rounded-control px-1.5 text-lg leading-none text-amber-700 hover:bg-amber-100"
+                  onClick={rv.dismissRetentionBanner}
+                >
+                  &times;
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
       <FiltersRail
         operatorOptions={rv.operatorOptions}
         operatorFilter={rv.operatorFilter}

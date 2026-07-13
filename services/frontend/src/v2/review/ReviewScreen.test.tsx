@@ -307,6 +307,24 @@ test('Export ready lists the READY completed runs + the include-failed toggle', 
   await waitFor(() => expect(screen.queryByTestId('review-export-list')).toBeNull());
 });
 
+test('Export ready reads (0), is disabled, and is styled to LOOK disabled when nothing is READY', async () => {
+  // A single NEEDS CHECK run → nothing is exportable yet.
+  mockApi([
+    { run_id: 'ep-b', state: 'completed', started_at: '2026-07-13T09:05:00Z', episode: ep('pending', 'needs_review') },
+  ]);
+  renderWithClient(<ReviewScreen />);
+  await waitFor(() => expect(screen.getByTestId('review-episodes-count')).toHaveTextContent('1 shown'));
+
+  const exportBtn = screen.getByTestId('review-export-ready');
+  expect(exportBtn).toHaveTextContent('Export ready (0)');
+  // Functionally disabled …
+  expect(exportBtn).toBeDisabled();
+  // … and styled to read disabled (a muted look, not the live teal CTA) so the
+  // count-zero button doesn't invite a dead click (Apple P2).
+  expect(exportBtn).toHaveClass('disabled:bg-gray-200');
+  expect(exportBtn).toHaveClass('disabled:cursor-not-allowed');
+});
+
 test('the pipeline strip is present; a READY run shows the inline Export CTA', async () => {
   mockApi([
     { run_id: 'ep-a', state: 'completed', started_at: '2026-07-13T09:00:00Z', episode: ep('pending', 'good') },
@@ -316,6 +334,76 @@ test('the pipeline strip is present; a READY run shows the inline Export CTA', a
   // Good → READY → the inline CTA + the Ready/Export strip steps are present.
   expect(screen.getByTestId('review-export-cta')).toHaveTextContent(/Export now \(1\)/);
   expect(screen.getByTestId('review-pipeline-strip')).toHaveTextContent('Ready');
+});
+
+// ---------------------------------------------------------------------------
+// Retention advisory banner (surface-only; never deletes).
+// ---------------------------------------------------------------------------
+
+function mockApiWithRetention(
+  items: Record<string, unknown>[],
+  retention: Record<string, unknown>,
+) {
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    const method = (init?.method ?? 'GET').toUpperCase();
+    if (url.includes('/retention')) return Promise.resolve(jsonResponse(retention));
+    if (url.match(/\/runs\/[^/?]+(\?|$)/) && method === 'GET')
+      return Promise.resolve(jsonResponse({ run_id: 'x', state: 'completed', topics: [] }));
+    if (url.includes('/config/options')) return Promise.resolve(jsonResponse(CONFIG_OPTIONS));
+    if (url.includes('/runs')) return Promise.resolve(jsonResponse({ items, next_cursor: null }));
+    return Promise.resolve(jsonResponse({}));
+  });
+}
+
+test('retention banner surfaces old recordings and its CTA filters the table without deleting', async () => {
+  mockApiWithRetention(
+    [
+      { run_id: 'old', state: 'completed', started_at: '2020-01-01T00:00:00Z', bytes: 1048576 },
+      { run_id: 'fresh', state: 'completed', started_at: '2026-07-13T09:00:00Z', bytes: 2000 },
+    ],
+    {
+      days: 30,
+      total_bytes: 1048576,
+      candidates: [{ run_id: 'old', state: 'completed', has_episode: false, bytes: 1048576 }],
+    },
+  );
+  renderWithClient(<ReviewScreen />);
+
+  const banner = await screen.findByTestId('review-retention-banner');
+  expect(banner).toHaveTextContent('older than 30 days');
+  expect(banner).toHaveTextContent('review and delete what you no longer need');
+  // Both runs are shown before the filter is applied.
+  await waitFor(() => expect(screen.getByTestId('review-episodes-count')).toHaveTextContent('2 shown'));
+
+  // The CTA narrows the table to the candidate only (no deletion happened).
+  fireEvent.click(screen.getByTestId('review-retention-review'));
+  await waitFor(() => expect(screen.getByTestId('review-episodes-count')).toHaveTextContent('1 shown'));
+  // A "Show all" affordance returns to the full list.
+  fireEvent.click(screen.getByTestId('review-retention-show-all'));
+  await waitFor(() => expect(screen.getByTestId('review-episodes-count')).toHaveTextContent('2 shown'));
+});
+
+test('retention banner is dismissible', async () => {
+  mockApiWithRetention(
+    [{ run_id: 'old', state: 'completed', started_at: '2020-01-01T00:00:00Z', bytes: 1000 }],
+    { days: 30, total_bytes: 1000, candidates: [{ run_id: 'old', state: 'completed', has_episode: false, bytes: 1000 }] },
+  );
+  renderWithClient(<ReviewScreen />);
+  fireEvent.click(await screen.findByTestId('review-retention-dismiss'));
+  await waitFor(() =>
+    expect(screen.queryByTestId('review-retention-banner')).not.toBeInTheDocument(),
+  );
+});
+
+test('no retention banner when the feature is disabled (days 0)', async () => {
+  mockApiWithRetention(
+    [{ run_id: 'a', state: 'completed', started_at: '2020-01-01T00:00:00Z' }],
+    { days: 0, total_bytes: 0, candidates: [] },
+  );
+  renderWithClient(<ReviewScreen />);
+  await waitFor(() => expect(screen.getByTestId('review-episodes-count')).toBeInTheDocument());
+  expect(screen.queryByTestId('review-retention-banner')).not.toBeInTheDocument();
 });
 
 test('Return to review PATCHes review_status=pending (from an excluded run)', async () => {

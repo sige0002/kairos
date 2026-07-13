@@ -35,6 +35,7 @@ from fastapi import APIRouter, Depends, Request, Response
 from kairos_common import ApiError, JobState
 from pydantic import BaseModel
 
+from api_orchestrator import datasets_index
 from api_orchestrator.deps import get_run_service
 from api_orchestrator.models import DatasetDetail, RunState, RunTopic, TopicQos
 from api_orchestrator.runs import RunService
@@ -294,7 +295,14 @@ async def _export_one(
     # run row (delete cascades the episode). No episode -> no sidecar written.
     dataset_dir = summary.get("dataset_dir")
     if isinstance(dataset_dir, str) and dataset_dir:
-        service.write_episode_sidecar(run_id, dataset_dir)
+        episode = service.write_episode_sidecar(run_id, dataset_dir)
+        # Append the derived root-catalog row (best-effort: the export already
+        # MOVED the data; a catalog write must never fail it — readers fall back
+        # to a tree scan on a stale/corrupt catalog, and it is rebuildable).
+        datasets_index.append_row(
+            service.data_dir,
+            datasets_index.index_row(dataset_dir, summary, episode, service.data_dir),
+        )
     # Success confirmed: the recording has been MOVED out of recorded/, so
     # delete the now-orphaned run row (its dir + siblings). The report
     # sidecars (validation / loss / video_check mp4 cache) are KEPT: they stay
@@ -305,9 +313,31 @@ async def _export_one(
 
 @router.get("")
 async def list_datasets(request: Request) -> dict[str, Any]:
-    """List exported datasets under ``data_dir`` (grouped client-side)."""
+    """List exported datasets (grouped client-side).
+
+    Served from the ``data/index.jsonl`` catalog when it exists and parses;
+    otherwise a live tree scan (the same rows) — the index is a derived,
+    rebuildable optimization, never a second source of truth.
+    """
     data_dir = Path(request.app.state.settings.data_dir)
-    return {"datasets": _scan_datasets(data_dir)}
+    rows = datasets_index.list_from_index(data_dir)
+    if rows is None:
+        rows = _scan_datasets(data_dir)
+    return {"datasets": rows}
+
+
+@router.post("/index/rebuild")
+async def rebuild_index(request: Request) -> dict[str, Any]:
+    """Regenerate ``data/index.jsonl`` purely from the on-disk sidecars.
+
+    Scans the dataset tree (``dataset.json`` + ``episode.json``) and rewrites the
+    catalog from scratch, discarding whatever it held. The recovery path when the
+    catalog drifts from the tree (the sidecars are canonical). Returns
+    ``{"count": N}``.
+    """
+    data_dir = Path(request.app.state.settings.data_dir)
+    count = datasets_index.rebuild(data_dir, _scan_datasets(data_dir))
+    return {"count": count}
 
 
 @router.get("/{operator}/{task}/{index}", response_model=DatasetDetail)
@@ -391,6 +421,16 @@ async def delete_dataset(
             parent.rmdir()
         except OSError:
             break
+    # Drop the catalog row for the removed dataset (atomic rewrite). A no-op if
+    # the catalog is absent/corrupt — a later rebuild regenerates it from disk.
+    datasets_index.remove_rows(
+        data_dir,
+        lambda r: (
+            r.get("operator") == operator
+            and r.get("task") == task
+            and r.get("index") == index
+        ),
+    )
     # The run-keyed reports were kept at export only for this dataset's detail
     # view; with the dataset gone they are orphans. Leave them alone if a run
     # row still claims the run_id (e.g. a re-imported run) or it is unsafe.
