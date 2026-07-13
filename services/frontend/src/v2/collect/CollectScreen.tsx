@@ -67,10 +67,17 @@ export function CollectScreen() {
       <div
         className={cn(
           'grid grid-cols-1 lg:min-h-0 lg:flex-1 lg:grid-cols-[340px_1fr]',
-          // Paired with the console's min-height centering: stop the row from
-          // growing to fill the height on tall screens so the centering has slack
-          // to distribute; short screens keep lg:flex-1 (fill + internal scroll).
-          '[@media(min-height:900px)]:lg:flex-none',
+          // Paired with the console's min-height centering: CAP the row's height
+          // on tall screens (742px = the console's natural height at the 600px
+          // camera cap + episode strip) instead of flex-none'ing it. flex-1 +
+          // max-h means: when the viewport has room the row stops at its natural
+          // height and the centering has slack to distribute; when it does NOT
+          // (e.g. a ~900px-tall window, where flex-none used to overflow by
+          // ~22px and justify-center clipped the context bar's top AND the batch
+          // stats' bottom), the row shrinks to fit and the left column falls
+          // back to its internal scroll — nothing is ever clipped. Short screens
+          // (<900) are untouched: plain lg:flex-1 fill + internal scroll.
+          '[@media(min-height:900px)]:lg:max-h-[742px]',
           COL_GAP,
         )}
       >
