@@ -188,6 +188,10 @@ class DatasetDetail(BaseModel):
     topics: list[RunTopic] = Field(default_factory=list)
     manifest: dict[str, Any] | None = None
     dataset: dict[str, Any] | None = None
+    # Episode labels persisted at export time (from episode.json): task_result /
+    # failure_reason / quality / quality_source / review_status + batch context.
+    # ``null`` when the exported run had no episode. Additive (Console v2 Phase 2).
+    episode: dict[str, Any] | None = None
     validation: dict[str, Any] | None = None
     loss: dict[str, Any] | None = None
 

@@ -21,7 +21,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import shutil
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -87,6 +89,28 @@ def _run_episode(
         quality=episode.quality,
         review_status=episode.review_status,
     )
+
+
+def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
+    """Write *data* to *path* as JSON atomically (temp file + ``os.replace``).
+
+    Mirrors the config router's YAML writer: the temp file is created in the
+    same directory so ``os.replace`` is an atomic same-filesystem rename; on any
+    failure the temp file is removed and the original is left untouched.
+    ``ensure_ascii=False`` keeps non-ASCII operator/task names intact.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+    )
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def allocate_run_id(now: datetime | None = None) -> str:
@@ -582,6 +606,61 @@ class RunService:
         except (OSError, ValueError):
             return None
         return data if isinstance(data, dict) else None
+
+    def write_episode_sidecar(
+        self, run_id: str, dataset_dir: str | Path
+    ) -> dict[str, Any] | None:
+        """Persist a run's episode labels into ``<dataset_dir>/episode.json``.
+
+        Called during a successful dataset export, BEFORE the run row is deleted
+        (delete cascades the episode). Without this, the operator's
+        task_result / failure_reason / quality / review_status and the batch link
+        would be lost on export — labeled data would export as unlabeled.
+
+        Reads the episode + its batch and writes ``episode.json`` next to
+        ``dataset.json``. A run with no episode writes nothing and returns
+        ``None``. The write is best-effort: a filesystem error is logged and
+        swallowed (the export already MOVED the recording — it must not fail
+        after the fact), returning ``None``.
+        """
+        episode = self._store.get_episode_by_run_id(run_id)
+        if episode is None:
+            return None
+        batch = self._store.get_batch(episode.batch_id)
+        payload: dict[str, Any] = {
+            "episode_id": episode.episode_id,
+            "batch_id": episode.batch_id,
+            "batch_seq": batch.batch_seq if batch else None,
+            "index_in_batch": episode.index_in_batch,
+            "task_result": episode.task_result,
+            "failure_reason": episode.failure_reason,
+            "quality": episode.quality,
+            "quality_source": episode.quality_source,
+            "review_status": episode.review_status,
+            # Batch context so the exported dataset is self-describing without
+            # the (now-deleted) batch row.
+            "batch": {
+                "batch_id": batch.batch_id,
+                "batch_seq": batch.batch_seq,
+                "project": batch.project,
+                "task": batch.task,
+                "condition": batch.condition,
+                "operator": batch.operator,
+                "robot": batch.robot,
+            }
+            if batch
+            else None,
+            "exported_at": utc_now_iso8601(),
+        }
+        try:
+            _atomic_write_json(Path(dataset_dir) / "episode.json", payload)
+        except OSError as exc:
+            logger.warning(
+                "episode sidecar write failed",
+                extra={"run_id": run_id, "error": str(exc)},
+            )
+            return None
+        return payload
 
     def delete(self, run_id: str, *, keep_reports: bool = False) -> None:
         """Delete a run: its recording directory + session.json and the row.
