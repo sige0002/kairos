@@ -31,6 +31,10 @@ export interface EpisodeRow {
   ep: number;
   /** Full backend run id — kept for API calls / deep links / title attrs. */
   runId: string;
+  /** Server episode id (Phase 2) when this run has one, else null. Non-null
+   *  means quality/result/adopt-exclude changes PATCH the server episode; null
+   *  means the row is local-only (bridge fallback or no episode). */
+  episodeId: string | null;
   /** Real terminal run state (completed/failed/interrupted); drives the header
    *  badge fallback when the operator hasn't set a quality/decision. */
   state: RunState;

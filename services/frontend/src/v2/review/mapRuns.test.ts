@@ -87,10 +87,12 @@ test('a completed run with a bridge outcome fills Quality / Task result / Batch'
   );
   const withO = rows.find((r) => r.runId === 'withOutcome');
   const without = rows.find((r) => r.runId === 'noOutcome');
-  // Bridged row: Collect's axes mapped to the Review display vocabulary.
+  // Bridged row: Collect's axes mapped to the Review display vocabulary. The
+  // Batch column is a per-list grouping ordinal (first distinct batch = 1), not
+  // the raw batchNum — the server episode has no friendly batch number.
   expect(withO?.quality).toBe('Needs review');
   expect(withO?.task).toBe('Failure');
-  expect(withO?.batch).toBe('4');
+  expect(withO?.batch).toBe('1');
   // A run with no bridge entry stays honestly unset ("—" / null).
   expect(without?.quality).toBeNull();
   expect(without?.task).toBeNull();
@@ -101,7 +103,8 @@ test('good/ok bridge outcome maps to Good / Success', () => {
   const rows = mapRunsToEpisodes([run({ run_id: 'x' })], () => outcome({ quality: 'good', taskResult: 'ok', batchNum: 2 }));
   expect(rows[0]?.quality).toBe('Good');
   expect(rows[0]?.task).toBe('Success');
-  expect(rows[0]?.batch).toBe('2');
+  // Ordinal grouping: the single bridged batch is #1 in the list.
+  expect(rows[0]?.batch).toBe('1');
 });
 
 test('backend truth wins: a failed run stays "Not usable" even if a stale bridge entry exists', () => {
@@ -114,4 +117,58 @@ test('backend truth wins: a failed run stays "Not usable" even if a stale bridge
   expect(rows[0]?.task).toBeNull();
   expect(rows[0]?.batch).toBe('—');
   expect(rows[0]?.issues).toBe('Recording did not complete cleanly');
+});
+
+// ---- Phase 2 server episode (primary) --------------------------------------
+
+const serverEpisode = {
+  episode_id: 'ep_1',
+  batch_id: 'batch_1',
+  index_in_batch: 1,
+  task_result: 'failure' as const,
+  quality: 'needs_review' as const,
+  review_status: 'pending' as const,
+};
+
+test('the server episode is the primary source and wins over any bridge entry', () => {
+  const bridge: Record<string, EpisodeOutcome> = {
+    r1: outcome({ quality: 'good', taskResult: 'ok', batchNum: 9 }),
+  };
+  const rows = mapRunsToEpisodes(
+    [run({ run_id: 'r1', episode: serverEpisode })],
+    (id) => bridge[id] ?? null,
+  );
+  // Server 'needs_review'/'failure' wins over the bridge's Good/Success.
+  expect(rows[0]?.quality).toBe('Needs review');
+  expect(rows[0]?.task).toBe('Failure');
+  expect(rows[0]?.episodeId).toBe('ep_1');
+  expect(rows[0]?.batch).toBe('1');
+});
+
+test('a run with a server episode maps quality/task from it; episodeId enables PATCH', () => {
+  const rows = mapRunsToEpisodes([
+    run({
+      run_id: 'r2',
+      episode: {
+        episode_id: 'ep_2',
+        batch_id: 'batch_1',
+        index_in_batch: 3,
+        task_result: 'success',
+        quality: 'not_usable',
+        review_status: 'excluded',
+      },
+    }),
+  ]);
+  expect(rows[0]?.quality).toBe('Not usable');
+  expect(rows[0]?.task).toBe('Success');
+  expect(rows[0]?.episodeId).toBe('ep_2');
+});
+
+test('a failed run stays "Not usable" and ignores its server episode (no override PATCH)', () => {
+  const rows = mapRunsToEpisodes([
+    run({ run_id: 'x', state: 'failed', episode: { ...serverEpisode, quality: 'good', task_result: 'success' } }),
+  ]);
+  expect(rows[0]?.quality).toBe('Not usable');
+  // endedBadly → the episode is ignored, so there's no episodeId to PATCH.
+  expect(rows[0]?.episodeId).toBeNull();
 });

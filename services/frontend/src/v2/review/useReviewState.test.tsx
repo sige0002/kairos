@@ -103,7 +103,8 @@ test('a bridged Collect outcome surfaces as the effective quality/task/batch', a
   const row = result.current.rows[0]!;
   expect(row.effectiveQuality).toBe('Needs review');
   expect(row.effectiveTask).toBe('Failure');
-  expect(row.batch).toBe('2');
+  // Batch column is a per-list grouping ordinal (first distinct batch = 1).
+  expect(row.batch).toBe('1');
 });
 
 test('a session override still wins over the bridged value', async () => {
@@ -349,4 +350,117 @@ test('operator filter is real: options are the distinct run operators and it fil
 
   act(() => result.current.setOperatorFilter(ALL_OPERATORS));
   expect(result.current.rows).toHaveLength(3);
+});
+
+// ---- Phase 2: PATCH /episodes on override / adopt-exclude (server-backed) ---
+
+/** A run carrying a server episode, plus a capturing PATCH /episodes handler. */
+function mockRunsWithEpisode(
+  episode: Record<string, unknown>,
+  patchStatus = 200,
+): { patchCalls: { url: string; body: Record<string, unknown> | undefined }[] } {
+  const patchCalls: { url: string; body: Record<string, unknown> | undefined }[] = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    const method = (init?.method ?? 'GET').toUpperCase();
+    if (url.includes('/episodes/') && method === 'PATCH') {
+      let body: Record<string, unknown> | undefined;
+      try {
+        body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      } catch {
+        body = undefined;
+      }
+      patchCalls.push({ url, body });
+      if (patchStatus >= 400) {
+        return Promise.resolve(jsonResponse({ error: { code: 'x', message: 'no' } }, patchStatus));
+      }
+      return Promise.resolve(jsonResponse({ episode_id: 'ep_1', ...body }, 200));
+    }
+    if (url.includes('/runs')) {
+      return Promise.resolve(
+        jsonResponse({
+          items: [{ run_id: 'a', state: 'completed', started_at: '2026-07-13T09:00:00Z', episode }],
+          next_cursor: null,
+        }),
+      );
+    }
+    return Promise.resolve(jsonResponse({}));
+  });
+  return { patchCalls };
+}
+
+const EP = {
+  episode_id: 'ep_1',
+  batch_id: 'b1',
+  index_in_batch: 1,
+  task_result: 'success',
+  quality: 'good',
+  review_status: 'pending',
+};
+
+test('cycling quality on a server-backed run PATCHes the episode with the mapped enum', async () => {
+  const { patchCalls } = mockRunsWithEpisode(EP);
+  const { result } = renderHook(() => useReviewState(), { wrapper });
+  await waitFor(() => expect(result.current.rows).toHaveLength(1));
+  // The server episode surfaces as the effective quality.
+  expect(result.current.rows[0]?.effectiveQuality).toBe('Good');
+
+  act(() => result.current.select('a'));
+  act(() => result.current.cycleFinalQuality()); // Good -> Needs review
+
+  expect(result.current.selected!.effectiveQuality).toBe('Needs review');
+  await waitFor(() => expect(patchCalls).toHaveLength(1));
+  expect(patchCalls[0]?.url).toContain('/episodes/ep_1');
+  expect(patchCalls[0]?.body).toMatchObject({ quality: 'needs_review', quality_source: 'operator' });
+});
+
+test('excluding a server-backed run PATCHes review_status excluded', async () => {
+  const { patchCalls } = mockRunsWithEpisode(EP);
+  const { result } = renderHook(() => useReviewState(), { wrapper });
+  await waitFor(() => expect(result.current.rows).toHaveLength(1));
+
+  act(() => result.current.requestArchive('a'));
+  act(() => result.current.confirmArchive());
+
+  await waitFor(() => expect(patchCalls).toHaveLength(1));
+  expect(patchCalls[0]?.url).toContain('/episodes/ep_1');
+  expect(patchCalls[0]?.body).toMatchObject({ review_status: 'excluded', quality: 'not_usable' });
+});
+
+test('a failed PATCH reverts the optimistic quality override', async () => {
+  mockRunsWithEpisode(EP, 500);
+  const { result } = renderHook(() => useReviewState(), { wrapper });
+  await waitFor(() => expect(result.current.rows).toHaveLength(1));
+
+  act(() => result.current.select('a'));
+  act(() => result.current.cycleFinalQuality()); // optimistic Good -> Needs review
+  // The failed PATCH reverts the override back to the server's Good.
+  await waitFor(() => expect(result.current.selected!.effectiveQuality).toBe('Good'));
+});
+
+test('a run with no server episode stays local-only (no PATCH is attempted)', async () => {
+  // No `episode` on the run → mapRuns yields episodeId null.
+  const patchCalls: string[] = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    if (url.includes('/episodes/') && (init?.method ?? 'GET') === 'PATCH') patchCalls.push(url);
+    if (url.includes('/runs')) {
+      return Promise.resolve(
+        jsonResponse({
+          items: [{ run_id: 'a', state: 'completed', started_at: '2026-07-13T09:00:00Z' }],
+          next_cursor: null,
+        }),
+      );
+    }
+    return Promise.resolve(jsonResponse({}));
+  });
+  const { result } = renderHook(() => useReviewState(), { wrapper });
+  await waitFor(() => expect(result.current.rows).toHaveLength(1));
+
+  act(() => result.current.select('a'));
+  act(() => result.current.cycleFinalQuality());
+  // Local override still applies, but nothing is PATCHed to the server.
+  expect(result.current.selected!.effectiveQuality).toBe('Good');
+  await Promise.resolve();
+  expect(patchCalls).toHaveLength(0);
 });

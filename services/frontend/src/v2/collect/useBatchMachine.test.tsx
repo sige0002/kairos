@@ -597,11 +597,81 @@ test('a volatile phase is NOT restored on reload — recording resolves to ready
 });
 
 // ---------------------------------------------------------------------------
-// Collect -> Review episode-outcome bridge.
+// Phase 2 orchestrator API: batch create / episode POST / lifecycle PATCH /
+// server restore, plus the API-down fallback to the local bridge.
 // ---------------------------------------------------------------------------
 
-test('confirming an episode mirrors its outcome into the Collect->Review bridge', async () => {
-  recordFlowFetch('run_bridge');
+interface Phase2Opts {
+  runId?: string;
+  batchId?: string;
+  activeBatches?: unknown[];
+  episodePostFails?: boolean;
+}
+
+/** Mocks the record + batches + episodes endpoints, capturing every request. */
+function phase2Fetch(opts: Phase2Opts = {}) {
+  const runId = opts.runId ?? 'run_1';
+  const batchId = opts.batchId ?? 'batch_x';
+  const calls: { url: string; method: string; body: Record<string, unknown> | undefined }[] = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    const method = (init?.method ?? 'GET').toUpperCase();
+    let body: Record<string, unknown> | undefined;
+    if (init?.body) {
+      try {
+        body = JSON.parse(String(init.body)) as Record<string, unknown>;
+      } catch {
+        body = undefined;
+      }
+    }
+    calls.push({ url, method, body });
+    if (url.includes('/batches') && method === 'POST') {
+      return Promise.resolve(jsonResponse({ ...body, batch_id: batchId, status: 'active' }, 201));
+    }
+    if (url.includes('/batches') && method === 'PATCH') {
+      return Promise.resolve(jsonResponse({ batch_id: batchId, status: body?.status ?? 'active' }));
+    }
+    if (url.includes('/batches') && method === 'GET') {
+      return Promise.resolve(jsonResponse({ items: opts.activeBatches ?? [] }));
+    }
+    if (url.includes('/episodes') && method === 'POST') {
+      if (opts.episodePostFails) {
+        return Promise.resolve(jsonResponse({ error: { code: 'io', message: 'down' } }, 500));
+      }
+      return Promise.resolve(jsonResponse({ episode_id: 'ep_1', ...body }, 201));
+    }
+    if (url.includes('/record/start')) {
+      return Promise.resolve(jsonResponse({ run_id: runId, state: 'recording' }));
+    }
+    if (url.includes('/record/stop')) {
+      return Promise.resolve(jsonResponse({ run_id: runId, state: 'completed' }));
+    }
+    return Promise.resolve(jsonResponse({}));
+  });
+  return { calls };
+}
+
+test('starting a recording creates a server batch with the plan context', async () => {
+  useUiStore.setState({ recordOperator: 'yuki' });
+  const { calls } = phase2Fetch({ runId: 'run_1' });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+
+  act(() => result.current.startRecording());
+  await waitFor(() => expect(result.current.phase).toBe('recording'));
+  await waitFor(() =>
+    expect(calls.some((c) => c.url.includes('/batches') && c.method === 'POST')).toBe(true),
+  );
+  const post = calls.find((c) => c.url.includes('/batches') && c.method === 'POST')!;
+  expect(post.body).toMatchObject({
+    project: 'Tabletop Manipulation',
+    task: 'Pick and Place',
+    operator: 'yuki',
+    target_episodes: EPISODES_PER_BATCH,
+  });
+});
+
+test('saving an episode POSTs it with enum-mapped fields; success does not touch the bridge', async () => {
+  const { calls } = phase2Fetch({ runId: 'run_ep', batchId: 'batch_ep' });
   const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
 
   act(() => result.current.startRecording());
@@ -613,14 +683,143 @@ test('confirming an episode mirrors its outcome into the Collect->Review bridge'
   act(() => result.current.confirmEpisode());
   await waitFor(() => expect(result.current.stats.nRecorded).toBe(1));
 
-  // The run's outcome is now readable by the Review screen, keyed by run_id.
-  expect(getEpisodeOutcome('run_bridge')).toMatchObject({
-    quality: 'good', // clean recording (<6s), independent of the failed task
-    taskResult: 'fail',
-    failReason: 'Object dropped',
+  await waitFor(() =>
+    expect(calls.some((c) => c.url.includes('/episodes') && c.method === 'POST')).toBe(true),
+  );
+  const post = calls.find((c) => c.url.includes('/episodes') && c.method === 'POST')!;
+  // Collect's 'fail' + clean recording map to the server vocabulary.
+  expect(post.body).toMatchObject({
+    batch_id: 'batch_ep',
+    run_id: 'run_ep',
+    index_in_batch: 1,
+    task_result: 'failure',
+    quality: 'good',
+    quality_source: 'operator',
+    failure_reason: 'Object dropped',
+  });
+  // Server accepted it → the browser bridge is not written.
+  expect(getEpisodeOutcome('run_ep')).toBeNull();
+});
+
+test('an episode POST failure falls back to the local bridge', async () => {
+  phase2Fetch({ runId: 'run_fb', batchId: 'batch_fb', episodePostFails: true });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+
+  act(() => result.current.startRecording());
+  await waitFor(() => expect(result.current.phase).toBe('recording'));
+  act(() => result.current.stopRecording());
+  await waitFor(() => expect(result.current.phase).toBe('result'), { timeout: 4000 });
+  act(() => result.current.pickSuccess());
+  act(() => result.current.confirmEpisode());
+  await waitFor(() => expect(result.current.stats.nRecorded).toBe(1));
+
+  // Server rejected → the outcome is preserved in the browser bridge so Review
+  // can still show it via the fallback path.
+  await waitFor(() => expect(getEpisodeOutcome('run_fb')).not.toBeNull());
+  expect(getEpisodeOutcome('run_fb')).toMatchObject({
+    quality: 'good',
+    taskResult: 'ok',
     batchNum: 1,
     episodeIndex: 1,
   });
+});
+
+test('ending a batch early PATCHes the server batch to ended_early', async () => {
+  const { calls } = phase2Fetch({ runId: 'run_e', batchId: 'batch_e' });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+
+  act(() => result.current.startRecording());
+  await waitFor(() => expect(result.current.phase).toBe('recording'));
+  act(() => result.current.pickEndReason('Safety'));
+  act(() => result.current.confirmEndBatch());
+  await waitFor(() => expect(result.current.phase).toBe('ended'));
+
+  await waitFor(() =>
+    expect(
+      calls.some((c) => c.url.includes('/batches/batch_e') && c.method === 'PATCH'),
+    ).toBe(true),
+  );
+  const patch = calls.find((c) => c.url.includes('/batches/batch_e') && c.method === 'PATCH')!;
+  expect(patch.body).toMatchObject({ status: 'ended_early', ended_reason: 'Safety' });
+});
+
+test('completing the 30th episode PATCHes the batch to completed', async () => {
+  const seed = Array.from({ length: EPISODES_PER_BATCH - 1 }, (_, i) => ({
+    index: i + 1,
+    quality: 'good' as const,
+    taskResult: 'ok' as const,
+    runId: `r${i + 1}`,
+  }));
+  window.localStorage.setItem(
+    BATCH_STORAGE_KEY,
+    JSON.stringify({
+      batchNum: 1,
+      batchId: 'batch_full',
+      episodes: seed,
+      project: 'P',
+      task: 'T',
+      condition: 'C',
+    }),
+  );
+  __rehydrateBatchStore();
+  const { calls } = phase2Fetch({ runId: 'run_30', batchId: 'batch_full' });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  expect(result.current.stats.nRecorded).toBe(EPISODES_PER_BATCH - 1);
+
+  act(() => result.current.startRecording());
+  await waitFor(() => expect(result.current.phase).toBe('recording'));
+  act(() => result.current.stopRecording());
+  await waitFor(() => expect(result.current.phase).toBe('result'), { timeout: 4000 });
+  act(() => result.current.pickSuccess());
+  act(() => result.current.confirmEpisode());
+  await waitFor(() => expect(result.current.phase).toBe('completed'));
+
+  await waitFor(() =>
+    expect(
+      calls.some(
+        (c) =>
+          c.url.includes('/batches/batch_full') &&
+          c.method === 'PATCH' &&
+          c.body?.status === 'completed',
+      ),
+    ).toBe(true),
+  );
+});
+
+test('reload restores the active batch from the server (GET /batches?status=active)', async () => {
+  phase2Fetch({
+    activeBatches: [
+      {
+        batch_id: 'batch_active',
+        project: 'Bin Picking',
+        task: 'Bin to Tray',
+        condition: 'Bin: full',
+        operator: 'yuki',
+        target_episodes: 30,
+        status: 'active',
+        episode_count: 2,
+        episodes: [
+          { index: 1, run_id: 'r1', task_result: 'success', quality: 'good', review_status: 'pending' },
+          {
+            index: 2,
+            run_id: 'r2',
+            task_result: 'failure',
+            quality: 'needs_review',
+            review_status: 'pending',
+          },
+        ],
+      },
+    ],
+  });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+
+  await waitFor(() => expect(result.current.stats.nRecorded).toBe(2));
+  expect(result.current.project).toBe('Bin Picking');
+  expect(result.current.task).toBe('Bin to Tray');
+  expect(result.current.condition).toBe('Bin: full');
+  // Second episode's needs_review maps to the local 'review' quality axis.
+  expect(result.current.stats.nReview).toBe(1);
+  expect(result.current.stats.epNext).toBe(3);
 });
 
 test('discarding a run removes its bridge entry (no stale outcome lingers)', async () => {

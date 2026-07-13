@@ -224,8 +224,8 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
         data-testid="review-bridge-caption"
         className="border-t border-gray-100 px-[18px] py-2 text-[11px] text-gray-400"
       >
-        Quality / Task / Batch come from this browser&apos;s Collect sessions — the server-side
-        episode model is Phase 2.
+        Quality / Task / Batch from the episode records (server) · pre-Phase-2 entries from this
+        browser.
       </p>
     </div>
   );

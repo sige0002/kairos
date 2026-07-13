@@ -93,6 +93,10 @@ export interface RunSummary {
   duration_ms?: number;
   operator?: string | null;
   task?: string | null;
+  /** Console v2 Phase 2: the episode this run belongs to (null when none),
+   *  additively joined by the runs read path so Review shows real data on any
+   *  terminal. Never persisted on the run row. */
+  episode?: RunEpisode | null;
 }
 
 /** `dataset_export` job summary (dora_runner): one exported dataset directory. */
@@ -214,6 +218,8 @@ export interface RunDetail {
   task?: string | null;
   split?: Record<string, unknown> | null;
   error?: { code: string; message: string } | null;
+  /** Console v2 Phase 2: the episode this run belongs to (null when none). */
+  episode?: RunEpisode | null;
   /** Optional audit manifest + stats surfaced by the orchestrator. */
   manifest?: Record<string, unknown> | null;
   validation?: Record<string, unknown> | null;
@@ -465,3 +471,109 @@ export interface RecordStatusEvent {
 }
 
 export type SseEventType = 'record_status' | 'metrics' | 'alert' | 'job' | 'resync';
+
+// ---- Console v2 Phase 2: batches & episodes -----------------------------
+// Mirrors api_orchestrator.models (batches/episodes). Backend vocab differs
+// from the Review display enums (types in v2/review/types.ts): here quality is
+// 'good'|'needs_review'|'not_usable' and task result 'success'|'failure'.
+
+export type EpisodeTaskResult = 'success' | 'failure';
+export type EpisodeQuality = 'good' | 'needs_review' | 'not_usable';
+export type EpisodeQualitySource = 'operator' | 'quick_check' | 'validator';
+export type EpisodeReviewStatus = 'pending' | 'adopted' | 'excluded';
+export type BatchStatus = 'active' | 'completed' | 'ended_early';
+
+/** Compact episode summary joined onto a run (`Run.episode`). */
+export interface RunEpisode {
+  episode_id: string;
+  batch_id: string;
+  index_in_batch: number;
+  task_result: EpisodeTaskResult;
+  failure_reason?: string | null;
+  quality: EpisodeQuality;
+  review_status: EpisodeReviewStatus;
+}
+
+export interface Batch {
+  batch_id: string;
+  robot?: string | null;
+  project: string;
+  task: string;
+  condition?: string | null;
+  operator?: string | null;
+  target_episodes: number;
+  status: BatchStatus;
+  ended_reason?: string | null;
+  created_at?: string | null;
+  ended_at?: string | null;
+}
+
+export interface Episode {
+  episode_id: string;
+  batch_id: string;
+  run_id: string;
+  index_in_batch: number;
+  task_result: EpisodeTaskResult;
+  failure_reason?: string | null;
+  quality: EpisodeQuality;
+  quality_source: EpisodeQualitySource;
+  review_status: EpisodeReviewStatus;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+/** Per-episode row inside a batch list item (`BatchSummary.episodes`). */
+export interface BatchEpisodeSummary {
+  index: number;
+  run_id: string;
+  task_result: EpisodeTaskResult;
+  quality: EpisodeQuality;
+  review_status: EpisodeReviewStatus;
+}
+
+export interface BatchSummary extends Batch {
+  episode_count: number;
+  episodes: BatchEpisodeSummary[];
+}
+
+export interface BatchDetail extends Batch {
+  episode_count: number;
+  episodes: Episode[];
+}
+
+export interface BatchListResponse {
+  items: BatchSummary[];
+}
+
+export interface BatchCreateRequest {
+  robot?: string | null;
+  project: string;
+  task: string;
+  condition?: string | null;
+  operator?: string | null;
+  target_episodes?: number;
+}
+
+export interface BatchPatchRequest {
+  status?: BatchStatus;
+  ended_reason?: string | null;
+  condition?: string | null;
+}
+
+export interface EpisodeCreateRequest {
+  batch_id: string;
+  run_id: string;
+  index_in_batch: number;
+  task_result: EpisodeTaskResult;
+  failure_reason?: string | null;
+  quality: EpisodeQuality;
+  quality_source?: EpisodeQualitySource;
+}
+
+export interface EpisodePatchRequest {
+  task_result?: EpisodeTaskResult;
+  failure_reason?: string | null;
+  quality?: EpisodeQuality;
+  quality_source?: EpisodeQualitySource;
+  review_status?: EpisodeReviewStatus;
+}

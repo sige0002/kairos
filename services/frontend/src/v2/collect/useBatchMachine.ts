@@ -18,12 +18,22 @@ import {
   useSyncExternalStore,
 } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiDelete, apiGet, apiPost } from '../../api/client';
+import { ApiError, apiDelete, apiGet, apiPost } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
 import { errorText } from '../../components/ErrorMessage';
 import { useUiStore } from '../../store/uiStore';
-import { removeEpisodeOutcome, saveEpisodeOutcome } from '../episodeBridge';
+import {
+  createBatch,
+  createEpisode,
+  listActiveBatches,
+  patchBatch,
+  removeEpisodeOutcome,
+  saveEpisodeOutcome,
+} from '../episodeBridge';
 import type {
+  BatchEpisodeSummary,
+  BatchSummary,
+  EpisodeCreateRequest,
   RecordArming,
   RecordIntegrity,
   RecordStartRequest,
@@ -172,6 +182,9 @@ interface MachineState {
   phase: Phase;
   episodes: EpisodeRecord[];
   batchNum: number;
+  /** Server batch id (Phase 2), null until the batch is created on the API. The
+   *  display counter is `batchNum`; this is the real key for episode POSTs. */
+  batchId: string | null;
   elapsedMs: number;
   recWarning: boolean;
   pendingTask: 'ok' | 'fail' | null;
@@ -190,6 +203,7 @@ function createInitialState(): MachineState {
     phase: 'ready',
     episodes: [],
     batchNum: 1,
+    batchId: null,
     elapsedMs: 0,
     recWarning: false,
     pendingTask: null,
@@ -225,7 +239,8 @@ type Action =
   | { type: 'START_NEXT_BATCH' }
   | { type: 'SET_CONDITION'; condition: string }
   | { type: 'SET_PROJECT'; project: string; task: string; condition: string }
-  | { type: 'SET_TASK'; task: string; condition: string };
+  | { type: 'SET_TASK'; task: string; condition: string }
+  | { type: 'SET_BATCH_ID'; batchId: string | null };
 
 function reducer(state: MachineState, action: Action): MachineState {
   switch (action.type) {
@@ -331,6 +346,9 @@ function reducer(state: MachineState, action: Action): MachineState {
         ...state,
         episodes: [],
         batchNum: state.batchNum + 1,
+        // A new display batch needs a fresh server batch; cleared here and
+        // re-created lazily on the next start (see ensureBatch in the hook).
+        batchId: null,
         phase: 'ready',
         elapsedMs: 0,
         recWarning: false,
@@ -343,6 +361,8 @@ function reducer(state: MachineState, action: Action): MachineState {
       return { ...state, project: action.project, task: action.task, condition: action.condition };
     case 'SET_TASK':
       return { ...state, task: action.task, condition: action.condition };
+    case 'SET_BATCH_ID':
+      return { ...state, batchId: action.batchId };
     default:
       return state;
   }
@@ -373,6 +393,9 @@ const BATCH_STORAGE_KEY = 'kairos.collect.batch';
 
 interface PersistedBatch {
   batchNum: number;
+  /** Server batch id, mirrored so a reload can match `batchNum` back to it when
+   *  the API is reachable, and so an API-down reload can still resume. */
+  batchId: string | null;
   episodes: EpisodeRecord[];
   project: string;
   task: string;
@@ -383,6 +406,7 @@ interface PersistedBatch {
 function serializeDurable(state: MachineState): string {
   const blob: PersistedBatch = {
     batchNum: state.batchNum,
+    batchId: state.batchId,
     episodes: state.episodes,
     project: state.project,
     task: state.task,
@@ -430,6 +454,7 @@ function readInitialState(): MachineState {
       ...base,
       phase,
       batchNum: typeof blob.batchNum === 'number' ? blob.batchNum : base.batchNum,
+      batchId: typeof blob.batchId === 'string' ? blob.batchId : null,
       episodes,
       project: typeof blob.project === 'string' ? blob.project : base.project,
       task: typeof blob.task === 'string' ? blob.task : base.task,
@@ -448,27 +473,10 @@ function notifyStore(): void {
 }
 
 function dispatch(action: Action): void {
-  const prev = currentState;
-  const next = reducer(prev, action);
-  if (next === prev) return;
+  const next = reducer(currentState, action);
+  if (next === currentState) return;
   currentState = next;
   persistBatch(next);
-  // Mirror a just-confirmed episode's outcome into the cross-session bridge
-  // (Collect -> Review), keyed by its run_id. Done here alongside the other
-  // localStorage mirroring — the reducer itself stays pure.
-  if (action.type === 'CONFIRM_EPISODE' && next.episodes.length > prev.episodes.length) {
-    const ep = next.episodes[next.episodes.length - 1];
-    if (ep?.runId) {
-      saveEpisodeOutcome(ep.runId, {
-        quality: ep.quality,
-        taskResult: ep.taskResult,
-        failReason: ep.failReason,
-        batchNum: next.batchNum,
-        episodeIndex: ep.index,
-        savedAt: Date.now(),
-      });
-    }
-  }
   notifyStore();
 }
 
@@ -488,10 +496,57 @@ function useBatchState(): MachineState {
   return useSyncExternalStore(subscribeStore, getStoreSnapshot, getStoreSnapshot);
 }
 
+// ---- Phase 2 server restore ----------------------------------------------
+// On the first Collect mount of a page load, the durable batch context is
+// reconciled with the orchestrator (GET /batches?status=active — server truth,
+// which supersedes the localStorage fallback restored above). Runs once per
+// load (this flag), never on later tab-switch remounts, so it can't clobber
+// in-memory progress; and only while the machine is at rest, so it never
+// disturbs an active recording. On API failure the localStorage restore stands.
+let serverHydrated = false;
+
+/** Map a server batch's episode summary to the local display record. */
+function serverEpisodeToRecord(ep: BatchEpisodeSummary): EpisodeRecord {
+  return {
+    index: ep.index,
+    // Collect's live quality axis is good | review; a server 'not_usable'
+    // (e.g. a Review exclude) has no Collect equivalent, so it shows as review.
+    quality: ep.quality === 'good' ? 'good' : 'review',
+    taskResult: ep.task_result === 'failure' ? 'fail' : 'ok',
+    runId: ep.run_id,
+  };
+}
+
+/** Adopt the server's active batch as the durable context. When the server
+ *  reports none we deliberately leave local state alone (a no-op) rather than
+ *  clobber it — the local blob may hold a just-finished batch or an episode that
+ *  only reached the browser bridge while the API was down; either self-heals on
+ *  the next recording. Volatile phase stays at rest. */
+function applyServerRestore(batch: BatchSummary | null): void {
+  if (!batch) return;
+  const episodes = batch.episodes.map(serverEpisodeToRecord);
+  // Recover the display counter only when it belongs to this same server batch.
+  const batchNum = currentState.batchId === batch.batch_id ? currentState.batchNum : 1;
+  const phase: Phase = episodes.length >= EPISODES_PER_BATCH ? 'completed' : 'ready';
+  currentState = {
+    ...createInitialState(),
+    batchId: batch.batch_id,
+    batchNum,
+    project: batch.project,
+    task: batch.task,
+    condition: batch.condition ?? '—',
+    episodes,
+    phase,
+  };
+  persistBatch(currentState);
+  notifyStore();
+}
+
 // Test-only hooks: reset the module store between tests, or re-run the
 // storage-restore path after seeding a localStorage blob. Not used in app code.
 export function __resetBatchStore(): void {
   lastPersisted = '';
+  serverHydrated = false;
   try {
     window.localStorage.removeItem(BATCH_STORAGE_KEY);
   } catch {
@@ -701,6 +756,51 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     [],
   );
 
+  // ---- Phase 2 batch lifecycle (server API) --------------------------------
+  // A server batch is created lazily on the first recording of a batch (and
+  // after "start next batch"), not eagerly, so merely opening Collect never
+  // spawns empty batches. Recording never waits on it: if the create fails the
+  // recording still proceeds and the episode save falls back to the bridge.
+  const batchCreateInFlight = useRef(false);
+  const ensureBatch = useCallback(() => {
+    const s = getStoreSnapshot();
+    if (s.batchId || batchCreateInFlight.current) return;
+    batchCreateInFlight.current = true;
+    const op = useUiStore.getState().recordOperator.trim();
+    createBatch({
+      project: s.project,
+      task: s.task,
+      condition: s.condition && s.condition !== '—' ? s.condition : undefined,
+      operator: op || undefined,
+      target_episodes: EPISODES_PER_BATCH,
+    })
+      .then((batch) => dispatch({ type: 'SET_BATCH_ID', batchId: batch.batch_id }))
+      .catch(() => {
+        // API unreachable — the episode save will fall back to the bridge.
+      })
+      .finally(() => {
+        batchCreateInFlight.current = false;
+      });
+  }, []);
+
+  // Once-per-page-load reconcile with the server's active batch. Never on later
+  // tab-switch remounts (module flag), and only while the machine is at rest, so
+  // it can't disturb an in-progress recording. On failure the localStorage
+  // restore already applied at store init stands.
+  useEffect(() => {
+    if (serverHydrated) return;
+    serverHydrated = true;
+    listActiveBatches()
+      .then((resp) => {
+        const p = getStoreSnapshot().phase;
+        const atRest = p === 'ready' || p === 'completed' || p === 'ended' || p === 'paused';
+        if (atRest) applyServerRestore(resp.items?.[0] ?? null);
+      })
+      .catch(() => {
+        /* API unreachable — keep the localStorage fallback. */
+      });
+  }, []);
+
   // ---- real recording API (mirrors LiveTab's start/stop wiring) -----------
   // Tracks a Cancel (during arming) or an end-batch-early confirmed while
   // arming/recording, so a start that lands late — or a stop that fails — is
@@ -754,6 +854,8 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   const startRecording = useCallback(() => {
     if (state.phase !== 'ready' || noSelection) return;
     cancelledStartRef.current = false;
+    // Lazily create the server batch (best-effort, never blocks the recording).
+    ensureBatch();
     dispatch({ type: 'START_REQUESTED' });
     // Mirror v1 LiveTab.tsx:345-350: topics from the resolved selection, plus
     // operator (from the header input, via uiStore) and task when non-empty.
@@ -761,7 +863,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     if (operator.trim()) body.operator = operator.trim();
     if (state.task.trim()) body.task = state.task.trim();
     startMutation.mutate(body);
-  }, [state.phase, state.task, noSelection, selection.topics, operator, startMutation]);
+  }, [state.phase, state.task, noSelection, selection.topics, operator, startMutation, ensureBatch]);
 
   const cancelArming = useCallback(() => {
     if (state.phase !== 'arming') return;
@@ -815,7 +917,54 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     const isFail = state.pendingTask === 'fail';
     const reason = state.failReason;
     const needsReview = state.recWarning;
+    const runId = state.currentRunId;
+    const batchId = state.batchId;
+    const batchNum = state.batchNum;
     dispatch({ type: 'CONFIRM_EPISODE' });
+
+    // Persist the episode to the server (Phase 2). On any failure keep the local
+    // save and fall back to the browser bridge, so Review still shows it, and
+    // tell the operator it didn't reach the server (honesty).
+    if (runId) {
+      const bridgeFallback = () => {
+        saveEpisodeOutcome(runId, {
+          quality: needsReview ? 'review' : 'good',
+          taskResult: isFail ? 'fail' : 'ok',
+          failReason: isFail ? reason || undefined : undefined,
+          batchNum,
+          episodeIndex: nextIndex,
+          savedAt: Date.now(),
+        });
+        showToast(`Episode ${nextIndex} saved locally — couldn't reach the server`);
+      };
+      if (batchId) {
+        const body: EpisodeCreateRequest = {
+          batch_id: batchId,
+          run_id: runId,
+          index_in_batch: nextIndex,
+          task_result: isFail ? 'failure' : 'success',
+          quality: needsReview ? 'needs_review' : 'good',
+          quality_source: 'operator',
+        };
+        if (isFail && reason) body.failure_reason = reason;
+        createEpisode(body)
+          .then(() => {
+            if (willComplete) void patchBatch(batchId, { status: 'completed' }).catch(() => {});
+          })
+          .catch((err) => {
+            // 409 = the run already has an episode (already saved) — not a failure.
+            if (err instanceof ApiError && err.status === 409) return;
+            bridgeFallback();
+          });
+      } else {
+        // No server batch (create failed / API down) — bridge only.
+        bridgeFallback();
+      }
+    } else if (willComplete && batchId) {
+      // Completed with no run to attach — still mark the batch done.
+      void patchBatch(batchId, { status: 'completed' }).catch(() => {});
+    }
+
     if (!willComplete) {
       // Report both axes when either is notable — a failed task and/or a
       // review-flagged recording — so the toast never implies "not usable"
@@ -826,7 +975,17 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
       const detail = notes.length ? ` — ${notes.join(', ')}` : '';
       showToast(`Episode ${nextIndex} saved${detail} — ready for #${nextIndex + 1}`);
     }
-  }, [state.phase, state.pendingTask, state.failReason, state.recWarning, state.episodes.length, showToast]);
+  }, [
+    state.phase,
+    state.pendingTask,
+    state.failReason,
+    state.recWarning,
+    state.episodes.length,
+    state.currentRunId,
+    state.batchId,
+    state.batchNum,
+    showToast,
+  ]);
 
   // ---- discard episode (real DELETE /runs/{id} — v1 LiveTab Keep/Discard) ----
   // The result-phase "Discard & re-record" used to only reset local state, so
@@ -891,17 +1050,26 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     } else if (state.phase === 'recording' || state.phase === 'saving' || state.phase === 'quickcheck') {
       void apiPost('/record/stop', {}).catch(() => {});
     }
+    // Mark the server batch ended-early (best-effort; only if one exists).
+    if (state.batchId) {
+      void patchBatch(state.batchId, {
+        status: 'ended_early',
+        ended_reason: state.endReason,
+      }).catch(() => {});
+    }
     dispatch({ type: 'CONFIRM_END_BATCH' });
     setEndModalOpen(false);
     setBatchMenuOpen(false);
-  }, [state.endReason, state.phase]);
+  }, [state.endReason, state.phase, state.batchId]);
 
   const startNextBatch = useCallback(() => {
     if (state.phase !== 'ended' && state.phase !== 'completed') return;
     const nextBatch = state.batchNum + 1;
     dispatch({ type: 'START_NEXT_BATCH' });
+    // START_NEXT_BATCH cleared batchId; create the new server batch now.
+    ensureBatch();
     showToast(`Batch ${nextBatch} ready — same condition, ${EPISODES_PER_BATCH} episodes`);
-  }, [state.phase, state.batchNum, showToast]);
+  }, [state.phase, state.batchNum, showToast, ensureBatch]);
 
   // ---- context: project / task / condition ----------------------------------
   const ctxEditable =
@@ -984,9 +1152,11 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     (condition: string) => {
       dispatch({ type: 'SET_CONDITION', condition });
       setCondModalOpen(false);
+      // Persist the condition change on the current server batch (best-effort).
+      if (state.batchId) void patchBatch(state.batchId, { condition }).catch(() => {});
       showToast('Condition updated — applies from next episode');
     },
-    [showToast],
+    [state.batchId, showToast],
   );
 
   const advicePrev = useCallback(

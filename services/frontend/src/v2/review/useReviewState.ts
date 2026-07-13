@@ -10,9 +10,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiDelete, apiGet } from '../../api/client';
-import type { Page, RunSummary } from '../../api/types';
+import type {
+  EpisodePatchRequest,
+  EpisodeQuality,
+  EpisodeReviewStatus,
+  EpisodeTaskResult,
+  Page,
+  RunSummary,
+} from '../../api/types';
 import { useUiStore } from '../../store/uiStore';
-import { removeEpisodeOutcome } from '../episodeBridge';
+import { patchEpisode, removeEpisodeOutcome } from '../episodeBridge';
 import { mapRunsToEpisodes } from './mapRuns';
 import { initialTransferSlot, transferReducer, TRANSFER_DURATION_MS, TRANSFER_TICK_MS } from './transfer';
 import { useSplitMode } from './splitMode';
@@ -25,6 +32,21 @@ const REVIEW_RUNS_KEY = ['runs', 'review-list'] as const;
 const REVIEW_PAGE_LIMIT = 200;
 
 const QUALITY_ORDER: Quality[] = ['Good', 'Needs review', 'Not usable'];
+
+// ---- Review display value → Phase 2 server enum (for PATCH /episodes) ------
+function toServerQuality(q: Quality): EpisodeQuality {
+  if (q === 'Needs review') return 'needs_review';
+  if (q === 'Not usable') return 'not_usable';
+  return 'good';
+}
+function toServerTask(t: TaskResult): EpisodeTaskResult {
+  return t === 'Failure' ? 'failure' : 'success';
+}
+function toServerReview(d: Decision): EpisodeReviewStatus {
+  if (d === 'adopted') return 'adopted';
+  if (d === 'excluded') return 'excluded';
+  return 'pending';
+}
 
 /** Sentinel option value for "any operator" in the operator filter. */
 export const ALL_OPERATORS = '__all__';
@@ -126,6 +148,27 @@ export function useReviewState(): ReviewState {
     [],
   );
 
+  // ---- Phase 2 server sync (PATCH /episodes) --------------------------------
+  // Adopt/exclude and quality/result overrides are applied optimistically to the
+  // local overlays below, then PATCHed to the server episode when the run has
+  // one. A run WITHOUT a server episode (bridge-only / pre-Phase-2) stays
+  // local-only — nothing to sync. On a failed PATCH we revert the optimistic
+  // change and say so, so the UI never claims a server-save that didn't happen.
+  const syncEpisode = useCallback(
+    (episodeId: string | null, body: EpisodePatchRequest, revert: () => void) => {
+      if (!episodeId) return;
+      patchEpisode(episodeId, body)
+        .then(() => {
+          void queryClient.invalidateQueries({ queryKey: REVIEW_RUNS_KEY });
+        })
+        .catch(() => {
+          revert();
+          showToast('Couldn’t save to the server — change reverted');
+        });
+    },
+    [queryClient, showToast],
+  );
+
   // ---- local overlays: decisions / overrides / archive / transfer ----------
   const [decisions, setDecisions] = useState<Record<string, Decision>>({});
   const [overrides, setOverrides] = useState<Record<string, { quality?: Quality; task?: TaskResult }>>({});
@@ -134,6 +177,28 @@ export function useReviewState(): ReviewState {
   const [overrideCounts, setOverrideCounts] = useState<Record<string, number>>({});
   const [archivedRunIds, setArchivedRunIds] = useState<Record<string, true>>({});
   const [transfers, setTransfers] = useState<Record<string, TransferSlot>>({});
+
+  // Restore a map entry to a captured prior value (delete when it had none) —
+  // used by the optimistic PATCH reverts below.
+  const restoreOverride = useCallback(
+    (runId: string, prev: { quality?: Quality; task?: TaskResult } | undefined) => {
+      setOverrides((cur) => {
+        const next = { ...cur };
+        if (prev === undefined) delete next[runId];
+        else next[runId] = prev;
+        return next;
+      });
+    },
+    [],
+  );
+  const restoreDecision = useCallback((runId: string, prev: Decision | undefined) => {
+    setDecisions((cur) => {
+      const next = { ...cur };
+      if (prev === undefined) delete next[runId];
+      else next[runId] = prev;
+      return next;
+    });
+  }, []);
 
   const decorated: DecoratedEpisode[] = useMemo(
     () =>
@@ -218,24 +283,45 @@ export function useReviewState(): ReviewState {
           return next;
         });
         showToast(`Episode #${row.ep} restored — no longer excluded`);
+        // Un-exclude on the server → review_status pending; re-hide on failure.
+        syncEpisode(row.episodeId, { review_status: 'pending' }, () => {
+          setArchivedRunIds((prev) => ({ ...prev, [runId]: true }));
+        });
         return;
       }
       setPendingArchiveRunId(runId);
     },
-    [decorated, showToast],
+    [decorated, showToast, syncEpisode],
   );
   const confirmArchive = useCallback(() => {
     if (!pendingArchiveRunId) return;
-    const row = decorated.find((r) => r.runId === pendingArchiveRunId);
-    setArchivedRunIds((prev) => ({ ...prev, [pendingArchiveRunId]: true }));
+    const runId = pendingArchiveRunId;
+    const row = decorated.find((r) => r.runId === runId);
+    const prevOverride = overrides[runId];
+    const prevDecision = decisions[runId];
+    setArchivedRunIds((prev) => ({ ...prev, [runId]: true }));
     setOverrides((prev) => ({
       ...prev,
-      [pendingArchiveRunId]: { ...prev[pendingArchiveRunId], quality: 'Not usable' },
+      [runId]: { ...prev[runId], quality: 'Not usable' },
     }));
-    setDecisions((prev) => ({ ...prev, [pendingArchiveRunId]: 'excluded' }));
+    setDecisions((prev) => ({ ...prev, [runId]: 'excluded' }));
     showToast(`Episode #${row?.ep ?? '?'} → Not usable · Excluded (recording kept, restorable)`);
     setPendingArchiveRunId(null);
-  }, [pendingArchiveRunId, decorated, showToast]);
+    // Exclude on the server; revert the whole optimistic change if it fails.
+    syncEpisode(
+      row?.episodeId ?? null,
+      { review_status: 'excluded', quality: 'not_usable', quality_source: 'operator' },
+      () => {
+        setArchivedRunIds((prev) => {
+          const next = { ...prev };
+          delete next[runId];
+          return next;
+        });
+        restoreOverride(runId, prevOverride);
+        restoreDecision(runId, prevDecision);
+      },
+    );
+  }, [pendingArchiveRunId, decorated, overrides, decisions, showToast, syncEpisode, restoreOverride, restoreDecision]);
   const cancelArchive = useCallback(() => setPendingArchiveRunId(null), []);
   const pendingArchiveEp = pendingArchiveRunId
     ? (decorated.find((r) => r.runId === pendingArchiveRunId)?.ep ?? null)
@@ -351,6 +437,14 @@ export function useReviewState(): ReviewState {
   }, [decorated, purgeLocal, queryClient, showToast]);
 
   // ---- decisions / overrides ---------------------------------------------
+  const clearDecision = useCallback((runId: string) => {
+    setDecisions((prev) => {
+      const next = { ...prev };
+      delete next[runId];
+      return next;
+    });
+  }, []);
+
   const adoptAllGood = useCallback(() => {
     const candidates = decorated.filter((r) => !r.isArchived && r.effectiveQuality === 'Good' && !r.decision);
     if (!candidates.length) {
@@ -365,15 +459,24 @@ export function useReviewState(): ReviewState {
       return next;
     });
     showToast(`${candidates.length} good episode${candidates.length === 1 ? '' : 's'} adopted — needs-review items left untouched`);
-  }, [decorated, showToast]);
+    // Persist each server-backed adoption; revert just the ones that fail.
+    candidates.forEach((c) =>
+      syncEpisode(c.episodeId, { review_status: 'adopted' }, () => clearDecision(c.runId)),
+    );
+  }, [decorated, showToast, syncEpisode, clearDecision]);
 
   const decide = useCallback(
     (d: Decision) => {
       if (!selected) return;
-      setDecisions((prev) => ({ ...prev, [selected.runId]: d }));
+      const runId = selected.runId;
+      const prev = decisions[runId];
+      setDecisions((prevD) => ({ ...prevD, [runId]: d }));
       showToast(`Episode #${selected.ep} → ${d}`);
+      syncEpisode(selected.episodeId, { review_status: toServerReview(d) }, () =>
+        restoreDecision(runId, prev),
+      );
     },
-    [selected, showToast],
+    [selected, decisions, showToast, syncEpisode, restoreDecision],
   );
 
   const bumpOverrideCount = useCallback((runId: string) => {
@@ -382,22 +485,36 @@ export function useReviewState(): ReviewState {
 
   const cycleFinalQuality = useCallback(() => {
     if (!selected) return;
+    const runId = selected.runId;
+    const episodeId = selected.episodeId;
     // From an unset ("—") base, indexOf === -1 → first click lands on "Good".
     const idx = selected.effectiveQuality ? QUALITY_ORDER.indexOf(selected.effectiveQuality) : -1;
     const next = QUALITY_ORDER[(idx + 1) % QUALITY_ORDER.length]!;
-    setOverrides((prev) => ({ ...prev, [selected.runId]: { ...prev[selected.runId], quality: next } }));
-    bumpOverrideCount(selected.runId);
+    const prevOverride = overrides[runId];
+    setOverrides((prev) => ({ ...prev, [runId]: { ...prev[runId], quality: next } }));
+    bumpOverrideCount(runId);
     showToast(`#${selected.ep} quality → ${next} (your override, kept this session)`);
-  }, [selected, showToast, bumpOverrideCount]);
+    syncEpisode(episodeId, { quality: toServerQuality(next), quality_source: 'operator' }, () => {
+      restoreOverride(runId, prevOverride);
+      setOverrideCounts((prev) => ({ ...prev, [runId]: Math.max(0, (prev[runId] ?? 1) - 1) }));
+    });
+  }, [selected, overrides, showToast, bumpOverrideCount, syncEpisode, restoreOverride]);
 
   const cycleTaskResult = useCallback(() => {
     if (!selected) return;
+    const runId = selected.runId;
+    const episodeId = selected.episodeId;
     // Unset base → first click sets Success; thereafter toggles.
     const next: TaskResult = selected.effectiveTask === 'Success' ? 'Failure' : 'Success';
-    setOverrides((prev) => ({ ...prev, [selected.runId]: { ...prev[selected.runId], task: next } }));
-    bumpOverrideCount(selected.runId);
+    const prevOverride = overrides[runId];
+    setOverrides((prev) => ({ ...prev, [runId]: { ...prev[runId], task: next } }));
+    bumpOverrideCount(runId);
     showToast(`#${selected.ep} task result → ${next} (your override, kept this session)`);
-  }, [selected, showToast, bumpOverrideCount]);
+    syncEpisode(episodeId, { task_result: toServerTask(next) }, () => {
+      restoreOverride(runId, prevOverride);
+      setOverrideCounts((prev) => ({ ...prev, [runId]: Math.max(0, (prev[runId] ?? 1) - 1) }));
+    });
+  }, [selected, overrides, showToast, bumpOverrideCount, syncEpisode, restoreOverride]);
 
   // ---- deep links ---------------------------------------------------------
   const setActiveTab = useUiStore((s) => s.setActiveTab);

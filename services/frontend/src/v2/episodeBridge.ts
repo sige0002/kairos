@@ -1,20 +1,33 @@
-// Client-side episode-outcome bridge: Collect → Review.
+// Episode persistence for Console v2: the Phase-2 orchestrator API (primary)
+// plus a browser-local fallback bridge (used only when the API is unreachable
+// or a run predates the server model).
 //
-// The orchestrator has no Session/Batch/Episode model yet (Phase 2), so Collect's
-// per-episode outcomes (quality / task result / batch grouping) live only in the
-// operator's browser. This module is the narrow, shared conduit that lets the
-// Review screen surface those outcomes on the matching run's row instead of a
-// blank "—", keyed by the real `run_id` that both screens already share.
+// The lower half of this file is the REST client for /api/v1/batches and
+// /api/v1/episodes — the server is now the source of truth, so an episode saved
+// on one terminal shows in Review on any other.
 //
-// It is deliberately SEPARATE from Collect's batch-session blob
-// (`kairos.collect.batch`, which clears per batch): this map ACCUMULATES across
-// batches and sessions, capped at the newest ~500 runs. When the Phase-2 backend
-// lands, Review reads the server model instead and this module is retired.
+// The upper half is the LEGACY fallback bridge: a run_id-keyed localStorage map,
+// deliberately SEPARATE from Collect's per-batch blob (`kairos.collect.batch`),
+// capped at the newest ~500 runs. Collect writes it only when the episode POST
+// fails (so the outcome isn't lost); Review reads it only for runs with no
+// server `episode` (so pre-Phase-2 entries stay displayable). No migration —
+// these entries age out.
 //
 // Honesty: the bridge only ever carries what the operator actually chose in
 // Collect. It never overrides backend truth — a run the backend reports as
 // failed/interrupted stays "Not usable" in Review regardless of any stale entry
 // here (the read side in mapRuns.ts enforces that).
+
+import { ApiError, apiGet, apiPost, getApiBase } from '../api/client';
+import type {
+  Batch,
+  BatchCreateRequest,
+  BatchListResponse,
+  BatchPatchRequest,
+  Episode,
+  EpisodeCreateRequest,
+  EpisodePatchRequest,
+} from '../api/types';
 
 /** Collect's own quality axis (`review/useBatchMachine` Quality). Never
  *  'not usable' — that is a backend verdict, not something Collect emits. */
@@ -118,4 +131,58 @@ export function __clearEpisodeOutcomes(): void {
   } catch {
     /* ignore */
   }
+}
+
+// ===========================================================================
+// Phase 2 server API (primary): /api/v1/batches and /api/v1/episodes.
+// ===========================================================================
+
+// PATCH isn't in api/client.ts (and that file is out of scope to edit), so a
+// minimal PATCH mirrors apiPost's error handling here.
+async function apiPatch<T>(path: string, body: unknown): Promise<T> {
+  const base = getApiBase();
+  const url = path.startsWith('/api/')
+    ? path
+    : `${base}${path.startsWith('/') ? '' : '/'}${path}`;
+  const resp = await fetch(url, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) {
+    let errBody = null;
+    try {
+      errBody = await resp.json();
+    } catch {
+      errBody = null;
+    }
+    throw new ApiError(resp.status, errBody, `HTTP ${resp.status} ${resp.statusText}`);
+  }
+  const text = await resp.text();
+  return (text ? JSON.parse(text) : undefined) as T;
+}
+
+/** POST /api/v1/batches — start a batch (Collect). */
+export function createBatch(body: BatchCreateRequest): Promise<Batch> {
+  return apiPost<Batch>('/batches', body);
+}
+
+/** PATCH /api/v1/batches/{id} — early stop / completion / condition change. */
+export function patchBatch(batchId: string, body: BatchPatchRequest): Promise<Batch> {
+  return apiPatch<Batch>(`/batches/${encodeURIComponent(batchId)}`, body);
+}
+
+/** GET /api/v1/batches?status=active — newest-first, each with its episodes. */
+export function listActiveBatches(): Promise<BatchListResponse> {
+  return apiGet<BatchListResponse>('/batches', { query: { status: 'active' } });
+}
+
+/** POST /api/v1/episodes — persist an episode on Collect Save. */
+export function createEpisode(body: EpisodeCreateRequest): Promise<Episode> {
+  return apiPost<Episode>('/episodes', body);
+}
+
+/** PATCH /api/v1/episodes/{id} — Review adopt/exclude or quality/result override. */
+export function patchEpisode(episodeId: string, body: EpisodePatchRequest): Promise<Episode> {
+  return apiPatch<Episode>(`/episodes/${encodeURIComponent(episodeId)}`, body);
 }
