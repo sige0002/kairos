@@ -209,6 +209,10 @@ class RunService:
             "state": run.state.value,
             "message_count": run.message_count,
             "bytes": run.bytes,
+            # Additive (persona review R2 / I-1): lets a page that missed the
+            # start transition still render the elapsed time of an in-progress
+            # recording it did not initiate.
+            "started_at": run.started_at,
         }
         if arming is not None:
             payload["arming"] = arming
@@ -530,8 +534,41 @@ class RunService:
     # ---- status / reads ---------------------------------------------------
 
     async def status(self) -> dict[str, Any]:
-        """Proxy the recorder's ``GET /record/status``."""
-        return await self._recorder.status()
+        """Proxy the recorder's ``GET /record/status``, reconciling stale runs.
+
+        The status poll is the one call every UI makes continuously, so it
+        doubles as LAZY reconciliation: if the DB still holds a live
+        (``recording``/``stopping``) run but the recorder reports that session
+        as over — e.g. the MAX_RECORD_BYTES watcher auto-stopped inside the
+        recorder, bypassing ``POST /record/stop`` — the run is finalized
+        through the normal stop path (metadata re-sync, real terminal state,
+        ``record_status`` SSE) within one poll interval instead of surfacing
+        as ``interrupted`` at the next restart. A live run the recorder does
+        not know at all is reconciled to ``interrupted`` (same rule as the
+        startup pass). Reconciliation errors never fail the status read.
+        """
+        status = await self._recorder.status()
+        try:
+            await self._reconcile_from_status(status)
+        except Exception:  # noqa: BLE001 - status must stay readable.
+            logger.warning("lazy reconciliation failed", exc_info=True)
+        return status
+
+    async def _reconcile_from_status(self, status: dict[str, Any]) -> None:
+        """Finalize/interrupt DB-live runs the recorder says are over."""
+        live = self._store.list_by_states([RunState.recording, RunState.stopping])
+        if not live:
+            return
+        if self._recorder_is_active(status):
+            return  # a genuine recording is in progress; nothing stale.
+        recorder_run = status.get("run_id")
+        if any(run.run_id == recorder_run for run in live):
+            # The recorder finished THIS run on its own (auto-stop): finalize
+            # it exactly like an API stop — stop() is idempotent and derives
+            # the real terminal state from the recorder's manifest.
+            await self.stop()
+        else:
+            self._reconcile_against_status(live, status)
 
     def get(self, run_id: str) -> Run:
         """Return a run or raise a unified 404."""

@@ -332,3 +332,52 @@ def test_episodes_recorded_is_monotone_across_a_run_delete(
     # Surfaced in the active-batch list (Collect's restore path) too.
     active = client.get("/api/v1/batches", params={"status": "active"}).json()
     assert active["items"][0]["episodes_recorded"] == 3
+
+
+def test_episode_index_collision_reallocates_server_side(
+    client: TestClient, store: RunStore
+) -> None:
+    """Two terminals saving the same browser-allocated index into one batch:
+    the second insert must NOT collide silently — the server re-allocates the
+    next free index and returns it (persona review R2 / codex adjacent-5)."""
+    batch_id = _new_batch(client)["batch_id"]
+    run_a = _seed_run(store, "run_20260714_000010")
+    run_b = _seed_run(store, "run_20260714_000011")
+
+    body = {
+        "batch_id": batch_id,
+        "run_id": run_a,
+        "index_in_batch": 1,
+        "task_result": "success",
+        "quality": "good",
+    }
+    first = client.post("/api/v1/episodes", json=body)
+    assert first.status_code == 201
+    assert first.json()["index_in_batch"] == 1
+
+    second = client.post("/api/v1/episodes", json={**body, "run_id": run_b})
+    assert second.status_code == 201
+    # Server-side re-allocation: the stored index is the batch max + 1.
+    assert second.json()["index_in_batch"] == 2
+
+    # Both rows persisted, indices unique within the batch.
+    eps = client.get(f"/api/v1/batches/{batch_id}").json()["episodes"]
+    assert sorted(e["index_in_batch"] for e in eps) == [1, 2]
+
+
+def test_list_batches_robot_and_operator_filters(client: TestClient) -> None:
+    """Collect scopes its active-batch restore by robot/operator so one
+    terminal never adopts another robot's or operator's batch."""
+    _new_batch(client, robot="airoa_hsr", operator="alice")
+    _new_batch(client, robot="realman", operator="bob")
+
+    by_robot = client.get("/api/v1/batches", params={"robot": "realman"}).json()
+    assert [b["robot"] for b in by_robot["items"]] == ["realman"]
+
+    by_op = client.get("/api/v1/batches", params={"operator": "alice"}).json()
+    assert [b["operator"] for b in by_op["items"]] == ["alice"]
+
+    both = client.get(
+        "/api/v1/batches", params={"robot": "airoa_hsr", "operator": "bob"}
+    ).json()
+    assert both["items"] == []

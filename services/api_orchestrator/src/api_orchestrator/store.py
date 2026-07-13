@@ -272,6 +272,39 @@ class RunStore:
                 WHERE batch_seq IS NULL
                 """
             )
+        # (batch_id, index_in_batch) uniqueness (persona review R2 / codex):
+        # indices were browser-allocated, so two terminals on the same batch
+        # could save the same number. Before adding the unique index to a
+        # pre-existing DB, renumber any duplicate rows (later seq wins a fresh
+        # index above the batch's current max — labels are untouched, only the
+        # display/sort number moves).
+        dupes = conn.execute(
+            """
+            SELECT e.seq, e.batch_id FROM episodes e
+            WHERE EXISTS (
+                SELECT 1 FROM episodes d
+                WHERE d.batch_id = e.batch_id
+                  AND d.index_in_batch = e.index_in_batch
+                  AND d.seq < e.seq
+            )
+            ORDER BY e.seq
+            """
+        ).fetchall()
+        for row in dupes:
+            conn.execute(
+                """
+                UPDATE episodes SET index_in_batch = (
+                    SELECT COALESCE(MAX(index_in_batch), 0) + 1
+                    FROM episodes WHERE batch_id = ?
+                )
+                WHERE seq = ?
+                """,
+                (row["batch_id"], row["seq"]),
+            )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_episodes_batch_index "
+            "ON episodes (batch_id, index_in_batch)"
+        )
 
     @contextmanager
     def _conn(self) -> Iterator[sqlite3.Connection]:
@@ -654,13 +687,27 @@ class RunStore:
             ).fetchall()
         return {row["batch_id"]: row["batch_seq"] for row in rows}
 
-    def list_batches(self, status: str | None = None) -> list[Batch]:
-        """Return batches newest-first, optionally filtered by ``status``."""
+    def list_batches(
+        self,
+        status: str | None = None,
+        *,
+        robot: str | None = None,
+        operator: str | None = None,
+    ) -> list[Batch]:
+        """Return batches newest-first, optionally filtered by ``status`` /
+        ``robot`` / ``operator`` (used to scope Collect's active-batch restore)."""
         params: list[Any] = []
-        where = ""
+        clauses: list[str] = []
         if status is not None:
-            where = "WHERE status = ?"
+            clauses.append("status = ?")
             params.append(status)
+        if robot is not None:
+            clauses.append("robot = ?")
+            params.append(robot)
+        if operator is not None:
+            clauses.append("operator = ?")
+            params.append(operator)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         with self._conn() as conn:
             rows = conn.execute(
                 f"SELECT * FROM batches {where} ORDER BY seq DESC", params
@@ -671,33 +718,37 @@ class RunStore:
 
     def create_episode(self, episode: Episode) -> Episode:
         """Insert a new episode row. Raises :class:`EpisodeRunExistsError` when
-        the run already has an episode (``episodes.run_id`` UNIQUE)."""
+        the run already has an episode (``episodes.run_id`` UNIQUE).
+
+        ``index_in_batch`` is a client HINT: on a ``(batch_id, index_in_batch)``
+        collision (two terminals saving into the same batch allocated the same
+        browser-side number) the store re-allocates the next free index for the
+        batch inside the same locked transaction and returns the episode with
+        the index that was actually stored — the caller must read it back.
+        """
         with self._conn() as conn:
             try:
-                conn.execute(
-                    """
-                    INSERT INTO episodes
-                        (episode_id, batch_id, run_id, index_in_batch,
-                         task_result, failure_reason, quality, quality_source,
-                         review_status, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        episode.episode_id,
-                        episode.batch_id,
-                        episode.run_id,
-                        episode.index_in_batch,
-                        episode.task_result,
-                        episode.failure_reason,
-                        episode.quality,
-                        episode.quality_source,
-                        episode.review_status,
-                        episode.created_at,
-                        episode.updated_at,
-                    ),
-                )
+                self._insert_episode(conn, episode)
             except sqlite3.IntegrityError as exc:
-                raise EpisodeRunExistsError(episode.run_id) from exc
+                msg = str(exc)
+                if "episodes.run_id" in msg:
+                    raise EpisodeRunExistsError(episode.run_id) from exc
+                if "index_in_batch" not in msg:
+                    raise
+                # Index taken: allocate MAX+1 under the store lock (race-safe —
+                # _conn serializes all writers) and retry once.
+                row = conn.execute(
+                    "SELECT COALESCE(MAX(index_in_batch), 0) + 1 AS nxt "
+                    "FROM episodes WHERE batch_id = ?",
+                    (episode.batch_id,),
+                ).fetchone()
+                episode = episode.model_copy(update={"index_in_batch": row["nxt"]})
+                try:
+                    self._insert_episode(conn, episode)
+                except sqlite3.IntegrityError as retry_exc:
+                    if "episodes.run_id" in str(retry_exc):
+                        raise EpisodeRunExistsError(episode.run_id) from retry_exc
+                    raise
             # Bump the batch's monotone recorded counter in the same transaction.
             # A no-op if the batch is absent (the caller validates it first).
             conn.execute(
@@ -706,6 +757,31 @@ class RunStore:
                 (episode.batch_id,),
             )
         return episode
+
+    @staticmethod
+    def _insert_episode(conn: sqlite3.Connection, episode: Episode) -> None:
+        conn.execute(
+            """
+            INSERT INTO episodes
+                (episode_id, batch_id, run_id, index_in_batch,
+                 task_result, failure_reason, quality, quality_source,
+                 review_status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                episode.episode_id,
+                episode.batch_id,
+                episode.run_id,
+                episode.index_in_batch,
+                episode.task_result,
+                episode.failure_reason,
+                episode.quality,
+                episode.quality_source,
+                episode.review_status,
+                episode.created_at,
+                episode.updated_at,
+            ),
+        )
 
     def update_episode(self, episode_id: str, **fields: Any) -> Episode:
         """Patch selected columns of an episode and return it (``KeyError`` if

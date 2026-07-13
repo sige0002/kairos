@@ -148,13 +148,21 @@ async def patch_batch(
 
 @batches_router.get("", response_model=BatchListResponse)
 async def list_batches(
-    request: Request, status: str | None = Query(None)
+    request: Request,
+    status: str | None = Query(None),
+    robot: str | None = Query(None),
+    operator: str | None = Query(None),
 ) -> BatchListResponse:
-    """List batches newest-first (optionally filtered by ``status``), each with
-    its episode count + compact episode summaries."""
+    """List batches newest-first, each with its episode count + compact episode
+    summaries. Optional filters: ``status``, ``robot``, ``operator`` — Collect
+    scopes its active-batch restore with these so one terminal never silently
+    adopts (and appends episodes to) another robot's/operator's batch."""
     store = _store(request)
     return BatchListResponse(
-        items=[_batch_summary(store, b) for b in store.list_batches(status)]
+        items=[
+            _batch_summary(store, b)
+            for b in store.list_batches(status, robot=robot, operator=operator)
+        ]
     )
 
 

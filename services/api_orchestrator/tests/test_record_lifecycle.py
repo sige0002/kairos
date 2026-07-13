@@ -417,3 +417,60 @@ def test_record_status_event_omits_arming_without_start_paused(
     ]
     assert recording
     assert "arming" not in recording[-1]
+
+
+def test_status_finalizes_recorder_auto_stopped_run(
+    client: TestClient, fake_recorder: FakeRecorder, store: RunStore
+) -> None:
+    """The status poll finalizes a run the recorder stopped on its own.
+
+    A MAX_RECORD_BYTES auto-stop happens INSIDE the recorder (no
+    POST /record/stop through the orchestrator), so the DB row stays
+    ``recording``. The next GET /record/status — the UI polls it every few
+    seconds — must lazily finalize the run through the normal stop path
+    (metadata sync, COMPLETED, not interrupted-at-next-restart).
+    """
+    run_id = "run_20260714_000001"
+    store.create(Run(run_id=run_id, state=RunState.recording))
+    # The recorder auto-stopped this very session: terminal state, finalized bag.
+    fake_recorder.run_id = run_id
+    fake_recorder.state = "completed"
+    fake_recorder.finalized = True
+    fake_recorder.message_count = 4321
+    fake_recorder.bytes = 999
+
+    resp = client.get("/api/v1/record/status")
+
+    assert resp.status_code == 200
+    run = store.get(run_id)
+    assert run.state.value == "completed"
+    assert run.ended_at is not None
+
+
+def test_status_interrupts_run_unknown_to_recorder(
+    client: TestClient, fake_recorder: FakeRecorder, store: RunStore
+) -> None:
+    """The status poll reconciles a live DB run the recorder has no session for."""
+    stale = "run_20200101_000000"
+    store.create(Run(run_id=stale, state=RunState.recording))
+    assert fake_recorder.state == "idle"
+
+    resp = client.get("/api/v1/record/status")
+
+    assert resp.status_code == 200
+    assert store.get(stale).state.value == "interrupted"
+
+
+def test_status_leaves_genuine_recording_alone(
+    client: TestClient, fake_recorder: FakeRecorder, store: RunStore
+) -> None:
+    """A genuinely-active recording is never touched by the lazy reconcile."""
+    active = "run_20260714_000002"
+    store.create(Run(run_id=active, state=RunState.recording))
+    fake_recorder.state = "recording"
+    fake_recorder.run_id = active
+
+    resp = client.get("/api/v1/record/status")
+
+    assert resp.status_code == 200
+    assert store.get(active).state.value == "recording"
