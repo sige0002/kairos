@@ -119,11 +119,22 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
         <button
           type="button"
           onClick={machine.startRecording}
-          className="flex h-[52px] items-center justify-center gap-2 rounded-control bg-teal-600 text-[15px] font-bold text-white shadow-btn hover:bg-teal-700"
+          disabled={machine.noSelection}
+          className={cn(
+            'flex h-[52px] items-center justify-center gap-2 rounded-control text-[15px] font-bold shadow-btn',
+            machine.noSelection
+              ? 'cursor-not-allowed bg-gray-200 text-gray-400'
+              : 'bg-teal-600 text-white hover:bg-teal-700',
+          )}
         >
           <span className="h-2.5 w-2.5 rounded-full bg-white" />
           Start recording
         </button>
+        {machine.noSelection && (
+          <span className="text-[11px] font-medium text-amber-600">
+            Every topic is cleared — select at least one in Monitor to record.
+          </span>
+        )}
         {machine.startError && (
           <ErrorBanner>
             <span className="text-[10.5px] font-semibold uppercase tracking-[0.09em]">Start failed</span>{' '}
@@ -330,7 +341,7 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
         </button>
         <button
           type="button"
-          onClick={machine.retryEpisode}
+          onClick={machine.openDiscardModal}
           className="h-9 rounded-control border border-gray-200 bg-white text-[12.5px] font-semibold text-gray-500 hover:bg-gray-50"
         >
           Discard &amp; re-record this episode

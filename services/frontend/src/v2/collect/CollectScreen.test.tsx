@@ -53,7 +53,14 @@ function phaseTitle() {
 
 beforeEach(() => {
   setApiBase('/api/v1');
-  useUiStore.setState({ activeTab: '', sseStatus: 'closed', monitorBridge: null });
+  useUiStore.setState({
+    activeTab: '',
+    sseStatus: 'closed',
+    monitorBridge: null,
+    recordOperator: '',
+    recordSelected: new Set<string>(),
+    recordCustomized: false,
+  });
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -207,6 +214,44 @@ test('recording phase shows the real arming matched/missing note from /record/st
   expect(note).toHaveTextContent('3 matched');
   expect(note).toHaveTextContent('2 missing');
   expect(note).toHaveTextContent('/cam/right');
+});
+
+// Record-topic selection chip: shows the real resolved count and navigates to
+// Monitor (where the picker lives). CONFIG has no default_topics and the store
+// is not customized → "all topics".
+test('ContextBar shows the REC topics chip and navigates to Monitor on click', async () => {
+  mockFetch({ run_id: 'run_1', state: 'recording' });
+  renderWithClient(<CollectScreen />);
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
+
+  const chip = screen.getByTestId('rec-topics-chip');
+  expect(chip).toHaveTextContent('REC all topics');
+  fireEvent.click(chip);
+  await waitFor(() => expect(useUiStore.getState().activeTab).toBe('monitor'));
+});
+
+// Real Discard: the result-phase "Discard & re-record" opens a confirmation
+// modal, then DELETE /api/v1/runs/{run_id} actually removes the run before the
+// local re-record reset (v1 LiveTab Keep/Discard parity).
+test('Discard & re-record confirms, then deletes the run via DELETE /runs/{id}', async () => {
+  const fetchSpy = mockFetchWithStatus({
+    status: { run_id: 'run_1', state: 'completed', integrity: 'ok', bytes: 1048576 },
+  });
+  renderWithClient(<CollectScreen />);
+  await driveToResult();
+
+  fireEvent.click(screen.getByRole('button', { name: /Discard & re-record this episode/ }));
+  const confirm = await screen.findByRole('button', { name: /Discard permanently/ });
+  fireEvent.click(confirm);
+
+  await waitFor(() => {
+    const del = fetchSpy.mock.calls.find(
+      ([u, i]) => String(u).includes('/runs/run_1') && i?.method === 'DELETE',
+    );
+    expect(del).toBeTruthy();
+  });
+  // After a successful delete the batch re-arms for a fresh take of this episode.
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
 });
 
 test('Robot cell lists real robots and switches via POST /config/select', async () => {

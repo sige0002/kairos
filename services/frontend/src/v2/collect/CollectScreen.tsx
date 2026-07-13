@@ -30,10 +30,10 @@ export function CollectScreen() {
   const sseStatus = useUiStore((s) => s.sseStatus);
   const monitorBridge = useUiStore((s) => s.monitorBridge);
 
-  const recordTopics = config?.defaults.default_topics?.length
-    ? config.defaults.default_topics
-    : 'all';
-  const machine = useBatchMachine({ recordTopics });
+  // The machine resolves the next-start topic selection from these configured
+  // defaults + the uiStore Monitor picker (see useBatchMachine's RecordSelection).
+  const defaultTopics = config?.defaults.default_topics ?? [];
+  const machine = useBatchMachine({ defaultTopics });
 
   const [camerasOk, setCamerasOk] = useState(true);
   const onHealthChange = useCallback((ok: boolean) => setCamerasOk(ok), []);

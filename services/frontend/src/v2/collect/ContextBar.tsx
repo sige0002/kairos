@@ -191,10 +191,17 @@ function RobotCell({ disabled }: { disabled: boolean }) {
 }
 
 export function ContextBar({ machine }: { machine: BatchMachine }) {
-  const { phase, stats } = machine;
+  const { phase, stats, selection } = machine;
   const epNextText =
     phase === 'completed' ? '· complete' : phase === 'ended' ? '· ended early' : `· next #${stats.epNext}`;
   const curProject = findProject(machine.project);
+  // Real count of what the NEXT recording captures (config defaults + the
+  // Monitor picker), mirroring v1 LiveTab's idleTopicLabel.
+  const recTopicsLabel = selection.customized
+    ? `${selection.count} topic${selection.count === 1 ? '' : 's'}`
+    : selection.topics === 'all'
+      ? 'all topics'
+      : `${selection.count} configured`;
 
   return (
     <Card className="relative flex shrink-0 items-center px-[18px] py-2.5">
@@ -235,6 +242,16 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
       <Divider />
       <RobotCell disabled={!machine.ctxEditable} />
       <div className="flex-1" />
+      <button
+        type="button"
+        onClick={machine.goMonitor}
+        title="Topics captured on the next recording — open Monitor to change the selection"
+        data-testid="rec-topics-chip"
+        className="mr-2.5 inline-flex items-center gap-1.5 rounded-chip border border-teal-200 bg-teal-50 px-2.5 py-1.5 text-[11.5px] font-semibold text-teal-700 hover:bg-teal-100"
+      >
+        <span className="h-[7px] w-[7px] rounded-full bg-teal-500" />
+        REC {recTopicsLabel}
+      </button>
       <button
         type="button"
         onClick={machine.toggleBatchMenu}

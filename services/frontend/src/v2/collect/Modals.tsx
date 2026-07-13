@@ -149,6 +149,69 @@ function ConditionModal({ machine }: { machine: BatchMachine }) {
   );
 }
 
+function formatBytes(bytes: number | null): string | null {
+  if (!bytes) return null;
+  const u = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let v = bytes;
+  let i = 0;
+  while (v >= 1024 && i < u.length - 1) {
+    v /= 1024;
+    i += 1;
+  }
+  return `${v.toFixed(i === 0 ? 0 : 2)} ${u[i]}`;
+}
+
+// Discard-episode confirmation: unlike v1's post-stop Keep/Discard prompt, this
+// lives on the result phase (the operator already reviewed the take). Confirm
+// runs a real DELETE /runs/{id}; a failure keeps the episode and shows the error.
+function DiscardModal({ machine }: { machine: BatchMachine }) {
+  const size = formatBytes(machine.discardRunBytes);
+  return (
+    <Modal
+      open={machine.discardModalOpen}
+      onClose={machine.closeModals}
+      title="Discard this episode?"
+      footer={
+        <>
+          <Button variant="ghost" onClick={machine.closeModals} disabled={machine.isDiscarding}>
+            Keep
+          </Button>
+          <Button variant="danger" onClick={machine.confirmDiscard} disabled={machine.isDiscarding}>
+            {machine.isDiscarding ? 'Discarding…' : 'Discard permanently'}
+          </Button>
+        </>
+      }
+    >
+      <p className="text-[12.5px] leading-relaxed text-gray-600">
+        This permanently deletes the recorded run
+        {machine.discardRunId ? (
+          <>
+            {' '}
+            <span className="font-mono text-gray-800">{machine.discardRunId}</span>
+          </>
+        ) : null}
+        {size ? ` (${size})` : ''} from disk, then re-arms for a fresh take of this episode. This
+        cannot be undone.
+      </p>
+      {!machine.discardRunId && (
+        <p className="mt-2 text-[12px] text-gray-400">
+          Nothing was persisted for this take yet — this just re-records the episode.
+        </p>
+      )}
+      {machine.discardError && (
+        <div
+          role="alert"
+          data-testid="discard-error"
+          className="mt-3 rounded-control border border-red-200 bg-red-50/70 px-3 py-2 text-[12px] text-red-800"
+        >
+          <span className="font-semibold">Discard failed</span> — {machine.discardError}. The
+          episode is kept.
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 function Toast({ message }: { message: string }) {
   if (!message) return null;
   return (
@@ -165,6 +228,7 @@ export function CollectModals({ machine }: { machine: BatchMachine }) {
       <EndBatchModal machine={machine} />
       <IssueModal machine={machine} />
       <ConditionModal machine={machine} />
+      <DiscardModal machine={machine} />
       <Toast message={machine.toast} />
     </>
   );

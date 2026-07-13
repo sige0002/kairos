@@ -164,7 +164,14 @@ function wrapper({ children }: { children: ReactNode }) {
 
 beforeEach(() => {
   setApiBase('/api/v1');
-  useUiStore.setState({ activeTab: '' });
+  // Reset the shared record-picker store so selection-resolution tests don't
+  // leak customized state into each other.
+  useUiStore.setState({
+    activeTab: '',
+    recordOperator: '',
+    recordSelected: new Set<string>(),
+    recordCustomized: false,
+  });
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -177,7 +184,7 @@ test('startRecording() calls /record/start and only then moves to recording', as
     return Promise.resolve(jsonResponse({}));
   });
 
-  const { result } = renderHook(() => useBatchMachine({ recordTopics: 'all' }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
   expect(result.current.phase).toBe('ready');
 
   act(() => result.current.startRecording());
@@ -204,7 +211,7 @@ test('a rejected start (200 + state=failed) reverts to ready with a banner, not 
     return Promise.resolve(jsonResponse({}));
   });
 
-  const { result } = renderHook(() => useBatchMachine({ recordTopics: 'all' }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
   act(() => result.current.startRecording());
   expect(result.current.phase).toBe('arming');
 
@@ -219,7 +226,7 @@ test('a network failure on start reverts to ready with an error banner', async (
     return Promise.resolve(jsonResponse({}));
   });
 
-  const { result } = renderHook(() => useBatchMachine({ recordTopics: 'all' }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
   act(() => result.current.startRecording());
   await waitFor(() => expect(result.current.phase).toBe('ready'));
   expect(result.current.startError).toContain('network down');
@@ -237,7 +244,7 @@ test('stopRecording() optimistically moves to saving and calls /record/stop', as
     return Promise.resolve(jsonResponse({}));
   });
 
-  const { result } = renderHook(() => useBatchMachine({ recordTopics: 'all' }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
   act(() => result.current.startRecording());
   await waitFor(() => expect(result.current.phase).toBe('recording'));
 
@@ -271,7 +278,7 @@ test('/record/status arming (matched/missing) surfaces on machine.arming', async
     return Promise.resolve(jsonResponse({}));
   });
 
-  const { result } = renderHook(() => useBatchMachine({ recordTopics: 'all' }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
   await waitFor(() => expect(result.current.arming).not.toBeNull());
   expect(result.current.arming?.matched_topics).toHaveLength(3);
   expect(result.current.arming?.missing_topics).toEqual(['/x', '/y']);
@@ -296,7 +303,7 @@ test('a dropped-integrity run surfaces on machine.integrity + droppedMessages', 
     return Promise.resolve(jsonResponse({}));
   });
 
-  const { result } = renderHook(() => useBatchMachine({ recordTopics: 'all' }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
   act(() => result.current.startRecording());
   await waitFor(() => expect(result.current.phase).toBe('recording'));
   await waitFor(() => expect(result.current.integrity).toBe('dropped'));
@@ -326,9 +333,135 @@ test('integrity is gated to the current run — a mismatched run_id is dropped a
     return Promise.resolve(jsonResponse({}));
   });
 
-  const { result } = renderHook(() => useBatchMachine({ recordTopics: 'all' }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
   await waitFor(() => expect(result.current.integrity).toBe('dropped'));
   act(() => result.current.startRecording());
   await waitFor(() => expect(result.current.phase).toBe('recording'));
   await waitFor(() => expect(result.current.integrity).toBeNull());
+});
+
+// ---------------------------------------------------------------------------
+// operator (Task 2) + selection resolution (Task 3) + real Discard (Task 1).
+// ---------------------------------------------------------------------------
+
+function startFetch() {
+  return vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/record/start')) {
+      return Promise.resolve(jsonResponse({ run_id: 'run_1', state: 'recording' }));
+    }
+    return Promise.resolve(jsonResponse({}));
+  });
+}
+
+test('startRecording sends operator (trimmed) + configured topics', async () => {
+  const fetchMock = startFetch();
+  useUiStore.setState({ recordOperator: '  yuki  ' });
+
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: ['/a', '/b'] }), { wrapper });
+  act(() => result.current.startRecording());
+  await waitFor(() => expect(result.current.phase).toBe('recording'));
+
+  const call = fetchMock.mock.calls.find(([u]) => String(u).includes('/record/start'));
+  const body = JSON.parse(String((call![1] as RequestInit).body));
+  expect(body.operator).toBe('yuki');
+  expect(body.topics).toEqual(['/a', '/b']);
+});
+
+test('startRecording omits operator when the store value is blank, defaults to all topics', async () => {
+  const fetchMock = startFetch();
+  // recordOperator stays '' (reset in beforeEach).
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  act(() => result.current.startRecording());
+  await waitFor(() => expect(result.current.phase).toBe('recording'));
+
+  const call = fetchMock.mock.calls.find(([u]) => String(u).includes('/record/start'));
+  const body = JSON.parse(String((call![1] as RequestInit).body));
+  expect('operator' in body).toBe(false);
+  expect(body.topics).toBe('all');
+});
+
+test('selection resolution: customized set → explicit topics; empty customized set disables Start', () => {
+  useUiStore.setState({ recordCustomized: true, recordSelected: new Set(['/x', '/y']) });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: ['/a'] }), { wrapper });
+  expect(result.current.selection).toEqual({ topics: ['/x', '/y'], count: 2, customized: true });
+  expect(result.current.noSelection).toBe(false);
+
+  // Clearing every topic (customized empty set) disables Start.
+  act(() => useUiStore.setState({ recordSelected: new Set<string>() }));
+  expect(result.current.selection.count).toBe(0);
+  expect(result.current.noSelection).toBe(true);
+});
+
+test('selection resolution: configured defaults, then all when neither customized nor configured', () => {
+  const configured = renderHook(() => useBatchMachine({ defaultTopics: ['/a', '/b', '/c'] }), {
+    wrapper,
+  });
+  expect(configured.result.current.selection).toEqual({
+    topics: ['/a', '/b', '/c'],
+    count: 3,
+    customized: false,
+  });
+
+  const all = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  expect(all.result.current.selection).toEqual({ topics: 'all', count: 0, customized: false });
+});
+
+test('startRecording is a no-op when the customized selection is empty', async () => {
+  const fetchMock = vi
+    .spyOn(globalThis, 'fetch')
+    .mockImplementation(() => Promise.resolve(jsonResponse({})));
+  useUiStore.setState({ recordCustomized: true, recordSelected: new Set<string>() });
+
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: ['/a'] }), { wrapper });
+  expect(result.current.noSelection).toBe(true);
+  act(() => result.current.startRecording());
+  expect(result.current.phase).toBe('ready');
+  await Promise.resolve();
+  expect(fetchMock.mock.calls.some(([u]) => String(u).includes('/record/start'))).toBe(false);
+});
+
+test('Discard: confirm deletes the run then re-records; a failed DELETE keeps the episode', async () => {
+  let failDelete = false;
+  const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    if (url.includes('/record/start')) {
+      return Promise.resolve(jsonResponse({ run_id: 'run_9', state: 'recording' }));
+    }
+    if (url.includes('/record/stop')) {
+      return Promise.resolve(jsonResponse({ run_id: 'run_9', state: 'completed' }));
+    }
+    if (url.includes('/runs/run_9') && init?.method === 'DELETE') {
+      return failDelete
+        ? Promise.resolve(jsonResponse({ error: { code: 'BUSY', message: 'run locked' } }, 500))
+        : Promise.resolve(new Response(null, { status: 204 }));
+    }
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  act(() => result.current.startRecording());
+  await waitFor(() => expect(result.current.phase).toBe('recording'));
+  act(() => result.current.stopRecording());
+  await waitFor(() => expect(result.current.phase).toBe('result'), { timeout: 4000 });
+
+  // A failing DELETE keeps the episode in the result phase and surfaces the error.
+  failDelete = true;
+  act(() => result.current.openDiscardModal());
+  expect(result.current.discardModalOpen).toBe(true);
+  expect(result.current.discardRunId).toBe('run_9');
+  act(() => result.current.confirmDiscard());
+  await waitFor(() => expect(result.current.discardError).toBeTruthy());
+  expect(result.current.phase).toBe('result');
+
+  // A succeeding DELETE hits DELETE /runs/run_9 and returns to ready (re-record).
+  failDelete = false;
+  act(() => result.current.confirmDiscard());
+  await waitFor(() => expect(result.current.phase).toBe('ready'));
+  expect(result.current.episodes).toHaveLength(0);
+  expect(
+    fetchMock.mock.calls.some(
+      ([u, i]) => String(u).includes('/runs/run_9') && i?.method === 'DELETE',
+    ),
+  ).toBe(true);
 });

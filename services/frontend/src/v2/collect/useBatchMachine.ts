@@ -11,7 +11,7 @@
 
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiGet, apiPost } from '../../api/client';
+import { apiDelete, apiGet, apiPost } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
 import { errorText } from '../../components/ErrorMessage';
 import { useUiStore } from '../../store/uiStore';
@@ -357,8 +357,20 @@ export interface BatchStats {
 }
 
 export interface UseBatchMachineArgs {
-  /** Topics for the next /record/start (mirrors LiveTab's RecordSelection.topics). */
-  recordTopics: string[] | 'all';
+  /** The active robot's configured `default_topics` (from runtime config). The
+   *  actual next-start selection is resolved from this + the uiStore record
+   *  picker (see `RecordSelection` / v1 LiveTab.tsx:940-948). */
+  defaultTopics: string[];
+}
+
+/** Resolved topic selection for the next /record/start (mirrors v1 LiveTab). */
+export interface RecordSelection {
+  /** Explicit concrete names, or 'all' to record everything. */
+  topics: string[] | 'all';
+  /** How many topics that represents (for the record-topics chip). */
+  count: number;
+  /** Whether the operator customized the Monitor picker (vs configured defaults). */
+  customized: boolean;
 }
 
 export interface BatchMachine {
@@ -385,6 +397,14 @@ export interface BatchMachine {
   /** rosbag2's self-reported messages lost when integrity is 'dropped'. */
   droppedMessages: number | null;
 
+  // Next-recording topic selection (resolved from config default_topics + the
+  // uiStore Monitor picker; the picker checkboxes are another screen's task —
+  // Collect only consumes the store).
+  selection: RecordSelection;
+  /** True only when the operator explicitly cleared every topic — disables
+   *  Start (v1 LiveTab parity). */
+  noSelection: boolean;
+
   // context
   project: string;
   task: string;
@@ -408,6 +428,17 @@ export interface BatchMachine {
   openIssueModal: () => void;
   closeModals: () => void;
 
+  // Discard-episode confirmation (real DELETE /runs/{id} — v1 LiveTab parity).
+  discardModalOpen: boolean;
+  /** run_id of the just-stopped episode that Discard would delete (null when
+   *  the capture had no persisted run). */
+  discardRunId: string | null;
+  /** Finalised size of that run (from /record/status), for the modal. */
+  discardRunBytes: number | null;
+  /** DELETE error text, kept on the open modal so the episode is preserved. */
+  discardError: string | null;
+  isDiscarding: boolean;
+
   // advice pager
   adviceIdx: number;
   advicePrev: () => void;
@@ -424,7 +455,10 @@ export interface BatchMachine {
   pickFailure: () => void;
   pickFailReason: (reason: string) => void;
   confirmEpisode: () => void;
-  retryEpisode: () => void;
+  /** Open the Discard confirmation modal (was a silent local reset). */
+  openDiscardModal: () => void;
+  /** Confirm Discard: DELETE the run, then proceed to the re-record flow. */
+  confirmDiscard: () => void;
   pauseBatch: () => void;
   resumeBatch: () => void;
   pickEndReason: (reason: string) => void;
@@ -438,11 +472,30 @@ export interface BatchMachine {
   goMonitor: () => void;
 }
 
-export function useBatchMachine({ recordTopics }: UseBatchMachineArgs): BatchMachine {
+export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMachine {
   const [state, dispatch] = useReducer(reducer, undefined, createInitialState);
   const queryClient = useQueryClient();
   const setActiveTab = useUiStore((s) => s.setActiveTab);
   const goMonitor = useCallback(() => setActiveTab('monitor'), [setActiveTab]);
+
+  // ---- next-recording selection (config defaults + uiStore Monitor picker) --
+  // Resolves exactly like v1 LiveTab.tsx:940-948. The picker checkboxes live in
+  // the Monitor screen (another agent) — Collect only READS the store values.
+  const operator = useUiStore((s) => s.recordOperator);
+  const recordSelected = useUiStore((s) => s.recordSelected);
+  const recordCustomized = useUiStore((s) => s.recordCustomized);
+  const selection: RecordSelection = useMemo(() => {
+    if (recordCustomized) {
+      return { topics: [...recordSelected], count: recordSelected.size, customized: true };
+    }
+    if (defaultTopics.length > 0) {
+      return { topics: defaultTopics, count: defaultTopics.length, customized: false };
+    }
+    return { topics: 'all', count: 0, customized: false };
+  }, [recordCustomized, recordSelected, defaultTopics]);
+  // Disable Start only when the operator explicitly cleared every topic.
+  const noSelection =
+    selection.customized && Array.isArray(selection.topics) && selection.topics.length === 0;
 
   // ---- real recorder status (arming + integrity) --------------------------
   // Polls /record/status on the SAME query key LiveTab uses, so react-query
@@ -465,6 +518,8 @@ export function useBatchMachine({ recordTopics }: UseBatchMachineArgs): BatchMac
     state.currentRunId == null || (status?.run_id ?? null) === state.currentRunId;
   const integrity: RecordIntegrity | null = runMatches ? status?.integrity ?? null : null;
   const droppedMessages: number | null = runMatches ? status?.dropped_messages ?? null : null;
+  // Finalised bag size for the just-stopped run, shown in the Discard modal.
+  const currentRunBytes: number | null = runMatches ? status?.bytes ?? null : null;
 
   // ---- toast --------------------------------------------------------------
   const [toast, setToast] = useState('');
@@ -532,12 +587,16 @@ export function useBatchMachine({ recordTopics }: UseBatchMachineArgs): BatchMac
   });
 
   const startRecording = useCallback(() => {
-    if (state.phase !== 'ready') return;
+    if (state.phase !== 'ready' || noSelection) return;
     cancelledStartRef.current = false;
     dispatch({ type: 'START_REQUESTED' });
-    const body: RecordStartRequest = { topics: recordTopics, task: state.task };
+    // Mirror v1 LiveTab.tsx:345-350: topics from the resolved selection, plus
+    // operator (from the header input, via uiStore) and task when non-empty.
+    const body: RecordStartRequest = { topics: selection.topics };
+    if (operator.trim()) body.operator = operator.trim();
+    if (state.task.trim()) body.task = state.task.trim();
     startMutation.mutate(body);
-  }, [state.phase, state.task, recordTopics, startMutation]);
+  }, [state.phase, state.task, noSelection, selection.topics, operator, startMutation]);
 
   const cancelArming = useCallback(() => {
     if (state.phase !== 'arming') return;
@@ -604,11 +663,41 @@ export function useBatchMachine({ recordTopics }: UseBatchMachineArgs): BatchMac
     }
   }, [state.phase, state.pendingTask, state.failReason, state.recWarning, state.episodes.length, showToast]);
 
-  const retryEpisode = useCallback(() => {
+  // ---- discard episode (real DELETE /runs/{id} — v1 LiveTab Keep/Discard) ----
+  // The result-phase "Discard & re-record" used to only reset local state, so
+  // the run stayed on disk. Now it opens a confirmation modal and, on confirm,
+  // deletes the run before the local re-record reset (RETRY_EPISODE, unchanged).
+  // Deletion never happens without the modal; a failed DELETE keeps the episode.
+  const [discardModalOpen, setDiscardModalOpen] = useState(false);
+  const discardMutation = useMutation({
+    mutationFn: (rid: string) => apiDelete(`/runs/${encodeURIComponent(rid)}`),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.recordStatus });
+      void queryClient.invalidateQueries({ queryKey: ['runs'] });
+      dispatch({ type: 'RETRY_EPISODE' });
+      setDiscardModalOpen(false);
+      showToast('Episode discarded — run deleted, re-record when ready');
+    },
+    // onError: keep the episode + modal open; the error surfaces via discardError.
+  });
+
+  const openDiscardModal = useCallback(() => {
     if (state.phase !== 'result') return;
+    discardMutation.reset();
+    setDiscardModalOpen(true);
+  }, [state.phase, discardMutation]);
+
+  const confirmDiscard = useCallback(() => {
+    if (state.phase !== 'result') return;
+    if (state.currentRunId) {
+      discardMutation.mutate(state.currentRunId);
+      return;
+    }
+    // No persisted run to delete (capture returned no run_id) — local reset only.
     dispatch({ type: 'RETRY_EPISODE' });
+    setDiscardModalOpen(false);
     showToast('Episode discarded — re-record when ready');
-  }, [state.phase, showToast]);
+  }, [state.phase, state.currentRunId, discardMutation, showToast]);
 
   // ---- batch menu actions ---------------------------------------------------
   const pauseBatch = useCallback(() => {
@@ -692,6 +781,7 @@ export function useBatchMachine({ recordTopics }: UseBatchMachineArgs): BatchMac
     setEndModalOpen(false);
     setIssueModalOpen(false);
     setCondModalOpen(false);
+    setDiscardModalOpen(false);
   }, []);
   const submitIssue = useCallback(() => {
     setIssueModalOpen(false);
@@ -769,6 +859,9 @@ export function useBatchMachine({ recordTopics }: UseBatchMachineArgs): BatchMac
     integrity,
     droppedMessages,
 
+    selection,
+    noSelection,
+
     project: state.project,
     task: state.task,
     condition: state.condition,
@@ -790,6 +883,12 @@ export function useBatchMachine({ recordTopics }: UseBatchMachineArgs): BatchMac
     openIssueModal,
     closeModals,
 
+    discardModalOpen,
+    discardRunId: state.currentRunId,
+    discardRunBytes: currentRunBytes,
+    discardError: discardMutation.isError ? errorText(discardMutation.error) : null,
+    isDiscarding: discardMutation.isPending,
+
     adviceIdx,
     advicePrev,
     adviceNext,
@@ -803,7 +902,8 @@ export function useBatchMachine({ recordTopics }: UseBatchMachineArgs): BatchMac
     pickFailure,
     pickFailReason,
     confirmEpisode,
-    retryEpisode,
+    openDiscardModal,
+    confirmDiscard,
     pauseBatch,
     resumeBatch,
     pickEndReason,
