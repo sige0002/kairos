@@ -247,6 +247,29 @@ test('a needs-review run is NEEDS CHECK until "Mark OK — include" flips it to 
   expect(screen.getByTestId('review-detail-status')).toHaveTextContent('READY');
 });
 
+test('the decision buttons live in the pinned bar, not in the scrolling body', async () => {
+  // The operator must never scroll past the inspection to reach Mark OK /
+  // Exclude (user-reported UX pain) — they sit in a bar pinned below the
+  // scroll region, and the READY Export CTA is pinned there too.
+  mockApi([
+    { run_id: 'ep-a', state: 'completed', started_at: '2026-07-13T09:00:00Z', episode: ep('pending', 'needs_review') },
+  ]);
+  renderWithClient(<ReviewScreen />);
+  await waitFor(() => expect(screen.getByTestId('review-detail-status')).toHaveTextContent('NEEDS CHECK'));
+
+  const bar = screen.getByTestId('review-decision-bar');
+  expect(within(bar).getByTestId('review-mark-ok')).toBeInTheDocument();
+  expect(within(bar).getByTestId('review-decision-exclude')).toBeInTheDocument();
+  // The bar is a sibling BELOW the scroll region (overflow-y-auto), not inside it.
+  const scrollRegion = bar.parentElement!.querySelector('.overflow-y-auto');
+  expect(scrollRegion).not.toBeNull();
+  expect(scrollRegion!.contains(bar)).toBe(false);
+
+  // After Mark OK the episode is READY: the Export CTA appears in the same bar.
+  fireEvent.click(within(bar).getByTestId('review-mark-ok'));
+  expect(within(bar).getByTestId('review-export-cta')).toBeInTheDocument();
+});
+
 test('Export ready lists the READY completed runs + the include-failed toggle', async () => {
   mockApi([
     { run_id: 'ep-a', state: 'completed', started_at: '2026-07-13T09:00:00Z', episode: ep('pending', 'good') },

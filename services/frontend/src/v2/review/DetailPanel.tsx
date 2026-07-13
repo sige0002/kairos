@@ -130,7 +130,12 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
   const showInspection = !rv.splitMode || sel.transferSlot.phase === 'transferred';
 
   return (
-    <div className="flex flex-col overflow-auto rounded-card border border-gray-200 bg-white shadow-card">
+    // overflow-hidden + an inner scroll region: the header and the decision
+    // bar (bottom) stay pinned; only the evidence (inspection / quality /
+    // pipeline) scrolls. Previously the whole panel scrolled and the decision
+    // buttons sat below the tall inspection — the operator had to scroll to
+    // the very bottom for every Mark OK / Exclude (user-reported UX pain).
+    <div className="flex flex-col overflow-hidden rounded-card border border-gray-200 bg-white shadow-card">
       <div
         data-testid="review-detail-header"
         className="flex items-center gap-2.5 border-b border-gray-100 px-[18px] py-3"
@@ -143,7 +148,7 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
         </span>
       </div>
 
-      <div className="flex flex-col gap-3 px-[18px] py-3.5">
+      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-[18px] py-3.5">
         {showInspection ? (
           <RunInspection runId={sel.runId} />
         ) : (
@@ -222,42 +227,6 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
 
         <PipelineStrip lane={sel.reviewLane} />
 
-        {/* Exception-review actions: READY (good or confirmed) needs no click;
-            you only resolve a NEEDS CHECK exception (Mark OK / Exclude). */}
-        <div className="flex flex-wrap gap-1.5">
-          {sel.reviewLane === 'needs_check' && (
-            <DecisionButton tone="adopt" testId="review-mark-ok" onClick={rv.markOk}>
-              Mark OK — include
-            </DecisionButton>
-          )}
-          {sel.reviewLane !== 'excluded' && (
-            <DecisionButton tone="exclude" testId="review-decision-exclude" onClick={() => rv.decide('excluded')}>
-              Exclude
-            </DecisionButton>
-          )}
-          {/* Return to review (reversible, non-scary): an excluded item goes back
-              to pending; a confirmed EXCEPTION (adopted but not good-quality) can
-              be sent back to the queue. Hidden for good-quality READY (no-op). */}
-          {(sel.reviewLane === 'excluded' ||
-            (sel.effectiveReviewStatus === 'adopted' && sel.effectiveQuality !== 'Good')) && (
-            <DecisionButton tone="review" testId="review-return-to-review" onClick={() => rv.decide('review')}>
-              {sel.reviewLane === 'excluded' ? '↩ Return to review' : '↩ Reset to needs check'}
-            </DecisionButton>
-          )}
-        </div>
-
-        {/* READY → the next pipeline step (export), right where the operator is. */}
-        {sel.reviewLane === 'ready' && sel.state === 'completed' && (
-          <button
-            type="button"
-            data-testid="review-export-cta"
-            onClick={rv.requestExportReady}
-            className="flex items-center justify-center gap-1.5 rounded-control bg-teal-600 px-3 py-2 text-[12.5px] font-bold text-white transition-colors hover:bg-teal-700"
-          >
-            Ready — Export now ({rv.readyExportable.length}) →
-          </button>
-        )}
-
         {sel.isArchived && (
           <div className="flex flex-col gap-1.5 rounded-[10px] border border-gray-200 bg-gray-50 px-3 py-2.5">
             <div className="flex items-center gap-2">
@@ -303,6 +272,48 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
               : 'no overrides yet'}
           </span>
         </div>
+      </div>
+
+      {/* Pinned decision bar — always visible, never behind a scroll. Exception-
+          review actions: READY (good or confirmed) needs no click; you only
+          resolve a NEEDS CHECK exception (Mark OK / Exclude). */}
+      <div
+        data-testid="review-decision-bar"
+        className="flex flex-col gap-2 border-t border-gray-100 bg-gray-50/60 px-[18px] py-3"
+      >
+        <div className="flex flex-wrap gap-1.5">
+          {sel.reviewLane === 'needs_check' && (
+            <DecisionButton tone="adopt" testId="review-mark-ok" onClick={rv.markOk}>
+              Mark OK — include
+            </DecisionButton>
+          )}
+          {sel.reviewLane !== 'excluded' && (
+            <DecisionButton tone="exclude" testId="review-decision-exclude" onClick={() => rv.decide('excluded')}>
+              Exclude
+            </DecisionButton>
+          )}
+          {/* Return to review (reversible, non-scary): an excluded item goes back
+              to pending; a confirmed EXCEPTION (adopted but not good-quality) can
+              be sent back to the queue. Hidden for good-quality READY (no-op). */}
+          {(sel.reviewLane === 'excluded' ||
+            (sel.effectiveReviewStatus === 'adopted' && sel.effectiveQuality !== 'Good')) && (
+            <DecisionButton tone="review" testId="review-return-to-review" onClick={() => rv.decide('review')}>
+              {sel.reviewLane === 'excluded' ? '↩ Return to review' : '↩ Reset to needs check'}
+            </DecisionButton>
+          )}
+        </div>
+
+        {/* READY → the next pipeline step (export), right where the operator is. */}
+        {sel.reviewLane === 'ready' && sel.state === 'completed' && (
+          <button
+            type="button"
+            data-testid="review-export-cta"
+            onClick={rv.requestExportReady}
+            className="flex items-center justify-center gap-1.5 rounded-control bg-teal-600 px-3 py-2 text-[12.5px] font-bold text-white transition-colors hover:bg-teal-700"
+          >
+            Ready — Export now ({rv.readyExportable.length}) →
+          </button>
+        )}
       </div>
     </div>
   );
