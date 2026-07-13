@@ -1,26 +1,32 @@
-// Frequency chart card: the selected topics' chosen metric over time, OVERLAID
-// as distinct series on the shared uPlot infrastructure (src/features/probe/
-// UplotChart.tsx — NEVER rewritten; its empty-buffer redraw guard took a day to
-// debug). Full v1 Graph-tab parity in the v2 skin: a metric selector (Frequency /
-// Bandwidth / Max gap / Rate vs expected), a 30s/1m/5m window, Pause/Resume, and
-// REAL REC/STOP markers derived from /record/status (useRecMarkers → uiStore).
-// Fed by useMetricHistory, the same rolling client-side accumulator the old Graph
-// tab used. The mock's amber warn BAND still needs a per-topic event model that
-// doesn't exist yet (Phase 2) — noted in the footer, not faked.
+// One chart PANEL for the Monitor Topics view: the panel's selected topics'
+// chosen metric over time, OVERLAID as distinct series on the shared uPlot
+// infrastructure (src/features/probe/UplotChart.tsx — NEVER rewritten; its
+// empty-buffer redraw guard took a day to debug). Full v1 Graph-tab parity in the
+// v2 skin: a per-panel metric selector (Frequency / Bandwidth / Max gap / Rate vs
+// expected), REAL REC/STOP markers, and expected_hz / 100%-target ref lines.
+//
+// Panels are add/removable (v1 Graph tab). The PRIMARY panel's topic set is driven
+// by the TopicsTable row clicks below (unchanged UX for the common case); every
+// other panel carries its own compact add-topic control + removable series chips.
+// The window (30s/1m/5m) and Pause are GLOBAL across panels, so they live in the
+// TopicsView toolbar — this card only receives the shared history / clock / markers
+// (accumulated once by the parent) plus its own metric + topics.
 
-import { useMemo, useState } from 'react';
-import type { RuntimeConfig } from '../../config';
+import { useMemo } from 'react';
 import { formatBaseline, type MonitorRow } from '../../features/monitor/useMonitorRows';
 import { DEFAULT_WARN_SHORTFALL_PCT } from '../../features/monitor/thresholds';
-import { useMetricHistory } from '../../features/graph/useMetricHistory';
-import { UplotChart, type UplotSeriesConf, type RefLine } from '../../features/probe/UplotChart';
-import { Card, cn } from '../../components/ui';
+import type { MetricSample } from '../../features/graph/useMetricHistory';
+import {
+  UplotChart,
+  type UplotSeriesConf,
+  type RefLine,
+  type ChartMarker,
+} from '../../features/probe/UplotChart';
+import { Card } from '../../components/ui';
 import { amber } from '../tokens';
-import { useNowClock } from './useNowClock';
-import { useRecMarkers } from './useRecMarkers';
 import {
   MONITOR_METRICS,
-  MONITOR_WINDOWS,
+  MAX_SERIES,
   type MonitorMetricKey,
   type MonitorWindowId,
   alignMetricSeries,
@@ -31,6 +37,7 @@ import {
   shortName,
   windowMs,
 } from './chartSeries';
+import type { ChartPanel } from './panelStore';
 
 /** Last non-null value in an aligned column (the series' current reading). */
 function lastValue(col: (number | null)[]): number | null {
@@ -41,30 +48,57 @@ function lastValue(col: (number | null)[]): number | null {
 }
 
 export function FrequencyChartCard({
-  config,
+  panel,
+  isPrimary,
   rows,
   topics,
+  windowId,
+  history,
+  updatedAt,
+  now,
+  markers,
+  chartHeight,
+  layoutKey,
+  removable,
+  onMetricChange,
+  onToggleTopic,
+  onRemove,
 }: {
-  config: RuntimeConfig;
+  panel: ChartPanel;
+  /** The primary panel (index 0) — its topic set is driven by the TopicsTable, so
+   *  it shows a read-only legend rather than its own add-topic control. */
+  isPrimary: boolean;
   rows: MonitorRow[];
+  /** Resolved charted topics for THIS panel (already filtered + capped). */
   topics: string[];
+  /** Global time window (shared across panels — lives in the TopicsView toolbar). */
+  windowId: MonitorWindowId;
+  /** Shared rolling accumulator (one instance for all panels). */
+  history: Map<string, MetricSample[]>;
+  /** Accumulation tick — a memo dependency since `history` mutates in place. */
+  updatedAt: number;
+  /** Shared window-anchor clock (frozen by the global Pause). */
+  now: number;
+  /** Shared REC/STOP markers from /record/status. */
+  markers: ChartMarker[];
+  /** Per-panel-count chart height (shrinks as panels are added — no page scroll). */
+  chartHeight: number;
+  /** Remounts uPlot when the grid geometry changes so its fixed-px canvas picks
+   *  up the new column width (uPlot only self-resizes on a window resize). */
+  layoutKey: string;
+  removable: boolean;
+  onMetricChange: (m: MonitorMetricKey) => void;
+  onToggleTopic: (name: string) => void;
+  onRemove: () => void;
 }) {
-  const [metricKey, setMetricKey] = useState<MonitorMetricKey>('hz');
-  const [windowId, setWindowId] = useState<MonitorWindowId>('1m');
-  const [paused, setPaused] = useState(false);
-  const metric = metricDef(metricKey);
+  const metric = metricDef(panel.metric);
   const ms = windowMs(windowId);
-
-  // Pause freezes both the accumulation (v1 useMetricHistory frozen flag) AND the
-  // window anchor, so the visible chart truly stops rather than scrolling the
-  // frozen points off-screen. Resume restarts both.
-  const now = useNowClock(!paused);
-  const { history, updatedAt } = useMetricHistory(config, paused);
-  const markers = useRecMarkers();
+  const sfx = isPrimary ? '' : `-${panel.id}`;
 
   const labelMap = useMemo(() => buildLabelMap(topics), [topics]);
   const labelFor = (t: string) => labelMap.get(t) ?? shortName(t);
   const rowFor = (t: string): MonitorRow | null => rows.find((r) => r.name === t) ?? null;
+  const availableTopics = useMemo(() => rows.map((r) => r.name), [rows]);
 
   // x axis = sorted union of every selected topic's in-window sample times; each
   // column null-filled at ticks the topic has no sample for (see alignMetricSeries).
@@ -93,9 +127,9 @@ export function FrequencyChartCard({
         ? [{ v: 100, color: amber[600] }]
         : undefined;
 
-  // Footer references the PRIMARY (first-selected) topic.
-  const primary = topics[0] ?? null;
-  const primaryRow = primary ? rowFor(primary) : null;
+  // Footer references the PRIMARY (first-selected) topic of THIS panel.
+  const primaryTopic = topics[0] ?? null;
+  const primaryRow = primaryTopic ? rowFor(primaryTopic) : null;
   const primaryLast = cols[0] ? lastValue(cols[0]) : null;
   const current = primaryLast != null ? `${primaryLast.toFixed(metric.digits)} ${metric.unit}` : '—';
   const primaryExpected = primaryRow?.expected_hz ?? null;
@@ -115,15 +149,20 @@ export function FrequencyChartCard({
         ? topics[0]!
         : `${topics.length} topics`;
 
+  // Non-primary add-topic control: currently-flowing topics not already charted,
+  // hidden once the panel hits the MAX_SERIES overlay cap.
+  const addable = availableTopics.filter((t) => !topics.includes(t));
+  const atCap = topics.length >= MAX_SERIES;
+
   return (
-    <Card className="flex flex-1 flex-col lg:min-h-0">
+    <Card className="flex min-h-0 flex-1 flex-col overflow-hidden">
       <div className="flex flex-wrap items-center gap-2.5 border-b border-gray-100 px-[18px] py-3">
-        <span className="font-mono text-[13px] font-semibold text-gray-900">{title}</span>
+        <span className="truncate font-mono text-[13px] font-semibold text-gray-900">{title}</span>
         <select
-          data-testid="freq-metric-select"
+          data-testid={`freq-metric-select${sfx}`}
           aria-label="chart metric"
-          value={metricKey}
-          onChange={(e) => setMetricKey(e.target.value as MonitorMetricKey)}
+          value={panel.metric}
+          onChange={(e) => onMetricChange(e.target.value as MonitorMetricKey)}
           className="rounded-control border border-gray-200 px-2 py-1 text-[12px] font-medium text-gray-700 focus:border-teal-500 focus:outline-none"
         >
           {MONITOR_METRICS.map((m) => (
@@ -134,102 +173,145 @@ export function FrequencyChartCard({
           ))}
         </select>
         <div className="flex-1" />
-        <div className="flex gap-[3px] rounded-control border border-gray-200 bg-gray-100 p-1">
-          {MONITOR_WINDOWS.map((w) => (
-            <button
-              key={w.id}
-              type="button"
-              data-testid={`freq-window-${w.id}`}
-              aria-pressed={w.id === windowId}
-              onClick={() => setWindowId(w.id)}
-              className={cn(
-                'rounded-chip px-2.5 py-0.5 text-[11px] font-medium transition-colors',
-                w.id === windowId
-                  ? 'bg-white text-teal-700 shadow-sm'
-                  : 'text-gray-500 hover:text-gray-700',
-              )}
-            >
-              {w.label}
-            </button>
-          ))}
-        </div>
-        <button
-          type="button"
-          data-testid="freq-pause"
-          aria-pressed={paused}
-          onClick={() => setPaused((p) => !p)}
-          className={cn(
-            'rounded-control border px-3 py-1 text-[11px] font-medium transition-colors',
-            paused
-              ? 'border-amber-200 bg-amber-50 text-amber-700'
-              : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50',
-          )}
-        >
-          {paused ? 'Resume' : 'Pause'}
-        </button>
+        {removable && (
+          <button
+            type="button"
+            data-testid={`freq-remove${sfx}`}
+            aria-label="remove chart"
+            onClick={onRemove}
+            className="rounded-control border border-red-200 px-2.5 py-1 text-[11px] font-semibold text-red-700 hover:bg-red-50"
+          >
+            Remove
+          </button>
+        )}
       </div>
 
-      <div
-        data-testid="freq-chart-legend"
-        className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-gray-100 px-[18px] py-2"
-      >
-        {topics.length === 0 ? (
-          <span className="text-[11.5px] text-gray-400">No series selected.</span>
-        ) : (
-          topics.map((t, i) => {
+      {isPrimary ? (
+        // Primary panel: read-only legend (the TopicsTable row clicks drive its set).
+        <div
+          data-testid={`freq-chart-legend${sfx}`}
+          className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-gray-100 px-[18px] py-2"
+        >
+          {topics.length === 0 ? (
+            <span className="text-[11.5px] text-gray-400">No series selected.</span>
+          ) : (
+            topics.map((t, i) => {
+              const v = cols[i] ? lastValue(cols[i]!) : null;
+              const shown = v != null ? `${v.toFixed(metric.digits)} ${metric.unit}` : '—';
+              return (
+                <span
+                  key={t}
+                  data-testid={`freq-legend${sfx}-${t}`}
+                  className="inline-flex items-center gap-1.5 text-[11.5px] text-gray-500"
+                >
+                  <span className="h-[3px] w-3.5 rounded-sm" style={{ background: paletteColor(i) }} />
+                  <span className="font-mono">{labelFor(t)}</span>
+                  <span className="font-semibold text-gray-700">{shown}</span>
+                </span>
+              );
+            })
+          )}
+          {refLines && (
+            <span className="inline-flex items-center gap-1.5 text-[11.5px] text-gray-500">
+              <span
+                className="h-0 w-3.5 border-t-2"
+                style={{ borderTopStyle: 'dashed', borderTopColor: amber[600] }}
+              />
+              {metric.key === 'rate' ? '100% target' : `expected ${singleExpected} Hz`}
+            </span>
+          )}
+        </div>
+      ) : (
+        // Non-primary panel: its own removable series chips + an add-topic picker.
+        <div
+          data-testid={`freq-chart-legend${sfx}`}
+          className="flex flex-wrap items-center gap-1.5 border-b border-gray-100 px-[18px] py-2"
+        >
+          {topics.map((t, i) => {
             const v = cols[i] ? lastValue(cols[i]!) : null;
             const shown = v != null ? `${v.toFixed(metric.digits)} ${metric.unit}` : '—';
             return (
               <span
                 key={t}
-                data-testid={`freq-legend-${t}`}
-                className="inline-flex items-center gap-1.5 text-[11.5px] text-gray-500"
+                data-testid={`freq-legend${sfx}-${t}`}
+                className="inline-flex items-center gap-1.5 rounded-chip border border-gray-200 bg-white py-0.5 pl-2 pr-1 text-[11px] text-gray-500"
               >
                 <span className="h-[3px] w-3.5 rounded-sm" style={{ background: paletteColor(i) }} />
                 <span className="font-mono">{labelFor(t)}</span>
                 <span className="font-semibold text-gray-700">{shown}</span>
+                <button
+                  type="button"
+                  data-testid={`freq-chip-remove${sfx}-${t}`}
+                  aria-label={`remove ${t} from chart`}
+                  onClick={() => onToggleTopic(t)}
+                  className="ml-0.5 rounded-sm px-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+                >
+                  ×
+                </button>
               </span>
             );
-          })
-        )}
-        {refLines && (
-          <span className="inline-flex items-center gap-1.5 text-[11.5px] text-gray-500">
-            <span
-              className="h-0 w-3.5 border-t-2"
-              style={{ borderTopStyle: 'dashed', borderTopColor: amber[600] }}
-            />
-            {metric.key === 'rate' ? '100% target' : `expected ${singleExpected} Hz`}
-          </span>
-        )}
-      </div>
+          })}
+          {atCap ? (
+            <span className="text-[10.5px] text-amber-600">
+              {MAX_SERIES}/{MAX_SERIES} series
+            </span>
+          ) : (
+            <select
+              data-testid={`freq-add-topic${sfx}`}
+              aria-label="add topic to chart"
+              value=""
+              onChange={(e) => {
+                if (e.target.value) onToggleTopic(e.target.value);
+              }}
+              disabled={addable.length === 0}
+              className="rounded-control border border-gray-200 px-2 py-0.5 text-[11px] font-medium text-gray-600 focus:border-teal-500 focus:outline-none disabled:text-gray-300"
+            >
+              <option value="">{addable.length === 0 ? 'No more topics' : '+ Add topic'}</option>
+              {addable.map((t) => (
+                <option key={t} value={t}>
+                  {labelFor(t)}
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
+      )}
 
-      <div className="min-h-0 flex-1 px-[18px] py-2.5">
+      <div className="min-h-0 flex-1 overflow-hidden px-[18px] py-2.5">
         {topics.length > 0 && hasData ? (
           // uPlot's own bottom legend ("Time: -- observed: --") duplicates the
-          // custom header legend above and isn't in the mock — scoped away here
-          // (not in UplotChart itself, which is shared and never rewritten; see
-          // the file header) rather than passed as a construction option, since
-          // UplotChart's props don't expose raw uPlot options.
-          <div className="monitor-freq-chart">
-            <style>{'.monitor-freq-chart .u-legend { display: none; }'}</style>
-            <UplotChart data={data} series={series} refLines={refLines} markers={markers} height={240} />
+          // header legend above and isn't in the mock — scoped away by the
+          // .monitor-freq-chart rule injected once in TopicsView (not in
+          // UplotChart, which is shared and never rewritten; see its header).
+          <div className="monitor-freq-chart h-full">
+            <UplotChart
+              key={layoutKey}
+              data={data}
+              series={series}
+              refLines={refLines}
+              markers={markers}
+              height={chartHeight}
+            />
           </div>
         ) : (
           <p
-            data-testid="freq-chart-empty"
+            data-testid={`freq-chart-empty${sfx}`}
             className="flex h-full items-center justify-center text-center text-[12px] text-gray-400"
           >
             {topics.length === 0
-              ? 'No topic to chart yet — pick one from the table below once topics are discovered.'
+              ? isPrimary
+                ? 'No topic to chart yet — pick one from the table below once topics are discovered.'
+                : 'No topic to chart — use "+ Add topic" above.'
               : (metric.note ?? `No ${metric.label.toLowerCase()} data in the last ${windowId}.`)}
           </p>
         )}
       </div>
 
       <div className="flex flex-wrap gap-4 border-t border-gray-100 px-[18px] py-2.5 text-xs text-gray-500">
-        {topics.length > 1 && primary && (
+        {topics.length > 1 && primaryTopic && (
           <span>
-            primary <span className="font-mono font-semibold text-gray-900">{labelFor(primary)}</span>
+            primary{' '}
+            <span className="font-mono font-semibold text-gray-900">{labelFor(primaryTopic)}</span>
           </span>
         )}
         <span>
@@ -247,7 +329,7 @@ export function FrequencyChartCard({
         )}
         <div className="flex-1" />
         <span className="text-gray-400">
-          REC markers are real · observed shortfall, not confirmed loss · warn band pending an event model (Phase 2)
+          REC markers are real · observed shortfall, not confirmed loss
         </span>
       </div>
     </Card>
