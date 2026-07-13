@@ -3,8 +3,10 @@
 # then serve them with nginx (which also reverse-proxies /api to the
 # orchestrator so the browser talks to a single origin).
 
+# Base images are pinned by patch tag + digest for reproducible builds (see the
+# README "Releases" section).
 # ---- build ------------------------------------------------------------------
-FROM node:22-slim AS build
+FROM node:22.23.1-slim@sha256:53ada149d435c38b14476cb57e4a7da73c15595aba79bd6971b547ceb6d018bf AS build
 WORKDIR /app
 # Copy the manifest AND the committed lockfile, then install from the lockfile
 # (`npm ci`) for a reproducible, pinned build (fails if they disagree).
@@ -14,7 +16,7 @@ COPY services/frontend/ ./
 RUN npm run build
 
 # ---- serve ------------------------------------------------------------------
-FROM nginx:1.27-alpine AS runtime
+FROM nginx:1.27.5-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10 AS runtime
 # nginx envsubst template: the image entrypoint expands the ports
 # (${FRONTEND_PORT} / ${API_ORCH_PORT} / ${WEBRTC_PORT} / ${TOPIC_PROBE_PORT})
 # and the upstream hosts (${API_HOST} / ${WEBRTC_HOST} / ${PROBE_HOST}), all

@@ -15,21 +15,30 @@ ARG ROS_DISTRO=jazzy
 # without "universe" (seen on a real-robot network). UV_PYTHON_PREFERENCE=
 # only-system + a bare "python3" interpreter name keep uv from trying to
 # download a standalone Python build (also DNS-blocked on the same networks).
+# uv is pinned by version + digest for reproducible builds (see README Releases).
 FROM ros:${ROS_DISTRO}-ros-base AS builder
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.10.0@sha256:78a7ff97cd27b7124a5f3c2aefe146170793c56a1e03321dd31a289f6d82a04f /uv /usr/local/bin/uv
 
 # Build the venv with --system-site-packages so the ROS-provided rclpy (added
-# later) remains importable alongside the pip-installed app deps.
-ENV VENV=/opt/venv UV_PYTHON_PREFERENCE=only-system
+# later) remains importable alongside the pip-installed app deps. The venv lives
+# at UV_PROJECT_ENVIRONMENT so `uv sync` installs into it (not a project-local
+# .venv).
+ENV VENV=/opt/venv \
+    UV_PYTHON_PREFERENCE=only-system \
+    UV_PROJECT_ENVIRONMENT=/opt/venv
 RUN uv venv --python python3 --system-site-packages $VENV
 ENV PATH="$VENV/bin:$PATH"
 
 WORKDIR /app
 COPY libs/kairos_common /app/libs/kairos_common
 COPY services/rosbag2_recorder /app/services/rosbag2_recorder
-# --no-editable: a plain uv pip install of a local path defaults to editable,
-# whose .pth points at this builder stage's /app — absent in the runtime stage.
-RUN uv pip install --no-cache-dir --no-editable ./libs/kairos_common ./services/rosbag2_recorder
+# Install the exact locked dependency set (--frozen: no `>=` re-resolution) plus
+# the local packages non-editable (--no-editable, so the copied venv has no .pth
+# pointing back at this builder stage's /app). The lock's kairos-common path
+# source (../../libs/kairos_common) resolves from the service dir. --no-dev omits
+# the dev group (none defined) and the test extra stays out (not a default group).
+RUN cd /app/services/rosbag2_recorder \
+    && uv sync --frozen --no-editable --no-dev
 
 # ---- runtime ----------------------------------------------------------------
 FROM ros:${ROS_DISTRO}-ros-base AS runtime

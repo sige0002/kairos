@@ -83,6 +83,14 @@ API_ORCH_PORT ?= $(or $(call _env_val,API_ORCH_PORT),8000)
 WEBRTC_PUBLIC_URL ?= /webrtc
 export WEBRTC_PUBLIC_URL
 
+# Release version — single source of truth is the root VERSION file. Exported so
+# every `docker compose` invocation below (single-host COMPOSE and the split
+# COMPOSE_ROBOT / COMPOSE_RECORDING) tags the kairos-*:${KAIROS_VERSION} images
+# instead of the :dev fallback baked into compose.yaml. Cutting a release = bump
+# VERSION + update CHANGELOG + git tag (see the README "Releases" section).
+KAIROS_VERSION ?= $(if $(wildcard VERSION),$(strip $(shell cat VERSION)),dev)
+export KAIROS_VERSION
+
 COMPOSE      := docker compose
 # Let the replay harness read the root .env too (so BAG / ROS_DISTRO / RMW set
 # there drive `make rosbag`), when a .env exists.
@@ -265,6 +273,30 @@ config-reload: ## apply config/*.yaml edits (restart monitor + orchestrator)
 config-show: ## print the live GET /api/v1/config defaults
 	@curl -fsS --max-time 5 http://localhost:$(API_ORCH_PORT)/api/v1/config \
 		| python3 -m json.tool 2>/dev/null || echo "orchestrator not reachable (make up?)"
+
+# ---- backup -----------------------------------------------------------------
+# Where snapshots land, and which top-level data/ dirs are RAW SAMPLE INPUTS
+# (reproducible source, NOT system state) to exclude. Override to match your
+# sample layout: `make backup BACKUP_SAMPLE_DIRS="airoa-moma-mcap my-bags"`.
+BACKUP_DIR ?= backups
+BACKUP_SAMPLE_DIRS ?= airoa-moma-mcap realman
+.PHONY: backup
+backup: ## consistent snapshot -> backups/<ts>.tar.gz: DB (.backup) + recordings/reports/datasets/index + config/. See docs/specs/en/config.md (restore).
+	@ts=$$(date +%Y%m%d_%H%M%S); out="$(BACKUP_DIR)/$$ts.tar.gz"; \
+	mkdir -p "$(BACKUP_DIR)"; tmp=$$(mktemp -d); \
+	if [ -f data/kairos.db ]; then \
+		if command -v sqlite3 >/dev/null 2>&1; then \
+			sqlite3 data/kairos.db ".backup '$$tmp/kairos.db'"; \
+		else \
+			cp data/kairos.db data/kairos.db-wal data/kairos.db-shm "$$tmp/" 2>/dev/null; \
+			cp data/kairos.db "$$tmp/kairos.db"; \
+		fi; \
+	fi; \
+	excl="--exclude=data/kairos.db --exclude=data/kairos.db-wal --exclude=data/kairos.db-shm --exclude=data/report/video_check"; \
+	for d in $(BACKUP_SAMPLE_DIRS); do excl="$$excl --exclude=data/$$d"; done; \
+	tar czf "$$out" $$excl -C "$$tmp" . -C "$(CURDIR)" config $$( [ -d data ] && echo data ); \
+	rm -rf "$$tmp"; \
+	echo "backup: wrote $$out (restore: docs/specs/en/config.md 'Operations')"
 
 # ---- test-data replay harness ----------------------------------------------
 .PHONY: rosbag rosbag-loop table smoke smoke-record

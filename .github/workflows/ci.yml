@@ -1,0 +1,106 @@
+# kairos CI — gates every push / PR to develop and main on the same checks the
+# Makefile runs locally (make test / make lint) plus compose validation. The
+# real ROS `ros2 bag record` round-trip runs in a separate workflow
+# (ros-integration.yml) because it needs the ROS 2 toolchain.
+name: CI
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+    branches: [develop, main]
+
+# One in-flight run per ref; cancel superseded pushes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ---- Python unit tests: shared lib + every Python service -----------------
+  # The four ROS-node services (recorder/monitor/probe/streamer) lazy-import
+  # rclpy, so their pure-logic suites pass on a plain runner without ROS (the
+  # rclpy-dependent paths skip). Mirrors `make test-py`.
+  python:
+    name: py • ${{ matrix.dir }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dir:
+          - libs/kairos_common
+          - services/rosbag2_recorder
+          - services/topic_monitor
+          - services/topic_probe
+          - services/webrtc_streamer
+          - services/api_orchestrator
+          - services/dora_runner
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.10.0"
+      - name: Unit tests
+        working-directory: ${{ matrix.dir }}
+        run: uv run --extra test pytest -q
+
+  # ---- Frontend: build + unit tests + lint (mirrors `make test-fe`) ---------
+  frontend:
+    name: frontend build/test/lint
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: services/frontend/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+      - run: npm run lint
+
+  # ---- Ruff lint + format check (mirrors `make lint` + format --check) ------
+  lint:
+    name: ruff lint + format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.10.0"
+      - run: uvx ruff check libs services
+      - run: uvx ruff format --check libs services
+
+  # ---- Compose validation: every compose file parses + interpolates ---------
+  # `config -q` fully renders each file (env interpolation + `extends` + merge),
+  # so it catches drift the smoke test would only hit at deploy time. The split
+  # files pull their services from compose.yaml via `extends`. TURN_EXTERNAL_IP
+  # is a required var in compose.turn.yaml with no default — supply a placeholder
+  # so the file renders (its real value is the deploy host's IP).
+  compose:
+    name: compose config
+    runs-on: ubuntu-latest
+    env:
+      TURN_EXTERNAL_IP: 203.0.113.1
+    steps:
+      - uses: actions/checkout@v4
+      - name: docker compose config -q
+        run: |
+          set -e
+          for f in compose.yaml \
+                   compose.recording.yaml \
+                   compose.robot.yaml \
+                   compose.turn.yaml \
+                   compose.zenoh.yaml \
+                   deploy/test/compose.yaml; do
+            echo "== $f =="
+            docker compose -f "$f" config -q
+          done

@@ -11,19 +11,26 @@ ARG ROS_DISTRO=jazzy
 # without "universe" (seen on a real-robot network). UV_PYTHON_PREFERENCE=
 # only-system + a bare "python3" interpreter name keep uv from trying to
 # download a standalone Python build (also DNS-blocked on the same networks).
+# uv is pinned by version + digest for reproducible builds (see README Releases).
 FROM ros:${ROS_DISTRO}-ros-base AS builder
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.10.0@sha256:78a7ff97cd27b7124a5f3c2aefe146170793c56a1e03321dd31a289f6d82a04f /uv /usr/local/bin/uv
 
-ENV VENV=/opt/venv UV_PYTHON_PREFERENCE=only-system
+# --system-site-packages so the ROS-provided rclpy stays importable; the venv
+# lives at UV_PROJECT_ENVIRONMENT so `uv sync` installs into it.
+ENV VENV=/opt/venv \
+    UV_PYTHON_PREFERENCE=only-system \
+    UV_PROJECT_ENVIRONMENT=/opt/venv
 RUN uv venv --python python3 --system-site-packages $VENV
 ENV PATH="$VENV/bin:$PATH"
 
 WORKDIR /app
 COPY libs/kairos_common /app/libs/kairos_common
 COPY services/topic_probe /app/services/topic_probe
-# --no-editable: a plain uv pip install of a local path defaults to editable,
-# whose .pth points at this builder stage's /app — absent in the runtime stage.
-RUN uv pip install --no-cache-dir --no-editable ./libs/kairos_common ./services/topic_probe
+# Install the exact locked dependency set (--frozen: no `>=` re-resolution) plus
+# the local packages non-editable (--no-editable). The lock's kairos-common path
+# source (../../libs/kairos_common) resolves from the service dir.
+RUN cd /app/services/topic_probe \
+    && uv sync --frozen --no-editable --no-dev
 
 # ---- runtime ----------------------------------------------------------------
 FROM ros:${ROS_DISTRO}-ros-base AS runtime

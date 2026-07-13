@@ -212,9 +212,31 @@ backend 駆動で描画します（タブは Console v2 の役割 6 タブ = Col
 
 詳しいコマンド・確認済みレシピは [CLAUDE.ja.md](CLAUDE.ja.md) の「ビルド / テスト / 実行コマンド」を参照してください。
 
+## リリース
+
+バージョニングは [SemVer](https://semver.org/) に従います。現在のバージョンはルートの
+[`VERSION`](VERSION) ファイル（正本）で、履歴は [`CHANGELOG.md`](CHANGELOG.md) にあります。
+
+- **CI**（`.github/workflows/`）が `develop`・`main` への push / PR ごとに検証します:
+  Python 単体テスト（共有ライブラリ + Python 6 サービス）・frontend の build/test/lint・
+  Ruff lint + format・`docker compose config` 検証。recorder の実 `ros2 bag record`
+  往復テストは（ROS 2 ツールチェーンが必要なため）別の **ROS integration** ワークフローで実行します。
+- **再現可能なイメージ**: 各サービスは依存を committed な `uv.lock` から導入し
+  （`uv sync --frozen`、`>=` の再解決なし）、ベースイメージは patch タグ + digest で固定します。
+  `make build` / `make up` はイメージを `kairos-*:$(cat VERSION)` でタグ付けします
+  （エクスポートされた `KAIROS_VERSION` 経由）。素の `docker compose build` は `:dev` にフォールバックします。
+
+リリースの切り方:
+
+1. [`VERSION`](VERSION) を更新（例: `0.1.0` → `0.2.0`）。
+2. [`CHANGELOG.md`](CHANGELOG.md) の **Unreleased** の内容を新しい `## [x.y.z] - <日付>`
+   見出しへ移し、空の Unreleased セクションを新設。
+3. コミットしてタグを push: `git tag -a vX.Y.Z -m "kairos vX.Y.Z" && git push --tags`。
+4. `make build` でそのタグの `kairos-*:X.Y.Z` イメージが生成される。
+
 ## ドキュメントの言語ルール
 
-**日本語が正本**です。日本語ファイル（`*.ja.md`）を編集し、英語版（`*.md`）は `/sync-docs` スキルで
+**日本語が正本**です。日本語ファイル（`*.ja.md`）を編集し、英語版（`*.md`）は日本語の変更に**手動で追随**させて
 再生成します。英語版は手で編集しないでください。
 
 ## コントリビュート

@@ -1,4 +1,4 @@
-<!-- AUTO-GENERATED from README.ja.md. Do not edit by hand — edit the Japanese source and run /sync-docs. -->
+<!-- Mirror of README.ja.md (the Japanese file is canonical). Keep this file in sync by hand — the sync-docs skill was retired. -->
 # kairos
 
 **日本語: [README.ja.md](README.ja.md)**
@@ -219,10 +219,35 @@ Collect / Review / Datasets / Validation / Monitor / Settings).
 
 For detailed commands and verified recipes, see "Build / test / run commands" in [CLAUDE.md](CLAUDE.md).
 
+## Releases
+
+Versioning follows [SemVer](https://semver.org/). The current version is the root
+[`VERSION`](VERSION) file (single source of truth); the history is in
+[`CHANGELOG.md`](CHANGELOG.md).
+
+- **CI** (`.github/workflows/`) gates every push / PR to `develop` and `main`:
+  Python unit tests (shared lib + all six Python services), the frontend
+  build/test/lint, Ruff lint + format, and `docker compose config` validation.
+  The recorder's real `ros2 bag record` round-trip runs in the separate
+  **ROS integration** workflow (it needs the ROS 2 toolchain).
+- **Reproducible images**: each service installs its dependencies from the
+  committed `uv.lock` (`uv sync --frozen`, no `>=` re-resolution), and base images
+  are pinned by patch tag + digest. `make build` / `make up` tag the images
+  `kairos-*:$(cat VERSION)` (via the exported `KAIROS_VERSION`); a bare
+  `docker compose build` falls back to `:dev`.
+
+To cut a release:
+
+1. Bump [`VERSION`](VERSION) (e.g. `0.1.0` → `0.2.0`).
+2. In [`CHANGELOG.md`](CHANGELOG.md), move the **Unreleased** entries under a new
+   `## [x.y.z] - <date>` heading and start a fresh empty Unreleased section.
+3. Commit, then tag and push: `git tag -a vX.Y.Z -m "kairos vX.Y.Z" && git push --tags`.
+4. `make build` then produces the `kairos-*:X.Y.Z` images for that tag.
+
 ## Documentation language rule
 
 **Japanese is the source of truth.** Edit the Japanese files (`*.ja.md`), and regenerate the English
-versions (`*.md`) with the `/sync-docs` skill. Do not edit the English versions by hand.
+versions (`*.md`) by hand to match the Japanese changes. Do not author content in the English versions directly.
 
 ## Contributing
 
