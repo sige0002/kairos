@@ -77,6 +77,7 @@ def _batch_summary(store: RunStore, batch: Batch) -> BatchSummary:
             BatchEpisodeSummary(
                 index=ep.index_in_batch,
                 run_id=ep.run_id,
+                batch_seq=batch.batch_seq,
                 task_result=ep.task_result,
                 quality=ep.quality,
                 review_status=ep.review_status,

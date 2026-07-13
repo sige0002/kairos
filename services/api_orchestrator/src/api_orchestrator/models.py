@@ -83,6 +83,10 @@ class RunEpisode(BaseModel):
 
     episode_id: str
     batch_id: str
+    # Per-(robot, local day) batch number of this episode's batch (Console v2
+    # Phase 2). Surfaced on the join so Review/Datasets can label a row
+    # "MM/DD · #N" without a second fetch. Null if the batch predates numbering.
+    batch_seq: int | None = None
     index_in_batch: int
     task_result: TaskResult
     failure_reason: str | None = None
@@ -317,6 +321,10 @@ class Batch(BaseModel):
     # "N recorded" for Collect's counts, independent of the live episode_count
     # which shrinks when an episode is deleted.
     episodes_recorded: int = 0
+    # Per-(robot, local day) batch number, allocated by the server at create
+    # time (see store._next_batch_seq) — the single human-readable number across
+    # Collect/Review/Datasets. Null only for a row predating numbering.
+    batch_seq: int | None = None
 
 
 class Episode(BaseModel):
@@ -384,6 +392,9 @@ class BatchEpisodeSummary(BaseModel):
 
     index: int
     run_id: str
+    # The parent batch's per-(robot, local day) number (same for every row in
+    # the batch); carried here so a flattened episode list can label rows.
+    batch_seq: int | None = None
     task_result: TaskResult
     quality: Quality
     review_status: ReviewStatus

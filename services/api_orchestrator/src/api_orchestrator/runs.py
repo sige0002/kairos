@@ -67,13 +67,20 @@ def _default_meta(value: str | None, default: str) -> str:
     return value.strip() if value and value.strip() else default
 
 
-def _run_episode(episode: Episode | None) -> RunEpisode | None:
-    """Project a full :class:`Episode` down to the compact run-join summary."""
+def _run_episode(
+    episode: Episode | None, batch_seq: int | None = None
+) -> RunEpisode | None:
+    """Project a full :class:`Episode` down to the compact run-join summary.
+
+    ``batch_seq`` is the number of the episode's batch (looked up separately, as
+    it lives on the batch, not the episode row); ``None`` leaves it unlabeled.
+    """
     if episode is None:
         return None
     return RunEpisode(
         episode_id=episode.episode_id,
         batch_id=episode.batch_id,
+        batch_seq=batch_seq,
         index_in_batch=episode.index_in_batch,
         task_result=episode.task_result,
         failure_reason=episode.failure_reason,
@@ -529,8 +536,15 @@ class RunService:
             dataset_stats=self._read_json(self._report_path("dataset_export", run_id)),
             loss=self._read_json(self._report_path("loss_report", run_id)),
         )
-        # Console v2 Phase 2: attach the episode summary (null when none).
-        detail.episode = _run_episode(self._store.get_episode_by_run_id(run_id))
+        # Console v2 Phase 2: attach the episode summary (null when none),
+        # labeled with its batch's per-day number.
+        episode = self._store.get_episode_by_run_id(run_id)
+        batch_seq = None
+        if episode is not None:
+            batch_seq = self._store.batch_seqs_for_ids([episode.batch_id]).get(
+                episode.batch_id
+            )
+        detail.episode = _run_episode(episode, batch_seq)
         return detail
 
     def _report_path(self, pipeline: str, run_id: str) -> Path:
@@ -621,8 +635,14 @@ class RunService:
         parsed = self._parse_cursor(cursor)
         runs, next_seq = self._store.list_runs(limit, parsed)
         episodes = self._store.episodes_by_run_ids([r.run_id for r in runs])
+        # Batched batch_seq lookup so each joined episode carries its batch
+        # number without an N+1 read.
+        seqs = self._store.batch_seqs_for_ids(
+            list({ep.batch_id for ep in episodes.values()})
+        )
         for run in runs:
-            run.episode = _run_episode(episodes.get(run.run_id))
+            ep = episodes.get(run.run_id)
+            run.episode = _run_episode(ep, seqs.get(ep.batch_id) if ep else None)
         return runs, (str(next_seq) if next_seq is not None else None)
 
     @staticmethod

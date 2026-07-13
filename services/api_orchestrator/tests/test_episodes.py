@@ -48,6 +48,17 @@ def test_create_batch_accepts_explicit_robot_and_target(client: TestClient) -> N
     assert batch["operator"] == "yuki"
 
 
+def test_batch_seq_allocated_and_increments_same_day(client: TestClient) -> None:
+    """The server assigns batch_seq per (robot, local day): consecutive batches
+    for the same robot increment; a different robot restarts at 1."""
+    first = _new_batch(client)
+    second = _new_batch(client)
+    assert first["batch_seq"] == 1
+    assert second["batch_seq"] == 2  # same (default) robot, same local day
+    other = _new_batch(client, robot="realman")
+    assert other["batch_seq"] == 1  # different robot -> restarts at 1
+
+
 def test_get_batch_returns_full_batch_with_episodes(client: TestClient) -> None:
     batch_id = _new_batch(client)["batch_id"]
     resp = client.get(f"/api/v1/batches/{batch_id}")
@@ -133,6 +144,7 @@ def test_create_episode_and_batch_summary(client: TestClient, store: RunStore) -
     assert listed["episodes"][0] == {
         "index": 1,
         "run_id": run_id,
+        "batch_seq": 1,  # first batch of the local day for this robot
         "task_result": "success",
         "quality": "good",
         "review_status": "pending",
@@ -250,6 +262,7 @@ def test_runs_list_and_detail_attach_episode(
     assert joined == {
         "episode_id": ep_id,
         "batch_id": batch_id,
+        "batch_seq": 1,  # the join carries the batch's per-day number
         "index_in_batch": 2,
         "task_result": "failure",
         "failure_reason": "drop",
@@ -259,6 +272,7 @@ def test_runs_list_and_detail_attach_episode(
 
     detail = client.get(f"/api/v1/runs/{with_ep}").json()
     assert detail["episode"]["episode_id"] == ep_id
+    assert detail["episode"]["batch_seq"] == 1
 
 
 def test_delete_run_cascades_episode(client: TestClient, store: RunStore) -> None:
