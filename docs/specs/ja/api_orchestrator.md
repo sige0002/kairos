@@ -34,7 +34,12 @@
 - 設定: `GET /api/v1/config`（frontend 実行時設定: endpoints / tabs / defaults（`ros_domain_id` を含む）/ stream / schemas）。〔`GET/POST /api/v1/settings` は**未実装**（将来）。現状は下の `PUT /api/v1/config/recording` が設定編集の入口〕
 - 収録設定（フル編集）: `GET /api/v1/config/recording` → `{ config: <RecordingConfig dump>|null, path }`、`PUT /api/v1/config/recording`（body `{ config }`。下記「収録設定のフル編集」参照）
 - 設定カタログ: `GET /api/v1/config/options`、`POST /api/v1/config/select`（検証テンプレート等のカテゴリ別選択肢と現在の選択）
-- システム情報: `GET /api/v1/system` → `{ cpu: { model, cores }, gpu }`（ホストの読み取り専用イントロスペクション。`nvidia-smi` 不在時は `gpu: null`。常に `200`）
+- システム情報: `GET /api/v1/system` → `{ cpu: { model, cores }, gpu, cpu_percent, disk, gpu_percent }`（ホストの読み取り専用イントロスペクション。常に `200`）
+  - `cpu` / `gpu`: 静的な情報（CPU モデル名・論理コア数は `/proc/cpuinfo`、GPU 名は `nvidia-smi`。取得不能時は各フィールド `null`）
+  - `cpu_percent`: ホスト全体の CPU 使用率 `[0, 100]`（`/proc/stat` の集約 `cpu` 行を 2 スナップショット差分して算出＝真の busy%。ロードアベレージではない）。差分の基準がまだ無い初回サンプルや `/proc/stat` 不読時は `null`
+  - `disk`: 収録データ用ディレクトリを含むファイルシステムの `{ path, total_bytes, free_bytes }`（`shutil.disk_usage`。app が知る `data_dir` を優先し、無ければ `/data` にフォールバック。いずれも存在しなければ `null`）
+  - `gpu_percent`: GPU 使用率 `[0, 100]`（`nvidia-smi --query-gpu=utilization.gpu`）。GPU 非搭載・`nvidia-smi` 取得不能時は `null`（値をでっち上げない）
+  - `cpu_percent` / `disk` / `gpu_percent` は時間変化するため約 2 秒キャッシュ（SSE 相当のポーリングでも安価）。`nvidia-smi` プローブはワーカースレッドで実行しイベントループをブロックしない
 - ファイル配信: `GET /api/v1/files/{path}` — `data_dir` からの**相対パス**でファイルを配信（トラバーサルガード: `data_dir` 配下のみ。それ以外・不在は `404`）。`video_check` の mp4 プレビュー取得に使う
 - データセット: `GET /api/v1/datasets`（`data/<operator>/<task>/<NNN>/dataset.json` を走査した一覧。`data_dir` 配下のみ読む）、`GET /api/v1/datasets/{operator}/{task}/{index}`（**エクスポート済みデータセットの詳細**。下記「データセットエクスポート」参照）、`POST /api/v1/datasets/export`（body `{ run_id }`）、`POST /api/v1/datasets/export-all`（`recorded/` 内の完了 run を**一括** export）
 - `GET /healthz` / `GET /readyz`（`components: { recorder, monitor, streamer }` の疎通も返す）
