@@ -506,6 +506,10 @@ export interface Batch {
   ended_reason?: string | null;
   created_at?: string | null;
   ended_at?: string | null;
+  /** Monotone count of episodes ever recorded into this batch — never lowered
+   *  by a run-delete cascade. Collect's counts use this (falls back to the
+   *  live episode count on older backends that omit it). */
+  episodes_recorded?: number;
 }
 
 export interface Episode {

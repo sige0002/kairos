@@ -139,6 +139,11 @@ interface MachineState {
   phase: Phase;
   episodes: EpisodeRecord[];
   batchNum: number;
+  /** Monotone count of episodes recorded this batch — drives EVERY count/next
+   *  number the operator sees. Only ever grows (per confirm), never lowered by a
+   *  Review exclude/delete: `episodes` (used for the quality/task tallies + strip
+   *  chips) may shrink on a delete-restore, but the recorded count must not. */
+  recordedCount: number;
   /** Server batch id (Phase 2), null until the batch is created on the API. The
    *  display counter is `batchNum`; this is the real key for episode POSTs. */
   batchId: string | null;
@@ -165,6 +170,7 @@ function createInitialState(): MachineState {
     phase: 'ready',
     episodes: [],
     batchNum: 1,
+    recordedCount: 0,
     batchId: null,
     elapsedMs: 0,
     recWarning: false,
@@ -260,18 +266,22 @@ function reducer(state: MachineState, action: Action): MachineState {
       // Independent axes: a failed task can still be good-quality, usable data.
       const taskResult: TaskResult = state.pendingTask === 'fail' ? 'fail' : 'ok';
       const quality: Quality = state.recWarning ? 'review' : 'good';
+      // The next index follows the monotone recorded count (never reuses a
+      // deleted episode's number).
+      const recordedCount = state.recordedCount + 1;
       const episode: EpisodeRecord = {
-        index: state.episodes.length + 1,
+        index: recordedCount,
         quality,
         taskResult,
         runId: state.currentRunId ?? undefined,
         failReason: taskResult === 'fail' ? state.failReason : undefined,
       };
       const episodes = [...state.episodes, episode];
-      const done = episodes.length >= EPISODES_PER_BATCH;
+      const done = recordedCount >= EPISODES_PER_BATCH;
       return {
         ...state,
         episodes,
+        recordedCount,
         phase: done ? 'completed' : 'ready',
         elapsedMs: 0,
         recWarning: false,
@@ -307,6 +317,7 @@ function reducer(state: MachineState, action: Action): MachineState {
       return {
         ...state,
         episodes: [],
+        recordedCount: 0,
         batchNum: state.batchNum + 1,
         // A new display batch needs a fresh server batch; cleared here and
         // re-created lazily on the next start (see ensureBatch in the hook).
@@ -355,6 +366,8 @@ const BATCH_STORAGE_KEY = 'kairos.collect.batch';
 
 interface PersistedBatch {
   batchNum: number;
+  /** Monotone recorded count (survives an API-down reload; see the note above). */
+  recordedCount: number;
   /** Server batch id, mirrored so a reload can match `batchNum` back to it when
    *  the API is reachable, and so an API-down reload can still resume. */
   batchId: string | null;
@@ -368,6 +381,7 @@ interface PersistedBatch {
 function serializeDurable(state: MachineState): string {
   const blob: PersistedBatch = {
     batchNum: state.batchNum,
+    recordedCount: state.recordedCount,
     batchId: state.batchId,
     episodes: state.episodes,
     project: state.project,
@@ -393,6 +407,15 @@ function persistBatch(state: MachineState): void {
   }
 }
 
+/** Lower bound for the monotone recorded count from an episode list — the max
+ *  of the list length and the highest episode index (an older backend that
+ *  omits `episodes_recorded` still can't lower the count below what's present). */
+function maxRecorded(episodes: EpisodeRecord[]): number {
+  let m = episodes.length;
+  for (const e of episodes) if (typeof e.index === 'number' && e.index > m) m = e.index;
+  return m;
+}
+
 /** Fresh state seeded from the persisted durable context, if any. Volatile
  *  fields (phase, timers, run id, pending result, errors) are NEVER restored. */
 function readInitialState(): MachineState {
@@ -408,14 +431,19 @@ function readInitialState(): MachineState {
     const blob = JSON.parse(raw) as Partial<PersistedBatch> | null;
     if (!blob || typeof blob !== 'object') return base;
     const episodes = Array.isArray(blob.episodes) ? (blob.episodes as EpisodeRecord[]) : [];
+    const recordedCount = Math.max(
+      typeof blob.recordedCount === 'number' ? blob.recordedCount : 0,
+      maxRecorded(episodes),
+    );
     // A durable full batch resumes on its completed summary; anything else
     // lands on the safe 'ready' baseline. The persisted phase (if any) is
     // ignored on purpose — see the note above.
-    const phase: Phase = episodes.length >= EPISODES_PER_BATCH ? 'completed' : 'ready';
+    const phase: Phase = recordedCount >= EPISODES_PER_BATCH ? 'completed' : 'ready';
     return {
       ...base,
       phase,
       batchNum: typeof blob.batchNum === 'number' ? blob.batchNum : base.batchNum,
+      recordedCount,
       batchId: typeof blob.batchId === 'string' ? blob.batchId : null,
       episodes,
       project: typeof blob.project === 'string' ? blob.project : base.project,
@@ -489,11 +517,20 @@ function applyServerRestore(batch: BatchSummary | null): void {
   const episodes = batch.episodes.map(serverEpisodeToRecord);
   // Recover the display counter only when it belongs to this same server batch.
   const batchNum = currentState.batchId === batch.batch_id ? currentState.batchNum : 1;
-  const phase: Phase = episodes.length >= EPISODES_PER_BATCH ? 'completed' : 'ready';
+  // Monotone recorded count: the server's `episodes_recorded` (which excludes
+  // nothing and never drops on a Review delete) — or, on an older backend, the
+  // episode list's own lower bound. NEVER lower the count already held locally.
+  const serverRecorded =
+    typeof batch.episodes_recorded === 'number'
+      ? batch.episodes_recorded
+      : maxRecorded(episodes);
+  const recordedCount = Math.max(serverRecorded, currentState.recordedCount);
+  const phase: Phase = recordedCount >= EPISODES_PER_BATCH ? 'completed' : 'ready';
   currentState = {
     ...createInitialState(),
     batchId: batch.batch_id,
     batchNum,
+    recordedCount,
     project: batch.project,
     task: batch.task,
     condition: batch.condition ?? '—',
@@ -878,7 +915,9 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   const confirmEpisode = useCallback(() => {
     if (state.phase !== 'result' || !state.pendingTask) return;
     if (state.pendingTask === 'fail' && !state.failReason) return;
-    const nextIndex = state.episodes.length + 1;
+    // Monotone: the new episode's number follows the recorded count, so a prior
+    // Review delete never causes a reused index_in_batch on the server.
+    const nextIndex = state.recordedCount + 1;
     const willComplete = nextIndex >= EPISODES_PER_BATCH;
     const isFail = state.pendingTask === 'fail';
     const reason = state.failReason;
@@ -946,7 +985,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     state.pendingTask,
     state.failReason,
     state.recWarning,
-    state.episodes.length,
+    state.recordedCount,
     state.currentRunId,
     state.batchId,
     state.batchNum,
@@ -1144,7 +1183,11 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   const adviceNext = useCallback(() => setAdviceIdx((i) => (i + 1) % ADVICE_ITEMS.length), []);
 
   const stats: BatchStats = useMemo(() => {
-    const nRecorded = state.episodes.length;
+    // The recorded count / next number are MONOTONE (from recordedCount) so a
+    // Review exclude/delete never lowers them or renumbers. The quality/task
+    // tallies still come from the surviving episodes (they legitimately shrink
+    // when a recording is deleted).
+    const nRecorded = state.recordedCount;
     const nGood = state.episodes.filter((e) => e.quality === 'good').length;
     const nReview = state.episodes.filter((e) => e.quality === 'review').length;
     const nTaskFailed = state.episodes.filter((e) => e.taskResult === 'fail').length;
@@ -1153,10 +1196,10 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
       nGood,
       nReview,
       nTaskFailed,
-      nRemaining: EPISODES_PER_BATCH - nRecorded,
+      nRemaining: Math.max(0, EPISODES_PER_BATCH - nRecorded),
       epNext: Math.min(nRecorded + 1, EPISODES_PER_BATCH),
     };
-  }, [state.episodes]);
+  }, [state.episodes, state.recordedCount]);
 
   return {
     phase: state.phase,

@@ -208,3 +208,68 @@ test('SPLIT_MODE on: transfer UI appears and a transfer can be started', async (
     { timeout: 3000 },
   );
 });
+
+// ---------------------------------------------------------------------------
+// Adopt visibility (status chip) + export-adopted dialog.
+// ---------------------------------------------------------------------------
+
+function ep(review_status: string) {
+  return {
+    episode_id: `ep_${review_status}`,
+    batch_id: 'b1',
+    index_in_batch: 1,
+    task_result: 'success',
+    quality: 'good',
+    review_status,
+  };
+}
+
+test('the row + detail header show a status chip from the server review_status', async () => {
+  mockApi([
+    { run_id: 'ep-a', state: 'completed', started_at: '2026-07-13T09:00:00Z', episode: ep('adopted') },
+  ]);
+  renderWithClient(<ReviewScreen />);
+  await waitFor(() => expect(screen.getByTestId('review-row-1')).toBeInTheDocument());
+
+  expect(screen.getByTestId('review-status-1')).toHaveTextContent('ADOPTED');
+  await waitFor(() =>
+    expect(screen.getByTestId('review-detail-status')).toHaveTextContent('ADOPTED'),
+  );
+});
+
+test('adopting a run updates its status chip immediately', async () => {
+  mockApi([
+    { run_id: 'ep-a', state: 'completed', started_at: '2026-07-13T09:00:00Z', episode: ep('pending') },
+  ]);
+  renderWithClient(<ReviewScreen />);
+  await waitFor(() => expect(screen.getByTestId('review-status-1')).toHaveTextContent('PENDING'));
+
+  fireEvent.click(screen.getByTestId('review-decision-adopt'));
+  expect(screen.getByTestId('review-status-1')).toHaveTextContent('ADOPTED');
+  expect(screen.getByTestId('review-detail-status')).toHaveTextContent('ADOPTED');
+});
+
+test('Export adopted opens a dialog listing only adopted runs + the explainer', async () => {
+  mockApi([
+    { run_id: 'ep-a', state: 'completed', started_at: '2026-07-13T09:00:00Z', episode: ep('adopted') },
+    { run_id: 'ep-b', state: 'completed', started_at: '2026-07-13T09:05:00Z', episode: ep('pending') },
+  ]);
+  renderWithClient(<ReviewScreen />);
+  await waitFor(() => expect(screen.getByTestId('review-episodes-count')).toHaveTextContent('2 shown'));
+
+  // The Adopt = label · Export = move explainer is present near the action.
+  expect(screen.getByTestId('review-adopt-explainer')).toHaveTextContent(/Adopt.*label.*Export.*Datasets/);
+
+  const exportBtn = screen.getByTestId('review-export-adopted');
+  expect(exportBtn).toHaveTextContent('Export adopted (1)');
+  fireEvent.click(exportBtn);
+
+  const list = await screen.findByTestId('review-export-list');
+  // Only the adopted run is listed; the pending one is not.
+  expect(within(list).getByText('ep-a')).toBeInTheDocument();
+  expect(within(list).queryByText('ep-b')).toBeNull();
+
+  // Cancel — never run a real export in the UI check.
+  fireEvent.click(screen.getByText('Cancel'));
+  await waitFor(() => expect(screen.queryByTestId('review-export-list')).toBeNull());
+});

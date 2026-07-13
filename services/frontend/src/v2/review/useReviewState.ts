@@ -9,8 +9,10 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiDelete, apiGet } from '../../api/client';
+import { apiDelete, apiGet, apiPost } from '../../api/client';
+import { queryKeys } from '../../api/queryKeys';
 import type {
+  DatasetExportSummary,
   EpisodePatchRequest,
   EpisodeQuality,
   EpisodeReviewStatus,
@@ -23,7 +25,15 @@ import { patchEpisode, removeEpisodeOutcome } from '../episodeBridge';
 import { mapRunsToEpisodes } from './mapRuns';
 import { initialTransferSlot, transferReducer, TRANSFER_DURATION_MS, TRANSFER_TICK_MS } from './transfer';
 import { useSplitMode } from './splitMode';
-import type { Decision, DecoratedEpisode, EpisodeRow, Quality, TaskResult, TransferSlot } from './types';
+import type {
+  Decision,
+  DecoratedEpisode,
+  EpisodeRow,
+  Quality,
+  ReviewStatus,
+  TaskResult,
+  TransferSlot,
+} from './types';
 
 // Own query key (not queryKeys.runs(cursor)): this screen wants one big page
 // of everything reviewable, a different shape than the Recordings list's
@@ -100,6 +110,21 @@ export interface ReviewState {
   bulkFailures: { runId: string; error: string }[];
   confirmBulkDelete: () => void;
   cancelBulkDelete: () => void;
+
+  // ---- export adopted → Datasets (Adopt = label · Export = move) ----------
+  /** Adopted episodes (any state) — the count on the "Export adopted" action. */
+  adoptedRows: DecoratedEpisode[];
+  /** Adopted AND 'completed' — the runs the export will actually move. */
+  adoptedExportable: DecoratedEpisode[];
+  /** Adopted but not 'completed' — listed as skipped (with the reason). */
+  adoptedSkipped: DecoratedEpisode[];
+  requestExportAdopted: () => void;
+  exportAdoptedOpen: boolean;
+  exportRunning: boolean;
+  exportDone: number;
+  exportFailures: { runId: string; error: string }[];
+  confirmExportAdopted: () => void;
+  cancelExportAdopted: () => void;
 
   adoptAllGood: () => void;
   decide: (d: Decision) => void;
@@ -204,12 +229,25 @@ export function useReviewState(): ReviewState {
     () =>
       baseEpisodes.map((e) => {
         const ov = overrides[e.runId];
+        const isArchived = !!archivedRunIds[e.runId];
+        const decision = decisions[e.runId] ?? null;
+        // The status chip: a session decision wins, then the server episode's
+        // review_status, then 'pending'. ('review' = keep-in-review = pending.)
+        const effectiveReviewStatus: ReviewStatus =
+          isArchived || decision === 'excluded'
+            ? 'excluded'
+            : decision === 'adopted'
+              ? 'adopted'
+              : decision === 'review'
+                ? 'pending'
+                : (e.reviewStatus ?? 'pending');
         return {
           ...e,
           effectiveQuality: ov?.quality ?? e.quality,
           effectiveTask: ov?.task ?? e.task,
-          isArchived: !!archivedRunIds[e.runId],
-          decision: decisions[e.runId] ?? null,
+          isArchived,
+          decision,
+          effectiveReviewStatus,
           transferSlot: transfers[e.runId] ?? initialTransferSlot(e.transfer),
         };
       }),
@@ -436,6 +474,78 @@ export function useReviewState(): ReviewState {
     }
   }, [decorated, purgeLocal, queryClient, showToast]);
 
+  // ---- export adopted → Datasets (the Adopt→Datasets bridge) ---------------
+  // Adopt is a label; Export MOVEs the recording into the dataset tree. Only
+  // 'completed' runs are exportable — an adopted run that isn't completed is
+  // listed as skipped with the reason. Sequential POST /datasets/export with
+  // live progress + honest per-run failures, then invalidate the review list,
+  // the runs list, and the datasets list (same MOVE invalidation as v1).
+  const adoptedRows = useMemo(
+    () => decorated.filter((r) => r.effectiveReviewStatus === 'adopted'),
+    [decorated],
+  );
+  const adoptedExportable = useMemo(
+    () => adoptedRows.filter((r) => r.state === 'completed'),
+    [adoptedRows],
+  );
+  const adoptedSkipped = useMemo(
+    () => adoptedRows.filter((r) => r.state !== 'completed'),
+    [adoptedRows],
+  );
+  const [exportAdoptedOpen, setExportAdoptedOpen] = useState(false);
+  const [exportRunning, setExportRunning] = useState(false);
+  const [exportDone, setExportDone] = useState(0);
+  const [exportFailures, setExportFailures] = useState<{ runId: string; error: string }[]>([]);
+  const requestExportAdopted = useCallback(() => {
+    setExportFailures([]);
+    setExportDone(0);
+    setExportAdoptedOpen(true);
+  }, []);
+  const cancelExportAdopted = useCallback(() => {
+    if (exportRunning) return;
+    setExportAdoptedOpen(false);
+    setExportFailures([]);
+    setExportDone(0);
+  }, [exportRunning]);
+  const confirmExportAdopted = useCallback(async () => {
+    const targets = decorated.filter(
+      (r) => r.effectiveReviewStatus === 'adopted' && r.state === 'completed',
+    );
+    if (!targets.length) {
+      setExportAdoptedOpen(false);
+      return;
+    }
+    setExportRunning(true);
+    setExportDone(0);
+    setExportFailures([]);
+    const failures: { runId: string; error: string }[] = [];
+    const succeeded: string[] = [];
+    for (const t of targets) {
+      try {
+        await apiPost<DatasetExportSummary>('/datasets/export', { run_id: t.runId });
+        succeeded.push(t.runId);
+      } catch (e) {
+        failures.push({ runId: t.runId, error: e instanceof Error ? e.message : 'failed' });
+      }
+      setExportDone((d) => d + 1);
+      setExportFailures([...failures]);
+    }
+    succeeded.forEach(purgeLocal);
+    // MOVE: exported runs leave Review + Recordings and appear under Datasets.
+    await queryClient.invalidateQueries({ queryKey: REVIEW_RUNS_KEY });
+    await queryClient.invalidateQueries({ queryKey: queryKeys.runs(undefined) });
+    await queryClient.invalidateQueries({ queryKey: queryKeys.datasets });
+    setExportRunning(false);
+    if (failures.length === 0) {
+      showToast(
+        `Exported ${succeeded.length} adopted episode${succeeded.length === 1 ? '' : 's'} to Datasets`,
+      );
+      setExportAdoptedOpen(false);
+    } else {
+      showToast(`Exported ${succeeded.length}, ${failures.length} failed`);
+    }
+  }, [decorated, purgeLocal, queryClient, showToast]);
+
   // ---- decisions / overrides ---------------------------------------------
   const clearDecision = useCallback((runId: string) => {
     setDecisions((prev) => {
@@ -624,6 +734,17 @@ export function useReviewState(): ReviewState {
     bulkFailures,
     confirmBulkDelete,
     cancelBulkDelete,
+
+    adoptedRows,
+    adoptedExportable,
+    adoptedSkipped,
+    requestExportAdopted,
+    exportAdoptedOpen,
+    exportRunning,
+    exportDone,
+    exportFailures,
+    confirmExportAdopted,
+    cancelExportAdopted,
 
     adoptAllGood,
     decide,

@@ -13,6 +13,8 @@ import type { RunState } from '../../api/types';
 export type Quality = 'Good' | 'Needs review' | 'Not usable';
 export type TaskResult = 'Success' | 'Failure';
 export type Decision = 'adopted' | 'review' | 'excluded';
+/** Server-facing adopt/exclude state shown as a status chip on each row. */
+export type ReviewStatus = 'pending' | 'adopted' | 'excluded';
 
 /** MCAP transfer status for a split deployment: the episode's MCAP lives on
  *  the robot PC until explicitly transferred to the recording PC. */
@@ -50,6 +52,8 @@ export interface EpisodeRow {
   /** The operator's Collect-session task result from the bridge, or null when
    *  none is recorded (no automated task-result model exists). */
   task: TaskResult | null;
+  /** Server episode's adopt/exclude state (null when the run has no episode). */
+  reviewStatus: ReviewStatus | null;
   durationMs?: number;
   startedAt?: string;
   /** Real on-disk size in bytes (RunSummary carries it); null when unknown.
@@ -72,5 +76,8 @@ export interface DecoratedEpisode extends EpisodeRow {
   effectiveTask: TaskResult | null;
   isArchived: boolean;
   decision: Decision | null;
+  /** Adopt/exclude state shown as the row's status chip: the session decision
+   *  wins, else the server episode's review_status, else 'pending'. */
+  effectiveReviewStatus: ReviewStatus;
   transferSlot: TransferSlot;
 }

@@ -5,8 +5,25 @@
 
 import { Badge, cn, type Tone } from '../../components/ui';
 import { formatHms, formatTimeOfDay } from './format';
-import type { DecoratedEpisode, Quality, TaskResult } from './types';
+import type { DecoratedEpisode, Quality, ReviewStatus, TaskResult } from './types';
 import type { ReviewState } from './useReviewState';
+
+const STATUS_TONE: Record<ReviewStatus, Tone> = {
+  adopted: 'green',
+  excluded: 'red',
+  pending: 'gray',
+};
+
+/** Adopt/exclude status chip (server review_status + session override). */
+function StatusChip({ status, testId }: { status: ReviewStatus; testId: string }) {
+  return (
+    <span data-testid={testId} className="justify-self-end">
+      <Badge tone={STATUS_TONE[status]} className="w-fit whitespace-nowrap">
+        {status.toUpperCase()}
+      </Badge>
+    </span>
+  );
+}
 
 // A trash can reads as permanent deletion — this action never deletes
 // anything (the recording is kept and restorable), so it gets its own glyph
@@ -116,7 +133,7 @@ function Row({ row, isSelected, rv }: { row: DecoratedEpisode; isSelected: boole
           {transfer.label}
         </Badge>
       )}
-      <span aria-hidden />
+      <StatusChip status={row.effectiveReviewStatus} testId={`review-status-${row.ep}`} />
       <button
         type="button"
         data-testid={`review-archive-${row.ep}`}
@@ -180,6 +197,16 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
         >
           Adopt all good ({rv.nUndecidedGood})
         </button>
+        <button
+          type="button"
+          data-testid="review-export-adopted"
+          onClick={rv.requestExportAdopted}
+          disabled={rv.adoptedRows.length === 0}
+          title="Move the adopted recordings into the Datasets tree"
+          className="rounded-control bg-teal-600 px-3 py-1.5 text-[12.5px] font-semibold text-white transition-colors hover:bg-teal-700 disabled:opacity-50"
+        >
+          Export adopted ({rv.adoptedRows.length})…
+        </button>
         <input
           type="text"
           value={rv.search}
@@ -189,6 +216,15 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
           className="w-[170px] rounded-control border border-gray-200 px-2.5 py-1.5 text-[12.5px] text-gray-700 placeholder:text-gray-400"
         />
       </div>
+      {/* Make the two verbs distinct: adopting only labels; exporting moves. */}
+      <p
+        data-testid="review-adopt-explainer"
+        className="border-b border-gray-100 px-[18px] py-1.5 text-[11px] text-gray-400"
+      >
+        <span className="font-semibold text-teal-700">Adopt</span> = label ·{' '}
+        <span className="font-semibold text-teal-700">Export</span> = moves the recording into
+        Datasets.
+      </p>
       <div
         className={cn(
           'grid gap-2 border-b border-gray-100 px-[18px] py-2 text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400',
@@ -202,7 +238,7 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
         <span>Duration</span>
         <span>Time</span>
         {rv.splitMode && <span>Transfer</span>}
-        <span aria-hidden />
+        <span className="justify-self-end">Status</span>
         <span />
       </div>
       <div className="flex-1 overflow-auto">

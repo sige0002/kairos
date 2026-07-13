@@ -8,7 +8,7 @@
 import type { ReactNode } from 'react';
 import { Badge, cn, type Tone } from '../../components/ui';
 import { RunInspection } from './RunInspection';
-import type { Decision, Quality } from './types';
+import type { Quality, ReviewStatus } from './types';
 import type { ReviewState } from './useReviewState';
 import type { RunState } from '../../api/types';
 
@@ -24,17 +24,18 @@ function stateTone(state: RunState): Tone {
   return 'gray';
 }
 
-// Header badge: the operator's decision wins, then their quality override /
-// the real "Not usable" verdict, then the raw run state as an honest fallback.
+// Header badge: the adopt/exclude status (from the server episode + the
+// operator's session override) wins, then their quality override / the real
+// "Not usable" verdict, then the raw run state as an honest fallback. Reflecting
+// the status here (not only a local decision) means a fresh load of an
+// already-adopted run reads "ADOPTED", and clicking Adopt flips it at once.
 function headerBadge(
-  decision: Decision | null,
+  reviewStatus: ReviewStatus,
   quality: Quality | null,
   state: RunState,
 ): { label: string; tone: Tone } {
-  if (decision) {
-    const tone: Tone = decision === 'adopted' ? 'green' : decision === 'review' ? 'amber' : 'gray';
-    return { label: decision.toUpperCase(), tone };
-  }
+  if (reviewStatus === 'adopted') return { label: 'ADOPTED', tone: 'green' };
+  if (reviewStatus === 'excluded') return { label: 'EXCLUDED', tone: 'red' };
   if (quality) return { label: quality.toUpperCase(), tone: qualityTone(quality) };
   return { label: state.toUpperCase(), tone: stateTone(state) };
 }
@@ -99,7 +100,7 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
     );
   }
 
-  const badge = headerBadge(sel.decision, sel.effectiveQuality, sel.state);
+  const badge = headerBadge(sel.effectiveReviewStatus, sel.effectiveQuality, sel.state);
   const showInspection = !rv.splitMode || sel.transferSlot.phase === 'transferred';
 
   return (
@@ -111,7 +112,9 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
         <span className="font-mono text-sm font-semibold text-gray-900">Episode #{sel.ep}</span>
         <span className="text-xs text-gray-400">Batch {sel.batch}</span>
         <div className="flex-1" />
-        <Badge tone={badge.tone}>{badge.label}</Badge>
+        <span data-testid="review-detail-status">
+          <Badge tone={badge.tone}>{badge.label}</Badge>
+        </span>
       </div>
 
       <div className="flex flex-col gap-3 px-[18px] py-3.5">

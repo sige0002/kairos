@@ -109,6 +109,9 @@ test('recording the 30th episode completes the batch', () => {
   let s = createState();
   s = {
     ...s,
+    // Counts are driven by the monotone recordedCount, so seed it alongside the
+    // 29 recorded episodes.
+    recordedCount: EPISODES_PER_BATCH - 1,
     episodes: Array.from({ length: EPISODES_PER_BATCH - 1 }, (_, i) => ({
       index: i + 1,
       quality: 'good' as const,
@@ -119,6 +122,7 @@ test('recording the 30th episode completes the batch', () => {
   s = reducer(s, { type: 'PICK_RESULT', result: 'ok' });
   s = reducer(s, { type: 'CONFIRM_EPISODE' });
   expect(s.episodes).toHaveLength(EPISODES_PER_BATCH);
+  expect(s.recordedCount).toBe(EPISODES_PER_BATCH);
   expect(s.phase).toBe('completed');
 });
 
@@ -820,6 +824,104 @@ test('reload restores the active batch from the server (GET /batches?status=acti
   // Second episode's needs_review maps to the local 'review' quality axis.
   expect(result.current.stats.nReview).toBe(1);
   expect(result.current.stats.epNext).toBe(3);
+});
+
+// ---------------------------------------------------------------------------
+// Monotone recorded count: a Review exclude/delete must never lower Collect's
+// counts (the user-reported inconsistency).
+// ---------------------------------------------------------------------------
+
+test('restore keeps the recorded count monotone after a Review delete (episodes_recorded)', async () => {
+  phase2Fetch({
+    activeBatches: [
+      {
+        batch_id: 'batch_del',
+        project: 'P',
+        task: 'T',
+        condition: 'C',
+        target_episodes: 30,
+        status: 'active',
+        episodes_recorded: 3, // 3 episodes were recorded …
+        episode_count: 2,
+        episodes: [
+          // … but one was deleted in Review, so only 2 survive (index 2 gone).
+          { index: 1, run_id: 'r1', task_result: 'success', quality: 'good', review_status: 'adopted' },
+          { index: 3, run_id: 'r3', task_result: 'success', quality: 'good', review_status: 'pending' },
+        ],
+      },
+    ],
+  });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+
+  await waitFor(() => expect(result.current.stats.nRecorded).toBe(3));
+  // Count is monotone (3) and next follows it (#4); tallies use the 2 survivors.
+  expect(result.current.stats.epNext).toBe(4);
+  expect(result.current.episodes).toHaveLength(2);
+  expect(result.current.stats.nRemaining).toBe(27);
+});
+
+test('an excluded episode still counts toward the recorded total', async () => {
+  phase2Fetch({
+    activeBatches: [
+      {
+        batch_id: 'batch_x',
+        project: 'P',
+        task: 'T',
+        target_episodes: 30,
+        status: 'active',
+        episodes_recorded: 2,
+        episode_count: 2,
+        episodes: [
+          { index: 1, run_id: 'r1', task_result: 'success', quality: 'good', review_status: 'pending' },
+          { index: 2, run_id: 'r2', task_result: 'success', quality: 'not_usable', review_status: 'excluded' },
+        ],
+      },
+    ],
+  });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+
+  await waitFor(() => expect(result.current.stats.nRecorded).toBe(2));
+  // The excluded episode is NOT filtered out of the count or the strip.
+  expect(result.current.episodes).toHaveLength(2);
+  expect(result.current.stats.epNext).toBe(3);
+});
+
+test('a server restore never LOWERS a higher local recorded count', async () => {
+  const episodes = Array.from({ length: 5 }, (_, i) => ({
+    index: i + 1,
+    quality: 'good' as const,
+    taskResult: 'ok' as const,
+    runId: `r${i + 1}`,
+  }));
+  window.localStorage.setItem(
+    BATCH_STORAGE_KEY,
+    JSON.stringify({ batchNum: 1, recordedCount: 5, batchId: 'batch_hi', episodes, project: 'P', task: 'T', condition: 'C' }),
+  );
+  __rehydrateBatchStore();
+  // Server reports the SAME batch but a stale lower count (2).
+  phase2Fetch({
+    activeBatches: [
+      {
+        batch_id: 'batch_hi',
+        project: 'P',
+        task: 'T',
+        target_episodes: 30,
+        status: 'active',
+        episodes_recorded: 2,
+        episode_count: 2,
+        episodes: [
+          { index: 1, run_id: 'r1', task_result: 'success', quality: 'good', review_status: 'pending' },
+          { index: 2, run_id: 'r2', task_result: 'success', quality: 'good', review_status: 'pending' },
+        ],
+      },
+    ],
+  });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+
+  // The restore adopts the server batch but keeps the higher local count (5).
+  await waitFor(() => expect(result.current.batchNum).toBe(1));
+  expect(result.current.stats.nRecorded).toBe(5);
+  expect(result.current.stats.epNext).toBe(6);
 });
 
 test('discarding a run removes its bridge entry (no stale outcome lingers)', async () => {

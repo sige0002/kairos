@@ -119,6 +119,7 @@ export function mapRunsToEpisodes(
       operator: run.operator ?? null,
       quality,
       task,
+      reviewStatus: episode?.review_status ?? null,
       durationMs: run.duration_ms ?? spanMs(run.started_at, run.ended_at),
       startedAt: run.started_at,
       bytes: bytes ?? null,

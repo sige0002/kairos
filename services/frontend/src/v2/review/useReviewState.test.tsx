@@ -1,4 +1,4 @@
-import { QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import type { ReactNode } from 'react';
@@ -463,4 +463,134 @@ test('a run with no server episode stays local-only (no PATCH is attempted)', as
   expect(result.current.selected!.effectiveQuality).toBe('Good');
   await Promise.resolve();
   expect(patchCalls).toHaveLength(0);
+});
+
+// ---------------------------------------------------------------------------
+// Adopt visibility + export-adopted → Datasets.
+// ---------------------------------------------------------------------------
+
+function episode(review_status: string, extra: Record<string, unknown> = {}) {
+  return {
+    episode_id: `ep_${review_status}`,
+    batch_id: 'b1',
+    index_in_batch: 1,
+    task_result: 'success',
+    quality: 'good',
+    review_status,
+    ...extra,
+  };
+}
+
+/** Runs with server episodes + a capturing POST /datasets/export handler. */
+function mockRunsWithExport(items: Record<string, unknown>[]) {
+  const exportCalls: string[] = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    if (url.includes('/datasets/export') && (init?.method ?? 'GET') === 'POST') {
+      const body = JSON.parse(String(init?.body)) as { run_id: string };
+      exportCalls.push(body.run_id);
+      return Promise.resolve(jsonResponse({ run_id: body.run_id, index: '001' }));
+    }
+    if (url.includes('/runs')) {
+      return Promise.resolve(jsonResponse({ items, next_cursor: null }));
+    }
+    return Promise.resolve(jsonResponse({}));
+  });
+  return { exportCalls };
+}
+
+test('effectiveReviewStatus reflects the server review_status (chip source)', async () => {
+  mockRunsWithExport([
+    { run_id: 'a', state: 'completed', started_at: '2026-07-13T09:00:00Z', episode: episode('adopted') },
+    { run_id: 'b', state: 'completed', started_at: '2026-07-13T09:05:00Z', episode: episode('pending') },
+  ]);
+  const { result } = renderHook(() => useReviewState(), { wrapper });
+  await waitFor(() => expect(result.current.rows).toHaveLength(2));
+  const byId = (id: string) => result.current.rows.find((r) => r.runId === id)!;
+  expect(byId('a').effectiveReviewStatus).toBe('adopted');
+  expect(byId('b').effectiveReviewStatus).toBe('pending');
+});
+
+test('adopting a run flips its effectiveReviewStatus immediately', async () => {
+  mockRunsWithExport([
+    { run_id: 'a', state: 'completed', started_at: '2026-07-13T09:00:00Z', episode: episode('pending') },
+  ]);
+  const { result } = renderHook(() => useReviewState(), { wrapper });
+  await waitFor(() => expect(result.current.rows).toHaveLength(1));
+  expect(result.current.rows[0]?.effectiveReviewStatus).toBe('pending');
+
+  act(() => result.current.select('a'));
+  act(() => result.current.decide('adopted'));
+  expect(result.current.rows[0]?.effectiveReviewStatus).toBe('adopted');
+});
+
+test('export-adopted separates completed (exportable) from a non-completed adopted run (skipped)', async () => {
+  mockRunsWithExport([
+    { run_id: 'done', state: 'completed', started_at: '2026-07-13T09:00:00Z', episode: episode('adopted') },
+    // A failed run the operator adopts by hand — not exportable.
+    { run_id: 'bad', state: 'failed', started_at: '2026-07-13T09:05:00Z' },
+  ]);
+  const { result } = renderHook(() => useReviewState(), { wrapper });
+  await waitFor(() => expect(result.current.rows).toHaveLength(2));
+
+  act(() => result.current.select('bad'));
+  act(() => result.current.decide('adopted'));
+
+  expect(result.current.adoptedRows.map((r) => r.runId).sort()).toEqual(['bad', 'done']);
+  // Only the completed run is exportable; the failed one is listed as skipped.
+  expect(result.current.adoptedExportable.map((r) => r.runId)).toEqual(['done']);
+  expect(result.current.adoptedSkipped.map((r) => r.runId)).toEqual(['bad']);
+});
+
+test('confirmExportAdopted POSTs completed adopted runs and double-invalidates (runs + datasets)', async () => {
+  const { exportCalls } = mockRunsWithExport([
+    { run_id: 'a', state: 'completed', started_at: '2026-07-13T09:00:00Z', episode: episode('adopted') },
+  ]);
+  const invalidate = vi.spyOn(QueryClient.prototype, 'invalidateQueries');
+  const { result } = renderHook(() => useReviewState(), { wrapper });
+  await waitFor(() => expect(result.current.adoptedExportable).toHaveLength(1));
+
+  act(() => result.current.requestExportAdopted());
+  await act(async () => {
+    await result.current.confirmExportAdopted();
+  });
+
+  expect(exportCalls).toEqual(['a']);
+  expect(result.current.exportFailures).toHaveLength(0);
+  // MOVE semantics: invalidates the runs list AND the datasets list.
+  const keys = invalidate.mock.calls.map((c) => JSON.stringify(c[0]?.queryKey));
+  expect(keys).toContain(JSON.stringify(['runs', null]));
+  expect(keys).toContain(JSON.stringify(['datasets']));
+});
+
+test('a failed export keeps the run in Review with an honest per-run note', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    if (url.includes('/datasets/export') && (init?.method ?? 'GET') === 'POST') {
+      return Promise.resolve(jsonResponse({ error: { code: 'io', message: 'disk full' } }, 500));
+    }
+    if (url.includes('/runs')) {
+      return Promise.resolve(
+        jsonResponse({
+          items: [
+            { run_id: 'a', state: 'completed', started_at: '2026-07-13T09:00:00Z', episode: episode('adopted') },
+          ],
+          next_cursor: null,
+        }),
+      );
+    }
+    return Promise.resolve(jsonResponse({}));
+  });
+  const { result } = renderHook(() => useReviewState(), { wrapper });
+  await waitFor(() => expect(result.current.adoptedExportable).toHaveLength(1));
+
+  act(() => result.current.requestExportAdopted());
+  await act(async () => {
+    await result.current.confirmExportAdopted();
+  });
+
+  expect(result.current.exportFailures.map((f) => f.runId)).toEqual(['a']);
+  // The dialog stays open so the failure is visible; the run is still adopted.
+  expect(result.current.exportAdoptedOpen).toBe(true);
+  expect(result.current.adoptedRows).toHaveLength(1);
 });
