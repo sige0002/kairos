@@ -93,6 +93,10 @@ export interface RunSummary {
   duration_ms?: number;
   operator?: string | null;
   task?: string | null;
+  /** Console v2 Phase 2: the episode this run belongs to (null when none),
+   *  additively joined by the runs read path so Review shows real data on any
+   *  terminal. Never persisted on the run row. */
+  episode?: RunEpisode | null;
 }
 
 /** `dataset_export` job summary (dora_runner): one exported dataset directory. */
@@ -120,6 +124,15 @@ export interface DatasetEntry {
   bytes?: number;
   message_count?: number | null;
   exported_at?: string;
+  /** Console v2 Phase 2: episode-label subset for catalog cards. The backend
+   *  serves these FLAT on each list row (mirroring its per-row dataset.json
+   *  read); null/absent on older backends or pre-label exports. The full
+   *  nested `episode` object exists only on DatasetDetail. */
+  task_result?: 'success' | 'failure' | null;
+  quality?: 'good' | 'needs_review' | 'not_usable' | null;
+  review_status?: 'pending' | 'adopted' | 'excluded' | null;
+  batch_seq?: number | null;
+  index_in_batch?: number | null;
 }
 
 /** GET /api/v1/datasets — the flat list of exported datasets (grouped in the UI). */
@@ -157,6 +170,9 @@ export interface DatasetDetail {
   validation?: Record<string, unknown> | null;
   /** `loss_report` summary that survived export (or was re-run post-export). */
   loss?: { run_id?: string; topics?: LossTopic[]; checked_at?: string } | null;
+  /** Console v2 Phase 2: the episode this exported run belongs to (null/absent
+   *  on older backends). Drives the detail's label chips; nothing when absent. */
+  episode?: RunEpisode | null;
 }
 
 /** POST /api/v1/datasets/export-all — per-run successes + failures for the batch. */
@@ -214,6 +230,8 @@ export interface RunDetail {
   task?: string | null;
   split?: Record<string, unknown> | null;
   error?: { code: string; message: string } | null;
+  /** Console v2 Phase 2: the episode this run belongs to (null when none). */
+  episode?: RunEpisode | null;
   /** Optional audit manifest + stats surfaced by the orchestrator. */
   manifest?: Record<string, unknown> | null;
   validation?: Record<string, unknown> | null;
@@ -465,3 +483,148 @@ export interface RecordStatusEvent {
 }
 
 export type SseEventType = 'record_status' | 'metrics' | 'alert' | 'job' | 'resync';
+
+// ---- Console v2 Phase 2: batches & episodes -----------------------------
+// Mirrors api_orchestrator.models (batches/episodes). Backend vocab differs
+// from the Review display enums (types in v2/review/types.ts): here quality is
+// 'good'|'needs_review'|'not_usable' and task result 'success'|'failure'.
+
+export type EpisodeTaskResult = 'success' | 'failure';
+export type EpisodeQuality = 'good' | 'needs_review' | 'not_usable';
+export type EpisodeQualitySource = 'operator' | 'quick_check' | 'validator';
+export type EpisodeReviewStatus = 'pending' | 'adopted' | 'excluded';
+export type BatchStatus = 'active' | 'completed' | 'ended_early';
+
+/** Compact episode summary joined onto a run (`Run.episode`). */
+export interface RunEpisode {
+  episode_id: string;
+  batch_id: string;
+  index_in_batch: number;
+  task_result: EpisodeTaskResult;
+  failure_reason?: string | null;
+  quality: EpisodeQuality;
+  review_status: EpisodeReviewStatus;
+  /** Server-assigned per-(robot, local-date) batch number (Console v2 pipeline
+   *  UX). The single human-readable batch number shared by Collect/Review/
+   *  Datasets. Optional until the phase-2 backend serves it (fallback: "—"). */
+  batch_seq?: number | null;
+  /** The batch's created_at, so Review/Datasets can render "MM/DD · #N" without
+   *  a second round-trip. Optional (falls back to the run's own started_at). */
+  batch_created_at?: string | null;
+}
+
+export interface Batch {
+  batch_id: string;
+  robot?: string | null;
+  project: string;
+  task: string;
+  condition?: string | null;
+  operator?: string | null;
+  target_episodes: number;
+  status: BatchStatus;
+  ended_reason?: string | null;
+  created_at?: string | null;
+  ended_at?: string | null;
+  /** Server-assigned per-(robot, local-date) batch number — the human-readable
+   *  "Batch N" shown in Collect and (as "MM/DD · #N") in Review/Datasets.
+   *  Optional until the phase-2 backend serves it (fallback: honest pre-state). */
+  batch_seq?: number | null;
+  /** Monotone count of episodes ever recorded into this batch — never lowered
+   *  by a run-delete cascade. Collect's counts use this (falls back to the
+   *  live episode count on older backends that omit it). */
+  episodes_recorded?: number;
+}
+
+export interface Episode {
+  episode_id: string;
+  batch_id: string;
+  run_id: string;
+  index_in_batch: number;
+  task_result: EpisodeTaskResult;
+  failure_reason?: string | null;
+  quality: EpisodeQuality;
+  quality_source: EpisodeQualitySource;
+  review_status: EpisodeReviewStatus;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+/** Per-episode row inside a batch list item (`BatchSummary.episodes`). */
+export interface BatchEpisodeSummary {
+  index: number;
+  run_id: string;
+  task_result: EpisodeTaskResult;
+  quality: EpisodeQuality;
+  review_status: EpisodeReviewStatus;
+}
+
+export interface BatchSummary extends Batch {
+  episode_count: number;
+  episodes: BatchEpisodeSummary[];
+}
+
+export interface BatchDetail extends Batch {
+  episode_count: number;
+  episodes: Episode[];
+}
+
+export interface BatchListResponse {
+  items: BatchSummary[];
+}
+
+export interface BatchCreateRequest {
+  robot?: string | null;
+  project: string;
+  task: string;
+  condition?: string | null;
+  operator?: string | null;
+  target_episodes?: number;
+}
+
+export interface BatchPatchRequest {
+  status?: BatchStatus;
+  ended_reason?: string | null;
+  condition?: string | null;
+}
+
+export interface EpisodeCreateRequest {
+  batch_id: string;
+  run_id: string;
+  index_in_batch: number;
+  task_result: EpisodeTaskResult;
+  failure_reason?: string | null;
+  quality: EpisodeQuality;
+  quality_source?: EpisodeQualitySource;
+}
+
+export interface EpisodePatchRequest {
+  task_result?: EpisodeTaskResult;
+  failure_reason?: string | null;
+  quality?: EpisodeQuality;
+  quality_source?: EpisodeQualitySource;
+  review_status?: EpisodeReviewStatus;
+}
+
+// ---- System info (GET /api/v1/system) -----------------------------------
+
+/** Filesystem usage of the runtime data dir (bytes). */
+export interface SystemDisk {
+  path: string;
+  total_bytes: number;
+  free_bytes: number;
+}
+
+/**
+ * GET /api/v1/system: static CPU/GPU names joined with live, best-effort
+ * utilization. Mirrors routers/system.py. The utilization fields are optional
+ * and null whenever the host cannot measure them (older backend, no GPU, a
+ * missing data dir, or — for cpu_percent — the very first sample), so the UI
+ * shows an honest "—" rather than a fabricated number.
+ */
+export interface SystemInfo {
+  cpu: { model: string | null; cores: number | null };
+  gpu: string | null;
+  cpu_percent?: number | null;
+  disk?: SystemDisk | null;
+  gpu_percent?: number | null;
+}

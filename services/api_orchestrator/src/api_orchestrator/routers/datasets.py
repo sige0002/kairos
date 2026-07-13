@@ -218,18 +218,28 @@ def _scan_datasets(data_dir: Path) -> list[dict[str, Any]]:
                 meta = _read_json(index_dir / "dataset.json")
                 if meta is None:
                     continue
-                out.append(
-                    {
-                        "operator": operator_dir.name,
-                        "task": task_dir.name,
-                        "index": index_dir.name,
-                        "dataset_dir": str(index_dir),
-                        "run_id": meta.get("run_id"),
-                        "bytes": meta.get("bytes"),
-                        "message_count": meta.get("message_count"),
-                        "exported_at": meta.get("exported_at"),
-                    }
-                )
+                row = {
+                    "operator": operator_dir.name,
+                    "task": task_dir.name,
+                    "index": index_dir.name,
+                    "dataset_dir": str(index_dir),
+                    "run_id": meta.get("run_id"),
+                    "bytes": meta.get("bytes"),
+                    "message_count": meta.get("message_count"),
+                    "exported_at": meta.get("exported_at"),
+                }
+                # Cheap episode-label subset for cards (mirrors the per-row
+                # dataset.json read). Absent episode.json -> keys stay null.
+                episode = _read_json(index_dir / "episode.json") or {}
+                for key in (
+                    "task_result",
+                    "quality",
+                    "review_status",
+                    "batch_seq",
+                    "index_in_batch",
+                ):
+                    row[key] = episode.get(key)
+                out.append(row)
     out.sort(key=lambda d: (d["operator"], d["task"], d["index"]))
     return out
 
@@ -278,13 +288,19 @@ async def _export_one(
             ),
             details=details,
         )
+    result = res.get("result") or {}
+    summary = result.get("summary", {})
+    # Persist the run's episode labels next to dataset.json BEFORE deleting the
+    # run row (delete cascades the episode). No episode -> no sidecar written.
+    dataset_dir = summary.get("dataset_dir")
+    if isinstance(dataset_dir, str) and dataset_dir:
+        service.write_episode_sidecar(run_id, dataset_dir)
     # Success confirmed: the recording has been MOVED out of recorded/, so
     # delete the now-orphaned run row (its dir + siblings). The report
     # sidecars (validation / loss / video_check mp4 cache) are KEPT: they stay
     # keyed by run_id and back the dataset detail view after export.
     service.delete(run_id, keep_reports=True)
-    result = res.get("result") or {}
-    return result.get("summary", {})
+    return summary
 
 
 @router.get("")
@@ -331,6 +347,9 @@ async def dataset_detail(
         topics=_dataset_topics(manifest, session, meta),
         manifest=manifest,
         dataset=meta,
+        # Episode labels persisted at export (task_result / quality /
+        # review_status + batch context); null when the run had no episode.
+        episode=_read_json(dataset_dir / "episode.json"),
         validation=_run_report(data_dir, run_id, "fast_validation"),
         loss=_run_report(data_dir, run_id, "loss_report"),
     )

@@ -21,7 +21,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import shutil
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -35,9 +37,11 @@ from kairos_common import (
 
 from api_orchestrator.events import EVENT_RECORD_STATUS, EventHub
 from api_orchestrator.models import (
+    Episode,
     RecordStartRequest,
     Run,
     RunDetail,
+    RunEpisode,
     RunError,
     RunState,
     RunTopic,
@@ -63,6 +67,50 @@ _UNKNOWN_TASK = "unknown_task"
 def _default_meta(value: str | None, default: str) -> str:
     """Coerce an empty/whitespace metadata field to a stable placeholder."""
     return value.strip() if value and value.strip() else default
+
+
+def _run_episode(
+    episode: Episode | None, batch_seq: int | None = None
+) -> RunEpisode | None:
+    """Project a full :class:`Episode` down to the compact run-join summary.
+
+    ``batch_seq`` is the number of the episode's batch (looked up separately, as
+    it lives on the batch, not the episode row); ``None`` leaves it unlabeled.
+    """
+    if episode is None:
+        return None
+    return RunEpisode(
+        episode_id=episode.episode_id,
+        batch_id=episode.batch_id,
+        batch_seq=batch_seq,
+        index_in_batch=episode.index_in_batch,
+        task_result=episode.task_result,
+        failure_reason=episode.failure_reason,
+        quality=episode.quality,
+        review_status=episode.review_status,
+    )
+
+
+def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
+    """Write *data* to *path* as JSON atomically (temp file + ``os.replace``).
+
+    Mirrors the config router's YAML writer: the temp file is created in the
+    same directory so ``os.replace`` is an atomic same-filesystem rename; on any
+    failure the temp file is removed and the original is left untouched.
+    ``ensure_ascii=False`` keeps non-ASCII operator/task names intact.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+    )
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def allocate_run_id(now: datetime | None = None) -> str:
@@ -505,13 +553,23 @@ class RunService:
         whose files were deleted still returns cleanly).
         """
         run = self.get(run_id)  # 404 if absent
-        return RunDetail(
+        detail = RunDetail(
             **run.model_dump(),
             manifest=self._read_json(self._recorded_dir / run_id / "manifest.json"),
             validation=self._read_json(self._report_path("fast_validation", run_id)),
             dataset_stats=self._read_json(self._report_path("dataset_export", run_id)),
             loss=self._read_json(self._report_path("loss_report", run_id)),
         )
+        # Console v2 Phase 2: attach the episode summary (null when none),
+        # labeled with its batch's per-day number.
+        episode = self._store.get_episode_by_run_id(run_id)
+        batch_seq = None
+        if episode is not None:
+            batch_seq = self._store.batch_seqs_for_ids([episode.batch_id]).get(
+                episode.batch_id
+            )
+        detail.episode = _run_episode(episode, batch_seq)
+        return detail
 
     def _report_path(self, pipeline: str, run_id: str) -> Path:
         return self._data_dir / "report" / pipeline / run_id / "summary.json"
@@ -548,6 +606,61 @@ class RunService:
         except (OSError, ValueError):
             return None
         return data if isinstance(data, dict) else None
+
+    def write_episode_sidecar(
+        self, run_id: str, dataset_dir: str | Path
+    ) -> dict[str, Any] | None:
+        """Persist a run's episode labels into ``<dataset_dir>/episode.json``.
+
+        Called during a successful dataset export, BEFORE the run row is deleted
+        (delete cascades the episode). Without this, the operator's
+        task_result / failure_reason / quality / review_status and the batch link
+        would be lost on export — labeled data would export as unlabeled.
+
+        Reads the episode + its batch and writes ``episode.json`` next to
+        ``dataset.json``. A run with no episode writes nothing and returns
+        ``None``. The write is best-effort: a filesystem error is logged and
+        swallowed (the export already MOVED the recording — it must not fail
+        after the fact), returning ``None``.
+        """
+        episode = self._store.get_episode_by_run_id(run_id)
+        if episode is None:
+            return None
+        batch = self._store.get_batch(episode.batch_id)
+        payload: dict[str, Any] = {
+            "episode_id": episode.episode_id,
+            "batch_id": episode.batch_id,
+            "batch_seq": batch.batch_seq if batch else None,
+            "index_in_batch": episode.index_in_batch,
+            "task_result": episode.task_result,
+            "failure_reason": episode.failure_reason,
+            "quality": episode.quality,
+            "quality_source": episode.quality_source,
+            "review_status": episode.review_status,
+            # Batch context so the exported dataset is self-describing without
+            # the (now-deleted) batch row.
+            "batch": {
+                "batch_id": batch.batch_id,
+                "batch_seq": batch.batch_seq,
+                "project": batch.project,
+                "task": batch.task,
+                "condition": batch.condition,
+                "operator": batch.operator,
+                "robot": batch.robot,
+            }
+            if batch
+            else None,
+            "exported_at": utc_now_iso8601(),
+        }
+        try:
+            _atomic_write_json(Path(dataset_dir) / "episode.json", payload)
+        except OSError as exc:
+            logger.warning(
+                "episode sidecar write failed",
+                extra={"run_id": run_id, "error": str(exc)},
+            )
+            return None
+        return payload
 
     def delete(self, run_id: str, *, keep_reports: bool = False) -> None:
         """Delete a run: its recording directory + session.json and the row.
@@ -586,12 +699,29 @@ class RunService:
             if report_root.is_dir():
                 for pipeline_dir in report_root.iterdir():
                     shutil.rmtree(pipeline_dir / run_id, ignore_errors=True)
+        # Cascade the run's episode (Console v2 Phase 2). Done in code rather than
+        # via a SQLite FK pragma, so it holds regardless of connection settings.
+        self._store.delete_episode_by_run_id(run_id)
         self._store.delete(run_id)
 
     def list_runs(self, limit: int, cursor: str | None) -> tuple[list[Run], str | None]:
-        """Return one page of runs and the next cursor (opaque string)."""
+        """Return one page of runs and the next cursor (opaque string).
+
+        Each run is additively joined with its episode summary (Console v2
+        Phase 2) via a single batched lookup, so the Review list shows real
+        data without an N+1 read per run.
+        """
         parsed = self._parse_cursor(cursor)
         runs, next_seq = self._store.list_runs(limit, parsed)
+        episodes = self._store.episodes_by_run_ids([r.run_id for r in runs])
+        # Batched batch_seq lookup so each joined episode carries its batch
+        # number without an N+1 read.
+        seqs = self._store.batch_seqs_for_ids(
+            list({ep.batch_id for ep in episodes.values()})
+        )
+        for run in runs:
+            ep = episodes.get(run.run_id)
+            run.episode = _run_episode(ep, seqs.get(ep.batch_id) if ep else None)
         return runs, (str(next_seq) if next_seq is not None else None)
 
     @staticmethod

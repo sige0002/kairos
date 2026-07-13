@@ -1,0 +1,133 @@
+// Left column: the real exported-dataset catalog (GET /api/v1/datasets),
+// grouped operator -> [task #index] (see data.ts). Selecting a card switches
+// the center/right columns' content (useDatasetsState owns the selection).
+// Renders an honest empty state both when there are genuinely no exports yet
+// and when the backend is unreachable — never a blank panel.
+
+import type { DatasetEntry, RunEpisode } from '../../api/types';
+import { Badge, cn } from '../../components/ui';
+import { EpisodeLabelChips } from '../episodeChips';
+import { formatCount } from './data';
+import type { DatasetsState } from './useDatasetsState';
+
+/** The datasets LIST serves the episode-label subset as FLAT row fields
+ *  (episode.json is nested only on the detail payload). Adapt a row into the
+ *  RunEpisode shape the shared chips consume; null when no label survived
+ *  export (pre-label datasets) so the card shows nothing fabricated. */
+function rowEpisode(entry: DatasetEntry): RunEpisode | null {
+  // The chips render task-result + quality unconditionally, so both must be
+  // real values (episode.json writes them together; absent file -> all null).
+  if (entry.task_result == null || entry.quality == null) return null;
+  return {
+    episode_id: '',
+    batch_id: '',
+    index_in_batch: entry.index_in_batch ?? 0,
+    task_result: entry.task_result,
+    quality: entry.quality,
+    review_status: entry.review_status ?? 'pending',
+    batch_seq: entry.batch_seq ?? null,
+  };
+}
+
+/** A pre-label export: the backend couldn't attribute it to an operator/task
+ *  (older exports predate the episode model). Shown muted, labeled honestly. */
+function isLegacy(operator: string, task: string): boolean {
+  return operator === 'unknown_operator' || task === 'unknown_task';
+}
+
+export function DatasetList({ state }: { state: DatasetsState }) {
+  const hasAny = state.groups.length > 0;
+  return (
+    <div className="flex flex-col overflow-auto rounded-card border border-gray-200 bg-white shadow-card">
+      <div className="flex items-center gap-2.5 border-b border-gray-100 px-4 py-[13px]">
+        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+          Datasets
+        </span>
+        <div className="flex-1" />
+        <button
+          type="button"
+          data-testid="new-dataset-btn"
+          onClick={state.toastNewDataset}
+          className="rounded-chip bg-teal-600 px-[11px] py-[5px] text-xs font-bold text-white hover:bg-teal-700"
+        >
+          + New
+        </button>
+      </div>
+
+      {state.isLoading ? (
+        <div className="px-4 py-6 text-sm text-gray-400">Loading datasets…</div>
+      ) : !hasAny ? (
+        <div data-testid="dataset-list-empty" className="flex flex-col gap-1 px-4 py-6">
+          <span className="text-sm text-gray-500">No datasets yet.</span>
+          <span className="text-xs leading-relaxed text-gray-400">
+            Exported datasets will appear here. Recipe-based builds arrive in Phase 2.
+          </span>
+          {state.isError && (
+            <span className="text-xs text-amber-600">Couldn&apos;t reach the backend just now.</span>
+          )}
+        </div>
+      ) : (
+        <div className="flex flex-col gap-3 overflow-auto p-3">
+          {state.groups.map((group) => (
+            <div key={group.operator} className="flex flex-col gap-[7px]">
+              <span className="px-1 font-mono text-[11px] font-semibold text-gray-500">
+                {group.operator}
+              </span>
+              {group.entries.map((entry) => {
+                const selected = state.isSelected(entry);
+                const legacy = isLegacy(entry.operator, entry.task);
+                const episode = rowEpisode(entry);
+                return (
+                  <div
+                    key={entry.dataset_dir}
+                    data-testid={`dataset-card-${entry.dataset_dir}`}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => state.select(entry)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') state.select(entry);
+                    }}
+                    className={cn(
+                      'flex cursor-pointer flex-col gap-[5px] rounded-[11px] border px-[13px] py-[11px]',
+                      selected ? 'border-teal-200 bg-teal-50' : 'border-gray-100',
+                      legacy && !selected && 'opacity-70',
+                    )}
+                  >
+                    <span className="text-[13px] font-semibold text-gray-900">{entry.task}</span>
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-[11.5px] text-gray-500">
+                        {formatCount(entry.message_count)} msgs
+                      </span>
+                      <div className="flex-1" />
+                      <Badge tone={selected ? 'teal' : 'gray'} mono>
+                        #{entry.index}
+                      </Badge>
+                    </div>
+                    {/* Episode labels only when the backend attributes them
+                        (flat row subset from episode.json); nothing fabricated
+                        when absent. */}
+                    {episode && (
+                      <EpisodeLabelChips
+                        episode={episode}
+                        isoFallback={entry.exported_at}
+                        testId={`dataset-card-labels-${entry.dataset_dir}`}
+                      />
+                    )}
+                    {legacy && (
+                      <span
+                        data-testid={`dataset-card-legacy-${entry.dataset_dir}`}
+                        className="text-[10.5px] italic text-gray-400"
+                      >
+                        legacy (pre-label) export
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}

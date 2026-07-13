@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from api_orchestrator.models import (
+    Batch,
     Run,
     RunError,
     RunState,
@@ -96,3 +97,109 @@ def test_file_db_persists_across_instances(tmp_path: Path) -> None:
 
     reopened = RunStore(db)
     assert reopened.get("run_persist") is not None
+
+
+def test_migrate_adds_and_backfills_episodes_recorded(tmp_path: Path) -> None:
+    """A DB created before `episodes_recorded` existed gets the column added and
+    backfilled from its current episode count when the store reopens."""
+    import sqlite3
+
+    db = tmp_path / "kairos.db"
+    # Build a pre-migration `batches` table (no episodes_recorded) plus its
+    # episodes, exactly as an older schema would have left them.
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        """
+        CREATE TABLE batches (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            batch_id TEXT NOT NULL UNIQUE, robot TEXT,
+            project TEXT NOT NULL, task TEXT NOT NULL, condition TEXT,
+            operator TEXT, target_episodes INTEGER NOT NULL DEFAULT 30,
+            status TEXT NOT NULL DEFAULT 'active', ended_reason TEXT,
+            created_at TEXT, ended_at TEXT
+        );
+        CREATE TABLE episodes (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            episode_id TEXT NOT NULL UNIQUE, batch_id TEXT NOT NULL,
+            run_id TEXT NOT NULL UNIQUE, index_in_batch INTEGER NOT NULL,
+            task_result TEXT, failure_reason TEXT, quality TEXT,
+            quality_source TEXT NOT NULL DEFAULT 'operator',
+            review_status TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT, updated_at TEXT
+        );
+        INSERT INTO batches (batch_id, project, task) VALUES ('batch_old', 'p', 't');
+        INSERT INTO episodes (episode_id, batch_id, run_id, index_in_batch)
+            VALUES ('ep1', 'batch_old', 'r1', 1), ('ep2', 'batch_old', 'r2', 2);
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    # Reopening runs the additive migration: column added + backfilled to 2.
+    store = RunStore(db)
+    batch = store.get_batch("batch_old")
+    assert batch is not None
+    assert batch.episodes_recorded == 2
+
+
+def test_batch_seq_allocates_per_robot_and_local_day() -> None:
+    """batch_seq is 1 + max over the same robot on the same local calendar day,
+    so it restarts at 1 per robot and each local morning."""
+    store = RunStore(":memory:")
+
+    def mk(bid: str, robot: str, created: str) -> int | None:
+        batch = store.create_batch(
+            Batch(batch_id=bid, robot=robot, project="p", task="t", created_at=created)
+        )
+        return batch.batch_seq
+
+    # UTC times chosen mid-day so they map to the same local calendar day under
+    # any plausible server timezone; the day-2 stamp is >24h later, so it is a
+    # different local day everywhere.
+    assert mk("b1", "r1", "2026-07-13T05:00:00.000Z") == 1
+    assert mk("b2", "r1", "2026-07-13T06:00:00.000Z") == 2  # same robot + day
+    assert mk("b3", "r2", "2026-07-13T06:30:00.000Z") == 1  # other robot -> 1
+    assert mk("b4", "r1", "2026-07-15T05:00:00.000Z") == 1  # next day -> 1
+    store.close()
+
+
+def test_migrate_backfills_batch_seq_per_robot_and_day(tmp_path: Path) -> None:
+    """A DB created before `batch_seq` existed gets it added and backfilled per
+    (robot, local day) in created_at order (not insertion order)."""
+    import sqlite3
+
+    db = tmp_path / "kairos.db"
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        """
+        CREATE TABLE batches (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            batch_id TEXT NOT NULL UNIQUE, robot TEXT,
+            project TEXT NOT NULL, task TEXT NOT NULL, condition TEXT,
+            operator TEXT, target_episodes INTEGER NOT NULL DEFAULT 30,
+            status TEXT NOT NULL DEFAULT 'active', ended_reason TEXT,
+            created_at TEXT, ended_at TEXT,
+            episodes_recorded INTEGER NOT NULL DEFAULT 0
+        );
+        """
+    )
+    # Inserted out of created_at order to prove the backfill orders by
+    # created_at (b_early before b_late) rather than by row/seq.
+    conn.executemany(
+        "INSERT INTO batches (batch_id, robot, project, task, created_at) "
+        "VALUES (?, ?, 'p', 't', ?)",
+        [
+            ("b_late", "r1", "2026-07-13T09:00:00.000Z"),
+            ("b_early", "r1", "2026-07-13T05:00:00.000Z"),
+            ("b_r2", "r2", "2026-07-13T06:00:00.000Z"),
+            ("b_day2", "r1", "2026-07-15T05:00:00.000Z"),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    store = RunStore(db)
+    assert store.get_batch("b_early").batch_seq == 1  # earliest same robot+day
+    assert store.get_batch("b_late").batch_seq == 2  # later same robot+day
+    assert store.get_batch("b_r2").batch_seq == 1  # different robot
+    assert store.get_batch("b_day2").batch_seq == 1  # different day

@@ -25,6 +25,8 @@ from typing import Any
 from kairos_common import Compression, JobState
 
 from api_orchestrator.models import (
+    Batch,
+    Episode,
     JobCreateResponse,
     JobResult,
     JobStatus,
@@ -46,6 +48,30 @@ class RunExistsError(Exception):
 
     def __init__(self, run_id: str) -> None:
         super().__init__(f"Run already exists: {run_id}")
+        self.run_id = run_id
+
+
+class BatchExistsError(Exception):
+    """Raised by :meth:`RunStore.create_batch` when ``batch_id`` already exists.
+
+    Lets the batch-allocation path re-allocate a unique id and retry, mirroring
+    :class:`RunExistsError`.
+    """
+
+    def __init__(self, batch_id: str) -> None:
+        super().__init__(f"Batch already exists: {batch_id}")
+        self.batch_id = batch_id
+
+
+class EpisodeRunExistsError(Exception):
+    """Raised by :meth:`RunStore.create_episode` when ``run_id`` already has one.
+
+    ``episodes.run_id`` is UNIQUE (1 episode = 1 run), so a second episode for
+    the same run is a conflict the router maps to ``409`` rather than a 500.
+    """
+
+    def __init__(self, run_id: str) -> None:
+        super().__init__(f"Run already has an episode: {run_id}")
         self.run_id = run_id
 
 
@@ -94,7 +120,84 @@ CREATE TABLE IF NOT EXISTS validation_templates (
 );
 CREATE INDEX IF NOT EXISTS idx_validation_templates_seq
     ON validation_templates (seq DESC);
+
+-- Console v2 Phase 2: a Collect batch groups the episodes recorded in one run
+-- of a task/condition. Kept separate from runs/jobs so the recording path is
+-- untouched (an episode only references a run; runs never reference a batch).
+CREATE TABLE IF NOT EXISTS batches (
+    seq             INTEGER PRIMARY KEY AUTOINCREMENT,
+    batch_id        TEXT NOT NULL UNIQUE,
+    robot           TEXT,
+    project         TEXT NOT NULL,
+    task            TEXT NOT NULL,
+    condition       TEXT,
+    operator        TEXT,
+    target_episodes INTEGER NOT NULL DEFAULT 30,
+    status          TEXT NOT NULL DEFAULT 'active',
+    ended_reason    TEXT,
+    created_at      TEXT,
+    ended_at        TEXT,
+    -- Monotone count of episodes ever recorded into this batch: incremented on
+    -- every POST /episodes and NEVER decremented (a run-delete cascade removes
+    -- the episode row but leaves this untouched), so Collect's "N / 30" stays
+    -- truthful to what was captured even after a Review exclude/delete.
+    episodes_recorded INTEGER NOT NULL DEFAULT 0,
+    -- Human-readable batch number, allocated lazily at create time as
+    -- 1 + MAX(batch_seq) over batches with the same robot on the same local
+    -- calendar day. It restarts at 1 each local morning and per robot, and is
+    -- the single number shown across Collect/Review/Datasets. Nullable only for
+    -- a row predating allocation; every created/backfilled row carries one.
+    batch_seq         INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_batches_seq ON batches (seq DESC);
+
+-- One episode == one run (episodes.run_id UNIQUE). The operator's task result +
+-- quality call, and Review's adopt/exclude, are persisted here so Review shows
+-- real data on any terminal (replacing the browser-local episodeBridge).
+CREATE TABLE IF NOT EXISTS episodes (
+    seq             INTEGER PRIMARY KEY AUTOINCREMENT,
+    episode_id      TEXT NOT NULL UNIQUE,
+    batch_id        TEXT NOT NULL,
+    run_id          TEXT NOT NULL UNIQUE,
+    index_in_batch  INTEGER NOT NULL,
+    task_result     TEXT,
+    failure_reason  TEXT,
+    quality         TEXT,
+    quality_source  TEXT NOT NULL DEFAULT 'operator',
+    review_status   TEXT NOT NULL DEFAULT 'pending',
+    created_at      TEXT,
+    updated_at      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_episodes_seq ON episodes (seq DESC);
+CREATE INDEX IF NOT EXISTS idx_episodes_batch ON episodes (batch_id);
 """
+
+# Columns an update_batch / update_episode patch may target (typo guard). All
+# scalar text/int columns, so patch values pass straight through to SQLite.
+_BATCH_UPDATE_FIELDS = {
+    "robot",
+    "project",
+    "task",
+    "condition",
+    "operator",
+    "target_episodes",
+    "status",
+    "ended_reason",
+    "created_at",
+    "ended_at",
+}
+_EPISODE_UPDATE_FIELDS = {
+    "batch_id",
+    "run_id",
+    "index_in_batch",
+    "task_result",
+    "failure_reason",
+    "quality",
+    "quality_source",
+    "review_status",
+    "created_at",
+    "updated_at",
+}
 
 
 class RunStore:
@@ -135,6 +238,40 @@ class RunStore:
         for column in ("operator", "task"):
             if column not in existing:
                 conn.execute(f"ALTER TABLE runs ADD COLUMN {column} TEXT")
+        # Console v2 Phase 2: monotone recorded-episode counter on batches. For a
+        # DB created before this column, add it and backfill from the current
+        # episode count (best available truth for pre-existing batches).
+        batch_cols = {row["name"] for row in conn.execute("PRAGMA table_info(batches)")}
+        if "episodes_recorded" not in batch_cols:
+            conn.execute(
+                "ALTER TABLE batches ADD COLUMN "
+                "episodes_recorded INTEGER NOT NULL DEFAULT 0"
+            )
+            conn.execute(
+                "UPDATE batches SET episodes_recorded = (SELECT COUNT(*) FROM "
+                "episodes WHERE episodes.batch_id = batches.batch_id) "
+                "WHERE episodes_recorded = 0"
+            )
+        # Console v2 Phase 2: per-(robot, local day) batch number. For a DB
+        # created before this column, add it and backfill so each
+        # (robot, local calendar day) group is numbered 1..N in created_at order
+        # (seq as a stable tie-break) — history then displays consistently.
+        if "batch_seq" not in batch_cols:
+            conn.execute("ALTER TABLE batches ADD COLUMN batch_seq INTEGER")
+            conn.execute(
+                """
+                UPDATE batches SET batch_seq = (
+                    SELECT COUNT(*) FROM batches b2
+                    WHERE b2.robot IS batches.robot
+                      AND date(b2.created_at, 'localtime')
+                          = date(batches.created_at, 'localtime')
+                      AND (b2.created_at < batches.created_at
+                           OR (b2.created_at = batches.created_at
+                               AND b2.seq <= batches.seq))
+                )
+                WHERE batch_seq IS NULL
+                """
+            )
 
     @contextmanager
     def _conn(self) -> Iterator[sqlite3.Connection]:
@@ -401,6 +538,252 @@ class RunStore:
         next_cursor = int(page[-1]["seq"]) if has_more and page else None
         return templates, next_cursor
 
+    # ---- batches ----------------------------------------------------------
+
+    def create_batch(self, batch: Batch) -> Batch:
+        """Insert a new batch row, allocating its per-(robot, day) ``batch_seq``.
+
+        The number is assigned inside the same transaction as the insert (under
+        the store lock), so the read-then-insert is atomic against concurrent
+        creates. Raises :class:`BatchExistsError` on a ``batch_id`` collision so
+        the caller can re-allocate the id and retry (the seq is recomputed).
+        """
+        with self._conn() as conn:
+            seq = self._next_batch_seq(conn, batch.robot, batch.created_at)
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO batches
+                        (batch_id, robot, project, task, condition, operator,
+                         target_episodes, status, ended_reason, created_at,
+                         ended_at, batch_seq)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        batch.batch_id,
+                        batch.robot,
+                        batch.project,
+                        batch.task,
+                        batch.condition,
+                        batch.operator,
+                        batch.target_episodes,
+                        batch.status,
+                        batch.ended_reason,
+                        batch.created_at,
+                        batch.ended_at,
+                        seq,
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise BatchExistsError(batch.batch_id) from exc
+            batch.batch_seq = seq
+        return batch
+
+    @staticmethod
+    def _next_batch_seq(
+        conn: sqlite3.Connection, robot: str | None, created_at: str | None
+    ) -> int:
+        """Next per-(robot, local day) batch number.
+
+        ``1 + MAX(batch_seq)`` over batches with the same robot whose
+        ``created_at`` falls on the same local calendar day (SQLite converts the
+        UTC ``created_at`` with ``date(..., 'localtime')``), so numbering
+        restarts at 1 each local morning and per robot. ``robot IS ?`` is
+        null-safe. Called inside the caller's transaction so the read is
+        consistent with the insert that follows.
+        """
+        row = conn.execute(
+            """
+            SELECT MAX(batch_seq) AS m FROM batches
+            WHERE robot IS ?
+              AND date(created_at, 'localtime') = date(?, 'localtime')
+            """,
+            (robot, created_at),
+        ).fetchone()
+        current = row["m"] if row and row["m"] is not None else 0
+        return int(current) + 1
+
+    def update_batch(self, batch_id: str, **fields: Any) -> Batch:
+        """Patch selected columns of a batch and return it (``KeyError`` if
+        absent). Unknown fields raise ``KeyError`` to catch typos."""
+        if not fields:
+            return self.get_batch_or_raise(batch_id)
+        for name in fields:
+            if name not in _BATCH_UPDATE_FIELDS:
+                raise KeyError(f"Unknown batch field: {name}")
+        assignments = ", ".join(f"{name} = ?" for name in fields)
+        with self._conn() as conn:
+            cur = conn.execute(
+                f"UPDATE batches SET {assignments} WHERE batch_id = ?",
+                (*fields.values(), batch_id),
+            )
+            if cur.rowcount == 0:
+                raise KeyError(batch_id)
+        return self.get_batch_or_raise(batch_id)
+
+    def get_batch(self, batch_id: str) -> Batch | None:
+        """Return the batch, or ``None`` if it does not exist."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM batches WHERE batch_id = ?", (batch_id,)
+            ).fetchone()
+        return self._batch_from_row(row) if row is not None else None
+
+    def get_batch_or_raise(self, batch_id: str) -> Batch:
+        """Return the batch or raise ``KeyError`` if absent."""
+        batch = self.get_batch(batch_id)
+        if batch is None:
+            raise KeyError(batch_id)
+        return batch
+
+    def batch_seqs_for_ids(self, batch_ids: list[str]) -> dict[str, int | None]:
+        """Return ``{batch_id: batch_seq}`` for the given batches.
+
+        Batched lookup so the ``GET /runs`` episode join can label rows with the
+        batch number without an N+1 read (``batch_seq`` lives on the batch, not
+        on the episode row).
+        """
+        if not batch_ids:
+            return {}
+        placeholders = ", ".join("?" for _ in batch_ids)
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT batch_id, batch_seq FROM batches "
+                f"WHERE batch_id IN ({placeholders})",
+                batch_ids,
+            ).fetchall()
+        return {row["batch_id"]: row["batch_seq"] for row in rows}
+
+    def list_batches(self, status: str | None = None) -> list[Batch]:
+        """Return batches newest-first, optionally filtered by ``status``."""
+        params: list[Any] = []
+        where = ""
+        if status is not None:
+            where = "WHERE status = ?"
+            params.append(status)
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM batches {where} ORDER BY seq DESC", params
+            ).fetchall()
+        return [self._batch_from_row(r) for r in rows]
+
+    # ---- episodes ---------------------------------------------------------
+
+    def create_episode(self, episode: Episode) -> Episode:
+        """Insert a new episode row. Raises :class:`EpisodeRunExistsError` when
+        the run already has an episode (``episodes.run_id`` UNIQUE)."""
+        with self._conn() as conn:
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO episodes
+                        (episode_id, batch_id, run_id, index_in_batch,
+                         task_result, failure_reason, quality, quality_source,
+                         review_status, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        episode.episode_id,
+                        episode.batch_id,
+                        episode.run_id,
+                        episode.index_in_batch,
+                        episode.task_result,
+                        episode.failure_reason,
+                        episode.quality,
+                        episode.quality_source,
+                        episode.review_status,
+                        episode.created_at,
+                        episode.updated_at,
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise EpisodeRunExistsError(episode.run_id) from exc
+            # Bump the batch's monotone recorded counter in the same transaction.
+            # A no-op if the batch is absent (the caller validates it first).
+            conn.execute(
+                "UPDATE batches SET episodes_recorded = episodes_recorded + 1 "
+                "WHERE batch_id = ?",
+                (episode.batch_id,),
+            )
+        return episode
+
+    def update_episode(self, episode_id: str, **fields: Any) -> Episode:
+        """Patch selected columns of an episode and return it (``KeyError`` if
+        absent). Unknown fields raise ``KeyError`` to catch typos."""
+        if not fields:
+            return self.get_episode_or_raise(episode_id)
+        for name in fields:
+            if name not in _EPISODE_UPDATE_FIELDS:
+                raise KeyError(f"Unknown episode field: {name}")
+        assignments = ", ".join(f"{name} = ?" for name in fields)
+        with self._conn() as conn:
+            cur = conn.execute(
+                f"UPDATE episodes SET {assignments} WHERE episode_id = ?",
+                (*fields.values(), episode_id),
+            )
+            if cur.rowcount == 0:
+                raise KeyError(episode_id)
+        return self.get_episode_or_raise(episode_id)
+
+    def get_episode(self, episode_id: str) -> Episode | None:
+        """Return the episode, or ``None`` if it does not exist."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM episodes WHERE episode_id = ?", (episode_id,)
+            ).fetchone()
+        return self._episode_from_row(row) if row is not None else None
+
+    def get_episode_or_raise(self, episode_id: str) -> Episode:
+        """Return the episode or raise ``KeyError`` if absent."""
+        episode = self.get_episode(episode_id)
+        if episode is None:
+            raise KeyError(episode_id)
+        return episode
+
+    def get_episode_by_run_id(self, run_id: str) -> Episode | None:
+        """Return the episode attached to *run_id*, or ``None`` (1 run = 1 ep)."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM episodes WHERE run_id = ?", (run_id,)
+            ).fetchone()
+        return self._episode_from_row(row) if row is not None else None
+
+    def list_episodes_by_batch(self, batch_id: str) -> list[Episode]:
+        """Return a batch's episodes ordered by ``index_in_batch``."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM episodes WHERE batch_id = ?
+                ORDER BY index_in_batch, seq
+                """,
+                (batch_id,),
+            ).fetchall()
+        return [self._episode_from_row(r) for r in rows]
+
+    def episodes_by_run_ids(self, run_ids: list[str]) -> dict[str, Episode]:
+        """Return ``{run_id: Episode}`` for the given runs that have an episode.
+
+        Batch lookup for the ``GET /runs`` list join (avoids N+1 per-run reads).
+        """
+        if not run_ids:
+            return {}
+        placeholders = ", ".join("?" for _ in run_ids)
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM episodes WHERE run_id IN ({placeholders})", run_ids
+            ).fetchall()
+        return {row["run_id"]: self._episode_from_row(row) for row in rows}
+
+    def delete_episode_by_run_id(self, run_id: str) -> bool:
+        """Delete the episode attached to *run_id*. Returns ``True`` if removed.
+
+        Called when a run is deleted so the episode is cascaded in code (we do
+        not rely on a SQLite FK pragma).
+        """
+        with self._conn() as conn:
+            cur = conn.execute("DELETE FROM episodes WHERE run_id = ?", (run_id,))
+        return cur.rowcount > 0
+
     # ---- (de)serialization ------------------------------------------------
 
     @staticmethod
@@ -519,4 +902,40 @@ class RunStore:
             required_topics=json.loads(row["required_topics"])
             if row["required_topics"]
             else [],
+        )
+
+    @staticmethod
+    def _batch_from_row(row: sqlite3.Row) -> Batch:
+        """Rebuild a :class:`Batch` from a database row."""
+        return Batch(
+            batch_id=row["batch_id"],
+            robot=row["robot"],
+            project=row["project"],
+            task=row["task"],
+            condition=row["condition"],
+            operator=row["operator"],
+            target_episodes=row["target_episodes"],
+            status=row["status"],
+            ended_reason=row["ended_reason"],
+            created_at=row["created_at"],
+            ended_at=row["ended_at"],
+            episodes_recorded=row["episodes_recorded"],
+            batch_seq=row["batch_seq"],
+        )
+
+    @staticmethod
+    def _episode_from_row(row: sqlite3.Row) -> Episode:
+        """Rebuild an :class:`Episode` from a database row."""
+        return Episode(
+            episode_id=row["episode_id"],
+            batch_id=row["batch_id"],
+            run_id=row["run_id"],
+            index_in_batch=row["index_in_batch"],
+            task_result=row["task_result"],
+            failure_reason=row["failure_reason"],
+            quality=row["quality"],
+            quality_source=row["quality_source"],
+            review_status=row["review_status"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
         )

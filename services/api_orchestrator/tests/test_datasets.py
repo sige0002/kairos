@@ -15,7 +15,7 @@ from pathlib import Path
 
 import httpx
 from api_orchestrator.app_factory import create_orchestrator_app
-from api_orchestrator.models import Run, RunState
+from api_orchestrator.models import Batch, Episode, Run, RunState
 from api_orchestrator.store import RunStore
 from conftest import FakeRecorder
 from fastapi.testclient import TestClient
@@ -540,3 +540,185 @@ def test_list_datasets_empty(
         resp = client.get("/api/v1/datasets")
     assert resp.status_code == 200
     assert resp.json() == {"datasets": []}
+
+
+# ---- episode label persistence on export (Console v2 Phase 2) --------------
+
+
+def _seed_batch_episode(
+    store: RunStore,
+    *,
+    run_id: str,
+    batch_id: str,
+    ep_id: str,
+    index_in_batch: int = 3,
+    task_result: str = "failure",
+    failure_reason: str | None = "slip",
+    quality: str = "not_usable",
+    review_status: str = "adopted",
+) -> None:
+    """Create a batch (batch_seq allocated) + an episode for *run_id*.
+
+    The batch's ``task`` (``pick_place``) deliberately differs from the run's
+    session task (``pick``) so tests prove the sidecar carries batch context
+    independent of the dataset's path.
+    """
+    if store.get_batch(batch_id) is None:
+        store.create_batch(
+            Batch(
+                batch_id=batch_id,
+                robot="airoa_hsr",
+                project="proj",
+                task="pick_place",
+                condition="cond_a",
+                operator="yuki",
+                created_at="2026-07-13T05:00:00.000Z",
+            )
+        )
+    store.create_episode(
+        Episode(
+            episode_id=ep_id,
+            batch_id=batch_id,
+            run_id=run_id,
+            index_in_batch=index_in_batch,
+            task_result=task_result,
+            failure_reason=failure_reason,
+            quality=quality,
+            quality_source="operator",
+            review_status=review_status,
+            created_at="2026-07-13T05:00:00.000Z",
+            updated_at="2026-07-13T05:00:00.000Z",
+        )
+    )
+
+
+def test_export_persists_episode_labels_into_sidecar(
+    tmp_path: Path, store: RunStore, fake_recorder: FakeRecorder
+) -> None:
+    """Export writes episode.json with the labels; the run + episode rows are
+    gone afterwards, but the sidecar preserves what the operator judged, and it
+    surfaces in both the detail endpoint and the flat list rows."""
+    data_dir = tmp_path / "data"
+    _make_recorded_run(data_dir, "run_a", operator="yuki", task="pick")
+    store.create(Run(run_id="run_a", state=RunState.completed))
+    _seed_batch_episode(store, run_id="run_a", batch_id="batch_x", ep_id="ep_x")
+    app = _build(tmp_path, store, fake_recorder, FakeDoraExporter(data_dir))
+
+    with TestClient(app) as client:
+        assert (
+            client.post("/api/v1/datasets/export", json={"run_id": "run_a"}).status_code
+            == 200
+        )
+
+        # The row + episode cascade are gone, but episode.json survived on disk.
+        assert store.get("run_a") is None
+        assert store.get_episode_by_run_id("run_a") is None
+        sidecar = json.loads(
+            (data_dir / "yuki" / "pick" / "001" / "episode.json").read_text()
+        )
+        assert sidecar["episode_id"] == "ep_x"
+        assert sidecar["batch_id"] == "batch_x"
+        assert sidecar["batch_seq"] == 1
+        assert sidecar["index_in_batch"] == 3
+        assert sidecar["task_result"] == "failure"
+        assert sidecar["failure_reason"] == "slip"
+        assert sidecar["quality"] == "not_usable"
+        assert sidecar["quality_source"] == "operator"
+        assert sidecar["review_status"] == "adopted"
+        assert sidecar["exported_at"]
+        # Batch context is self-describing (independent of the dataset path).
+        assert sidecar["batch"] == {
+            "batch_id": "batch_x",
+            "batch_seq": 1,
+            "project": "proj",
+            "task": "pick_place",
+            "condition": "cond_a",
+            "operator": "yuki",
+            "robot": "airoa_hsr",
+        }
+
+        # Detail endpoint exposes the additive episode field.
+        detail = client.get("/api/v1/datasets/yuki/pick/001").json()
+        assert detail["episode"]["task_result"] == "failure"
+        assert detail["episode"]["review_status"] == "adopted"
+        assert detail["episode"]["batch"]["project"] == "proj"
+
+        # Flat list rows carry the cheap card subset.
+        row = client.get("/api/v1/datasets").json()["datasets"][0]
+        assert row["task_result"] == "failure"
+        assert row["quality"] == "not_usable"
+        assert row["review_status"] == "adopted"
+        assert row["batch_seq"] == 1
+        assert row["index_in_batch"] == 3
+
+
+def test_export_without_episode_writes_no_sidecar(
+    tmp_path: Path, store: RunStore, fake_recorder: FakeRecorder
+) -> None:
+    """A run with no episode exports with no episode.json (not an empty file),
+    and the detail/list episode fields stay null."""
+    data_dir = tmp_path / "data"
+    _make_recorded_run(data_dir, "run_a", operator="yuki", task="pick")
+    store.create(Run(run_id="run_a", state=RunState.completed))
+    app = _build(tmp_path, store, fake_recorder, FakeDoraExporter(data_dir))
+
+    with TestClient(app) as client:
+        assert (
+            client.post("/api/v1/datasets/export", json={"run_id": "run_a"}).status_code
+            == 200
+        )
+        assert not (data_dir / "yuki" / "pick" / "001" / "episode.json").exists()
+        assert client.get("/api/v1/datasets/yuki/pick/001").json()["episode"] is None
+        assert (
+            client.get("/api/v1/datasets").json()["datasets"][0]["task_result"] is None
+        )
+
+
+def test_export_all_persists_each_episode(
+    tmp_path: Path, store: RunStore, fake_recorder: FakeRecorder
+) -> None:
+    """export-all writes a per-run episode.json for every exported run that has
+    an episode (two episodes of the same batch, different runs)."""
+    data_dir = tmp_path / "data"
+    for rid in ("run_1", "run_2"):
+        _make_recorded_run(data_dir, rid, operator="yuki", task="pick")
+        store.create(Run(run_id=rid, state=RunState.completed))
+    _seed_batch_episode(
+        store,
+        run_id="run_1",
+        batch_id="batch_x",
+        ep_id="ep_1",
+        index_in_batch=1,
+        task_result="success",
+        failure_reason=None,
+        quality="good",
+        review_status="pending",
+    )
+    _seed_batch_episode(
+        store,
+        run_id="run_2",
+        batch_id="batch_x",
+        ep_id="ep_2",
+        index_in_batch=2,
+        task_result="failure",
+        review_status="excluded",
+    )
+    app = _build(tmp_path, store, fake_recorder, FakeDoraExporter(data_dir))
+
+    with TestClient(app) as client:
+        body = client.post("/api/v1/datasets/export-all").json()
+        assert len(body["exported"]) == 2
+
+        # Both dataset dirs (001/002) carry their run's own episode.json.
+        by_index = {}
+        for idx in ("001", "002"):
+            sidecar = json.loads(
+                (data_dir / "yuki" / "pick" / idx / "episode.json").read_text()
+            )
+            by_index[sidecar["episode_id"]] = sidecar
+        assert by_index["ep_1"]["index_in_batch"] == 1
+        assert by_index["ep_1"]["task_result"] == "success"
+        assert by_index["ep_2"]["index_in_batch"] == 2
+        assert by_index["ep_2"]["review_status"] == "excluded"
+        # Same batch, same number for both.
+        assert by_index["ep_1"]["batch_seq"] == by_index["ep_2"]["batch_seq"] == 1
