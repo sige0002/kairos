@@ -1,8 +1,16 @@
-// Collect context bar: Project / Task / Batch / Episode / Condition cells plus
-// the Batch menu. Project/task/condition are plan-based mock selections (see
-// useBatchMachine's PLANS) — the backend has no plan/batch model yet.
+// Collect context bar: Robot / Project / Task / Batch / Episode / Condition
+// cells plus the Batch menu. Project/task/condition are plan-based mock
+// selections (see useBatchMachine's PLANS) — the backend has no plan/batch
+// model yet. The Robot cell is REAL: it lists config/<robot> sets from
+// GET /config/options and switches the active robot via POST /config/select
+// (same endpoints and cache-refresh set as the v1 Config tab), so cameras,
+// default topics and expected-Hz all follow the selection immediately.
 
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { apiGet, apiPost } from '../../api/client';
+import { queryKeys } from '../../api/queryKeys';
+import type { ConfigOptions } from '../../api/types';
 import { Card, cn } from '../../components/ui';
 import { PLANS, findProject, type BatchMachine } from './useBatchMachine';
 
@@ -130,6 +138,58 @@ function MenuItem({
   );
 }
 
+/** Real robot selector — the v1 Config tab's robot switch, relocated here. */
+function RobotCell({ disabled }: { disabled: boolean }) {
+  const queryClient = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const options = useQuery({
+    queryKey: queryKeys.configOptions,
+    queryFn: ({ signal }) => apiGet<ConfigOptions>('/config/options', { signal }),
+  });
+  const select = useMutation({
+    mutationFn: (id: string) => apiPost<ConfigOptions>('/config/select', { category: 'robot', id }),
+    onSuccess: (data) => {
+      queryClient.setQueryData(queryKeys.configOptions, data);
+      // Same refresh set as v1 ConfigTab's selectMutation: a robot switch
+      // changes the runtime config (defaults + stream panes → the camera
+      // tiles) and re-points the editable recording file.
+      queryClient.invalidateQueries({ queryKey: queryKeys.runtimeConfig });
+      queryClient.invalidateQueries({ queryKey: ['config', 'recording'] });
+    },
+  });
+
+  const robots = options.data?.robots ?? [];
+  const active = options.data?.active_robot;
+  return (
+    <div className="relative">
+      <CellButton
+        label="Robot"
+        value={select.isPending ? 'switching…' : (active ?? '—')}
+        onClick={() => setOpen((v) => !v)}
+        disabled={disabled || robots.length === 0 || select.isPending}
+        title="Switch robot config (disabled while recording)"
+      />
+      {open && (
+        <PickerPopover className="left-0 top-full mt-1" heading="Robot (applies immediately)">
+          {robots.map((r) => (
+            <PickItem
+              key={r.id}
+              active={r.id === active}
+              onClick={() => {
+                setOpen(false);
+                if (r.id !== active) select.mutate(r.id);
+              }}
+            >
+              {r.id}
+              {r.local ? <span className="text-[10px] text-gray-400"> · local</span> : null}
+            </PickItem>
+          ))}
+        </PickerPopover>
+      )}
+    </div>
+  );
+}
+
 export function ContextBar({ machine }: { machine: BatchMachine }) {
   const { phase, stats } = machine;
   const epNextText =
@@ -172,6 +232,8 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
         disabled={!machine.condAllowed}
         title="Change condition (applies from next episode)"
       />
+      <Divider />
+      <RobotCell disabled={!machine.ctxEditable} />
       <div className="flex-1" />
       <button
         type="button"

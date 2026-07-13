@@ -83,7 +83,7 @@ test('shortCameraLabel derives a human name from real robot topics', () => {
 // P5 regression: the camera tiles must come from config.stream.panes (the
 // robot's real cameras), not a fixed mock top/left/right layout that never
 // matches a real topic name.
-test('renders exactly one tile per configured camera — no fixed 3rd tile', async () => {
+test('every configured camera streams live — main at its preset, subs at the forced cap', async () => {
   renderWithClient(<Cameras config={CONFIG} machine={MACHINE} />);
 
   // Main tile negotiates against the FIRST configured pane.
@@ -91,34 +91,53 @@ test('renders exactly one tile per configured camera — no fixed 3rd tile', asy
   expect(screen.getByText(/Main camera · head/)).toBeInTheDocument();
 
   // Exactly one sub tile for the second configured camera (HSR has 2 total) —
-  // never a fabricated 3rd tile.
-  const subs = screen.getAllByTestId('sub-camera-tile');
-  expect(subs).toHaveLength(1);
-  expect(screen.getByText(/camera — hand/)).toBeInTheDocument();
+  // never a fabricated 3rd tile — and it carries its own live video element.
+  expect(screen.getAllByTestId('sub-camera-tile')).toHaveLength(1);
+  expect(screen.getByTestId('sub-camera-video')).toBeInTheDocument();
 
-  const calls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.map((c) => ({
-    url: String(c[0]),
-    body: c[1] ? JSON.parse(String((c[1] as RequestInit).body)) : undefined,
-  }));
-  const start = calls.find((c) => c.url.includes('/stream/start'));
-  expect(start?.body.topic).toBe('/hsrb/head_rgbd_sensor/rgb/image_rect_color/compressed');
+  await waitFor(() => {
+    const starts = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls
+      .map((c) => ({
+        url: String(c[0]),
+        body: c[1] ? JSON.parse(String((c[1] as RequestInit).body)) : undefined,
+      }))
+      .filter((c) => c.url.includes('/stream/start'));
+    const main = starts.find(
+      (c) => c.body.topic === '/hsrb/head_rgbd_sensor/rgb/image_rect_color/compressed',
+    );
+    const sub = starts.find((c) => c.body.topic === '/hsrb/hand_camera/image_raw/compressed');
+    // Main follows the default 480p preset; the sub is force-capped to 320x240
+    // (the per-screen image budget: one operator-resolution stream at a time).
+    expect(main?.body.max_width).toBe(640);
+    expect(sub?.body.max_width).toBe(320);
+  });
 });
 
-test('clicking a sub tile swaps its topic into the main slot', async () => {
+test('clicking a sub tile swaps its topic into the main slot at main resolution', async () => {
   renderWithClient(<Cameras config={CONFIG} machine={MACHINE} />);
   await waitFor(() => expect(screen.getByTestId('main-camera-video')).toBeInTheDocument());
 
   fireEvent.click(screen.getByTestId('sub-camera-tile'));
 
   await waitFor(() => expect(screen.getByText(/Main camera · hand/)).toBeInTheDocument());
-  expect(screen.getByText(/camera — head/)).toBeInTheDocument();
+  // The demoted topic (head) is now the sub tile.
+  expect(screen.getByTitle(/head_rgbd_sensor.*click to make this the main camera/)).toBeInTheDocument();
 
-  const calls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.map((c) => ({
-    url: String(c[0]),
-    body: c[1] ? JSON.parse(String((c[1] as RequestInit).body)) : undefined,
-  }));
-  const starts = calls.filter((c) => c.url.includes('/stream/start'));
-  expect(starts.some((c) => c.body.topic === '/hsrb/hand_camera/image_raw/compressed')).toBe(true);
+  await waitFor(() => {
+    const starts = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls
+      .map((c) => ({
+        url: String(c[0]),
+        body: c[1] ? JSON.parse(String((c[1] as RequestInit).body)) : undefined,
+      }))
+      .filter((c) => c.url.includes('/stream/start'));
+    // hand was promoted: it must have re-negotiated at the main preset (640),
+    // not just kept its old 320 sub stream.
+    expect(
+      starts.some(
+        (c) => c.body.topic === '/hsrb/hand_camera/image_raw/compressed' && c.body.max_width === 640,
+      ),
+    ).toBe(true);
+  });
 });
 
 test('no cameras configured renders a single explanatory placeholder, not empty fixed tiles', () => {

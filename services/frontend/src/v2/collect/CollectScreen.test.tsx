@@ -116,3 +116,40 @@ test('a failed task with no quality warning shows the plain-language summary and
   expect(screen.getByTestId('stat-review')).toHaveTextContent('0');
   expect(screen.getByTestId('stat-task-failed')).toHaveTextContent('1');
 });
+
+test('Robot cell lists real robots and switches via POST /config/select', async () => {
+  const OPTIONS = {
+    active_robot: 'airoa_hsr',
+    robots: [
+      { id: 'airoa_hsr', local: false },
+      { id: 'realman', local: false },
+    ],
+    aspects: {},
+  };
+  const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/config/options')) return Promise.resolve(jsonResponse(OPTIONS));
+    if (url.includes('/config/select'))
+      return Promise.resolve(jsonResponse({ ...OPTIONS, active_robot: 'realman' }));
+    if (url.includes('/config')) return Promise.resolve(jsonResponse(CONFIG));
+    return Promise.resolve(jsonResponse({}));
+  });
+  renderWithClient(<CollectScreen />);
+
+  const cell = () => screen.getByTitle('Switch robot config (disabled while recording)');
+  await waitFor(() => expect(cell()).toHaveTextContent('airoa_hsr'));
+
+  fireEvent.click(cell());
+  fireEvent.click(await screen.findByRole('button', { name: /realman/ }));
+
+  await waitFor(() => {
+    const call = fetchSpy.mock.calls.find((c) => String(c[0]).includes('/config/select'));
+    expect(call).toBeTruthy();
+    expect(JSON.parse(String((call![1] as RequestInit).body))).toEqual({
+      category: 'robot',
+      id: 'realman',
+    });
+  });
+  // The cell reflects the response's new active robot (cache updated in place).
+  await waitFor(() => expect(cell()).toHaveTextContent('realman'));
+});

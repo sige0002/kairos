@@ -5,14 +5,13 @@
 // space rather than showing empty frames for cameras that don't exist (a
 // 2-camera robot like the HSR sample rig gets exactly 2 tiles).
 //
-// Only the MAIN tile carries a live WebRTC stream, reusing useWebRtcStream
-// directly (the MTU/black-preview workarounds live there and are not
-// duplicated here). Each stream is its own robot-side encode pipeline plus a
-// PeerConnection per viewer (webrtc_streamer: "multiple cameras = multiple
-// streams"), so keeping every OTHER tile a static placeholder bounds the
-// robot's encode/network cost to one full-resolution stream at a time. In
-// Phase 1 the only way to view a sub camera live is to click it, which swaps
-// its topic into the main slot.
+// Every tile carries a live WebRTC stream, reusing useWebRtcStream directly
+// (the MTU/black-preview workarounds live there and are not duplicated here).
+// The agreed sub-multiplication mitigation (console v2 design §3-2) is a
+// per-screen image budget of ONE operator-resolution stream: the main tile
+// runs at the selected preset, every sub tile is force-capped to 320x240 so
+// its robot-side encode/egress cost stays marginal. Clicking a sub swaps its
+// topic into the main slot (and the demoted topic drops to the sub cap).
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { cn } from '../../components/ui';
@@ -41,17 +40,15 @@ function formatElapsed(ms: number): string {
   return `00:${mm}:${ss}`;
 }
 
-// Deterministic wobble for the (mock) sub-tile stats, so they're not static
-// but need no state of their own — a function of elapsed time only.
-function wobble(elapsedMs: number, base: number, amp: number, phase: number): string {
-  return (base + Math.sin((elapsedMs / 1000) * 2.1 + phase) * amp).toFixed(1);
-}
-
 const RES_PRESETS: { label: string; w: number; h: number }[] = [
   { label: '720p', w: 1280, h: 720 },
   { label: '480p', w: 640, h: 480 },
   { label: '240p', w: 320, h: 240 },
 ];
+
+// Forced cap for every sub tile — the "sub cameras are always low-res" half of
+// the image-budget rule in the file header.
+const SUB_MAX = { w: 320, h: 240 };
 
 function PlaceholderTile({ label, className }: { label: string; className?: string }) {
   return (
@@ -77,6 +74,58 @@ function OverlayBadge({ className, children }: { className: string; children: Re
     >
       {children}
     </span>
+  );
+}
+
+function SubCameraTile({
+  topic,
+  config,
+  onSelect,
+  style,
+}: {
+  topic: string;
+  config: RuntimeConfig;
+  onSelect: () => void;
+  style: React.CSSProperties;
+}) {
+  const { phase, stream, stats } = useWebRtcStream({
+    webrtcBase: config.endpoints.webrtc,
+    topic,
+    iceServers: config.ice_servers ?? [],
+    maxWidth: SUB_MAX.w,
+    maxHeight: SUB_MAX.h,
+  });
+  const videoRef = useRef<HTMLVideoElement>(null);
+  useEffect(() => {
+    if (videoRef.current && stream) videoRef.current.srcObject = stream;
+  }, [stream]);
+  const connected = phase === 'connected';
+  const label = shortCameraLabel(topic);
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      title={`${topic} — click to make this the main camera`}
+      data-testid="sub-camera-tile"
+      className="relative overflow-hidden rounded-card border border-gray-200 bg-[#1f2937] hover:border-teal-500"
+      style={style}
+    >
+      {/* Always mounted, like the main tile — see the comment there. */}
+      <video
+        ref={videoRef}
+        autoPlay
+        playsInline
+        muted
+        className="h-full w-full object-contain"
+        data-testid="sub-camera-video"
+      />
+      {!connected && (
+        <PlaceholderTile className="absolute inset-0" label={`camera — ${label}`} />
+      )}
+      <OverlayBadge className="bottom-2 left-2 max-w-[90%] truncate px-2 py-0.5 text-[10px]">
+        {label} · {connected ? `${stats.fps ?? '—'} fps` : 'connecting…'}
+      </OverlayBadge>
+    </button>
   );
 }
 
@@ -215,20 +264,13 @@ export function Cameras({
       </div>
 
       {subTopics.map((topic, i) => (
-        <button
+        <SubCameraTile
           key={topic}
-          type="button"
-          onClick={() => setMainTopic(topic)}
-          title={`${topic} — click to make this the main camera`}
-          data-testid="sub-camera-tile"
-          className="relative overflow-hidden rounded-card border border-gray-200 hover:border-teal-500"
+          topic={topic}
+          config={config}
+          onSelect={() => setMainTopic(topic)}
           style={{ gridColumn: 2, gridRow: i + 1 }}
-        >
-          <PlaceholderTile className="h-full w-full" label={`camera — ${shortCameraLabel(topic)}`} />
-          <OverlayBadge className="bottom-2 left-2 max-w-[90%] truncate px-2 py-0.5 text-[10px]">
-            {wobble(machine.elapsedMs, 29.5, recording ? 0.4 : 0, i + 1)} fps
-          </OverlayBadge>
-        </button>
+        />
       ))}
     </div>
   );
