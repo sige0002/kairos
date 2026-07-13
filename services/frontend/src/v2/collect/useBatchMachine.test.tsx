@@ -653,6 +653,10 @@ interface Phase2Opts {
   batchId?: string;
   activeBatches?: unknown[];
   episodePostFails?: boolean;
+  /** run_ids the server's `GET /runs` list reports as still existing — used by
+   *  the phantom-batch reconcile (a seeded local batch is real only when its
+   *  runs are here). Defaults to none. */
+  runs?: string[];
 }
 
 /** Mocks the record + batches + episodes endpoints, capturing every request. */
@@ -686,6 +690,12 @@ function phase2Fetch(opts: Phase2Opts = {}) {
         return Promise.resolve(jsonResponse({ error: { code: 'io', message: 'down' } }, 500));
       }
       return Promise.resolve(jsonResponse({ episode_id: 'ep_1', ...body }, 201));
+    }
+    // GET /runs (the list, not a /runs/{id} detail or DELETE) — the phantom
+    // reconcile checks whether a seeded local batch's runs still exist here.
+    if (method === 'GET' && /\/runs(\?|$)/.test(url)) {
+      const items = (opts.runs ?? []).map((rid) => ({ run_id: rid, state: 'completed' }));
+      return Promise.resolve(jsonResponse({ items, total: items.length }));
     }
     if (url.includes('/record/status')) {
       return Promise.resolve(jsonResponse({ run_id: runId, state: 'completed', integrity: 'ok' }));
@@ -843,7 +853,13 @@ test('completing the 30th episode PATCHes the batch to completed', async () => {
     }),
   );
   __rehydrateBatchStore();
-  const { calls } = phase2Fetch({ runId: 'run_30', batchId: 'batch_full' });
+  // The seeded batch's runs still exist server-side, so the phantom reconcile
+  // leaves it intact (it's a real in-progress batch, not a stale ghost).
+  const { calls } = phase2Fetch({
+    runId: 'run_30',
+    batchId: 'batch_full',
+    runs: seed.map((e) => e.runId),
+  });
   const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
   expect(result.current.stats.nRecorded).toBe(EPISODES_PER_BATCH - 1);
 
@@ -901,6 +917,133 @@ test('reload restores the active batch from the server (GET /batches?status=acti
   // Second episode's needs_review maps to the local 'review' quality axis.
   expect(result.current.stats.nReview).toBe(1);
   expect(result.current.stats.epNext).toBe(3);
+});
+
+// ---------------------------------------------------------------------------
+// Phantom batch (Apple P0): a local batch context whose runs were deleted
+// server-side must not survive as fabricated counters on the hero screen.
+// ---------------------------------------------------------------------------
+
+// A stale batch persisted locally (batch 6, 3 recorded) whose runs no longer
+// exist, and a server that reports no active batch and no runs, is discarded —
+// the counters reset to the honest empty state.
+test('a stale local batch is discarded when the server has no active batch and its runs are gone', async () => {
+  window.localStorage.setItem(
+    BATCH_STORAGE_KEY,
+    JSON.stringify({
+      batchSeq: 6,
+      recordedCount: 3,
+      batchId: 'batch_ghost',
+      episodes: [
+        { index: 1, quality: 'good', taskResult: 'ok', runId: 'ghost_1' },
+        { index: 2, quality: 'good', taskResult: 'ok', runId: 'ghost_2' },
+        { index: 3, quality: 'review', taskResult: 'fail', runId: 'ghost_3' },
+      ],
+      project: 'Bin Picking',
+      task: 'Bin to Tray',
+      condition: 'Bin: full',
+    }),
+  );
+  __rehydrateBatchStore();
+  // Server: no active batch (default empty activeBatches) and no runs at all.
+  phase2Fetch({ runs: [] });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+
+  // Before reconcile the seeded phantom is visible …
+  expect(result.current.stats.nRecorded).toBe(3);
+  expect(result.current.batchSeq).toBe(6);
+  // … then the reconcile discards it: counts fall back to the honest empty state.
+  await waitFor(() => expect(result.current.stats.nRecorded).toBe(0));
+  expect(result.current.batchSeq).toBeNull();
+  expect(result.current.episodes).toHaveLength(0);
+  expect(result.current.stats.epNext).toBe(1);
+  // The persisted blob is cleared too, so a later reload doesn't resurrect it.
+  expect(window.localStorage.getItem(BATCH_STORAGE_KEY)).toBeNull();
+});
+
+// Offline resilience: if the /runs check itself fails, the local batch is kept
+// (we never discard a batch we couldn't prove is stale).
+test('a local batch is kept when the runs check fails (API error → keep)', async () => {
+  window.localStorage.setItem(
+    BATCH_STORAGE_KEY,
+    JSON.stringify({
+      batchSeq: 6,
+      recordedCount: 3,
+      batchId: 'batch_maybe',
+      episodes: [
+        { index: 1, quality: 'good', taskResult: 'ok', runId: 'x1' },
+        { index: 2, quality: 'good', taskResult: 'ok', runId: 'x2' },
+        { index: 3, quality: 'good', taskResult: 'ok', runId: 'x3' },
+      ],
+      project: 'P',
+      task: 'T',
+      condition: 'C',
+    }),
+  );
+  __rehydrateBatchStore();
+  const calls: string[] = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    const method = (init?.method ?? 'GET').toUpperCase();
+    calls.push(`${method} ${url}`);
+    if (url.includes('/batches') && method === 'GET') {
+      return Promise.resolve(jsonResponse({ items: [] }));
+    }
+    if (method === 'GET' && /\/runs(\?|$)/.test(url)) {
+      // The runs check errors — we must NOT clear the local batch.
+      return Promise.resolve(jsonResponse({ error: { code: 'io', message: 'down' } }, 500));
+    }
+    return Promise.resolve(jsonResponse({}));
+  });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+
+  // Wait until the reconcile has attempted (and failed) the runs check …
+  await waitFor(() => expect(calls.some((c) => /GET .*\/runs(\?|$)/.test(c))).toBe(true));
+  // … and confirm the local batch survived (offline resilience preserved).
+  expect(result.current.stats.nRecorded).toBe(3);
+  expect(result.current.batchSeq).toBe(6);
+  expect(window.localStorage.getItem(BATCH_STORAGE_KEY)).not.toBeNull();
+});
+
+// An active batch on the server always wins over a stale local one (server
+// truth), rather than being treated as a phantom (see also the restore test).
+test('an active server batch overrides a stale local batch (server wins, not discarded)', async () => {
+  window.localStorage.setItem(
+    BATCH_STORAGE_KEY,
+    JSON.stringify({
+      batchSeq: 6,
+      recordedCount: 3,
+      batchId: 'batch_old',
+      episodes: [{ index: 1, quality: 'good', taskResult: 'ok', runId: 'old_1' }],
+      project: 'Old',
+      task: 'Old task',
+      condition: 'Old',
+    }),
+  );
+  __rehydrateBatchStore();
+  phase2Fetch({
+    activeBatches: [
+      {
+        batch_id: 'batch_new',
+        batch_seq: 7,
+        project: 'Bin Picking',
+        task: 'Bin to Tray',
+        condition: 'Bin: full',
+        target_episodes: 30,
+        status: 'active',
+        episodes_recorded: 5,
+        episode_count: 1,
+        episodes: [
+          { index: 5, run_id: 'r5', task_result: 'success', quality: 'good', review_status: 'pending' },
+        ],
+      },
+    ],
+  });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+
+  await waitFor(() => expect(result.current.batchSeq).toBe(7));
+  expect(result.current.stats.nRecorded).toBe(5);
+  expect(result.current.project).toBe('Bin Picking');
 });
 
 // ---------------------------------------------------------------------------

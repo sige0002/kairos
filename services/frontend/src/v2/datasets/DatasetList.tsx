@@ -117,20 +117,22 @@ export function DatasetList({ state }: { state: DatasetsState }) {
                         #{entry.index}
                       </Badge>
                     </div>
-                    {/* Episode labels only when the backend attributes them
-                        (flat row subset from episode.json); nothing fabricated
-                        when absent. */}
-                    {episode && (
+                    {/* One predicate — the presence of an episode label
+                        (`episode`) — drives BOTH sides so a card can never claim
+                        both at once: labels present → chips (no note); labels
+                        absent → the note (no chips). Operator/task attribution
+                        is a separate, independent axis (the muted group header
+                        and task label above), not this label axis. */}
+                    {episode ? (
                       <EpisodeLabelChips
                         episode={episode}
                         isoFallback={entry.exported_at}
                         testId={`dataset-card-labels-${entry.dataset_dir}`}
                       />
-                    )}
-                    {legacy && (
+                    ) : (
                       <span
                         data-testid={`dataset-card-legacy-${entry.dataset_dir}`}
-                        title="Exported before per-episode labels existed, so quality and operator aren't recorded."
+                        title="Exported before per-episode labels existed, so quality and task labels aren't recorded."
                         className="text-[10.5px] italic text-gray-400"
                       >
                         no episode labels (exported before labeling)

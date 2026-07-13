@@ -337,3 +337,62 @@ test('no cameras configured renders a single explanatory placeholder, not empty 
   expect(screen.queryByTestId('main-camera-video')).not.toBeInTheDocument();
   expect(screen.queryByTestId('sub-camera-tile')).not.toBeInTheDocument();
 });
+
+// ---------------------------------------------------------------------------
+// Camera connecting / failed states (Apple P1): a blank tile must say which
+// state it's in, and a failure must be recoverable in place.
+// ---------------------------------------------------------------------------
+
+test('a camera still connecting shows a spinner + "Connecting to camera…" (not a failure)', async () => {
+  // A peer that negotiates but never reaches "connected" keeps the tile in the
+  // connecting state.
+  class PendingPeer extends FakePeerConnection {
+    async setRemoteDescription() {
+      // Intentionally does NOT flip connectionState to 'connected'.
+    }
+  }
+  vi.stubGlobal('RTCPeerConnection', PendingPeer);
+  renderWithClient(<Cameras config={CONFIG} machine={MACHINE} />);
+
+  await waitFor(() =>
+    expect(screen.getAllByTestId('camera-connecting-spinner').length).toBeGreaterThan(0),
+  );
+  expect(screen.getAllByText('Connecting to camera…').length).toBeGreaterThan(0);
+  // Connecting is NOT failure: no Retry, no "unavailable" copy.
+  expect(screen.queryByTestId('camera-retry')).toBeNull();
+  expect(screen.queryByText(/Camera preview unavailable/)).toBeNull();
+});
+
+test('a failed camera shows the reason + a Retry that re-triggers the WebRTC connect', async () => {
+  let headStarts = 0;
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    const body = (init as RequestInit | undefined)?.body
+      ? JSON.parse(String((init as RequestInit).body))
+      : {};
+    if (url.includes('/stream/start')) {
+      if (body.topic === HEAD) {
+        headStarts++;
+        // The main camera's first connect fails; a retry succeeds.
+        if (headStarts === 1) {
+          return Promise.resolve(jsonResponse({ error: { message: 'boom' } }, 500));
+        }
+      }
+      return Promise.resolve(jsonResponse({ stream_id: 's-1' }));
+    }
+    if (url.includes('/stream/offer'))
+      return Promise.resolve(jsonResponse({ type: 'answer', sdp: 'v=0 answer' }));
+    if (url.includes('/topics')) return Promise.resolve(jsonResponse([]));
+    return Promise.resolve(jsonResponse({}));
+  });
+  renderWithClient(<Cameras config={CONFIG} machine={MACHINE} />);
+
+  // The failed main tile shows the designed failed state, not just a dark box.
+  const retryBtn = await screen.findByTestId('camera-retry');
+  expect(screen.getByText(/Camera preview unavailable/)).toBeInTheDocument();
+  expect(headStarts).toBe(1);
+
+  // Retrying re-triggers the WebRTC connect (a second /stream/start for HEAD).
+  fireEvent.click(retryBtn);
+  await waitFor(() => expect(headStarts).toBeGreaterThanOrEqual(2));
+});

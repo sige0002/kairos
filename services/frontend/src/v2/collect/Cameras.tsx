@@ -20,7 +20,11 @@ import { apiGet } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
 import type { TopicInfo } from '../../api/types';
 import { cn } from '../../components/ui';
-import { useWebRtcStream, type StreamStats } from '../../features/stream/useWebRtcStream';
+import {
+  useWebRtcStream,
+  type StreamStats,
+  type StreamPhase,
+} from '../../features/stream/useWebRtcStream';
 import type { RuntimeConfig } from '../../config';
 import type { BatchMachine } from './useBatchMachine';
 import {
@@ -94,21 +98,31 @@ export function StatsBadge({ stats, className }: { stats: StreamStats; className
   );
 }
 
-function PlaceholderTile({
-  label,
-  hint,
+/** Overlay for a camera tile with no frames yet. It names the state the
+ *  operator needs to distinguish — still CONNECTING (a spinner + "Connecting to
+ *  camera…") vs FAILED (the reason + a Retry that re-triggers the WebRTC
+ *  connect) — so a blank tile never silently reads as a failure, and a real
+ *  failure is recoverable in place. `phase === 'failed'` is the same signal the
+ *  SYSTEM STATUS Cameras row reads (onHealthChange), so the two always agree. */
+function CameraPlaceholder({
+  phase,
+  error,
+  onRetry,
+  name,
   className,
 }: {
-  label: string;
-  /** Optional second line explaining WHY the tile is blank (e.g. the stream is
-   *  still connecting) so an empty preview never reads as a failure. */
-  hint?: string;
+  phase: StreamPhase;
+  error: string | null;
+  onRetry: () => void;
+  /** Human camera name (identity), shown muted under the status line. */
+  name: string;
   className?: string;
 }) {
+  const failed = phase === 'failed';
   return (
     <div
       className={cn(
-        'flex flex-col items-center justify-center gap-1 border border-gray-200',
+        'flex flex-col items-center justify-center gap-1.5 border border-gray-200 px-3 text-center',
         className,
       )}
       style={{
@@ -116,8 +130,46 @@ function PlaceholderTile({
           'repeating-linear-gradient(45deg,#1f2937 0px,#1f2937 14px,#243042 14px,#243042 28px)',
       }}
     >
-      <span className="truncate px-3 font-mono text-xs text-gray-500">{label}</span>
-      {hint && <span className="truncate px-3 font-mono text-[11px] text-gray-600">{hint}</span>}
+      {failed ? (
+        <>
+          <span aria-hidden className="text-lg leading-none text-amber-400">
+            ⚠
+          </span>
+          <span className="font-sans text-xs font-semibold text-gray-200">
+            Camera preview unavailable
+          </span>
+          <span
+            className="max-w-full truncate font-mono text-[11px] text-gray-400"
+            title={error ?? undefined}
+          >
+            {error ?? "the WebRTC stream couldn't connect"}
+          </span>
+          <span className="max-w-full truncate font-mono text-[10.5px] text-gray-500">{name}</span>
+          <button
+            type="button"
+            data-testid="camera-retry"
+            onClick={(e) => {
+              e.stopPropagation();
+              onRetry();
+            }}
+            className="mt-0.5 rounded-control border border-gray-500 bg-gray-900/70 px-3 py-1 text-[11.5px] font-semibold text-teal-300 hover:bg-gray-800"
+          >
+            Retry
+          </button>
+        </>
+      ) : (
+        <>
+          <span
+            aria-hidden
+            data-testid="camera-connecting-spinner"
+            className="h-6 w-6 animate-spin rounded-full border-2 border-gray-600 border-t-teal-400"
+          />
+          <span className="font-sans text-xs font-semibold text-gray-300">
+            Connecting to camera…
+          </span>
+          <span className="max-w-full truncate font-mono text-[10.5px] text-gray-500">{name}</span>
+        </>
+      )}
     </div>
   );
 }
@@ -173,7 +225,7 @@ function SubCameraTile({
   style: React.CSSProperties;
 }) {
   const { w, h } = resBounds(pane.subResLabel);
-  const { phase, stream, stats } = useWebRtcStream({
+  const { phase, stream, stats, error, retry } = useWebRtcStream({
     webrtcBase: config.endpoints.webrtc,
     topic: pane.topic,
     iceServers: config.ice_servers ?? [],
@@ -206,7 +258,15 @@ function SubCameraTile({
         className="h-full w-full object-contain"
         data-testid="sub-camera-video"
       />
-      {!connected && <PlaceholderTile className="absolute inset-0" label={`camera — ${label}`} />}
+      {!connected && (
+        <CameraPlaceholder
+          phase={phase}
+          error={error}
+          onRetry={retry}
+          name={label}
+          className="absolute inset-0"
+        />
+      )}
       {/* Top-right overlay stack: res toggle, then the v1-style live stats
           below it — the corner placement the user asked for, without the two
           chips overlapping each other (or the remove control at top-left). */}
@@ -234,7 +294,6 @@ function SubCameraTile({
       )}
       <OverlayBadge className="bottom-2 left-2 max-w-[92%] truncate px-2 py-0.5 text-[10px]">
         {label}
-        {connected ? '' : ' · connecting…'}
       </OverlayBadge>
     </div>
   );
@@ -326,7 +385,7 @@ export function Cameras({
   const mainTopic = mainPane?.topic;
   const { w: mainW, h: mainH } = resBounds(mainResLabel);
 
-  const { phase, stream, stats } = useWebRtcStream({
+  const { phase, stream, stats, error, retry } = useWebRtcStream({
     webrtcBase: config.endpoints.webrtc,
     topic: mainTopic ?? '',
     iceServers: config.ice_servers ?? [],
@@ -403,10 +462,12 @@ export function Cameras({
           data-testid="main-camera-video"
         />
         {!connected && (
-          <PlaceholderTile
+          <CameraPlaceholder
+            phase={phase}
+            error={error}
+            onRetry={retry}
+            name={mainTopic ? `${mainLabel} · ${mainTopic}` : 'no camera'}
             className="absolute inset-0"
-            label={`live camera preview — ${mainTopic ?? '—'}`}
-            hint="waiting for stream — local WebRTC connect"
           />
         )}
         <OverlayBadge className="left-3 top-3 bg-gray-900/75 font-sans text-xs font-semibold text-white">

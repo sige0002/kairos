@@ -95,9 +95,19 @@ export function CollectScreen() {
     // the whole console (context bar + both columns) aligned and centered, and
     // holds the main camera tile near its 4:3 source aspect. Below the cap
     // (≤1366) it's a no-op, so the compact single-page layout is unchanged.
+    //
+    // Scroll fallback, scoped to the ≥900 band (where `justify-center` +
+    // `max-h-742` engage): there we switch `h-full` → `h-auto`/`min-h-full` so
+    // the console can grow PAST the viewport and the enclosing overflow-auto tab
+    // panel scrolls to it, instead of `justify-center` clipping both the context
+    // bar's top and the Batch-stats footnote with no way to reach them (verified
+    // clipped at 1440×900). Below 900 the console keeps `h-full` so the grid's
+    // flex-1 fill + the left column's own internal scroll are unchanged (the
+    // ControlCard stays pinned; no page scroll at 1366×768).
     <div
       className={cn(
         'flex flex-col lg:mx-auto lg:h-full lg:min-h-0 lg:w-full lg:max-w-[1480px]',
+        '[@media(min-height:900px)]:lg:h-auto [@media(min-height:900px)]:lg:min-h-full',
         // On tall viewports the capped camera height frees vertical space; center
         // the console block so that space is shared top and bottom (an
         // intentional centered console) rather than pinned to the top. Gated on

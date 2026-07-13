@@ -166,7 +166,13 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
             type="button"
             data-testid="review-transfer-all"
             onClick={rv.transferAllUntransferred}
-            className="rounded-control border border-gray-200 bg-white px-3 py-1.5 text-[12.5px] font-semibold text-gray-500 transition-colors hover:bg-gray-50"
+            disabled={rv.nUntransferred === 0}
+            title={
+              rv.nUntransferred === 0
+                ? 'Every recording is already transferred'
+                : 'Transfer every recording still only on the robot'
+            }
+            className="rounded-control border border-gray-200 bg-white px-3 py-1.5 text-[12.5px] font-semibold text-gray-500 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:border-gray-100 disabled:bg-gray-50 disabled:text-gray-300 disabled:hover:bg-gray-50"
           >
             Transfer untransferred ({rv.nUntransferred})
           </button>
@@ -189,8 +195,12 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
           data-testid="review-export-ready"
           onClick={rv.requestExportReady}
           disabled={rv.readyExportable.length === 0}
-          title="Move every READY recording into the Datasets tree"
-          className="rounded-control bg-teal-600 px-3 py-1.5 text-[12.5px] font-semibold text-white transition-colors hover:bg-teal-700 disabled:opacity-50"
+          title={
+            rv.readyExportable.length === 0
+              ? 'No READY recordings to export yet'
+              : 'Move every READY recording into the Datasets tree'
+          }
+          className="rounded-control bg-teal-600 px-3 py-1.5 text-[12.5px] font-semibold text-white transition-colors hover:bg-teal-700 disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-gray-400 disabled:hover:bg-gray-200"
         >
           Export ready ({rv.readyExportable.length})…
         </button>

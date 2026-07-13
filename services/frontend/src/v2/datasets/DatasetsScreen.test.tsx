@@ -348,15 +348,43 @@ test('a dataset card shows episode label chips when the backend attributes them'
   expect(within(labels).getByText('GOOD')).toBeInTheDocument();
   expect(within(labels).getByText('SUCCESS')).toBeInTheDocument();
   expect(within(labels).getByText(/#4/)).toBeInTheDocument();
+  // Unified predicate: a labeled card NEVER also shows the "no episode labels"
+  // note (the Apple self-contradiction fix).
+  expect(screen.queryByTestId(`dataset-card-legacy-${ENTRY_LABELED.dataset_dir}`)).toBeNull();
 });
 
-test('a dataset card shows NO label chips when the episode is absent (no fabrication)', async () => {
+test('a dataset card shows NO label chips (but the honest note) when the episode is absent', async () => {
   // ENTRY_A1 carries no `episode` field.
   mockFetch({ list: { datasets: [ENTRY_A1] } });
   renderWithClient(<DatasetsScreen />);
 
   await waitFor(() => expect(screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`)).toBeInTheDocument());
+  // No chips (nothing fabricated) …
   expect(screen.queryByTestId(`dataset-card-labels-${ENTRY_A1.dataset_dir}`)).toBeNull();
+  // … and the same predicate surfaces the honest "no episode labels" note in
+  // their place — one or the other, never both, never neither.
+  expect(screen.getByTestId(`dataset-card-legacy-${ENTRY_A1.dataset_dir}`)).toBeInTheDocument();
+});
+
+test('a labeled card with an unknown operator shows chips and NOT the legacy note (Apple P1 regression)', async () => {
+  // The exact self-contradiction Apple caught: real quality/task labels next to
+  // "no episode labels (exported before labeling)" on the same card. The
+  // operator being unattributed must not resurrect the note when labels exist.
+  const entry: DatasetEntry = {
+    ...ENTRY_LABELED,
+    operator: 'unknown_operator',
+    dataset_dir: 'unknown_operator/folding/002',
+  };
+  mockFetch({ list: { datasets: [entry] } });
+  renderWithClient(<DatasetsScreen />);
+
+  const chipsId = `dataset-card-labels-${entry.dataset_dir}`;
+  await waitFor(() => expect(screen.getByTestId(chipsId)).toBeInTheDocument());
+  expect(within(screen.getByTestId(chipsId)).getByText('GOOD')).toBeInTheDocument();
+  // The note must be absent even though the operator is unattributed.
+  expect(screen.queryByTestId(`dataset-card-legacy-${entry.dataset_dir}`)).toBeNull();
+  // The missing operator is still surfaced honestly, on its own (group header).
+  expect(screen.getByText('operator not recorded')).toBeInTheDocument();
 });
 
 test('an unattributed export is explained in plain language (no raw sentinels)', async () => {

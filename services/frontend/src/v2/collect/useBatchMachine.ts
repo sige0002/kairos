@@ -651,6 +651,53 @@ function applyServerRestore(batch: BatchSummary | null): void {
   notifyStore();
 }
 
+/** True when the persisted local batch holds real content worth reconciling
+ *  against the server (a recorded count, episodes, or a server batch handle) —
+ *  vs a pristine empty machine that has nothing to discard. */
+function hasLocalBatchContext(s: MachineState): boolean {
+  return (
+    s.recordedCount > 0 || s.episodes.length > 0 || s.batchSeq != null || s.batchId != null
+  );
+}
+
+/** True when a local batch context can't be backed by any server run — a
+ *  phantom left behind after the runs/batches were deleted server-side (Apple
+ *  P0: an operator wipes runs, then the next load shows "Batch 6 · 3 recorded"
+ *  that no longer exists). Only reports phantom on POSITIVE evidence of absence:
+ *  a bridge-only episode whose run still exists is preserved (self-heals). */
+function localBatchIsPhantom(s: MachineState, runs: RunSummary[]): boolean {
+  const serverRunIds = new Set(runs.map((r) => r.run_id));
+  const localRunIds = s.episodes
+    .map((e) => e.runId)
+    .filter((id): id is string => typeof id === 'string' && id.length > 0);
+  if (localRunIds.length > 0) {
+    // Every recorded episode's run is gone from the server → phantom. If even
+    // one survives (e.g. an episode that only reached the browser bridge), keep.
+    return localRunIds.every((id) => !serverRunIds.has(id));
+  }
+  // No run ids to check (an older blob, or counts without episodes): phantom
+  // only when the server has NO runs at all — otherwise we can't prove the
+  // local batch is stale, so we keep it (offline/older-backend resilience).
+  return runs.length === 0;
+}
+
+/** Discard a stale local batch context (a confirmed phantom): clear the
+ *  persisted blob and reset the machine to the honest empty state, preserving
+ *  only the transient predicted next-batch number (recomputed this same load).
+ *  The counters then read the truth — nothing recorded — instead of numbers for
+ *  recordings that no longer exist. */
+function clearLocalBatch(): void {
+  lastPersisted = '';
+  try {
+    window.localStorage.removeItem(BATCH_STORAGE_KEY);
+  } catch {
+    /* ignore */
+  }
+  const predicted = currentState.predictedSeq;
+  currentState = { ...createInitialState(), predictedSeq: predicted };
+  notifyStore();
+}
+
 /** True when `iso` falls on today's LOCAL calendar day (batch_seq resets per
  *  local date server-side, so the prediction must use the same day boundary). */
 function isLocalToday(iso: string | null | undefined): boolean {
@@ -1130,13 +1177,40 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     // One GET /batches serves both jobs: restore the newest *active* batch (server
     // truth over the localStorage fallback) AND predict the next batch number from
     // today's batches (the honest pre-state before any batch exists).
+    const atRestPhase = (p: Phase) =>
+      p === 'ready' || p === 'completed' || p === 'ended' || p === 'paused';
     listBatches()
-      .then((resp) => {
+      .then(async (resp) => {
         const items = resp.items ?? [];
-        const p = getStoreSnapshot().phase;
-        const atRest = p === 'ready' || p === 'completed' || p === 'ended' || p === 'paused';
-        if (atRest) applyServerRestore(items.find((b) => b.status === 'active') ?? null);
+        // The predicted pre-state is always safe to refresh from today's batches.
         setPredictedSeq(predictNextSeq(items));
+        if (!atRestPhase(getStoreSnapshot().phase)) return;
+        const active = items.find((b) => b.status === 'active') ?? null;
+        if (active) {
+          applyServerRestore(active);
+          return;
+        }
+        // Server reports NO active batch. A local batch context here may be a
+        // phantom left behind after the runs/batches were deleted server-side
+        // (Apple P0). Confirm by checking the batch's runs still exist, then
+        // discard the stale context so the hero counters never report
+        // recordings that don't exist. We keep it on any /runs failure (offline
+        // resilience) or when a run still backs it (bridge-only episode).
+        if (!hasLocalBatchContext(getStoreSnapshot())) return;
+        let runs: Page<RunSummary>;
+        try {
+          runs = await apiGet<Page<RunSummary>>('/runs', { query: { limit: 100 } });
+        } catch {
+          return; // /runs unreachable — keep the local context.
+        }
+        const after = getStoreSnapshot();
+        if (
+          atRestPhase(after.phase) &&
+          hasLocalBatchContext(after) &&
+          localBatchIsPhantom(after, runs.items ?? [])
+        ) {
+          clearLocalBatch();
+        }
       })
       .catch(() => {
         /* API unreachable — keep the localStorage fallback; the pre-state falls
