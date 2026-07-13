@@ -9,7 +9,14 @@
 // unit testing. Everything else in the hook (real API calls, timers, toast,
 // modal/picker visibility) wraps it.
 
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiDelete, apiGet, apiPost } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
@@ -343,6 +350,144 @@ function reducer(state: MachineState, action: Action): MachineState {
 // Exported for direct reducer unit tests (no React needed for pure transitions).
 export { reducer as batchMachineReducer, createInitialState as createBatchMachineState };
 
+// ---------------------------------------------------------------------------
+// Module-level external store for the batch machine.
+//
+// The reducer above is unchanged; only its *host* moves. The Collect screen is
+// unmounted whenever the operator switches tabs (App.tsx renders only the
+// active tab — including the "REC N topics" chip / "Open in Monitor →" jumps),
+// so a `useReducer` inside the hook wiped the whole batch on every navigation.
+// Parking the state in module scope (like uiStore does for the Live-tab drafts)
+// makes it survive the unmount: the module store keeps the FULL state — phase
+// included — so a mid-result-phase round-trip keeps its run_id, and components
+// re-subscribe on remount via `useSyncExternalStore`.
+//
+// Durable session context (batch number, confirmed episodes, project/task/
+// condition) is ALSO mirrored to localStorage so it survives a full reload.
+// Volatile/in-flight state is never persisted: on a reload the phase resolves to
+// the safe baseline (ready, or the completed-batch summary when the episode
+// count is already full), timers reset, and any in-flight recording truth comes
+// from the /record/status poll — never reconstructed from storage.
+const BATCH_STORAGE_KEY = 'kairos.collect.batch';
+
+interface PersistedBatch {
+  batchNum: number;
+  episodes: EpisodeRecord[];
+  project: string;
+  task: string;
+  condition: string;
+}
+
+/** Serialize just the durable subset (used both to persist and to dedupe). */
+function serializeDurable(state: MachineState): string {
+  const blob: PersistedBatch = {
+    batchNum: state.batchNum,
+    episodes: state.episodes,
+    project: state.project,
+    task: state.task,
+    condition: state.condition,
+  };
+  return JSON.stringify(blob);
+}
+
+// Skip redundant writes: TICK fires ~4x/s during recording but never changes
+// the durable subset, so we only touch localStorage when it actually differs.
+let lastPersisted = '';
+
+function persistBatch(state: MachineState): void {
+  const blob = serializeDurable(state);
+  if (blob === lastPersisted) return;
+  lastPersisted = blob;
+  try {
+    window.localStorage.setItem(BATCH_STORAGE_KEY, blob);
+  } catch {
+    // localStorage unavailable (private mode / SSR): the in-memory store still
+    // survives tab switches; only reload-persistence is lost.
+  }
+}
+
+/** Fresh state seeded from the persisted durable context, if any. Volatile
+ *  fields (phase, timers, run id, pending result, errors) are NEVER restored. */
+function readInitialState(): MachineState {
+  const base = createInitialState();
+  let raw: string | null = null;
+  try {
+    raw = window.localStorage.getItem(BATCH_STORAGE_KEY);
+  } catch {
+    return base;
+  }
+  if (!raw) return base;
+  try {
+    const blob = JSON.parse(raw) as Partial<PersistedBatch> | null;
+    if (!blob || typeof blob !== 'object') return base;
+    const episodes = Array.isArray(blob.episodes) ? (blob.episodes as EpisodeRecord[]) : [];
+    // A durable full batch resumes on its completed summary; anything else
+    // lands on the safe 'ready' baseline. The persisted phase (if any) is
+    // ignored on purpose — see the note above.
+    const phase: Phase = episodes.length >= EPISODES_PER_BATCH ? 'completed' : 'ready';
+    return {
+      ...base,
+      phase,
+      batchNum: typeof blob.batchNum === 'number' ? blob.batchNum : base.batchNum,
+      episodes,
+      project: typeof blob.project === 'string' ? blob.project : base.project,
+      task: typeof blob.task === 'string' ? blob.task : base.task,
+      condition: typeof blob.condition === 'string' ? blob.condition : base.condition,
+    };
+  } catch {
+    return base;
+  }
+}
+
+let currentState: MachineState = readInitialState();
+const storeListeners = new Set<() => void>();
+
+function notifyStore(): void {
+  for (const listener of storeListeners) listener();
+}
+
+function dispatch(action: Action): void {
+  const next = reducer(currentState, action);
+  if (next === currentState) return;
+  currentState = next;
+  persistBatch(next);
+  notifyStore();
+}
+
+function subscribeStore(listener: () => void): () => void {
+  storeListeners.add(listener);
+  return () => {
+    storeListeners.delete(listener);
+  };
+}
+
+function getStoreSnapshot(): MachineState {
+  return currentState;
+}
+
+/** React binding for the module store (subscribes for the component's life). */
+function useBatchState(): MachineState {
+  return useSyncExternalStore(subscribeStore, getStoreSnapshot, getStoreSnapshot);
+}
+
+// Test-only hooks: reset the module store between tests, or re-run the
+// storage-restore path after seeding a localStorage blob. Not used in app code.
+export function __resetBatchStore(): void {
+  lastPersisted = '';
+  try {
+    window.localStorage.removeItem(BATCH_STORAGE_KEY);
+  } catch {
+    /* ignore */
+  }
+  currentState = createInitialState();
+  notifyStore();
+}
+export function __rehydrateBatchStore(): void {
+  lastPersisted = '';
+  currentState = readInitialState();
+  notifyStore();
+}
+
 export interface BatchStats {
   nRecorded: number;
   /** quality === 'good' (independent of task outcome). */
@@ -473,7 +618,9 @@ export interface BatchMachine {
 }
 
 export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMachine {
-  const [state, dispatch] = useReducer(reducer, undefined, createInitialState);
+  // State lives in the module-level store above (survives tab-switch unmounts);
+  // `dispatch` is the module dispatch, `state` is this component's subscription.
+  const state = useBatchState();
   const queryClient = useQueryClient();
   const setActiveTab = useUiStore((s) => s.setActiveTab);
   const goMonitor = useCallback(() => setActiveTab('monitor'), [setActiveTab]);

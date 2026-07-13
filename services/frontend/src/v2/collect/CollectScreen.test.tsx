@@ -4,6 +4,7 @@ import { setApiBase } from '../../api/client';
 import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
 import { useUiStore } from '../../store/uiStore';
 import { CollectScreen } from './CollectScreen';
+import { __resetBatchStore } from './useBatchMachine';
 
 const CONFIG = {
   endpoints: { api: '/api/v1', events: '/api/v1/events', webrtc: 'http://localhost:8002' },
@@ -53,6 +54,10 @@ function phaseTitle() {
 
 beforeEach(() => {
   setApiBase('/api/v1');
+  // The batch machine is a module-level store (survives tab-switch unmounts);
+  // reset it (and its localStorage mirror) so a recorded episode in one test
+  // can't leak into the next test's fresh CollectScreen.
+  __resetBatchStore();
   useUiStore.setState({
     activeTab: '',
     sseStatus: 'closed',

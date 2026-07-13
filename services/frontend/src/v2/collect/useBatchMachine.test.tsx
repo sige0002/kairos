@@ -9,8 +9,12 @@ import {
   batchMachineReducer as reducer,
   createBatchMachineState as createState,
   useBatchMachine,
+  __resetBatchStore,
+  __rehydrateBatchStore,
   EPISODES_PER_BATCH,
 } from './useBatchMachine';
+
+const BATCH_STORAGE_KEY = 'kairos.collect.batch';
 
 // ---------------------------------------------------------------------------
 // Pure reducer transitions — no React needed.
@@ -164,6 +168,10 @@ function wrapper({ children }: { children: ReactNode }) {
 
 beforeEach(() => {
   setApiBase('/api/v1');
+  // The batch machine now lives in a module-level store (so it survives a
+  // tab-switch unmount); reset it — and its localStorage mirror — between hook
+  // tests so state can't leak from one test into the next.
+  __resetBatchStore();
   // Reset the shared record-picker store so selection-resolution tests don't
   // leak customized state into each other.
   useUiStore.setState({
@@ -464,4 +472,118 @@ test('Discard: confirm deletes the run then re-records; a failed DELETE keeps th
       ([u, i]) => String(u).includes('/runs/run_9') && i?.method === 'DELETE',
     ),
   ).toBe(true);
+});
+
+// ---------------------------------------------------------------------------
+// State survives a tab-switch unmount (module store) and a reload (localStorage).
+// ---------------------------------------------------------------------------
+
+/** Mock /record/start + /record/stop for a given run id (drives one episode). */
+function recordFlowFetch(runId: string) {
+  return vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/record/start')) {
+      return Promise.resolve(jsonResponse({ run_id: runId, state: 'recording' }));
+    }
+    if (url.includes('/record/stop')) {
+      return Promise.resolve(jsonResponse({ run_id: runId, state: 'completed' }));
+    }
+    return Promise.resolve(jsonResponse({}));
+  });
+}
+
+// (a) A confirmed episode must survive the hook unmounting and remounting — the
+// exact tab-switch the bug wiped (episode count back to 0/30).
+test('confirmed episodes survive an unmount/remount (tab switch)', async () => {
+  recordFlowFetch('run_1');
+  const { result, unmount } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+
+  act(() => result.current.startRecording());
+  await waitFor(() => expect(result.current.phase).toBe('recording'));
+  act(() => result.current.stopRecording());
+  await waitFor(() => expect(result.current.phase).toBe('result'), { timeout: 4000 });
+  act(() => result.current.pickSuccess());
+  act(() => result.current.confirmEpisode());
+  await waitFor(() => expect(result.current.stats.nRecorded).toBe(1));
+
+  // Tab switch: the CollectScreen unmounts, then a fresh instance remounts.
+  unmount();
+  const remounted = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  expect(remounted.result.current.stats.nRecorded).toBe(1);
+  expect(remounted.result.current.stats.epNext).toBe(2);
+  expect(remounted.result.current.phase).toBe('ready');
+});
+
+// (d) The result phase and its run_id are durable context — a mid-result-phase
+// tab round-trip must keep both (so Discard / integrity gating still target the
+// right run on return).
+test('the result phase and its run_id survive an unmount/remount', async () => {
+  recordFlowFetch('run_9');
+  const { result, unmount } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+
+  act(() => result.current.startRecording());
+  await waitFor(() => expect(result.current.phase).toBe('recording'));
+  act(() => result.current.stopRecording());
+  await waitFor(() => expect(result.current.phase).toBe('result'), { timeout: 4000 });
+  expect(result.current.discardRunId).toBe('run_9');
+
+  unmount();
+  const remounted = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  expect(remounted.result.current.phase).toBe('result');
+  expect(remounted.result.current.discardRunId).toBe('run_9');
+});
+
+// (b) A reload restores the durable session context from localStorage.
+test('a reload restores episodes, batchNum and context from localStorage', () => {
+  window.localStorage.setItem(
+    BATCH_STORAGE_KEY,
+    JSON.stringify({
+      batchNum: 3,
+      episodes: [
+        { index: 1, quality: 'good', taskResult: 'ok' },
+        { index: 2, quality: 'review', taskResult: 'fail', failReason: 'Grasp missed' },
+      ],
+      project: 'Bin Picking',
+      task: 'Bin to Tray',
+      condition: 'Bin: full',
+    }),
+  );
+  __rehydrateBatchStore();
+
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  expect(result.current.batchNum).toBe(3);
+  expect(result.current.episodes).toHaveLength(2);
+  expect(result.current.stats.nReview).toBe(1);
+  expect(result.current.stats.nTaskFailed).toBe(1);
+  expect(result.current.stats.epNext).toBe(3);
+  expect(result.current.project).toBe('Bin Picking');
+  expect(result.current.condition).toBe('Bin: full');
+});
+
+// (c) A volatile phase is never restored: a persisted mid-recording context
+// resolves to the safe 'ready' baseline (with no invented run/result), while
+// the durable episodes still come back.
+test('a volatile phase is NOT restored on reload — recording resolves to ready', () => {
+  const defaults = createState();
+  window.localStorage.setItem(
+    BATCH_STORAGE_KEY,
+    JSON.stringify({
+      batchNum: 1,
+      episodes: [{ index: 1, quality: 'good', taskResult: 'ok' }],
+      project: defaults.project,
+      task: defaults.task,
+      condition: defaults.condition,
+      // A stale volatile phase/run must be ignored on restore.
+      phase: 'recording',
+      currentRunId: 'run_stale',
+      elapsedMs: 4200,
+    }),
+  );
+  __rehydrateBatchStore();
+
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  expect(result.current.phase).toBe('ready');
+  expect(result.current.elapsedMs).toBe(0);
+  expect(result.current.discardRunId).toBeNull();
+  expect(result.current.stats.nRecorded).toBe(1);
 });
