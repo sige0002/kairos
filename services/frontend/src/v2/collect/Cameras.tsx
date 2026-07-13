@@ -329,8 +329,14 @@ export function Cameras({
   const hasCol2 = subs.length > 0 || addVisible;
 
   return (
+    // max-h caps the camera area's height on tall/large screens so a small
+    // (e.g. 640×480) stream isn't stretched to fill the whole column — object-
+    // contain would otherwise upscale it to dominate the screen. The cap sits
+    // above the compact 1366×768 height (~534px) so it's a no-op there and only
+    // engages on larger displays; the freed vertical space lets the column
+    // breathe. Width is bounded by CollectScreen's console max-width.
     <div
-      className="grid flex-1 gap-2"
+      className="grid flex-1 gap-2 lg:max-h-[600px]"
       style={{
         gridTemplateColumns: hasCol2 ? '2fr 1fr' : '1fr',
         gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`,

@@ -45,11 +45,32 @@ export function CollectScreen() {
   }
 
   return (
-    <div className={cn('flex flex-col lg:h-full lg:min-h-0', COL_GAP)}>
+    // Cap the console width and center it on large screens. Without a cap the
+    // right column's `1fr` track (and thus the camera tile) grows unbounded — a
+    // 640×480 preview balloons to ~1440px wide on a 2560 display. ~1480px keeps
+    // the whole console (context bar + both columns) aligned and centered, and
+    // holds the main camera tile near its 4:3 source aspect. Below the cap
+    // (≤1366) it's a no-op, so the compact single-page layout is unchanged.
+    <div
+      className={cn(
+        'flex flex-col lg:mx-auto lg:h-full lg:min-h-0 lg:w-full lg:max-w-[1480px]',
+        // On tall viewports the capped camera height frees vertical space; center
+        // the console block so that space is shared top and bottom (an
+        // intentional centered console) rather than pinned to the top. Gated on
+        // min-height so the short 1366×768 layout — which relies on the grid row
+        // filling and the left cards scrolling internally — is untouched.
+        '[@media(min-height:900px)]:lg:justify-center',
+        COL_GAP,
+      )}
+    >
       <ContextBar machine={machine} />
       <div
         className={cn(
           'grid grid-cols-1 lg:min-h-0 lg:flex-1 lg:grid-cols-[340px_1fr]',
+          // Paired with the console's min-height centering: stop the row from
+          // growing to fill the height on tall screens so the centering has slack
+          // to distribute; short screens keep lg:flex-1 (fill + internal scroll).
+          '[@media(min-height:900px)]:lg:flex-none',
           COL_GAP,
         )}
       >
