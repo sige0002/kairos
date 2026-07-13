@@ -61,7 +61,7 @@ services:
       - 'R="$$(basename "${MSGS_OVERLAY_DIR:-robot}")";
          OVL="/overlays/$$R/install/setup.bash";
          if [ -f "$$OVL" ]; then . "$$OVL"; echo "rosbag_player: sourced overlay $$R"; else echo "rosbag_player: no overlay for $$R (custom-type topics skipped)"; fi;
-         BAG="${BAG:-airoa-moma-mcap/235210}";
+         BAG="${BAG:-airoa-moma-mcap/115647}";
          case "$$BAG" in /*) P="$$BAG";; *) P="/data/$$BAG";; esac;
          ros2 bag info "$$P"
          && echo "--- playing $$P (overlay=$$R, LOOP=${LOOP:-off}) ---"
