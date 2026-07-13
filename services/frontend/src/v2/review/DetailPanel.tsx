@@ -40,6 +40,46 @@ function headerBadge(
   return { label: state.toUpperCase(), tone: stateTone(state) };
 }
 
+// The Collect → Review → Datasets pipeline for this episode, so the operator can
+// see where it is and what the next step is (the "adopt did nothing visible"
+// complaint). Export / In dataset aren't observable from Review, so they stay
+// upcoming; the current step is highlighted.
+type StepState = 'done' | 'current' | 'todo' | 'off';
+function PipelineStrip({ status }: { status: ReviewStatus }) {
+  const reviewed = status !== 'pending'; // a decision (adopt/exclude) was made
+  const adopted = status === 'adopted';
+  const excluded = status === 'excluded';
+  const steps: { label: string; state: StepState }[] = [
+    { label: 'Recorded', state: 'done' },
+    { label: 'Reviewed', state: reviewed ? 'done' : 'current' },
+    { label: 'Adopted', state: adopted ? 'done' : excluded ? 'off' : 'todo' },
+    { label: 'Export', state: adopted ? 'current' : 'todo' },
+    { label: 'In dataset', state: 'todo' },
+  ];
+  const glyph: Record<StepState, string> = { done: '✓', current: '●', todo: '○', off: '✕' };
+  const tone: Record<StepState, string> = {
+    done: 'text-teal-700',
+    current: 'text-teal-700 font-semibold',
+    todo: 'text-gray-400',
+    off: 'text-gray-300 line-through',
+  };
+  return (
+    <div
+      data-testid="review-pipeline-strip"
+      className="flex flex-wrap items-center gap-x-1.5 gap-y-1 rounded-[10px] border border-gray-100 bg-gray-50 px-3 py-2 text-[11.5px]"
+    >
+      {steps.map((s, i) => (
+        <span key={s.label} className="flex items-center gap-1.5">
+          {i > 0 && <span className="text-gray-300">·</span>}
+          <span className={tone[s.state]}>
+            {glyph[s.state]} {s.label}
+          </span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
 function DecisionButton({
   active,
   tone,
@@ -194,6 +234,8 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
           </div>
         </div>
 
+        <PipelineStrip status={sel.effectiveReviewStatus} />
+
         <div className="flex gap-1.5">
           <DecisionButton
             active={sel.decision === 'adopted'}
@@ -209,7 +251,8 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
             testId="review-decision-review"
             onClick={() => rv.decide('review')}
           >
-            Keep in review
+            {/* When already adopted, "Keep in review" is effectively un-adopt. */}
+            {sel.effectiveReviewStatus === 'adopted' ? 'Un-adopt (review)' : 'Keep in review'}
           </DecisionButton>
           <DecisionButton
             active={sel.decision === 'excluded'}
@@ -220,6 +263,31 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
             Exclude
           </DecisionButton>
         </div>
+
+        {/* Adopted → the next pipeline step, right where the operator just acted. */}
+        {sel.effectiveReviewStatus === 'adopted' && (
+          <button
+            type="button"
+            data-testid="review-export-cta"
+            onClick={rv.requestExportAdopted}
+            className="flex items-center justify-center gap-1.5 rounded-control bg-teal-600 px-3 py-2 text-[12.5px] font-bold text-white transition-colors hover:bg-teal-700"
+          >
+            Adopted — Export now ({rv.adoptedRows.length}) →
+          </button>
+        )}
+
+        {/* Return to review (reversible, non-scary): puts an adopted/excluded
+            episode back to Pending via the existing decide('review') PATCH. */}
+        {(sel.effectiveReviewStatus === 'adopted' || sel.effectiveReviewStatus === 'excluded') && (
+          <button
+            type="button"
+            data-testid="review-return-to-review"
+            onClick={() => rv.decide('review')}
+            className="flex items-center justify-center gap-1.5 rounded-control border border-gray-200 bg-white px-3 py-1.5 text-[12px] font-semibold text-gray-600 transition-colors hover:bg-gray-50"
+          >
+            ↩ Return to review
+          </button>
+        )}
 
         {sel.isArchived && (
           <div className="flex flex-col gap-1.5 rounded-[10px] border border-gray-200 bg-gray-50 px-3 py-2.5">

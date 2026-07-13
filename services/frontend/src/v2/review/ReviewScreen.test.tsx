@@ -273,3 +273,57 @@ test('Export adopted opens a dialog listing only adopted runs + the explainer', 
   fireEvent.click(screen.getByText('Cancel'));
   await waitFor(() => expect(screen.queryByTestId('review-export-list')).toBeNull());
 });
+
+// ---------------------------------------------------------------------------
+// Pipeline strip + inline Export CTA + Return to review (Q4/Q6).
+// ---------------------------------------------------------------------------
+
+test('the detail panel shows the pipeline strip; adopting reveals the Export CTA', async () => {
+  mockApi([
+    { run_id: 'ep-a', state: 'completed', started_at: '2026-07-13T09:00:00Z', episode: ep('pending') },
+  ]);
+  renderWithClient(<ReviewScreen />);
+  await waitFor(() => expect(screen.getByTestId('review-pipeline-strip')).toBeInTheDocument());
+  // Pending → no Export CTA yet.
+  expect(screen.queryByTestId('review-export-cta')).toBeNull();
+
+  fireEvent.click(screen.getByTestId('review-decision-adopt'));
+  // Adopted → the inline "Export now" CTA appears right where the operator acted.
+  expect(screen.getByTestId('review-export-cta')).toHaveTextContent(/Export now \(1\)/);
+  // The strip reflects the adopted state.
+  expect(screen.getByTestId('review-pipeline-strip')).toHaveTextContent('Adopted');
+});
+
+test('Return to review PATCHes review_status=pending and hides the CTA', async () => {
+  const patchBodies: Record<string, unknown>[] = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    const method = (init?.method ?? 'GET').toUpperCase();
+    if (url.includes('/episodes/') && method === 'PATCH') {
+      patchBodies.push(JSON.parse(String(init?.body)));
+      return Promise.resolve(jsonResponse({ episode_id: 'ep_adopted' }));
+    }
+    if (url.match(/\/runs\/[^/?]+(\?|$)/)) return Promise.resolve(jsonResponse({ run_id: 'ep-a', state: 'completed', topics: [] }));
+    if (url.includes('/config/options')) return Promise.resolve(jsonResponse(CONFIG_OPTIONS));
+    if (url.includes('/runs')) {
+      return Promise.resolve(
+        jsonResponse({
+          items: [{ run_id: 'ep-a', state: 'completed', started_at: '2026-07-13T09:00:00Z', episode: ep('adopted') }],
+          next_cursor: null,
+        }),
+      );
+    }
+    return Promise.resolve(jsonResponse({}));
+  });
+  renderWithClient(<ReviewScreen />);
+  // Server says adopted → the Return-to-review button is present.
+  await waitFor(() => expect(screen.getByTestId('review-return-to-review')).toBeInTheDocument());
+
+  fireEvent.click(screen.getByTestId('review-return-to-review'));
+  // Back to pending: chip flips and the CTA/return button disappear.
+  await waitFor(() => expect(screen.getByTestId('review-status-1')).toHaveTextContent('PENDING'));
+  expect(screen.queryByTestId('review-export-cta')).toBeNull();
+  await waitFor(() =>
+    expect(patchBodies.some((b) => b.review_status === 'pending')).toBe(true),
+  );
+});
