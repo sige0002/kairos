@@ -6,7 +6,8 @@
 // coverage) render an honest note instead of a chart. See data.ts for the
 // 2026-07-13 user directive that dropped the fabricated PickPlace_* catalog.
 
-import { Badge } from '../../components/ui';
+import { ErrorMessage } from '../../components/ErrorMessage';
+import { Badge, Button, Modal, TrashIcon } from '../../components/ui';
 import { EpisodeLabelChips } from '../episodeChips';
 import { DatasetInspection } from './DatasetInspection';
 import { formatBytes, formatCount, formatWhen } from './data';
@@ -36,6 +37,14 @@ export function DatasetDetail({ state }: { state: DatasetsState }) {
             </span>
             <div className="flex-1" />
             <span className="text-xs text-gray-400">exported {formatWhen(selected.exported_at)}</span>
+            <button
+              type="button"
+              onClick={state.requestDelete}
+              className="inline-flex shrink-0 items-center gap-1 rounded-control border border-red-200 px-2.5 py-1 text-xs font-semibold text-red-700 hover:bg-red-50"
+            >
+              <TrashIcon />
+              Delete
+            </button>
           </>
         ) : (
           <span data-testid="dataset-detail-name" className="text-[15px] font-semibold text-gray-400">
@@ -111,6 +120,33 @@ export function DatasetDetail({ state }: { state: DatasetsState }) {
           </>
         ) : null}
       </div>
+
+      <Modal
+        open={state.confirmingDelete}
+        onClose={state.cancelDelete}
+        title="Delete dataset"
+        footer={
+          <>
+            <Button variant="ghost" onClick={state.cancelDelete} disabled={state.deleting}>
+              Cancel
+            </Button>
+            <Button variant="danger" onClick={state.confirmDelete} disabled={state.deleting}>
+              {state.deleting ? 'Deleting…' : 'Delete'}
+            </Button>
+          </>
+        }
+      >
+        Permanently delete{' '}
+        <span className="font-mono text-gray-800">
+          {selected ? `${selected.operator}/${selected.task}/${selected.index}` : ''}
+        </span>
+        ? The exported files are removed from disk. This cannot be undone.
+        {state.deleteError && (
+          <div className="mt-2">
+            <ErrorMessage error={state.deleteError} />
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }

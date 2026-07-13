@@ -91,14 +91,22 @@ interface MockOpts {
   details?: Record<string, DatasetDetail>;
 }
 
+// DELETE calls the mock served with 204 (reset per test); after a delete the
+// list route serves empty, mirroring the backend's post-delete refetch.
+let deletedUrls: string[] = [];
+
 // Routes the endpoints the catalog-only Datasets screen touches: the /jobs
 // route (post-export inspection) matches before the /datasets list and detail
 // routes. There is no per-run export path here anymore (Review owns export).
 function mockFetch(opts: MockOpts) {
   const details = opts.details ?? {};
-  return vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+  return vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     const url = String(input);
 
+    if ((init as RequestInit | undefined)?.method === 'DELETE') {
+      deletedUrls.push(url);
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
     if (url.includes('/jobs')) {
       // Both the create POST and the status poll resolve terminal-succeeded.
       return Promise.resolve(jsonResponse({ job_id: 'job_1', pipeline: 'loss_report', state: 'succeeded' }));
@@ -107,7 +115,9 @@ function mockFetch(opts: MockOpts) {
       if (opts.listStatus && opts.listStatus >= 400) {
         return Promise.resolve(jsonResponse({ error: { message: 'unreachable' } }, opts.listStatus));
       }
-      return Promise.resolve(jsonResponse(opts.list ?? { datasets: [] }));
+      return Promise.resolve(
+        jsonResponse(deletedUrls.length > 0 ? { datasets: [] } : (opts.list ?? { datasets: [] })),
+      );
     }
     for (const [key, detail] of Object.entries(details)) {
       if (url.includes(key)) return Promise.resolve(jsonResponse(detail));
@@ -118,6 +128,7 @@ function mockFetch(opts: MockOpts) {
 
 beforeEach(() => {
   setApiBase('/api/v1');
+  deletedUrls = [];
   // The Go-to-Review pointer flips the shared tab store; reset it between tests.
   useUiStore.setState({ activeTab: 'datasets' });
 });
@@ -198,6 +209,58 @@ test('renders the same honest empty state when the backend is unreachable', asyn
   const emptyState = screen.getByTestId('dataset-list-empty');
   expect(within(emptyState).getByText('No datasets yet.')).toBeInTheDocument();
   expect(within(emptyState).getByText(/backend/i)).toBeInTheDocument();
+});
+
+test('Delete confirms in a modal, calls DELETE, clears the selection, and toasts', async () => {
+  mockFetch({
+    list: LIST_RESPONSE,
+    details: { [detailUrlFor(ENTRY_A1)]: detailFor(ENTRY_A1) },
+  });
+  renderWithClient(<DatasetsScreen />);
+
+  await waitFor(() => expect(screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`)).toBeInTheDocument());
+  fireEvent.click(screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`));
+  await waitFor(() => expect(screen.getByTestId('dataset-stats')).toBeInTheDocument());
+
+  // The header Delete button opens a confirm modal; nothing is deleted yet.
+  fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+  const dialog = await screen.findByRole('dialog');
+  expect(dialog).toHaveTextContent('operator_a/pick_and_place/001');
+  expect(deletedUrls).toHaveLength(0);
+
+  // Confirming issues DELETE /datasets/{op}/{task}/{index}.
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
+  await waitFor(() =>
+    expect(deletedUrls[0]).toContain('/datasets/operator_a/pick_and_place/001'),
+  );
+
+  // Selection clears, a toast confirms, and the refetched (empty) list shows.
+  await waitFor(() =>
+    expect(screen.getByTestId('dataset-detail-name')).toHaveTextContent('No dataset selected'),
+  );
+  expect(screen.getByTestId('toast')).toHaveTextContent('Dataset deleted');
+  await waitFor(() => expect(screen.getByTestId('dataset-list-empty')).toBeInTheDocument());
+});
+
+test('cancelling the delete modal leaves the dataset alone', async () => {
+  mockFetch({
+    list: LIST_RESPONSE,
+    details: { [detailUrlFor(ENTRY_A1)]: detailFor(ENTRY_A1) },
+  });
+  renderWithClient(<DatasetsScreen />);
+
+  await waitFor(() => expect(screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`)).toBeInTheDocument());
+  fireEvent.click(screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`));
+  await waitFor(() => expect(screen.getByTestId('dataset-stats')).toBeInTheDocument());
+
+  fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+  const dialog = await screen.findByRole('dialog');
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  expect(deletedUrls).toHaveLength(0);
+  // The selection (detail pane) is untouched.
+  expect(screen.getByTestId('dataset-detail-name')).toHaveTextContent('operator_a / pick_and_place');
 });
 
 test('clicking "+ New" shows the Phase 2 toast', async () => {
