@@ -62,17 +62,36 @@ function formatElapsed(ms: number): string {
   return `00:${mm}:${ss}`;
 }
 
-/** Real receive-side stats line for an overlay badge — only the values the hook
- *  actually measured (honesty: never a synthesized fps/latency to fill a slot).
- *  `withRes` appends the decoded WxH (main tile only). */
-function statsLine(stats: StreamStats, withRes: boolean): string {
-  const parts: string[] = [];
-  if (stats.fps != null) parts.push(`${stats.fps} fps`);
-  if (stats.latencyMs != null) parts.push(`${stats.latencyMs} ms`);
-  if (withRes && stats.width != null && stats.height != null) {
-    parts.push(`${stats.width}×${stats.height}`);
-  }
-  return parts.join(' · ');
+/** v1 StreamTab's latency-threshold colour for the preview latency chip: high
+ *  is red, caution amber, normal teal. This is WebRTC preview latency
+ *  (getStats), independent of the ROS recording path. */
+function latColor(ms: number): string {
+  return ms > 150 ? '#dc2626' : ms >= 85 ? '#d97706' : '#0d9488';
+}
+
+/** v1-style live stats chip — latency (threshold colour) + fps, placed at the
+ *  tile's top-right (user preference over the mock's bottom stats line). Only
+ *  the values the hook actually measured are rendered (honesty: never a
+ *  synthesized fps/latency to fill a slot); nothing at all until one exists. */
+export function StatsBadge({ stats, className }: { stats: StreamStats; className?: string }) {
+  if (stats.latencyMs == null && stats.fps == null) return null;
+  return (
+    <span
+      data-testid="camera-stats"
+      className={cn(
+        'inline-flex items-center gap-1.5 rounded-chip bg-gray-900/75 px-2.5 py-1 font-mono text-[11px]',
+        className,
+      )}
+    >
+      {stats.latencyMs != null && (
+        <span className="font-semibold" style={{ color: latColor(stats.latencyMs) }}>
+          {stats.latencyMs}ms
+        </span>
+      )}
+      {stats.latencyMs != null && stats.fps != null && <span className="text-gray-500">·</span>}
+      {stats.fps != null && <span className="text-gray-300">{stats.fps}fps</span>}
+    </span>
+  );
 }
 
 function PlaceholderTile({
@@ -116,14 +135,11 @@ function OverlayBadge({ className, children }: { className: string; children: Re
   );
 }
 
-/** Compact segmented control for a sub tile's resolution (360p/240p only). */
+/** Compact segmented control for a sub tile's resolution (360p/240p only).
+ *  Positioned by its parent (the tile's top-right overlay stack). */
 function SubResToggle({ value, onPick }: { value: SubResLabel; onPick: (l: SubResLabel) => void }) {
   return (
-    <div
-      className="absolute right-1.5 top-1.5 flex items-center gap-0.5 rounded-chip bg-gray-900/80 p-[2px]"
-      // Don't let a res click bubble to the tile's click-to-main handler.
-      onClick={(e) => e.stopPropagation()}
-    >
+    <div className="flex items-center gap-0.5 rounded-chip bg-gray-900/80 p-[2px]">
       {SUB_RES_LABELS.map((label) => (
         <button
           key={label}
@@ -170,7 +186,6 @@ function SubCameraTile({
   }, [stream]);
   const connected = phase === 'connected';
   const label = shortCameraLabel(pane.topic);
-  const line = connected ? statsLine(stats, false) : 'connecting…';
   return (
     // A plain clickable tile (as the design mock's sub cameras are) rather than a
     // <button>, so the resolution toggle and remove control can nest inside it
@@ -192,7 +207,17 @@ function SubCameraTile({
         data-testid="sub-camera-video"
       />
       {!connected && <PlaceholderTile className="absolute inset-0" label={`camera — ${label}`} />}
-      <SubResToggle value={pane.subResLabel} onPick={(l) => setSubCameraRes(pane.id, l)} />
+      {/* Top-right overlay stack: res toggle, then the v1-style live stats
+          below it — the corner placement the user asked for, without the two
+          chips overlapping each other (or the remove control at top-left). */}
+      <div
+        className="absolute right-1.5 top-1.5 flex flex-col items-end gap-1"
+        // Don't let a res/stats click bubble to the tile's click-to-main handler.
+        onClick={(e) => e.stopPropagation()}
+      >
+        <SubResToggle value={pane.subResLabel} onPick={(l) => setSubCameraRes(pane.id, l)} />
+        {connected && <StatsBadge stats={stats} className="px-1.5 py-0.5 text-[10px]" />}
+      </div>
       {onRemove && (
         <button
           type="button"
@@ -209,7 +234,7 @@ function SubCameraTile({
       )}
       <OverlayBadge className="bottom-2 left-2 max-w-[92%] truncate px-2 py-0.5 text-[10px]">
         {label}
-        {line ? ` · ${line}` : ''}
+        {connected ? '' : ' · connecting…'}
       </OverlayBadge>
     </div>
   );
@@ -322,9 +347,12 @@ export function Cameras({
   const elapsedText = formatElapsed(machine.elapsedMs);
   const connected = phase === 'connected' && !!mainTopic;
   const mainLabel = mainTopic ? shortCameraLabel(mainTopic) : 'none';
-  const mainStats = statsLine(stats, true);
+  // Bottom line keeps only the identity facts (topic · preset · decoded WxH);
+  // the live fps/latency moved to the top-right stats chip (v1 placement).
+  const mainDims =
+    stats.width != null && stats.height != null ? ` · ${stats.width}×${stats.height}` : '';
   const topicLine = mainTopic
-    ? `${mainTopic} · ${mainResLabel}${connected ? (mainStats ? ` · ${mainStats}` : '') : ' · waiting for stream…'}`
+    ? `${mainTopic} · ${mainResLabel}${connected ? mainDims : ' · waiting for stream…'}`
     : 'no camera configured for this robot';
 
   if (panes.length === 0) {
@@ -384,41 +412,54 @@ export function Cameras({
         <OverlayBadge className="left-3 top-3 bg-gray-900/75 font-sans text-xs font-semibold text-white">
           Main camera · {mainLabel}
         </OverlayBadge>
-        <span
-          className={cn(
-            'absolute right-3 top-3 inline-flex items-center gap-1.5 rounded-chip bg-gray-900/75 px-2.5 py-1 font-mono text-[11.5px] font-bold',
-            recording ? 'text-red-300' : 'text-teal-300',
-          )}
-        >
+        {/* Top-right overlay stack: REC/STANDBY in the corner, the v1-style
+            live stats chip right below it — top-right per the user's request,
+            with the two chips stacked so nothing overlaps. */}
+        <div className="absolute right-3 top-3 flex flex-col items-end gap-1.5">
           <span
             className={cn(
-              'h-[7px] w-[7px] animate-recpulse rounded-sm',
-              recording ? 'bg-red-500' : 'bg-teal-400',
+              'inline-flex items-center gap-1.5 rounded-chip bg-gray-900/75 px-2.5 py-1 font-mono text-[11.5px] font-bold',
+              recording ? 'text-red-300' : 'text-teal-300',
             )}
-          />
-          {recording ? `REC ${elapsedText}` : 'STANDBY'}
-        </span>
-        <OverlayBadge className="bottom-3 left-3 max-w-[70%] truncate">{topicLine}</OverlayBadge>
-        <div
-          data-testid="main-res-group"
-          className="absolute bottom-3 right-3 flex items-center gap-0.5 rounded-chip bg-gray-900/80 p-[3px]"
-        >
-          <span className="px-1.5 text-[10px] font-semibold tracking-[0.04em] text-gray-400">
-            RES
-          </span>
-          {MAIN_RES_PRESETS.map((p) => (
-            <button
-              key={p.label}
-              type="button"
-              onClick={() => setMainCameraRes(p.label)}
+          >
+            <span
               className={cn(
-                'rounded-chip px-2 py-0.5 font-mono text-[10.5px] font-bold',
-                p.label === mainResLabel ? 'bg-teal-300 text-gray-900' : 'text-gray-400',
+                'h-[7px] w-[7px] animate-recpulse rounded-sm',
+                recording ? 'bg-red-500' : 'bg-teal-400',
               )}
-            >
-              {p.label}
-            </button>
-          ))}
+            />
+            {recording ? `REC ${elapsedText}` : 'STANDBY'}
+          </span>
+          {connected && <StatsBadge stats={stats} />}
+        </div>
+        {/* Bottom row as ONE flex strip (topic left, RES right) so the two
+            chips share the width and can never overlap, whatever the topic
+            name length or tile width. */}
+        <div className="absolute inset-x-3 bottom-3 flex items-center justify-between gap-2">
+          <span className="min-w-0 truncate rounded-chip bg-gray-900/75 px-2.5 py-1 font-mono text-[11px] text-gray-300">
+            {topicLine}
+          </span>
+          <div
+            data-testid="main-res-group"
+            className="flex shrink-0 items-center gap-0.5 rounded-chip bg-gray-900/80 p-[3px]"
+          >
+            <span className="px-1.5 text-[10px] font-semibold tracking-[0.04em] text-gray-400">
+              RES
+            </span>
+            {MAIN_RES_PRESETS.map((p) => (
+              <button
+                key={p.label}
+                type="button"
+                onClick={() => setMainCameraRes(p.label)}
+                className={cn(
+                  'rounded-chip px-2 py-0.5 font-mono text-[10.5px] font-bold',
+                  p.label === mainResLabel ? 'bg-teal-300 text-gray-900' : 'text-gray-400',
+                )}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 

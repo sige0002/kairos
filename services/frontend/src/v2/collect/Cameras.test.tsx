@@ -1,10 +1,10 @@
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
 import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
 import type { RuntimeConfig } from '../../config';
 import type { BatchMachine } from './useBatchMachine';
-import { Cameras, shortCameraLabel } from './Cameras';
+import { Cameras, StatsBadge, shortCameraLabel } from './Cameras';
 import {
   MAX_CAMERA_PANES,
   __resetCameraStore,
@@ -87,6 +87,39 @@ afterEach(() => {
 test('shortCameraLabel derives a human name from real robot topics', () => {
   expect(shortCameraLabel(HEAD)).toBe('head');
   expect(shortCameraLabel(HAND)).toBe('hand');
+});
+
+// ---------------------------------------------------------------------------
+// StatsBadge: the v1-style top-right latency/fps chip.
+// ---------------------------------------------------------------------------
+
+const stats = (fps: number | null, latencyMs: number | null) => ({
+  fps,
+  latencyMs,
+  width: null,
+  height: null,
+});
+
+test('StatsBadge renders measured latency (threshold colour) and fps', () => {
+  const { rerender } = render(<StatsBadge stats={stats(24, 200)} />);
+  // High latency -> red (v1 thresholds: >150 red, >=85 amber, else teal).
+  expect(screen.getByText('200ms')).toHaveStyle({ color: '#dc2626' });
+  expect(screen.getByText('24fps')).toBeInTheDocument();
+
+  rerender(<StatsBadge stats={stats(24, 90)} />);
+  expect(screen.getByText('90ms')).toHaveStyle({ color: '#d97706' });
+  rerender(<StatsBadge stats={stats(24, 40)} />);
+  expect(screen.getByText('40ms')).toHaveStyle({ color: '#0d9488' });
+});
+
+test('StatsBadge shows only measured values and nothing when none exist', () => {
+  // fps alone (latency not yet measured): no synthesized latency slot.
+  const { rerender } = render(<StatsBadge stats={stats(12, null)} />);
+  expect(screen.getByText('12fps')).toBeInTheDocument();
+  expect(screen.queryByText(/ms$/)).toBeNull();
+  // Nothing measured -> the chip does not render at all (honesty).
+  rerender(<StatsBadge stats={stats(null, null)} />);
+  expect(screen.queryByTestId('camera-stats')).toBeNull();
 });
 
 // ---------------------------------------------------------------------------
