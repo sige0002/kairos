@@ -1,40 +1,60 @@
-// Right-rail System card, from GET /api/v1/system. Only CPU model / core count
-// and GPU name are REAL — the backend (routers/system.py) returns just
-// { cpu: { model, cores }, gpu } with no utilization percentage and no storage
-// endpoint. The design mock's CPU%/GPU% bar fills and "286 GB free" row were
-// fabricated to fill the visual slot; per the honesty rule we DON'T show numbers
-// the system can't measure, so those are dropped in favour of the real facts
-// plus a one-line note. (Adding a backend utilization/storage endpoint is a
-// separate decision pending with the user — no backend code added here.)
+// Right-rail System card, from GET /api/v1/system. Shows the host's static
+// facts (CPU model / core count, GPU name) plus live utilization the backend now
+// measures: CPU busy %, GPU % (only when a GPU is present), and data-dir storage
+// free/total. Each utilization field is optional — when the backend can't
+// measure it (older build, no GPU, missing data dir, first CPU sample) we render
+// an honest "—" / omit the bar rather than a fabricated number.
 
 import { useQuery } from '@tanstack/react-query';
 import { apiGet } from '../../api/client';
 import { Card } from '../../components/ui';
+import type { SystemInfo } from '../../api/types';
+import { formatBytes } from '../review/format';
 
-interface SystemInfoResponse {
-  cpu: { model: string | null; cores: number | null };
-  gpu: string | null;
-}
+// Utilization/disk change over time (the static CPU/GPU names don't), so poll a
+// few seconds apart. The backend caches its samples ~2s, so this is cheap. The
+// 'system' query key is shared with the header readout (which stays static).
+const REFETCH_MS = 5000;
 
-function InfoRow({ label, value }: { label: string; value: string }) {
+function InfoRow({ label, value, testId }: { label: string; value: string; testId?: string }) {
   return (
     <div className="flex items-baseline gap-2 text-xs text-gray-500">
       <span>{label}</span>
       <div className="flex-1" />
-      <span className="max-w-[180px] truncate font-mono font-semibold text-gray-700" title={value}>
+      <span
+        data-testid={testId}
+        className="max-w-[180px] truncate font-mono font-semibold text-gray-700"
+        title={value}
+      >
         {value}
       </span>
     </div>
   );
 }
 
+function Meter({ label, percent, testId }: { label: string; percent: number; testId?: string }) {
+  const pct = Math.max(0, Math.min(100, percent));
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-baseline justify-between text-[11px] text-gray-500">
+        <span>{label}</span>
+        <span data-testid={testId} className="font-mono font-semibold text-gray-700">
+          {pct.toFixed(0)}%
+        </span>
+      </div>
+      <div className="h-1.5 overflow-hidden rounded-full bg-gray-100">
+        <div className="h-full rounded-full bg-teal-500" style={{ width: `${pct}%` }} />
+      </div>
+    </div>
+  );
+}
+
 export function SystemCard() {
   const { data } = useQuery({
-    // Same query key as SystemInfo.tsx so a header instance (if any) shares the
-    // cached fetch instead of duplicating it.
     queryKey: ['system'],
-    queryFn: ({ signal }) => apiGet<SystemInfoResponse>('/api/v1/system', { signal }),
-    staleTime: Infinity,
+    queryFn: ({ signal }) => apiGet<SystemInfo>('/api/v1/system', { signal }),
+    staleTime: REFETCH_MS,
+    refetchInterval: REFETCH_MS,
   });
 
   const cpuValue =
@@ -42,15 +62,21 @@ export function SystemCard() {
       ? `${data.cpu.cores}× ${data.cpu.model ?? 'CPU'}`
       : (data?.cpu?.model ?? '—');
   const gpuValue = data?.gpu ?? 'not detected';
+  const cpuPercent = data?.cpu_percent ?? null;
+  const gpuPercent = data?.gpu_percent ?? null;
+  const disk = data?.disk ?? null;
+  const storageValue = disk
+    ? `${formatBytes(disk.free_bytes)} free of ${formatBytes(disk.total_bytes)}`
+    : '—';
 
   return (
     <Card className="flex shrink-0 flex-col gap-2.5 px-4 py-3.5">
       <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">System</span>
       <InfoRow label="CPU" value={cpuValue} />
+      {cpuPercent != null && <Meter label="CPU load" percent={cpuPercent} testId="cpu-load" />}
       <InfoRow label="GPU" value={gpuValue} />
-      <p data-testid="system-note" className="text-[11px] leading-relaxed text-gray-400">
-        Utilization and storage are not reported by the backend yet.
-      </p>
+      {gpuPercent != null && <Meter label="GPU load" percent={gpuPercent} testId="gpu-load" />}
+      <InfoRow label="Storage" value={storageValue} testId="system-storage" />
     </Card>
   );
 }

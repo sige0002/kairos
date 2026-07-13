@@ -577,3 +577,27 @@ export interface EpisodePatchRequest {
   quality_source?: EpisodeQualitySource;
   review_status?: EpisodeReviewStatus;
 }
+
+// ---- System info (GET /api/v1/system) -----------------------------------
+
+/** Filesystem usage of the runtime data dir (bytes). */
+export interface SystemDisk {
+  path: string;
+  total_bytes: number;
+  free_bytes: number;
+}
+
+/**
+ * GET /api/v1/system: static CPU/GPU names joined with live, best-effort
+ * utilization. Mirrors routers/system.py. The utilization fields are optional
+ * and null whenever the host cannot measure them (older backend, no GPU, a
+ * missing data dir, or — for cpu_percent — the very first sample), so the UI
+ * shows an honest "—" rather than a fabricated number.
+ */
+export interface SystemInfo {
+  cpu: { model: string | null; cores: number | null };
+  gpu: string | null;
+  cpu_percent?: number | null;
+  disk?: SystemDisk | null;
+  gpu_percent?: number | null;
+}

@@ -4,12 +4,21 @@
 // WebRTC phase) where trivially available; the rest is mock data, same as the
 // design mock's sysRows / warnings / advice.
 
+import { useQuery } from '@tanstack/react-query';
+import { apiGet } from '../../api/client';
 import { Card, cn } from '../../components/ui';
+import type { SystemInfo } from '../../api/types';
 import type { SseStatus } from '../../store/uiStore';
 import { ADVICE_ITEMS, type BatchMachine } from './useBatchMachine';
 import { SIDE_PAD } from './compact';
+import { formatBytes } from '../review/format';
 
 type Tone = 'green' | 'amber' | 'red' | 'teal' | 'gray';
+
+// Below this much free space on the data-dir filesystem we flag Storage for
+// attention (amber "CHECK"). ~50 GB leaves comfortable headroom for several more
+// episodes before disk pressure becomes a real risk to an in-progress batch.
+const LOW_STORAGE_FREE_BYTES = 50 * 1024 ** 3;
 
 const CHIP_TONE: Record<Tone, string> = {
   green: 'bg-green-100 text-green-700',
@@ -50,6 +59,26 @@ export function SystemStatusCard({
   const recording = machine.phase === 'recording';
   const saving = machine.phase === 'saving' || machine.phase === 'quickcheck';
 
+  // Real disk free/total for the data-dir filesystem (GET /api/v1/system). Null
+  // until measured (older backend / missing data dir) -> honest "—", never a
+  // fabricated figure. Polled a few seconds apart; the backend caches ~2s.
+  const { data: system } = useQuery({
+    queryKey: ['system'],
+    queryFn: ({ signal }) => apiGet<SystemInfo>('/api/v1/system', { signal }),
+    staleTime: 5000,
+    refetchInterval: 5000,
+  });
+  const disk = system?.disk ?? null;
+  const storageOk = disk != null && disk.free_bytes >= LOW_STORAGE_FREE_BYTES;
+  const storageRow: SysRow = disk
+    ? {
+        label: 'Storage',
+        value: `${formatBytes(disk.free_bytes)} free`,
+        chip: storageOk ? 'OK' : 'CHECK',
+        tone: storageOk ? 'green' : 'amber',
+      }
+    : { label: 'Storage', value: '—', chip: '—', tone: 'gray' };
+
   // Real arming snapshot (matched vs missing target topics) — only measured
   // while the recorder is arming/recording; outside that window it's honestly
   // unknown ("—"), never a made-up count.
@@ -81,9 +110,7 @@ export function SystemStatusCard({
       chip: robotLive ? 'OK' : 'CHECK',
       tone: robotLive ? 'green' : robotOffline ? 'amber' : 'gray',
     },
-    // The backend has no storage endpoint yet — an honest dash beats a fake
-    // "286 GB free" (pending decision on extending GET /api/v1/system).
-    { label: 'Storage', value: 'not reported yet', chip: '—', tone: 'gray' },
+    storageRow,
     {
       label: 'Recorder',
       value: recording ? 'recording' : saving ? 'saving' : 'standby',
