@@ -7,8 +7,10 @@
 import type { DatasetEntry, RunEpisode } from '../../api/types';
 import { Badge, cn } from '../../components/ui';
 import { EpisodeLabelChips } from '../episodeChips';
-import { formatCount } from './data';
+import { formatCount, UNKNOWN_OPERATOR, UNKNOWN_TASK } from './data';
 import type { DatasetsState } from './useDatasetsState';
+
+const MUTED = 'italic text-gray-400';
 
 /** The datasets LIST serves the episode-label subset as FLAT row fields
  *  (episode.json is nested only on the detail payload). Adapt a row into the
@@ -70,8 +72,13 @@ export function DatasetList({ state }: { state: DatasetsState }) {
         <div className="flex flex-col gap-3 overflow-auto p-3">
           {state.groups.map((group) => (
             <div key={group.operator} className="flex flex-col gap-[7px]">
-              <span className="px-1 font-mono text-[11px] font-semibold text-gray-500">
-                {group.operator}
+              <span
+                className={cn(
+                  'px-1 text-[11px] font-semibold',
+                  group.operator === UNKNOWN_OPERATOR ? MUTED : 'font-mono text-gray-500',
+                )}
+              >
+                {group.operator === UNKNOWN_OPERATOR ? 'operator not recorded' : group.operator}
               </span>
               {group.entries.map((entry) => {
                 const selected = state.isSelected(entry);
@@ -93,7 +100,14 @@ export function DatasetList({ state }: { state: DatasetsState }) {
                       legacy && !selected && 'opacity-70',
                     )}
                   >
-                    <span className="text-[13px] font-semibold text-gray-900">{entry.task}</span>
+                    <span
+                      className={cn(
+                        'text-[13px] font-semibold',
+                        entry.task === UNKNOWN_TASK ? MUTED : 'text-gray-900',
+                      )}
+                    >
+                      {entry.task === UNKNOWN_TASK ? 'task not recorded' : entry.task}
+                    </span>
                     <div className="flex items-center gap-2">
                       <span className="font-mono text-[11.5px] text-gray-500">
                         {formatCount(entry.message_count)} msgs
@@ -116,9 +130,10 @@ export function DatasetList({ state }: { state: DatasetsState }) {
                     {legacy && (
                       <span
                         data-testid={`dataset-card-legacy-${entry.dataset_dir}`}
+                        title="Exported before per-episode labels existed, so quality and operator aren't recorded."
                         className="text-[10.5px] italic text-gray-400"
                       >
-                        legacy (pre-label) export
+                        no episode labels (exported before labeling)
                       </span>
                     )}
                   </div>

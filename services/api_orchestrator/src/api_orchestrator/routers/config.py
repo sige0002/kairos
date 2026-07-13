@@ -118,6 +118,26 @@ async def config_options(request: Request) -> dict[str, Any]:
     return _options_payload(_catalog(request))
 
 
+@router.get("/robots/{robot}")
+async def get_robot_config(request: Request, robot: str) -> dict[str, Any]:
+    """Read-only config for a named robot (active or not), for the Settings UI.
+
+    Returns each aspect's selected/default file content (or null) plus a derived
+    summary. The robot name is a single path segment (FastAPI) and must be a
+    known robot from the catalog, else 404 — nothing here mutates the active
+    selection, so a non-active robot can be inspected as a template.
+    """
+    described = _catalog(request).describe_robot(robot)
+    if described is None:
+        raise ApiError(
+            status_code=404,
+            code="config_not_found",
+            message=f"Robot not found: {robot}",
+            details={"robot": robot},
+        )
+    return described
+
+
 @router.post("/select")
 async def config_select(request: Request, body: ConfigSelectRequest) -> dict[str, Any]:
     """Switch the active robot or an aspect option, hot-swapping the live copies.

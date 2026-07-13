@@ -16,6 +16,8 @@ import type { JSONSchema } from '../../schema/jsonSchema';
 import { initialValueFor } from '../../schema/jsonSchema';
 import type {
   ConfigOptions,
+  DatasetEntry,
+  DatasetsResponse,
   JobState,
   JobStatus,
   Page,
@@ -28,7 +30,7 @@ import type { Summary } from '../../features/validation/SummaryResult';
 import { Card } from '../../components/ui';
 import { PipelineRail } from './PipelineRail';
 import { DetailHeader } from './DetailHeader';
-import { ParamsPanel, ALL_RUNS } from './ParamsPanel';
+import { ParamsPanel, ALL_RUNS, DATASET_VALUE_PREFIX } from './ParamsPanel';
 import { ResultsPanel, type ActiveOutcome } from './ResultsPanel';
 import type { RequiredTopic } from './resultsMapping';
 import { Toast } from './Toast';
@@ -41,6 +43,15 @@ const FALLBACK_SCHEMA: JSONSchema = {
   properties: { template: { type: 'string' } },
 };
 const FAST_VALIDATION = 'fast_validation';
+// Pipelines that can read an exported dataset dir (params.dataset_dir), even if
+// the served form schema doesn't spell out the field. Any pipeline whose schema
+// DOES declare `dataset_dir` is treated as dataset-capable too (see below).
+const DATASET_PIPELINES = new Set(['loss_report', 'video_check']);
+
+/** True if a pipeline can validate an exported dataset (by id or schema). */
+function isDatasetCapable(id: string, schema: JSONSchema | undefined): boolean {
+  return DATASET_PIPELINES.has(id) || schema?.properties?.dataset_dir !== undefined;
+}
 
 interface JobRef {
   run_id: string;
@@ -127,6 +138,28 @@ export function ValidationScreen() {
     if (!targetRunId && runs.length > 0) setTargetRunId(runs[0]!.run_id);
   }, [runs, targetRunId]);
 
+  // Exported datasets are also validation targets (D-6): re-validate a built
+  // dataset (loss/video checks) without going through Review.
+  const datasetsQuery = useQuery({
+    queryKey: queryKeys.datasets,
+    queryFn: ({ signal }) => apiGet<DatasetsResponse>('/datasets', { signal }),
+  });
+  const datasets = datasetsQuery.data?.datasets ?? [];
+  const datasetByValue = useMemo(() => {
+    const m = new Map<string, DatasetEntry>();
+    for (const d of datasets) m.set(`${DATASET_VALUE_PREFIX}${d.dataset_dir}`, d);
+    return m;
+  }, [datasets]);
+  const selectedDataset = datasetByValue.get(targetRunId) ?? null;
+  const targetKind: 'none' | 'all' | 'run' | 'dataset' =
+    targetRunId === ''
+      ? 'none'
+      : targetRunId === ALL_RUNS
+        ? 'all'
+        : selectedDataset
+          ? 'dataset'
+          : 'run';
+
   const optionsQuery = useQuery({
     queryKey: queryKeys.configOptions,
     queryFn: ({ signal }) => apiGet<ConfigOptions>('/config/options', { signal }),
@@ -145,9 +178,29 @@ export function ValidationScreen() {
     queryFn: fetchRuntimeConfig,
   });
   const isFastValidation = selectedPipeline?.id === FAST_VALIDATION;
+  const pipelineForms = configQuery.data?.schemas?.pipeline_forms;
   const schema: JSONSchema =
-    (selectedPipeline && configQuery.data?.schemas?.pipeline_forms?.[selectedPipeline.id]) ??
+    (selectedPipeline && pipelineForms?.[selectedPipeline.id]) ??
     (isFastValidation ? FALLBACK_SCHEMA : EMPTY_SCHEMA);
+
+  // Per-pipeline applicability to the chosen target (D-6): a dataset target only
+  // accepts dataset-capable pipelines; the rest are disabled with a note. Run
+  // targets accept every pipeline (nothing here is dataset-only).
+  const applicability = useMemo(
+    () =>
+      pipelines.map((p) =>
+        targetKind === 'dataset' && !isDatasetCapable(p.id, pipelineForms?.[p.id])
+          ? { ok: false, note: 'applies to runs' }
+          : { ok: true, note: null as string | null },
+      ),
+    [pipelines, targetKind, pipelineForms],
+  );
+  const selectedApplicable =
+    targetKind !== 'dataset' ||
+    (!!selectedPipeline && isDatasetCapable(selectedPipeline.id, schema));
+  const applicabilityNote = selectedApplicable
+    ? undefined
+    : 'This pipeline applies to runs, not datasets — pick a run above.';
 
   const seeded = useMemo(
     () => (initialValueFor(schema) as Record<string, unknown>) ?? {},
@@ -235,7 +288,19 @@ export function ValidationScreen() {
   };
 
   const runOnSelection = () => {
-    if (!selectedPipeline) return;
+    if (!selectedPipeline || !selectedApplicable) return;
+    if (targetKind === 'dataset') {
+      const d = selectedDataset;
+      if (!d?.run_id) return;
+      submitMutation.mutate({
+        pipeline: selectedPipeline.id,
+        // The exported dataset dir (relative <operator>/<task>/<index>) — the
+        // recording was MOVED there by dataset_export, so the run dir is gone.
+        params: { ...params, dataset_dir: `${d.operator}/${d.task}/${d.index}` },
+        runIds: [d.run_id],
+      });
+      return;
+    }
     const runIds = targetRunId === ALL_RUNS ? runs.map((r) => r.run_id) : [targetRunId];
     submitMutation.mutate({
       pipeline: selectedPipeline.id,
@@ -260,8 +325,18 @@ export function ValidationScreen() {
     });
   };
 
-  const targetCount = targetRunId === ALL_RUNS ? runs.length : targetRunId ? 1 : 0;
-  const canRun = !!selectedPipeline && targetCount > 0 && !submitMutation.isPending;
+  const targetCount =
+    targetKind === 'all'
+      ? runs.length
+      : targetKind === 'dataset'
+        ? selectedDataset?.run_id
+          ? 1
+          : 0
+        : targetRunId
+          ? 1
+          : 0;
+  const canRun =
+    !!selectedPipeline && targetCount > 0 && selectedApplicable && !submitMutation.isPending;
   const running = (!!active && !allSettled) || submitMutation.isPending;
 
   const progressPct = active
@@ -300,6 +375,7 @@ export function ValidationScreen() {
           pipelines={pipelines}
           selectedIndex={0}
           onSelect={selectPipeline}
+          applicability={applicability}
           onNewRun={() => showToast('New run — pick pipeline, targets, parameters')}
         />
         <Card className="flex items-center justify-center p-8 text-sm text-gray-500">
@@ -317,6 +393,7 @@ export function ValidationScreen() {
         pipelines={pipelines}
         selectedIndex={selectedIndex}
         onSelect={selectPipeline}
+        applicability={applicability}
         onNewRun={() => showToast('New run — pick pipeline, targets, parameters')}
       />
 
@@ -336,8 +413,11 @@ export function ValidationScreen() {
             templateOptions={templates}
             runs={runs}
             runsLoading={runsQuery.isPending}
+            datasets={datasets}
+            datasetsLoading={datasetsQuery.isPending}
             targetRunId={targetRunId}
             onTargetRunChange={setTargetRunId}
+            applicabilityNote={applicabilityNote}
             onRun={runOnSelection}
             canRun={canRun}
             running={running}

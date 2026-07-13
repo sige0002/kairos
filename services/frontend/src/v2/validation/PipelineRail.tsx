@@ -5,15 +5,24 @@ import { Badge, Card, cn } from '../../components/ui';
 import type { PipelineInfo } from '../../api/types';
 import { lifecycleForIndex, lifecycleTone } from './lifecycle';
 
+/** Whether each pipeline applies to the chosen target (index-aligned to `pipelines`). */
+export interface PipelineApplicability {
+  ok: boolean;
+  note: string | null;
+}
+
 export function PipelineRail({
   pipelines,
   selectedIndex,
   onSelect,
+  applicability,
   onNewRun,
 }: {
   pipelines: PipelineInfo[];
   selectedIndex: number;
   onSelect: (index: number) => void;
+  /** Per-pipeline applicability to the current target; absent = all applicable. */
+  applicability?: PipelineApplicability[];
   onNewRun: () => void;
 }) {
   return (
@@ -38,19 +47,23 @@ export function PipelineRail({
         {pipelines.map((p, i) => {
           const lifecycle = lifecycleForIndex(i);
           const selected = i === selectedIndex;
+          const applies = applicability?.[i]?.ok ?? true;
+          const note = applicability?.[i]?.note ?? null;
           return (
             <div
               key={p.id}
               role="button"
-              tabIndex={0}
+              tabIndex={applies ? 0 : -1}
+              aria-disabled={!applies}
               data-testid={`pipeline-card-${p.id}`}
-              onClick={() => onSelect(i)}
+              onClick={() => applies && onSelect(i)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') onSelect(i);
+                if (applies && (e.key === 'Enter' || e.key === ' ')) onSelect(i);
               }}
               className={cn(
-                'flex cursor-pointer flex-col gap-1 rounded-[11px] border p-[10px_13px] text-left',
+                'flex flex-col gap-1 rounded-[11px] border p-[10px_13px] text-left',
                 selected ? 'border-teal-200 bg-teal-50' : 'border-gray-100',
+                applies ? 'cursor-pointer' : 'cursor-not-allowed opacity-50',
               )}
             >
               <div className="flex items-center gap-2">
@@ -58,7 +71,11 @@ export function PipelineRail({
                   {p.id}
                 </span>
                 <div className="flex-1" />
-                <Badge tone={lifecycleTone(lifecycle)}>{lifecycle.toUpperCase()}</Badge>
+                {note ? (
+                  <Badge tone="gray">{note}</Badge>
+                ) : (
+                  <Badge tone={lifecycleTone(lifecycle)}>{lifecycle.toUpperCase()}</Badge>
+                )}
               </div>
               {p.description && (
                 <span className="truncate text-[11.5px] text-gray-400" title={p.description}>

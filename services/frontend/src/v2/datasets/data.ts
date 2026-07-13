@@ -10,6 +10,12 @@
 
 import type { DatasetEntry } from '../../api/types';
 
+// Sentinels the backend writes when an export predates the episode model, so it
+// couldn't attribute an operator/task. Shown as plain-language "not recorded"
+// copy rather than the raw token (D-8-3), only when the value matches exactly.
+export const UNKNOWN_OPERATOR = 'unknown_operator';
+export const UNKNOWN_TASK = 'unknown_task';
+
 export function formatBytes(n?: number | null): string {
   if (n === undefined || n === null) return '—';
   if (n >= 1e9) return `${(n / 1e9).toFixed(1)} GB`;

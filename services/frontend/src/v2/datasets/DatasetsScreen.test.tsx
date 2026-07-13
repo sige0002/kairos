@@ -359,13 +359,24 @@ test('a dataset card shows NO label chips when the episode is absent (no fabrica
   expect(screen.queryByTestId(`dataset-card-labels-${ENTRY_A1.dataset_dir}`)).toBeNull();
 });
 
-test('an unattributed export gets a muted "legacy (pre-label) export" treatment', async () => {
+test('an unattributed export is explained in plain language (no raw sentinels)', async () => {
   mockFetch({ list: { datasets: [ENTRY_LEGACY] } });
   renderWithClient(<DatasetsScreen />);
 
   const legacyId = `dataset-card-legacy-${ENTRY_LEGACY.dataset_dir}`;
   await waitFor(() => expect(screen.getByTestId(legacyId)).toBeInTheDocument());
-  expect(screen.getByTestId(legacyId)).toHaveTextContent(/legacy \(pre-label\) export/);
+  // Plain-language note (not the internal "pre-label" jargon) with an
+  // explanatory tooltip.
+  expect(screen.getByTestId(legacyId)).toHaveTextContent('no episode labels (exported before labeling)');
+  expect(screen.getByTestId(legacyId)).toHaveAttribute(
+    'title',
+    expect.stringContaining('Exported before per-episode labels existed'),
+  );
+  // The raw unknown_operator / unknown_task sentinels are replaced with prose.
+  expect(screen.getByText('operator not recorded')).toBeInTheDocument();
+  expect(screen.getByText('task not recorded')).toBeInTheDocument();
+  expect(screen.queryByText('unknown_operator')).toBeNull();
+  expect(screen.queryByText('unknown_task')).toBeNull();
 });
 
 test('the dataset detail shows episode label chips when present', async () => {

@@ -231,6 +231,70 @@ def test_active_validation_injected_into_jobs(tmp_path: Path, fake_recorder) -> 
         assert dora.last_payload["params"]["template"]["name"] == "bravo_default"
 
 
+def test_robot_config_describes_active_robot(tmp_path: Path, fake_recorder) -> None:
+    with _client(tmp_path, fake_recorder, _FakeDora()) as c:
+        body = c.get("/api/v1/config/robots/alpha").json()
+        assert body["robot"] == "alpha"
+        assert body["active"] is True
+        assert body["local"] is False
+        # Derived summary comes from the recording file's parsed content.
+        assert body["summary"]["robot_name"] == "alpha"
+        assert body["summary"]["default_topics"] == ["/a", "/b"]
+        # ros_domain_id is not a RecordingConfig field, so it is absent here.
+        assert body["summary"]["ros_domain_id"] is None
+        # Every aspect the robot has is present with parsed content.
+        rec = body["aspects"]["recording"]
+        assert rec["id"] == "default"
+        assert rec["content"]["default_topics"] == ["/a", "/b"]
+        assert body["aspects"]["stream"]["content"]["columns"] == 2
+        assert body["aspects"]["validation"]["content"]["name"] == "alpha_default"
+        assert (
+            body["aspects"]["validators"]["content"]["gap_threshold_multiplier"] == 5.0
+        )
+
+
+def test_robot_config_reads_non_active_robot_without_switching(
+    tmp_path: Path, fake_recorder
+) -> None:
+    with _client(tmp_path, fake_recorder, _FakeDora()) as c:
+        body = c.get("/api/v1/config/robots/bravo").json()
+        assert body["active"] is False
+        assert body["summary"]["default_topics"] == ["/x"]
+        assert body["aspects"]["recording"]["content"]["robot_name"] == "bravo"
+        # Inspecting a non-active robot must NOT change the active selection.
+        assert c.get("/api/v1/config/options").json()["active_robot"] == "alpha"
+
+
+def test_robot_config_local_robot_missing_aspects_are_null(
+    tmp_path: Path, fake_recorder
+) -> None:
+    with _client(tmp_path, fake_recorder, _FakeDora()) as c:
+        body = c.get("/api/v1/config/robots/charlie").json()
+        assert body["local"] is True
+        assert body["aspects"]["recording"]["content"]["default_topics"] == ["/c"]
+        # charlie has only a recording aspect; the rest resolve to null.
+        assert body["aspects"]["stream"] is None
+        assert body["aspects"]["validation"] is None
+        assert body["aspects"]["validators"] is None
+
+
+def test_robot_config_honours_active_robot_option_pick(
+    tmp_path: Path, fake_recorder
+) -> None:
+    with _client(tmp_path, fake_recorder, _FakeDora()) as c:
+        c.post("/api/v1/config/select", json={"category": "recording", "id": "minimal"})
+        rec = c.get("/api/v1/config/robots/alpha").json()["aspects"]["recording"]
+        assert rec["id"] == "minimal"
+        assert rec["content"]["default_topics"] == ["/a"]
+
+
+def test_robot_config_unknown_robot_is_404(tmp_path: Path, fake_recorder) -> None:
+    with _client(tmp_path, fake_recorder, _FakeDora()) as c:
+        assert c.get("/api/v1/config/robots/nope").status_code == 404
+        # A path-traversal-ish name is not a known robot either.
+        assert c.get("/api/v1/config/robots/local").status_code == 404
+
+
 def test_explicit_template_is_not_overridden(tmp_path: Path, fake_recorder) -> None:
     dora = _FakeDora()
     with _client(tmp_path, fake_recorder, dora) as c:

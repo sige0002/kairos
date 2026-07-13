@@ -88,6 +88,24 @@ const RUNTIME_CONFIG = {
   },
 };
 
+const DATASETS = {
+  datasets: [
+    {
+      operator: 'op1',
+      task: 'pick',
+      index: '001',
+      dataset_dir: 'op1/pick/001',
+      run_id: 'run_ds1',
+      message_count: 1000,
+      exported_at: '2026-07-13T12:00:00Z',
+      batch_seq: 4,
+      index_in_batch: 2,
+      task_result: 'success',
+      quality: 'good',
+    },
+  ],
+};
+
 let postedBodies: Record<string, unknown>[] = [];
 let jobCounter = 0;
 let resultByRunId: Record<string, unknown> = {};
@@ -100,6 +118,7 @@ beforeEach(() => {
   vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     const url = String(input);
     if (url.includes('/validation/presets')) return Promise.resolve(jsonResponse(PRESETS));
+    if (url.includes('/datasets')) return Promise.resolve(jsonResponse(DATASETS));
     if (url.includes('/config/options')) return Promise.resolve(jsonResponse(OPTIONS));
     if (url.endsWith('/api/v1/config') || url.endsWith('/api/v1/config/')) {
       return Promise.resolve(jsonResponse(RUNTIME_CONFIG));
@@ -163,7 +182,7 @@ test('running on a single target run renders the generic SummaryResult fallback'
   fireEvent.click(await screen.findByTestId('pipeline-card-hello_kairos'));
 
   await waitFor(() =>
-    expect((screen.getByLabelText('target run') as HTMLSelectElement).value).toBe('run_002'),
+    expect((screen.getByLabelText('target') as HTMLSelectElement).value).toBe('run_002'),
   );
   fireEvent.click(screen.getByRole('button', { name: 'Run on selection' }));
 
@@ -179,7 +198,7 @@ test('running on all completed runs renders OK/WARNING/FAIL tiles and per-run ro
   renderWithClient(<ValidationScreen />);
   fireEvent.click(await screen.findByTestId('pipeline-card-hello_kairos'));
 
-  fireEvent.change(await screen.findByLabelText('target run'), {
+  fireEvent.change(await screen.findByLabelText('target'), {
     target: { value: '__all__' },
   });
   fireEvent.click(screen.getByRole('button', { name: 'Run on selection' }));
@@ -231,7 +250,7 @@ test('a fast_validation run renders the bespoke required-topics checklist', asyn
   // fast_validation is the default (first) pipeline; target defaults to run_002.
   await screen.findByTestId('pipeline-card-fast_validation');
   await waitFor(() =>
-    expect((screen.getByLabelText('target run') as HTMLSelectElement).value).toBe('run_002'),
+    expect((screen.getByLabelText('target') as HTMLSelectElement).value).toBe('run_002'),
   );
   fireEvent.click(screen.getByRole('button', { name: 'Run on selection' }));
 
@@ -241,4 +260,46 @@ test('a fast_validation run renders the bespoke required-topics checklist', asyn
   expect(within(card).getByText('/hsrb/joint_states')).toBeInTheDocument();
   expect(within(card).getByText('/hsrb/odom')).toBeInTheDocument();
   expect(within(card).getByText('+1 extra topics not required')).toBeInTheDocument();
+});
+
+test('the target selector offers exported datasets grouped separately from runs', async () => {
+  renderWithClient(<ValidationScreen />);
+  const target = (await screen.findByLabelText('target')) as HTMLSelectElement;
+  // Both group labels are present, and the dataset carries a labeled option.
+  expect(within(target).getByRole('group', { name: 'Runs (before export)' })).toBeInTheDocument();
+  expect(within(target).getByRole('group', { name: 'Datasets (exported)' })).toBeInTheDocument();
+  expect(await screen.findByRole('option', { name: '07/13 · #4 · pick' })).toBeInTheDocument();
+  expect(screen.getByText('Validation only — export stays in Review.')).toBeInTheDocument();
+});
+
+test('a dataset target runs a dataset-capable pipeline with params.dataset_dir', async () => {
+  renderWithClient(<ValidationScreen />);
+  fireEvent.click(await screen.findByTestId('pipeline-card-loss_report'));
+  fireEvent.change(await screen.findByLabelText('target'), {
+    target: { value: 'dataset:op1/pick/001' },
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'Run on selection' }));
+
+  await waitFor(() => expect(postedBodies.length).toBe(1));
+  // run_id is the dataset's own run_id; the exported dir goes in params.
+  expect(postedBodies[0]).toMatchObject({
+    pipeline: 'loss_report',
+    run_id: 'run_ds1',
+    params: { dataset_dir: 'op1/pick/001' },
+  });
+});
+
+test('a dataset target disables run-only pipelines with an "applies to runs" note', async () => {
+  renderWithClient(<ValidationScreen />);
+  await screen.findByTestId('pipeline-card-fast_validation'); // default selection
+  fireEvent.change(await screen.findByLabelText('target'), {
+    target: { value: 'dataset:op1/pick/001' },
+  });
+
+  // fast_validation reads a run directly -> not applicable to a dataset target.
+  const fast = screen.getByTestId('pipeline-card-fast_validation');
+  await waitFor(() => expect(within(fast).getByText('applies to runs')).toBeInTheDocument());
+  expect(screen.getByRole('button', { name: 'Run on selection' })).toBeDisabled();
+  // loss_report stays applicable (dataset-capable).
+  expect(within(screen.getByTestId('pipeline-card-loss_report')).queryByText('applies to runs')).toBeNull();
 });

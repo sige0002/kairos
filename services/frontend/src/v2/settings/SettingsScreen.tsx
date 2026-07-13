@@ -36,7 +36,7 @@ export function SettingsScreen() {
   return (
     <div className="grid grid-cols-1 gap-2.5 lg:h-full lg:min-h-0 lg:grid-cols-[216px_250px_1fr]">
       <MenuRail settings={settings} />
-      {settings.menuIdx === 0 && <RobotsSection settings={settings} config={config} />}
+      {settings.menuIdx === 0 && <RobotsSection config={config} />}
       {settings.menuIdx === 1 && <PlansSection settings={settings} />}
       {settings.menuIdx > 1 && (
         <OtherSection label={SETTINGS_MENU[settings.menuIdx] ?? 'Settings'} />

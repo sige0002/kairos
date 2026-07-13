@@ -379,6 +379,36 @@ export interface ConfigOptions {
   aspects: Record<ConfigAspect, { active: string; options: AspectOption[] }>;
 }
 
+/** One aspect's selected/default file in the read-only robot view. */
+export interface RobotAspectFile {
+  id: string;
+  path: string;
+  local: boolean;
+  /** Best-effort parsed YAML mapping (null when unreadable / not a mapping). */
+  content: Record<string, unknown> | null;
+}
+
+/** Derived, display-only summary of a robot's recording config. */
+export interface RobotConfigSummary {
+  robot_name: string;
+  default_topics: string[];
+  /** Present only if a config file carries it (not a RecordingConfig field). */
+  ros_domain_id?: number | null;
+}
+
+/**
+ * GET /api/v1/config/robots/{robot} — read-only config for a named robot,
+ * active or not. Lets Settings show a non-active robot's config as a template
+ * without switching the live system (D-5-2).
+ */
+export interface RobotConfig {
+  robot: string;
+  local: boolean;
+  active: boolean;
+  summary: RobotConfigSummary;
+  aspects: Record<ConfigAspect, RobotAspectFile | null>;
+}
+
 /**
  * A validation template, adapted from the active robot's `validation` aspect
  * options for the fast_validation params form (PipelineForm `templateOptions`).

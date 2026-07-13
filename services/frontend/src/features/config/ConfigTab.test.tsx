@@ -225,7 +225,7 @@ test('a client-side JSON parse error blocks the PUT', async () => {
   fireEvent.change(editor, { target: { value: '{ not json' } });
   fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
-  expect(await screen.findByText(/JSON error:/)).toBeInTheDocument();
+  expect(await screen.findByText(/Invalid JSON —/)).toBeInTheDocument();
   const calls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls;
   const put = calls.find(
     (c) =>
@@ -233,4 +233,23 @@ test('a client-side JSON parse error blocks the PUT', async () => {
       ((c[1] as RequestInit)?.method ?? 'GET') === 'PUT',
   );
   expect(put).toBeUndefined();
+});
+
+test('inline validation flags invalid JSON, disables Save, then clears when fixed', async () => {
+  renderWithClient(<ConfigTab config={CONFIG} />);
+  const editor = (await screen.findByLabelText('recording config json')) as HTMLTextAreaElement;
+  await waitFor(() => expect(editor.value).toContain('"robot_name"'));
+  // Valid seed -> muted "Valid JSON" and Save enabled.
+  expect(await screen.findByText('Valid JSON')).toBeInTheDocument();
+  const save = screen.getByRole('button', { name: 'Save' });
+
+  // Type invalid JSON: after the debounce, Save is disabled with a red note.
+  fireEvent.change(editor, { target: { value: '{ nope' } });
+  await waitFor(() => expect(save).toBeDisabled());
+  expect(screen.getByText(/Invalid JSON —/)).toBeInTheDocument();
+
+  // Fix it: Save re-enables and the note flips back to "Valid JSON".
+  fireEvent.change(editor, { target: { value: '{"robot_name":"x"}' } });
+  await waitFor(() => expect(save).not.toBeDisabled());
+  expect(screen.getByText('Valid JSON')).toBeInTheDocument();
 });

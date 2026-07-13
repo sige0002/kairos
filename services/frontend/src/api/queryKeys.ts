@@ -15,6 +15,7 @@ export const queryKeys = {
   job: (id: string) => ['jobs', id] as const,
   jobResult: (id: string) => ['jobs', id, 'result'] as const,
   configOptions: ['config', 'options'] as const,
+  configRobot: (robot: string) => ['config', 'robot', robot] as const,
   datasets: ['datasets'] as const,
   dataset: (operator: string, task: string, index: string) =>
     ['datasets', 'detail', operator, task, index] as const,

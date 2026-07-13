@@ -3,15 +3,35 @@
 // presets (GET /validation/presets) — each runs its pipeline over exactly the
 // completed runs it hasn't validated yet (`pending_run_ids`).
 import type { JSONSchema } from '../../schema/jsonSchema';
-import type { RunSummary, ValidationOption, ValidationPreset } from '../../api/types';
+import type {
+  DatasetEntry,
+  RunSummary,
+  ValidationOption,
+  ValidationPreset,
+} from '../../api/types';
 import { PipelineForm } from '../../features/validation/PipelineForm';
 import { ErrorMessage } from '../../components/ErrorMessage';
 import { Badge } from '../../components/ui';
 
 export const ALL_RUNS = '__all__';
+// A dataset target value: `dataset:<dataset_dir>`. Runs use the bare run_id.
+export const DATASET_VALUE_PREFIX = 'dataset:';
 
 const SELECT_CLASS =
   'rounded-control border border-gray-200 px-2 py-1.5 font-mono text-sm focus:border-teal-500 focus:outline-none';
+
+/** A dataset option label: `MM/DD · #seq · task` when labeled, else its path. */
+function datasetOptionLabel(d: DatasetEntry): string {
+  if (d.batch_seq != null) {
+    const when = d.exported_at ? new Date(d.exported_at) : null;
+    const md =
+      when && !Number.isNaN(when.getTime())
+        ? `${String(when.getMonth() + 1).padStart(2, '0')}/${String(when.getDate()).padStart(2, '0')}`
+        : null;
+    return `${md ? `${md} · ` : ''}#${d.batch_seq} · ${d.task}`;
+  }
+  return `${d.operator}/${d.task}/${d.index}`;
+}
 
 export function ParamsPanel({
   schema,
@@ -20,8 +40,11 @@ export function ParamsPanel({
   templateOptions,
   runs,
   runsLoading,
+  datasets,
+  datasetsLoading,
   targetRunId,
   onTargetRunChange,
+  applicabilityNote,
   onRun,
   canRun,
   running,
@@ -39,8 +62,12 @@ export function ParamsPanel({
   templateOptions: ValidationOption[];
   runs: RunSummary[];
   runsLoading: boolean;
+  datasets: DatasetEntry[];
+  datasetsLoading: boolean;
   targetRunId: string;
   onTargetRunChange: (id: string) => void;
+  /** Set when the selected pipeline can't run on the selected target type. */
+  applicabilityNote?: string;
   onRun: () => void;
   canRun: boolean;
   running: boolean;
@@ -59,26 +86,49 @@ export function ParamsPanel({
       </span>
 
       <label className="flex flex-col gap-1 text-sm">
-        <span className="text-[11px] font-medium text-gray-500">Target run</span>
+        <span className="text-[11px] font-medium text-gray-500">Target</span>
         <select
-          aria-label="target run"
+          aria-label="target"
           value={targetRunId}
           onChange={(e) => onTargetRunChange(e.target.value)}
           disabled={running}
           className={SELECT_CLASS}
         >
-          <option value="">
-            {runsLoading ? 'Loading…' : runs.length ? '— Select —' : 'No completed runs'}
-          </option>
-          {runs.length > 0 && (
-            <option value={ALL_RUNS}>— All completed runs ({runs.length}) —</option>
-          )}
-          {runs.map((r) => (
-            <option key={r.run_id} value={r.run_id}>
-              {r.run_id}
-            </option>
-          ))}
+          <option value="">{runsLoading || datasetsLoading ? 'Loading…' : '— Select —'}</option>
+          <optgroup label="Runs (before export)">
+            {runs.length === 0 ? (
+              <option value="" disabled>
+                No completed runs
+              </option>
+            ) : (
+              <>
+                <option value={ALL_RUNS}>— All completed runs ({runs.length}) —</option>
+                {runs.map((r) => (
+                  <option key={r.run_id} value={r.run_id}>
+                    {r.run_id}
+                  </option>
+                ))}
+              </>
+            )}
+          </optgroup>
+          <optgroup label="Datasets (exported)">
+            {datasets.length === 0 ? (
+              <option value="" disabled>
+                No exported datasets
+              </option>
+            ) : (
+              datasets.map((d) => (
+                <option key={d.dataset_dir} value={`${DATASET_VALUE_PREFIX}${d.dataset_dir}`}>
+                  {datasetOptionLabel(d)}
+                </option>
+              ))
+            )}
+          </optgroup>
         </select>
+        {applicabilityNote && (
+          <span className="text-[11px] text-amber-700">{applicabilityNote}</span>
+        )}
+        <span className="text-[11px] text-gray-400">Validation only — export stays in Review.</span>
       </label>
 
       <PipelineForm

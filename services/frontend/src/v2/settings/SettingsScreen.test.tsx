@@ -62,6 +62,29 @@ const RECORDING = {
   path: '/config/airoa_hsr/recording/default.yaml',
 };
 
+// GET /api/v1/config/robots/{robot} — read-only view of a non-active robot.
+const ROBOT_CONFIG_TEMPLATE = {
+  robot: 'template',
+  local: false,
+  active: false,
+  summary: { robot_name: 'template', default_topics: ['/tmpl/a', '/tmpl/b'], ros_domain_id: null },
+  aspects: {
+    recording: {
+      id: 'default',
+      path: '/config/template/recording/default.yaml',
+      local: false,
+      content: { robot_name: 'template', default_topics: ['/tmpl/a', '/tmpl/b'] },
+    },
+    stream: null,
+    validation: null,
+    validators: null,
+  },
+};
+
+// The recorder state served by GET /record/status; tests flip it to exercise the
+// recording-aware guards.
+let recordState: 'idle' | 'recording' = 'idle';
+
 /** Build the /config/select echo: active follows the posted selection. */
 function echoSelect(body: { category: string; id: string }) {
   const next = structuredClone(OPTIONS);
@@ -94,11 +117,29 @@ function mockFetch() {
       const body = JSON.parse(String((init as RequestInit).body));
       return Promise.resolve(jsonResponse(echoSelect(body)));
     }
+    if (url.includes('/config/robots/')) {
+      return Promise.resolve(jsonResponse(ROBOT_CONFIG_TEMPLATE));
+    }
+    if (url.includes('/record/stop')) {
+      recordState = 'idle';
+      return Promise.resolve(jsonResponse({ run_id: 'run_x', state: 'completed' }));
+    }
+    if (url.includes('/record/status')) {
+      return Promise.resolve(
+        jsonResponse({ run_id: recordState === 'recording' ? 'run_x' : null, state: recordState }),
+      );
+    }
     if (url.includes('/config')) {
       return Promise.resolve(jsonResponse(CONFIG_WITH_ROBOT));
     }
     return Promise.resolve(jsonResponse({}));
   });
+}
+
+/** The POST bodies fetch has seen for a given path substring. */
+function postsTo(pathPart: string) {
+  const calls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls;
+  return calls.filter((c) => String(c[0]).includes(pathPart));
 }
 
 /** The /config/select POST bodies fetch has seen so far. */
@@ -111,6 +152,7 @@ function selectPosts() {
 
 beforeEach(() => {
   setApiBase('/api/v1');
+  recordState = 'idle';
   // Plans live in the shared v2/plans store now; reset it so a project added in
   // one test can't leak into the next.
   __resetPlansStore();
@@ -146,16 +188,94 @@ test('the active robot form shows real read-only runtime values + the recording 
   await waitFor(() => expect(editor.value).toContain('"robot_name": "hsr"'));
 });
 
-test('selecting a non-active robot previews it without switching the live system', async () => {
+test('selecting a non-active robot shows its config read-only, without switching', async () => {
   renderWithClient(<SettingsScreen />);
   fireEvent.click(await screen.findByTestId('robot-row-1'));
 
   expect(screen.getByTestId('robot-form-name')).toHaveTextContent('template');
-  // It is not active, so we show the activate prompt, not the active robot's config.
-  expect(screen.getByTestId('robot-inactive-note')).toBeInTheDocument();
+  // Read-only banner names the robot and says how to edit.
+  const banner = await screen.findByTestId('robot-readonly-banner');
+  expect(banner).toHaveTextContent('Read-only');
+  expect(banner).toHaveTextContent('template');
+  expect(banner).toHaveTextContent('Activate it to edit');
+  // Its recording config is visible as a disabled template (a different editor
+  // from the active robot's editable one).
+  const readonly = (await screen.findByLabelText(
+    'recording config json (read-only)',
+  )) as HTMLTextAreaElement;
+  expect(readonly).toBeDisabled();
+  expect(readonly.value).toContain('/tmpl/a');
   expect(screen.queryByLabelText('recording config json')).not.toBeInTheDocument();
   // Merely selecting a row must NOT POST a switch.
   expect(selectPosts()).toHaveLength(0);
+});
+
+test('+ Add robot opens a persistent explainer panel (not a toast)', async () => {
+  renderWithClient(<SettingsScreen />);
+  await screen.findByTestId('robot-row-0');
+
+  fireEvent.click(screen.getByTestId('add-robot'));
+  const explainer = screen.getByTestId('robot-add-explainer');
+  expect(explainer).toHaveTextContent('config/<robot>/');
+  expect(explainer).toHaveTextContent('no in-console create yet');
+  expect(explainer).toHaveTextContent('inspect its config as a template');
+  // Selecting a robot dismisses the explainer.
+  fireEvent.click(screen.getByTestId('robot-row-1'));
+  expect(screen.queryByTestId('robot-add-explainer')).not.toBeInTheDocument();
+});
+
+test('the menu rail footer shows the real active robot (not a fabricated version)', async () => {
+  renderWithClient(<SettingsScreen />);
+  await waitFor(() =>
+    expect(screen.getByTestId('settings-active-robot')).toHaveTextContent('airoa_hsr'),
+  );
+  expect(screen.queryByText(/v2\.4\.1/)).not.toBeInTheDocument();
+});
+
+test('activating a robot while recording confirms first, then stops and switches', async () => {
+  recordState = 'recording';
+  renderWithClient(<SettingsScreen />);
+  fireEvent.click(await screen.findByTestId('robot-row-1')); // template (non-active)
+
+  // The activate action opens a confirm modal, not an immediate switch.
+  fireEvent.click(screen.getByTestId('activate-robot'));
+  const dialog = await screen.findByRole('dialog');
+  expect(dialog).toHaveTextContent('A recording is in progress. Switching robots will stop it.');
+  expect(selectPosts()).toHaveLength(0);
+  expect(postsTo('/record/stop')).toHaveLength(0);
+
+  // Stop & switch: POST /record/stop, then POST /config/select {robot}.
+  fireEvent.click(screen.getByRole('button', { name: 'Stop & switch' }));
+  await waitFor(() => expect(postsTo('/record/stop')).toHaveLength(1));
+  await waitFor(() =>
+    expect(selectPosts()).toContainEqual({ category: 'robot', id: 'template' }),
+  );
+});
+
+test('cancelling the switch-while-recording confirm leaves the recording alone', async () => {
+  recordState = 'recording';
+  renderWithClient(<SettingsScreen />);
+  fireEvent.click(await screen.findByTestId('robot-row-1'));
+
+  fireEvent.click(screen.getByTestId('activate-robot'));
+  await screen.findByRole('dialog');
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  expect(postsTo('/record/stop')).toHaveLength(0);
+  expect(selectPosts()).toHaveLength(0);
+});
+
+test('the recording-config editor warns that a save applies to the next recording', async () => {
+  recordState = 'recording';
+  renderWithClient(<SettingsScreen />);
+  // Active robot (airoa_hsr) renders the editable editor.
+  await screen.findByLabelText('recording config json');
+  expect(
+    await screen.findByText(
+      /saving recording config won.t change the current recording; it applies to the next one/i,
+    ),
+  ).toBeInTheDocument();
 });
 
 test('"Use this robot" POSTs {category: robot} for the previewed robot', async () => {

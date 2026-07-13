@@ -18,6 +18,7 @@ import type {
   ConfigAspect,
   ConfigOptions,
   RecordingConfigPayload,
+  RecordStatus,
 } from '../../api/types';
 import type { RuntimeConfig } from '../../config';
 import { ErrorMessage } from '../../components/ErrorMessage';
@@ -84,8 +85,20 @@ export function RecordingConfigEditor({ config }: { config: RuntimeConfig }) {
     queryFn: ({ signal }) => apiGet<RecordingConfigPayload>('/config/recording', { signal }),
   });
 
+  // Single source of truth for "is a capture running" — the same /record/status
+  // query key Collect polls (react-query dedups it), so this banner can never
+  // disagree with Collect about whether recording is live.
+  const recordStatusQuery = useQuery({
+    queryKey: queryKeys.recordStatus,
+    queryFn: ({ signal }) => apiGet<RecordStatus>('/record/status', { signal }),
+  });
+  const recording = recordStatusQuery.data?.state === 'recording';
+
   const [text, setText] = useState('');
-  const [parseError, setParseError] = useState<string | null>(null);
+  // Inline JSON validity (debounced ~300ms below): null = valid, else the parse
+  // message. Disables Save while the buffer isn't valid JSON, before the server
+  // ever sees it.
+  const [jsonError, setJsonError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
 
   // Seed the buffer from the fetched config (pretty-printed). Re-seed when the
@@ -94,9 +107,23 @@ export function RecordingConfigEditor({ config }: { config: RuntimeConfig }) {
     if (recordingQuery.data) {
       const cfg = recordingQuery.data.config ?? {};
       setText(JSON.stringify(cfg, null, 2));
-      setParseError(null);
+      setJsonError(null);
     }
   }, [recordingQuery.data]);
+
+  // Debounced client-side JSON validation on every edit — surfaces a parse error
+  // (and disables Save) before the operator ever clicks Save.
+  useEffect(() => {
+    const id = setTimeout(() => {
+      try {
+        JSON.parse(text);
+        setJsonError(null);
+      } catch (e) {
+        setJsonError(e instanceof Error ? e.message : 'JSON parse error');
+      }
+    }, 300);
+    return () => clearTimeout(id);
+  }, [text]);
 
   const saveMutation = useMutation({
     mutationFn: (parsed: Record<string, unknown>) => putRecordingConfig(parsed),
@@ -114,14 +141,13 @@ export function RecordingConfigEditor({ config }: { config: RuntimeConfig }) {
     try {
       parsed = JSON.parse(text);
     } catch (e) {
-      setParseError(e instanceof Error ? e.message : 'JSON parse error');
+      setJsonError(e instanceof Error ? e.message : 'JSON parse error');
       return;
     }
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-      setParseError('Config must be an object ({ ... }).');
+      setJsonError('config must be an object ({ … })');
       return;
     }
-    setParseError(null);
     saveMutation.mutate(parsed as Record<string, unknown>);
   };
 
@@ -156,12 +182,22 @@ export function RecordingConfigEditor({ config }: { config: RuntimeConfig }) {
         disabled={saveMutation.isPending}
         onChange={(e) => {
           setText(e.target.value);
-          setParseError(null);
           setSaved(false);
         }}
       />
 
-      {parseError && <p className="mt-2 text-sm text-red-700">JSON error: {parseError}</p>}
+      {jsonError ? (
+        <p className="mt-2 text-sm text-red-700">Invalid JSON — {jsonError}</p>
+      ) : (
+        <p className="mt-2 text-xs text-gray-400">Valid JSON</p>
+      )}
+
+      {recording && (
+        <div className="mt-2 rounded-control border border-amber-200 bg-amber-50 p-2 text-sm text-amber-800">
+          A recording is in progress — saving recording config won&apos;t change the current
+          recording; it applies to the next one.
+        </div>
+      )}
 
       {saveMutation.isError && (
         <div className="mt-2">
@@ -192,7 +228,7 @@ export function RecordingConfigEditor({ config }: { config: RuntimeConfig }) {
         <button
           type="button"
           onClick={onSave}
-          disabled={saveMutation.isPending}
+          disabled={saveMutation.isPending || jsonError !== null}
           className="rounded-control bg-teal-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-teal-700 disabled:opacity-50"
         >
           {saveMutation.isPending ? 'Saving…' : 'Save'}
