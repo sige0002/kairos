@@ -45,6 +45,10 @@ export interface EpisodeRow {
   task: TaskResult | null;
   durationMs?: number;
   startedAt?: string;
+  /** Real on-disk size in bytes (RunSummary carries it); null when unknown.
+   *  Surfaced in the delete-from-disk confirmation so the operator sees how
+   *  much storage is reclaimed. */
+  bytes: number | null;
   /** Real issue note when the run itself failed; null for a clean run (there's
    *  no list-time per-topic issue source — that's the on-demand loss report). */
   issues: string | null;

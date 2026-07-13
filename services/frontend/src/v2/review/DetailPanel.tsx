@@ -218,6 +218,27 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
           </DecisionButton>
         </div>
 
+        {sel.isArchived && (
+          <div className="flex flex-col gap-1.5 rounded-[10px] border border-gray-200 bg-gray-50 px-3 py-2.5">
+            <div className="flex items-center gap-2">
+              <span className="text-[12px] font-semibold text-gray-600">Excluded — kept on disk</span>
+              <div className="flex-1" />
+              <button
+                type="button"
+                data-testid="review-delete-one"
+                onClick={() => rv.requestDelete(sel.runId)}
+                className="rounded-control border border-red-200 px-2.5 py-1 text-[11.5px] font-semibold text-red-700 transition-colors hover:bg-red-50"
+              >
+                Delete from disk…
+              </button>
+            </div>
+            <span className="text-[11px] text-gray-400">
+              Excluded from dataset use, but the recording still occupies disk. Deleting reclaims that
+              storage and is permanent.
+            </span>
+          </div>
+        )}
+
         <div className="flex items-center gap-3 border-t border-gray-100 pt-2.5">
           <button
             type="button"

@@ -119,6 +119,7 @@ function Row({ row, isSelected, rv }: { row: DecoratedEpisode; isSelected: boole
       <span aria-hidden />
       <button
         type="button"
+        data-testid={`review-archive-${row.ep}`}
         onClick={(e) => {
           e.stopPropagation();
           rv.requestArchive(row.runId);
@@ -148,6 +149,17 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
             className="rounded-control border border-gray-200 bg-white px-3 py-1.5 text-[12.5px] font-semibold text-gray-500 transition-colors hover:bg-gray-50"
           >
             {rv.showArchived ? 'Hide' : 'Show'} excluded ({rv.nArchived})
+          </button>
+        )}
+        {rv.hasArchived && (
+          <button
+            type="button"
+            data-testid="review-bulk-delete"
+            onClick={rv.requestBulkDelete}
+            title="Permanently delete every excluded recording from disk"
+            className="rounded-control border border-red-200 bg-white px-3 py-1.5 text-[12.5px] font-semibold text-red-700 transition-colors hover:bg-red-50"
+          >
+            Delete excluded ({rv.nArchived})…
           </button>
         )}
         {rv.splitMode && (

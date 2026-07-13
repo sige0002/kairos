@@ -18,22 +18,39 @@ const CONFIG_OPTIONS = {
 };
 
 // A fetch mock covering everything the Review screen touches: the /runs list,
-// the per-run detail the embedded RunInspection loads (GET /runs/{id}), and the
-// config/options the validation template is resolved from. Detail defaults to a
-// completed run with no topics unless overridden per run id.
-function mockApi(items: Record<string, unknown>[], detailById: Record<string, unknown> = {}) {
-  return vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+// the per-run detail the embedded RunInspection loads (GET /runs/{id}), the
+// config/options the validation template is resolved from, and DELETE
+// /runs/{id} (removes it from the live list). Detail defaults to a completed
+// run with no topics unless overridden per run id.
+function mockApi(initial: Record<string, unknown>[], detailById: Record<string, unknown> = {}) {
+  let items = [...initial];
+  const deleteCalls: string[] = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     const url = String(input);
+    const method = (init?.method ?? 'GET').toUpperCase();
     const detailMatch = url.match(/\/runs\/([^/?]+)(?:\?|$)/);
+    if (method === 'DELETE' && detailMatch) {
+      const id = decodeURIComponent(detailMatch[1]!);
+      deleteCalls.push(id);
+      items = items.filter((r) => r.run_id !== id);
+      return Promise.resolve(jsonResponse({}, 200));
+    }
     if (detailMatch) {
       const id = decodeURIComponent(detailMatch[1]!);
       const detail = detailById[id] ?? { run_id: id, state: 'completed', topics: [] };
       return Promise.resolve(jsonResponse(detail));
     }
     if (url.includes('/config/options')) return Promise.resolve(jsonResponse(CONFIG_OPTIONS));
-    if (url.includes('/runs')) return Promise.resolve(jsonResponse({ items, next_cursor: null }));
+    if (url.includes('/runs')) return Promise.resolve(jsonResponse({ items: [...items], next_cursor: null }));
     return Promise.resolve(jsonResponse({}));
   });
+  return { deleteCalls };
+}
+
+// Exclude the episode in the given row (opens the confirm, then confirms).
+function excludeRow(ep: number) {
+  fireEvent.click(screen.getByTestId(`review-archive-${ep}`));
+  fireEvent.click(screen.getByTestId('review-confirm-exclude'));
 }
 
 beforeEach(() => {
@@ -117,6 +134,62 @@ test('SPLIT_MODE off by default: no transfer UI renders', async () => {
   expect(screen.queryByTestId('review-transfer-all')).not.toBeInTheDocument();
   expect(screen.queryByTestId('review-transfer-button')).not.toBeInTheDocument();
   expect(screen.queryByText('Data is on the robot PC')).not.toBeInTheDocument();
+});
+
+test('the delete-from-disk action appears only after an episode is excluded', async () => {
+  mockApi([{ run_id: 'ep-a', state: 'completed', started_at: '2026-07-13T09:00:00Z', bytes: 1048576 }]);
+  renderWithClient(<ReviewScreen />);
+  await waitFor(() => expect(screen.getByTestId('review-detail-header')).toBeInTheDocument());
+
+  // Not excluded yet: no per-episode delete, no bulk delete.
+  expect(screen.queryByTestId('review-delete-one')).not.toBeInTheDocument();
+  expect(screen.queryByTestId('review-bulk-delete')).not.toBeInTheDocument();
+
+  excludeRow(1);
+  await waitFor(() => expect(screen.getByTestId('review-delete-one')).toBeInTheDocument());
+  expect(screen.getByText('Excluded — kept on disk')).toBeInTheDocument();
+});
+
+test('the single delete dialog shows the run_id and size, and is cancelable', async () => {
+  mockApi([{ run_id: 'ep-a', state: 'completed', started_at: '2026-07-13T09:00:00Z', bytes: 1048576 }]);
+  renderWithClient(<ReviewScreen />);
+  await waitFor(() => expect(screen.getByTestId('review-detail-header')).toBeInTheDocument());
+  excludeRow(1);
+
+  fireEvent.click(await screen.findByTestId('review-delete-one'));
+  expect(screen.getByTestId('review-delete-runid')).toHaveTextContent('ep-a');
+  expect(screen.getByTestId('review-delete-size')).toHaveTextContent('1.0 MB');
+
+  // Cancel closes the dialog and leaves the excluded run in place (its
+  // delete affordance is still there — nothing was deleted).
+  fireEvent.click(screen.getByText('Cancel'));
+  await waitFor(() => expect(screen.queryByTestId('review-delete-runid')).not.toBeInTheDocument());
+  expect(screen.getByTestId('review-delete-one')).toBeInTheDocument();
+});
+
+test('bulk delete: count, listed run_ids, and list refresh after a mocked success', async () => {
+  const { deleteCalls } = mockApi([
+    { run_id: 'ep-a', state: 'completed', started_at: '2026-07-13T09:00:00Z', bytes: 1000 },
+    { run_id: 'ep-b', state: 'completed', started_at: '2026-07-13T09:05:00Z', bytes: 2000 },
+  ]);
+  renderWithClient(<ReviewScreen />);
+  await waitFor(() => expect(screen.getByTestId('review-episodes-count')).toHaveTextContent('2 shown'));
+
+  excludeRow(1); // ep-a (older, #1)
+  excludeRow(2); // ep-b (newer, #2)
+  const bulk = await screen.findByTestId('review-bulk-delete');
+  expect(bulk).toHaveTextContent('Delete excluded (2)');
+
+  fireEvent.click(bulk);
+  const list = await screen.findByTestId('review-bulk-list');
+  expect(within(list).getByText('ep-a')).toBeInTheDocument();
+  expect(within(list).getByText('ep-b')).toBeInTheDocument();
+
+  fireEvent.click(screen.getByText('Delete 2'));
+  await waitFor(() => expect(deleteCalls.sort()).toEqual(['ep-a', 'ep-b']));
+  // Both gone → empty state, modal closed, bulk action gone.
+  await waitFor(() => expect(screen.getByText('No episodes to review yet.')).toBeInTheDocument());
+  expect(screen.queryByTestId('review-bulk-delete')).not.toBeInTheDocument();
 });
 
 test('SPLIT_MODE on: transfer UI appears and a transfer can be started', async () => {

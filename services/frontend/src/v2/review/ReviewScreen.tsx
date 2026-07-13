@@ -1,8 +1,9 @@
 // Review tab (v2 IA) — the episode take-review workflow (adopt / keep in
-// review / exclude). Root mirrors the design mock's 216px / 1fr / 400px
-// three-column grid (filters, episode list, detail). Episodes come from the
-// real /runs API (mapRuns.ts fills in the quality/task/batch concepts the
-// backend doesn't have yet); see useReviewState.ts for the full behavior.
+// review / exclude), plus a two-step physical delete: Exclude is a reversible
+// review label (kept on disk); Delete permanently reclaims the storage. Root
+// mirrors the design mock's 216px / 1fr / 400px three-column grid (filters,
+// episode list, detail). Episodes come from the real /runs API; see
+// useReviewState.ts for the full behavior.
 //
 // Also carries our own addition — MCAP transfer for split robot/recording-PC
 // deployments — gated behind SPLIT_MODE (splitMode.ts), off by default.
@@ -12,10 +13,13 @@ import { DetailPanel } from './DetailPanel';
 import { EpisodeTable } from './EpisodeTable';
 import { FiltersRail } from './FiltersRail';
 import { Toast } from './Toast';
+import { formatBytes } from './format';
 import { useReviewState } from './useReviewState';
 
 export function ReviewScreen() {
   const rv = useReviewState();
+  const del = rv.pendingDeleteRow;
+  const bulkTotalBytes = rv.excludedRows.reduce((sum, r) => sum + (r.bytes ?? 0), 0);
 
   return (
     <div className="grid grid-cols-1 gap-2.5 lg:h-full lg:min-h-0 lg:grid-cols-[216px_1fr_400px]">
@@ -39,7 +43,7 @@ export function ReviewScreen() {
             <Button variant="ghost" onClick={rv.cancelArchive}>
               Cancel
             </Button>
-            <Button variant="danger" onClick={rv.confirmArchive}>
+            <Button variant="danger" data-testid="review-confirm-exclude" onClick={rv.confirmArchive}>
               Exclude
             </Button>
           </>
@@ -47,6 +51,96 @@ export function ReviewScreen() {
       >
         The recording itself is kept and can be restored at any time. It&apos;s reclassified as
         Not usable / Excluded — episode numbers are never reassigned.
+      </Modal>
+
+      {/* Single physical delete — only reachable from an excluded episode. */}
+      <Modal
+        open={del !== null}
+        onClose={rv.cancelDelete}
+        title={`Delete episode #${del?.ep} from disk?`}
+        footer={
+          <>
+            <Button variant="ghost" onClick={rv.cancelDelete} disabled={rv.deleting}>
+              Cancel
+            </Button>
+            <Button variant="danger" onClick={rv.confirmDelete} disabled={rv.deleting}>
+              {rv.deleting ? 'Deleting…' : 'Delete from disk'}
+            </Button>
+          </>
+        }
+      >
+        <p>
+          Permanently delete{' '}
+          <span data-testid="review-delete-runid" className="font-mono text-gray-800">
+            {del?.runId}
+          </span>{' '}
+          (<span data-testid="review-delete-size">{formatBytes(del?.bytes)}</span>) from disk? This
+          reclaims the storage and <strong>cannot be undone</strong>. The recording is already
+          excluded from dataset use.
+        </p>
+        {rv.deleteError && (
+          <p role="alert" className="mt-2 text-sm text-red-600">
+            {rv.deleteError}
+          </p>
+        )}
+      </Modal>
+
+      {/* Bulk physical delete of every excluded episode. */}
+      <Modal
+        open={rv.bulkDeleteOpen}
+        onClose={rv.cancelBulkDelete}
+        title={`Delete ${rv.excludedRows.length} excluded recording${rv.excludedRows.length === 1 ? '' : 's'} from disk?`}
+        footer={
+          <>
+            <Button variant="ghost" onClick={rv.cancelBulkDelete} disabled={rv.bulkRunning}>
+              {rv.bulkFailures.length > 0 && !rv.bulkRunning ? 'Close' : 'Cancel'}
+            </Button>
+            <Button
+              variant="danger"
+              onClick={rv.confirmBulkDelete}
+              disabled={rv.bulkRunning || rv.excludedRows.length === 0}
+            >
+              {rv.bulkRunning
+                ? `Deleting… (${rv.bulkDone}/${rv.excludedRows.length})`
+                : `Delete ${rv.excludedRows.length}`}
+            </Button>
+          </>
+        }
+      >
+        <p>
+          Permanently delete these excluded recordings from disk — reclaiming{' '}
+          <span className="font-mono text-gray-800">{formatBytes(bulkTotalBytes)}</span>. This{' '}
+          <strong>cannot be undone</strong>.
+        </p>
+        <ul
+          data-testid="review-bulk-list"
+          className="mt-2 max-h-48 overflow-auto rounded-control border border-gray-200 text-xs"
+        >
+          {rv.excludedRows.map((r) => {
+            const failure = rv.bulkFailures.find((f) => f.runId === r.runId);
+            return (
+              <li
+                key={r.runId}
+                className="flex items-center justify-between gap-2 border-t border-gray-100 px-2 py-1 first:border-t-0"
+              >
+                <span className="truncate font-mono text-gray-700">{r.runId}</span>
+                {failure ? (
+                  <span className="shrink-0 text-red-600" title={failure.error}>
+                    failed
+                  </span>
+                ) : (
+                  <span className="shrink-0 font-mono text-gray-400">{formatBytes(r.bytes)}</span>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+        {rv.bulkFailures.length > 0 && !rv.bulkRunning && (
+          <p role="alert" className="mt-2 text-sm text-red-600">
+            {rv.bulkFailures.length} deletion{rv.bulkFailures.length === 1 ? '' : 's'} failed — those
+            recordings are still on disk.
+          </p>
+        )}
       </Modal>
     </div>
   );

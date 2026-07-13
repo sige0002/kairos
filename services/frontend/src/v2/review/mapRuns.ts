@@ -35,6 +35,9 @@ export function mapRunsToEpisodes(runs: RunSummary[]): EpisodeRow[] {
   });
   return ordered.map((run, i) => {
     const endedBadly = run.state === 'failed' || run.state === 'interrupted';
+    // The /runs list carries bytes (backend Run model), though the shared
+    // RunSummary type omits it — read it defensively.
+    const bytes = (run as RunSummary & { bytes?: number | null }).bytes;
     return {
       ep: i + 1,
       runId: run.run_id,
@@ -46,6 +49,7 @@ export function mapRunsToEpisodes(runs: RunSummary[]): EpisodeRow[] {
       task: null,
       durationMs: run.duration_ms ?? spanMs(run.started_at, run.ended_at),
       startedAt: run.started_at,
+      bytes: bytes ?? null,
       issues: endedBadly ? 'Recording did not complete cleanly' : null,
       // Honest default: nothing has been transferred this session yet.
       transfer: 'on_robot',

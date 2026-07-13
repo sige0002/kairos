@@ -8,8 +8,8 @@
 // GET /runs/{id} and drives the real dora_runner job flows.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { apiGet } from '../../api/client';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { apiDelete, apiGet } from '../../api/client';
 import type { Page, RunSummary } from '../../api/types';
 import { useUiStore } from '../../store/uiStore';
 import { mapRunsToEpisodes } from './mapRuns';
@@ -59,6 +59,25 @@ export interface ReviewState {
   confirmArchive: () => void;
   cancelArchive: () => void;
 
+  // ---- physical delete (two-step: only on Excluded episodes) --------------
+  /** The excluded episodes eligible for permanent deletion (kept on disk). */
+  excludedRows: DecoratedEpisode[];
+  /** Single delete: open the confirm for one excluded run. */
+  requestDelete: (runId: string) => void;
+  pendingDeleteRow: DecoratedEpisode | null;
+  deleting: boolean;
+  deleteError: string | null;
+  confirmDelete: () => void;
+  cancelDelete: () => void;
+  /** Bulk delete of every excluded episode. */
+  requestBulkDelete: () => void;
+  bulkDeleteOpen: boolean;
+  bulkRunning: boolean;
+  bulkDone: number;
+  bulkFailures: { runId: string; error: string }[];
+  confirmBulkDelete: () => void;
+  cancelBulkDelete: () => void;
+
   adoptAllGood: () => void;
   decide: (d: Decision) => void;
   cycleFinalQuality: () => void;
@@ -76,6 +95,7 @@ export interface ReviewState {
 }
 
 export function useReviewState(): ReviewState {
+  const queryClient = useQueryClient();
   const runsQuery = useQuery({
     queryKey: REVIEW_RUNS_KEY,
     queryFn: ({ signal }) =>
@@ -220,6 +240,113 @@ export function useReviewState(): ReviewState {
     ? (decorated.find((r) => r.runId === pendingArchiveRunId)?.ep ?? null)
     : null;
 
+  // ---- physical delete (storage reclamation) ------------------------------
+  // Two-step, and only reachable on an already-Excluded episode: Exclude is a
+  // reversible review label (the recording stays on disk); Delete is the
+  // permanent DELETE /api/v1/runs/{id}. Purge all local overlay state for a
+  // gone run so nothing stale lingers, and drop the selection if it was the
+  // deleted one (the auto-select effect then picks the next episode).
+  const excludedRows = useMemo(() => decorated.filter((r) => r.isArchived), [decorated]);
+  const purgeLocal = useCallback((runId: string) => {
+    const drop = <T,>(prev: Record<string, T>) => {
+      if (!(runId in prev)) return prev;
+      const next = { ...prev };
+      delete next[runId];
+      return next;
+    };
+    setArchivedRunIds(drop);
+    setDecisions(drop);
+    setOverrides(drop);
+    setTransfers(drop);
+    setOverrideCounts(drop);
+    setSelectedRunId((cur) => (cur === runId ? null : cur));
+  }, []);
+
+  const [pendingDeleteRunId, setPendingDeleteRunId] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const requestDelete = useCallback((runId: string) => {
+    setDeleteError(null);
+    setPendingDeleteRunId(runId);
+  }, []);
+  const cancelDelete = useCallback(() => {
+    if (deleting) return;
+    setPendingDeleteRunId(null);
+    setDeleteError(null);
+  }, [deleting]);
+  const confirmDelete = useCallback(async () => {
+    if (!pendingDeleteRunId) return;
+    const runId = pendingDeleteRunId;
+    const row = decorated.find((r) => r.runId === runId);
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await apiDelete(`/runs/${encodeURIComponent(runId)}`);
+      purgeLocal(runId);
+      await queryClient.invalidateQueries({ queryKey: REVIEW_RUNS_KEY });
+      showToast(`Episode #${row?.ep ?? '?'} deleted from disk`);
+      setPendingDeleteRunId(null);
+    } catch (e) {
+      setDeleteError(e instanceof Error ? e.message : 'Delete failed');
+    } finally {
+      setDeleting(false);
+    }
+  }, [pendingDeleteRunId, decorated, purgeLocal, queryClient, showToast]);
+  const pendingDeleteRow = pendingDeleteRunId
+    ? (decorated.find((r) => r.runId === pendingDeleteRunId) ?? null)
+    : null;
+
+  // Bulk delete every excluded episode: sequential DELETEs with live progress,
+  // honestly reporting per-run failures (a failed run stays excluded, not
+  // silently dropped).
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+  const [bulkRunning, setBulkRunning] = useState(false);
+  const [bulkDone, setBulkDone] = useState(0);
+  const [bulkFailures, setBulkFailures] = useState<{ runId: string; error: string }[]>([]);
+  const requestBulkDelete = useCallback(() => {
+    setBulkFailures([]);
+    setBulkDone(0);
+    setBulkDeleteOpen(true);
+  }, []);
+  const cancelBulkDelete = useCallback(() => {
+    if (bulkRunning) return;
+    setBulkDeleteOpen(false);
+    setBulkFailures([]);
+    setBulkDone(0);
+  }, [bulkRunning]);
+  const confirmBulkDelete = useCallback(async () => {
+    const targets = decorated.filter((r) => r.isArchived);
+    if (!targets.length) {
+      setBulkDeleteOpen(false);
+      return;
+    }
+    setBulkRunning(true);
+    setBulkDone(0);
+    setBulkFailures([]);
+    const failures: { runId: string; error: string }[] = [];
+    const succeeded: string[] = [];
+    for (const t of targets) {
+      try {
+        await apiDelete(`/runs/${encodeURIComponent(t.runId)}`);
+        succeeded.push(t.runId);
+      } catch (e) {
+        failures.push({ runId: t.runId, error: e instanceof Error ? e.message : 'failed' });
+      }
+      setBulkDone((d) => d + 1);
+      setBulkFailures([...failures]);
+    }
+    succeeded.forEach(purgeLocal);
+    await queryClient.invalidateQueries({ queryKey: REVIEW_RUNS_KEY });
+    setBulkRunning(false);
+    if (failures.length === 0) {
+      showToast(`Deleted ${succeeded.length} excluded episode${succeeded.length === 1 ? '' : 's'} from disk`);
+      setBulkDeleteOpen(false);
+    } else {
+      // Keep the modal open so the per-run failures stay visible.
+      showToast(`Deleted ${succeeded.length}, ${failures.length} failed`);
+    }
+  }, [decorated, purgeLocal, queryClient, showToast]);
+
   // ---- decisions / overrides ---------------------------------------------
   const adoptAllGood = useCallback(() => {
     const candidates = decorated.filter((r) => !r.isArchived && r.effectiveQuality === 'Good' && !r.decision);
@@ -362,6 +489,21 @@ export function useReviewState(): ReviewState {
     pendingArchiveEp,
     confirmArchive,
     cancelArchive,
+
+    excludedRows,
+    requestDelete,
+    pendingDeleteRow,
+    deleting,
+    deleteError,
+    confirmDelete,
+    cancelDelete,
+    requestBulkDelete,
+    bulkDeleteOpen,
+    bulkRunning,
+    bulkDone,
+    bulkFailures,
+    confirmBulkDelete,
+    cancelBulkDelete,
 
     adoptAllGood,
     decide,

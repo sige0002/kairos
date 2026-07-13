@@ -23,6 +23,7 @@ import {
   formatWhen,
   spanMs,
 } from '../../features/inspect/inspect';
+import { formatBytes } from './format';
 
 // The orchestrator's RunDetail also carries message_count/bytes (models.Run),
 // which the shared api/types.ts RunDetail happens to omit — extend it locally
@@ -31,19 +32,6 @@ type RunDetailFull = RunDetail & { message_count?: number | null; bytes?: number
 
 function runDurationMs(run: RunDetailFull): number | undefined {
   return spanMs(run.started_at, run.ended_at);
-}
-
-function formatBytes(bytes?: number | null): string {
-  if (bytes === undefined || bytes === null) return '—';
-  if (bytes < 1024) return `${bytes} B`;
-  const units = ['KB', 'MB', 'GB', 'TB'];
-  let value = bytes / 1024;
-  let i = 0;
-  while (value >= 1024 && i < units.length - 1) {
-    value /= 1024;
-    i += 1;
-  }
-  return `${value.toFixed(1)} ${units[i]}`;
 }
 
 function Row({ label, children }: { label: string; children: ReactNode }) {
