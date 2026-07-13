@@ -64,3 +64,23 @@ test('a rename mutation (via setPlans) replaces the stored value', () => {
   expect(getPlans()[0]!.name).toBe('Renamed Project');
   expect(findProject(getPlans(), 'Renamed Project').tasks.length).toBeGreaterThan(0);
 });
+
+test('removing a project (via setPlans) drops it and persists the rest', () => {
+  const next = clonePlans(getPlans()).filter((p) => p.name !== 'Bin Picking');
+  setPlans(next);
+  expect(getPlans().some((p) => p.name === 'Bin Picking')).toBe(false);
+  const persisted = JSON.parse(window.localStorage.getItem(KEY)!) as { name: string }[];
+  expect(persisted.some((p) => p.name === 'Bin Picking')).toBe(false);
+});
+
+test('an empty catalog is not persisted — a reload restores the defaults', () => {
+  // Why the Settings editor blocks removing the LAST project: setPlans([]) does
+  // write an empty array this session, but readInitial() treats a zero-length
+  // catalog as absent and restores the seed, so an all-deleted catalog would
+  // silently reappear on reload (and the editor reads plans[idx].name, which an
+  // empty catalog would crash). Blocking the last removal is the honest fix.
+  setPlans([]);
+  expect(getPlans()).toEqual([]);
+  __rehydratePlansStore();
+  expect(getPlans().map((p) => p.name)).toEqual(DEFAULT_PLANS.map((p) => p.name));
+});

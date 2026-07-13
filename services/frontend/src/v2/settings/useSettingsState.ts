@@ -23,6 +23,7 @@ export interface SettingsState {
   selectTask: (i: number) => void;
   addProject: () => void;
   renameProject: () => void;
+  removeProject: (i: number) => void;
   addTask: () => void;
   renameTask: () => void;
   removeTask: (i: number) => void;
@@ -85,6 +86,36 @@ export function useSettingsState(): SettingsState {
     setPlans(next);
     showToast('Project renamed');
   }, [plans, ppIdx, showToast]);
+
+  const removeProject = useCallback((i: number) => {
+    const target = plans[i];
+    if (!target) return;
+    // A plan needs at least one project: an empty catalog would crash the
+    // editor (it reads plans[idx].name) and the store can't even persist it
+    // (readInitial falls back to the defaults for a zero-length array). So
+    // block the last removal with an honest note rather than half-doing it.
+    if (plans.length <= 1) {
+      showToast('Keep at least one project — the last one can’t be removed');
+      return;
+    }
+    const nTasks = target.tasks.length;
+    const ok = window.confirm(
+      `Remove project “${target.name}”? Its ${nTasks} task${nTasks === 1 ? '' : 's'} ` +
+        'will disappear from the Collect picker. Episodes already recorded keep their plan.',
+    );
+    if (!ok) return;
+    const next = clonePlans(plans);
+    next.splice(i, 1);
+    setPlans(next);
+    // Keep the currently-selected project selected when a different one is
+    // removed; otherwise land on the neighbour. Clamp into the shorter list.
+    setPlanProjIdx((prev) => {
+      const shifted = i < prev ? prev - 1 : prev;
+      return Math.max(0, Math.min(shifted, next.length - 1));
+    });
+    setPlanTaskIdx(0);
+    showToast(`Project “${target.name}” removed`);
+  }, [plans, showToast]);
 
   const addTask = useCallback(() => {
     const v = window.prompt('New task name', '');
@@ -152,6 +183,7 @@ export function useSettingsState(): SettingsState {
     selectTask,
     addProject,
     renameProject,
+    removeProject,
     addTask,
     renameTask,
     removeTask,

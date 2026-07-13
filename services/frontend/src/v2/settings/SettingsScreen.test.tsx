@@ -3,7 +3,7 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
 import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
 import { SettingsScreen } from './SettingsScreen';
-import { __resetPlansStore, getPlans } from '../plans';
+import { __resetPlansStore, getPlans, setPlans } from '../plans';
 
 // Runtime config (GET /api/v1/config): the ACTIVE robot's read-only values that
 // the Robots form surfaces (ROS_DOMAIN_ID + recorded topics).
@@ -278,4 +278,61 @@ test('Plans: adding a project writes the SHARED store (so Collect sees it)', asy
   // The UI shows it AND it landed in the shared store (what Collect reads).
   expect(screen.getByTestId('plan-project-name')).toHaveTextContent('Warehouse Sort');
   expect(getPlans().some((p) => p.name === 'Warehouse Sort')).toBe(true);
+});
+
+test('Plans: removing a project (confirmed) drops it from the list and the shared store', async () => {
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
+  renderWithClient(<SettingsScreen />);
+  await waitFor(() => expect(screen.getByTestId('robot-form')).toBeInTheDocument());
+  fireEvent.click(screen.getByTestId('settings-menu-item-1'));
+
+  // Default catalog has three projects; remove "Bin Picking" (row 1).
+  expect(within(screen.getByTestId('plan-project-1')).getByText('Bin Picking')).toBeInTheDocument();
+  fireEvent.click(within(screen.getByTestId('plan-project-1')).getByTitle('Remove project'));
+
+  // Gone from the list AND from the shared store the Collect pickers read.
+  expect(screen.queryByText('Bin Picking')).not.toBeInTheDocument();
+  expect(getPlans().some((p) => p.name === 'Bin Picking')).toBe(false);
+});
+
+test('Plans: cancelling the remove confirmation keeps the project', async () => {
+  vi.spyOn(window, 'confirm').mockReturnValue(false);
+  renderWithClient(<SettingsScreen />);
+  await waitFor(() => expect(screen.getByTestId('robot-form')).toBeInTheDocument());
+  fireEvent.click(screen.getByTestId('settings-menu-item-1'));
+
+  fireEvent.click(within(screen.getByTestId('plan-project-1')).getByTitle('Remove project'));
+
+  expect(within(screen.getByTestId('plan-project-1')).getByText('Bin Picking')).toBeInTheDocument();
+  expect(getPlans().some((p) => p.name === 'Bin Picking')).toBe(true);
+});
+
+test('Plans: the last project cannot be removed (honest note, no confirm dialog)', async () => {
+  const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+  setPlans([{ name: 'Only Project', tasks: [{ name: 'Only Task', conditions: ['Only Cond'] }] }]);
+  renderWithClient(<SettingsScreen />);
+  await waitFor(() => expect(screen.getByTestId('robot-form')).toBeInTheDocument());
+  fireEvent.click(screen.getByTestId('settings-menu-item-1'));
+
+  fireEvent.click(within(screen.getByTestId('plan-project-0')).getByTitle('Remove project'));
+
+  // Blocked before any confirm dialog; the project survives and we say why.
+  expect(confirmSpy).not.toHaveBeenCalled();
+  expect(getPlans().map((p) => p.name)).toEqual(['Only Project']);
+  expect(screen.getByTestId('settings-toast')).toHaveTextContent(/Keep at least one project/i);
+});
+
+test('Plans: removing the selected project falls back to a surviving one (no crash)', async () => {
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
+  renderWithClient(<SettingsScreen />);
+  await waitFor(() => expect(screen.getByTestId('robot-form')).toBeInTheDocument());
+  fireEvent.click(screen.getByTestId('settings-menu-item-1'));
+
+  // Tabletop Manipulation (row 0) is the default selection; remove it.
+  expect(screen.getByTestId('plan-project-name')).toHaveTextContent('Tabletop Manipulation');
+  fireEvent.click(within(screen.getByTestId('plan-project-0')).getByTitle('Remove project'));
+
+  // The detail panel shows the neighbour that slid into slot 0 — no crash.
+  expect(screen.getByTestId('plan-project-name')).toHaveTextContent('Bin Picking');
+  expect(getPlans().some((p) => p.name === 'Tabletop Manipulation')).toBe(false);
 });

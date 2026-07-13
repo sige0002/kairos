@@ -17,6 +17,7 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
     selectTask,
     addProject,
     renameProject,
+    removeProject,
     addTask,
     renameTask,
     removeTask,
@@ -40,21 +41,33 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
           {plans.map((p, i) => {
             const nConditions = p.tasks.reduce((n, t) => n + t.conditions.length, 0);
             return (
-              <button
+              <div
                 key={p.name}
-                type="button"
                 data-testid={`plan-project-${i}`}
-                onClick={() => selectProject(i)}
                 className={cn(
-                  'flex flex-col gap-0.5 rounded-[11px] border px-[13px] py-[11px] text-left',
+                  'flex items-center gap-2 rounded-[11px] border px-[13px] py-[11px]',
                   i === planProjIdx ? 'border-teal-200 bg-teal-50' : 'border-gray-100',
                 )}
               >
-                <span className="text-[13px] font-semibold text-gray-900">{p.name}</span>
-                <span className="text-[11.5px] text-gray-400">
-                  {p.tasks.length} task{p.tasks.length === 1 ? '' : 's'} · {nConditions} conditions
-                </span>
-              </button>
+                <button
+                  type="button"
+                  onClick={() => selectProject(i)}
+                  className="flex min-w-0 flex-1 flex-col gap-0.5 text-left"
+                >
+                  <span className="text-[13px] font-semibold text-gray-900">{p.name}</span>
+                  <span className="text-[11.5px] text-gray-400">
+                    {p.tasks.length} task{p.tasks.length === 1 ? '' : 's'} · {nConditions} conditions
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => removeProject(i)}
+                  title="Remove project"
+                  className="shrink-0 px-0.5 text-xs text-gray-300 hover:text-gray-500"
+                >
+                  ✕
+                </button>
+              </div>
             );
           })}
           <button
