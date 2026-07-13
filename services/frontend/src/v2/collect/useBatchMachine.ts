@@ -205,6 +205,7 @@ type Action =
   | { type: 'PICK_END_REASON'; reason: string }
   | { type: 'CONFIRM_END_BATCH' }
   | { type: 'START_NEXT_BATCH' }
+  | { type: 'RESET_BATCH' }
   | { type: 'SET_CONDITION'; condition: string }
   | { type: 'SET_PROJECT'; project: string; task: string; condition: string }
   | { type: 'SET_TASK'; task: string; condition: string }
@@ -325,6 +326,30 @@ function reducer(state: MachineState, action: Action): MachineState {
         phase: 'ready',
         elapsedMs: 0,
         recWarning: false,
+        endReason: '',
+        currentRunId: null,
+      };
+    case 'RESET_BATCH':
+      // Close the current batch and start a fresh one: counts back to 0/30,
+      // batch number bumped (same as START_NEXT_BATCH), a new server batch
+      // created lazily on the next start. The recordings already taken are NOT
+      // touched — they stay in Review. Also clears any in-flight/result state so
+      // reset works from any phase (the hook stops/cancels a live recording
+      // first). Allowed from every phase (no guard) since it's a deliberate,
+      // confirmed action.
+      return {
+        ...state,
+        episodes: [],
+        recordedCount: 0,
+        batchNum: state.batchNum + 1,
+        batchId: null,
+        phase: 'ready',
+        elapsedMs: 0,
+        recWarning: false,
+        pendingTask: null,
+        failReason: '',
+        startError: null,
+        stopError: null,
         endReason: '',
         currentRunId: null,
       };
@@ -637,12 +662,14 @@ export interface BatchMachine {
   endModalOpen: boolean;
   issueModalOpen: boolean;
   condModalOpen: boolean;
+  resetModalOpen: boolean;
   toggleBatchMenu: () => void;
   openProjPicker: () => void;
   openTaskPicker: () => void;
   openCondModal: () => void;
   openEndModal: () => void;
   openIssueModal: () => void;
+  openResetModal: () => void;
   closeModals: () => void;
 
   // Discard-episode confirmation (real DELETE /runs/{id} — v1 LiveTab parity).
@@ -682,6 +709,8 @@ export interface BatchMachine {
   confirmEndBatch: () => void;
   submitIssue: () => void;
   startNextBatch: () => void;
+  /** Reset the batch (counts → 0/30, recordings kept in Review). */
+  resetBatch: () => void;
   pickProject: (name: string) => void;
   pickTask: (name: string) => void;
   /** Set a free-text task the operator typed (v1 parity — recording accepted any
@@ -1076,6 +1105,34 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     showToast(`Batch ${nextBatch} ready — same condition, ${EPISODES_PER_BATCH} episodes`);
   }, [state.phase, state.batchNum, showToast, ensureBatch]);
 
+  // Reset the batch: close the current one and start fresh (counts → 0/30). The
+  // recordings already taken are NOT deleted — they stay in Review. Unlike
+  // start-next-batch, the new server batch is created LAZILY on the next start
+  // (ensureBatch), not now. Works with the API down: the local reset always
+  // happens and the toast says whether the server batch was closed.
+  const resetBatch = useCallback(() => {
+    // Abort any in-flight capture first so nothing is orphaned (as end-early).
+    if (state.phase === 'arming') {
+      cancelledStartRef.current = true;
+    } else if (state.phase === 'recording' || state.phase === 'saving' || state.phase === 'quickcheck') {
+      void apiPost('/record/stop', {}).catch(() => {});
+    }
+    const hadBatch = !!state.batchId;
+    if (state.batchId) {
+      void patchBatch(state.batchId, { status: 'ended_early', ended_reason: 'reset' }).catch(
+        () => {},
+      );
+    }
+    dispatch({ type: 'RESET_BATCH' });
+    setResetModalOpen(false);
+    setBatchMenuOpen(false);
+    showToast(
+      hadBatch
+        ? 'Batch reset — recordings already taken stay in Review'
+        : 'Batch reset (local) — recordings already taken stay in Review',
+    );
+  }, [state.phase, state.batchId, showToast]);
+
   // ---- context: project / task / condition ----------------------------------
   const ctxEditable =
     state.phase === 'ready' ||
@@ -1090,6 +1147,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   const [endModalOpen, setEndModalOpen] = useState(false);
   const [issueModalOpen, setIssueModalOpen] = useState(false);
   const [condModalOpen, setCondModalOpen] = useState(false);
+  const [resetModalOpen, setResetModalOpen] = useState(false);
   const [adviceIdx, setAdviceIdx] = useState(0);
 
   const toggleBatchMenu = useCallback(() => setBatchMenuOpen((v) => !v), []);
@@ -1118,10 +1176,15 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     setIssueModalOpen(true);
     setBatchMenuOpen(false);
   }, []);
+  const openResetModal = useCallback(() => {
+    setResetModalOpen(true);
+    setBatchMenuOpen(false);
+  }, []);
   const closeModals = useCallback(() => {
     setEndModalOpen(false);
     setIssueModalOpen(false);
     setCondModalOpen(false);
+    setResetModalOpen(false);
     setDiscardModalOpen(false);
   }, []);
   const submitIssue = useCallback(() => {
@@ -1234,12 +1297,14 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     endModalOpen,
     issueModalOpen,
     condModalOpen,
+    resetModalOpen,
     toggleBatchMenu,
     openProjPicker,
     openTaskPicker,
     openCondModal,
     openEndModal,
     openIssueModal,
+    openResetModal,
     closeModals,
 
     discardModalOpen,
@@ -1269,6 +1334,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     confirmEndBatch,
     submitIssue,
     startNextBatch,
+    resetBatch,
     pickProject,
     pickTask,
     pickCustomTask,

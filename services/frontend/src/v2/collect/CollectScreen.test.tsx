@@ -363,3 +363,21 @@ test('Collect degrades gracefully when its selected project is absent from the s
   fireEvent.click(screen.getByTitle('Change task (from plan)'));
   expect(screen.getByRole('button', { name: 'Only Task' })).toBeInTheDocument();
 });
+
+test('Batch menu → Reset batch opens a confirm modal that resets the batch', async () => {
+  mockFetch({ run_id: 'run_1', state: 'recording' });
+  renderWithClient(<CollectScreen />);
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
+
+  fireEvent.click(screen.getByText('Batch menu'));
+  fireEvent.click(screen.getByText('Reset batch…'));
+
+  // v2-style confirmation: explains counts reset + recordings kept in Review.
+  expect(screen.getByText('Reset batch 1?')).toBeInTheDocument();
+  expect(screen.getByText(/stay in Review/)).toBeInTheDocument();
+
+  fireEvent.click(screen.getByTestId('reset-batch-confirm'));
+  // Modal closes and the batch number advances (2 / 5 in the context bar).
+  await waitFor(() => expect(screen.queryByText('Reset batch 1?')).toBeNull());
+  expect(screen.getByText('2 / 5')).toBeInTheDocument();
+});

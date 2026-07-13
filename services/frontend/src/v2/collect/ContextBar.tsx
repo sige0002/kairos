@@ -302,6 +302,7 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
           <MenuItem onClick={machine.openEndModal} danger>
             End batch early…
           </MenuItem>
+          <MenuItem onClick={machine.openResetModal}>Reset batch…</MenuItem>
           <MenuItem onClick={machine.openIssueModal}>Report issue…</MenuItem>
           <MenuItem onClick={machine.openCondModal} disabled={!machine.condAllowed}>
             Change condition…

@@ -4,7 +4,7 @@
 
 import { useState } from 'react';
 import { Button, Modal, cn } from '../../components/ui';
-import { END_REASONS, type BatchMachine } from './useBatchMachine';
+import { END_REASONS, EPISODES_PER_BATCH, type BatchMachine } from './useBatchMachine';
 import { findTask, usePlans } from '../plans';
 
 function ReasonChip({
@@ -83,6 +83,35 @@ function EndBatchModal({ machine }: { machine: BatchMachine }) {
           ))}
         </div>
       </div>
+    </Modal>
+  );
+}
+
+function ResetBatchModal({ machine }: { machine: BatchMachine }) {
+  return (
+    <Modal
+      open={machine.resetModalOpen}
+      onClose={machine.closeModals}
+      title={`Reset batch ${machine.batchNum}?`}
+      footer={
+        <>
+          <Button variant="ghost" onClick={machine.closeModals}>
+            Cancel
+          </Button>
+          <Button data-testid="reset-batch-confirm" onClick={machine.resetBatch}>
+            Reset batch
+          </Button>
+        </>
+      }
+    >
+      <p className="text-[12.5px] leading-relaxed text-gray-600">
+        This closes the current batch and starts a fresh one — the counter returns to{' '}
+        <span className="font-mono text-gray-800">0 / {EPISODES_PER_BATCH}</span>.
+      </p>
+      <p className="mt-2 text-[12.5px] leading-relaxed text-gray-600">
+        The <strong className="text-gray-700">{machine.stats.nRecorded} recording(s)</strong> already
+        taken are <strong className="text-gray-700">not deleted</strong> — they stay in Review.
+      </p>
     </Modal>
   );
 }
@@ -228,6 +257,7 @@ export function CollectModals({ machine }: { machine: BatchMachine }) {
   return (
     <>
       <EndBatchModal machine={machine} />
+      <ResetBatchModal machine={machine} />
       <IssueModal machine={machine} />
       <ConditionModal machine={machine} />
       <DiscardModal machine={machine} />

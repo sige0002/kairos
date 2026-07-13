@@ -965,3 +965,100 @@ test('discarding a run removes its bridge entry (no stale outcome lingers)', asy
     ),
   ).toBe(true);
 });
+
+// ---------------------------------------------------------------------------
+// Batch reset: close the current batch, counts → 0/30, recordings kept.
+// ---------------------------------------------------------------------------
+
+test('resetBatch clears the counts, PATCHes the batch ended_early=reset, and deletes nothing', async () => {
+  const { calls } = phase2Fetch({ runId: 'run_r', batchId: 'batch_r' });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+
+  act(() => result.current.startRecording());
+  await waitFor(() => expect(result.current.phase).toBe('recording'));
+  act(() => result.current.stopRecording());
+  await waitFor(() => expect(result.current.phase).toBe('result'), { timeout: 4000 });
+  act(() => result.current.pickSuccess());
+  act(() => result.current.confirmEpisode());
+  await waitFor(() => expect(result.current.stats.nRecorded).toBe(1));
+  const batchNumBefore = result.current.batchNum;
+
+  act(() => result.current.resetBatch());
+
+  // Counts back to 0/30, batch number bumped, back to a ready fresh batch.
+  expect(result.current.stats.nRecorded).toBe(0);
+  expect(result.current.stats.epNext).toBe(1);
+  expect(result.current.batchNum).toBe(batchNumBefore + 1);
+  expect(result.current.phase).toBe('ready');
+  expect(result.current.episodes).toHaveLength(0);
+
+  // The old server batch is closed as ended_early='reset' (best-effort) …
+  await waitFor(() =>
+    expect(
+      calls.some(
+        (c) =>
+          c.url.includes('/batches/batch_r') &&
+          c.method === 'PATCH' &&
+          c.body?.status === 'ended_early' &&
+          c.body?.ended_reason === 'reset',
+      ),
+    ).toBe(true),
+  );
+  // … and NO recording was deleted (they stay in Review).
+  expect(calls.some((c) => c.method === 'DELETE')).toBe(false);
+});
+
+test('after a reset, the next recording start lazily creates a fresh server batch', async () => {
+  const { calls } = phase2Fetch({ runId: 'run_r', batchId: 'batch_r' });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+
+  act(() => result.current.startRecording()); // creates batch #1
+  await waitFor(() => expect(result.current.phase).toBe('recording'));
+  act(() => result.current.stopRecording());
+  await waitFor(() => expect(result.current.phase).toBe('result'), { timeout: 4000 });
+  act(() => result.current.pickSuccess());
+  act(() => result.current.confirmEpisode());
+  await waitFor(() => expect(result.current.stats.nRecorded).toBe(1));
+
+  act(() => result.current.resetBatch());
+  expect(result.current.stats.nRecorded).toBe(0);
+
+  const postsBefore = calls.filter((c) => c.url.includes('/batches') && c.method === 'POST').length;
+  act(() => result.current.startRecording()); // must lazily create batch #2
+  await waitFor(() => expect(result.current.phase).toBe('recording'));
+  await waitFor(() =>
+    expect(
+      calls.filter((c) => c.url.includes('/batches') && c.method === 'POST').length,
+    ).toBe(postsBefore + 1),
+  );
+});
+
+test('reset works with the API down (local-only reset, recordings untouched)', async () => {
+  // /batches and /episodes reject; /record works so we can record locally.
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/batches')) return Promise.reject(new Error('api down'));
+    if (url.includes('/episodes')) return Promise.reject(new Error('api down'));
+    if (url.includes('/record/start')) {
+      return Promise.resolve(jsonResponse({ run_id: 'run_x', state: 'recording' }));
+    }
+    if (url.includes('/record/stop')) {
+      return Promise.resolve(jsonResponse({ run_id: 'run_x', state: 'completed' }));
+    }
+    return Promise.resolve(jsonResponse({}));
+  });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+
+  act(() => result.current.startRecording());
+  await waitFor(() => expect(result.current.phase).toBe('recording'));
+  act(() => result.current.stopRecording());
+  await waitFor(() => expect(result.current.phase).toBe('result'), { timeout: 4000 });
+  act(() => result.current.pickSuccess());
+  act(() => result.current.confirmEpisode());
+  await waitFor(() => expect(result.current.stats.nRecorded).toBe(1));
+
+  // Reset still works locally even though every batch/episode call failed.
+  act(() => result.current.resetBatch());
+  expect(result.current.stats.nRecorded).toBe(0);
+  expect(result.current.phase).toBe('ready');
+});
