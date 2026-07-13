@@ -24,7 +24,8 @@
 ## 公開 API（`/api/v1`、無認証）
 
 - 記録: `POST /api/v1/record/start`、`POST /api/v1/record/stop`、`GET /api/v1/record/status`（recorder へプロキシ）
-- Run: `GET /api/v1/runs`（カーソルページング）、`GET /api/v1/runs/{id}`
+- Run: `GET /api/v1/runs`（カーソルページング）、`GET /api/v1/runs/{id}`（Console v2 Phase 2 で **各 run に `episode` サマリを additive に同梱**。下記「Batch / Episode」）
+- Batch / Episode（**Console v2 Phase 2**。Collect の進行と Review の判断を永続化）: `POST /api/v1/batches`、`PATCH /api/v1/batches/{id}`、`GET /api/v1/batches?status=`、`GET /api/v1/batches/{id}`、`POST /api/v1/episodes`、`PATCH /api/v1/episodes/{id}`（下記「Batch / Episode」）
 - Topic: `GET /api/v1/topics`（一覧。**情報源は `topic_monitor` の `GET /topics` discovery をプロキシ**: `name` / `type` / `publisher_count` / `subscriber_count` / `qos` / `last_seen`）、`GET /api/v1/topics/status`（monitor 由来の live metrics）
 - イベント: `GET /api/v1/events`（**SSE 集約**。契約は下記）
 - Pipeline / Job（stage3。詳細は [dora_runner](dora_runner.md)）: `GET /api/v1/pipelines`、`POST /api/v1/jobs`、`GET /api/v1/jobs/{id}/status`、`GET /api/v1/jobs/{id}/result`、`POST /api/v1/jobs/{id}/cancel`
@@ -53,6 +54,25 @@
 - **start 時の operator / task**: 空のときは `unknown_operator` / `unknown_task` を既定値とする（データセットの保存先 `data/<operator>/<task>` が常に keyable になるよう、null コンポーネントを排除）。
 - **`record_status` SSE**: record start / stop の状態遷移ごとに `record_status` イベントを発行する（下記 SSE 契約）。
 - **`GET /api/v1/runs/{id}` は RunDetail を返す**: run 行に加えて、ディスク上のサイドカーを best-effort で同梱する — `manifest`（recorder の `manifest.json`）/ `validation`（`fast_validation` レポート）/ `dataset_stats`（`dataset_export` レポート）/ `loss`（`loss_report` レポート）。各ファイルが無ければ `null`（孤児 run でもクリーンに返る）。
+
+## Batch / Episode（Console v2 Phase 2）
+
+Collect の Batch/Episode 進行・タスク結果・品質判断を orchestrator に**永続化**し、Review が端末に依存せず実データを表示できるようにする（従来のブラウザ内ブリッジ `episodeBridge` を置換）。**既存の runs / jobs には手を入れない**。episode は run への参照を持つ別テーブルで、録画経路（record/start → stop → MCAP）は無変更 = 録画の安全性に影響しない。
+
+- **データモデル**（orchestrator の既存 SQLite に 2 テーブル追加）:
+  - `batches`: `batch_id`（`batch_YYYYMMDD_HHMMSS`）/ `robot` / `project` / `task` / `condition` / `operator` / `target_episodes`（既定 30）/ `status`（`active` | `completed` | `ended_early`）/ `ended_reason?` / `created_at` / `ended_at?`。`project` は Plan 由来の文字列（**Plan 自体のモデル化は Phase 2.5 に先送り**）。
+  - `episodes`: `episode_id`（`ep_<uuid>`）/ `batch_id` / `run_id`（**UNIQUE** = 1 episode = 1 run）/ `index_in_batch` / `task_result`（`success` | `failure`）/ `failure_reason?` / `quality`（`good` | `needs_review` | `not_usable`）/ `quality_source`（`operator` | `quick_check` | `validator`。既定 `operator`）/ `review_status`（`pending` | `adopted` | `excluded`。既定 `pending`）/ `created_at` / `updated_at`。
+  - FK はコード側で担保（SQLite の FK pragma に依存しない）。`DELETE /api/v1/runs/{id}` 時は該当 episode を**コードでカスケード削除**する。
+- **エンドポイント**:
+  - `POST /api/v1/batches` — バッチ開始。body `{ project, task, condition?, operator?, robot?, target_episodes=30 }` → `201`（`robot` 省略時は **active robot** で補完）。`batch_id` は同秒衝突時にサフィックス再採番。
+  - `PATCH /api/v1/batches/{id}` — 途中終了（`status` / `ended_reason`）・`condition` 変更。**終端 status（`completed` / `ended_early`）到達時に `ended_at` を一度だけスタンプ**。不整合な遷移は緩く許容（ハード拒否しない）。不在は `404`。
+  - `GET /api/v1/batches?status=` — バッチ一覧（**新しい順**）。各要素に `episode_count` と**コンパクトな episodes サマリ**（`index` / `run_id` / `task_result` / `quality` / `review_status`）を同梱（リロード時のアクティブバッチ復元に使う）。
+  - `GET /api/v1/batches/{id}` — バッチ全体 ＋ **episodes（フル）**。不在は `404`。
+  - `POST /api/v1/episodes` — Collect Save 時。body `{ batch_id, run_id, index_in_batch, task_result, failure_reason?, quality, quality_source='operator' }` → `201`。batch / run が未知なら `404`、run に既に episode があれば **`409`**（`episode_exists`）。
+  - `PATCH /api/v1/episodes/{id}` — Review の Adopt/Exclude（`review_status`）・品質/結果の上書き。不在は `404`。書き込みごとに `updated_at` を更新。
+- **runs への JOIN**: `GET /api/v1/runs` / `GET /api/v1/runs/{id}` は各 run に `episode` サマリ（`episode_id` / `batch_id` / `index_in_batch` / `task_result` / `failure_reason` / `quality` / `review_status`）を **additive に同梱**（無ければ `null`）。既存フィールドは不変。一覧はバッチ一括取得で N+1 を回避。
+- **SSE**: 既存 `record_status` / `resync` で足りるため**新イベントは追加しない**（必要になれば Phase 2b）。
+- **Phase 2.5 TBD**: UX 仕様の Session > Batch > Episode のうち **Session は今回作らない**（運用実績を見て判断）。Plan（Projects/Tasks/Conditions）の DB 化・Settings からの編集保存も Phase 2.5。
 
 ## 収録設定のフル編集（`GET/PUT /api/v1/config/recording`）
 
@@ -95,7 +115,9 @@ UI（Config タブ）から `RECORDING_CONFIG` 全体を編集・永続化する
   - `POST /api/v1/validation/templates/generate` body = `{ run_id }` → `{ name, version, required_topics: [ ... ] }`（雛形）
 - ワンクリック検証プリセット:
   - `GET /api/v1/validation/presets` → `{ items: [ { id, name, description, pipeline, params, total, pending, pending_run_ids: [ run_id ] } ] }`。静的フィールド（`id` / `name` / `description` / `pipeline` / `params`）は機体の `validation_presets.yaml`（[config](config.md)）由来。動的フィールドはリクエスト毎に算出＝完了収録（`recorded/` に残る run）のうち **その pipeline の `report/<pipeline>/<run_id>/summary.json` がまだ無い**もの（`pending_run_ids`）。UI はこれを 1 クリックで一括実行する（`POST /api/v1/jobs` を run ごと）。読み取り専用（状態は変えない）。
-- run（`GET /api/v1/runs/{id}` = RunDetail）: `{ run_id, state, started_at, ended_at?: string|null, operator?, task?, topics: [ { name, type, qos } ], compression, split?: object|null, error?: { code, message }|null, manifest?: object|null, validation?: object|null, dataset_stats?: object|null, loss?: object|null }`（末尾 4 つはディスク上サイドカー由来。不在で `null`）。
+- run（`GET /api/v1/runs/{id}` = RunDetail）: `{ run_id, state, started_at, ended_at?: string|null, operator?, task?, topics: [ { name, type, qos } ], compression, split?: object|null, error?: { code, message }|null, episode?: object|null, manifest?: object|null, validation?: object|null, dataset_stats?: object|null, loss?: object|null }`（`episode` は Phase 2 の JOIN。末尾 4 つはディスク上サイドカー由来。いずれも不在で `null`）。
+- batch（`GET /api/v1/batches` の要素 = BatchSummary）: `{ batch_id, robot?, project, task, condition?, operator?, target_episodes, status, ended_reason?, created_at, ended_at?, episode_count, episodes: [ { index, run_id, task_result, quality, review_status } ] }`。`GET /api/v1/batches/{id}`（BatchDetail）は `episodes` がフル episode 配列。
+- episode（`POST/PATCH /api/v1/episodes`）: `{ episode_id, batch_id, run_id, index_in_batch, task_result, failure_reason?, quality, quality_source, review_status, created_at, updated_at }`。
 - job（`GET /api/v1/jobs/{id}/status`）: `{ job_id, run_id, pipeline, state, progress, logs_tail }`（[dora_runner](dora_runner.md)）。
 
 ## フレームワーク / 永続
