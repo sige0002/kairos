@@ -138,14 +138,18 @@ export const MB_PER_S = 6.8; // demo write-rate used for the recording MB counte
 interface MachineState {
   phase: Phase;
   episodes: EpisodeRecord[];
-  batchNum: number;
+  /** Server-assigned batch number (per robot+local-date), the ONE human-readable
+   *  batch number shared with Review/Datasets. Null until the batch is created on
+   *  the API (lazily, on the first recording), so an empty reset never inflates
+   *  it — the old local monotone counter is gone. */
+  batchSeq: number | null;
   /** Monotone count of episodes recorded this batch — drives EVERY count/next
    *  number the operator sees. Only ever grows (per confirm), never lowered by a
    *  Review exclude/delete: `episodes` (used for the quality/task tallies + strip
    *  chips) may shrink on a delete-restore, but the recorded count must not. */
   recordedCount: number;
-  /** Server batch id (Phase 2), null until the batch is created on the API. The
-   *  display counter is `batchNum`; this is the real key for episode POSTs. */
+  /** Server batch id (Phase 2), null until the batch is created on the API; the
+   *  real key for episode POSTs. */
   batchId: string | null;
   elapsedMs: number;
   recWarning: boolean;
@@ -169,7 +173,7 @@ function createInitialState(): MachineState {
   return {
     phase: 'ready',
     episodes: [],
-    batchNum: 1,
+    batchSeq: null,
     recordedCount: 0,
     batchId: null,
     elapsedMs: 0,
@@ -209,7 +213,7 @@ type Action =
   | { type: 'SET_CONDITION'; condition: string }
   | { type: 'SET_PROJECT'; project: string; task: string; condition: string }
   | { type: 'SET_TASK'; task: string; condition: string }
-  | { type: 'SET_BATCH_ID'; batchId: string | null };
+  | { type: 'SET_BATCH'; batchId: string | null; batchSeq: number | null };
 
 function reducer(state: MachineState, action: Action): MachineState {
   switch (action.type) {
@@ -319,9 +323,9 @@ function reducer(state: MachineState, action: Action): MachineState {
         ...state,
         episodes: [],
         recordedCount: 0,
-        batchNum: state.batchNum + 1,
-        // A new display batch needs a fresh server batch; cleared here and
-        // re-created lazily on the next start (see ensureBatch in the hook).
+        // A new batch needs a fresh server batch (and its own new batch_seq);
+        // both cleared here and re-created lazily on the next start (ensureBatch).
+        batchSeq: null,
         batchId: null,
         phase: 'ready',
         elapsedMs: 0,
@@ -330,18 +334,17 @@ function reducer(state: MachineState, action: Action): MachineState {
         currentRunId: null,
       };
     case 'RESET_BATCH':
-      // Close the current batch and start a fresh one: counts back to 0/30,
-      // batch number bumped (same as START_NEXT_BATCH), a new server batch
-      // created lazily on the next start. The recordings already taken are NOT
-      // touched — they stay in Review. Also clears any in-flight/result state so
-      // reset works from any phase (the hook stops/cancels a live recording
-      // first). Allowed from every phase (no guard) since it's a deliberate,
-      // confirmed action.
+      // Close the current batch and start a fresh one: counts back to 0/30, the
+      // batch number cleared (a NEW server batch_seq is assigned lazily on the
+      // next recording — an empty reset never inflates the number). The
+      // recordings already taken are NOT touched — they stay in Review. Also
+      // clears any in-flight/result state so reset works from any phase (the
+      // hook stops/cancels a live recording first).
       return {
         ...state,
         episodes: [],
         recordedCount: 0,
-        batchNum: state.batchNum + 1,
+        batchSeq: null,
         batchId: null,
         phase: 'ready',
         elapsedMs: 0,
@@ -359,8 +362,8 @@ function reducer(state: MachineState, action: Action): MachineState {
       return { ...state, project: action.project, task: action.task, condition: action.condition };
     case 'SET_TASK':
       return { ...state, task: action.task, condition: action.condition };
-    case 'SET_BATCH_ID':
-      return { ...state, batchId: action.batchId };
+    case 'SET_BATCH':
+      return { ...state, batchId: action.batchId, batchSeq: action.batchSeq };
     default:
       return state;
   }
@@ -390,11 +393,11 @@ export { reducer as batchMachineReducer, createInitialState as createBatchMachin
 const BATCH_STORAGE_KEY = 'kairos.collect.batch';
 
 interface PersistedBatch {
-  batchNum: number;
+  /** Server batch number (null until created / API down). */
+  batchSeq: number | null;
   /** Monotone recorded count (survives an API-down reload; see the note above). */
   recordedCount: number;
-  /** Server batch id, mirrored so a reload can match `batchNum` back to it when
-   *  the API is reachable, and so an API-down reload can still resume. */
+  /** Server batch id, mirrored so an API-down reload can still resume. */
   batchId: string | null;
   episodes: EpisodeRecord[];
   project: string;
@@ -405,7 +408,7 @@ interface PersistedBatch {
 /** Serialize just the durable subset (used both to persist and to dedupe). */
 function serializeDurable(state: MachineState): string {
   const blob: PersistedBatch = {
-    batchNum: state.batchNum,
+    batchSeq: state.batchSeq,
     recordedCount: state.recordedCount,
     batchId: state.batchId,
     episodes: state.episodes,
@@ -467,7 +470,7 @@ function readInitialState(): MachineState {
     return {
       ...base,
       phase,
-      batchNum: typeof blob.batchNum === 'number' ? blob.batchNum : base.batchNum,
+      batchSeq: typeof blob.batchSeq === 'number' ? blob.batchSeq : null,
       recordedCount,
       batchId: typeof blob.batchId === 'string' ? blob.batchId : null,
       episodes,
@@ -540,8 +543,9 @@ function serverEpisodeToRecord(ep: BatchEpisodeSummary): EpisodeRecord {
 function applyServerRestore(batch: BatchSummary | null): void {
   if (!batch) return;
   const episodes = batch.episodes.map(serverEpisodeToRecord);
-  // Recover the display counter only when it belongs to this same server batch.
-  const batchNum = currentState.batchId === batch.batch_id ? currentState.batchNum : 1;
+  // The batch number is the server's own batch_seq (null on an older backend
+  // that doesn't serve it yet → honest "—" fallback in the UI).
+  const batchSeq = typeof batch.batch_seq === 'number' ? batch.batch_seq : null;
   // Monotone recorded count: the server's `episodes_recorded` (which excludes
   // nothing and never drops on a Review delete) — or, on an older backend, the
   // episode list's own lower bound. NEVER lower the count already held locally.
@@ -554,7 +558,7 @@ function applyServerRestore(batch: BatchSummary | null): void {
   currentState = {
     ...createInitialState(),
     batchId: batch.batch_id,
-    batchNum,
+    batchSeq,
     recordedCount,
     project: batch.project,
     task: batch.task,
@@ -618,7 +622,9 @@ export interface RecordSelection {
 export interface BatchMachine {
   phase: Phase;
   episodes: EpisodeRecord[];
-  batchNum: number;
+  /** Server batch number (null before the batch is created / on an older
+   *  backend). The UI shows "Batch {batchSeq}" or an honest "—" fallback. */
+  batchSeq: number | null;
   elapsedMs: number;
   recWarning: boolean;
   pendingTask: 'ok' | 'fail' | null;
@@ -806,7 +812,13 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
       operator: op || undefined,
       target_episodes: EPISODES_PER_BATCH,
     })
-      .then((batch) => dispatch({ type: 'SET_BATCH_ID', batchId: batch.batch_id }))
+      .then((batch) =>
+        dispatch({
+          type: 'SET_BATCH',
+          batchId: batch.batch_id,
+          batchSeq: typeof batch.batch_seq === 'number' ? batch.batch_seq : null,
+        }),
+      )
       .catch(() => {
         // API unreachable — the episode save will fall back to the bridge.
       })
@@ -953,7 +965,9 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     const needsReview = state.recWarning;
     const runId = state.currentRunId;
     const batchId = state.batchId;
-    const batchNum = state.batchNum;
+    // The bridge fallback (used only when the episode POST fails) keeps a local
+    // grouping number; use the server batch_seq when known, else a safe 1.
+    const bridgeBatchNum = state.batchSeq ?? 1;
     dispatch({ type: 'CONFIRM_EPISODE' });
 
     // Persist the episode to the server (Phase 2). On any failure keep the local
@@ -965,7 +979,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
           quality: needsReview ? 'review' : 'good',
           taskResult: isFail ? 'fail' : 'ok',
           failReason: isFail ? reason || undefined : undefined,
-          batchNum,
+          batchNum: bridgeBatchNum,
           episodeIndex: nextIndex,
           savedAt: Date.now(),
         });
@@ -1017,7 +1031,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     state.recordedCount,
     state.currentRunId,
     state.batchId,
-    state.batchNum,
+    state.batchSeq,
     showToast,
   ]);
 
@@ -1098,12 +1112,12 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
 
   const startNextBatch = useCallback(() => {
     if (state.phase !== 'ended' && state.phase !== 'completed') return;
-    const nextBatch = state.batchNum + 1;
     dispatch({ type: 'START_NEXT_BATCH' });
-    // START_NEXT_BATCH cleared batchId; create the new server batch now.
+    // START_NEXT_BATCH cleared batchId/batchSeq; create the new server batch now
+    // (its batch_seq is assigned server-side).
     ensureBatch();
-    showToast(`Batch ${nextBatch} ready — same condition, ${EPISODES_PER_BATCH} episodes`);
-  }, [state.phase, state.batchNum, showToast, ensureBatch]);
+    showToast(`Next batch ready — same condition, ${EPISODES_PER_BATCH} episodes`);
+  }, [state.phase, showToast, ensureBatch]);
 
   // Reset the batch: close the current one and start fresh (counts → 0/30). The
   // recordings already taken are NOT deleted — they stay in Review. Unlike
@@ -1267,7 +1281,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   return {
     phase: state.phase,
     episodes: state.episodes,
-    batchNum: state.batchNum,
+    batchSeq: state.batchSeq,
     elapsedMs: state.elapsedMs,
     recWarning: state.recWarning,
     pendingTask: state.pendingTask,

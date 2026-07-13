@@ -4,26 +4,10 @@
 // value, matching the mock's `effQuality`/`effTask`.
 
 import { Badge, cn, type Tone } from '../../components/ui';
+import { QualityChip, ReviewStatusChip, TaskResultChip } from '../episodeChips';
 import { formatHms, formatTimeOfDay } from './format';
-import type { DecoratedEpisode, Quality, ReviewStatus, TaskResult } from './types';
+import type { DecoratedEpisode } from './types';
 import type { ReviewState } from './useReviewState';
-
-const STATUS_TONE: Record<ReviewStatus, Tone> = {
-  adopted: 'green',
-  excluded: 'red',
-  pending: 'gray',
-};
-
-/** Adopt/exclude status chip (server review_status + session override). */
-function StatusChip({ status, testId }: { status: ReviewStatus; testId: string }) {
-  return (
-    <span data-testid={testId} className="justify-self-end">
-      <Badge tone={STATUS_TONE[status]} className="w-fit whitespace-nowrap">
-        {status.toUpperCase()}
-      </Badge>
-    </span>
-  );
-}
 
 // A trash can reads as permanent deletion — this action never deletes
 // anything (the recording is kept and restorable), so it gets its own glyph
@@ -51,15 +35,8 @@ function ArchiveIcon({ size = 14 }: { size?: number }) {
   );
 }
 
-function qualityTone(q: Quality): Tone {
-  if (q === 'Good') return 'green';
-  if (q === 'Needs review') return 'amber';
-  return 'red';
-}
-
-// Quality/Task render the *effective* (post-override) value; both are null
-// until either the real "Not usable" verdict or an operator override sets one,
-// and a muted "—" stands in for the unset state (no fabricated label).
+// Quality renders the *effective* (post-override) value via the shared chip; an
+// archived (Excluded) row shows EXCLUDED in the quality column too.
 function QualityCell({ row }: { row: DecoratedEpisode }) {
   if (row.isArchived)
     return (
@@ -67,21 +44,7 @@ function QualityCell({ row }: { row: DecoratedEpisode }) {
         EXCLUDED
       </Badge>
     );
-  if (!row.effectiveQuality) return <span className="font-mono text-xs text-gray-400">—</span>;
-  return (
-    <Badge tone={qualityTone(row.effectiveQuality)} className="w-fit">
-      {row.effectiveQuality.toUpperCase()}
-    </Badge>
-  );
-}
-
-function TaskCell({ task }: { task: TaskResult | null }) {
-  if (!task) return <span className="font-mono text-xs text-gray-400">—</span>;
-  return (
-    <Badge tone={task === 'Success' ? 'teal' : 'gray'} className="w-fit">
-      {task.toUpperCase()}
-    </Badge>
-  );
+  return <QualityChip quality={row.effectiveQuality} />;
 }
 
 function transferBadge(row: DecoratedEpisode): { tone: Tone; label: string } {
@@ -125,7 +88,7 @@ function Row({ row, isSelected, rv }: { row: DecoratedEpisode; isSelected: boole
       <span className="font-mono text-[13px] font-semibold text-gray-900">#{row.ep}</span>
       <span className="font-mono text-[12.5px] text-gray-500">{row.batch}</span>
       <QualityCell row={row} />
-      <TaskCell task={row.effectiveTask} />
+      <TaskResultChip task={row.effectiveTask} />
       <span className="font-mono text-xs text-gray-500">{formatHms(row.durationMs)}</span>
       <span className="font-mono text-xs text-gray-400">{formatTimeOfDay(row.startedAt)}</span>
       {rv.splitMode && (
@@ -133,7 +96,7 @@ function Row({ row, isSelected, rv }: { row: DecoratedEpisode; isSelected: boole
           {transfer.label}
         </Badge>
       )}
-      <StatusChip status={row.effectiveReviewStatus} testId={`review-status-${row.ep}`} />
+      <ReviewStatusChip status={row.effectiveReviewStatus} testId={`review-status-${row.ep}`} />
       <button
         type="button"
         data-testid={`review-archive-${row.ep}`}

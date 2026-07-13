@@ -364,20 +364,22 @@ test('Collect degrades gracefully when its selected project is absent from the s
   expect(screen.getByRole('button', { name: 'Only Task' })).toBeInTheDocument();
 });
 
-test('Batch menu → Reset batch opens a confirm modal that resets the batch', async () => {
+test('Batch menu → Reset batch on an empty batch is a no-op (honest wording)', async () => {
   mockFetch({ run_id: 'run_1', state: 'recording' });
   renderWithClient(<CollectScreen />);
   await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
+  // No recording yet → no server batch → the Batch cell shows an honest "—".
+  expect(screen.getByText('Batch —')).toBeInTheDocument();
 
   fireEvent.click(screen.getByText('Batch menu'));
   fireEvent.click(screen.getByText('Reset batch…'));
 
-  // v2-style confirmation: explains counts reset + recordings kept in Review.
-  expect(screen.getByText('Reset batch 1?')).toBeInTheDocument();
-  expect(screen.getByText(/stay in Review/)).toBeInTheDocument();
+  // Empty batch → no-number title + no-op wording (nothing created or closed).
+  expect(screen.getByText('Reset batch?')).toBeInTheDocument();
+  expect(screen.getByText(/Nothing has been recorded/)).toBeInTheDocument();
 
   fireEvent.click(screen.getByTestId('reset-batch-confirm'));
-  // Modal closes and the batch number advances (2 / 5 in the context bar).
-  await waitFor(() => expect(screen.queryByText('Reset batch 1?')).toBeNull());
-  expect(screen.getByText('2 / 5')).toBeInTheDocument();
+  await waitFor(() => expect(screen.queryByText('Reset batch?')).toBeNull());
+  // Still "—": an empty reset never allocates a number.
+  expect(screen.getByText('Batch —')).toBeInTheDocument();
 });

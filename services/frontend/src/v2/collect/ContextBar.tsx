@@ -224,7 +224,12 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
         title="Change task (from plan)"
       />
       <Divider />
-      <StaticCell label="Batch" value={`${machine.batchNum} / 5`} />
+      {/* Server batch number ("Batch N"), no fabricated "/5" planned-count. Shows
+          "—" until the batch is created (on the first recording). */}
+      <StaticCell
+        label="Batch"
+        value={machine.batchSeq != null ? `Batch ${machine.batchSeq}` : 'Batch —'}
+      />
       <Divider />
       <StaticCell
         label="Episode"

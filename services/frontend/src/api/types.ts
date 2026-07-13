@@ -492,6 +492,13 @@ export interface RunEpisode {
   failure_reason?: string | null;
   quality: EpisodeQuality;
   review_status: EpisodeReviewStatus;
+  /** Server-assigned per-(robot, local-date) batch number (Console v2 pipeline
+   *  UX). The single human-readable batch number shared by Collect/Review/
+   *  Datasets. Optional until the phase-2 backend serves it (fallback: "—"). */
+  batch_seq?: number | null;
+  /** The batch's created_at, so Review/Datasets can render "MM/DD · #N" without
+   *  a second round-trip. Optional (falls back to the run's own started_at). */
+  batch_created_at?: string | null;
 }
 
 export interface Batch {
@@ -506,6 +513,10 @@ export interface Batch {
   ended_reason?: string | null;
   created_at?: string | null;
   ended_at?: string | null;
+  /** Server-assigned per-(robot, local-date) batch number — the human-readable
+   *  "Batch N" shown in Collect and (as "MM/DD · #N") in Review/Datasets.
+   *  Optional until the phase-2 backend serves it (fallback: honest pre-state). */
+  batch_seq?: number | null;
   /** Monotone count of episodes ever recorded into this batch — never lowered
    *  by a run-delete cascade. Collect's counts use this (falls back to the
    *  live episode count on older backends that omit it). */

@@ -103,8 +103,8 @@ test('a bridged Collect outcome surfaces as the effective quality/task/batch', a
   const row = result.current.rows[0]!;
   expect(row.effectiveQuality).toBe('Needs review');
   expect(row.effectiveTask).toBe('Failure');
-  // Batch column is a per-list grouping ordinal (first distinct batch = 1).
-  expect(row.batch).toBe('1');
+  // No server episode → bridge fallback shows its own local number "#N".
+  expect(row.batch).toBe('#2');
 });
 
 test('a session override still wins over the bridged value', async () => {

@@ -387,7 +387,7 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
     return (
       <Card className={cn('flex shrink-0 flex-col gap-2.5 border-2 border-amber-200', CARD_GAP_COMPACT, CARD_PAD)}>
         <div className="flex items-center gap-2">
-          <span className="text-[15px] font-bold text-gray-900">Batch {machine.batchNum} ended early</span>
+          <span className="text-[15px] font-bold text-gray-900">Batch {machine.batchSeq ?? '—'} ended early</span>
           <div className="flex-1" />
           <span className="rounded-chip bg-amber-100 px-2 py-0.5 text-[11px] font-bold text-amber-800">
             INCOMPLETE
@@ -412,7 +412,7 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
   return (
     <Card className={cn('flex shrink-0 flex-col gap-2.5 border-2 border-green-200', CARD_GAP_COMPACT, CARD_PAD)}>
       <div className="flex items-center gap-2">
-        <span className="text-[15px] font-bold text-gray-900">Batch {machine.batchNum} completed 🎉</span>
+        <span className="text-[15px] font-bold text-gray-900">Batch {machine.batchSeq ?? '—'} completed 🎉</span>
         <div className="flex-1" />
         <span className="rounded-chip bg-green-100 px-2 py-0.5 text-[11px] font-bold text-green-700">
           COMPLETE

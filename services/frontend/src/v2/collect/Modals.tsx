@@ -37,7 +37,7 @@ function EndBatchModal({ machine }: { machine: BatchMachine }) {
     <Modal
       open={machine.endModalOpen}
       onClose={machine.closeModals}
-      title={`End batch ${machine.batchNum} early?`}
+      title={machine.batchSeq != null ? `End batch ${machine.batchSeq} early?` : 'End batch early?'}
       footer={
         <>
           <Button variant="ghost" onClick={machine.closeModals}>
@@ -88,11 +88,15 @@ function EndBatchModal({ machine }: { machine: BatchMachine }) {
 }
 
 function ResetBatchModal({ machine }: { machine: BatchMachine }) {
+  // An empty batch (nothing recorded) has no server row and no number — resetting
+  // it is a pure local no-op that neither closes nor allocates any batch number.
+  const empty = machine.stats.nRecorded === 0;
+  const seq = machine.batchSeq != null ? ` ${machine.batchSeq}` : '';
   return (
     <Modal
       open={machine.resetModalOpen}
       onClose={machine.closeModals}
-      title={`Reset batch ${machine.batchNum}?`}
+      title={empty ? 'Reset batch?' : `Reset batch${seq}?`}
       footer={
         <>
           <Button variant="ghost" onClick={machine.closeModals}>
@@ -104,14 +108,25 @@ function ResetBatchModal({ machine }: { machine: BatchMachine }) {
         </>
       }
     >
-      <p className="text-[12.5px] leading-relaxed text-gray-600">
-        This closes the current batch and starts a fresh one — the counter returns to{' '}
-        <span className="font-mono text-gray-800">0 / {EPISODES_PER_BATCH}</span>.
-      </p>
-      <p className="mt-2 text-[12.5px] leading-relaxed text-gray-600">
-        The <strong className="text-gray-700">{machine.stats.nRecorded} recording(s)</strong> already
-        taken are <strong className="text-gray-700">not deleted</strong> — they stay in Review.
-      </p>
+      {empty ? (
+        <p className="text-[12.5px] leading-relaxed text-gray-600">
+          Nothing has been recorded in this batch yet, so this just clears local state — no batch is
+          created or closed, and the batch number is unchanged.
+        </p>
+      ) : (
+        <>
+          <p className="text-[12.5px] leading-relaxed text-gray-600">
+            This closes the current batch. The counter returns to{' '}
+            <span className="font-mono text-gray-800">0 / {EPISODES_PER_BATCH}</span>; the next batch
+            number is assigned when you start your next recording.
+          </p>
+          <p className="mt-2 text-[12.5px] leading-relaxed text-gray-600">
+            The <strong className="text-gray-700">{machine.stats.nRecorded} recording(s)</strong>{' '}
+            already taken are <strong className="text-gray-700">not deleted</strong> — they stay in
+            Review.
+          </p>
+        </>
+      )}
     </Modal>
   );
 }
@@ -140,7 +155,8 @@ function IssueModal({ machine }: { machine: BatchMachine }) {
       }
     >
       <p className="mb-2">
-        Attached to Batch {machine.batchNum}, Episode {machine.stats.epNext} context automatically.
+        Attached to Batch {machine.batchSeq ?? '—'}, Episode {machine.stats.epNext} context
+        automatically.
       </p>
       <textarea
         value={note}
@@ -157,7 +173,16 @@ function ConditionModal({ machine }: { machine: BatchMachine }) {
   const plans = usePlans();
   const task = findTask(plans, machine.project, machine.task);
   return (
-    <Modal open={machine.condModalOpen} onClose={machine.closeModals} title="Change condition">
+    <Modal
+      open={machine.condModalOpen}
+      onClose={machine.closeModals}
+      title="Change condition"
+      footer={
+        <Button variant="ghost" onClick={machine.closeModals}>
+          Cancel
+        </Button>
+      }
+    >
       <p className="mb-3">Applies from the next episode. Current episode plans are unaffected.</p>
       <div className="flex flex-col gap-1.5">
         {task.conditions.map((c) => (

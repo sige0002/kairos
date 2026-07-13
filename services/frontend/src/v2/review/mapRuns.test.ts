@@ -88,11 +88,10 @@ test('a completed run with a bridge outcome fills Quality / Task result / Batch'
   const withO = rows.find((r) => r.runId === 'withOutcome');
   const without = rows.find((r) => r.runId === 'noOutcome');
   // Bridged row: Collect's axes mapped to the Review display vocabulary. The
-  // Batch column is a per-list grouping ordinal (first distinct batch = 1), not
-  // the raw batchNum — the server episode has no friendly batch number.
+  // Batch column is the bridge's own local number ("#N"), no server batch_seq.
   expect(withO?.quality).toBe('Needs review');
   expect(withO?.task).toBe('Failure');
-  expect(withO?.batch).toBe('1');
+  expect(withO?.batch).toBe('#4');
   // A run with no bridge entry stays honestly unset ("—" / null).
   expect(without?.quality).toBeNull();
   expect(without?.task).toBeNull();
@@ -103,8 +102,8 @@ test('good/ok bridge outcome maps to Good / Success', () => {
   const rows = mapRunsToEpisodes([run({ run_id: 'x' })], () => outcome({ quality: 'good', taskResult: 'ok', batchNum: 2 }));
   expect(rows[0]?.quality).toBe('Good');
   expect(rows[0]?.task).toBe('Success');
-  // Ordinal grouping: the single bridged batch is #1 in the list.
-  expect(rows[0]?.batch).toBe('1');
+  // Bridge fallback keeps its own local number.
+  expect(rows[0]?.batch).toBe('#2');
 });
 
 test('backend truth wins: a failed run stays "Not usable" even if a stale bridge entry exists', () => {
@@ -128,6 +127,8 @@ const serverEpisode = {
   task_result: 'failure' as const,
   quality: 'needs_review' as const,
   review_status: 'pending' as const,
+  batch_seq: 3,
+  batch_created_at: '2026-07-13T09:00:00Z',
 };
 
 test('the server episode is the primary source and wins over any bridge entry', () => {
@@ -138,11 +139,12 @@ test('the server episode is the primary source and wins over any bridge entry', 
     [run({ run_id: 'r1', episode: serverEpisode })],
     (id) => bridge[id] ?? null,
   );
-  // Server 'needs_review'/'failure' wins over the bridge's Good/Success.
+  // Server 'needs_review'/'failure' wins over the bridge's Good/Success, and the
+  // batch label is the server's own batch_seq as "MM/DD · #N".
   expect(rows[0]?.quality).toBe('Needs review');
   expect(rows[0]?.task).toBe('Failure');
   expect(rows[0]?.episodeId).toBe('ep_1');
-  expect(rows[0]?.batch).toBe('1');
+  expect(rows[0]?.batch).toBe('07/13 · #3');
 });
 
 test('a run with a server episode maps quality/task from it; episodeId enables PATCH', () => {

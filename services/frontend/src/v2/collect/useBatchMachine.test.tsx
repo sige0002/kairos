@@ -136,13 +136,15 @@ test('end-batch-early requires a reason, then moves to ended', () => {
   expect(s.phase).toBe('ended');
 });
 
-test('START_NEXT_BATCH resets episodes and bumps the batch number from ended or completed', () => {
+test('START_NEXT_BATCH resets episodes and clears the batch number (server re-assigns)', () => {
   let s = createState();
-  s = { ...s, phase: 'ended', episodes: [{ index: 1, quality: 'good', taskResult: 'ok' }], batchNum: 1 };
+  s = { ...s, phase: 'ended', episodes: [{ index: 1, quality: 'good', taskResult: 'ok' }], batchSeq: 5 };
   s = reducer(s, { type: 'START_NEXT_BATCH' });
   expect(s.phase).toBe('ready');
   expect(s.episodes).toEqual([]);
-  expect(s.batchNum).toBe(2);
+  // No local +1: the next batch's number is assigned server-side on first record.
+  expect(s.batchSeq).toBeNull();
+  expect(s.batchId).toBeNull();
 });
 
 test('CANCEL_ARMING only applies while arming', () => {
@@ -546,11 +548,11 @@ test('the result phase and its run_id survive an unmount/remount', async () => {
 });
 
 // (b) A reload restores the durable session context from localStorage.
-test('a reload restores episodes, batchNum and context from localStorage', () => {
+test('a reload restores episodes, batchSeq and context from localStorage', () => {
   window.localStorage.setItem(
     BATCH_STORAGE_KEY,
     JSON.stringify({
-      batchNum: 3,
+      batchSeq: 3,
       episodes: [
         { index: 1, quality: 'good', taskResult: 'ok' },
         { index: 2, quality: 'review', taskResult: 'fail', failReason: 'Grasp missed' },
@@ -563,7 +565,7 @@ test('a reload restores episodes, batchNum and context from localStorage', () =>
   __rehydrateBatchStore();
 
   const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
-  expect(result.current.batchNum).toBe(3);
+  expect(result.current.batchSeq).toBe(3);
   expect(result.current.episodes).toHaveLength(2);
   expect(result.current.stats.nReview).toBe(1);
   expect(result.current.stats.nTaskFailed).toBe(1);
@@ -895,14 +897,15 @@ test('a server restore never LOWERS a higher local recorded count', async () => 
   }));
   window.localStorage.setItem(
     BATCH_STORAGE_KEY,
-    JSON.stringify({ batchNum: 1, recordedCount: 5, batchId: 'batch_hi', episodes, project: 'P', task: 'T', condition: 'C' }),
+    JSON.stringify({ batchSeq: null, recordedCount: 5, batchId: 'batch_hi', episodes, project: 'P', task: 'T', condition: 'C' }),
   );
   __rehydrateBatchStore();
-  // Server reports the SAME batch but a stale lower count (2).
+  // Server reports the SAME batch (batch_seq 7) but a stale lower count (2).
   phase2Fetch({
     activeBatches: [
       {
         batch_id: 'batch_hi',
+        batch_seq: 7,
         project: 'P',
         task: 'T',
         target_episodes: 30,
@@ -918,8 +921,9 @@ test('a server restore never LOWERS a higher local recorded count', async () => 
   });
   const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
 
-  // The restore adopts the server batch but keeps the higher local count (5).
-  await waitFor(() => expect(result.current.batchNum).toBe(1));
+  // The restore adopts the server batch (its batch_seq) but keeps the higher
+  // local count (5), never lowering it to the server's stale 2.
+  await waitFor(() => expect(result.current.batchSeq).toBe(7));
   expect(result.current.stats.nRecorded).toBe(5);
   expect(result.current.stats.epNext).toBe(6);
 });
@@ -981,14 +985,14 @@ test('resetBatch clears the counts, PATCHes the batch ended_early=reset, and del
   act(() => result.current.pickSuccess());
   act(() => result.current.confirmEpisode());
   await waitFor(() => expect(result.current.stats.nRecorded).toBe(1));
-  const batchNumBefore = result.current.batchNum;
 
   act(() => result.current.resetBatch());
 
-  // Counts back to 0/30, batch number bumped, back to a ready fresh batch.
+  // Counts back to 0/30, batch number cleared (server re-assigns on next record),
+  // back to a ready fresh batch.
   expect(result.current.stats.nRecorded).toBe(0);
   expect(result.current.stats.epNext).toBe(1);
-  expect(result.current.batchNum).toBe(batchNumBefore + 1);
+  expect(result.current.batchSeq).toBeNull();
   expect(result.current.phase).toBe('ready');
   expect(result.current.episodes).toHaveLength(0);
 

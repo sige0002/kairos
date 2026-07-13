@@ -17,6 +17,7 @@
 import type { EpisodeRow, Quality, TaskResult } from './types';
 import type { EpisodeQuality, EpisodeTaskResult, RunSummary } from '../../api/types';
 import { getEpisodeOutcome, type EpisodeOutcome } from '../episodeBridge';
+import { formatBatchLabel } from '../episodeChips';
 
 /** Server quality → Review display quality. */
 function serverQuality(q: EpisodeQuality): Quality {
@@ -62,21 +63,6 @@ export function mapRunsToEpisodes(
     if (!Number.isNaN(ta) && !Number.isNaN(tb)) return ta - tb;
     return a.run_id.localeCompare(b.run_id);
   });
-  // The server episode has no friendly batch number, so assign a display ordinal
-  // per distinct batch key in started_at order (oldest batch = 1). Server rows
-  // key on batch_id; bridge rows on their stored batchNum — a stable label for
-  // grouping either way.
-  const batchOrdinals = new Map<string, number>();
-  const batchLabel = (key: string | null): string => {
-    if (!key) return '—';
-    let n = batchOrdinals.get(key);
-    if (n === undefined) {
-      n = batchOrdinals.size + 1;
-      batchOrdinals.set(key, n);
-    }
-    return String(n);
-  };
-
   return ordered.map((run, i) => {
     const endedBadly = run.state === 'failed' || run.state === 'interrupted';
     // Backend truth wins: never consult the episode/bridge for a run that didn't
@@ -88,26 +74,28 @@ export function mapRunsToEpisodes(
     const bytes = (run as RunSummary & { bytes?: number | null }).bytes;
 
     // Precedence: server episode > bridge > "—" (session overrides are layered
-    // on top later, in useReviewState's decorated map).
+    // on top later, in useReviewState's decorated map). The batch label is the
+    // server's own batch_seq ("MM/DD · #N" — the SAME number Collect shows), or
+    // the bridge's local number, or "—".
     let quality: Quality | null;
     let task: TaskResult | null;
-    let batchKey: string | null;
+    let batch: string;
     if (endedBadly) {
       quality = 'Not usable';
       task = null;
-      batchKey = null;
+      batch = '—';
     } else if (episode) {
       quality = serverQuality(episode.quality);
       task = serverTask(episode.task_result);
-      batchKey = episode.batch_id;
+      batch = formatBatchLabel(episode.batch_seq, episode.batch_created_at ?? run.started_at, '—');
     } else if (outcome) {
       quality = bridgeQuality(outcome.quality);
       task = bridgeTask(outcome.taskResult);
-      batchKey = `bridge:${outcome.batchNum}`;
+      batch = `#${outcome.batchNum}`;
     } else {
       quality = null;
       task = null;
-      batchKey = null;
+      batch = '—';
     }
 
     return {
@@ -115,7 +103,7 @@ export function mapRunsToEpisodes(
       runId: run.run_id,
       episodeId: episode?.episode_id ?? null,
       state: run.state,
-      batch: batchLabel(batchKey),
+      batch,
       operator: run.operator ?? null,
       quality,
       task,
