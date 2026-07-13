@@ -1,11 +1,15 @@
-// Right column: the selected dataset's real export details (run/state/
-// exported-at, from the same GET /api/v1/datasets/{operator}/{task}/{index}
-// the center column reads) plus the recipe-based "build" action. There is no
-// backend endpoint yet for building a LeRobot v3 artifact from a recipe, so
-// "Build dataset" just explains that (no fake progress animation — see the
-// 2026-07-13 user directive that dropped it along with the fabricated
-// PickPlace_* recipe rows).
+// Right column, three blocks:
+//   1. Export recordings (ExportRecordings) — the REAL working path: move a
+//      completed recording into the dataset tree (POST /datasets/export[-all]).
+//   2. Selected dataset — its real export provenance (run/state/exported-at,
+//      from the same GET /api/v1/datasets/{operator}/{task}/{index} the center
+//      column reads).
+//   3. Build (Phase 2 mock) — there is no backend endpoint yet for building a
+//      LeRobot v3 artifact from a recipe, so "Build dataset" only explains that
+//      (no fake progress animation — see the 2026-07-13 user directive that
+//      dropped it along with the fabricated PickPlace_* recipe rows).
 
+import { ExportRecordings } from './ExportRecordings';
 import { formatWhen } from './data';
 import type { DatasetsState } from './useDatasetsState';
 
@@ -19,7 +23,16 @@ export function BuildRail({ state }: { state: DatasetsState }) {
           Export &amp; build
         </span>
       </div>
+
+      {/* Real working path: move completed recordings into the dataset tree. */}
+      <div className="border-b border-gray-100 px-[18px] py-[14px]">
+        <ExportRecordings />
+      </div>
+
       <div className="flex flex-col gap-[11px] px-[18px] py-[14px]">
+        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+          Selected dataset
+        </span>
         {!selected ? (
           <span className="text-[12.5px] text-gray-400">
             Select a dataset to see its export details.
@@ -36,12 +49,14 @@ export function BuildRail({ state }: { state: DatasetsState }) {
           </div>
         ) : null}
 
-        <div className="rounded-[10px] border border-gray-100 bg-gray-50 px-3 py-[10px] text-xs leading-relaxed text-gray-500">
-          Export moves a completed recording&apos;s MCAP into{' '}
-          <span className="font-mono">data/&lt;operator&gt;/&lt;task&gt;/NNN</span> — the recording
-          leaves Recordings once exported.
+        <div className="mt-1 flex items-center gap-2 border-t border-gray-100 pt-3">
+          <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+            Build
+          </span>
+          <span className="rounded-chip bg-amber-100 px-2 py-[2px] text-[10px] font-bold text-amber-700">
+            Phase 2 · pending
+          </span>
         </div>
-
         <button
           type="button"
           data-testid="build-dataset-btn"
@@ -52,7 +67,7 @@ export function BuildRail({ state }: { state: DatasetsState }) {
         </button>
         <span className="text-center text-[11.5px] leading-relaxed text-gray-400">
           Recipe-based builds convert matching episodes into a versioned LeRobot v3 artifact — this
-          arrives with the Phase 2 recipe/episode model.
+          arrives with the Phase 2 recipe/episode model. Not wired to a backend yet.
         </span>
       </div>
     </div>

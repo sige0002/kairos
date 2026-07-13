@@ -7,6 +7,7 @@
 // 2026-07-13 user directive that dropped the fabricated PickPlace_* catalog.
 
 import { Badge } from '../../components/ui';
+import { DatasetInspection } from './DatasetInspection';
 import { formatBytes, formatCount, formatWhen } from './data';
 import type { DatasetsState } from './useDatasetsState';
 
@@ -86,6 +87,10 @@ export function DatasetDetail({ state }: { state: DatasetsState }) {
             >
               Episode-level breakdowns (operator mix, condition coverage) aren&apos;t available yet
               — they require the Phase 2 recipe/episode model.
+            </div>
+
+            <div className="border-t border-gray-100 pt-4">
+              <DatasetInspection detail={detail} />
             </div>
           </>
         ) : null}
