@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { setApiBase } from './api/client';
 import { fetchRuntimeConfig, type RuntimeConfig } from './config';
@@ -235,6 +235,104 @@ function EventStreamMount({ url }: { url: string }) {
   return null;
 }
 
+const OPERATOR_STORAGE_KEY = 'kairos.operator';
+
+/** Operator identity chip (v1's Live operator input, relocated): click to set
+ *  the name recorded with each episode. Writes the SAME uiStore field the
+ *  record-start flow reads (`recordOperator` → /record/start `operator`), plus
+ *  localStorage so the name survives a reload — the store itself is in-memory. */
+function OperatorChip() {
+  const operator = useUiStore((s) => s.recordOperator);
+  const setOperator = useUiStore((s) => s.setRecordOperator);
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState('');
+
+  // Mount-only hydrate from localStorage (never overwrite a live edit).
+  useEffect(() => {
+    if (!useUiStore.getState().recordOperator) {
+      const saved = window.localStorage.getItem(OPERATOR_STORAGE_KEY);
+      if (saved) setOperator(saved);
+    }
+  }, [setOperator]);
+
+  const initials = operator.trim()
+    ? operator
+        .trim()
+        .split(/\s+/)
+        .map((w) => w[0] ?? '')
+        .slice(0, 2)
+        .join('')
+        .toUpperCase()
+    : 'OP';
+
+  const save = () => {
+    const v = draft.trim();
+    setOperator(v);
+    if (v) window.localStorage.setItem(OPERATOR_STORAGE_KEY, v);
+    else window.localStorage.removeItem(OPERATOR_STORAGE_KEY);
+    setOpen(false);
+  };
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        aria-label="operator"
+        data-testid="operator-chip"
+        title={
+          operator.trim()
+            ? `Operator: ${operator} — saved into each recording`
+            : 'Set operator name — saved into each recording'
+        }
+        onClick={() => {
+          setDraft(operator);
+          setOpen((v) => !v);
+        }}
+        className={cn(
+          'flex h-8 w-8 items-center justify-center rounded-full border text-xs font-semibold',
+          operator.trim()
+            ? 'border-teal-200 bg-teal-50 text-teal-700 hover:border-teal-400'
+            : 'border-gray-200 bg-gray-100 text-gray-600 hover:border-gray-300',
+        )}
+      >
+        {initials}
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full z-40 mt-2 w-72 rounded-card border border-gray-200 bg-white p-3 shadow-float">
+          <label
+            htmlFor="operator-name"
+            className="mb-1.5 block text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400"
+          >
+            Operator — saved into each recording
+          </label>
+          <div className="flex gap-2">
+            <input
+              id="operator-name"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') save();
+                if (e.key === 'Escape') setOpen(false);
+              }}
+              placeholder="e.g. sadasue"
+              autoFocus
+              data-testid="operator-input"
+              className="w-full rounded-control border border-gray-200 px-2 py-1.5 text-sm focus:border-teal-500 focus:outline-none"
+            />
+            <button
+              type="button"
+              onClick={save}
+              className="rounded-control bg-teal-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-teal-700"
+            >
+              Save
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** The kairos wordmark + 6-tab nav + operator context chips, all in one row
  *  (design mock header). Always mounted — unlike the tab panel below it, it
  *  never unmounts on a tab switch. */
@@ -256,13 +354,7 @@ function Header({ active, config }: { active: V2TabId; config: RuntimeConfig }) 
       <div className="flex-1" />
       <DomainChip domainId={config.defaults.ros_domain_id} />
       <ConnectionBadge />
-      <span
-        aria-label="operator"
-        title="Operator"
-        className="flex h-8 w-8 items-center justify-center rounded-full border border-gray-200 bg-gray-100 text-xs font-semibold text-gray-600"
-      >
-        OP
-      </span>
+      <OperatorChip />
     </header>
   );
 }

@@ -148,3 +148,26 @@ test('a legacy solo deep link (?tab=probe&solo=1) redirects and rewrites the URL
   expect(window.location.search).toMatch(/tab=monitor/);
   expect(window.location.search).toMatch(/solo=1/);
 });
+
+test('the operator chip sets uiStore.recordOperator (sent with /record/start) and persists it', async () => {
+  window.history.replaceState(null, '', '/');
+  window.localStorage.removeItem('kairos.operator');
+  useUiStore.setState({ recordOperator: '' });
+  renderWithClient(<App />);
+  await waitFor(() =>
+    expect(screen.queryByText(/Loading kairos/i)).not.toBeInTheDocument(),
+  );
+
+  const chip = screen.getByTestId('operator-chip');
+  expect(chip).toHaveTextContent('OP'); // unset → placeholder initials
+
+  fireEvent.click(chip);
+  fireEvent.change(screen.getByTestId('operator-input'), {
+    target: { value: 'Sadasue Yuki' },
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+  expect(useUiStore.getState().recordOperator).toBe('Sadasue Yuki');
+  expect(window.localStorage.getItem('kairos.operator')).toBe('Sadasue Yuki');
+  expect(chip).toHaveTextContent('SY'); // initials from the saved name
+});
