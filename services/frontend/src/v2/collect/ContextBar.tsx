@@ -279,6 +279,19 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
               {t.name}
             </PickItem>
           ))}
+          {/* Free-text task (v1 parity): the operator could always type any task
+              string at record time. Uses window.prompt to match the Plans
+              editor's interaction style; sets it as the selected task without
+              adding it to the shared plans catalog. */}
+          <PickItem
+            active={!curProject.tasks.some((t) => t.name === machine.task)}
+            onClick={() => {
+              const entered = window.prompt('Custom task', '');
+              if (entered && entered.trim()) machine.pickCustomTask(entered);
+            }}
+          >
+            <span className="text-teal-700">Custom…</span>
+          </PickItem>
         </PickerPopover>
       )}
       {machine.batchMenuOpen && (

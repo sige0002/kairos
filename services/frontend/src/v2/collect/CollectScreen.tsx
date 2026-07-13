@@ -72,7 +72,11 @@ export function CollectScreen() {
             <BatchStatsCard machine={machine} />
           </div>
         </div>
-        <div className={cn('flex flex-col lg:min-h-0', COL_GAP)}>
+        {/* min-w-0: this is the grid's `1fr` track — without it the camera
+            column's intrinsic content width (the tiles + the add-camera select)
+            makes the track exceed its share and clips the sub column at the
+            viewport edge. min-w-0 lets the fr track shrink so the tiles fit. */}
+        <div className={cn('flex flex-col lg:min-h-0 lg:min-w-0', COL_GAP)}>
           <Cameras config={config} machine={machine} onHealthChange={onHealthChange} />
           <EpisodeStrip machine={machine} />
         </div>

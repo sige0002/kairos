@@ -5,6 +5,7 @@ import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
 import { useUiStore } from '../../store/uiStore';
 import { CollectScreen } from './CollectScreen';
 import { __resetBatchStore } from './useBatchMachine';
+import { __resetCameraStore } from './cameraStore';
 import { __clearEpisodeOutcomes } from '../episodeBridge';
 import { __resetPlansStore, clonePlans, getPlans, setPlans } from '../plans';
 
@@ -63,6 +64,9 @@ beforeEach(() => {
   // project/task/condition seed from the (now clean) catalog.
   __resetPlansStore();
   __resetBatchStore();
+  // The camera panes live in a module store too — reset so a prior test's panes
+  // can't leak into the next CollectScreen render.
+  __resetCameraStore();
   // A confirmed episode now mirrors into the Collect->Review bridge; clear it
   // between tests so nothing accumulates across cases.
   __clearEpisodeOutcomes();
@@ -319,6 +323,30 @@ test('a project added to the shared store appears in the Collect project picker'
   // Open the project picker; the newly-added project is listed immediately.
   fireEvent.click(screen.getByTitle('Change project (from plan)'));
   expect(screen.getByRole('button', { name: 'Warehouse Sort' })).toBeInTheDocument();
+});
+
+// Free-text task (v1 parity): the "Custom…" Task-picker entry prompts for any
+// string and flows it into the real /record/start body — without adding it to
+// the shared plans catalog.
+test('a custom task typed via the Task picker flows into the /record/start body', async () => {
+  const fetchSpy = mockFetch({ run_id: 'run_1', state: 'recording' });
+  vi.spyOn(window, 'prompt').mockReturnValue('Fold the towel');
+  renderWithClient(<CollectScreen />);
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
+
+  fireEvent.click(screen.getByTitle('Change task (from plan)'));
+  fireEvent.click(screen.getByRole('button', { name: /Custom/ }));
+
+  // Shown as the selected task, and NOT added to the plans catalog.
+  await waitFor(() => expect(screen.getByText('Fold the towel')).toBeInTheDocument());
+  expect(getPlans().some((p) => p.tasks.some((t) => t.name === 'Fold the towel'))).toBe(false);
+
+  fireEvent.click(screen.getByRole('button', { name: /Start recording/ }));
+  await waitFor(() => {
+    const start = fetchSpy.mock.calls.find((c) => String(c[0]).includes('/record/start'));
+    expect(start).toBeTruthy();
+    expect(JSON.parse(String((start![1] as RequestInit).body)).task).toBe('Fold the towel');
+  });
 });
 
 test('Collect degrades gracefully when its selected project is absent from the store', async () => {

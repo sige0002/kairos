@@ -647,6 +647,10 @@ export interface BatchMachine {
   startNextBatch: () => void;
   pickProject: (name: string) => void;
   pickTask: (name: string) => void;
+  /** Set a free-text task the operator typed (v1 parity — recording accepted any
+   *  task string). Not added to the plans store; flows into the next
+   *  /record/start and /batches as-is. */
+  pickCustomTask: (name: string) => void;
   pickCondition: (condition: string) => void;
   /** Jump to the Monitor tab (Warnings card's "Open in Monitor →"). */
   goMonitor: () => void;
@@ -1110,6 +1114,18 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     },
     [state.project, showToast],
   );
+  const pickCustomTask = useCallback(
+    (name: string) => {
+      const trimmed = name.trim();
+      if (!trimmed) return;
+      // A free-text task has no plan-defined conditions; clear the condition to
+      // '—' so a stale plan condition can't ride along with an unrelated task.
+      dispatch({ type: 'SET_TASK', task: trimmed, condition: '—' });
+      setTaskPickerOpen(false);
+      showToast('Custom task set — applies to next recording');
+    },
+    [showToast],
+  );
   const pickCondition = useCallback(
     (condition: string) => {
       dispatch({ type: 'SET_CONDITION', condition });
@@ -1212,6 +1228,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     startNextBatch,
     pickProject,
     pickTask,
+    pickCustomTask,
     pickCondition,
     goMonitor,
   };
