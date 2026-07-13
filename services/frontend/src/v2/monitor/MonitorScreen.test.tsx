@@ -44,21 +44,35 @@ test('lands on Topics: chart defaults to the first discovered topic, table lists
 
   await waitFor(() => expect(screen.getByTestId('topic-row-/hsrb/joint_states')).toBeInTheDocument());
   expect(screen.getByTestId('topic-row-/hsrb/odom')).toBeInTheDocument();
-  // Configured topic sorts first (useMonitorRows) and is the chart's default.
-  expect(screen.getAllByText('/hsrb/joint_states')[0]).toBeInTheDocument();
+  // Configured topic sorts first (useMonitorRows) and is the chart's default —
+  // it's charted (aria-pressed) and appears in the chart's per-series legend.
+  expect(screen.getByTestId('topic-row-/hsrb/joint_states')).toHaveAttribute('aria-pressed', 'true');
+  expect(screen.getByTestId('freq-legend-/hsrb/joint_states')).toBeInTheDocument();
 });
 
-test('clicking a topic row switches the charted topic (chart header updates)', async () => {
+test('clicking a second topic overlays it (both charted); clicking again removes it', async () => {
   mockFetch();
   renderWithClient(<MonitorScreen />);
 
   await waitFor(() => expect(screen.getByTestId('topic-row-/hsrb/odom')).toBeInTheDocument());
-  fireEvent.click(screen.getByTestId('topic-row-/hsrb/odom'));
+  // odom starts un-charted; the default (joint_states) is already charted.
+  expect(screen.getByTestId('topic-row-/hsrb/odom')).toHaveAttribute('aria-pressed', 'false');
 
-  // The chart card's mono header shows the selected topic's full name.
+  fireEvent.click(screen.getByTestId('topic-row-/hsrb/odom'));
+  // Now BOTH overlay the chart — the overlay the user asked for.
   await waitFor(() =>
-    expect(screen.getByTestId('topic-row-/hsrb/odom').className).toContain('bg-teal-50'),
+    expect(screen.getByTestId('topic-row-/hsrb/odom')).toHaveAttribute('aria-pressed', 'true'),
   );
+  expect(screen.getByTestId('topic-row-/hsrb/joint_states')).toHaveAttribute('aria-pressed', 'true');
+  expect(screen.getByTestId('freq-legend-/hsrb/odom')).toBeInTheDocument();
+  expect(screen.getByTestId('freq-legend-/hsrb/joint_states')).toBeInTheDocument();
+
+  // Toggling it off drops it back out of the charted set.
+  fireEvent.click(screen.getByTestId('topic-row-/hsrb/odom'));
+  await waitFor(() =>
+    expect(screen.getByTestId('topic-row-/hsrb/odom')).toHaveAttribute('aria-pressed', 'false'),
+  );
+  expect(screen.queryByTestId('freq-legend-/hsrb/odom')).not.toBeInTheDocument();
 });
 
 test('sub-nav: switching away from Topics shows the placeholder, and back returns', async () => {

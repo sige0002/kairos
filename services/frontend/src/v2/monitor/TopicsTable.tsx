@@ -1,7 +1,8 @@
 // Topics table (below the frequency chart): real per-topic health rows,
 // merging ROS graph discovery with the live SSE metrics snapshot — same data
 // source as the old Monitor/Live-tab table (src/features/monitor/useMonitorRows.ts).
-// Clicking a row selects the topic the chart above plots.
+// Clicking a row TOGGLES the topic in/out of the chart's overlaid set (v1 Graph
+// parity); charted rows carry a swatch in their series colour.
 
 import {
   formatBandwidth,
@@ -12,6 +13,7 @@ import {
 } from '../../features/monitor/useMonitorRows';
 import { Badge, Card, cn } from '../../components/ui';
 import { useUiStore } from '../../store/uiStore';
+import { MAX_SERIES, paletteColor } from './chartSeries';
 
 const GRID_COLS = 'grid-cols-[1fr_84px_84px_96px_84px_96px]';
 
@@ -32,17 +34,19 @@ function statusLabel(row: MonitorRow): string {
 export function TopicsTable({
   rows,
   isDiscovering,
-  selectedTopic,
-  onSelect,
+  chartedTopics,
+  onToggle,
 }: {
   rows: MonitorRow[];
   isDiscovering: boolean;
-  selectedTopic: string | null;
-  onSelect: (name: string) => void;
+  /** Ordered set of topics currently overlaid on the chart; index → series colour. */
+  chartedTopics: string[];
+  onToggle: (name: string) => void;
 }) {
   // Robot-edge reachability (same idiom as GraphTab's GraphPanel): explain an
   // empty table instead of just... being empty (honesty principle).
   const monitorBridge = useUiStore((s) => s.monitorBridge);
+  const atCap = chartedTopics.length >= MAX_SERIES;
 
   return (
     <Card className="flex max-h-[270px] shrink-0 flex-col">
@@ -59,6 +63,14 @@ export function TopicsTable({
         <span>Max gap</span>
         <span>Status</span>
       </div>
+      {atCap && (
+        <p
+          data-testid="topics-table-cap"
+          className="border-b border-amber-100 bg-amber-50 px-[18px] py-1 text-[10.5px] text-amber-700"
+        >
+          Charting {MAX_SERIES}/{MAX_SERIES} topics — deselect one to overlay another.
+        </p>
+      )}
       <div className="overflow-auto">
         {isDiscovering ? (
           <p className="px-[18px] py-6 text-center text-xs text-gray-400">Discovering topics…</p>
@@ -73,20 +85,33 @@ export function TopicsTable({
           </p>
         ) : (
           rows.map((row) => {
-            const selected = row.name === selectedTopic;
+            const chartIdx = chartedTopics.indexOf(row.name);
+            const charted = chartIdx >= 0;
             return (
               <button
                 key={row.name}
                 type="button"
                 data-testid={`topic-row-${row.name}`}
-                onClick={() => onSelect(row.name)}
+                aria-pressed={charted}
+                onClick={() => onToggle(row.name)}
                 className={cn(
                   'grid w-full items-center gap-2 border-b border-gray-50 px-[18px] py-2 text-left transition-colors hover:bg-gray-50',
                   GRID_COLS,
-                  selected && 'bg-teal-50 hover:bg-teal-50',
+                  charted && 'bg-teal-50 hover:bg-teal-50',
                 )}
               >
-                <span className="truncate font-mono text-[12.5px] text-gray-900">{row.name}</span>
+                <span className="flex min-w-0 items-center gap-2">
+                  <span
+                    aria-hidden
+                    className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm border"
+                    style={
+                      charted
+                        ? { background: paletteColor(chartIdx), borderColor: paletteColor(chartIdx) }
+                        : { background: 'transparent', borderColor: '#e5e7eb' }
+                    }
+                  />
+                  <span className="truncate font-mono text-[12.5px] text-gray-900">{row.name}</span>
+                </span>
                 <span className="font-mono text-[12.5px] text-gray-700">
                   {row.hz != null ? row.hz.toFixed(1) : '—'}
                 </span>
