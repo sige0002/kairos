@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
 import { renderWithClient, jsonResponse } from '../../test/renderWithClient';
@@ -52,11 +52,13 @@ const DETAIL = {
 
 let exportBody: Record<string, unknown> | null = null;
 let exportAllCalled = false;
+let deletedUrl: string | null = null;
 
 beforeEach(() => {
   setApiBase('/api/v1');
   exportBody = null;
   exportAllCalled = false;
+  deletedUrl = null;
   vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     const url = String(input);
     if (url.endsWith('/datasets/export-all')) {
@@ -69,9 +71,17 @@ beforeEach(() => {
         jsonResponse({ index: '002', dataset_dir: '/data/yuki/pick/002' }),
       );
     }
+    if ((init as RequestInit | undefined)?.method === 'DELETE') {
+      deletedUrl = url;
+      // Deleted: the datasets list refetch below returns empty.
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
     if (url.includes('/datasets/yuki/pick/001'))
       return Promise.resolve(jsonResponse(DETAIL));
-    if (url.includes('/datasets')) return Promise.resolve(jsonResponse(DATASETS));
+    if (url.includes('/datasets'))
+      return Promise.resolve(
+        jsonResponse(deletedUrl ? { datasets: [] } : DATASETS),
+      );
     if (url.includes('/runs')) return Promise.resolve(jsonResponse(RUNS));
     return Promise.resolve(jsonResponse({}));
   });
@@ -156,6 +166,51 @@ test('the detail pane minimizes to a slim bar and expands again', async () => {
   // Expand: the same dataset's detail comes back.
   fireEvent.click(bar);
   await waitFor(() => expect(screen.getByText('Topics (2)')).toBeInTheDocument());
+});
+
+test('deletes a dataset after confirming in the modal and clears the detail', async () => {
+  renderWithClient(<DatasetTab />);
+  await waitFor(() =>
+    expect(screen.getByTestId('dataset-dir')).toHaveTextContent('/data/yuki/pick/001'),
+  );
+  fireEvent.click(screen.getByText('#001'));
+  await waitFor(() => expect(screen.getByText('Topics (2)')).toBeInTheDocument());
+
+  // The detail Delete button opens a confirm modal; nothing is deleted yet.
+  fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+  const dialog = await screen.findByRole('dialog');
+  expect(dialog).toHaveTextContent('yuki/pick/001');
+  expect(deletedUrl).toBeNull();
+
+  // Confirming issues DELETE /datasets/{op}/{task}/{index}.
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
+  await waitFor(() =>
+    expect(deletedUrl).toContain('/api/v1/datasets/yuki/pick/001'),
+  );
+
+  // The detail pane closes and the refreshed (now empty) list shows through.
+  await waitFor(() =>
+    expect(screen.queryByLabelText('dataset detail')).not.toBeInTheDocument(),
+  );
+  await waitFor(() => expect(screen.getByText('No datasets yet.')).toBeInTheDocument());
+});
+
+test('cancelling the delete modal leaves the dataset alone', async () => {
+  renderWithClient(<DatasetTab />);
+  await waitFor(() =>
+    expect(screen.getByTestId('dataset-dir')).toHaveTextContent('/data/yuki/pick/001'),
+  );
+  fireEvent.click(screen.getByText('#001'));
+  await waitFor(() => expect(screen.getByText('Topics (2)')).toBeInTheDocument());
+
+  fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+  const dialog = await screen.findByRole('dialog');
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  expect(deletedUrl).toBeNull();
+  // The selection (detail pane) is untouched.
+  expect(screen.getByText('Topics (2)')).toBeInTheDocument();
 });
 
 test('empty datasets show the empty state', async () => {

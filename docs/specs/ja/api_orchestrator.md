@@ -35,7 +35,7 @@
 - 設定カタログ: `GET /api/v1/config/options`、`POST /api/v1/config/select`（検証テンプレート等のカテゴリ別選択肢と現在の選択）
 - システム情報: `GET /api/v1/system` → `{ cpu: { model, cores }, gpu }`（ホストの読み取り専用イントロスペクション。`nvidia-smi` 不在時は `gpu: null`。常に `200`）
 - ファイル配信: `GET /api/v1/files/{path}` — `data_dir` からの**相対パス**でファイルを配信（トラバーサルガード: `data_dir` 配下のみ。それ以外・不在は `404`）。`video_check` の mp4 プレビュー取得に使う
-- データセット: `GET /api/v1/datasets`（`data/<operator>/<task>/<NNN>/dataset.json` を走査した一覧。`data_dir` 配下のみ読む）、`GET /api/v1/datasets/{operator}/{task}/{index}`（**エクスポート済みデータセットの詳細**。下記「データセットエクスポート」参照）、`POST /api/v1/datasets/export`（body `{ run_id }`）、`POST /api/v1/datasets/export-all`（`recorded/` 内の完了 run を**一括** export）
+- データセット: `GET /api/v1/datasets`（`data/<operator>/<task>/<NNN>/dataset.json` を走査した一覧。`data_dir` 配下のみ読む）、`GET /api/v1/datasets/{operator}/{task}/{index}`（**エクスポート済みデータセットの詳細**。下記「データセットエクスポート」参照）、`DELETE /api/v1/datasets/{operator}/{task}/{index}`（**エクスポート済みデータセットの削除**。同節参照）、`POST /api/v1/datasets/export`（body `{ run_id }`）、`POST /api/v1/datasets/export-all`（`recorded/` 内の完了 run を**一括** export）
 - `GET /healthz` / `GET /readyz`（`components: { recorder, monitor, streamer }` の疎通も返す）
 - `GET /openapi.json`（OpenAPI。frontend は Orval でクライアントを自動生成）
 
@@ -75,6 +75,7 @@ UI（Config タブ）から `RECORDING_CONFIG` 全体を編集・永続化する
 - `POST /api/v1/datasets/export-all`: `recorded/` にファイルが残る完了 run を**全件** export。1 件の失敗でバッチは止めず、`{ exported: [...], failed: [{ run_id, error }], total }` を返す。
 - 結果として**エクスポート済みの収録は Recordings 一覧から消える**（来歴は `<NNN>/dataset.json` に保存）。`GET /api/v1/datasets` で operator › task › NNN を一覧できる。
 - **`GET /api/v1/datasets/{operator}/{task}/{index}` はエクスポート後の RunDetail 相当**（DatasetDetail）を返す: `dataset.json`（来歴・`files` / `bytes` / `message_count`）に加え、移動された `session.json`（state / started_at / ended_at）・`manifest.json`（topics の name / type / QoS。無ければ session / dataset.json の名前のみへフォールバック）と、エクスポートを生き残った run キーのレポート（`validation` / `loss`）を best-effort で同梱する。応答の `path`（`<operator>/<task>/<index>` 相対パス）は、エクスポート後に `video_check` / `loss_report` ジョブを実行する際の `params.dataset_dir` にそのまま使える。パスコンポーネントは単一ディレクトリ名のみ許可（トラバーサル・予約名 `recorded`/`report`/`datasets` は `400`）、ディレクトリまたは `dataset.json` 不在は `404`。
+- **`DELETE /api/v1/datasets/{operator}/{task}/{index}` はエクスポート後の `DELETE /runs/{id}` 相当**（`204`）: データセットディレクトリを削除し、空になった `<task>` / `<operator>` 親ディレクトリを掃除、さらにエクスポート時に意図的に残した run キーのレポートサイドカー（`data/report/*/<run_id>`）も**孤児になるためここで削除**する（同じ run_id の run 行がまだ存在する場合は残す）。パス規則は詳細と同じ（不正コンポーネント・予約名は `400`、ディレクトリまたは `dataset.json` 不在は `404` — `dataset.json` の無いディレクトリは削除対象にならない）。削除に失敗した場合は `500`（`dataset_delete_failed`）。
 
 ## SSE イベント契約（`GET /api/v1/events`）
 

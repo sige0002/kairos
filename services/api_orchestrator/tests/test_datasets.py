@@ -433,6 +433,104 @@ def test_export_all_skips_failures_and_continues(
         assert {d["index"] for d in datasets} == {"001", "002"}
 
 
+def test_delete_dataset_removes_dir_reports_and_empty_parents(
+    tmp_path: Path, store: RunStore, fake_recorder: FakeRecorder
+) -> None:
+    """DELETE removes the dataset dir, the orphaned run-keyed reports, and the
+    now-empty task/operator parents — the post-export twin of DELETE /runs."""
+    data_dir = tmp_path / "data"
+    _make_recorded_run(data_dir, "run_a", operator="yuki", task="pick")
+    _seed_run_sidecars(data_dir, "run_a")
+    store.create(Run(run_id="run_a", state=RunState.completed))
+    app = _build(tmp_path, store, fake_recorder, FakeDoraExporter(data_dir))
+
+    with TestClient(app) as client:
+        assert (
+            client.post("/api/v1/datasets/export", json={"run_id": "run_a"}).status_code
+            == 200
+        )
+
+        resp = client.delete("/api/v1/datasets/yuki/pick/001")
+        assert resp.status_code == 204
+
+        # The dataset dir AND its emptied parents are gone.
+        assert not (data_dir / "yuki" / "pick" / "001").exists()
+        assert not (data_dir / "yuki").exists()
+        # The run-keyed reports kept at export are now orphans -> removed.
+        for pipeline in ("fast_validation", "loss_report", "video_check"):
+            assert not (data_dir / "report" / pipeline / "run_a").exists()
+        # Gone from the list and the detail.
+        assert client.get("/api/v1/datasets").json()["datasets"] == []
+        assert client.get("/api/v1/datasets/yuki/pick/001").status_code == 404
+
+
+def test_delete_dataset_keeps_sibling_datasets_and_their_parents(
+    tmp_path: Path, store: RunStore, fake_recorder: FakeRecorder
+) -> None:
+    """Deleting one index leaves a sibling index (and the shared parents)."""
+    data_dir = tmp_path / "data"
+    for rid in ("run_1", "run_2"):
+        _make_recorded_run(data_dir, rid, operator="yuki", task="pick")
+        store.create(Run(run_id=rid, state=RunState.completed))
+    app = _build(tmp_path, store, fake_recorder, FakeDoraExporter(data_dir))
+
+    with TestClient(app) as client:
+        assert client.post("/api/v1/datasets/export-all").status_code == 200
+
+        assert client.delete("/api/v1/datasets/yuki/pick/001").status_code == 204
+
+        datasets = client.get("/api/v1/datasets").json()["datasets"]
+        assert [d["index"] for d in datasets] == ["002"]
+        assert (data_dir / "yuki" / "pick" / "002" / "dataset.json").exists()
+
+
+def test_delete_dataset_keeps_reports_of_a_live_run_id(
+    tmp_path: Path, store: RunStore, fake_recorder: FakeRecorder
+) -> None:
+    """If a run row still owns the dataset's run_id, its reports are kept."""
+    data_dir = tmp_path / "data"
+    dataset_dir = data_dir / "yuki" / "pick" / "001"
+    dataset_dir.mkdir(parents=True)
+    (dataset_dir / "dataset.json").write_text(
+        json.dumps({"run_id": "run_live"}), encoding="utf-8"
+    )
+    report_dir = data_dir / "report" / "fast_validation" / "run_live"
+    report_dir.mkdir(parents=True)
+    (report_dir / "summary.json").write_text("{}", encoding="utf-8")
+    store.create(Run(run_id="run_live", state=RunState.completed))
+    app = _build(tmp_path, store, fake_recorder, FakeDoraExporter(data_dir))
+
+    with TestClient(app) as client:
+        assert client.delete("/api/v1/datasets/yuki/pick/001").status_code == 204
+
+    assert not dataset_dir.exists()
+    # The reports belong to the still-existing run row -> untouched.
+    assert (report_dir / "summary.json").exists()
+
+
+def test_delete_dataset_missing_or_invalid_path(
+    tmp_path: Path, store: RunStore, fake_recorder: FakeRecorder
+) -> None:
+    data_dir = tmp_path / "data"
+    app = _build(tmp_path, store, fake_recorder, FakeDoraExporter(data_dir))
+
+    with TestClient(app) as client:
+        # Unknown dataset -> 404.
+        resp = client.delete("/api/v1/datasets/yuki/pick/001")
+        assert resp.status_code == 404
+        assert resp.json()["error"]["code"] == "dataset_not_found"
+        # A dir without dataset.json is NOT a dataset: refused AND untouched.
+        sample = data_dir / "samples" / "demo" / "001"
+        sample.mkdir(parents=True)
+        (sample / "x.mcap").write_bytes(b"m")
+        assert client.delete("/api/v1/datasets/samples/demo/001").status_code == 404
+        assert (sample / "x.mcap").exists()
+        # Reserved top-level dirs are never dataset operators -> 400.
+        resp = client.delete("/api/v1/datasets/report/fast_validation/run_a")
+        assert resp.status_code == 400
+        assert resp.json()["error"]["code"] == "invalid_dataset_path"
+
+
 def test_list_datasets_empty(
     tmp_path: Path, store: RunStore, fake_recorder: FakeRecorder
 ) -> None:

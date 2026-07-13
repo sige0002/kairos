@@ -6,6 +6,8 @@
 // selecting a dataset opens the same inspection view as a recording
 // (GET /datasets/{op}/{task}/{index}: metadata, topics, loss report, video
 // check — the post-hoc jobs read the exported dir via the dataset_dir param).
+// The detail pane offers Delete (DELETE /datasets/{op}/{task}/{index}) behind
+// the same confirm modal as the Recordings delete.
 // Export is a
 // MOVE — the orchestrator runs the dataset_export job to completion
 // synchronously, deletes the run row, and returns the summary. On any export
@@ -19,7 +21,7 @@ import {
   useQuery,
   useQueryClient,
 } from '@tanstack/react-query';
-import { apiGet, apiPost } from '../../api/client';
+import { apiDelete, apiGet, apiPost } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
 import { useUiStore } from '../../store/uiStore';
 import type {
@@ -33,7 +35,15 @@ import type {
   RunSummary,
 } from '../../api/types';
 import { ErrorMessage } from '../../components/ErrorMessage';
-import { Badge, Button, Card, SectionLabel, cn } from '../../components/ui';
+import {
+  Badge,
+  Button,
+  Card,
+  Modal,
+  SectionLabel,
+  TrashIcon,
+  cn,
+} from '../../components/ui';
 import {
   JsonBlock,
   LossTable,
@@ -265,15 +275,36 @@ function DatasetDetailView({ entry }: { entry: DatasetEntry }) {
 }
 
 function DatasetsSection() {
+  const queryClient = useQueryClient();
   // The selected dataset (opens the detail pane on the right, like Recordings).
   const [selected, setSelected] = useState<DatasetEntry | null>(null);
   // Detail pane minimized to a slim bar: the tree gets the full width back
   // while the selection is kept, so expanding restores the same dataset.
   const [collapsed, setCollapsed] = useState(false);
+  // The dataset pending a delete-confirm modal (set from the detail Delete
+  // button); null hides the modal. Same UX as the Recordings delete.
+  const [pendingDelete, setPendingDelete] = useState<DatasetEntry | null>(null);
   const datasetsQuery = useQuery({
     queryKey: queryKeys.datasets,
     queryFn: ({ signal }) => apiGet<DatasetsResponse>('/datasets', { signal }),
     placeholderData: keepPreviousData,
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (entry: DatasetEntry) =>
+      apiDelete(
+        `/datasets/${encodeURIComponent(entry.operator)}/${encodeURIComponent(
+          entry.task,
+        )}/${encodeURIComponent(entry.index)}`,
+      ),
+    onSuccess: (_data, entry) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.datasets });
+      queryClient.removeQueries({
+        queryKey: queryKeys.dataset(entry.operator, entry.task, entry.index),
+      });
+      if (selected?.dataset_dir === entry.dataset_dir) setSelected(null);
+      setPendingDelete(null);
+    },
   });
 
   const datasets = datasetsQuery.data?.datasets ?? [];
@@ -355,14 +386,24 @@ function DatasetsSection() {
                   <h3 className="break-all font-mono text-sm font-semibold text-teal-700">
                     {selected.operator}/{selected.task}/{selected.index}
                   </h3>
-                  <button
-                    type="button"
-                    onClick={() => setCollapsed(true)}
-                    aria-label="Minimize dataset detail"
-                    className="shrink-0 rounded-control border border-gray-200 px-2.5 py-1 text-xs font-semibold text-gray-600 hover:bg-gray-50"
-                  >
-                    Minimize
-                  </button>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setPendingDelete(selected)}
+                      className="inline-flex items-center gap-1 rounded-control border border-red-200 px-2.5 py-1 text-xs font-semibold text-red-700 hover:bg-red-50"
+                    >
+                      <TrashIcon />
+                      Delete
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCollapsed(true)}
+                      aria-label="Minimize dataset detail"
+                      className="rounded-control border border-gray-200 px-2.5 py-1 text-xs font-semibold text-gray-600 hover:bg-gray-50"
+                    >
+                      Minimize
+                    </button>
+                  </div>
                 </div>
                 <DatasetDetailView entry={selected} />
               </Card>
@@ -370,6 +411,43 @@ function DatasetsSection() {
           </div>
         </>
       )}
+
+      <Modal
+        open={!!pendingDelete}
+        onClose={() => setPendingDelete(null)}
+        title="Delete dataset"
+        footer={
+          <>
+            <Button
+              variant="ghost"
+              onClick={() => setPendingDelete(null)}
+              disabled={deleteMutation.isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              onClick={() => pendingDelete && deleteMutation.mutate(pendingDelete)}
+              disabled={deleteMutation.isPending}
+            >
+              {deleteMutation.isPending ? 'Deleting…' : 'Delete'}
+            </Button>
+          </>
+        }
+      >
+        Permanently delete{' '}
+        <span className="font-mono text-gray-800">
+          {pendingDelete
+            ? `${pendingDelete.operator}/${pendingDelete.task}/${pendingDelete.index}`
+            : ''}
+        </span>
+        ? The exported files are removed from disk. This cannot be undone.
+        {deleteMutation.isError && (
+          <div className="mt-2">
+            <ErrorMessage error={deleteMutation.error} />
+          </div>
+        )}
+      </Modal>
     </section>
   );
 }

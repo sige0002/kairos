@@ -8,6 +8,9 @@ pipeline). These endpoints:
 - ``GET  /api/v1/datasets/{operator}/{task}/{index}`` — inspect ONE exported
   dataset (sidecars + surviving run-keyed reports), the post-export
   counterpart of ``GET /runs/{id}``.
+- ``DELETE /api/v1/datasets/{operator}/{task}/{index}`` — delete ONE exported
+  dataset (its directory, the now-orphaned run-keyed reports, and any
+  empty parent dirs), the post-export counterpart of ``DELETE /runs/{id}``.
 - ``POST /api/v1/datasets/export`` — export ONE completed run: run the
   ``dataset_export`` pipeline (a MOVE) to completion, then delete the run row.
 - ``POST /api/v1/datasets/export-all`` — export EVERY completed run with files,
@@ -24,10 +27,11 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Response
 from kairos_common import ApiError, JobState
 from pydantic import BaseModel
 
@@ -107,6 +111,38 @@ def _validate_component(value: str, field: str) -> str:
             details={field: value},
         )
     return value
+
+
+def _resolve_dataset_dir(
+    data_dir: Path, operator: str, task: str, index: str
+) -> tuple[Path, dict[str, Any]]:
+    """Validate the path and return the dataset dir + its ``dataset.json``.
+
+    Shared by the detail and delete endpoints: 400 on an unsafe component or a
+    reserved top-level dir, 404 when the directory or its ``dataset.json`` is
+    missing (a dir without the sidecar is not a dataset — same rule as the
+    list scan, so delete can never remove an arbitrary directory).
+    """
+    _validate_component(operator, "operator")
+    _validate_component(task, "task")
+    _validate_component(index, "index")
+    if operator in _RESERVED_TOP:
+        raise ApiError(
+            status_code=400,
+            code="invalid_dataset_path",
+            message=f"Not a dataset operator directory: {operator}",
+            details={"operator": operator},
+        )
+    dataset_dir = data_dir / operator / task / index
+    meta = _read_json(dataset_dir / "dataset.json")
+    if not dataset_dir.is_dir() or meta is None:
+        raise ApiError(
+            status_code=404,
+            code="dataset_not_found",
+            message=f"No exported dataset at {operator}/{task}/{index}.",
+            details={"operator": operator, "task": task, "index": index},
+        )
+    return dataset_dir, meta
 
 
 def _dataset_topics(
@@ -271,25 +307,7 @@ async def dataset_detail(
     or its ``dataset.json`` is missing, 400 on an unsafe path component.
     """
     data_dir = Path(request.app.state.settings.data_dir)
-    _validate_component(operator, "operator")
-    _validate_component(task, "task")
-    _validate_component(index, "index")
-    if operator in _RESERVED_TOP:
-        raise ApiError(
-            status_code=400,
-            code="invalid_dataset_path",
-            message=f"Not a dataset operator directory: {operator}",
-            details={"operator": operator},
-        )
-    dataset_dir = data_dir / operator / task / index
-    meta = _read_json(dataset_dir / "dataset.json")
-    if not dataset_dir.is_dir() or meta is None:
-        raise ApiError(
-            status_code=404,
-            code="dataset_not_found",
-            message=f"No exported dataset at {operator}/{task}/{index}.",
-            details={"operator": operator, "task": task, "index": index},
-        )
+    dataset_dir, meta = _resolve_dataset_dir(data_dir, operator, task, index)
     session = _read_json(dataset_dir / "session.json")
     manifest = _read_json(dataset_dir / "manifest.json")
     run_id = meta.get("run_id")
@@ -316,6 +334,66 @@ async def dataset_detail(
         validation=_run_report(data_dir, run_id, "fast_validation"),
         loss=_run_report(data_dir, run_id, "loss_report"),
     )
+
+
+@router.delete("/{operator}/{task}/{index}", status_code=204)
+async def delete_dataset(
+    request: Request,
+    operator: str,
+    task: str,
+    index: str,
+    service: RunService = Depends(get_run_service),
+) -> Response:
+    """Delete one exported dataset — the post-export ``DELETE /runs/{id}``.
+
+    Removes the ``<operator>/<task>/<index>`` directory, then the run-keyed
+    report sidecars (``data/report/*/<run_id>``, kept at export solely to back
+    this dataset's detail view — unless a live run still owns that run_id) and
+    any now-empty ``<task>`` / ``<operator>`` parent dirs. Same path rules as
+    the detail view: 400 on an unsafe component, 404 when the directory or its
+    ``dataset.json`` is missing. Returns 204 on success.
+    """
+    data_dir = Path(request.app.state.settings.data_dir)
+    dataset_dir, meta = _resolve_dataset_dir(data_dir, operator, task, index)
+    run_id = meta.get("run_id")
+    try:
+        shutil.rmtree(dataset_dir)
+    except OSError as exc:
+        raise ApiError(
+            status_code=500,
+            code="dataset_delete_failed",
+            message=f"Could not delete the dataset directory: {exc}",
+            details={"operator": operator, "task": task, "index": index},
+        ) from exc
+    # Prune now-empty parents (task, then operator) so the tree doesn't
+    # accumulate husks; rmdir refuses a non-empty dir, which ends the walk.
+    for parent in (dataset_dir.parent, dataset_dir.parent.parent):
+        try:
+            parent.rmdir()
+        except OSError:
+            break
+    # The run-keyed reports were kept at export only for this dataset's detail
+    # view; with the dataset gone they are orphans. Leave them alone if a run
+    # row still claims the run_id (e.g. a re-imported run) or it is unsafe.
+    if (
+        isinstance(run_id, str)
+        and _RUN_ID_RE.match(run_id)
+        and not _run_exists(service, run_id)
+    ):
+        report_root = data_dir / "report"
+        if report_root.is_dir():
+            for pipeline_dir in report_root.iterdir():
+                shutil.rmtree(pipeline_dir / run_id, ignore_errors=True)
+    return Response(status_code=204)
+
+
+def _run_exists(service: RunService, run_id: str) -> bool:
+    """True when a run row with this id still exists in the store."""
+    try:
+        service.get(run_id)
+    except ApiError:
+        return False
+    return True
 
 
 @router.post("/export")
