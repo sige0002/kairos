@@ -35,9 +35,11 @@ from kairos_common import (
 
 from api_orchestrator.events import EVENT_RECORD_STATUS, EventHub
 from api_orchestrator.models import (
+    Episode,
     RecordStartRequest,
     Run,
     RunDetail,
+    RunEpisode,
     RunError,
     RunState,
     RunTopic,
@@ -63,6 +65,21 @@ _UNKNOWN_TASK = "unknown_task"
 def _default_meta(value: str | None, default: str) -> str:
     """Coerce an empty/whitespace metadata field to a stable placeholder."""
     return value.strip() if value and value.strip() else default
+
+
+def _run_episode(episode: Episode | None) -> RunEpisode | None:
+    """Project a full :class:`Episode` down to the compact run-join summary."""
+    if episode is None:
+        return None
+    return RunEpisode(
+        episode_id=episode.episode_id,
+        batch_id=episode.batch_id,
+        index_in_batch=episode.index_in_batch,
+        task_result=episode.task_result,
+        failure_reason=episode.failure_reason,
+        quality=episode.quality,
+        review_status=episode.review_status,
+    )
 
 
 def allocate_run_id(now: datetime | None = None) -> str:
@@ -505,13 +522,16 @@ class RunService:
         whose files were deleted still returns cleanly).
         """
         run = self.get(run_id)  # 404 if absent
-        return RunDetail(
+        detail = RunDetail(
             **run.model_dump(),
             manifest=self._read_json(self._recorded_dir / run_id / "manifest.json"),
             validation=self._read_json(self._report_path("fast_validation", run_id)),
             dataset_stats=self._read_json(self._report_path("dataset_export", run_id)),
             loss=self._read_json(self._report_path("loss_report", run_id)),
         )
+        # Console v2 Phase 2: attach the episode summary (null when none).
+        detail.episode = _run_episode(self._store.get_episode_by_run_id(run_id))
+        return detail
 
     def _report_path(self, pipeline: str, run_id: str) -> Path:
         return self._data_dir / "report" / pipeline / run_id / "summary.json"
@@ -586,12 +606,23 @@ class RunService:
             if report_root.is_dir():
                 for pipeline_dir in report_root.iterdir():
                     shutil.rmtree(pipeline_dir / run_id, ignore_errors=True)
+        # Cascade the run's episode (Console v2 Phase 2). Done in code rather than
+        # via a SQLite FK pragma, so it holds regardless of connection settings.
+        self._store.delete_episode_by_run_id(run_id)
         self._store.delete(run_id)
 
     def list_runs(self, limit: int, cursor: str | None) -> tuple[list[Run], str | None]:
-        """Return one page of runs and the next cursor (opaque string)."""
+        """Return one page of runs and the next cursor (opaque string).
+
+        Each run is additively joined with its episode summary (Console v2
+        Phase 2) via a single batched lookup, so the Review list shows real
+        data without an N+1 read per run.
+        """
         parsed = self._parse_cursor(cursor)
         runs, next_seq = self._store.list_runs(limit, parsed)
+        episodes = self._store.episodes_by_run_ids([r.run_id for r in runs])
+        for run in runs:
+            run.episode = _run_episode(episodes.get(run.run_id))
         return runs, (str(next_seq) if next_seq is not None else None)
 
     @staticmethod

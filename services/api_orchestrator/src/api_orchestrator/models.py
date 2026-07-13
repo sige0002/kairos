@@ -14,6 +14,15 @@ from typing import Any, Literal
 from kairos_common import Compression, Durability, JobState, Reliability
 from pydantic import BaseModel, Field
 
+# Console v2 Phase 2 controlled vocabularies (design doc
+# console_v2_phase2_episode_model). Kept as Literal aliases so they are visible
+# in the OpenAPI schema and validated at the request boundary.
+TaskResult = Literal["success", "failure"]
+Quality = Literal["good", "needs_review", "not_usable"]
+QualitySource = Literal["operator", "quick_check", "validator"]
+ReviewStatus = Literal["pending", "adopted", "excluded"]
+BatchStatus = Literal["active", "completed", "ended_early"]
+
 
 class RunState(StrEnum):
     """Run lifecycle state (shared vocabulary, config.md).
@@ -63,6 +72,24 @@ class RunError(BaseModel):
     message: str
 
 
+class RunEpisode(BaseModel):
+    """Compact episode summary attached to a run (Console v2 Phase 2).
+
+    Additively joined onto ``GET /api/v1/runs`` and ``GET /api/v1/runs/{id}`` so
+    the Review tab shows the operator's task result + quality and the adopt /
+    exclude state on any terminal, without an existing run field changing.
+    ``null`` when the run has no episode.
+    """
+
+    episode_id: str
+    batch_id: str
+    index_in_batch: int
+    task_result: TaskResult
+    failure_reason: str | None = None
+    quality: Quality
+    review_status: ReviewStatus
+
+
 class Run(BaseModel):
     """A run as returned by ``GET /api/v1/runs/{id}`` and the record endpoints."""
 
@@ -79,6 +106,9 @@ class Run(BaseModel):
     # Session metadata captured at record start (who recorded, what task).
     operator: str | None = None
     task: str | None = None
+    # Console v2 Phase 2: the episode this run belongs to (null when none). Set
+    # by the runs-list / run-detail read path; never persisted on the run row.
+    episode: RunEpisode | None = None
 
 
 class RecordStartRequest(BaseModel):
@@ -258,3 +288,121 @@ class ValidationPresetListResponse(BaseModel):
     """List of one-click validation presets (``GET /api/v1/validation/presets``)."""
 
     items: list[ValidationPresetInfo] = Field(default_factory=list)
+
+
+# ---- Console v2 Phase 2: batches & episodes -----------------------------
+
+
+class Batch(BaseModel):
+    """A Collect batch: the episodes recorded in one run of a task/condition.
+
+    ``project`` is a plain string sourced from the Plan; modelling the Plan
+    (Projects/Tasks/Conditions) itself is deferred to Phase 2.5. ``Session`` (the
+    UX-spec Session > Batch > Episode outer level) is also Phase 2.5 TBD.
+    """
+
+    batch_id: str
+    robot: str | None = None
+    project: str
+    task: str
+    condition: str | None = None
+    operator: str | None = None
+    target_episodes: int = 30
+    status: BatchStatus = "active"
+    ended_reason: str | None = None
+    created_at: str | None = None
+    ended_at: str | None = None
+
+
+class Episode(BaseModel):
+    """One episode == one run (``run_id`` is unique across episodes)."""
+
+    episode_id: str
+    batch_id: str
+    run_id: str
+    index_in_batch: int
+    task_result: TaskResult
+    failure_reason: str | None = None
+    quality: Quality
+    quality_source: QualitySource = "operator"
+    review_status: ReviewStatus = "pending"
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class BatchCreateRequest(BaseModel):
+    """Body for ``POST /api/v1/batches``.
+
+    ``robot`` defaults to the orchestrator's active robot when omitted.
+    """
+
+    robot: str | None = None
+    project: str
+    task: str
+    condition: str | None = None
+    operator: str | None = None
+    target_episodes: int = Field(default=30, ge=1)
+
+
+class BatchPatchRequest(BaseModel):
+    """Body for ``PATCH /api/v1/batches/{id}`` (early stop / condition change)."""
+
+    status: BatchStatus | None = None
+    ended_reason: str | None = None
+    condition: str | None = None
+
+
+class EpisodeCreateRequest(BaseModel):
+    """Body for ``POST /api/v1/episodes`` (Collect Save)."""
+
+    batch_id: str
+    run_id: str
+    index_in_batch: int = Field(ge=0)
+    task_result: TaskResult
+    failure_reason: str | None = None
+    quality: Quality
+    quality_source: QualitySource = "operator"
+
+
+class EpisodePatchRequest(BaseModel):
+    """Body for ``PATCH /api/v1/episodes/{id}`` (Review adopt/exclude/override)."""
+
+    task_result: TaskResult | None = None
+    failure_reason: str | None = None
+    quality: Quality | None = None
+    quality_source: QualitySource | None = None
+    review_status: ReviewStatus | None = None
+
+
+class BatchEpisodeSummary(BaseModel):
+    """Compact per-episode row in a batch list item."""
+
+    index: int
+    run_id: str
+    task_result: TaskResult
+    quality: Quality
+    review_status: ReviewStatus
+
+
+class BatchSummary(Batch):
+    """A batch plus its episode count and compact episode summaries.
+
+    Returned by ``GET /api/v1/batches`` (list) so Collect can restore an active
+    batch and show progress without a second round-trip per batch.
+    """
+
+    episode_count: int = 0
+    episodes: list[BatchEpisodeSummary] = Field(default_factory=list)
+
+
+class BatchDetail(Batch):
+    """A batch plus its full episodes (``GET /api/v1/batches/{id}``)."""
+
+    episode_count: int = 0
+    episodes: list[Episode] = Field(default_factory=list)
+
+
+class BatchListResponse(BaseModel):
+    """Batch list newest-first (``GET /api/v1/batches``)."""
+
+    items: list[BatchSummary] = Field(default_factory=list)

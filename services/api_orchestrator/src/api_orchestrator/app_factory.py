@@ -42,6 +42,7 @@ from api_orchestrator.monitor_client import MonitorClient
 from api_orchestrator.recorder_client import RecorderClient
 from api_orchestrator.routers import config as config_router
 from api_orchestrator.routers import datasets as datasets_router
+from api_orchestrator.routers import episodes as episodes_router
 from api_orchestrator.routers import events as events_router
 from api_orchestrator.routers import files as files_router
 from api_orchestrator.routers import jobs as jobs_router
@@ -233,6 +234,8 @@ def create_orchestrator_app(
     app.include_router(config_router.router)
     app.include_router(record_router.router)
     app.include_router(runs_router.router)
+    app.include_router(episodes_router.batches_router)
+    app.include_router(episodes_router.episodes_router)
     app.include_router(topics_router.router)
     app.include_router(system_router.router)
     app.include_router(events_router.router)
