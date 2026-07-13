@@ -14,6 +14,8 @@ ROS 2 トピックの **軽量・非破壊なリアルタイム監視**コンテ
 - 監視対象 topics（**allowlist**。`RECORDING_CONFIG` の `default_topics` と整合）
 - topic ごとの `expected_hz`（`RECORDING_CONFIG`、任意）
 - alert 定義（`{ topic, metric, op, threshold }` のリスト、`cooldown_s` / `clear_after_s` を含む）
+  - **アラートは incident 単位**（key = `(topic, metric)`）: 発火中は現在値を更新しながら保持し、解消時に `cleared` を明示送出（確実な配達のため約 60s 保持）。UI は 1 incident = 1 行に集約する。
+  - **既定 DANGER ルール**: config ルールが無いトピックでも、monitor 自身の `danger` 分類（expected_hz 割れ）が約 10 秒持続すれば既定 incident を発火する — テーブルの DANGER と Events が矛盾しない。同一 `(topic, hz)` の config ルールは既定を上書きする。
 
 ## 構成コンポーネント
 

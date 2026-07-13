@@ -103,7 +103,7 @@ resume は **rosbag2 の `~/resume` サービス**で行うため、対話 SPACE
 ## 設定（config）
 
 - `run_id` の文字種は `[A-Za-z0-9_-]+`（パストラバーサル防止）。
-- `MAX_RECORD_BYTES > 0` で超過時に自動 stop。
+- `MAX_RECORD_BYTES > 0` で超過時に自動 stop。`MAX_RECORD_SECONDS`（既定 600・`0`=無効）は 1 録画の wall-clock 上限 — 誰も止めない孤児録画のディスク保護バックストップ。どちらの自動停止も orchestrator の遅延 reconciliation（status ポーリング）が通常の completed として確定する。
 - `default_topics` / `topic_qos_overrides` は `RECORDING_CONFIG` の YAML から（パターン一致）。`ROS_DOMAIN_ID` / `DATA_DIR` / `BIND_HOST` は共有 [config](config.md)。
 
 ## 設計ポイント

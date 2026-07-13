@@ -47,8 +47,10 @@ backend-driven な軽量 Web UI（Vite + React + TypeScript）。タブは技術
 - **Batch / Episode 進行はサーバ永続**: バッチは初回録画時に遅延作成（`POST /api/v1/batches`）。空バッチは行を持たず番号を消費しない。リロード・タブ切替は `GET /api/v1/batches?status=active` で復元。
 - **Batch menu** の作用（End early / Reset は**録画を消さない**）:
   - Pause / Resume（現状ローカルのみ。サーバ化は **TBD**: Phase 2.5）／End batch early（`status=ended_early`＋理由）／Reset（空バッチなら**完全 no-op**、録画ありなら現バッチを閉じて次の録画から新番号）／Change condition（PATCH）／Report issue。
-- **録画操作**: Start / Stop。arming ゲート（subscription 確立待ち。「N matched · N missing」ノート）、failed-start バナー、**recorder cache/drop 検出バナー**（`dropped_messages`＋cache 設定のヒント、当該 run にゲート）。録画トピックの解決は v1 と同じ（selected / configured / all。選択は Monitor の Rec 列と連動し、「REC N topics」チップから Monitor へ飛べる。空選択では Start 無効）。
-- **エピソードの保存**: 停止後に Task result（success / failure＋failure reason）と Quality（good / needs_review / not_usable）を付けて Save → `POST /api/v1/episodes`。Discard は確認モーダル付きの**実削除**（`DELETE /api/v1/runs/{id}`）。保存後は平易な 3 行サマリ（Task / Quality / 保存済み）を表示。
+- **録画操作**: Start / Stop。arming ゲート（subscription 確立待ち。「N matched · N missing」ノート）、failed-start バナー（**平易文言先行・生コードは従行** — `already_recording` 等はオペレーター語に写像）、**recorder cache/drop 検出バナー**（`dropped_messages`＋cache 設定のヒント、当該 run にゲート）。**キーボード**: `R`=Start / `S`・`Space`=Stop / `Esc`=arming Cancel / `?`=ショートカット一覧（入力欄フォーカス中は無効・ボタンラベルに `· R` 等のヒント）。フェーズ遷移毎にフォーカスは次の主操作へ移る（body に落ちない）。
+- **録画状態はサーバが真実**（`GET /record/status` の 5s ポーリング。HCD 修正 2026-07-14）: このブラウザが開始していない/見失った録画が走っていれば **RECORDING IN PROGRESS カード**（run / 経過 / サイズ / operator / topics、確認モーダル付き `Stop & save`、`Open in Monitor →`）が READY の代わりに出る。SYSTEM STATUS の Recorder 行も同一クエリ由来 = 「READY なのに 409」の矛盾は構造的に発生しない。停止で回収されたテイクは下記「未保存テイク回収」に現れる。録画トピックの解決は v1 と同じ（selected / configured / all。選択は Monitor の Rec 列と連動し、「REC N topics」チップから Monitor へ飛べる。空選択では Start 無効）。
+- **エピソードの保存**: Stop → 実イベントゲート（stop API 解決 → integrity 読取。固定タイマー廃止・stop 失敗は SAVING に留まり `Retry stop`）→ 結果パネル。**Success は既定選択**で、クリーンな成功は `Save — success` 1 操作（Enter 可）。Failure は ✕ から理由必須の分岐。**Quality は実 integrity から自動導出**（clean→`Good · auto`、drop/failed→`Needs review · auto`＋実 drop 件数）で、`change` から 3 択（good / needs_review / not_usable）で任意上書き — **上書き時のみ `quality_source='operator'`、非上書きは `'quick_check'`**（来歴を偽らない）。保存は `POST /api/v1/episodes` で、**サーバ 201 確定後にレシート** `Saved — Episode n of Batch m · {operator}`（strip チップに一時リング）。Discard は確認モーダル付きの**実削除**（`DELETE /api/v1/runs/{id}`）。
+- **未保存テイク回収**: Stop〜Save 間で離脱しても、リロード時に「Unsaved take from {time} — {N} MB, {duration}」の amber バナー（`Label it` / `Discard` / `Later`）で回収できる（completed かつ episode 無しの直近 run を検出）。
 - 件数「n / target」は**単調カウンタ `episodes_recorded`**（撮った数が正。Review 側の削除で減らない。品質内訳と乖離した場合は脚注で明示）。
 - **カメラ**: WebRTC プレビュー。ペイン追加/削除（上限 4）。メインは解像度プリセット選択、サブは低解像度（240/360p）に強制 cap。**遅延 / fps はプレビュー映像内・右上のオーバーレイチップ**（タイル毎の実測値・閾値色。映像外へは置かない）。接続前のプレースホルダには状態の理由を明記（空欄を故障に見せない）。
 - **Quick check**（停止直後の品質サマリ）は表示枠のみで**実判定は TBD（Phase 3）**。確定済みの設計: 「収録中に貯めた監視統計の清算」2 層 — Layer 0 = monitor / recorder が収録中に持つ統計（件数・drop・gap・expected_hz 比。stop 時点で確定）、Layer 1 = MCAP の summary section のみ読む（O(index)）。**≤5 秒・split 構成でも転送ゼロ**で成立させる。
@@ -57,7 +59,7 @@ backend-driven な軽量 Web UI（Vite + React + TypeScript）。タブは技術
 
 ### Review — 品質とラベルの判断、エクスポート
 
-- 完了収録の一覧＋詳細。各行は run と episode の JOIN（`GET /api/v1/runs`）で **Batch「MM/DD · #N」/ Task result / Quality / レーン**のチップを表示。operator 等でフィルタ可能。
+- 完了収録の一覧＋詳細。各行は run と episode の JOIN（`GET /api/v1/runs`）で **Batch「MM/DD · #N」/ Task result / Quality / レーン**のチップを表示。operator 等でフィルタ可能。**一覧はカーソルを最後まで追従**（200件で黙って切れない）し、ヘッダに実データ集計チップ（`n ready · n needs check · n excluded` / `n success · n failure`）。表示番号は**永続 `index_in_batch`**（削除で振り直らない）。判断ボタン（Mark OK / Exclude / Export CTA）は**スクロール外の固定バー**。
 - **例外レビューモデル**: quality が good（または operator 確認済み）の episode は **READY**（追加クリック不要）。**NEEDS CHECK**（quality 非 good かつ未判断）だけが作業キューで、「Mark OK — include」か Exclude で解消する。既定の並びは NEEDS CHECK → READY → EXCLUDED。判断は `PATCH /api/v1/episodes/{id}`（`review_status`）。
 - **Export は本タブが唯一の入口**（一機能一箇所）: 「**Export ready (n)…**」が READY の完了収録を一括エクスポート（**移動**。[api_orchestrator.md](api_orchestrator.md) データセットエクスポート）。「Include task-failed (labeled)」トグルは既定 ON（失敗データを一律除外しない）。**パイプライン strip**（Recorded → Reviewed → Ready → Export → In dataset）が現在地と次アクションを示し、READY 到達直後はインラインの Export CTA を出す。
 - **削除は 2 段階**: Exclude =「Excluded — kept on disk」（非破壊・ラベルのみ）→ 除外済みの項目だけに「Delete from disk…」（run_id・サイズ・不可逆を確認。一括「Delete excluded (n)…」は逐次実行し失敗を正直に報告）。EXCLUDED や確定済みの例外からは「↩ Return to review」で pending に戻せる（可逆）。
@@ -76,11 +78,11 @@ backend-driven な軽量 Web UI（Vite + React + TypeScript）。タブは技術
 
 v1 の機能をそのまま維持し、レイアウトのみ v2 化。
 
-- **pipeline 非依存**: pipeline 選択（`GET /api/v1/pipelines` の enabled 全件）→ 対象 run 選択 → **パラメータフォーム**（`schemas.pipeline_forms[<id>]` から自動生成）→ 実行（`POST /api/v1/jobs`）。結果は**汎用レンダラ**が `summary.json` を shape 非依存で描く（PASS/FAIL バッジ・message・metrics の key-value ツリー・artifacts・raw JSON）。**プラグイン追加時に本タブへ手を入れる必要はない**（[dora_plugins.md §2.5](dora_plugins.md)）。
+- **pipeline 非依存**: pipeline 選択（`GET /api/v1/pipelines` の enabled 全件）→ **対象選択（grouped）**: `Runs (before export)`（主経路）＋ `Datasets (exported)`（エクスポート済みの再検証。`params.dataset_dir` で実行。dataset 対応 pipeline のみ enable、非対応は「applies to runs」注記で disable。空状態はグループ毎に正直表示）→ **パラメータフォーム**（`schemas.pipeline_forms[<id>]` から自動生成）→ 実行（`POST /api/v1/jobs`）。結果は**汎用レンダラ**が `summary.json` を shape 非依存で描く（PASS/FAIL バッジ・message・metrics の key-value ツリー・artifacts・raw JSON）。**プラグイン追加時に本タブへ手を入れる必要はない**（[dora_plugins.md §2.5](dora_plugins.md)）。
 - 同梱 `fast_validation` のみ template の必須トピック一覧に対する専用チェックリストを持つ。結果は CSV でダウンロード可能。
 - **一括実行**: 「All completed runs」で選択 pipeline を完了収録すべてに投入（run ごとに `POST /api/v1/jobs`）。run 別の進捗リスト（live state、完了で PASS/FAIL）。
 - **ワンクリック検証プリセット**: `GET /api/v1/validation/presets` のプリセットボタン（`pipeline`＋固定 `params`）。**未検証の完了収録**（`pending_run_ids`）へ一括実行。「N pending」表示・0 件は「up to date」で無効化。定義は機体設定 `config/<robot>/validation_presets.yaml`（[config.md](config.md)）。
-- `dataset_export` pipeline は Review の Export と同じ**移動**の programmatic 版として残る。
+- `dataset_export` pipeline は Review の Export と同じ**移動**の programmatic 版として残る。タブ内に「Validation only — export stays in Review.」を明示（Export の一機能一箇所は不変）。
 - lifecycle チップ（Experimental → Standard の昇格）は**見た目のみ（TBD: 実体化は将来）**。
 
 ### Monitor — 通信・信号・システム診断
@@ -89,15 +91,15 @@ v1 の Graph / Probe / Live 健全性パネルの統合先。
 
 - **コンテキスト帯**: 録画中は REC・run_id・経過時間、それ以外は STANDBY（`record_status` 由来の実表示）。
 - **Topics ビュー**:
-  - **チャートパネルの追加 / 削除（上限 4）**。パネル毎にメトリクス（**Frequency / Bandwidth / Max gap / Rate vs expected**）とトピック重畳（上限 6）を選択。時間窓（30s / 1m / 5m）と Pause はグローバル（Pause は窓のアンカーも凍結）。**録画の REC / STOP マーカー**を全パネルに重畳。Frequency には expected_hz の参照線。**latency / loss はメニューに置かない** — 非破壊 monitor では測れない（per-run の loss は Review の事後解析で提供）。
+  - **チャートパネルの追加 / 削除（上限 4）**。パネル毎にメトリクス（**Frequency / Bandwidth / Max gap / Rate vs expected**）とトピック重畳（上限 6）を選択。時間窓（30s / 1m / 5m）と **Freeze charts / Live**（旧 Pause）はグローバル — 凍結はチャート限定（`Charts frozen · table still live.` を明示。テーブルは意図的に live 継続）。窓は開いてからの蓄積なので、蓄積が窓未満の間は `{window} window (n so far)` と正直に表示。チャート高さは**実測スロット追従**（固定高が overflow-hidden な親にクリップされ低値域が見えなくなる不具合の根治）。**録画の REC / STOP マーカー**を全パネルに重畳。Frequency には expected_hz の参照線。**latency / loss はメニューに置かない** — 非破壊 monitor では測れない（per-run の loss は Review の事後解析で提供）。
   - **トピック表**: discovery の全トピック＋live metrics（Hz / 帯域 / gap、status ドット `inactive`/`danger`/`warning`/`ok`/`unknown`、閾値超過時の shortfall バッジ＋理由 tooltip。shortfall は observed であり真の loss ではない）。**Rec チェックボックス列** = 次回録画の対象選択（記録途中の変更ではない）。設定済みトピックは事前チェック。機体切替で config 既定に再シード。チャートの系列選択とは独立。
 - **Signals ビュー**（v1 Probe の移植）: `topic_probe` 由来の**数値フィールド**を (topic, field) 単位で重畳プロットする汎用プロッタ。トピック → 数値フィールド（配列は `[0..N]` 展開）を選び、**異トピック × 複数フィールドを重畳**。サンプルレート選択（1/5/10/30Hz・既定 10Hz）・窓・Pause。**decode は隔離コンテナ `topic_probe` が担い、録画・監視に波及しない**（[topic_probe.md](topic_probe.md)）。
-- **Events カード**: SSE `alert` の実履歴（firing / cleared・メトリクス・しきい値・値・時刻）。
+- **Events カード**: SSE `alert` を **incident 単位（topic × metric）で 1 行に集約** — 発火中は `firing · since {t}` で現在値を in-place 更新、解消で `cleared · {t}`（muted）へ反転、再発火は `×n`。config ルールの無いトピックも monitor の既定 DANGER incident（持続 ~10s）で拾う = **テーブルの DANGER と Events は矛盾しない**（[topic_monitor.md](topic_monitor.md)）。
 - **System カード**: 実 CPU% / GPU% / ディスク使用量（`GET /api/v1/system`）。取得できない値は「—」（でっち上げない）。
 
 ### Settings — 機体設定・計画
 
-- **Robots**: 機体一覧（committed `config/<robot>/` と gitignored `config/local/<robot>/`）と選択（`POST /api/v1/config/select` で recording / stream を hot-swap。recorder QoS / monitor expected_hz は再起動後 — UI にもその旨を表示）。**aspect**（recording / stream / validation / validators）の option 選択。recording config は JSON で編集・永続化（`PUT /api/v1/config/recording`）。機体の新規作成は不可（API が無い。ボタンは正直にその旨を通知する）。
+- **Robots**: 機体一覧（committed `config/<robot>/` と gitignored `config/local/<robot>/`）と選択（`POST /api/v1/config/select` で recording / stream を hot-swap。recorder QoS / monitor expected_hz は再起動後 — UI にもその旨を表示。**録画中のアクティブ化は「Stop and switch?」確認モーダル**）。**非アクティブ機体は read-only で設定を閲覧可能**（`GET /api/v1/config/robots/{robot}`。「Read-only — {robot} is not the active robot.」バナー＋雛形として読める disabled JSON）。**aspect**（recording / stream / validation / validators）の option 選択。recording config は JSON で編集・永続化（`PUT /api/v1/config/recording`。**インライン検証**: 不正 JSON は Save 無効＋平易エラー。録画中の保存は「次の録画から適用」の情報バナー）。機体の新規作成は不可 — `+ Add robot` は消えるトーストでなく**次の一歩を示す常設 explainer**（`config/<robot>/` フォルダ作成＋既存機体の雛形参照）を開く。レール下部は出典の無い版数表示を廃し **active robot の実値**。
 - **Plans**: Project / Task / Condition の定義を編集。Collect のピッカーと**共有ストア**で即時反映（現状は localStorage。**TBD**: サーバー保存は Phase 2.5）。
 
 ## データフロー（SSE × キャッシュ）

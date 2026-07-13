@@ -24,9 +24,9 @@ The **job management / state management / API hub** container. The single public
 
 ## Public API (`/api/v1`, no auth)
 
-- Recording: `POST /api/v1/record/start`, `POST /api/v1/record/stop`, `GET /api/v1/record/status` (proxies to the recorder)
+- Recording: `POST /api/v1/record/start`, `POST /api/v1/record/stop`, `GET /api/v1/record/status` (proxies to the recorder. **Also serves as lazy reconciliation**: if a run that is live in the DB is reported as finished by the recorder (e.g. the recorder's internal auto-stop on `MAX_RECORD_BYTES`/`MAX_RECORD_SECONDS`), it is settled to completed via the normal stop path, and a live run the recorder does not know about is immediately marked interrupted — without waiting for a restart)
 - Run: `GET /api/v1/runs` (cursor paging), `GET /api/v1/runs/{id}` (Console v2 Phase 2 **additively bundles an `episode` summary with each run**. See "Batch / Episode" below)
-- Batch / Episode (**Console v2 Phase 2**. Persists Collect's progress and Review's decisions): `POST /api/v1/batches`, `PATCH /api/v1/batches/{id}`, `GET /api/v1/batches?status=`, `GET /api/v1/batches/{id}`, `POST /api/v1/episodes`, `PATCH /api/v1/episodes/{id}` (see "Batch / Episode" below)
+- Batch / Episode (**Console v2 Phase 2**. Persists Collect's progress and Review's decisions): `POST /api/v1/batches`, `PATCH /api/v1/batches/{id}`, `GET /api/v1/batches?status=&robot=&operator=`, `GET /api/v1/batches/{id}`, `POST /api/v1/episodes`, `PATCH /api/v1/episodes/{id}` (see "Batch / Episode" below)
 - Topic: `GET /api/v1/topics` (list. **The source is a proxy of `topic_monitor`'s `GET /topics` discovery**: `name` / `type` / `publisher_count` / `subscriber_count` / `qos` / `last_seen`), `GET /api/v1/topics/status` (live metrics from the monitor)
 - Events: `GET /api/v1/events` (**SSE aggregation**. Contract below)
 - Pipeline / Job (stage3. Details in [dora_runner](dora_runner.md)): `GET /api/v1/pipelines`, `POST /api/v1/jobs`, `GET /api/v1/jobs/{id}/status`, `GET /api/v1/jobs/{id}/result`, `POST /api/v1/jobs/{id}/cancel`
@@ -34,7 +34,7 @@ The **job management / state management / API hub** container. The single public
 - One-click validation presets: `GET /api/v1/validation/presets` (config-defined presets + their not-yet-validated runs)
 - Settings: `GET /api/v1/config` (frontend runtime settings: endpoints / tabs / defaults (including `ros_domain_id`) / stream / schemas). [`GET/POST /api/v1/settings` is **not implemented** (future); `PUT /api/v1/config/recording` below is currently the entry point for config editing]
 - Recording config (full edit): `GET /api/v1/config/recording` → `{ config: <RecordingConfig dump>|null, path }`, `PUT /api/v1/config/recording` (body `{ config }`. See "Full editing of recording config" below)
-- Settings catalog: `GET /api/v1/config/options`, `POST /api/v1/config/select` (per-category choices such as validation templates, and the current selection)
+- Settings catalog: `GET /api/v1/config/options`, `POST /api/v1/config/select` (per-category choices such as validation templates, and the current selection), `GET /api/v1/config/robots/{robot}` (**returns any catalog robot's config read-only** — the parsed content per aspect + a summary. To reference another robot as a template without hot-swapping the live services (Settings). An unknown robot or an invalid path component is `404`)
 - System info: `GET /api/v1/system` → `{ cpu: { model, cores }, gpu, cpu_percent, disk, gpu_percent }` (read-only introspection of the host. Always `200`)
   - `cpu` / `gpu`: static information (CPU model name and logical core count from `/proc/cpuinfo`, GPU name from `nvidia-smi`. Each field is `null` when unobtainable)
   - `cpu_percent`: host-wide CPU utilization `[0, 100]` (computed by diffing two snapshots of the aggregated `cpu` line of `/proc/stat` = true busy%, not a load average). `null` on the first sample (no diff baseline yet) or when `/proc/stat` is unreadable
@@ -74,9 +74,9 @@ The **job management / state management / API hub** container. The single public
 - **Endpoints**:
   - `POST /api/v1/batches` — start a batch. Body `{ project, task, condition?, operator?, robot?, target_episodes=30 }` → `201` (when `robot` is omitted, it is filled in with the **active robot**). On a same-second collision, `batch_id` is re-assigned with a suffix.
   - `PATCH /api/v1/batches/{id}` — early termination (`status` / `ended_reason`) and `condition` changes. **`ended_at` is stamped exactly once when a terminal status (`completed` / `ended_early`) is reached.** Inconsistent transitions are tolerated loosely (no hard rejection). Absent is `404`.
-  - `GET /api/v1/batches?status=` — batch list (**newest first**). Each element bundles `batch_seq`, `episode_count` (live count), `episodes_recorded` (monotone counter), and a **compact episodes summary** (`index` / `run_id` / `batch_seq` / `task_result` / `quality` / `review_status`) (used to restore the active batch on reload; Collect's counters reference `episodes_recorded`).
+  - `GET /api/v1/batches?status=&robot=&operator=` — batch list (**newest first**). Each element bundles `batch_seq`, `episode_count` (live count), `episodes_recorded` (monotone counter), and a **compact episodes summary** (`index` / `run_id` / `batch_seq` / `task_result` / `quality` / `review_status`) (used to restore the active batch on reload; Collect's counters reference `episodes_recorded`).
   - `GET /api/v1/batches/{id}` — the whole batch + **episodes (full)**. Absent is `404`.
-  - `POST /api/v1/episodes` — on Collect Save. Body `{ batch_id, run_id, index_in_batch, task_result, failure_reason?, quality, quality_source='operator' }` → `201`. Unknown batch / run is `404`; a run that already has an episode is **`409`** (`episode_exists`).
+  - `POST /api/v1/episodes` — on Collect Save. Body `{ batch_id, run_id, index_in_batch, task_result, failure_reason?, quality, quality_source='operator' }` → `201`. Unknown batch / run is `404`; a run that already has an episode is **`409`** (`episode_exists`). **`index_in_batch` is a client hint**: `(batch_id, index_in_batch)` is protected by a UNIQUE constraint, and on a collision (multiple terminals assign the same number) the server re-assigns MAX+1 under the lock and **returns the index it actually saved in the response** (the client adopts the returned value).
   - `PATCH /api/v1/episodes/{id}` — Review's Adopt/Exclude (`review_status`) and quality/result overrides. Absent is `404`. `updated_at` is refreshed on every write.
 - **JOIN into runs**: `GET /api/v1/runs` / `GET /api/v1/runs/{id}` **additively bundle** an `episode` summary (`episode_id` / `batch_id` / `batch_seq` / `index_in_batch` / `task_result` / `failure_reason` / `quality` / `review_status`) with each run (`null` when absent). Since `batch_seq` lives on the batch rather than the episode row, the join bulk-resolves `batch_id → batch_seq` and attaches it (so Review/Datasets can show the number without a second round trip). Existing fields are unchanged. The list avoids N+1 via a bulk batch fetch.
 - **SSE**: the existing `record_status` / `resync` suffice, so **no new events are added** (Phase 2b if needed).
@@ -110,7 +110,7 @@ An operation that **moves a recording from the canonical staging (`recorded/`) t
 
 - Format: `id:` (monotonically increasing integer) / `event:` (kind) / `data:` (JSON).
 - Kinds and payloads:
-  - `record_status`: `{ run_id, state, message_count, bytes }`
+  - `record_status`: `{ run_id, state, message_count, bytes, started_at }` (`started_at` is additive — a page that missed the start transition can still render the elapsed time of an in-progress recording)
   - `metrics`: `topic_monitor`'s periodic snapshot (the output schema of [topic_monitor](topic_monitor.md))
   - `alert`: `{ topic, metric, level, value, threshold }`
   - `job`: `{ job_id, run_id, pipeline, state, progress }`

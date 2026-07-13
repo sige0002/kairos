@@ -51,6 +51,7 @@
 | `LOG_LEVEL` | `INFO` | ログレベル |
 | `RETENTION_DAYS` | `0` | `0`=無効。`>0` で古い run を保持期間で削除候補に |
 | `MAX_RECORD_BYTES` | `0` | `0`=無制限。`>0` で超過時に記録を自動 stop |
+| `MAX_RECORD_SECONDS` | `600` | 1 録画の wall-clock 上限（秒）。`0`=無効。孤児（zombie）録画のディスク保護バックストップ — タブを閉じても録画は止まらないため、可視の Stop UI が主たる回収で、これは無人時の保険。上限到達の自動停止は orchestrator の遅延 reconciliation により通常の completed として確定する |
 | `ALERT_CONFIG_PATH` | (任意・既定は空=無効) | `topic_monitor` のアラート定義ファイル（**コンテナ絶対**、規約は `/config/<robot>/monitoring/alerts.yaml`。`config/local/<robot>/...` の override が優先）。空＝アラート無効。`make` は `ROBOT` から自動導出、素の `docker compose` では手で設定 |
 | `CYCLONEDDS_URI` | (任意) | Cyclone DDS の設定ファイル URI（例 `file:///config/cyclonedds.xml`）。クロスホストで multicast discovery が通らない場合に unicast peer を明示するなどに使う。`env_file` 経由でコンテナに渡る（ROS サービスは `/config` を read-only マウント済み） |
 | `NO_PROXY` | `localhost,127.0.0.1` | コンテナ内 HTTP のプロキシ除外（`no_proxy` にも同値を配布）。corporate proxy 配下のホストでは Docker が `HTTP(S)_PROXY` を全コンテナへ注入するため、これが無いとヘルスチェックやサービス間 LAN 呼び出しがプロキシへ吸われて失敗する。クロスホスト分割ではロボット IP を追加する（`.env.split.example` 参照）。orchestrator の内部 httpx クライアントはそもそも `trust_env=False` |

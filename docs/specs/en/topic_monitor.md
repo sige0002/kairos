@@ -16,6 +16,8 @@ A container for **lightweight, non-destructive real-time monitoring** of ROS 2 t
 - Monitored topics (**allowlist**; consistent with `default_topics` in `RECORDING_CONFIG`)
 - Per-topic `expected_hz` (`RECORDING_CONFIG`, optional)
 - alert definitions (a list of `{ topic, metric, op, threshold }`, including `cooldown_s` / `clear_after_s`)
+  - **Alerts are per-incident** (key = `(topic, metric)`): while firing, it is held with its current value updated in place, and on clearing a `cleared` is explicitly emitted (retained ~60s for reliable delivery). The UI collapses 1 incident = 1 row.
+  - **Default DANGER rule**: even for a topic with no config rule, if the monitor's own `danger` classification (expected_hz shortfall) persists ~10 seconds, a default incident fires — so the table's DANGER and Events do not contradict. A config rule for the same `(topic, hz)` overrides the default.
 
 ## Components
 

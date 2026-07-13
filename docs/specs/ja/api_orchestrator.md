@@ -23,9 +23,9 @@
 
 ## 公開 API（`/api/v1`、無認証）
 
-- 記録: `POST /api/v1/record/start`、`POST /api/v1/record/stop`、`GET /api/v1/record/status`（recorder へプロキシ）
+- 記録: `POST /api/v1/record/start`、`POST /api/v1/record/stop`、`GET /api/v1/record/status`（recorder へプロキシ。**遅延 reconciliation を兼務**: DB 上 live な run を recorder が終了済みと報告していれば（例: `MAX_RECORD_BYTES`/`MAX_RECORD_SECONDS` の recorder 内自動停止）通常の stop 経路で completed に確定し、recorder が知らない live run は即 interrupted 化する — 再起動を待たない）
 - Run: `GET /api/v1/runs`（カーソルページング）、`GET /api/v1/runs/{id}`（Console v2 Phase 2 で **各 run に `episode` サマリを additive に同梱**。下記「Batch / Episode」）
-- Batch / Episode（**Console v2 Phase 2**。Collect の進行と Review の判断を永続化）: `POST /api/v1/batches`、`PATCH /api/v1/batches/{id}`、`GET /api/v1/batches?status=`、`GET /api/v1/batches/{id}`、`POST /api/v1/episodes`、`PATCH /api/v1/episodes/{id}`（下記「Batch / Episode」）
+- Batch / Episode（**Console v2 Phase 2**。Collect の進行と Review の判断を永続化）: `POST /api/v1/batches`、`PATCH /api/v1/batches/{id}`、`GET /api/v1/batches?status=&robot=&operator=`、`GET /api/v1/batches/{id}`、`POST /api/v1/episodes`、`PATCH /api/v1/episodes/{id}`（下記「Batch / Episode」）
 - Topic: `GET /api/v1/topics`（一覧。**情報源は `topic_monitor` の `GET /topics` discovery をプロキシ**: `name` / `type` / `publisher_count` / `subscriber_count` / `qos` / `last_seen`）、`GET /api/v1/topics/status`（monitor 由来の live metrics）
 - イベント: `GET /api/v1/events`（**SSE 集約**。契約は下記）
 - Pipeline / Job（stage3。詳細は [dora_runner](dora_runner.md)）: `GET /api/v1/pipelines`、`POST /api/v1/jobs`、`GET /api/v1/jobs/{id}/status`、`GET /api/v1/jobs/{id}/result`、`POST /api/v1/jobs/{id}/cancel`
@@ -33,7 +33,7 @@
 - ワンクリック検証プリセット: `GET /api/v1/validation/presets`（config 定義のプリセット＋未検証 run 一覧）
 - 設定: `GET /api/v1/config`（frontend 実行時設定: endpoints / tabs / defaults（`ros_domain_id` を含む）/ stream / schemas）。〔`GET/POST /api/v1/settings` は**未実装**（将来）。現状は下の `PUT /api/v1/config/recording` が設定編集の入口〕
 - 収録設定（フル編集）: `GET /api/v1/config/recording` → `{ config: <RecordingConfig dump>|null, path }`、`PUT /api/v1/config/recording`（body `{ config }`。下記「収録設定のフル編集」参照）
-- 設定カタログ: `GET /api/v1/config/options`、`POST /api/v1/config/select`（検証テンプレート等のカテゴリ別選択肢と現在の選択）
+- 設定カタログ: `GET /api/v1/config/options`、`POST /api/v1/config/select`（検証テンプレート等のカテゴリ別選択肢と現在の選択）、`GET /api/v1/config/robots/{robot}`（**任意のカタログ機体の設定を read-only で返す** — aspect 毎のパース済み内容+要約。ライブ系を切り替えずに他機体を雛形参照するため（Settings）。未知の機体・不正なパス成分は `404`）
 - システム情報: `GET /api/v1/system` → `{ cpu: { model, cores }, gpu, cpu_percent, disk, gpu_percent }`（ホストの読み取り専用イントロスペクション。常に `200`）
   - `cpu` / `gpu`: 静的な情報（CPU モデル名・論理コア数は `/proc/cpuinfo`、GPU 名は `nvidia-smi`。取得不能時は各フィールド `null`）
   - `cpu_percent`: ホスト全体の CPU 使用率 `[0, 100]`（`/proc/stat` の集約 `cpu` 行を 2 スナップショット差分して算出＝真の busy%。ロードアベレージではない）。差分の基準がまだ無い初回サンプルや `/proc/stat` 不読時は `null`
@@ -73,9 +73,9 @@ Collect の Batch/Episode 進行・タスク結果・品質判断を orchestrato
 - **エンドポイント**:
   - `POST /api/v1/batches` — バッチ開始。body `{ project, task, condition?, operator?, robot?, target_episodes=30 }` → `201`（`robot` 省略時は **active robot** で補完）。`batch_id` は同秒衝突時にサフィックス再採番。
   - `PATCH /api/v1/batches/{id}` — 途中終了（`status` / `ended_reason`）・`condition` 変更。**終端 status（`completed` / `ended_early`）到達時に `ended_at` を一度だけスタンプ**。不整合な遷移は緩く許容（ハード拒否しない）。不在は `404`。
-  - `GET /api/v1/batches?status=` — バッチ一覧（**新しい順**）。各要素に `batch_seq`・`episode_count`（ライブ件数）・`episodes_recorded`（単調カウンタ）と**コンパクトな episodes サマリ**（`index` / `run_id` / `batch_seq` / `task_result` / `quality` / `review_status`）を同梱（リロード時のアクティブバッチ復元に使う。Collect の件数表示は `episodes_recorded` を参照）。
+  - `GET /api/v1/batches?status=&robot=&operator=` — バッチ一覧（**新しい順**）。各要素に `batch_seq`・`episode_count`（ライブ件数）・`episodes_recorded`（単調カウンタ）と**コンパクトな episodes サマリ**（`index` / `run_id` / `batch_seq` / `task_result` / `quality` / `review_status`）を同梱（リロード時のアクティブバッチ復元に使う。Collect の件数表示は `episodes_recorded` を参照）。
   - `GET /api/v1/batches/{id}` — バッチ全体 ＋ **episodes（フル）**。不在は `404`。
-  - `POST /api/v1/episodes` — Collect Save 時。body `{ batch_id, run_id, index_in_batch, task_result, failure_reason?, quality, quality_source='operator' }` → `201`。batch / run が未知なら `404`、run に既に episode があれば **`409`**（`episode_exists`）。
+  - `POST /api/v1/episodes` — Collect Save 時。body `{ batch_id, run_id, index_in_batch, task_result, failure_reason?, quality, quality_source='operator' }` → `201`。batch / run が未知なら `404`、run に既に episode があれば **`409`**（`episode_exists`）。**`index_in_batch` はクライアントのヒント**: `(batch_id, index_in_batch)` は UNIQUE 制約で保護され、衝突時（複数端末が同番号を採番）はサーバーがロック下で MAX+1 を再採番し**実際に保存した index を応答で返す**（クライアントは応答値を採用する）。
   - `PATCH /api/v1/episodes/{id}` — Review の Adopt/Exclude（`review_status`）・品質/結果の上書き。不在は `404`。書き込みごとに `updated_at` を更新。
 - **runs への JOIN**: `GET /api/v1/runs` / `GET /api/v1/runs/{id}` は各 run に `episode` サマリ（`episode_id` / `batch_id` / `batch_seq` / `index_in_batch` / `task_result` / `failure_reason` / `quality` / `review_status`）を **additive に同梱**（無ければ `null`）。`batch_seq` は episode 行でなくバッチ側にあるため、join 時に `batch_id → batch_seq` を一括引きして付与する（Review/Datasets が 2 度目の往復なしで番号を表示できる）。既存フィールドは不変。一覧はバッチ一括取得で N+1 を回避。
 - **SSE**: 既存 `record_status` / `resync` で足りるため**新イベントは追加しない**（必要になれば Phase 2b）。
@@ -109,7 +109,7 @@ UI（Settings タブ）から `RECORDING_CONFIG` 全体を編集・永続化す�
 
 - 形式: `id:`（単調増加の整数）/ `event:`（種別）/ `data:`（JSON）。
 - 種別と payload:
-  - `record_status`: `{ run_id, state, message_count, bytes }`
+  - `record_status`: `{ run_id, state, message_count, bytes, started_at }`（`started_at` は additive — start 遷移を見逃したページも進行中録画の経過を描ける）
   - `metrics`: `topic_monitor` の周期 snapshot（[topic_monitor](topic_monitor.md) の出力スキーマ）
   - `alert`: `{ topic, metric, level, value, threshold }`
   - `job`: `{ job_id, run_id, pipeline, state, progress }`

@@ -105,7 +105,7 @@ Trade-offs (explicit):
 ## Configuration (config)
 
 - The character set of `run_id` is `[A-Za-z0-9_-]+` (path-traversal prevention).
-- With `MAX_RECORD_BYTES > 0`, auto-stop on exceeding it.
+- With `MAX_RECORD_BYTES > 0`, auto-stop on exceeding it. `MAX_RECORD_SECONDS` (default 600, `0`=disabled) is the wall-clock cap of a single recording — a disk-protection backstop for orphan recordings that no one stops. Both auto-stops are settled as a normal completed by the orchestrator's lazy reconciliation (status polling).
 - `default_topics` / `topic_qos_overrides` come from the `RECORDING_CONFIG` YAML (pattern match). `ROS_DOMAIN_ID` / `DATA_DIR` / `BIND_HOST` are in the shared [config](config.md).
 
 ## Design points
