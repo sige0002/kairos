@@ -191,6 +191,7 @@ class RecorderSession:
 
         # MAX_RECORD_BYTES auto-stop watcher. 0 disables (default).
         self._max_record_bytes: int = settings.max_record_bytes
+        self._max_record_seconds: int = settings.max_record_seconds
         self._size_watcher: threading.Thread | None = None
         self._watcher_stop = threading.Event()
         # Reason for a pending auto-stop, surfaced in the manifest error.
@@ -547,13 +548,18 @@ class RecorderSession:
             return self._status_locked()
 
     def _start_size_watcher(self, run_id: str) -> None:
-        """Start the MAX_RECORD_BYTES auto-stop watcher (no-op if disabled).
+        """Start the auto-stop watcher (no-op when both limits are disabled).
 
-        Runs a daemon thread that polls the run's on-disk size and triggers
-        ``stop()`` once ``MAX_RECORD_BYTES`` is exceeded. Disabled when
-        ``MAX_RECORD_BYTES == 0`` (the default).
+        Runs a daemon thread that polls the run and triggers ``stop()`` once
+        ``MAX_RECORD_BYTES`` (disk size, 0 = unlimited) or
+        ``MAX_RECORD_SECONDS`` (wall clock, 0 = unlimited; default 600) is
+        exceeded. The duration cap is the zombie-recording backstop (persona
+        review R2 / HCD D-9①): an orphaned session that nobody stops must not
+        hold the recorder and eat disk forever. The orchestrator's lazy status
+        reconciliation then finalizes the run as COMPLETED (not interrupted)
+        within one status poll.
         """
-        if self._max_record_bytes <= 0:
+        if self._max_record_bytes <= 0 and self._max_record_seconds <= 0:
             return
         self._watcher_stop.clear()
         watcher = threading.Thread(
@@ -566,26 +572,42 @@ class RecorderSession:
         watcher.start()
 
     def _watch_size(self, run_id: str) -> None:
-        """Poll the recorded size and auto-stop when MAX_RECORD_BYTES is exceeded.
+        """Poll the run and auto-stop on the byte or wall-clock limit.
 
         Triggered via the public ``stop()`` (which takes the lock and is
         idempotent), so this never touches session state directly and cannot
         deadlock against a concurrent user stop.
         """
-        limit = self._max_record_bytes
+        byte_limit = self._max_record_bytes
+        seconds_limit = self._max_record_seconds
+        started = time.monotonic()
         while not self._watcher_stop.wait(SIZE_POLL_S):
-            size = self._recorded_bytes(run_id)
-            if size >= limit:
-                self._auto_stop_reason = (
-                    f"auto-stopped: recorded {size} bytes reached "
-                    f"MAX_RECORD_BYTES={limit}"
-                )
-                logger.warning(
-                    "MAX_RECORD_BYTES exceeded; auto-stopping",
-                    extra={"run_id": run_id, "component": "recorder"},
-                )
-                self.stop()
-                return
+            if byte_limit > 0:
+                size = self._recorded_bytes(run_id)
+                if size >= byte_limit:
+                    self._auto_stop_reason = (
+                        f"auto-stopped: recorded {size} bytes reached "
+                        f"MAX_RECORD_BYTES={byte_limit}"
+                    )
+                    logger.warning(
+                        "MAX_RECORD_BYTES exceeded; auto-stopping",
+                        extra={"run_id": run_id, "component": "recorder"},
+                    )
+                    self.stop()
+                    return
+            if seconds_limit > 0:
+                elapsed = time.monotonic() - started
+                if elapsed >= seconds_limit:
+                    self._auto_stop_reason = (
+                        f"auto-stopped: recording ran {int(elapsed)}s, reaching "
+                        f"MAX_RECORD_SECONDS={seconds_limit}"
+                    )
+                    logger.warning(
+                        "MAX_RECORD_SECONDS exceeded; auto-stopping",
+                        extra={"run_id": run_id, "component": "recorder"},
+                    )
+                    self.stop()
+                    return
 
     def _stop_size_watcher(self) -> None:
         """Signal the size watcher to exit and join it (best-effort).

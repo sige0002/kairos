@@ -99,7 +99,11 @@ export function mapRunsToEpisodes(
     }
 
     return {
-      ep: i + 1,
+      // Stable episode number: the server's persisted index_in_batch when the
+      // run has an episode — deleting/exporting older rows must not renumber
+      // what remains (persona review R2 / codex adjacent-7). Episode-less rows
+      // (legacy / unlabeled takes) keep the positional fallback.
+      ep: episode?.index_in_batch ?? i + 1,
       runId: run.run_id,
       episodeId: episode?.episode_id ?? null,
       state: run.state,

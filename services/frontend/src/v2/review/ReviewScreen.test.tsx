@@ -270,6 +270,19 @@ test('the decision buttons live in the pinned bar, not in the scrolling body', a
   expect(within(bar).getByTestId('review-export-cta')).toBeInTheDocument();
 });
 
+test('the header shows real lane and task tallies over the shown rows', async () => {
+  // OP2 (R2): "no at-a-glance day tally — I scan the column by hand."
+  mockApi([
+    { run_id: 'ep-a', state: 'completed', started_at: '2026-07-14T09:00:00Z', episode: ep('pending', 'good', 'success') },
+    { run_id: 'ep-b', state: 'completed', started_at: '2026-07-14T09:05:00Z', episode: ep('pending', 'needs_review', 'failure') },
+  ]);
+  renderWithClient(<ReviewScreen />);
+  await waitFor(() => expect(screen.getByTestId('review-episodes-count')).toHaveTextContent('2 shown'));
+
+  expect(screen.getByTestId('review-lane-tally')).toHaveTextContent('1 ready · 1 needs check · 0 excluded');
+  expect(screen.getByTestId('review-task-tally')).toHaveTextContent('1 success · 1 failure');
+});
+
 test('Export ready lists the READY completed runs + the include-failed toggle', async () => {
   mockApi([
     { run_id: 'ep-a', state: 'completed', started_at: '2026-07-13T09:00:00Z', episode: ep('pending', 'good') },

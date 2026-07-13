@@ -116,6 +116,13 @@ function Row({ row, isSelected, rv }: { row: DecoratedEpisode; isSelected: boole
 }
 
 export function EpisodeTable({ rv }: { rv: ReviewState }) {
+  // At-a-glance tallies over the SHOWN rows (persona review R2 / D-8-5: OP2 had
+  // to count the column by eye). Real data only — lanes + task_result.
+  const nReady = rv.rows.filter((r) => r.reviewLane === 'ready').length;
+  const nCheck = rv.rows.filter((r) => r.reviewLane === 'needs_check').length;
+  const nExcluded = rv.rows.filter((r) => r.reviewLane === 'excluded').length;
+  const nSuccess = rv.rows.filter((r) => r.task === 'Success').length;
+  const nFail = rv.rows.filter((r) => r.task === 'Failure').length;
   return (
     <div className="flex min-w-0 flex-col overflow-hidden rounded-card border border-gray-200 bg-white shadow-card">
       <div className="flex flex-wrap items-center gap-2.5 border-b border-gray-100 px-[18px] py-3">
@@ -123,6 +130,16 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
         <span data-testid="review-episodes-count" className="font-mono text-xs text-gray-400">
           {rv.rows.length} shown
         </span>
+        {rv.rows.length > 0 && (
+          <>
+            <span data-testid="review-lane-tally" className="rounded-chip bg-gray-50 px-2 py-0.5 font-mono text-[11px] text-gray-500">
+              {nReady} ready · {nCheck} needs check · {nExcluded} excluded
+            </span>
+            <span data-testid="review-task-tally" className="rounded-chip bg-gray-50 px-2 py-0.5 font-mono text-[11px] text-gray-500">
+              {nSuccess} success · {nFail} failure
+            </span>
+          </>
+        )}
         <div className="flex-1" />
         {rv.hasArchived && (
           <button

@@ -174,3 +174,16 @@ test('a failed run stays "Not usable" and ignores its server episode (no overrid
   // endedBadly → the episode is ignored, so there's no episodeId to PATCH.
   expect(rows[0]?.episodeId).toBeNull();
 });
+
+test('a server episode pins the displayed number to its persisted index_in_batch', () => {
+  // Deleting/exporting older rows must not renumber survivors: the server's
+  // index_in_batch wins over the positional fallback (persona review R2).
+  const rows = mapRunsToEpisodes([
+    run({
+      run_id: 'only-one-left',
+      started_at: '2026-07-14T09:00:00Z',
+      episode: { ...serverEpisode, index_in_batch: 5 },
+    }),
+  ]);
+  expect(rows[0]?.ep).toBe(5);
+});

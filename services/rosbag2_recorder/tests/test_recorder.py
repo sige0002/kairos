@@ -811,11 +811,42 @@ def test_max_record_bytes_auto_stops(
     assert manifest.error is not None and "MAX_RECORD_BYTES" in manifest.error
 
 
-def test_max_record_bytes_zero_disables_watcher(
-    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+def test_max_record_seconds_auto_stops(
+    monkeypatch: pytest.MonkeyPatch,
+    data_dir: Path,
+    fake_process: type,
+    write_metadata: Callable[..., Path],
 ) -> None:
-    # Default (0) disables the watcher: no auto-stop, no background thread.
-    assert settings.max_record_bytes == 0
+    # MAX_RECORD_SECONDS > 0: the wall-clock backstop auto-stops a recording
+    # nobody stops (the zombie-recording guard — persona review R2 / D-9①).
+    import rosbag2_recorder.recorder as rec
+
+    monkeypatch.setattr(rec, "SIZE_POLL_S", 0.02)  # poll fast for the test
+    settings = Settings(
+        data_dir=str(data_dir), max_record_bytes=0, max_record_seconds=1
+    )
+    session = _make_session(settings, fake_process, write_metadata)
+
+    session.start(_start_req("run_timecap"))
+    deadline = time.monotonic() + 5.0
+    while session.status().state is RunState.recording and time.monotonic() < deadline:
+        time.sleep(0.02)
+
+    status = session.status()
+    assert status.state is RunState.completed
+    manifest = read_manifest(settings.data_dir, "run_timecap")
+    assert manifest.state is RunState.completed
+    assert manifest.error is not None and "MAX_RECORD_SECONDS" in manifest.error
+
+
+def test_both_caps_zero_disable_watcher(
+    data_dir: Path, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    # Both limits 0 disable the watcher: no auto-stop, no background thread.
+    # (The duration cap DEFAULTS to 600s, so disabling is now explicit.)
+    settings = Settings(
+        data_dir=str(data_dir), max_record_bytes=0, max_record_seconds=0
+    )
     session = _make_session(settings, fake_process, write_metadata)
     session.start(_start_req("run_nowatch"))
     assert session._size_watcher is None  # type: ignore[attr-defined]

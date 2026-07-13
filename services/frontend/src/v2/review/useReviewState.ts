@@ -154,8 +154,25 @@ export function useReviewState(): ReviewState {
   const queryClient = useQueryClient();
   const runsQuery = useQuery({
     queryKey: REVIEW_RUNS_KEY,
-    queryFn: ({ signal }) =>
-      apiGet<Page<RunSummary>>('/runs', { signal, query: { limit: REVIEW_PAGE_LIMIT } }),
+    // Follow the cursor to exhaustion: Review's counts, lanes, and the
+    // "Export ready (n)" set must cover EVERY reviewable run — a single
+    // 200-row page silently dropped the tail once the system grew past it
+    // (persona review R2 / codex). Pages stay at 200 per request; the guard
+    // caps runaway pagination at 50 pages (10k runs) and reports honestly.
+    queryFn: async ({ signal }) => {
+      const items: RunSummary[] = [];
+      let cursor: string | undefined;
+      for (let page = 0; page < 50; page++) {
+        const res = await apiGet<Page<RunSummary>>('/runs', {
+          signal,
+          query: { limit: REVIEW_PAGE_LIMIT, ...(cursor ? { cursor } : {}) },
+        });
+        items.push(...res.items);
+        if (!res.next_cursor) return { items, next_cursor: null };
+        cursor = res.next_cursor;
+      }
+      return { items, next_cursor: cursor ?? null };
+    },
   });
   const isError = runsQuery.isError;
   const errorMessage = runsQuery.error instanceof Error ? runsQuery.error.message : null;

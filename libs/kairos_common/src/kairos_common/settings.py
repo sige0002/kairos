@@ -134,6 +134,13 @@ class Settings(BaseSettings):
     retention_days: Annotated[int, Field(ge=0)] = 0
     # 0 means unlimited; >0 auto-stops recording when exceeded.
     max_record_bytes: Annotated[int, Field(ge=0)] = 0
+    # Hard wall-clock cap on one recording; 0 disables. Default 10 minutes — a
+    # disk backstop against orphaned ("zombie") recordings that nobody stops
+    # (persona review R2 / HCD D-9①): a normal episode is seconds-to-minutes,
+    # observed zombies ran 8-12 min unattended at ~GBs. The recorder stops
+    # itself and the orchestrator's lazy status reconciliation finalizes the
+    # run as completed within one poll.
+    max_record_seconds: Annotated[int, Field(ge=0)] = 600
     # Optional path to the topic_monitor alert-definition file.
     alert_config_path: str | None = None
 
