@@ -1,14 +1,12 @@
 // Validation screen (v2 IA): a re-layout of the existing ValidationTab, not a
-// rewrite. The pipeline list, schema-driven params form, job submission/poll
-// and the generic result renderer are all real, reusing
-// features/validation/PipelineForm + SummaryResult and the same GET
-// /pipelines · GET /runs · GET /config/options · POST /jobs ·
-// GET /jobs/{id}/status|result wiring as ValidationTab (see
-// docs/specs/ja/dora_plugins.md §"UI 非依存の契約"). Pipeline lifecycle,
-// version/owner metadata, presets and diff-vs-previous-version are Phase 2
-// backend concepts the orchestrator doesn't expose yet — those render as
-// clearly-commented mock/static content (lifecycle.ts, mockMeta.ts,
-// ParamsPanel's Preset/Diff cards).
+// rewrite. The pipeline list, schema-driven params form, job submission/poll,
+// the generic result renderer, the bespoke fast_validation checklist and the
+// one-click presets are all real, reusing features/validation/PipelineForm +
+// SummaryResult and the same GET /pipelines · GET /runs · GET /config/options ·
+// GET /validation/presets · POST /jobs · GET /jobs/{id}/status|result wiring as
+// ValidationTab (see docs/specs/ja/dora_plugins.md §"UI 非依存の契約"). Only the
+// pipeline lifecycle chip is a client-side placeholder — the orchestrator
+// doesn't report a lifecycle yet (see lifecycle.ts).
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { apiGet, apiPost } from '../../api/client';
@@ -24,6 +22,7 @@ import type {
   PipelineInfo,
   RunSummary,
   ValidationOption,
+  ValidationPreset,
 } from '../../api/types';
 import type { Summary } from '../../features/validation/SummaryResult';
 import { Card } from '../../components/ui';
@@ -31,6 +30,7 @@ import { PipelineRail } from './PipelineRail';
 import { DetailHeader } from './DetailHeader';
 import { ParamsPanel, ALL_RUNS } from './ParamsPanel';
 import { ResultsPanel, type ActiveOutcome } from './ResultsPanel';
+import type { RequiredTopic } from './resultsMapping';
 import { Toast } from './Toast';
 import { useJobResult } from './useJobResult';
 
@@ -50,6 +50,9 @@ interface JobRef {
 interface ActiveRun {
   pipeline: string;
   jobs: JobRef[];
+  // fast_validation only: the template's required topics, so the checklist card
+  // can show found (✓) rows, not just the summary's `missing` entries.
+  requiredTopics?: RequiredTopic[];
 }
 
 interface JobProbeUpdate {
@@ -171,17 +174,41 @@ export function ValidationScreen() {
   }, []);
 
   const allSettled = !active || active.jobs.every((j) => jobStates[j.job_id]?.terminal);
+  // On batch settle, refresh both the runs list and the presets' pending counts
+  // (a preset run just validated some of its pending recordings).
   useEffect(() => {
     if (active && allSettled) {
       queryClient.invalidateQueries({ queryKey: queryKeys.runs(undefined) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.validationPresets });
     }
   }, [active, allSettled, queryClient]);
+
+  // Real one-click presets (GET /validation/presets): config-defined bundles,
+  // each with the recordings its pipeline hasn't validated yet. Poll their
+  // pending counts while a batch is in flight, then stop.
+  const presetsQuery = useQuery({
+    queryKey: queryKeys.validationPresets,
+    queryFn: ({ signal }) =>
+      apiGet<{ items: ValidationPreset[] }>('/validation/presets', { signal }),
+    refetchInterval: active && !allSettled ? 3000 : false,
+  });
+  const presets = presetsQuery.data?.items ?? [];
+
+  // Resolve a fast_validation template's required topics (matched by option id
+  // or its meta name, since a preset targets the template by name).
+  const requiredTopicsFor = useCallback(
+    (templateKey: string): RequiredTopic[] =>
+      templates.find((t) => t.id === templateKey || t.name === templateKey)?.required_topics ??
+      [],
+    [templates],
+  );
 
   const submitMutation = useMutation({
     mutationFn: async (arg: {
       pipeline: string;
       params: Record<string, unknown>;
       runIds: string[];
+      requiredTopics?: RequiredTopic[];
     }): Promise<ActiveRun> => {
       const jobs: JobRef[] = [];
       for (const rid of arg.runIds) {
@@ -193,7 +220,7 @@ export function ValidationScreen() {
         queryClient.setQueryData(queryKeys.job(job.job_id), job);
         jobs.push({ run_id: rid, job_id: job.job_id });
       }
-      return { pipeline: arg.pipeline, jobs };
+      return { pipeline: arg.pipeline, jobs, requiredTopics: arg.requiredTopics };
     },
     onSuccess: (run) => {
       setJobStates({});
@@ -210,7 +237,27 @@ export function ValidationScreen() {
   const runOnSelection = () => {
     if (!selectedPipeline) return;
     const runIds = targetRunId === ALL_RUNS ? runs.map((r) => r.run_id) : [targetRunId];
-    submitMutation.mutate({ pipeline: selectedPipeline.id, params, runIds });
+    submitMutation.mutate({
+      pipeline: selectedPipeline.id,
+      params,
+      runIds,
+      requiredTopics: isFastValidation ? requiredTopicsFor(String(params.template ?? '')) : undefined,
+    });
+  };
+
+  // One-click preset: run its pipeline over exactly the recordings it hasn't
+  // validated yet. A preset with nothing pending is disabled in the UI.
+  const runPreset = (preset: ValidationPreset) => {
+    if (preset.pending_run_ids.length === 0) return;
+    submitMutation.mutate({
+      pipeline: preset.pipeline,
+      params: preset.params ?? {},
+      runIds: preset.pending_run_ids,
+      requiredTopics:
+        preset.pipeline === FAST_VALIDATION
+          ? requiredTopicsFor(String(preset.params?.template ?? ''))
+          : undefined,
+    });
   };
 
   const targetCount = targetRunId === ALL_RUNS ? runs.length : targetRunId ? 1 : 0;
@@ -242,6 +289,7 @@ export function ValidationScreen() {
         })),
         artifacts:
           active.jobs.length === 1 ? (jobStates[active.jobs[0]!.job_id]?.artifacts ?? []) : [],
+        requiredTopics: active.requiredTopics,
       }
     : null;
 
@@ -295,12 +343,14 @@ export function ValidationScreen() {
             running={running}
             progressPct={progressPct}
             progressLabel={progressLabel}
-            onCompareRuns={() => showToast('Compare view — parameter & result diff')}
+            onCompareRuns={() => showToast('Run comparison isn’t available yet')}
+            presets={presets}
+            presetsLoading={presetsQuery.isPending}
+            onRunPreset={runPreset}
             submitError={submitMutation.isError ? submitMutation.error : undefined}
           />
           <ResultsPanel
             active={activeOutcome}
-            onExportCsv={() => showToast('CSV exported')}
             selectedRunId={selectedRunId}
             onSelectRun={setSelectedRunId}
           />

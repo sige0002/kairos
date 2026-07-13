@@ -17,6 +17,60 @@ import type { Summary } from '../../features/validation/SummaryResult';
 
 export type OutcomeTone = 'OK' | 'WARNING' | 'FAIL';
 
+/** A required topic from a fast_validation template (name + optional msg type). */
+export interface RequiredTopic {
+  name: string;
+  type?: string | null;
+}
+
+export interface ChecklistRow extends RequiredTopic {
+  found: boolean;
+}
+
+export interface Checklist {
+  rows: ChecklistRow[];
+  found: number;
+  total: number;
+  extraCount: number;
+  pass: boolean;
+}
+
+/** Read an array of `{name, type}` topics from a loose summary field. */
+function topicsFrom(value: unknown): RequiredTopic[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (t): t is RequiredTopic => typeof t === 'object' && t !== null && 'name' in t,
+  );
+}
+
+/**
+ * Build the fast_validation required-topic checklist from a job summary and the
+ * template's declared required topics. The summary only reports `missing`/`extra`
+ * (see services/dora_runner/.../validation.py), so the full `required` list is
+ * threaded in to render the found (✓) rows too; if the template couldn't be
+ * resolved we degrade to just the missing rows.
+ */
+export function buildChecklist(
+  summary: Summary | undefined,
+  required: RequiredTopic[],
+): Checklist {
+  const missing = topicsFrom(summary?.missing);
+  const missingNames = new Set(missing.map((m) => m.name));
+  const base = required.length > 0 ? required : missing;
+  const rows: ChecklistRow[] = base.map((t) => ({
+    name: t.name,
+    type: t.type,
+    found: !missingNames.has(t.name),
+  }));
+  return {
+    rows,
+    found: Math.max(0, rows.length - missing.length),
+    total: rows.length,
+    extraCount: topicsFrom(summary?.extra).length,
+    pass: summary?.result === 'pass',
+  };
+}
+
 export interface EpisodeOutcome {
   runId: string;
   /** The job never produced a clean verdict (orchestration failure / errored

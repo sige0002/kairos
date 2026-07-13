@@ -1,9 +1,9 @@
-// Detail header: selected pipeline's name, version + lifecycle chips, the
-// promote affordance (Candidate only), and a mock owner line.
+// Detail header: selected pipeline's name + real description, a client-side
+// lifecycle chip (lifecycle.ts — no backend lifecycle yet) and the promote
+// affordance (Candidate only).
 import { Badge } from '../../components/ui';
 import type { PipelineInfo } from '../../api/types';
 import { lifecycleForIndex, lifecycleTone } from './lifecycle';
-import { mockOwner, mockVersion } from './mockMeta';
 
 export function DetailHeader({
   pipeline,
@@ -21,10 +21,12 @@ export function DetailHeader({
       className="flex items-center gap-2.5 border-b border-gray-100 px-[18px] py-[13px]"
     >
       <span className="text-[15px] font-bold text-gray-900">{pipeline.id}</span>
-      <Badge tone="teal" mono>
-        {mockVersion(index)}
-      </Badge>
       <Badge tone={lifecycleTone(lifecycle)}>{lifecycle.toUpperCase()}</Badge>
+      {pipeline.description && (
+        <span className="min-w-0 truncate text-xs text-gray-400" title={pipeline.description}>
+          {pipeline.description}
+        </span>
+      )}
       <div className="flex-1" />
       {lifecycle === 'Candidate' && (
         <button
@@ -35,7 +37,6 @@ export function DetailHeader({
           Promote to Standard…
         </button>
       )}
-      <span className="text-xs text-gray-400">owner: {mockOwner(index)}</span>
     </div>
   );
 }

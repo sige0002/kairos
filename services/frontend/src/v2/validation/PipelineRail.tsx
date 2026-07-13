@@ -1,10 +1,9 @@
-// Left column: the real, enabled pipeline list (GET /pipelines) with a mock
-// lifecycle chip and meta line per card (see lifecycle.ts / mockMeta.ts for
-// why those two are client-side placeholders).
+// Left column: the real, enabled pipeline list (GET /pipelines). Each card shows
+// the pipeline's real id + description, plus a client-side lifecycle chip (see
+// lifecycle.ts — the orchestrator doesn't report a lifecycle yet).
 import { Badge, Card, cn } from '../../components/ui';
 import type { PipelineInfo } from '../../api/types';
 import { lifecycleForIndex, lifecycleTone } from './lifecycle';
-import { mockOwner, mockVersion } from './mockMeta';
 
 export function PipelineRail({
   pipelines,
@@ -61,9 +60,11 @@ export function PipelineRail({
                 <div className="flex-1" />
                 <Badge tone={lifecycleTone(lifecycle)}>{lifecycle.toUpperCase()}</Badge>
               </div>
-              <span className="text-[11.5px] text-gray-400">
-                {mockVersion(i)} · {mockOwner(i)}
-              </span>
+              {p.description && (
+                <span className="truncate text-[11.5px] text-gray-400" title={p.description}>
+                  {p.description}
+                </span>
+              )}
             </div>
           );
         })}

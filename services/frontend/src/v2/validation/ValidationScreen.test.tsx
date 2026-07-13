@@ -31,12 +31,43 @@ const OPTIONS = {
           id: 'airoa_hsr',
           path: '/config/airoa_hsr/validation/default.yaml',
           local: false,
-          meta: { name: 'airoa_hsr', version: 1, required_topics: [] },
+          meta: {
+            name: 'airoa_hsr',
+            version: 1,
+            required_topics: [
+              { name: '/hsrb/joint_states', type: 'sensor_msgs/msg/JointState' },
+              { name: '/hsrb/odom', type: 'nav_msgs/msg/Odometry' },
+            ],
+          },
         },
       ],
     },
     validators: { active: 'loss_report', options: [] },
   },
+};
+const PRESETS = {
+  items: [
+    {
+      id: 'hsr_required_topics',
+      name: 'HSR required topics',
+      description: 'Required-topic presence check.',
+      pipeline: 'fast_validation',
+      params: { template: 'airoa_hsr' },
+      total: 2,
+      pending: 2,
+      pending_run_ids: ['run_002', 'run_001'],
+    },
+    {
+      id: 'greeting_demo',
+      name: 'Greeting demo',
+      description: 'hello_kairos template plugin.',
+      pipeline: 'hello_kairos',
+      params: { subject: 'kairos' },
+      total: 2,
+      pending: 0,
+      pending_run_ids: [],
+    },
+  ],
 };
 const RUNTIME_CONFIG = {
   endpoints: { api: '/api/v1', events: '/api/v1/events', webrtc: '/webrtc' },
@@ -68,6 +99,7 @@ beforeEach(() => {
   resultByRunId = {};
   vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     const url = String(input);
+    if (url.includes('/validation/presets')) return Promise.resolve(jsonResponse(PRESETS));
     if (url.includes('/config/options')) return Promise.resolve(jsonResponse(OPTIONS));
     if (url.endsWith('/api/v1/config') || url.endsWith('/api/v1/config/')) {
       return Promise.resolve(jsonResponse(RUNTIME_CONFIG));
@@ -159,4 +191,54 @@ test('running on all completed runs renders OK/WARNING/FAIL tiles and per-run ro
   const rowsSection = screen.getByText('Timeline').closest('div')!.parentElement as HTMLElement;
   expect(within(rowsSection).getByText('run_002')).toBeInTheDocument();
   expect(within(rowsSection).getByText('run_001')).toBeInTheDocument();
+});
+
+test('real presets list with pending badges; an up-to-date preset is disabled', async () => {
+  renderWithClient(<ValidationScreen />);
+  await screen.findByTestId('preset-hsr_required_topics');
+  expect(screen.getByText('HSR required topics')).toBeInTheDocument();
+  expect(screen.getByText('2 pending')).toBeInTheDocument();
+  expect(screen.getByText('up to date')).toBeInTheDocument();
+  expect(screen.getByTestId('preset-greeting_demo')).toBeDisabled();
+  expect(screen.getByTestId('preset-hsr_required_topics')).not.toBeDisabled();
+});
+
+test('clicking a preset runs its pipeline over exactly its pending_run_ids', async () => {
+  resultByRunId['for:run_002'] = { summary: { result: 'pass', missing: [], extra: [] } };
+  resultByRunId['for:run_001'] = {
+    summary: { result: 'fail', missing: [{ name: '/hsrb/odom' }], extra: [] },
+  };
+  renderWithClient(<ValidationScreen />);
+  fireEvent.click(await screen.findByTestId('preset-hsr_required_topics'));
+
+  await waitFor(() => expect(postedBodies.length).toBe(2));
+  expect(postedBodies.every((b) => b.pipeline === 'fast_validation')).toBe(true);
+  expect((postedBodies.map((b) => b.run_id) as string[]).sort()).toEqual(['run_001', 'run_002']);
+  // A 2-run batch renders the OK/WARNING/FAIL breakdown.
+  await waitFor(() => expect(screen.getByText('2 runs')).toBeInTheDocument());
+});
+
+test('a fast_validation run renders the bespoke required-topics checklist', async () => {
+  resultByRunId['for:run_002'] = {
+    summary: {
+      pipeline: 'fast_validation',
+      result: 'fail',
+      missing: [{ name: '/hsrb/odom', type: 'nav_msgs/msg/Odometry' }],
+      extra: [{ name: '/camera/head' }],
+    },
+  };
+  renderWithClient(<ValidationScreen />);
+  // fast_validation is the default (first) pipeline; target defaults to run_002.
+  await screen.findByTestId('pipeline-card-fast_validation');
+  await waitFor(() =>
+    expect((screen.getByLabelText('target run') as HTMLSelectElement).value).toBe('run_002'),
+  );
+  fireEvent.click(screen.getByRole('button', { name: 'Run on selection' }));
+
+  const card = await screen.findByTestId('fast-validation-checklist');
+  expect(within(card).getByText('1/2 required')).toBeInTheDocument();
+  expect(within(card).getByText('FAIL')).toBeInTheDocument();
+  expect(within(card).getByText('/hsrb/joint_states')).toBeInTheDocument();
+  expect(within(card).getByText('/hsrb/odom')).toBeInTheDocument();
+  expect(within(card).getByText('+1 extra topics not required')).toBeInTheDocument();
 });

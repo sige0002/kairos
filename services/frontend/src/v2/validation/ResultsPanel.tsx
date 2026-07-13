@@ -5,19 +5,58 @@
 // fallback is the point: a new plugin's summary.json renders here with no UI
 // change required.
 import { Card } from '../../components/ui';
-import { SummaryResult } from '../../features/validation/SummaryResult';
+import { SummaryResult, type Summary } from '../../features/validation/SummaryResult';
+import { ChecklistCard } from './ChecklistCard';
 import {
   hasEpisodeBreakdown,
   mapEpisodeRows,
   tileCounts,
   type EpisodeOutcome,
+  type EpisodeRow,
+  type RequiredTopic,
 } from './resultsMapping';
+
+const FAST_VALIDATION = 'fast_validation';
 
 export interface ActiveOutcome {
   pipeline: string;
   outcomes: EpisodeOutcome[];
   allSettled: boolean;
   artifacts: string[];
+  /** Present for fast_validation: the template's required topics, so the
+   *  bespoke checklist can render found (✓) rows, not just the missing ones. */
+  requiredTopics?: RequiredTopic[];
+}
+
+/** fast_validation gets its bespoke checklist; every other pipeline is generic. */
+function DetailCard({
+  pipeline,
+  summary,
+  artifacts,
+  requiredTopics,
+}: {
+  pipeline: string;
+  summary: Summary;
+  artifacts?: string[];
+  requiredTopics?: RequiredTopic[];
+}) {
+  if (pipeline === FAST_VALIDATION) {
+    return <ChecklistCard summary={summary} required={requiredTopics ?? []} />;
+  }
+  return <SummaryResult pipeline={pipeline} summary={summary} artifacts={artifacts} />;
+}
+
+/** Real client-side CSV of the per-run rows (data already in the browser). */
+function exportRowsCsv(pipeline: string, rows: EpisodeRow[]) {
+  const header = 'run_id,result,coverage_pct';
+  const body = rows.map((r) => `${r.runId},${r.tone},${r.coverage ?? ''}`);
+  const blob = new Blob([[header, ...body].join('\n')], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `validation-${pipeline}-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 const TILE_STYLES = {
@@ -40,12 +79,10 @@ const BAR_TONE_CLASS: Record<string, string> = {
 
 export function ResultsPanel({
   active,
-  onExportCsv,
   selectedRunId,
   onSelectRun,
 }: {
   active: ActiveOutcome | null;
-  onExportCsv: () => void;
   selectedRunId: string | null;
   onSelectRun: (runId: string) => void;
 }) {
@@ -87,19 +124,12 @@ export function ResultsPanel({
             Latest run
           </span>
           <span className="font-mono text-xs text-gray-400">{outcome.runId}</span>
-          <div className="flex-1" />
-          <button
-            type="button"
-            onClick={onExportCsv}
-            className="text-xs font-semibold text-gray-700 hover:text-teal-700"
-          >
-            Export CSV →
-          </button>
         </div>
-        <SummaryResult
+        <DetailCard
           pipeline={active.pipeline}
           summary={outcome.summary}
           artifacts={active.artifacts}
+          requiredTopics={active.requiredTopics}
         />
         <FooterNote />
       </div>
@@ -121,7 +151,7 @@ export function ResultsPanel({
         <div className="flex-1" />
         <button
           type="button"
-          onClick={onExportCsv}
+          onClick={() => exportRowsCsv(active.pipeline, rows)}
           className="text-xs font-semibold text-gray-700 hover:text-teal-700"
         >
           Export CSV →
@@ -182,9 +212,10 @@ export function ResultsPanel({
       </div>
 
       {selected && selectedOutcome?.summary && (
-        <SummaryResult
+        <DetailCard
           pipeline={active.pipeline}
           summary={selectedOutcome.summary}
+          requiredTopics={active.requiredTopics}
         />
       )}
 

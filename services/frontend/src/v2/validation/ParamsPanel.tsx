@@ -1,13 +1,12 @@
 // Params column (inner-left, 300px): the REAL schema-driven PipelineForm and
-// target-run picker, submitting an actual /jobs POST. The Preset row and Diff
-// card are static mock decoration — named parameter *bundles* and version
-// diffing are a Phase 2 concept (dora_plugins.md has no such endpoint yet);
-// they render the design mock's illustrative content and do nothing.
+// target-run picker, submitting an actual /jobs POST, plus the real one-click
+// presets (GET /validation/presets) — each runs its pipeline over exactly the
+// completed runs it hasn't validated yet (`pending_run_ids`).
 import type { JSONSchema } from '../../schema/jsonSchema';
-import type { RunSummary } from '../../api/types';
-import type { ValidationOption } from '../../api/types';
+import type { RunSummary, ValidationOption, ValidationPreset } from '../../api/types';
 import { PipelineForm } from '../../features/validation/PipelineForm';
 import { ErrorMessage } from '../../components/ErrorMessage';
+import { Badge } from '../../components/ui';
 
 export const ALL_RUNS = '__all__';
 
@@ -29,6 +28,9 @@ export function ParamsPanel({
   progressPct,
   progressLabel,
   onCompareRuns,
+  presets,
+  presetsLoading,
+  onRunPreset,
   submitError,
 }: {
   schema: JSONSchema;
@@ -45,6 +47,9 @@ export function ParamsPanel({
   progressPct: number;
   progressLabel: string;
   onCompareRuns: () => void;
+  presets: ValidationPreset[];
+  presetsLoading: boolean;
+  onRunPreset: (preset: ValidationPreset) => void;
   submitError?: unknown;
 }) {
   return (
@@ -83,18 +88,42 @@ export function ParamsPanel({
         templateOptions={templateOptions}
       />
 
-      {/* Static mock: named parameter bundles aren't a backend concept yet. */}
-      <div className="flex flex-col gap-1">
-        <span className="text-xs font-semibold text-gray-700">Preset</span>
-        <div className="flex items-center rounded-[9px] border border-gray-200 bg-white px-[11px] py-2 text-sm text-gray-700">
-          tabletop-default
-          <div className="flex-1" />
-          <span className="text-[10px] text-gray-400">▾</span>
-        </div>
-      </div>
-      {/* Static mock: parameter-diff-vs-previous-version isn't tracked yet. */}
-      <div className="rounded-[10px] border border-gray-100 bg-gray-50 px-3 py-[9px] text-[11.5px] leading-relaxed text-gray-500">
-        Diff vs v1.2.0: <span className="font-mono text-teal-700">min_coverage 75 → 80</span>
+      {/* Real one-click presets (GET /validation/presets): each runs its own
+          pipeline over exactly the completed runs it hasn't validated yet. */}
+      <div className="flex flex-col gap-1.5">
+        <span className="text-xs font-semibold text-gray-700">One-click presets</span>
+        {presetsLoading ? (
+          <p className="text-[11px] text-gray-400">Loading presets…</p>
+        ) : presets.length === 0 ? (
+          <p className="text-[11px] leading-relaxed text-gray-400">
+            No presets configured. Add{' '}
+            <span className="font-mono">config/&lt;robot&gt;/validation_presets.yaml</span>.
+          </p>
+        ) : (
+          presets.map((p) => (
+            <button
+              key={p.id}
+              type="button"
+              data-testid={`preset-${p.id}`}
+              disabled={p.pending === 0 || running}
+              onClick={() => onRunPreset(p)}
+              title={p.description || undefined}
+              className="flex items-center gap-2 rounded-[9px] border border-gray-200 bg-white px-[11px] py-2 text-left hover:border-teal-400 hover:bg-teal-50/40 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[13px] font-medium text-gray-700">
+                  {p.name}
+                </span>
+                <span className="block truncate font-mono text-[10.5px] text-gray-400">
+                  {p.pipeline}
+                </span>
+              </span>
+              <Badge tone={p.pending > 0 ? 'teal' : 'gray'} dot={p.pending > 0}>
+                {p.pending > 0 ? `${p.pending} pending` : 'up to date'}
+              </Badge>
+            </button>
+          ))
+        )}
       </div>
 
       <div className="flex-1" />
