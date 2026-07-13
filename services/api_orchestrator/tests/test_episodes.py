@@ -280,3 +280,41 @@ def test_delete_run_cascades_episode(client: TestClient, store: RunStore) -> Non
     assert store.get_episode_by_run_id(run_id) is None
     # The batch still exists, now with no episodes.
     assert client.get(f"/api/v1/batches/{batch_id}").json()["episode_count"] == 0
+
+
+def test_episodes_recorded_is_monotone_across_a_run_delete(
+    client: TestClient, store: RunStore
+) -> None:
+    """The recorded counter counts what was captured and never shrinks on a
+    delete — the fix for Collect's episode count dropping after a Review delete.
+    """
+    batch_id = _new_batch(client)["batch_id"]
+    for i in range(1, 4):
+        run_id = _seed_run(store, f"run_rec_{i}")
+        assert (
+            client.post(
+                "/api/v1/episodes",
+                json={
+                    "batch_id": batch_id,
+                    "run_id": run_id,
+                    "index_in_batch": i,
+                    "task_result": "success",
+                    "quality": "good",
+                },
+            ).status_code
+            == 201
+        )
+
+    batch = client.get(f"/api/v1/batches/{batch_id}").json()
+    assert batch["episode_count"] == 3
+    assert batch["episodes_recorded"] == 3
+
+    # Delete one run → its episode cascades away, so the live count drops to 2 …
+    assert client.delete("/api/v1/runs/run_rec_2").status_code == 204
+    batch = client.get(f"/api/v1/batches/{batch_id}").json()
+    assert batch["episode_count"] == 2
+    # … but the monotone recorded count stays 3 (3 episodes were captured).
+    assert batch["episodes_recorded"] == 3
+    # Surfaced in the active-batch list (Collect's restore path) too.
+    active = client.get("/api/v1/batches", params={"status": "active"}).json()
+    assert active["items"][0]["episodes_recorded"] == 3

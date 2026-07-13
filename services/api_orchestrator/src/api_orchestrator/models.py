@@ -312,6 +312,11 @@ class Batch(BaseModel):
     ended_reason: str | None = None
     created_at: str | None = None
     ended_at: str | None = None
+    # Monotone count of episodes ever recorded into this batch (incremented on
+    # POST /episodes, never decremented on a run-delete cascade) — the truthful
+    # "N recorded" for Collect's counts, independent of the live episode_count
+    # which shrinks when an episode is deleted.
+    episodes_recorded: int = 0
 
 
 class Episode(BaseModel):

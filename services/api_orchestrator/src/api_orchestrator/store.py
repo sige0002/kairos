@@ -136,7 +136,12 @@ CREATE TABLE IF NOT EXISTS batches (
     status          TEXT NOT NULL DEFAULT 'active',
     ended_reason    TEXT,
     created_at      TEXT,
-    ended_at        TEXT
+    ended_at        TEXT,
+    -- Monotone count of episodes ever recorded into this batch: incremented on
+    -- every POST /episodes and NEVER decremented (a run-delete cascade removes
+    -- the episode row but leaves this untouched), so Collect's "N / 30" stays
+    -- truthful to what was captured even after a Review exclude/delete.
+    episodes_recorded INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_batches_seq ON batches (seq DESC);
 
@@ -227,6 +232,22 @@ class RunStore:
         for column in ("operator", "task"):
             if column not in existing:
                 conn.execute(f"ALTER TABLE runs ADD COLUMN {column} TEXT")
+        # Console v2 Phase 2: monotone recorded-episode counter on batches. For a
+        # DB created before this column, add it and backfill from the current
+        # episode count (best available truth for pre-existing batches).
+        batch_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(batches)")
+        }
+        if "episodes_recorded" not in batch_cols:
+            conn.execute(
+                "ALTER TABLE batches ADD COLUMN "
+                "episodes_recorded INTEGER NOT NULL DEFAULT 0"
+            )
+            conn.execute(
+                "UPDATE batches SET episodes_recorded = (SELECT COUNT(*) FROM "
+                "episodes WHERE episodes.batch_id = batches.batch_id) "
+                "WHERE episodes_recorded = 0"
+            )
 
     @contextmanager
     def _conn(self) -> Iterator[sqlite3.Connection]:
@@ -603,6 +624,13 @@ class RunStore:
                 )
             except sqlite3.IntegrityError as exc:
                 raise EpisodeRunExistsError(episode.run_id) from exc
+            # Bump the batch's monotone recorded counter in the same transaction.
+            # A no-op if the batch is absent (the caller validates it first).
+            conn.execute(
+                "UPDATE batches SET episodes_recorded = episodes_recorded + 1 "
+                "WHERE batch_id = ?",
+                (episode.batch_id,),
+            )
         return episode
 
     def update_episode(self, episode_id: str, **fields: Any) -> Episode:
@@ -817,6 +845,7 @@ class RunStore:
             ended_reason=row["ended_reason"],
             created_at=row["created_at"],
             ended_at=row["ended_at"],
+            episodes_recorded=row["episodes_recorded"],
         )
 
     @staticmethod

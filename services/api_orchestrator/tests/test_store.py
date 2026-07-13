@@ -96,3 +96,46 @@ def test_file_db_persists_across_instances(tmp_path: Path) -> None:
 
     reopened = RunStore(db)
     assert reopened.get("run_persist") is not None
+
+
+def test_migrate_adds_and_backfills_episodes_recorded(tmp_path: Path) -> None:
+    """A DB created before `episodes_recorded` existed gets the column added and
+    backfilled from its current episode count when the store reopens."""
+    import sqlite3
+
+    db = tmp_path / "kairos.db"
+    # Build a pre-migration `batches` table (no episodes_recorded) plus its
+    # episodes, exactly as an older schema would have left them.
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        """
+        CREATE TABLE batches (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            batch_id TEXT NOT NULL UNIQUE, robot TEXT,
+            project TEXT NOT NULL, task TEXT NOT NULL, condition TEXT,
+            operator TEXT, target_episodes INTEGER NOT NULL DEFAULT 30,
+            status TEXT NOT NULL DEFAULT 'active', ended_reason TEXT,
+            created_at TEXT, ended_at TEXT
+        );
+        CREATE TABLE episodes (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            episode_id TEXT NOT NULL UNIQUE, batch_id TEXT NOT NULL,
+            run_id TEXT NOT NULL UNIQUE, index_in_batch INTEGER NOT NULL,
+            task_result TEXT, failure_reason TEXT, quality TEXT,
+            quality_source TEXT NOT NULL DEFAULT 'operator',
+            review_status TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT, updated_at TEXT
+        );
+        INSERT INTO batches (batch_id, project, task) VALUES ('batch_old', 'p', 't');
+        INSERT INTO episodes (episode_id, batch_id, run_id, index_in_batch)
+            VALUES ('ep1', 'batch_old', 'r1', 1), ('ep2', 'batch_old', 'r2', 2);
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    # Reopening runs the additive migration: column added + backfilled to 2.
+    store = RunStore(db)
+    batch = store.get_batch("batch_old")
+    assert batch is not None
+    assert batch.episodes_recorded == 2
