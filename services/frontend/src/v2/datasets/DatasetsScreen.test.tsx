@@ -257,7 +257,13 @@ const ENTRY_LABELED: DatasetEntry = {
   run_id: 'run_lab',
   message_count: 5000,
   exported_at: '2026-07-13T12:00:00Z',
-  episode: epJoin({ quality: 'good', task_result: 'success', batch_seq: 4 }),
+  // The list serves the label subset FLAT (episode.json is nested only on the
+  // detail payload) — mirror the real backend shape.
+  quality: 'good',
+  task_result: 'success',
+  review_status: 'adopted',
+  batch_seq: 4,
+  index_in_batch: 2,
 };
 const ENTRY_LEGACY: DatasetEntry = {
   operator: 'unknown_operator',
@@ -300,7 +306,9 @@ test('an unattributed export gets a muted "legacy (pre-label) export" treatment'
 });
 
 test('the dataset detail shows episode label chips when present', async () => {
-  const detail = detailFor(ENTRY_LABELED, { episode: ENTRY_LABELED.episode });
+  const detail = detailFor(ENTRY_LABELED, {
+    episode: epJoin({ quality: 'good', task_result: 'success', batch_seq: 4 }),
+  });
   mockFetch({
     list: { datasets: [ENTRY_LABELED] },
     details: { [detailUrlFor(ENTRY_LABELED)]: detail },

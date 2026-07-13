@@ -124,10 +124,15 @@ export interface DatasetEntry {
   bytes?: number;
   message_count?: number | null;
   exported_at?: string;
-  /** Console v2 Phase 2: the episode this exported run belongs to (null/absent
-   *  on older backends or pre-label exports). When present the catalog card can
-   *  show its task_result/quality/batch labels; when absent it shows nothing. */
-  episode?: RunEpisode | null;
+  /** Console v2 Phase 2: episode-label subset for catalog cards. The backend
+   *  serves these FLAT on each list row (mirroring its per-row dataset.json
+   *  read); null/absent on older backends or pre-label exports. The full
+   *  nested `episode` object exists only on DatasetDetail. */
+  task_result?: 'success' | 'failure' | null;
+  quality?: 'good' | 'needs_review' | 'not_usable' | null;
+  review_status?: 'pending' | 'adopted' | 'excluded' | null;
+  batch_seq?: number | null;
+  index_in_batch?: number | null;
 }
 
 /** GET /api/v1/datasets — the flat list of exported datasets (grouped in the UI). */

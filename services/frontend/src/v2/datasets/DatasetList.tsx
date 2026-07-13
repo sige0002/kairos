@@ -4,10 +4,30 @@
 // Renders an honest empty state both when there are genuinely no exports yet
 // and when the backend is unreachable — never a blank panel.
 
+import type { DatasetEntry, RunEpisode } from '../../api/types';
 import { Badge, cn } from '../../components/ui';
 import { EpisodeLabelChips } from '../episodeChips';
 import { formatCount } from './data';
 import type { DatasetsState } from './useDatasetsState';
+
+/** The datasets LIST serves the episode-label subset as FLAT row fields
+ *  (episode.json is nested only on the detail payload). Adapt a row into the
+ *  RunEpisode shape the shared chips consume; null when no label survived
+ *  export (pre-label datasets) so the card shows nothing fabricated. */
+function rowEpisode(entry: DatasetEntry): RunEpisode | null {
+  // The chips render task-result + quality unconditionally, so both must be
+  // real values (episode.json writes them together; absent file -> all null).
+  if (entry.task_result == null || entry.quality == null) return null;
+  return {
+    episode_id: '',
+    batch_id: '',
+    index_in_batch: entry.index_in_batch ?? 0,
+    task_result: entry.task_result,
+    quality: entry.quality,
+    review_status: entry.review_status ?? 'pending',
+    batch_seq: entry.batch_seq ?? null,
+  };
+}
 
 /** A pre-label export: the backend couldn't attribute it to an operator/task
  *  (older exports predate the episode model). Shown muted, labeled honestly. */
@@ -56,6 +76,7 @@ export function DatasetList({ state }: { state: DatasetsState }) {
               {group.entries.map((entry) => {
                 const selected = state.isSelected(entry);
                 const legacy = isLegacy(entry.operator, entry.task);
+                const episode = rowEpisode(entry);
                 return (
                   <div
                     key={entry.dataset_dir}
@@ -83,10 +104,11 @@ export function DatasetList({ state }: { state: DatasetsState }) {
                       </Badge>
                     </div>
                     {/* Episode labels only when the backend attributes them
-                        (Phase 2 join); nothing fabricated when absent. */}
-                    {entry.episode && (
+                        (flat row subset from episode.json); nothing fabricated
+                        when absent. */}
+                    {episode && (
                       <EpisodeLabelChips
-                        episode={entry.episode}
+                        episode={episode}
                         isoFallback={entry.exported_at}
                         testId={`dataset-card-labels-${entry.dataset_dir}`}
                       />
