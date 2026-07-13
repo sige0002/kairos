@@ -103,9 +103,11 @@ def test_video_check_missing_run_dir_raises(tmp_path: Path) -> None:
         run_video_check(run_id="run_absent", data_dir=data_dir, topic="/cam")
 
 
-def test_create_job_rejects_missing_topic() -> None:
+def test_create_job_rejects_missing_topic(tmp_path: Path) -> None:
     """A video_check job with no topic param fails fast with topic_required."""
-    app = create_dora_app(Settings(data_dir="/nonexistent-data"))
+    # A writable data dir (the app now opens a SQLite store beneath it); the run
+    # dir stays absent, but the worker rejects on the missing topic before any read.
+    app = create_dora_app(Settings(data_dir=str(tmp_path)))
     with TestClient(app) as client:
         created = client.post(
             "/jobs",

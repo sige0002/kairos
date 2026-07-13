@@ -70,7 +70,14 @@ The post-recording **validation / conversion / extension processing pipeline** c
 
 - `/data/report/<pipeline>/<run>/` (`summary.json` / preview / logs)
 - `/data/converted/<run>/` (output of `dataset_convert`. e.g. training format)
-- job record (**the SQLite of `api_orchestrator` is canonical**)
+- job record (the user-facing canonical store is **`api_orchestrator`'s SQLite**; dora_runner also persists its own internal state — see "Persistence and restart reconciliation" below)
+
+## Persistence and restart reconciliation
+
+- **Jobs and validation templates are persisted in SQLite** (`store.py`; default `<data_dir>/dora_runner.db`, beside the `report/` tree in the same data directory). It follows the same conventions as `api_orchestrator.store`: a `threading.RLock` serializes connection use, and `PRAGMA user_version` records the schema version. Previously this state was in-memory and was lost on process restart (release-readiness finding F4/MS-6).
+- **Execution stays in-process** (this persists *state*, not a distributed queue). A running job is held as a live `JobRecord` (owning its `asyncio.Task`) and is **checkpointed** to its row on each state transition (queued → running → terminal); it is not written per log line. `logs_tail` is stored with the terminal row.
+- **Restart reconciliation**: on startup (`create_dora_app`), any job left `queued`/`running` is resolved to a terminal `failed` state carrying the reason in its `summary` (`{result:"fail", reason:"interrupted", error:{code:"job_interrupted", message:"dora_runner restarted while the job was in flight."}}`), and an interrupted note is appended to `logs_tail`. `JobState` has no `interrupted` member, and `api_orchestrator`'s `run_job_to_completion` treats only succeeded/failed/canceled as terminal — so **interrupted collapses onto `failed` with the reason in the summary** (the same representation as timeout). `datasets._job_failure_reason` and the Validation tab's generic renderer then surface it to the user with no orchestrator/frontend changes.
+- `GET /jobs/{id}/status` / `GET /jobs/{id}/result` prefer the live `JobRecord` and fall back to the SQLite row, so a job whose worker vanished with the old process still returns a terminal state and result.
 
 ## API (service-internal API; public exposure is via `api_orchestrator`)
 
@@ -106,15 +113,16 @@ rejects them with `pipeline_unavailable`).
 (default `services/dora_runner/plugins/`) for automatic registration; an example `hello_dora` plugin is
 bundled), the **in-process dora dataflow interpreter** (plugins that declare `executor: dora` also run
 in-process, for the reasons below), and **job concurrency limits and per-job timeouts**
-(`KAIROS_DORA_MAX_CONCURRENCY` / `KAIROS_DORA_JOB_TIMEOUT_S`). Each pipeline's heavy reads and encoding
-are offloaded to worker threads.
+(`KAIROS_DORA_MAX_CONCURRENCY` / `KAIROS_DORA_JOB_TIMEOUT_S`), and **SQLite persistence of jobs/templates with
+restart reconciliation** (see "Persistence and restart reconciliation" above). Each pipeline's heavy reads and
+encoding are offloaded to worker threads.
 
 **Not implemented / not bundled**: the Rust **dora CLI/daemon (coordinator) is not bundled**. Accordingly,
 `/readyz` honestly reports the **actual execution backend** in `components.dora` (`available` if the `dora`
 binary is present, otherwise `in-process`), while `status` stays `ready` even without dora (since it runs
 in-process). Each `PipelineDefinition` returned by `/pipelines` also reports `effective_executor` (how it
-actually runs), distinct from the declared `executor`. **AI nodes** (inference / LeRobot conversion) and
-**job/template persistence** (currently in-memory, lost on process restart) are also not implemented.
+actually runs), distinct from the declared `executor`. **AI nodes** (inference / LeRobot conversion) are not
+implemented.
 
 For how to add validation checks, unit testing, and debugging procedures via the local CLI (`python -m dora_runner.cli`),
 see the developer guide [docs/dora/README.md](../../dora/README.md).

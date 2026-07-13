@@ -1,19 +1,95 @@
-"""In-memory job and validation template state for dora_runner."""
+"""Persistent job and validation-template state for dora_runner.
+
+The store is SQLite-backed so job/template state survives a process restart
+(release-readiness finding F4/MS-6: an in-memory store orphaned in-flight work on
+restart, breaking the crash-recovery symmetry the recorder/orchestrator uphold).
+It mirrors :mod:`api_orchestrator.store` conventions — a ``threading.RLock``
+serializes connection use, ``_conn`` opens a fresh connection per call for a file
+DB (and reuses one shared connection for ``:memory:``), and ``_migrate`` records a
+``PRAGMA user_version`` schema version.
+
+Execution stays in-process: a running job keeps a live :class:`JobRecord` (holding
+its ``asyncio.Task``) in :attr:`RunnerStore.jobs`, guarded by the asyncio
+:attr:`RunnerStore.lock`; that in-memory handle is *checkpointed* to the ``jobs``
+table on each state transition (queued -> running -> terminal). We persist STATE,
+not a distributed queue. On startup :meth:`reconcile_interrupted_jobs` marks any
+row still ``queued``/``running`` as ``failed`` with an honest interrupted reason,
+so ``GET /jobs/{id}/status`` and ``/result`` serve a terminal outcome even for a
+job whose worker vanished with the old process.
+"""
 
 from __future__ import annotations
 
 import asyncio
+import json
+import sqlite3
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
-from kairos_common import JobState
+from kairos_common import JobState, utc_now_iso8601
 
 from dora_runner.models import JobResult, JobStatus, ValidationTemplate
+
+# Bumped whenever the schema changes in a non-additive way; recorded via
+# ``PRAGMA user_version`` so a future migration can branch on the on-disk version.
+_SCHEMA_VERSION = 1
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS jobs (
+    -- Monotonic insertion order (unused today, but mirrors the orchestrator and
+    -- keeps a stable ordering key for a future job list).
+    seq        INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id     TEXT NOT NULL UNIQUE,
+    run_id     TEXT NOT NULL,
+    pipeline   TEXT NOT NULL,
+    -- The job's params (JSON): makes the persisted row self-describing.
+    params     TEXT NOT NULL DEFAULT '{}',
+    state      TEXT NOT NULL,
+    progress   REAL NOT NULL DEFAULT 0,
+    logs_tail  TEXT NOT NULL DEFAULT '[]',
+    result     TEXT,
+    created_at TEXT,
+    updated_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_jobs_seq ON jobs (seq DESC);
+
+CREATE TABLE IF NOT EXISTS validation_templates (
+    seq             INTEGER PRIMARY KEY AUTOINCREMENT,
+    name            TEXT NOT NULL,
+    version         INTEGER NOT NULL,
+    required_topics TEXT NOT NULL DEFAULT '[]',
+    UNIQUE(name, version)
+);
+CREATE INDEX IF NOT EXISTS idx_validation_templates_seq
+    ON validation_templates (seq DESC);
+"""
+
+# The honest terminal outcome written to a job whose worker was lost to a restart.
+# ``state`` is ``failed`` (not a new enum member): the shared ``JobState`` has no
+# ``interrupted`` value, and the orchestrator's ``run_job_to_completion`` only
+# treats succeeded/failed/canceled as terminal — so an interrupted job must land on
+# ``failed`` and carry the reason in the summary (exactly like the timeout path),
+# which ``datasets._job_failure_reason`` and the Validation UI already surface.
+_INTERRUPTED_MESSAGE = "dora_runner restarted while the job was in flight."
+_INTERRUPTED_SUMMARY: dict[str, Any] = {
+    "result": "fail",
+    "reason": "interrupted",
+    "error": {"code": "job_interrupted", "message": _INTERRUPTED_MESSAGE},
+}
 
 
 @dataclass
 class JobRecord:
-    """Mutable internal job record."""
+    """Mutable in-process handle for a running job.
+
+    Holds the live ``asyncio.Task`` and the working copy of the job's state that
+    the worker mutates directly; :meth:`RunnerStore.persist_job` checkpoints it to
+    SQLite at each transition.
+    """
 
     job_id: str
     run_id: str
@@ -38,39 +114,256 @@ class JobRecord:
 
 
 class RunnerStore:
-    """Process-local store for v1 dora_runner jobs/templates."""
+    """SQLite-backed store for dora_runner jobs/templates.
 
-    def __init__(self) -> None:
+    Args:
+        db_path: Path to the SQLite file (``/data/dora_runner.db`` in production).
+            Parent directories are created. Defaults to ``":memory:"`` (a single
+            shared connection) so a bare ``RunnerStore()`` — used by unit tests and
+            in-process runners — stays isolated and needs no filesystem.
+
+    :attr:`jobs` and :attr:`lock` preserve the previous in-memory surface: the
+    asyncio worker still tracks live jobs in the dict under the asyncio lock (that
+    guard is what keeps a cancel from racing the worker — BUG-D). The SQLite
+    connection has its own ``threading.RLock`` (``_conn``), independent of the
+    asyncio lock, so a checkpoint taken while holding the asyncio lock never
+    deadlocks.
+    """
+
+    def __init__(self, db_path: str | Path = ":memory:") -> None:
+        # Live in-process handles (asyncio.Task + working state) for running jobs.
         self.jobs: dict[str, JobRecord] = {}
-        self.templates: list[ValidationTemplate] = []
+        # Serializes async worker state transitions (queued/running/terminal) and
+        # mutation of ``jobs`` — unchanged from the pre-persistence store.
         self.lock = asyncio.Lock()
 
+        self._path = str(db_path)
+        # Serializes every connection use (reentrant: write helpers nest reads).
+        self._db_lock = threading.RLock()
+        self._shared: sqlite3.Connection | None = None
+        if self._path != ":memory:":
+            Path(self._path).parent.mkdir(parents=True, exist_ok=True)
+        else:
+            # In-memory DBs vanish when their connection closes, so keep one.
+            # check_same_thread=False: FastAPI runs sync work in a thread pool, so
+            # the shared connection is touched from worker threads; the lock
+            # serializes access.
+            self._shared = sqlite3.connect(self._path, check_same_thread=False)
+            self._shared.row_factory = sqlite3.Row
+        with self._conn() as conn:
+            conn.executescript(_SCHEMA)
+            self._migrate(conn)
+
+    @staticmethod
+    def _migrate(conn: sqlite3.Connection) -> None:
+        """Record the schema version (``PRAGMA user_version``).
+
+        No legacy DB exists, so fresh ``CREATE TABLE IF NOT EXISTS`` is enough; this
+        stamps the version so a future non-additive change can branch on it.
+        """
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        if version < _SCHEMA_VERSION:
+            conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+
+    @contextmanager
+    def _conn(self) -> Iterator[sqlite3.Connection]:
+        """Yield a connection under the lock, committing on success.
+
+        The lock serializes all access so the shared connection is safe across
+        FastAPI's thread pool. For a file DB a fresh connection is opened per call
+        and closed afterwards; the in-memory DB reuses its single shared connection
+        (closing it would drop the data).
+        """
+        with self._db_lock:
+            if self._shared is not None:
+                yield self._shared
+                self._shared.commit()
+                return
+            conn = sqlite3.connect(self._path)
+            conn.row_factory = sqlite3.Row
+            try:
+                yield conn
+                conn.commit()
+            finally:
+                conn.close()
+
+    def close(self) -> None:
+        """Close the shared in-memory connection (no-op for file DBs)."""
+        if self._shared is not None:
+            self._shared.close()
+            self._shared = None
+
+    # ---- jobs -------------------------------------------------------------
+
+    def persist_job(self, job: JobRecord) -> None:
+        """Checkpoint a live :class:`JobRecord` to the ``jobs`` table.
+
+        Called on each state transition (coarse by design — not per log line). An
+        upsert: ``created_at`` is set once on insert; ``result`` is only overwritten
+        when the record carries one, so an intermediate ``running`` checkpoint never
+        wipes a result written earlier.
+        """
+        now = utc_now_iso8601()
+        result_json = (
+            json.dumps(job.result.model_dump()) if job.result is not None else None
+        )
+        with self._conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO jobs
+                    (job_id, run_id, pipeline, params, state, progress,
+                     logs_tail, result, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(job_id) DO UPDATE SET
+                    state = excluded.state,
+                    progress = excluded.progress,
+                    logs_tail = excluded.logs_tail,
+                    result = COALESCE(excluded.result, jobs.result),
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    job.job_id,
+                    job.run_id,
+                    job.pipeline,
+                    json.dumps(job.params),
+                    job.state.value,
+                    job.progress,
+                    json.dumps(job.logs_tail),
+                    result_json,
+                    now,
+                    now,
+                ),
+            )
+
+    def get_persisted_job(self, job_id: str) -> JobStatus | None:
+        """Return the persisted job status, or ``None`` if absent.
+
+        The read-path fallback for a job with no live :class:`JobRecord` — e.g. one
+        marked ``failed``/interrupted at startup after the worker's process died.
+        """
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM jobs WHERE job_id = ?", (job_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        logs = json.loads(row["logs_tail"]) if row["logs_tail"] else []
+        return JobStatus(
+            job_id=row["job_id"],
+            run_id=row["run_id"],
+            pipeline=row["pipeline"],
+            state=JobState(row["state"]),
+            progress=float(row["progress"]),
+            logs_tail=logs[-50:],
+        )
+
+    def get_persisted_result(self, job_id: str) -> JobResult | None:
+        """Return the persisted terminal result for a job, or ``None``."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT result FROM jobs WHERE job_id = ?", (job_id,)
+            ).fetchone()
+        if row is None or not row["result"]:
+            return None
+        return JobResult.model_validate(json.loads(row["result"]))
+
+    def reconcile_interrupted_jobs(self) -> int:
+        """Fail any job left ``queued``/``running`` by a previous process.
+
+        In-flight execution does not survive a restart (state is persisted, work is
+        not), so an orphaned row is resolved to a terminal ``failed`` state carrying
+        the interrupted reason — mirroring the orchestrator's honest-reason
+        reconciliation for interrupted runs. Returns the number reconciled.
+        """
+        now = utc_now_iso8601()
+        result_json = json.dumps({"summary": _INTERRUPTED_SUMMARY, "artifacts": []})
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT job_id, logs_tail FROM jobs "
+                "WHERE state IN ('queued', 'running')"
+            ).fetchall()
+            for row in rows:
+                logs = json.loads(row["logs_tail"]) if row["logs_tail"] else []
+                logs.append(_INTERRUPTED_MESSAGE)
+                conn.execute(
+                    """
+                    UPDATE jobs
+                    SET state = ?, progress = 1.0, logs_tail = ?, result = ?,
+                        updated_at = ?
+                    WHERE job_id = ?
+                    """,
+                    (
+                        JobState.failed.value,
+                        json.dumps(logs),
+                        result_json,
+                        now,
+                        row["job_id"],
+                    ),
+                )
+        return len(rows)
+
+    # ---- validation templates --------------------------------------------
+
     async def add_template(self, template: ValidationTemplate) -> ValidationTemplate:
-        """Create or replace a template by ``(name, version)``."""
-        async with self.lock:
-            self.templates = [
-                item
-                for item in self.templates
-                if not (item.name == template.name and item.version == template.version)
-            ]
-            self.templates.append(template)
+        """Create or replace a template by ``(name, version)``.
+
+        Async only for call-site compatibility; the body is a fast synchronous
+        upsert. A collision on ``(name, version)`` overwrites ``required_topics``.
+        """
+        with self._conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO validation_templates (name, version, required_topics)
+                VALUES (?, ?, ?)
+                ON CONFLICT(name, version) DO UPDATE SET
+                    required_topics = excluded.required_topics
+                """,
+                (
+                    template.name,
+                    template.version,
+                    json.dumps([t.model_dump() for t in template.required_topics]),
+                ),
+            )
         return template
 
     async def list_templates(
         self, limit: int, cursor: int | None
     ) -> tuple[list[ValidationTemplate], int | None]:
-        """Return newest-first template page."""
-        async with self.lock:
-            ordered = list(reversed(self.templates))
-        start = cursor or 0
-        page = ordered[start : start + limit]
-        next_cursor = start + limit if len(ordered) > start + limit else None
-        return page, next_cursor
+        """Return a newest-first template page and the next cursor (a ``seq``)."""
+        params: list[Any] = []
+        where = ""
+        if cursor is not None:
+            where = "WHERE seq < ?"
+            params.append(cursor)
+        params.append(limit + 1)
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT * FROM validation_templates {where}
+                ORDER BY seq DESC LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        has_more = len(rows) > limit
+        page = rows[:limit]
+        templates = [self._template_from_row(r) for r in page]
+        next_cursor = int(page[-1]["seq"]) if has_more and page else None
+        return templates, next_cursor
 
     async def get_template(self, name: str) -> ValidationTemplate | None:
-        """Return the newest template with *name*."""
-        async with self.lock:
-            for template in reversed(self.templates):
-                if template.name == name:
-                    return template
-        return None
+        """Return the newest template with *name* (highest ``seq``)."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM validation_templates WHERE name = ? "
+                "ORDER BY seq DESC LIMIT 1",
+                (name,),
+            ).fetchone()
+        return self._template_from_row(row) if row is not None else None
+
+    @staticmethod
+    def _template_from_row(row: sqlite3.Row) -> ValidationTemplate:
+        """Rebuild a validation template from a database row."""
+        raw = json.loads(row["required_topics"]) if row["required_topics"] else []
+        return ValidationTemplate(
+            name=row["name"], version=row["version"], required_topics=raw
+        )

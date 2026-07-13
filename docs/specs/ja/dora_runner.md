@@ -69,7 +69,14 @@
 
 - `/data/report/<pipeline>/<run>/`（`summary.json` / preview / logs）
 - `/data/converted/<run>/`（`dataset_convert` の出力。例: 学習用形式）
-- job record（**`api_orchestrator` の SQLite が正**）
+- job record（ユーザー向けの正は **`api_orchestrator` の SQLite**。dora_runner 自身も内部状態を永続化する＝下記「永続化と再起動リコンサイル」）
+
+## 永続化と再起動リコンサイル
+
+- **job / validation template を SQLite に永続化**する（`store.py`。既定 `<data_dir>/dora_runner.db`＝`report/` ツリーと同じデータディレクトリ直下。`api_orchestrator.store` と同じ規約: `threading.RLock` でコネクションを直列化し、`PRAGMA user_version` でスキーマ版を記録）。以前は in-memory で、プロセス再起動で job/template が消えていた（release-readiness の F4/MS-6）。
+- **実行系は in-process のまま**（分散キューではなく、永続化するのは**状態**）。実行中の job は `asyncio.Task` を持つ live な `JobRecord` として保持し、状態遷移（queued → running → 終端）ごとに行へ**チェックポイント**する（ログ 1 行ごとには書かない）。`logs_tail` は終端行にそのまま保存される。
+- **再起動リコンサイル**: 起動時（`create_dora_app`）に `queued` / `running` のまま残った job を終端の `failed` へ確定し、理由を `summary` に載せる（`{result:"fail", reason:"interrupted", error:{code:"job_interrupted", message:"dora_runner restarted while the job was in flight."}}`）＋ `logs_tail` に注記を追記する。`JobState` に `interrupted` 値は無く、`api_orchestrator` の `run_job_to_completion` が終端とみなすのは succeeded/failed/canceled のみなので、**interrupted は `failed` に集約し理由を summary に持たせる**（timeout と同じ表現）。これにより `datasets._job_failure_reason` と Validation タブの汎用レンダラがそのままユーザーへ提示でき、orchestrator / frontend の改修は不要。
+- `GET /jobs/{id}/status` / `GET /jobs/{id}/result` は live な `JobRecord` を優先し、無ければ SQLite の行から応答する（再起動後に worker が消えた job も終端状態・結果を返せる）。
 
 ## API（サービス内部 API。公開は `api_orchestrator` 経由）
 
@@ -104,14 +111,14 @@ MCAP → dora dataflow（validator / converter / AI nodes）→ reports / conver
 `plugin_loader.discover_plugins()` が `KAIROS_PLUGINS_DIR`（既定 `services/dora_runner/plugins/`）配下の
 manifest をスキャンして自動登録する。例として `hello_dora` プラグインを同梱）、**dora dataflow の
 in-process インタプリタ**（`executor: dora` を宣言したプラグインも、後述の理由で in-process で実行）、
-**ジョブの並行度上限・per-job timeout**（`KAIROS_DORA_MAX_CONCURRENCY` / `KAIROS_DORA_JOB_TIMEOUT_S`）。
+**ジョブの並行度上限・per-job timeout**（`KAIROS_DORA_MAX_CONCURRENCY` / `KAIROS_DORA_JOB_TIMEOUT_S`）、
+**job/template の SQLite 永続化と再起動リコンサイル**（上記「永続化と再起動リコンサイル」）。
 各パイプラインの重い読込・エンコードは worker スレッドに退避する。
 
 **未実装 / 未同梱**: **Rust の dora CLI/daemon（coordinator）は同梱していない**。そのため `/readyz` は
 `components.dora` に**実際の実行系**（`dora` バイナリがあれば `available`、無ければ `in-process`）を誠実に
 返し、`status` は dora 不在でも `ready`（in-process で動くため）。`/pipelines` の各 `PipelineDefinition` も
-宣言上の `executor` とは別に `effective_executor`（実際にどう動くか）を返す。**AI node（推論・LeRobot 変換）**、
-**job/template の永続化**（現状 in-memory・プロセス再起動で消える）も未実装。
+宣言上の `executor` とは別に `effective_executor`（実際にどう動くか）を返す。**AI node（推論・LeRobot 変換）**は未実装。
 
 validation チェックの追加方法・単体試験・ローカル CLI（`python -m dora_runner.cli`）でのデバッグ手順は、
 開発者ガイド [docs/dora/README.ja.md](../../dora/README.ja.md) を参照。

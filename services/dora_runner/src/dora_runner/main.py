@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import uuid
 from pathlib import Path
@@ -27,6 +28,8 @@ from dora_runner.store import JobRecord, RunnerStore
 from dora_runner.validation import generate_template
 
 SERVICE_NAME = "dora_runner"
+
+logger = logging.getLogger("kairos")
 
 # Per-job execution limits (spec §: bounded concurrency + a per-job timeout).
 # Read from the environment so a deployment can tune them; both fall back to
@@ -94,11 +97,24 @@ def _override_readyz(app: FastAPI) -> None:
         return {"status": "ready", "components": {"dora": dora}}
 
 
-def create_dora_app(settings: Settings | None = None) -> FastAPI:
-    """Build the dora_runner app."""
+def create_dora_app(
+    settings: Settings | None = None, *, store: RunnerStore | None = None
+) -> FastAPI:
+    """Build the dora_runner app.
+
+    The job/template store is SQLite-backed at ``<data_dir>/dora_runner.db`` (beside
+    the ``report/`` tree), so state survives a restart. Pass *store* to inject one
+    (tests use ``RunnerStore(":memory:")``). On startup any job the previous process
+    left in flight is reconciled to a terminal ``failed``/interrupted state.
+    """
     settings = settings or get_settings()
     data_dir = Path(settings.data_dir)
-    store = RunnerStore()
+    store = store or RunnerStore(str(data_dir / "dora_runner.db"))
+    interrupted = store.reconcile_interrupted_jobs()
+    if interrupted:
+        logger.info(
+            "reconciled interrupted dora jobs at start", extra={"count": interrupted}
+        )
     app = create_app(SERVICE_NAME, settings=settings)
     app.state.runner_store = store
     app.state.data_dir = data_dir
@@ -136,6 +152,7 @@ def create_dora_app(settings: Settings | None = None) -> FastAPI:
         )
         async with store.lock:
             store.jobs[job.job_id] = job
+            store.persist_job(job)
         job.task = asyncio.create_task(
             _execute_job(job, store, data_dir, slots=job_slots, timeout_s=job_timeout_s)
         )
@@ -143,12 +160,29 @@ def create_dora_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/jobs/{job_id}/status", response_model=JobStatus)
     async def job_status(job_id: str) -> JobStatus:
-        return (await _get_job(store, job_id)).status()
+        async with store.lock:
+            live = store.jobs.get(job_id)
+        # Prefer the live worker's view; fall back to the persisted row for a job
+        # with no in-process handle (e.g. one reconciled to failed at startup).
+        if live is not None:
+            return live.status()
+        persisted = store.get_persisted_job(job_id)
+        if persisted is None:
+            raise _job_not_found(job_id)
+        return persisted
 
     @app.get("/jobs/{job_id}/result", response_model=JobResult)
     async def job_result(job_id: str) -> JobResult:
-        job = await _get_job(store, job_id)
-        if job.state not in {JobState.succeeded, JobState.failed, JobState.canceled}:
+        async with store.lock:
+            live = store.jobs.get(job_id)
+        if live is not None:
+            state, result = live.state, live.result
+        else:
+            persisted = store.get_persisted_job(job_id)
+            if persisted is None:
+                raise _job_not_found(job_id)
+            state, result = persisted.state, store.get_persisted_result(job_id)
+        if state not in {JobState.succeeded, JobState.failed, JobState.canceled}:
             raise ApiError(
                 status_code=409,
                 code="job_not_terminal",
@@ -157,23 +191,34 @@ def create_dora_app(settings: Settings | None = None) -> FastAPI:
                     "state."
                 ),
             )
-        if job.result is None:
+        if result is None:
             raise ApiError(
                 status_code=404,
                 code="job_result_not_found",
                 message=f"Job result not found: {job_id}",
             )
-        return job.result
+        return result
 
     @app.post("/jobs/{job_id}/cancel", response_model=JobStatus)
     async def cancel_job(job_id: str) -> JobStatus:
-        job = await _get_job(store, job_id)
         async with store.lock:
-            cancellable = job.state in {JobState.queued, JobState.running}
-            if cancellable:
+            job = store.jobs.get(job_id)
+            cancellable = job is not None and job.state in {
+                JobState.queued,
+                JobState.running,
+            }
+            if job is not None and cancellable:
                 job.state = JobState.canceled
                 job.progress = min(job.progress, 1.0)
                 job.logs_tail.append("Job canceled.")
+                store.persist_job(job)
+        if job is None:
+            # No live handle: a job persisted by a previous process (already
+            # terminal after startup reconciliation) — cancel is a no-op.
+            persisted = store.get_persisted_job(job_id)
+            if persisted is None:
+                raise _job_not_found(job_id)
+            return persisted
         # Signal the task outside the lock; the worker re-checks `canceled`
         # under the lock before writing any terminal state (BUG-D).
         if cancellable and job.task is not None:
@@ -222,18 +267,14 @@ def create_dora_app(settings: Settings | None = None) -> FastAPI:
     return app
 
 
-async def _get_job(store: RunnerStore, job_id: str) -> JobRecord:
-    """Return a job or raise a unified 404."""
-    async with store.lock:
-        job = store.jobs.get(job_id)
-    if job is None:
-        raise ApiError(
-            status_code=404,
-            code="job_not_found",
-            message=f"Job not found: {job_id}",
-            details={"job_id": job_id},
-        )
-    return job
+def _job_not_found(job_id: str) -> ApiError:
+    """Build the unified 404 for an unknown job id."""
+    return ApiError(
+        status_code=404,
+        code="job_not_found",
+        message=f"Job not found: {job_id}",
+        details={"job_id": job_id},
+    )
 
 
 def _parse_cursor(cursor: str | None) -> int | None:
@@ -303,6 +344,7 @@ async def _execute_job(
             job.state = JobState.running
             job.progress = 0.1
             job.logs_tail.append("Job started.")
+            store.persist_job(job)
         # Registry dispatch (OL-④): one uniform runner per pipeline, no per-type
         # branching here. /jobs already rejected non-runnable pipelines, but guard
         # in case a placeholder slipped through.
@@ -333,6 +375,7 @@ async def _execute_job(
             job.progress = 1.0
             job.state = JobState.succeeded
             job.logs_tail.append("Job succeeded.")
+            store.persist_job(job)
     except TimeoutError:
         async with store.lock:
             # A concurrent cancel must win over a timeout (BUG-D).
@@ -352,11 +395,13 @@ async def _execute_job(
                 },
                 artifacts=[],
             )
+            store.persist_job(job)
     except asyncio.CancelledError:
         # Reached because cancel_job already set `canceled` under the lock and
         # cancelled the task; just record it (idempotent).
         job.state = JobState.canceled
         job.logs_tail.append("Job canceled.")
+        store.persist_job(job)
     except ApiError as exc:
         async with store.lock:
             # A concurrent cancel must win over a failing worker (BUG-D): don't
@@ -370,6 +415,7 @@ async def _execute_job(
                 summary={"result": "fail", "error": exc.to_model().model_dump()},
                 artifacts=[],
             )
+            store.persist_job(job)
     except Exception as exc:  # noqa: BLE001 - job failures are status, not 500s.
         async with store.lock:
             if job.state == JobState.canceled:
@@ -384,16 +430,20 @@ async def _execute_job(
                 },
                 artifacts=[],
             )
-
-
-app = create_dora_app()
+            store.persist_job(job)
 
 
 def main() -> None:
-    """Run the service with uvicorn, binding host/port from config."""
+    """Run the service with uvicorn, binding host/port from config.
+
+    The app (and its file-backed SQLite store) is built here rather than at module
+    import, so merely importing ``dora_runner.main`` — as the tests do — has no
+    filesystem side effect. The launch entry point is ``python -m dora_runner.main``.
+    """
     import uvicorn
 
     settings = get_settings()
+    app = create_dora_app(settings)
     uvicorn.run(app, host=settings.bind_host, port=settings.dora_runner_port)
 
 
