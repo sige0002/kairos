@@ -1,9 +1,14 @@
 import { expect, test } from 'vitest';
 import type { RunSummary } from '../../api/types';
+import type { EpisodeOutcome } from '../episodeBridge';
 import { mapRunsToEpisodes } from './mapRuns';
 
 function run(overrides: Partial<RunSummary>): RunSummary {
   return { run_id: 'run_1', state: 'completed', ...overrides };
+}
+
+function outcome(overrides: Partial<EpisodeOutcome> = {}): EpisodeOutcome {
+  return { quality: 'good', taskResult: 'ok', batchNum: 1, episodeIndex: 1, savedAt: 1, ...overrides };
 }
 
 test('excludes runs that never finished (created/recording/stopping)', () => {
@@ -68,4 +73,45 @@ test('duration falls back to started/ended span when duration_ms is absent', () 
     run({ run_id: 'x', started_at: '2026-07-13T09:00:00Z', ended_at: '2026-07-13T09:00:05Z' }),
   ]);
   expect(rows[0]?.durationMs).toBe(5000);
+});
+
+// ---- Collect -> Review bridge (client-side, pre-Phase-2) -------------------
+
+test('a completed run with a bridge outcome fills Quality / Task result / Batch', () => {
+  const bridge: Record<string, EpisodeOutcome> = {
+    withOutcome: outcome({ quality: 'review', taskResult: 'fail', batchNum: 4, episodeIndex: 9 }),
+  };
+  const rows = mapRunsToEpisodes(
+    [run({ run_id: 'withOutcome' }), run({ run_id: 'noOutcome', started_at: '2026-07-13T10:00:00Z' })],
+    (id) => bridge[id] ?? null,
+  );
+  const withO = rows.find((r) => r.runId === 'withOutcome');
+  const without = rows.find((r) => r.runId === 'noOutcome');
+  // Bridged row: Collect's axes mapped to the Review display vocabulary.
+  expect(withO?.quality).toBe('Needs review');
+  expect(withO?.task).toBe('Failure');
+  expect(withO?.batch).toBe('4');
+  // A run with no bridge entry stays honestly unset ("—" / null).
+  expect(without?.quality).toBeNull();
+  expect(without?.task).toBeNull();
+  expect(without?.batch).toBe('—');
+});
+
+test('good/ok bridge outcome maps to Good / Success', () => {
+  const rows = mapRunsToEpisodes([run({ run_id: 'x' })], () => outcome({ quality: 'good', taskResult: 'ok', batchNum: 2 }));
+  expect(rows[0]?.quality).toBe('Good');
+  expect(rows[0]?.task).toBe('Success');
+  expect(rows[0]?.batch).toBe('2');
+});
+
+test('backend truth wins: a failed run stays "Not usable" even if a stale bridge entry exists', () => {
+  const rows = mapRunsToEpisodes(
+    [run({ run_id: 'gone-bad', state: 'failed' })],
+    // A stale entry claiming Good must NOT override the real failure.
+    () => outcome({ quality: 'good', taskResult: 'ok', batchNum: 5 }),
+  );
+  expect(rows[0]?.quality).toBe('Not usable');
+  expect(rows[0]?.task).toBeNull();
+  expect(rows[0]?.batch).toBe('—');
+  expect(rows[0]?.issues).toBe('Recording did not complete cleanly');
 });

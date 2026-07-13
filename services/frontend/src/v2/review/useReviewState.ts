@@ -12,6 +12,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiDelete, apiGet } from '../../api/client';
 import type { Page, RunSummary } from '../../api/types';
 import { useUiStore } from '../../store/uiStore';
+import { removeEpisodeOutcome } from '../episodeBridge';
 import { mapRunsToEpisodes } from './mapRuns';
 import { initialTransferSlot, transferReducer, TRANSFER_DURATION_MS, TRANSFER_TICK_MS } from './transfer';
 import { useSplitMode } from './splitMode';
@@ -260,6 +261,8 @@ export function useReviewState(): ReviewState {
     setTransfers(drop);
     setOverrideCounts(drop);
     setSelectedRunId((cur) => (cur === runId ? null : cur));
+    // A deleted run is gone for good — drop its Collect->Review bridge entry too.
+    removeEpisodeOutcome(runId);
   }, []);
 
   const [pendingDeleteRunId, setPendingDeleteRunId] = useState<string | null>(null);

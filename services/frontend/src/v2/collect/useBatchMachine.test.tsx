@@ -13,6 +13,11 @@ import {
   __rehydrateBatchStore,
   EPISODES_PER_BATCH,
 } from './useBatchMachine';
+import {
+  __clearEpisodeOutcomes,
+  getEpisodeOutcome,
+  saveEpisodeOutcome,
+} from '../episodeBridge';
 
 const BATCH_STORAGE_KEY = 'kairos.collect.batch';
 
@@ -172,6 +177,9 @@ beforeEach(() => {
   // tab-switch unmount); reset it — and its localStorage mirror — between hook
   // tests so state can't leak from one test into the next.
   __resetBatchStore();
+  // The Collect->Review outcome bridge accumulates across sessions; clear it so
+  // a saved episode in one test can't leak into the next.
+  __clearEpisodeOutcomes();
   // Reset the shared record-picker store so selection-resolution tests don't
   // leak customized state into each other.
   useUiStore.setState({
@@ -586,4 +594,73 @@ test('a volatile phase is NOT restored on reload — recording resolves to ready
   expect(result.current.elapsedMs).toBe(0);
   expect(result.current.discardRunId).toBeNull();
   expect(result.current.stats.nRecorded).toBe(1);
+});
+
+// ---------------------------------------------------------------------------
+// Collect -> Review episode-outcome bridge.
+// ---------------------------------------------------------------------------
+
+test('confirming an episode mirrors its outcome into the Collect->Review bridge', async () => {
+  recordFlowFetch('run_bridge');
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+
+  act(() => result.current.startRecording());
+  await waitFor(() => expect(result.current.phase).toBe('recording'));
+  act(() => result.current.stopRecording());
+  await waitFor(() => expect(result.current.phase).toBe('result'), { timeout: 4000 });
+  act(() => result.current.pickFailure());
+  act(() => result.current.pickFailReason('Object dropped'));
+  act(() => result.current.confirmEpisode());
+  await waitFor(() => expect(result.current.stats.nRecorded).toBe(1));
+
+  // The run's outcome is now readable by the Review screen, keyed by run_id.
+  expect(getEpisodeOutcome('run_bridge')).toMatchObject({
+    quality: 'good', // clean recording (<6s), independent of the failed task
+    taskResult: 'fail',
+    failReason: 'Object dropped',
+    batchNum: 1,
+    episodeIndex: 1,
+  });
+});
+
+test('discarding a run removes its bridge entry (no stale outcome lingers)', async () => {
+  const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    if (url.includes('/record/start')) {
+      return Promise.resolve(jsonResponse({ run_id: 'run_disc', state: 'recording' }));
+    }
+    if (url.includes('/record/stop')) {
+      return Promise.resolve(jsonResponse({ run_id: 'run_disc', state: 'completed' }));
+    }
+    if (url.includes('/runs/run_disc') && init?.method === 'DELETE') {
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  act(() => result.current.startRecording());
+  await waitFor(() => expect(result.current.phase).toBe('recording'));
+  act(() => result.current.stopRecording());
+  await waitFor(() => expect(result.current.phase).toBe('result'), { timeout: 4000 });
+
+  // Seed a bridge entry for this run (defensive: prove Discard actually removes it).
+  saveEpisodeOutcome('run_disc', {
+    quality: 'good',
+    taskResult: 'ok',
+    batchNum: 1,
+    episodeIndex: 1,
+    savedAt: Date.now(),
+  });
+  expect(getEpisodeOutcome('run_disc')).not.toBeNull();
+
+  act(() => result.current.openDiscardModal());
+  act(() => result.current.confirmDiscard());
+  await waitFor(() => expect(result.current.phase).toBe('ready'));
+  expect(getEpisodeOutcome('run_disc')).toBeNull();
+  expect(
+    fetchMock.mock.calls.some(
+      ([u, i]) => String(u).includes('/runs/run_disc') && i?.method === 'DELETE',
+    ),
+  ).toBe(true);
 });

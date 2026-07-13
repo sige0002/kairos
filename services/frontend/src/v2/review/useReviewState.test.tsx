@@ -5,6 +5,7 @@ import type { ReactNode } from 'react';
 import { setApiBase } from '../../api/client';
 import { makeTestClient, jsonResponse } from '../../test/renderWithClient';
 import { useUiStore } from '../../store/uiStore';
+import { __clearEpisodeOutcomes, saveEpisodeOutcome } from '../episodeBridge';
 import { useReviewState, ALL_OPERATORS } from './useReviewState';
 
 function wrapper({ children }: { children: ReactNode }) {
@@ -54,6 +55,9 @@ async function excludeAll(result: { current: ReturnType<typeof useReviewState> }
 beforeEach(() => {
   setApiBase('/api/v1');
   useUiStore.setState({ activeTab: '', pendingRun: null });
+  // mapRuns now reads the Collect->Review bridge (localStorage); clear it so
+  // one test's seeded outcome can't bleed into another.
+  __clearEpisodeOutcomes();
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -82,6 +86,36 @@ test('a completed run starts with unset (null) quality/task — no synthetic lab
   await waitFor(() => expect(result.current.rows).toHaveLength(1));
   expect(result.current.rows[0]?.effectiveQuality).toBeNull();
   expect(result.current.rows[0]?.effectiveTask).toBeNull();
+});
+
+test('a bridged Collect outcome surfaces as the effective quality/task/batch', async () => {
+  saveEpisodeOutcome('a', {
+    quality: 'review',
+    taskResult: 'fail',
+    failReason: 'Grasp missed',
+    batchNum: 2,
+    episodeIndex: 5,
+    savedAt: 1,
+  });
+  mockRuns([{ run_id: 'a', state: 'completed', started_at: '2026-07-13T09:00:00Z' }]);
+  const { result } = renderHook(() => useReviewState(), { wrapper });
+  await waitFor(() => expect(result.current.rows).toHaveLength(1));
+  const row = result.current.rows[0]!;
+  expect(row.effectiveQuality).toBe('Needs review');
+  expect(row.effectiveTask).toBe('Failure');
+  expect(row.batch).toBe('2');
+});
+
+test('a session override still wins over the bridged value', async () => {
+  saveEpisodeOutcome('a', { quality: 'good', taskResult: 'ok', batchNum: 1, episodeIndex: 1, savedAt: 1 });
+  mockRuns([{ run_id: 'a', state: 'completed', started_at: '2026-07-13T09:00:00Z' }]);
+  const { result } = renderHook(() => useReviewState(), { wrapper });
+  await waitFor(() => expect(result.current.rows).toHaveLength(1));
+  // Bridge seeds 'Good'; one cycle moves it to the operator's own 'Needs review'.
+  expect(result.current.rows[0]?.effectiveQuality).toBe('Good');
+  act(() => result.current.select('a'));
+  act(() => result.current.cycleFinalQuality());
+  expect(result.current.selected!.effectiveQuality).toBe('Needs review');
 });
 
 test('cycleFinalQuality: first click sets Good, then wraps Good->Needs review->Not usable->Good', async () => {

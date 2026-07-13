@@ -34,14 +34,17 @@ export interface EpisodeRow {
   /** Real terminal run state (completed/failed/interrupted); drives the header
    *  badge fallback when the operator hasn't set a quality/decision. */
   state: RunState;
-  /** Grouping the backend doesn't track per-run yet — always "—". */
+  /** Collect batch number from the client-side bridge when present, else "—"
+   *  (the backend doesn't track per-run batch grouping yet). */
   batch: string;
   /** Real operator string (RunSummary.operator); null when the run has none. */
   operator: string | null;
-  /** Auto-assessed quality: "Not usable" for a run that didn't finish cleanly,
-   *  else null (no automated quality model exists — the UI shows "—"). */
+  /** "Not usable" for a run that didn't finish cleanly (backend verdict, always
+   *  wins); otherwise the operator's Collect-session quality from the bridge, or
+   *  null when neither applies (the UI shows "—"). */
   quality: Quality | null;
-  /** No automated task-result model yet — null unless the operator sets it. */
+  /** The operator's Collect-session task result from the bridge, or null when
+   *  none is recorded (no automated task-result model exists). */
   task: TaskResult | null;
   durationMs?: number;
   startedAt?: string;

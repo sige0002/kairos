@@ -22,6 +22,7 @@ import { apiDelete, apiGet, apiPost } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
 import { errorText } from '../../components/ErrorMessage';
 import { useUiStore } from '../../store/uiStore';
+import { removeEpisodeOutcome, saveEpisodeOutcome } from '../episodeBridge';
 import type {
   RecordArming,
   RecordIntegrity,
@@ -447,10 +448,27 @@ function notifyStore(): void {
 }
 
 function dispatch(action: Action): void {
-  const next = reducer(currentState, action);
-  if (next === currentState) return;
+  const prev = currentState;
+  const next = reducer(prev, action);
+  if (next === prev) return;
   currentState = next;
   persistBatch(next);
+  // Mirror a just-confirmed episode's outcome into the cross-session bridge
+  // (Collect -> Review), keyed by its run_id. Done here alongside the other
+  // localStorage mirroring — the reducer itself stays pure.
+  if (action.type === 'CONFIRM_EPISODE' && next.episodes.length > prev.episodes.length) {
+    const ep = next.episodes[next.episodes.length - 1];
+    if (ep?.runId) {
+      saveEpisodeOutcome(ep.runId, {
+        quality: ep.quality,
+        taskResult: ep.taskResult,
+        failReason: ep.failReason,
+        batchNum: next.batchNum,
+        episodeIndex: ep.index,
+        savedAt: Date.now(),
+      });
+    }
+  }
   notifyStore();
 }
 
@@ -818,9 +836,12 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   const [discardModalOpen, setDiscardModalOpen] = useState(false);
   const discardMutation = useMutation({
     mutationFn: (rid: string) => apiDelete(`/runs/${encodeURIComponent(rid)}`),
-    onSuccess: () => {
+    onSuccess: (_data, rid) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.recordStatus });
       void queryClient.invalidateQueries({ queryKey: ['runs'] });
+      // Drop any Collect->Review bridge entry for the deleted run so a discarded
+      // recording never lingers as a stale outcome on the Review screen.
+      removeEpisodeOutcome(rid);
       dispatch({ type: 'RETRY_EPISODE' });
       setDiscardModalOpen(false);
       showToast('Episode discarded — run deleted, re-record when ready');

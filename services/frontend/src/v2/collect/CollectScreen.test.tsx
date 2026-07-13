@@ -5,6 +5,7 @@ import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
 import { useUiStore } from '../../store/uiStore';
 import { CollectScreen } from './CollectScreen';
 import { __resetBatchStore } from './useBatchMachine';
+import { __clearEpisodeOutcomes } from '../episodeBridge';
 
 const CONFIG = {
   endpoints: { api: '/api/v1', events: '/api/v1/events', webrtc: 'http://localhost:8002' },
@@ -58,6 +59,9 @@ beforeEach(() => {
   // reset it (and its localStorage mirror) so a recorded episode in one test
   // can't leak into the next test's fresh CollectScreen.
   __resetBatchStore();
+  // A confirmed episode now mirrors into the Collect->Review bridge; clear it
+  // between tests so nothing accumulates across cases.
+  __clearEpisodeOutcomes();
   useUiStore.setState({
     activeTab: '',
     sseStatus: 'closed',
