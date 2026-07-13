@@ -42,6 +42,9 @@ beforeEach(() => {
     recMarkers: [],
     recMarkersPrevActive: null,
     probeSeries: [],
+    recordSelected: new Set<string>(),
+    recordCustomized: false,
+    recordSeededKey: null,
   });
 });
 afterEach(() => vi.restoreAllMocks());
@@ -138,6 +141,35 @@ test('Signals sub-view: nav mounts the probe plotter with real topic/field contr
   expect(screen.getByTestId('signals-topic')).toBeInTheDocument();
   expect(screen.getByTestId('signals-add')).toBeInTheDocument();
   expect(screen.getByTestId('signals-empty')).toBeInTheDocument();
+});
+
+test('Rec column: seeds the recording set from the configured topics on discovery', async () => {
+  mockFetch();
+  renderWithClient(<MonitorScreen />);
+
+  // joint_states is a configured default → checked once discovery seeds; odom is
+  // discovered-but-not-configured → unchecked.
+  await waitFor(() => expect(screen.getByTestId('rec-check-/hsrb/joint_states')).toBeChecked());
+  expect(screen.getByTestId('rec-check-/hsrb/odom')).not.toBeChecked();
+  expect([...useUiStore.getState().recordSelected]).toContain('/hsrb/joint_states');
+});
+
+test('Rec column: toggling a checkbox customizes the set and it survives a sub-view round-trip', async () => {
+  mockFetch();
+  renderWithClient(<MonitorScreen />);
+  await waitFor(() => expect(screen.getByTestId('rec-check-/hsrb/odom')).toBeInTheDocument());
+
+  // Add odom to the next-recording set.
+  fireEvent.click(screen.getByTestId('rec-check-/hsrb/odom'));
+  await waitFor(() => expect(useUiStore.getState().recordCustomized).toBe(true));
+  expect([...useUiStore.getState().recordSelected]).toContain('/hsrb/odom');
+
+  // Leave Topics and come back — the customized set persists (it lives in the
+  // store, not the unmounted view) and a re-seed with the same key is a no-op.
+  fireEvent.click(screen.getByTestId('mon-nav-Signals'));
+  fireEvent.click(screen.getByTestId('mon-nav-Topics'));
+  await waitFor(() => expect(screen.getByTestId('rec-check-/hsrb/odom')).toBeChecked());
+  expect(useUiStore.getState().recordCustomized).toBe(true);
 });
 
 test('empty-state: no topics discovered explains why instead of an empty chart only', async () => {

@@ -1,8 +1,14 @@
 // Topics table (below the frequency chart): real per-topic health rows,
 // merging ROS graph discovery with the live SSE metrics snapshot — same data
 // source as the old Monitor/Live-tab table (src/features/monitor/useMonitorRows.ts).
-// Clicking a row TOGGLES the topic in/out of the chart's overlaid set (v1 Graph
-// parity); charted rows carry a swatch in their series colour.
+// Two independent, separate click targets per row:
+//   • the leftmost "Rec" checkbox picks the topic set for the NEXT recording
+//     start (v1 LiveTab semantics — never affects a capture already running);
+//     it drives the shared uiStore recordSelected set (a Collect-side start reads
+//     the same fields). Clicking it does NOT touch the chart selection.
+//   • clicking anywhere else on the row TOGGLES the topic in/out of the chart's
+//     overlaid set (v1 Graph parity); charted rows carry a swatch in their
+//     series colour and are highlighted.
 
 import {
   formatBandwidth,
@@ -15,7 +21,8 @@ import { Badge, Card, cn } from '../../components/ui';
 import { useUiStore } from '../../store/uiStore';
 import { MAX_SERIES, paletteColor } from './chartSeries';
 
-const GRID_COLS = 'grid-cols-[1fr_84px_84px_96px_84px_96px]';
+// Rec checkbox + the original six metric columns (leading 34px is the Rec cell).
+const GRID_COLS = 'grid-cols-[34px_1fr_84px_84px_96px_84px_96px]';
 
 // TopicStatus -> the mock's short chip words (only OK / CHECK appear in the
 // mock's sample rows; DANGER / SILENT / — extend it to the backend's full enum).
@@ -36,12 +43,18 @@ export function TopicsTable({
   isDiscovering,
   chartedTopics,
   onToggle,
+  recordSelected = new Set<string>(),
+  onToggleRec = () => {},
 }: {
   rows: MonitorRow[];
   isDiscovering: boolean;
   /** Ordered set of topics currently overlaid on the chart; index → series colour. */
   chartedTopics: string[];
   onToggle: (name: string) => void;
+  /** Topics checked for the NEXT recording start (shared uiStore recordSelected). */
+  recordSelected?: Set<string>;
+  /** Toggle a topic in/out of the next-recording set (uiStore toggleRecordTopic). */
+  onToggleRec?: (name: string) => void;
 }) {
   // Robot-edge reachability (same idiom as GraphTab's GraphPanel): explain an
   // empty table instead of just... being empty (honesty principle).
@@ -56,6 +69,7 @@ export function TopicsTable({
           GRID_COLS,
         )}
       >
+        <span title="Include in the next recording">Rec</span>
         <span>Topic</span>
         <span>Hz</span>
         <span>Expected</span>
@@ -87,19 +101,44 @@ export function TopicsTable({
           rows.map((row) => {
             const chartIdx = chartedTopics.indexOf(row.name);
             const charted = chartIdx >= 0;
+            const recChecked = recordSelected.has(row.name);
             return (
-              <button
+              // The row is the chart-toggle target (a div-as-button, since it
+              // hosts an interactive checkbox — a checkbox nested in a real
+              // <button> is invalid). The Rec checkbox is a sibling grid cell
+              // that stops click propagation, so the two targets never overlap.
+              <div
                 key={row.name}
-                type="button"
+                role="button"
+                tabIndex={0}
                 data-testid={`topic-row-${row.name}`}
                 aria-pressed={charted}
                 onClick={() => onToggle(row.name)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    onToggle(row.name);
+                  }
+                }}
                 className={cn(
-                  'grid w-full items-center gap-2 border-b border-gray-50 px-[18px] py-2 text-left transition-colors hover:bg-gray-50',
+                  'grid w-full cursor-pointer items-center gap-2 border-b border-gray-50 px-[18px] py-2 text-left transition-colors hover:bg-gray-50',
                   GRID_COLS,
                   charted && 'bg-teal-50 hover:bg-teal-50',
                 )}
               >
+                <span className="flex items-center">
+                  <input
+                    type="checkbox"
+                    data-testid={`rec-check-${row.name}`}
+                    aria-label={`record ${row.name}`}
+                    checked={recChecked}
+                    // Keep the checkbox click from bubbling to the row's
+                    // chart-toggle handler (separate targets).
+                    onClick={(e) => e.stopPropagation()}
+                    onChange={() => onToggleRec(row.name)}
+                    className="h-3.5 w-3.5 cursor-pointer accent-teal-600"
+                  />
+                </span>
                 <span className="flex min-w-0 items-center gap-2">
                   <span
                     aria-hidden
@@ -123,7 +162,7 @@ export function TopicsTable({
                 </span>
                 <span className="font-mono text-[12.5px] text-gray-700">{formatGap(row)}</span>
                 <Badge tone={rowTone(row)}>{statusLabel(row)}</Badge>
-              </button>
+              </div>
             );
           })
         )}

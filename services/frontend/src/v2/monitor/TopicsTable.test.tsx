@@ -94,6 +94,65 @@ test('a charted row carries a swatch in its series colour (index -> palette)', (
   expect(swatchB).toBeTruthy();
 });
 
+test('Rec checkbox reflects recordSelected and is independent of the chart selection', () => {
+  const rows = [row({ name: '/a' }), row({ name: '/b' })];
+  render(
+    <TopicsTable
+      rows={rows}
+      isDiscovering={false}
+      chartedTopics={['/a']}
+      onToggle={() => {}}
+      recordSelected={new Set(['/b'])}
+      onToggleRec={() => {}}
+    />,
+  );
+  // /b is in the record set (checked) though it is NOT charted; /a is charted
+  // but NOT in the record set (unchecked) — the two selections are orthogonal.
+  expect(screen.getByTestId('rec-check-/b')).toBeChecked();
+  expect(screen.getByTestId('rec-check-/a')).not.toBeChecked();
+});
+
+test('clicking the Rec checkbox toggles the record set only — never the chart series', () => {
+  const rows = [row({ name: '/a' }), row({ name: '/b' })];
+  const onToggle = vi.fn();
+  const onToggleRec = vi.fn();
+  render(
+    <TopicsTable
+      rows={rows}
+      isDiscovering={false}
+      chartedTopics={[]}
+      onToggle={onToggle}
+      recordSelected={new Set()}
+      onToggleRec={onToggleRec}
+    />,
+  );
+
+  fireEvent.click(screen.getByTestId('rec-check-/a'));
+  expect(onToggleRec).toHaveBeenCalledWith('/a');
+  // Separation: the checkbox click must not bubble to the row's chart toggle.
+  expect(onToggle).not.toHaveBeenCalled();
+});
+
+test('clicking the row toggles the chart series only — never the record set', () => {
+  const rows = [row({ name: '/a' })];
+  const onToggle = vi.fn();
+  const onToggleRec = vi.fn();
+  render(
+    <TopicsTable
+      rows={rows}
+      isDiscovering={false}
+      chartedTopics={[]}
+      onToggle={onToggle}
+      recordSelected={new Set()}
+      onToggleRec={onToggleRec}
+    />,
+  );
+
+  fireEvent.click(screen.getByTestId('topic-row-/a'));
+  expect(onToggle).toHaveBeenCalledWith('/a');
+  expect(onToggleRec).not.toHaveBeenCalled();
+});
+
 test('cap note appears only when the charted set is full', () => {
   const rows = Array.from({ length: MAX_SERIES + 1 }, (_, i) => row({ name: `/t${i}` }));
   const full = rows.slice(0, MAX_SERIES).map((r) => r.name);
