@@ -108,7 +108,12 @@ class MonitorService:
             expected_hz_for=make_expected_hz_resolver(config),
             **reg_kwargs,
         )
-        self._alerts = AlertEngine(alert_rules)
+        # The alert engine also synthesizes default DANGER incidents (D-9 ③) for
+        # topics whose status crosses danger with no config rule; it needs the
+        # same expected_hz resolver to label the reference rate.
+        self._alerts = AlertEngine(
+            alert_rules, expected_hz_for=make_expected_hz_resolver(config)
+        )
         # Monitor self-load (OL-②.4): on by default; the monitor block can toggle
         # it off to drop all overhead. Times sample-callback latency + snapshot age.
         self._self_load = self._build_self_load(config)

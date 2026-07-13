@@ -10,6 +10,11 @@
 # patterns) so a healthy replay never flaps, but a real rate collapse (roughly
 # half-rate or worse) fires. clear_after_s / cooldown_s debounce brief dips.
 # Both topics are concrete entries of that config's default_topics.
+#
+# Topics without an explicit rule below are still covered: the monitor raises a
+# default hz incident for any topic it classifies `danger` (sustained ~10 s), so
+# Events never stays empty while the table shows DANGER. The rules below tune the
+# threshold/hysteresis for the feeds that matter most and supersede that default.
 # -----------------------------------------------------------------------------
 
 rules:
@@ -23,6 +28,17 @@ rules:
 
   # Head RGB-D color camera (compressed). Expected ~30 Hz; warn below 15 Hz.
   - topic: /hsrb/head_rgbd_sensor/rgb/image_rect_color/compressed
+    metric: hz
+    op: lt
+    threshold: 15
+    clear_after_s: 3
+    cooldown_s: 10
+
+  # Hand camera (compressed). Expected ~30 Hz; warn below 15 Hz. Added after
+  # persona review R2: this topic sat in a sustained table-DANGER (8-9 Hz)
+  # with zero events because it had no rule — every default_topics camera
+  # should carry one.
+  - topic: /hsrb/hand_camera/image_raw/compressed
     metric: hz
     op: lt
     threshold: 15

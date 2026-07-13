@@ -20,7 +20,7 @@ import { EventsCard } from './EventsCard';
 import { SystemCard } from './SystemCard';
 import { useNowClock } from './useNowClock';
 import { useRecMarkers } from './useRecMarkers';
-import { MONITOR_WINDOWS, type MonitorWindowId, toggleTopic } from './chartSeries';
+import { MONITOR_WINDOWS, type MonitorWindowId, toggleTopic, windowMs } from './chartSeries';
 import {
   MAX_PANELS,
   addPanel,
@@ -30,6 +30,12 @@ import {
   setPanelTopics,
   usePanels,
 } from './panelStore';
+
+/** Coarse "time since Monitor opened" for the honesty note (e.g. `2m`, `45s`). */
+function formatElapsed(ms: number): string {
+  const secs = Math.floor(ms / 1000);
+  return secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m`;
+}
 
 export function TopicsView({ config }: { config: RuntimeConfig }) {
   const { rows, isDiscovering } = useMonitorRows(config);
@@ -65,6 +71,13 @@ export function TopicsView({ config }: { config: RuntimeConfig }) {
   const { history, updatedAt } = useMetricHistory(config, paused);
   const markers = useRecMarkers();
 
+  // Honesty (D-8-7): the window is "at most {windowId} since Monitor opened", not a
+  // rolling history that predates this session. While the buffer is younger than the
+  // selected window, surface how long it has actually been accumulating.
+  const [openedAt] = useState(() => Date.now());
+  const elapsedMs = Math.max(0, now - openedAt);
+  const windowNotFull = elapsedMs < windowMs(windowId);
+
   // --- panels ---------------------------------------------------------------
   const panels = usePanels();
   const availableNames = useMemo(() => rows.map((r) => r.name), [rows]);
@@ -99,10 +112,18 @@ export function TopicsView({ config }: { config: RuntimeConfig }) {
         <style>{'.monitor-freq-chart .u-legend { display: none; }'}</style>
 
         <div className="flex shrink-0 flex-wrap items-center gap-2.5">
-          <span className="font-mono text-[11.5px] text-gray-400">
+          <span
+            className="font-mono text-[11.5px] text-gray-400"
+            title="History accumulates from when Monitor opened."
+          >
             {rows.length} topics · {panels.length} chart{panels.length === 1 ? '' : 's'} · {windowId}{' '}
-            window
+            window{windowNotFull ? ` (${formatElapsed(elapsedMs)} so far)` : ''}
           </span>
+          {paused && (
+            <span data-testid="freeze-note" className="font-mono text-[11px] text-amber-600">
+              Charts frozen · table still live.
+            </span>
+          )}
           <div className="flex-1" />
           <div className="flex gap-[3px] rounded-control border border-gray-200 bg-gray-100 p-1">
             {MONITOR_WINDOWS.map((w) => (
@@ -127,6 +148,7 @@ export function TopicsView({ config }: { config: RuntimeConfig }) {
             type="button"
             data-testid="freq-pause"
             aria-pressed={paused}
+            title="Freezes the charts only — the topics table keeps updating live."
             onClick={() => setPaused((p) => !p)}
             className={cn(
               'rounded-control border px-3 py-1 text-[11px] font-medium transition-colors',
@@ -135,7 +157,7 @@ export function TopicsView({ config }: { config: RuntimeConfig }) {
                 : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50',
             )}
           >
-            {paused ? 'Resume' : 'Pause'}
+            {paused ? 'Live' : 'Freeze charts'}
           </button>
           <button
             type="button"

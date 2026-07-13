@@ -100,6 +100,7 @@ export function UplotChart({
   height = 280,
   markers,
   refLines,
+  yAxis,
 }: {
   data: (number | null)[][];
   series: UplotSeriesConf[];
@@ -108,6 +109,10 @@ export function UplotChart({
   markers?: ChartMarker[];
   /** Dashed horizontal reference lines (e.g. expected_hz, 2%/5% thresholds). */
   refLines?: RefLine[];
+  /** Optional y-axis tuning passed from the caller: a wider gutter (`size`, px)
+   *  and a tick formatter (`format`) so labels don't clip a leading digit (I-10).
+   *  Behaviour is baked at construction; keep it stable per chart. */
+  yAxis?: { size?: number; format?: (v: number) => string };
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const plotRef = useRef<uPlot | null>(null);
@@ -169,7 +174,21 @@ export function UplotChart({
           points: { show: false },
         })),
       ],
-      axes: [{}, {}],
+      // Default y-axis, optionally given a wider gutter + a precision-limited tick
+      // formatter by the caller so a tight range (e.g. 29.975) keeps its leading
+      // digit instead of clipping in the default-width gutter (I-10).
+      axes: [
+        {},
+        {
+          ...(yAxis?.size != null ? { size: yAxis.size } : {}),
+          ...(yAxis?.format
+            ? {
+                values: (_u, splits) =>
+                  splits.map((v) => (v == null ? '' : yAxis.format!(v))),
+              }
+            : {}),
+        },
+      ],
       hooks: {
         draw: [
           (u) => {

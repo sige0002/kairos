@@ -29,6 +29,13 @@
 #
 # A metric that is currently null (e.g. `late` / `loss` with no expected_hz) is
 # simply not evaluated that tick — the rule neither fires nor clears on it.
+#
+# Default DANGER incidents (no rule needed): beneath the rules below, the monitor
+# automatically raises a hz incident for ANY topic it classifies `danger` (its
+# expected_hz shortfall crossing the danger threshold) once that danger persists
+# for ~10 s — so a real rate collapse is never silent just because no rule was
+# written for the topic. A rule on the same `topic` with `metric: hz` supersedes
+# this default (no double incident); write one to tune the threshold/hysteresis.
 # -----------------------------------------------------------------------------
 
 rules: []

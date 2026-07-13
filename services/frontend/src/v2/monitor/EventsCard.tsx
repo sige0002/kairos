@@ -8,7 +8,7 @@ import { useQuery } from '@tanstack/react-query';
 import { queryKeys } from '../../api/queryKeys';
 import type { AlertEvent } from '../../api/types';
 import { Card, cn } from '../../components/ui';
-import { toAlertRows, type AlertTone } from './alerts';
+import { incidentCount, toAlertRows, type AlertTone } from './alerts';
 
 const CAP = 12;
 
@@ -30,6 +30,9 @@ export function EventsCard() {
   });
   const alerts = data ?? [];
   const rows = toAlertRows(alerts, CAP);
+  // Count distinct incidents (not raw buffer entries — a sustained breach re-sends
+  // its firing state each tick), so the header is honest about how many there are.
+  const total = incidentCount(alerts);
 
   return (
     <Card className="flex flex-1 flex-col lg:min-h-0">
@@ -39,7 +42,7 @@ export function EventsCard() {
         </span>
         <div className="flex-1" />
         <span data-testid="events-count" className="font-mono text-[11.5px] text-gray-400">
-          {alerts.length > CAP ? `${CAP} of ${alerts.length}` : `${alerts.length}`} alerts
+          {total > CAP ? `${CAP} of ${total}` : `${total}`} alerts
         </span>
       </div>
       <div className="flex flex-col gap-0.5 overflow-auto p-2.5">
@@ -67,7 +70,8 @@ export function EventsCard() {
                   {ev.detail && <span className="font-normal text-gray-400"> · {ev.detail}</span>}
                 </span>
                 <span className="font-mono text-[11px] text-gray-400">
-                  {ev.state === 'cleared' ? 'cleared' : 'firing'} · {ev.time}
+                  {ev.state === 'cleared' ? `cleared · ${ev.time}` : `firing · since ${ev.time}`}
+                  {ev.refires > 1 && <span className="text-gray-400"> · ×{ev.refires}</span>}
                 </span>
               </div>
             </div>

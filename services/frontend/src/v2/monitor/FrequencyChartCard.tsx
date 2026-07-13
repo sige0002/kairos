@@ -38,6 +38,7 @@ import {
   windowMs,
 } from './chartSeries';
 import type { ChartPanel } from './panelStore';
+import { useMeasuredHeight } from './useMeasuredHeight';
 
 /** Last non-null value in an aligned column (the series' current reading). */
 function lastValue(col: (number | null)[]): number | null {
@@ -46,6 +47,15 @@ function lastValue(col: (number | null)[]): number | null {
   }
   return null;
 }
+
+/** y-axis tuning for every Monitor chart (I-10): a wider gutter plus a tick
+ *  formatter that caps precision at 3 decimals (trailing zeros trimmed) so a
+ *  tight range like 29.975 renders in full instead of clipping its leading
+ *  digit. A module constant so its identity is stable across renders. */
+const CHART_Y_AXIS = {
+  size: 56,
+  format: (v: number) => String(Number(v.toFixed(3))),
+};
 
 export function FrequencyChartCard({
   panel,
@@ -94,6 +104,11 @@ export function FrequencyChartCard({
   const metric = metricDef(panel.metric);
   const ms = windowMs(windowId);
   const sfx = isPrimary ? '' : `-${panel.id}`;
+
+  // Track the actual plot-area slot so the uPlot canvas fills it exactly rather
+  // than being clipped by a shorter overflow-hidden ancestor (I-4). Falls back to
+  // the parent's fixed chartHeight before the first measure / in a test env.
+  const [plotAreaRef, measuredHeight] = useMeasuredHeight<HTMLDivElement>();
 
   const labelMap = useMemo(() => buildLabelMap(topics), [topics]);
   const labelFor = (t: string) => labelMap.get(t) ?? shortName(t);
@@ -277,7 +292,10 @@ export function FrequencyChartCard({
         </div>
       )}
 
-      <div className="min-h-0 flex-1 overflow-hidden px-[18px] py-2.5">
+      <div
+        ref={plotAreaRef}
+        className="min-h-0 flex-1 overflow-hidden px-[18px] py-2.5"
+      >
         {topics.length > 0 && hasData ? (
           // uPlot's own bottom legend ("Time: -- observed: --") duplicates the
           // header legend above and isn't in the mock — scoped away by the
@@ -290,7 +308,8 @@ export function FrequencyChartCard({
               series={series}
               refLines={refLines}
               markers={markers}
-              height={chartHeight}
+              height={measuredHeight || chartHeight}
+              yAxis={CHART_Y_AXIS}
             />
           </div>
         ) : (
@@ -302,7 +321,8 @@ export function FrequencyChartCard({
               ? isPrimary
                 ? 'No topic to chart yet — pick one from the table below once topics are discovered.'
                 : 'No topic to chart — use "+ Add topic" above.'
-              : (metric.note ?? `No ${metric.label.toLowerCase()} data in the last ${windowId}.`)}
+              : (metric.note ??
+                `No ${metric.label.toLowerCase()} data yet — history builds from when you opened Monitor.`)}
           </p>
         )}
       </div>

@@ -92,7 +92,8 @@ test('sub-nav: switching away from Topics shows the placeholder, and back return
   await screen.findByTestId('mon-nav-Topics');
 
   fireEvent.click(screen.getByTestId('mon-nav-System'));
-  expect(screen.getByText(/specified in §11/)).toBeInTheDocument();
+  // Honest placeholder copy (D-8-2): no internal spec jargon leaks to the UI.
+  expect(screen.getByText(/This view isn't built yet/)).toBeInTheDocument();
 
   fireEvent.click(screen.getByRole('button', { name: 'Back to Topics' }));
   await waitFor(() => expect(screen.getByTestId('topic-row-/hsrb/odom')).toBeInTheDocument());

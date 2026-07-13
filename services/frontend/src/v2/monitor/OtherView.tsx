@@ -9,7 +9,7 @@ export function OtherView({ label, onBack }: { label: string; onBack: () => void
     <Card className="flex flex-1 flex-col items-center justify-center gap-2 lg:min-h-0">
       <span className="text-[15px] font-bold text-gray-700">{label}</span>
       <span className="text-[12.5px] text-gray-400">
-        This sub-view is specified in §11 — mock focuses on Topics.
+        This view isn&apos;t built yet — Topics has the live monitoring you need today.
       </span>
       <button
         type="button"

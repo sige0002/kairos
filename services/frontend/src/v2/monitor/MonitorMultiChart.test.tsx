@@ -156,9 +156,11 @@ test('window + pause are a single GLOBAL control regardless of panel count', asy
   expect(screen.getAllByTestId('freq-window-1m')).toHaveLength(1);
 
   const pause = screen.getByTestId('freq-pause');
-  expect(pause).toHaveTextContent('Pause');
+  expect(pause).toHaveTextContent('Freeze charts');
   fireEvent.click(pause);
-  expect(pause).toHaveTextContent('Resume');
+  expect(pause).toHaveTextContent('Live');
+  // Freezing charts scopes only the charts — the table stays live (D-7-3).
+  expect(screen.getByTestId('freeze-note')).toHaveTextContent('Charts frozen · table still live.');
 });
 
 test('+ Add chart is disabled once the panel cap (4) is reached', async () => {
