@@ -5,7 +5,7 @@ import type { ReactNode } from 'react';
 import { setApiBase } from '../../api/client';
 import { makeTestClient, jsonResponse } from '../../test/renderWithClient';
 import { useUiStore } from '../../store/uiStore';
-import { useReviewState } from './useReviewState';
+import { useReviewState, ALL_OPERATORS } from './useReviewState';
 
 function wrapper({ children }: { children: ReactNode }) {
   const client = makeTestClient();
@@ -33,49 +33,68 @@ test('maps real /runs into rows and excludes runs that never finished', async ()
   ]);
   const { result } = renderHook(() => useReviewState(), { wrapper });
   await waitFor(() => expect(result.current.isLoading).toBe(false));
-  expect(result.current.usingFallback).toBe(false);
+  expect(result.current.isError).toBe(false);
   expect(result.current.rows).toHaveLength(1);
   expect(result.current.rows[0]?.runId).toBe('b');
 });
 
-test('falls back to the built-in demo set when /runs is unreachable', async () => {
+test('a failed /runs request yields an honest empty+error state, never fabricated rows', async () => {
   vi.spyOn(globalThis, 'fetch').mockImplementation(() => Promise.reject(new Error('down')));
   const { result } = renderHook(() => useReviewState(), { wrapper });
-  await waitFor(() => expect(result.current.usingFallback).toBe(true));
-  expect(result.current.rows.length).toBeGreaterThan(0);
+  await waitFor(() => expect(result.current.isError).toBe(true));
+  expect(result.current.rows).toHaveLength(0);
 });
 
-test('cycleFinalQuality rotates Good -> Needs review -> Not usable and wraps after 3 steps', async () => {
+test('a completed run starts with unset (null) quality/task — no synthetic label', async () => {
+  mockRuns([{ run_id: 'a', state: 'completed', started_at: '2026-07-13T09:00:00Z' }]);
+  const { result } = renderHook(() => useReviewState(), { wrapper });
+  await waitFor(() => expect(result.current.rows).toHaveLength(1));
+  expect(result.current.rows[0]?.effectiveQuality).toBeNull();
+  expect(result.current.rows[0]?.effectiveTask).toBeNull();
+});
+
+test('cycleFinalQuality: first click sets Good, then wraps Good->Needs review->Not usable->Good', async () => {
   mockRuns([{ run_id: 'a', state: 'completed', started_at: '2026-07-13T09:00:00Z' }]);
   const { result } = renderHook(() => useReviewState(), { wrapper });
   await waitFor(() => expect(result.current.rows).toHaveLength(1));
   act(() => result.current.select(result.current.rows[0]!.runId));
 
-  const order = ['Good', 'Needs review', 'Not usable'];
-  const start = result.current.selected!.effectiveQuality;
+  // From the unset "—" base, the first click lands on the first real value.
   act(() => result.current.cycleFinalQuality());
-  expect(result.current.selected!.effectiveQuality).toBe(order[(order.indexOf(start) + 1) % 3]);
+  expect(result.current.selected!.effectiveQuality).toBe('Good');
   act(() => result.current.cycleFinalQuality());
+  expect(result.current.selected!.effectiveQuality).toBe('Needs review');
   act(() => result.current.cycleFinalQuality());
-  // A full 3-step loop returns to the starting value.
-  expect(result.current.selected!.effectiveQuality).toBe(start);
+  expect(result.current.selected!.effectiveQuality).toBe('Not usable');
+  act(() => result.current.cycleFinalQuality());
+  expect(result.current.selected!.effectiveQuality).toBe('Good');
 });
 
-test('cycleTaskResult toggles Success <-> Failure', async () => {
+test('cycleTaskResult: first click sets Success, then toggles', async () => {
   mockRuns([{ run_id: 'a', state: 'completed', started_at: '2026-07-13T09:00:00Z' }]);
   const { result } = renderHook(() => useReviewState(), { wrapper });
   await waitFor(() => expect(result.current.rows).toHaveLength(1));
   act(() => result.current.select(result.current.rows[0]!.runId));
-  const start = result.current.selected!.effectiveTask;
   act(() => result.current.cycleTaskResult());
-  expect(result.current.selected!.effectiveTask).not.toBe(start);
+  expect(result.current.selected!.effectiveTask).toBe('Success');
   act(() => result.current.cycleTaskResult());
-  expect(result.current.selected!.effectiveTask).toBe(start);
+  expect(result.current.selected!.effectiveTask).toBe('Failure');
+});
+
+test('overrides are counted per run as real session history', async () => {
+  mockRuns([{ run_id: 'a', state: 'completed', started_at: '2026-07-13T09:00:00Z' }]);
+  const { result } = renderHook(() => useReviewState(), { wrapper });
+  await waitFor(() => expect(result.current.rows).toHaveLength(1));
+  act(() => result.current.select(result.current.rows[0]!.runId));
+  expect(result.current.selectedOverrideCount).toBe(0);
+  act(() => result.current.cycleFinalQuality());
+  act(() => result.current.cycleTaskResult());
+  expect(result.current.selectedOverrideCount).toBe(2);
 });
 
 test('adoptAllGood only adopts undecided Good episodes; decide() sets a specific decision', async () => {
   // Both runs are `failed`, so mapRuns deterministically starts them at "Not
-  // usable" — no dependency on the mock quality hash landing on "Good".
+  // usable" — no dependency on any quality guess.
   mockRuns([
     { run_id: 'ep-a', state: 'failed', started_at: '2026-07-13T09:00:00Z' },
     { run_id: 'ep-b', state: 'failed', started_at: '2026-07-13T09:05:00Z' },
@@ -140,10 +159,11 @@ test('requestArchive opens a pending confirm; confirming reclassifies as Not usa
 test(
   'transferOne drives on_robot -> transferring -> transferred over time',
   async () => {
-    vi.spyOn(globalThis, 'fetch').mockImplementation(() => Promise.reject(new Error('down')));
+    mockRuns([{ run_id: 'ep-a', state: 'completed', started_at: '2026-07-13T09:00:00Z' }]);
     const { result } = renderHook(() => useReviewState(), { wrapper });
-    await waitFor(() => expect(result.current.usingFallback).toBe(true));
+    await waitFor(() => expect(result.current.rows).toHaveLength(1));
 
+    // Every real row seeds on_robot until explicitly transferred.
     const onRobotRow = result.current.rows.find((r) => r.transferSlot.phase === 'on_robot');
     expect(onRobotRow).toBeTruthy();
     const runId = onRobotRow!.runId;
@@ -177,4 +197,21 @@ test('search filters by episode number or run id', async () => {
 
   act(() => result.current.clearFilters());
   expect(result.current.rows).toHaveLength(2);
+});
+
+test('operator filter is real: options are the distinct run operators and it filters rows', async () => {
+  mockRuns([
+    { run_id: 'a', state: 'completed', operator: 'alice', started_at: '2026-07-13T09:00:00Z' },
+    { run_id: 'b', state: 'completed', operator: 'bob', started_at: '2026-07-13T09:05:00Z' },
+    { run_id: 'c', state: 'completed', operator: 'alice', started_at: '2026-07-13T09:10:00Z' },
+  ]);
+  const { result } = renderHook(() => useReviewState(), { wrapper });
+  await waitFor(() => expect(result.current.rows).toHaveLength(3));
+  expect(result.current.operatorOptions).toEqual(['alice', 'bob']);
+
+  act(() => result.current.setOperatorFilter('alice'));
+  expect(result.current.rows.map((r) => r.runId).sort()).toEqual(['a', 'c']);
+
+  act(() => result.current.setOperatorFilter(ALL_OPERATORS));
+  expect(result.current.rows).toHaveLength(3);
 });

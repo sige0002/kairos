@@ -19,7 +19,12 @@ export function ReviewScreen() {
 
   return (
     <div className="grid grid-cols-1 gap-2.5 lg:h-full lg:min-h-0 lg:grid-cols-[216px_1fr_400px]">
-      <FiltersRail onClearFilters={rv.clearFilters} />
+      <FiltersRail
+        operatorOptions={rv.operatorOptions}
+        operatorFilter={rv.operatorFilter}
+        onOperatorChange={rv.setOperatorFilter}
+        onClearFilters={rv.clearFilters}
+      />
       <EpisodeTable rv={rv} />
       <DetailPanel rv={rv} />
 

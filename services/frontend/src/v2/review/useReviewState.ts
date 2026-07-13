@@ -1,17 +1,18 @@
 // Review screen state: fetches real runs, maps them to episodes (mapRuns.ts),
-// and layers all the locally-decided state on top — decisions, quality/task
-// overrides, archival, transfer, selection, playback, the standard-validation
-// mock action, and the toast. None of this posts back to the orchestrator
-// (there's no Session/Batch/Episode-review backend model yet — Phase 2,
-// mirroring the Collect screen's useBatchMachine.ts note on the same gap).
+// and layers the locally-decided state on top — decisions, quality/task
+// overrides, archival, transfer, selection, and the toast. None of this posts
+// back to the orchestrator (there's no Session/Batch/Episode-review backend
+// model yet — Phase 2, mirroring the Collect screen's useBatchMachine.ts note
+// on the same gap). The REAL per-run inspection (detail rows, video, loss,
+// validation, JSON sidecars) lives in RunInspection.tsx, which fetches
+// GET /runs/{id} and drives the real dora_runner job flows.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { apiGet } from '../../api/client';
 import type { Page, RunSummary } from '../../api/types';
 import { useUiStore } from '../../store/uiStore';
-import { FALLBACK_EPISODES, mapRunsToEpisodes } from './mapRuns';
-import { formatMmSs } from './format';
+import { mapRunsToEpisodes } from './mapRuns';
 import { initialTransferSlot, transferReducer, TRANSFER_DURATION_MS, TRANSFER_TICK_MS } from './transfer';
 import { useSplitMode } from './splitMode';
 import type { Decision, DecoratedEpisode, EpisodeRow, Quality, TaskResult, TransferSlot } from './types';
@@ -24,9 +25,13 @@ const REVIEW_PAGE_LIMIT = 200;
 
 const QUALITY_ORDER: Quality[] = ['Good', 'Needs review', 'Not usable'];
 
+/** Sentinel option value for "any operator" in the operator filter. */
+export const ALL_OPERATORS = '__all__';
+
 export interface ReviewState {
   isLoading: boolean;
-  usingFallback: boolean;
+  isError: boolean;
+  errorMessage: string | null;
 
   rows: DecoratedEpisode[]; // visible (filtered + sorted, newest first)
   nUndecidedGood: number;
@@ -37,11 +42,17 @@ export interface ReviewState {
 
   search: string;
   setSearch: (v: string) => void;
+  operatorFilter: string;
+  setOperatorFilter: (v: string) => void;
+  operatorOptions: string[];
   clearFilters: () => void;
 
   selectedRunId: string | null;
   select: (runId: string) => void;
   selected: DecoratedEpisode | undefined;
+  /** Count of the operator's own quality/task overrides on the selected run
+   *  this session — the real "override history" the detail panel surfaces. */
+  selectedOverrideCount: number;
 
   requestArchive: (runId: string) => void;
   pendingArchiveEp: number | null;
@@ -52,14 +63,6 @@ export interface ReviewState {
   decide: (d: Decision) => void;
   cycleFinalQuality: () => void;
   cycleTaskResult: () => void;
-
-  playing: boolean;
-  playPct: number;
-  playTimeLabel: string;
-  togglePlay: () => void;
-
-  rvRunning: boolean;
-  runStandardOnEp: () => void;
 
   goMonitor: () => void;
   goValidation: () => void;
@@ -78,12 +81,14 @@ export function useReviewState(): ReviewState {
     queryFn: ({ signal }) =>
       apiGet<Page<RunSummary>>('/runs', { signal, query: { limit: REVIEW_PAGE_LIMIT } }),
   });
-  const usingFallback = runsQuery.isError;
-  const baseEpisodes: EpisodeRow[] = useMemo(() => {
-    if (runsQuery.data) return mapRunsToEpisodes(runsQuery.data.items);
-    if (usingFallback) return FALLBACK_EPISODES;
-    return [];
-  }, [runsQuery.data, usingFallback]);
+  const isError = runsQuery.isError;
+  const errorMessage = runsQuery.error instanceof Error ? runsQuery.error.message : null;
+  const baseEpisodes: EpisodeRow[] = useMemo(
+    // On error we show an honest empty/error state (EpisodeTable), never a
+    // fabricated demo dataset.
+    () => (runsQuery.data ? mapRunsToEpisodes(runsQuery.data.items) : []),
+    [runsQuery.data],
+  );
 
   // ---- toast ----------------------------------------------------------------
   const [toast, setToast] = useState('');
@@ -103,6 +108,9 @@ export function useReviewState(): ReviewState {
   // ---- local overlays: decisions / overrides / archive / transfer ----------
   const [decisions, setDecisions] = useState<Record<string, Decision>>({});
   const [overrides, setOverrides] = useState<Record<string, { quality?: Quality; task?: TaskResult }>>({});
+  // Per-run count of the operator's own override actions this session — real
+  // local history behind the detail panel's "override history" caption.
+  const [overrideCounts, setOverrideCounts] = useState<Record<string, number>>({});
   const [archivedRunIds, setArchivedRunIds] = useState<Record<string, true>>({});
   const [transfers, setTransfers] = useState<Record<string, TransferSlot>>({});
 
@@ -126,18 +134,31 @@ export function useReviewState(): ReviewState {
   const [showArchived, setShowArchived] = useState(false);
   const toggleArchived = useCallback(() => setShowArchived((v) => !v), []);
   const [search, setSearch] = useState('');
-  const clearFilters = useCallback(() => setSearch(''), []);
+  const [operatorFilter, setOperatorFilter] = useState<string>(ALL_OPERATORS);
+  const clearFilters = useCallback(() => {
+    setSearch('');
+    setOperatorFilter(ALL_OPERATORS);
+  }, []);
+
+  // Distinct real operators across the loaded runs — the one filter with a real
+  // backing (RunSummary.operator); others in FiltersRail stay display-only.
+  const operatorOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const e of baseEpisodes) if (e.operator) set.add(e.operator);
+    return [...set].sort((a, b) => a.localeCompare(b));
+  }, [baseEpisodes]);
 
   const rows = useMemo(() => {
     const q = search.trim().toLowerCase();
     return decorated
       .filter((r) => showArchived || !r.isArchived)
+      .filter((r) => operatorFilter === ALL_OPERATORS || r.operator === operatorFilter)
       .filter((r) => {
         if (!q) return true;
         return `#${r.ep}`.toLowerCase().includes(q) || r.runId.toLowerCase().includes(q);
       })
       .sort((a, b) => b.ep - a.ep);
-  }, [decorated, search, showArchived]);
+  }, [decorated, search, operatorFilter, showArchived]);
 
   const nArchived = useMemo(() => decorated.filter((r) => r.isArchived).length, [decorated]);
   const nUndecidedGood = useMemo(
@@ -155,6 +176,7 @@ export function useReviewState(): ReviewState {
     if (first) setSelectedRunId(first.runId);
   }, [decorated, selectedRunId]);
   const selected = decorated.find((r) => r.runId === selectedRunId);
+  const selectedOverrideCount = selectedRunId ? (overrideCounts[selectedRunId] ?? 0) : 0;
 
   // ---- archive (with confirm) ------------------------------------------
   // "Archive" is this file's internal name for what the UI presents as
@@ -202,7 +224,7 @@ export function useReviewState(): ReviewState {
   const adoptAllGood = useCallback(() => {
     const candidates = decorated.filter((r) => !r.isArchived && r.effectiveQuality === 'Good' && !r.decision);
     if (!candidates.length) {
-      showToast('No undecided good episodes');
+      showToast('No episodes marked Good to adopt');
       return;
     }
     setDecisions((prev) => {
@@ -224,81 +246,28 @@ export function useReviewState(): ReviewState {
     [selected, showToast],
   );
 
+  const bumpOverrideCount = useCallback((runId: string) => {
+    setOverrideCounts((prev) => ({ ...prev, [runId]: (prev[runId] ?? 0) + 1 }));
+  }, []);
+
   const cycleFinalQuality = useCallback(() => {
     if (!selected) return;
-    const next = QUALITY_ORDER[(QUALITY_ORDER.indexOf(selected.effectiveQuality) + 1) % QUALITY_ORDER.length]!;
+    // From an unset ("—") base, indexOf === -1 → first click lands on "Good".
+    const idx = selected.effectiveQuality ? QUALITY_ORDER.indexOf(selected.effectiveQuality) : -1;
+    const next = QUALITY_ORDER[(idx + 1) % QUALITY_ORDER.length]!;
     setOverrides((prev) => ({ ...prev, [selected.runId]: { ...prev[selected.runId], quality: next } }));
-    showToast(`#${selected.ep} quality → ${next} (override recorded, history kept)`);
-  }, [selected, showToast]);
+    bumpOverrideCount(selected.runId);
+    showToast(`#${selected.ep} quality → ${next} (your override, kept this session)`);
+  }, [selected, showToast, bumpOverrideCount]);
 
   const cycleTaskResult = useCallback(() => {
     if (!selected) return;
+    // Unset base → first click sets Success; thereafter toggles.
     const next: TaskResult = selected.effectiveTask === 'Success' ? 'Failure' : 'Success';
     setOverrides((prev) => ({ ...prev, [selected.runId]: { ...prev[selected.runId], task: next } }));
-    showToast(`#${selected.ep} task result → ${next} (override recorded, history kept)`);
-  }, [selected, showToast]);
-
-  // ---- fake player --------------------------------------------------------
-  const [playing, setPlaying] = useState(false);
-  const [playPct, setPlayPct] = useState(0);
-  const playIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  useEffect(() => {
-    // A newly-selected episode always starts its fake player from the top.
-    setPlaying(false);
-    setPlayPct(0);
-    if (playIntervalRef.current) {
-      clearInterval(playIntervalRef.current);
-      playIntervalRef.current = null;
-    }
-  }, [selectedRunId]);
-  useEffect(
-    () => () => {
-      if (playIntervalRef.current) clearInterval(playIntervalRef.current);
-    },
-    [],
-  );
-  const togglePlay = useCallback(() => {
-    if (playing) {
-      if (playIntervalRef.current) clearInterval(playIntervalRef.current);
-      playIntervalRef.current = null;
-      setPlaying(false);
-      return;
-    }
-    setPlaying(true);
-    playIntervalRef.current = setInterval(() => {
-      setPlayPct((p) => {
-        const next = p + 2.4;
-        if (next >= 100) {
-          if (playIntervalRef.current) clearInterval(playIntervalRef.current);
-          playIntervalRef.current = null;
-          setPlaying(false);
-          return 0;
-        }
-        return next;
-      });
-    }, 200);
-  }, [playing]);
-  const totalSeconds = Math.max(1, Math.round((selected?.durationMs ?? 28000) / 1000));
-  const playTimeLabel = `${formatMmSs((totalSeconds * playPct) / 100)} / ${formatMmSs(totalSeconds)}`;
-
-  // ---- standard validation mock action --------------------------------
-  const [rvRunning, setRvRunning] = useState(false);
-  const rvTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(
-    () => () => {
-      if (rvTimerRef.current) clearTimeout(rvTimerRef.current);
-    },
-    [],
-  );
-  const runStandardOnEp = useCallback(() => {
-    if (rvRunning || !selected) return;
-    setRvRunning(true);
-    showToast(`Running 2 standard pipelines on #${selected.ep}…`);
-    rvTimerRef.current = setTimeout(() => {
-      setRvRunning(false);
-      showToast(`#${selected.ep} — camera_coverage OK 94.1% · sync_drift OK 3.2 ms`);
-    }, 2200);
-  }, [rvRunning, selected, showToast]);
+    bumpOverrideCount(selected.runId);
+    showToast(`#${selected.ep} task result → ${next} (your override, kept this session)`);
+  }, [selected, showToast, bumpOverrideCount]);
 
   // ---- deep links ---------------------------------------------------------
   const setActiveTab = useUiStore((s) => s.setActiveTab);
@@ -367,7 +336,8 @@ export function useReviewState(): ReviewState {
 
   return {
     isLoading: runsQuery.isPending,
-    usingFallback,
+    isError,
+    errorMessage,
 
     rows,
     nUndecidedGood,
@@ -378,11 +348,15 @@ export function useReviewState(): ReviewState {
 
     search,
     setSearch,
+    operatorFilter,
+    setOperatorFilter,
+    operatorOptions,
     clearFilters,
 
     selectedRunId,
     select,
     selected,
+    selectedOverrideCount,
 
     requestArchive,
     pendingArchiveEp,
@@ -393,14 +367,6 @@ export function useReviewState(): ReviewState {
     decide,
     cycleFinalQuality,
     cycleTaskResult,
-
-    playing,
-    playPct,
-    playTimeLabel,
-    togglePlay,
-
-    rvRunning,
-    runStandardOnEp,
 
     goMonitor,
     goValidation,

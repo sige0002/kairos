@@ -1,13 +1,16 @@
-// Detail column: selected episode header, camera tiles (or the split-mode
-// transfer placeholder), fake player, quality/task/issues cells, decision
-// buttons, the standard-pipelines mock action, and cross-tab deep links.
+// Detail column: selected episode header, the REAL run inspection (detail rows,
+// video_check, loss_report, fast_validation, JSON sidecars — RunInspection.tsx),
+// the operator's local quality/task overrides (Phase 1, start from "—"), the
+// adopt/keep/exclude decision (Phase 2 local), and cross-tab deep links. In a
+// split deployment an un-transferred episode shows the transfer placeholder
+// instead — its MCAP is still on the robot PC, so there's nothing to inspect.
 
 import type { ReactNode } from 'react';
 import { Badge, cn, type Tone } from '../../components/ui';
+import { RunInspection } from './RunInspection';
 import type { Decision, Quality } from './types';
 import type { ReviewState } from './useReviewState';
-
-const CAMERA_LABELS = ['top', 'left', 'right', 'wrist'];
+import type { RunState } from '../../api/types';
 
 function qualityTone(q: Quality): Tone {
   if (q === 'Good') return 'green';
@@ -15,11 +18,25 @@ function qualityTone(q: Quality): Tone {
   return 'red';
 }
 
-function statusTone(decision: Decision | null, quality: Quality): Tone {
-  if (decision === 'adopted') return 'green';
-  if (decision === 'excluded') return 'gray';
-  if (decision === 'review') return 'amber';
-  return qualityTone(quality);
+function stateTone(state: RunState): Tone {
+  if (state === 'failed' || state === 'interrupted') return 'red';
+  if (state === 'completed') return 'gray';
+  return 'gray';
+}
+
+// Header badge: the operator's decision wins, then their quality override /
+// the real "Not usable" verdict, then the raw run state as an honest fallback.
+function headerBadge(
+  decision: Decision | null,
+  quality: Quality | null,
+  state: RunState,
+): { label: string; tone: Tone } {
+  if (decision) {
+    const tone: Tone = decision === 'adopted' ? 'green' : decision === 'review' ? 'amber' : 'gray';
+    return { label: decision.toUpperCase(), tone };
+  }
+  if (quality) return { label: quality.toUpperCase(), tone: qualityTone(quality) };
+  return { label: state.toUpperCase(), tone: stateTone(state) };
 }
 
 function DecisionButton({
@@ -61,6 +78,16 @@ function DecisionButton({
   );
 }
 
+/** A quality badge, or a muted "—" when unset (no automated quality model). */
+function QualityValue({ quality }: { quality: Quality | null }) {
+  if (!quality) return <span className="text-[12.5px] text-gray-400">—</span>;
+  return (
+    <Badge tone={qualityTone(quality)} className="w-fit">
+      {quality}
+    </Badge>
+  );
+}
+
 export function DetailPanel({ rv }: { rv: ReviewState }) {
   const sel = rv.selected;
 
@@ -72,7 +99,8 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
     );
   }
 
-  const showTiles = !rv.splitMode || sel.transferSlot.phase === 'transferred';
+  const badge = headerBadge(sel.decision, sel.effectiveQuality, sel.state);
+  const showInspection = !rv.splitMode || sel.transferSlot.phase === 'transferred';
 
   return (
     <div className="flex flex-col overflow-auto rounded-card border border-gray-200 bg-white shadow-card">
@@ -83,42 +111,12 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
         <span className="font-mono text-sm font-semibold text-gray-900">Episode #{sel.ep}</span>
         <span className="text-xs text-gray-400">Batch {sel.batch}</span>
         <div className="flex-1" />
-        <Badge tone={statusTone(sel.decision, sel.effectiveQuality)}>
-          {(sel.decision ?? sel.effectiveQuality).toUpperCase()}
-        </Badge>
+        <Badge tone={badge.tone}>{badge.label}</Badge>
       </div>
 
       <div className="flex flex-col gap-3 px-[18px] py-3.5">
-        {showTiles ? (
-          <>
-            <div className="grid grid-cols-2 gap-1.5">
-              {CAMERA_LABELS.map((c) => (
-                <div
-                  key={c}
-                  className="flex aspect-[16/10] items-center justify-center rounded-[10px] bg-[repeating-linear-gradient(45deg,#1f2937_0px,#1f2937_10px,#243042_10px,#243042_20px)]"
-                >
-                  <span className="font-mono text-[10.5px] text-gray-400">{c}</span>
-                </div>
-              ))}
-            </div>
-            <div className="flex items-center gap-2 rounded-control bg-gray-50 px-3 py-2">
-              <button
-                type="button"
-                data-testid="review-play-toggle"
-                onClick={rv.togglePlay}
-                className="border-none bg-transparent p-0 text-xs font-bold text-teal-700"
-              >
-                {rv.playing ? '❚❚' : '▶'}
-              </button>
-              <div className="relative h-[5px] flex-1 rounded-[3px] bg-gray-200">
-                <span
-                  className="absolute bottom-0 left-0 top-0 rounded-[3px] bg-teal-600"
-                  style={{ width: `${rv.playPct}%` }}
-                />
-              </div>
-              <span className="font-mono text-[11px] text-gray-500">{rv.playTimeLabel}</span>
-            </div>
-          </>
+        {showInspection ? (
+          <RunInspection runId={sel.runId} />
         ) : (
           <div className="flex flex-col items-center justify-center gap-2.5 rounded-[10px] border border-dashed border-gray-300 bg-gray-50 px-4 py-8 text-center">
             <span className="text-sm font-medium text-gray-600">Data is on the robot PC</span>
@@ -148,18 +146,16 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
           </div>
         )}
 
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-2 gap-2 border-t border-gray-100 pt-3">
           <div className="flex flex-col gap-0.5 rounded-[10px] border border-gray-100 px-3 py-2.5">
             <span className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400">
-              Quick quality
+              Auto quality
             </span>
-            <Badge tone={qualityTone(sel.quality)} className="w-fit">
-              {sel.quality}
-            </Badge>
+            <QualityValue quality={sel.quality} />
           </div>
           <div
             onClick={rv.cycleFinalQuality}
-            title="Click to override: Good → Needs review → Not usable"
+            title="Click to set: Good → Needs review → Not usable"
             data-testid="review-final-quality"
             className="flex cursor-pointer flex-col gap-0.5 rounded-[10px] border border-gray-100 px-3 py-2.5 transition-colors hover:border-teal-200 hover:bg-teal-50"
           >
@@ -169,13 +165,11 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
               </span>
               <span className="text-[10px] text-gray-400">✎</span>
             </div>
-            <Badge tone={qualityTone(sel.effectiveQuality)} className="w-fit">
-              {sel.effectiveQuality}
-            </Badge>
+            <QualityValue quality={sel.effectiveQuality} />
           </div>
           <div
             onClick={rv.cycleTaskResult}
-            title="Click to override: Success ↔ Failure"
+            title="Click to set: Success ↔ Failure"
             data-testid="review-task-result"
             className="flex cursor-pointer flex-col gap-0.5 rounded-[10px] border border-gray-100 px-3 py-2.5 transition-colors hover:border-teal-200 hover:bg-teal-50"
           >
@@ -185,13 +179,15 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
               </span>
               <span className="text-[10px] text-gray-400">✎</span>
             </div>
-            <span className="text-[12.5px] font-medium text-gray-700">{sel.effectiveTask}</span>
+            <span className="text-[12.5px] font-medium text-gray-700">{sel.effectiveTask ?? '—'}</span>
           </div>
           <div className="flex flex-col gap-0.5 rounded-[10px] border border-gray-100 px-3 py-2.5">
             <span className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400">
               Issues
             </span>
-            <span className="text-[12.5px] font-medium text-amber-800">{sel.issues}</span>
+            <span className={cn('text-[12.5px] font-medium', sel.issues ? 'text-amber-800' : 'text-gray-400')}>
+              {sel.issues ?? '—'}
+            </span>
           </div>
         </div>
 
@@ -222,42 +218,6 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
           </DecisionButton>
         </div>
 
-        <div className="flex flex-col gap-1.5 border-t border-gray-100 pt-2.5">
-          <div className="flex items-center gap-2">
-            <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
-              Standard pipelines
-            </span>
-            <span className="text-[11px] text-gray-400">preset by engineers</span>
-            <div className="flex-1" />
-            {rv.rvRunning && (
-              <span className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold text-teal-700">
-                <span className="h-3 w-3 animate-spin rounded-full border-2 border-teal-100 border-t-teal-600" />
-                running…
-              </span>
-            )}
-          </div>
-          <div className="flex flex-wrap gap-1.5">
-            <span className="rounded-[7px] bg-gray-100 px-2.5 py-1 font-mono text-[11.5px] font-semibold text-gray-500">
-              camera_coverage_check v1.3.0
-            </span>
-            <span className="rounded-[7px] bg-gray-100 px-2.5 py-1 font-mono text-[11.5px] font-semibold text-gray-500">
-              sync_drift_check v2.0.1
-            </span>
-          </div>
-          <button
-            type="button"
-            data-testid="review-run-standard"
-            onClick={rv.runStandardOnEp}
-            disabled={rv.rvRunning}
-            className={cn(
-              'h-[38px] rounded-control border border-gray-200 text-[13px] font-semibold transition-colors',
-              rv.rvRunning ? 'cursor-not-allowed bg-gray-100 text-gray-400' : 'bg-white text-teal-700 hover:bg-teal-50',
-            )}
-          >
-            Run standard validation on #{sel.ep}
-          </button>
-        </div>
-
         <div className="flex items-center gap-3 border-t border-gray-100 pt-2.5">
           <button
             type="button"
@@ -274,9 +234,12 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
             Open in Validation →
           </button>
           <div className="flex-1" />
-          {/* Static mock text (Phase 1) — no override-history model exists yet. */}
+          {/* Real local history: how many quality/task overrides the operator
+              has applied to this episode this session. */}
           <span data-testid="review-override-history" className="text-[11.5px] text-gray-400">
-            override history (1)
+            {rv.selectedOverrideCount > 0
+              ? `${rv.selectedOverrideCount} override${rv.selectedOverrideCount === 1 ? '' : 's'} this session`
+              : 'no overrides yet'}
           </span>
         </div>
       </div>

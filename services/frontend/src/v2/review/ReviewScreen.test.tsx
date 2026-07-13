@@ -6,9 +6,31 @@ import { useUiStore } from '../../store/uiStore';
 import { setSplitMode } from './splitMode';
 import { ReviewScreen } from './ReviewScreen';
 
-function mockRuns(items: Record<string, unknown>[]) {
+const CONFIG_OPTIONS = {
+  active_robot: 'airoa_hsr',
+  robots: [],
+  aspects: {
+    recording: { active: 'default', options: [] },
+    stream: { active: 'default', options: [] },
+    validation: { active: 'default', options: [] },
+    validators: { active: 'default', options: [] },
+  },
+};
+
+// A fetch mock covering everything the Review screen touches: the /runs list,
+// the per-run detail the embedded RunInspection loads (GET /runs/{id}), and the
+// config/options the validation template is resolved from. Detail defaults to a
+// completed run with no topics unless overridden per run id.
+function mockApi(items: Record<string, unknown>[], detailById: Record<string, unknown> = {}) {
   return vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
+    const detailMatch = url.match(/\/runs\/([^/?]+)(?:\?|$)/);
+    if (detailMatch) {
+      const id = decodeURIComponent(detailMatch[1]!);
+      const detail = detailById[id] ?? { run_id: id, state: 'completed', topics: [] };
+      return Promise.resolve(jsonResponse(detail));
+    }
+    if (url.includes('/config/options')) return Promise.resolve(jsonResponse(CONFIG_OPTIONS));
     if (url.includes('/runs')) return Promise.resolve(jsonResponse({ items, next_cursor: null }));
     return Promise.resolve(jsonResponse({}));
   });
@@ -23,18 +45,41 @@ afterEach(() => {
   setSplitMode(false); // reset the module-level flag between tests
 });
 
-test('renders the episode list and detail panel from real runs', async () => {
-  mockRuns([
-    { run_id: 'ep-a', state: 'completed', started_at: '2026-07-13T09:00:00Z', duration_ms: 30000 },
-  ]);
+test('renders the episode list and real detail panel from real runs', async () => {
+  mockApi([{ run_id: 'ep-a', state: 'completed', started_at: '2026-07-13T09:00:00Z', duration_ms: 30000 }]);
   renderWithClient(<ReviewScreen />);
   await waitFor(() => expect(screen.getByTestId('review-episodes-count')).toHaveTextContent('1 shown'));
   expect(screen.getByTestId('review-row-1')).toBeInTheDocument();
   expect(screen.getByTestId('review-detail-header')).toHaveTextContent('Episode #1');
+  // The real per-run inspection panel loads (GET /runs/{id}).
+  await waitFor(() => expect(screen.getByTestId('review-inspection')).toBeInTheDocument());
+});
+
+test('the detail panel shows real run fields, not fabricated ones', async () => {
+  mockApi(
+    [{ run_id: 'ep-a', state: 'completed', started_at: '2026-07-13T09:00:00Z' }],
+    {
+      'ep-a': {
+        run_id: 'ep-a',
+        state: 'completed',
+        operator: 'alice',
+        task: 'Pick and Place',
+        message_count: 1057,
+        bytes: 7975674,
+        topics: [{ name: '/hsrb/joint_states', type: 'sensor_msgs/msg/JointState' }],
+      },
+    },
+  );
+  renderWithClient(<ReviewScreen />);
+  const inspection = await screen.findByTestId('review-inspection');
+  expect(within(inspection).getByText('alice')).toBeInTheDocument();
+  expect(within(inspection).getByText('Pick and Place')).toBeInTheDocument();
+  expect(within(inspection).getByText('1,057')).toBeInTheDocument();
+  expect(within(screen.getByTestId('review-topics')).getByText('/hsrb/joint_states')).toBeInTheDocument();
 });
 
 test('selecting a row updates the detail panel', async () => {
-  mockRuns([
+  mockApi([
     { run_id: 'ep-a', state: 'completed', started_at: '2026-07-13T09:00:00Z' },
     { run_id: 'ep-b', state: 'completed', started_at: '2026-07-13T09:05:00Z' },
   ]);
@@ -47,29 +92,26 @@ test('selecting a row updates the detail panel', async () => {
   await waitFor(() => expect(screen.getByTestId('review-detail-header')).toHaveTextContent('Episode #1'));
 });
 
-test('cycling Final quality updates the detail panel badge', async () => {
-  mockRuns([{ run_id: 'ep-a', state: 'completed', started_at: '2026-07-13T09:00:00Z' }]);
+test('Final quality starts at "—" and becomes Good on the first click', async () => {
+  mockApi([{ run_id: 'ep-a', state: 'completed', started_at: '2026-07-13T09:00:00Z' }]);
   renderWithClient(<ReviewScreen />);
   await waitFor(() => expect(screen.getByTestId('review-detail-header')).toBeInTheDocument());
 
   const finalCell = screen.getByTestId('review-final-quality');
-  const before = within(finalCell).getByText(/Good|Needs review|Not usable/).textContent;
+  expect(within(finalCell).getByText('—')).toBeInTheDocument();
   fireEvent.click(finalCell);
-  await waitFor(() => {
-    const after = within(finalCell).getByText(/Good|Needs review|Not usable/).textContent;
-    expect(after).not.toBe(before);
-  });
+  await waitFor(() => expect(within(finalCell).getByText('Good')).toBeInTheDocument());
 });
 
-test('falls back to the built-in demo set (no blank screen) when the API is down', async () => {
+test('a failed /runs request shows an honest error, not a fabricated demo set', async () => {
   vi.spyOn(globalThis, 'fetch').mockImplementation(() => Promise.reject(new Error('down')));
   renderWithClient(<ReviewScreen />);
-  await waitFor(() => expect(screen.getByTestId('review-detail-header')).toBeInTheDocument());
-  expect(screen.queryByText('No episodes to review yet.')).not.toBeInTheDocument();
+  await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(/Couldn't load recordings/));
+  expect(screen.queryByTestId('review-detail-header')).not.toBeInTheDocument();
 });
 
 test('SPLIT_MODE off by default: no transfer UI renders', async () => {
-  mockRuns([{ run_id: 'ep-a', state: 'completed', started_at: '2026-07-13T09:00:00Z' }]);
+  mockApi([{ run_id: 'ep-a', state: 'completed', started_at: '2026-07-13T09:00:00Z' }]);
   renderWithClient(<ReviewScreen />);
   await waitFor(() => expect(screen.getByTestId('review-detail-header')).toBeInTheDocument());
   expect(screen.queryByTestId('review-transfer-all')).not.toBeInTheDocument();
@@ -79,12 +121,12 @@ test('SPLIT_MODE off by default: no transfer UI renders', async () => {
 
 test('SPLIT_MODE on: transfer UI appears and a transfer can be started', async () => {
   setSplitMode(true);
-  vi.spyOn(globalThis, 'fetch').mockImplementation(() => Promise.reject(new Error('down')));
+  mockApi([{ run_id: 'ep-a', state: 'completed', started_at: '2026-07-13T09:00:00Z' }]);
   renderWithClient(<ReviewScreen />);
-  // demo_ep_26 is seeded on_robot in the fallback set (mapRuns.ts).
-  await waitFor(() => expect(screen.getByTestId('review-row-26')).toBeInTheDocument());
+  await waitFor(() => expect(screen.getByTestId('review-row-1')).toBeInTheDocument());
 
-  fireEvent.click(screen.getByTestId('review-row-26'));
+  // The single run seeds on_robot, so the detail panel shows the transfer
+  // placeholder instead of inspecting an MCAP that's still on the robot PC.
   await waitFor(() => expect(screen.getByText('Data is on the robot PC')).toBeInTheDocument());
 
   fireEvent.click(screen.getByTestId('review-transfer-button'));

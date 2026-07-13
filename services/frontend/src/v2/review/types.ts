@@ -1,9 +1,14 @@
-// Domain types for the Review screen. `RunSummary` (api/types.ts) is the only
-// real signal the backend gives us — quality / task result / batch grouping
-// are Phase 2 concepts the orchestrator doesn't model per-run yet, so this
-// screen fills them in with a deterministic mock (see mapRuns.ts) rather than
-// inventing a fake API. Transfer status is our own addition (not in the
-// design mock) for split robot/recording-PC deployments — see splitMode.ts.
+// Domain types for the Review screen. `RunSummary` (api/types.ts) is the real
+// signal the backend gives us. Quality / task result / batch grouping are
+// Phase 2 concepts the orchestrator doesn't model per-run yet, so the base
+// row leaves them UNSET (null → "—" in the UI) rather than fabricating a
+// value; the one real verdict folded in is that a `failed`/`interrupted` run
+// is "Not usable". Quality/Task become concrete only when the operator sets
+// them locally this session (the click-to-cycle cells). Transfer status is our
+// own addition (not in the design mock) for split robot/recording-PC
+// deployments — see splitMode.ts.
+
+import type { RunState } from '../../api/types';
 
 export type Quality = 'Good' | 'Needs review' | 'Not usable';
 export type TaskResult = 'Success' | 'Failure';
@@ -26,24 +31,34 @@ export interface EpisodeRow {
   ep: number;
   /** Full backend run id — kept for API calls / deep links / title attrs. */
   runId: string;
-  /** Grouping the backend doesn't track per-run yet (see mapRuns.ts). */
+  /** Real terminal run state (completed/failed/interrupted); drives the header
+   *  badge fallback when the operator hasn't set a quality/decision. */
+  state: RunState;
+  /** Grouping the backend doesn't track per-run yet — always "—". */
   batch: string;
-  quality: Quality;
-  task: TaskResult;
+  /** Real operator string (RunSummary.operator); null when the run has none. */
+  operator: string | null;
+  /** Auto-assessed quality: "Not usable" for a run that didn't finish cleanly,
+   *  else null (no automated quality model exists — the UI shows "—"). */
+  quality: Quality | null;
+  /** No automated task-result model yet — null unless the operator sets it. */
+  task: TaskResult | null;
   durationMs?: number;
   startedAt?: string;
-  /** Issue count for the table's ⚠ column; 0 renders blank like the mock. */
-  warnCount: number;
-  issues: string;
-  /** Initial transfer status (mock seed); only surfaced when split mode is on. */
+  /** Real issue note when the run itself failed; null for a clean run (there's
+   *  no list-time per-topic issue source — that's the on-demand loss report). */
+  issues: string | null;
+  /** Initial transfer status; only surfaced when split mode is on. Seeds to
+   *  on_robot (nothing transferred yet this session) — no fabricated state. */
   transfer: TransferPhase;
 }
 
 /** An EpisodeRow plus the locally-applied overrides/decision/transfer state
- *  the table and detail panel actually render. */
+ *  the table and detail panel actually render. `effectiveQuality`/`effectiveTask`
+ *  stay null until either the real signal or an operator override supplies one. */
 export interface DecoratedEpisode extends EpisodeRow {
-  effectiveQuality: Quality;
-  effectiveTask: TaskResult;
+  effectiveQuality: Quality | null;
+  effectiveTask: TaskResult | null;
   isArchived: boolean;
   decision: Decision | null;
   transferSlot: TransferSlot;

@@ -40,8 +40,31 @@ function qualityTone(q: Quality): Tone {
   return 'red';
 }
 
-function taskTone(t: TaskResult): Tone {
-  return t === 'Success' ? 'teal' : 'gray';
+// Quality/Task render the *effective* (post-override) value; both are null
+// until either the real "Not usable" verdict or an operator override sets one,
+// and a muted "—" stands in for the unset state (no fabricated label).
+function QualityCell({ row }: { row: DecoratedEpisode }) {
+  if (row.isArchived)
+    return (
+      <Badge tone="red" className="w-fit">
+        EXCLUDED
+      </Badge>
+    );
+  if (!row.effectiveQuality) return <span className="font-mono text-xs text-gray-400">—</span>;
+  return (
+    <Badge tone={qualityTone(row.effectiveQuality)} className="w-fit">
+      {row.effectiveQuality.toUpperCase()}
+    </Badge>
+  );
+}
+
+function TaskCell({ task }: { task: TaskResult | null }) {
+  if (!task) return <span className="font-mono text-xs text-gray-400">—</span>;
+  return (
+    <Badge tone={task === 'Success' ? 'teal' : 'gray'} className="w-fit">
+      {task.toUpperCase()}
+    </Badge>
+  );
 }
 
 function transferBadge(row: DecoratedEpisode): { tone: Tone; label: string } {
@@ -65,8 +88,8 @@ function transferBadge(row: DecoratedEpisode): { tone: Tone; label: string } {
 // (Tailwind's arbitrary-value classes must appear as complete literal strings
 // in the source for its scanner to pick them up — hence two full strings
 // rather than building one via interpolation.)
-const GRID_COLS = 'grid-cols-[56px_48px_108px_96px_72px_80px_30px_minmax(0,1fr)_28px]';
-const GRID_COLS_SPLIT = 'grid-cols-[56px_48px_108px_96px_72px_80px_30px_84px_minmax(0,1fr)_28px]';
+const GRID_COLS = 'grid-cols-[56px_48px_108px_96px_72px_80px_minmax(0,1fr)_28px]';
+const GRID_COLS_SPLIT = 'grid-cols-[56px_48px_108px_96px_72px_80px_84px_minmax(0,1fr)_28px]';
 
 function Row({ row, isSelected, rv }: { row: DecoratedEpisode; isSelected: boolean; rv: ReviewState }) {
   const transfer = transferBadge(row);
@@ -84,15 +107,10 @@ function Row({ row, isSelected, rv }: { row: DecoratedEpisode; isSelected: boole
     >
       <span className="font-mono text-[13px] font-semibold text-gray-900">#{row.ep}</span>
       <span className="font-mono text-[12.5px] text-gray-500">{row.batch}</span>
-      <Badge tone={row.isArchived ? 'red' : qualityTone(row.effectiveQuality)} className="w-fit">
-        {row.isArchived ? 'EXCLUDED' : row.effectiveQuality.toUpperCase()}
-      </Badge>
-      <Badge tone={taskTone(row.effectiveTask)} className="w-fit">
-        {row.effectiveTask.toUpperCase()}
-      </Badge>
+      <QualityCell row={row} />
+      <TaskCell task={row.effectiveTask} />
       <span className="font-mono text-xs text-gray-500">{formatHms(row.durationMs)}</span>
       <span className="font-mono text-xs text-gray-400">{formatTimeOfDay(row.startedAt)}</span>
-      <span className="font-mono text-xs text-amber-600">{row.warnCount > 0 ? row.warnCount : ''}</span>
       {rv.splitMode && (
         <Badge tone={transfer.tone} className="w-fit whitespace-nowrap">
           {transfer.label}
@@ -171,7 +189,6 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
         <span>Task result</span>
         <span>Duration</span>
         <span>Time</span>
-        <span>⚠</span>
         {rv.splitMode && <span>Transfer</span>}
         <span aria-hidden />
         <span />
@@ -179,6 +196,10 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
       <div className="flex-1 overflow-auto">
         {rv.isLoading ? (
           <p className="px-[18px] py-3 text-sm text-gray-500">Loading episodes…</p>
+        ) : rv.isError ? (
+          <p className="px-[18px] py-3 text-sm text-red-600" role="alert">
+            Couldn&apos;t load recordings{rv.errorMessage ? `: ${rv.errorMessage}` : ''}.
+          </p>
         ) : rv.rows.length === 0 ? (
           <p className="px-[18px] py-3 text-sm text-gray-500">No episodes to review yet.</p>
         ) : (
