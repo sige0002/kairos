@@ -2,8 +2,22 @@
 // Datasets, so an episode reads identically in every pipeline step (Console v2
 // pipeline UX). Honesty: a missing value renders "—", never a fabricated label.
 
+import type { RunEpisode } from '../api/types';
 import { Badge, type Tone } from '../components/ui';
 import type { Quality, ReviewLane, ReviewStatus, TaskResult } from './review/types';
+
+// Server episode enums (api/types) → the Review display vocabulary the chips
+// speak. Kept here so every surface that renders an episode (Review, Datasets)
+// maps identically.
+const QUALITY_FROM_SERVER: Record<RunEpisode['quality'], Quality> = {
+  good: 'Good',
+  needs_review: 'Needs review',
+  not_usable: 'Not usable',
+};
+const TASK_FROM_SERVER: Record<RunEpisode['task_result'], TaskResult> = {
+  success: 'Success',
+  failure: 'Failure',
+};
 
 const LANE_TONE: Record<ReviewLane, Tone> = { ready: 'green', needs_check: 'amber', excluded: 'red' };
 const LANE_LABEL: Record<ReviewLane, string> = {
@@ -99,5 +113,28 @@ export function BatchChip({
     <Badge tone="gray" mono className="w-fit whitespace-nowrap">
       {formatBatchLabel(batchSeq, isoDate, fallback ?? '—')}
     </Badge>
+  );
+}
+
+/** The label chips for one episode (batch · task-result · quality), read from a
+ *  server `RunEpisode`. Used wherever an exported/recorded episode is listed
+ *  (Datasets catalog card + detail). Render this ONLY when an episode is present
+ *  — callers show nothing (no fabricated labels) when it is null/absent. */
+export function EpisodeLabelChips({
+  episode,
+  isoFallback,
+  testId,
+}: {
+  episode: RunEpisode;
+  /** Date used for the batch chip when the episode carries no batch_created_at. */
+  isoFallback?: string | null;
+  testId?: string;
+}) {
+  return (
+    <div data-testid={testId} className="flex flex-wrap items-center gap-1.5">
+      <BatchChip batchSeq={episode.batch_seq} isoDate={episode.batch_created_at ?? isoFallback} />
+      <TaskResultChip task={TASK_FROM_SERVER[episode.task_result]} />
+      <QualityChip quality={QUALITY_FROM_SERVER[episode.quality]} />
+    </div>
   );
 }

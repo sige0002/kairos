@@ -1,9 +1,10 @@
 // Datasets tab (v2 IA). Root mirrors the design mock's 270px / 1fr / 330px
-// three-column grid (dataset list, detail, export & build). Real (v1 parity):
+// three-column grid (dataset list, detail, review pointer & build). Datasets is
+// now a CATALOG ONLY — Review is the single export surface (the exception-review
+// model bulk-exports the READY set), so the right rail points there instead of
+// duplicating a per-run export path. Real (v1 parity):
 //   - the dataset catalog + detail (GET /api/v1/datasets,
 //     GET /api/v1/datasets/{operator}/{task}/{index} — see useDatasetsState.ts),
-//   - export operations (right rail): move completed recordings into the tree
-//     (POST /datasets/export[-all], MOVE = invalidate runs + datasets),
 //   - dataset inspection (center): loss report / video check / JSON sidecars
 //     reusing src/features/inspect/inspect.tsx against the exported dir.
 // Mock-only (Phase 2): the recipe-based LeRobot v3 build/version model has no

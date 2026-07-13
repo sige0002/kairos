@@ -5,8 +5,15 @@
 // and when the backend is unreachable — never a blank panel.
 
 import { Badge, cn } from '../../components/ui';
+import { EpisodeLabelChips } from '../episodeChips';
 import { formatCount } from './data';
 import type { DatasetsState } from './useDatasetsState';
+
+/** A pre-label export: the backend couldn't attribute it to an operator/task
+ *  (older exports predate the episode model). Shown muted, labeled honestly. */
+function isLegacy(operator: string, task: string): boolean {
+  return operator === 'unknown_operator' || task === 'unknown_task';
+}
 
 export function DatasetList({ state }: { state: DatasetsState }) {
   const hasAny = state.groups.length > 0;
@@ -48,6 +55,7 @@ export function DatasetList({ state }: { state: DatasetsState }) {
               </span>
               {group.entries.map((entry) => {
                 const selected = state.isSelected(entry);
+                const legacy = isLegacy(entry.operator, entry.task);
                 return (
                   <div
                     key={entry.dataset_dir}
@@ -61,6 +69,7 @@ export function DatasetList({ state }: { state: DatasetsState }) {
                     className={cn(
                       'flex cursor-pointer flex-col gap-[5px] rounded-[11px] border px-[13px] py-[11px]',
                       selected ? 'border-teal-200 bg-teal-50' : 'border-gray-100',
+                      legacy && !selected && 'opacity-70',
                     )}
                   >
                     <span className="text-[13px] font-semibold text-gray-900">{entry.task}</span>
@@ -73,6 +82,23 @@ export function DatasetList({ state }: { state: DatasetsState }) {
                         #{entry.index}
                       </Badge>
                     </div>
+                    {/* Episode labels only when the backend attributes them
+                        (Phase 2 join); nothing fabricated when absent. */}
+                    {entry.episode && (
+                      <EpisodeLabelChips
+                        episode={entry.episode}
+                        isoFallback={entry.exported_at}
+                        testId={`dataset-card-labels-${entry.dataset_dir}`}
+                      />
+                    )}
+                    {legacy && (
+                      <span
+                        data-testid={`dataset-card-legacy-${entry.dataset_dir}`}
+                        className="text-[10.5px] italic text-gray-400"
+                      >
+                        legacy (pre-label) export
+                      </span>
+                    )}
                   </div>
                 );
               })}

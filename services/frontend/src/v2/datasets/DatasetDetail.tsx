@@ -7,6 +7,7 @@
 // 2026-07-13 user directive that dropped the fabricated PickPlace_* catalog.
 
 import { Badge } from '../../components/ui';
+import { EpisodeLabelChips } from '../episodeChips';
 import { DatasetInspection } from './DatasetInspection';
 import { formatBytes, formatCount, formatWhen } from './data';
 import type { DatasetsState } from './useDatasetsState';
@@ -73,6 +74,21 @@ export function DatasetDetail({ state }: { state: DatasetsState }) {
               <Badge tone="teal">Operator: {detail.operator}</Badge>
               <Badge tone="teal">Task: {detail.task}</Badge>
             </div>
+
+            {/* Episode labels only when the backend attributes them (Phase 2
+                join); nothing fabricated when absent. */}
+            {detail.episode && (
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+                  Episode
+                </span>
+                <EpisodeLabelChips
+                  episode={detail.episode}
+                  isoFallback={detail.exported_at}
+                  testId="dataset-detail-labels"
+                />
+              </div>
+            )}
 
             <div className="grid grid-cols-4 gap-2" data-testid="dataset-stats">
               <Stat value={formatCount(detail.message_count)} label="messages" />

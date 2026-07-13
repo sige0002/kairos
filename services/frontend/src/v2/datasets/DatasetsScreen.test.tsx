@@ -1,17 +1,25 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
-import { queryKeys } from '../../api/queryKeys';
-import type {
-  DatasetDetail,
-  DatasetEntry,
-  DatasetsResponse,
-  ExportAllResponse,
-  Page,
-  RunSummary,
-} from '../../api/types';
-import { jsonResponse, makeTestClient, renderWithClient } from '../../test/renderWithClient';
+import type { DatasetDetail, DatasetEntry, DatasetsResponse, RunEpisode } from '../../api/types';
+import { useUiStore } from '../../store/uiStore';
+import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
 import { DatasetsScreen } from './DatasetsScreen';
+
+/** A server episode join for the label-chip cases. */
+function epJoin(overrides: Partial<RunEpisode> = {}): RunEpisode {
+  return {
+    episode_id: 'e_1',
+    batch_id: 'b_4',
+    index_in_batch: 1,
+    task_result: 'success',
+    quality: 'good',
+    review_status: 'adopted',
+    batch_seq: 4,
+    batch_created_at: '2026-07-13T09:00:00Z',
+    ...overrides,
+  };
+}
 
 const ENTRY_A1: DatasetEntry = {
   operator: 'operator_a',
@@ -45,33 +53,6 @@ const ENTRY_B1: DatasetEntry = {
 };
 
 const LIST_RESPONSE: DatasetsResponse = { datasets: [ENTRY_A1, ENTRY_A2, ENTRY_B1] };
-
-// Two completed runs (exportable) + one still recording (must be filtered out).
-const RUN_DONE_1: RunSummary = {
-  run_id: 'run_done_1',
-  state: 'completed',
-  started_at: '2026-07-10T10:00:00Z',
-  operator: 'operator_a',
-  task: 'pick_and_place',
-};
-const RUN_DONE_2: RunSummary = {
-  run_id: 'run_done_2',
-  state: 'completed',
-  started_at: '2026-07-10T11:00:00Z',
-  operator: 'operator_b',
-  task: 'stacking',
-};
-const RUN_RECORDING: RunSummary = {
-  run_id: 'run_live',
-  state: 'recording',
-  started_at: '2026-07-10T12:00:00Z',
-  operator: 'operator_a',
-  task: 'pick_and_place',
-};
-const RUNS_PAGE: Page<RunSummary> = {
-  items: [RUN_DONE_1, RUN_DONE_2, RUN_RECORDING],
-  next_cursor: null,
-};
 
 function detailFor(entry: DatasetEntry, overrides: Partial<DatasetDetail> = {}): DatasetDetail {
   return {
@@ -108,32 +89,19 @@ interface MockOpts {
   list?: DatasetsResponse;
   listStatus?: number;
   details?: Record<string, DatasetDetail>;
-  runs?: Page<RunSummary>;
-  exportAll?: ExportAllResponse;
 }
 
-// Routes every endpoint the Datasets screen now touches. Order matters: the
-// specific /datasets/export[-all] and /jobs routes are matched before the
-// /datasets list and detail routes.
+// Routes the endpoints the catalog-only Datasets screen touches: the /jobs
+// route (post-export inspection) matches before the /datasets list and detail
+// routes. There is no per-run export path here anymore (Review owns export).
 function mockFetch(opts: MockOpts) {
   const details = opts.details ?? {};
   return vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
 
-    if (url.includes('/datasets/export-all')) {
-      return Promise.resolve(
-        jsonResponse(opts.exportAll ?? { exported: [], failed: [], total: 0 }),
-      );
-    }
-    if (url.includes('/datasets/export')) {
-      return Promise.resolve(jsonResponse({ run_id: 'run_done_1', dataset_dir: 'x/y/001' }));
-    }
     if (url.includes('/jobs')) {
       // Both the create POST and the status poll resolve terminal-succeeded.
       return Promise.resolve(jsonResponse({ job_id: 'job_1', pipeline: 'loss_report', state: 'succeeded' }));
-    }
-    if (url.includes('/runs')) {
-      return Promise.resolve(jsonResponse(opts.runs ?? { items: [], next_cursor: null }));
     }
     if (url.endsWith('/datasets')) {
       if (opts.listStatus && opts.listStatus >= 400) {
@@ -148,7 +116,11 @@ function mockFetch(opts: MockOpts) {
   });
 }
 
-beforeEach(() => setApiBase('/api/v1'));
+beforeEach(() => {
+  setApiBase('/api/v1');
+  // The Go-to-Review pointer flips the shared tab store; reset it between tests.
+  useUiStore.setState({ activeTab: 'datasets' });
+});
 afterEach(() => vi.restoreAllMocks());
 
 test('renders the real exported datasets, grouped by operator, with no fabricated names', async () => {
@@ -249,81 +221,99 @@ test('clicking "Build dataset" toasts that it needs the Phase 2 recipe model, wi
   expect(screen.queryByTestId('build-progress')).not.toBeInTheDocument();
 });
 
-// ---- Export operations (v1 parity) --------------------------------------
+// ---- Catalog-only: export lives in Review now ---------------------------
 
-test('lists only completed recordings as exportable (filters non-completed)', async () => {
-  mockFetch({ list: { datasets: [] }, runs: RUNS_PAGE });
+test('the per-run export panel is gone; the rail points to Review instead', async () => {
+  mockFetch({ list: LIST_RESPONSE });
   renderWithClient(<DatasetsScreen />);
 
-  await waitFor(() => expect(screen.getByTestId('export-run-run_done_1')).toBeInTheDocument());
-  expect(screen.getByTestId('export-run-run_done_2')).toBeInTheDocument();
-  // The still-recording run must never appear as exportable.
-  expect(screen.queryByTestId('export-run-run_live')).not.toBeInTheDocument();
-  // Count + "Export all (2)" reflect the completed subset only.
-  expect(screen.getByTestId('export-all-btn')).toHaveTextContent('Export all (2)');
-  expect(within(screen.getByTestId('export-recordings')).getByText('2 completed')).toBeInTheDocument();
+  await waitFor(() => expect(screen.getByTestId('review-pointer')).toBeInTheDocument());
+  // The old ExportRecordings working panel and its controls no longer exist.
+  expect(screen.queryByTestId('export-recordings')).toBeNull();
+  expect(screen.queryByTestId('export-all-btn')).toBeNull();
+  // The rail explains where export moved to.
+  expect(
+    within(screen.getByTestId('review-pointer')).getByText(/reviewed and exported in/),
+  ).toBeInTheDocument();
 });
 
-test('honest empty state when there are no completed recordings to export', async () => {
-  mockFetch({ list: { datasets: [] }, runs: { items: [RUN_RECORDING], next_cursor: null } });
+test('"Go to Review" switches the active tab to Review (real tab switch)', async () => {
+  mockFetch({ list: LIST_RESPONSE });
   renderWithClient(<DatasetsScreen />);
 
-  await waitFor(() => expect(screen.getByTestId('export-empty')).toBeInTheDocument());
-  expect(screen.getByTestId('export-empty')).toHaveTextContent(/No completed recordings/);
-  expect(screen.getByTestId('export-all-btn')).toBeDisabled();
+  await waitFor(() => expect(screen.getByTestId('go-to-review')).toBeInTheDocument());
+  expect(useUiStore.getState().activeTab).toBe('datasets');
+  fireEvent.click(screen.getByTestId('go-to-review'));
+  expect(useUiStore.getState().activeTab).toBe('review');
 });
 
-test('per-run Export moves the run: POST /datasets/export then invalidates BOTH runs and datasets', async () => {
-  const fetchSpy = mockFetch({ list: { datasets: [] }, runs: RUNS_PAGE });
-  const client = makeTestClient();
-  const invalidate = vi.spyOn(client, 'invalidateQueries');
-  renderWithClient(<DatasetsScreen />, { client });
+// ---- Block 3: dataset label chips (only when the backend attributes them) --
 
-  await waitFor(() => expect(screen.getByTestId('export-run-btn-run_done_1')).toBeInTheDocument());
-  fireEvent.click(screen.getByTestId('export-run-btn-run_done_1'));
+const ENTRY_LABELED: DatasetEntry = {
+  operator: 'operator_a',
+  task: 'folding',
+  index: '002',
+  dataset_dir: 'operator_a/folding/002',
+  run_id: 'run_lab',
+  message_count: 5000,
+  exported_at: '2026-07-13T12:00:00Z',
+  episode: epJoin({ quality: 'good', task_result: 'success', batch_seq: 4 }),
+};
+const ENTRY_LEGACY: DatasetEntry = {
+  operator: 'unknown_operator',
+  task: 'unknown_task',
+  index: '001',
+  dataset_dir: 'unknown_operator/unknown_task/001',
+  run_id: 'run_leg',
+  message_count: 100,
+  exported_at: '2026-06-01T12:00:00Z',
+};
 
-  // The export POST carries the clicked run_id.
-  await waitFor(() => {
-    const call = fetchSpy.mock.calls.find(
-      ([u, i]) => String(u).includes('/datasets/export') && (i?.method ?? '').toUpperCase() === 'POST',
-    );
-    expect(call).toBeTruthy();
-    expect(JSON.parse(String(call?.[1]?.body))).toEqual({ run_id: 'run_done_1' });
-  });
+test('a dataset card shows episode label chips when the backend attributes them', async () => {
+  mockFetch({ list: { datasets: [ENTRY_LABELED] } });
+  renderWithClient(<DatasetsScreen />);
 
-  // MOVE semantics: exactly the v1 double invalidation (runs list + datasets list).
-  await waitFor(() => {
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.runs(undefined) });
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.datasets });
-  });
+  const testId = `dataset-card-labels-${ENTRY_LABELED.dataset_dir}`;
+  await waitFor(() => expect(screen.getByTestId(testId)).toBeInTheDocument());
+  const labels = screen.getByTestId(testId);
+  expect(within(labels).getByText('GOOD')).toBeInTheDocument();
+  expect(within(labels).getByText('SUCCESS')).toBeInTheDocument();
+  expect(within(labels).getByText(/#4/)).toBeInTheDocument();
 });
 
-test('Export all reports "N exported, M failed" with a failure list and double invalidation', async () => {
-  const exportAll: ExportAllResponse = {
-    exported: [{ run_id: 'run_done_1' }],
-    failed: [{ run_id: 'run_done_2', error: 'no files on disk' }],
-    total: 2,
-  };
-  mockFetch({ list: { datasets: [] }, runs: RUNS_PAGE, exportAll });
-  const client = makeTestClient();
-  const invalidate = vi.spyOn(client, 'invalidateQueries');
-  renderWithClient(<DatasetsScreen />, { client });
+test('a dataset card shows NO label chips when the episode is absent (no fabrication)', async () => {
+  // ENTRY_A1 carries no `episode` field.
+  mockFetch({ list: { datasets: [ENTRY_A1] } });
+  renderWithClient(<DatasetsScreen />);
 
-  // The button is disabled until the completed runs load; a click on a disabled
-  // button is a no-op, so wait for it to enable first.
-  await waitFor(() => expect(screen.getByTestId('export-all-btn')).toBeEnabled());
-  fireEvent.click(screen.getByTestId('export-all-btn'));
+  await waitFor(() => expect(screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`)).toBeInTheDocument());
+  expect(screen.queryByTestId(`dataset-card-labels-${ENTRY_A1.dataset_dir}`)).toBeNull();
+});
 
-  await waitFor(() => expect(screen.getByTestId('export-all-result')).toBeInTheDocument());
-  expect(screen.getByTestId('export-all-result')).toHaveTextContent('1 exported, 1 failed');
-  const failures = screen.getByTestId('export-all-failures');
-  expect(within(failures).getByText('run_done_2')).toBeInTheDocument();
-  expect(within(failures).getByText(/no files on disk/)).toBeInTheDocument();
+test('an unattributed export gets a muted "legacy (pre-label) export" treatment', async () => {
+  mockFetch({ list: { datasets: [ENTRY_LEGACY] } });
+  renderWithClient(<DatasetsScreen />);
 
-  await waitFor(() => {
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.runs(undefined) });
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.datasets });
+  const legacyId = `dataset-card-legacy-${ENTRY_LEGACY.dataset_dir}`;
+  await waitFor(() => expect(screen.getByTestId(legacyId)).toBeInTheDocument());
+  expect(screen.getByTestId(legacyId)).toHaveTextContent(/legacy \(pre-label\) export/);
+});
+
+test('the dataset detail shows episode label chips when present', async () => {
+  const detail = detailFor(ENTRY_LABELED, { episode: ENTRY_LABELED.episode });
+  mockFetch({
+    list: { datasets: [ENTRY_LABELED] },
+    details: { [detailUrlFor(ENTRY_LABELED)]: detail },
   });
+  renderWithClient(<DatasetsScreen />);
+
+  await waitFor(() => expect(screen.getByTestId(`dataset-card-${ENTRY_LABELED.dataset_dir}`)).toBeInTheDocument());
+  fireEvent.click(screen.getByTestId(`dataset-card-${ENTRY_LABELED.dataset_dir}`));
+
+  await waitFor(() => expect(screen.getByTestId('dataset-detail-labels')).toBeInTheDocument());
+  const labels = screen.getByTestId('dataset-detail-labels');
+  expect(within(labels).getByText('GOOD')).toBeInTheDocument();
+  expect(within(labels).getByText('SUCCESS')).toBeInTheDocument();
 });
 
 // ---- Dataset inspection (v1 parity via features/inspect) -----------------
@@ -381,50 +371,3 @@ test('dataset inspection: shows the loss table + video check, and JSON sidecars 
   expect(within(inspection).getByText('Manifest')).toBeInTheDocument();
 });
 
-// ---------------------------------------------------------------------------
-// Q3: episode-context export rows — chips, adopted-first grouping, filter.
-// ---------------------------------------------------------------------------
-
-function epJoin(
-  review_status: 'pending' | 'adopted' | 'excluded',
-  batch_seq: number,
-  quality: 'good' | 'needs_review' | 'not_usable' = 'good',
-  task_result: 'success' | 'failure' = 'success',
-) {
-  return {
-    episode_id: `e_${review_status}`,
-    batch_id: `b_${batch_seq}`,
-    index_in_batch: 1,
-    task_result,
-    quality,
-    review_status,
-    batch_seq,
-    batch_created_at: '2026-07-13T09:00:00Z',
-  };
-}
-
-test('export rows show episode context + status chips, group adopted-first, and filter to Adopted', async () => {
-  const runs: Page<RunSummary> = {
-    items: [
-      { run_id: 'r_pend', state: 'completed', started_at: '2026-07-13T09:00:00Z', operator: 'yuki', task: 'pick', episode: epJoin('pending', 4) },
-      { run_id: 'r_adopt', state: 'completed', started_at: '2026-07-13T10:00:00Z', operator: 'yuki', task: 'stack', episode: epJoin('adopted', 5, 'needs_review', 'failure') },
-    ],
-    next_cursor: null,
-  };
-  mockFetch({ runs });
-  renderWithClient(<DatasetsScreen />);
-  await waitFor(() => expect(screen.getByTestId('export-run-r_adopt')).toBeInTheDocument());
-
-  // Review-status chips render per row (resolves "is it adopted?").
-  expect(screen.getByTestId('export-status-r_adopt')).toHaveTextContent('ADOPTED');
-  expect(screen.getByTestId('export-status-r_pend')).toHaveTextContent('PENDING');
-
-  // Adopted batch group is ordered before the pending batch.
-  const html = screen.getByTestId('export-recordings').innerHTML;
-  expect(html.indexOf('export-run-r_adopt')).toBeLessThan(html.indexOf('export-run-r_pend'));
-
-  // Filter → Adopted only.
-  fireEvent.click(screen.getByTestId('export-filter-adopted'));
-  await waitFor(() => expect(screen.queryByTestId('export-run-r_pend')).toBeNull());
-  expect(screen.getByTestId('export-run-r_adopt')).toBeInTheDocument();
-});

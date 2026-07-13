@@ -124,6 +124,10 @@ export interface DatasetEntry {
   bytes?: number;
   message_count?: number | null;
   exported_at?: string;
+  /** Console v2 Phase 2: the episode this exported run belongs to (null/absent
+   *  on older backends or pre-label exports). When present the catalog card can
+   *  show its task_result/quality/batch labels; when absent it shows nothing. */
+  episode?: RunEpisode | null;
 }
 
 /** GET /api/v1/datasets — the flat list of exported datasets (grouped in the UI). */
@@ -161,6 +165,9 @@ export interface DatasetDetail {
   validation?: Record<string, unknown> | null;
   /** `loss_report` summary that survived export (or was re-run post-export). */
   loss?: { run_id?: string; topics?: LossTopic[]; checked_at?: string } | null;
+  /** Console v2 Phase 2: the episode this exported run belongs to (null/absent
+   *  on older backends). Drives the detail's label chips; nothing when absent. */
+  episode?: RunEpisode | null;
 }
 
 /** POST /api/v1/datasets/export-all — per-run successes + failures for the batch. */
