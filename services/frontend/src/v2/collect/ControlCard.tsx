@@ -1,21 +1,33 @@
 // The phase-driven control card (left column, top): READY / ARMING /
-// RECORDING / SAVING+QUICK-CHECK / EPISODE RESULT / PAUSED / ENDED / COMPLETED.
-// Exactly one renders at a time, keyed off `machine.phase`.
+// RECORDING / SAVING+QUICK-CHECK / EPISODE RESULT / PAUSED / ENDED / COMPLETED —
+// or, when a recording is running that this screen isn't driving, the takeover
+// card (D-1). Exactly one renders at a time, keyed off `machine`.
 
+import { useEffect, useRef, useState } from 'react';
 import { Card, cn } from '../../components/ui';
 import type { RecordArming } from '../../api/types';
+import { formatBytes } from '../review/format';
 import { CARD_PAD } from './compact';
 import {
-  describeQuality,
   describeTaskOutcome,
   EPISODES_PER_BATCH,
   FAIL_REASONS,
-  MB_PER_S,
+  QUALITY_LABEL,
   type BatchMachine,
+  type MachineError,
+  type QualityOverride,
 } from './useBatchMachine';
 
 // Card gap that tightens on short viewports (see compact.ts).
 const CARD_GAP_COMPACT = '[@media(max-height:860px)]:gap-1.5';
+
+// Operator-facing copy for known recorder error codes (D-8-1). Unknown codes
+// fall through to the raw server message; the code is always shown muted below.
+const ERROR_COPY: Record<string, string> = {
+  already_recording: 'A recording is already in progress — stop it before starting a new one.',
+  not_recording: 'No recording is in progress.',
+  recorder_unreachable: "Can't reach the recorder — check the robot connection.",
+};
 
 function formatElapsed(ms: number): string {
   const s = Math.max(0, Math.floor(ms / 1000));
@@ -32,10 +44,26 @@ function ErrorBanner({ children }: { children: React.ReactNode }) {
   );
 }
 
+// A recorder error, shown operator-first: a friendly line (mapped from the code,
+// or the raw server message when unknown) plus a muted mono `(code)` line so the
+// raw code is available without leaking into the primary message (D-8-1).
+function MachineErrorBanner({ label, error }: { label: string; error: MachineError }) {
+  const line = (error.code && ERROR_COPY[error.code]) || error.message;
+  return (
+    <ErrorBanner>
+      <span className="text-[10.5px] font-semibold uppercase tracking-[0.09em]">{label}</span>{' '}
+      <span>{line}</span>
+      {error.code && (
+        <span className="mt-0.5 block font-mono text-[11px] opacity-70">({error.code})</span>
+      )}
+    </ErrorBanner>
+  );
+}
+
 // Real arming matched/missing note (OL-①.4): a live, non-persisted aid read
-// straight from /record/status — NOT the mock arming hold. A non-empty
-// `missing` is the useful signal: the readiness gate resumed with those target
-// topics still not publishing. Mirrors v1 LiveTab's ArmingNote wording.
+// straight from /record/status — NOT a mock hold. A non-empty `missing` is the
+// useful signal: the readiness gate resumed with those target topics still not
+// publishing. Mirrors v1 LiveTab's ArmingNote wording.
 function ArmingNote({ arming }: { arming: RecordArming }) {
   const matched = arming.matched_topics ?? [];
   const missing = arming.missing_topics ?? [];
@@ -70,9 +98,8 @@ function ArmingNote({ arming }: { arming: RecordArming }) {
 
 // Real recording-integrity banner (OL-①): shown in the episode result when the
 // just-finished run lost messages to the recorder cache (`dropped`) or failed
-// verification (`failed`). Driven by the REAL /record/status integrity, never
-// the mock quality flag (recWarning) — so it dominates the provisional QUICK
-// chip and carries the recorder's own wording (matches v1 LiveTab IntegrityNote).
+// verification (`failed`). Driven by the REAL /record/status integrity — it
+// carries the recorder's own wording (matches v1 LiveTab IntegrityNote).
 function IntegrityBanner({
   integrity,
   dropped,
@@ -107,8 +134,127 @@ function IntegrityBanner({
   );
 }
 
+// One "Label : value" row in the takeover card (D-1). Values are real recorder
+// data; missing ones render "—" (never fabricated).
+function FieldRow({ label, value, mono }: { label: string; value: React.ReactNode; mono?: boolean }) {
+  return (
+    <div className="flex items-baseline gap-2.5">
+      <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">{label}</span>
+      <div className="flex-1" />
+      <span className={cn('text-[13px] text-gray-800', mono && 'font-mono text-xs')}>{value}</span>
+    </div>
+  );
+}
+
 export function ControlCard({ machine }: { machine: BatchMachine }) {
   const { phase, stats } = machine;
+  const takeover = machine.takeover;
+
+  // Focus targets for each phase (D-4): re-target on every phase change so the
+  // flow stays keyboard-operable and focus never falls to <body>.
+  const startRef = useRef<HTMLButtonElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const stopRef = useRef<HTMLButtonElement>(null);
+  const savingTitleRef = useRef<HTMLSpanElement>(null);
+  const saveRef = useRef<HTMLButtonElement>(null);
+  const failReasonRef = useRef<HTMLButtonElement>(null);
+  const takeoverStopRef = useRef<HTMLButtonElement>(null);
+  const hasTakeover = !!takeover;
+  useEffect(() => {
+    if (hasTakeover) {
+      takeoverStopRef.current?.focus();
+      return;
+    }
+    switch (phase) {
+      case 'ready':
+        startRef.current?.focus();
+        break;
+      case 'arming':
+        cancelRef.current?.focus();
+        break;
+      case 'recording':
+        stopRef.current?.focus();
+        break;
+      case 'saving':
+      case 'quickcheck':
+        savingTitleRef.current?.focus();
+        break;
+      case 'result':
+        if (machine.pendingTask === 'fail') failReasonRef.current?.focus();
+        else saveRef.current?.focus();
+        break;
+    }
+  }, [phase, machine.pendingTask, hasTakeover]);
+
+  // Takeover card's own once-a-second elapsed ticker (the recording card uses
+  // the machine's own timer instead).
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!hasTakeover) return;
+    const id = setInterval(() => setTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, [hasTakeover]);
+
+  // Quality override expander (D-2): collapsed by default; opening it reveals the
+  // three chips. Auto-open once the operator has already overridden.
+  const [qualityOpen, setQualityOpen] = useState(false);
+
+  if (takeover) {
+    const elapsedMs = takeover.startedAt
+      ? Math.max(0, Date.now() - Date.parse(takeover.startedAt))
+      : null;
+    return (
+      <Card className={cn('flex shrink-0 flex-col gap-2.5 border-2 border-red-200', CARD_GAP_COMPACT, CARD_PAD)}>
+        <div className="flex items-center gap-2">
+          <span className="h-[9px] w-[9px] animate-recpulse rounded-sm bg-red-600" />
+          <span data-testid="phase-title" className="text-[15px] font-bold text-red-700">
+            RECORDING IN PROGRESS
+          </span>
+        </div>
+        <span className="text-[12.5px] leading-relaxed text-gray-600">
+          {machine.takeoverResumedOwn
+            ? 'Recording resumed — this was started here earlier.'
+            : "A recording is running on this robot — it wasn't started from this screen."}
+        </span>
+        <div className="flex flex-col gap-1.5 rounded-control border border-gray-200 bg-gray-50 px-3 py-2.5">
+          <FieldRow label="Run" value={takeover.runId} mono />
+          <div className="flex items-baseline gap-2.5">
+            <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">Elapsed</span>
+            <div className="flex-1" />
+            <span data-testid="takeover-elapsed" className="font-mono text-[34px] font-semibold text-gray-900">
+              {elapsedMs != null ? formatElapsed(elapsedMs) : '—'}
+            </span>
+          </div>
+          <FieldRow
+            label="Written"
+            value={takeover.bytes != null ? formatBytes(takeover.bytes) : '—'}
+            mono
+          />
+          <FieldRow label="Operator" value={takeover.operator || '—'} />
+          <FieldRow
+            label="Topics"
+            value={takeover.topicsCount != null ? `${takeover.topicsCount} topics` : '—'}
+          />
+        </div>
+        <button
+          ref={takeoverStopRef}
+          type="button"
+          onClick={machine.openTakeoverStopModal}
+          className="flex h-[52px] items-center justify-center gap-2 rounded-control bg-red-600 text-[15px] font-bold text-white shadow-btn-red hover:bg-red-700 [@media(max-height:860px)]:h-[44px]"
+        >
+          <span className="h-[11px] w-[11px] rounded-sm bg-white" />
+          Stop recording
+        </button>
+        <button
+          type="button"
+          onClick={machine.goMonitor}
+          className="self-start text-[12.5px] font-semibold text-teal-700 hover:underline"
+        >
+          Open in Monitor →
+        </button>
+      </Card>
+    );
+  }
 
   if (phase === 'ready') {
     return (
@@ -129,6 +275,7 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
               : `${machine.selection.count} configured topics`}
         </span>
         <button
+          ref={startRef}
           type="button"
           onClick={machine.startRecording}
           disabled={machine.noSelection}
@@ -141,18 +288,14 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
         >
           <span className="h-2.5 w-2.5 rounded-full bg-white" />
           Start recording
+          <span className="text-[11px] font-medium opacity-70">· R</span>
         </button>
         {machine.noSelection && (
           <span className="text-[11px] font-medium text-amber-600">
             Every topic is cleared — select at least one in Monitor to record.
           </span>
         )}
-        {machine.startError && (
-          <ErrorBanner>
-            <span className="text-[10.5px] font-semibold uppercase tracking-[0.09em]">Start failed</span>{' '}
-            <span className="font-mono text-[11px] opacity-80">{machine.startError}</span>
-          </ErrorBanner>
-        )}
+        {machine.startError && <MachineErrorBanner label="Start failed" error={machine.startError} />}
       </Card>
     );
   }
@@ -168,6 +311,7 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
           Hold still. Recording starts automatically once the recorder confirms.
         </span>
         <button
+          ref={cancelRef}
           type="button"
           onClick={machine.cancelArming}
           className="h-10 rounded-control border border-gray-200 bg-white text-[13px] font-semibold text-gray-500 hover:bg-gray-50"
@@ -181,7 +325,9 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
 
   if (phase === 'recording') {
     const elapsedText = formatElapsed(machine.elapsedMs);
-    const mbText = `${((machine.elapsedMs / 1000) * MB_PER_S).toFixed(1)} MB written`;
+    // Real bytes written for this run (from /record/status), not elapsed×rate.
+    const writtenText =
+      machine.recordingBytes != null ? `${formatBytes(machine.recordingBytes)} written` : '—';
     return (
       <Card className={cn('flex shrink-0 flex-col gap-2.5 border-2 border-red-200', CARD_GAP_COMPACT, CARD_PAD)}>
         <div className="flex items-center gap-2">
@@ -194,15 +340,17 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
           <span data-testid="elapsed" className="font-mono text-[34px] font-semibold text-gray-900">
             {elapsedText}
           </span>
-          <span className="font-mono text-xs text-gray-400">{mbText}</span>
+          <span className="font-mono text-xs text-gray-400">{writtenText}</span>
         </div>
         <button
+          ref={stopRef}
           type="button"
           onClick={machine.stopRecording}
           className="flex h-[52px] items-center justify-center gap-2 rounded-control bg-red-600 text-[15px] font-bold text-white shadow-btn-red hover:bg-red-700 [@media(max-height:860px)]:h-[44px]"
         >
           <span className="h-[11px] w-[11px] rounded-sm bg-white" />
           Stop recording
+          <span className="text-[11px] font-medium opacity-70">· S</span>
         </button>
         {machine.arming && <ArmingNote arming={machine.arming} />}
       </Card>
@@ -211,40 +359,56 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
 
   if (phase === 'saving' || phase === 'quickcheck') {
     const saving = phase === 'saving';
-    const mb = ((machine.elapsedMs / 1000) * MB_PER_S).toFixed(0);
     return (
       <Card className={cn('flex shrink-0 flex-col gap-2.5 border-2 border-gray-200', CARD_GAP_COMPACT, CARD_PAD)}>
         <div className="flex items-center gap-2">
           <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-100 border-t-teal-600" />
-          <span data-testid="phase-title" className="text-[17px] font-bold text-gray-700">{saving ? 'SAVING…' : 'QUICK CHECK…'}</span>
+          <span
+            ref={savingTitleRef}
+            data-testid="phase-title"
+            tabIndex={-1}
+            aria-live="polite"
+            className="text-[17px] font-bold text-gray-700 outline-none"
+          >
+            {saving ? 'SAVING…' : 'QUICK CHECK…'}
+          </span>
         </div>
         <span className="text-[12.5px] leading-relaxed text-gray-500">
-          {saving
-            ? `Writing MCAP and verifying integrity (${mb} MB).`
-            : 'Checking required topics, gaps and camera coverage. Provisional result in seconds.'}
+          {saving ? 'Finalizing the recording…' : 'Reading recorded counts, gaps and integrity.'}
         </span>
+        {/* Indeterminate progress — the real duration isn't known, so no fake %. */}
         <div className="h-1.5 overflow-hidden rounded-full bg-gray-100">
-          <span
-            className="block h-full rounded-full bg-teal-600 transition-[width] duration-[1200ms] ease-out"
-            style={{ width: saving ? '45%' : '85%' }}
-          />
+          <span className="block h-full w-1/3 animate-pulse rounded-full bg-teal-500" />
         </div>
         {machine.stopError && (
-          <ErrorBanner>
-            <span className="text-[10.5px] font-semibold uppercase tracking-[0.09em]">Stop failed</span>{' '}
-            <span className="font-mono text-[11px] opacity-80">{machine.stopError}</span>
-          </ErrorBanner>
+          <>
+            <MachineErrorBanner label="Stop failed" error={machine.stopError} />
+            <button
+              type="button"
+              onClick={machine.retryStop}
+              className="h-10 rounded-control bg-red-600 text-[13px] font-bold text-white hover:bg-red-700"
+            >
+              Retry stop
+            </button>
+          </>
         )}
       </Card>
     );
   }
 
   if (phase === 'result') {
-    const quickGood = !machine.recWarning;
-    const canConfirm =
-      machine.pendingTask === 'ok' || (machine.pendingTask === 'fail' && !!machine.failReason);
+    const quickGood = machine.autoQuality === 'good';
+    const isFail = machine.pendingTask === 'fail';
+    const canConfirm = machine.pendingTask === 'ok' || (isFail && !!machine.failReason);
     const willComplete = stats.nRecorded + 1 >= EPISODES_PER_BATCH;
-    const nextBtnText = willComplete ? 'Save & finish batch' : `Save & ready for #${stats.epNext + 1}`;
+    const saveLabel = isFail
+      ? 'Save — failure'
+      : willComplete
+        ? 'Save — success · finishes batch'
+        : 'Save — success';
+    const effectiveQuality: QualityOverride = machine.qualityOverride ?? machine.autoQuality;
+    const qualityAuto = machine.qualityOverride == null;
+    const qualityChips: QualityOverride[] = ['good', 'review', 'notusable'];
     return (
       <Card className={cn('flex shrink-0 flex-col gap-3 border-2 border-teal-200', '[@media(max-height:860px)]:gap-1.5', CARD_PAD)}>
         <div className="flex items-center gap-2">
@@ -264,11 +428,48 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
         {(machine.integrity === 'dropped' || machine.integrity === 'failed') && (
           <IntegrityBanner integrity={machine.integrity} dropped={machine.droppedMessages} />
         )}
-        <span className="text-xs text-gray-500">
-          {quickGood
-            ? 'No issues detected. Final quality follows after full validation.'
-            : 'Right camera rate dropped during recording — flagged for review. Final quality follows after full validation.'}
-        </span>
+        {/* Honest quality line (D-2): the effective quality + its provenance, with
+            an override affordance — no fabricated "camera rate dropped". */}
+        <div className="flex flex-col gap-1.5">
+          <div className="flex items-center gap-2 text-xs">
+            <span className="text-gray-600">
+              Quality:{' '}
+              <span className={cn('font-semibold', quickGood ? 'text-green-700' : 'text-amber-700')}>
+                {QUALITY_LABEL[effectiveQuality]}
+              </span>
+              {qualityAuto && <span className="text-gray-400"> · auto</span>}
+            </span>
+            <button
+              type="button"
+              onClick={() => setQualityOpen((v) => !v)}
+              className="text-teal-700 hover:underline"
+            >
+              change
+            </button>
+          </div>
+          {machine.integrity == null && (
+            <span className="text-[11px] text-gray-400">Quick check unavailable — verify in Review.</span>
+          )}
+          {qualityOpen && (
+            <div data-testid="quality-chips" className="flex flex-wrap gap-1.5">
+              {qualityChips.map((q) => (
+                <button
+                  key={q}
+                  type="button"
+                  onClick={() => machine.setQuality(q)}
+                  className={cn(
+                    'rounded-chip border px-2.5 py-1 text-[11px] font-semibold',
+                    effectiveQuality === q
+                      ? 'border-teal-600 bg-teal-50 text-teal-700'
+                      : 'border-gray-200 bg-white font-medium text-gray-500',
+                  )}
+                >
+                  {QUALITY_LABEL[q]}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
         <div className="flex flex-col gap-1.5">
           <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
             Task result — your call
@@ -306,9 +507,10 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
               What failed? (required)
             </span>
             <div className="flex flex-wrap gap-1.5">
-              {FAIL_REASONS.map((reason) => (
+              {FAIL_REASONS.map((reason, i) => (
                 <button
                   key={reason}
+                  ref={i === 0 ? failReasonRef : undefined}
                   type="button"
                   onClick={() => machine.pickFailReason(reason)}
                   className={cn(
@@ -333,14 +535,11 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
               <span className="font-semibold text-gray-700">Task outcome:</span>{' '}
               {describeTaskOutcome(machine.pendingTask, machine.failReason)}
             </span>
-            <span>
-              <span className="font-semibold text-gray-700">Recording quality:</span>{' '}
-              {describeQuality(machine.recWarning)}
-            </span>
             <span className="text-gray-500">Saved safely — visible in Review either way.</span>
           </div>
         )}
         <button
+          ref={saveRef}
           type="button"
           onClick={machine.confirmEpisode}
           disabled={!canConfirm}
@@ -349,7 +548,7 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
             canConfirm ? 'bg-teal-600 text-white shadow-btn' : 'cursor-not-allowed bg-gray-200 text-gray-400',
           )}
         >
-          {nextBtnText}
+          {saveLabel}
         </button>
         <button
           type="button"

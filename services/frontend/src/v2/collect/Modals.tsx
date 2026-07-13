@@ -268,6 +268,115 @@ function DiscardModal({ machine }: { machine: BatchMachine }) {
   );
 }
 
+function formatElapsedClock(startedAt: string | null): string {
+  if (!startedAt) return '—';
+  const t = Date.parse(startedAt);
+  if (Number.isNaN(t)) return '—';
+  const s = Math.max(0, Math.floor((Date.now() - t) / 1000));
+  const mm = String(Math.floor(s / 60)).padStart(2, '0');
+  const ss = String(s % 60).padStart(2, '0');
+  return `${mm}:${ss}`;
+}
+
+// Confirm stopping a recording this screen isn't driving (D-1). Guards against
+// knocking over another operator's take by mistake; the two body variants match
+// whether it's a resumed-own recording or another session's.
+function TakeoverStopModal({ machine }: { machine: BatchMachine }) {
+  const t = machine.takeover;
+  const size = formatBytes(t?.bytes ?? null) ?? '—';
+  return (
+    <Modal
+      open={machine.takeoverStopModalOpen}
+      onClose={machine.closeModals}
+      title="Stop this recording?"
+      footer={
+        <>
+          <Button variant="ghost" onClick={machine.closeModals} disabled={machine.isTakeoverStopping}>
+            Keep recording
+          </Button>
+          <Button variant="danger" onClick={machine.confirmTakeoverStop} disabled={machine.isTakeoverStopping}>
+            {machine.isTakeoverStopping ? 'Stopping…' : 'Stop & save'}
+          </Button>
+        </>
+      }
+    >
+      {machine.takeoverResumedOwn ? (
+        <p className="text-[12.5px] leading-relaxed text-gray-600">
+          Stop the recording that&apos;s still running? {size} captured so far will be saved to Review.
+        </p>
+      ) : (
+        <p className="text-[12.5px] leading-relaxed text-gray-600">
+          This recording was started from another session (operator{' '}
+          <strong className="text-gray-700">{t?.operator || '—'}</strong> · running{' '}
+          <span className="font-mono text-gray-800">{formatElapsedClock(t?.startedAt ?? null)}</span> ·{' '}
+          {size}). Stopping it saves what&apos;s captured so far — it will appear in Review.
+        </p>
+      )}
+    </Modal>
+  );
+}
+
+// Confirm discarding an unsaved take from the recovery banner (D-3). A real
+// DELETE /runs/{id} runs on confirm.
+function UnsavedDiscardModal({ machine }: { machine: BatchMachine }) {
+  const size = formatBytes(machine.unsavedTake?.bytes ?? null) ?? 'It';
+  return (
+    <Modal
+      open={machine.unsavedDiscardModalOpen}
+      onClose={machine.closeModals}
+      title="Discard this take?"
+      footer={
+        <>
+          <Button variant="ghost" onClick={machine.closeModals} disabled={machine.isDiscardingUnsaved}>
+            Keep
+          </Button>
+          <Button variant="danger" onClick={machine.confirmDiscardUnsavedTake} disabled={machine.isDiscardingUnsaved}>
+            {machine.isDiscardingUnsaved ? 'Deleting…' : 'Delete'}
+          </Button>
+        </>
+      }
+    >
+      <p className="text-[12.5px] leading-relaxed text-gray-600">
+        {size} will be permanently deleted.
+      </p>
+    </Modal>
+  );
+}
+
+// Keyboard-shortcuts help sheet (opened with `?`). Collect-local — the shared
+// header is out of scope for this screen (deviation noted in the change report).
+function ShortcutsSheet({ machine }: { machine: BatchMachine }) {
+  const rows: [string, string][] = [
+    ['R', 'Start recording (when ready)'],
+    ['S / Space', 'Stop recording'],
+    ['Esc', 'Cancel arming · close a dialog'],
+    ['?', 'Show this shortcuts sheet'],
+  ];
+  return (
+    <Modal
+      open={machine.shortcutsOpen}
+      onClose={machine.closeModals}
+      title="Keyboard shortcuts"
+      footer={
+        <Button variant="ghost" onClick={machine.closeModals}>
+          Close
+        </Button>
+      }
+    >
+      <div className="flex flex-col gap-1.5">
+        {rows.map(([key, desc]) => (
+          <div key={key} className="flex items-center gap-3">
+            <kbd className="rounded-control border border-gray-200 bg-gray-50 px-2 py-0.5 font-mono text-[12px] text-gray-700">
+              {key}
+            </kbd>
+            <span className="text-[12.5px] text-gray-600">{desc}</span>
+          </div>
+        ))}
+      </div>
+    </Modal>
+  );
+}
+
 function Toast({ message }: { message: string }) {
   if (!message) return null;
   return (
@@ -286,6 +395,9 @@ export function CollectModals({ machine }: { machine: BatchMachine }) {
       <IssueModal machine={machine} />
       <ConditionModal machine={machine} />
       <DiscardModal machine={machine} />
+      <TakeoverStopModal machine={machine} />
+      <UnsavedDiscardModal machine={machine} />
+      <ShortcutsSheet machine={machine} />
       <Toast message={machine.toast} />
     </>
   );

@@ -17,8 +17,52 @@ import { Cameras } from './Cameras';
 import { EpisodeStrip } from './EpisodeStrip';
 import { CollectModals } from './Modals';
 import { COL_GAP } from './compact';
-import { useBatchMachine } from './useBatchMachine';
-import { cn } from '../../components/ui';
+import { useBatchMachine, type BatchMachine } from './useBatchMachine';
+import { Card, cn } from '../../components/ui';
+import { formatBytes, formatHms, formatTimeOfDay } from '../review/format';
+
+// Recovery banner (D-3) for a take stopped but never saved (e.g. a reload
+// between Stop and Save). Sits above the control card until the operator labels,
+// discards, or dismisses it. All figures are real (or an honest "—").
+function UnsavedTakeBanner({ machine }: { machine: BatchMachine }) {
+  const take = machine.unsavedTake;
+  if (!take) return null;
+  return (
+    <Card
+      role="alert"
+      data-testid="unsaved-take-banner"
+      className="flex shrink-0 flex-col gap-2 border-2 border-amber-200 bg-amber-50/70 px-4 py-3"
+    >
+      <span className="text-[13px] text-amber-900">
+        Unsaved take from {formatTimeOfDay(take.startedAt ?? undefined)} — {formatBytes(take.bytes)},{' '}
+        {formatHms(take.durationMs ?? undefined)}. Label it now, or discard it.
+      </span>
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={machine.labelUnsavedTake}
+          className="h-9 rounded-control bg-teal-600 px-3.5 text-[12.5px] font-bold text-white hover:bg-teal-700"
+        >
+          Label it
+        </button>
+        <button
+          type="button"
+          onClick={machine.discardUnsavedTake}
+          className="h-9 rounded-control border border-gray-200 bg-white px-3.5 text-[12.5px] font-semibold text-gray-600 hover:bg-gray-50"
+        >
+          Discard
+        </button>
+        <button
+          type="button"
+          onClick={machine.dismissUnsavedTake}
+          className="h-9 rounded-control px-2 text-[12.5px] font-semibold text-gray-500 hover:underline"
+        >
+          Later
+        </button>
+      </div>
+    </Card>
+  );
+}
 
 export function CollectScreen() {
   // The runtime config is already fetched (and cached under this same key) by
@@ -87,6 +131,7 @@ export function CollectScreen() {
             room — so the page itself never scrolls and the control is never cut
             off. In the steady states everything fits with no scroll at all. */}
         <div className={cn('flex flex-col overflow-hidden lg:min-h-0', COL_GAP)}>
+          <UnsavedTakeBanner machine={machine} />
           <ControlCard machine={machine} />
           <div className={cn('flex flex-col overflow-y-auto lg:min-h-0 lg:flex-1', COL_GAP)}>
             <SystemStatusCard

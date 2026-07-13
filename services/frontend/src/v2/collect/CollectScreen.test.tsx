@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
 import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
@@ -27,16 +27,25 @@ function mockFetch(recordStartBody: Record<string, unknown>) {
 }
 
 // Like mockFetch but with a controllable GET /record/status body — the real
-// source of the arming note + integrity banner.
+// source of the arming note + integrity banner. The status reports idle UNTIL
+// the operator starts here, so the test's own start flow isn't mistaken for a
+// takeover (a server recording we didn't start); afterwards it returns `status`.
 function mockFetchWithStatus(opts: {
   start?: Record<string, unknown>;
   status?: Record<string, unknown>;
 }) {
   const start = opts.start ?? { run_id: 'run_1', state: 'recording' };
+  let started = false;
   return vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
-    if (url.includes('/record/status')) return Promise.resolve(jsonResponse(opts.status ?? {}));
-    if (url.includes('/record/start')) return Promise.resolve(jsonResponse(start));
+    if (url.includes('/record/status'))
+      return Promise.resolve(
+        jsonResponse(started ? (opts.status ?? {}) : { run_id: null, state: 'idle' }),
+      );
+    if (url.includes('/record/start')) {
+      started = true;
+      return Promise.resolve(jsonResponse(start));
+    }
     if (url.includes('/record/stop')) return Promise.resolve(jsonResponse({ run_id: 'run_1', state: 'completed' }));
     if (url.includes('/config')) return Promise.resolve(jsonResponse(CONFIG));
     return Promise.resolve(jsonResponse({}));
@@ -121,8 +130,25 @@ test('a rejected start shows the failed banner and stays on READY', async () => 
   expect(phaseTitle()).toHaveTextContent('READY');
 });
 
-test('Stop recording moves to SAVING', async () => {
-  mockFetch({ run_id: 'run_1', state: 'recording' });
+test('Stop recording moves to SAVING and shows the honest finalizing copy', async () => {
+  // The stop hangs and the recorder keeps reporting the run as still recording,
+  // so SAVING persists — proving it waits on the real stop event (D-3), not a
+  // fixed timer. Status is idle until we start (avoids the takeover path).
+  let started = false;
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/config')) return Promise.resolve(jsonResponse(CONFIG));
+    if (url.includes('/record/start')) {
+      started = true;
+      return Promise.resolve(jsonResponse({ run_id: 'run_1', state: 'recording' }));
+    }
+    if (url.includes('/record/status'))
+      return Promise.resolve(
+        jsonResponse(started ? { run_id: 'run_1', state: 'recording' } : { run_id: null, state: 'idle' }),
+      );
+    if (url.includes('/record/stop')) return new Promise(() => {}); // never resolves
+    return Promise.resolve(jsonResponse({}));
+  });
   renderWithClient(<CollectScreen />);
 
   await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
@@ -131,33 +157,32 @@ test('Stop recording moves to SAVING', async () => {
 
   fireEvent.click(screen.getByRole('button', { name: /Stop recording/ }));
   await waitFor(() => expect(phaseTitle()).toHaveTextContent('SAVING…'));
+  // Honest, non-fabricated copy (no fake MB/percent).
+  expect(screen.getByText('Finalizing the recording…')).toBeInTheDocument();
 });
 
-// Persona finding P1/P4: a failed TASK must not read as "not usable" data,
-// and the operator must see both dimensions in plain language before saving.
-test('a failed task with no quality warning shows the plain-language summary and keeps good quality in the stats', async () => {
-  mockFetch({ run_id: 'run_1', state: 'recording' });
+// Persona finding P1/P4: a failed TASK must not read as "not usable" data, and
+// the operator must see the task outcome in plain language before saving. Quality
+// is now the real quick-check (integrity 'ok' → Good), not a fabricated warning.
+test('a failed task on a clean recording stays good quality; the single Save action reflects the outcome', async () => {
+  mockFetchWithStatus({
+    status: { run_id: 'run_1', state: 'completed', integrity: 'ok' },
+  });
   renderWithClient(<CollectScreen />);
+  await driveToResult();
 
-  await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
-  fireEvent.click(screen.getByRole('button', { name: /Start recording/ }));
-  await waitFor(() => expect(phaseTitle()).toHaveTextContent('RECORDING'));
-  // Stop well before the 6s review-warning threshold, so quality stays 'good'.
-  fireEvent.click(screen.getByRole('button', { name: /Stop recording/ }));
-  await waitFor(() => expect(phaseTitle()).toHaveTextContent('Episode 1 result'), { timeout: 4000 });
+  // Success is pre-selected on entry → the primary is a single "Save — success".
+  expect(screen.getByRole('button', { name: /Save — success/ })).toBeInTheDocument();
 
   fireEvent.click(screen.getByRole('button', { name: /Failure/ }));
-  // No summary until a fail reason is picked (Save stays disabled either way).
+  // No reason yet → Save is the failure variant and the summary prompts for one.
   expect(screen.getByTestId('episode-summary')).toHaveTextContent(
     'Task outcome: Failed — choose a reason below.',
   );
   fireEvent.click(screen.getByRole('button', { name: 'Object dropped' }));
+  expect(screen.getByTestId('episode-summary')).toHaveTextContent('Task outcome: Failed — object dropped.');
 
-  const summary = screen.getByTestId('episode-summary');
-  expect(summary).toHaveTextContent('Task outcome: Failed — object dropped.');
-  expect(summary).toHaveTextContent('Recording quality: Good — no issues detected.');
-
-  fireEvent.click(screen.getByRole('button', { name: /Save & ready for #2/ }));
+  fireEvent.click(screen.getByRole('button', { name: /Save — failure/ }));
 
   // The core P1 fix: a failed task still counts as good-quality, usable data —
   // never lumped into a quality "not usable"/fail bucket.
@@ -166,12 +191,31 @@ test('a failed task with no quality warning shows the plain-language summary and
   expect(screen.getByTestId('stat-task-failed')).toHaveTextContent('1');
 });
 
+// D-2: the QUICK chip and quality line reflect the REAL integrity — no fabricated
+// "camera rate dropped". A clean run defaults to Good · auto; the operator can
+// override to Not usable (which becomes the honest 'operator' provenance).
+test('result panel shows honest auto quality and an operator override', async () => {
+  mockFetchWithStatus({ status: { run_id: 'run_1', state: 'completed', integrity: 'ok' } });
+  renderWithClient(<CollectScreen />);
+  await driveToResult();
+
+  expect(screen.getByText('QUICK: GOOD')).toBeInTheDocument();
+  expect(screen.getByText(/Good/)).toBeInTheDocument();
+  expect(screen.getByText('· auto')).toBeInTheDocument();
+
+  // Expand the override chips and choose Not usable.
+  fireEvent.click(screen.getByRole('button', { name: 'change' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Not usable' }));
+  // The "· auto" provenance is gone once the operator overrides.
+  expect(screen.queryByText('· auto')).toBeNull();
+});
+
 // Real drop/integrity banner (v1 parity, OL-①): a run that stopped with
 // integrity 'dropped' shows the amber "Data dropped — N messages lost" banner
-// with the cache hint, driven by the REAL /record/status — not the mock quality
-// path. A quick stop (<6s) keeps the mock chip at QUICK: GOOD, proving the two
-// signals are independent and the banner is the dominant, real one.
-test('result phase shows the real drop banner (dropped_messages) from /record/status', async () => {
+// with the cache hint, driven by the REAL /record/status. Now the QUICK chip is
+// DERIVED from that same real integrity (D-2), so a dropped run reads NEEDS
+// REVIEW — the chip and the banner agree because they share one honest source.
+test('result phase shows the real drop banner and a matching NEEDS REVIEW chip', async () => {
   mockFetchWithStatus({
     status: { run_id: 'run_1', state: 'completed', integrity: 'dropped', dropped_messages: 1234 },
   });
@@ -181,9 +225,7 @@ test('result phase shows the real drop banner (dropped_messages) from /record/st
   const banner = screen.getByTestId('integrity-banner');
   expect(banner).toHaveTextContent(/Data dropped — 1[.,]?234 messages lost/);
   expect(banner).toHaveTextContent('raise max_cache_size_mb');
-  // The mock quality path is separate and does NOT drive this banner: a quick
-  // stop keeps QUICK: GOOD while the real drop banner still dominates.
-  expect(screen.getByText('QUICK: GOOD')).toBeInTheDocument();
+  expect(screen.getByText('QUICK: NEEDS REVIEW')).toBeInTheDocument();
 });
 
 test('result phase shows the real "Recording failed" banner when integrity is failed', async () => {
@@ -385,4 +427,116 @@ test('Batch menu → Reset batch on an empty batch is a no-op (honest wording)',
   // Still the prediction pre-state: an empty reset never allocates a number.
   expect(screen.getByText(/assigned on first recording/)).toBeInTheDocument();
   expect(screen.queryByText('Batch —')).toBeNull();
+});
+
+// ---------------------------------------------------------------------------
+// D-1 takeover: a server recording this screen isn't driving replaces READY.
+// ---------------------------------------------------------------------------
+
+test('a server recording surfaces the takeover card instead of READY, and Stop confirms first', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/config')) return Promise.resolve(jsonResponse(CONFIG));
+    if (url.includes('/runs/run_ext'))
+      return Promise.resolve(
+        jsonResponse({ run_id: 'run_ext', state: 'recording', topics: [{ name: '/a', type: 'x' }], operator: 'other' }),
+      );
+    if (url.includes('/record/status'))
+      return Promise.resolve(
+        jsonResponse({ run_id: 'run_ext', state: 'recording', started_at: new Date().toISOString(), bytes: 4096 }),
+      );
+    return Promise.resolve(jsonResponse({}));
+  });
+  renderWithClient(<CollectScreen />);
+
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('RECORDING IN PROGRESS'));
+  expect(screen.getByText(/wasn't started from this screen/)).toBeInTheDocument();
+  // The primary action opens a confirmation (use-error guard), not an instant stop.
+  fireEvent.click(screen.getByRole('button', { name: /Stop recording/ }));
+  expect(await screen.findByText('Stop this recording?')).toBeInTheDocument();
+});
+
+// ---------------------------------------------------------------------------
+// D-3 unsaved-take recovery banner.
+// ---------------------------------------------------------------------------
+
+test('an unsaved completed take shows the recovery banner with Label / Discard / Later', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/config')) return Promise.resolve(jsonResponse(CONFIG));
+    if (url.includes('/runs'))
+      return Promise.resolve(
+        jsonResponse({
+          items: [
+            {
+              run_id: 'run_u',
+              state: 'completed',
+              started_at: new Date(Date.now() - 60_000).toISOString(),
+              ended_at: new Date().toISOString(),
+            },
+          ],
+          next_cursor: null,
+        }),
+      );
+    return Promise.resolve(jsonResponse({}));
+  });
+  renderWithClient(<CollectScreen />);
+
+  const banner = await screen.findByTestId('unsaved-take-banner');
+  expect(banner).toHaveTextContent(/Unsaved take from/);
+  expect(banner).toHaveTextContent(/Label it now, or discard it\./);
+  expect(within(banner).getByRole('button', { name: 'Label it' })).toBeInTheDocument();
+  expect(within(banner).getByRole('button', { name: 'Discard' })).toBeInTheDocument();
+  expect(within(banner).getByRole('button', { name: 'Later' })).toBeInTheDocument();
+
+  // "Later" dismisses it for this page load.
+  fireEvent.click(within(banner).getByRole('button', { name: 'Later' }));
+  await waitFor(() => expect(screen.queryByTestId('unsaved-take-banner')).toBeNull());
+});
+
+// ---------------------------------------------------------------------------
+// D-4 keyboard & focus.
+// ---------------------------------------------------------------------------
+
+test('focus follows the phase — Start on ready, Save on result (no focus falls to body)', async () => {
+  mockFetchWithStatus({ status: { run_id: 'run_1', state: 'completed', integrity: 'ok' } });
+  renderWithClient(<CollectScreen />);
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
+  await waitFor(() =>
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: /Start recording/ })),
+  );
+
+  await driveToResult();
+  await waitFor(() =>
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: /Save — success/ })),
+  );
+});
+
+test('keyboard shortcuts: R starts and S stops, but typing in an input is ignored', async () => {
+  mockFetch({ run_id: 'run_1', state: 'recording' });
+  renderWithClient(<CollectScreen />);
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
+
+  // Typing R into an input must NOT start recording.
+  const input = document.createElement('input');
+  document.body.appendChild(input);
+  input.focus();
+  fireEvent.keyDown(input, { key: 'r' });
+  expect(phaseTitle()).toHaveTextContent('READY');
+  input.remove();
+
+  // R on the page starts recording…
+  fireEvent.keyDown(document.body, { key: 'r' });
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('RECORDING'));
+  // …and S stops it (leaves the recording phase).
+  fireEvent.keyDown(document.body, { key: 's' });
+  await waitFor(() => expect(phaseTitle()).not.toHaveTextContent('RECORDING'));
+});
+
+test('the ? shortcut opens the keyboard-shortcuts sheet', async () => {
+  mockFetch({ run_id: 'run_1', state: 'recording' });
+  renderWithClient(<CollectScreen />);
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
+  fireEvent.keyDown(document.body, { key: '?' });
+  expect(await screen.findByText('Keyboard shortcuts')).toBeInTheDocument();
 });

@@ -1,12 +1,13 @@
 // Collect screen state machine: batch -> episode -> phase, all local to the
 // frontend (the backend has no Session/Batch/Episode model yet — that's Phase
 // 2). The recording itself is real: startRecording()/stopRecording() call the
-// orchestrator's /record/start and /record/stop (same contract LiveTab uses),
-// and every other transition (arming/saving/quick-check/result/pause/end) is
-// simulated client-side so the operator flow is fully demoable today.
+// orchestrator's /record/start and /record/stop (same contract LiveTab uses).
+// The saving/quick-check transitions are gated on REAL recorder events (the
+// stop mutation resolving and the /record/status integrity landing), not fixed
+// demo timers — so the operator never advances past a stop that hasn't finished.
 //
 // The reducer below is the "batch machine" proper — pure, exported for direct
-// unit testing. Everything else in the hook (real API calls, timers, toast,
+// unit testing. Everything else in the hook (real API calls, event gates, toast,
 // modal/picker visibility) wraps it.
 
 import {
@@ -25,6 +26,7 @@ import { useUiStore } from '../../store/uiStore';
 import {
   createBatch,
   createEpisode,
+  getEpisodeOutcome,
   listBatches,
   patchBatch,
   removeEpisodeOutcome,
@@ -35,11 +37,16 @@ import type {
   BatchEpisodeSummary,
   BatchSummary,
   EpisodeCreateRequest,
+  EpisodeQuality,
+  EpisodeQualitySource,
+  Page,
   RecordArming,
   RecordIntegrity,
   RecordStartRequest,
   RecordStatus,
   RunDetail,
+  RunState,
+  RunSummary,
 } from '../../api/types';
 
 export type Phase =
@@ -62,6 +69,19 @@ export type Phase =
 export type Quality = 'good' | 'review';
 export type TaskResult = 'ok' | 'fail';
 
+// The operator's optional quality override on the result panel. 'notusable' has
+// no local EpisodeRecord equivalent (see Quality) — it maps to 'review' for the
+// strip/tallies and to the server 'not_usable' on save.
+export type QualityOverride = 'good' | 'review' | 'notusable';
+
+// A recorder error carried to the UI: `code` is the machine-readable code
+// (e.g. `already_recording`) when the backend/transport gave one, so ControlCard
+// can show friendly copy and a muted `(code)` line; null when only a message.
+export interface MachineError {
+  code: string | null;
+  message: string;
+}
+
 export interface EpisodeRecord {
   index: number;
   /** Recording/data quality — independent of whether the task succeeded. */
@@ -82,12 +102,12 @@ export function describeTaskOutcome(pendingTask: 'ok' | 'fail' | null, failReaso
   return '—';
 }
 
-/** Plain-language "Recording quality: …" line for the episode-result summary. */
-export function describeQuality(recWarning: boolean): string {
-  return recWarning
-    ? 'Needs review — camera rate dropped during recording.'
-    : 'Good — no issues detected.';
-}
+/** Human labels for the effective quality shown on the result panel. */
+export const QUALITY_LABEL: Record<QualityOverride, string> = {
+  good: 'Good',
+  review: 'Needs review',
+  notusable: 'Not usable',
+};
 
 // The plan catalog (Projects → Tasks → Conditions) now lives in the shared
 // v2/plans store so a Settings edit reflects here immediately. This screen reads
@@ -130,10 +150,14 @@ export const ADVICE_ITEMS: AdviceItem[] = [
 ];
 
 export const EPISODES_PER_BATCH = 30;
-const SAVING_MS = 1000;
-const QUICKCHECK_MS = 1500;
-const WARNING_AT_S = 6;
-export const MB_PER_S = 6.8; // demo write-rate used for the recording MB counter
+// Quick-check waits for the real integrity signal from /record/status; this is
+// only the backstop if that signal never lands (e.g. an older backend that
+// doesn't classify integrity) so the operator is never stuck on QUICK CHECK.
+const QUICKCHECK_FALLBACK_MS = 3000;
+// A just-saved episode's strip chip flashes a teal ring for this long.
+const SAVED_FLASH_MS = 1200;
+// An unsaved take older than this is no longer offered for recovery.
+const UNSAVED_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 interface MachineState {
   phase: Phase;
@@ -158,12 +182,18 @@ interface MachineState {
    *  persisted (transient; recomputed from GET /batches on each page load). */
   predictedSeq: number | null;
   elapsedMs: number;
-  recWarning: boolean;
+  /** Operator's quality choice on the result panel; null = accept the auto
+   *  (quick-check) quality. The auto value is NOT stored here — it is derived
+   *  live from the recorder's integrity signal in the hook. */
+  qualityOverride: QualityOverride | null;
   pendingTask: 'ok' | 'fail' | null;
   failReason: string;
-  startError: string | null;
-  stopError: string | null;
+  startError: MachineError | null;
+  stopError: MachineError | null;
   currentRunId: string | null;
+  /** The last run this browser started (durable) — lets takeover detection tell
+   *  a resumed-own recording from one another session started. */
+  lastRunId: string | null;
   project: string;
   task: string;
   condition: string;
@@ -184,12 +214,13 @@ function createInitialState(): MachineState {
     batchId: null,
     predictedSeq: null,
     elapsedMs: 0,
-    recWarning: false,
+    qualityOverride: null,
     pendingTask: null,
     failReason: '',
     startError: null,
     stopError: null,
     currentRunId: null,
+    lastRunId: null,
     project: firstPlan?.name ?? '—',
     task: firstTask?.name ?? '—',
     condition: firstTask?.conditions[0] ?? '—',
@@ -199,17 +230,20 @@ function createInitialState(): MachineState {
 
 type Action =
   | { type: 'START_REQUESTED' }
-  | { type: 'START_FAILED'; message: string }
+  | { type: 'START_FAILED'; error: MachineError }
   | { type: 'START_SUCCEEDED'; runId: string | null }
   | { type: 'CANCEL_ARMING' }
   | { type: 'TICK'; elapsedMs: number }
   | { type: 'STOP_REQUESTED' }
-  | { type: 'STOP_FAILED'; message: string }
+  | { type: 'STOP_FAILED'; error: MachineError }
+  | { type: 'RETRY_STOP' }
   | { type: 'SAVED' }
   | { type: 'QUICK_CHECK_DONE' }
   | { type: 'PICK_RESULT'; result: 'ok' | 'fail' }
   | { type: 'PICK_FAIL_REASON'; reason: string }
-  | { type: 'CONFIRM_EPISODE' }
+  | { type: 'SET_QUALITY'; quality: QualityOverride | null }
+  | { type: 'CONFIRM_EPISODE'; quality: Quality }
+  | { type: 'RESUME_TAKE'; runId: string }
   | { type: 'RETRY_EPISODE' }
   | { type: 'PAUSE_BATCH' }
   | { type: 'RESUME_BATCH' }
@@ -228,14 +262,16 @@ function reducer(state: MachineState, action: Action): MachineState {
       if (state.phase !== 'ready') return state;
       return { ...state, phase: 'arming', startError: null };
     case 'START_FAILED':
-      return { ...state, phase: 'ready', startError: action.message };
+      return { ...state, phase: 'ready', startError: action.error };
     case 'START_SUCCEEDED':
       return {
         ...state,
         phase: 'recording',
         elapsedMs: 0,
-        recWarning: false,
+        qualityOverride: null,
         currentRunId: action.runId,
+        // Remember the run we started (durable) for resumed-own takeover detection.
+        lastRunId: action.runId ?? state.lastRunId,
         startError: null,
       };
     case 'CANCEL_ARMING':
@@ -243,25 +279,29 @@ function reducer(state: MachineState, action: Action): MachineState {
       return { ...state, phase: 'ready' };
     case 'TICK': {
       if (state.phase !== 'recording') return state;
-      const recWarning = state.recWarning || action.elapsedMs >= WARNING_AT_S * 1000;
-      return { ...state, elapsedMs: action.elapsedMs, recWarning };
+      return { ...state, elapsedMs: action.elapsedMs };
     }
     case 'STOP_REQUESTED':
       if (state.phase !== 'recording') return state;
       return { ...state, phase: 'saving', stopError: null };
+    case 'RETRY_STOP':
+      // Clear the prior stop error while a fresh stop is attempted (stays in
+      // 'saving'; the mutation re-fires from the hook).
+      if (state.phase !== 'saving') return state;
+      return { ...state, stopError: null };
     case 'STOP_FAILED':
-      // Only snap back to RECORDING if we're still in the immediate next phase —
-      // once the demo-paced saving/quick-check timers have moved further on, a
-      // late stop error just gets recorded (no phase change), since forcing the
-      // operator's already-shown result back would be more confusing than useful.
-      if (state.phase !== 'saving') return { ...state, stopError: action.message };
-      return { ...state, phase: 'recording', stopError: action.message };
+      // Stay in 'saving' and surface the error — the operator retries via the
+      // visible Retry-stop button (D-3). The recording isn't lost; the recorder
+      // is still holding the bag until a stop succeeds, so we never silently
+      // swallow the failure or force the flow forward.
+      return { ...state, stopError: action.error };
     case 'SAVED':
       if (state.phase !== 'saving') return state;
       return { ...state, phase: 'quickcheck' };
     case 'QUICK_CHECK_DONE':
       if (state.phase !== 'quickcheck') return state;
-      return { ...state, phase: 'result', pendingTask: null, failReason: '' };
+      // Pre-select Success so the happy path is a single primary action (D-9 ④).
+      return { ...state, phase: 'result', pendingTask: 'ok', failReason: '', qualityOverride: null };
     case 'PICK_RESULT':
       if (state.phase !== 'result') return state;
       return {
@@ -272,12 +312,17 @@ function reducer(state: MachineState, action: Action): MachineState {
     case 'PICK_FAIL_REASON':
       if (state.phase !== 'result') return state;
       return { ...state, failReason: action.reason };
+    case 'SET_QUALITY':
+      if (state.phase !== 'result') return state;
+      return { ...state, qualityOverride: action.quality };
     case 'CONFIRM_EPISODE': {
       if (state.phase !== 'result' || !state.pendingTask) return state;
       if (state.pendingTask === 'fail' && !state.failReason) return state;
       // Independent axes: a failed task can still be good-quality, usable data.
+      // Quality is decided by the HOOK (real integrity + any operator override)
+      // and passed in — the reducer never reads a live signal itself.
       const taskResult: TaskResult = state.pendingTask === 'fail' ? 'fail' : 'ok';
-      const quality: Quality = state.recWarning ? 'review' : 'good';
+      const quality: Quality = action.quality;
       // The next index follows the monotone recorded count (never reuses a
       // deleted episode's number).
       const recordedCount = state.recordedCount + 1;
@@ -296,19 +341,34 @@ function reducer(state: MachineState, action: Action): MachineState {
         recordedCount,
         phase: done ? 'completed' : 'ready',
         elapsedMs: 0,
-        recWarning: false,
+        qualityOverride: null,
         pendingTask: null,
         failReason: '',
         currentRunId: null,
       };
     }
+    case 'RESUME_TAKE':
+      // Recover an unsaved take (D-3): drop straight into the result panel for
+      // the given run so the operator can label it. Success is pre-selected;
+      // quality falls back to auto (no override) until the operator changes it.
+      return {
+        ...state,
+        phase: 'result',
+        currentRunId: action.runId,
+        pendingTask: 'ok',
+        failReason: '',
+        qualityOverride: null,
+        elapsedMs: 0,
+        startError: null,
+        stopError: null,
+      };
     case 'RETRY_EPISODE':
       if (state.phase !== 'result') return state;
       return {
         ...state,
         phase: 'ready',
         elapsedMs: 0,
-        recWarning: false,
+        qualityOverride: null,
         pendingTask: null,
         failReason: '',
         currentRunId: null,
@@ -336,7 +396,7 @@ function reducer(state: MachineState, action: Action): MachineState {
         batchId: null,
         phase: 'ready',
         elapsedMs: 0,
-        recWarning: false,
+        qualityOverride: null,
         endReason: '',
         currentRunId: null,
       };
@@ -355,7 +415,7 @@ function reducer(state: MachineState, action: Action): MachineState {
         batchId: null,
         phase: 'ready',
         elapsedMs: 0,
-        recWarning: false,
+        qualityOverride: null,
         pendingTask: null,
         failReason: '',
         startError: null,
@@ -410,6 +470,9 @@ interface PersistedBatch {
   project: string;
   task: string;
   condition: string;
+  /** Last run this browser started — durable so a reload can still recognise a
+   *  recording it started as "resumed own" rather than another session's. */
+  lastRunId: string | null;
 }
 
 /** Serialize just the durable subset (used both to persist and to dedupe). */
@@ -422,6 +485,7 @@ function serializeDurable(state: MachineState): string {
     project: state.project,
     task: state.task,
     condition: state.condition,
+    lastRunId: state.lastRunId,
   };
   return JSON.stringify(blob);
 }
@@ -484,6 +548,7 @@ function readInitialState(): MachineState {
       project: typeof blob.project === 'string' ? blob.project : base.project,
       task: typeof blob.task === 'string' ? blob.task : base.task,
       condition: typeof blob.condition === 'string' ? blob.condition : base.condition,
+      lastRunId: typeof blob.lastRunId === 'string' ? blob.lastRunId : null,
     };
   } catch {
     return base;
@@ -492,6 +557,12 @@ function readInitialState(): MachineState {
 
 let currentState: MachineState = readInitialState();
 const storeListeners = new Set<() => void>();
+
+// Runs the operator has dismissed ("Later") from the unsaved-take banner. Module
+// scope so a tab-switch remount keeps them hidden; cleared on a full page load
+// (a fresh module) so the banner re-offers them next session — matching the
+// "hide until next page load" contract in the design.
+const dismissedUnsavedRuns = new Set<string>();
 
 function notifyStore(): void {
   for (const listener of storeListeners) listener();
@@ -572,6 +643,9 @@ function applyServerRestore(batch: BatchSummary | null): void {
     condition: batch.condition ?? '—',
     episodes,
     phase,
+    // Preserve the durable last-run pointer so a resumed-own takeover is still
+    // recognised after a server restore (which otherwise resets to a fresh state).
+    lastRunId: currentState.lastRunId,
   };
   persistBatch(currentState);
   notifyStore();
@@ -615,6 +689,7 @@ function setPredictedSeq(seq: number | null): void {
 export function __resetBatchStore(): void {
   lastPersisted = '';
   serverHydrated = false;
+  dismissedUnsavedRuns.clear();
   try {
     window.localStorage.removeItem(BATCH_STORAGE_KEY);
   } catch {
@@ -669,13 +744,22 @@ export interface BatchMachine {
    *  `batchSeq` is null. Null → the UI falls back to "next #1". */
   predictedSeq: number | null;
   elapsedMs: number;
-  recWarning: boolean;
   pendingTask: 'ok' | 'fail' | null;
   failReason: string;
-  startError: string | null;
-  stopError: string | null;
+  startError: MachineError | null;
+  stopError: MachineError | null;
   isStarting: boolean;
   stats: BatchStats;
+
+  // Quality (D-2): the auto value from the real integrity signal, plus the
+  // operator's optional override. `autoQuality` drives the QUICK chip; the
+  // effective quality (override ?? auto) is what gets saved.
+  /** Real quick-check quality for the current run (from integrity), never a mock. */
+  autoQuality: Quality;
+  /** Operator override, or null when accepting the auto value. */
+  qualityOverride: QualityOverride | null;
+  /** Set the operator override (null clears it back to auto). */
+  setQuality: (q: QualityOverride | null) => void;
 
   // Real recorder signals from /record/status (never the mock quality flag).
   /** Live arming matched/missing snapshot (OL-①.4). Null unless the recorder
@@ -687,6 +771,53 @@ export interface BatchMachine {
   integrity: RecordIntegrity | null;
   /** rosbag2's self-reported messages lost when integrity is 'dropped'. */
   droppedMessages: number | null;
+  /** Finalised/live bag size for the current run (formatBytes it; null → "—"). */
+  recordingBytes: number | null;
+  /** The recorder's SERVER state (from /record/status), the single source the
+   *  SYSTEM STATUS Recorder row and the takeover card both read — so the two can
+   *  never contradict. Null before the first poll. */
+  recorderState: RunState | 'idle' | null;
+
+  // Takeover (D-1): a recording is running server-side that this screen is not
+  // driving (another tab/session, or a reload of our own). Null in the normal
+  // case; when set, ControlCard shows the takeover card instead of a phase card.
+  takeover: {
+    runId: string;
+    startedAt: string | null;
+    bytes: number | null;
+    /** Topic count from the run detail (RecordStatus has no topic list); null until loaded. */
+    topicsCount: number | null;
+    /** Operator from the run detail; null when absent (never fabricated). */
+    operator: string | null;
+  } | null;
+  /** True when the takeover run is one this browser started (resumed own). */
+  takeoverResumedOwn: boolean;
+  takeoverStopModalOpen: boolean;
+  openTakeoverStopModal: () => void;
+  confirmTakeoverStop: () => void;
+  isTakeoverStopping: boolean;
+
+  // Unsaved take recovery (D-3): a completed run with no episode label, offered
+  // for recovery after a reload between Stop and Save. Null when none.
+  unsavedTake: {
+    runId: string;
+    startedAt: string | null;
+    bytes: number | null;
+    durationMs: number | null;
+  } | null;
+  /** Open the result panel for the unsaved take to label it. */
+  labelUnsavedTake: () => void;
+  /** Open the discard-confirmation for the unsaved take. */
+  discardUnsavedTake: () => void;
+  /** Confirm discarding the unsaved take (real DELETE /runs/{id}). */
+  confirmDiscardUnsavedTake: () => void;
+  /** Hide the unsaved-take banner until the next page load. */
+  dismissUnsavedTake: () => void;
+  unsavedDiscardModalOpen: boolean;
+  isDiscardingUnsaved: boolean;
+
+  /** Index of the just-saved episode (flashes its strip chip), cleared shortly after. */
+  lastSavedIndex: number | null;
 
   // Next-recording topic selection (resolved from config default_topics + the
   // uiStore Monitor picker; the picker checkboxes are another screen's task —
@@ -712,6 +843,8 @@ export interface BatchMachine {
   issueModalOpen: boolean;
   condModalOpen: boolean;
   resetModalOpen: boolean;
+  /** Keyboard-shortcuts help sheet (opened with `?`). */
+  shortcutsOpen: boolean;
   toggleBatchMenu: () => void;
   openProjPicker: () => void;
   openTaskPicker: () => void;
@@ -719,6 +852,7 @@ export interface BatchMachine {
   openEndModal: () => void;
   openIssueModal: () => void;
   openResetModal: () => void;
+  openShortcuts: () => void;
   closeModals: () => void;
 
   // Discard-episode confirmation (real DELETE /runs/{id} — v1 LiveTab parity).
@@ -744,6 +878,8 @@ export interface BatchMachine {
   startRecording: () => void;
   cancelArming: () => void;
   stopRecording: () => void;
+  /** Re-attempt a stop that failed (stays in SAVING). */
+  retryStop: () => void;
   pickSuccess: () => void;
   pickFailure: () => void;
   pickFailReason: (reason: string) => void;
@@ -769,6 +905,21 @@ export interface BatchMachine {
   pickCondition: (condition: string) => void;
   /** Jump to the Monitor tab (Warnings card's "Open in Monitor →"). */
   goMonitor: () => void;
+}
+
+/** Normalise a thrown error to a MachineError. A backend code passes through; a
+ *  5xx or a transport failure (no code) is treated as an unreachable recorder so
+ *  ControlCard can show the friendly connection copy. */
+function toMachineError(err: unknown): MachineError {
+  if (err instanceof ApiError) {
+    if (err.code) return { code: err.code, message: err.message };
+    if (err.status >= 500) return { code: 'recorder_unreachable', message: err.message };
+    return { code: null, message: err.message };
+  }
+  return {
+    code: 'recorder_unreachable',
+    message: err instanceof Error ? err.message : String(err),
+  };
 }
 
 export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMachine {
@@ -819,8 +970,90 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     state.currentRunId == null || (status?.run_id ?? null) === state.currentRunId;
   const integrity: RecordIntegrity | null = runMatches ? status?.integrity ?? null : null;
   const droppedMessages: number | null = runMatches ? status?.dropped_messages ?? null : null;
-  // Finalised bag size for the just-stopped run, shown in the Discard modal.
+  // Finalised/live bag size for the current run (the Discard modal + the
+  // recording card's real "MB written", replacing a fabricated elapsed×rate).
   const currentRunBytes: number | null = runMatches ? status?.bytes ?? null : null;
+  // The recorder's SERVER state — the one source the SYSTEM STATUS Recorder row
+  // and the takeover card both read (D-1), so they can never disagree.
+  const recorderState: RunState | 'idle' | null = status?.state ?? null;
+
+  // ---- auto quality (D-2) --------------------------------------------------
+  // The quick-check quality is DERIVED from the recorder's real integrity — a
+  // clean run is 'good', a dropped/failed run is flagged for review. No fixed
+  // timer, no fabricated "camera rate dropped". `null` integrity (older backend)
+  // stays 'good' and the result panel notes the check was unavailable.
+  const autoQuality: Quality = integrity === 'dropped' || integrity === 'failed' ? 'review' : 'good';
+  const setQuality = useCallback(
+    (q: QualityOverride | null) => dispatch({ type: 'SET_QUALITY', quality: q }),
+    [],
+  );
+
+  // ---- takeover detection (D-1) --------------------------------------------
+  // A recording is running server-side that THIS screen isn't driving (another
+  // tab/session started it, or this is a reload of our own). We treat it as a
+  // takeover whenever the server reports 'recording' but our local phase isn't
+  // in an active-recording state.
+  const localActive =
+    state.phase === 'arming' ||
+    state.phase === 'recording' ||
+    state.phase === 'saving' ||
+    state.phase === 'quickcheck';
+  const takeoverRunId =
+    recorderState === 'recording' && !localActive ? status?.run_id ?? null : null;
+  // The run detail supplies the operator + topic count (RecordStatus carries
+  // neither); only fetched while a takeover is showing.
+  const takeoverDetailQuery = useQuery({
+    queryKey: queryKeys.run(takeoverRunId ?? ''),
+    queryFn: ({ signal }) =>
+      apiGet<RunDetail>(`/runs/${encodeURIComponent(takeoverRunId ?? '')}`, { signal }),
+    enabled: !!takeoverRunId,
+  });
+  const takeover = takeoverRunId
+    ? {
+        runId: takeoverRunId,
+        startedAt: status?.started_at ?? null,
+        bytes: status?.bytes ?? null,
+        topicsCount: takeoverDetailQuery.data?.topics?.length ?? null,
+        operator: takeoverDetailQuery.data?.operator ?? null,
+      }
+    : null;
+  const takeoverResumedOwn = !!takeover && takeover.runId === state.lastRunId;
+
+  // ---- unsaved-take scan (D-3) ---------------------------------------------
+  // A completed run with no episode label, recent, and not the run we're already
+  // labeling, is a take the operator stopped but never saved (e.g. a reload
+  // between Stop and Save). Offer it for recovery. Shares the ['runs'] cache
+  // prefix so a save/discard invalidation refreshes it.
+  const runsScanQuery = useQuery({
+    queryKey: queryKeys.runs('collect-scan'),
+    queryFn: ({ signal }) =>
+      apiGet<Page<RunSummary>>('/runs', { signal, query: { limit: 10 } }),
+    refetchInterval: 15000,
+  });
+  // A bump to recompute the (module-set-backed) dismissed filter without state.
+  const [dismissNonce, setDismissNonce] = useState(0);
+  const unsavedTake = useMemo(() => {
+    void dismissNonce; // recompute when a take is dismissed
+    const items = runsScanQuery.data?.items ?? [];
+    const now = Date.now();
+    for (const run of items) {
+      if (run.state !== 'completed') continue;
+      if (run.episode) continue;
+      if (!run.started_at) continue;
+      const startedMs = Date.parse(run.started_at);
+      if (Number.isNaN(startedMs) || now - startedMs > UNSAVED_MAX_AGE_MS) continue;
+      if (run.run_id === state.currentRunId) continue;
+      if (dismissedUnsavedRuns.has(run.run_id)) continue;
+      if (getEpisodeOutcome(run.run_id)) continue;
+      const bytes =
+        status?.run_id === run.run_id && typeof status?.bytes === 'number' ? status.bytes : null;
+      const endedMs = run.ended_at ? Date.parse(run.ended_at) : NaN;
+      const durationMs =
+        run.duration_ms ?? (Number.isNaN(endedMs) ? null : Math.max(0, endedMs - startedMs));
+      return { runId: run.run_id, startedAt: run.started_at, bytes, durationMs };
+    }
+    return null;
+  }, [runsScanQuery.data, state.currentRunId, status?.run_id, status?.bytes, dismissNonce]);
 
   // ---- toast --------------------------------------------------------------
   const [toast, setToast] = useState('');
@@ -833,6 +1066,23 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   useEffect(
     () => () => {
       if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    },
+    [],
+  );
+
+  // ---- save flash ----------------------------------------------------------
+  // Briefly mark the just-saved episode's strip chip (a teal ring) so the save
+  // receipt is visible on the strip, not only the toast.
+  const [lastSavedIndex, setLastSavedIndex] = useState<number | null>(null);
+  const savedFlashRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flashSaved = useCallback((index: number) => {
+    setLastSavedIndex(index);
+    if (savedFlashRef.current) clearTimeout(savedFlashRef.current);
+    savedFlashRef.current = setTimeout(() => setLastSavedIndex(null), SAVED_FLASH_MS);
+  }, []);
+  useEffect(
+    () => () => {
+      if (savedFlashRef.current) clearTimeout(savedFlashRef.current);
     },
     [],
   );
@@ -917,9 +1167,9 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
       if (!run || run.state === 'failed') {
         dispatch({
           type: 'START_FAILED',
-          message: run?.error
-            ? `${run.error.code}: ${run.error.message}`
-            : 'the recorder rejected the start',
+          error: run?.error
+            ? { code: run.error.code, message: run.error.message }
+            : { code: null, message: 'the recorder rejected the start' },
         });
         return;
       }
@@ -930,7 +1180,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
         cancelledStartRef.current = false;
         return;
       }
-      dispatch({ type: 'START_FAILED', message: errorText(err) });
+      dispatch({ type: 'START_FAILED', error: toMachineError(err) });
     },
   });
 
@@ -938,9 +1188,14 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     mutationFn: () => apiPost<RunDetail>('/record/stop', {}),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.recordStatus });
+      // The stop returned the finalised run: advance SAVING → QUICK CHECK on the
+      // real event, and refresh the runs cache (the just-stopped run is now
+      // completed — feeds the unsaved-take scan if the operator navigates away).
+      void queryClient.invalidateQueries({ queryKey: ['runs'] });
+      dispatch({ type: 'SAVED' });
     },
     onError: (err) => {
-      dispatch({ type: 'STOP_FAILED', message: errorText(err) });
+      dispatch({ type: 'STOP_FAILED', error: toMachineError(err) });
     },
   });
 
@@ -970,7 +1225,13 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     stopMutation.mutate();
   }, [state.phase, stopMutation]);
 
-  // ---- demo-paced phase timers ---------------------------------------------
+  const retryStop = useCallback(() => {
+    if (getStoreSnapshot().phase !== 'saving') return;
+    dispatch({ type: 'RETRY_STOP' });
+    stopMutation.mutate();
+  }, [stopMutation]);
+
+  // ---- recording elapsed timer ---------------------------------------------
   const recStartRef = useRef<number | null>(null);
   useEffect(() => {
     if (state.phase !== 'recording') return;
@@ -982,17 +1243,30 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     return () => clearInterval(id);
   }, [state.phase]);
 
+  // SAVING advances on the REAL stop event (stopMutation.onSuccess dispatches
+  // SAVED). This secondary gate covers a tab-switch during saving: once the
+  // recorder reports the current run finalised, advance even if the mutation's
+  // callback was on an unmounted instance. A failed stop stays in SAVING (with
+  // the Retry button) and never trips this (state is still 'recording' on the
+  // recorder until a stop succeeds).
   useEffect(() => {
     if (state.phase !== 'saving') return;
-    const id = setTimeout(() => dispatch({ type: 'SAVED' }), SAVING_MS);
-    return () => clearTimeout(id);
-  }, [state.phase]);
+    const forThisRun = state.currentRunId == null || status?.run_id === state.currentRunId;
+    if (status?.state === 'completed' && forThisRun) dispatch({ type: 'SAVED' });
+  }, [state.phase, state.currentRunId, status?.state, status?.run_id]);
 
+  // QUICK CHECK reads the recorder's real integrity (already on /record/status);
+  // advance as soon as it lands for this run, with a fallback so an older backend
+  // that never classifies integrity can't strand the operator.
   useEffect(() => {
     if (state.phase !== 'quickcheck') return;
-    const id = setTimeout(() => dispatch({ type: 'QUICK_CHECK_DONE' }), QUICKCHECK_MS);
+    if (integrity != null) {
+      dispatch({ type: 'QUICK_CHECK_DONE' });
+      return;
+    }
+    const id = setTimeout(() => dispatch({ type: 'QUICK_CHECK_DONE' }), QUICKCHECK_FALLBACK_MS);
     return () => clearTimeout(id);
-  }, [state.phase]);
+  }, [state.phase, integrity]);
 
   // ---- episode result / confirm --------------------------------------------
   const pickSuccess = useCallback(() => dispatch({ type: 'PICK_RESULT', result: 'ok' }), []);
@@ -1011,13 +1285,30 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     const willComplete = nextIndex >= EPISODES_PER_BATCH;
     const isFail = state.pendingTask === 'fail';
     const reason = state.failReason;
-    const needsReview = state.recWarning;
+    // Effective quality (D-2): the operator's override if any, else the auto
+    // (real integrity) value. `quality_source` is honest — 'operator' only when
+    // they actually changed it. 'notusable' has no local axis (maps to 'review').
+    const override = state.qualityOverride;
+    const effective: QualityOverride = override ?? autoQuality;
+    const localQuality: Quality = effective === 'good' ? 'good' : 'review';
+    const serverQuality: EpisodeQuality =
+      effective === 'good' ? 'good' : effective === 'review' ? 'needs_review' : 'not_usable';
+    const qualitySource: EpisodeQualitySource = override != null ? 'operator' : 'quick_check';
     const runId = state.currentRunId;
     const batchId = state.batchId;
     // The bridge fallback (used only when the episode POST fails) keeps a local
     // grouping number; use the server batch_seq when known, else a safe 1.
     const bridgeBatchNum = state.batchSeq ?? 1;
-    dispatch({ type: 'CONFIRM_EPISODE' });
+    const batchSeqForReceipt = state.batchSeq;
+    const op = operator.trim();
+    // The save receipt: prefer the SERVER-returned index_in_batch (the backend
+    // may re-allocate it); falls back to the local next index otherwise.
+    const receipt = (index: number) => {
+      flashSaved(index);
+      const seqPart = batchSeqForReceipt != null ? ` of Batch ${batchSeqForReceipt}` : '';
+      showToast(`Saved — Episode ${index}${seqPart}${op ? ` · ${op}` : ''}`);
+    };
+    dispatch({ type: 'CONFIRM_EPISODE', quality: localQuality });
 
     // Persist the episode to the server (Phase 2). On any failure keep the local
     // save and fall back to the browser bridge, so Review still shows it, and
@@ -1025,7 +1316,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     if (runId) {
       const bridgeFallback = () => {
         saveEpisodeOutcome(runId, {
-          quality: needsReview ? 'review' : 'good',
+          quality: localQuality,
           taskResult: isFail ? 'fail' : 'ok',
           failReason: isFail ? reason || undefined : undefined,
           batchNum: bridgeBatchNum,
@@ -1040,48 +1331,49 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
           run_id: runId,
           index_in_batch: nextIndex,
           task_result: isFail ? 'failure' : 'success',
-          quality: needsReview ? 'needs_review' : 'good',
-          quality_source: 'operator',
+          quality: serverQuality,
+          quality_source: qualitySource,
         };
         if (isFail && reason) body.failure_reason = reason;
         createEpisode(body)
-          .then(() => {
+          .then((ep) => {
             if (willComplete) void patchBatch(batchId, { status: 'completed' }).catch(() => {});
+            receipt(typeof ep.index_in_batch === 'number' ? ep.index_in_batch : nextIndex);
+            // The just-saved run now has an episode — refresh the unsaved-take scan.
+            void queryClient.invalidateQueries({ queryKey: ['runs'] });
           })
           .catch((err) => {
             // 409 = the run already has an episode (already saved) — not a failure.
-            if (err instanceof ApiError && err.status === 409) return;
+            if (err instanceof ApiError && err.status === 409) {
+              receipt(nextIndex);
+              return;
+            }
             bridgeFallback();
           });
       } else {
         // No server batch (create failed / API down) — bridge only.
         bridgeFallback();
       }
-    } else if (willComplete && batchId) {
-      // Completed with no run to attach — still mark the batch done.
-      void patchBatch(batchId, { status: 'completed' }).catch(() => {});
-    }
-
-    if (!willComplete) {
-      // Report both axes when either is notable — a failed task and/or a
-      // review-flagged recording — so the toast never implies "not usable"
-      // for data that's actually saved and labeled.
-      const notes: string[] = [];
-      if (isFail) notes.push(`task failed${reason ? ` (${reason})` : ''}`);
-      if (needsReview) notes.push('quality needs review');
-      const detail = notes.length ? ` — ${notes.join(', ')}` : '';
-      showToast(`Episode ${nextIndex} saved${detail} — ready for #${nextIndex + 1}`);
+    } else {
+      // No run to attach (capture returned no run_id) — a purely local strip
+      // entry; still mark a completed batch done and give a receipt.
+      if (willComplete && batchId) void patchBatch(batchId, { status: 'completed' }).catch(() => {});
+      receipt(nextIndex);
     }
   }, [
     state.phase,
     state.pendingTask,
     state.failReason,
-    state.recWarning,
+    state.qualityOverride,
     state.recordedCount,
     state.currentRunId,
     state.batchId,
     state.batchSeq,
+    autoQuality,
+    operator,
     showToast,
+    flashSaved,
+    queryClient,
   ]);
 
   // ---- discard episode (real DELETE /runs/{id} — v1 LiveTab Keep/Discard) ----
@@ -1122,6 +1414,57 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     setDiscardModalOpen(false);
     showToast('Episode discarded — re-record when ready');
   }, [state.phase, state.currentRunId, discardMutation, showToast]);
+
+  // ---- takeover stop (D-1) -------------------------------------------------
+  // Stop a recording this screen isn't driving (another session, or a resumed
+  // own). A confirmation modal guards against knocking over someone else's take;
+  // the stop then joins the normal completion path (the stopped run surfaces as
+  // an unsaved take for labeling).
+  const [takeoverStopModalOpen, setTakeoverStopModalOpen] = useState(false);
+  const takeoverStopMutation = useMutation({
+    mutationFn: () => apiPost<RunDetail>('/record/stop', {}),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.recordStatus });
+      void queryClient.invalidateQueries({ queryKey: ['runs'] });
+      setTakeoverStopModalOpen(false);
+    },
+  });
+  const openTakeoverStopModal = useCallback(() => setTakeoverStopModalOpen(true), []);
+  const confirmTakeoverStop = useCallback(
+    () => takeoverStopMutation.mutate(),
+    [takeoverStopMutation],
+  );
+
+  // ---- unsaved-take recovery (D-3) -----------------------------------------
+  const labelUnsavedTake = useCallback(() => {
+    const t = unsavedTake;
+    if (!t) return;
+    dispatch({ type: 'RESUME_TAKE', runId: t.runId });
+    // Make sure there's a server batch to attach the recovered episode to.
+    ensureBatch();
+  }, [unsavedTake, ensureBatch]);
+
+  const [unsavedDiscardModalOpen, setUnsavedDiscardModalOpen] = useState(false);
+  const unsavedDiscardMutation = useMutation({
+    mutationFn: (rid: string) => apiDelete(`/runs/${encodeURIComponent(rid)}`),
+    onSuccess: (_data, rid) => {
+      void queryClient.invalidateQueries({ queryKey: ['runs'] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.recordStatus });
+      removeEpisodeOutcome(rid);
+      setUnsavedDiscardModalOpen(false);
+      showToast('Unsaved take discarded — run deleted');
+    },
+  });
+  const discardUnsavedTake = useCallback(() => setUnsavedDiscardModalOpen(true), []);
+  const confirmDiscardUnsavedTake = useCallback(() => {
+    if (unsavedTake) unsavedDiscardMutation.mutate(unsavedTake.runId);
+  }, [unsavedTake, unsavedDiscardMutation]);
+  const dismissUnsavedTake = useCallback(() => {
+    if (unsavedTake) {
+      dismissedUnsavedRuns.add(unsavedTake.runId);
+      setDismissNonce((n) => n + 1);
+    }
+  }, [unsavedTake]);
 
   // ---- batch menu actions ---------------------------------------------------
   const pauseBatch = useCallback(() => {
@@ -1211,6 +1554,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   const [issueModalOpen, setIssueModalOpen] = useState(false);
   const [condModalOpen, setCondModalOpen] = useState(false);
   const [resetModalOpen, setResetModalOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [adviceIdx, setAdviceIdx] = useState(0);
 
   const toggleBatchMenu = useCallback(() => setBatchMenuOpen((v) => !v), []);
@@ -1243,12 +1587,16 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     setResetModalOpen(true);
     setBatchMenuOpen(false);
   }, []);
+  const openShortcuts = useCallback(() => setShortcutsOpen(true), []);
   const closeModals = useCallback(() => {
     setEndModalOpen(false);
     setIssueModalOpen(false);
     setCondModalOpen(false);
     setResetModalOpen(false);
     setDiscardModalOpen(false);
+    setTakeoverStopModalOpen(false);
+    setUnsavedDiscardModalOpen(false);
+    setShortcutsOpen(false);
   }, []);
   const submitIssue = useCallback(() => {
     setIssueModalOpen(false);
@@ -1308,6 +1656,64 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   );
   const adviceNext = useCallback(() => setAdviceIdx((i) => (i + 1) % ADVICE_ITEMS.length), []);
 
+  // ---- keyboard shortcut layer (D-4) ---------------------------------------
+  // R/S/Space/Esc/? on the window, ignored while typing or when an overlay is
+  // open (modals own their own keys, e.g. Esc-to-close). Enter is deliberately
+  // NOT bound — focus management keeps the primary button focused so the native
+  // button handles it.
+  const anyOverlayOpen =
+    endModalOpen ||
+    issueModalOpen ||
+    condModalOpen ||
+    resetModalOpen ||
+    discardModalOpen ||
+    takeoverStopModalOpen ||
+    unsavedDiscardModalOpen ||
+    shortcutsOpen ||
+    projPickerOpen ||
+    taskPickerOpen ||
+    batchMenuOpen;
+  // R-to-start must not fire into a takeover (would 409); read it via a ref so
+  // the listener stays stable.
+  const takeoverActiveRef = useRef(false);
+  takeoverActiveRef.current = !!takeover;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      const tag = t?.tagName;
+      const typing =
+        tag === 'INPUT' ||
+        tag === 'TEXTAREA' ||
+        tag === 'SELECT' ||
+        (t?.isContentEditable ?? false);
+      if (typing) return;
+      // While an overlay is open, only let it handle its own keys.
+      if (anyOverlayOpen) return;
+      const phase = getStoreSnapshot().phase;
+      if (e.key === 'r' || e.key === 'R') {
+        if (phase === 'ready' && !takeoverActiveRef.current) {
+          e.preventDefault();
+          startRecording();
+        }
+      } else if (e.key === 's' || e.key === 'S' || e.key === ' ' || e.key === 'Spacebar') {
+        if (phase === 'recording') {
+          e.preventDefault();
+          stopRecording();
+        }
+      } else if (e.key === 'Escape') {
+        if (phase === 'arming') {
+          e.preventDefault();
+          cancelArming();
+        }
+      } else if (e.key === '?') {
+        e.preventDefault();
+        setShortcutsOpen(true);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [anyOverlayOpen, startRecording, stopRecording, cancelArming]);
+
   const stats: BatchStats = useMemo(() => {
     // The recorded count / next number are MONOTONE (from recordedCount) so a
     // Review exclude/delete never lowers them or renumbers. The quality/task
@@ -1333,7 +1739,6 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     batchSeq: state.batchSeq,
     predictedSeq: state.predictedSeq,
     elapsedMs: state.elapsedMs,
-    recWarning: state.recWarning,
     pendingTask: state.pendingTask,
     failReason: state.failReason,
     startError: state.startError,
@@ -1341,9 +1746,32 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     isStarting: startMutation.isPending,
     stats,
 
+    autoQuality,
+    qualityOverride: state.qualityOverride,
+    setQuality,
+
     arming,
     integrity,
     droppedMessages,
+    recordingBytes: currentRunBytes,
+    recorderState,
+
+    takeover,
+    takeoverResumedOwn,
+    takeoverStopModalOpen,
+    openTakeoverStopModal,
+    confirmTakeoverStop,
+    isTakeoverStopping: takeoverStopMutation.isPending,
+
+    unsavedTake,
+    labelUnsavedTake,
+    discardUnsavedTake,
+    confirmDiscardUnsavedTake,
+    dismissUnsavedTake,
+    unsavedDiscardModalOpen,
+    isDiscardingUnsaved: unsavedDiscardMutation.isPending,
+
+    lastSavedIndex,
 
     selection,
     noSelection,
@@ -1362,6 +1790,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     issueModalOpen,
     condModalOpen,
     resetModalOpen,
+    shortcutsOpen,
     toggleBatchMenu,
     openProjPicker,
     openTaskPicker,
@@ -1369,6 +1798,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     openEndModal,
     openIssueModal,
     openResetModal,
+    openShortcuts,
     closeModals,
 
     discardModalOpen,
@@ -1386,6 +1816,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     startRecording,
     cancelArming,
     stopRecording,
+    retryStop,
     pickSuccess,
     pickFailure,
     pickFailReason,

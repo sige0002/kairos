@@ -56,8 +56,12 @@ export function SystemStatusCard({
 }) {
   const robotOffline = sseStatus === 'open' && monitorBridge === 'down';
   const robotLive = sseStatus === 'open' && !robotOffline;
-  const recording = machine.phase === 'recording';
-  const saving = machine.phase === 'saving' || machine.phase === 'quickcheck';
+  // The Recorder row reads the SERVER recorder state (same /record/status query
+  // the takeover card uses), so a live server-side recording always shows REC
+  // here — never a stale local "READY" while the recorder is actually running.
+  const recState = machine.recorderState;
+  const recording = recState === 'recording';
+  const stopping = recState === 'stopping';
 
   // Real disk free/total for the data-dir filesystem (GET /api/v1/system). Null
   // until measured (older backend / missing data dir) -> honest "—", never a
@@ -113,9 +117,9 @@ export function SystemStatusCard({
     storageRow,
     {
       label: 'Recorder',
-      value: recording ? 'recording' : saving ? 'saving' : 'standby',
-      chip: recording ? 'REC' : 'READY',
-      tone: recording ? 'red' : 'teal',
+      value: recording ? 'recording' : stopping ? 'stopping' : 'standby',
+      chip: recording ? 'REC' : stopping ? 'STOPPING' : 'READY',
+      tone: recording ? 'red' : stopping ? 'amber' : 'teal',
     },
   ];
 
@@ -137,11 +141,13 @@ export function SystemStatusCard({
 }
 
 export function WarningsCard({ machine }: { machine: BatchMachine }) {
-  const hasWarnings = machine.recWarning;
-  const elapsedText = (() => {
-    const s = Math.floor(machine.elapsedMs / 1000);
-    return `00:${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
-  })();
+  // Driven by the REAL arming snapshot (OL-①.4), not a fabricated "camera rate
+  // dropped" — the honest live warning is target topics that aren't publishing
+  // while the recorder is armed/recording. Outside that window there's no live
+  // signal, so the card reads "No active warnings" (never a made-up one).
+  const missing = machine.arming?.missing_topics ?? [];
+  const hasWarnings = missing.length > 0;
+  const shown = missing.slice(0, 3);
 
   return (
     <Card className={cn('flex shrink-0 flex-col gap-2 [@media(max-height:860px)]:gap-1', SIDE_PAD)}>
@@ -150,19 +156,26 @@ export function WarningsCard({ machine }: { machine: BatchMachine }) {
           Active warnings
         </span>
         <div className="flex-1" />
-        <Chip tone={hasWarnings ? 'amber' : 'gray'}>{hasWarnings ? '1 needs attention' : '0'}</Chip>
+        <Chip tone={hasWarnings ? 'amber' : 'gray'}>
+          {hasWarnings ? `${missing.length} needs attention` : '0'}
+        </Chip>
       </div>
       {hasWarnings ? (
         <>
           <div className="flex flex-col gap-0.5 rounded-control border border-amber-200 bg-amber-50 px-3 py-2.5">
             <div className="flex items-center gap-2">
               <span className="h-[7px] w-[7px] shrink-0 rounded-sm bg-amber-600" />
-              <span className="text-[13px] font-semibold text-amber-800">Right camera update rate is low</span>
+              <span className="text-[13px] font-semibold text-amber-800">
+                {missing.length} target topic{missing.length === 1 ? '' : 's'} not publishing
+              </span>
             </div>
             <span className="pl-[15px] text-xs text-amber-700">
-              Recording can continue — this episode will be flagged for review.
+              Recording continues, but these won't be captured until they appear.
             </span>
-            <span className="pl-[15px] font-mono text-[11px] text-amber-600">{elapsedText} → ongoing</span>
+            <span className="truncate pl-[15px] font-mono text-[11px] text-amber-600" title={missing.join('\n')}>
+              {shown.join(', ')}
+              {missing.length > shown.length ? ' …' : ''}
+            </span>
           </div>
           <button
             type="button"

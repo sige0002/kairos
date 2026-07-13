@@ -38,6 +38,8 @@ export function EpisodeStrip({ machine }: { machine: BatchMachine }) {
       };
       const glyphs: Record<Bucket, string> = { good: '✓', review: '!', taskFailed: '✕' };
       const bucket = bucketOf(recorded);
+      // A just-saved episode flashes a teal ring (save receipt on the strip, D-3).
+      const justSaved = machine.lastSavedIndex === recorded.index;
       return (
         <span
           key={n}
@@ -45,6 +47,7 @@ export function EpisodeStrip({ machine }: { machine: BatchMachine }) {
           className={cn(
             'flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full text-xs font-bold',
             styles[bucket],
+            justSaved && 'ring-2 ring-teal-500 ring-offset-1',
           )}
         >
           {glyphs[bucket]}
