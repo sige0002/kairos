@@ -204,7 +204,7 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
       : `${selection.count} configured`;
 
   return (
-    <Card className="relative flex shrink-0 items-center px-[18px] py-2.5">
+    <Card className="relative flex shrink-0 items-center px-[18px] py-2.5 [@media(max-height:860px)]:py-1.5">
       <CellButton
         label="Project"
         value={machine.project}

@@ -16,7 +16,9 @@ import { SystemStatusCard, WarningsCard, AdviceCard, BatchStatsCard } from './Si
 import { Cameras } from './Cameras';
 import { EpisodeStrip } from './EpisodeStrip';
 import { CollectModals } from './Modals';
+import { COL_GAP } from './compact';
 import { useBatchMachine } from './useBatchMachine';
+import { cn } from '../../components/ui';
 
 export function CollectScreen() {
   // The runtime config is already fetched (and cached under this same key) by
@@ -43,22 +45,34 @@ export function CollectScreen() {
   }
 
   return (
-    <div className="flex flex-col gap-2.5 lg:h-full lg:min-h-0">
+    <div className={cn('flex flex-col lg:h-full lg:min-h-0', COL_GAP)}>
       <ContextBar machine={machine} />
-      <div className="grid grid-cols-1 gap-2.5 lg:min-h-0 lg:flex-1 lg:grid-cols-[340px_1fr]">
-        <div className="flex flex-col gap-2.5 overflow-auto lg:min-h-0">
+      <div
+        className={cn(
+          'grid grid-cols-1 lg:min-h-0 lg:flex-1 lg:grid-cols-[340px_1fr]',
+          COL_GAP,
+        )}
+      >
+        {/* The ControlCard (the primary Start/Stop/Save action) is pinned and
+            always fully visible; only the secondary reference cards below scroll
+            when a tall phase (e.g. the episode result with banners) leaves no
+            room — so the page itself never scrolls and the control is never cut
+            off. In the steady states everything fits with no scroll at all. */}
+        <div className={cn('flex flex-col overflow-hidden lg:min-h-0', COL_GAP)}>
           <ControlCard machine={machine} />
-          <SystemStatusCard
-            machine={machine}
-            sseStatus={sseStatus}
-            monitorBridge={monitorBridge}
-            camerasOk={camerasOk}
-          />
-          <WarningsCard machine={machine} />
-          <AdviceCard machine={machine} />
-          <BatchStatsCard machine={machine} />
+          <div className={cn('flex flex-col overflow-y-auto lg:min-h-0 lg:flex-1', COL_GAP)}>
+            <SystemStatusCard
+              machine={machine}
+              sseStatus={sseStatus}
+              monitorBridge={monitorBridge}
+              camerasOk={camerasOk}
+            />
+            <WarningsCard machine={machine} />
+            <AdviceCard machine={machine} />
+            <BatchStatsCard machine={machine} />
+          </div>
         </div>
-        <div className="flex flex-col gap-2.5 lg:min-h-0">
+        <div className={cn('flex flex-col lg:min-h-0', COL_GAP)}>
           <Cameras config={config} machine={machine} onHealthChange={onHealthChange} />
           <EpisodeStrip machine={machine} />
         </div>

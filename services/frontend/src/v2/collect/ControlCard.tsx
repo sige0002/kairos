@@ -4,6 +4,7 @@
 
 import { Card, cn } from '../../components/ui';
 import type { RecordArming } from '../../api/types';
+import { CARD_PAD } from './compact';
 import {
   describeQuality,
   describeTaskOutcome,
@@ -12,6 +13,9 @@ import {
   MB_PER_S,
   type BatchMachine,
 } from './useBatchMachine';
+
+// Card gap that tightens on short viewports (see compact.ts).
+const CARD_GAP_COMPACT = '[@media(max-height:860px)]:gap-1.5';
 
 function formatElapsed(ms: number): string {
   const s = Math.max(0, Math.floor(ms / 1000));
@@ -108,7 +112,7 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
 
   if (phase === 'ready') {
     return (
-      <Card className="flex shrink-0 flex-col gap-2.5 border-2 border-teal-200 p-4">
+      <Card className={cn('flex shrink-0 flex-col gap-2.5 border-2 border-teal-200', CARD_GAP_COMPACT, CARD_PAD)}>
         <div className="flex items-center gap-2">
           <span className="h-[9px] w-[9px] animate-recpulse rounded-sm bg-teal-600" />
           <span data-testid="phase-title" className="text-[17px] font-bold text-teal-700">READY</span>
@@ -129,7 +133,7 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
           onClick={machine.startRecording}
           disabled={machine.noSelection}
           className={cn(
-            'flex h-[52px] items-center justify-center gap-2 rounded-control text-[15px] font-bold shadow-btn',
+            'flex h-[52px] items-center justify-center gap-2 rounded-control text-[15px] font-bold shadow-btn [@media(max-height:860px)]:h-[44px]',
             machine.noSelection
               ? 'cursor-not-allowed bg-gray-200 text-gray-400'
               : 'bg-teal-600 text-white hover:bg-teal-700',
@@ -155,7 +159,7 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
 
   if (phase === 'arming') {
     return (
-      <Card className="flex shrink-0 flex-col gap-2.5 border-2 border-amber-200 p-4">
+      <Card className={cn('flex shrink-0 flex-col gap-2.5 border-2 border-amber-200', CARD_GAP_COMPACT, CARD_PAD)}>
         <div className="flex items-center gap-2">
           <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-100 border-t-amber-600" />
           <span data-testid="phase-title" className="text-[17px] font-bold text-amber-700">ARMING…</span>
@@ -179,7 +183,7 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
     const elapsedText = formatElapsed(machine.elapsedMs);
     const mbText = `${((machine.elapsedMs / 1000) * MB_PER_S).toFixed(1)} MB written`;
     return (
-      <Card className="flex shrink-0 flex-col gap-2.5 border-2 border-red-200 p-4">
+      <Card className={cn('flex shrink-0 flex-col gap-2.5 border-2 border-red-200', CARD_GAP_COMPACT, CARD_PAD)}>
         <div className="flex items-center gap-2">
           <span className="h-[9px] w-[9px] animate-recpulse rounded-sm bg-red-600" />
           <span data-testid="phase-title" className="text-[17px] font-bold text-red-700">RECORDING</span>
@@ -195,7 +199,7 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
         <button
           type="button"
           onClick={machine.stopRecording}
-          className="flex h-[52px] items-center justify-center gap-2 rounded-control bg-red-600 text-[15px] font-bold text-white shadow-btn-red hover:bg-red-700"
+          className="flex h-[52px] items-center justify-center gap-2 rounded-control bg-red-600 text-[15px] font-bold text-white shadow-btn-red hover:bg-red-700 [@media(max-height:860px)]:h-[44px]"
         >
           <span className="h-[11px] w-[11px] rounded-sm bg-white" />
           Stop recording
@@ -209,7 +213,7 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
     const saving = phase === 'saving';
     const mb = ((machine.elapsedMs / 1000) * MB_PER_S).toFixed(0);
     return (
-      <Card className="flex shrink-0 flex-col gap-2.5 border-2 border-gray-200 p-4">
+      <Card className={cn('flex shrink-0 flex-col gap-2.5 border-2 border-gray-200', CARD_GAP_COMPACT, CARD_PAD)}>
         <div className="flex items-center gap-2">
           <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-100 border-t-teal-600" />
           <span data-testid="phase-title" className="text-[17px] font-bold text-gray-700">{saving ? 'SAVING…' : 'QUICK CHECK…'}</span>
@@ -242,7 +246,7 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
     const willComplete = stats.nRecorded + 1 >= EPISODES_PER_BATCH;
     const nextBtnText = willComplete ? 'Save & finish batch' : `Save & ready for #${stats.epNext + 1}`;
     return (
-      <Card className="flex shrink-0 flex-col gap-3 border-2 border-teal-200 p-4">
+      <Card className={cn('flex shrink-0 flex-col gap-3 border-2 border-teal-200', '[@media(max-height:860px)]:gap-1.5', CARD_PAD)}>
         <div className="flex items-center gap-2">
           <span data-testid="phase-title" className="text-[15px] font-bold text-gray-900">
             Episode {stats.epNext} result
@@ -341,7 +345,7 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
           onClick={machine.confirmEpisode}
           disabled={!canConfirm}
           className={cn(
-            'h-[46px] rounded-control text-sm font-bold',
+            'h-[46px] rounded-control text-sm font-bold [@media(max-height:860px)]:h-[40px]',
             canConfirm ? 'bg-teal-600 text-white shadow-btn' : 'cursor-not-allowed bg-gray-200 text-gray-400',
           )}
         >
@@ -350,7 +354,7 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
         <button
           type="button"
           onClick={machine.openDiscardModal}
-          className="h-9 rounded-control border border-gray-200 bg-white text-[12.5px] font-semibold text-gray-500 hover:bg-gray-50"
+          className="h-9 rounded-control border border-gray-200 bg-white text-[12.5px] font-semibold text-gray-500 hover:bg-gray-50 [@media(max-height:860px)]:h-8"
         >
           Discard &amp; re-record this episode
         </button>
@@ -360,7 +364,7 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
 
   if (phase === 'paused') {
     return (
-      <Card className="flex shrink-0 flex-col gap-2.5 border-2 border-gray-200 p-4">
+      <Card className={cn('flex shrink-0 flex-col gap-2.5 border-2 border-gray-200', CARD_GAP_COMPACT, CARD_PAD)}>
         <div className="flex items-center gap-2">
           <span className="h-[9px] w-[9px] rounded-sm bg-gray-400" />
           <span data-testid="phase-title" className="text-[17px] font-bold text-gray-500">PAUSED</span>
@@ -381,7 +385,7 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
 
   if (phase === 'ended') {
     return (
-      <Card className="flex shrink-0 flex-col gap-2.5 border-2 border-amber-200 p-4">
+      <Card className={cn('flex shrink-0 flex-col gap-2.5 border-2 border-amber-200', CARD_GAP_COMPACT, CARD_PAD)}>
         <div className="flex items-center gap-2">
           <span className="text-[15px] font-bold text-gray-900">Batch {machine.batchNum} ended early</span>
           <div className="flex-1" />
@@ -406,7 +410,7 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
 
   // phase === 'completed'
   return (
-    <Card className="flex shrink-0 flex-col gap-2.5 border-2 border-green-200 p-4">
+    <Card className={cn('flex shrink-0 flex-col gap-2.5 border-2 border-green-200', CARD_GAP_COMPACT, CARD_PAD)}>
       <div className="flex items-center gap-2">
         <span className="text-[15px] font-bold text-gray-900">Batch {machine.batchNum} completed 🎉</span>
         <div className="flex-1" />

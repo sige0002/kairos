@@ -7,6 +7,7 @@
 import { Card, cn } from '../../components/ui';
 import type { SseStatus } from '../../store/uiStore';
 import { ADVICE_ITEMS, type BatchMachine } from './useBatchMachine';
+import { SIDE_PAD } from './compact';
 
 type Tone = 'green' | 'amber' | 'red' | 'teal' | 'gray';
 
@@ -92,12 +93,12 @@ export function SystemStatusCard({
   ];
 
   return (
-    <Card className="flex shrink-0 flex-col gap-2 p-[13px] px-[18px]">
+    <Card className={cn('flex shrink-0 flex-col gap-2 [@media(max-height:860px)]:gap-1', SIDE_PAD)}>
       <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
         System status
       </span>
       {rows.map((r) => (
-        <div key={r.label} className="flex items-center gap-2.5 py-0.5">
+        <div key={r.label} className="flex items-center gap-2.5 py-0.5 [@media(max-height:860px)]:py-0">
           <span className="text-[13px] font-medium text-gray-700">{r.label}</span>
           <div className="flex-1" />
           <span className="font-mono text-xs text-gray-500">{r.value}</span>
@@ -116,7 +117,7 @@ export function WarningsCard({ machine }: { machine: BatchMachine }) {
   })();
 
   return (
-    <Card className="flex shrink-0 flex-col gap-2 p-[13px] px-[18px]">
+    <Card className={cn('flex shrink-0 flex-col gap-2 [@media(max-height:860px)]:gap-1', SIDE_PAD)}>
       <div className="flex items-center gap-2">
         <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           Active warnings
@@ -160,7 +161,7 @@ export function AdviceCard({ machine }: { machine: BatchMachine }) {
   const advice = ADVICE_ITEMS[machine.adviceIdx] ?? ADVICE_ITEMS[0]!;
   const single = ADVICE_ITEMS.length <= 1;
   return (
-    <Card className="flex shrink-0 flex-col gap-2 p-[13px] px-[18px]">
+    <Card className={cn('flex shrink-0 flex-col gap-2 [@media(max-height:860px)]:gap-1', SIDE_PAD)}>
       <div className="flex items-center gap-2">
         <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           Advice for next episode
@@ -188,14 +189,17 @@ export function AdviceCard({ machine }: { machine: BatchMachine }) {
           ›
         </button>
       </div>
-      <div className="flex flex-col gap-1 rounded-control border border-teal-200 bg-teal-50 px-3 py-2.5">
+      <div className="flex flex-col gap-1 rounded-control border border-teal-200 bg-teal-50 px-3 py-2.5 [@media(max-height:860px)]:py-1.5">
         <div className="flex items-center gap-2">
           <span className="rounded-chip bg-teal-100 px-2 py-0.5 text-[10.5px] font-bold text-teal-700">
             {advice.badge}
           </span>
           <span className="text-[12.5px] font-semibold text-teal-950">{advice.title}</span>
         </div>
-        <span className="text-xs leading-relaxed text-teal-700">{advice.detail}</span>
+        {/* Full advice at roomy heights; clamped to keep the card short on laptops. */}
+        <span className="text-xs leading-relaxed text-teal-700 [@media(max-height:860px)]:line-clamp-2">
+          {advice.detail}
+        </span>
       </div>
     </Card>
   );
@@ -207,7 +211,7 @@ export function BatchStatsCard({ machine }: { machine: BatchMachine }) {
   // recording itself is fine and stays usable/labeled data.
   const { nRecorded, nGood, nReview, nTaskFailed } = machine.stats;
   return (
-    <Card className="flex shrink-0 flex-col gap-1.5 p-[13px] px-[18px]">
+    <Card className={cn('flex shrink-0 flex-col gap-1.5', SIDE_PAD)}>
       <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">Batch stats</span>
       <div className="flex gap-3.5">
         <div className="flex flex-col">
