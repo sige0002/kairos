@@ -3,6 +3,7 @@
 // Exactly one renders at a time, keyed off `machine.phase`.
 
 import { Card, cn } from '../../components/ui';
+import type { RecordArming } from '../../api/types';
 import {
   describeQuality,
   describeTaskOutcome,
@@ -23,6 +24,81 @@ function ErrorBanner({ children }: { children: React.ReactNode }) {
   return (
     <div role="alert" className="rounded-control border border-red-200 bg-red-50/70 px-3 py-2 text-[12px] text-red-800">
       {children}
+    </div>
+  );
+}
+
+// Real arming matched/missing note (OL-①.4): a live, non-persisted aid read
+// straight from /record/status — NOT the mock arming hold. A non-empty
+// `missing` is the useful signal: the readiness gate resumed with those target
+// topics still not publishing. Mirrors v1 LiveTab's ArmingNote wording.
+function ArmingNote({ arming }: { arming: RecordArming }) {
+  const matched = arming.matched_topics ?? [];
+  const missing = arming.missing_topics ?? [];
+  if (matched.length === 0 && missing.length === 0) return null;
+  const ok = missing.length === 0;
+  const shown = missing.slice(0, 4);
+  return (
+    <div
+      data-testid="arming-note"
+      className={cn(
+        'flex flex-wrap items-center gap-x-2.5 gap-y-1 rounded-control border px-3 py-2 text-[12px]',
+        ok
+          ? 'border-teal-200 bg-teal-50/60 text-teal-800'
+          : 'border-amber-200 bg-amber-50/70 text-amber-800',
+      )}
+    >
+      <span className="text-[10.5px] font-semibold uppercase tracking-[0.09em]">Armed</span>
+      <span className="font-mono">{matched.length} matched</span>
+      {missing.length > 0 && (
+        <>
+          <span className="opacity-40">·</span>
+          <span className="font-mono font-semibold">{missing.length} missing</span>
+          <span className="truncate font-mono text-[11px] opacity-80" title={missing.join('\n')}>
+            {shown.join(', ')}
+            {missing.length > shown.length ? ' …' : ''}
+          </span>
+        </>
+      )}
+    </div>
+  );
+}
+
+// Real recording-integrity banner (OL-①): shown in the episode result when the
+// just-finished run lost messages to the recorder cache (`dropped`) or failed
+// verification (`failed`). Driven by the REAL /record/status integrity, never
+// the mock quality flag (recWarning) — so it dominates the provisional QUICK
+// chip and carries the recorder's own wording (matches v1 LiveTab IntegrityNote).
+function IntegrityBanner({
+  integrity,
+  dropped,
+}: {
+  integrity: 'dropped' | 'failed';
+  dropped: number | null;
+}) {
+  const failed = integrity === 'failed';
+  return (
+    <div
+      role="alert"
+      data-testid="integrity-banner"
+      className={cn(
+        'flex flex-col gap-0.5 rounded-control border-2 px-3 py-2.5',
+        failed ? 'border-red-300 bg-red-50 text-red-800' : 'border-amber-300 bg-amber-50 text-amber-900',
+      )}
+    >
+      <div className="flex items-center gap-2">
+        <span className={cn('h-2 w-2 shrink-0 rounded-sm', failed ? 'bg-red-600' : 'bg-amber-600')} />
+        <span className="text-[13px] font-bold">
+          {failed
+            ? 'Recording failed — bag unreadable'
+            : `Data dropped — ${dropped != null ? dropped.toLocaleString() : '?'} messages lost`}
+        </span>
+      </div>
+      <span className="pl-4 text-xs">
+        {failed
+          ? 'The bag could not be verified or read back.'
+          : 'Recorder cache overflowed — raise max_cache_size_mb.'}
+      </span>
     </div>
   );
 }
@@ -75,6 +151,7 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
         >
           Cancel
         </button>
+        {machine.arming && <ArmingNote arming={machine.arming} />}
       </Card>
     );
   }
@@ -104,6 +181,7 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
           <span className="h-[11px] w-[11px] rounded-sm bg-white" />
           Stop recording
         </button>
+        {machine.arming && <ArmingNote arming={machine.arming} />}
       </Card>
     );
   }
@@ -160,6 +238,9 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
             {quickGood ? 'QUICK: GOOD' : 'QUICK: NEEDS REVIEW'}
           </span>
         </div>
+        {(machine.integrity === 'dropped' || machine.integrity === 'failed') && (
+          <IntegrityBanner integrity={machine.integrity} dropped={machine.droppedMessages} />
+        )}
         <span className="text-xs text-gray-500">
           {quickGood
             ? 'No issues detected. Final quality follows after full validation.'

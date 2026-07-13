@@ -10,12 +10,18 @@
 // modal/picker visibility) wraps it.
 
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { apiPost } from '../../api/client';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { apiGet, apiPost } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
 import { errorText } from '../../components/ErrorMessage';
 import { useUiStore } from '../../store/uiStore';
-import type { RecordStartRequest, RunDetail } from '../../api/types';
+import type {
+  RecordArming,
+  RecordIntegrity,
+  RecordStartRequest,
+  RecordStatus,
+  RunDetail,
+} from '../../api/types';
 
 export type Phase =
   | 'ready'
@@ -368,6 +374,17 @@ export interface BatchMachine {
   isStarting: boolean;
   stats: BatchStats;
 
+  // Real recorder signals from /record/status (never the mock quality flag).
+  /** Live arming matched/missing snapshot (OL-①.4). Null unless the recorder
+   *  reports it; a non-persisted live aid, never stored anywhere. */
+  arming: RecordArming | null;
+  /** Recording integrity for THIS episode's run (OL-①). 'dropped'/'failed'
+   *  drive the result-phase banner; gated to the current run so a prior run's
+   *  drop can't leak into this episode's result. */
+  integrity: RecordIntegrity | null;
+  /** rosbag2's self-reported messages lost when integrity is 'dropped'. */
+  droppedMessages: number | null;
+
   // context
   project: string;
   task: string;
@@ -426,6 +443,28 @@ export function useBatchMachine({ recordTopics }: UseBatchMachineArgs): BatchMac
   const queryClient = useQueryClient();
   const setActiveTab = useUiStore((s) => s.setActiveTab);
   const goMonitor = useCallback(() => setActiveTab('monitor'), [setActiveTab]);
+
+  // ---- real recorder status (arming + integrity) --------------------------
+  // Polls /record/status on the SAME query key LiveTab uses, so react-query
+  // dedupes it (no extra network). Two honest, non-persisted live signals ride
+  // this poll: the arming matched/missing summary (OL-①.4) and the post-stop
+  // recording integrity (OL-①) — both read straight from the recorder, never
+  // synthesized and never the mock quality flag (recWarning). The stop mutation
+  // already invalidates this key, so the integrity surfaces once the recorder
+  // finalises the bag.
+  const statusQuery = useQuery({
+    queryKey: queryKeys.recordStatus,
+    queryFn: ({ signal }) => apiGet<RecordStatus>('/record/status', { signal }),
+    refetchInterval: 5000,
+  });
+  const status = statusQuery.data;
+  const arming: RecordArming | null = status?.arming ?? null;
+  // Gate integrity to THIS episode's run so a previous run's `dropped`/`failed`
+  // can't leak into the current episode's result while the poll catches up.
+  const runMatches =
+    state.currentRunId == null || (status?.run_id ?? null) === state.currentRunId;
+  const integrity: RecordIntegrity | null = runMatches ? status?.integrity ?? null : null;
+  const droppedMessages: number | null = runMatches ? status?.dropped_messages ?? null : null;
 
   // ---- toast --------------------------------------------------------------
   const [toast, setToast] = useState('');
@@ -725,6 +764,10 @@ export function useBatchMachine({ recordTopics }: UseBatchMachineArgs): BatchMac
     stopError: state.stopError,
     isStarting: startMutation.isPending,
     stats,
+
+    arming,
+    integrity,
+    droppedMessages,
 
     project: state.project,
     task: state.task,

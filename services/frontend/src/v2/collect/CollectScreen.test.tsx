@@ -22,6 +22,31 @@ function mockFetch(recordStartBody: Record<string, unknown>) {
   });
 }
 
+// Like mockFetch but with a controllable GET /record/status body — the real
+// source of the arming note + integrity banner.
+function mockFetchWithStatus(opts: {
+  start?: Record<string, unknown>;
+  status?: Record<string, unknown>;
+}) {
+  const start = opts.start ?? { run_id: 'run_1', state: 'recording' };
+  return vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/record/status')) return Promise.resolve(jsonResponse(opts.status ?? {}));
+    if (url.includes('/record/start')) return Promise.resolve(jsonResponse(start));
+    if (url.includes('/record/stop')) return Promise.resolve(jsonResponse({ run_id: 'run_1', state: 'completed' }));
+    if (url.includes('/config')) return Promise.resolve(jsonResponse(CONFIG));
+    return Promise.resolve(jsonResponse({}));
+  });
+}
+
+async function driveToResult() {
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
+  fireEvent.click(screen.getByRole('button', { name: /Start recording/ }));
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('RECORDING'));
+  fireEvent.click(screen.getByRole('button', { name: /Stop recording/ }));
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('Episode 1 result'), { timeout: 4000 });
+}
+
 function phaseTitle() {
   return screen.getByTestId('phase-title');
 }
@@ -115,6 +140,73 @@ test('a failed task with no quality warning shows the plain-language summary and
   await waitFor(() => expect(screen.getByTestId('stat-good')).toHaveTextContent('1'));
   expect(screen.getByTestId('stat-review')).toHaveTextContent('0');
   expect(screen.getByTestId('stat-task-failed')).toHaveTextContent('1');
+});
+
+// Real drop/integrity banner (v1 parity, OL-①): a run that stopped with
+// integrity 'dropped' shows the amber "Data dropped — N messages lost" banner
+// with the cache hint, driven by the REAL /record/status — not the mock quality
+// path. A quick stop (<6s) keeps the mock chip at QUICK: GOOD, proving the two
+// signals are independent and the banner is the dominant, real one.
+test('result phase shows the real drop banner (dropped_messages) from /record/status', async () => {
+  mockFetchWithStatus({
+    status: { run_id: 'run_1', state: 'completed', integrity: 'dropped', dropped_messages: 1234 },
+  });
+  renderWithClient(<CollectScreen />);
+  await driveToResult();
+
+  const banner = screen.getByTestId('integrity-banner');
+  expect(banner).toHaveTextContent(/Data dropped — 1[.,]?234 messages lost/);
+  expect(banner).toHaveTextContent('raise max_cache_size_mb');
+  // The mock quality path is separate and does NOT drive this banner: a quick
+  // stop keeps QUICK: GOOD while the real drop banner still dominates.
+  expect(screen.getByText('QUICK: GOOD')).toBeInTheDocument();
+});
+
+test('result phase shows the real "Recording failed" banner when integrity is failed', async () => {
+  mockFetchWithStatus({
+    status: { run_id: 'run_1', state: 'failed', integrity: 'failed' },
+  });
+  renderWithClient(<CollectScreen />);
+  await driveToResult();
+
+  const banner = screen.getByTestId('integrity-banner');
+  expect(banner).toHaveTextContent('Recording failed — bag unreadable');
+});
+
+// The mock quality path must never fabricate a drop/integrity banner: an 'ok'
+// run reaches the result with QUICK: GOOD and no banner.
+test('no integrity banner when the run integrity is ok', async () => {
+  mockFetchWithStatus({
+    status: { run_id: 'run_1', state: 'completed', integrity: 'ok' },
+  });
+  renderWithClient(<CollectScreen />);
+  await driveToResult();
+
+  expect(screen.getByText('QUICK: GOOD')).toBeInTheDocument();
+  expect(screen.queryByTestId('integrity-banner')).toBeNull();
+});
+
+test('recording phase shows the real arming matched/missing note from /record/status', async () => {
+  mockFetchWithStatus({
+    status: {
+      run_id: 'run_1',
+      state: 'recording',
+      arming: {
+        active: false,
+        matched_topics: ['/a', '/b', '/c'],
+        missing_topics: ['/cam/right', '/lidar'],
+      },
+    },
+  });
+  renderWithClient(<CollectScreen />);
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
+  fireEvent.click(screen.getByRole('button', { name: /Start recording/ }));
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('RECORDING'));
+
+  const note = await screen.findByTestId('arming-note');
+  expect(note).toHaveTextContent('3 matched');
+  expect(note).toHaveTextContent('2 missing');
+  expect(note).toHaveTextContent('/cam/right');
 });
 
 test('Robot cell lists real robots and switches via POST /config/select', async () => {

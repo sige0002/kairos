@@ -247,3 +247,88 @@ test('stopRecording() optimistically moves to saving and calls /record/stop', as
     expect(fetchMock.mock.calls.some(([u]) => String(u).includes('/record/stop'))).toBe(true),
   );
 });
+
+// ---------------------------------------------------------------------------
+// Real recorder status: arming (matched/missing) + integrity (drop/fail).
+// ---------------------------------------------------------------------------
+
+test('/record/status arming (matched/missing) surfaces on machine.arming', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/record/status')) {
+      return Promise.resolve(
+        jsonResponse({
+          run_id: 'run_7',
+          state: 'recording',
+          arming: {
+            active: false,
+            matched_topics: ['/a', '/b', '/c'],
+            missing_topics: ['/x', '/y'],
+          },
+        }),
+      );
+    }
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  const { result } = renderHook(() => useBatchMachine({ recordTopics: 'all' }), { wrapper });
+  await waitFor(() => expect(result.current.arming).not.toBeNull());
+  expect(result.current.arming?.matched_topics).toHaveLength(3);
+  expect(result.current.arming?.missing_topics).toEqual(['/x', '/y']);
+});
+
+test('a dropped-integrity run surfaces on machine.integrity + droppedMessages', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/record/start')) {
+      return Promise.resolve(jsonResponse({ run_id: 'run_1', state: 'recording' }));
+    }
+    if (url.includes('/record/status')) {
+      return Promise.resolve(
+        jsonResponse({
+          run_id: 'run_1',
+          state: 'completed',
+          integrity: 'dropped',
+          dropped_messages: 1234,
+        }),
+      );
+    }
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  const { result } = renderHook(() => useBatchMachine({ recordTopics: 'all' }), { wrapper });
+  act(() => result.current.startRecording());
+  await waitFor(() => expect(result.current.phase).toBe('recording'));
+  await waitFor(() => expect(result.current.integrity).toBe('dropped'));
+  expect(result.current.droppedMessages).toBe(1234);
+});
+
+// Gating: an integrity report for a *different* run must never leak into the
+// current episode's result. Before any start (currentRunId null) the status is
+// ungated, so it reads through; once a start binds currentRunId to run_1, a
+// run_OTHER report is dropped.
+test('integrity is gated to the current run — a mismatched run_id is dropped after start', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/record/start')) {
+      return Promise.resolve(jsonResponse({ run_id: 'run_1', state: 'recording' }));
+    }
+    if (url.includes('/record/status')) {
+      return Promise.resolve(
+        jsonResponse({
+          run_id: 'run_OTHER',
+          state: 'completed',
+          integrity: 'dropped',
+          dropped_messages: 9,
+        }),
+      );
+    }
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  const { result } = renderHook(() => useBatchMachine({ recordTopics: 'all' }), { wrapper });
+  await waitFor(() => expect(result.current.integrity).toBe('dropped'));
+  act(() => result.current.startRecording());
+  await waitFor(() => expect(result.current.phase).toBe('recording'));
+  await waitFor(() => expect(result.current.integrity).toBeNull());
+});
