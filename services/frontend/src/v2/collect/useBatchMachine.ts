@@ -30,6 +30,7 @@ import {
   removeEpisodeOutcome,
   saveEpisodeOutcome,
 } from '../episodeBridge';
+import { findProject, findTask, getPlans } from '../plans';
 import type {
   BatchEpisodeSummary,
   BatchSummary,
@@ -88,50 +89,9 @@ export function describeQuality(recWarning: boolean): string {
     : 'Good — no issues detected.';
 }
 
-export interface PlanTask {
-  name: string;
-  conditions: string[];
-}
-
-export interface PlanProject {
-  name: string;
-  tasks: PlanTask[];
-}
-
-// Mock plan catalog (same values as the design mock's `plans` state) — stands
-// in for the plan/task/condition backend that doesn't exist yet.
-export const PLANS: PlanProject[] = [
-  {
-    name: 'Tabletop Manipulation',
-    tasks: [
-      {
-        name: 'Pick and Place',
-        conditions: [
-          'Object: Left → Tray: Center',
-          'Object: Center → Tray: Center',
-          'Object: Right → Tray: Center',
-        ],
-      },
-      { name: 'Stacking', conditions: ['Blocks: 3', 'Blocks: 5'] },
-    ],
-  },
-  {
-    name: 'Bin Picking',
-    tasks: [{ name: 'Bin to Tray', conditions: ['Bin: full', 'Bin: sparse'] }],
-  },
-  {
-    name: 'Kitchen Mobile',
-    tasks: [{ name: 'Drawer Open', conditions: ['Drawer: top', 'Drawer: bottom'] }],
-  },
-];
-
-export function findProject(name: string): PlanProject {
-  return PLANS.find((p) => p.name === name) ?? PLANS[0]!;
-}
-export function findTask(projectName: string, taskName: string): PlanTask {
-  const plan = findProject(projectName);
-  return plan.tasks.find((t) => t.name === taskName) ?? plan.tasks[0]!;
-}
+// The plan catalog (Projects → Tasks → Conditions) now lives in the shared
+// v2/plans store so a Settings edit reflects here immediately. This screen reads
+// the live catalog (getPlans / usePlans) rather than a private copy.
 
 export const FAIL_REASONS = [
   'Grasp missed',
@@ -175,9 +135,6 @@ const QUICKCHECK_MS = 1500;
 const WARNING_AT_S = 6;
 export const MB_PER_S = 6.8; // demo write-rate used for the recording MB counter
 
-const firstPlan = PLANS[0]!;
-const firstTask = firstPlan.tasks[0]!;
-
 interface MachineState {
   phase: Phase;
   episodes: EpisodeRecord[];
@@ -199,6 +156,11 @@ interface MachineState {
 }
 
 function createInitialState(): MachineState {
+  // Seed the context from the CURRENT shared catalog (which may carry the
+  // operator's Settings edits), not a hardcoded first plan.
+  const plans = getPlans();
+  const firstPlan = plans[0];
+  const firstTask = firstPlan?.tasks[0];
   return {
     phase: 'ready',
     episodes: [],
@@ -211,9 +173,9 @@ function createInitialState(): MachineState {
     startError: null,
     stopError: null,
     currentRunId: null,
-    project: firstPlan.name,
-    task: firstTask.name,
-    condition: firstTask.conditions[0] ?? '—',
+    project: firstPlan?.name ?? '—',
+    task: firstTask?.name ?? '—',
+    condition: firstTask?.conditions[0] ?? '—',
     endReason: '',
   };
 }
@@ -1126,7 +1088,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
 
   const pickProject = useCallback(
     (name: string) => {
-      const plan = findProject(name);
+      const plan = findProject(getPlans(), name);
       const t0 = plan.tasks[0];
       dispatch({
         type: 'SET_PROJECT',
@@ -1141,7 +1103,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   );
   const pickTask = useCallback(
     (name: string) => {
-      const t = findTask(state.project, name);
+      const t = findTask(getPlans(), state.project, name);
       dispatch({ type: 'SET_TASK', task: t?.name ?? '—', condition: t?.conditions[0] ?? '—' });
       setTaskPickerOpen(false);
       showToast('Task switched — applies to next batch');

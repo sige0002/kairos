@@ -12,7 +12,8 @@ import { apiGet, apiPost } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
 import type { ConfigOptions } from '../../api/types';
 import { Card, cn } from '../../components/ui';
-import { PLANS, findProject, type BatchMachine } from './useBatchMachine';
+import { type BatchMachine } from './useBatchMachine';
+import { findProject, usePlans } from '../plans';
 
 function CellButton({
   label,
@@ -192,9 +193,11 @@ function RobotCell({ disabled }: { disabled: boolean }) {
 
 export function ContextBar({ machine }: { machine: BatchMachine }) {
   const { phase, stats, selection } = machine;
+  // Live shared catalog — a project/task added in Settings shows up here at once.
+  const plans = usePlans();
   const epNextText =
     phase === 'completed' ? '· complete' : phase === 'ended' ? '· ended early' : `· next #${stats.epNext}`;
-  const curProject = findProject(machine.project);
+  const curProject = findProject(plans, machine.project);
   // Real count of what the NEXT recording captures (config defaults + the
   // Monitor picker), mirroring v1 LiveTab's idleTopicLabel.
   const recTopicsLabel = selection.customized
@@ -262,7 +265,7 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
 
       {machine.projPickerOpen && (
         <PickerPopover className="left-3.5 top-[58px]" heading="Project (from plan)">
-          {PLANS.map((p) => (
+          {plans.map((p) => (
             <PickItem key={p.name} active={p.name === machine.project} onClick={() => machine.pickProject(p.name)}>
               {p.name}
             </PickItem>

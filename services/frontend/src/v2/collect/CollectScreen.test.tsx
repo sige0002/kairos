@@ -6,6 +6,7 @@ import { useUiStore } from '../../store/uiStore';
 import { CollectScreen } from './CollectScreen';
 import { __resetBatchStore } from './useBatchMachine';
 import { __clearEpisodeOutcomes } from '../episodeBridge';
+import { __resetPlansStore, clonePlans, getPlans, setPlans } from '../plans';
 
 const CONFIG = {
   endpoints: { api: '/api/v1', events: '/api/v1/events', webrtc: 'http://localhost:8002' },
@@ -58,6 +59,9 @@ beforeEach(() => {
   // The batch machine is a module-level store (survives tab-switch unmounts);
   // reset it (and its localStorage mirror) so a recorded episode in one test
   // can't leak into the next test's fresh CollectScreen.
+  // Reset the shared plans store BEFORE the batch store — the machine's initial
+  // project/task/condition seed from the (now clean) catalog.
+  __resetPlansStore();
   __resetBatchStore();
   // A confirmed episode now mirrors into the Collect->Review bridge; clear it
   // between tests so nothing accumulates across cases.
@@ -298,4 +302,36 @@ test('Robot cell lists real robots and switches via POST /config/select', async 
   });
   // The cell reflects the response's new active robot (cache updated in place).
   await waitFor(() => expect(cell()).toHaveTextContent('realman'));
+});
+
+// ---------------------------------------------------------------------------
+// Shared plans store: a Settings edit must reflect in Collect's pickers, and a
+// removed selection must degrade gracefully (no crash).
+// ---------------------------------------------------------------------------
+
+test('a project added to the shared store appears in the Collect project picker', async () => {
+  mockFetch({ run_id: 'run_1', state: 'recording' });
+  // Simulate a Settings edit: add a project to the shared catalog.
+  setPlans([...clonePlans(getPlans()), { name: 'Warehouse Sort', tasks: [{ name: 'Sort', conditions: ['Bin: A'] }] }]);
+  renderWithClient(<CollectScreen />);
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
+
+  // Open the project picker; the newly-added project is listed immediately.
+  fireEvent.click(screen.getByTitle('Change project (from plan)'));
+  expect(screen.getByRole('button', { name: 'Warehouse Sort' })).toBeInTheDocument();
+});
+
+test('Collect degrades gracefully when its selected project is absent from the store', async () => {
+  mockFetch({ run_id: 'run_1', state: 'recording' });
+  // The machine seeded its project from the default catalog; now replace the
+  // catalog so that selection no longer exists (as if it were removed/renamed).
+  setPlans([{ name: 'Only Project', tasks: [{ name: 'Only Task', conditions: ['Only Cond'] }] }]);
+  renderWithClient(<CollectScreen />);
+
+  // Still renders (no crash); the orphaned selection stays shown as-is, and the
+  // task picker falls back to the surviving project's tasks.
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
+  expect(screen.getByText('Tabletop Manipulation')).toBeInTheDocument();
+  fireEvent.click(screen.getByTitle('Change task (from plan)'));
+  expect(screen.getByRole('button', { name: 'Only Task' })).toBeInTheDocument();
 });

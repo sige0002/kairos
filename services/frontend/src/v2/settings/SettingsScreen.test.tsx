@@ -3,6 +3,7 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
 import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
 import { SettingsScreen } from './SettingsScreen';
+import { __resetPlansStore, getPlans } from '../plans';
 
 // Runtime config (GET /api/v1/config): the ACTIVE robot's read-only values that
 // the Robots form surfaces (ROS_DOMAIN_ID + recorded topics).
@@ -110,6 +111,9 @@ function selectPosts() {
 
 beforeEach(() => {
   setApiBase('/api/v1');
+  // Plans live in the shared v2/plans store now; reset it so a project added in
+  // one test can't leak into the next.
+  __resetPlansStore();
   mockFetch();
 });
 afterEach(() => vi.restoreAllMocks());
@@ -261,4 +265,17 @@ test('Plans: adding and removing a condition updates the condition count', async
 
   fireEvent.click(within(screen.getByTestId('plan-condition-3')).getByTitle('Remove condition'));
   expect(screen.getByTestId('plan-task-0')).toHaveTextContent('3 cond');
+});
+
+test('Plans: adding a project writes the SHARED store (so Collect sees it)', async () => {
+  vi.spyOn(window, 'prompt').mockReturnValue('Warehouse Sort');
+  renderWithClient(<SettingsScreen />);
+  await waitFor(() => expect(screen.getByTestId('robot-form')).toBeInTheDocument());
+  fireEvent.click(screen.getByTestId('settings-menu-item-1'));
+
+  fireEvent.click(screen.getByText('+ Add project'));
+
+  // The UI shows it AND it landed in the shared store (what Collect reads).
+  expect(screen.getByTestId('plan-project-name')).toHaveTextContent('Warehouse Sort');
+  expect(getPlans().some((p) => p.name === 'Warehouse Sort')).toBe(true);
 });

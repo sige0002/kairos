@@ -1,11 +1,14 @@
 // Local state for the Settings screen: menu selection and the plans
 // (project/task/condition) editor. Robot selection is real and lives in
-// RobotsSection (GET /api/v1/config/options). The plans catalog itself is still
-// a Phase 2 backend feature (see SettingsScreen.tsx); this hook keeps its
-// interactions (select, add, rename, remove) demoable, frontend-only.
+// RobotsSection (GET /api/v1/config/options). The plans catalog is the SHARED
+// v2/plans store (single source of truth with Collect) — this hook keeps its
+// interactions (select, add, rename, remove) and just writes that store, so an
+// edit here shows up in Collect immediately. The store's server model is Phase
+// 2.5; it's browser-local for now.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { clonePlans, INITIAL_PLANS, type PlanProjectData } from './data';
+import { clonePlans, type PlanProjectData } from './data';
+import { setPlans, usePlans } from '../plans';
 
 const TOAST_MS = 2400;
 
@@ -33,7 +36,9 @@ export interface SettingsState {
 
 export function useSettingsState(): SettingsState {
   const [menuIdx, setMenuIdx] = useState(0);
-  const [plans, setPlans] = useState<PlanProjectData[]>(INITIAL_PLANS);
+  // The catalog lives in the shared store; mutations below call setPlans (which
+  // persists + notifies Collect). Only the editor's cursor is local.
+  const plans = usePlans();
   const [planProjIdx, setPlanProjIdx] = useState(0);
   const [planTaskIdx, setPlanTaskIdx] = useState(0);
   const [toast, setToast] = useState('');

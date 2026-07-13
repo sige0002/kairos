@@ -4,7 +4,8 @@
 
 import { useState } from 'react';
 import { Button, Modal, cn } from '../../components/ui';
-import { END_REASONS, findTask, type BatchMachine } from './useBatchMachine';
+import { END_REASONS, type BatchMachine } from './useBatchMachine';
+import { findTask, usePlans } from '../plans';
 
 function ReasonChip({
   active,
@@ -124,7 +125,8 @@ function IssueModal({ machine }: { machine: BatchMachine }) {
 }
 
 function ConditionModal({ machine }: { machine: BatchMachine }) {
-  const task = findTask(machine.project, machine.task);
+  const plans = usePlans();
+  const task = findTask(plans, machine.project, machine.task);
   return (
     <Modal open={machine.condModalOpen} onClose={machine.closeModals} title="Change condition">
       <p className="mb-3">Applies from the next episode. Current episode plans are unaffected.</p>

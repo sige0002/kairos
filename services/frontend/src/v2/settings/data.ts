@@ -17,48 +17,9 @@ export const SETTINGS_MENU = [
   'System',
 ] as const;
 
-export interface PlanTaskData {
-  name: string;
-  conditions: string[];
-}
-
-export interface PlanProjectData {
-  name: string;
-  tasks: PlanTaskData[];
-}
-
-// Plan catalog seed. Deliberately the same literal project/task/condition
-// values as src/v2/collect/useBatchMachine.ts's `PLANS` (not imported from
-// there — each v2 screen owns its directory — so the two screens read as one
-// consistent catalog until batch plans grow a real backend, Phase 2).
-export const INITIAL_PLANS: PlanProjectData[] = [
-  {
-    name: 'Tabletop Manipulation',
-    tasks: [
-      {
-        name: 'Pick and Place',
-        conditions: [
-          'Object: Left → Tray: Center',
-          'Object: Center → Tray: Center',
-          'Object: Right → Tray: Center',
-        ],
-      },
-      { name: 'Stacking', conditions: ['Blocks: 3', 'Blocks: 5'] },
-    ],
-  },
-  {
-    name: 'Bin Picking',
-    tasks: [{ name: 'Bin to Tray', conditions: ['Bin: full', 'Bin: sparse'] }],
-  },
-  {
-    name: 'Kitchen Mobile',
-    tasks: [{ name: 'Drawer Open', conditions: ['Drawer: top', 'Drawer: bottom'] }],
-  },
-];
-
-export function clonePlans(plans: PlanProjectData[]): PlanProjectData[] {
-  return plans.map((p) => ({
-    name: p.name,
-    tasks: p.tasks.map((t) => ({ name: t.name, conditions: t.conditions.slice() })),
-  }));
-}
+// The plan catalog (Projects → Tasks → Conditions) is now the SHARED v2/plans
+// store — the single source of truth for both Settings and Collect, so an edit
+// here reflects in Collect immediately. These re-exports keep the existing
+// Settings type names (`PlanProjectData`/`PlanTaskData`).
+export type { PlanProject as PlanProjectData, PlanTask as PlanTaskData } from '../plans';
+export { DEFAULT_PLANS as INITIAL_PLANS, clonePlans } from '../plans';
