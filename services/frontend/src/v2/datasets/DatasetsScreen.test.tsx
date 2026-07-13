@@ -380,3 +380,51 @@ test('dataset inspection: shows the loss table + video check, and JSON sidecars 
   // Reused JsonBlock renders the manifest sidecar.
   expect(within(inspection).getByText('Manifest')).toBeInTheDocument();
 });
+
+// ---------------------------------------------------------------------------
+// Q3: episode-context export rows — chips, adopted-first grouping, filter.
+// ---------------------------------------------------------------------------
+
+function epJoin(
+  review_status: 'pending' | 'adopted' | 'excluded',
+  batch_seq: number,
+  quality: 'good' | 'needs_review' | 'not_usable' = 'good',
+  task_result: 'success' | 'failure' = 'success',
+) {
+  return {
+    episode_id: `e_${review_status}`,
+    batch_id: `b_${batch_seq}`,
+    index_in_batch: 1,
+    task_result,
+    quality,
+    review_status,
+    batch_seq,
+    batch_created_at: '2026-07-13T09:00:00Z',
+  };
+}
+
+test('export rows show episode context + status chips, group adopted-first, and filter to Adopted', async () => {
+  const runs: Page<RunSummary> = {
+    items: [
+      { run_id: 'r_pend', state: 'completed', started_at: '2026-07-13T09:00:00Z', operator: 'yuki', task: 'pick', episode: epJoin('pending', 4) },
+      { run_id: 'r_adopt', state: 'completed', started_at: '2026-07-13T10:00:00Z', operator: 'yuki', task: 'stack', episode: epJoin('adopted', 5, 'needs_review', 'failure') },
+    ],
+    next_cursor: null,
+  };
+  mockFetch({ runs });
+  renderWithClient(<DatasetsScreen />);
+  await waitFor(() => expect(screen.getByTestId('export-run-r_adopt')).toBeInTheDocument());
+
+  // Review-status chips render per row (resolves "is it adopted?").
+  expect(screen.getByTestId('export-status-r_adopt')).toHaveTextContent('ADOPTED');
+  expect(screen.getByTestId('export-status-r_pend')).toHaveTextContent('PENDING');
+
+  // Adopted batch group is ordered before the pending batch.
+  const html = screen.getByTestId('export-recordings').innerHTML;
+  expect(html.indexOf('export-run-r_adopt')).toBeLessThan(html.indexOf('export-run-r_pend'));
+
+  // Filter → Adopted only.
+  fireEvent.click(screen.getByTestId('export-filter-adopted'));
+  await waitFor(() => expect(screen.queryByTestId('export-run-r_pend')).toBeNull());
+  expect(screen.getByTestId('export-run-r_adopt')).toBeInTheDocument();
+});
