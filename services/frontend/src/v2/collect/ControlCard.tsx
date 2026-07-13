@@ -115,7 +115,15 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
           <div className="flex-1" />
           <span className="font-mono text-xs text-gray-500">Ep {stats.epNext} / {EPISODES_PER_BATCH}</span>
         </div>
-        <span className="text-xs text-gray-500">Start gate passed — 12/12 required topics live</span>
+        {/* Real next-start summary (was a fabricated "12/12 topics live"). */}
+        <span className="text-xs text-gray-500">
+          Next recording captures{' '}
+          {machine.selection.customized
+            ? `${machine.selection.count} selected topic${machine.selection.count === 1 ? '' : 's'}`
+            : machine.selection.topics === 'all'
+              ? 'all topics'
+              : `${machine.selection.count} configured topics`}
+        </span>
         <button
           type="button"
           onClick={machine.startRecording}

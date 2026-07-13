@@ -49,11 +49,28 @@ export function SystemStatusCard({
   const recording = machine.phase === 'recording';
   const saving = machine.phase === 'saving' || machine.phase === 'quickcheck';
 
+  // Real arming snapshot (matched vs missing target topics) — only measured
+  // while the recorder is arming/recording; outside that window it's honestly
+  // unknown ("—"), never a made-up count.
+  const arming = machine.arming;
+  const matched = arming?.matched_topics.length ?? null;
+  const missing = arming?.missing_topics.length ?? null;
+
   const rows: SysRow[] = [
-    { label: 'Required data', value: '12 / 12', chip: 'OK', tone: 'green' },
+    matched !== null && missing !== null
+      ? {
+          label: 'Required data',
+          value: `${matched} / ${matched + missing}`,
+          chip: missing === 0 ? 'OK' : 'CHECK',
+          tone: missing === 0 ? 'green' : 'amber',
+        }
+      : { label: 'Required data', value: '—', chip: '—', tone: 'gray' },
     {
+      // Health is measured on the main preview stream only (sub tiles run
+      // their own streams but don't report here) — say that, don't invent
+      // an N/M camera count.
       label: 'Cameras',
-      value: camerasOk ? '3 / 3' : '2 / 3 healthy',
+      value: camerasOk ? 'main stream OK' : 'main stream failed',
       chip: camerasOk ? 'OK' : 'CHECK',
       tone: camerasOk ? 'green' : 'amber',
     },
@@ -63,7 +80,9 @@ export function SystemStatusCard({
       chip: robotLive ? 'OK' : 'CHECK',
       tone: robotLive ? 'green' : robotOffline ? 'amber' : 'gray',
     },
-    { label: 'Storage', value: '286 GB free', chip: 'OK', tone: 'green' },
+    // The backend has no storage endpoint yet — an honest dash beats a fake
+    // "286 GB free" (pending decision on extending GET /api/v1/system).
+    { label: 'Storage', value: 'not reported yet', chip: '—', tone: 'gray' },
     {
       label: 'Recorder',
       value: recording ? 'recording' : saving ? 'saving' : 'standby',
