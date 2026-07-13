@@ -1,19 +1,19 @@
 // Monitor tab (v2 IA) — absorbs the old Graph + Probe tabs (Topics / Signals /
-// Events / System sub-views) plus the header's old SystemInfo footer. Only
-// Topics has a built-out layout (the mock's own scope, §11); the rest render a
-// shared placeholder. The context strip's Episode/time-range/warning-chip are
-// static mock — the handoff from Collect needs a Session/Batch/Episode model
-// that's Phase 2 (see mockData.ts).
+// Events / System sub-views) plus the header's old SystemInfo footer. Topics
+// (the mock's own scope, §11) and Signals (the ported Probe plotter) have
+// built-out real-data layouts; the remaining sub-views render a shared
+// placeholder. The context strip shows the REAL recording state (RecordContextChip).
 
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { fetchRuntimeConfig } from '../../config';
 import { queryKeys } from '../../api/queryKeys';
 import { useUiStore } from '../../store/uiStore';
-import { Card, cn } from '../../components/ui';
+import { cn } from '../../components/ui';
 import { TopicsView } from './TopicsView';
 import { OtherView } from './OtherView';
-import { MONITOR_CONTEXT } from './mockData';
+import { RecordContextChip } from './RecordContextChip';
+import { SignalsView } from './signals/SignalsView';
 
 const MON_NAV = ['Overview', 'Topics', 'Signals', 'System', 'Events', 'Logs'] as const;
 type MonView = (typeof MON_NAV)[number];
@@ -31,18 +31,7 @@ export function MonitorScreen() {
   return (
     <div className="flex flex-col gap-2.5 lg:h-full lg:min-h-0">
       <div className="flex shrink-0 flex-wrap items-center gap-2.5">
-        <Card className="flex items-center gap-2.5 px-3.5 py-2">
-          <span className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400">
-            Context
-          </span>
-          <span className="font-mono text-[12.5px] font-semibold text-gray-900">
-            {MONITOR_CONTEXT.episode}
-          </span>
-          <span className="font-mono text-xs text-gray-500">{MONITOR_CONTEXT.timeRange}</span>
-          <span className="inline-flex rounded-chip bg-amber-100 px-[7px] py-0.5 text-[10.5px] font-bold text-amber-800">
-            {MONITOR_CONTEXT.chip}
-          </span>
-        </Card>
+        <RecordContextChip />
 
         <div className="flex gap-0.5 rounded-[11px] border border-gray-200 bg-gray-100 p-[3px]">
           {MON_NAV.map((label) => (
@@ -79,6 +68,8 @@ export function MonitorScreen() {
         ) : (
           <div className="p-4 text-sm text-gray-400">Loading…</div>
         )
+      ) : monView === 'Signals' ? (
+        <SignalsView />
       ) : (
         <OtherView label={monView} onBack={() => setMonView('Topics')} />
       )}
