@@ -177,6 +177,12 @@ export function listActiveBatches(): Promise<BatchListResponse> {
   return apiGet<BatchListResponse>('/batches', { query: { status: 'active' } });
 }
 
+/** GET /api/v1/batches — ALL batches newest-first (any status). Used to predict
+ *  the next batch number (max batch_seq among today's batches + 1). */
+export function listBatches(): Promise<BatchListResponse> {
+  return apiGet<BatchListResponse>('/batches');
+}
+
 /** POST /api/v1/episodes — persist an episode on Collect Save. */
 export function createEpisode(body: EpisodeCreateRequest): Promise<Episode> {
   return apiPost<Episode>('/episodes', body);

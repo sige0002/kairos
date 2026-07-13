@@ -25,7 +25,7 @@ import { useUiStore } from '../../store/uiStore';
 import {
   createBatch,
   createEpisode,
-  listActiveBatches,
+  listBatches,
   patchBatch,
   removeEpisodeOutcome,
   saveEpisodeOutcome,
@@ -151,6 +151,12 @@ interface MachineState {
   /** Server batch id (Phase 2), null until the batch is created on the API; the
    *  real key for episode POSTs. */
   batchId: string | null;
+  /** Predicted next batch number for the honest pre-state shown while `batchSeq`
+   *  is null (no batch created yet): 1 + max(batch_seq) among today's batches, or
+   *  1 when there are none / the API is unreachable. A display hint only — the
+   *  real number is assigned server-side on the first recording — so it is never
+   *  persisted (transient; recomputed from GET /batches on each page load). */
+  predictedSeq: number | null;
   elapsedMs: number;
   recWarning: boolean;
   pendingTask: 'ok' | 'fail' | null;
@@ -176,6 +182,7 @@ function createInitialState(): MachineState {
     batchSeq: null,
     recordedCount: 0,
     batchId: null,
+    predictedSeq: null,
     elapsedMs: 0,
     recWarning: false,
     pendingTask: null,
@@ -570,6 +577,39 @@ function applyServerRestore(batch: BatchSummary | null): void {
   notifyStore();
 }
 
+/** True when `iso` falls on today's LOCAL calendar day (batch_seq resets per
+ *  local date server-side, so the prediction must use the same day boundary). */
+function isLocalToday(iso: string | null | undefined): boolean {
+  if (!iso) return false;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return false;
+  const now = new Date();
+  return (
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate()
+  );
+}
+
+/** 1 + the largest batch_seq among today's batches — the number the NEXT batch
+ *  will most likely get. No batches today (or none carry a seq) → 1. */
+function predictNextSeq(items: BatchSummary[]): number {
+  let max = 0;
+  for (const b of items) {
+    if (isLocalToday(b.created_at) && typeof b.batch_seq === 'number' && b.batch_seq > max) {
+      max = b.batch_seq;
+    }
+  }
+  return max + 1;
+}
+
+/** Store the predicted next batch number (display hint; never persisted). */
+function setPredictedSeq(seq: number | null): void {
+  if (currentState.predictedSeq === seq) return;
+  currentState = { ...currentState, predictedSeq: seq };
+  notifyStore();
+}
+
 // Test-only hooks: reset the module store between tests, or re-run the
 // storage-restore path after seeding a localStorage blob. Not used in app code.
 export function __resetBatchStore(): void {
@@ -625,6 +665,9 @@ export interface BatchMachine {
   /** Server batch number (null before the batch is created / on an older
    *  backend). The UI shows "Batch {batchSeq}" or an honest "—" fallback. */
   batchSeq: number | null;
+  /** Predicted next batch number (display hint) for the pre-state shown while
+   *  `batchSeq` is null. Null → the UI falls back to "next #1". */
+  predictedSeq: number | null;
   elapsedMs: number;
   recWarning: boolean;
   pendingTask: 'ok' | 'fail' | null;
@@ -834,14 +877,20 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   useEffect(() => {
     if (serverHydrated) return;
     serverHydrated = true;
-    listActiveBatches()
+    // One GET /batches serves both jobs: restore the newest *active* batch (server
+    // truth over the localStorage fallback) AND predict the next batch number from
+    // today's batches (the honest pre-state before any batch exists).
+    listBatches()
       .then((resp) => {
+        const items = resp.items ?? [];
         const p = getStoreSnapshot().phase;
         const atRest = p === 'ready' || p === 'completed' || p === 'ended' || p === 'paused';
-        if (atRest) applyServerRestore(resp.items?.[0] ?? null);
+        if (atRest) applyServerRestore(items.find((b) => b.status === 'active') ?? null);
+        setPredictedSeq(predictNextSeq(items));
       })
       .catch(() => {
-        /* API unreachable — keep the localStorage fallback. */
+        /* API unreachable — keep the localStorage fallback; the pre-state falls
+         *  back to "next #1" (predictedSeq stays null). */
       });
   }, []);
 
@@ -1282,6 +1331,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     phase: state.phase,
     episodes: state.episodes,
     batchSeq: state.batchSeq,
+    predictedSeq: state.predictedSeq,
     elapsedMs: state.elapsedMs,
     recWarning: state.recWarning,
     pendingTask: state.pendingTask,

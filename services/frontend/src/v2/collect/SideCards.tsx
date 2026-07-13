@@ -266,6 +266,14 @@ export function BatchStatsCard({ machine }: { machine: BatchMachine }) {
           <span className="text-[11px] text-gray-400">task failed</span>
         </div>
       </div>
+      {/* After a Review delete the monotone "recorded" count outruns the quality
+          tallies (which only cover recordings still on disk). Surface that gap
+          honestly instead of letting the numbers look inconsistent. */}
+      {nRecorded > nGood + nReview && (
+        <p data-testid="stats-footnote" className="text-[11px] leading-snug text-gray-400">
+          recorded counts every take this batch; quality tallies reflect recordings still on disk
+        </p>
+      )}
     </Card>
   );
 }

@@ -368,8 +368,10 @@ test('Batch menu → Reset batch on an empty batch is a no-op (honest wording)',
   mockFetch({ run_id: 'run_1', state: 'recording' });
   renderWithClient(<CollectScreen />);
   await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
-  // No recording yet → no server batch → the Batch cell shows an honest "—".
-  expect(screen.getByText('Batch —')).toBeInTheDocument();
+  // No recording yet → no server batch → the Batch cell shows an honest, muted
+  // prediction of the next number instead of a bare "—".
+  expect(screen.getByText(/assigned on first recording/)).toBeInTheDocument();
+  expect(screen.queryByText('Batch —')).toBeNull();
 
   fireEvent.click(screen.getByText('Batch menu'));
   fireEvent.click(screen.getByText('Reset batch…'));
@@ -380,6 +382,7 @@ test('Batch menu → Reset batch on an empty batch is a no-op (honest wording)',
 
   fireEvent.click(screen.getByTestId('reset-batch-confirm'));
   await waitFor(() => expect(screen.queryByText('Reset batch?')).toBeNull());
-  // Still "—": an empty reset never allocates a number.
-  expect(screen.getByText('Batch —')).toBeInTheDocument();
+  // Still the prediction pre-state: an empty reset never allocates a number.
+  expect(screen.getByText(/assigned on first recording/)).toBeInTheDocument();
+  expect(screen.queryByText('Batch —')).toBeNull();
 });

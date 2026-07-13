@@ -75,16 +75,30 @@ function statsLine(stats: StreamStats, withRes: boolean): string {
   return parts.join(' · ');
 }
 
-function PlaceholderTile({ label, className }: { label: string; className?: string }) {
+function PlaceholderTile({
+  label,
+  hint,
+  className,
+}: {
+  label: string;
+  /** Optional second line explaining WHY the tile is blank (e.g. the stream is
+   *  still connecting) so an empty preview never reads as a failure. */
+  hint?: string;
+  className?: string;
+}) {
   return (
     <div
-      className={cn('flex items-center justify-center border border-gray-200', className)}
+      className={cn(
+        'flex flex-col items-center justify-center gap-1 border border-gray-200',
+        className,
+      )}
       style={{
         backgroundImage:
           'repeating-linear-gradient(45deg,#1f2937 0px,#1f2937 14px,#243042 14px,#243042 28px)',
       }}
     >
       <span className="truncate px-3 font-mono text-xs text-gray-500">{label}</span>
+      {hint && <span className="truncate px-3 font-mono text-[11px] text-gray-600">{hint}</span>}
     </div>
   );
 }
@@ -364,6 +378,7 @@ export function Cameras({
           <PlaceholderTile
             className="absolute inset-0"
             label={`live camera preview — ${mainTopic ?? '—'}`}
+            hint="waiting for stream — local WebRTC connect"
           />
         )}
         <OverlayBadge className="left-3 top-3 bg-gray-900/75 font-sans text-xs font-semibold text-white">

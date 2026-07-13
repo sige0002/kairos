@@ -1066,3 +1066,66 @@ test('reset works with the API down (local-only reset, recordings untouched)', a
   expect(result.current.stats.nRecorded).toBe(0);
   expect(result.current.phase).toBe('ready');
 });
+
+// ---------------------------------------------------------------------------
+// Next-batch prediction: the honest pre-state shown before a batch exists.
+// batch_seq resets per (robot, local date) server-side, so the prediction is
+// 1 + max(batch_seq) among TODAY's batches (yesterday's numbers don't count),
+// falling back to #1 when there are none or the API is unreachable.
+// ---------------------------------------------------------------------------
+
+const NOW_ISO = new Date().toISOString();
+// ~2 days back — safely a prior LOCAL calendar day regardless of time-of-day.
+const OLD_ISO = new Date(Date.now() - 2 * 86_400_000).toISOString();
+
+test("predictedSeq = 1 + max(batch_seq) among today's batches (older days excluded)", async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/batches')) {
+      return Promise.resolve(
+        jsonResponse({
+          items: [
+            // Yesterday's #9 must NOT leak into today's prediction.
+            { batch_id: 'b_old', status: 'completed', batch_seq: 9, created_at: OLD_ISO, episodes: [] },
+            { batch_id: 'b1', status: 'completed', batch_seq: 2, created_at: NOW_ISO, episodes: [] },
+            { batch_id: 'b2', status: 'completed', batch_seq: 4, created_at: NOW_ISO, episodes: [] },
+          ],
+        }),
+      );
+    }
+    return Promise.resolve(jsonResponse({}));
+  });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  await waitFor(() => expect(result.current.predictedSeq).toBe(5));
+});
+
+test('predictedSeq falls back to 1 when no batch exists today', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/batches')) {
+      return Promise.resolve(
+        jsonResponse({
+          items: [
+            { batch_id: 'b_old', status: 'completed', batch_seq: 7, created_at: OLD_ISO, episodes: [] },
+          ],
+        }),
+      );
+    }
+    return Promise.resolve(jsonResponse({}));
+  });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  await waitFor(() => expect(result.current.predictedSeq).toBe(1));
+});
+
+test('predictedSeq stays null on a GET /batches failure (the UI then renders "next #1")', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/batches')) return Promise.reject(new Error('api down'));
+    return Promise.resolve(jsonResponse({}));
+  });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  // The GET is fired on mount; give it a tick to reject, then confirm the catch
+  // left the hint unset (ContextBar renders `predictedSeq ?? 1`).
+  await waitFor(() => expect(globalThis.fetch).toHaveBeenCalled());
+  expect(result.current.predictedSeq).toBeNull();
+});

@@ -224,11 +224,24 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
         title="Change task (from plan)"
       />
       <Divider />
-      {/* Server batch number ("Batch N"), no fabricated "/5" planned-count. Shows
-          "—" until the batch is created (on the first recording). */}
+      {/* Server batch number ("Batch N"), no fabricated "/5" planned-count.
+          Before the batch is created (on the first recording) we show an honest,
+          muted prediction of the number it will most likely get rather than a
+          bare "—". The real number is assigned server-side, hence "next". */}
       <StaticCell
         label="Batch"
-        value={machine.batchSeq != null ? `Batch ${machine.batchSeq}` : 'Batch —'}
+        value={
+          machine.batchSeq != null ? (
+            `Batch ${machine.batchSeq}`
+          ) : (
+            <span className="font-normal text-gray-400">
+              next #{machine.predictedSeq ?? 1}
+              <span className="ml-1.5 font-sans text-[11px] font-normal text-gray-400">
+                · assigned on first recording
+              </span>
+            </span>
+          )
+        }
       />
       <Divider />
       <StaticCell

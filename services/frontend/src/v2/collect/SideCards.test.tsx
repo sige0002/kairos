@@ -3,8 +3,8 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
 import type { SystemInfo } from '../../api/types';
 import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
-import { SystemStatusCard } from './SideCards';
-import type { BatchMachine } from './useBatchMachine';
+import { BatchStatsCard, SystemStatusCard } from './SideCards';
+import type { BatchMachine, BatchStats } from './useBatchMachine';
 
 const GB = 1024 ** 3;
 
@@ -70,4 +70,35 @@ test('falls back to an honest "—" when the backend reports no disk', async () 
   expect(screen.queryByText(/GB free/)).not.toBeInTheDocument();
   // Both the value and the chip in the Storage row are dashes.
   expect(within(storageRow()).getAllByText('—').length).toBeGreaterThanOrEqual(1);
+});
+
+// ---- BatchStatsCard: post-delete divergence footnote ----------------------
+
+function statsMachine(stats: Partial<BatchStats>): BatchMachine {
+  const full: BatchStats = {
+    nRecorded: 0,
+    nGood: 0,
+    nReview: 0,
+    nTaskFailed: 0,
+    nRemaining: 0,
+    epNext: 1,
+    ...stats,
+  };
+  return { stats: full } as unknown as BatchMachine;
+}
+
+test('BatchStatsCard shows no footnote while recorded matches the on-disk tallies', () => {
+  // 4 recorded = 3 good + 1 review: nothing deleted, so no caption.
+  renderWithClient(<BatchStatsCard machine={statsMachine({ nRecorded: 4, nGood: 3, nReview: 1 })} />);
+  expect(screen.queryByTestId('stats-footnote')).toBeNull();
+});
+
+test('BatchStatsCard footnote appears once recorded outruns the quality tallies', () => {
+  // 5 recorded but only 3 good + 1 review remain on disk (one was deleted in
+  // Review): surface the gap honestly.
+  renderWithClient(<BatchStatsCard machine={statsMachine({ nRecorded: 5, nGood: 3, nReview: 1 })} />);
+  const note = screen.getByTestId('stats-footnote');
+  expect(note).toBeInTheDocument();
+  expect(note).toHaveTextContent(/recorded counts every take/i);
+  expect(note).toHaveTextContent(/still on disk/i);
 });
