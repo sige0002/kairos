@@ -30,6 +30,7 @@ from dora_runner.loss_report_config import (
     coerce_target_topics,
     load_loss_report_config,
 )
+from dora_runner.signal_report import DEFAULT_MAX_POINTS, run_signal_report
 from dora_runner.store import JobRecord, RunnerStore
 from dora_runner.validation import generate_template, run_fast_validation
 from dora_runner.video_check import MAX_FRAMES, run_video_check
@@ -209,6 +210,63 @@ async def _run_video_check(job: JobRecord, store: RunnerStore, data_dir: Path) -
     )
 
 
+def _topics_param(params: dict) -> list[str] | None:
+    """Optional ``topics`` allow-list: list or comma-string, ``None`` = all.
+
+    Accepts the frontend's array of topic names or a comma-separated string
+    (CLI convenience); blank entries are dropped. An empty/absent value returns
+    ``None``, which signal_report reads as "every non-image numeric topic".
+    """
+    raw = params.get("topics")
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        items = [part.strip() for part in raw.split(",")]
+    elif isinstance(raw, (list, tuple)):
+        items = [str(part).strip() for part in raw]
+    else:
+        raise ApiError(
+            status_code=400,
+            code="invalid_topics",
+            message="topics must be a list of topic names (or a comma string).",
+        )
+    names = [name for name in items if name]
+    return names or None
+
+
+def _max_points_param(params: dict) -> int:
+    """Optional ``max_points`` job param: per-topic downsample cap (>= 1)."""
+    raw = params.get("max_points")
+    if raw is None:
+        return DEFAULT_MAX_POINTS
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = 0
+    if value < 1:
+        raise ApiError(
+            status_code=400,
+            code="invalid_max_points",
+            message="max_points must be an integer >= 1.",
+        )
+    return value
+
+
+async def _run_signal_report(
+    job: JobRecord, store: RunnerStore, data_dir: Path
+) -> dict:
+    return await asyncio.to_thread(
+        run_signal_report,
+        run_id=job.run_id,
+        data_dir=data_dir,
+        topics=_topics_param(job.params),
+        max_points=_max_points_param(job.params),
+        # Post-export source: read the exported dataset dir instead of
+        # recorded/<run_id> (the recording was MOVED there by dataset_export).
+        dataset_dir=_dataset_dir_param(job.params),
+    )
+
+
 # ---- default registry ---------------------------------------------------------
 
 _FAST_VALIDATION_SCHEMA = {
@@ -229,6 +287,30 @@ _VIDEO_CHECK_SCHEMA = {
         # Encode cap: default keeps previews short; 0 = the full episode
         # (pair with force to regenerate a truncated preview at full length).
         "max_frames": {"type": "integer", "minimum": 0, "default": MAX_FRAMES},
+    },
+}
+_SIGNAL_REPORT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "topics": {
+            "type": "array",
+            "title": "Topics",
+            "description": (
+                "Topics to extract (empty = every non-image topic with numeric "
+                "fields). Image topics use video_check instead."
+            ),
+            "items": {"type": "string"},
+        },
+        "max_points": {
+            "type": "integer",
+            "title": "Max points per topic",
+            "description": "Uniform-stride downsample cap per topic.",
+            "minimum": 1,
+            "default": DEFAULT_MAX_POINTS,
+        },
+        # Post-export source: "<operator>/<task>/<NNN>" under data/ (the
+        # exported dataset dir); omitted = read recorded/<run_id>.
+        "dataset_dir": {"type": "string"},
     },
 }
 _NO_PARAMS_SCHEMA = {"type": "object", "properties": {}}
@@ -359,6 +441,19 @@ def build_default_registry(
             params_schema=_VIDEO_CHECK_SCHEMA,
             outputs=["report/video_check/<run_id>/<topic>.mp4"],
             runner=_run_video_check,
+        )
+    )
+    registry.register(
+        RegisteredPipeline(
+            id="signal_report",
+            name="Signal report",
+            description=(
+                "Generic numeric time-series + per-topic continuity from a "
+                "recorded MCAP, for Review charts."
+            ),
+            params_schema=_SIGNAL_REPORT_SCHEMA,
+            outputs=["report/signal_report/<run_id>/summary.json"],
+            runner=_run_signal_report,
         )
     )
     for pid, name, description in _PLACEHOLDERS:

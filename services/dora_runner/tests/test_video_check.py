@@ -394,3 +394,75 @@ def test_video_check_max_frames_caps_the_encode() -> None:
     assert summary["truncated"] is True
     assert summary["max_frames"] == 3
     assert (DATA_DIR / summary["file"]).exists()
+
+
+# ---- max_frames=0 (full episode) on a synthetic bag longer than the default --
+# Hermetic (no sample recording): a tiny CompressedImage MCAP with MAX_FRAMES+1
+# frames proves max_frames=0 encodes past the 900 default while the default cap
+# still stops (and truncates) at MAX_FRAMES.
+
+_IMAGE_DEF = (
+    "std_msgs/Header header\nstring format\nuint8[] data\n"
+    "================================================================================\n"
+    "MSG: std_msgs/Header\nbuiltin_interfaces/Time stamp\nstring frame_id\n"
+    "================================================================================\n"
+    "MSG: builtin_interfaces/Time\nint32 sec\nuint32 nanosec\n"
+)
+
+
+def _write_compressed_image_mcap(path: Path, count: int) -> None:
+    """Write *count* tiny (16x16) JPEG CompressedImage frames at ~15 fps."""
+    from io import BytesIO
+
+    from mcap_ros2.writer import Writer
+    from PIL import Image
+
+    with path.open("wb") as fh:
+        writer = Writer(fh)
+        schema = writer.register_msgdef("sensor_msgs/msg/CompressedImage", _IMAGE_DEF)
+        for i in range(count):
+            buf = BytesIO()
+            Image.new("RGB", (16, 16), (i % 256, 0, 0)).save(buf, format="JPEG")
+            ts = i * 66 * _MS  # ~15 fps cadence
+            writer.write_message(
+                topic="/cam/image/compressed",
+                schema=schema,
+                message={
+                    "header": {"stamp": {"sec": i, "nanosec": 0}, "frame_id": "c"},
+                    "format": "jpeg",
+                    "data": list(buf.getvalue()),
+                },
+                log_time=ts,
+                publish_time=ts,
+            )
+        writer.finish()
+
+
+@pytest.mark.skipif(
+    not _HAS_ENCODE_DEPS,
+    reason="needs the 'av' and 'Pillow' packages installed",
+)
+def test_video_check_max_frames_zero_streams_beyond_default(tmp_path: Path) -> None:
+    """max_frames=0 must NOT stop at the 900 default — it encodes the full bag.
+
+    Regression guard for the "Re-encode full episode" path (params
+    ``{force: true, max_frames: 0}``): the encoder streams past MAX_FRAMES,
+    while the default cap still stops there and marks ``truncated``.
+    """
+    topic = "/cam/image/compressed"
+    run_dir = tmp_path / "recorded" / "run_full"
+    run_dir.mkdir(parents=True)
+    _write_compressed_image_mcap(run_dir / "run_full_0.mcap", MAX_FRAMES + 1)
+
+    full = run_video_check(
+        run_id="run_full", data_dir=tmp_path, topic=topic, max_frames=0
+    )
+    assert full["summary"]["frames"] == MAX_FRAMES + 1
+    assert full["summary"]["truncated"] is False
+    assert full["summary"]["max_frames"] == 0
+
+    capped = run_video_check(
+        run_id="run_full", data_dir=tmp_path, topic=topic, force=True
+    )
+    assert capped["summary"]["frames"] == MAX_FRAMES
+    assert capped["summary"]["truncated"] is True

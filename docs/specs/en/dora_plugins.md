@@ -284,7 +284,7 @@ ENV KAIROS_PLUGINS_DIR=/app/plugins
 
 1. **executor=dora scaffolding**: `dora up` at the entrypoint, and add `make_dora_runner()` and `PluginManifest`. Add daemon liveness to `/readyz`.
 2. **Migrate one bundled pipeline to a dataflow**: turn `fast_validation` into a dataflow by reusing the nodes from `validation.py`, and ensure output parity with the in_process version via tests (golden summary comparison).
-3. **Migrate the remaining bundled pipelines**: `loss_report` / `video_check` / `dataset_export`. Since `dataset_export` is a file move, it is a single-node dataflow.
+3. **Migrate the remaining bundled pipelines**: `loss_report` / `video_check` / `dataset_export` / `signal_report`. Since `dataset_export` is a file move, it is a single-node dataflow.
 4. Enable **discover_plugins() + manifest scan**, and confirm it works even with an empty `plugins/`.
 5. **Turn the sample plugin into a submodule** and pass E2E (discover → `/jobs` → summary.json).
 6. Decide whether to fill the **placeholders (full_validation/dataset_convert/dataset_validation)** with plugins or bundled dataflows, and implement (following the direction of acceptance review (`dev_docs/arch_review.md` / local working draft) M4, unimplemented slots are hidden by default).

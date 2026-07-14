@@ -282,7 +282,7 @@ ENV KAIROS_PLUGINS_DIR=/app/plugins
 
 1. **executor=dora の足場**: entrypoint で `dora up`、`make_dora_runner()` と `PluginManifest` を追加。`/readyz` に daemon 死活を追加。
 2. **同梱 pipeline を 1 本 dataflow 化**: `fast_validation` を `validation.py` の node を流用して dataflow 化し、in_process 版と出力一致をテストで担保（golden summary 比較）。
-3. **残り同梱 pipeline を移行**: `loss_report` / `video_check` / `dataset_export`。`dataset_export` はファイル移動なので node 1 個 dataflow。
+3. **残り同梱 pipeline を移行**: `loss_report` / `video_check` / `dataset_export` / `signal_report`。`dataset_export` はファイル移動なので node 1 個 dataflow。
 4. **discover_plugins() + manifest scan** を有効化し、`plugins/` 空でも回ることを確認。
 5. **サンプルプラグインを submodule 化**して E2E（discover → `/jobs` → summary.json）を通す。
 6. **placeholder（full_validation/dataset_convert/dataset_validation）** を、プラグイン or 同梱 dataflow のどちらで埋めるか決めて実装（検収レビュー（`dev_docs/arch_review.md`・ローカル作業ドラフト） M4 の方針に従い、未実装枠は既定非表示）。

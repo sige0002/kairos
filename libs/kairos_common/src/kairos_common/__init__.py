@@ -12,6 +12,14 @@ from __future__ import annotations
 from kairos_common.app import REQUEST_ID_HEADER, create_app, error_response
 from kairos_common.config_path import resolve_config_path
 from kairos_common.errors import ApiError, ErrorBody, ErrorModel
+from kairos_common.field_introspect import (
+    DEFAULT_MAX_ARRAY,
+    DEFAULT_MAX_DEPTH,
+    DEFAULT_MAX_FIELDS,
+    extract_value,
+    iter_numeric_fields,
+    parse_path,
+)
 from kairos_common.logging import get_request_id, reset_request_id, set_request_id
 from kairos_common.recording_config import (
     Compression,
@@ -42,6 +50,9 @@ from kairos_common.validation_config import (
 __all__ = [
     "ApiError",
     "Compression",
+    "DEFAULT_MAX_ARRAY",
+    "DEFAULT_MAX_DEPTH",
+    "DEFAULT_MAX_FIELDS",
     "Durability",
     "ErrorBody",
     "ErrorModel",
@@ -63,11 +74,14 @@ __all__ = [
     "ValidationTemplate",
     "create_app",
     "error_response",
+    "extract_value",
     "get_request_id",
     "get_settings",
+    "iter_numeric_fields",
     "load_recording_config",
     "load_stream_config",
     "load_validation_template",
+    "parse_path",
     "reset_request_id",
     "resolve_config_path",
     "set_request_id",
