@@ -12,6 +12,37 @@ Phase A hardening toward a supportable release
 
 ### Added
 
+- Stop-time quick check settlement: when a recording stops, the orchestrator
+  settles a two-layer quick check off the stop path (Layer 0 = monitor window
+  deltas + incidents + recorder integrity; Layer 1 = MCAP summary-section read,
+  no message scan) and persists a `quick_check` verdict (good / needs_review
+  with specific per-topic reasons) on the run; episode saves derive their
+  default `quality` from it (`quality_source: "quick_check"`). Honest
+  degradation: each layer carries an `available` flag and a missing bag summary
+  is itself a needs_review signal.
+- Derived hz alert rules: every monitored topic with an `expected_hz` and no
+  explicit alerts.yaml rule now auto-gets a shortfall rule (WARNING < 0.8×,
+  DANGER < 0.5× expected; tunable via `derived_rules:`). Incidents carry a
+  `rule_origin` (config / derived / default), and `GET /incidents?since_ns=`
+  serves a bounded fired/cleared incident history so the stop-time quick check
+  can settle "what fired during this recording".
+- `signal_report` dora pipeline: generic post-hoc numeric time-series
+  extraction from a recorded MCAP (any topic with numeric leaves — joints,
+  wrench, odom, cmd_vel; image topics are skipped toward video_check). One
+  scan extracts every numeric leaf (shared live-Signals path vocabulary via
+  `kairos_common.field_introspect`), downsamples to ≤ max_points with
+  episode-relative `t_ns`, and computes a per-topic continuity score whose
+  formula ships inside the sidecar.
+- Review detail: a Signals section (topic + field-path picker, uPlot chart,
+  continuity chip with its definition, per-topic time source) and
+  chart↔video synced playback — the playhead tracks `video.currentTime` and
+  clicking the chart seeks the video, enabled only on a full-length
+  (`max_frames: 0`) render so a head-capped preview never lies about episode
+  time. The QUICK CHECK verdict and its reasons render on the episode detail.
+- Review layout: the detail pane is now viewport-elastic
+  (`minmax(400px,1.2fr)`) and the FILTERS rail collapses to a slim rail
+  (persisted, keyboard-accessible) so charts and synced video get the width
+  they need on operator screens.
 - Batch targets are per-batch and editable (Collect's Batch menu "Change
   target…", `PATCH /batches/{id} target_episodes` 1–500): the strip, counters
   and completion all follow the batch's own plan size instead of a fixed 30.
