@@ -41,6 +41,9 @@ class FakeRecorder:
         # set this to "failed"/"interrupted" to exercise non-completed finalize.
         self.final_state: str = "completed"
         self.final_error: dict[str, Any] | None = None
+        # Recording integrity classification reported in the manifest post-stop
+        # (ok|dropped|failed|unknown). The stop-time quick check reads this.
+        self.integrity: str = "ok"
         # Failure injection knobs for tests.
         self.start_status: int = 201
         self.start_error: dict[str, Any] | None = None
@@ -211,6 +214,9 @@ class FakeRecorder:
             "compression": "none",
             "split": None,
             "ended_at": "2026-06-24T00:05:00.000Z" if self.finalized else None,
+            # Recorder integrity classification (post-finalize); "unknown" until
+            # the bag is finalized, mirroring the real recorder.
+            "integrity": self.integrity if self.finalized else "unknown",
         }
         rosbag2_metadata = None
         if self.finalized:

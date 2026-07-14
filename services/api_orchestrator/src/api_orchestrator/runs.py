@@ -30,7 +30,8 @@ import logging
 import os
 import shutil
 import tempfile
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -57,10 +58,30 @@ from api_orchestrator.models import (
     Split,
     TopicQos,
 )
+from api_orchestrator.monitor_client import MonitorClient
+from api_orchestrator.quick_check import (
+    assemble_quick_check,
+    build_layer0,
+    build_layer1,
+    incidents_in_window,
+    read_mcap_summary,
+)
 from api_orchestrator.recorder_client import RecorderClient
 from api_orchestrator.store import RunExistsError, RunStore
 
 logger = logging.getLogger("kairos")
+
+# ---- stop-time quick-check settlement budget ------------------------------
+# Total wall budget for the settlement (task requirement: finish well within 5s
+# in the normal case). Enforced per-call below, not as one hard deadline, so a
+# completed step is always persisted even if a later one times out.
+QUICK_CHECK_BUDGET_S = 4.0
+# Per-call timeouts (no retry) so one slow downstream can't blow the budget.
+_SETTLE_MONITOR_TIMEOUT_S = 1.2
+_SETTLE_MCAP_TIMEOUT_S = 1.5
+# Short, best-effort budget for the record-START baseline monitor snapshot; a
+# slow/absent monitor must not add latency to the start path.
+_BASELINE_TIMEOUT_S = 1.0
 
 # Bound on suffix-retries when an allocated run_id collides with an existing
 # row (same-second / rapid starts). Practically one retry suffices.
@@ -93,6 +114,30 @@ def _parse_iso8601(value: str | None) -> datetime | None:
     except ValueError:
         return None
     return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed
+
+
+def _iso_to_ns(value: str | None) -> int | None:
+    """Convert a UTC ISO8601 timestamp to epoch nanoseconds (``None`` on failure).
+
+    Used to scope the monitor ``/incidents?since_ns=`` query and the window
+    overlap filter to the recording's start. Unparseable input yields ``None`` so
+    the incident leg simply degrades to unavailable rather than raising.
+    """
+    parsed = _parse_iso8601(value)
+    if parsed is None:
+        return None
+    return int(parsed.timestamp() * 1_000_000_000)
+
+
+def _coerce_int(value: Any) -> int | None:
+    """Coerce a JSON number to int, or ``None`` if it isn't one (bools excluded)."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    return None
 
 
 def _run_episode(
@@ -169,6 +214,23 @@ class _PreparedEntry:
     match_key: tuple[Any, ...]
 
 
+@dataclass
+class MonitorBaseline:
+    """A minimal per-topic monitor snapshot captured at record START.
+
+    Held in memory (``RunService._record_baselines``, keyed by run_id) so the
+    stop-time quick check can report whole-window figures: the monitor's
+    ``dds_samples_lost`` / ``messages_total`` are cumulative-since-monitor-start,
+    so the honest per-recording value is stop minus this baseline. Best-effort —
+    absent when the monitor was unreachable at start; the quick check then falls
+    back to the raw cumulative value with no baseline subtraction.
+    """
+
+    captured_ns: int
+    dds_samples_lost: dict[str, int] = field(default_factory=dict)
+    messages_total: dict[str, int] = field(default_factory=dict)
+
+
 class RunService:
     """Coordinates run state across the store and the recorder client.
 
@@ -188,11 +250,22 @@ class RunService:
         event_hub: EventHub | None = None,
         recorded_dir: str | Path = "/data/recorded",
         data_dir: str | Path | None = None,
+        monitor: MonitorClient | None = None,
     ) -> None:
         self._store = store
         self._recorder = recorder
         self._config = recording_config
         self._event_hub = event_hub
+        # Monitor client for the stop-time quick check's Layer 0 (metrics snapshot
+        # + incidents) and the record-start baseline. Optional: when absent, the
+        # quick check degrades to Layer 1 (+ recorder integrity) honestly.
+        self._monitor = monitor
+        # In-memory record-START monitor baselines, keyed by run_id (see
+        # MonitorBaseline). Consumed (popped) by the stop-time settlement.
+        self._record_baselines: dict[str, MonitorBaseline] = {}
+        # Live background settlement tasks (fire-and-forget from stop()). Held so
+        # they aren't GC'd mid-flight and can be awaited on shutdown / in tests.
+        self._settlement_tasks: set[asyncio.Task[None]] = set()
         # Recording output root; used to remove a run's directory on delete and
         # to read a run's manifest sidecar for the detail view.
         self._recorded_dir = Path(recorded_dir)
@@ -548,6 +621,12 @@ class RunService:
             )
             # Sync resolved topics/types/QoS ("all" expansion) from the recorder.
             run = await self._sync_metadata(run_id, allow_partial=True)
+            # Capture the record-START monitor baseline so the stop-time quick
+            # check can report whole-window dds_samples_lost / message counts.
+            # Best-effort + short-timeout: never delay or fail a start on it.
+            baseline = await self._capture_monitor_baseline()
+            if baseline is not None:
+                self._record_baselines[run_id] = baseline
             # The recorder's start blocks through the --start-paused arming gate
             # and returns the settled arming snapshot in its body, so pass it
             # straight through on the record_status event (no extra round-trip).
@@ -682,6 +761,14 @@ class RunService:
                 fields["error"] = error
             final = self._update(run.run_id, **fields)
             await self._emit_record_status(final)
+            # Capture the recorder-sourced integrity/backstop NOW (before any
+            # later run could overwrite the recorder's last-run metadata), then
+            # settle the quick check off the stop path so the HTTP response is
+            # not delayed. The run row is updated with quick_check when it lands.
+            integrity, backstop = await self._integrity_and_backstop()
+            self._schedule_settlement(
+                final, integrity=integrity, backstop=backstop, stop_ns=time.time_ns()
+            )
             return final
 
     async def _final_state(self, run: Run) -> tuple[RunState, RunError | None]:
@@ -734,6 +821,212 @@ class RunService:
         state = terminal.get(recorder_state or "", RunState.completed)
         # Only override the run's error when the recorder gives us a real one.
         return state, recorder_error
+
+    # ---- quick-check settlement -------------------------------------------
+
+    async def _capture_monitor_baseline(self) -> MonitorBaseline | None:
+        """Snapshot per-topic cumulative monitor counters at record start.
+
+        Best-effort + short-timeout (no retry): a slow/absent monitor returns
+        ``None`` (no baseline) rather than adding latency to the start path. Reads
+        ``dds_samples_lost`` and (when the monitor serves it) ``messages_total``
+        per topic so the stop-time quick check can diff to whole-window values.
+        """
+        if self._monitor is None:
+            return None
+        try:
+            body = await self._monitor.metrics(timeout=_BASELINE_TIMEOUT_S, retries=0)
+        except ApiError:
+            return None
+        dds: dict[str, int] = {}
+        msgs: dict[str, int] = {}
+        for topic in body.get("topics") or []:
+            if not isinstance(topic, dict):
+                continue
+            name = topic.get("name")
+            if not isinstance(name, str):
+                continue
+            d = _coerce_int(topic.get("dds_samples_lost"))
+            if d is not None:
+                dds[name] = d
+            m = _coerce_int(topic.get("messages_total"))
+            if m is not None:
+                msgs[name] = m
+        return MonitorBaseline(
+            captured_ns=time.time_ns(), dds_samples_lost=dds, messages_total=msgs
+        )
+
+    async def _integrity_and_backstop(self) -> tuple[str | None, str | None]:
+        """Read the recorder's integrity + any backstop note from its manifest.
+
+        ``integrity`` is the recorder's ``ok|dropped|failed|unknown``
+        classification; ``backstop`` is the auto-stop note (only when
+        ``MAX_RECORD_SECONDS``/``BYTES`` tripped the stop — the recorder writes it
+        into ``manifest.error`` prefixed ``auto-stopped:`` even on a clean cap).
+        Best-effort: an unreachable recorder yields ``(None, None)``.
+        """
+        try:
+            meta = await self._recorder.metadata()
+        except ApiError:
+            return None, None
+        manifest = meta.get("manifest") or {}
+        integrity = manifest.get("integrity")
+        err = manifest.get("error")
+        backstop = (
+            err if isinstance(err, str) and err.startswith("auto-stopped:") else None
+        )
+        return (integrity if isinstance(integrity, str) else None), backstop
+
+    def _schedule_settlement(
+        self,
+        run: Run,
+        *,
+        integrity: str | None,
+        backstop: str | None,
+        stop_ns: int,
+    ) -> None:
+        """Fire the quick-check settlement as a background task (never blocks).
+
+        Requires a running loop (always true inside the stop request handler); a
+        missing loop is a no-op so a synchronous caller degrades to "no quick
+        check" rather than raising.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        task = loop.create_task(
+            self._settle_and_persist(
+                run, integrity=integrity, backstop=backstop, stop_ns=stop_ns
+            )
+        )
+        self._settlement_tasks.add(task)
+        task.add_done_callback(self._settlement_tasks.discard)
+
+    async def _settle_and_persist(
+        self,
+        run: Run,
+        *,
+        integrity: str | None,
+        backstop: str | None,
+        stop_ns: int,
+    ) -> None:
+        """Compute the two-layer quick check and persist it on the run row.
+
+        Fully guarded: this runs off the stop path, so any failure is logged and
+        swallowed (a failed settlement must never crash the process or strand the
+        run). Each downstream piece is independently best-effort with its own
+        timeout, so a completed layer is always persisted even if another times
+        out — the ``available`` flags stay honest about what was reached.
+        """
+        started = time.monotonic()
+        try:
+            baseline = self._record_baselines.pop(run.run_id, None)
+            topic_names = [t.name for t in run.topics]
+            start_ns = _iso_to_ns(run.started_at)
+
+            # Layer 0 — monitor snapshot + incidents (no MCAP read). The whole
+            # ring is fetched (since_ns=0) and scoped to the recording window
+            # here — see _monitor_incidents for why server-side since scoping
+            # would miss still-open incidents that began before the recording.
+            monitor_topics = await self._monitor_metric_topics()
+            incidents = await self._monitor_incidents()
+            incidents_window = (
+                incidents_in_window(incidents, start_ns, stop_ns)
+                if incidents is not None
+                else None
+            )
+            layer0 = build_layer0(
+                integrity=integrity,
+                backstop=backstop,
+                monitor_topics=monitor_topics,
+                baseline_dds=baseline.dds_samples_lost if baseline else None,
+                incidents=incidents_window,
+                topic_names=topic_names,
+                config=self._config,
+            )
+
+            # Layer 1 — MCAP summary-only read (off the event loop, bounded).
+            run_dir = self._recorded_dir / run.run_id
+            try:
+                summary = await asyncio.wait_for(
+                    asyncio.to_thread(read_mcap_summary, run_dir),
+                    timeout=_SETTLE_MCAP_TIMEOUT_S,
+                )
+            except (TimeoutError, OSError):
+                summary = None
+            required = topic_names or (
+                list(self._config.default_topics) if self._config else []
+            )
+            layer1 = build_layer1(
+                summary=summary, config=self._config, required_topics=required
+            )
+
+            elapsed_ms = int((time.monotonic() - started) * 1000)
+            quick = assemble_quick_check(
+                layer0=layer0, layer1=layer1, elapsed_ms=elapsed_ms
+            )
+            self._update(run.run_id, quick_check=quick)
+            logger.info(
+                "quick_check settled",
+                extra={
+                    "run_id": run.run_id,
+                    "quality": quick.verdict.quality,
+                    "elapsed_ms": elapsed_ms,
+                },
+            )
+        except Exception:  # noqa: BLE001 - settlement must never crash the app.
+            logger.exception(
+                "quick_check settlement failed", extra={"run_id": run.run_id}
+            )
+
+    async def _monitor_metric_topics(self) -> list[dict[str, Any]] | None:
+        """Fetch the monitor ``/metrics`` ``topics`` array (``None`` if absent).
+
+        Budgeted (short timeout, no retry) so a slow monitor can't blow the
+        settlement budget; ``None`` on any monitor failure marks Layer 0's
+        monitor-derived part unavailable.
+        """
+        if self._monitor is None:
+            return None
+        try:
+            body = await self._monitor.metrics(
+                timeout=_SETTLE_MONITOR_TIMEOUT_S, retries=0
+            )
+        except ApiError:
+            return None
+        topics = body.get("topics")
+        return topics if isinstance(topics, list) else None
+
+    async def _monitor_incidents(self) -> list[dict[str, Any]] | None:
+        """Fetch the whole monitor incident ring (``None`` if unavailable).
+
+        We pass ``since_ns=0`` (the full bounded ring, <=500) and do the
+        window-overlap filtering client-side, NOT ``since_ns=start``. The
+        monitor's ``since_ns`` filter is one-sided (``fired_at_ns >= since_ns OR
+        cleared_at_ns >= since_ns``): scoping the fetch to the recording start
+        would silently MISS an incident that fired before the recording began and
+        is still open across the whole window (its ``cleared_at_ns`` is null, so
+        it matches neither clause). ``incidents_in_window`` then keeps exactly the
+        incidents overlapping ``[start, stop]``. Older monitor without the
+        endpoint → 404 → ``ApiError`` → ``None`` (honest degradation).
+        """
+        if self._monitor is None:
+            return None
+        try:
+            body = await self._monitor.incidents(
+                0, timeout=_SETTLE_MONITOR_TIMEOUT_S, retries=0
+            )
+        except ApiError:
+            return None
+        items = body.get("incidents")
+        return items if isinstance(items, list) else None
+
+    async def drain_settlements(self) -> None:
+        """Await any in-flight settlement tasks (shutdown / test determinism)."""
+        tasks = list(self._settlement_tasks)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     def _last_run_or_idle(self) -> Run:
         """Return the newest run for an idempotent stop with nothing active.

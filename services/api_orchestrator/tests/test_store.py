@@ -109,7 +109,8 @@ def test_file_db_sets_wal_and_user_version(tmp_path: Path) -> None:
     conn = sqlite3.connect(db)
     try:
         assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+        # Bumped to 2 when the runs.quick_check column was added (see _USER_VERSION).
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
     finally:
         conn.close()
 

@@ -31,6 +31,9 @@ from api_orchestrator.models import (
     Episode,
     EpisodeCreateRequest,
     EpisodePatchRequest,
+    Quality,
+    QualitySource,
+    Run,
 )
 from api_orchestrator.store import (
     BatchExistsError,
@@ -194,7 +197,8 @@ async def create_episode(request: Request, body: EpisodeCreateRequest) -> Episod
     store = _store(request)
     if store.get_batch(body.batch_id) is None:
         raise _batch_not_found(body.batch_id)
-    if store.get(body.run_id) is None:
+    run = store.get(body.run_id)
+    if run is None:
         raise ApiError(
             status_code=404,
             code="run_not_found",
@@ -203,6 +207,7 @@ async def create_episode(request: Request, body: EpisodeCreateRequest) -> Episod
         )
     if store.get_episode_by_run_id(body.run_id) is not None:
         raise _episode_exists(body.run_id)
+    quality, quality_source = _resolve_episode_quality(body, run)
     now = utc_now_iso8601()
     episode = Episode(
         episode_id=f"ep_{uuid4().hex}",
@@ -211,8 +216,8 @@ async def create_episode(request: Request, body: EpisodeCreateRequest) -> Episod
         index_in_batch=body.index_in_batch,
         task_result=body.task_result,
         failure_reason=body.failure_reason,
-        quality=body.quality,
-        quality_source=body.quality_source,
+        quality=quality,
+        quality_source=quality_source,
         review_status="pending",
         created_at=now,
         updated_at=now,
@@ -247,6 +252,37 @@ async def patch_episode(
         return store.update_episode(episode_id, **fields)
     except KeyError as exc:  # deleted between the read and the write
         raise _episode_not_found(episode_id) from exc
+
+
+# ---- quality derivation (D-2 seam) ----------------------------------------
+
+# Conservative default when an episode is saved with no explicit quality AND the
+# run carries no settled quick_check (e.g. an old run, or settlement that never
+# finished): we cannot vouch for the data, so mark it for review rather than
+# silently passing it as good.
+_UNSETTLED_QUALITY_DEFAULT: Quality = "needs_review"
+
+
+def _resolve_episode_quality(
+    body: EpisodeCreateRequest, run: Run
+) -> tuple[Quality, QualitySource]:
+    """Resolve an episode's saved quality + its source (extends the D-2 seam).
+
+    - An explicit ``quality`` in the request is the operator's call and is stored
+      as-is with the request's ``quality_source`` (defaults to ``operator``).
+    - When ``quality`` is omitted, the default derives from the run's stop-time
+      ``quick_check.verdict.quality`` with ``quality_source="quick_check"`` — so
+      the orchestrator's settled verdict is the single source of the auto value,
+      not re-derived per client.
+    - With no quick_check to derive from, fall back to a conservative
+      ``needs_review`` (still ``quick_check`` source: an absent settlement is
+      itself the signal).
+    """
+    if body.quality is not None:
+        return body.quality, body.quality_source
+    if run.quick_check is not None:
+        return run.quick_check.verdict.quality, "quick_check"
+    return _UNSETTLED_QUALITY_DEFAULT, "quick_check"
 
 
 # ---- error helpers --------------------------------------------------------

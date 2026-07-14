@@ -52,7 +52,7 @@
 1. `POST /api/v1/record/start` → orchestrator が **`run_id` を採番**し SQLite に run を作成（`state=created`）。
 2. recorder の `POST /record/start`（`run_id` を渡す）を呼ぶ。成功で `state=recording`、失敗なら **run 行は残したまま `state=failed` に更新**（理由を記録。DB 行は削除しない）。
 3. start 成功直後に recorder の `GET /record/metadata` を取得し、**確定した topics / type / QoS（`"all"` 展開結果を含む）を run 行へ同期**する。取得失敗時は `recording` のまま `error` に理由を記録して再試行する。
-4. `POST /api/v1/record/stop` → recorder stop → 最終 metadata（`message_count` / `bytes` / `ended_at` / topics）を再同期して `state=completed`。同期不能のまま完了した場合は `state=completed` とし `error` に同期失敗を残す（reconciliation 対象）。
+4. `POST /api/v1/record/stop` → recorder stop → 最終 metadata（`message_count` / `bytes` / `ended_at` / topics）を再同期して `state=completed`。同期不能のまま完了した場合は `state=completed` とし `error` に同期失敗を残す（reconciliation 対象）。確定後、**停止時クイックチェックを stop 応答の外で走らせ**、完了時に `quick_check` を run 行へ書き込む（下記「停止時クイックチェック」）。
 5. **再起動時の reconciliation**: 起動時に `recording` / `stopping` の run を recorder の `GET /record/status` と突き合わせ、実体が無ければ `state=interrupted` に更新する。
 
 - `run_id` は orchestrator が所有して recorder へ渡す。**SQLite が唯一の正**、recorder の `manifest.json` は監査用。
@@ -61,6 +61,41 @@
 - **start 時の operator / task**: 空のときは `unknown_operator` / `unknown_task` を既定値とする（データセットの保存先 `data/<operator>/<task>` が常に keyable になるよう、null コンポーネントを排除）。
 - **`record_status` SSE**: record start / stop の状態遷移ごとに `record_status` イベントを発行する（下記 SSE 契約）。
 - **`GET /api/v1/runs/{id}` は RunDetail を返す**: run 行に加えて、ディスク上のサイドカーを best-effort で同梱する — `manifest`（recorder の `manifest.json`）/ `validation`（`fast_validation` レポート）/ `dataset_stats`（`dataset_export` レポート）/ `loss`（`loss_report` レポート）。各ファイルが無ければ `null`（孤児 run でもクリーンに返る）。
+
+## 停止時クイックチェック（`quick_check` settlement）
+
+録画停止時に orchestrator が **2 層のクイックチェックを一度だけ確定（settle）**し、run 行に `quick_check`（JSON）として永続化する。分担: topic_monitor = 常時のライブ検知、**orchestrator = 停止時の一度きりの確定**、dora_runner = 事後のディープ解析（quick_check には手を出さない）。**stop の HTTP 応答は現状以上に遅延させない**: run を終端状態（`completed` 等）に確定し `record_status` を発行したあと、確定処理を **stop 経路の外（バックグラウンドタスク）**で走らせ、完了時に run 行を `quick_check` で更新する。総予算は約 `4s`（各下流呼び出しに個別タイムアウト・no-retry）。タイムアウト時は**完了した分だけ**を `available` フラグを正直に落として永続化する（正直な degradation）。
+
+- **Layer 0（MCAP を読まない、~ms）** — 停止時に一度だけ引く:
+  - monitor `GET /metrics` スナップショット（per-topic `hz` / `expected_hz` / `rate_shortfall` / `gap_max_ms` / `dds_samples_lost`）。`expected_hz` は `RECORDING_CONFIG` の `expected_hz_patterns` を fnmatch 先勝ちで解決（monitor と同じ規則）。`dds_samples_lost` は **録画 START 時に取ったベースライン（monitor スナップショットを in-memory に保持、run_id キー）との差分**で全区間値にする（ベースライン取得は best-effort・短タイムアウト = start を遅延させない）。
+  - monitor `GET /incidents?since_ns=0`（**リング全体 ≤500 を取得**）を引き、**録画ウィンドウ `[start, stop]` に重なるものだけをクライアント側でフィルタ**する（`fired_at_ns <= stop` かつ `cleared_at_ns` が `start` 以降 or `null`）。`since_ns=<録画開始>` を渡さないこと: monitor の `since_ns` フィルタは片側（`fired_at_ns >= since_ns OR cleared_at_ns >= since_ns`）で、**録画開始前に発火して継続中（`cleared_at_ns=null`）の incident を取りこぼす**ため。契約: `{ incidents: [ { id, topic, metric, severity: "danger"|"warning", rule_origin: "config"|"derived"|"default", fired_at_ns, cleared_at_ns: int|null, message } ] }`。タイムスタンプは epoch ns（`time.time_ns`）。
+  - recorder の `integrity`（`ok`|`dropped`|`failed`|`unknown`。recorder の manifest 由来 = monitor とは独立に埋まるので、monitor 不達でも残る）。
+  - backstop: `MAX_RECORD_SECONDS`/`BYTES` による自動停止ノート（recorder が manifest に `auto-stopped:` 接頭辞で残す。あれば同梱。informational で verdict には効かない）。
+  - monitor が不達 / エンドポイント `404` のときは Layer 0 の monitor 由来部を `available: false` と正直に落とす（settlement は失敗させない。`integrity` は独立に残る）。
+- **Layer 1（MCAP の summary のみ読む、<1s）** — 録画 bag の **summary/statistics セクションのみ**（per-channel メッセージ数・start/end）を読む。**メッセージ全走査はしない**。per-topic `avg_hz = count / duration` を算出して `expected_hz` と比較。欠落トピック（config の `default_topics` / 録画対象にあるが bag に無い）・空トピック（channel はあるが count 0）・duration を検出。**summary が無い（unclean stop）場合はフルスキャンにフォールバックせず** `summary_available: false` とし、強い needs_review シグナルとして扱う。bag 自体が無ければ `available: false`。
+- **verdict**: 次のいずれかで `needs_review`、他は `good`。`reasons` に発火した**具体的な**理由を列挙（例: `/hsrb/hand_camera avg 8.9Hz < expected 30Hz`）。`good` は空配列。
+  - `integrity != "ok"`（`unknown` / 取得不能も含む）
+  - ウィンドウ内に **danger** 重大度の incident が発火（`warning` は記録するが単独では効かない）
+  - いずれかのトピックの `avg_hz < 0.8 × expected_hz`
+  - 必須トピックの欠落 / 空
+  - summary が取得不能
+
+**永続契約（FIXED — frontend が実装対象）**: `quick_check` を run 行に保存し（基底 `Run` フィールド = 一覧 / 詳細どちらにも載る）、run 詳細を返す全経路で公開する。settlement 完了までは `null`（機能導入前の古い run も `null`）。形:
+
+```json
+{
+  "computed_at": "<iso8601>", "elapsed_ms": 123,
+  "layer0": { "available": true, "integrity": "ok|dropped|failed|unknown|null",
+    "topics": { "/x": { "hz": 29.7, "expected_hz": 30, "rate_shortfall": 0.01, "gap_max_ms": 40, "dds_samples_lost": 0 } },
+    "incidents": [ /* /incidents のうちウィンドウに重なるもの */ ], "backstop": "auto-stopped: …|null" },
+  "layer1": { "available": true, "summary_available": true,
+    "topics": { "/x": { "message_count": 1780, "avg_hz": 29.6, "expected_hz": 30 } },
+    "missing_topics": [], "empty_topics": [], "duration_s": 60.1 },
+  "verdict": { "quality": "good|needs_review", "reasons": ["…"] }
+}
+```
+
+- **episode の既定品質は `quick_check.verdict.quality` から導出**する（既存の D-2「integrity→品質」シームを**拡張**）。`POST /api/v1/episodes` で `quality` を**省略**すると、run の `quick_check.verdict.quality`（`good` | `needs_review`）を既定値とし `quality_source="quick_check"` を付ける。明示的な `quality` はオペレータの上書きとしてそのまま保存（`quality_source` は既定 `operator`）。run に `quick_check` が無ければ保守的に `needs_review`（未確定は good と見なさない）。
 
 ## Batch / Episode（Console v2 Phase 2）
 
@@ -78,7 +113,7 @@ Collect の Batch/Episode 進行・タスク結果・品質判断を orchestrato
   - `PATCH /api/v1/batches/{id}` — 途中終了（`status` / `ended_reason`）・`condition` 変更・**`target_episodes` 変更（1–500、範囲外は 422。2026-07-14）**。**終端 status（`completed` / `ended_early`）到達時に `ended_at` を一度だけスタンプ**。不整合な遷移は緩く許容（ハード拒否しない）。不在は `404`。
   - `GET /api/v1/batches?status=&robot=&operator=` — バッチ一覧（**新しい順**）。各要素に `batch_seq`・`episode_count`（ライブ件数）・`episodes_recorded`（単調カウンタ）と**コンパクトな episodes サマリ**（`index` / `run_id` / `batch_seq` / `task_result` / `quality` / `review_status`）を同梱（リロード時のアクティブバッチ復元に使う。Collect の件数表示は `episodes_recorded` を参照）。
   - `GET /api/v1/batches/{id}` — バッチ全体 ＋ **episodes（フル）**。不在は `404`。
-  - `POST /api/v1/episodes` — Collect Save 時。body `{ batch_id, run_id, index_in_batch, task_result, failure_reason?, quality, quality_source='operator' }` → `201`。batch / run が未知なら `404`、run に既に episode があれば **`409`**（`episode_exists`）。**`index_in_batch` はクライアントのヒント**: `(batch_id, index_in_batch)` は UNIQUE 制約で保護され、衝突時（複数端末が同番号を採番）はサーバーがロック下で MAX+1 を再採番し**実際に保存した index を応答で返す**（クライアントは応答値を採用する）。
+  - `POST /api/v1/episodes` — Collect Save 時。body `{ batch_id, run_id, index_in_batch, task_result, failure_reason?, quality?, quality_source='operator' }` → `201`。batch / run が未知なら `404`、run に既に episode があれば **`409`**（`episode_exists`）。**`quality` は任意**: 省略時は run の `quick_check.verdict.quality` から既定を導出し `quality_source="quick_check"` を付ける（`quick_check` が無ければ保守的に `needs_review`）。明示指定はオペレータ上書きとしてそのまま保存（上記「停止時クイックチェック」参照）。**`index_in_batch` はクライアントのヒント**: `(batch_id, index_in_batch)` は UNIQUE 制約で保護され、衝突時（複数端末が同番号を採番）はサーバーがロック下で MAX+1 を再採番し**実際に保存した index を応答で返す**（クライアントは応答値を採用する）。
   - `PATCH /api/v1/episodes/{id}` — Review の Adopt/Exclude（`review_status`）・品質/結果の上書き。不在は `404`。書き込みごとに `updated_at` を更新。
 - **runs への JOIN**: `GET /api/v1/runs` / `GET /api/v1/runs/{id}` は各 run に `episode` サマリ（`episode_id` / `batch_id` / `batch_seq` / `index_in_batch` / `task_result` / `failure_reason` / `quality` / `review_status`）を **additive に同梱**（無ければ `null`）。`batch_seq` は episode 行でなくバッチ側にあるため、join 時に `batch_id → batch_seq` を一括引きして付与する（Review/Datasets が 2 度目の往復なしで番号を表示できる）。既存フィールドは不変。一覧はバッチ一括取得で N+1 を回避。
 - **SSE**: 既存 `record_status` / `resync` で足りるため**新イベントは追加しない**（必要になれば Phase 2b）。
@@ -128,9 +163,9 @@ UI（Settings タブ）から `RECORDING_CONFIG` 全体を編集・永続化す�
   - `POST /api/v1/validation/templates/generate` body = `{ run_id }` → `{ name, version, required_topics: [ ... ] }`（雛形）
 - ワンクリック検証プリセット:
   - `GET /api/v1/validation/presets` → `{ items: [ { id, name, description, pipeline, params, total, pending, pending_run_ids: [ run_id ] } ] }`。静的フィールド（`id` / `name` / `description` / `pipeline` / `params`）は機体の `validation_presets.yaml`（[config](config.md)）由来。動的フィールドはリクエスト毎に算出＝完了収録（`recorded/` に残る run）のうち **その pipeline の `report/<pipeline>/<run_id>/summary.json` がまだ無い**もの（`pending_run_ids`）。UI はこれを 1 クリックで一括実行する（`POST /api/v1/jobs` を run ごと）。読み取り専用（状態は変えない）。
-- run（`GET /api/v1/runs/{id}` = RunDetail）: `{ run_id, state, started_at, ended_at?: string|null, operator?, task?, topics: [ { name, type, qos } ], compression, split?: object|null, error?: { code, message }|null, episode?: object|null, manifest?: object|null, validation?: object|null, dataset_stats?: object|null, loss?: object|null }`（`episode` は Phase 2 の JOIN。末尾 4 つはディスク上サイドカー由来。いずれも不在で `null`）。
+- run（`GET /api/v1/runs/{id}` = RunDetail）: `{ run_id, state, started_at, ended_at?: string|null, operator?, task?, topics: [ { name, type, qos } ], compression, split?: object|null, error?: { code, message }|null, episode?: object|null, quick_check?: object|null, manifest?: object|null, validation?: object|null, dataset_stats?: object|null, loss?: object|null }`（`episode` は Phase 2 の JOIN。`quick_check` は停止時クイックチェックの確定結果〔基底 `Run` フィールドなので一覧にも載る〕。末尾 4 つはディスク上サイドカー由来。いずれも不在で `null`）。
 - batch（`GET /api/v1/batches` の要素 = BatchSummary）: `{ batch_id, robot?, project, task, condition?, operator?, target_episodes, status, ended_reason?, created_at, ended_at?, episodes_recorded, batch_seq?, episode_count, episodes: [ { index, run_id, batch_seq?, task_result, quality, review_status } ] }`。`GET /api/v1/batches/{id}`（BatchDetail）は `episodes` がフル episode 配列。
-- episode（`POST/PATCH /api/v1/episodes`）: `{ episode_id, batch_id, run_id, index_in_batch, task_result, failure_reason?, quality, quality_source, review_status, created_at, updated_at }`。
+- episode（`POST/PATCH /api/v1/episodes`）: `{ episode_id, batch_id, run_id, index_in_batch, task_result, failure_reason?, quality, quality_source, review_status, created_at, updated_at }`（`POST` の `quality` は任意 = 省略時 `quick_check` から導出。応答の `quality` / `quality_source` は確定値）。
 - job（`GET /api/v1/jobs/{id}/status`）: `{ job_id, run_id, pipeline, state, progress, logs_tail }`（[dora_runner](dora_runner.md)）。
 
 ## フレームワーク / 永続

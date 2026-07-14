@@ -336,6 +336,9 @@ def test_lifecycle_emits_record_status_events(
         svc = RunService(store, recorder, recording_config=None, event_hub=hub)
         await svc.start(RecordStartRequest(topics=["/tf"]))
         await svc.stop()
+        # stop() settles the quick check off-path as a background task; drain it
+        # so it doesn't dangle when asyncio.run closes the loop.
+        await svc.drain_settlements()
         await http_client.aclose()
 
     asyncio.run(run_it())

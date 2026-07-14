@@ -13,6 +13,10 @@ dependencies = [
     "uvicorn>=0.30",
     # Internal HTTP client for the recorder (3s timeout + 1 retry).
     "httpx>=0.27",
+    # Stop-time quick-check Layer 1: read ONLY the MCAP summary/statistics
+    # section of a recorded bag (per-channel counts, start/end) — never a full
+    # message scan. Same version dora_runner pins.
+    "mcap>=1.4.0",
 ]
 
 [project.optional-dependencies]

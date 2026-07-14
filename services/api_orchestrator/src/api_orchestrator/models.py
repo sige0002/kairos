@@ -94,6 +94,93 @@ class RunEpisode(BaseModel):
     review_status: ReviewStatus
 
 
+# ---- stop-time quick-check settlement -----------------------------------
+# A two-layer "quick check" settled once, at recording stop, and persisted on
+# the run (see ``quick_check.py`` for the settlement logic + verdict rules).
+# Layer 0 is a no-MCAP pull (monitor snapshot + incidents + recorder integrity);
+# Layer 1 is an MCAP summary-only read (per-channel counts, no message scan).
+# The whole object degrades honestly: each layer carries ``available`` flags so
+# an unreachable monitor or an absent MCAP summary never fails the settlement —
+# it just narrows what the verdict can vouch for. Frozen contract: the frontend
+# codes against this exact shape.
+
+
+class QuickCheckL0Topic(BaseModel):
+    """Per-topic Layer 0 snapshot (live monitor metrics at stop)."""
+
+    hz: float | None = None
+    expected_hz: float | None = None
+    rate_shortfall: float | None = None
+    gap_max_ms: float | None = None
+    # Whole-window DDS samples lost (stop minus the start baseline when one was
+    # captured; else the monitor's cumulative value). None if unknown.
+    dds_samples_lost: int | None = None
+
+
+class QuickCheckLayer0(BaseModel):
+    """Layer 0 — no MCAP read (~ms): monitor snapshot + incidents + integrity.
+
+    ``available`` is the monitor-derived reachability (metrics/incidents). The
+    recorder-sourced ``integrity`` is populated independently of it (the recorder
+    is a separate service), so a monitor outage still leaves integrity intact.
+    """
+
+    available: bool = False
+    integrity: str | None = None
+    topics: dict[str, QuickCheckL0Topic] = Field(default_factory=dict)
+    # Monitor ``/incidents`` items overlapping the recording window (raw pass-
+    # through of the monitor's contract; see MonitorClient.incidents).
+    incidents: list[dict[str, Any]] = Field(default_factory=list)
+    # Additive: the recorder's auto-stop note when MAX_RECORD_SECONDS/BYTES
+    # tripped the stop (else null). Informational — not a verdict trigger.
+    backstop: str | None = None
+
+
+class QuickCheckL1Topic(BaseModel):
+    """Per-topic Layer 1 summary (from the MCAP statistics section)."""
+
+    message_count: int
+    avg_hz: float | None = None
+    expected_hz: float | None = None
+
+
+class QuickCheckLayer1(BaseModel):
+    """Layer 1 — MCAP summary-only read (<1s): per-channel counts + duration.
+
+    ``summary_available`` is False when the bag has no summary/statistics section
+    (an unclean stop); we deliberately do NOT fall back to a full scan — instead
+    the missing summary is treated as a strong ``needs_review`` signal.
+    """
+
+    available: bool = False
+    summary_available: bool = False
+    topics: dict[str, QuickCheckL1Topic] = Field(default_factory=dict)
+    missing_topics: list[str] = Field(default_factory=list)
+    empty_topics: list[str] = Field(default_factory=list)
+    duration_s: float | None = None
+
+
+class QuickCheckVerdict(BaseModel):
+    """The settled quality call + every specific reason that triggered it.
+
+    ``quality`` is ``good`` only when ``reasons`` is empty; any trigger flips it
+    to ``needs_review`` and appends a human-readable, specific reason.
+    """
+
+    quality: Literal["good", "needs_review"] = "good"
+    reasons: list[str] = Field(default_factory=list)
+
+
+class QuickCheck(BaseModel):
+    """The persisted stop-time quick-check settlement (frozen contract)."""
+
+    computed_at: str
+    elapsed_ms: int = 0
+    layer0: QuickCheckLayer0 = Field(default_factory=QuickCheckLayer0)
+    layer1: QuickCheckLayer1 = Field(default_factory=QuickCheckLayer1)
+    verdict: QuickCheckVerdict = Field(default_factory=QuickCheckVerdict)
+
+
 class Run(BaseModel):
     """A run as returned by ``GET /api/v1/runs/{id}`` and the record endpoints."""
 
@@ -113,6 +200,9 @@ class Run(BaseModel):
     # Console v2 Phase 2: the episode this run belongs to (null when none). Set
     # by the runs-list / run-detail read path; never persisted on the run row.
     episode: RunEpisode | None = None
+    # Stop-time quick-check settlement, persisted on the run row (null until the
+    # stop-path settlement completes, or for runs that predate the feature).
+    quick_check: QuickCheck | None = None
 
 
 class RecordStartRequest(BaseModel):
@@ -421,14 +511,21 @@ class BatchPatchRequest(BaseModel):
 
 
 class EpisodeCreateRequest(BaseModel):
-    """Body for ``POST /api/v1/episodes`` (Collect Save)."""
+    """Body for ``POST /api/v1/episodes`` (Collect Save).
+
+    ``quality`` is optional: when omitted the backend derives the default from
+    the run's stop-time ``quick_check.verdict.quality`` (with
+    ``quality_source="quick_check"``). Sending an explicit ``quality`` is the
+    operator override and is stored as-is (``quality_source`` then defaults to
+    ``operator``). See ``routers/episodes._resolve_episode_quality``.
+    """
 
     batch_id: str
     run_id: str
     index_in_batch: int = Field(ge=0)
     task_result: TaskResult
     failure_reason: str | None = None
-    quality: Quality
+    quality: Quality | None = None
     quality_source: QualitySource = "operator"
 
 

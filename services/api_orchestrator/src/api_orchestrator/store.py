@@ -30,6 +30,7 @@ from api_orchestrator.models import (
     JobCreateResponse,
     JobResult,
     JobStatus,
+    QuickCheck,
     Run,
     RunError,
     RunState,
@@ -43,7 +44,7 @@ from api_orchestrator.models import (
 # the schema changes (columns/indexes/tables). ``_migrate`` stays idempotent
 # (guarded by PRAGMA table_info), and user_version records which generation a DB
 # was last brought up to — a hook for gating future one-way migrations.
-_USER_VERSION = 1
+_USER_VERSION = 2
 
 
 class RunExistsError(Exception):
@@ -100,7 +101,9 @@ CREATE TABLE IF NOT EXISTS runs (
     error         TEXT,
     -- Session metadata captured at record start.
     operator      TEXT,
-    task          TEXT
+    task          TEXT,
+    -- Stop-time quick-check settlement (JSON; null until settled / for old rows).
+    quick_check   TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_runs_seq ON runs (seq DESC);
 
@@ -262,7 +265,7 @@ class RunStore:
         newly-introduced nullable columns here (idempotent: guarded by PRAGMA).
         """
         existing = {row["name"] for row in conn.execute("PRAGMA table_info(runs)")}
-        for column in ("operator", "task"):
+        for column in ("operator", "task", "quick_check"):
             if column not in existing:
                 conn.execute(f"ALTER TABLE runs ADD COLUMN {column} TEXT")
         # Console v2 Phase 2: monotone recorded-episode counter on batches. For a
@@ -382,8 +385,8 @@ class RunStore:
                     INSERT INTO runs
                         (run_id, state, started_at, ended_at, topics,
                          compression, split, message_count, bytes, error,
-                         operator, task)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         operator, task, quick_check)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     self._to_columns(run),
                 )
@@ -946,6 +949,15 @@ class RunStore:
             return json.dumps(
                 value.model_dump() if isinstance(value, RunError) else value
             )
+        if name == "quick_check":
+            if value is None:
+                return None
+            payload = (
+                value.model_dump(mode="json")
+                if isinstance(value, QuickCheck)
+                else value
+            )
+            return json.dumps(payload)
         if name in {"state", "compression"}:
             # Accept either a StrEnum member or a plain string.
             return value.value if hasattr(value, "value") else str(value)
@@ -976,6 +988,7 @@ class RunStore:
             self._encode_field("error", run.error),
             run.operator,
             run.task,
+            self._encode_field("quick_check", run.quick_check),
         )
 
     @staticmethod
@@ -985,6 +998,11 @@ class RunStore:
         split_raw = json.loads(row["split"]) if row["split"] else None
         error_raw = json.loads(row["error"]) if row["error"] else None
         keys = row.keys()
+        qc_raw = (
+            json.loads(row["quick_check"])
+            if "quick_check" in keys and row["quick_check"]
+            else None
+        )
         return Run(
             run_id=row["run_id"],
             state=RunState(row["state"]),
@@ -998,6 +1016,7 @@ class RunStore:
             error=RunError.model_validate(error_raw) if error_raw else None,
             operator=row["operator"] if "operator" in keys else None,
             task=row["task"] if "task" in keys else None,
+            quick_check=QuickCheck.model_validate(qc_raw) if qc_raw else None,
         )
 
     @staticmethod

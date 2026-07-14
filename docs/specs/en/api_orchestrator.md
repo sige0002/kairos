@@ -53,7 +53,7 @@ The **job management / state management / API hub** container. The single public
 1. `POST /api/v1/record/start` → the orchestrator **assigns a `run_id`** and creates a run in SQLite (`state=created`).
 2. Calls the recorder's `POST /record/start` (passing `run_id`). On success, `state=recording`; on failure, the **run row is kept and updated to `state=failed`** (recording the reason. The DB row is not deleted).
 3. Immediately after a successful start, fetches the recorder's `GET /record/metadata` and **syncs the finalized topics / type / QoS (including the result of `"all"` expansion) to the run row**. On fetch failure, keeps it `recording`, records the reason in `error`, and retries.
-4. `POST /api/v1/record/stop` → recorder stop → re-syncs the final metadata (`message_count` / `bytes` / `ended_at` / topics) and sets `state=completed`. If it completes while still unable to sync, it is set to `state=completed` and the sync failure is left in `error` (subject to reconciliation).
+4. `POST /api/v1/record/stop` → recorder stop → re-syncs the final metadata (`message_count` / `bytes` / `ended_at` / topics) and sets `state=completed`. If it completes while still unable to sync, it is set to `state=completed` and the sync failure is left in `error` (subject to reconciliation). After finalizing, it **runs the stop-time quick check off the stop response** and writes `quick_check` onto the run row when it lands (see "Stop-time quick check" below).
 5. **Reconciliation on restart**: at startup, reconciles `recording` / `stopping` runs against the recorder's `GET /record/status`, and if no actual entity exists, updates to `state=interrupted`.
 
 - The `run_id` is owned by the orchestrator and passed to the recorder. **SQLite is the single source of truth**; the recorder's `manifest.json` is for auditing.
@@ -62,6 +62,41 @@ The **job management / state management / API hub** container. The single public
 - **operator / task at start**: when empty, `unknown_operator` / `unknown_task` are the defaults (so that the dataset destination `data/<operator>/<task>` is always keyable, eliminating null components).
 - **`record_status` SSE**: emits a `record_status` event on each state transition of record start / stop (SSE contract below).
 - **`GET /api/v1/runs/{id}` returns RunDetail**: in addition to the run row, it best-effort includes on-disk sidecars — `manifest` (the recorder's `manifest.json`) / `validation` (the `fast_validation` report) / `dataset_stats` (the `dataset_export` report) / `loss` (the `loss_report` report). If a file is absent, it is `null` (returns cleanly even for orphan runs).
+
+## Stop-time quick check (`quick_check` settlement)
+
+At recording stop the orchestrator **settles a two-layer quick check exactly once** and persists it on the run row as `quick_check` (JSON). Division of labor: topic_monitor does always-on live detection, **the orchestrator settles once at stop**, and dora_runner does deep on-demand analysis (it never touches quick_check). **The stop HTTP response is not delayed beyond current behavior**: after the run is finalized (`completed`, etc.) and `record_status` is emitted, the settlement runs **off the stop path (a background task)** and updates the run row with `quick_check` when done. The total budget is ~`4s` (per-downstream-call timeouts, no retry); on timeout it persists **only what completed**, dropping the `available` flags honestly (honest degradation).
+
+- **Layer 0 (no MCAP read, ~ms)** — pulled once at stop:
+  - the monitor `GET /metrics` snapshot (per-topic `hz` / `expected_hz` / `rate_shortfall` / `gap_max_ms` / `dds_samples_lost`). `expected_hz` is resolved from `RECORDING_CONFIG` `expected_hz_patterns` (fnmatch, first-match-wins — same rule as the monitor). `dds_samples_lost` is made whole-window by diffing against a **baseline captured at record START** (an in-memory monitor snapshot, keyed by run_id; the baseline pull is best-effort + short-timeout so it never delays start).
+  - the monitor `GET /incidents?since_ns=0` (**fetch the whole bounded ring, ≤500**), then keep only the items that **overlap the recording window `[start, stop]`** client-side (`fired_at_ns <= stop` and `cleared_at_ns` at or after `start`, or `null`). Do NOT pass `since_ns=<recording-start>`: the monitor's `since_ns` filter is one-sided (`fired_at_ns >= since_ns OR cleared_at_ns >= since_ns`), so it would **miss an incident that fired before the recording began and is still open** (`cleared_at_ns=null`). Contract: `{ incidents: [ { id, topic, metric, severity: "danger"|"warning", rule_origin: "config"|"derived"|"default", fired_at_ns, cleared_at_ns: int|null, message } ] }`. Timestamps are epoch ns (`time.time_ns`).
+  - the recorder's `integrity` (`ok`|`dropped`|`failed`|`unknown`; from the recorder manifest = populated independently of the monitor, so it survives a monitor outage).
+  - backstop: the auto-stop note when `MAX_RECORD_SECONDS`/`BYTES` tripped the stop (the recorder writes it into the manifest with an `auto-stopped:` prefix; bundled when present, informational — not a verdict trigger).
+  - if the monitor is unreachable / the endpoint `404`s, Layer 0's monitor-derived part degrades to `available: false` honestly (settlement never fails; `integrity` still lands).
+- **Layer 1 (MCAP summary-only read, <1s)** — reads ONLY the recorded bag's **summary/statistics section** (per-channel message counts, start/end). It **never scans messages**. Computes per-topic `avg_hz = count / duration` and compares with `expected_hz`; detects missing topics (in config `default_topics` / the recorded set but absent from the bag), empty topics (channel present, count 0), and duration. **If the summary section is absent (unclean stop) it does NOT fall back to a full scan** — it sets `summary_available: false` and treats that as a strong needs_review signal. `available: false` when there is no bag at all.
+- **verdict**: `needs_review` if ANY of the following, else `good`. `reasons` lists every **specific** trigger (e.g. `/hsrb/hand_camera avg 8.9Hz < expected 30Hz`); an empty list means `good`.
+  - `integrity != "ok"` (including `unknown` / unavailable)
+  - a **danger**-severity incident fired during the window (`warning` is recorded but never triggers on its own)
+  - any topic's `avg_hz < 0.8 × expected_hz`
+  - missing / empty required topics
+  - the MCAP summary was unavailable
+
+**Persisted contract (FIXED — the frontend codes against this)**: `quick_check` is stored on the run row (a base `Run` field, so it appears in both the list and the detail) and exposed wherever run details are served. It is `null` until settlement completes (and for runs predating the feature). Shape:
+
+```json
+{
+  "computed_at": "<iso8601>", "elapsed_ms": 123,
+  "layer0": { "available": true, "integrity": "ok|dropped|failed|unknown|null",
+    "topics": { "/x": { "hz": 29.7, "expected_hz": 30, "rate_shortfall": 0.01, "gap_max_ms": 40, "dds_samples_lost": 0 } },
+    "incidents": [ /* /incidents items overlapping the window */ ], "backstop": "auto-stopped: …|null" },
+  "layer1": { "available": true, "summary_available": true,
+    "topics": { "/x": { "message_count": 1780, "avg_hz": 29.6, "expected_hz": 30 } },
+    "missing_topics": [], "empty_topics": [], "duration_s": 60.1 },
+  "verdict": { "quality": "good|needs_review", "reasons": ["…"] }
+}
+```
+
+- **An episode's default quality derives from `quick_check.verdict.quality`** (this **extends** the existing D-2 "integrity→quality" seam). In `POST /api/v1/episodes`, **omitting** `quality` derives the default from the run's `quick_check.verdict.quality` (`good` | `needs_review`) with `quality_source="quick_check"`; an explicit `quality` is the operator override, stored as-is (`quality_source` then defaults to `operator`). With no `quick_check` to derive from, the default is a conservative `needs_review` (an unsettled run is not vouched as good).
 
 ## Batch / Episode (Console v2 Phase 2)
 
@@ -79,7 +114,7 @@ The **job management / state management / API hub** container. The single public
   - `PATCH /api/v1/batches/{id}` — early termination (`status` / `ended_reason`), `condition` changes, and **`target_episodes` changes (1–500; out of range is 422; 2026-07-14)**. **`ended_at` is stamped exactly once when a terminal status (`completed` / `ended_early`) is reached.** Inconsistent transitions are tolerated loosely (no hard rejection). Absent is `404`.
   - `GET /api/v1/batches?status=&robot=&operator=` — batch list (**newest first**). Each element bundles `batch_seq`, `episode_count` (live count), `episodes_recorded` (monotone counter), and a **compact episodes summary** (`index` / `run_id` / `batch_seq` / `task_result` / `quality` / `review_status`) (used to restore the active batch on reload; Collect's counters reference `episodes_recorded`).
   - `GET /api/v1/batches/{id}` — the whole batch + **episodes (full)**. Absent is `404`.
-  - `POST /api/v1/episodes` — on Collect Save. Body `{ batch_id, run_id, index_in_batch, task_result, failure_reason?, quality, quality_source='operator' }` → `201`. Unknown batch / run is `404`; a run that already has an episode is **`409`** (`episode_exists`). **`index_in_batch` is a client hint**: `(batch_id, index_in_batch)` is protected by a UNIQUE constraint, and on a collision (multiple terminals assign the same number) the server re-assigns MAX+1 under the lock and **returns the index it actually saved in the response** (the client adopts the returned value).
+  - `POST /api/v1/episodes` — on Collect Save. Body `{ batch_id, run_id, index_in_batch, task_result, failure_reason?, quality?, quality_source='operator' }` → `201`. Unknown batch / run is `404`; a run that already has an episode is **`409`** (`episode_exists`). **`quality` is optional**: when omitted the default derives from the run's `quick_check.verdict.quality` with `quality_source="quick_check"` (falls back to `needs_review` when there is no `quick_check`); an explicit value is the operator override, stored as-is (see "Stop-time quick check"). **`index_in_batch` is a client hint**: `(batch_id, index_in_batch)` is protected by a UNIQUE constraint, and on a collision (multiple terminals assign the same number) the server re-assigns MAX+1 under the lock and **returns the index it actually saved in the response** (the client adopts the returned value).
   - `PATCH /api/v1/episodes/{id}` — Review's Adopt/Exclude (`review_status`) and quality/result overrides. Absent is `404`. `updated_at` is refreshed on every write.
 - **JOIN into runs**: `GET /api/v1/runs` / `GET /api/v1/runs/{id}` **additively bundle** an `episode` summary (`episode_id` / `batch_id` / `batch_seq` / `index_in_batch` / `task_result` / `failure_reason` / `quality` / `review_status`) with each run (`null` when absent). Since `batch_seq` lives on the batch rather than the episode row, the join bulk-resolves `batch_id → batch_seq` and attaches it (so Review/Datasets can show the number without a second round trip). Existing fields are unchanged. The list avoids N+1 via a bulk batch fetch.
 - **SSE**: the existing `record_status` / `resync` suffice, so **no new events are added** (Phase 2b if needed).
@@ -129,9 +164,9 @@ An operation that **moves a recording from the canonical staging (`recorded/`) t
   - `POST /api/v1/validation/templates/generate` body = `{ run_id }` → `{ name, version, required_topics: [ ... ] }` (a draft)
 - One-click validation presets:
   - `GET /api/v1/validation/presets` → `{ items: [ { id, name, description, pipeline, params, total, pending, pending_run_ids: [ run_id ] } ] }`. The static fields (`id` / `name` / `description` / `pipeline` / `params`) come from the robot's `validation_presets.yaml` ([config](config.md)). The dynamic fields are computed per request = the completed recordings (runs still in `recorded/`) for which **that pipeline's `report/<pipeline>/<run_id>/summary.json` does not exist yet** (`pending_run_ids`). The UI runs them in one click (`POST /api/v1/jobs` per run). Read-only (does not change state).
-- run (`GET /api/v1/runs/{id}` = RunDetail): `{ run_id, state, started_at, ended_at?: string|null, operator?, task?, topics: [ { name, type, qos } ], compression, split?: object|null, error?: { code, message }|null, episode?: object|null, manifest?: object|null, validation?: object|null, dataset_stats?: object|null, loss?: object|null }` (`episode` is the Phase 2 JOIN. The last 4 come from on-disk sidecars. Each is `null` when absent).
+- run (`GET /api/v1/runs/{id}` = RunDetail): `{ run_id, state, started_at, ended_at?: string|null, operator?, task?, topics: [ { name, type, qos } ], compression, split?: object|null, error?: { code, message }|null, episode?: object|null, quick_check?: object|null, manifest?: object|null, validation?: object|null, dataset_stats?: object|null, loss?: object|null }` (`episode` is the Phase 2 JOIN. `quick_check` is the settled stop-time quick check [a base `Run` field, so it appears in the list too]. The last 4 come from on-disk sidecars. Each is `null` when absent).
 - batch (an element of `GET /api/v1/batches` = BatchSummary): `{ batch_id, robot?, project, task, condition?, operator?, target_episodes, status, ended_reason?, created_at, ended_at?, episodes_recorded, batch_seq?, episode_count, episodes: [ { index, run_id, batch_seq?, task_result, quality, review_status } ] }`. In `GET /api/v1/batches/{id}` (BatchDetail), `episodes` is the full episode array.
-- episode (`POST/PATCH /api/v1/episodes`): `{ episode_id, batch_id, run_id, index_in_batch, task_result, failure_reason?, quality, quality_source, review_status, created_at, updated_at }`.
+- episode (`POST/PATCH /api/v1/episodes`): `{ episode_id, batch_id, run_id, index_in_batch, task_result, failure_reason?, quality, quality_source, review_status, created_at, updated_at }` (`quality` is optional on `POST` = derived from `quick_check` when omitted; the response `quality` / `quality_source` are the settled values).
 - job (`GET /api/v1/jobs/{id}/status`): `{ job_id, run_id, pipeline, state, progress, logs_tail }` ([dora_runner](dora_runner.md)).
 
 ## Framework / persistence

@@ -192,6 +192,9 @@ def create_orchestrator_app(
         # Same data root dora_runner writes report/ under, so the run-detail
         # view can read validation/dataset_export summaries.
         data_dir=settings.data_dir,
+        # Layer 0 of the stop-time quick check (metrics snapshot + incidents) and
+        # the record-start baseline pull through the same monitor client.
+        monitor=monitor,
     )
 
     @asynccontextmanager
@@ -203,6 +206,9 @@ def create_orchestrator_app(
         except Exception:  # noqa: BLE001 - never block startup on reconcile.
             logger.exception("startup reconciliation failed")
         yield
+        # Let any in-flight stop-time quick-check settlement finish (and persist)
+        # before we tear down the HTTP client it may still be using.
+        await service.drain_settlements()
         await event_hub.stop()
         # Shutdown: close the client only if we created it here.
         if owns_client:
