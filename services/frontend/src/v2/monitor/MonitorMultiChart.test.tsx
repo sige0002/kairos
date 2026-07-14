@@ -63,6 +63,8 @@ afterEach(() => vi.restoreAllMocks());
 test('+ Add chart adds a second panel defaulting to a distinct metric (Hz → Bandwidth)', async () => {
   mockFetch();
   renderWithClient(<MonitorScreen />);
+  // Default sub-view is Overview (§11 landing); drill into Topics for the charts.
+  fireEvent.click(await screen.findByTestId('mon-nav-Topics'));
   await waitFor(() => expect(screen.getByTestId('topic-row-/hsrb/odom')).toBeInTheDocument());
 
   // Only the primary panel to start: its metric select has no id suffix.
@@ -81,6 +83,8 @@ test('+ Add chart adds a second panel defaulting to a distinct metric (Hz → Ba
 test('per-panel topic sets are independent (add/remove on panel 2 never touches panel 1)', async () => {
   mockFetch();
   renderWithClient(<MonitorScreen />);
+  // Default sub-view is Overview (§11 landing); drill into Topics for the charts.
+  fireEvent.click(await screen.findByTestId('mon-nav-Topics'));
   await waitFor(() => expect(screen.getByTestId('topic-row-/hsrb/odom')).toBeInTheDocument());
 
   // Primary charts the configured default (joint_states) and nothing else.
@@ -112,6 +116,8 @@ test('per-panel topic sets are independent (add/remove on panel 2 never touches 
 test('the topics table row-click toggles PANEL 1 only, never other panels', async () => {
   mockFetch();
   renderWithClient(<MonitorScreen />);
+  // Default sub-view is Overview (§11 landing); drill into Topics for the charts.
+  fireEvent.click(await screen.findByTestId('mon-nav-Topics'));
   await waitFor(() => expect(screen.getByTestId('topic-row-/hsrb/odom')).toBeInTheDocument());
 
   fireEvent.click(screen.getByTestId('add-chart'));
@@ -128,6 +134,8 @@ test('the topics table row-click toggles PANEL 1 only, never other panels', asyn
 test('primary panel has no Remove; non-primary panels can be removed', async () => {
   mockFetch();
   renderWithClient(<MonitorScreen />);
+  // Default sub-view is Overview (§11 landing); drill into Topics for the charts.
+  fireEvent.click(await screen.findByTestId('mon-nav-Topics'));
   await waitFor(() => expect(screen.getByTestId('topic-row-/hsrb/odom')).toBeInTheDocument());
 
   // The lone primary panel offers no Remove control.
@@ -145,6 +153,8 @@ test('primary panel has no Remove; non-primary panels can be removed', async () 
 test('window + pause are a single GLOBAL control regardless of panel count', async () => {
   mockFetch();
   renderWithClient(<MonitorScreen />);
+  // Default sub-view is Overview (§11 landing); drill into Topics for the charts.
+  fireEvent.click(await screen.findByTestId('mon-nav-Topics'));
   await waitFor(() => expect(screen.getByTestId('topic-row-/hsrb/odom')).toBeInTheDocument());
 
   fireEvent.click(screen.getByTestId('add-chart'));
@@ -166,6 +176,8 @@ test('window + pause are a single GLOBAL control regardless of panel count', asy
 test('+ Add chart is disabled once the panel cap (4) is reached', async () => {
   mockFetch();
   renderWithClient(<MonitorScreen />);
+  // Default sub-view is Overview (§11 landing); drill into Topics for the charts.
+  fireEvent.click(await screen.findByTestId('mon-nav-Topics'));
   await waitFor(() => expect(screen.getByTestId('topic-row-/hsrb/odom')).toBeInTheDocument());
 
   const add = screen.getByTestId('add-chart');
@@ -179,6 +191,8 @@ test('+ Add chart is disabled once the panel cap (4) is reached', async () => {
 test('panel configs survive a Monitor sub-nav round-trip (module store)', async () => {
   mockFetch();
   renderWithClient(<MonitorScreen />);
+  // Default sub-view is Overview (§11 landing); drill into Topics for the charts.
+  fireEvent.click(await screen.findByTestId('mon-nav-Topics'));
   await waitFor(() => expect(screen.getByTestId('topic-row-/hsrb/odom')).toBeInTheDocument());
 
   fireEvent.click(screen.getByTestId('add-chart'));

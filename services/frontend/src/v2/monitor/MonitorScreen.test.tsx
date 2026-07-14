@@ -3,12 +3,15 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
 import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
 import { useUiStore } from '../../store/uiStore';
+import { __resetPanelStore } from './panelStore';
 import { MonitorScreen } from './MonitorScreen';
 
 const CONFIG = {
   endpoints: { api: '/api/v1', events: '/api/v1/events', webrtc: 'http://localhost:8002' },
   tabs: [],
   defaults: {
+    robot_name: 'hsr',
+    ros_domain_id: 42,
     default_topics: ['/hsrb/joint_states'],
     expected_hz: { '/hsrb/joint_states': 50 },
   },
@@ -33,8 +36,14 @@ function mockFetch(recordStatus: Record<string, unknown> = { state: 'created', r
   });
 }
 
+/** Navigate into the Topics sub-view (default landing is Overview). */
+async function gotoTopics() {
+  fireEvent.click(await screen.findByTestId('mon-nav-Topics'));
+}
+
 beforeEach(() => {
   setApiBase('/api/v1');
+  __resetPanelStore();
   useUiStore.setState({
     activeTab: 'monitor',
     sseStatus: 'closed',
@@ -49,36 +58,68 @@ beforeEach(() => {
 });
 afterEach(() => vi.restoreAllMocks());
 
-test('lands on Topics: chart defaults to the first discovered topic, table lists both', async () => {
+test('lands on Overview: the diagnostic landing, not a fabricated episode', async () => {
   mockFetch();
   renderWithClient(<MonitorScreen />);
 
-  await waitFor(() => expect(screen.getByTestId('topic-row-/hsrb/joint_states')).toBeInTheDocument());
+  await waitFor(() => expect(screen.getByTestId('monitor-overview')).toBeInTheDocument());
+  expect(screen.getByTestId('mon-nav-Overview')).toHaveAttribute('aria-pressed', 'true');
+  expect(screen.getByTestId('overview-record-state')).toHaveTextContent('STANDBY');
+  expect(screen.getByTestId('overview-open-topics')).toBeInTheDocument();
+  expect(screen.getByTestId('overview-open-signals')).toBeInTheDocument();
+});
+
+test('nav is in §11 spec order', async () => {
+  mockFetch();
+  renderWithClient(<MonitorScreen />);
+  await screen.findByTestId('mon-nav-Overview');
+  for (const label of ['Overview', 'Topics', 'Signals', 'System', 'Events', 'Logs']) {
+    expect(screen.getByTestId(`mon-nav-${label}`)).toBeInTheDocument();
+  }
+});
+
+test('Overview → "chart →" on a danger topic opens Topics with that topic charted', async () => {
+  mockFetch();
+  const { client } = renderWithClient(<MonitorScreen />);
+  client.setQueryData(['metrics'], {
+    topics: [{ name: '/hsrb/joint_states', hz: 1, status: 'danger' }],
+  });
+
+  const attn = await screen.findByTestId('attention-/hsrb/joint_states');
+  fireEvent.click(attn);
+
+  await waitFor(() =>
+    expect(screen.getByTestId('freq-legend-/hsrb/joint_states')).toBeInTheDocument(),
+  );
+});
+
+test('Topics: chart defaults to the first discovered topic, table lists both', async () => {
+  mockFetch();
+  renderWithClient(<MonitorScreen />);
+  await gotoTopics();
+
+  await waitFor(() =>
+    expect(screen.getByTestId('topic-row-/hsrb/joint_states')).toBeInTheDocument(),
+  );
   expect(screen.getByTestId('topic-row-/hsrb/odom')).toBeInTheDocument();
-  // Configured topic sorts first (useMonitorRows) and is the chart's default —
-  // it's charted (aria-pressed) and appears in the chart's per-series legend.
   expect(screen.getByTestId('topic-row-/hsrb/joint_states')).toHaveAttribute('aria-pressed', 'true');
   expect(screen.getByTestId('freq-legend-/hsrb/joint_states')).toBeInTheDocument();
 });
 
-test('clicking a second topic overlays it (both charted); clicking again removes it', async () => {
+test('Topics: clicking a second topic overlays it; clicking again removes it', async () => {
   mockFetch();
   renderWithClient(<MonitorScreen />);
+  await gotoTopics();
 
   await waitFor(() => expect(screen.getByTestId('topic-row-/hsrb/odom')).toBeInTheDocument());
-  // odom starts un-charted; the default (joint_states) is already charted.
   expect(screen.getByTestId('topic-row-/hsrb/odom')).toHaveAttribute('aria-pressed', 'false');
 
   fireEvent.click(screen.getByTestId('topic-row-/hsrb/odom'));
-  // Now BOTH overlay the chart — the overlay the user asked for.
   await waitFor(() =>
     expect(screen.getByTestId('topic-row-/hsrb/odom')).toHaveAttribute('aria-pressed', 'true'),
   );
-  expect(screen.getByTestId('topic-row-/hsrb/joint_states')).toHaveAttribute('aria-pressed', 'true');
   expect(screen.getByTestId('freq-legend-/hsrb/odom')).toBeInTheDocument();
-  expect(screen.getByTestId('freq-legend-/hsrb/joint_states')).toBeInTheDocument();
 
-  // Toggling it off drops it back out of the charted set.
   fireEvent.click(screen.getByTestId('topic-row-/hsrb/odom'));
   await waitFor(() =>
     expect(screen.getByTestId('topic-row-/hsrb/odom')).toHaveAttribute('aria-pressed', 'false'),
@@ -86,16 +127,24 @@ test('clicking a second topic overlays it (both charted); clicking again removes
   expect(screen.queryByTestId('freq-legend-/hsrb/odom')).not.toBeInTheDocument();
 });
 
-test('sub-nav: switching away from Topics shows the placeholder, and back returns', async () => {
+test('sub-nav switches between the real built-out views (no placeholders)', async () => {
   mockFetch();
   renderWithClient(<MonitorScreen />);
-  await screen.findByTestId('mon-nav-Topics');
+  await screen.findByTestId('mon-nav-System');
 
   fireEvent.click(screen.getByTestId('mon-nav-System'));
-  // Honest placeholder copy (D-8-2): no internal spec jargon leaks to the UI.
-  expect(screen.getByText(/This view isn't built yet/)).toBeInTheDocument();
+  expect(await screen.findByTestId('monitor-system')).toBeInTheDocument();
 
-  fireEvent.click(screen.getByRole('button', { name: 'Back to Topics' }));
+  fireEvent.click(screen.getByTestId('mon-nav-Events'));
+  expect(screen.getByTestId('monitor-events')).toBeInTheDocument();
+
+  fireEvent.click(screen.getByTestId('mon-nav-Logs'));
+  expect(screen.getByTestId('monitor-logs')).toBeInTheDocument();
+
+  // No leftover "not built yet" placeholder anywhere.
+  expect(screen.queryByText(/isn't built yet/)).not.toBeInTheDocument();
+
+  fireEvent.click(screen.getByTestId('mon-nav-Topics'));
   await waitFor(() => expect(screen.getByTestId('topic-row-/hsrb/odom')).toBeInTheDocument());
 });
 
@@ -113,7 +162,6 @@ test('context strip: STANDBY when no recording is active (no fabricated episode)
   renderWithClient(<MonitorScreen />);
 
   await waitFor(() => expect(screen.getByTestId('context-state')).toHaveTextContent('STANDBY'));
-  // The fabricated "Episode #27 / FROM COLLECT WARNING" mock is gone.
   expect(screen.queryByText(/Episode #27/)).not.toBeInTheDocument();
   expect(screen.queryByText(/FROM COLLECT WARNING/)).not.toBeInTheDocument();
 });
@@ -126,9 +174,10 @@ test('context strip: REC + run_id shown while a real recording is running', asyn
   expect(screen.getByTestId('monitor-context')).toHaveTextContent('run_test');
 });
 
-test('Events card: honest empty state when the alert buffer is empty', async () => {
+test('Topics Events card: honest empty state when the alert buffer is empty', async () => {
   mockFetch();
   renderWithClient(<MonitorScreen />);
+  await gotoTopics();
   await waitFor(() => expect(screen.getByTestId('events-empty')).toBeInTheDocument());
 });
 
@@ -138,7 +187,6 @@ test('Signals sub-view: nav mounts the probe plotter with real topic/field contr
   await screen.findByTestId('mon-nav-Signals');
 
   fireEvent.click(screen.getByTestId('mon-nav-Signals'));
-  // Real probe controls (topic dropdown + add button) and the honest no-series state.
   expect(screen.getByTestId('signals-topic')).toBeInTheDocument();
   expect(screen.getByTestId('signals-add')).toBeInTheDocument();
   expect(screen.getByTestId('signals-empty')).toBeInTheDocument();
@@ -147,9 +195,8 @@ test('Signals sub-view: nav mounts the probe plotter with real topic/field contr
 test('Rec column: seeds the recording set from the configured topics on discovery', async () => {
   mockFetch();
   renderWithClient(<MonitorScreen />);
+  await gotoTopics();
 
-  // joint_states is a configured default → checked once discovery seeds; odom is
-  // discovered-but-not-configured → unchecked.
   await waitFor(() => expect(screen.getByTestId('rec-check-/hsrb/joint_states')).toBeChecked());
   expect(screen.getByTestId('rec-check-/hsrb/odom')).not.toBeChecked();
   expect([...useUiStore.getState().recordSelected]).toContain('/hsrb/joint_states');
@@ -158,22 +205,20 @@ test('Rec column: seeds the recording set from the configured topics on discover
 test('Rec column: toggling a checkbox customizes the set and it survives a sub-view round-trip', async () => {
   mockFetch();
   renderWithClient(<MonitorScreen />);
+  await gotoTopics();
   await waitFor(() => expect(screen.getByTestId('rec-check-/hsrb/odom')).toBeInTheDocument());
 
-  // Add odom to the next-recording set.
   fireEvent.click(screen.getByTestId('rec-check-/hsrb/odom'));
   await waitFor(() => expect(useUiStore.getState().recordCustomized).toBe(true));
   expect([...useUiStore.getState().recordSelected]).toContain('/hsrb/odom');
 
-  // Leave Topics and come back — the customized set persists (it lives in the
-  // store, not the unmounted view) and a re-seed with the same key is a no-op.
   fireEvent.click(screen.getByTestId('mon-nav-Signals'));
   fireEvent.click(screen.getByTestId('mon-nav-Topics'));
   await waitFor(() => expect(screen.getByTestId('rec-check-/hsrb/odom')).toBeChecked());
   expect(useUiStore.getState().recordCustomized).toBe(true);
 });
 
-test('empty-state: no topics discovered explains why instead of an empty chart only', async () => {
+test('Topics empty-state: no topics discovered explains why instead of an empty chart', async () => {
   vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
     if (url.includes('/config')) return Promise.resolve(jsonResponse(CONFIG));
@@ -181,7 +226,12 @@ test('empty-state: no topics discovered explains why instead of an empty chart o
     return Promise.resolve(jsonResponse({}));
   });
   renderWithClient(<MonitorScreen />);
+  await gotoTopics();
 
   await waitFor(() => expect(screen.getByTestId('topics-table-empty')).toBeInTheDocument());
-  expect(screen.getByText('No topic to chart yet — pick one from the table below once topics are discovered.')).toBeInTheDocument();
+  expect(
+    screen.getByText(
+      'No topic to chart yet — pick one from the table below once topics are discovered.',
+    ),
+  ).toBeInTheDocument();
 });

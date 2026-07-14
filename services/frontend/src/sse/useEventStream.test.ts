@@ -6,6 +6,7 @@ import type {
   MetricsSnapshot,
   RecordStatus,
   RecordStatusEvent,
+  SessionLogEntry,
 } from '../api/types';
 import { dispatchSseEvent } from './useEventStream';
 
@@ -125,6 +126,54 @@ test('malformed payloads are ignored', () => {
   const qc = new QueryClient();
   dispatchSseEvent(qc, 'metrics', 'not json');
   expect(qc.getQueryData(queryKeys.metrics)).toBeUndefined();
+});
+
+test('lifecycle events append to the session event-log ring buffer (newest-first)', () => {
+  const qc = new QueryClient();
+  dispatchSseEvent(
+    qc,
+    'record_status',
+    JSON.stringify({ run_id: 'run-9', state: 'recording' }),
+  );
+  dispatchSseEvent(
+    qc,
+    'alert',
+    JSON.stringify({ ts: 't', alerts: [{ topic: '/a', metric: 'hz', threshold: 5, value: 1 }] }),
+  );
+  dispatchSseEvent(
+    qc,
+    'job',
+    JSON.stringify({ job_id: 'j1', pipeline: 'fast_validation', state: 'succeeded', run_id: 'run-9' }),
+  );
+  const log = qc.getQueryData<SessionLogEntry[]>(queryKeys.eventLog);
+  expect(log).toHaveLength(3);
+  // Newest-first: the job event is at the head.
+  expect(log?.[0]).toMatchObject({ type: 'job', summary: 'fast_validation · succeeded · run-9' });
+  expect(log?.[1]).toMatchObject({ type: 'alert', summary: '/a hz = 1' });
+  expect(log?.[2]).toMatchObject({ type: 'record_status', summary: 'recording · run-9' });
+});
+
+test('metrics events are NOT logged (they would be pure noise)', () => {
+  const qc = new QueryClient();
+  dispatchSseEvent(qc, 'metrics', JSON.stringify({ topics: [{ name: '/a', hz: 10 }] }));
+  expect(qc.getQueryData<SessionLogEntry[]>(queryKeys.eventLog)).toBeUndefined();
+});
+
+test('alert log summary counts additional alerts in the snapshot', () => {
+  const qc = new QueryClient();
+  dispatchSseEvent(
+    qc,
+    'alert',
+    JSON.stringify({
+      ts: 't',
+      alerts: [
+        { topic: '/a', metric: 'hz', threshold: 5, value: 1 },
+        { topic: '/b', metric: 'hz', threshold: 5, value: 2 },
+      ],
+    }),
+  );
+  const log = qc.getQueryData<SessionLogEntry[]>(queryKeys.eventLog);
+  expect(log?.[0]?.summary).toBe('/a hz = 1 (+1 more)');
 });
 
 test('bridge events drive the monitorBridge ui state', async () => {

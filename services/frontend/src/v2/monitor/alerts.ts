@@ -16,6 +16,8 @@ export type AlertTone = 'red' | 'gray';
 export interface AlertRow {
   /** Incident identity — one row per (topic, metric). */
   key: string;
+  /** Full topic path (for the Events sub-view's substring filter). */
+  topic: string;
   tone: AlertTone;
   state: 'firing' | 'cleared';
   /** e.g. `joint_states Hz < 45` */
@@ -69,6 +71,7 @@ export function formatAlert(a: AlertEvent): AlertRow {
   const detail = state === 'firing' && a.value != null ? `now ${a.value}` : '';
   return {
     key: incidentKey(a),
+    topic: a.topic,
     // A cleared alert is a recovery (muted); a firing one is an active breach.
     tone: state === 'cleared' ? 'gray' : 'red',
     state,

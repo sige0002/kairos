@@ -8,6 +8,9 @@ export const queryKeys = {
   topicsStatus: ['topics', 'status'] as const,
   metrics: ['metrics'] as const,
   alerts: ['alerts'] as const,
+  // Monitor "Logs": session-local ring buffer of received SSE events, written by
+  // useEventStream (never fetched). Read by the Logs sub-view.
+  eventLog: ['event-log'] as const,
   runs: (cursor?: string) => ['runs', cursor ?? null] as const,
   run: (id: string) => ['runs', 'detail', id] as const,
   pipelines: ['pipelines'] as const,

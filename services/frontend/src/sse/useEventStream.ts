@@ -18,10 +18,48 @@ import type {
   MetricsSnapshot,
   RecordStatus,
   RecordStatusEvent,
+  SessionLogEntry,
+  SessionLogType,
 } from '../api/types';
 import { useUiStore } from '../store/uiStore';
 
 const MAX_ALERTS = 100;
+// Bounded session ring buffer for the Monitor "Logs" sub-view. Holds the last
+// N *lifecycle* events (record_status / alert / job) received since the page
+// opened — NOT the high-frequency `metrics` stream (that would be pure noise and
+// is already shown as live charts). Newest-first, same as the alert buffer.
+const MAX_LOG_ENTRIES = 500;
+
+// Monotonic id source for log entries (session-local; only used as a React key).
+let logSeq = 0;
+
+/** Append one entry to the session event-log ring buffer (newest-first, capped). */
+function appendLog(qc: QueryClient, type: SessionLogType, summary: string): void {
+  const entry: SessionLogEntry = { id: logSeq++, ts: Date.now(), type, summary };
+  qc.setQueryData<SessionLogEntry[]>(queryKeys.eventLog, (prev) =>
+    [entry, ...(prev ?? [])].slice(0, MAX_LOG_ENTRIES),
+  );
+}
+
+/** Compact one-liner for a record_status event: state + run_id. */
+function summarizeRecordStatus(data: RecordStatusEvent): string {
+  const run = data.run_id ? ` · ${data.run_id}` : '';
+  return `${data.state}${run}`;
+}
+
+/** Compact one-liner for an alert snapshot: the first alert + a "+N more" tail. */
+function summarizeAlertSnapshot(alerts: AlertEvent[]): string {
+  const first = alerts[0]!;
+  const value = first.value != null ? ` = ${first.value}` : '';
+  const head = `${first.topic} ${first.metric}${value}`;
+  return alerts.length > 1 ? `${head} (+${alerts.length - 1} more)` : head;
+}
+
+/** Compact one-liner for a job event: pipeline + state (+ run_id when present). */
+function summarizeJob(data: JobStatus): string {
+  const run = data.run_id ? ` · ${data.run_id}` : '';
+  return `${data.pipeline} · ${data.state}${run}`;
+}
 
 function applyRecordStatus(qc: QueryClient, data: RecordStatusEvent): void {
   // Merge onto the previous cache entry rather than replacing it. The arming
@@ -40,6 +78,7 @@ function applyRecordStatus(qc: QueryClient, data: RecordStatusEvent): void {
     if (data.arming !== undefined) next.arming = data.arming;
     return next;
   });
+  appendLog(qc, 'record_status', summarizeRecordStatus(data));
 }
 
 function applyMetrics(qc: QueryClient, data: MetricsSnapshot): void {
@@ -54,10 +93,12 @@ function applyAlert(qc: QueryClient, data: AlertSnapshot): void {
   qc.setQueryData<AlertEvent[]>(queryKeys.alerts, (prev) =>
     [...incoming, ...(prev ?? [])].slice(0, MAX_ALERTS),
   );
+  appendLog(qc, 'alert', summarizeAlertSnapshot(incoming));
 }
 
 function applyJob(qc: QueryClient, data: JobStatus): void {
   qc.setQueryData(queryKeys.job(data.job_id), data);
+  appendLog(qc, 'job', summarizeJob(data));
 }
 
 /** Parse + dispatch a single SSE message. Exported for unit testing. */

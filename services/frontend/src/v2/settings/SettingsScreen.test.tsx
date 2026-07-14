@@ -336,7 +336,7 @@ test('saving the recording editor PUTs the edited config', async () => {
   expect(await screen.findByText('Saved')).toBeInTheDocument();
 });
 
-test('menu switches between Robots, Plans, and a placeholder for the rest', async () => {
+test('menu switches Robots → Plans → Recording (real, not a placeholder) → back', async () => {
   renderWithClient(<SettingsScreen />);
   await waitFor(() => expect(screen.getByTestId('robot-form')).toBeInTheDocument());
 
@@ -344,11 +344,26 @@ test('menu switches between Robots, Plans, and a placeholder for the rest', asyn
   expect(screen.getByTestId('plan-projects')).toBeInTheDocument();
   expect(screen.getByTestId('plan-project-name')).toHaveTextContent('Tabletop Manipulation');
 
+  // Recording is now a real form-first section, not a §12 placeholder.
   fireEvent.click(screen.getByTestId('settings-menu-item-2'));
-  expect(screen.getByTestId('settings-other-placeholder')).toHaveTextContent('Recording');
+  expect(screen.getByTestId('settings-recording')).toBeInTheDocument();
+  expect(screen.queryByTestId('settings-other-placeholder')).not.toBeInTheDocument();
 
   fireEvent.click(screen.getByTestId('settings-menu-item-0'));
   expect(screen.getByTestId('robot-form')).toBeInTheDocument();
+});
+
+test('only Dataset profiles + Users & permissions stay honest placeholders', async () => {
+  renderWithClient(<SettingsScreen />);
+  await waitFor(() => expect(screen.getByTestId('robot-form')).toBeInTheDocument());
+
+  fireEvent.click(screen.getByTestId('settings-menu-item-5'));
+  expect(screen.getByTestId('settings-other-placeholder')).toHaveTextContent('Dataset profiles');
+  expect(screen.getByTestId('settings-other-placeholder')).toHaveTextContent(/Phase 3 recipe/);
+
+  fireEvent.click(screen.getByTestId('settings-menu-item-6'));
+  expect(screen.getByTestId('settings-other-placeholder')).toHaveTextContent('Users & permissions');
+  expect(screen.getByTestId('settings-other-placeholder')).toHaveTextContent(/single-team/);
 });
 
 test('Plans: adding and removing a task updates the task list and condition count', async () => {

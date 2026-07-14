@@ -532,6 +532,25 @@ export interface RecordStatusEvent {
 
 export type SseEventType = 'record_status' | 'metrics' | 'alert' | 'job' | 'resync';
 
+/**
+ * One entry in the Monitor "Logs" session ring buffer (Console v2). Populated by
+ * useEventStream as real SSE events arrive — a faithful, browser-local record of
+ * what was received since this page opened (NOT a server-side log; the full
+ * service logs live in `docker compose logs`). `ts` is the client receipt time,
+ * so entries are ordered by when the UI saw them.
+ */
+export type SessionLogType = 'record_status' | 'alert' | 'job';
+
+export interface SessionLogEntry {
+  /** Monotonic id for React keys (session-local). */
+  id: number;
+  /** Client receipt time (epoch ms). */
+  ts: number;
+  type: SessionLogType;
+  /** Compact one-line summary built at receipt from the typed payload. */
+  summary: string;
+}
+
 // ---- Console v2 Phase 2: batches & episodes -----------------------------
 // Mirrors api_orchestrator.models (batches/episodes). Backend vocab differs
 // from the Review display enums (types in v2/review/types.ts): here quality is

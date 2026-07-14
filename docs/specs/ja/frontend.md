@@ -87,20 +87,27 @@ v1 の機能をそのまま維持し、レイアウトのみ v2 化。
 
 ### Monitor — 通信・信号・システム診断
 
-v1 の Graph / Probe / Live 健全性パネルの統合先。
+v1 の Graph / Probe / Live 健全性パネルの統合先。サブナビ（§11 順）は **Overview / Topics / Signals / System / Events / Logs**。6 サブビュー全て実データで実装（取得不能値は「—」・空グラフ／空リストは理由を明示）。既定表示は Overview。
 
 - **コンテキスト帯**: 録画中は REC・run_id・経過時間、それ以外は STANDBY（`record_status` 由来の実表示）。
+- **Overview ビュー**（診断ランディング・既定）: 録画コンテキスト、トピック健全性の集計（`ok`/`warning`/`danger`/`inactive` 件数＋要注意トピック名 → クリックで Topics にチャート）、発火中インシデント要約（実 alert バッファ）、`GET /api/v1/system` の簡易スナップショット、Topics/Signals へのジャンプ。
 - **Topics ビュー**:
   - **チャートパネルの追加 / 削除（上限 4）**。パネル毎にメトリクス（**Frequency / Bandwidth / Max gap / Rate vs expected**）とトピック重畳（上限 6）を選択。時間窓（30s / 1m / 5m）と **Freeze charts / Live**（旧 Pause）はグローバル — 凍結はチャート限定（`Charts frozen · table still live.` を明示。テーブルは意図的に live 継続）。窓は開いてからの蓄積なので、蓄積が窓未満の間は `{window} window (n so far)` と正直に表示。チャート高さは**実測スロット追従**（固定高が overflow-hidden な親にクリップされ低値域が見えなくなる不具合の根治）。**録画の REC / STOP マーカー**を全パネルに重畳。Frequency には expected_hz の参照線。**latency / loss はメニューに置かない** — 非破壊 monitor では測れない（per-run の loss は Review の事後解析で提供）。
   - **トピック表**: discovery の全トピック＋live metrics（Hz / 帯域 / gap、status ドット `inactive`/`danger`/`warning`/`ok`/`unknown`、閾値超過時の shortfall バッジ＋理由 tooltip。shortfall は observed であり真の loss ではない）。**Rec チェックボックス列** = 次回録画の対象選択（記録途中の変更ではない）。設定済みトピックは事前チェック。機体切替で config 既定に再シード。チャートの系列選択とは独立。
 - **Signals ビュー**（v1 Probe の移植）: `topic_probe` 由来の**数値フィールド**を (topic, field) 単位で重畳プロットする汎用プロッタ。トピック → 数値フィールド（配列は `[0..N]` 展開）を選び、**異トピック × 複数フィールドを重畳**。サンプルレート選択（1/5/10/30Hz・既定 10Hz）・窓・Pause。**decode は隔離コンテナ `topic_probe` が担い、録画・監視に波及しない**（[topic_probe.md](topic_probe.md)）。
-- **Events カード**: SSE `alert` を **incident 単位（topic × metric）で 1 行に集約** — 発火中は `firing · since {t}` で現在値を in-place 更新、解消で `cleared · {t}`（muted）へ反転、再発火は `×n`。config ルールの無いトピックも monitor の既定 DANGER incident（持続 ~10s）で拾う = **テーブルの DANGER と Events は矛盾しない**（[topic_monitor.md](topic_monitor.md)）。
-- **System カード**: 実 CPU% / GPU% / ディスク使用量（`GET /api/v1/system`）。取得できない値は「—」（でっち上げない）。
+- **System ビュー**（全面）: ホスト実測（CPU% / GPU% / ディスク使用量・`GET /api/v1/system`。取得不能値は「—」）＋ ROS_DOMAIN_ID・サービスエンドポイント（`GET /api/v1/config`）＋ **コンポーネント健全性**。健全性はブラウザから誠実に観測できる信号のみで表す＝ orchestrator=ライブ SSE 開通、monitor=`bridge` イベント。recorder / streamer の個別 readiness は orchestrator の**サーバ側 `/readyz`**（Docker healthcheck 用）で判定されブラウザオリジンには露出しない旨を明記する（`/readyz` は同一オリジンに proxy されないため fetch しない）。Overview / Topics 右レールには簡易 **System カード**を埋め込む。
+- **Events**: SSE `alert` を **incident 単位（topic × metric）で 1 行に集約** — 発火中は `firing · since {t}` で現在値を in-place 更新、解消で `cleared · {t}`（muted）へ反転、再発火は `×n`。Overview / Topics 右レールの **Events カード**が集約表示、**Events ビュー**（全面）は topic 部分一致＋状態（firing/cleared/all）フィルタと注記（履歴は Monitor を開いてからのセッションローカル）を持つ。config ルールの無いトピックも monitor の既定 DANGER incident（持続 ~10s）で拾う = **テーブルの DANGER と Events は矛盾しない**（[topic_monitor.md](topic_monitor.md)）。
+- **Logs ビュー**: 受信した SSE ライフサイクルイベント（record_status / alert / job）のセッションローカルなタイムライン（種別チップ＋テキストフィルタ、上限 ~500 のリングバッファ）。「このページを開いてから／完全なログは `docker compose logs`」と正直に表示。metrics は高頻度ノイズのため記録しない。
 
 ### Settings — 機体設定・計画
 
 - **Robots**: 機体一覧（committed `config/<robot>/` と gitignored `config/local/<robot>/`）と選択（`POST /api/v1/config/select` で recording / stream を hot-swap。recorder QoS / monitor expected_hz は再起動後 — UI にもその旨を表示。**録画中のアクティブ化は「Stop and switch?」確認モーダル**）。**非アクティブ機体は read-only で設定を閲覧可能**（`GET /api/v1/config/robots/{robot}`。「Read-only — {robot} is not the active robot.」バナー＋雛形として読める disabled JSON）。**aspect**（recording / stream / validation / validators）の option 選択。recording config は JSON で編集・永続化（`PUT /api/v1/config/recording`。**インライン検証**: 不正 JSON は Save 無効＋平易エラー。録画中の保存は「次の録画から適用」の情報バナー）。機体の新規作成は不可 — `+ Add robot` は消えるトーストでなく**次の一歩を示す常設 explainer**（`config/<robot>/` フォルダ作成＋既存機体の雛形参照）を開く。レール下部は出典の無い版数表示を廃し **active robot の実値**。
-- **Plans**: Project / Task / Condition の定義を編集。Collect のピッカーと**共有ストア**で即時反映（現状は localStorage。**TBD**: サーバー保存は Phase 2.5）。
+- **Projects & tasks（Plans）**: Project / Task / Condition の定義を編集。Collect のピッカーと**共有ストア**で即時反映（現状は localStorage。**TBD**: サーバー保存は Phase 2.5）。
+- **Recording**: アクティブ機体の recording config を**フォーム優先**で表示（`GET /api/v1/config/recording`：compression / start gate〔`start_paused`〕/ cache〔`max_cache_size_mb`〕と default_topics 表〔expected Hz・QoS override バッジ〕）。生 JSON エディタは「Advanced」に格下げ（既定折りたたみ・`PUT /api/v1/config/recording`）。
+- **Data quality**（読み取り専用）: `GET /api/v1/config/robots/{robot}` の aspects 内容から、expected Hz 参照レート＋ monitor の warn/danger 閾値（`monitor.warn_shortfall`/`danger_shortfall`）＋アクティブ validation テンプレートの必須トピックを表示。明示的な閾値アラート規則は API 非露出の `config/<robot>/monitoring/alerts.yaml` にある旨を明記（レスポンスの `robot`＝機体ディレクトリ id を使い、存在するパスを指す）。
+- **Validation**: validation / validators aspect 選択（`POST /api/v1/config/select`）＋ワンクリックプリセット一覧（`GET /api/v1/validation/presets`・pending 件数）。実行は Validation タブへリンク（1 機能 1 箇所）。
+- **System**（読み取り専用）: デプロイ事実（ROS_DOMAIN_ID・エンドポイント・data dir/storage・コンポーネント健全性）。誠実な version ソースがクライアントに無いため version 行は省略。RMW/DDS は API 非露出のため注記のみ。
+- **honest placeholder**: **Dataset profiles**（Phase 3 の recipe モデル待ち）と **Users & permissions**（同一 LAN・無認証スコープのため管理対象なし）は、理由を述べる placeholder のみ（dead な操作は置かない）。
 
 ## データフロー（SSE × キャッシュ）
 

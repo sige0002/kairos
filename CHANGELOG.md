@@ -12,6 +12,12 @@ Phase A hardening toward a supportable release
 
 ### Added
 
+- Monitor sub-views implemented on real data: Overview (diagnostic landing),
+  System, Events (incident history with filters), Logs (session event
+  timeline); Settings sections implemented: Recording (form-first, JSON as
+  Advanced), Data quality, Validation, System. Dataset profiles and
+  Users & permissions remain honest placeholders with stated rationale.
+
 - Continuous integration (`.github/workflows/ci.yml`) run on every push and pull
   request to `develop` / `main`: Python unit tests for the shared library and all
   six Python services, frontend build + test + lint, Ruff lint and format checks,
