@@ -6,10 +6,18 @@
 // A module-level store (same useSyncExternalStore pattern as collect's batch
 // store) makes edits reactive across screens and survive a tab-switch unmount;
 // it also persists to localStorage (versioned key) so edits survive a reload.
-// The server-side plan model is Phase 2.5 — until then this browser-local
-// catalog stands in (it is not synced to any backend).
+//
+// SERVER SYNC (2026-07-14, batch-label decision): the catalog is the label
+// VOCABULARY Collect stamps onto batches/episodes, so every terminal must
+// share ONE copy — GET/PUT /api/v1/plans persists it in the orchestrator.
+// Contract: a never-set server (projects: null) is SEEDED from this browser;
+// unsynced local edits (dirty flag) win over the server copy; otherwise the
+// server catalog is adopted. Offline, the browser-local copy stands and a
+// dirty edit is re-pushed on the next edit or page load. This is still NOT
+// the Phase 2.5 Plan model (no ids/refs/targets) — just the shared catalog.
 
-import { useSyncExternalStore } from 'react';
+import { useEffect, useSyncExternalStore } from 'react';
+import { apiGet, apiPut } from '../api/client';
 
 export interface PlanTask {
   name: string;
@@ -111,20 +119,105 @@ export function getPlans(): PlanProject[] {
 }
 
 /** Replace the whole catalog (Settings' add/rename/remove all funnel here),
- *  persisting to localStorage and notifying every subscribed screen. */
+ *  persisting to localStorage + pushing to the server, and notifying every
+ *  subscribed screen. A failed push leaves the dirty flag set, so the edit is
+ *  re-pushed on the next edit or page load instead of being silently lost. */
 export function setPlans(next: PlanProject[]): void {
   currentPlans = next;
+  writeDirty(true);
   try {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
   } catch {
     // localStorage unavailable — the in-memory catalog still works this session.
   }
   notify();
+  pushPlansToServer(next);
+}
+
+// ---- server sync -----------------------------------------------------------
+
+/** GET/PUT /api/v1/plans response shape (see routers/plans.py). */
+interface PlansServerResponse {
+  projects: PlanProject[] | null;
+  updated_at: string | null;
+}
+
+// Set while a local edit hasn't been confirmed by the server — it survives a
+// reload so an offline edit still wins the next reconcile.
+const DIRTY_KEY = 'kairos.v2.plans.dirty.v1';
+
+function readDirty(): boolean {
+  try {
+    return window.localStorage.getItem(DIRTY_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function writeDirty(dirty: boolean): void {
+  try {
+    if (dirty) window.localStorage.setItem(DIRTY_KEY, '1');
+    else window.localStorage.removeItem(DIRTY_KEY);
+  } catch {
+    // localStorage unavailable: sync still works within this session.
+  }
+}
+
+function pushPlansToServer(projects: PlanProject[]): void {
+  apiPut<PlansServerResponse>('/plans', { projects })
+    .then(() => writeDirty(false))
+    .catch(() => {
+      // Offline / older backend: the dirty flag stays set and the local copy
+      // stands; re-pushed on the next edit or page load.
+    });
+}
+
+/** Adopt the server catalog as-is (no dirty mark, no re-push). An empty list
+ *  is honored — an explicitly emptied catalog must not resurrect the seeds. */
+function adoptServerPlans(projects: PlanProject[]): void {
+  if (!projects.every(isPlanProject)) return; // malformed — local copy stands
+  currentPlans = clonePlans(projects);
+  try {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(currentPlans));
+  } catch {
+    /* ignore */
+  }
+  notify();
+}
+
+// Once per page load (module flag) — later mounts are no-ops.
+let plansSyncStarted = false;
+
+/** Reconcile the browser-local catalog with the server, once per page load:
+ *  never-set server → seed it from this browser; unsynced local edits → push
+ *  them; otherwise adopt the server copy. Any failure keeps the local copy. */
+export function ensurePlansSynced(): void {
+  if (plansSyncStarted) return;
+  plansSyncStarted = true;
+  apiGet<PlansServerResponse>('/plans')
+    .then((resp) => {
+      if (!resp || !Array.isArray(resp.projects)) {
+        if (resp && resp.projects === null) pushPlansToServer(getPlans());
+        return;
+      }
+      if (readDirty()) {
+        pushPlansToServer(getPlans());
+        return;
+      }
+      adoptServerPlans(resp.projects);
+    })
+    .catch(() => {
+      // API unreachable — the browser-local catalog stands.
+    });
 }
 
 /** React binding: re-renders the subscriber whenever the catalog changes, so a
- *  Settings edit shows up in Collect's pickers immediately. */
+ *  Settings edit shows up in Collect's pickers immediately. The first mount of
+ *  any subscriber also kicks the once-per-load server reconcile. */
 export function usePlans(): PlanProject[] {
+  useEffect(() => {
+    ensurePlansSynced();
+  }, []);
   return useSyncExternalStore(
     (l) => {
       listeners.add(l);
@@ -141,9 +234,11 @@ export function usePlans(): PlanProject[] {
 export function __resetPlansStore(): void {
   try {
     window.localStorage.removeItem(STORAGE_KEY);
+    window.localStorage.removeItem(DIRTY_KEY);
   } catch {
     /* ignore */
   }
+  plansSyncStarted = false;
   currentPlans = clonePlans(DEFAULT_PLANS);
   notify();
 }

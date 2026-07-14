@@ -46,6 +46,10 @@ def test_index_row_derives_components_and_relative_path(tmp_path: Path) -> None:
             "review_status": "pending",
             "batch_seq": 2,
             "index_in_batch": 3,
+            "batch_id": "batch_20260713_050000",
+            # condition lives in the sidecar's NESTED batch context — the row
+            # must flatten it so the catalog is filterable on its own.
+            "batch": {"batch_id": "batch_20260713_050000", "condition": "Bin: full"},
         },
         data_dir,
     )
@@ -55,10 +59,14 @@ def test_index_row_derives_components_and_relative_path(tmp_path: Path) -> None:
     assert row["dataset_dir"] == "yuki/pick/001"  # relative, portable
     assert row["schema_version"] == 1
     assert row["batch_seq"] == 2
+    assert row["batch_id"] == "batch_20260713_050000"
+    assert row["condition"] == "Bin: full"
     # Round-trips back to the absolute list shape.
     listed = datasets_index.to_list_row(row, data_dir)
     assert listed["dataset_dir"] == str(dataset_dir)
     assert "schema_version" not in listed
+    assert listed["batch_id"] == "batch_20260713_050000"
+    assert listed["condition"] == "Bin: full"
 
 
 def test_read_rows_absent_and_corrupt_signal_fallback(tmp_path: Path) -> None:
@@ -96,6 +104,8 @@ def test_export_appends_row_and_list_matches_scan(
         assert rows[0]["run_id"] == "run_a"
         assert rows[0]["task_result"] == "failure"
         assert rows[0]["batch_seq"] == 1
+        assert rows[0]["batch_id"] == "b"
+        assert rows[0]["condition"] == "cond_a"  # flattened from batch context
         assert rows[0]["schema_version"] == 1
 
         # The list is served from the catalog and is byte-identical to a scan.
@@ -181,6 +191,9 @@ def test_rebuild_regenerates_from_sidecars(
         assert len(rows) == 1
         assert rows[0]["dataset_dir"] == "yuki/pick/001"
         assert rows[0]["task_result"] == "failure"  # from episode.json sidecar
+        # The rebuild heals pre-batch_id/condition rows from the sidecars.
+        assert rows[0]["batch_id"] == "b"
+        assert rows[0]["condition"] == "cond_a"
         # And the list now serves from the rebuilt catalog, identical to a scan.
         assert client.get("/api/v1/datasets").json()["datasets"] == _scan_datasets(
             data_dir

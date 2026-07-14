@@ -94,10 +94,15 @@ export interface EpisodeRecord {
 }
 
 /** Plain-language "Task outcome: …" line for the episode-result summary. */
-export function describeTaskOutcome(pendingTask: 'ok' | 'fail' | null, failReason: string): string {
+export function describeTaskOutcome(
+  pendingTask: 'ok' | 'fail' | null,
+  failReason: string,
+): string {
   if (pendingTask === 'ok') return 'Success.';
   if (pendingTask === 'fail') {
-    return failReason ? `Failed — ${failReason.toLowerCase()}.` : 'Failed — choose a reason below.';
+    return failReason
+      ? `Failed — ${failReason.toLowerCase()}.`
+      : 'Failed — choose a reason below.';
   }
   return '—';
 }
@@ -243,6 +248,7 @@ type Action =
   | { type: 'PICK_FAIL_REASON'; reason: string }
   | { type: 'SET_QUALITY'; quality: QualityOverride | null }
   | { type: 'CONFIRM_EPISODE'; quality: Quality }
+  | { type: 'ADOPT_EPISODE_INDEX'; runId: string; index: number }
   | { type: 'RESUME_TAKE'; runId: string }
   | { type: 'RETRY_EPISODE' }
   | { type: 'PAUSE_BATCH' }
@@ -301,7 +307,13 @@ function reducer(state: MachineState, action: Action): MachineState {
     case 'QUICK_CHECK_DONE':
       if (state.phase !== 'quickcheck') return state;
       // Pre-select Success so the happy path is a single primary action (D-9 ④).
-      return { ...state, phase: 'result', pendingTask: 'ok', failReason: '', qualityOverride: null };
+      return {
+        ...state,
+        phase: 'result',
+        pendingTask: 'ok',
+        failReason: '',
+        qualityOverride: null,
+      };
     case 'PICK_RESULT':
       if (state.phase !== 'result') return state;
       return {
@@ -345,6 +357,25 @@ function reducer(state: MachineState, action: Action): MachineState {
         pendingTask: null,
         failReason: '',
         currentRunId: null,
+      };
+    }
+    case 'ADOPT_EPISODE_INDEX': {
+      // The server may re-allocate index_in_batch on a save collision (another
+      // terminal took the number first). Adopt the returned value so the strip
+      // chip sits on its true slot instead of drifting one off after a restore.
+      let changed = false;
+      const episodes = state.episodes.map((e) => {
+        if (e.runId === action.runId && e.index !== action.index) {
+          changed = true;
+          return { ...e, index: action.index };
+        }
+        return e;
+      });
+      if (!changed) return state;
+      return {
+        ...state,
+        episodes,
+        recordedCount: Math.max(state.recordedCount, action.index),
       };
     }
     case 'RESUME_TAKE':
@@ -426,7 +457,12 @@ function reducer(state: MachineState, action: Action): MachineState {
     case 'SET_CONDITION':
       return { ...state, condition: action.condition };
     case 'SET_PROJECT':
-      return { ...state, project: action.project, task: action.task, condition: action.condition };
+      return {
+        ...state,
+        project: action.project,
+        task: action.task,
+        condition: action.condition,
+      };
     case 'SET_TASK':
       return { ...state, task: action.task, condition: action.condition };
     case 'SET_BATCH':
@@ -437,7 +473,10 @@ function reducer(state: MachineState, action: Action): MachineState {
 }
 
 // Exported for direct reducer unit tests (no React needed for pure transitions).
-export { reducer as batchMachineReducer, createInitialState as createBatchMachineState };
+export {
+  reducer as batchMachineReducer,
+  createInitialState as createBatchMachineState,
+};
 
 // ---------------------------------------------------------------------------
 // Module-level external store for the batch machine.
@@ -529,7 +568,9 @@ function readInitialState(): MachineState {
   try {
     const blob = JSON.parse(raw) as Partial<PersistedBatch> | null;
     if (!blob || typeof blob !== 'object') return base;
-    const episodes = Array.isArray(blob.episodes) ? (blob.episodes as EpisodeRecord[]) : [];
+    const episodes = Array.isArray(blob.episodes)
+      ? (blob.episodes as EpisodeRecord[])
+      : [];
     const recordedCount = Math.max(
       typeof blob.recordedCount === 'number' ? blob.recordedCount : 0,
       maxRecorded(episodes),
@@ -620,18 +661,46 @@ function serverEpisodeToRecord(ep: BatchEpisodeSummary): EpisodeRecord {
  *  the next recording. Volatile phase stays at rest. */
 function applyServerRestore(batch: BatchSummary | null): void {
   if (!batch) return;
-  const episodes = batch.episodes.map(serverEpisodeToRecord);
+  const serverEpisodes = batch.episodes.map(serverEpisodeToRecord);
+  // Same batch as the local blob? Then local episodes the server does NOT have
+  // (a save that only reached the browser bridge while the API was down, or a
+  // POST that hadn't landed yet) must survive the restore — replacing the list
+  // wholesale flipped a just-saved chip back to "not recorded". A record whose
+  // slot the server has since given to another episode can't be placed honestly
+  // and is dropped (the monotone count still includes it).
+  const sameBatch = currentState.batchId === batch.batch_id;
+  let episodes = serverEpisodes;
+  if (sameBatch) {
+    const serverRunIds = new Set(
+      serverEpisodes
+        .map((e) => e.runId)
+        .filter((id): id is string => typeof id === 'string'),
+    );
+    const usedIndexes = new Set(serverEpisodes.map((e) => e.index));
+    const localOnly = currentState.episodes.filter(
+      (e) => (!e.runId || !serverRunIds.has(e.runId)) && !usedIndexes.has(e.index),
+    );
+    if (localOnly.length > 0) {
+      episodes = [...serverEpisodes, ...localOnly].sort((a, b) => a.index - b.index);
+    }
+  }
   // The batch number is the server's own batch_seq (null on an older backend
   // that doesn't serve it yet → honest "—" fallback in the UI).
   const batchSeq = typeof batch.batch_seq === 'number' ? batch.batch_seq : null;
   // Monotone recorded count: the server's `episodes_recorded` (which excludes
   // nothing and never drops on a Review delete) — or, on an older backend, the
-  // episode list's own lower bound. NEVER lower the count already held locally.
+  // episode list's own lower bound. The locally-held count only joins the max
+  // when it belongs to THIS batch — carrying a different (e.g. just-finished)
+  // batch's count into the server's active batch would inflate it.
   const serverRecorded =
     typeof batch.episodes_recorded === 'number'
       ? batch.episodes_recorded
-      : maxRecorded(episodes);
-  const recordedCount = Math.max(serverRecorded, currentState.recordedCount);
+      : maxRecorded(serverEpisodes);
+  const recordedCount = Math.max(
+    serverRecorded,
+    sameBatch ? currentState.recordedCount : 0,
+    maxRecorded(episodes),
+  );
   const phase: Phase = recordedCount >= EPISODES_PER_BATCH ? 'completed' : 'ready';
   currentState = {
     ...createInitialState(),
@@ -656,7 +725,10 @@ function applyServerRestore(batch: BatchSummary | null): void {
  *  vs a pristine empty machine that has nothing to discard. */
 function hasLocalBatchContext(s: MachineState): boolean {
   return (
-    s.recordedCount > 0 || s.episodes.length > 0 || s.batchSeq != null || s.batchId != null
+    s.recordedCount > 0 ||
+    s.episodes.length > 0 ||
+    s.batchSeq != null ||
+    s.batchId != null
   );
 }
 
@@ -717,7 +789,11 @@ function isLocalToday(iso: string | null | undefined): boolean {
 function predictNextSeq(items: BatchSummary[]): number {
   let max = 0;
   for (const b of items) {
-    if (isLocalToday(b.created_at) && typeof b.batch_seq === 'number' && b.batch_seq > max) {
+    if (
+      isLocalToday(b.created_at) &&
+      typeof b.batch_seq === 'number' &&
+      b.batch_seq > max
+    ) {
       max = b.batch_seq;
     }
   }
@@ -960,7 +1036,8 @@ export interface BatchMachine {
 function toMachineError(err: unknown): MachineError {
   if (err instanceof ApiError) {
     if (err.code) return { code: err.code, message: err.message };
-    if (err.status >= 500) return { code: 'recorder_unreachable', message: err.message };
+    if (err.status >= 500)
+      return { code: 'recorder_unreachable', message: err.message };
     return { code: null, message: err.message };
   }
   return {
@@ -985,7 +1062,11 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   const recordCustomized = useUiStore((s) => s.recordCustomized);
   const selection: RecordSelection = useMemo(() => {
     if (recordCustomized) {
-      return { topics: [...recordSelected], count: recordSelected.size, customized: true };
+      return {
+        topics: [...recordSelected],
+        count: recordSelected.size,
+        customized: true,
+      };
     }
     if (defaultTopics.length > 0) {
       return { topics: defaultTopics, count: defaultTopics.length, customized: false };
@@ -994,7 +1075,9 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   }, [recordCustomized, recordSelected, defaultTopics]);
   // Disable Start only when the operator explicitly cleared every topic.
   const noSelection =
-    selection.customized && Array.isArray(selection.topics) && selection.topics.length === 0;
+    selection.customized &&
+    Array.isArray(selection.topics) &&
+    selection.topics.length === 0;
 
   // ---- real recorder status (arming + integrity) --------------------------
   // Polls /record/status on the SAME query key LiveTab uses, so react-query
@@ -1015,11 +1098,15 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   // can't leak into the current episode's result while the poll catches up.
   const runMatches =
     state.currentRunId == null || (status?.run_id ?? null) === state.currentRunId;
-  const integrity: RecordIntegrity | null = runMatches ? status?.integrity ?? null : null;
-  const droppedMessages: number | null = runMatches ? status?.dropped_messages ?? null : null;
+  const integrity: RecordIntegrity | null = runMatches
+    ? (status?.integrity ?? null)
+    : null;
+  const droppedMessages: number | null = runMatches
+    ? (status?.dropped_messages ?? null)
+    : null;
   // Finalised/live bag size for the current run (the Discard modal + the
   // recording card's real "MB written", replacing a fabricated elapsed×rate).
-  const currentRunBytes: number | null = runMatches ? status?.bytes ?? null : null;
+  const currentRunBytes: number | null = runMatches ? (status?.bytes ?? null) : null;
   // The recorder's SERVER state — the one source the SYSTEM STATUS Recorder row
   // and the takeover card both read (D-1), so they can never disagree.
   const recorderState: RunState | 'idle' | null = status?.state ?? null;
@@ -1029,7 +1116,8 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   // clean run is 'good', a dropped/failed run is flagged for review. No fixed
   // timer, no fabricated "camera rate dropped". `null` integrity (older backend)
   // stays 'good' and the result panel notes the check was unavailable.
-  const autoQuality: Quality = integrity === 'dropped' || integrity === 'failed' ? 'review' : 'good';
+  const autoQuality: Quality =
+    integrity === 'dropped' || integrity === 'failed' ? 'review' : 'good';
   const setQuality = useCallback(
     (q: QualityOverride | null) => dispatch({ type: 'SET_QUALITY', quality: q }),
     [],
@@ -1046,7 +1134,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     state.phase === 'saving' ||
     state.phase === 'quickcheck';
   const takeoverRunId =
-    recorderState === 'recording' && !localActive ? status?.run_id ?? null : null;
+    recorderState === 'recording' && !localActive ? (status?.run_id ?? null) : null;
   // The run detail supplies the operator + topic count (RecordStatus carries
   // neither); only fetched while a takeover is showing.
   const takeoverDetailQuery = useQuery({
@@ -1093,14 +1181,23 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
       if (dismissedUnsavedRuns.has(run.run_id)) continue;
       if (getEpisodeOutcome(run.run_id)) continue;
       const bytes =
-        status?.run_id === run.run_id && typeof status?.bytes === 'number' ? status.bytes : null;
+        status?.run_id === run.run_id && typeof status?.bytes === 'number'
+          ? status.bytes
+          : null;
       const endedMs = run.ended_at ? Date.parse(run.ended_at) : NaN;
       const durationMs =
-        run.duration_ms ?? (Number.isNaN(endedMs) ? null : Math.max(0, endedMs - startedMs));
+        run.duration_ms ??
+        (Number.isNaN(endedMs) ? null : Math.max(0, endedMs - startedMs));
       return { runId: run.run_id, startedAt: run.started_at, bytes, durationMs };
     }
     return null;
-  }, [runsScanQuery.data, state.currentRunId, status?.run_id, status?.bytes, dismissNonce]);
+  }, [
+    runsScanQuery.data,
+    state.currentRunId,
+    status?.run_id,
+    status?.bytes,
+    dismissNonce,
+  ]);
 
   // ---- toast --------------------------------------------------------------
   const [toast, setToast] = useState('');
@@ -1285,7 +1382,15 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     if (operator.trim()) body.operator = operator.trim();
     if (state.task.trim()) body.task = state.task.trim();
     startMutation.mutate(body);
-  }, [state.phase, state.task, noSelection, selection.topics, operator, startMutation, ensureBatch]);
+  }, [
+    state.phase,
+    state.task,
+    noSelection,
+    selection.topics,
+    operator,
+    startMutation,
+    ensureBatch,
+  ]);
 
   const cancelArming = useCallback(() => {
     if (state.phase !== 'arming') return;
@@ -1325,7 +1430,8 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   // recorder until a stop succeeds).
   useEffect(() => {
     if (state.phase !== 'saving') return;
-    const forThisRun = state.currentRunId == null || status?.run_id === state.currentRunId;
+    const forThisRun =
+      state.currentRunId == null || status?.run_id === state.currentRunId;
     if (status?.state === 'completed' && forThisRun) dispatch({ type: 'SAVED' });
   }, [state.phase, state.currentRunId, status?.state, status?.run_id]);
 
@@ -1338,13 +1444,22 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
       dispatch({ type: 'QUICK_CHECK_DONE' });
       return;
     }
-    const id = setTimeout(() => dispatch({ type: 'QUICK_CHECK_DONE' }), QUICKCHECK_FALLBACK_MS);
+    const id = setTimeout(
+      () => dispatch({ type: 'QUICK_CHECK_DONE' }),
+      QUICKCHECK_FALLBACK_MS,
+    );
     return () => clearTimeout(id);
   }, [state.phase, integrity]);
 
   // ---- episode result / confirm --------------------------------------------
-  const pickSuccess = useCallback(() => dispatch({ type: 'PICK_RESULT', result: 'ok' }), []);
-  const pickFailure = useCallback(() => dispatch({ type: 'PICK_RESULT', result: 'fail' }), []);
+  const pickSuccess = useCallback(
+    () => dispatch({ type: 'PICK_RESULT', result: 'ok' }),
+    [],
+  );
+  const pickFailure = useCallback(
+    () => dispatch({ type: 'PICK_RESULT', result: 'fail' }),
+    [],
+  );
   const pickFailReason = useCallback(
     (reason: string) => dispatch({ type: 'PICK_FAIL_REASON', reason }),
     [],
@@ -1366,8 +1481,13 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     const effective: QualityOverride = override ?? autoQuality;
     const localQuality: Quality = effective === 'good' ? 'good' : 'review';
     const serverQuality: EpisodeQuality =
-      effective === 'good' ? 'good' : effective === 'review' ? 'needs_review' : 'not_usable';
-    const qualitySource: EpisodeQualitySource = override != null ? 'operator' : 'quick_check';
+      effective === 'good'
+        ? 'good'
+        : effective === 'review'
+          ? 'needs_review'
+          : 'not_usable';
+    const qualitySource: EpisodeQualitySource =
+      override != null ? 'operator' : 'quick_check';
     const runId = state.currentRunId;
     const batchId = state.batchId;
     // The bridge fallback (used only when the episode POST fails) keeps a local
@@ -1379,7 +1499,8 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     // may re-allocate it); falls back to the local next index otherwise.
     const receipt = (index: number) => {
       flashSaved(index);
-      const seqPart = batchSeqForReceipt != null ? ` of Batch ${batchSeqForReceipt}` : '';
+      const seqPart =
+        batchSeqForReceipt != null ? ` of Batch ${batchSeqForReceipt}` : '';
       showToast(`Saved — Episode ${index}${seqPart}${op ? ` · ${op}` : ''}`);
     };
     dispatch({ type: 'CONFIRM_EPISODE', quality: localQuality });
@@ -1411,8 +1532,23 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
         if (isFail && reason) body.failure_reason = reason;
         createEpisode(body)
           .then((ep) => {
-            if (willComplete) void patchBatch(batchId, { status: 'completed' }).catch(() => {});
-            receipt(typeof ep.index_in_batch === 'number' ? ep.index_in_batch : nextIndex);
+            if (willComplete)
+              void patchBatch(batchId, { status: 'completed' }).catch(() => {});
+            // The server may have re-allocated the index (UNIQUE collision with
+            // another terminal) — adopt it so the strip chip sits on the true slot.
+            if (
+              typeof ep.index_in_batch === 'number' &&
+              ep.index_in_batch !== nextIndex
+            ) {
+              dispatch({
+                type: 'ADOPT_EPISODE_INDEX',
+                runId,
+                index: ep.index_in_batch,
+              });
+            }
+            receipt(
+              typeof ep.index_in_batch === 'number' ? ep.index_in_batch : nextIndex,
+            );
             // The just-saved run now has an episode — refresh the unsaved-take scan.
             void queryClient.invalidateQueries({ queryKey: ['runs'] });
           })
@@ -1431,7 +1567,8 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     } else {
       // No run to attach (capture returned no run_id) — a purely local strip
       // entry; still mark a completed batch done and give a receipt.
-      if (willComplete && batchId) void patchBatch(batchId, { status: 'completed' }).catch(() => {});
+      if (willComplete && batchId)
+        void patchBatch(batchId, { status: 'completed' }).catch(() => {});
       receipt(nextIndex);
     }
   }, [
@@ -1561,7 +1698,11 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
       // A start may still land after we've moved on — treat it like a manual
       // cancel so it gets auto-stopped instead of orphaned.
       cancelledStartRef.current = true;
-    } else if (state.phase === 'recording' || state.phase === 'saving' || state.phase === 'quickcheck') {
+    } else if (
+      state.phase === 'recording' ||
+      state.phase === 'saving' ||
+      state.phase === 'quickcheck'
+    ) {
       void apiPost('/record/stop', {}).catch(() => {});
     }
     // Mark the server batch ended-early (best-effort; only if one exists).
@@ -1594,14 +1735,19 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     // Abort any in-flight capture first so nothing is orphaned (as end-early).
     if (state.phase === 'arming') {
       cancelledStartRef.current = true;
-    } else if (state.phase === 'recording' || state.phase === 'saving' || state.phase === 'quickcheck') {
+    } else if (
+      state.phase === 'recording' ||
+      state.phase === 'saving' ||
+      state.phase === 'quickcheck'
+    ) {
       void apiPost('/record/stop', {}).catch(() => {});
     }
     const hadBatch = !!state.batchId;
     if (state.batchId) {
-      void patchBatch(state.batchId, { status: 'ended_early', ended_reason: 'reset' }).catch(
-        () => {},
-      );
+      void patchBatch(state.batchId, {
+        status: 'ended_early',
+        ended_reason: 'reset',
+      }).catch(() => {});
     }
     dispatch({ type: 'RESET_BATCH' });
     setResetModalOpen(false);
@@ -1695,7 +1841,11 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   const pickTask = useCallback(
     (name: string) => {
       const t = findTask(getPlans(), state.project, name);
-      dispatch({ type: 'SET_TASK', task: t?.name ?? '—', condition: t?.conditions[0] ?? '—' });
+      dispatch({
+        type: 'SET_TASK',
+        task: t?.name ?? '—',
+        condition: t?.conditions[0] ?? '—',
+      });
       setTaskPickerOpen(false);
       showToast('Task switched — applies to next batch');
     },
@@ -1728,7 +1878,10 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     () => setAdviceIdx((i) => (i - 1 + ADVICE_ITEMS.length) % ADVICE_ITEMS.length),
     [],
   );
-  const adviceNext = useCallback(() => setAdviceIdx((i) => (i + 1) % ADVICE_ITEMS.length), []);
+  const adviceNext = useCallback(
+    () => setAdviceIdx((i) => (i + 1) % ADVICE_ITEMS.length),
+    [],
+  );
 
   // ---- keyboard shortcut layer (D-4) ---------------------------------------
   // R/S/Space/Esc/? on the window, ignored while typing or when an overlay is
@@ -1769,7 +1922,12 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
           e.preventDefault();
           startRecording();
         }
-      } else if (e.key === 's' || e.key === 'S' || e.key === ' ' || e.key === 'Spacebar') {
+      } else if (
+        e.key === 's' ||
+        e.key === 'S' ||
+        e.key === ' ' ||
+        e.key === 'Spacebar'
+      ) {
         if (phase === 'recording') {
           e.preventDefault();
           stopRecording();

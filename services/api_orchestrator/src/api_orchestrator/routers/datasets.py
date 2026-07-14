@@ -231,15 +231,10 @@ def _scan_datasets(data_dir: Path) -> list[dict[str, Any]]:
                 }
                 # Cheap episode-label subset for cards (mirrors the per-row
                 # dataset.json read). Absent episode.json -> keys stay null.
-                episode = _read_json(index_dir / "episode.json") or {}
-                for key in (
-                    "task_result",
-                    "quality",
-                    "review_status",
-                    "batch_seq",
-                    "index_in_batch",
-                ):
-                    row[key] = episode.get(key)
+                # The SAME flattening the catalog rows use, so the two serving
+                # paths stay byte-for-byte identical.
+                episode = _read_json(index_dir / "episode.json")
+                row.update(datasets_index.episode_subset(episode))
                 out.append(row)
     out.sort(key=lambda d: (d["operator"], d["task"], d["index"]))
     return out

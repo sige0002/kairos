@@ -89,7 +89,13 @@ test('CONFIRM_EPISODE requires a fail reason when the result is Failure', () => 
   const confirmed = reducer(s, { type: 'CONFIRM_EPISODE', quality: 'good' });
   expect(confirmed.phase).toBe('ready');
   expect(confirmed.episodes).toEqual([
-    { index: 1, quality: 'good', taskResult: 'fail', runId: undefined, failReason: 'Grasp missed' },
+    {
+      index: 1,
+      quality: 'good',
+      taskResult: 'fail',
+      runId: undefined,
+      failReason: 'Grasp missed',
+    },
   ]);
 });
 
@@ -125,7 +131,9 @@ test('quality and task result are independent axes, not one merged bucket', () =
 // SET_QUALITY records the operator override (only valid in the result phase).
 test('SET_QUALITY sets the override in the result phase and is a no-op elsewhere', () => {
   let s = createState();
-  expect(reducer(s, { type: 'SET_QUALITY', quality: 'notusable' }).qualityOverride).toBeNull();
+  expect(
+    reducer(s, { type: 'SET_QUALITY', quality: 'notusable' }).qualityOverride,
+  ).toBeNull();
   s = { ...s, phase: 'result' };
   s = reducer(s, { type: 'SET_QUALITY', quality: 'notusable' });
   expect(s.qualityOverride).toBe('notusable');
@@ -133,6 +141,25 @@ test('SET_QUALITY sets the override in the result phase and is a no-op elsewhere
   s = reducer(s, { type: 'PICK_RESULT', result: 'ok' });
   s = reducer(s, { type: 'CONFIRM_EPISODE', quality: 'review' });
   expect(s.qualityOverride).toBeNull();
+});
+
+// The server may re-allocate index_in_batch on a save collision; adopting the
+// returned value moves the chip to its true slot and lifts the monotone count.
+test('ADOPT_EPISODE_INDEX moves the saved episode to the server-assigned slot', () => {
+  let s = createState();
+  s = { ...s, phase: 'result', pendingTask: 'ok', currentRunId: 'run_9' };
+  s = reducer(s, { type: 'CONFIRM_EPISODE', quality: 'good' });
+  expect(s.episodes[0]).toMatchObject({ index: 1, runId: 'run_9' });
+
+  s = reducer(s, { type: 'ADOPT_EPISODE_INDEX', runId: 'run_9', index: 4 });
+  expect(s.episodes[0]?.index).toBe(4);
+  expect(s.recordedCount).toBe(4);
+
+  // No-op for an unknown run or an unchanged index (same state reference).
+  expect(
+    reducer(s, { type: 'ADOPT_EPISODE_INDEX', runId: 'run_unknown', index: 9 }),
+  ).toBe(s);
+  expect(reducer(s, { type: 'ADOPT_EPISODE_INDEX', runId: 'run_9', index: 4 })).toBe(s);
 });
 
 test('recording the 30th episode completes the batch', () => {
@@ -168,7 +195,12 @@ test('end-batch-early requires a reason, then moves to ended', () => {
 
 test('START_NEXT_BATCH resets episodes and clears the batch number (server re-assigns)', () => {
   let s = createState();
-  s = { ...s, phase: 'ended', episodes: [{ index: 1, quality: 'good', taskResult: 'ok' }], batchSeq: 5 };
+  s = {
+    ...s,
+    phase: 'ended',
+    episodes: [{ index: 1, quality: 'good', taskResult: 'ok' }],
+    batchSeq: 5,
+  };
   s = reducer(s, { type: 'START_NEXT_BATCH' });
   expect(s.phase).toBe('ready');
   expect(s.episodes).toEqual([]);
@@ -236,7 +268,9 @@ test('startRecording() calls /record/start and only then moves to recording', as
     return Promise.resolve(jsonResponse({}));
   });
 
-  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
   expect(result.current.phase).toBe('ready');
 
   act(() => result.current.startRecording());
@@ -263,7 +297,9 @@ test('a rejected start (200 + state=failed) reverts to ready with a banner, not 
     return Promise.resolve(jsonResponse({}));
   });
 
-  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
   act(() => result.current.startRecording());
   expect(result.current.phase).toBe('arming');
 
@@ -279,7 +315,9 @@ test('a network failure on start reverts to ready with an error banner', async (
     return Promise.resolve(jsonResponse({}));
   });
 
-  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
   act(() => result.current.startRecording());
   await waitFor(() => expect(result.current.phase).toBe('ready'));
   expect(result.current.startError?.message).toContain('network down');
@@ -299,14 +337,18 @@ test('stopRecording() optimistically moves to saving and calls /record/stop', as
     return Promise.resolve(jsonResponse({}));
   });
 
-  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
   act(() => result.current.startRecording());
   await waitFor(() => expect(result.current.phase).toBe('recording'));
 
   act(() => result.current.stopRecording());
   expect(result.current.phase).toBe('saving');
   await waitFor(() =>
-    expect(fetchMock.mock.calls.some(([u]) => String(u).includes('/record/stop'))).toBe(true),
+    expect(fetchMock.mock.calls.some(([u]) => String(u).includes('/record/stop'))).toBe(
+      true,
+    ),
   );
 });
 
@@ -333,7 +375,9 @@ test('/record/status arming (matched/missing) surfaces on machine.arming', async
     return Promise.resolve(jsonResponse({}));
   });
 
-  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
   await waitFor(() => expect(result.current.arming).not.toBeNull());
   expect(result.current.arming?.matched_topics).toHaveLength(3);
   expect(result.current.arming?.missing_topics).toEqual(['/x', '/y']);
@@ -358,7 +402,9 @@ test('a dropped-integrity run surfaces on machine.integrity + droppedMessages', 
     return Promise.resolve(jsonResponse({}));
   });
 
-  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
   act(() => result.current.startRecording());
   await waitFor(() => expect(result.current.phase).toBe('recording'));
   await waitFor(() => expect(result.current.integrity).toBe('dropped'));
@@ -388,7 +434,9 @@ test('integrity is gated to the current run — a mismatched run_id is dropped a
     return Promise.resolve(jsonResponse({}));
   });
 
-  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
   await waitFor(() => expect(result.current.integrity).toBe('dropped'));
   act(() => result.current.startRecording());
   await waitFor(() => expect(result.current.phase).toBe('recording'));
@@ -413,7 +461,10 @@ test('startRecording sends operator (trimmed) + configured topics', async () => 
   const fetchMock = startFetch();
   useUiStore.setState({ recordOperator: '  yuki  ' });
 
-  const { result } = renderHook(() => useBatchMachine({ defaultTopics: ['/a', '/b'] }), { wrapper });
+  const { result } = renderHook(
+    () => useBatchMachine({ defaultTopics: ['/a', '/b'] }),
+    { wrapper },
+  );
   act(() => result.current.startRecording());
   await waitFor(() => expect(result.current.phase).toBe('recording'));
 
@@ -426,7 +477,9 @@ test('startRecording sends operator (trimmed) + configured topics', async () => 
 test('startRecording omits operator when the store value is blank, defaults to all topics', async () => {
   const fetchMock = startFetch();
   // recordOperator stays '' (reset in beforeEach).
-  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
   act(() => result.current.startRecording());
   await waitFor(() => expect(result.current.phase).toBe('recording'));
 
@@ -437,9 +490,18 @@ test('startRecording omits operator when the store value is blank, defaults to a
 });
 
 test('selection resolution: customized set → explicit topics; empty customized set disables Start', () => {
-  useUiStore.setState({ recordCustomized: true, recordSelected: new Set(['/x', '/y']) });
-  const { result } = renderHook(() => useBatchMachine({ defaultTopics: ['/a'] }), { wrapper });
-  expect(result.current.selection).toEqual({ topics: ['/x', '/y'], count: 2, customized: true });
+  useUiStore.setState({
+    recordCustomized: true,
+    recordSelected: new Set(['/x', '/y']),
+  });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: ['/a'] }), {
+    wrapper,
+  });
+  expect(result.current.selection).toEqual({
+    topics: ['/x', '/y'],
+    count: 2,
+    customized: true,
+  });
   expect(result.current.noSelection).toBe(false);
 
   // Clearing every topic (customized empty set) disables Start.
@@ -449,9 +511,12 @@ test('selection resolution: customized set → explicit topics; empty customized
 });
 
 test('selection resolution: configured defaults, then all when neither customized nor configured', () => {
-  const configured = renderHook(() => useBatchMachine({ defaultTopics: ['/a', '/b', '/c'] }), {
-    wrapper,
-  });
+  const configured = renderHook(
+    () => useBatchMachine({ defaultTopics: ['/a', '/b', '/c'] }),
+    {
+      wrapper,
+    },
+  );
   expect(configured.result.current.selection).toEqual({
     topics: ['/a', '/b', '/c'],
     count: 3,
@@ -459,7 +524,11 @@ test('selection resolution: configured defaults, then all when neither customize
   });
 
   const all = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
-  expect(all.result.current.selection).toEqual({ topics: 'all', count: 0, customized: false });
+  expect(all.result.current.selection).toEqual({
+    topics: 'all',
+    count: 0,
+    customized: false,
+  });
 });
 
 test('startRecording is a no-op when the customized selection is empty', async () => {
@@ -468,12 +537,16 @@ test('startRecording is a no-op when the customized selection is empty', async (
     .mockImplementation(() => Promise.resolve(jsonResponse({})));
   useUiStore.setState({ recordCustomized: true, recordSelected: new Set<string>() });
 
-  const { result } = renderHook(() => useBatchMachine({ defaultTopics: ['/a'] }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: ['/a'] }), {
+    wrapper,
+  });
   expect(result.current.noSelection).toBe(true);
   act(() => result.current.startRecording());
   expect(result.current.phase).toBe('ready');
   await Promise.resolve();
-  expect(fetchMock.mock.calls.some(([u]) => String(u).includes('/record/start'))).toBe(false);
+  expect(fetchMock.mock.calls.some(([u]) => String(u).includes('/record/start'))).toBe(
+    false,
+  );
 });
 
 test('Discard: confirm deletes the run then re-records; a failed DELETE keeps the episode', async () => {
@@ -481,7 +554,9 @@ test('Discard: confirm deletes the run then re-records; a failed DELETE keeps th
   const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     const url = String(input);
     if (url.includes('/record/status')) {
-      return Promise.resolve(jsonResponse({ run_id: 'run_9', state: 'completed', integrity: 'ok' }));
+      return Promise.resolve(
+        jsonResponse({ run_id: 'run_9', state: 'completed', integrity: 'ok' }),
+      );
     }
     if (url.includes('/record/start')) {
       return Promise.resolve(jsonResponse({ run_id: 'run_9', state: 'recording' }));
@@ -491,13 +566,17 @@ test('Discard: confirm deletes the run then re-records; a failed DELETE keeps th
     }
     if (url.includes('/runs/run_9') && init?.method === 'DELETE') {
       return failDelete
-        ? Promise.resolve(jsonResponse({ error: { code: 'BUSY', message: 'run locked' } }, 500))
+        ? Promise.resolve(
+            jsonResponse({ error: { code: 'BUSY', message: 'run locked' } }, 500),
+          )
         : Promise.resolve(new Response(null, { status: 204 }));
     }
     return Promise.resolve(jsonResponse({}));
   });
 
-  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
   act(() => result.current.startRecording());
   await waitFor(() => expect(result.current.phase).toBe('recording'));
   act(() => result.current.stopRecording());
@@ -541,7 +620,9 @@ function recordFlowFetch(runId: string) {
       return Promise.resolve(jsonResponse({ run_id: runId, state: 'completed' }));
     }
     if (url.includes('/record/status')) {
-      return Promise.resolve(jsonResponse({ run_id: runId, state: 'completed', integrity: 'ok' }));
+      return Promise.resolve(
+        jsonResponse({ run_id: runId, state: 'completed', integrity: 'ok' }),
+      );
     }
     return Promise.resolve(jsonResponse({}));
   });
@@ -551,7 +632,9 @@ function recordFlowFetch(runId: string) {
 // exact tab-switch the bug wiped (episode count back to 0/30).
 test('confirmed episodes survive an unmount/remount (tab switch)', async () => {
   recordFlowFetch('run_1');
-  const { result, unmount } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  const { result, unmount } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
 
   act(() => result.current.startRecording());
   await waitFor(() => expect(result.current.phase).toBe('recording'));
@@ -563,7 +646,9 @@ test('confirmed episodes survive an unmount/remount (tab switch)', async () => {
 
   // Tab switch: the CollectScreen unmounts, then a fresh instance remounts.
   unmount();
-  const remounted = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  const remounted = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
   expect(remounted.result.current.stats.nRecorded).toBe(1);
   expect(remounted.result.current.stats.epNext).toBe(2);
   expect(remounted.result.current.phase).toBe('ready');
@@ -574,7 +659,9 @@ test('confirmed episodes survive an unmount/remount (tab switch)', async () => {
 // right run on return).
 test('the result phase and its run_id survive an unmount/remount', async () => {
   recordFlowFetch('run_9');
-  const { result, unmount } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  const { result, unmount } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
 
   act(() => result.current.startRecording());
   await waitFor(() => expect(result.current.phase).toBe('recording'));
@@ -583,7 +670,9 @@ test('the result phase and its run_id survive an unmount/remount', async () => {
   expect(result.current.discardRunId).toBe('run_9');
 
   unmount();
-  const remounted = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  const remounted = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
   expect(remounted.result.current.phase).toBe('result');
   expect(remounted.result.current.discardRunId).toBe('run_9');
 });
@@ -605,7 +694,9 @@ test('a reload restores episodes, batchSeq and context from localStorage', () =>
   );
   __rehydrateBatchStore();
 
-  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
   expect(result.current.batchSeq).toBe(3);
   expect(result.current.episodes).toHaveLength(2);
   expect(result.current.stats.nReview).toBe(1);
@@ -636,7 +727,9 @@ test('a volatile phase is NOT restored on reload — recording resolves to ready
   );
   __rehydrateBatchStore();
 
-  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
   expect(result.current.phase).toBe('ready');
   expect(result.current.elapsedMs).toBe(0);
   expect(result.current.discardRunId).toBeNull();
@@ -663,7 +756,11 @@ interface Phase2Opts {
 function phase2Fetch(opts: Phase2Opts = {}) {
   const runId = opts.runId ?? 'run_1';
   const batchId = opts.batchId ?? 'batch_x';
-  const calls: { url: string; method: string; body: Record<string, unknown> | undefined }[] = [];
+  const calls: {
+    url: string;
+    method: string;
+    body: Record<string, unknown> | undefined;
+  }[] = [];
   vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     const url = String(input);
     const method = (init?.method ?? 'GET').toUpperCase();
@@ -677,28 +774,39 @@ function phase2Fetch(opts: Phase2Opts = {}) {
     }
     calls.push({ url, method, body });
     if (url.includes('/batches') && method === 'POST') {
-      return Promise.resolve(jsonResponse({ ...body, batch_id: batchId, status: 'active' }, 201));
+      return Promise.resolve(
+        jsonResponse({ ...body, batch_id: batchId, status: 'active' }, 201),
+      );
     }
     if (url.includes('/batches') && method === 'PATCH') {
-      return Promise.resolve(jsonResponse({ batch_id: batchId, status: body?.status ?? 'active' }));
+      return Promise.resolve(
+        jsonResponse({ batch_id: batchId, status: body?.status ?? 'active' }),
+      );
     }
     if (url.includes('/batches') && method === 'GET') {
       return Promise.resolve(jsonResponse({ items: opts.activeBatches ?? [] }));
     }
     if (url.includes('/episodes') && method === 'POST') {
       if (opts.episodePostFails) {
-        return Promise.resolve(jsonResponse({ error: { code: 'io', message: 'down' } }, 500));
+        return Promise.resolve(
+          jsonResponse({ error: { code: 'io', message: 'down' } }, 500),
+        );
       }
       return Promise.resolve(jsonResponse({ episode_id: 'ep_1', ...body }, 201));
     }
     // GET /runs (the list, not a /runs/{id} detail or DELETE) — the phantom
     // reconcile checks whether a seeded local batch's runs still exist here.
     if (method === 'GET' && /\/runs(\?|$)/.test(url)) {
-      const items = (opts.runs ?? []).map((rid) => ({ run_id: rid, state: 'completed' }));
+      const items = (opts.runs ?? []).map((rid) => ({
+        run_id: rid,
+        state: 'completed',
+      }));
       return Promise.resolve(jsonResponse({ items, total: items.length }));
     }
     if (url.includes('/record/status')) {
-      return Promise.resolve(jsonResponse({ run_id: runId, state: 'completed', integrity: 'ok' }));
+      return Promise.resolve(
+        jsonResponse({ run_id: runId, state: 'completed', integrity: 'ok' }),
+      );
     }
     if (url.includes('/record/start')) {
       return Promise.resolve(jsonResponse({ run_id: runId, state: 'recording' }));
@@ -714,12 +822,16 @@ function phase2Fetch(opts: Phase2Opts = {}) {
 test('starting a recording creates a server batch with the plan context', async () => {
   useUiStore.setState({ recordOperator: 'yuki' });
   const { calls } = phase2Fetch({ runId: 'run_1' });
-  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
 
   act(() => result.current.startRecording());
   await waitFor(() => expect(result.current.phase).toBe('recording'));
   await waitFor(() =>
-    expect(calls.some((c) => c.url.includes('/batches') && c.method === 'POST')).toBe(true),
+    expect(calls.some((c) => c.url.includes('/batches') && c.method === 'POST')).toBe(
+      true,
+    ),
   );
   const post = calls.find((c) => c.url.includes('/batches') && c.method === 'POST')!;
   expect(post.body).toMatchObject({
@@ -732,7 +844,9 @@ test('starting a recording creates a server batch with the plan context', async 
 
 test('saving an episode POSTs it with enum-mapped fields; success does not touch the bridge', async () => {
   const { calls } = phase2Fetch({ runId: 'run_ep', batchId: 'batch_ep' });
-  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
 
   act(() => result.current.startRecording());
   await waitFor(() => expect(result.current.phase).toBe('recording'));
@@ -744,7 +858,9 @@ test('saving an episode POSTs it with enum-mapped fields; success does not touch
   await waitFor(() => expect(result.current.stats.nRecorded).toBe(1));
 
   await waitFor(() =>
-    expect(calls.some((c) => c.url.includes('/episodes') && c.method === 'POST')).toBe(true),
+    expect(calls.some((c) => c.url.includes('/episodes') && c.method === 'POST')).toBe(
+      true,
+    ),
   );
   const post = calls.find((c) => c.url.includes('/episodes') && c.method === 'POST')!;
   // Collect's 'fail' + a clean (integrity ok) recording map to the server
@@ -767,7 +883,9 @@ test('saving an episode POSTs it with enum-mapped fields; success does not touch
 // 'operator' provenance; 'Not usable' maps to the server 'not_usable'.
 test('an operator quality override sets quality + quality_source=operator', async () => {
   const { calls } = phase2Fetch({ runId: 'run_ov', batchId: 'batch_ov' });
-  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
 
   act(() => result.current.startRecording());
   await waitFor(() => expect(result.current.phase).toBe('recording'));
@@ -780,7 +898,9 @@ test('an operator quality override sets quality + quality_source=operator', asyn
   await waitFor(() => expect(result.current.stats.nRecorded).toBe(1));
 
   await waitFor(() =>
-    expect(calls.some((c) => c.url.includes('/episodes') && c.method === 'POST')).toBe(true),
+    expect(calls.some((c) => c.url.includes('/episodes') && c.method === 'POST')).toBe(
+      true,
+    ),
   );
   const post = calls.find((c) => c.url.includes('/episodes') && c.method === 'POST')!;
   expect(post.body).toMatchObject({
@@ -794,7 +914,9 @@ test('an operator quality override sets quality + quality_source=operator', asyn
 
 test('an episode POST failure falls back to the local bridge', async () => {
   phase2Fetch({ runId: 'run_fb', batchId: 'batch_fb', episodePostFails: true });
-  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
 
   act(() => result.current.startRecording());
   await waitFor(() => expect(result.current.phase).toBe('recording'));
@@ -817,7 +939,9 @@ test('an episode POST failure falls back to the local bridge', async () => {
 
 test('ending a batch early PATCHes the server batch to ended_early', async () => {
   const { calls } = phase2Fetch({ runId: 'run_e', batchId: 'batch_e' });
-  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
 
   act(() => result.current.startRecording());
   await waitFor(() => expect(result.current.phase).toBe('recording'));
@@ -830,7 +954,9 @@ test('ending a batch early PATCHes the server batch to ended_early', async () =>
       calls.some((c) => c.url.includes('/batches/batch_e') && c.method === 'PATCH'),
     ).toBe(true),
   );
-  const patch = calls.find((c) => c.url.includes('/batches/batch_e') && c.method === 'PATCH')!;
+  const patch = calls.find(
+    (c) => c.url.includes('/batches/batch_e') && c.method === 'PATCH',
+  )!;
   expect(patch.body).toMatchObject({ status: 'ended_early', ended_reason: 'Safety' });
 });
 
@@ -860,7 +986,9 @@ test('completing the 30th episode PATCHes the batch to completed', async () => {
     batchId: 'batch_full',
     runs: seed.map((e) => e.runId),
   });
-  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
   expect(result.current.stats.nRecorded).toBe(EPISODES_PER_BATCH - 1);
 
   act(() => result.current.startRecording());
@@ -896,7 +1024,13 @@ test('reload restores the active batch from the server (GET /batches?status=acti
         status: 'active',
         episode_count: 2,
         episodes: [
-          { index: 1, run_id: 'r1', task_result: 'success', quality: 'good', review_status: 'pending' },
+          {
+            index: 1,
+            run_id: 'r1',
+            task_result: 'success',
+            quality: 'good',
+            review_status: 'pending',
+          },
           {
             index: 2,
             run_id: 'r2',
@@ -908,7 +1042,9 @@ test('reload restores the active batch from the server (GET /batches?status=acti
       },
     ],
   });
-  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
 
   await waitFor(() => expect(result.current.stats.nRecorded).toBe(2));
   expect(result.current.project).toBe('Bin Picking');
@@ -947,7 +1083,9 @@ test('a stale local batch is discarded when the server has no active batch and i
   __rehydrateBatchStore();
   // Server: no active batch (default empty activeBatches) and no runs at all.
   phase2Fetch({ runs: [] });
-  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
 
   // Before reconcile the seeded phantom is visible …
   expect(result.current.stats.nRecorded).toBe(3);
@@ -991,14 +1129,20 @@ test('a local batch is kept when the runs check fails (API error → keep)', asy
     }
     if (method === 'GET' && /\/runs(\?|$)/.test(url)) {
       // The runs check errors — we must NOT clear the local batch.
-      return Promise.resolve(jsonResponse({ error: { code: 'io', message: 'down' } }, 500));
+      return Promise.resolve(
+        jsonResponse({ error: { code: 'io', message: 'down' } }, 500),
+      );
     }
     return Promise.resolve(jsonResponse({}));
   });
-  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
 
   // Wait until the reconcile has attempted (and failed) the runs check …
-  await waitFor(() => expect(calls.some((c) => /GET .*\/runs(\?|$)/.test(c))).toBe(true));
+  await waitFor(() =>
+    expect(calls.some((c) => /GET .*\/runs(\?|$)/.test(c))).toBe(true),
+  );
   // … and confirm the local batch survived (offline resilience preserved).
   expect(result.current.stats.nRecorded).toBe(3);
   expect(result.current.batchSeq).toBe(6);
@@ -1034,12 +1178,20 @@ test('an active server batch overrides a stale local batch (server wins, not dis
         episodes_recorded: 5,
         episode_count: 1,
         episodes: [
-          { index: 5, run_id: 'r5', task_result: 'success', quality: 'good', review_status: 'pending' },
+          {
+            index: 5,
+            run_id: 'r5',
+            task_result: 'success',
+            quality: 'good',
+            review_status: 'pending',
+          },
         ],
       },
     ],
   });
-  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
 
   await waitFor(() => expect(result.current.batchSeq).toBe(7));
   expect(result.current.stats.nRecorded).toBe(5);
@@ -1065,13 +1217,27 @@ test('restore keeps the recorded count monotone after a Review delete (episodes_
         episode_count: 2,
         episodes: [
           // … but one was deleted in Review, so only 2 survive (index 2 gone).
-          { index: 1, run_id: 'r1', task_result: 'success', quality: 'good', review_status: 'adopted' },
-          { index: 3, run_id: 'r3', task_result: 'success', quality: 'good', review_status: 'pending' },
+          {
+            index: 1,
+            run_id: 'r1',
+            task_result: 'success',
+            quality: 'good',
+            review_status: 'adopted',
+          },
+          {
+            index: 3,
+            run_id: 'r3',
+            task_result: 'success',
+            quality: 'good',
+            review_status: 'pending',
+          },
         ],
       },
     ],
   });
-  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
 
   await waitFor(() => expect(result.current.stats.nRecorded).toBe(3));
   // Count is monotone (3) and next follows it (#4); tallies use the 2 survivors.
@@ -1092,13 +1258,27 @@ test('an excluded episode still counts toward the recorded total', async () => {
         episodes_recorded: 2,
         episode_count: 2,
         episodes: [
-          { index: 1, run_id: 'r1', task_result: 'success', quality: 'good', review_status: 'pending' },
-          { index: 2, run_id: 'r2', task_result: 'success', quality: 'not_usable', review_status: 'excluded' },
+          {
+            index: 1,
+            run_id: 'r1',
+            task_result: 'success',
+            quality: 'good',
+            review_status: 'pending',
+          },
+          {
+            index: 2,
+            run_id: 'r2',
+            task_result: 'success',
+            quality: 'not_usable',
+            review_status: 'excluded',
+          },
         ],
       },
     ],
   });
-  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
 
   await waitFor(() => expect(result.current.stats.nRecorded).toBe(2));
   // The excluded episode is NOT filtered out of the count or the strip.
@@ -1115,7 +1295,15 @@ test('a server restore never LOWERS a higher local recorded count', async () => 
   }));
   window.localStorage.setItem(
     BATCH_STORAGE_KEY,
-    JSON.stringify({ batchSeq: null, recordedCount: 5, batchId: 'batch_hi', episodes, project: 'P', task: 'T', condition: 'C' }),
+    JSON.stringify({
+      batchSeq: null,
+      recordedCount: 5,
+      batchId: 'batch_hi',
+      episodes,
+      project: 'P',
+      task: 'T',
+      condition: 'C',
+    }),
   );
   __rehydrateBatchStore();
   // Server reports the SAME batch (batch_seq 7) but a stale lower count (2).
@@ -1131,13 +1319,27 @@ test('a server restore never LOWERS a higher local recorded count', async () => 
         episodes_recorded: 2,
         episode_count: 2,
         episodes: [
-          { index: 1, run_id: 'r1', task_result: 'success', quality: 'good', review_status: 'pending' },
-          { index: 2, run_id: 'r2', task_result: 'success', quality: 'good', review_status: 'pending' },
+          {
+            index: 1,
+            run_id: 'r1',
+            task_result: 'success',
+            quality: 'good',
+            review_status: 'pending',
+          },
+          {
+            index: 2,
+            run_id: 'r2',
+            task_result: 'success',
+            quality: 'good',
+            review_status: 'pending',
+          },
         ],
       },
     ],
   });
-  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
 
   // The restore adopts the server batch (its batch_seq) but keeps the higher
   // local count (5), never lowering it to the server's stale 2.
@@ -1146,11 +1348,79 @@ test('a server restore never LOWERS a higher local recorded count', async () => 
   expect(result.current.stats.epNext).toBe(6);
 });
 
+// The reported "just-saved chip flips back to not-recorded" bug: an episode
+// that only reached the browser bridge (its POST failed / hadn't landed) must
+// SURVIVE a same-batch server restore instead of being dropped from the strip.
+test('a same-batch server restore keeps an episode the server does not know about', async () => {
+  const episodes = Array.from({ length: 3 }, (_, i) => ({
+    index: i + 1,
+    quality: 'good' as const,
+    taskResult: 'ok' as const,
+    runId: `r${i + 1}`,
+  }));
+  window.localStorage.setItem(
+    BATCH_STORAGE_KEY,
+    JSON.stringify({
+      batchSeq: 7,
+      recordedCount: 3,
+      batchId: 'batch_active',
+      episodes,
+      project: 'P',
+      task: 'T',
+      condition: 'C',
+    }),
+  );
+  __rehydrateBatchStore();
+  // The server knows the same batch but only episodes 1-2 (r3's POST never
+  // landed) — its stale list must not erase the locally-saved episode 3.
+  phase2Fetch({
+    activeBatches: [
+      {
+        batch_id: 'batch_active',
+        batch_seq: 7,
+        project: 'P',
+        task: 'T',
+        target_episodes: 30,
+        status: 'active',
+        episodes_recorded: 2,
+        episode_count: 2,
+        episodes: [
+          {
+            index: 1,
+            run_id: 'r1',
+            task_result: 'success',
+            quality: 'good',
+            review_status: 'pending',
+          },
+          {
+            index: 2,
+            run_id: 'r2',
+            task_result: 'success',
+            quality: 'good',
+            review_status: 'pending',
+          },
+        ],
+      },
+    ],
+  });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+
+  await waitFor(() => expect(result.current.batchSeq).toBe(7));
+  expect(result.current.episodes).toHaveLength(3);
+  expect(result.current.episodes.map((e) => e.index)).toEqual([1, 2, 3]);
+  expect(result.current.stats.nRecorded).toBe(3);
+  expect(result.current.stats.epNext).toBe(4);
+});
+
 test('discarding a run removes its bridge entry (no stale outcome lingers)', async () => {
   const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     const url = String(input);
     if (url.includes('/record/status')) {
-      return Promise.resolve(jsonResponse({ run_id: 'run_disc', state: 'completed', integrity: 'ok' }));
+      return Promise.resolve(
+        jsonResponse({ run_id: 'run_disc', state: 'completed', integrity: 'ok' }),
+      );
     }
     if (url.includes('/record/start')) {
       return Promise.resolve(jsonResponse({ run_id: 'run_disc', state: 'recording' }));
@@ -1164,7 +1434,9 @@ test('discarding a run removes its bridge entry (no stale outcome lingers)', asy
     return Promise.resolve(jsonResponse({}));
   });
 
-  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
   act(() => result.current.startRecording());
   await waitFor(() => expect(result.current.phase).toBe('recording'));
   act(() => result.current.stopRecording());
@@ -1197,7 +1469,9 @@ test('discarding a run removes its bridge entry (no stale outcome lingers)', asy
 
 test('resetBatch clears the counts, PATCHes the batch ended_early=reset, and deletes nothing', async () => {
   const { calls } = phase2Fetch({ runId: 'run_r', batchId: 'batch_r' });
-  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
 
   act(() => result.current.startRecording());
   await waitFor(() => expect(result.current.phase).toBe('recording'));
@@ -1235,7 +1509,9 @@ test('resetBatch clears the counts, PATCHes the batch ended_early=reset, and del
 
 test('after a reset, the next recording start lazily creates a fresh server batch', async () => {
   const { calls } = phase2Fetch({ runId: 'run_r', batchId: 'batch_r' });
-  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
 
   act(() => result.current.startRecording()); // creates batch #1
   await waitFor(() => expect(result.current.phase).toBe('recording'));
@@ -1248,7 +1524,9 @@ test('after a reset, the next recording start lazily creates a fresh server batc
   act(() => result.current.resetBatch());
   expect(result.current.stats.nRecorded).toBe(0);
 
-  const postsBefore = calls.filter((c) => c.url.includes('/batches') && c.method === 'POST').length;
+  const postsBefore = calls.filter(
+    (c) => c.url.includes('/batches') && c.method === 'POST',
+  ).length;
   act(() => result.current.startRecording()); // must lazily create batch #2
   await waitFor(() => expect(result.current.phase).toBe('recording'));
   await waitFor(() =>
@@ -1265,7 +1543,9 @@ test('reset works with the API down (local-only reset, recordings untouched)', a
     if (url.includes('/batches')) return Promise.reject(new Error('api down'));
     if (url.includes('/episodes')) return Promise.reject(new Error('api down'));
     if (url.includes('/record/status')) {
-      return Promise.resolve(jsonResponse({ run_id: 'run_x', state: 'completed', integrity: 'ok' }));
+      return Promise.resolve(
+        jsonResponse({ run_id: 'run_x', state: 'completed', integrity: 'ok' }),
+      );
     }
     if (url.includes('/record/start')) {
       return Promise.resolve(jsonResponse({ run_id: 'run_x', state: 'recording' }));
@@ -1275,7 +1555,9 @@ test('reset works with the API down (local-only reset, recordings untouched)', a
     }
     return Promise.resolve(jsonResponse({}));
   });
-  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
 
   act(() => result.current.startRecording());
   await waitFor(() => expect(result.current.phase).toBe('recording'));
@@ -1310,16 +1592,36 @@ test("predictedSeq = 1 + max(batch_seq) among today's batches (older days exclud
         jsonResponse({
           items: [
             // Yesterday's #9 must NOT leak into today's prediction.
-            { batch_id: 'b_old', status: 'completed', batch_seq: 9, created_at: OLD_ISO, episodes: [] },
-            { batch_id: 'b1', status: 'completed', batch_seq: 2, created_at: NOW_ISO, episodes: [] },
-            { batch_id: 'b2', status: 'completed', batch_seq: 4, created_at: NOW_ISO, episodes: [] },
+            {
+              batch_id: 'b_old',
+              status: 'completed',
+              batch_seq: 9,
+              created_at: OLD_ISO,
+              episodes: [],
+            },
+            {
+              batch_id: 'b1',
+              status: 'completed',
+              batch_seq: 2,
+              created_at: NOW_ISO,
+              episodes: [],
+            },
+            {
+              batch_id: 'b2',
+              status: 'completed',
+              batch_seq: 4,
+              created_at: NOW_ISO,
+              episodes: [],
+            },
           ],
         }),
       );
     }
     return Promise.resolve(jsonResponse({}));
   });
-  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
   await waitFor(() => expect(result.current.predictedSeq).toBe(5));
 });
 
@@ -1330,14 +1632,22 @@ test('predictedSeq falls back to 1 when no batch exists today', async () => {
       return Promise.resolve(
         jsonResponse({
           items: [
-            { batch_id: 'b_old', status: 'completed', batch_seq: 7, created_at: OLD_ISO, episodes: [] },
+            {
+              batch_id: 'b_old',
+              status: 'completed',
+              batch_seq: 7,
+              created_at: OLD_ISO,
+              episodes: [],
+            },
           ],
         }),
       );
     }
     return Promise.resolve(jsonResponse({}));
   });
-  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
   await waitFor(() => expect(result.current.predictedSeq).toBe(1));
 });
 
@@ -1347,7 +1657,9 @@ test('predictedSeq stays null on a GET /batches failure (the UI then renders "ne
     if (url.includes('/batches')) return Promise.reject(new Error('api down'));
     return Promise.resolve(jsonResponse({}));
   });
-  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
   // The GET is fired on mount; give it a tick to reject, then confirm the catch
   // left the hint unset (ContextBar renders `predictedSeq ?? 1`).
   await waitFor(() => expect(globalThis.fetch).toHaveBeenCalled());
@@ -1366,7 +1678,10 @@ test('a server recording not started here surfaces as a takeover (operator + top
         jsonResponse({
           run_id: 'run_ext',
           state: 'recording',
-          topics: [{ name: '/a', type: 'x' }, { name: '/b', type: 'y' }],
+          topics: [
+            { name: '/a', type: 'x' },
+            { name: '/b', type: 'y' },
+          ],
           operator: 'someone',
         }),
       );
@@ -1383,7 +1698,9 @@ test('a server recording not started here surfaces as a takeover (operator + top
     }
     return Promise.resolve(jsonResponse({}));
   });
-  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
   await waitFor(() => expect(result.current.takeover?.runId).toBe('run_ext'));
   // Not our run (no persisted lastRunId) → not resumed-own.
   expect(result.current.takeoverResumedOwn).toBe(false);
@@ -1397,20 +1714,41 @@ test('a server recording not started here surfaces as a takeover (operator + top
 test('a reload of our own recording is a resumed-own takeover (lastRunId match)', async () => {
   window.localStorage.setItem(
     BATCH_STORAGE_KEY,
-    JSON.stringify({ lastRunId: 'run_own', episodes: [], project: 'P', task: 'T', condition: 'C' }),
+    JSON.stringify({
+      lastRunId: 'run_own',
+      episodes: [],
+      project: 'P',
+      task: 'T',
+      condition: 'C',
+    }),
   );
   __rehydrateBatchStore();
   vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
     if (url.includes('/runs/run_own')) {
-      return Promise.resolve(jsonResponse({ run_id: 'run_own', state: 'recording', topics: [], operator: null }));
+      return Promise.resolve(
+        jsonResponse({
+          run_id: 'run_own',
+          state: 'recording',
+          topics: [],
+          operator: null,
+        }),
+      );
     }
     if (url.includes('/record/status')) {
-      return Promise.resolve(jsonResponse({ run_id: 'run_own', state: 'recording', started_at: new Date().toISOString() }));
+      return Promise.resolve(
+        jsonResponse({
+          run_id: 'run_own',
+          state: 'recording',
+          started_at: new Date().toISOString(),
+        }),
+      );
     }
     return Promise.resolve(jsonResponse({}));
   });
-  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
   await waitFor(() => expect(result.current.takeover?.runId).toBe('run_own'));
   expect(result.current.takeoverResumedOwn).toBe(true);
 });
@@ -1418,25 +1756,45 @@ test('a reload of our own recording is a resumed-own takeover (lastRunId match)'
 test('confirming a takeover stop POSTs /record/stop and closes the modal', async () => {
   const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     const url = String(input);
-    if (url.includes('/record/stop') && (init?.method ?? 'POST').toUpperCase() === 'POST') {
+    if (
+      url.includes('/record/stop') &&
+      (init?.method ?? 'POST').toUpperCase() === 'POST'
+    ) {
       return Promise.resolve(jsonResponse({ run_id: 'run_ext', state: 'completed' }));
     }
     if (url.includes('/runs/run_ext')) {
-      return Promise.resolve(jsonResponse({ run_id: 'run_ext', state: 'recording', topics: [], operator: null }));
+      return Promise.resolve(
+        jsonResponse({
+          run_id: 'run_ext',
+          state: 'recording',
+          topics: [],
+          operator: null,
+        }),
+      );
     }
     if (url.includes('/record/status')) {
-      return Promise.resolve(jsonResponse({ run_id: 'run_ext', state: 'recording', started_at: new Date().toISOString() }));
+      return Promise.resolve(
+        jsonResponse({
+          run_id: 'run_ext',
+          state: 'recording',
+          started_at: new Date().toISOString(),
+        }),
+      );
     }
     return Promise.resolve(jsonResponse({}));
   });
-  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
   await waitFor(() => expect(result.current.takeover?.runId).toBe('run_ext'));
 
   act(() => result.current.openTakeoverStopModal());
   expect(result.current.takeoverStopModalOpen).toBe(true);
   act(() => result.current.confirmTakeoverStop());
   await waitFor(() =>
-    expect(fetchMock.mock.calls.some(([u]) => String(u).includes('/record/stop'))).toBe(true),
+    expect(fetchMock.mock.calls.some(([u]) => String(u).includes('/record/stop'))).toBe(
+      true,
+    ),
   );
 });
 
@@ -1474,7 +1832,9 @@ function unsavedRunsFetch(present: () => boolean) {
 
 test('detects a completed-but-unlabeled recent run as an unsaved take, then labels it', async () => {
   unsavedRunsFetch(() => true);
-  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
   await waitFor(() => expect(result.current.unsavedTake?.runId).toBe('run_unsaved'));
 
   // Await act so the lazy ensureBatch() POST settles inside act (no stray update).
@@ -1497,7 +1857,9 @@ test('a run with a bridge outcome is NOT offered as an unsaved take', async () =
     savedAt: Date.now(),
   });
   unsavedRunsFetch(() => true);
-  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
   await waitFor(() => expect(globalThis.fetch).toHaveBeenCalled());
   // Give the scan a tick, then confirm it stays null (already accounted for).
   await new Promise((r) => setTimeout(r, 20));
@@ -1506,7 +1868,9 @@ test('a run with a bridge outcome is NOT offered as an unsaved take', async () =
 
 test('discarding an unsaved take DELETEs the run', async () => {
   const fetchMock = unsavedRunsFetch(() => true);
-  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
   await waitFor(() => expect(result.current.unsavedTake?.runId).toBe('run_unsaved'));
 
   act(() => result.current.discardUnsavedTake());
@@ -1523,7 +1887,9 @@ test('discarding an unsaved take DELETEs the run', async () => {
 
 test('dismissing an unsaved take hides it (Later)', async () => {
   unsavedRunsFetch(() => true);
-  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
   await waitFor(() => expect(result.current.unsavedTake?.runId).toBe('run_unsaved'));
   act(() => result.current.dismissUnsavedTake());
   expect(result.current.unsavedTake).toBeNull();
@@ -1538,7 +1904,9 @@ test('a failed stop stays in SAVING with a working Retry stop', async () => {
     }
     if (url.includes('/record/stop')) {
       return failStop
-        ? Promise.resolve(jsonResponse({ error: { code: 'io', message: 'disk busy' } }, 500))
+        ? Promise.resolve(
+            jsonResponse({ error: { code: 'io', message: 'disk busy' } }, 500),
+          )
         : Promise.resolve(jsonResponse({ run_id: 'run_s', state: 'completed' }));
     }
     if (url.includes('/record/status')) {
@@ -1553,7 +1921,9 @@ test('a failed stop stays in SAVING with a working Retry stop', async () => {
     return Promise.resolve(jsonResponse({}));
   });
 
-  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
   act(() => result.current.startRecording());
   await waitFor(() => expect(result.current.phase).toBe('recording'));
   act(() => result.current.stopRecording());
@@ -1563,7 +1933,9 @@ test('a failed stop stays in SAVING with a working Retry stop', async () => {
 
   // Retry succeeds → SAVING advances through QUICK CHECK to the result.
   failStop = false;
-  const stopsBefore = fetchMock.mock.calls.filter(([u]) => String(u).includes('/record/stop')).length;
+  const stopsBefore = fetchMock.mock.calls.filter(([u]) =>
+    String(u).includes('/record/stop'),
+  ).length;
   act(() => result.current.retryStop());
   await waitFor(() => expect(result.current.phase).toBe('result'), { timeout: 4000 });
   expect(

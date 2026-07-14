@@ -177,6 +177,17 @@ CREATE TABLE IF NOT EXISTS episodes (
 );
 CREATE INDEX IF NOT EXISTS idx_episodes_seq ON episodes (seq DESC);
 CREATE INDEX IF NOT EXISTS idx_episodes_batch ON episodes (batch_id);
+
+-- The shared plan catalog (Projects -> Tasks -> Conditions): the label
+-- VOCABULARY Collect stamps onto batches/episodes. One JSON payload row,
+-- server-side so every terminal shares ONE vocabulary (browser-local copies
+-- could label the same physical condition with different strings). NOT the
+-- Phase 2.5 Plan model — no ids/refs/targets, just the persisted catalog.
+CREATE TABLE IF NOT EXISTS plan_catalog (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    payload     TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
 """
 
 # Columns an update_batch / update_episode patch may target (typo guard). All
@@ -682,6 +693,40 @@ class RunStore:
                 "SELECT * FROM batches WHERE batch_id = ?", (batch_id,)
             ).fetchone()
         return self._batch_from_row(row) if row is not None else None
+
+    def get_plan_catalog(self) -> tuple[list[Any], str] | None:
+        """The shared plan catalog: ``(projects, updated_at)``, or ``None``.
+
+        ``None`` means the catalog was NEVER set (distinct from an explicitly
+        emptied one, which returns ``([], ts)``) — the client seeds the server
+        from its local copy only in the never-set case. An unparseable payload
+        also reads as ``None`` (the client's copy then stands).
+        """
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT payload, updated_at FROM plan_catalog WHERE id = 1"
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            projects = json.loads(row["payload"])
+        except ValueError:
+            return None
+        if not isinstance(projects, list):
+            return None
+        return projects, row["updated_at"]
+
+    def set_plan_catalog(self, projects: list[Any], updated_at: str) -> None:
+        """Replace the shared plan catalog (single-row upsert)."""
+        payload = json.dumps(projects, ensure_ascii=False)
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO plan_catalog (id, payload, updated_at) "
+                "VALUES (1, ?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET "
+                "payload = excluded.payload, updated_at = excluded.updated_at",
+                (payload, updated_at),
+            )
 
     def get_batch_or_raise(self, batch_id: str) -> Batch:
         """Return the batch or raise ``KeyError`` if absent."""

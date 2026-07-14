@@ -12,6 +12,18 @@ Phase A hardening toward a supportable release
 
 ### Added
 
+- Batch labels are now queryable at the consumption end (2026-07-14 decision):
+  `data/index.jsonl` catalog rows and `GET /api/v1/datasets` list rows carry
+  `batch_id` (globally unique; `batch_seq` resets daily) and `condition`
+  (flattened from episode.json's batch context), so a training-set assembler
+  can exclude whole batches or filter by condition from one file. Pre-existing
+  rows heal via `POST /api/v1/datasets/index/rebuild`. Dataset cards show the
+  condition; the detail's Sidecars section now includes the episode.json block.
+- Shared plan catalog `GET/PUT /api/v1/plans` (single-row `plan_catalog`
+  table): the project/task/condition vocabulary is persisted server-side and
+  reconciled once per page load (seed a never-set server, push dirty local
+  edits, otherwise adopt the server copy), so labels stay aggregable across
+  terminals. Not the Phase 2.5 Plan model (no ids/refs/targets).
 - Monitor sub-views implemented on real data: Overview (diagnostic landing),
   System, Events (incident history with filters), Logs (session event
   timeline); Settings sections implemented: Recording (form-first, JSON as
@@ -44,6 +56,22 @@ Phase A hardening toward a supportable release
   container health: its `/readyz` includes downstream dependencies, so driving
   the healthcheck off it would restart the orchestrator whenever the recorder is
   down (documented inline in `compose.yaml`).
+
+### Fixed
+
+- Collect episode strip off-by-one (user report 2026-07-14): chips now sit on
+  their true `index_in_batch` instead of array position, so a Review
+  export/delete no longer slides later chips left and makes the newest episode
+  read as "not recorded"; a missing recorded number renders as an honest dashed
+  "no longer listed" chip. A server-reallocated save index is adopted locally,
+  and the once-per-load server restore now MERGES same-batch local episodes the
+  server doesn't know about (bridge-only / unlanded POST) instead of dropping
+  the just-saved chip; a restore onto a different batch no longer inherits the
+  local recorded count.
+- Datasets left list scroll containment (user report 2026-07-14): the screen
+  grid pins its single row to the viewport (`minmax(0,1fr)`) and the list
+  scrolls inside its own column with a pinned header, so older datasets stay
+  reachable regardless of count or layout engine.
 
 ## [0.1.0] - 2026-07-14
 

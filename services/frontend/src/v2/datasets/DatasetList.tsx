@@ -40,8 +40,8 @@ function isLegacy(operator: string, task: string): boolean {
 export function DatasetList({ state }: { state: DatasetsState }) {
   const hasAny = state.groups.length > 0;
   return (
-    <div className="flex flex-col overflow-auto rounded-card border border-gray-200 bg-white shadow-card">
-      <div className="flex items-center gap-2.5 border-b border-gray-100 px-4 py-[13px]">
+    <div className="flex min-h-0 flex-col overflow-hidden rounded-card border border-gray-200 bg-white shadow-card">
+      <div className="flex shrink-0 items-center gap-2.5 border-b border-gray-100 px-4 py-[13px]">
         <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           Datasets
         </span>
@@ -65,84 +65,108 @@ export function DatasetList({ state }: { state: DatasetsState }) {
             Exported datasets will appear here. Recipe-based builds arrive in Phase 2.
           </span>
           {state.isError && (
-            <span className="text-xs text-amber-600">Couldn&apos;t reach the backend just now.</span>
+            <span className="text-xs text-amber-600">
+              Couldn&apos;t reach the backend just now.
+            </span>
           )}
         </div>
       ) : (
-        <div className="flex flex-col gap-3 overflow-auto p-3">
-          {state.groups.map((group) => (
-            <div key={group.operator} className="flex flex-col gap-[7px]">
-              <span
-                className={cn(
-                  'px-1 text-[11px] font-semibold',
-                  group.operator === UNKNOWN_OPERATOR ? MUTED : 'font-mono text-gray-500',
-                )}
-              >
-                {group.operator === UNKNOWN_OPERATOR ? 'operator not recorded' : group.operator}
-              </span>
-              {group.entries.map((entry) => {
-                const selected = state.isSelected(entry);
-                const legacy = isLegacy(entry.operator, entry.task);
-                const episode = rowEpisode(entry);
-                return (
-                  <div
-                    key={entry.dataset_dir}
-                    data-testid={`dataset-card-${entry.dataset_dir}`}
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => state.select(entry)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') state.select(entry);
-                    }}
-                    className={cn(
-                      'flex cursor-pointer flex-col gap-[5px] rounded-[11px] border px-[13px] py-[11px]',
-                      selected ? 'border-teal-200 bg-teal-50' : 'border-gray-100',
-                      legacy && !selected && 'opacity-70',
-                    )}
-                  >
-                    <span
+        <div
+          data-testid="dataset-list-scroll"
+          className="min-h-0 flex-1 overflow-y-auto p-3"
+        >
+          <div className="flex flex-col gap-3">
+            {state.groups.map((group) => (
+              <div key={group.operator} className="flex flex-col gap-[7px]">
+                <span
+                  className={cn(
+                    'px-1 text-[11px] font-semibold',
+                    group.operator === UNKNOWN_OPERATOR
+                      ? MUTED
+                      : 'font-mono text-gray-500',
+                  )}
+                >
+                  {group.operator === UNKNOWN_OPERATOR
+                    ? 'operator not recorded'
+                    : group.operator}
+                </span>
+                {group.entries.map((entry) => {
+                  const selected = state.isSelected(entry);
+                  const legacy = isLegacy(entry.operator, entry.task);
+                  const episode = rowEpisode(entry);
+                  return (
+                    <div
+                      key={entry.dataset_dir}
+                      data-testid={`dataset-card-${entry.dataset_dir}`}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => state.select(entry)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') state.select(entry);
+                      }}
                       className={cn(
-                        'text-[13px] font-semibold',
-                        entry.task === UNKNOWN_TASK ? MUTED : 'text-gray-900',
+                        'flex cursor-pointer flex-col gap-[5px] rounded-[11px] border px-[13px] py-[11px]',
+                        selected ? 'border-teal-200 bg-teal-50' : 'border-gray-100',
+                        legacy && !selected && 'opacity-70',
                       )}
                     >
-                      {entry.task === UNKNOWN_TASK ? 'task not recorded' : entry.task}
-                    </span>
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono text-[11.5px] text-gray-500">
-                        {formatCount(entry.message_count)} msgs
+                      <span
+                        className={cn(
+                          'text-[13px] font-semibold',
+                          entry.task === UNKNOWN_TASK ? MUTED : 'text-gray-900',
+                        )}
+                      >
+                        {entry.task === UNKNOWN_TASK ? 'task not recorded' : entry.task}
                       </span>
-                      <div className="flex-1" />
-                      <Badge tone={selected ? 'teal' : 'gray'} mono>
-                        #{entry.index}
-                      </Badge>
-                    </div>
-                    {/* One predicate — the presence of an episode label
+                      {entry.condition && (
+                        <span
+                          data-testid={`dataset-card-condition-${entry.dataset_dir}`}
+                          title={
+                            entry.batch_id
+                              ? `Recording condition (batch ${entry.batch_id})`
+                              : 'Recording condition'
+                          }
+                          className="text-[10.5px] text-gray-500"
+                        >
+                          {entry.condition}
+                        </span>
+                      )}
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-[11.5px] text-gray-500">
+                          {formatCount(entry.message_count)} msgs
+                        </span>
+                        <div className="flex-1" />
+                        <Badge tone={selected ? 'teal' : 'gray'} mono>
+                          #{entry.index}
+                        </Badge>
+                      </div>
+                      {/* One predicate — the presence of an episode label
                         (`episode`) — drives BOTH sides so a card can never claim
                         both at once: labels present → chips (no note); labels
                         absent → the note (no chips). Operator/task attribution
                         is a separate, independent axis (the muted group header
                         and task label above), not this label axis. */}
-                    {episode ? (
-                      <EpisodeLabelChips
-                        episode={episode}
-                        isoFallback={entry.exported_at}
-                        testId={`dataset-card-labels-${entry.dataset_dir}`}
-                      />
-                    ) : (
-                      <span
-                        data-testid={`dataset-card-legacy-${entry.dataset_dir}`}
-                        title="Exported before per-episode labels existed, so quality and task labels aren't recorded."
-                        className="text-[10.5px] italic text-gray-400"
-                      >
-                        no episode labels (exported before labeling)
-                      </span>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          ))}
+                      {episode ? (
+                        <EpisodeLabelChips
+                          episode={episode}
+                          isoFallback={entry.exported_at}
+                          testId={`dataset-card-labels-${entry.dataset_dir}`}
+                        />
+                      ) : (
+                        <span
+                          data-testid={`dataset-card-legacy-${entry.dataset_dir}`}
+                          title="Exported before per-episode labels existed, so quality and task labels aren't recorded."
+                          className="text-[10.5px] italic text-gray-400"
+                        >
+                          no episode labels (exported before labeling)
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </div>

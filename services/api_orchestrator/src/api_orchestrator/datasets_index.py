@@ -13,7 +13,11 @@ One line per exported dataset::
 
     {"operator","task","index","dataset_dir"(relative),"run_id","bytes",
      "message_count","exported_at","task_result","quality","review_status",
-     "batch_seq","index_in_batch","schema_version":1}
+     "batch_seq","index_in_batch","batch_id","condition","schema_version":1}
+
+(``batch_id`` / ``condition`` are additive, nullable; rows written before they
+existed serve ``None`` until a ``POST /datasets/index/rebuild`` heals them from
+the sidecars.)
 
 ``dataset_dir`` is stored RELATIVE to ``data_dir`` so a moved/restored ``data/``
 tree keeps working; the served row reconstructs the absolute path so the
@@ -37,13 +41,36 @@ INDEX_SCHEMA_VERSION = 1
 INDEX_FILENAME = "index.jsonl"
 
 # The label subset carried per row (mirrors the dataset list card fields).
+# ``batch_id`` + ``condition`` make the catalog the one file a training-set
+# assembler needs to include/exclude whole batches or filter by condition —
+# ``batch_seq`` alone can't identify a batch (it resets per robot per day).
 _EPISODE_KEYS = (
     "task_result",
     "quality",
     "review_status",
     "batch_seq",
     "index_in_batch",
+    "batch_id",
+    "condition",
 )
+
+
+def episode_subset(episode: dict[str, Any] | None) -> dict[str, Any]:
+    """Flatten the per-row label subset out of an ``episode.json`` payload.
+
+    ``condition`` lives in the sidecar's nested batch context
+    (``batch.condition``); rows that already carry it flat (catalog rows, tree
+    scans fed back through :func:`rebuild`) pass through unchanged. Absent
+    fields stay ``None`` — nothing is fabricated.
+    """
+    ep = episode or {}
+    out = {k: ep.get(k) for k in _EPISODE_KEYS}
+    if out.get("condition") is None:
+        batch = ep.get("batch")
+        if isinstance(batch, dict):
+            out["condition"] = batch.get("condition")
+    return out
+
 
 # Serializes catalog writes across FastAPI's thread pool: append and full
 # rewrite must not interleave (a torn line would look corrupt and force a
@@ -77,7 +104,6 @@ def index_row(
     parts = rel.parts
     if len(parts) != 3:
         return None
-    ep = episode or {}
     row: dict[str, Any] = {
         "operator": parts[0],
         "task": parts[1],
@@ -88,8 +114,7 @@ def index_row(
         "message_count": meta.get("message_count"),
         "exported_at": meta.get("exported_at"),
     }
-    for key in _EPISODE_KEYS:
-        row[key] = ep.get(key)
+    row.update(episode_subset(episode))
     row["schema_version"] = INDEX_SCHEMA_VERSION
     return row
 

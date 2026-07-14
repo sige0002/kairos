@@ -47,6 +47,7 @@ from api_orchestrator.routers import events as events_router
 from api_orchestrator.routers import files as files_router
 from api_orchestrator.routers import jobs as jobs_router
 from api_orchestrator.routers import pipelines as pipelines_router
+from api_orchestrator.routers import plans as plans_router
 from api_orchestrator.routers import record as record_router
 from api_orchestrator.routers import retention as retention_router
 from api_orchestrator.routers import runs as runs_router
@@ -241,6 +242,7 @@ def create_orchestrator_app(
     app.include_router(system_router.router)
     app.include_router(events_router.router)
     app.include_router(pipelines_router.router)
+    app.include_router(plans_router.router)
     app.include_router(jobs_router.router)
     app.include_router(validation_router.router)
     app.include_router(validation_router.presets_router)

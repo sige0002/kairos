@@ -1,9 +1,10 @@
 // Settings > Projects & tasks (the mock's "Plans" section) — projects list
 // (middle column) + selected project's tasks/conditions editor (right
-// column). Drives the Collect screen's Project/Task/Condition pickers
-// conceptually; sharing that state with Collect is Phase 2 (Collect keeps
-// its own local PLANS catalog today — see src/v2/collect/useBatchMachine.ts),
-// so this editor is local state seeded with the same catalog values.
+// column). Edits funnel through the SHARED plans store (src/v2/plans.ts):
+// Collect's pickers update immediately, and the catalog is persisted
+// server-side (PUT /api/v1/plans) so every terminal offers the same
+// project/task/condition vocabulary — the labels stamped onto batches and
+// episodes stay aggregable across machines.
 
 import { Card, cn } from '../../components/ui';
 import type { SettingsState } from './useSettingsState';

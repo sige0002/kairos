@@ -151,6 +151,13 @@ export interface DatasetEntry {
   review_status?: 'pending' | 'adopted' | 'excluded' | null;
   batch_seq?: number | null;
   index_in_batch?: number | null;
+  /** Globally-unique batch id (batch_seq resets per robot per day, so it
+   *  can't identify a batch alone); null until a catalog rebuild heals
+   *  pre-existing rows. */
+  batch_id?: string | null;
+  /** The batch's recording condition, flattened out of episode.json's batch
+   *  context; null on pre-label exports. */
+  condition?: string | null;
 }
 
 /** GET /api/v1/datasets — the flat list of exported datasets (grouped in the UI). */

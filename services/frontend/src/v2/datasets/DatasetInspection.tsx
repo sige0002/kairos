@@ -105,7 +105,10 @@ export function DatasetInspection({ detail }: { detail: DatasetDetail }) {
         <JsonBlock label="Manifest" value={detail.manifest} />
         <JsonBlock label="Validation" value={detail.validation} />
         <JsonBlock label="Dataset json" value={detail.dataset} />
-        {!detail.manifest && !detail.validation && !detail.dataset && (
+        {/* The labels that survived export (task result / quality / review
+            status + batch context) — the file a training-set assembler reads. */}
+        <JsonBlock label="Episode json" value={detail.episode} />
+        {!detail.manifest && !detail.validation && !detail.dataset && !detail.episode && (
           <p className="text-xs text-gray-500">No JSON sidecars present in this dataset.</p>
         )}
       </section>

@@ -91,6 +91,22 @@ export async function apiPost<T>(
   return (text ? JSON.parse(text) : undefined) as T;
 }
 
+export async function apiPut<T>(
+  path: string,
+  body: unknown,
+  opts: RequestOptions = {},
+): Promise<T> {
+  const resp = await fetch(joinUrl(withQuery(path, opts.query)), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+    signal: opts.signal,
+  });
+  if (!resp.ok) throw await parseError(resp);
+  const text = await resp.text();
+  return (text ? JSON.parse(text) : undefined) as T;
+}
+
 export async function apiDelete(path: string, opts: RequestOptions = {}): Promise<void> {
   const resp = await fetch(joinUrl(withQuery(path, opts.query)), {
     method: 'DELETE',

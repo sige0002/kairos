@@ -43,6 +43,7 @@ backend-driven な軽量 Web UI（Vite + React + TypeScript）。タブは技術
 ### Collect — 収録の実行と即時判断
 
 - **コンテキストバー**: Robot（実選択・Settings と同じ機体カタログ）／Project・Task・Condition（Plans 由来のピッカー＋Custom 自由入力）／**Batch 番号**／Episode 進行「n / target」。
+  - **Plans カタログ（Projects → Tasks → Conditions）はサーバ同期**（2026-07-14）: `GET/PUT /api/v1/plans` と once-per-load で照合する — サーバ未設定ならこのブラウザのカタログを**シード**、未同期のローカル編集（dirty フラグ、リロードを生き残る）があればそれを push、それ以外はサーバ側を採用。オフライン時はブラウザローカルのカタログがそのまま立ち、編集は次回編集/ロードで再 push される。condition を選択式に保つことでラベル語彙が端末間で割れない（バッチラベル裁定）。
   - Batch 番号は**サーバ発番の `batch_seq`**（機体×ローカル日付ごとに毎朝 1 から）。バッチ未作成の間は「next #N · assigned on first recording」の**予測表示**（本日の最大 seq + 1）とし、初回録画でサーバ値に確定する。「計画バッチ数」の分母は置かない（実体がないため）。
 - **Batch / Episode 進行はサーバ永続**: バッチは初回録画時に遅延作成（`POST /api/v1/batches`）。空バッチは行を持たず番号を消費しない。リロード・タブ切替は `GET /api/v1/batches?status=active` で復元。
 - **Batch menu** の作用（End early / Reset は**録画を消さない**）:
@@ -52,6 +53,7 @@ backend-driven な軽量 Web UI（Vite + React + TypeScript）。タブは技術
 - **エピソードの保存**: Stop → 実イベントゲート（stop API 解決 → integrity 読取。固定タイマー廃止・stop 失敗は SAVING に留まり `Retry stop`）→ 結果パネル。**Success は既定選択**で、クリーンな成功は `Save — success` 1 操作（Enter 可）。Failure は ✕ から理由必須の分岐。**Quality は実 integrity から自動導出**（clean→`Good · auto`、drop/failed→`Needs review · auto`＋実 drop 件数）で、`change` から 3 択（good / needs_review / not_usable）で任意上書き — **上書き時のみ `quality_source='operator'`、非上書きは `'quick_check'`**（来歴を偽らない）。保存は `POST /api/v1/episodes` で、**サーバ 201 確定後にレシート** `Saved — Episode n of Batch m · {operator}`（strip チップに一時リング）。Discard は確認モーダル付きの**実削除**（`DELETE /api/v1/runs/{id}`）。
 - **未保存テイク回収**: Stop〜Save 間で離脱しても、リロード時に「Unsaved take from {time} — {N} MB, {duration}」の amber バナー（`Label it` / `Discard` / `Later`）で回収できる（completed かつ episode 無しの直近 run を検出）。
 - 件数「n / target」は**単調カウンタ `episodes_recorded`**（撮った数が正。Review 側の削除で減らない。品質内訳と乖離した場合は脚注で明示）。
+- **エピソード strip はチップを真のエピソード番号（`index_in_batch`）に置く**（2026-07-14 修正）: 配列位置で描くと Review の export/削除で後続チップが左に詰まり、直近エピソードが「not recorded」に見える 1 ずれが出る。録画済み番号のうち現存しない番号は破線チップ+「recorded earlier; no longer listed (exported or deleted in Review)」で正直に区別する。サーバが `index_in_batch` を振り直した保存（端末間衝突）は応答値をローカルチップにも採用。**サーバ復元は同一バッチに限りマージ**: サーバが知らないローカル保存（bridge のみ・POST 未達）を落とさない（落とすと保存直後のチップが not recorded に戻る）。別バッチへの復元ではローカルの件数を持ち込まない。
 - **カメラ**: WebRTC プレビュー。ペイン追加/削除（上限 4）。メインは解像度プリセット選択、サブは低解像度（240/360p）に強制 cap。**遅延 / fps はプレビュー映像内・右上のオーバーレイチップ**（タイル毎の実測値・閾値色。映像外へは置かない）。接続前のプレースホルダには状態の理由を明記（空欄を故障に見せない）。
 - **Quick check**（停止直後の品質サマリ）は表示枠のみで**実判定は TBD（Phase 3）**。確定済みの設計: 「収録中に貯めた監視統計の清算」2 層 — Layer 0 = monitor / recorder が収録中に持つ統計（件数・drop・gap・expected_hz 比。stop 時点で確定）、Layer 1 = MCAP の summary section のみ読む（O(index)）。**≤5 秒・split 構成でも転送ゼロ**で成立させる。
 - **Advice** は固定 1 件のモック（hold still ~1s）。**生成ロジックは TBD（Phase 3）**。方針のみ確定: Live advice は orchestrator SSE の集約メトリクスを入力、Deep advice は転送後の MCAP（dora は DDS に触らない）。
@@ -69,8 +71,8 @@ backend-driven な軽量 Web UI（Vite + React + TypeScript）。タブは技術
 ### Datasets — エクスポート済みデータセットのカタログ
 
 - **カタログ専用**。export 操作は置かない（「Recordings are reviewed and exported in Review → Go to Review」の誘導のみ）。v1 の無判断一括ダンプ（Export all）は**意図的に廃止**し、Review 経由に一本化した。
-- 一覧: `GET /api/v1/datasets` の operator › task › NNN ツリー。各カードに **episode ラベルチップ**（`episode.json` 由来: batch / task result / quality / review status）。**ラベルの無い旧 export は「legacy (pre-label)」として淡色表示**する（値をでっち上げない）。
-- 詳細 = DatasetDetail（メタデータ / トピック一覧 / loss report / mp4 Video check / dataset.json・episode.json 等の JSON）。loss / video のジョブは `params.dataset_dir` でエクスポート先の MCAP を読む。
+- 一覧: `GET /api/v1/datasets` の operator › task › NNN ツリー。各カードに **episode ラベルチップ**（`episode.json` 由来: batch / task result / quality / review status）＋ **condition の 1 行**（カタログ行の `condition`。tooltip にグローバル一意の `batch_id`。無ければ非表示 — 値をでっち上げない）。**ラベルの無い旧 export は「legacy (pre-label)」として淡色表示**する。**一覧は左カラム内で独立スクロール**（グリッド行を `minmax(0,1fr)` で viewport に固定・ヘッダはピン留め。件数が増えても過去のデータセットに必ず到達できる）。
+- 詳細 = DatasetDetail（メタデータ / トピック一覧 / loss report / mp4 Video check / dataset.json・episode.json 等の JSON）。Sidecars セクションには **episode.json ブロックも並ぶ**（エクスポートを生き残ったラベル+バッチコンテキストをその場で閲覧。2026-07-14 ユーザー要望）。loss / video のジョブは `params.dataset_dir` でエクスポート先の MCAP を読む。
 - **Delete**（確認モーダル・Recordings の削除と同 UX）で `DELETE /api/v1/datasets/{op}/{task}/{index}`。
 - **Build**（LeRobot v3 等への変換）と **Recipe 型データセット構築は未実装（TBD: Phase 3）** — UI は淡色の枠のみで、動くコントロールに見せない。
 
@@ -102,7 +104,7 @@ v1 の Graph / Probe / Live 健全性パネルの統合先。サブナビ（§11
 ### Settings — 機体設定・計画
 
 - **Robots**: 機体一覧（committed `config/<robot>/` と gitignored `config/local/<robot>/`）と選択（`POST /api/v1/config/select` で recording / stream を hot-swap。recorder QoS / monitor expected_hz は再起動後 — UI にもその旨を表示。**録画中のアクティブ化は「Stop and switch?」確認モーダル**）。**非アクティブ機体は read-only で設定を閲覧可能**（`GET /api/v1/config/robots/{robot}`。「Read-only — {robot} is not the active robot.」バナー＋雛形として読める disabled JSON）。**aspect**（recording / stream / validation / validators）の option 選択。recording config は JSON で編集・永続化（`PUT /api/v1/config/recording`。**インライン検証**: 不正 JSON は Save 無効＋平易エラー。録画中の保存は「次の録画から適用」の情報バナー）。機体の新規作成は不可 — `+ Add robot` は消えるトーストでなく**次の一歩を示す常設 explainer**（`config/<robot>/` フォルダ作成＋既存機体の雛形参照）を開く。レール下部は出典の無い版数表示を廃し **active robot の実値**。
-- **Projects & tasks（Plans）**: Project / Task / Condition の定義を編集。Collect のピッカーと**共有ストア**で即時反映（現状は localStorage。**TBD**: サーバー保存は Phase 2.5）。
+- **Projects & tasks（Plans）**: Project / Task / Condition の定義を編集。Collect のピッカーと**共有ストア**で即時反映し、**サーバーに永続化**（`PUT /api/v1/plans`。2026-07-14 — 全端末で単一のラベル語彙を共有。オフライン時は localStorage が立ち dirty 編集は後で再 push。Plan の**モデル化**（id/参照/目標本数）は引き続き Phase 2.5）。
 - **Recording**: アクティブ機体の recording config を**フォーム優先**で表示（`GET /api/v1/config/recording`：compression / start gate〔`start_paused`〕/ cache〔`max_cache_size_mb`〕と default_topics 表〔expected Hz・QoS override バッジ〕）。生 JSON エディタは「Advanced」に格下げ（既定折りたたみ・`PUT /api/v1/config/recording`）。
 - **Data quality**（読み取り専用）: `GET /api/v1/config/robots/{robot}` の aspects 内容から、expected Hz 参照レート＋ monitor の warn/danger 閾値（`monitor.warn_shortfall`/`danger_shortfall`）＋アクティブ validation テンプレートの必須トピックを表示。明示的な閾値アラート規則は API 非露出の `config/<robot>/monitoring/alerts.yaml` にある旨を明記（レスポンスの `robot`＝機体ディレクトリ id を使い、存在するパスを指す）。
 - **Validation**: validation / validators aspect 選択（`POST /api/v1/config/select`）＋ワンクリックプリセット一覧（`GET /api/v1/validation/presets`・pending 件数）。実行は Validation タブへリンク（1 機能 1 箇所）。
@@ -143,5 +145,5 @@ v1 の Graph / Probe / Live 健全性パネルの統合先。サブナビ（§11
 - Dataset Recipe・Build（Phase 3）
 - Validation lifecycle（Experimental → Standard）の実体化
 - split 転送ジョブと Review 転送 UI の実配線（split 自己申告の信号を含む）
-- Session 階層・Plans のサーバー保存・Batch Pause のサーバー化（Phase 2.5）
+- Session 階層・Plan モデル化（id/参照/目標本数 — カタログ自体のサーバー保存は 2026-07-14 に実装済み）・Batch Pause のサーバー化（Phase 2.5）
 - アクセシビリティ（WCAG 2.2 AA）

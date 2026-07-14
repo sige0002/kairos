@@ -353,6 +353,24 @@ test('a dataset card shows episode label chips when the backend attributes them'
   expect(screen.queryByTestId(`dataset-card-legacy-${ENTRY_LABELED.dataset_dir}`)).toBeNull();
 });
 
+test('a dataset card shows the recording condition when the catalog carries it', async () => {
+  const entry: DatasetEntry = {
+    ...ENTRY_LABELED,
+    batch_id: 'batch_20260713_050000',
+    condition: 'Bin: full',
+  };
+  mockFetch({ list: { datasets: [entry] } });
+  renderWithClient(<DatasetsScreen />);
+
+  const testId = `dataset-card-condition-${entry.dataset_dir}`;
+  await waitFor(() => expect(screen.getByTestId(testId)).toBeInTheDocument());
+  expect(screen.getByTestId(testId).textContent).toBe('Bin: full');
+  // The tooltip carries the globally-unique batch id (batch_seq resets daily).
+  expect(screen.getByTestId(testId).getAttribute('title')).toContain('batch_20260713_050000');
+  // A row without a condition renders no line (nothing fabricated) — covered
+  // by ENTRY_LABELED itself in the chips test above (no condition field).
+});
+
 test('a dataset card shows NO label chips (but the honest note) when the episode is absent', async () => {
   // ENTRY_A1 carries no `episode` field.
   mockFetch({ list: { datasets: [ENTRY_A1] } });
@@ -463,6 +481,15 @@ test('dataset inspection: shows the loss table + video check, and JSON sidecars 
           run_id: 'run_1',
           topics: [{ name: '/hsrb/joint_states', hz: 40, loss_rate: 0, gap_max_ms: 30 }],
         },
+        episode: {
+          episode_id: 'ep_1',
+          batch_id: 'batch_20260713_050000',
+          index_in_batch: 2,
+          task_result: 'success',
+          quality: 'good',
+          review_status: 'adopted',
+          batch_seq: 4,
+        },
       }),
     },
   });
@@ -479,5 +506,8 @@ test('dataset inspection: shows the loss table + video check, and JSON sidecars 
   expect(within(inspection).getByText('Video check')).toBeInTheDocument();
   // Reused JsonBlock renders the manifest sidecar.
   expect(within(inspection).getByText('Manifest')).toBeInTheDocument();
+  // episode.json is a first-class sidecar too (user request 2026-07-14): the
+  // labels that survived export are inspectable right on the Datasets tab.
+  expect(within(inspection).getByText('Episode json')).toBeInTheDocument();
 });
 

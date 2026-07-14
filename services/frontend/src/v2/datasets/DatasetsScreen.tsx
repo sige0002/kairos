@@ -19,8 +19,12 @@ import { useDatasetsState } from './useDatasetsState';
 
 export function DatasetsScreen() {
   const state = useDatasetsState();
+  // The single row is pinned to the free space (minmax(0,1fr)) so a long
+  // dataset list can never blow the row past the viewport — the auto-row
+  // fallback let it, and the shell's overflow-hidden then clipped the tail
+  // with no way to scroll to older datasets. Columns scroll internally.
   return (
-    <div className="grid grid-cols-1 gap-2.5 lg:h-full lg:min-h-0 lg:grid-cols-[270px_1fr_330px]">
+    <div className="grid grid-cols-1 gap-2.5 lg:h-full lg:min-h-0 lg:grid-cols-[270px_1fr_330px] lg:grid-rows-[minmax(0,1fr)]">
       <DatasetList state={state} />
       <DatasetDetail state={state} />
       <BuildRail state={state} />
