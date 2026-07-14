@@ -162,6 +162,28 @@ test('ADOPT_EPISODE_INDEX moves the saved episode to the server-assigned slot', 
   expect(reducer(s, { type: 'ADOPT_EPISODE_INDEX', runId: 'run_9', index: 4 })).toBe(s);
 });
 
+test('SET_TARGET re-derives completion at rest and is clamped', () => {
+  let s = createState();
+  expect(s.targetEpisodes).toBe(EPISODES_PER_BATCH);
+  // Lowering the target to what's already recorded completes the batch …
+  s = { ...s, recordedCount: 10 };
+  s = reducer(s, { type: 'SET_TARGET', target: 10 });
+  expect(s.targetEpisodes).toBe(10);
+  expect(s.phase).toBe('completed');
+  // … and raising it re-opens it.
+  s = reducer(s, { type: 'SET_TARGET', target: 12 });
+  expect(s.phase).toBe('ready');
+  // Clamped to >= 1; never disturbs an active recording phase.
+  s = reducer(s, { type: 'SET_TARGET', target: 0 });
+  expect(s.targetEpisodes).toBe(1);
+  const rec = reducer(
+    { ...createState(), phase: 'recording' },
+    { type: 'SET_TARGET', target: 5 },
+  );
+  expect(rec.phase).toBe('recording');
+  expect(rec.targetEpisodes).toBe(5);
+});
+
 test('recording the 30th episode completes the batch', () => {
   let s = createState();
   s = {

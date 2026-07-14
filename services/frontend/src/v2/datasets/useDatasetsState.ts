@@ -15,8 +15,23 @@ import { queryKeys } from '../../api/queryKeys';
 import type { DatasetDetail, DatasetEntry, DatasetsResponse } from '../../api/types';
 import { groupByOperator, sameDataset, type OperatorGroup } from './data';
 
+export type TaskResultFilter = 'all' | 'success' | 'failure';
+
 export interface DatasetsState {
   groups: OperatorGroup[];
+  /** Rows surviving the active filters (what `groups` is built from). */
+  filtered: DatasetEntry[];
+  /** Total rows before filtering (to say "n of m" honestly). */
+  total: number;
+  taskResultFilter: TaskResultFilter;
+  setTaskResultFilter: (f: TaskResultFilter) => void;
+  conditionFilter: string | null;
+  setConditionFilter: (c: string | null) => void;
+  /** Distinct conditions present in the catalog (filter chip choices). */
+  conditions: string[];
+  /** Download the filtered rows as a manifest JSON (the versionable
+   *  training-set definition — 2026-07-14 batch-label decision). */
+  downloadManifest: () => void;
   isLoading: boolean;
   isError: boolean;
   selected: DatasetEntry | null;
@@ -53,9 +68,12 @@ export function useDatasetsState(): DatasetsState {
     toastTimerRef.current = setTimeout(() => setToast(''), TOAST_MS);
   }, []);
 
-  useEffect(() => () => {
-    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-  }, []);
+  useEffect(
+    () => () => {
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    },
+    [],
+  );
 
   const listQuery = useQuery({
     queryKey: queryKeys.datasets,
@@ -63,7 +81,69 @@ export function useDatasetsState(): DatasetsState {
   });
 
   const datasets = listQuery.data?.datasets ?? [];
-  const groups = useMemo(() => groupByOperator(datasets), [datasets]);
+
+  // ---- label filters (task result / condition) -----------------------------
+  // Filtering happens client-side over the catalog rows the list already has;
+  // a row with NO label (pre-label export) only survives 'all' — an unlabeled
+  // row must not pass a success/failure predicate it can't answer.
+  const [taskResultFilter, setTaskResultFilter] = useState<TaskResultFilter>('all');
+  const [conditionFilter, setConditionFilter] = useState<string | null>(null);
+  const conditions = useMemo(
+    () =>
+      [
+        ...new Set(datasets.map((d) => d.condition).filter((c): c is string => !!c)),
+      ].sort(),
+    [datasets],
+  );
+  const filtered = useMemo(
+    () =>
+      datasets.filter(
+        (d) =>
+          (taskResultFilter === 'all' || d.task_result === taskResultFilter) &&
+          (conditionFilter === null || d.condition === conditionFilter),
+      ),
+    [datasets, taskResultFilter, conditionFilter],
+  );
+  const groups = useMemo(() => groupByOperator(filtered), [filtered]);
+
+  // The manifest is the materialized filter: a versionable file that defines a
+  // training set (commit it next to the training config to reproduce a run).
+  const downloadManifest = useCallback(() => {
+    const manifest = {
+      generated_at: new Date().toISOString(),
+      filter: {
+        task_result: taskResultFilter,
+        condition: conditionFilter,
+      },
+      count: filtered.length,
+      episodes: filtered.map((d) => ({
+        // data_dir-relative path (portable across machines/mounts).
+        path: `${d.operator}/${d.task}/${d.index}`,
+        run_id: d.run_id ?? null,
+        task_result: d.task_result ?? null,
+        failure_reason: d.failure_reason ?? null,
+        quality: d.quality ?? null,
+        review_status: d.review_status ?? null,
+        condition: d.condition ?? null,
+        batch_id: d.batch_id ?? null,
+        batch_seq: d.batch_seq ?? null,
+        index_in_batch: d.index_in_batch ?? null,
+        exported_at: d.exported_at ?? null,
+        bytes: d.bytes ?? null,
+        message_count: d.message_count ?? null,
+      })),
+    };
+    const blob = new Blob([JSON.stringify(manifest, null, 2)], {
+      type: 'application/json',
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `kairos-manifest-${new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-')}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast(`Manifest downloaded — ${filtered.length} episode(s)`);
+  }, [filtered, taskResultFilter, conditionFilter, showToast]);
 
   const detailQuery = useQuery({
     queryKey: queryKeys.dataset(
@@ -101,6 +181,14 @@ export function useDatasetsState(): DatasetsState {
 
   return {
     groups,
+    filtered,
+    total: datasets.length,
+    taskResultFilter,
+    setTaskResultFilter,
+    conditionFilter,
+    setConditionFilter,
+    conditions,
+    downloadManifest,
     isLoading: listQuery.isPending,
     isError: listQuery.isError,
     selected,

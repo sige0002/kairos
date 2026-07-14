@@ -19,7 +19,11 @@ const TASK_FROM_SERVER: Record<RunEpisode['task_result'], TaskResult> = {
   failure: 'Failure',
 };
 
-const LANE_TONE: Record<ReviewLane, Tone> = { ready: 'green', needs_check: 'amber', excluded: 'red' };
+const LANE_TONE: Record<ReviewLane, Tone> = {
+  ready: 'green',
+  needs_check: 'amber',
+  excluded: 'red',
+};
 const LANE_LABEL: Record<ReviewLane, string> = {
   ready: 'READY',
   needs_check: 'NEEDS CHECK',
@@ -53,12 +57,27 @@ export function QualityChip({ quality }: { quality: Quality | null }) {
   );
 }
 
-export function TaskResultChip({ task }: { task: TaskResult | null }) {
+export function TaskResultChip({
+  task,
+  reason,
+}: {
+  task: TaskResult | null;
+  /** The operator's failure reason (episodes.failure_reason) — surfaces as the
+   *  FAILURE chip's tooltip so the WHY is one hover away wherever the chip
+   *  appears (it was persisted but rendered nowhere — user report 2026-07-14). */
+  reason?: string | null;
+}) {
   if (!task) return <span className="font-mono text-xs text-gray-400">—</span>;
+  const title = task === 'Failure' && reason ? `Failure reason: ${reason}` : undefined;
   return (
-    <Badge tone={task === 'Success' ? 'teal' : 'gray'} className="w-fit whitespace-nowrap">
-      {task.toUpperCase()}
-    </Badge>
+    <span title={title} className="w-fit">
+      <Badge
+        tone={task === 'Success' ? 'teal' : 'gray'}
+        className="w-fit whitespace-nowrap"
+      >
+        {task.toUpperCase()}
+      </Badge>
+    </span>
   );
 }
 
@@ -132,8 +151,14 @@ export function EpisodeLabelChips({
 }) {
   return (
     <div data-testid={testId} className="flex flex-wrap items-center gap-1.5">
-      <BatchChip batchSeq={episode.batch_seq} isoDate={episode.batch_created_at ?? isoFallback} />
-      <TaskResultChip task={TASK_FROM_SERVER[episode.task_result]} />
+      <BatchChip
+        batchSeq={episode.batch_seq}
+        isoDate={episode.batch_created_at ?? isoFallback}
+      />
+      <TaskResultChip
+        task={TASK_FROM_SERVER[episode.task_result]}
+        reason={episode.failure_reason}
+      />
       <QualityChip quality={QUALITY_FROM_SERVER[episode.quality]} />
     </div>
   );

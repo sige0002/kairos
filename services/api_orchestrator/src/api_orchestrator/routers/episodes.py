@@ -137,6 +137,8 @@ async def patch_batch(
         fields["ended_reason"] = body.ended_reason
     if body.condition is not None:
         fields["condition"] = body.condition
+    if body.target_episodes is not None:
+        fields["target_episodes"] = body.target_episodes
     # Stamp ended_at when a batch first reaches a terminal status.
     if body.status in _TERMINAL_BATCH_STATUSES and batch.ended_at is None:
         fields["ended_at"] = utc_now_iso8601()

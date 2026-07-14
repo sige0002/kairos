@@ -4,7 +4,7 @@
 
 import { useState } from 'react';
 import { Button, Modal, cn } from '../../components/ui';
-import { END_REASONS, EPISODES_PER_BATCH, type BatchMachine } from './useBatchMachine';
+import { END_REASONS, type BatchMachine } from './useBatchMachine';
 import { findTask, usePlans } from '../plans';
 
 function ReasonChip({
@@ -22,7 +22,9 @@ function ReasonChip({
       onClick={onClick}
       className={cn(
         'rounded-chip border px-3 py-1.5 text-xs font-semibold',
-        active ? 'border-teal-600 bg-teal-50 text-teal-700' : 'border-gray-200 bg-white font-medium text-gray-500',
+        active
+          ? 'border-teal-600 bg-teal-50 text-teal-700'
+          : 'border-gray-200 bg-white font-medium text-gray-500',
       )}
     >
       {children}
@@ -37,13 +39,21 @@ function EndBatchModal({ machine }: { machine: BatchMachine }) {
     <Modal
       open={machine.endModalOpen}
       onClose={machine.closeModals}
-      title={machine.batchSeq != null ? `End batch ${machine.batchSeq} early?` : 'End batch early?'}
+      title={
+        machine.batchSeq != null
+          ? `End batch ${machine.batchSeq} early?`
+          : 'End batch early?'
+      }
       footer={
         <>
           <Button variant="ghost" onClick={machine.closeModals}>
             Cancel
           </Button>
-          <Button variant="danger" onClick={machine.confirmEndBatch} disabled={!canConfirm}>
+          <Button
+            variant="danger"
+            onClick={machine.confirmEndBatch}
+            disabled={!canConfirm}
+          >
             End batch
           </Button>
         </>
@@ -51,15 +61,21 @@ function EndBatchModal({ machine }: { machine: BatchMachine }) {
     >
       <div className="grid grid-cols-3 gap-2">
         <div className="rounded-control border border-gray-100 px-3 py-2.5">
-          <div className="font-mono text-lg font-semibold text-gray-900">{stats.nRecorded}</div>
+          <div className="font-mono text-lg font-semibold text-gray-900">
+            {stats.nRecorded}
+          </div>
           <div className="text-[11px] text-gray-400">recorded</div>
         </div>
         <div className="rounded-control border border-gray-100 px-3 py-2.5">
-          <div className="font-mono text-lg font-semibold text-gray-500">{stats.nRemaining}</div>
+          <div className="font-mono text-lg font-semibold text-gray-500">
+            {stats.nRemaining}
+          </div>
           <div className="text-[11px] text-gray-400">not recorded</div>
         </div>
         <div className="rounded-control border border-gray-100 px-3 py-2.5">
-          <div className="font-mono text-lg font-semibold text-amber-600">{stats.nReview}</div>
+          <div className="font-mono text-lg font-semibold text-amber-600">
+            {stats.nReview}
+          </div>
           <div className="text-[11px] text-gray-400">needs review</div>
         </div>
       </div>
@@ -110,20 +126,25 @@ function ResetBatchModal({ machine }: { machine: BatchMachine }) {
     >
       {empty ? (
         <p className="text-[12.5px] leading-relaxed text-gray-600">
-          Nothing has been recorded in this batch yet, so this just clears local state — no batch is
-          created or closed, and the batch number is unchanged.
+          Nothing has been recorded in this batch yet, so this just clears local state —
+          no batch is created or closed, and the batch number is unchanged.
         </p>
       ) : (
         <>
           <p className="text-[12.5px] leading-relaxed text-gray-600">
             This closes the current batch. The counter returns to{' '}
-            <span className="font-mono text-gray-800">0 / {EPISODES_PER_BATCH}</span>; the next batch
-            number is assigned when you start your next recording.
+            <span className="font-mono text-gray-800">
+              0 / {machine.targetEpisodes}
+            </span>
+            ; the next batch number is assigned when you start your next recording.
           </p>
           <p className="mt-2 text-[12.5px] leading-relaxed text-gray-600">
-            The <strong className="text-gray-700">{machine.stats.nRecorded} recording(s)</strong>{' '}
-            already taken are <strong className="text-gray-700">not deleted</strong> — they stay in
-            Review.
+            The{' '}
+            <strong className="text-gray-700">
+              {machine.stats.nRecorded} recording(s)
+            </strong>{' '}
+            already taken are <strong className="text-gray-700">not deleted</strong> —
+            they stay in Review.
           </p>
         </>
       )}
@@ -155,8 +176,8 @@ function IssueModal({ machine }: { machine: BatchMachine }) {
       }
     >
       <p className="mb-2">
-        Attached to Batch {machine.batchSeq ?? '—'}, Episode {machine.stats.epNext} context
-        automatically.
+        Attached to Batch {machine.batchSeq ?? '—'}, Episode {machine.stats.epNext}{' '}
+        context automatically.
       </p>
       <textarea
         value={note}
@@ -183,7 +204,9 @@ function ConditionModal({ machine }: { machine: BatchMachine }) {
         </Button>
       }
     >
-      <p className="mb-3">Applies from the next episode. Current episode plans are unaffected.</p>
+      <p className="mb-3">
+        Applies from the next episode. Current episode plans are unaffected.
+      </p>
       <div className="flex flex-col gap-1.5">
         {task.conditions.map((c) => (
           <button
@@ -201,6 +224,61 @@ function ConditionModal({ machine }: { machine: BatchMachine }) {
           </button>
         ))}
       </div>
+    </Modal>
+  );
+}
+
+function TargetModal({ machine }: { machine: BatchMachine }) {
+  const [value, setValue] = useState<string>('');
+  const parsed = Number.parseInt(value, 10);
+  const valid = Number.isFinite(parsed) && parsed >= 1 && parsed <= 500;
+  // Lowering below what's already recorded completes the batch — say so
+  // instead of surprising the operator.
+  const completesNow = valid && parsed <= machine.stats.nRecorded;
+  return (
+    <Modal
+      open={machine.targetModalOpen}
+      onClose={machine.closeModals}
+      title="Change batch target"
+      footer={
+        <>
+          <Button variant="ghost" onClick={machine.closeModals}>
+            Cancel
+          </Button>
+          <Button
+            data-testid="target-confirm"
+            disabled={!valid}
+            onClick={() => valid && machine.changeTarget(parsed)}
+          >
+            Set target
+          </Button>
+        </>
+      }
+    >
+      <p className="mb-3 text-[12.5px] leading-relaxed text-gray-600">
+        Planned episodes for this batch (currently{' '}
+        <span className="font-mono text-gray-800">{machine.targetEpisodes}</span>,
+        recorded{' '}
+        <span className="font-mono text-gray-800">{machine.stats.nRecorded}</span>).
+        Applies to the current batch and is inherited by the next one.
+      </p>
+      <input
+        type="number"
+        min={1}
+        max={500}
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        placeholder={String(machine.targetEpisodes)}
+        data-testid="target-input"
+        autoFocus
+        className="w-full rounded-control border border-gray-200 px-3 py-2.5 font-mono text-sm text-gray-700 focus:border-teal-500 focus:outline-none"
+      />
+      {completesNow && (
+        <p className="mt-2 text-[12px] leading-relaxed text-amber-700">
+          {machine.stats.nRecorded} episode(s) are already recorded, so this target
+          marks the batch complete immediately.
+        </p>
+      )}
     </Modal>
   );
 }
@@ -229,10 +307,18 @@ function DiscardModal({ machine }: { machine: BatchMachine }) {
       title="Discard this episode?"
       footer={
         <>
-          <Button variant="ghost" onClick={machine.closeModals} disabled={machine.isDiscarding}>
+          <Button
+            variant="ghost"
+            onClick={machine.closeModals}
+            disabled={machine.isDiscarding}
+          >
             Keep
           </Button>
-          <Button variant="danger" onClick={machine.confirmDiscard} disabled={machine.isDiscarding}>
+          <Button
+            variant="danger"
+            onClick={machine.confirmDiscard}
+            disabled={machine.isDiscarding}
+          >
             {machine.isDiscarding ? 'Discarding…' : 'Discard permanently'}
           </Button>
         </>
@@ -246,8 +332,8 @@ function DiscardModal({ machine }: { machine: BatchMachine }) {
             <span className="font-mono text-gray-800">{machine.discardRunId}</span>
           </>
         ) : null}
-        {size ? ` (${size})` : ''} from disk, then re-arms for a fresh take of this episode. This
-        cannot be undone.
+        {size ? ` (${size})` : ''} from disk, then re-arms for a fresh take of this
+        episode. This cannot be undone.
       </p>
       {!machine.discardRunId && (
         <p className="mt-2 text-[12px] text-gray-400">
@@ -260,8 +346,8 @@ function DiscardModal({ machine }: { machine: BatchMachine }) {
           data-testid="discard-error"
           className="mt-3 rounded-control border border-red-200 bg-red-50/70 px-3 py-2 text-[12px] text-red-800"
         >
-          <span className="font-semibold">Discard failed</span> — {machine.discardError}. The
-          episode is kept.
+          <span className="font-semibold">Discard failed</span> — {machine.discardError}
+          . The episode is kept.
         </div>
       )}
     </Modal>
@@ -291,10 +377,18 @@ function TakeoverStopModal({ machine }: { machine: BatchMachine }) {
       title="Stop this recording?"
       footer={
         <>
-          <Button variant="ghost" onClick={machine.closeModals} disabled={machine.isTakeoverStopping}>
+          <Button
+            variant="ghost"
+            onClick={machine.closeModals}
+            disabled={machine.isTakeoverStopping}
+          >
             Keep recording
           </Button>
-          <Button variant="danger" onClick={machine.confirmTakeoverStop} disabled={machine.isTakeoverStopping}>
+          <Button
+            variant="danger"
+            onClick={machine.confirmTakeoverStop}
+            disabled={machine.isTakeoverStopping}
+          >
             {machine.isTakeoverStopping ? 'Stopping…' : 'Stop & save'}
           </Button>
         </>
@@ -302,14 +396,18 @@ function TakeoverStopModal({ machine }: { machine: BatchMachine }) {
     >
       {machine.takeoverResumedOwn ? (
         <p className="text-[12.5px] leading-relaxed text-gray-600">
-          Stop the recording that&apos;s still running? {size} captured so far will be saved to Review.
+          Stop the recording that&apos;s still running? {size} captured so far will be
+          saved to Review.
         </p>
       ) : (
         <p className="text-[12.5px] leading-relaxed text-gray-600">
           This recording was started from another session (operator{' '}
           <strong className="text-gray-700">{t?.operator || '—'}</strong> · running{' '}
-          <span className="font-mono text-gray-800">{formatElapsedClock(t?.startedAt ?? null)}</span> ·{' '}
-          {size}). Stopping it saves what&apos;s captured so far — it will appear in Review.
+          <span className="font-mono text-gray-800">
+            {formatElapsedClock(t?.startedAt ?? null)}
+          </span>{' '}
+          · {size}). Stopping it saves what&apos;s captured so far — it will appear in
+          Review.
         </p>
       )}
     </Modal>
@@ -327,10 +425,18 @@ function UnsavedDiscardModal({ machine }: { machine: BatchMachine }) {
       title="Discard this take?"
       footer={
         <>
-          <Button variant="ghost" onClick={machine.closeModals} disabled={machine.isDiscardingUnsaved}>
+          <Button
+            variant="ghost"
+            onClick={machine.closeModals}
+            disabled={machine.isDiscardingUnsaved}
+          >
             Keep
           </Button>
-          <Button variant="danger" onClick={machine.confirmDiscardUnsavedTake} disabled={machine.isDiscardingUnsaved}>
+          <Button
+            variant="danger"
+            onClick={machine.confirmDiscardUnsavedTake}
+            disabled={machine.isDiscardingUnsaved}
+          >
             {machine.isDiscardingUnsaved ? 'Deleting…' : 'Delete'}
           </Button>
         </>
@@ -393,6 +499,7 @@ export function CollectModals({ machine }: { machine: BatchMachine }) {
       <EndBatchModal machine={machine} />
       <ResetBatchModal machine={machine} />
       <IssueModal machine={machine} />
+      <TargetModal machine={machine} />
       <ConditionModal machine={machine} />
       <DiscardModal machine={machine} />
       <TakeoverStopModal machine={machine} />

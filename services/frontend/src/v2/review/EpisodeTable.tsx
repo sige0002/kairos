@@ -69,9 +69,18 @@ function transferBadge(row: DecoratedEpisode): { tone: Tone; label: string } {
 // in the source for its scanner to pick them up — hence two full strings
 // rather than building one via interpolation.)
 const GRID_COLS = 'grid-cols-[56px_48px_108px_96px_72px_80px_minmax(0,1fr)_28px]';
-const GRID_COLS_SPLIT = 'grid-cols-[56px_48px_108px_96px_72px_80px_84px_minmax(0,1fr)_28px]';
+const GRID_COLS_SPLIT =
+  'grid-cols-[56px_48px_108px_96px_72px_80px_84px_minmax(0,1fr)_28px]';
 
-function Row({ row, isSelected, rv }: { row: DecoratedEpisode; isSelected: boolean; rv: ReviewState }) {
+function Row({
+  row,
+  isSelected,
+  rv,
+}: {
+  row: DecoratedEpisode;
+  isSelected: boolean;
+  rv: ReviewState;
+}) {
   const transfer = transferBadge(row);
   return (
     <div
@@ -85,12 +94,18 @@ function Row({ row, isSelected, rv }: { row: DecoratedEpisode; isSelected: boole
         row.isArchived && 'bg-red-50 opacity-50',
       )}
     >
-      <span className="font-mono text-[13px] font-semibold text-gray-900">#{row.ep}</span>
+      <span className="font-mono text-[13px] font-semibold text-gray-900">
+        #{row.ep}
+      </span>
       <span className="font-mono text-[12.5px] text-gray-500">{row.batch}</span>
       <QualityCell row={row} />
-      <TaskResultChip task={row.effectiveTask} />
-      <span className="font-mono text-xs text-gray-500">{formatHms(row.durationMs)}</span>
-      <span className="font-mono text-xs text-gray-400">{formatTimeOfDay(row.startedAt)}</span>
+      <TaskResultChip task={row.effectiveTask} reason={row.failReason} />
+      <span className="font-mono text-xs text-gray-500">
+        {formatHms(row.durationMs)}
+      </span>
+      <span className="font-mono text-xs text-gray-400">
+        {formatTimeOfDay(row.startedAt)}
+      </span>
       {rv.splitMode && (
         <Badge tone={transfer.tone} className="w-fit whitespace-nowrap">
           {transfer.label}
@@ -106,10 +121,18 @@ function Row({ row, isSelected, rv }: { row: DecoratedEpisode; isSelected: boole
           e.stopPropagation();
           rv.requestArchive(row.runId);
         }}
-        title={row.isArchived ? 'Restore to dataset use' : 'Exclude from dataset use (recording is kept)'}
+        title={
+          row.isArchived
+            ? 'Restore to dataset use'
+            : 'Exclude from dataset use (recording is kept)'
+        }
         className="flex h-[26px] w-[26px] items-center justify-center rounded-[7px] text-gray-300 transition-colors hover:bg-red-50 hover:text-red-600"
       >
-        {row.isArchived ? <span className="text-sm text-teal-700">↺</span> : <ArchiveIcon />}
+        {row.isArchived ? (
+          <span className="text-sm text-teal-700">↺</span>
+        ) : (
+          <ArchiveIcon />
+        )}
       </button>
     </div>
   );
@@ -126,16 +149,27 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
   return (
     <div className="flex min-w-0 flex-col overflow-hidden rounded-card border border-gray-200 bg-white shadow-card">
       <div className="flex flex-wrap items-center gap-2.5 border-b border-gray-100 px-[18px] py-3">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">Episodes</span>
-        <span data-testid="review-episodes-count" className="font-mono text-xs text-gray-400">
+        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+          Episodes
+        </span>
+        <span
+          data-testid="review-episodes-count"
+          className="font-mono text-xs text-gray-400"
+        >
           {rv.rows.length} shown
         </span>
         {rv.rows.length > 0 && (
           <>
-            <span data-testid="review-lane-tally" className="rounded-chip bg-gray-50 px-2 py-0.5 font-mono text-[11px] text-gray-500">
+            <span
+              data-testid="review-lane-tally"
+              className="rounded-chip bg-gray-50 px-2 py-0.5 font-mono text-[11px] text-gray-500"
+            >
               {nReady} ready · {nCheck} needs check · {nExcluded} excluded
             </span>
-            <span data-testid="review-task-tally" className="rounded-chip bg-gray-50 px-2 py-0.5 font-mono text-[11px] text-gray-500">
+            <span
+              data-testid="review-task-tally"
+              className="rounded-chip bg-gray-50 px-2 py-0.5 font-mono text-[11px] text-gray-500"
+            >
               {nSuccess} success · {nFail} failure
             </span>
           </>
@@ -218,9 +252,10 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
         data-testid="review-adopt-explainer"
         className="border-b border-gray-100 px-[18px] py-1.5 text-[11px] text-gray-400"
       >
-        <span className="font-semibold text-teal-700">READY</span> episodes export as-is —{' '}
-        you only resolve the <span className="font-semibold text-amber-700">NEEDS CHECK</span>{' '}
-        exceptions. Export moves the recording into Datasets.
+        <span className="font-semibold text-teal-700">READY</span> episodes export as-is
+        — you only resolve the{' '}
+        <span className="font-semibold text-amber-700">NEEDS CHECK</span> exceptions.
+        Export moves the recording into Datasets.
       </p>
       <div
         className={cn(
@@ -243,13 +278,21 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
           <p className="px-[18px] py-3 text-sm text-gray-500">Loading episodes…</p>
         ) : rv.isError ? (
           <p className="px-[18px] py-3 text-sm text-red-600" role="alert">
-            Couldn&apos;t load recordings{rv.errorMessage ? `: ${rv.errorMessage}` : ''}.
+            Couldn&apos;t load recordings{rv.errorMessage ? `: ${rv.errorMessage}` : ''}
+            .
           </p>
         ) : rv.rows.length === 0 ? (
-          <p className="px-[18px] py-3 text-sm text-gray-500">No episodes to review yet.</p>
+          <p className="px-[18px] py-3 text-sm text-gray-500">
+            No episodes to review yet.
+          </p>
         ) : (
           rv.rows.map((row) => (
-            <Row key={row.runId} row={row} isSelected={row.runId === rv.selectedRunId} rv={rv} />
+            <Row
+              key={row.runId}
+              row={row}
+              isSelected={row.runId === rv.selectedRunId}
+              rv={rv}
+            />
           ))
         )}
       </div>
@@ -257,8 +300,8 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
         data-testid="review-bridge-caption"
         className="border-t border-gray-100 px-[18px] py-2 text-[11px] text-gray-400"
       >
-        Quality / Task / Batch from the episode records (server) · pre-Phase-2 entries from this
-        browser.
+        Quality / Task / Batch from the episode records (server) · pre-Phase-2 entries
+        from this browser.
       </p>
     </div>
   );

@@ -8,7 +8,12 @@
 // pipeline lifecycle chip is a client-side placeholder — the orchestrator
 // doesn't report a lifecycle yet (see lifecycle.ts).
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
+import {
+  useMutation,
+  useQuery,
+  useQueryClient,
+  keepPreviousData,
+} from '@tanstack/react-query';
 import { apiGet, apiPost } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
 import { fetchRuntimeConfig } from '../../config';
@@ -30,7 +35,13 @@ import type { Summary } from '../../features/validation/SummaryResult';
 import { Card } from '../../components/ui';
 import { PipelineRail } from './PipelineRail';
 import { DetailHeader } from './DetailHeader';
-import { ParamsPanel, ALL_RUNS, DATASET_VALUE_PREFIX } from './ParamsPanel';
+import {
+  ParamsPanel,
+  ALL_RUNS,
+  DATASET_VALUE_PREFIX,
+  BATCH_VALUE_PREFIX,
+} from './ParamsPanel';
+import { listBatches } from '../episodeBridge';
 import { ResultsPanel, type ActiveOutcome } from './ResultsPanel';
 import type { RequiredTopic } from './resultsMapping';
 import { Toast } from './Toast';
@@ -78,7 +89,13 @@ interface JobProbeUpdate {
 }
 
 /** Invisible per-job poller: reports status/result changes to the parent. */
-function JobProbe({ job, onUpdate }: { job: JobRef; onUpdate: (u: JobProbeUpdate) => void }) {
+function JobProbe({
+  job,
+  onUpdate,
+}: {
+  job: JobRef;
+  onUpdate: (u: JobProbeUpdate) => void;
+}) {
   const { statusQuery, terminal, resultQuery } = useJobResult(job.job_id);
   useEffect(() => {
     if (!statusQuery.data) return;
@@ -92,7 +109,14 @@ function JobProbe({ job, onUpdate }: { job: JobRef; onUpdate: (u: JobProbeUpdate
       artifacts: terminal ? resultQuery.data?.artifacts : undefined,
       resultErrored: terminal && resultQuery.isError,
     });
-  }, [statusQuery.data, terminal, resultQuery.data, resultQuery.isError, job.job_id, job.run_id]);
+  }, [
+    statusQuery.data,
+    terminal,
+    resultQuery.data,
+    resultQuery.isError,
+    job.job_id,
+    job.run_id,
+  ]);
   return null;
 }
 
@@ -116,7 +140,8 @@ export function ValidationScreen() {
 
   const pipelinesQuery = useQuery({
     queryKey: queryKeys.pipelines,
-    queryFn: ({ signal }) => apiGet<{ items: PipelineInfo[] }>('/pipelines', { signal }),
+    queryFn: ({ signal }) =>
+      apiGet<{ items: PipelineInfo[] }>('/pipelines', { signal }),
   });
   const pipelines = useMemo(
     () => (pipelinesQuery.data?.items ?? []).filter((p) => p.enabled),
@@ -126,7 +151,8 @@ export function ValidationScreen() {
 
   const runsQuery = useQuery({
     queryKey: queryKeys.runs(undefined),
-    queryFn: ({ signal }) => apiGet<Page<RunSummary>>('/runs', { signal, query: { limit: 50 } }),
+    queryFn: ({ signal }) =>
+      apiGet<Page<RunSummary>>('/runs', { signal, query: { limit: 50 } }),
     placeholderData: keepPreviousData,
   });
   const runs = useMemo(
@@ -151,14 +177,40 @@ export function ValidationScreen() {
     return m;
   }, [datasets]);
   const selectedDataset = datasetByValue.get(targetRunId) ?? null;
-  const targetKind: 'none' | 'all' | 'run' | 'dataset' =
+
+  // Batches as bulk targets (blast-radius check, 2026-07-14): validate every
+  // still-present run of one batch in one click. Only a run that hasn't been
+  // exported can be validated (export MOVES the recording), so each batch's
+  // candidate set is its episode run_ids ∩ the completed runs list.
+  const batchesQuery = useQuery({
+    queryKey: ['batches', 'validation'],
+    queryFn: () => listBatches(),
+    staleTime: 15_000,
+  });
+  const batches = useMemo(
+    () => (batchesQuery.data?.items ?? []).filter((b) => (b.episodes ?? []).length > 0),
+    [batchesQuery.data],
+  );
+  const completedRunIds = useMemo(() => new Set(runs.map((r) => r.run_id)), [runs]);
+  const batchRunIds = useCallback(
+    (b: (typeof batches)[number]) =>
+      (b.episodes ?? []).map((e) => e.run_id).filter((id) => completedRunIds.has(id)),
+    [completedRunIds],
+  );
+  const selectedBatch = targetRunId.startsWith(BATCH_VALUE_PREFIX)
+    ? (batches.find((b) => `${BATCH_VALUE_PREFIX}${b.batch_id}` === targetRunId) ??
+      null)
+    : null;
+  const targetKind: 'none' | 'all' | 'run' | 'dataset' | 'batch' =
     targetRunId === ''
       ? 'none'
       : targetRunId === ALL_RUNS
         ? 'all'
-        : selectedDataset
-          ? 'dataset'
-          : 'run';
+        : selectedBatch
+          ? 'batch'
+          : selectedDataset
+            ? 'dataset'
+            : 'run';
 
   const optionsQuery = useQuery({
     queryKey: queryKeys.configOptions,
@@ -208,7 +260,8 @@ export function ValidationScreen() {
   );
   const params: Record<string, unknown> = { ...seeded, ...overrides };
   if (schema.properties?.template && !params.template) {
-    params.template = optionsQuery.data?.aspects?.validation?.active || templates[0]?.id || '';
+    params.template =
+      optionsQuery.data?.aspects?.validation?.active || templates[0]?.id || '';
   }
 
   const onJobUpdate = useCallback((u: JobProbeUpdate) => {
@@ -251,8 +304,8 @@ export function ValidationScreen() {
   // or its meta name, since a preset targets the template by name).
   const requiredTopicsFor = useCallback(
     (templateKey: string): RequiredTopic[] =>
-      templates.find((t) => t.id === templateKey || t.name === templateKey)?.required_topics ??
-      [],
+      templates.find((t) => t.id === templateKey || t.name === templateKey)
+        ?.required_topics ?? [],
     [templates],
   );
 
@@ -301,12 +354,20 @@ export function ValidationScreen() {
       });
       return;
     }
-    const runIds = targetRunId === ALL_RUNS ? runs.map((r) => r.run_id) : [targetRunId];
+    const runIds =
+      targetRunId === ALL_RUNS
+        ? runs.map((r) => r.run_id)
+        : selectedBatch
+          ? batchRunIds(selectedBatch)
+          : [targetRunId];
+    if (runIds.length === 0) return;
     submitMutation.mutate({
       pipeline: selectedPipeline.id,
       params,
       runIds,
-      requiredTopics: isFastValidation ? requiredTopicsFor(String(params.template ?? '')) : undefined,
+      requiredTopics: isFastValidation
+        ? requiredTopicsFor(String(params.template ?? ''))
+        : undefined,
     });
   };
 
@@ -328,15 +389,22 @@ export function ValidationScreen() {
   const targetCount =
     targetKind === 'all'
       ? runs.length
-      : targetKind === 'dataset'
-        ? selectedDataset?.run_id
-          ? 1
+      : targetKind === 'batch'
+        ? selectedBatch
+          ? batchRunIds(selectedBatch).length
           : 0
-        : targetRunId
-          ? 1
-          : 0;
+        : targetKind === 'dataset'
+          ? selectedDataset?.run_id
+            ? 1
+            : 0
+          : targetRunId
+            ? 1
+            : 0;
   const canRun =
-    !!selectedPipeline && targetCount > 0 && selectedApplicable && !submitMutation.isPending;
+    !!selectedPipeline &&
+    targetCount > 0 &&
+    selectedApplicable &&
+    !submitMutation.isPending;
   const running = (!!active && !allSettled) || submitMutation.isPending;
 
   const progressPct = active
@@ -359,11 +427,14 @@ export function ValidationScreen() {
         outcomes: active.jobs.map((j) => ({
           runId: j.run_id,
           orchestrationFailed:
-            jobStates[j.job_id]?.state === 'failed' || jobStates[j.job_id]?.resultErrored,
+            jobStates[j.job_id]?.state === 'failed' ||
+            jobStates[j.job_id]?.resultErrored,
           summary: jobStates[j.job_id]?.summary,
         })),
         artifacts:
-          active.jobs.length === 1 ? (jobStates[active.jobs[0]!.job_id]?.artifacts ?? []) : [],
+          active.jobs.length === 1
+            ? (jobStates[active.jobs[0]!.job_id]?.artifacts ?? [])
+            : [],
         requiredTopics: active.requiredTopics,
       }
     : null;
@@ -387,7 +458,9 @@ export function ValidationScreen() {
 
   return (
     <div className="grid grid-cols-1 gap-2.5 lg:h-full lg:min-h-0 lg:grid-cols-[290px_1fr]">
-      {active?.jobs.map((job) => <JobProbe key={job.job_id} job={job} onUpdate={onJobUpdate} />)}
+      {active?.jobs.map((job) => (
+        <JobProbe key={job.job_id} job={job} onUpdate={onJobUpdate} />
+      ))}
 
       <PipelineRail
         pipelines={pipelines}
@@ -402,7 +475,9 @@ export function ValidationScreen() {
           pipeline={selectedPipeline}
           index={selectedIndex}
           onPromote={() =>
-            showToast(`${selectedPipeline.id} promoted to Standard — applies to new episodes`)
+            showToast(
+              `${selectedPipeline.id} promoted to Standard — applies to new episodes`,
+            )
           }
         />
         <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[300px_1fr]">
@@ -415,6 +490,8 @@ export function ValidationScreen() {
             runsLoading={runsQuery.isPending}
             datasets={datasets}
             datasetsLoading={datasetsQuery.isPending}
+            batches={batches}
+            batchRunCount={(b) => batchRunIds(b).length}
             targetRunId={targetRunId}
             onTargetRunChange={setTargetRunId}
             applicabilityNote={applicabilityNote}

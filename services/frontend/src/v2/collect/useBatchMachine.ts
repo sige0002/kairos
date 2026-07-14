@@ -177,6 +177,10 @@ interface MachineState {
    *  Review exclude/delete: `episodes` (used for the quality/task tallies + strip
    *  chips) may shrink on a delete-restore, but the recorded count must not. */
   recordedCount: number;
+  /** Planned episodes for this batch (server `target_episodes`). Editable per
+   *  batch (Batch menu) — the fixed 30 ignored the server value the API always
+   *  had. Inherited by the next batch; the strip/counters all follow it. */
+  targetEpisodes: number;
   /** Server batch id (Phase 2), null until the batch is created on the API; the
    *  real key for episode POSTs. */
   batchId: string | null;
@@ -216,6 +220,7 @@ function createInitialState(): MachineState {
     episodes: [],
     batchSeq: null,
     recordedCount: 0,
+    targetEpisodes: EPISODES_PER_BATCH,
     batchId: null,
     predictedSeq: null,
     elapsedMs: 0,
@@ -249,6 +254,7 @@ type Action =
   | { type: 'SET_QUALITY'; quality: QualityOverride | null }
   | { type: 'CONFIRM_EPISODE'; quality: Quality }
   | { type: 'ADOPT_EPISODE_INDEX'; runId: string; index: number }
+  | { type: 'SET_TARGET'; target: number }
   | { type: 'RESUME_TAKE'; runId: string }
   | { type: 'RETRY_EPISODE' }
   | { type: 'PAUSE_BATCH' }
@@ -346,7 +352,7 @@ function reducer(state: MachineState, action: Action): MachineState {
         failReason: taskResult === 'fail' ? state.failReason : undefined,
       };
       const episodes = [...state.episodes, episode];
-      const done = recordedCount >= EPISODES_PER_BATCH;
+      const done = recordedCount >= state.targetEpisodes;
       return {
         ...state,
         episodes,
@@ -377,6 +383,18 @@ function reducer(state: MachineState, action: Action): MachineState {
         episodes,
         recordedCount: Math.max(state.recordedCount, action.index),
       };
+    }
+    case 'SET_TARGET': {
+      // Clamp to a sane range; re-derive completion when at rest (raising the
+      // target re-opens a completed batch, lowering it below the recorded
+      // count completes it). Recording/result phases are never disturbed.
+      const target = Math.max(1, Math.min(500, Math.floor(action.target)));
+      if (!Number.isFinite(target) || target === state.targetEpisodes) return state;
+      let phase = state.phase;
+      if (phase === 'ready' || phase === 'completed') {
+        phase = state.recordedCount >= target ? 'completed' : 'ready';
+      }
+      return { ...state, targetEpisodes: target, phase };
     }
     case 'RESUME_TAKE':
       // Recover an unsaved take (D-3): drop straight into the result panel for
@@ -503,6 +521,9 @@ interface PersistedBatch {
   batchSeq: number | null;
   /** Monotone recorded count (survives an API-down reload; see the note above). */
   recordedCount: number;
+  /** Planned episodes for this batch (server target_episodes); absent in older
+   *  blobs -> the 30 default. */
+  targetEpisodes?: number;
   /** Server batch id, mirrored so an API-down reload can still resume. */
   batchId: string | null;
   episodes: EpisodeRecord[];
@@ -519,6 +540,7 @@ function serializeDurable(state: MachineState): string {
   const blob: PersistedBatch = {
     batchSeq: state.batchSeq,
     recordedCount: state.recordedCount,
+    targetEpisodes: state.targetEpisodes,
     batchId: state.batchId,
     episodes: state.episodes,
     project: state.project,
@@ -575,15 +597,20 @@ function readInitialState(): MachineState {
       typeof blob.recordedCount === 'number' ? blob.recordedCount : 0,
       maxRecorded(episodes),
     );
+    const targetEpisodes =
+      typeof blob.targetEpisodes === 'number' && blob.targetEpisodes >= 1
+        ? Math.floor(blob.targetEpisodes)
+        : EPISODES_PER_BATCH;
     // A durable full batch resumes on its completed summary; anything else
     // lands on the safe 'ready' baseline. The persisted phase (if any) is
     // ignored on purpose — see the note above.
-    const phase: Phase = recordedCount >= EPISODES_PER_BATCH ? 'completed' : 'ready';
+    const phase: Phase = recordedCount >= targetEpisodes ? 'completed' : 'ready';
     return {
       ...base,
       phase,
       batchSeq: typeof blob.batchSeq === 'number' ? blob.batchSeq : null,
       recordedCount,
+      targetEpisodes,
       batchId: typeof blob.batchId === 'string' ? blob.batchId : null,
       episodes,
       project: typeof blob.project === 'string' ? blob.project : base.project,
@@ -701,12 +728,18 @@ function applyServerRestore(batch: BatchSummary | null): void {
     sameBatch ? currentState.recordedCount : 0,
     maxRecorded(episodes),
   );
-  const phase: Phase = recordedCount >= EPISODES_PER_BATCH ? 'completed' : 'ready';
+  // The batch's own plan size (the API always carried it; the UI now follows).
+  const targetEpisodes =
+    typeof batch.target_episodes === 'number' && batch.target_episodes >= 1
+      ? Math.floor(batch.target_episodes)
+      : EPISODES_PER_BATCH;
+  const phase: Phase = recordedCount >= targetEpisodes ? 'completed' : 'ready';
   currentState = {
     ...createInitialState(),
     batchId: batch.batch_id,
     batchSeq,
     recordedCount,
+    targetEpisodes,
     project: batch.project,
     task: batch.task,
     condition: batch.condition ?? '—',
@@ -954,6 +987,8 @@ export interface BatchMachine {
   project: string;
   task: string;
   condition: string;
+  /** Planned episodes for the current batch (server target_episodes). */
+  targetEpisodes: number;
   ctxEditable: boolean;
   condAllowed: boolean;
   endReason: string;
@@ -966,12 +1001,17 @@ export interface BatchMachine {
   issueModalOpen: boolean;
   condModalOpen: boolean;
   resetModalOpen: boolean;
+  targetModalOpen: boolean;
   /** Keyboard-shortcuts help sheet (opened with `?`). */
   shortcutsOpen: boolean;
   toggleBatchMenu: () => void;
   openProjPicker: () => void;
   openTaskPicker: () => void;
   openCondModal: () => void;
+  openTargetModal: () => void;
+  /** Set the batch's planned episode count (clamped 1-500; PATCHes the server
+   *  batch when one exists). */
+  changeTarget: (target: number) => void;
   openEndModal: () => void;
   openIssueModal: () => void;
   openResetModal: () => void;
@@ -1247,7 +1287,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
       task: s.task,
       condition: s.condition && s.condition !== '—' ? s.condition : undefined,
       operator: op || undefined,
-      target_episodes: EPISODES_PER_BATCH,
+      target_episodes: getStoreSnapshot().targetEpisodes,
     })
       .then((batch) =>
         dispatch({
@@ -1471,7 +1511,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     // Monotone: the new episode's number follows the recorded count, so a prior
     // Review delete never causes a reused index_in_batch on the server.
     const nextIndex = state.recordedCount + 1;
-    const willComplete = nextIndex >= EPISODES_PER_BATCH;
+    const willComplete = nextIndex >= state.targetEpisodes;
     const isFail = state.pendingTask === 'fail';
     const reason = state.failReason;
     // Effective quality (D-2): the operator's override if any, else the auto
@@ -1577,6 +1617,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     state.failReason,
     state.qualityOverride,
     state.recordedCount,
+    state.targetEpisodes,
     state.currentRunId,
     state.batchId,
     state.batchSeq,
@@ -1723,8 +1764,8 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     // START_NEXT_BATCH cleared batchId/batchSeq; create the new server batch now
     // (its batch_seq is assigned server-side).
     ensureBatch();
-    showToast(`Next batch ready — same condition, ${EPISODES_PER_BATCH} episodes`);
-  }, [state.phase, showToast, ensureBatch]);
+    showToast(`Next batch ready — same condition, ${state.targetEpisodes} episodes`);
+  }, [state.targetEpisodes, state.phase, showToast, ensureBatch]);
 
   // Reset the batch: close the current one and start fresh (counts → 0/30). The
   // recordings already taken are NOT deleted — they stay in Review. Unlike
@@ -1774,6 +1815,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   const [issueModalOpen, setIssueModalOpen] = useState(false);
   const [condModalOpen, setCondModalOpen] = useState(false);
   const [resetModalOpen, setResetModalOpen] = useState(false);
+  const [targetModalOpen, setTargetModalOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [adviceIdx, setAdviceIdx] = useState(0);
 
@@ -1807,12 +1849,31 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     setResetModalOpen(true);
     setBatchMenuOpen(false);
   }, []);
+  const openTargetModal = useCallback(() => {
+    setTargetModalOpen(true);
+    setBatchMenuOpen(false);
+  }, []);
+  const changeTarget = useCallback(
+    (target: number) => {
+      const t = Math.max(1, Math.min(500, Math.floor(target)));
+      if (!Number.isFinite(t)) return;
+      dispatch({ type: 'SET_TARGET', target: t });
+      setTargetModalOpen(false);
+      // Persist on the current server batch (best-effort; a batch created
+      // later takes the value from the machine state at create time).
+      if (state.batchId)
+        void patchBatch(state.batchId, { target_episodes: t }).catch(() => {});
+      showToast(`Batch target set to ${t} episodes`);
+    },
+    [state.batchId, showToast],
+  );
   const openShortcuts = useCallback(() => setShortcutsOpen(true), []);
   const closeModals = useCallback(() => {
     setEndModalOpen(false);
     setIssueModalOpen(false);
     setCondModalOpen(false);
     setResetModalOpen(false);
+    setTargetModalOpen(false);
     setDiscardModalOpen(false);
     setTakeoverStopModalOpen(false);
     setUnsavedDiscardModalOpen(false);
@@ -1893,6 +1954,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     issueModalOpen ||
     condModalOpen ||
     resetModalOpen ||
+    targetModalOpen ||
     discardModalOpen ||
     takeoverStopModalOpen ||
     unsavedDiscardModalOpen ||
@@ -1960,10 +2022,10 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
       nGood,
       nReview,
       nTaskFailed,
-      nRemaining: Math.max(0, EPISODES_PER_BATCH - nRecorded),
-      epNext: Math.min(nRecorded + 1, EPISODES_PER_BATCH),
+      nRemaining: Math.max(0, state.targetEpisodes - nRecorded),
+      epNext: Math.min(nRecorded + 1, state.targetEpisodes),
     };
-  }, [state.episodes, state.recordedCount]);
+  }, [state.episodes, state.recordedCount, state.targetEpisodes]);
 
   return {
     phase: state.phase,
@@ -2011,6 +2073,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     project: state.project,
     task: state.task,
     condition: state.condition,
+    targetEpisodes: state.targetEpisodes,
     ctxEditable,
     condAllowed,
     endReason: state.endReason,
@@ -2022,11 +2085,14 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     issueModalOpen,
     condModalOpen,
     resetModalOpen,
+    targetModalOpen,
     shortcutsOpen,
     toggleBatchMenu,
     openProjPicker,
     openTaskPicker,
     openCondModal,
+    openTargetModal,
+    changeTarget,
     openEndModal,
     openIssueModal,
     openResetModal,

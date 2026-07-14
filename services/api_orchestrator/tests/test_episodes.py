@@ -381,3 +381,26 @@ def test_list_batches_robot_and_operator_filters(client: TestClient) -> None:
         "/api/v1/batches", params={"robot": "airoa_hsr", "operator": "bob"}
     ).json()
     assert both["items"] == []
+
+
+def test_patch_batch_target_episodes(client: TestClient) -> None:
+    """Mid-batch plan-size change (Collect's Change target…), validated 1-500."""
+    batch = _new_batch(client)
+    resp = client.patch(
+        f"/api/v1/batches/{batch['batch_id']}", json={"target_episodes": 10}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["target_episodes"] == 10
+    # Out-of-range targets are rejected by validation, not silently clamped.
+    assert (
+        client.patch(
+            f"/api/v1/batches/{batch['batch_id']}", json={"target_episodes": 0}
+        ).status_code
+        == 422
+    )
+    assert (
+        client.patch(
+            f"/api/v1/batches/{batch['batch_id']}", json={"target_episodes": 501}
+        ).status_code
+        == 422
+    )

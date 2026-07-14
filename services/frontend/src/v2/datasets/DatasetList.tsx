@@ -8,7 +8,13 @@ import type { DatasetEntry, RunEpisode } from '../../api/types';
 import { Badge, cn } from '../../components/ui';
 import { EpisodeLabelChips } from '../episodeChips';
 import { formatCount, UNKNOWN_OPERATOR, UNKNOWN_TASK } from './data';
-import type { DatasetsState } from './useDatasetsState';
+import type { DatasetsState, TaskResultFilter } from './useDatasetsState';
+
+const RESULT_FILTERS: { id: TaskResultFilter; label: string }[] = [
+  { id: 'all', label: 'All' },
+  { id: 'success', label: 'Success' },
+  { id: 'failure', label: 'Failure' },
+];
 
 const MUTED = 'italic text-gray-400';
 
@@ -25,6 +31,7 @@ function rowEpisode(entry: DatasetEntry): RunEpisode | null {
     batch_id: '',
     index_in_batch: entry.index_in_batch ?? 0,
     task_result: entry.task_result,
+    failure_reason: entry.failure_reason ?? null,
     quality: entry.quality,
     review_status: entry.review_status ?? 'pending',
     batch_seq: entry.batch_seq ?? null,
@@ -39,6 +46,8 @@ function isLegacy(operator: string, task: string): boolean {
 
 export function DatasetList({ state }: { state: DatasetsState }) {
   const hasAny = state.groups.length > 0;
+  const filtersActive =
+    state.taskResultFilter !== 'all' || state.conditionFilter !== null;
   return (
     <div className="flex min-h-0 flex-col overflow-hidden rounded-card border border-gray-200 bg-white shadow-card">
       <div className="flex shrink-0 items-center gap-2.5 border-b border-gray-100 px-4 py-[13px]">
@@ -56,14 +65,76 @@ export function DatasetList({ state }: { state: DatasetsState }) {
         </button>
       </div>
 
+      {(state.total > 0 || filtersActive) && (
+        <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-gray-100 px-3 py-2">
+          {RESULT_FILTERS.map((f) => (
+            <button
+              key={f.id}
+              type="button"
+              data-testid={`dataset-filter-${f.id}`}
+              onClick={() => state.setTaskResultFilter(f.id)}
+              className={cn(
+                'rounded-chip px-2 py-0.5 text-[11px] font-semibold',
+                state.taskResultFilter === f.id
+                  ? 'bg-teal-600 text-white'
+                  : 'bg-gray-100 text-gray-500 hover:bg-gray-200',
+              )}
+            >
+              {f.label}
+            </button>
+          ))}
+          {state.conditions.length > 0 && (
+            <select
+              data-testid="dataset-filter-condition"
+              value={state.conditionFilter ?? ''}
+              onChange={(e) => state.setConditionFilter(e.target.value || null)}
+              className="max-w-[130px] rounded-chip border border-gray-200 bg-white px-1.5 py-0.5 text-[11px] text-gray-600"
+            >
+              <option value="">Any condition</option>
+              {state.conditions.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+          )}
+          <div className="flex-1" />
+          <button
+            type="button"
+            data-testid="dataset-manifest-btn"
+            onClick={state.downloadManifest}
+            disabled={state.filtered.length === 0}
+            title="Download the filtered rows as a manifest JSON — a versionable training-set definition"
+            className="rounded-chip border border-teal-200 px-2 py-0.5 text-[11px] font-bold text-teal-700 hover:bg-teal-50 disabled:opacity-40"
+          >
+            Manifest ({state.filtered.length})
+          </button>
+        </div>
+      )}
+
       {state.isLoading ? (
         <div className="px-4 py-6 text-sm text-gray-400">Loading datasets…</div>
       ) : !hasAny ? (
         <div data-testid="dataset-list-empty" className="flex flex-col gap-1 px-4 py-6">
-          <span className="text-sm text-gray-500">No datasets yet.</span>
-          <span className="text-xs leading-relaxed text-gray-400">
-            Exported datasets will appear here. Recipe-based builds arrive in Phase 2.
-          </span>
+          {filtersActive && state.total > 0 ? (
+            <>
+              <span className="text-sm text-gray-500">
+                No datasets match the filter.
+              </span>
+              <span className="text-xs leading-relaxed text-gray-400">
+                {state.total} dataset(s) are hidden by the current task-result/condition
+                filter — unlabeled (pre-label) exports only appear under “All”.
+              </span>
+            </>
+          ) : (
+            <>
+              <span className="text-sm text-gray-500">No datasets yet.</span>
+              <span className="text-xs leading-relaxed text-gray-400">
+                Exported datasets will appear here. Recipe-based builds arrive in Phase
+                2.
+              </span>
+            </>
+          )}
           {state.isError && (
             <span className="text-xs text-amber-600">
               Couldn&apos;t reach the backend just now.

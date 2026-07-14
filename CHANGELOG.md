@@ -12,6 +12,19 @@ Phase A hardening toward a supportable release
 
 ### Added
 
+- Batch targets are per-batch and editable (Collect's Batch menu "Change
+  target…", `PATCH /batches/{id} target_episodes` 1–500): the strip, counters
+  and completion all follow the batch's own plan size instead of a fixed 30.
+- COVERAGE side card on Collect: per-condition "recorded / exported" counts
+  for the current task (recorded sums the monotone `episodes_recorded`, so
+  exported takes still count) — "what to record next" as a data decision.
+- Datasets label filters (task result / condition; unlabeled exports only pass
+  "All") and "Manifest (n)": download the filtered rows as a manifest JSON —
+  a versionable training-set definition (2026-07-14 second split hearing:
+  no physical success/failure split).
+- Per-batch bulk validation: the Validation target selector gains a "Batches"
+  group that runs the selected pipeline over every unexported run of a batch
+  (the blast-radius check for defects that cluster per batch).
 - Batch labels are now queryable at the consumption end (2026-07-14 decision):
   `data/index.jsonl` catalog rows and `GET /api/v1/datasets` list rows carry
   `batch_id` (globally unique; `batch_seq` resets daily) and `condition`
@@ -59,6 +72,11 @@ Phase A hardening toward a supportable release
 
 ### Fixed
 
+- Review now shows WHY a task failed (user report 2026-07-14): the
+  `failure_reason` picked at save time surfaces as the FAILURE chip tooltip
+  (Review list + Datasets cards) and in the Review detail panel; it also rides
+  the dataset catalog rows. The value was persisted all along — no UI rendered
+  it.
 - Collect episode strip off-by-one (user report 2026-07-14): chips now sit on
   their true `index_in_batch` instead of array position, so a Review
   export/delete no longer slides later chips left and makes the newest episode

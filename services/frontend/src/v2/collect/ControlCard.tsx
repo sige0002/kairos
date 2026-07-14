@@ -10,7 +10,6 @@ import { formatBytes } from '../review/format';
 import { CARD_PAD } from './compact';
 import {
   describeTaskOutcome,
-  EPISODES_PER_BATCH,
   FAIL_REASONS,
   QUALITY_LABEL,
   type BatchMachine,
@@ -24,7 +23,8 @@ const CARD_GAP_COMPACT = '[@media(max-height:860px)]:gap-1.5';
 // Operator-facing copy for known recorder error codes (D-8-1). Unknown codes
 // fall through to the raw server message; the code is always shown muted below.
 const ERROR_COPY: Record<string, string> = {
-  already_recording: 'A recording is already in progress — stop it before starting a new one.',
+  already_recording:
+    'A recording is already in progress — stop it before starting a new one.',
   not_recording: 'No recording is in progress.',
   recorder_unreachable: "Can't reach the recorder — check the robot connection.",
 };
@@ -38,7 +38,10 @@ function formatElapsed(ms: number): string {
 
 function ErrorBanner({ children }: { children: React.ReactNode }) {
   return (
-    <div role="alert" className="rounded-control border border-red-200 bg-red-50/70 px-3 py-2 text-[12px] text-red-800">
+    <div
+      role="alert"
+      className="rounded-control border border-red-200 bg-red-50/70 px-3 py-2 text-[12px] text-red-800"
+    >
       {children}
     </div>
   );
@@ -51,10 +54,14 @@ function MachineErrorBanner({ label, error }: { label: string; error: MachineErr
   const line = (error.code && ERROR_COPY[error.code]) || error.message;
   return (
     <ErrorBanner>
-      <span className="text-[10.5px] font-semibold uppercase tracking-[0.09em]">{label}</span>{' '}
+      <span className="text-[10.5px] font-semibold uppercase tracking-[0.09em]">
+        {label}
+      </span>{' '}
       <span>{line}</span>
       {error.code && (
-        <span className="mt-0.5 block font-mono text-[11px] opacity-70">({error.code})</span>
+        <span className="mt-0.5 block font-mono text-[11px] opacity-70">
+          ({error.code})
+        </span>
       )}
     </ErrorBanner>
   );
@@ -80,13 +87,18 @@ function ArmingNote({ arming }: { arming: RecordArming }) {
           : 'border-amber-200 bg-amber-50/70 text-amber-800',
       )}
     >
-      <span className="text-[10.5px] font-semibold uppercase tracking-[0.09em]">Armed</span>
+      <span className="text-[10.5px] font-semibold uppercase tracking-[0.09em]">
+        Armed
+      </span>
       <span className="font-mono">{matched.length} matched</span>
       {missing.length > 0 && (
         <>
           <span className="opacity-40">·</span>
           <span className="font-mono font-semibold">{missing.length} missing</span>
-          <span className="truncate font-mono text-[11px] opacity-80" title={missing.join('\n')}>
+          <span
+            className="truncate font-mono text-[11px] opacity-80"
+            title={missing.join('\n')}
+          >
             {shown.join(', ')}
             {missing.length > shown.length ? ' …' : ''}
           </span>
@@ -114,11 +126,18 @@ function IntegrityBanner({
       data-testid="integrity-banner"
       className={cn(
         'flex flex-col gap-0.5 rounded-control border-2 px-3 py-2.5',
-        failed ? 'border-red-300 bg-red-50 text-red-800' : 'border-amber-300 bg-amber-50 text-amber-900',
+        failed
+          ? 'border-red-300 bg-red-50 text-red-800'
+          : 'border-amber-300 bg-amber-50 text-amber-900',
       )}
     >
       <div className="flex items-center gap-2">
-        <span className={cn('h-2 w-2 shrink-0 rounded-sm', failed ? 'bg-red-600' : 'bg-amber-600')} />
+        <span
+          className={cn(
+            'h-2 w-2 shrink-0 rounded-sm',
+            failed ? 'bg-red-600' : 'bg-amber-600',
+          )}
+        />
         <span className="text-[13px] font-bold">
           {failed
             ? 'Recording failed — bag unreadable'
@@ -136,12 +155,24 @@ function IntegrityBanner({
 
 // One "Label : value" row in the takeover card (D-1). Values are real recorder
 // data; missing ones render "—" (never fabricated).
-function FieldRow({ label, value, mono }: { label: string; value: React.ReactNode; mono?: boolean }) {
+function FieldRow({
+  label,
+  value,
+  mono,
+}: {
+  label: string;
+  value: React.ReactNode;
+  mono?: boolean;
+}) {
   return (
     <div className="flex items-baseline gap-2.5">
-      <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">{label}</span>
+      <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        {label}
+      </span>
       <div className="flex-1" />
-      <span className={cn('text-[13px] text-gray-800', mono && 'font-mono text-xs')}>{value}</span>
+      <span className={cn('text-[13px] text-gray-800', mono && 'font-mono text-xs')}>
+        {value}
+      </span>
     </div>
   );
 }
@@ -204,10 +235,19 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
       ? Math.max(0, Date.now() - Date.parse(takeover.startedAt))
       : null;
     return (
-      <Card className={cn('flex shrink-0 flex-col gap-2.5 border-2 border-red-200', CARD_GAP_COMPACT, CARD_PAD)}>
+      <Card
+        className={cn(
+          'flex shrink-0 flex-col gap-2.5 border-2 border-red-200',
+          CARD_GAP_COMPACT,
+          CARD_PAD,
+        )}
+      >
         <div className="flex items-center gap-2">
           <span className="h-[9px] w-[9px] animate-recpulse rounded-sm bg-red-600" />
-          <span data-testid="phase-title" className="text-[15px] font-bold text-red-700">
+          <span
+            data-testid="phase-title"
+            className="text-[15px] font-bold text-red-700"
+          >
             RECORDING IN PROGRESS
           </span>
         </div>
@@ -219,9 +259,14 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
         <div className="flex flex-col gap-1.5 rounded-control border border-gray-200 bg-gray-50 px-3 py-2.5">
           <FieldRow label="Run" value={takeover.runId} mono />
           <div className="flex items-baseline gap-2.5">
-            <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">Elapsed</span>
+            <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+              Elapsed
+            </span>
             <div className="flex-1" />
-            <span data-testid="takeover-elapsed" className="font-mono text-[34px] font-semibold text-gray-900">
+            <span
+              data-testid="takeover-elapsed"
+              className="font-mono text-[34px] font-semibold text-gray-900"
+            >
               {elapsedMs != null ? formatElapsed(elapsedMs) : '—'}
             </span>
           </div>
@@ -233,7 +278,9 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
           <FieldRow label="Operator" value={takeover.operator || '—'} />
           <FieldRow
             label="Topics"
-            value={takeover.topicsCount != null ? `${takeover.topicsCount} topics` : '—'}
+            value={
+              takeover.topicsCount != null ? `${takeover.topicsCount} topics` : '—'
+            }
           />
         </div>
         <button
@@ -258,12 +305,25 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
 
   if (phase === 'ready') {
     return (
-      <Card className={cn('flex shrink-0 flex-col gap-2.5 border-2 border-teal-200', CARD_GAP_COMPACT, CARD_PAD)}>
+      <Card
+        className={cn(
+          'flex shrink-0 flex-col gap-2.5 border-2 border-teal-200',
+          CARD_GAP_COMPACT,
+          CARD_PAD,
+        )}
+      >
         <div className="flex items-center gap-2">
           <span className="h-[9px] w-[9px] animate-recpulse rounded-sm bg-teal-600" />
-          <span data-testid="phase-title" className="text-[17px] font-bold text-teal-700">READY</span>
+          <span
+            data-testid="phase-title"
+            className="text-[17px] font-bold text-teal-700"
+          >
+            READY
+          </span>
           <div className="flex-1" />
-          <span className="font-mono text-xs text-gray-500">Ep {stats.epNext} / {EPISODES_PER_BATCH}</span>
+          <span className="font-mono text-xs text-gray-500">
+            Ep {stats.epNext} / {machine.targetEpisodes}
+          </span>
         </div>
         {/* Real next-start summary (was a fabricated "12/12 topics live"). */}
         <span className="text-xs text-gray-500">
@@ -295,17 +355,30 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
             Every topic is cleared — select at least one in Monitor to record.
           </span>
         )}
-        {machine.startError && <MachineErrorBanner label="Start failed" error={machine.startError} />}
+        {machine.startError && (
+          <MachineErrorBanner label="Start failed" error={machine.startError} />
+        )}
       </Card>
     );
   }
 
   if (phase === 'arming') {
     return (
-      <Card className={cn('flex shrink-0 flex-col gap-2.5 border-2 border-amber-200', CARD_GAP_COMPACT, CARD_PAD)}>
+      <Card
+        className={cn(
+          'flex shrink-0 flex-col gap-2.5 border-2 border-amber-200',
+          CARD_GAP_COMPACT,
+          CARD_PAD,
+        )}
+      >
         <div className="flex items-center gap-2">
           <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-100 border-t-amber-600" />
-          <span data-testid="phase-title" className="text-[17px] font-bold text-amber-700">ARMING…</span>
+          <span
+            data-testid="phase-title"
+            className="text-[17px] font-bold text-amber-700"
+          >
+            ARMING…
+          </span>
         </div>
         <span className="text-[12.5px] leading-relaxed text-amber-800">
           Hold still. Recording starts automatically once the recorder confirms.
@@ -327,17 +400,35 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
     const elapsedText = formatElapsed(machine.elapsedMs);
     // Real bytes written for this run (from /record/status), not elapsed×rate.
     const writtenText =
-      machine.recordingBytes != null ? `${formatBytes(machine.recordingBytes)} written` : '—';
+      machine.recordingBytes != null
+        ? `${formatBytes(machine.recordingBytes)} written`
+        : '—';
     return (
-      <Card className={cn('flex shrink-0 flex-col gap-2.5 border-2 border-red-200', CARD_GAP_COMPACT, CARD_PAD)}>
+      <Card
+        className={cn(
+          'flex shrink-0 flex-col gap-2.5 border-2 border-red-200',
+          CARD_GAP_COMPACT,
+          CARD_PAD,
+        )}
+      >
         <div className="flex items-center gap-2">
           <span className="h-[9px] w-[9px] animate-recpulse rounded-sm bg-red-600" />
-          <span data-testid="phase-title" className="text-[17px] font-bold text-red-700">RECORDING</span>
+          <span
+            data-testid="phase-title"
+            className="text-[17px] font-bold text-red-700"
+          >
+            RECORDING
+          </span>
           <div className="flex-1" />
-          <span className="font-mono text-xs text-gray-500">Ep {stats.epNext} / {EPISODES_PER_BATCH}</span>
+          <span className="font-mono text-xs text-gray-500">
+            Ep {stats.epNext} / {machine.targetEpisodes}
+          </span>
         </div>
         <div className="flex items-baseline gap-2.5">
-          <span data-testid="elapsed" className="font-mono text-[34px] font-semibold text-gray-900">
+          <span
+            data-testid="elapsed"
+            className="font-mono text-[34px] font-semibold text-gray-900"
+          >
             {elapsedText}
           </span>
           <span className="font-mono text-xs text-gray-400">{writtenText}</span>
@@ -360,7 +451,13 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
   if (phase === 'saving' || phase === 'quickcheck') {
     const saving = phase === 'saving';
     return (
-      <Card className={cn('flex shrink-0 flex-col gap-2.5 border-2 border-gray-200', CARD_GAP_COMPACT, CARD_PAD)}>
+      <Card
+        className={cn(
+          'flex shrink-0 flex-col gap-2.5 border-2 border-gray-200',
+          CARD_GAP_COMPACT,
+          CARD_PAD,
+        )}
+      >
         <div className="flex items-center gap-2">
           <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-100 border-t-teal-600" />
           <span
@@ -374,7 +471,9 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
           </span>
         </div>
         <span className="text-[12.5px] leading-relaxed text-gray-500">
-          {saving ? 'Finalizing the recording…' : 'Reading recorded counts, gaps and integrity.'}
+          {saving
+            ? 'Finalizing the recording…'
+            : 'Reading recorded counts, gaps and integrity.'}
         </span>
         {/* Indeterminate progress — the real duration isn't known, so no fake %. */}
         <div className="h-1.5 overflow-hidden rounded-full bg-gray-100">
@@ -400,19 +499,29 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
     const quickGood = machine.autoQuality === 'good';
     const isFail = machine.pendingTask === 'fail';
     const canConfirm = machine.pendingTask === 'ok' || (isFail && !!machine.failReason);
-    const willComplete = stats.nRecorded + 1 >= EPISODES_PER_BATCH;
+    const willComplete = stats.nRecorded + 1 >= machine.targetEpisodes;
     const saveLabel = isFail
       ? 'Save — failure'
       : willComplete
         ? 'Save — success · finishes batch'
         : 'Save — success';
-    const effectiveQuality: QualityOverride = machine.qualityOverride ?? machine.autoQuality;
+    const effectiveQuality: QualityOverride =
+      machine.qualityOverride ?? machine.autoQuality;
     const qualityAuto = machine.qualityOverride == null;
     const qualityChips: QualityOverride[] = ['good', 'review', 'notusable'];
     return (
-      <Card className={cn('flex shrink-0 flex-col gap-3 border-2 border-teal-200', '[@media(max-height:860px)]:gap-1.5', CARD_PAD)}>
+      <Card
+        className={cn(
+          'flex shrink-0 flex-col gap-3 border-2 border-teal-200',
+          '[@media(max-height:860px)]:gap-1.5',
+          CARD_PAD,
+        )}
+      >
         <div className="flex items-center gap-2">
-          <span data-testid="phase-title" className="text-[15px] font-bold text-gray-900">
+          <span
+            data-testid="phase-title"
+            className="text-[15px] font-bold text-gray-900"
+          >
             Episode {stats.epNext} result
           </span>
           <div className="flex-1" />
@@ -426,7 +535,10 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
           </span>
         </div>
         {(machine.integrity === 'dropped' || machine.integrity === 'failed') && (
-          <IntegrityBanner integrity={machine.integrity} dropped={machine.droppedMessages} />
+          <IntegrityBanner
+            integrity={machine.integrity}
+            dropped={machine.droppedMessages}
+          />
         )}
         {/* Honest quality line (D-2): the effective quality + its provenance, with
             an override affordance — no fabricated "camera rate dropped". */}
@@ -434,7 +546,12 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
           <div className="flex items-center gap-2 text-xs">
             <span className="text-gray-600">
               Quality:{' '}
-              <span className={cn('font-semibold', quickGood ? 'text-green-700' : 'text-amber-700')}>
+              <span
+                className={cn(
+                  'font-semibold',
+                  quickGood ? 'text-green-700' : 'text-amber-700',
+                )}
+              >
                 {QUALITY_LABEL[effectiveQuality]}
               </span>
               {qualityAuto && <span className="text-gray-400"> · auto</span>}
@@ -448,7 +565,9 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
             </button>
           </div>
           {machine.integrity == null && (
-            <span className="text-[11px] text-gray-400">Quick check unavailable — verify in Review.</span>
+            <span className="text-[11px] text-gray-400">
+              Quick check unavailable — verify in Review.
+            </span>
           )}
           {qualityOpen && (
             <div data-testid="quality-chips" className="flex flex-wrap gap-1.5">
@@ -535,7 +654,9 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
               <span className="font-semibold text-gray-700">Task outcome:</span>{' '}
               {describeTaskOutcome(machine.pendingTask, machine.failReason)}
             </span>
-            <span className="text-gray-500">Saved safely — visible in Review either way.</span>
+            <span className="text-gray-500">
+              Saved safely — visible in Review either way.
+            </span>
           </div>
         )}
         <button
@@ -545,7 +666,9 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
           disabled={!canConfirm}
           className={cn(
             'h-[46px] rounded-control text-sm font-bold [@media(max-height:860px)]:h-[40px]',
-            canConfirm ? 'bg-teal-600 text-white shadow-btn' : 'cursor-not-allowed bg-gray-200 text-gray-400',
+            canConfirm
+              ? 'bg-teal-600 text-white shadow-btn'
+              : 'cursor-not-allowed bg-gray-200 text-gray-400',
           )}
         >
           {saveLabel}
@@ -563,12 +686,25 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
 
   if (phase === 'paused') {
     return (
-      <Card className={cn('flex shrink-0 flex-col gap-2.5 border-2 border-gray-200', CARD_GAP_COMPACT, CARD_PAD)}>
+      <Card
+        className={cn(
+          'flex shrink-0 flex-col gap-2.5 border-2 border-gray-200',
+          CARD_GAP_COMPACT,
+          CARD_PAD,
+        )}
+      >
         <div className="flex items-center gap-2">
           <span className="h-[9px] w-[9px] rounded-sm bg-gray-400" />
-          <span data-testid="phase-title" className="text-[17px] font-bold text-gray-500">PAUSED</span>
+          <span
+            data-testid="phase-title"
+            className="text-[17px] font-bold text-gray-500"
+          >
+            PAUSED
+          </span>
         </div>
-        <span className="text-[12.5px] text-gray-500">Batch is paused. Recorded episodes are safe.</span>
+        <span className="text-[12.5px] text-gray-500">
+          Batch is paused. Recorded episodes are safe.
+        </span>
         <button
           type="button"
           onClick={machine.resumeBatch}
@@ -584,9 +720,17 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
 
   if (phase === 'ended') {
     return (
-      <Card className={cn('flex shrink-0 flex-col gap-2.5 border-2 border-amber-200', CARD_GAP_COMPACT, CARD_PAD)}>
+      <Card
+        className={cn(
+          'flex shrink-0 flex-col gap-2.5 border-2 border-amber-200',
+          CARD_GAP_COMPACT,
+          CARD_PAD,
+        )}
+      >
         <div className="flex items-center gap-2">
-          <span className="text-[15px] font-bold text-gray-900">Batch {machine.batchSeq ?? '—'} ended early</span>
+          <span className="text-[15px] font-bold text-gray-900">
+            Batch {machine.batchSeq ?? '—'} ended early
+          </span>
           <div className="flex-1" />
           <span className="rounded-chip bg-amber-100 px-2 py-0.5 text-[11px] font-bold text-amber-800">
             INCOMPLETE
@@ -609,16 +753,24 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
 
   // phase === 'completed'
   return (
-    <Card className={cn('flex shrink-0 flex-col gap-2.5 border-2 border-green-200', CARD_GAP_COMPACT, CARD_PAD)}>
+    <Card
+      className={cn(
+        'flex shrink-0 flex-col gap-2.5 border-2 border-green-200',
+        CARD_GAP_COMPACT,
+        CARD_PAD,
+      )}
+    >
       <div className="flex items-center gap-2">
-        <span className="text-[15px] font-bold text-gray-900">Batch {machine.batchSeq ?? '—'} completed 🎉</span>
+        <span className="text-[15px] font-bold text-gray-900">
+          Batch {machine.batchSeq ?? '—'} completed 🎉
+        </span>
         <div className="flex-1" />
         <span className="rounded-chip bg-green-100 px-2 py-0.5 text-[11px] font-bold text-green-700">
           COMPLETE
         </span>
       </div>
       <span className="text-[12.5px] leading-relaxed text-gray-500">
-        {endSummary}. Nice work — all {EPISODES_PER_BATCH} episodes recorded.
+        {endSummary}. Nice work — all {machine.targetEpisodes} episodes recorded.
       </span>
       <button
         type="button"

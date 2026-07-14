@@ -40,7 +40,9 @@ export function DatasetInspection({ detail }: { detail: DatasetDetail }) {
   useQuery({
     queryKey: queryKeys.job(lossJobId ?? ''),
     queryFn: ({ signal }) =>
-      apiGet<JobStatus>(`/jobs/${encodeURIComponent(lossJobId ?? '')}/status`, { signal }),
+      apiGet<JobStatus>(`/jobs/${encodeURIComponent(lossJobId ?? '')}/status`, {
+        signal,
+      }),
     enabled: !!lossJobId,
     refetchInterval: (q) => {
       const state = q.state.data?.state;
@@ -79,21 +81,26 @@ export function DatasetInspection({ detail }: { detail: DatasetDetail }) {
           <LossTable topics={detail.loss.topics} />
         ) : (
           <p className="text-xs leading-relaxed text-gray-500">
-            Per-topic loss rate (gap-based estimate) computed straight from the exported MCAP.
-            Shortfalls are an observed estimate, not confirmed packet loss.
+            Per-topic loss rate (gap-based estimate) computed straight from the exported
+            MCAP. Shortfalls are an observed estimate, not confirmed packet loss.
           </p>
         )}
       </section>
 
       {runId ? (
-        <VideoCheckSection topics={detail.topics} runId={runId} datasetDir={detail.path} />
+        <VideoCheckSection
+          topics={detail.topics}
+          runId={runId}
+          datasetDir={detail.path}
+        />
       ) : (
         <section>
           <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
             Video check
           </span>
           <p className="mt-1.5 text-xs text-gray-500">
-            No run id on this dataset — camera previews need a source run to re-decode from.
+            No run id on this dataset — camera previews need a source run to re-decode
+            from.
           </p>
         </section>
       )}
@@ -108,9 +115,14 @@ export function DatasetInspection({ detail }: { detail: DatasetDetail }) {
         {/* The labels that survived export (task result / quality / review
             status + batch context) — the file a training-set assembler reads. */}
         <JsonBlock label="Episode json" value={detail.episode} />
-        {!detail.manifest && !detail.validation && !detail.dataset && !detail.episode && (
-          <p className="text-xs text-gray-500">No JSON sidecars present in this dataset.</p>
-        )}
+        {!detail.manifest &&
+          !detail.validation &&
+          !detail.dataset &&
+          !detail.episode && (
+            <p className="text-xs text-gray-500">
+              No JSON sidecars present in this dataset.
+            </p>
+          )}
       </section>
     </div>
   );

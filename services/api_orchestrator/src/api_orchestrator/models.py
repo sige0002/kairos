@@ -392,11 +392,13 @@ class BatchCreateRequest(BaseModel):
 
 
 class BatchPatchRequest(BaseModel):
-    """Body for ``PATCH /api/v1/batches/{id}`` (early stop / condition change)."""
+    """Body for ``PATCH /api/v1/batches/{id}`` (early stop / condition /
+    mid-batch target change)."""
 
     status: BatchStatus | None = None
     ended_reason: str | None = None
     condition: str | None = None
+    target_episodes: int | None = Field(default=None, ge=1, le=500)
 
 
 class EpisodeCreateRequest(BaseModel):

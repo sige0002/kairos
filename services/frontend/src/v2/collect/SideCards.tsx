@@ -6,8 +6,11 @@
 
 import { useQuery } from '@tanstack/react-query';
 import { apiGet } from '../../api/client';
+import { queryKeys } from '../../api/queryKeys';
 import { Card, cn } from '../../components/ui';
-import type { SystemInfo } from '../../api/types';
+import type { DatasetsResponse, SystemInfo } from '../../api/types';
+import { listBatches } from '../episodeBridge';
+import { findTask, usePlans } from '../plans';
 import type { SseStatus } from '../../store/uiStore';
 import { ADVICE_ITEMS, type BatchMachine } from './useBatchMachine';
 import { SIDE_PAD } from './compact';
@@ -30,7 +33,12 @@ const CHIP_TONE: Record<Tone, string> = {
 
 function Chip({ tone, children }: { tone: Tone; children: React.ReactNode }) {
   return (
-    <span className={cn('shrink-0 self-start rounded-chip px-2 py-0.5 text-[11px] font-bold tracking-[0.03em]', CHIP_TONE[tone])}>
+    <span
+      className={cn(
+        'shrink-0 self-start rounded-chip px-2 py-0.5 text-[11px] font-bold tracking-[0.03em]',
+        CHIP_TONE[tone],
+      )}
+    >
       {children}
     </span>
   );
@@ -124,12 +132,20 @@ export function SystemStatusCard({
   ];
 
   return (
-    <Card className={cn('flex shrink-0 flex-col gap-2 [@media(max-height:860px)]:gap-1', SIDE_PAD)}>
+    <Card
+      className={cn(
+        'flex shrink-0 flex-col gap-2 [@media(max-height:860px)]:gap-1',
+        SIDE_PAD,
+      )}
+    >
       <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
         System status
       </span>
       {rows.map((r) => (
-        <div key={r.label} className="flex items-center gap-2.5 py-0.5 [@media(max-height:860px)]:py-0">
+        <div
+          key={r.label}
+          className="flex items-center gap-2.5 py-0.5 [@media(max-height:860px)]:py-0"
+        >
           <span className="text-[13px] font-medium text-gray-700">{r.label}</span>
           <div className="flex-1" />
           <span className="font-mono text-xs text-gray-500">{r.value}</span>
@@ -150,7 +166,12 @@ export function WarningsCard({ machine }: { machine: BatchMachine }) {
   const shown = missing.slice(0, 3);
 
   return (
-    <Card className={cn('flex shrink-0 flex-col gap-2 [@media(max-height:860px)]:gap-1', SIDE_PAD)}>
+    <Card
+      className={cn(
+        'flex shrink-0 flex-col gap-2 [@media(max-height:860px)]:gap-1',
+        SIDE_PAD,
+      )}
+    >
       <div className="flex items-center gap-2">
         <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           Active warnings
@@ -166,13 +187,17 @@ export function WarningsCard({ machine }: { machine: BatchMachine }) {
             <div className="flex items-center gap-2">
               <span className="h-[7px] w-[7px] shrink-0 rounded-sm bg-amber-600" />
               <span className="text-[13px] font-semibold text-amber-800">
-                {missing.length} target topic{missing.length === 1 ? '' : 's'} not publishing
+                {missing.length} target topic{missing.length === 1 ? '' : 's'} not
+                publishing
               </span>
             </div>
             <span className="pl-[15px] text-xs text-amber-700">
               Recording continues, but these won't be captured until they appear.
             </span>
-            <span className="truncate pl-[15px] font-mono text-[11px] text-amber-600" title={missing.join('\n')}>
+            <span
+              className="truncate pl-[15px] font-mono text-[11px] text-amber-600"
+              title={missing.join('\n')}
+            >
               {shown.join(', ')}
               {missing.length > shown.length ? ' …' : ''}
             </span>
@@ -201,7 +226,12 @@ export function AdviceCard({ machine }: { machine: BatchMachine }) {
   const advice = ADVICE_ITEMS[machine.adviceIdx] ?? ADVICE_ITEMS[0]!;
   const single = ADVICE_ITEMS.length <= 1;
   return (
-    <Card className={cn('flex shrink-0 flex-col gap-2 [@media(max-height:860px)]:gap-1', SIDE_PAD)}>
+    <Card
+      className={cn(
+        'flex shrink-0 flex-col gap-2 [@media(max-height:860px)]:gap-1',
+        SIDE_PAD,
+      )}
+    >
       <div className="flex items-center gap-2">
         <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           Advice for next episode
@@ -234,7 +264,9 @@ export function AdviceCard({ machine }: { machine: BatchMachine }) {
           <span className="rounded-chip bg-teal-100 px-2 py-0.5 text-[10.5px] font-bold text-teal-700">
             {advice.badge}
           </span>
-          <span className="text-[12.5px] font-semibold text-teal-950">{advice.title}</span>
+          <span className="text-[12.5px] font-semibold text-teal-950">
+            {advice.title}
+          </span>
         </div>
         {/* Full advice at roomy heights; clamped to keep the card short on laptops. */}
         <span className="text-xs leading-relaxed text-teal-700 [@media(max-height:860px)]:line-clamp-2">
@@ -252,28 +284,42 @@ export function BatchStatsCard({ machine }: { machine: BatchMachine }) {
   const { nRecorded, nGood, nReview, nTaskFailed } = machine.stats;
   return (
     <Card className={cn('flex shrink-0 flex-col gap-1.5', SIDE_PAD)}>
-      <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">Batch stats</span>
+      <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        Batch stats
+      </span>
       <div className="flex gap-3.5">
         <div className="flex flex-col">
-          <span data-testid="stat-recorded" className="font-mono text-lg font-semibold text-gray-900">
+          <span
+            data-testid="stat-recorded"
+            className="font-mono text-lg font-semibold text-gray-900"
+          >
             {nRecorded}
           </span>
           <span className="text-[11px] text-gray-400">recorded</span>
         </div>
         <div className="flex flex-col">
-          <span data-testid="stat-good" className="font-mono text-lg font-semibold text-green-600">
+          <span
+            data-testid="stat-good"
+            className="font-mono text-lg font-semibold text-green-600"
+          >
             {nGood}
           </span>
           <span className="text-[11px] text-gray-400">good quality</span>
         </div>
         <div className="flex flex-col">
-          <span data-testid="stat-review" className="font-mono text-lg font-semibold text-amber-600">
+          <span
+            data-testid="stat-review"
+            className="font-mono text-lg font-semibold text-amber-600"
+          >
             {nReview}
           </span>
           <span className="text-[11px] text-gray-400">needs review</span>
         </div>
         <div className="flex flex-col">
-          <span data-testid="stat-task-failed" className="font-mono text-lg font-semibold text-red-600">
+          <span
+            data-testid="stat-task-failed"
+            className="font-mono text-lg font-semibold text-red-600"
+          >
             {nTaskFailed}
           </span>
           <span className="text-[11px] text-gray-400">task failed</span>
@@ -283,10 +329,112 @@ export function BatchStatsCard({ machine }: { machine: BatchMachine }) {
           tallies (which only cover recordings still on disk). Surface that gap
           honestly instead of letting the numbers look inconsistent. */}
       {nRecorded > nGood + nReview && (
-        <p data-testid="stats-footnote" className="text-[11px] leading-snug text-gray-400">
-          recorded counts every take this batch; quality tallies reflect recordings still on disk
+        <p
+          data-testid="stats-footnote"
+          className="text-[11px] leading-snug text-gray-400"
+        >
+          recorded counts every take this batch; quality tallies reflect recordings
+          still on disk
         </p>
       )}
+    </Card>
+  );
+}
+
+// Mirrors the exporter's path slug (dora_runner dataset_export._sanitize_component)
+// closely enough to match a dataset row's path `task` against a plan task name:
+// letters/digits/underscore survive, other runs collapse to "_".
+function taskSlug(task: string): string {
+  return task
+    .trim()
+    .replace(/[^\p{L}\p{N}_.-]+/gu, '_')
+    .replace(/^[._]+|[._]+$/gu, '');
+}
+
+/** Per-condition coverage for the CURRENT task — "what to record next" as a
+ *  data decision (2026-07-14 batch-label decision, coverage in Collect).
+ *  `recorded` sums the batches' monotone `episodes_recorded` (survives export
+ *  and Review deletes); `exported` counts dataset-catalog rows whose condition
+ *  and (slugged) task match. Conditions listed = the plan's ∪ those actually
+ *  seen in batches, so ad-hoc conditions still show up. */
+export function CoverageCard({ machine }: { machine: BatchMachine }) {
+  const plans = usePlans();
+  const batchesQuery = useQuery({
+    queryKey: ['batches', 'coverage'],
+    queryFn: () => listBatches(),
+    staleTime: 15_000,
+    refetchInterval: 30_000,
+  });
+  const datasetsQuery = useQuery({
+    queryKey: queryKeys.datasets,
+    queryFn: ({ signal }) => apiGet<DatasetsResponse>('/datasets', { signal }),
+    staleTime: 15_000,
+  });
+
+  const task = machine.task;
+  const planConditions = findTask(plans, machine.project, task).conditions;
+  const batches = (batchesQuery.data?.items ?? []).filter((b) => b.task === task);
+  const rowsByCondition = new Map<string, { recorded: number; exported: number }>();
+  const bump = (cond: string, key: 'recorded' | 'exported', n: number) => {
+    if (!cond || cond === '—') return;
+    const row = rowsByCondition.get(cond) ?? { recorded: 0, exported: 0 };
+    row[key] += n;
+    rowsByCondition.set(cond, row);
+  };
+  for (const c of planConditions) bump(c, 'recorded', 0);
+  for (const b of batches)
+    bump(b.condition ?? '', 'recorded', b.episodes_recorded ?? 0);
+  const slug = taskSlug(task);
+  for (const d of datasetsQuery.data?.datasets ?? []) {
+    if (d.condition && d.task === slug) bump(d.condition, 'exported', 1);
+  }
+  const rows = [...rowsByCondition.entries()];
+  if (rows.length === 0) return null; // free-text task with no plan conditions
+
+  return (
+    <Card
+      className={cn('flex shrink-0 flex-col gap-1.5', SIDE_PAD)}
+      data-testid="coverage-card"
+    >
+      <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        Coverage — {task}
+      </span>
+      <div className="flex flex-col gap-1">
+        {rows.map(([cond, n]) => (
+          <div
+            key={cond}
+            data-testid={`coverage-row-${cond}`}
+            className={cn(
+              'flex items-baseline gap-2 rounded-[7px] px-1.5 py-0.5',
+              cond === machine.condition && 'bg-teal-50',
+            )}
+          >
+            <span
+              className={cn(
+                'min-w-0 flex-1 truncate text-[11.5px]',
+                cond === machine.condition
+                  ? 'font-semibold text-teal-800'
+                  : 'text-gray-600',
+              )}
+              title={cond}
+            >
+              {cond}
+            </span>
+            <span className="shrink-0 font-mono text-[11.5px] text-gray-800">
+              {n.recorded}
+            </span>
+            <span className="shrink-0 text-[10.5px] text-gray-400">rec</span>
+            <span className="shrink-0 font-mono text-[11.5px] text-gray-800">
+              {n.exported}
+            </span>
+            <span className="shrink-0 text-[10.5px] text-gray-400">exp</span>
+          </div>
+        ))}
+      </div>
+      <p className="text-[10.5px] leading-snug text-gray-400">
+        rec counts every take in this task&apos;s batches (survives export); exp =
+        exported datasets with the condition label
+      </p>
     </Card>
   );
 }

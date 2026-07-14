@@ -8,7 +8,14 @@ function run(overrides: Partial<RunSummary>): RunSummary {
 }
 
 function outcome(overrides: Partial<EpisodeOutcome> = {}): EpisodeOutcome {
-  return { quality: 'good', taskResult: 'ok', batchNum: 1, episodeIndex: 1, savedAt: 1, ...overrides };
+  return {
+    quality: 'good',
+    taskResult: 'ok',
+    batchNum: 1,
+    episodeIndex: 1,
+    savedAt: 1,
+    ...overrides,
+  };
 }
 
 test('excludes runs that never finished (created/recording/stopping)', () => {
@@ -36,7 +43,9 @@ test('a failed or interrupted run is the one real "Not usable" verdict', () => {
     run({ run_id: 'fail-2', state: 'interrupted' }),
   ]);
   expect(rows.every((r) => r.quality === 'Not usable')).toBe(true);
-  expect(rows.every((r) => r.issues === 'Recording did not complete cleanly')).toBe(true);
+  expect(rows.every((r) => r.issues === 'Recording did not complete cleanly')).toBe(
+    true,
+  );
 });
 
 test('a clean (completed) run has NO fabricated quality/task/issues', () => {
@@ -54,7 +63,12 @@ test('real rows never get a fabricated batch number', () => {
 test('carries the real run state and operator through', () => {
   const rows = mapRunsToEpisodes([
     run({ run_id: 'x', state: 'completed', operator: 'alice' }),
-    run({ run_id: 'y', state: 'failed', operator: null, started_at: '2026-07-13T10:00:00Z' }),
+    run({
+      run_id: 'y',
+      state: 'failed',
+      operator: null,
+      started_at: '2026-07-13T10:00:00Z',
+    }),
   ]);
   const x = rows.find((r) => r.runId === 'x');
   const y = rows.find((r) => r.runId === 'y');
@@ -70,7 +84,11 @@ test('transfer seeds to on_robot (nothing transferred this session yet)', () => 
 
 test('duration falls back to started/ended span when duration_ms is absent', () => {
   const rows = mapRunsToEpisodes([
-    run({ run_id: 'x', started_at: '2026-07-13T09:00:00Z', ended_at: '2026-07-13T09:00:05Z' }),
+    run({
+      run_id: 'x',
+      started_at: '2026-07-13T09:00:00Z',
+      ended_at: '2026-07-13T09:00:05Z',
+    }),
   ]);
   expect(rows[0]?.durationMs).toBe(5000);
 });
@@ -79,10 +97,18 @@ test('duration falls back to started/ended span when duration_ms is absent', () 
 
 test('a completed run with a bridge outcome fills Quality / Task result / Batch', () => {
   const bridge: Record<string, EpisodeOutcome> = {
-    withOutcome: outcome({ quality: 'review', taskResult: 'fail', batchNum: 4, episodeIndex: 9 }),
+    withOutcome: outcome({
+      quality: 'review',
+      taskResult: 'fail',
+      batchNum: 4,
+      episodeIndex: 9,
+    }),
   };
   const rows = mapRunsToEpisodes(
-    [run({ run_id: 'withOutcome' }), run({ run_id: 'noOutcome', started_at: '2026-07-13T10:00:00Z' })],
+    [
+      run({ run_id: 'withOutcome' }),
+      run({ run_id: 'noOutcome', started_at: '2026-07-13T10:00:00Z' }),
+    ],
     (id) => bridge[id] ?? null,
   );
   const withO = rows.find((r) => r.runId === 'withOutcome');
@@ -99,7 +125,9 @@ test('a completed run with a bridge outcome fills Quality / Task result / Batch'
 });
 
 test('good/ok bridge outcome maps to Good / Success', () => {
-  const rows = mapRunsToEpisodes([run({ run_id: 'x' })], () => outcome({ quality: 'good', taskResult: 'ok', batchNum: 2 }));
+  const rows = mapRunsToEpisodes([run({ run_id: 'x' })], () =>
+    outcome({ quality: 'good', taskResult: 'ok', batchNum: 2 }),
+  );
   expect(rows[0]?.quality).toBe('Good');
   expect(rows[0]?.task).toBe('Success');
   // Bridge fallback keeps its own local number.
@@ -130,6 +158,33 @@ const serverEpisode = {
   batch_seq: 3,
   batch_created_at: '2026-07-13T09:00:00Z',
 };
+
+test('failure_reason survives the mapping from both sources (user report 2026-07-14)', () => {
+  // Server episode: the reason was persisted but never rendered anywhere.
+  const rows = mapRunsToEpisodes(
+    [
+      run({
+        run_id: 'r1',
+        episode: { ...serverEpisode, failure_reason: 'Grasp missed' },
+      }),
+    ],
+    () => null,
+  );
+  expect(rows[0]?.failReason).toBe('Grasp missed');
+  // Bridge fallback carries its local failReason too.
+  const bridged = mapRunsToEpisodes([run({ run_id: 'r2' })], () =>
+    outcome({
+      quality: 'good',
+      taskResult: 'fail',
+      failReason: 'Robot fault',
+      batchNum: 1,
+    }),
+  );
+  expect(bridged[0]?.failReason).toBe('Robot fault');
+  // A run with neither stays honestly empty.
+  const bare = mapRunsToEpisodes([run({ run_id: 'r3' })], () => null);
+  expect(bare[0]?.failReason).toBeNull();
+});
 
 test('the server episode is the primary source and wins over any bridge entry', () => {
   const bridge: Record<string, EpisodeOutcome> = {
@@ -168,7 +223,11 @@ test('a run with a server episode maps quality/task from it; episodeId enables P
 
 test('a failed run stays "Not usable" and ignores its server episode (no override PATCH)', () => {
   const rows = mapRunsToEpisodes([
-    run({ run_id: 'x', state: 'failed', episode: { ...serverEpisode, quality: 'good', task_result: 'success' } }),
+    run({
+      run_id: 'x',
+      state: 'failed',
+      episode: { ...serverEpisode, quality: 'good', task_result: 'success' },
+    }),
   ]);
   expect(rows[0]?.quality).toBe('Not usable');
   // endedBadly → the episode is ignored, so there's no episodeId to PATCH.

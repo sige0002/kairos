@@ -1,7 +1,12 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
-import type { DatasetDetail, DatasetEntry, DatasetsResponse, RunEpisode } from '../../api/types';
+import type {
+  DatasetDetail,
+  DatasetEntry,
+  DatasetsResponse,
+  RunEpisode,
+} from '../../api/types';
 import { useUiStore } from '../../store/uiStore';
 import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
 import { DatasetsScreen } from './DatasetsScreen';
@@ -54,7 +59,10 @@ const ENTRY_B1: DatasetEntry = {
 
 const LIST_RESPONSE: DatasetsResponse = { datasets: [ENTRY_A1, ENTRY_A2, ENTRY_B1] };
 
-function detailFor(entry: DatasetEntry, overrides: Partial<DatasetDetail> = {}): DatasetDetail {
+function detailFor(
+  entry: DatasetEntry,
+  overrides: Partial<DatasetDetail> = {},
+): DatasetDetail {
   return {
     operator: entry.operator,
     task: entry.task,
@@ -109,14 +117,20 @@ function mockFetch(opts: MockOpts) {
     }
     if (url.includes('/jobs')) {
       // Both the create POST and the status poll resolve terminal-succeeded.
-      return Promise.resolve(jsonResponse({ job_id: 'job_1', pipeline: 'loss_report', state: 'succeeded' }));
+      return Promise.resolve(
+        jsonResponse({ job_id: 'job_1', pipeline: 'loss_report', state: 'succeeded' }),
+      );
     }
     if (url.endsWith('/datasets')) {
       if (opts.listStatus && opts.listStatus >= 400) {
-        return Promise.resolve(jsonResponse({ error: { message: 'unreachable' } }, opts.listStatus));
+        return Promise.resolve(
+          jsonResponse({ error: { message: 'unreachable' } }, opts.listStatus),
+        );
       }
       return Promise.resolve(
-        jsonResponse(deletedUrls.length > 0 ? { datasets: [] } : (opts.list ?? { datasets: [] })),
+        jsonResponse(
+          deletedUrls.length > 0 ? { datasets: [] } : (opts.list ?? { datasets: [] }),
+        ),
       );
     }
     for (const [key, detail] of Object.entries(details)) {
@@ -138,11 +152,23 @@ test('renders the real exported datasets, grouped by operator, with no fabricate
   mockFetch({ list: LIST_RESPONSE });
   renderWithClient(<DatasetsScreen />);
 
-  await waitFor(() => expect(screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`)).toBeInTheDocument());
+  await waitFor(() =>
+    expect(
+      screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`),
+    ).toBeInTheDocument(),
+  );
   expect(screen.getByText('operator_a')).toBeInTheDocument();
   expect(screen.getByText('operator_b')).toBeInTheDocument();
-  expect(within(screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`)).getByText('pick_and_place')).toBeInTheDocument();
-  expect(within(screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`)).getByText('48,213 msgs')).toBeInTheDocument();
+  expect(
+    within(screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`)).getByText(
+      'pick_and_place',
+    ),
+  ).toBeInTheDocument();
+  expect(
+    within(screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`)).getByText(
+      '48,213 msgs',
+    ),
+  ).toBeInTheDocument();
 
   // No trace of the earlier fabricated demo catalog anywhere on the screen.
   expect(screen.queryByText(/PickPlace/)).not.toBeInTheDocument();
@@ -155,7 +181,11 @@ test('selecting a dataset fetches and shows its real detail metadata', async () 
   });
   renderWithClient(<DatasetsScreen />);
 
-  await waitFor(() => expect(screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`)).toBeInTheDocument());
+  await waitFor(() =>
+    expect(
+      screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`),
+    ).toBeInTheDocument(),
+  );
   fireEvent.click(screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`));
 
   await waitFor(() => expect(screen.getByTestId('dataset-stats')).toBeInTheDocument());
@@ -163,7 +193,9 @@ test('selecting a dataset fetches and shows its real detail metadata', async () 
   expect(within(stats).getByText('48,213')).toBeInTheDocument(); // messages
   expect(within(stats).getByText('1.2 GB')).toBeInTheDocument(); // size
   expect(within(stats).getByText('2')).toBeInTheDocument(); // topics count
-  expect(screen.getByTestId('dataset-detail-name')).toHaveTextContent('operator_a / pick_and_place');
+  expect(screen.getByTestId('dataset-detail-name')).toHaveTextContent(
+    'operator_a / pick_and_place',
+  );
 
   const rail = screen.getByTestId('export-details');
   expect(within(rail).getByText('run_1')).toBeInTheDocument();
@@ -177,11 +209,19 @@ test('sections with no real source render an honest note, not a fake chart', asy
   });
   renderWithClient(<DatasetsScreen />);
 
-  await waitFor(() => expect(screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`)).toBeInTheDocument());
+  await waitFor(() =>
+    expect(
+      screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`),
+    ).toBeInTheDocument(),
+  );
   fireEvent.click(screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`));
 
-  await waitFor(() => expect(screen.getByTestId('dataset-breakdown-note')).toBeInTheDocument());
-  expect(screen.getByTestId('dataset-breakdown-note')).toHaveTextContent(/not available yet|Phase 2/);
+  await waitFor(() =>
+    expect(screen.getByTestId('dataset-breakdown-note')).toBeInTheDocument(),
+  );
+  expect(screen.getByTestId('dataset-breakdown-note')).toHaveTextContent(
+    /not available yet|Phase 2/,
+  );
   // No fake condition-coverage / operator-mix chart content.
   expect(screen.queryByText(/underrepresented/)).not.toBeInTheDocument();
   expect(screen.queryByText('Condition coverage')).not.toBeInTheDocument();
@@ -192,7 +232,9 @@ test('shows an honest empty state when there are no exported datasets (not a bla
   mockFetch({ list: { datasets: [] } });
   renderWithClient(<DatasetsScreen />);
 
-  await waitFor(() => expect(screen.getByTestId('dataset-list-empty')).toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.getByTestId('dataset-list-empty')).toBeInTheDocument(),
+  );
   const emptyState = screen.getByTestId('dataset-list-empty');
   expect(within(emptyState).getByText('No datasets yet.')).toBeInTheDocument();
   expect(within(emptyState).getByText(/Phase 2/)).toBeInTheDocument();
@@ -205,7 +247,9 @@ test('renders the same honest empty state when the backend is unreachable', asyn
   mockFetch({ listStatus: 503 });
   renderWithClient(<DatasetsScreen />);
 
-  await waitFor(() => expect(screen.getByTestId('dataset-list-empty')).toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.getByTestId('dataset-list-empty')).toBeInTheDocument(),
+  );
   const emptyState = screen.getByTestId('dataset-list-empty');
   expect(within(emptyState).getByText('No datasets yet.')).toBeInTheDocument();
   expect(within(emptyState).getByText(/backend/i)).toBeInTheDocument();
@@ -218,7 +262,11 @@ test('Delete confirms in a modal, calls DELETE, clears the selection, and toasts
   });
   renderWithClient(<DatasetsScreen />);
 
-  await waitFor(() => expect(screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`)).toBeInTheDocument());
+  await waitFor(() =>
+    expect(
+      screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`),
+    ).toBeInTheDocument(),
+  );
   fireEvent.click(screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`));
   await waitFor(() => expect(screen.getByTestId('dataset-stats')).toBeInTheDocument());
 
@@ -236,10 +284,14 @@ test('Delete confirms in a modal, calls DELETE, clears the selection, and toasts
 
   // Selection clears, a toast confirms, and the refetched (empty) list shows.
   await waitFor(() =>
-    expect(screen.getByTestId('dataset-detail-name')).toHaveTextContent('No dataset selected'),
+    expect(screen.getByTestId('dataset-detail-name')).toHaveTextContent(
+      'No dataset selected',
+    ),
   );
   expect(screen.getByTestId('toast')).toHaveTextContent('Dataset deleted');
-  await waitFor(() => expect(screen.getByTestId('dataset-list-empty')).toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.getByTestId('dataset-list-empty')).toBeInTheDocument(),
+  );
 });
 
 test('cancelling the delete modal leaves the dataset alone', async () => {
@@ -249,7 +301,11 @@ test('cancelling the delete modal leaves the dataset alone', async () => {
   });
   renderWithClient(<DatasetsScreen />);
 
-  await waitFor(() => expect(screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`)).toBeInTheDocument());
+  await waitFor(() =>
+    expect(
+      screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`),
+    ).toBeInTheDocument(),
+  );
   fireEvent.click(screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`));
   await waitFor(() => expect(screen.getByTestId('dataset-stats')).toBeInTheDocument());
 
@@ -260,27 +316,39 @@ test('cancelling the delete modal leaves the dataset alone', async () => {
   await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   expect(deletedUrls).toHaveLength(0);
   // The selection (detail pane) is untouched.
-  expect(screen.getByTestId('dataset-detail-name')).toHaveTextContent('operator_a / pick_and_place');
+  expect(screen.getByTestId('dataset-detail-name')).toHaveTextContent(
+    'operator_a / pick_and_place',
+  );
 });
 
 test('clicking "+ New" shows the Phase 2 toast', async () => {
   mockFetch({ list: LIST_RESPONSE });
   renderWithClient(<DatasetsScreen />);
 
-  await waitFor(() => expect(screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`)).toBeInTheDocument());
+  await waitFor(() =>
+    expect(
+      screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`),
+    ).toBeInTheDocument(),
+  );
   fireEvent.click(screen.getByTestId('new-dataset-btn'));
 
-  expect(screen.getByTestId('toast')).toHaveTextContent('New dataset is a Phase 2 feature');
+  expect(screen.getByTestId('toast')).toHaveTextContent(
+    'New dataset is a Phase 2 feature',
+  );
 });
 
 test('clicking "Build dataset" toasts that it needs the Phase 2 recipe model, with no progress animation', async () => {
   mockFetch({ list: LIST_RESPONSE });
   renderWithClient(<DatasetsScreen />);
 
-  await waitFor(() => expect(screen.getByTestId('build-dataset-btn')).toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.getByTestId('build-dataset-btn')).toBeInTheDocument(),
+  );
   fireEvent.click(screen.getByTestId('build-dataset-btn'));
 
-  expect(screen.getByTestId('toast')).toHaveTextContent('requires the Phase 2 recipe model');
+  expect(screen.getByTestId('toast')).toHaveTextContent(
+    'requires the Phase 2 recipe model',
+  );
   expect(screen.queryByTestId('build-progress')).not.toBeInTheDocument();
 });
 
@@ -350,7 +418,9 @@ test('a dataset card shows episode label chips when the backend attributes them'
   expect(within(labels).getByText(/#4/)).toBeInTheDocument();
   // Unified predicate: a labeled card NEVER also shows the "no episode labels"
   // note (the Apple self-contradiction fix).
-  expect(screen.queryByTestId(`dataset-card-legacy-${ENTRY_LABELED.dataset_dir}`)).toBeNull();
+  expect(
+    screen.queryByTestId(`dataset-card-legacy-${ENTRY_LABELED.dataset_dir}`),
+  ).toBeNull();
 });
 
 test('a dataset card shows the recording condition when the catalog carries it', async () => {
@@ -366,7 +436,9 @@ test('a dataset card shows the recording condition when the catalog carries it',
   await waitFor(() => expect(screen.getByTestId(testId)).toBeInTheDocument());
   expect(screen.getByTestId(testId).textContent).toBe('Bin: full');
   // The tooltip carries the globally-unique batch id (batch_seq resets daily).
-  expect(screen.getByTestId(testId).getAttribute('title')).toContain('batch_20260713_050000');
+  expect(screen.getByTestId(testId).getAttribute('title')).toContain(
+    'batch_20260713_050000',
+  );
   // A row without a condition renders no line (nothing fabricated) — covered
   // by ENTRY_LABELED itself in the chips test above (no condition field).
 });
@@ -376,12 +448,20 @@ test('a dataset card shows NO label chips (but the honest note) when the episode
   mockFetch({ list: { datasets: [ENTRY_A1] } });
   renderWithClient(<DatasetsScreen />);
 
-  await waitFor(() => expect(screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`)).toBeInTheDocument());
+  await waitFor(() =>
+    expect(
+      screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`),
+    ).toBeInTheDocument(),
+  );
   // No chips (nothing fabricated) …
-  expect(screen.queryByTestId(`dataset-card-labels-${ENTRY_A1.dataset_dir}`)).toBeNull();
+  expect(
+    screen.queryByTestId(`dataset-card-labels-${ENTRY_A1.dataset_dir}`),
+  ).toBeNull();
   // … and the same predicate surfaces the honest "no episode labels" note in
   // their place — one or the other, never both, never neither.
-  expect(screen.getByTestId(`dataset-card-legacy-${ENTRY_A1.dataset_dir}`)).toBeInTheDocument();
+  expect(
+    screen.getByTestId(`dataset-card-legacy-${ENTRY_A1.dataset_dir}`),
+  ).toBeInTheDocument();
 });
 
 test('a labeled card with an unknown operator shows chips and NOT the legacy note (Apple P1 regression)', async () => {
@@ -413,7 +493,9 @@ test('an unattributed export is explained in plain language (no raw sentinels)',
   await waitFor(() => expect(screen.getByTestId(legacyId)).toBeInTheDocument());
   // Plain-language note (not the internal "pre-label" jargon) with an
   // explanatory tooltip.
-  expect(screen.getByTestId(legacyId)).toHaveTextContent('no episode labels (exported before labeling)');
+  expect(screen.getByTestId(legacyId)).toHaveTextContent(
+    'no episode labels (exported before labeling)',
+  );
   expect(screen.getByTestId(legacyId)).toHaveAttribute(
     'title',
     expect.stringContaining('Exported before per-episode labels existed'),
@@ -435,10 +517,16 @@ test('the dataset detail shows episode label chips when present', async () => {
   });
   renderWithClient(<DatasetsScreen />);
 
-  await waitFor(() => expect(screen.getByTestId(`dataset-card-${ENTRY_LABELED.dataset_dir}`)).toBeInTheDocument());
+  await waitFor(() =>
+    expect(
+      screen.getByTestId(`dataset-card-${ENTRY_LABELED.dataset_dir}`),
+    ).toBeInTheDocument(),
+  );
   fireEvent.click(screen.getByTestId(`dataset-card-${ENTRY_LABELED.dataset_dir}`));
 
-  await waitFor(() => expect(screen.getByTestId('dataset-detail-labels')).toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.getByTestId('dataset-detail-labels')).toBeInTheDocument(),
+  );
   const labels = screen.getByTestId('dataset-detail-labels');
   expect(within(labels).getByText('GOOD')).toBeInTheDocument();
   expect(within(labels).getByText('SUCCESS')).toBeInTheDocument();
@@ -453,15 +541,22 @@ test('dataset inspection: loss report button posts a loss_report job against the
   });
   renderWithClient(<DatasetsScreen />);
 
-  await waitFor(() => expect(screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`)).toBeInTheDocument());
+  await waitFor(() =>
+    expect(
+      screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`),
+    ).toBeInTheDocument(),
+  );
   fireEvent.click(screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`));
 
-  await waitFor(() => expect(screen.getByTestId('run-loss-report-btn')).toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.getByTestId('run-loss-report-btn')).toBeInTheDocument(),
+  );
   fireEvent.click(screen.getByTestId('run-loss-report-btn'));
 
   await waitFor(() => {
     const call = fetchSpy.mock.calls.find(
-      ([u, i]) => String(u).includes('/jobs') && (i?.method ?? '').toUpperCase() === 'POST',
+      ([u, i]) =>
+        String(u).includes('/jobs') && (i?.method ?? '').toUpperCase() === 'POST',
     );
     expect(call).toBeTruthy();
     const body = JSON.parse(String(call?.[1]?.body));
@@ -479,7 +574,9 @@ test('dataset inspection: shows the loss table + video check, and JSON sidecars 
         manifest: { compression: 'zstd' },
         loss: {
           run_id: 'run_1',
-          topics: [{ name: '/hsrb/joint_states', hz: 40, loss_rate: 0, gap_max_ms: 30 }],
+          topics: [
+            { name: '/hsrb/joint_states', hz: 40, loss_rate: 0, gap_max_ms: 30 },
+          ],
         },
         episode: {
           episode_id: 'ep_1',
@@ -495,10 +592,16 @@ test('dataset inspection: shows the loss table + video check, and JSON sidecars 
   });
   renderWithClient(<DatasetsScreen />);
 
-  await waitFor(() => expect(screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`)).toBeInTheDocument());
+  await waitFor(() =>
+    expect(
+      screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`),
+    ).toBeInTheDocument(),
+  );
   fireEvent.click(screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`));
 
-  await waitFor(() => expect(screen.getByTestId('dataset-inspection')).toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.getByTestId('dataset-inspection')).toBeInTheDocument(),
+  );
   const inspection = screen.getByTestId('dataset-inspection');
   // Reused LossTable renders the computed per-topic row.
   expect(within(inspection).getByText('/hsrb/joint_states')).toBeInTheDocument();
@@ -511,3 +614,113 @@ test('dataset inspection: shows the loss table + video check, and JSON sidecars 
   expect(within(inspection).getByText('Episode json')).toBeInTheDocument();
 });
 
+// ---------------------------------------------------------------------------
+// Label filters + manifest (2026-07-14 batch-label decision: no physical
+// success/failure split — the catalog filters, and the manifest materializes
+// the filter as a versionable training-set definition).
+// ---------------------------------------------------------------------------
+
+const ENTRY_FAILED: DatasetEntry = {
+  ...ENTRY_LABELED,
+  index: '003',
+  dataset_dir: 'operator_a/folding/003',
+  run_id: 'run_failed',
+  task_result: 'failure',
+  failure_reason: 'Grasp missed',
+  condition: 'Bin: full',
+};
+
+test('task-result filter chips narrow the list; unlabeled rows only pass "All"', async () => {
+  // ENTRY_A1 is unlabeled (pre-label export): it must not pass success/failure.
+  mockFetch({ list: { datasets: [ENTRY_LABELED, ENTRY_FAILED, ENTRY_A1] } });
+  renderWithClient(<DatasetsScreen />);
+  await waitFor(() =>
+    expect(
+      screen.getByTestId(`dataset-card-${ENTRY_LABELED.dataset_dir}`),
+    ).toBeInTheDocument(),
+  );
+
+  fireEvent.click(screen.getByTestId('dataset-filter-failure'));
+  expect(screen.queryByTestId(`dataset-card-${ENTRY_LABELED.dataset_dir}`)).toBeNull();
+  expect(screen.queryByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`)).toBeNull();
+  expect(
+    screen.getByTestId(`dataset-card-${ENTRY_FAILED.dataset_dir}`),
+  ).toBeInTheDocument();
+
+  fireEvent.click(screen.getByTestId('dataset-filter-all'));
+  expect(
+    screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`),
+  ).toBeInTheDocument();
+});
+
+test('an all-hidden filter result explains itself instead of claiming "no datasets"', async () => {
+  mockFetch({ list: { datasets: [ENTRY_LABELED] } });
+  renderWithClient(<DatasetsScreen />);
+  await waitFor(() =>
+    expect(
+      screen.getByTestId(`dataset-card-${ENTRY_LABELED.dataset_dir}`),
+    ).toBeInTheDocument(),
+  );
+  fireEvent.click(screen.getByTestId('dataset-filter-failure'));
+  const empty = screen.getByTestId('dataset-list-empty');
+  expect(empty.textContent).toContain('No datasets match the filter');
+  expect(empty.textContent).toContain('1 dataset(s) are hidden');
+});
+
+test('the manifest button downloads the FILTERED rows as JSON', async () => {
+  mockFetch({ list: { datasets: [ENTRY_LABELED, ENTRY_FAILED] } });
+  const created: Blob[] = [];
+  const origCreate = URL.createObjectURL;
+  const origRevoke = URL.revokeObjectURL;
+  URL.createObjectURL = (b: Blob) => {
+    created.push(b);
+    return 'blob:test';
+  };
+  URL.revokeObjectURL = () => {};
+  const clickSpy = vi
+    .spyOn(HTMLAnchorElement.prototype, 'click')
+    .mockImplementation(() => {});
+  try {
+    renderWithClient(<DatasetsScreen />);
+    await waitFor(() =>
+      expect(
+        screen.getByTestId(`dataset-card-${ENTRY_FAILED.dataset_dir}`),
+      ).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByTestId('dataset-filter-success'));
+    expect(screen.getByTestId('dataset-manifest-btn').textContent).toBe('Manifest (1)');
+    fireEvent.click(screen.getByTestId('dataset-manifest-btn'));
+    expect(clickSpy).toHaveBeenCalled();
+    // jsdom's Blob lacks .text(); FileReader is the portable reader there.
+    const text = await new Promise<string>((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(String(r.result));
+      r.onerror = () => reject(r.error as Error);
+      r.readAsText(created[0]!);
+    });
+    const manifest = JSON.parse(text) as {
+      filter: { task_result: string };
+      count: number;
+      episodes: { path: string; failure_reason: string | null }[];
+    };
+    expect(manifest.filter.task_result).toBe('success');
+    expect(manifest.count).toBe(1);
+    expect(manifest.episodes[0]!.path).toBe('operator_a/folding/002');
+  } finally {
+    URL.createObjectURL = origCreate;
+    URL.revokeObjectURL = origRevoke;
+    clickSpy.mockRestore();
+  }
+});
+
+test('a failed dataset card exposes the failure reason on the FAILURE chip', async () => {
+  mockFetch({ list: { datasets: [ENTRY_FAILED] } });
+  renderWithClient(<DatasetsScreen />);
+  const testId = `dataset-card-labels-${ENTRY_FAILED.dataset_dir}`;
+  await waitFor(() => expect(screen.getByTestId(testId)).toBeInTheDocument());
+  const chips = screen.getByTestId(testId);
+  const failure = within(chips).getByText('FAILURE');
+  expect(failure.closest('[title]')?.getAttribute('title')).toBe(
+    'Failure reason: Grasp missed',
+  );
+});

@@ -17,7 +17,6 @@ function qualityTone(q: Quality): Tone {
   return 'red';
 }
 
-
 // Header badge: the exception-review lane (READY / NEEDS CHECK / EXCLUDED) — the
 // same vocabulary as the row chip, so the detail header and the list agree.
 function headerBadge(lane: ReviewLane): { label: string; tone: Tone } {
@@ -42,7 +41,12 @@ function PipelineStrip({ lane }: { lane: ReviewLane }) {
     { label: 'Export', state: ready ? 'current' : 'todo' },
     { label: 'In dataset', state: 'todo' },
   ];
-  const glyph: Record<StepState, string> = { done: '✓', current: '●', todo: '○', off: '✕' };
+  const glyph: Record<StepState, string> = {
+    done: '✓',
+    current: '●',
+    todo: '○',
+    off: '✕',
+  };
   const tone: Record<StepState, string> = {
     done: 'text-teal-700',
     current: 'text-teal-700 font-semibold',
@@ -121,7 +125,9 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
   if (!sel) {
     return (
       <div className="flex flex-col overflow-auto rounded-card border border-gray-200 bg-white shadow-card">
-        <p className="p-[18px] text-sm text-gray-500">Select an episode to see details.</p>
+        <p className="p-[18px] text-sm text-gray-500">
+          Select an episode to see details.
+        </p>
       </div>
     );
   }
@@ -140,7 +146,9 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
         data-testid="review-detail-header"
         className="flex items-center gap-2.5 border-b border-gray-100 px-[18px] py-3"
       >
-        <span className="font-mono text-sm font-semibold text-gray-900">Episode #{sel.ep}</span>
+        <span className="font-mono text-sm font-semibold text-gray-900">
+          Episode #{sel.ep}
+        </span>
         <span className="text-xs text-gray-400">Batch {sel.batch}</span>
         <div className="flex-1" />
         <span data-testid="review-detail-status">
@@ -153,7 +161,9 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
           <RunInspection runId={sel.runId} />
         ) : (
           <div className="flex flex-col items-center justify-center gap-2.5 rounded-[10px] border border-dashed border-gray-300 bg-gray-50 px-4 py-8 text-center">
-            <span className="text-sm font-medium text-gray-600">Data is on the robot PC</span>
+            <span className="text-sm font-medium text-gray-600">
+              Data is on the robot PC
+            </span>
             <span className="text-xs text-gray-400">
               This episode hasn&apos;t been transferred to the recording PC yet.
             </span>
@@ -165,7 +175,9 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
                     style={{ width: `${sel.transferSlot.pct}%` }}
                   />
                 </div>
-                <span className="font-mono text-[11px] text-gray-500">{sel.transferSlot.pct}%</span>
+                <span className="font-mono text-[11px] text-gray-500">
+                  {sel.transferSlot.pct}%
+                </span>
               </div>
             ) : (
               <button
@@ -213,13 +225,28 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
               </span>
               <span className="text-[10px] text-gray-400">✎</span>
             </div>
-            <span className="text-[12.5px] font-medium text-gray-700">{sel.effectiveTask ?? '—'}</span>
+            <span className="text-[12.5px] font-medium text-gray-700">
+              {sel.effectiveTask ?? '—'}
+            </span>
+            {sel.effectiveTask === 'Failure' && sel.failReason && (
+              <span
+                data-testid="review-fail-reason"
+                className="text-[11px] leading-snug text-red-700"
+              >
+                {sel.failReason}
+              </span>
+            )}
           </div>
           <div className="flex flex-col gap-0.5 rounded-[10px] border border-gray-100 px-3 py-2.5">
             <span className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400">
               Issues
             </span>
-            <span className={cn('text-[12.5px] font-medium', sel.issues ? 'text-amber-800' : 'text-gray-400')}>
+            <span
+              className={cn(
+                'text-[12.5px] font-medium',
+                sel.issues ? 'text-amber-800' : 'text-gray-400',
+              )}
+            >
               {sel.issues ?? '—'}
             </span>
           </div>
@@ -230,7 +257,9 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
         {sel.isArchived && (
           <div className="flex flex-col gap-1.5 rounded-[10px] border border-gray-200 bg-gray-50 px-3 py-2.5">
             <div className="flex items-center gap-2">
-              <span className="text-[12px] font-semibold text-gray-600">Excluded — kept on disk</span>
+              <span className="text-[12px] font-semibold text-gray-600">
+                Excluded — kept on disk
+              </span>
               <div className="flex-1" />
               <button
                 type="button"
@@ -242,8 +271,8 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
               </button>
             </div>
             <span className="text-[11px] text-gray-400">
-              Excluded from dataset use, but the recording still occupies disk. Deleting reclaims that
-              storage and is permanent.
+              Excluded from dataset use, but the recording still occupies disk. Deleting
+              reclaims that storage and is permanent.
             </span>
           </div>
         )}
@@ -266,7 +295,10 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
           <div className="flex-1" />
           {/* Real local history: how many quality/task overrides the operator
               has applied to this episode this session. */}
-          <span data-testid="review-override-history" className="text-[11.5px] text-gray-400">
+          <span
+            data-testid="review-override-history"
+            className="text-[11.5px] text-gray-400"
+          >
             {rv.selectedOverrideCount > 0
               ? `${rv.selectedOverrideCount} override${rv.selectedOverrideCount === 1 ? '' : 's'} this session`
               : 'no overrides yet'}
@@ -288,7 +320,11 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
             </DecisionButton>
           )}
           {sel.reviewLane !== 'excluded' && (
-            <DecisionButton tone="exclude" testId="review-decision-exclude" onClick={() => rv.decide('excluded')}>
+            <DecisionButton
+              tone="exclude"
+              testId="review-decision-exclude"
+              onClick={() => rv.decide('excluded')}
+            >
               Exclude
             </DecisionButton>
           )}
@@ -296,9 +332,16 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
               to pending; a confirmed EXCEPTION (adopted but not good-quality) can
               be sent back to the queue. Hidden for good-quality READY (no-op). */}
           {(sel.reviewLane === 'excluded' ||
-            (sel.effectiveReviewStatus === 'adopted' && sel.effectiveQuality !== 'Good')) && (
-            <DecisionButton tone="review" testId="review-return-to-review" onClick={() => rv.decide('review')}>
-              {sel.reviewLane === 'excluded' ? '↩ Return to review' : '↩ Reset to needs check'}
+            (sel.effectiveReviewStatus === 'adopted' &&
+              sel.effectiveQuality !== 'Good')) && (
+            <DecisionButton
+              tone="review"
+              testId="review-return-to-review"
+              onClick={() => rv.decide('review')}
+            >
+              {sel.reviewLane === 'excluded'
+                ? '↩ Return to review'
+                : '↩ Reset to needs check'}
             </DecisionButton>
           )}
         </div>

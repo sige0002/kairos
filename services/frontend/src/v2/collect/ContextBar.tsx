@@ -105,7 +105,9 @@ function PickItem({
       onClick={onClick}
       className={cn(
         'rounded-chip px-3 py-2 text-left text-sm transition-colors',
-        active ? 'bg-teal-50 font-semibold text-teal-700' : 'font-medium text-gray-700 hover:bg-gray-50',
+        active
+          ? 'bg-teal-50 font-semibold text-teal-700'
+          : 'font-medium text-gray-700 hover:bg-gray-50',
       )}
     >
       {children}
@@ -131,7 +133,11 @@ function MenuItem({
       disabled={disabled}
       className={cn(
         'rounded-chip px-3 py-2 text-left text-sm font-medium',
-        disabled ? 'cursor-not-allowed text-gray-300' : danger ? 'text-gray-700 hover:bg-red-50' : 'text-gray-700 hover:bg-gray-50',
+        disabled
+          ? 'cursor-not-allowed text-gray-300'
+          : danger
+            ? 'text-gray-700 hover:bg-red-50'
+            : 'text-gray-700 hover:bg-gray-50',
       )}
     >
       {children}
@@ -148,7 +154,8 @@ function RobotCell({ disabled }: { disabled: boolean }) {
     queryFn: ({ signal }) => apiGet<ConfigOptions>('/config/options', { signal }),
   });
   const select = useMutation({
-    mutationFn: (id: string) => apiPost<ConfigOptions>('/config/select', { category: 'robot', id }),
+    mutationFn: (id: string) =>
+      apiPost<ConfigOptions>('/config/select', { category: 'robot', id }),
     onSuccess: (data) => {
       queryClient.setQueryData(queryKeys.configOptions, data);
       // Same refresh set as v1 ConfigTab's selectMutation: a robot switch
@@ -171,7 +178,10 @@ function RobotCell({ disabled }: { disabled: boolean }) {
         title="Switch robot config (disabled while recording)"
       />
       {open && (
-        <PickerPopover className="left-0 top-full mt-1" heading="Robot (applies immediately)">
+        <PickerPopover
+          className="left-0 top-full mt-1"
+          heading="Robot (applies immediately)"
+        >
           {robots.map((r) => (
             <PickItem
               key={r.id}
@@ -182,7 +192,9 @@ function RobotCell({ disabled }: { disabled: boolean }) {
               }}
             >
               {r.id}
-              {r.local ? <span className="text-[10px] text-gray-400"> · local</span> : null}
+              {r.local ? (
+                <span className="text-[10px] text-gray-400"> · local</span>
+              ) : null}
             </PickItem>
           ))}
         </PickerPopover>
@@ -196,7 +208,11 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
   // Live shared catalog — a project/task added in Settings shows up here at once.
   const plans = usePlans();
   const epNextText =
-    phase === 'completed' ? '· complete' : phase === 'ended' ? '· ended early' : `· next #${stats.epNext}`;
+    phase === 'completed'
+      ? '· complete'
+      : phase === 'ended'
+        ? '· ended early'
+        : `· next #${stats.epNext}`;
   const curProject = findProject(plans, machine.project);
   // Real count of what the NEXT recording captures (config defaults + the
   // Monitor picker), mirroring v1 LiveTab's idleTopicLabel.
@@ -248,7 +264,8 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
         label="Episode"
         value={
           <>
-            {stats.nRecorded} / 30 <span className="text-teal-600">{epNextText}</span>
+            {stats.nRecorded} / {machine.targetEpisodes}{' '}
+            <span className="text-teal-600">{epNextText}</span>
           </>
         }
       />
@@ -284,7 +301,11 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
       {machine.projPickerOpen && (
         <PickerPopover className="left-3.5 top-[58px]" heading="Project (from plan)">
           {plans.map((p) => (
-            <PickItem key={p.name} active={p.name === machine.project} onClick={() => machine.pickProject(p.name)}>
+            <PickItem
+              key={p.name}
+              active={p.name === machine.project}
+              onClick={() => machine.pickProject(p.name)}
+            >
               {p.name}
             </PickItem>
           ))}
@@ -293,7 +314,11 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
       {machine.taskPickerOpen && (
         <PickerPopover className="left-[210px] top-[58px]" heading="Task (from plan)">
           {curProject.tasks.map((t) => (
-            <PickItem key={t.name} active={t.name === machine.task} onClick={() => machine.pickTask(t.name)}>
+            <PickItem
+              key={t.name}
+              active={t.name === machine.task}
+              onClick={() => machine.pickTask(t.name)}
+            >
               {t.name}
             </PickItem>
           ))}
@@ -321,6 +346,7 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
             End batch early…
           </MenuItem>
           <MenuItem onClick={machine.openResetModal}>Reset batch…</MenuItem>
+          <MenuItem onClick={machine.openTargetModal}>Change target…</MenuItem>
           <MenuItem onClick={machine.openIssueModal}>Report issue…</MenuItem>
           <MenuItem onClick={machine.openCondModal} disabled={!machine.condAllowed}>
             Change condition…

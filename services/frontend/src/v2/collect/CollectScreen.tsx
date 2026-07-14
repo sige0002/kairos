@@ -12,7 +12,13 @@ import { queryKeys } from '../../api/queryKeys';
 import { useUiStore } from '../../store/uiStore';
 import { ContextBar } from './ContextBar';
 import { ControlCard } from './ControlCard';
-import { SystemStatusCard, WarningsCard, AdviceCard, BatchStatsCard } from './SideCards';
+import {
+  SystemStatusCard,
+  WarningsCard,
+  AdviceCard,
+  BatchStatsCard,
+  CoverageCard,
+} from './SideCards';
 import { Cameras } from './Cameras';
 import { EpisodeStrip } from './EpisodeStrip';
 import { CollectModals } from './Modals';
@@ -34,8 +40,9 @@ function UnsavedTakeBanner({ machine }: { machine: BatchMachine }) {
       className="flex shrink-0 flex-col gap-2 border-2 border-amber-200 bg-amber-50/70 px-4 py-3"
     >
       <span className="text-[13px] text-amber-900">
-        Unsaved take from {formatTimeOfDay(take.startedAt ?? undefined)} — {formatBytes(take.bytes)},{' '}
-        {formatHms(take.durationMs ?? undefined)}. Label it now, or discard it.
+        Unsaved take from {formatTimeOfDay(take.startedAt ?? undefined)} —{' '}
+        {formatBytes(take.bytes)}, {formatHms(take.durationMs ?? undefined)}. Label it
+        now, or discard it.
       </span>
       <div className="flex gap-2">
         <button
@@ -143,7 +150,12 @@ export function CollectScreen() {
         <div className={cn('flex flex-col overflow-hidden lg:min-h-0', COL_GAP)}>
           <UnsavedTakeBanner machine={machine} />
           <ControlCard machine={machine} />
-          <div className={cn('flex flex-col overflow-y-auto lg:min-h-0 lg:flex-1', COL_GAP)}>
+          <div
+            className={cn(
+              'flex flex-col overflow-y-auto lg:min-h-0 lg:flex-1',
+              COL_GAP,
+            )}
+          >
             <SystemStatusCard
               machine={machine}
               sseStatus={sseStatus}
@@ -153,6 +165,7 @@ export function CollectScreen() {
             <WarningsCard machine={machine} />
             <AdviceCard machine={machine} />
             <BatchStatsCard machine={machine} />
+            <CoverageCard machine={machine} />
           </div>
         </div>
         {/* min-w-0: this is the grid's `1fr` track — without it the camera

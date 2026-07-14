@@ -79,22 +79,31 @@ export function mapRunsToEpisodes(
     // the bridge's local number, or "—".
     let quality: Quality | null;
     let task: TaskResult | null;
+    let failReason: string | null;
     let batch: string;
     if (endedBadly) {
       quality = 'Not usable';
       task = null;
+      failReason = null;
       batch = '—';
     } else if (episode) {
       quality = serverQuality(episode.quality);
       task = serverTask(episode.task_result);
-      batch = formatBatchLabel(episode.batch_seq, episode.batch_created_at ?? run.started_at, '—');
+      failReason = episode.failure_reason ?? null;
+      batch = formatBatchLabel(
+        episode.batch_seq,
+        episode.batch_created_at ?? run.started_at,
+        '—',
+      );
     } else if (outcome) {
       quality = bridgeQuality(outcome.quality);
       task = bridgeTask(outcome.taskResult);
+      failReason = outcome.failReason ?? null;
       batch = `#${outcome.batchNum}`;
     } else {
       quality = null;
       task = null;
+      failReason = null;
       batch = '—';
     }
 
@@ -111,6 +120,7 @@ export function mapRunsToEpisodes(
       operator: run.operator ?? null,
       quality,
       task,
+      failReason,
       reviewStatus: episode?.review_status ?? null,
       durationMs: run.duration_ms ?? spanMs(run.started_at, run.ended_at),
       startedAt: run.started_at,

@@ -46,6 +46,7 @@ INDEX_FILENAME = "index.jsonl"
 # ``batch_seq`` alone can't identify a batch (it resets per robot per day).
 _EPISODE_KEYS = (
     "task_result",
+    "failure_reason",
     "quality",
     "review_status",
     "batch_seq",

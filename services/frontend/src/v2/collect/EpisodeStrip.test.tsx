@@ -13,6 +13,7 @@ function machineWith(episodes: EpisodeRecord[], nRecorded: number): BatchMachine
     episodes,
     phase: 'ready',
     lastSavedIndex: null,
+    targetEpisodes: 30,
     stats: {
       nRecorded,
       nGood: episodes.filter((e) => e.quality === 'good').length,

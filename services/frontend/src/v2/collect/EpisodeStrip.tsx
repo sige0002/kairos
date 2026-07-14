@@ -1,12 +1,10 @@
-// Bottom-right episode strip: N / 30 counter + a horizontally scrollable row
-// of 30 chips (done / review / fail / current / future) + running totals.
+// Bottom-right episode strip: N / target counter + a horizontally scrollable
+// row of `targetEpisodes` chips (done / review / fail / current / future) +
+// running totals. The chip count follows the batch's own target (editable via
+// the Batch menu), not a fixed 30.
 
 import { Card, cn } from '../../components/ui';
-import {
-  EPISODES_PER_BATCH,
-  type BatchMachine,
-  type EpisodeRecord,
-} from './useBatchMachine';
+import type { BatchMachine, EpisodeRecord } from './useBatchMachine';
 
 // The chip's marker is driven by task outcome first (operators think in task
 // terms — "did it work?"), then by quality; the tooltip always states BOTH
@@ -29,7 +27,7 @@ function tooltipOf(e: EpisodeRecord, n: number): string {
 }
 
 export function EpisodeStrip({ machine }: { machine: BatchMachine }) {
-  const { episodes, stats, phase } = machine;
+  const { episodes, stats, phase, targetEpisodes } = machine;
   const recording = phase === 'recording';
   const showNext = phase !== 'ended' && phase !== 'completed';
 
@@ -40,7 +38,7 @@ export function EpisodeStrip({ machine }: { machine: BatchMachine }) {
   const byIndex = new Map<number, EpisodeRecord>();
   for (const e of episodes) byIndex.set(e.index, e);
 
-  const nodes = Array.from({ length: EPISODES_PER_BATCH }, (_, i) => {
+  const nodes = Array.from({ length: targetEpisodes }, (_, i) => {
     const n = i + 1;
     const recorded = byIndex.get(n);
     if (recorded) {
@@ -117,7 +115,7 @@ export function EpisodeStrip({ machine }: { machine: BatchMachine }) {
         data-testid="episode-strip-count"
         className="font-mono text-[13px] font-semibold text-gray-900"
       >
-        {stats.nRecorded} / {EPISODES_PER_BATCH}
+        {stats.nRecorded} / {targetEpisodes}
       </span>
       <div className="min-w-0 flex-1 overflow-x-auto">
         <div className="flex w-max gap-1.5 p-0.5">{nodes}</div>

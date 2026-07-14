@@ -147,6 +147,9 @@ export interface DatasetEntry {
    *  read); null/absent on older backends or pre-label exports. The full
    *  nested `episode` object exists only on DatasetDetail. */
   task_result?: 'success' | 'failure' | null;
+  /** The operator's failure reason picked at save time; null for successes
+   *  and pre-label exports. */
+  failure_reason?: string | null;
   quality?: 'good' | 'needs_review' | 'not_usable' | null;
   review_status?: 'pending' | 'adopted' | 'excluded' | null;
   batch_seq?: number | null;
@@ -659,6 +662,8 @@ export interface BatchPatchRequest {
   status?: BatchStatus;
   ended_reason?: string | null;
   condition?: string | null;
+  /** Mid-batch plan-size change (Collect's Change target…). */
+  target_episodes?: number;
 }
 
 export interface EpisodeCreateRequest {

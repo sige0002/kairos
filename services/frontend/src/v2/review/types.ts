@@ -56,6 +56,10 @@ export interface EpisodeRow {
   /** The operator's Collect-session task result from the bridge, or null when
    *  none is recorded (no automated task-result model exists). */
   task: TaskResult | null;
+  /** WHY the task failed — the operator's reason picked at save time
+   *  (episodes.failure_reason / the bridge's failReason); null when the task
+   *  succeeded or no reason was recorded. */
+  failReason: string | null;
   /** Server episode's adopt/exclude state (null when the run has no episode). */
   reviewStatus: ReviewStatus | null;
   durationMs?: number;

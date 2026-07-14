@@ -4,11 +4,13 @@
 // completed runs it hasn't validated yet (`pending_run_ids`).
 import type { JSONSchema } from '../../schema/jsonSchema';
 import type {
+  BatchSummary,
   DatasetEntry,
   RunSummary,
   ValidationOption,
   ValidationPreset,
 } from '../../api/types';
+import { formatBatchLabel } from '../episodeChips';
 import { PipelineForm } from '../../features/validation/PipelineForm';
 import { ErrorMessage } from '../../components/ErrorMessage';
 import { Badge } from '../../components/ui';
@@ -16,6 +18,10 @@ import { Badge } from '../../components/ui';
 export const ALL_RUNS = '__all__';
 // A dataset target value: `dataset:<dataset_dir>`. Runs use the bare run_id.
 export const DATASET_VALUE_PREFIX = 'dataset:';
+// A batch target value: `batch:<batch_id>` — runs the pipeline over every
+// still-present (unexported) run in that batch (the blast-radius check: verify
+// a whole suspect batch in one click).
+export const BATCH_VALUE_PREFIX = 'batch:';
 
 const SELECT_CLASS =
   'rounded-control border border-gray-200 px-2 py-1.5 font-mono text-sm focus:border-teal-500 focus:outline-none';
@@ -42,6 +48,8 @@ export function ParamsPanel({
   runsLoading,
   datasets,
   datasetsLoading,
+  batches,
+  batchRunCount,
   targetRunId,
   onTargetRunChange,
   applicabilityNote,
@@ -64,6 +72,10 @@ export function ParamsPanel({
   runsLoading: boolean;
   datasets: DatasetEntry[];
   datasetsLoading: boolean;
+  /** Batches with at least one episode (newest first). */
+  batches: BatchSummary[];
+  /** How many of a batch's runs are still present (validatable) — 0 disables. */
+  batchRunCount: (b: BatchSummary) => number;
   targetRunId: string;
   onTargetRunChange: (id: string) => void;
   /** Set when the selected pipeline can't run on the selected target type. */
@@ -94,7 +106,9 @@ export function ParamsPanel({
           disabled={running}
           className={SELECT_CLASS}
         >
-          <option value="">{runsLoading || datasetsLoading ? 'Loading…' : '— Select —'}</option>
+          <option value="">
+            {runsLoading || datasetsLoading ? 'Loading…' : '— Select —'}
+          </option>
           <optgroup label="Runs (before export)">
             {runs.length === 0 ? (
               <option value="" disabled>
@@ -111,6 +125,27 @@ export function ParamsPanel({
               </>
             )}
           </optgroup>
+          <optgroup label="Batches (validate every run of a batch)">
+            {batches.length === 0 ? (
+              <option value="" disabled>
+                No batches with unexported runs
+              </option>
+            ) : (
+              batches.map((b) => {
+                const n = batchRunCount(b);
+                return (
+                  <option
+                    key={b.batch_id}
+                    value={`${BATCH_VALUE_PREFIX}${b.batch_id}`}
+                    disabled={n === 0}
+                  >
+                    {formatBatchLabel(b.batch_seq, b.created_at)} · {b.task}
+                    {n === 0 ? ' (all exported)' : ` (${n} runs)`}
+                  </option>
+                );
+              })
+            )}
+          </optgroup>
           <optgroup label="Datasets (exported)">
             {datasets.length === 0 ? (
               <option value="" disabled>
@@ -118,7 +153,10 @@ export function ParamsPanel({
               </option>
             ) : (
               datasets.map((d) => (
-                <option key={d.dataset_dir} value={`${DATASET_VALUE_PREFIX}${d.dataset_dir}`}>
+                <option
+                  key={d.dataset_dir}
+                  value={`${DATASET_VALUE_PREFIX}${d.dataset_dir}`}
+                >
                   {datasetOptionLabel(d)}
                 </option>
               ))
@@ -128,7 +166,9 @@ export function ParamsPanel({
         {applicabilityNote && (
           <span className="text-[11px] text-amber-700">{applicabilityNote}</span>
         )}
-        <span className="text-[11px] text-gray-400">Validation only — export stays in Review.</span>
+        <span className="text-[11px] text-gray-400">
+          Validation only — export stays in Review.
+        </span>
       </label>
 
       <PipelineForm
@@ -147,7 +187,10 @@ export function ParamsPanel({
         ) : presets.length === 0 ? (
           <p className="text-[11px] leading-relaxed text-gray-400">
             No presets configured. Add{' '}
-            <span className="font-mono">config/&lt;robot&gt;/validation_presets.yaml</span>.
+            <span className="font-mono">
+              config/&lt;robot&gt;/validation_presets.yaml
+            </span>
+            .
           </p>
         ) : (
           presets.map((p) => (
