@@ -4,7 +4,10 @@ import { setApiBase } from '../../api/client';
 import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
 import { useUiStore } from '../../store/uiStore';
 import { setSplitMode } from './splitMode';
+import { setFiltersCollapsed } from './filtersRail';
 import { ReviewScreen } from './ReviewScreen';
+
+const FILTERS_KEY = 'kairos.v2.review.filtersCollapsed.v1';
 
 const CONFIG_OPTIONS = {
   active_robot: 'airoa_hsr',
@@ -56,10 +59,14 @@ function excludeRow(ep: number) {
 beforeEach(() => {
   setApiBase('/api/v1');
   useUiStore.setState({ activeTab: '', pendingRun: null });
+  setFiltersCollapsed(false);
+  window.localStorage.removeItem(FILTERS_KEY);
 });
 afterEach(() => {
   vi.restoreAllMocks();
   setSplitMode(false); // reset the module-level flag between tests
+  setFiltersCollapsed(false);
+  window.localStorage.removeItem(FILTERS_KEY);
 });
 
 test('renders the episode list and real detail panel from real runs', async () => {
@@ -433,4 +440,59 @@ test('Return to review PATCHes review_status=pending (from an excluded run)', as
 
   fireEvent.click(screen.getByTestId('review-return-to-review'));
   await waitFor(() => expect(patchBodies.some((b) => b.review_status === 'pending')).toBe(true));
+});
+
+// ---- FiltersRail collapse (variable-width layout, feature 1) ----------------
+
+test('the filters rail collapse toggle flips aria-expanded and persists', async () => {
+  mockApi([{ run_id: 'ep-a', state: 'completed', started_at: '2026-07-13T09:00:00Z' }]);
+  renderWithClient(<ReviewScreen />);
+  await waitFor(() => expect(screen.getByTestId('review-episodes-count')).toHaveTextContent('1 shown'));
+
+  const toggle = screen.getByTestId('review-filters-toggle');
+  expect(toggle).toHaveAttribute('aria-expanded', 'true');
+
+  fireEvent.click(toggle);
+  await waitFor(() =>
+    expect(screen.getByTestId('review-filters-toggle')).toHaveAttribute('aria-expanded', 'false'),
+  );
+  // Collapsed rail is shown and the choice is persisted.
+  expect(screen.getByTestId('review-filters-collapsed')).toBeInTheDocument();
+  expect(window.localStorage.getItem(FILTERS_KEY)).toBe('1');
+
+  // Expanding again clears the persisted flag.
+  fireEvent.click(screen.getByTestId('review-filters-toggle'));
+  await waitFor(() =>
+    expect(screen.getByTestId('review-filters-toggle')).toHaveAttribute('aria-expanded', 'true'),
+  );
+  expect(window.localStorage.getItem(FILTERS_KEY)).toBeNull();
+});
+
+test('collapse restores focus to the toggle (keyboard flow)', async () => {
+  mockApi([{ run_id: 'ep-a', state: 'completed', started_at: '2026-07-13T09:00:00Z' }]);
+  renderWithClient(<ReviewScreen />);
+  await waitFor(() => expect(screen.getByTestId('review-episodes-count')).toHaveTextContent('1 shown'));
+
+  fireEvent.click(screen.getByTestId('review-filters-toggle'));
+  await waitFor(() => expect(screen.getByTestId('review-filters-toggle')).toHaveFocus());
+});
+
+test('an active operator filter surfaces a dot on the collapsed rail', async () => {
+  mockApi([
+    { run_id: 'ep-a', state: 'completed', started_at: '2026-07-13T09:00:00Z', operator: 'alice' },
+  ]);
+  renderWithClient(<ReviewScreen />);
+  await waitFor(() => expect(screen.getByTestId('review-episodes-count')).toHaveTextContent('1 shown'));
+
+  // No filter yet → no dot even when collapsed.
+  fireEvent.click(screen.getByTestId('review-filters-toggle'));
+  await waitFor(() => expect(screen.getByTestId('review-filters-collapsed')).toBeInTheDocument());
+  expect(screen.queryByTestId('review-filters-active-dot')).toBeNull();
+
+  // Expand, pick an operator, collapse again → the active-filter dot appears.
+  fireEvent.click(screen.getByTestId('review-filters-toggle'));
+  await waitFor(() => expect(screen.getByTestId('review-operator-filter')).toBeInTheDocument());
+  fireEvent.change(screen.getByTestId('review-operator-filter'), { target: { value: 'alice' } });
+  fireEvent.click(screen.getByTestId('review-filters-toggle'));
+  await waitFor(() => expect(screen.getByTestId('review-filters-active-dot')).toBeInTheDocument());
 });

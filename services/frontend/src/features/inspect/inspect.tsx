@@ -122,15 +122,32 @@ export function VideoPlayer({
   runId,
   topic,
   datasetDir,
+  onTimeUpdate,
+  seekTo,
+  onSummary,
 }: {
   runId: string;
   topic: string;
   datasetDir?: string;
+  /** Synced playback (Review Signals): report the video clock on every frame. */
+  onTimeUpdate?: (currentTime: number, duration: number) => void;
+  /** Seek request from the chart — a NEW object per seek (memoized by the
+   *  parent so a re-render doesn't re-apply a stale seek and fight playback). */
+  seekTo?: { seconds: number; nonce: number } | null;
+  /** The loaded video_check summary (so the parent learns duration/truncated). */
+  onSummary?: (summary: VideoCheckSummary) => void;
 }) {
   const [jobId, setJobId] = useState<string | null>(null);
   const [summary, setSummary] = useState<VideoCheckSummary | null>(null);
   const [jobError, setJobError] = useState<string | null>(null);
   const started = useRef(false);
+  // Sync plumbing: the <video> element + latest callbacks (refs keep the query
+  // callbacks and event handlers out of effect deps).
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const onTimeUpdateRef = useRef(onTimeUpdate);
+  onTimeUpdateRef.current = onTimeUpdate;
+  const onSummaryRef = useRef(onSummary);
+  onSummaryRef.current = onSummary;
 
   const mutation = useMutation({
     // `extra` carries the re-encode knobs (force + max_frames); the initial
@@ -163,6 +180,13 @@ export function VideoPlayer({
     mutation.mutate();
   }, [mutation]);
 
+  // Apply a seek from the chart. `seekTo` is a fresh object per seek, so the
+  // effect fires exactly on a real seek (not on every parent re-render).
+  useEffect(() => {
+    const v = videoRef.current;
+    if (v && seekTo) v.currentTime = seekTo.seconds;
+  }, [seekTo]);
+
   useQuery({
     queryKey: queryKeys.job(jobId ?? ''),
     queryFn: async ({ signal }) => {
@@ -176,7 +200,9 @@ export function VideoPlayer({
             `/jobs/${encodeURIComponent(jobId)}/result`,
             { signal },
           );
-          setSummary(result.summary as VideoCheckSummary);
+          const s = result.summary as VideoCheckSummary;
+          setSummary(s);
+          onSummaryRef.current?.(s);
         } else {
           // failed/canceled: fetch the terminal result so the failure is shown
           // instead of spinning on "Generating…" forever. dora_runner nests the
@@ -223,8 +249,21 @@ export function VideoPlayer({
       ) : summary && summary.file ? (
         <>
           <video
+            ref={videoRef}
             controls
             src={`${getApiBase()}/files/${summary.file}`}
+            onTimeUpdate={(e) =>
+              onTimeUpdateRef.current?.(
+                e.currentTarget.currentTime,
+                e.currentTarget.duration,
+              )
+            }
+            onLoadedMetadata={(e) =>
+              onTimeUpdateRef.current?.(
+                e.currentTarget.currentTime,
+                e.currentTarget.duration,
+              )
+            }
             className="w-full rounded-control border border-gray-200 bg-black"
           />
           <p className="text-[10px] text-gray-400">

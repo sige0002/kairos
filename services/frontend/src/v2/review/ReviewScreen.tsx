@@ -8,26 +8,56 @@
 // Also carries our own addition — MCAP transfer for split robot/recording-PC
 // deployments — gated behind SPLIT_MODE (splitMode.ts), off by default.
 
+import { useEffect, useRef } from 'react';
 import { Button, Modal, cn } from '../../components/ui';
 import { DetailPanel } from './DetailPanel';
 import { EpisodeTable } from './EpisodeTable';
 import { FiltersRail } from './FiltersRail';
 import { Toast } from './Toast';
+import { useFiltersCollapsed, toggleFiltersCollapsed } from './filtersRail';
 import { formatBytes } from './format';
 import { useReviewState } from './useReviewState';
+
+// Two complete literal grid templates (Tailwind's scanner needs full strings,
+// so we pick between them rather than interpolate a width). The two evidence
+// columns grow with the viewport (the detail pane, weighted 1.2fr, gets the
+// larger share — it was previously a fixed 400px); the table column keeps a
+// hard 580px floor so its 8-column row grid never clips (56+48+108+96+72+80+28
+// fixed tracks + 7×8px gaps + 36px padding). Collapsing the filter rail hands
+// its 216→44px back to those two columns (detail again taking the larger cut).
+const GRID_EXPANDED =
+  'lg:grid-cols-[216px_minmax(580px,0.8fr)_minmax(400px,1.2fr)]';
+const GRID_COLLAPSED =
+  'lg:grid-cols-[44px_minmax(580px,0.8fr)_minmax(400px,1.2fr)]';
 
 export function ReviewScreen() {
   const rv = useReviewState();
   const del = rv.pendingDeleteRow;
   const bulkTotalBytes = rv.excludedRows.reduce((sum, r) => sum + (r.bytes ?? 0), 0);
 
+  // FiltersRail collapse (persisted). The collapsed and expanded toggle buttons
+  // never mount at once, so after a user toggle we restore focus to whichever
+  // one is now rendered (keyboard-flow: the toggle stays the focused control).
+  const collapsed = useFiltersCollapsed();
+  const toggleRef = useRef<HTMLButtonElement>(null);
+  const restoreFocus = useRef(false);
+  const onToggleCollapsed = () => {
+    restoreFocus.current = true;
+    toggleFiltersCollapsed();
+  };
+  useEffect(() => {
+    if (!restoreFocus.current) return;
+    restoreFocus.current = false;
+    toggleRef.current?.focus();
+  }, [collapsed]);
+
   return (
-    <div className="grid grid-cols-1 gap-2.5 lg:h-full lg:min-h-0 lg:grid-cols-[216px_1fr_400px]">
+    <div className="flex flex-col gap-2.5 lg:h-full lg:min-h-0">
       {rv.showRetentionBanner && (
         <div
           role="status"
           data-testid="review-retention-banner"
-          className="flex flex-wrap items-center justify-between gap-2 rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 lg:col-span-3"
+          className="flex flex-wrap items-center justify-between gap-2 rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900"
         >
           {rv.retentionFilterActive ? (
             <>
@@ -76,16 +106,26 @@ export function ReviewScreen() {
           )}
         </div>
       )}
-      <FiltersRail
-        operatorOptions={rv.operatorOptions}
-        operatorFilter={rv.operatorFilter}
-        onOperatorChange={rv.setOperatorFilter}
-        batchFilterLabel={rv.batchFilterLabel}
-        onClearBatchFilter={() => rv.toggleBatchFilter(null)}
-        onClearFilters={rv.clearFilters}
-      />
-      <EpisodeTable rv={rv} />
-      <DetailPanel rv={rv} />
+      <div
+        className={cn(
+          'grid grid-cols-1 gap-2.5 lg:min-h-0 lg:flex-1 lg:grid-rows-[minmax(0,1fr)]',
+          collapsed ? GRID_COLLAPSED : GRID_EXPANDED,
+        )}
+      >
+        <FiltersRail
+          ref={toggleRef}
+          operatorOptions={rv.operatorOptions}
+          operatorFilter={rv.operatorFilter}
+          onOperatorChange={rv.setOperatorFilter}
+          batchFilterLabel={rv.batchFilterLabel}
+          onClearBatchFilter={() => rv.toggleBatchFilter(null)}
+          onClearFilters={rv.clearFilters}
+          collapsed={collapsed}
+          onToggleCollapsed={onToggleCollapsed}
+        />
+        <EpisodeTable rv={rv} />
+        <DetailPanel rv={rv} />
+      </div>
 
       <Toast message={rv.toast} />
 

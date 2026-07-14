@@ -263,6 +263,115 @@ export interface LossTopic {
   median_interval_ms?: number | null;
 }
 
+/** Per-topic downsample metadata for a `signal_report` topic. */
+export interface SignalDownsample {
+  /** Keep-every-Nth stride applied to fit `max_points`. */
+  stride: number;
+  /** Point count after downsampling. */
+  points: number;
+}
+
+/**
+ * One topic in a `signal_report`: its decoded numeric fields sampled over the
+ * episode timeline. `t_ns` is EPISODE-relative nanoseconds (0-based, so it stays
+ * within JS number precision) shared by every field array; `fields` maps a
+ * dotted field path (same vocabulary as the live Probe view) to its per-sample
+ * values (null where the field did not resolve on that message). `continuity` is
+ * a 0..1 score whose meaning is spelled out verbatim in `continuity_definition`
+ * (shown in the UI so the number is never presented without its formula).
+ */
+export interface SignalTopicReport {
+  msg_type?: string | null;
+  message_count?: number;
+  start_ns?: number;
+  end_ns?: number;
+  continuity?: number | null;
+  continuity_definition?: string | null;
+  /** Clock rule resolved for THIS topic (e.g. "publish_time") — per-topic, so it
+   *  lives on the topic entry, not the report. `t_ns` is sorted/monotonic and
+   *  co-sorted with every field array (safe to feed uPlot directly). */
+  time_source?: string;
+  downsample?: SignalDownsample | null;
+  t_ns: number[];
+  fields: Record<string, (number | null)[]>;
+  truncated_fields?: number;
+}
+
+/**
+ * `signal_report` job summary (dora_runner): per-topic decoded numeric signals
+ * over episode time, for the Review detail's Signals section. `skipped_topics`
+ * maps a topic to a plain-language reason it carries no numeric series (e.g. an
+ * image topic → use video_check).
+ */
+export interface SignalReport {
+  pipeline?: string;
+  /** Sidecar schema version (additive; unknown top-level keys are ignored). */
+  version?: string;
+  run_id?: string;
+  generated_at?: string;
+  /** `topics` is null when the job ran with defaults (all numeric topics). */
+  params?: { topics?: string[] | null; max_points?: number };
+  topics: Record<string, SignalTopicReport>;
+  /** Topic → human-readable reason it carries no numeric series. */
+  skipped_topics?: Record<string, string>;
+}
+
+/** One topic's layer-0 (live monitor at stop) quick-check figures. */
+export interface QuickCheckLayer0Topic {
+  hz?: number | null;
+  expected_hz?: number | null;
+  rate_shortfall?: number | null;
+  gap_max_ms?: number | null;
+  dds_samples_lost?: number;
+}
+
+/** Layer 0: what the topic_monitor observed live, captured at recording stop. */
+export interface QuickCheckLayer0 {
+  available: boolean;
+  integrity?: RecordIntegrity | string;
+  topics?: Record<string, QuickCheckLayer0Topic>;
+  incidents?: string[];
+}
+
+/** One topic's layer-1 (post-hoc bag summary) quick-check figures. */
+export interface QuickCheckLayer1Topic {
+  message_count?: number;
+  avg_hz?: number | null;
+  expected_hz?: number | null;
+}
+
+/** Layer 1: what the MCAP summary reports (needs a clean end-of-recording). */
+export interface QuickCheckLayer1 {
+  available: boolean;
+  summary_available?: boolean;
+  topics?: Record<string, QuickCheckLayer1Topic>;
+  missing_topics?: string[];
+  empty_topics?: string[];
+  duration_s?: number | null;
+}
+
+/** The bottom-line quick-check call plus the reasons behind it (the "why is this
+ *  needs_review" answer surfaced in Review so nobody has to open JSON). */
+export interface QuickCheckVerdict {
+  quality: 'good' | 'needs_review';
+  reasons: string[];
+}
+
+/**
+ * Fast pre-review quick-check attached to a run/episode: a cheap two-layer
+ * health read (live monitor at stop + bag summary) with a plain-language
+ * verdict. Absent on runs recorded before the feature — the UI then shows
+ * nothing (no fabricated state); a layer with `available:false` /
+ * `summary_available:false` is stated as honestly unavailable.
+ */
+export interface QuickCheck {
+  computed_at?: string;
+  elapsed_ms?: number;
+  layer0?: QuickCheckLayer0 | null;
+  layer1?: QuickCheckLayer1 | null;
+  verdict?: QuickCheckVerdict | null;
+}
+
 export interface RunDetail {
   run_id: string;
   state: RunState;
@@ -282,6 +391,12 @@ export interface RunDetail {
   dataset_stats?: Record<string, unknown> | null;
   /** `loss_report` per-topic gap-based loss summary (when computed). */
   loss?: { run_id?: string; topics?: LossTopic[]; checked_at?: string } | null;
+  /** `signal_report` sidecar (per-topic decoded numeric fields over episode
+   *  time), when the orchestrator surfaces it on the run. The Signals section
+   *  fetches it via the job-result path too, so this is a convenience mirror. */
+  signal?: SignalReport | null;
+  /** Fast pre-review quick-check verdict, when present (absent on old runs). */
+  quick_check?: QuickCheck | null;
 }
 
 // ---- Topics / Monitor ---------------------------------------------------

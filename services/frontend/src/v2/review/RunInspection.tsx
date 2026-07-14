@@ -23,6 +23,8 @@ import {
   formatWhen,
   spanMs,
 } from '../../features/inspect/inspect';
+import { QuickCheckVerdict } from './QuickCheckVerdict';
+import { SignalSection } from './SignalSection';
 import { formatBytes } from './format';
 
 // The orchestrator's RunDetail also carries message_count/bytes (models.Run),
@@ -125,6 +127,8 @@ export function RunInspection({ runId }: { runId: string }) {
         <Row label="Compression">{run.compression || '—'}</Row>
       </dl>
 
+      <QuickCheckVerdict quickCheck={run.quick_check} />
+
       {completed ? (
         <VideoCheckSection topics={run.topics} runId={runId} />
       ) : (
@@ -132,6 +136,8 @@ export function RunInspection({ runId }: { runId: string }) {
           Video preview is available once a recording completes.
         </p>
       )}
+
+      {completed && <SignalSection runId={runId} topics={run.topics} />}
 
       <section>
         <h4 className="mb-1.5 text-[12.5px] font-medium text-gray-700">

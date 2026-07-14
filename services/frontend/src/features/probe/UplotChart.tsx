@@ -101,6 +101,9 @@ export function UplotChart({
   markers,
   refLines,
   yAxis,
+  xTime = true,
+  playhead,
+  onSeek,
 }: {
   data: (number | null)[][];
   series: UplotSeriesConf[];
@@ -113,6 +116,17 @@ export function UplotChart({
    *  and a tick formatter (`format`) so labels don't clip a leading digit (I-10).
    *  Behaviour is baked at construction; keep it stable per chart. */
   yAxis?: { size?: number; format?: (v: number) => string };
+  /** Whether x is a wall-clock time scale (default) or a plain numeric axis.
+   *  The Review Signals chart uses `false`: x is episode-elapsed SECONDS, so it
+   *  labels ticks as "12s" instead of a 1970 HH:MM:SS. Baked at construction. */
+  xTime?: boolean;
+  /** A vertical playhead line at this x value (same units as the data x — for
+   *  the Signals chart, elapsed seconds). Drawn via a ref, so updating it just
+   *  redraws (no plot teardown). null/undefined draws nothing. */
+  playhead?: number | null;
+  /** Click/drag on the plot to seek: called with the x value under the cursor
+   *  (data units). When set, uPlot's drag-zoom is disabled so the drag seeks. */
+  onSeek?: (xVal: number) => void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const plotRef = useRef<uPlot | null>(null);
@@ -136,6 +150,13 @@ export function UplotChart({
   markersRef.current = markers ?? [];
   const refLinesRef = useRef<RefLine[]>(refLines ?? []);
   refLinesRef.current = refLines ?? [];
+  // Playhead + seek callback are read from refs by the draw hook / drag handlers
+  // (both fixed at construction, so they can't close over fresh props).
+  const playheadRef = useRef<number | null>(playhead ?? null);
+  playheadRef.current = playhead ?? null;
+  const onSeekRef = useRef(onSeek);
+  onSeekRef.current = onSeek;
+  const seekable = !!onSeek;
 
   useEffect(() => {
     const host = hostRef.current;
@@ -154,8 +175,10 @@ export function UplotChart({
       width: host.clientWidth || 600,
       height,
       legend: { show: true },
+      // Seek owns the drag when onSeek is set; otherwise uPlot's drag-zoom stays.
+      ...(seekable ? { cursor: { drag: { x: false, y: false } } } : {}),
       scales: {
-        x: { time: true },
+        x: { time: xTime },
         y: {
           // uPlot passes the raw data extremes (null before any data arrives);
           // yRange guards the flat-data degenerate case in EVERY path — the
@@ -178,7 +201,14 @@ export function UplotChart({
       // formatter by the caller so a tight range (e.g. 29.975) keeps its leading
       // digit instead of clipping in the default-width gutter (I-10).
       axes: [
-        {},
+        // Elapsed-seconds x (xTime=false) labels ticks as "12s"; the time scale
+        // keeps uPlot's default HH:MM:SS formatting.
+        xTime
+          ? {}
+          : {
+              values: (_u, splits) =>
+                splits.map((v) => (v == null ? '' : `${v}s`)),
+            },
         {
           ...(yAxis?.size != null ? { size: yAxis.size } : {}),
           ...(yAxis?.format
@@ -224,6 +254,19 @@ export function UplotChart({
               c.stroke();
             }
 
+            // Playhead: a solid teal line tracking the synced video's position.
+            const ph = playheadRef.current;
+            if (ph != null && ph >= xMin && ph <= xMax) {
+              const x = u.valToPos(ph, 'x', true);
+              c.strokeStyle = '#0d9488';
+              c.lineWidth = 2;
+              c.setLineDash([]);
+              c.beginPath();
+              c.moveTo(x, u.bbox.top);
+              c.lineTo(x, u.bbox.top + u.bbox.height);
+              c.stroke();
+            }
+
             c.setLineDash([]);
             c.restore();
           },
@@ -235,13 +278,44 @@ export function UplotChart({
     const onResize = () =>
       plot.setSize({ width: host.clientWidth || 600, height });
     window.addEventListener('resize', onResize);
+
+    // Click/drag anywhere on the plot to seek (drag-zoom is off when seekable):
+    // translate the pointer x to a data value via posToVal and hand it up. The
+    // move/up listeners are on window so a drag that leaves the plot still seeks.
+    let dragging = false;
+    const seekAt = (clientX: number) => {
+      const rect = plot.over.getBoundingClientRect();
+      onSeekRef.current?.(plot.posToVal(clientX - rect.left, 'x'));
+    };
+    const onDown = (e: MouseEvent) => {
+      if (!onSeekRef.current) return;
+      dragging = true;
+      seekAt(e.clientX);
+    };
+    const onMove = (e: MouseEvent) => {
+      if (dragging) seekAt(e.clientX);
+    };
+    const onUp = () => {
+      dragging = false;
+    };
+    if (seekable) {
+      plot.over.addEventListener('mousedown', onDown);
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    }
+
     return () => {
       window.removeEventListener('resize', onResize);
+      if (seekable) {
+        plot.over.removeEventListener('mousedown', onDown);
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+      }
       plot.destroy();
       plotRef.current = null;
     };
-    // safeData is applied via the setData effect; recreate only on series/refLines/height.
-  }, [seriesKey, refLinesKey, height]);
+    // safeData is applied via the setData effect; recreate only on series/refLines/height/xTime/seekable.
+  }, [seriesKey, refLinesKey, height, xTime, seekable]);
 
   useEffect(() => {
     plotRef.current?.setData(safeData);
@@ -262,7 +336,7 @@ export function UplotChart({
     const plot = plotRef.current;
     if (!plot || (plot.data[0]?.length ?? 0) === 0) return;
     plot.redraw();
-  }, [markers]);
+  }, [markers, playhead]);
 
   return <div ref={hostRef} className="w-full" />;
 }
