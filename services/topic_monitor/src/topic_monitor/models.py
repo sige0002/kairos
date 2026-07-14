@@ -95,6 +95,10 @@ class TopicMetrics(BaseModel):
     # the honest live "is it choppy" signal (OL-②.5-lite).
     interarrival_p50_ms: float | None = None
     interarrival_p95_ms: float | None = None
+    # Cumulative message count since the monitor subscribed to the topic (never
+    # evicted, unlike the windowed count). A start/stop delta over this yields a
+    # whole-recording-window average rate for the orchestrator.
+    messages_total: int = 0
     loss_rate: float | None = None
     # Cumulative DDS sample-lost count (rmw message_lost event). The ONE honest
     # "real loss" signal without sequence numbers — distinct from rate_shortfall.
@@ -198,7 +202,8 @@ class AlertRule(BaseModel):
 
     ``cooldown_s`` suppresses re-firing after an alert clears; ``clear_after_s``
     is how long the condition must stay false before the alert clears
-    (hysteresis), per the spec.
+    (hysteresis), per the spec. ``severity`` labels the incident this rule raises
+    (default ``warning``); the operator can set ``danger`` for a critical feed.
     """
 
     topic: str
@@ -207,6 +212,32 @@ class AlertRule(BaseModel):
     threshold: float
     cooldown_s: Annotated[float, Field(ge=0)] = 0.0
     clear_after_s: Annotated[float, Field(ge=0)] = 0.0
+    severity: str = "warning"  # "warning" | "danger"
+
+
+class DerivedRulesConfig(BaseModel):
+    """Tuning for the auto-derived per-topic hz rules (the ``derived_rules:`` block).
+
+    For every subscribed allowlist topic that has a static ``expected_hz`` and no
+    explicit alerts.yaml rule on its hz, the monitor synthesizes ONE hz incident
+    keyed on the measured rate relative to that expectation: ``warning`` once
+    ``hz < warn_ratio × expected`` is sustained, escalating to ``danger`` once
+    ``hz < danger_ratio × expected``. Ratios are fractions of the expected rate;
+    the whole mechanism is toggled with ``enabled`` (default on). These defaults
+    live in code so alerts.yaml only overrides what it needs to.
+    """
+
+    enabled: bool = True
+    # Fire (warning) below this fraction of expected_hz; escalate to danger below
+    # danger_ratio. danger_ratio <= warn_ratio (danger is the deeper shortfall).
+    warn_ratio: Annotated[float, Field(gt=0, le=1)] = 0.8
+    danger_ratio: Annotated[float, Field(gt=0, le=1)] = 0.5
+    # Hysteresis (mirrors the config-rule / default-incident vocabulary): the
+    # shortfall must hold this long before firing, stay recovered this long before
+    # clearing, and not re-fire within this long of a clear.
+    sustain_s: Annotated[float, Field(ge=0)] = 10.0
+    clear_after_s: Annotated[float, Field(ge=0)] = 3.0
+    cooldown_s: Annotated[float, Field(ge=0)] = 10.0
 
 
 class Alert(BaseModel):
@@ -219,6 +250,13 @@ class Alert(BaseModel):
     value: float | None = None
     state: str = "firing"  # "firing" | "cleared"
     since: str | None = None
+    # Where the rule that raised this incident came from (D-9 ③ provenance):
+    # "config" (alerts.yaml), "derived" (auto from expected_hz), or "default"
+    # (the status-based synthesizer for topics with no expected_hz).
+    rule_origin: str = "config"
+    # "warning" | "danger" — the severity of the incident (config rules default
+    # to warning; the default synthesizer is always danger).
+    severity: str = "warning"
 
 
 class AlertsResponse(BaseModel):
@@ -226,6 +264,32 @@ class AlertsResponse(BaseModel):
 
     ts: str
     alerts: list[Alert] = Field(default_factory=list)
+
+
+class Incident(BaseModel):
+    """One incident episode for the bounded history ring (``GET /incidents``).
+
+    Distinct from :class:`Alert` (the live incident view): this is an immutable
+    record of a single fire→clear episode, retained in a bounded ring beyond the
+    live 60 s post-clear retention so the orchestrator can settle "what fired
+    during a recording window" at stop time. ``fired_at_ns`` / ``cleared_at_ns``
+    are wall-clock UNIX nanoseconds (``cleared_at_ns`` is ``null`` while firing).
+    """
+
+    id: str
+    topic: str
+    metric: AlertMetric
+    severity: str  # "danger" | "warning"
+    rule_origin: str  # "config" | "derived" | "default"
+    fired_at_ns: int
+    cleared_at_ns: int | None = None
+    message: str = ""
+
+
+class IncidentsResponse(BaseModel):
+    """Body of ``GET /incidents?since_ns=<int>`` (the history ring)."""
+
+    incidents: list[Incident] = Field(default_factory=list)
 
 
 class PauseResponse(BaseModel):

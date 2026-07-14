@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from topic_monitor.alert_config import load_alert_rules
+from topic_monitor.alert_config import load_alert_rules, load_derived_config
 from topic_monitor.models import AlertMetric, AlertOp
 
 
@@ -102,3 +102,44 @@ def test_invalid_rule_field_raises(tmp_path: Path) -> None:
 def test_malformed_yaml_raises_value_error(tmp_path: Path) -> None:
     with pytest.raises(ValueError):
         load_alert_rules(_write(tmp_path, "rules: [unclosed\n"))
+
+
+# --- derived_rules block (load_derived_config) ----------------------------
+
+
+def test_derived_config_defaults_when_unset_or_absent(tmp_path: Path) -> None:
+    # No path, missing file, and a file without a derived_rules block all yield
+    # the defaults (feature enabled) so auto-derived rules work out of the box.
+    for cfg in (
+        load_derived_config(None),
+        load_derived_config(str(tmp_path / "missing.yaml")),
+        load_derived_config(_write(tmp_path, "rules: []\n")),
+    ):
+        assert cfg.enabled is True
+        assert cfg.warn_ratio == 0.8
+        assert cfg.danger_ratio == 0.5
+
+
+def test_derived_config_parses_overrides(tmp_path: Path) -> None:
+    path = _write(
+        tmp_path,
+        "derived_rules:\n"
+        "  enabled: false\n"
+        "  warn_ratio: 0.9\n"
+        "  danger_ratio: 0.6\n"
+        "  sustain_s: 4\n",
+    )
+    cfg = load_derived_config(path)
+    assert cfg.enabled is False
+    assert cfg.warn_ratio == 0.9
+    assert cfg.danger_ratio == 0.6
+    assert cfg.sustain_s == 4.0
+
+
+def test_derived_config_malformed_block_raises(tmp_path: Path) -> None:
+    # A present-but-wrong block fails loudly (same policy as the rules loader).
+    with pytest.raises(ValueError):
+        load_derived_config(_write(tmp_path, "derived_rules: 42\n"))
+    with pytest.raises(ValueError):
+        # warn_ratio > 1 violates the field bound.
+        load_derived_config(_write(tmp_path, "derived_rules:\n  warn_ratio: 2.0\n"))

@@ -21,7 +21,7 @@ import logging
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, Query, Response
 from fastapi.responses import StreamingResponse
 from kairos_common import (
     RecordingConfig,
@@ -33,9 +33,10 @@ from kairos_common import (
 )
 from pydantic import BaseModel
 
-from topic_monitor.alert_config import load_alert_rules
+from topic_monitor.alert_config import load_alert_rules, load_derived_config
 from topic_monitor.models import (
     AlertsResponse,
+    IncidentsResponse,
     MetricsSnapshot,
     PauseResponse,
     TopicsResponse,
@@ -86,8 +87,15 @@ def create_monitor_app(*, subscriber: TopicSubscriber | None = None) -> FastAPI:
     # empty because nothing ever builds the AlertRules the engine evaluates. The
     # loader tolerates an unset/missing path (no rules) but fails loudly on a
     # malformed file so a config typo is never silently ignored.
-    alert_rules = load_alert_rules(resolve_config_path(settings.alert_config_path))
-    service = MonitorService(sub, config=config, alert_rules=alert_rules)
+    alert_config_path = resolve_config_path(settings.alert_config_path)
+    alert_rules = load_alert_rules(alert_config_path)
+    # Auto-derived per-topic hz rules (from expected_hz shortfall). The optional
+    # `derived_rules:` block in the same file tunes ratios/hysteresis; absent, the
+    # feature is on with its defaults (see DerivedRulesConfig).
+    derived_config = load_derived_config(alert_config_path)
+    service = MonitorService(
+        sub, config=config, alert_rules=alert_rules, derived_config=derived_config
+    )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -157,6 +165,19 @@ def create_monitor_app(*, subscriber: TopicSubscriber | None = None) -> FastAPI:
     @app.get("/alerts/stream")
     async def alerts_stream() -> StreamingResponse:
         return StreamingResponse(_sse(_alerts_payload), media_type="text/event-stream")
+
+    @app.get("/incidents", response_model=IncidentsResponse)
+    async def incidents(
+        since_ns: int = Query(
+            0,
+            ge=0,
+            description=(
+                "Return incidents that fired OR cleared at/after this wall-clock "
+                "UNIX-nanosecond timestamp (0 = all retained history)."
+            ),
+        ),
+    ) -> IncidentsResponse:
+        return IncidentsResponse(incidents=service.incidents(since_ns))
 
     # Readiness reflects that the subscriber node is up; live but not ready
     # until then (e.g. ROS not reachable yet).

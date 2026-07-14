@@ -29,13 +29,31 @@
 #
 # A metric that is currently null (e.g. `late` / `loss` with no expected_hz) is
 # simply not evaluated that tick — the rule neither fires nor clears on it.
+# In particular `loss` (`loss_rate`) is hardcoded null in the monitor, so a
+# `metric: loss` rule can NEVER fire — use hz / gap instead.
 #
-# Default DANGER incidents (no rule needed): beneath the rules below, the monitor
-# automatically raises a hz incident for ANY topic it classifies `danger` (its
-# expected_hz shortfall crossing the danger threshold) once that danger persists
-# for ~10 s — so a real rate collapse is never silent just because no rule was
-# written for the topic. A rule on the same `topic` with `metric: hz` supersedes
-# this default (no double incident); write one to tune the threshold/hysteresis.
+# Auto-derived hz rules (no rule needed): for every topic that HAS an expected_hz
+# (RECORDING_CONFIG `expected_hz_patterns`) and no explicit hz rule below, the
+# monitor synthesizes ONE hz incident from the measured shortfall — WARNING once
+# `hz < warn_ratio × expected` is sustained, escalating to DANGER once
+# `hz < danger_ratio × expected`. Tune or disable them with the optional
+# top-level `derived_rules:` block (all fields optional; defaults shown):
+#
+#   derived_rules:
+#     enabled: true        # false turns the whole mechanism off
+#     warn_ratio: 0.8      # fire WARNING below this fraction of expected_hz
+#     danger_ratio: 0.5    # escalate to DANGER below this fraction (<= warn_ratio)
+#     sustain_s: 10        # shortfall must hold this long before firing
+#     clear_after_s: 3     # recovery must hold this long before clearing
+#     cooldown_s: 10       # do not re-fire within this long of a clear
+#
+# Default DANGER incidents (no rule needed): beneath the rules below and the
+# derived rules, the monitor also raises a hz incident for a topic with NO
+# expected_hz that it classifies `danger` (from a learned baseline) once that
+# danger persists for ~10 s — so a real rate collapse is never silent just because
+# no rule was written for the topic. Precedence on a topic's hz is
+# config rule > derived rule > default synthesizer (exactly one owner, no double
+# incident); write a `metric: hz` rule to tune the threshold/hysteresis.
 # -----------------------------------------------------------------------------
 
 rules: []

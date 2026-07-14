@@ -11,10 +11,25 @@
 # half-rate or worse) fires. clear_after_s / cooldown_s debounce brief dips.
 # Both topics are concrete entries of that config's default_topics.
 #
-# Topics without an explicit rule below are still covered: the monitor raises a
-# default hz incident for any topic it classifies `danger` (sustained ~10 s), so
-# Events never stays empty while the table shows DANGER. The rules below tune the
-# threshold/hysteresis for the feeds that matter most and supersede that default.
+# Topics without an explicit rule below are still covered on their hz, by one of
+# two automatic mechanisms (each topic's hz has exactly ONE owner — no double
+# incident — with precedence config rule > derived rule > default synthesizer):
+#   - Derived rules: any topic WITH an expected_hz (see recording/default.yaml ->
+#     expected_hz_patterns) auto-gets a hz incident from its measured shortfall —
+#     WARNING below 0.8x expected, DANGER below 0.5x expected (sustained). Tune or
+#     disable these globally with a top-level `derived_rules:` block
+#     (warn_ratio / danger_ratio / enabled / sustain_s / clear_after_s /
+#     cooldown_s); see config/template/monitoring/alerts.yaml for the schema.
+#   - Default synthesizer: a topic with NO expected_hz that the monitor still
+#     classifies `danger` (from a learned baseline), sustained ~10 s, raises a
+#     default hz incident — so Events never stays empty while the table shows
+#     DANGER. The rules below OVERRIDE the derived defaults for these feeds
+#     (per topic + hz metric), tuning the exact threshold/hysteresis that matters.
+#
+# Note: do NOT write `metric: loss` rules. `loss_rate` is hardcoded null in the
+# monitor (true message loss is not computable in ROS 2 without sequence numbers,
+# and DDS sample-lost is the monitor's own drop, not the publisher's/rosbag's), so
+# a `loss` rule is never evaluated and can NEVER fire. Use hz / gap instead.
 # -----------------------------------------------------------------------------
 
 rules:

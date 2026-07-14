@@ -14,7 +14,7 @@ from kairos_common import (
     TopicQosOverride,
 )
 from topic_monitor.metrics import SelfLoadMonitor
-from topic_monitor.models import AlertMetric, AlertOp, AlertRule
+from topic_monitor.models import AlertMetric, AlertOp, AlertRule, DerivedRulesConfig
 from topic_monitor.monitor import MonitorService
 from topic_monitor.subscriber import FakeSubscriber, TopicGraphEntry
 
@@ -26,6 +26,16 @@ class FakeClock:
         self.t = 0.0
 
     def __call__(self) -> float:
+        return self.t
+
+
+class FakeNs:
+    """A manually-set wall-clock (UNIX ns) source for deterministic history."""
+
+    def __init__(self) -> None:
+        self.t = 0
+
+    def __call__(self) -> int:
         return self.t
 
 
@@ -150,6 +160,66 @@ def test_alert_fires_in_snapshot_when_hz_below_threshold() -> None:
     sub.feed("/cam", recv_t=0.0, size_bytes=10)
     snap = service.metrics_snapshot()
     assert any(a.topic == "/cam" for a in snap.alerts)
+
+
+# --- messages_total (cumulative per-topic count) --------------------------
+
+
+def test_messages_total_is_cumulative_beyond_window() -> None:
+    clock = FakeClock()
+    sub = FakeSubscriber()
+    service = MonitorService(sub, config=_config(), clock=clock)
+    service.start()
+    # 100 samples spread over 20 s while the snapshot window is only 5 s, so the
+    # windowed deque evicts but messages_total keeps counting every message.
+    for i in range(100):
+        clock.t = i * 0.2
+        sub.feed("/cam", recv_t=clock.t, size_bytes=100)
+    clock.t = 20.0
+    cam = next(t for t in service.metrics_snapshot().topics if t.name == "/cam")
+    assert cam.messages_total == 100
+    # A silent seeded topic stays at 0.
+    js = next(t for t in service.metrics_snapshot().topics if t.name == "/joint_states")
+    assert js.messages_total == 0
+
+
+# --- auto-derived rules + incident history (end-to-end via the snapshot) --
+
+
+def test_derived_rule_fires_and_incident_history_records_it() -> None:
+    clock = FakeClock()
+    ns = FakeNs()
+    sub = FakeSubscriber()
+    cfg = _config()  # /cam expected_hz = 10
+    cfg.monitor.window_s = [5]
+    service = MonitorService(
+        sub,
+        config=cfg,
+        derived_config=DerivedRulesConfig(sustain_s=0.0),
+        clock=clock,
+        wall_clock_ns=ns,
+    )
+    service.start()
+    # Feed /cam at ~2 Hz (10 samples over 5 s) -> well below 0.5*10=5 -> danger.
+    for i in range(10):
+        clock.t = i * 0.5
+        sub.feed("/cam", recv_t=clock.t, size_bytes=100)
+    clock.t = 4.9
+    ns.t = 1_000
+    snap = service.metrics_snapshot()
+    cam_alerts = [a for a in snap.alerts if a.topic == "/cam"]
+    assert len(cam_alerts) == 1  # exactly one incident, not derived + default
+    assert cam_alerts[0].rule_origin == "derived"
+    assert cam_alerts[0].severity == "danger"
+
+    incidents = service.incidents(since_ns=0)
+    cam_inc = [i for i in incidents if i.topic == "/cam"]
+    assert len(cam_inc) == 1
+    assert cam_inc[0].rule_origin == "derived"
+    assert cam_inc[0].fired_at_ns == 1_000
+    assert cam_inc[0].cleared_at_ns is None
+    # since filtering past the fire time excludes it.
+    assert service.incidents(since_ns=1_001) == []
 
 
 # --- OL-②.4 monitor self-load metrics ------------------------------------

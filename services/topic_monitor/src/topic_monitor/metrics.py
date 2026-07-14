@@ -393,10 +393,18 @@ class TopicWindow:
         self._obs: deque[_Obs] = deque()
         self._lock = threading.Lock()
         self._last_recv_t: float | None = None
+        # Cumulative messages seen since subscribe (never evicted, unlike the
+        # windowed deque). A start/stop delta yields a whole-window average rate.
+        self._messages_total = 0
 
     @property
     def expected_hz(self) -> float | None:
         return self._expected_hz
+
+    @property
+    def messages_total(self) -> int:
+        with self._lock:
+            return self._messages_total
 
     def add(self, sample: Sample) -> None:
         """Record a sample (called per received message)."""
@@ -414,6 +422,7 @@ class TopicWindow:
                     stamp_delay_s=stamp_delay,
                 )
             )
+            self._messages_total += 1
             self._last_recv_t = sample.recv_t
             self._evict(sample.recv_t)
 

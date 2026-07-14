@@ -28,6 +28,8 @@ from topic_monitor.metrics import MetricsRegistry, SelfLoadMonitor, TopicState
 from topic_monitor.models import (
     Alert,
     AlertRule,
+    DerivedRulesConfig,
+    Incident,
     MetricsSnapshot,
     MonitorSelfLoad,
     QosInfo,
@@ -65,13 +67,16 @@ class MonitorService:
         *,
         config: RecordingConfig | None = None,
         alert_rules: list[AlertRule] | None = None,
+        derived_config: DerivedRulesConfig | None = None,
         clock: Callable[[], float] = time.monotonic,
         perf_clock: Callable[[], float] = time.perf_counter,
+        wall_clock_ns: Callable[[], int] = time.time_ns,
     ) -> None:
         self._subscriber = subscriber
         self._config = config
         self._clock = clock
         self._perf = perf_clock
+        self._wall_clock_ns = wall_clock_ns
         self._lock = threading.Lock()
         self._paused = False
         # Shared short-TTL snapshot cache (MON-M2/M1); see _SNAPSHOT_TTL_S.
@@ -108,11 +113,14 @@ class MonitorService:
             expected_hz_for=make_expected_hz_resolver(config),
             **reg_kwargs,
         )
-        # The alert engine also synthesizes default DANGER incidents (D-9 ③) for
-        # topics whose status crosses danger with no config rule; it needs the
-        # same expected_hz resolver to label the reference rate.
+        # The alert engine also synthesizes derived per-topic hz incidents (from
+        # expected_hz shortfall) and default DANGER incidents (for baseline-only
+        # topics); it needs the same expected_hz resolver to label the reference
+        # rate and to decide derived coverage.
         self._alerts = AlertEngine(
-            alert_rules, expected_hz_for=make_expected_hz_resolver(config)
+            alert_rules,
+            expected_hz_for=make_expected_hz_resolver(config),
+            derived_config=derived_config,
         )
         # Monitor self-load (OL-②.4): on by default; the monitor block can toggle
         # it off to drop all overhead. Times sample-callback latency + snapshot age.
@@ -231,7 +239,9 @@ class MonitorService:
         topics = [self._topic_metrics(state, now) for state in states]
 
         topics_by_name = {t.name: t.model_dump() for t in topics}
-        alerts = self._alerts.evaluate(topics_by_name, now, ts)
+        alerts = self._alerts.evaluate(
+            topics_by_name, now, ts, now_ns=self._wall_clock_ns()
+        )
 
         allowlist_total, allowlist_matched = self._allowlist_diag(states)
         return MetricsSnapshot(
@@ -318,6 +328,7 @@ class MonitorService:
             stamp_delay_ms=wm.stamp_delay_ms,
             interarrival_p50_ms=wm.interarrival_p50_ms,
             interarrival_p95_ms=wm.interarrival_p95_ms,
+            messages_total=state.window.messages_total,
             loss_rate=None,  # true loss not generally computable in ROS 2 (spec)
             dds_samples_lost=state.dds_samples_lost,
             rate_shortfall=wm.rate_shortfall,
@@ -389,3 +400,15 @@ class MonitorService:
         do not each re-run the full evaluation on every request.
         """
         return self.metrics_snapshot().alerts
+
+    def incidents(self, since_ns: int = 0) -> list[Incident]:
+        """Incident-history episodes touched at/after *since_ns* (the /incidents body).
+
+        Forces a fresh snapshot build first so the engine records any transition
+        up to ~now (the ring is only advanced during evaluation), then reads the
+        bounded history ring — retaining fired+cleared episodes beyond the live
+        cleared-retention window. Lets a consumer settle "what fired during a
+        recording window" at stop time.
+        """
+        self.metrics_snapshot()
+        return self._alerts.incident_history(since_ns)
