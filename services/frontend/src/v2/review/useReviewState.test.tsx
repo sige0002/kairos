@@ -16,7 +16,8 @@ function wrapper({ children }: { children: ReactNode }) {
 function mockRuns(items: Record<string, unknown>[]) {
   return vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
-    if (url.includes('/runs')) return Promise.resolve(jsonResponse({ items, next_cursor: null }));
+    if (url.includes('/runs'))
+      return Promise.resolve(jsonResponse({ items, next_cursor: null }));
     return Promise.resolve(jsonResponse({}));
   });
 }
@@ -35,17 +36,23 @@ function mockRunsMutable(initial: Record<string, unknown>[], failIds: string[] =
       const id = decodeURIComponent(detail[1]!);
       deleteCalls.push(id);
       if (failIds.includes(id))
-        return Promise.resolve(jsonResponse({ error: { code: 'io', message: 'disk busy' } }, 500));
+        return Promise.resolve(
+          jsonResponse({ error: { code: 'io', message: 'disk busy' } }, 500),
+        );
       items = items.filter((r) => r.run_id !== id);
       return Promise.resolve(jsonResponse({}, 200));
     }
-    if (url.includes('/runs')) return Promise.resolve(jsonResponse({ items: [...items], next_cursor: null }));
+    if (url.includes('/runs'))
+      return Promise.resolve(jsonResponse({ items: [...items], next_cursor: null }));
     return Promise.resolve(jsonResponse({}));
   });
   return { deleteCalls };
 }
 
-async function excludeAll(result: { current: ReturnType<typeof useReviewState> }, runIds: string[]) {
+async function excludeAll(
+  result: { current: ReturnType<typeof useReviewState> },
+  runIds: string[],
+) {
   for (const id of runIds) {
     act(() => result.current.requestArchive(id));
     act(() => result.current.confirmArchive());
@@ -74,7 +81,9 @@ test('maps real /runs into rows and excludes runs that never finished', async ()
 });
 
 test('a failed /runs request yields an honest empty+error state, never fabricated rows', async () => {
-  vi.spyOn(globalThis, 'fetch').mockImplementation(() => Promise.reject(new Error('down')));
+  vi.spyOn(globalThis, 'fetch').mockImplementation(() =>
+    Promise.reject(new Error('down')),
+  );
   const { result } = renderHook(() => useReviewState(), { wrapper });
   await waitFor(() => expect(result.current.isError).toBe(true));
   expect(result.current.rows).toHaveLength(0);
@@ -108,7 +117,13 @@ test('a bridged Collect outcome surfaces as the effective quality/task/batch', a
 });
 
 test('a session override still wins over the bridged value', async () => {
-  saveEpisodeOutcome('a', { quality: 'good', taskResult: 'ok', batchNum: 1, episodeIndex: 1, savedAt: 1 });
+  saveEpisodeOutcome('a', {
+    quality: 'good',
+    taskResult: 'ok',
+    batchNum: 1,
+    episodeIndex: 1,
+    savedAt: 1,
+  });
   mockRuns([{ run_id: 'a', state: 'completed', started_at: '2026-07-13T09:00:00Z' }]);
   const { result } = renderHook(() => useReviewState(), { wrapper });
   await waitFor(() => expect(result.current.rows).toHaveLength(1));
@@ -176,7 +191,9 @@ test('decide() sets a specific decision on the selected episode', async () => {
 });
 
 test('requestArchive opens a pending confirm; confirming reclassifies as Not usable/Excluded/archived', async () => {
-  mockRuns([{ run_id: 'ep-a', state: 'completed', started_at: '2026-07-13T09:00:00Z' }]);
+  mockRuns([
+    { run_id: 'ep-a', state: 'completed', started_at: '2026-07-13T09:00:00Z' },
+  ]);
   const { result } = renderHook(() => useReviewState(), { wrapper });
   await waitFor(() => expect(result.current.rows).toHaveLength(1));
   const runId = result.current.rows[0]!.runId;
@@ -205,33 +222,33 @@ test('requestArchive opens a pending confirm; confirming reclassifies as Not usa
   expect(result.current.rows.find((r) => r.runId === runId)?.isArchived).toBe(false);
 });
 
-test(
-  'transferOne drives on_robot -> transferring -> transferred over time',
-  async () => {
-    mockRuns([{ run_id: 'ep-a', state: 'completed', started_at: '2026-07-13T09:00:00Z' }]);
-    const { result } = renderHook(() => useReviewState(), { wrapper });
-    await waitFor(() => expect(result.current.rows).toHaveLength(1));
+test('transferOne drives on_robot -> transferring -> transferred over time', async () => {
+  mockRuns([
+    { run_id: 'ep-a', state: 'completed', started_at: '2026-07-13T09:00:00Z' },
+  ]);
+  const { result } = renderHook(() => useReviewState(), { wrapper });
+  await waitFor(() => expect(result.current.rows).toHaveLength(1));
 
-    // Every real row seeds on_robot until explicitly transferred.
-    const onRobotRow = result.current.rows.find((r) => r.transferSlot.phase === 'on_robot');
-    expect(onRobotRow).toBeTruthy();
-    const runId = onRobotRow!.runId;
+  // Every real row seeds on_robot until explicitly transferred.
+  const onRobotRow = result.current.rows.find(
+    (r) => r.transferSlot.phase === 'on_robot',
+  );
+  expect(onRobotRow).toBeTruthy();
+  const runId = onRobotRow!.runId;
 
-    act(() => result.current.transferOne(runId));
-    await waitFor(() => {
+  act(() => result.current.transferOne(runId));
+  await waitFor(() => {
+    const row = result.current.rows.find((r) => r.runId === runId);
+    expect(row?.transferSlot.phase).toBe('transferring');
+  });
+  await waitFor(
+    () => {
       const row = result.current.rows.find((r) => r.runId === runId);
-      expect(row?.transferSlot.phase).toBe('transferring');
-    });
-    await waitFor(
-      () => {
-        const row = result.current.rows.find((r) => r.runId === runId);
-        expect(row?.transferSlot.phase).toBe('transferred');
-      },
-      { timeout: 4000 },
-    );
-  },
-  8000,
-);
+      expect(row?.transferSlot.phase).toBe('transferred');
+    },
+    { timeout: 4000 },
+  );
+}, 8000);
 
 test('search filters by episode number or run id', async () => {
   mockRuns([
@@ -250,8 +267,18 @@ test('search filters by episode number or run id', async () => {
 
 test('delete is a real DELETE, drops the run from the list, and clears selection', async () => {
   const { deleteCalls } = mockRunsMutable([
-    { run_id: 'a', state: 'completed', started_at: '2026-07-13T09:00:00Z', bytes: 1000 },
-    { run_id: 'b', state: 'completed', started_at: '2026-07-13T09:05:00Z', bytes: 2000 },
+    {
+      run_id: 'a',
+      state: 'completed',
+      started_at: '2026-07-13T09:00:00Z',
+      bytes: 1000,
+    },
+    {
+      run_id: 'b',
+      state: 'completed',
+      started_at: '2026-07-13T09:05:00Z',
+      bytes: 2000,
+    },
   ]);
   const { result } = renderHook(() => useReviewState(), { wrapper });
   await waitFor(() => expect(result.current.rows).toHaveLength(2));
@@ -276,9 +303,24 @@ test('delete is a real DELETE, drops the run from the list, and clears selection
 
 test('bulk delete removes every excluded run on success', async () => {
   const { deleteCalls } = mockRunsMutable([
-    { run_id: 'a', state: 'completed', started_at: '2026-07-13T09:00:00Z', bytes: 1000 },
-    { run_id: 'b', state: 'completed', started_at: '2026-07-13T09:05:00Z', bytes: 2000 },
-    { run_id: 'c', state: 'completed', started_at: '2026-07-13T09:10:00Z', bytes: 3000 },
+    {
+      run_id: 'a',
+      state: 'completed',
+      started_at: '2026-07-13T09:00:00Z',
+      bytes: 1000,
+    },
+    {
+      run_id: 'b',
+      state: 'completed',
+      started_at: '2026-07-13T09:05:00Z',
+      bytes: 2000,
+    },
+    {
+      run_id: 'c',
+      state: 'completed',
+      started_at: '2026-07-13T09:10:00Z',
+      bytes: 3000,
+    },
   ]);
   const { result } = renderHook(() => useReviewState(), { wrapper });
   await waitFor(() => expect(result.current.rows).toHaveLength(3));
@@ -299,8 +341,18 @@ test('bulk delete removes every excluded run on success', async () => {
 test('bulk delete reports per-run failures honestly; a failed run stays excluded', async () => {
   mockRunsMutable(
     [
-      { run_id: 'a', state: 'completed', started_at: '2026-07-13T09:00:00Z', bytes: 1000 },
-      { run_id: 'b', state: 'completed', started_at: '2026-07-13T09:05:00Z', bytes: 2000 },
+      {
+        run_id: 'a',
+        state: 'completed',
+        started_at: '2026-07-13T09:00:00Z',
+        bytes: 1000,
+      },
+      {
+        run_id: 'b',
+        state: 'completed',
+        started_at: '2026-07-13T09:05:00Z',
+        bytes: 2000,
+      },
     ],
     ['b'], // DELETE b fails
   );
@@ -314,15 +366,32 @@ test('bulk delete reports per-run failures honestly; a failed run stays excluded
   });
   expect(result.current.bulkFailures.map((f) => f.runId)).toEqual(['b']);
   // 'a' is gone; 'b' failed, so it remains excluded (not silently dropped).
-  await waitFor(() => expect(result.current.excludedRows.map((r) => r.runId)).toEqual(['b']));
+  await waitFor(() =>
+    expect(result.current.excludedRows.map((r) => r.runId)).toEqual(['b']),
+  );
   expect(result.current.bulkDeleteOpen).toBe(true); // stays open to show the failure
 });
 
 test('operator filter is real: options are the distinct run operators and it filters rows', async () => {
   mockRuns([
-    { run_id: 'a', state: 'completed', operator: 'alice', started_at: '2026-07-13T09:00:00Z' },
-    { run_id: 'b', state: 'completed', operator: 'bob', started_at: '2026-07-13T09:05:00Z' },
-    { run_id: 'c', state: 'completed', operator: 'alice', started_at: '2026-07-13T09:10:00Z' },
+    {
+      run_id: 'a',
+      state: 'completed',
+      operator: 'alice',
+      started_at: '2026-07-13T09:00:00Z',
+    },
+    {
+      run_id: 'b',
+      state: 'completed',
+      operator: 'bob',
+      started_at: '2026-07-13T09:05:00Z',
+    },
+    {
+      run_id: 'c',
+      state: 'completed',
+      operator: 'alice',
+      started_at: '2026-07-13T09:10:00Z',
+    },
   ]);
   const { result } = renderHook(() => useReviewState(), { wrapper });
   await waitFor(() => expect(result.current.rows).toHaveLength(3));
@@ -355,14 +424,23 @@ function mockRunsWithEpisode(
       }
       patchCalls.push({ url, body });
       if (patchStatus >= 400) {
-        return Promise.resolve(jsonResponse({ error: { code: 'x', message: 'no' } }, patchStatus));
+        return Promise.resolve(
+          jsonResponse({ error: { code: 'x', message: 'no' } }, patchStatus),
+        );
       }
       return Promise.resolve(jsonResponse({ episode_id: 'ep_1', ...body }, 200));
     }
     if (url.includes('/runs')) {
       return Promise.resolve(
         jsonResponse({
-          items: [{ run_id: 'a', state: 'completed', started_at: '2026-07-13T09:00:00Z', episode }],
+          items: [
+            {
+              run_id: 'a',
+              state: 'completed',
+              started_at: '2026-07-13T09:00:00Z',
+              episode,
+            },
+          ],
           next_cursor: null,
         }),
       );
@@ -394,7 +472,10 @@ test('cycling quality on a server-backed run PATCHes the episode with the mapped
   expect(result.current.selected!.effectiveQuality).toBe('Needs review');
   await waitFor(() => expect(patchCalls).toHaveLength(1));
   expect(patchCalls[0]?.url).toContain('/episodes/ep_1');
-  expect(patchCalls[0]?.body).toMatchObject({ quality: 'needs_review', quality_source: 'operator' });
+  expect(patchCalls[0]?.body).toMatchObject({
+    quality: 'needs_review',
+    quality_source: 'operator',
+  });
 });
 
 test('excluding a server-backed run PATCHes review_status excluded', async () => {
@@ -407,7 +488,10 @@ test('excluding a server-backed run PATCHes review_status excluded', async () =>
 
   await waitFor(() => expect(patchCalls).toHaveLength(1));
   expect(patchCalls[0]?.url).toContain('/episodes/ep_1');
-  expect(patchCalls[0]?.body).toMatchObject({ review_status: 'excluded', quality: 'not_usable' });
+  expect(patchCalls[0]?.body).toMatchObject({
+    review_status: 'excluded',
+    quality: 'not_usable',
+  });
 });
 
 test('a failed PATCH reverts the optimistic quality override', async () => {
@@ -426,11 +510,14 @@ test('a run with no server episode stays local-only (no PATCH is attempted)', as
   const patchCalls: string[] = [];
   vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     const url = String(input);
-    if (url.includes('/episodes/') && (init?.method ?? 'GET') === 'PATCH') patchCalls.push(url);
+    if (url.includes('/episodes/') && (init?.method ?? 'GET') === 'PATCH')
+      patchCalls.push(url);
     if (url.includes('/runs')) {
       return Promise.resolve(
         jsonResponse({
-          items: [{ run_id: 'a', state: 'completed', started_at: '2026-07-13T09:00:00Z' }],
+          items: [
+            { run_id: 'a', state: 'completed', started_at: '2026-07-13T09:00:00Z' },
+          ],
           next_cursor: null,
         }),
       );
@@ -484,8 +571,18 @@ function mockRunsWithExport(items: Record<string, unknown>[]) {
 
 test('effectiveReviewStatus reflects the server review_status (chip source)', async () => {
   mockRunsWithExport([
-    { run_id: 'a', state: 'completed', started_at: '2026-07-13T09:00:00Z', episode: episode('adopted') },
-    { run_id: 'b', state: 'completed', started_at: '2026-07-13T09:05:00Z', episode: episode('pending') },
+    {
+      run_id: 'a',
+      state: 'completed',
+      started_at: '2026-07-13T09:00:00Z',
+      episode: episode('adopted'),
+    },
+    {
+      run_id: 'b',
+      state: 'completed',
+      started_at: '2026-07-13T09:05:00Z',
+      episode: episode('pending'),
+    },
   ]);
   const { result } = renderHook(() => useReviewState(), { wrapper });
   await waitFor(() => expect(result.current.rows).toHaveLength(2));
@@ -496,7 +593,12 @@ test('effectiveReviewStatus reflects the server review_status (chip source)', as
 
 test('adopting a run flips its effectiveReviewStatus immediately', async () => {
   mockRunsWithExport([
-    { run_id: 'a', state: 'completed', started_at: '2026-07-13T09:00:00Z', episode: episode('pending') },
+    {
+      run_id: 'a',
+      state: 'completed',
+      started_at: '2026-07-13T09:00:00Z',
+      episode: episode('pending'),
+    },
   ]);
   const { result } = renderHook(() => useReviewState(), { wrapper });
   await waitFor(() => expect(result.current.rows).toHaveLength(1));
@@ -510,13 +612,24 @@ test('adopting a run flips its effectiveReviewStatus immediately', async () => {
 test('READY lanes: good is ready with zero clicks; needs_check + toggle behavior', async () => {
   mockRunsWithExport([
     // Good quality → READY automatically (no click).
-    { run_id: 'good', state: 'completed', started_at: '2026-07-13T09:00:00Z', episode: episode('pending', { quality: 'good' }) },
+    {
+      run_id: 'good',
+      state: 'completed',
+      started_at: '2026-07-13T09:00:00Z',
+      episode: episode('pending', { quality: 'good' }),
+    },
     // Needs-review + failure → NEEDS CHECK until resolved.
-    { run_id: 'chk', state: 'completed', started_at: '2026-07-13T09:05:00Z', episode: episode('pending', { quality: 'needs_review', task_result: 'failure' }) },
+    {
+      run_id: 'chk',
+      state: 'completed',
+      started_at: '2026-07-13T09:05:00Z',
+      episode: episode('pending', { quality: 'needs_review', task_result: 'failure' }),
+    },
   ]);
   const { result } = renderHook(() => useReviewState(), { wrapper });
   await waitFor(() => expect(result.current.rows).toHaveLength(2));
-  const lane = (id: string) => result.current.rows.find((r) => r.runId === id)?.reviewLane;
+  const lane = (id: string) =>
+    result.current.rows.find((r) => r.runId === id)?.reviewLane;
   expect(lane('good')).toBe('ready');
   expect(lane('chk')).toBe('needs_check');
   expect(result.current.nNeedsCheck).toBe(1);
@@ -527,7 +640,10 @@ test('READY lanes: good is ready with zero clicks; needs_check + toggle behavior
   act(() => result.current.select('chk'));
   act(() => result.current.markOk());
   expect(lane('chk')).toBe('ready');
-  expect(result.current.readyExportable.map((r) => r.runId).sort()).toEqual(['chk', 'good']);
+  expect(result.current.readyExportable.map((r) => r.runId).sort()).toEqual([
+    'chk',
+    'good',
+  ]);
 
   // Toggle include-failed OFF → the task-failed READY run drops out of the set.
   act(() => result.current.setIncludeFailed(false));
@@ -536,7 +652,12 @@ test('READY lanes: good is ready with zero clicks; needs_check + toggle behavior
 
 test('confirmExportReady POSTs the READY completed runs and double-invalidates (runs + datasets)', async () => {
   const { exportCalls } = mockRunsWithExport([
-    { run_id: 'a', state: 'completed', started_at: '2026-07-13T09:00:00Z', episode: episode('pending', { quality: 'good' }) },
+    {
+      run_id: 'a',
+      state: 'completed',
+      started_at: '2026-07-13T09:00:00Z',
+      episode: episode('pending', { quality: 'good' }),
+    },
   ]);
   const invalidate = vi.spyOn(QueryClient.prototype, 'invalidateQueries');
   const { result } = renderHook(() => useReviewState(), { wrapper });
@@ -565,7 +686,8 @@ function mockRunsAndRetention(
   vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
     if (url.includes('/retention')) return Promise.resolve(jsonResponse(retention));
-    if (url.includes('/runs')) return Promise.resolve(jsonResponse({ items, next_cursor: null }));
+    if (url.includes('/runs'))
+      return Promise.resolve(jsonResponse({ items, next_cursor: null }));
     return Promise.resolve(jsonResponse({}));
   });
 }
@@ -617,7 +739,13 @@ test('retention: disabled (days 0) never shows the banner', async () => {
 test('retention: dismiss hides the banner, but an active filter keeps it visible for "show all"', async () => {
   mockRunsAndRetention(
     [{ run_id: 'old1', state: 'completed', started_at: '2020-01-01T00:00:00Z' }],
-    { days: 14, total_bytes: 10, candidates: [{ run_id: 'old1', state: 'completed', has_episode: false, bytes: 10 }] },
+    {
+      days: 14,
+      total_bytes: 10,
+      candidates: [
+        { run_id: 'old1', state: 'completed', has_episode: false, bytes: 10 },
+      ],
+    },
   );
   const { result } = renderHook(() => useReviewState(), { wrapper });
   await waitFor(() => expect(result.current.showRetentionBanner).toBe(true));
@@ -634,13 +762,20 @@ test('a failed export keeps the run in Review with an honest per-run note', asyn
   vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     const url = String(input);
     if (url.includes('/datasets/export') && (init?.method ?? 'GET') === 'POST') {
-      return Promise.resolve(jsonResponse({ error: { code: 'io', message: 'disk full' } }, 500));
+      return Promise.resolve(
+        jsonResponse({ error: { code: 'io', message: 'disk full' } }, 500),
+      );
     }
     if (url.includes('/runs')) {
       return Promise.resolve(
         jsonResponse({
           items: [
-            { run_id: 'a', state: 'completed', started_at: '2026-07-13T09:00:00Z', episode: episode('pending', { quality: 'good' }) },
+            {
+              run_id: 'a',
+              state: 'completed',
+              started_at: '2026-07-13T09:00:00Z',
+              episode: episode('pending', { quality: 'good' }),
+            },
           ],
           next_cursor: null,
         }),
@@ -660,4 +795,151 @@ test('a failed export keeps the run in Review with an honest per-run note', asyn
   // The dialog stays open so the failure is visible; the run is still READY.
   expect(result.current.exportReadyOpen).toBe(true);
   expect(result.current.readyExportable).toHaveLength(1);
+});
+
+// ---------------------------------------------------------------------------
+// Batch filter + batch-level bulk exclude/return (blast-radius follow-up).
+// ---------------------------------------------------------------------------
+
+function epi(
+  run: string,
+  batchId: string,
+  idx: number,
+  over: Record<string, unknown> = {},
+) {
+  return {
+    run_id: run,
+    state: 'completed',
+    started_at: `2026-07-13T09:0${idx}:00Z`,
+    episode: {
+      episode_id: `e_${run}`,
+      batch_id: batchId,
+      index_in_batch: idx,
+      task_result: 'success',
+      quality: 'good',
+      review_status: 'pending',
+      batch_seq: batchId === 'batch_a' ? 1 : 2,
+      batch_created_at: '2026-07-13T09:00:00Z',
+      ...over,
+    },
+  };
+}
+
+function mockRunsWithPatch(
+  items: Record<string, unknown>[],
+  failEpisodeIds: string[] = [],
+) {
+  const patches: { id: string; body: Record<string, unknown> }[] = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    const method = (init?.method ?? 'GET').toUpperCase();
+    const ep = url.match(/\/episodes\/([^/?]+)/);
+    if (method === 'PATCH' && ep) {
+      const id = decodeURIComponent(ep[1]!);
+      patches.push({
+        id,
+        body: JSON.parse(String(init?.body)) as Record<string, unknown>,
+      });
+      if (failEpisodeIds.includes(id))
+        return Promise.resolve(
+          jsonResponse({ error: { code: 'io', message: 'down' } }, 500),
+        );
+      return Promise.resolve(jsonResponse({ episode_id: id }));
+    }
+    if (url.includes('/runs'))
+      return Promise.resolve(jsonResponse({ items, next_cursor: null }));
+    return Promise.resolve(jsonResponse({}));
+  });
+  return { patches };
+}
+
+test('the batch chip filter narrows rows to one batch and toggles off', async () => {
+  mockRunsWithPatch([
+    epi('r1', 'batch_a', 1),
+    epi('r2', 'batch_a', 2),
+    epi('r3', 'batch_b', 1),
+  ]);
+  const { result } = renderHook(() => useReviewState(), { wrapper });
+  await waitFor(() => expect(result.current.rows).toHaveLength(3));
+
+  act(() => result.current.toggleBatchFilter('batch_a'));
+  expect(result.current.rows.map((r) => r.runId).sort()).toEqual(['r1', 'r2']);
+  expect(result.current.batchFilterLabel).toContain('#1');
+
+  // Same batch again → clears; clearFilters also clears it.
+  act(() => result.current.toggleBatchFilter('batch_a'));
+  expect(result.current.rows).toHaveLength(3);
+  act(() => result.current.toggleBatchFilter('batch_b'));
+  act(() => result.current.clearFilters());
+  expect(result.current.batchFilter).toBeNull();
+});
+
+test('Exclude batch PATCHes every not-yet-excluded episode of the batch (and only that batch)', async () => {
+  const { patches } = mockRunsWithPatch([
+    epi('r1', 'batch_a', 1),
+    epi('r2', 'batch_a', 2),
+    // Already excluded on the server: not a target.
+    epi('r3', 'batch_a', 3, { review_status: 'excluded', quality: 'not_usable' }),
+    epi('r4', 'batch_b', 1),
+  ]);
+  const { result } = renderHook(() => useReviewState(), { wrapper });
+  await waitFor(() => expect(result.current.rows).toHaveLength(4));
+
+  act(() => result.current.toggleBatchFilter('batch_a'));
+  expect(result.current.batchExcludable.map((r) => r.runId).sort()).toEqual([
+    'r1',
+    'r2',
+  ]);
+  expect(result.current.batchExcluded.map((r) => r.runId)).toEqual(['r3']);
+
+  act(() => result.current.requestExcludeBatch());
+  expect(result.current.excludeBatchOpen).toBe(true);
+  await act(async () => result.current.confirmExcludeBatch());
+
+  const excludePatches = patches.filter((p) => p.body.review_status === 'excluded');
+  expect(excludePatches.map((p) => p.id).sort()).toEqual(['e_r1', 'e_r2']);
+  expect(excludePatches[0]?.body).toMatchObject({
+    review_status: 'excluded',
+    quality: 'not_usable',
+    quality_source: 'operator',
+  });
+  // batch_b was never touched.
+  expect(patches.some((p) => p.id === 'e_r4')).toBe(false);
+  await waitFor(() => expect(result.current.excludeBatchOpen).toBe(false));
+});
+
+test('a failed exclude keeps that episode un-excluded and reports it (never silent)', async () => {
+  const { patches } = mockRunsWithPatch(
+    [epi('r1', 'batch_a', 1), epi('r2', 'batch_a', 2)],
+    ['e_r2'],
+  );
+  const { result } = renderHook(() => useReviewState(), { wrapper });
+  await waitFor(() => expect(result.current.rows).toHaveLength(2));
+  act(() => result.current.toggleBatchFilter('batch_a'));
+  act(() => result.current.requestExcludeBatch());
+  await act(async () => result.current.confirmExcludeBatch());
+
+  expect(patches).toHaveLength(2);
+  expect(result.current.excludeBatchFailures).toHaveLength(1);
+  expect(result.current.excludeBatchFailures[0]?.runId).toBe('r2');
+  // The modal stays open so the failure is visible; r2 kept its prior status.
+  expect(result.current.excludeBatchOpen).toBe(true);
+  const r2 = result.current.rows.find((r) => r.runId === 'r2');
+  expect(r2?.effectiveReviewStatus).not.toBe('excluded');
+});
+
+test('Return batch restores every excluded episode of the batch to pending', async () => {
+  const { patches } = mockRunsWithPatch([
+    epi('r1', 'batch_a', 1, { review_status: 'excluded', quality: 'not_usable' }),
+    epi('r2', 'batch_a', 2, { review_status: 'excluded', quality: 'not_usable' }),
+  ]);
+  const { result } = renderHook(() => useReviewState(), { wrapper });
+  await waitFor(() => expect(result.current.rows.length).toBeGreaterThan(0));
+  act(() => result.current.toggleBatchFilter('batch_a'));
+  expect(result.current.batchExcluded).toHaveLength(2);
+
+  act(() => result.current.returnBatchToReview());
+  await waitFor(() =>
+    expect(patches.filter((p) => p.body.review_status === 'pending')).toHaveLength(2),
+  );
 });

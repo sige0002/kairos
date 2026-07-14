@@ -22,6 +22,10 @@ Phase A hardening toward a supportable release
   "All") and "Manifest (n)": download the filtered rows as a manifest JSON —
   a versionable training-set definition (2026-07-14 second split hearing:
   no physical success/failure split).
+- Review batch filter + batch-level bulk decisions: clicking a row's batch
+  chip filters to that batch; "Exclude batch (n)…" (reversible, kept on disk,
+  per-row failure reporting) and "↺ Return batch (n)" act on the whole batch —
+  the one-action consequence of a failed per-batch validation.
 - Per-batch bulk validation: the Validation target selector gains a "Batches"
   group that runs the selected pipeline over every unexported run of a batch
   (the blast-radius check for defects that cluster per batch).

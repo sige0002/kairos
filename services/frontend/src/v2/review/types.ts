@@ -47,6 +47,9 @@ export interface EpisodeRow {
   /** Collect batch number from the client-side bridge when present, else "—"
    *  (the backend doesn't track per-run batch grouping yet). */
   batch: string;
+  /** Server batch id (globally unique) when the run has a server episode —
+   *  the real key behind the batch filter. Bridge-only rows have none. */
+  batchId: string | null;
   /** Real operator string (RunSummary.operator); null when the run has none. */
   operator: string | null;
   /** "Not usable" for a run that didn't finish cleanly (backend verdict, always

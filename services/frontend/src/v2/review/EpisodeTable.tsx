@@ -97,7 +97,31 @@ function Row({
       <span className="font-mono text-[13px] font-semibold text-gray-900">
         #{row.ep}
       </span>
-      <span className="font-mono text-[12.5px] text-gray-500">{row.batch}</span>
+      {row.batchId ? (
+        <button
+          type="button"
+          data-testid={`review-batch-chip-${row.ep}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            rv.toggleBatchFilter(row.batchId);
+          }}
+          title={
+            rv.batchFilter === row.batchId
+              ? 'Show all batches'
+              : 'Filter to this batch (then decide it in one action)'
+          }
+          className={cn(
+            'w-fit rounded-chip px-1 text-left font-mono text-[12.5px]',
+            rv.batchFilter === row.batchId
+              ? 'bg-teal-100 font-semibold text-teal-800'
+              : 'text-gray-500 hover:bg-gray-100 hover:text-gray-700',
+          )}
+        >
+          {row.batch}
+        </button>
+      ) : (
+        <span className="font-mono text-[12.5px] text-gray-500">{row.batch}</span>
+      )}
       <QualityCell row={row} />
       <TaskResultChip task={row.effectiveTask} reason={row.failReason} />
       <span className="font-mono text-xs text-gray-500">
@@ -210,6 +234,46 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
           >
             Transfer untransferred ({rv.nUntransferred})
           </button>
+        )}
+        {rv.batchFilter && (
+          <>
+            <span
+              data-testid="review-batch-filter-chip"
+              className="rounded-chip bg-teal-50 px-2 py-0.5 font-mono text-[11px] font-semibold text-teal-800"
+            >
+              Batch {rv.batchFilterLabel}
+            </span>
+            <button
+              type="button"
+              data-testid="review-exclude-batch"
+              onClick={rv.requestExcludeBatch}
+              disabled={rv.batchExcludable.length === 0}
+              title="Exclude every not-yet-excluded episode of this batch (recordings kept, reversible)"
+              className="rounded-control border border-red-200 bg-white px-3 py-1.5 text-[12.5px] font-semibold text-red-700 transition-colors hover:bg-red-50 disabled:cursor-not-allowed disabled:border-gray-100 disabled:text-gray-300 disabled:hover:bg-white"
+            >
+              Exclude batch ({rv.batchExcludable.length})…
+            </button>
+            {rv.batchExcluded.length > 0 && (
+              <button
+                type="button"
+                data-testid="review-return-batch"
+                onClick={rv.returnBatchToReview}
+                title="Return every excluded episode of this batch to review (pending)"
+                className="rounded-control border border-gray-200 bg-white px-3 py-1.5 text-[12.5px] font-semibold text-gray-500 transition-colors hover:bg-gray-50"
+              >
+                ↺ Return batch ({rv.batchExcluded.length})
+              </button>
+            )}
+            <button
+              type="button"
+              data-testid="review-batch-filter-clear"
+              onClick={() => rv.toggleBatchFilter(null)}
+              title="Show all batches"
+              className="rounded-control border border-gray-200 bg-white px-2 py-1.5 text-[12.5px] font-semibold text-gray-500 hover:bg-gray-50"
+            >
+              ✕
+            </button>
+          </>
         )}
         <label
           data-testid="review-include-failed"

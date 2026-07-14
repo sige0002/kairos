@@ -24,7 +24,12 @@ import type {
 import { useUiStore } from '../../store/uiStore';
 import { patchEpisode, removeEpisodeOutcome } from '../episodeBridge';
 import { mapRunsToEpisodes } from './mapRuns';
-import { initialTransferSlot, transferReducer, TRANSFER_DURATION_MS, TRANSFER_TICK_MS } from './transfer';
+import {
+  initialTransferSlot,
+  transferReducer,
+  TRANSFER_DURATION_MS,
+  TRANSFER_TICK_MS,
+} from './transfer';
 import { useSplitMode } from './splitMode';
 import type {
   Decision,
@@ -46,7 +51,11 @@ const REVIEW_PAGE_LIMIT = 200;
 const QUALITY_ORDER: Quality[] = ['Good', 'Needs review', 'Not usable'];
 
 // Default work-queue order: NEEDS CHECK first (exceptions), then READY, EXCLUDED.
-const LANE_ORDER: Record<ReviewLane, number> = { needs_check: 0, ready: 1, excluded: 2 };
+const LANE_ORDER: Record<ReviewLane, number> = {
+  needs_check: 0,
+  ready: 1,
+  excluded: 2,
+};
 
 // ---- Review display value → Phase 2 server enum (for PATCH /episodes) ------
 function toServerQuality(q: Quality): EpisodeQuality {
@@ -85,6 +94,28 @@ export interface ReviewState {
   setOperatorFilter: (v: string) => void;
   operatorOptions: string[];
   clearFilters: () => void;
+
+  // ---- batch filter + batch-level bulk decisions (blast-radius follow-up) --
+  /** Active batch filter (server batch_id), or null. Toggled by clicking a
+   *  row's batch chip; rows without a server batch can't be filtered to. */
+  batchFilter: string | null;
+  /** Display label ("MM/DD · #N") of the filtered batch (null when inactive). */
+  batchFilterLabel: string | null;
+  /** Toggle the filter: same batch again (or null) clears it. */
+  toggleBatchFilter: (batchId: string | null) => void;
+  /** Rows of the filtered batch not yet excluded — what "Exclude batch" hits. */
+  batchExcludable: DecoratedEpisode[];
+  /** Excluded rows of the filtered batch — what "Return batch" restores. */
+  batchExcluded: DecoratedEpisode[];
+  requestExcludeBatch: () => void;
+  excludeBatchOpen: boolean;
+  excludeBatchRunning: boolean;
+  excludeBatchDone: number;
+  excludeBatchFailures: { runId: string; error: string }[];
+  confirmExcludeBatch: () => void;
+  cancelExcludeBatch: () => void;
+  /** Reversible counterpart: every excluded row of the batch → pending. */
+  returnBatchToReview: () => void;
 
   selectedRunId: string | null;
   select: (runId: string) => void;
@@ -206,7 +237,8 @@ export function useReviewState(): ReviewState {
   const retention = retentionQuery.data;
 
   const isError = runsQuery.isError;
-  const errorMessage = runsQuery.error instanceof Error ? runsQuery.error.message : null;
+  const errorMessage =
+    runsQuery.error instanceof Error ? runsQuery.error.message : null;
   const baseEpisodes: EpisodeRow[] = useMemo(
     // On error we show an honest empty/error state (EpisodeTable), never a
     // fabricated demo dataset.
@@ -252,7 +284,9 @@ export function useReviewState(): ReviewState {
 
   // ---- local overlays: decisions / overrides / archive / transfer ----------
   const [decisions, setDecisions] = useState<Record<string, Decision>>({});
-  const [overrides, setOverrides] = useState<Record<string, { quality?: Quality; task?: TaskResult }>>({});
+  const [overrides, setOverrides] = useState<
+    Record<string, { quality?: Quality; task?: TaskResult }>
+  >({});
   // Per-run count of the operator's own override actions this session — real
   // local history behind the detail panel's "override history" caption.
   const [overrideCounts, setOverrideCounts] = useState<Record<string, number>>({});
@@ -326,6 +360,10 @@ export function useReviewState(): ReviewState {
   const toggleArchived = useCallback(() => setShowArchived((v) => !v), []);
   const [search, setSearch] = useState('');
   const [operatorFilter, setOperatorFilter] = useState<string>(ALL_OPERATORS);
+  const [batchFilter, setBatchFilter] = useState<string | null>(null);
+  const toggleBatchFilter = useCallback((batchId: string | null) => {
+    setBatchFilter((cur) => (batchId === null || cur === batchId ? null : batchId));
+  }, []);
 
   // ---- retention (advisory) -----------------------------------------------
   const [retentionFilterActive, setRetentionFilterActive] = useState(false);
@@ -340,7 +378,10 @@ export function useReviewState(): ReviewState {
   const retentionTotalBytes = retention?.total_bytes ?? 0;
   const applyRetentionFilter = useCallback(() => setRetentionFilterActive(true), []);
   const clearRetentionFilter = useCallback(() => setRetentionFilterActive(false), []);
-  const dismissRetentionBanner = useCallback(() => setRetentionBannerDismissed(true), []);
+  const dismissRetentionBanner = useCallback(
+    () => setRetentionBannerDismissed(true),
+    [],
+  );
   // Show when there are candidates and the window is on; stay visible while the
   // filter is active (even if dismissed) so "Show all" is always reachable.
   const showRetentionBanner =
@@ -351,6 +392,7 @@ export function useReviewState(): ReviewState {
   const clearFilters = useCallback(() => {
     setSearch('');
     setOperatorFilter(ALL_OPERATORS);
+    setBatchFilter(null);
     setRetentionFilterActive(false);
   }, []);
 
@@ -367,15 +409,31 @@ export function useReviewState(): ReviewState {
     return decorated
       .filter((r) => showArchived || !r.isArchived)
       .filter((r) => operatorFilter === ALL_OPERATORS || r.operator === operatorFilter)
+      .filter((r) => !batchFilter || r.batchId === batchFilter)
       .filter((r) => !retentionFilterActive || retentionCandidateRunIds.has(r.runId))
       .filter((r) => {
         if (!q) return true;
-        return `#${r.ep}`.toLowerCase().includes(q) || r.runId.toLowerCase().includes(q);
+        return (
+          `#${r.ep}`.toLowerCase().includes(q) || r.runId.toLowerCase().includes(q)
+        );
       })
-      .sort((a, b) => LANE_ORDER[a.reviewLane] - LANE_ORDER[b.reviewLane] || b.ep - a.ep);
-  }, [decorated, search, operatorFilter, showArchived, retentionFilterActive, retentionCandidateRunIds]);
+      .sort(
+        (a, b) => LANE_ORDER[a.reviewLane] - LANE_ORDER[b.reviewLane] || b.ep - a.ep,
+      );
+  }, [
+    decorated,
+    search,
+    operatorFilter,
+    batchFilter,
+    showArchived,
+    retentionFilterActive,
+    retentionCandidateRunIds,
+  ]);
 
-  const nArchived = useMemo(() => decorated.filter((r) => r.isArchived).length, [decorated]);
+  const nArchived = useMemo(
+    () => decorated.filter((r) => r.isArchived).length,
+    [decorated],
+  );
   const nNeedsCheck = useMemo(
     () => decorated.filter((r) => r.reviewLane === 'needs_check').length,
     [decorated],
@@ -391,7 +449,9 @@ export function useReviewState(): ReviewState {
     if (first) setSelectedRunId(first.runId);
   }, [decorated, selectedRunId]);
   const selected = decorated.find((r) => r.runId === selectedRunId);
-  const selectedOverrideCount = selectedRunId ? (overrideCounts[selectedRunId] ?? 0) : 0;
+  const selectedOverrideCount = selectedRunId
+    ? (overrideCounts[selectedRunId] ?? 0)
+    : 0;
 
   // ---- archive (with confirm) ------------------------------------------
   // "Archive" is this file's internal name for what the UI presents as
@@ -434,7 +494,9 @@ export function useReviewState(): ReviewState {
       [runId]: { ...prev[runId], quality: 'Not usable' },
     }));
     setDecisions((prev) => ({ ...prev, [runId]: 'excluded' }));
-    showToast(`Episode #${row?.ep ?? '?'} → Not usable · Excluded (recording kept, restorable)`);
+    showToast(
+      `Episode #${row?.ep ?? '?'} → Not usable · Excluded (recording kept, restorable)`,
+    );
     setPendingArchiveRunId(null);
     // Exclude on the server; revert the whole optimistic change if it fails.
     syncEpisode(
@@ -450,7 +512,16 @@ export function useReviewState(): ReviewState {
         restoreDecision(runId, prevDecision);
       },
     );
-  }, [pendingArchiveRunId, decorated, overrides, decisions, showToast, syncEpisode, restoreOverride, restoreDecision]);
+  }, [
+    pendingArchiveRunId,
+    decorated,
+    overrides,
+    decisions,
+    showToast,
+    syncEpisode,
+    restoreOverride,
+    restoreDecision,
+  ]);
   const cancelArchive = useCallback(() => setPendingArchiveRunId(null), []);
   const pendingArchiveEp = pendingArchiveRunId
     ? (decorated.find((r) => r.runId === pendingArchiveRunId)?.ep ?? null)
@@ -462,9 +533,12 @@ export function useReviewState(): ReviewState {
   // permanent DELETE /api/v1/runs/{id}. Purge all local overlay state for a
   // gone run so nothing stale lingers, and drop the selection if it was the
   // deleted one (the auto-select effect then picks the next episode).
-  const excludedRows = useMemo(() => decorated.filter((r) => r.isArchived), [decorated]);
+  const excludedRows = useMemo(
+    () => decorated.filter((r) => r.isArchived),
+    [decorated],
+  );
   const purgeLocal = useCallback((runId: string) => {
-    const drop = <T,>(prev: Record<string, T>) => {
+    const drop = <T>(prev: Record<string, T>) => {
       if (!(runId in prev)) return prev;
       const next = { ...prev };
       delete next[runId];
@@ -520,7 +594,9 @@ export function useReviewState(): ReviewState {
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
   const [bulkRunning, setBulkRunning] = useState(false);
   const [bulkDone, setBulkDone] = useState(0);
-  const [bulkFailures, setBulkFailures] = useState<{ runId: string; error: string }[]>([]);
+  const [bulkFailures, setBulkFailures] = useState<{ runId: string; error: string }[]>(
+    [],
+  );
   const requestBulkDelete = useCallback(() => {
     setBulkFailures([]);
     setBulkDone(0);
@@ -548,7 +624,10 @@ export function useReviewState(): ReviewState {
         await apiDelete(`/runs/${encodeURIComponent(t.runId)}`);
         succeeded.push(t.runId);
       } catch (e) {
-        failures.push({ runId: t.runId, error: e instanceof Error ? e.message : 'failed' });
+        failures.push({
+          runId: t.runId,
+          error: e instanceof Error ? e.message : 'failed',
+        });
       }
       setBulkDone((d) => d + 1);
       setBulkFailures([...failures]);
@@ -557,13 +636,142 @@ export function useReviewState(): ReviewState {
     await queryClient.invalidateQueries({ queryKey: REVIEW_RUNS_KEY });
     setBulkRunning(false);
     if (failures.length === 0) {
-      showToast(`Deleted ${succeeded.length} excluded episode${succeeded.length === 1 ? '' : 's'} from disk`);
+      showToast(
+        `Deleted ${succeeded.length} excluded episode${succeeded.length === 1 ? '' : 's'} from disk`,
+      );
       setBulkDeleteOpen(false);
     } else {
       // Keep the modal open so the per-run failures stay visible.
       showToast(`Deleted ${succeeded.length}, ${failures.length} failed`);
     }
   }, [decorated, purgeLocal, queryClient, showToast]);
+
+  // ---- batch-level bulk decisions (blast-radius follow-up, 2026-07-14) -----
+  // The enforcement arm of per-batch validation: a batch that failed its check
+  // must be one action away from staying out of "Export ready (n)". Exclude is
+  // the same semantics as the single-row Exclude (quality→Not usable,
+  // review_status→excluded, recording KEPT on disk, reversible); Return is the
+  // bulk counterpart of the single ↺ restore.
+  const batchRows = useMemo(
+    () => (batchFilter ? decorated.filter((r) => r.batchId === batchFilter) : []),
+    [decorated, batchFilter],
+  );
+  const batchFilterLabel = batchFilter ? (batchRows[0]?.batch ?? batchFilter) : null;
+  const batchExcludable = useMemo(
+    () => batchRows.filter((r) => r.effectiveReviewStatus !== 'excluded'),
+    [batchRows],
+  );
+  const batchExcluded = useMemo(
+    () => batchRows.filter((r) => r.effectiveReviewStatus === 'excluded'),
+    [batchRows],
+  );
+
+  const [excludeBatchOpen, setExcludeBatchOpen] = useState(false);
+  const [excludeBatchRunning, setExcludeBatchRunning] = useState(false);
+  const [excludeBatchDone, setExcludeBatchDone] = useState(0);
+  const [excludeBatchFailures, setExcludeBatchFailures] = useState<
+    { runId: string; error: string }[]
+  >([]);
+  const requestExcludeBatch = useCallback(() => {
+    setExcludeBatchFailures([]);
+    setExcludeBatchDone(0);
+    setExcludeBatchOpen(true);
+  }, []);
+  const cancelExcludeBatch = useCallback(() => {
+    if (excludeBatchRunning) return;
+    setExcludeBatchOpen(false);
+    setExcludeBatchFailures([]);
+    setExcludeBatchDone(0);
+  }, [excludeBatchRunning]);
+  const confirmExcludeBatch = useCallback(async () => {
+    const targets = batchExcludable;
+    if (!targets.length) {
+      setExcludeBatchOpen(false);
+      return;
+    }
+    setExcludeBatchRunning(true);
+    setExcludeBatchDone(0);
+    setExcludeBatchFailures([]);
+    const failures: { runId: string; error: string }[] = [];
+    let succeeded = 0;
+    for (const t of targets) {
+      // Optimistic local exclude (same shape as the single-row confirmArchive).
+      const prevOverride = overrides[t.runId];
+      const prevDecision = decisions[t.runId];
+      setArchivedRunIds((prev) => ({ ...prev, [t.runId]: true }));
+      setOverrides((prev) => ({
+        ...prev,
+        [t.runId]: { ...prev[t.runId], quality: 'Not usable' },
+      }));
+      setDecisions((prev) => ({ ...prev, [t.runId]: 'excluded' }));
+      if (t.episodeId) {
+        try {
+          await patchEpisode(t.episodeId, {
+            review_status: 'excluded',
+            quality: 'not_usable',
+            quality_source: 'operator',
+          });
+          succeeded += 1;
+        } catch (e) {
+          // Revert this row and report — never claim a server save that failed.
+          setArchivedRunIds((prev) => {
+            const next = { ...prev };
+            delete next[t.runId];
+            return next;
+          });
+          restoreOverride(t.runId, prevOverride);
+          restoreDecision(t.runId, prevDecision);
+          failures.push({
+            runId: t.runId,
+            error: e instanceof Error ? e.message : 'failed',
+          });
+        }
+      } else {
+        succeeded += 1; // local-only row: the local exclude IS the change
+      }
+      setExcludeBatchDone((d) => d + 1);
+      setExcludeBatchFailures([...failures]);
+    }
+    await queryClient.invalidateQueries({ queryKey: REVIEW_RUNS_KEY });
+    setExcludeBatchRunning(false);
+    if (failures.length === 0) {
+      showToast(
+        `Excluded ${succeeded} episode${succeeded === 1 ? '' : 's'} — recordings kept, reversible`,
+      );
+      setExcludeBatchOpen(false);
+    } else {
+      showToast(`Excluded ${succeeded}, ${failures.length} failed`);
+    }
+  }, [
+    batchExcludable,
+    overrides,
+    decisions,
+    queryClient,
+    showToast,
+    restoreOverride,
+    restoreDecision,
+  ]);
+
+  const returnBatchToReview = useCallback(() => {
+    const targets = batchExcluded;
+    if (!targets.length) return;
+    for (const t of targets) {
+      setArchivedRunIds((prev) => {
+        const next = { ...prev };
+        delete next[t.runId];
+        return next;
+      });
+      const prevDecision = decisions[t.runId];
+      setDecisions((prev) => ({ ...prev, [t.runId]: 'review' }));
+      syncEpisode(t.episodeId, { review_status: 'pending' }, () => {
+        setArchivedRunIds((prev) => ({ ...prev, [t.runId]: true }));
+        restoreDecision(t.runId, prevDecision);
+      });
+    }
+    showToast(
+      `Returned ${targets.length} episode${targets.length === 1 ? '' : 's'} to review`,
+    );
+  }, [batchExcluded, decisions, syncEpisode, showToast, restoreDecision]);
 
   // ---- export READY → Datasets (exception-review: no per-item adopt) --------
   // READY episodes export with zero clicks (good quality, or the operator
@@ -573,11 +781,15 @@ export function useReviewState(): ReviewState {
   // skipped. Sequential POST /datasets/export, live progress + honest failures,
   // then the same MOVE invalidation (review list + runs + datasets).
   const [includeFailed, setIncludeFailed] = useState(true);
-  const readyRows = useMemo(() => decorated.filter((r) => r.reviewLane === 'ready'), [decorated]);
+  const readyRows = useMemo(
+    () => decorated.filter((r) => r.reviewLane === 'ready'),
+    [decorated],
+  );
   const readyExportable = useMemo(
     () =>
       readyRows.filter(
-        (r) => r.state === 'completed' && (includeFailed || r.effectiveTask !== 'Failure'),
+        (r) =>
+          r.state === 'completed' && (includeFailed || r.effectiveTask !== 'Failure'),
       ),
     [readyRows, includeFailed],
   );
@@ -588,7 +800,9 @@ export function useReviewState(): ReviewState {
   const [exportReadyOpen, setExportReadyOpen] = useState(false);
   const [exportRunning, setExportRunning] = useState(false);
   const [exportDone, setExportDone] = useState(0);
-  const [exportFailures, setExportFailures] = useState<{ runId: string; error: string }[]>([]);
+  const [exportFailures, setExportFailures] = useState<
+    { runId: string; error: string }[]
+  >([]);
   const requestExportReady = useCallback(() => {
     setExportFailures([]);
     setExportDone(0);
@@ -616,7 +830,10 @@ export function useReviewState(): ReviewState {
         await apiPost<DatasetExportSummary>('/datasets/export', { run_id: t.runId });
         succeeded.push(t.runId);
       } catch (e) {
-        failures.push({ runId: t.runId, error: e instanceof Error ? e.message : 'failed' });
+        failures.push({
+          runId: t.runId,
+          error: e instanceof Error ? e.message : 'failed',
+        });
       }
       setExportDone((d) => d + 1);
       setExportFailures([...failures]);
@@ -661,7 +878,9 @@ export function useReviewState(): ReviewState {
     const prev = decisions[runId];
     setDecisions((prevD) => ({ ...prevD, [runId]: 'adopted' }));
     showToast(`Episode #${selected.ep} marked OK — included in the export`);
-    syncEpisode(selected.episodeId, { review_status: 'adopted' }, () => restoreDecision(runId, prev));
+    syncEpisode(selected.episodeId, { review_status: 'adopted' }, () =>
+      restoreDecision(runId, prev),
+    );
   }, [selected, decisions, showToast, syncEpisode, restoreDecision]);
 
   const bumpOverrideCount = useCallback((runId: string) => {
@@ -673,16 +892,25 @@ export function useReviewState(): ReviewState {
     const runId = selected.runId;
     const episodeId = selected.episodeId;
     // From an unset ("—") base, indexOf === -1 → first click lands on "Good".
-    const idx = selected.effectiveQuality ? QUALITY_ORDER.indexOf(selected.effectiveQuality) : -1;
+    const idx = selected.effectiveQuality
+      ? QUALITY_ORDER.indexOf(selected.effectiveQuality)
+      : -1;
     const next = QUALITY_ORDER[(idx + 1) % QUALITY_ORDER.length]!;
     const prevOverride = overrides[runId];
     setOverrides((prev) => ({ ...prev, [runId]: { ...prev[runId], quality: next } }));
     bumpOverrideCount(runId);
     showToast(`#${selected.ep} quality → ${next} (your override, kept this session)`);
-    syncEpisode(episodeId, { quality: toServerQuality(next), quality_source: 'operator' }, () => {
-      restoreOverride(runId, prevOverride);
-      setOverrideCounts((prev) => ({ ...prev, [runId]: Math.max(0, (prev[runId] ?? 1) - 1) }));
-    });
+    syncEpisode(
+      episodeId,
+      { quality: toServerQuality(next), quality_source: 'operator' },
+      () => {
+        restoreOverride(runId, prevOverride);
+        setOverrideCounts((prev) => ({
+          ...prev,
+          [runId]: Math.max(0, (prev[runId] ?? 1) - 1),
+        }));
+      },
+    );
   }, [selected, overrides, showToast, bumpOverrideCount, syncEpisode, restoreOverride]);
 
   const cycleTaskResult = useCallback(() => {
@@ -690,14 +918,20 @@ export function useReviewState(): ReviewState {
     const runId = selected.runId;
     const episodeId = selected.episodeId;
     // Unset base → first click sets Success; thereafter toggles.
-    const next: TaskResult = selected.effectiveTask === 'Success' ? 'Failure' : 'Success';
+    const next: TaskResult =
+      selected.effectiveTask === 'Success' ? 'Failure' : 'Success';
     const prevOverride = overrides[runId];
     setOverrides((prev) => ({ ...prev, [runId]: { ...prev[runId], task: next } }));
     bumpOverrideCount(runId);
-    showToast(`#${selected.ep} task result → ${next} (your override, kept this session)`);
+    showToast(
+      `#${selected.ep} task result → ${next} (your override, kept this session)`,
+    );
     syncEpisode(episodeId, { task_result: toServerTask(next) }, () => {
       restoreOverride(runId, prevOverride);
-      setOverrideCounts((prev) => ({ ...prev, [runId]: Math.max(0, (prev[runId] ?? 1) - 1) }));
+      setOverrideCounts((prev) => ({
+        ...prev,
+        [runId]: Math.max(0, (prev[runId] ?? 1) - 1),
+      }));
     });
   }, [selected, overrides, showToast, bumpOverrideCount, syncEpisode, restoreOverride]);
 
@@ -744,7 +978,10 @@ export function useReviewState(): ReviewState {
           transferTimers.current[runId] = setTimeout(tick, TRANSFER_TICK_MS);
           return {
             ...prev,
-            [runId]: transferReducer(cur, { type: 'TICK', pct: Math.round((elapsed / TRANSFER_DURATION_MS) * 100) }),
+            [runId]: transferReducer(cur, {
+              type: 'TICK',
+              pct: Math.round((elapsed / TRANSFER_DURATION_MS) * 100),
+            }),
           };
         });
       };
@@ -753,17 +990,23 @@ export function useReviewState(): ReviewState {
     [baseEpisodes, showToast],
   );
   const nUntransferred = useMemo(
-    () => decorated.filter((r) => !r.isArchived && r.transferSlot.phase === 'on_robot').length,
+    () =>
+      decorated.filter((r) => !r.isArchived && r.transferSlot.phase === 'on_robot')
+        .length,
     [decorated],
   );
   const transferAllUntransferred = useCallback(() => {
-    const targets = decorated.filter((r) => !r.isArchived && r.transferSlot.phase === 'on_robot');
+    const targets = decorated.filter(
+      (r) => !r.isArchived && r.transferSlot.phase === 'on_robot',
+    );
     if (!targets.length) {
       showToast('Nothing to transfer');
       return;
     }
     targets.forEach((r) => transferOne(r.runId));
-    showToast(`Transferring ${targets.length} episode${targets.length === 1 ? '' : 's'}…`);
+    showToast(
+      `Transferring ${targets.length} episode${targets.length === 1 ? '' : 's'}…`,
+    );
   }, [decorated, transferOne, showToast]);
 
   return {
@@ -784,6 +1027,20 @@ export function useReviewState(): ReviewState {
     setOperatorFilter,
     operatorOptions,
     clearFilters,
+
+    batchFilter,
+    batchFilterLabel,
+    toggleBatchFilter,
+    batchExcludable,
+    batchExcluded,
+    requestExcludeBatch,
+    excludeBatchOpen,
+    excludeBatchRunning,
+    excludeBatchDone,
+    excludeBatchFailures,
+    confirmExcludeBatch,
+    cancelExcludeBatch,
+    returnBatchToReview,
 
     selectedRunId,
     select,

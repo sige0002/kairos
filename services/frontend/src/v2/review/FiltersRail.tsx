@@ -10,7 +10,6 @@ import { ALL_OPERATORS } from './useReviewState';
 // Static rows with no real backing — shown so the filter rail matches the mock,
 // but visibly non-interactive (see the muted styling below).
 const DISPLAY_ONLY_FILTERS = [
-  { label: 'Batch', value: 'All batches' },
   { label: 'Data quality', value: 'All' },
   { label: 'Task result', value: 'All' },
   { label: 'Date range', value: 'All time' },
@@ -20,11 +19,17 @@ export function FiltersRail({
   operatorOptions,
   operatorFilter,
   onOperatorChange,
+  batchFilterLabel,
+  onClearBatchFilter,
   onClearFilters,
 }: {
   operatorOptions: string[];
   operatorFilter: string;
   onOperatorChange: (v: string) => void;
+  /** Active batch filter's display label, or null (set by clicking a row's
+   *  batch chip in the table — the rail shows and clears it). */
+  batchFilterLabel: string | null;
+  onClearBatchFilter: () => void;
   onClearFilters: () => void;
 }) {
   return (
@@ -46,6 +51,33 @@ export function FiltersRail({
             </option>
           ))}
         </select>
+      </div>
+
+      <div className="flex flex-col gap-1.5">
+        <span className="text-[11.5px] font-semibold text-gray-400">Batch</span>
+        {batchFilterLabel ? (
+          <div
+            data-testid="review-batch-filter-rail"
+            className="flex items-center justify-between gap-2 rounded-control border border-teal-200 bg-teal-50 px-2.5 py-1.5 text-[13px] font-semibold text-teal-800"
+          >
+            <span className="font-mono">{batchFilterLabel}</span>
+            <button
+              type="button"
+              onClick={onClearBatchFilter}
+              title="Show all batches"
+              className="text-teal-700 hover:text-teal-900"
+            >
+              ✕
+            </button>
+          </div>
+        ) : (
+          <div
+            title="Click a row's batch chip in the table to filter to that batch"
+            className="flex items-center rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[13px] text-gray-400"
+          >
+            All batches — click a batch chip
+          </div>
+        )}
       </div>
 
       {DISPLAY_ONLY_FILTERS.map((f) => (

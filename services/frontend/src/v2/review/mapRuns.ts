@@ -117,6 +117,7 @@ export function mapRunsToEpisodes(
       episodeId: episode?.episode_id ?? null,
       state: run.state,
       batch,
+      batchId: episode?.batch_id ?? null,
       operator: run.operator ?? null,
       quality,
       task,
