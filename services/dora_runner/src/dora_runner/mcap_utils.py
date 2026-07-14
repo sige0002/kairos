@@ -128,15 +128,43 @@ def topic_message_count(mcap_path: Path, topic: str) -> int | None:
     return sum(counts.get(cid, 0) for cid in channel_ids)
 
 
-def iter_topic_log_times(mcap_path: Path, topic: str) -> Iterable[int]:
-    """Yield *topic*'s message log_times (ns) in order, WITHOUT decoding payloads.
+def iter_topic_times(mcap_path: Path, topic: str) -> Iterable[tuple[int, int]]:
+    """Yield *topic*'s ``(log_time, publish_time)`` ns pairs, WITHOUT decoding.
 
     Cheap relative to full ROS2 decode (reads message records only), so callers
     that just need cadence — e.g. an fps estimate — can sample the first N
-    without paying to JPEG/CDR-decode every frame.
+    without paying to JPEG/CDR-decode every frame. ``log_time`` is the
+    recorder's receive time; ``publish_time`` is the sender-side DDS source
+    timestamp when the recording writer stored one (rosbag2 on Jazzy does;
+    older writers stamp both fields with the same receive time — see
+    :func:`source_times` for the fallback rule).
     """
     with mcap_path.open("rb") as stream:
         for _schema, _channel, message in make_reader(stream).iter_messages(
             topics=[topic]
         ):
-            yield message.log_time
+            yield message.log_time, message.publish_time
+
+
+def source_times(pairs: list[tuple[int, int]]) -> tuple[list[int], str]:
+    """Pick the source-side time series for cadence/loss analysis.
+
+    Prefers MCAP ``publish_time`` (the sender-side DDS source timestamp), which
+    is free of receive-side transport/recorder jitter — gaps in it are the
+    source not publishing, not the delivery path stalling. A bag whose writer
+    did not actually record it falls back to ``log_time``: "not recorded" means
+    every message's publish_time equals its log_time (older rosbag2 stamps both
+    with receive time) or any publish_time is 0 (MCAP's "unknown" value — a
+    mixed/zeroed series would corrupt interval math).
+
+    Returns ``(times_ns, time_source)`` with ``time_source`` one of
+    ``"publish_time"`` / ``"log_time"``, for the caller to stamp into its
+    report (honesty rule: say which clock produced the numbers).
+    """
+    if (
+        pairs
+        and all(publish != 0 for _log, publish in pairs)
+        and any(publish != log for log, publish in pairs)
+    ):
+        return [publish for _log, publish in pairs], "publish_time"
+    return [log for log, _publish in pairs], "log_time"

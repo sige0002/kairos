@@ -1,9 +1,11 @@
 """loss_report pipeline tests.
 
-``estimate_topic_loss`` is pure (operates on a list of log_times), so the loss
-methodology is fully unit-testable without an MCAP. The job-level traversal
-guard is checked directly; the end-to-end MCAP path is gated on a real local
-sample recording (skipped otherwise, like test_fast_validation).
+``estimate_topic_loss`` is pure (operates on a list of message times), so the
+loss methodology is fully unit-testable without an MCAP. The job-level
+traversal guard is checked directly; the end-to-end MCAP path is gated on a
+real local sample recording (skipped otherwise, like test_fast_validation).
+The publish_time-vs-log_time clock selection (``mcap_utils.source_times``) is
+covered both as a pure function and through a written MCAP.
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ from dora_runner.loss_report_config import (
     load_loss_report_config,
 )
 from dora_runner.main import create_dora_app
+from dora_runner.mcap_utils import source_times
 from dora_runner.registry import build_default_registry, loss_report_schema
 from fastapi.testclient import TestClient
 from kairos_common import Settings
@@ -175,6 +178,89 @@ def test_run_loss_report_filters_target_topics(tmp_path: Path) -> None:
     assert filtered["summary"]["params"]["target_topics"] == ["/hsrb/*"]
     # gap_exceeded is present on every reported topic (additive field).
     assert all("gap_exceeded" in t for t in filtered["summary"]["topics"])
+
+
+def _write_mcap_with_times(
+    path: Path, topic: str, pairs: list[tuple[int, int]]
+) -> None:
+    """Write an MCAP whose messages carry explicit (log_time, publish_time)."""
+    from mcap.writer import Writer
+
+    with path.open("wb") as fh:
+        writer = Writer(fh)
+        writer.start()
+        schema_id = writer.register_schema(
+            name="std_msgs/msg/Empty", encoding="ros2msg", data=b""
+        )
+        channel_id = writer.register_channel(
+            topic=topic, message_encoding="cdr", schema_id=schema_id
+        )
+        for log_time, publish_time in pairs:
+            writer.add_message(
+                channel_id=channel_id,
+                log_time=log_time,
+                publish_time=publish_time,
+                data=b"",
+            )
+        writer.finish()
+
+
+# ---- publish_time preference (source-side clock, mcap_utils.source_times) --
+
+
+def test_source_times_prefers_recorded_publish_time() -> None:
+    # Distinct publish_time (Jazzy recorder) -> the sender-side series is used.
+    pairs = [(100, 90), (200, 190), (300, 290)]
+    assert source_times(pairs) == ([90, 190, 290], "publish_time")
+
+
+def test_source_times_falls_back_when_not_recorded_or_zeroed() -> None:
+    # Older writers stamp publish_time == log_time on every message: the field
+    # carries no information -> receive-side log_time, said out loud.
+    assert source_times([(100, 100), (200, 200)]) == ([100, 200], "log_time")
+    # Any publish_time == 0 (MCAP's "unknown") would corrupt interval math ->
+    # whole-topic fallback, even though another message has a real value.
+    assert source_times([(100, 90), (200, 0)]) == ([100, 200], "log_time")
+    assert source_times([]) == ([], "log_time")
+
+
+def test_run_loss_report_uses_publish_time_when_recorded(tmp_path: Path) -> None:
+    """Receive-side smoothing must not hide a source-side gap: log_times are
+    perfectly regular (the recorder drained a burst evenly) while publish_times
+    carry one ~500 ms hole — the report must surface the hole and say which
+    clock it used."""
+    data_dir = tmp_path / "data"
+    run_dir = data_dir / "recorded" / "run_pub"
+    run_dir.mkdir(parents=True)
+    pairs = []
+    for i in range(30):
+        log = i * 100 * _MS + 3 * _MS  # clean 100 ms receive cadence
+        pub = i * 100 * _MS + (400 * _MS if i >= 15 else 0)  # one 500 ms hole
+        pairs.append((log, pub))
+    # publish_time of message 0 must be non-zero for the series to qualify.
+    pairs[0] = (pairs[0][0], 1)
+    _write_mcap_with_times(run_dir / "run_pub_0.mcap", "/hsrb/joint_states", pairs)
+
+    out = run_loss_report(run_id="run_pub", data_dir=data_dir)
+    (topic,) = out["summary"]["topics"]
+    assert topic["time_source"] == "publish_time"
+    # The 500 ms source-side hole is visible; on log_time it would be ~100 ms.
+    assert topic["gap_max_ms"] == pytest.approx(500.0, rel=0.05)
+    assert topic["loss_rate"] is not None and topic["loss_rate"] > 0.05
+
+
+def test_run_loss_report_falls_back_to_log_time_for_legacy_bags(
+    tmp_path: Path,
+) -> None:
+    """A bag whose writer stamped publish_time == log_time (pre-Jazzy) is
+    analysed on log_time, with the fallback stated per topic."""
+    data_dir = tmp_path / "data"
+    run_dir = data_dir / "recorded" / "run_legacy"
+    run_dir.mkdir(parents=True)
+    _write_minimal_mcap(run_dir / "run_legacy_0.mcap", {"/hsrb/joint_states": 10})
+
+    out = run_loss_report(run_id="run_legacy", data_dir=data_dir)
+    assert all(t["time_source"] == "log_time" for t in out["summary"]["topics"])
 
 
 def test_run_loss_report_reads_exported_dataset_dir(tmp_path: Path) -> None:

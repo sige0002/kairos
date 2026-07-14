@@ -367,6 +367,9 @@ def test_video_check_job_encodes_mp4() -> None:
         rel = summary["file"]
         assert rel and (DATA_DIR / rel).exists()
         assert summary["frames"] > 0
+        # The fps clock is always declared (publish_time on a Jazzy-recorded
+        # bag; log_time fallback on an older one).
+        assert summary["fps_time_source"] in ("publish_time", "log_time")
 
 
 @pytest.mark.skipif(

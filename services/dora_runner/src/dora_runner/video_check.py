@@ -41,16 +41,19 @@ from kairos_common import utc_now_iso8601
 from dora_runner.mcap_utils import (
     find_mcap,
     iter_decoded_ros2_messages,
-    iter_topic_log_times,
+    iter_topic_times,
     resolve_source_dir,
+    source_times,
     topic_message_count,
     validate_run_id,
 )
 
 # Pipeline identity stamped into the summary (reproducibility contract, shared
 # with the other bundled pipelines and the hello_dora plugin example).
+# 1.2.0: fps estimated from publish_time when the bag recorded it (log_time
+# fallback); summary gained ``fps_time_source``.
 PIPELINE_ID = "video_check"
-PIPELINE_VERSION = "1.1.0"
+PIPELINE_VERSION = "1.2.0"
 
 # DEFAULT encode cap (params.max_frames overrides; 0 = the full episode):
 # bounds encode time/size — at ~15 fps this is ~60 s of preview, plenty to
@@ -75,16 +78,18 @@ def sanitize_topic(topic: str) -> str:
     return slug or "topic"
 
 
-def estimate_fps(log_times_ns: list[int]) -> int:
-    """Estimate playback fps from frame log_times (count / duration).
+def estimate_fps(times_ns: list[int]) -> int:
+    """Estimate playback fps from frame times (count / duration).
 
+    *times_ns* is whichever clock the caller picked (``mcap_utils.
+    source_times``: publish_time when the bag recorded it, else log_time).
     Clamped to ``[_FPS_MIN, _FPS_MAX]``; falls back to ``_DEFAULT_FPS`` when the
     cadence is indeterminate (fewer than two frames or a zero-length span).
     """
-    n = len(log_times_ns)
+    n = len(times_ns)
     if n < 2:
         return _DEFAULT_FPS
-    ordered = sorted(log_times_ns)
+    ordered = sorted(times_ns)
     duration_s = (ordered[-1] - ordered[0]) / 1e9
     if duration_s <= 0:
         return _DEFAULT_FPS
@@ -231,20 +236,23 @@ def run_video_check(
 
     # Metadata first, without decoding any image: the authoritative total comes
     # from the MCAP statistics (O(1)); the fps cadence comes from a bounded scan
-    # of at most MAX_FRAMES message log_times (no JPEG/CDR decode). This is what
-    # lets the decode pass below stop at the cap instead of draining the whole
-    # topic just to count it (DORA-L1).
+    # of at most MAX_FRAMES message time fields (no JPEG/CDR decode). This is
+    # what lets the decode pass below stop at the cap instead of draining the
+    # whole topic just to count it (DORA-L1). Cadence prefers the sender-side
+    # publish_time so receive-side jitter never skews the playback fps
+    # (log_time fallback for bags that did not record it).
     total_from_stats = topic_message_count(mcap_path, topic)
-    cadence: list[int] = []
+    cadence_pairs: list[tuple[int, int]] = []
     scanned = 0
-    for log_time in iter_topic_log_times(mcap_path, topic):
+    for pair in iter_topic_times(mcap_path, topic):
         scanned += 1
-        if len(cadence) < MAX_FRAMES:
-            cadence.append(log_time)
+        if len(cadence_pairs) < MAX_FRAMES:
+            cadence_pairs.append(pair)
         elif total_from_stats is not None:
             # Enough cadence samples and the total is already known — stop early.
             break
     total_messages = total_from_stats if total_from_stats is not None else scanned
+    cadence, fps_time_source = source_times(cadence_pairs)
 
     truncated = False
     unsupported = False
@@ -322,6 +330,7 @@ def run_video_check(
 
     if frames_encoded == 0:
         summary["fps"] = None
+        summary["fps_time_source"] = None
         summary["width"] = None
         summary["height"] = None
         summary["duration_s"] = None
@@ -334,6 +343,9 @@ def run_video_check(
         )
     else:
         summary["fps"] = fps
+        # Which clock the fps came from (honesty rule): "publish_time" =
+        # sender-side cadence; "log_time" = receive-side fallback (older bags).
+        summary["fps_time_source"] = fps_time_source
         summary["width"] = width
         summary["height"] = height
         summary["duration_s"] = frames_encoded / fps if fps else None
