@@ -52,8 +52,10 @@ from dora_runner.mcap_utils import (
 # with the other bundled pipelines and the hello_dora plugin example).
 # 1.1.0: cadence/loss computed on publish_time when the bag recorded it
 # (log_time fallback); topic entries gained ``time_source``.
+# 1.1.1: tightened the publish_time trust rule (reject a log/source mix and an
+# offset-clock span mismatch — see mcap_utils.source_times).
 PIPELINE_ID = "loss_report"
-PIPELINE_VERSION = "1.1.0"
+PIPELINE_VERSION = "1.1.1"
 
 
 def estimate_topic_loss(times_ns: list[int]) -> dict[str, Any]:

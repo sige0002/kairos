@@ -52,8 +52,10 @@ from dora_runner.mcap_utils import (
 # with the other bundled pipelines and the hello_dora plugin example).
 # 1.2.0: fps estimated from publish_time when the bag recorded it (log_time
 # fallback); summary gained ``fps_time_source``.
+# 1.2.1: the clock choice is now decided over the whole topic (was the capped
+# cadence prefix), so it never disagrees with loss_report; tightened trust rule.
 PIPELINE_ID = "video_check"
-PIPELINE_VERSION = "1.2.0"
+PIPELINE_VERSION = "1.2.1"
 
 # DEFAULT encode cap (params.max_frames overrides; 0 = the full episode):
 # bounds encode time/size — at ~15 fps this is ~60 s of preview, plenty to
@@ -235,24 +237,19 @@ def run_video_check(
         ) from exc
 
     # Metadata first, without decoding any image: the authoritative total comes
-    # from the MCAP statistics (O(1)); the fps cadence comes from a bounded scan
-    # of at most MAX_FRAMES message time fields (no JPEG/CDR decode). This is
-    # what lets the decode pass below stop at the cap instead of draining the
-    # whole topic just to count it (DORA-L1). Cadence prefers the sender-side
-    # publish_time so receive-side jitter never skews the playback fps
-    # (log_time fallback for bags that did not record it).
+    # from the MCAP statistics (O(1)); the fps cadence comes from the message
+    # time fields (no JPEG/CDR decode — the expensive image decode below still
+    # stops at the cap, which is what DORA-L1 protects). The clock choice
+    # (publish_time vs log_time) is made over the WHOLE topic — the same input
+    # loss_report decides on — so the two pipelines can never disagree on a
+    # topic's time_source (a late unknown/zero publish_time must flip both, not
+    # just loss_report); the fps itself then comes from the chosen clock's first
+    # MAX_FRAMES samples.
     total_from_stats = topic_message_count(mcap_path, topic)
-    cadence_pairs: list[tuple[int, int]] = []
-    scanned = 0
-    for pair in iter_topic_times(mcap_path, topic):
-        scanned += 1
-        if len(cadence_pairs) < MAX_FRAMES:
-            cadence_pairs.append(pair)
-        elif total_from_stats is not None:
-            # Enough cadence samples and the total is already known — stop early.
-            break
-    total_messages = total_from_stats if total_from_stats is not None else scanned
-    cadence, fps_time_source = source_times(cadence_pairs)
+    pairs = list(iter_topic_times(mcap_path, topic))
+    total_messages = total_from_stats if total_from_stats is not None else len(pairs)
+    chosen, fps_time_source = source_times(pairs)
+    cadence = chosen[:MAX_FRAMES]
 
     truncated = False
     unsupported = False

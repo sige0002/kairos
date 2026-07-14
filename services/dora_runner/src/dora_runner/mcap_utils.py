@@ -150,21 +150,43 @@ def source_times(pairs: list[tuple[int, int]]) -> tuple[list[int], str]:
     """Pick the source-side time series for cadence/loss analysis.
 
     Prefers MCAP ``publish_time`` (the sender-side DDS source timestamp), which
-    is free of receive-side transport/recorder jitter — gaps in it are the
-    source not publishing, not the delivery path stalling. A bag whose writer
-    did not actually record it falls back to ``log_time``: "not recorded" means
-    every message's publish_time equals its log_time (older rosbag2 stamps both
-    with receive time) or any publish_time is 0 (MCAP's "unknown" value — a
-    mixed/zeroed series would corrupt interval math).
+    is free of receive-side jitter (DDS transport, recorder scheduling/cache
+    smear). It does NOT attribute gaps: a message lost before the recorder
+    wrote it is simply absent from the MCAP, so its publish_time is gone too —
+    the cadence/loss figures remain an inferred estimate, not a measurement of
+    source-vs-transport loss. Preferring publish_time only removes the
+    receive-side smear from that estimate.
 
-    Returns ``(times_ns, time_source)`` with ``time_source`` one of
-    ``"publish_time"`` / ``"log_time"``, for the caller to stamp into its
-    report (honesty rule: say which clock produced the numbers).
+    publish_time is trusted only when the writer recorded a real source stamp
+    for EVERY message and the two clocks agree on the recording's time window:
+
+    - every ``publish_time`` is non-zero (0 is MCAP's "unknown" sentinel), AND
+    - every ``publish_time`` differs from its ``log_time`` (a writer without a
+      source stamp copies the receive time in, so ANY ``publish == log``
+      message means the series is log_time, or a log/source mix — either way
+      untrustworthy; older rosbag2 stamps them equal on every message), AND
+    - the publish clock spans the same wall-clock window as the receive clock
+      (within 2x). Interleaved publishers with offset clocks on one topic pass
+      the per-message tests but inflate the span and fabricate huge gaps, so a
+      span mismatch falls back too.
+
+    Any failure falls back to ``log_time`` (the single recorder clock), so the
+    result is never worse than the pre-publish_time behaviour. Returns
+    ``(times_ns, time_source)`` with ``time_source`` one of ``"publish_time"``
+    / ``"log_time"`` for the caller to stamp into its report (honesty rule: say
+    which clock produced the numbers).
     """
-    if (
-        pairs
-        and all(publish != 0 for _log, publish in pairs)
-        and any(publish != log for log, publish in pairs)
-    ):
-        return [publish for _log, publish in pairs], "publish_time"
-    return [log for log, _publish in pairs], "log_time"
+    if not pairs:
+        return [], "log_time"
+    logs = [log for log, _publish in pairs]
+    pubs = [publish for _log, publish in pairs]
+    if all(p != 0 for p in pubs) and all(p != log for log, p in pairs):
+        log_span = max(logs) - min(logs)
+        pub_span = max(pubs) - min(pubs)
+        # Same wall-clock window (multiplicative form avoids div-by-zero when a
+        # span is 0). A single well-behaved publisher tracks log_time within
+        # transmission latency, so its span ratio is ~1; an offset-clock mix is
+        # rejected here.
+        if 2 * log_span >= pub_span and 2 * pub_span >= log_span:
+            return pubs, "publish_time"
+    return logs, "log_time"

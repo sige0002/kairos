@@ -224,6 +224,31 @@ def test_source_times_falls_back_when_not_recorded_or_zeroed() -> None:
     assert source_times([]) == ([], "log_time")
 
 
+def test_source_times_rejects_log_source_mix() -> None:
+    """If even ONE message has publish_time == log_time, the series is a
+    log/source mix (a writer that filled the receive time where no source stamp
+    was available) — untrustworthy, so fall back wholesale to log_time."""
+    # Message 2 has publish_time == log_time.
+    pairs = [(100 * _MS, 90 * _MS), (200 * _MS, 200 * _MS), (300 * _MS, 290 * _MS)]
+    times, source = source_times(pairs)
+    assert source == "log_time"
+    assert times == [100 * _MS, 200 * _MS, 300 * _MS]
+
+
+def test_source_times_rejects_offset_clock_span() -> None:
+    """Two interleaved publishers with a ~30 s clock offset on one topic pass
+    the per-message tests (all non-zero, all differ) but inflate the publish
+    span far beyond the receive window — a span mismatch falls back to the
+    single recorder clock instead of fabricating a huge gap."""
+    pairs = [
+        (100 * _MS, 100 * _MS + 1),
+        (200 * _MS, 200 * _MS + 30_000 * _MS),
+        (300 * _MS, 300 * _MS + 1),
+    ]
+    _times, source = source_times(pairs)
+    assert source == "log_time"
+
+
 def test_run_loss_report_uses_publish_time_when_recorded(tmp_path: Path) -> None:
     """Receive-side smoothing must not hide a source-side gap: log_times are
     perfectly regular (the recorder drained a burst evenly) while publish_times
@@ -247,6 +272,30 @@ def test_run_loss_report_uses_publish_time_when_recorded(tmp_path: Path) -> None
     # The 500 ms source-side hole is visible; on log_time it would be ~100 ms.
     assert topic["gap_max_ms"] == pytest.approx(500.0, rel=0.05)
     assert topic["loss_rate"] is not None and topic["loss_rate"] > 0.05
+
+
+def test_run_loss_report_survives_offset_publisher_clocks(tmp_path: Path) -> None:
+    """Regression: switching to publish_time must never be WORSE than log_time.
+    Two publishers with a 30 s clock offset feed one topic; log_time is the
+    single clean recorder clock. The report must fall back to log_time and NOT
+    fabricate the ~90%+ loss / 30 s gap that trusting the split publish clock
+    would produce."""
+    data_dir = tmp_path / "data"
+    run_dir = data_dir / "recorded" / "run_offset"
+    run_dir.mkdir(parents=True)
+    pairs = []
+    for i in range(20):
+        log = i * 100 * _MS  # clean 100 ms receive cadence, one clock
+        pub = i * 100 * _MS + (30_000 * _MS if i % 2 else 1)  # two offset clocks
+        pairs.append((log, pub))
+    _write_mcap_with_times(run_dir / "run_offset_0.mcap", "/hsrb/joint_states", pairs)
+
+    out = run_loss_report(run_id="run_offset", data_dir=data_dir)
+    (topic,) = out["summary"]["topics"]
+    assert topic["time_source"] == "log_time"
+    # On the clean recorder clock the cadence is regular -> low loss, small gap.
+    assert topic["loss_rate"] is not None and topic["loss_rate"] < 0.1
+    assert topic["gap_max_ms"] == pytest.approx(100.0, rel=0.05)
 
 
 def test_run_loss_report_falls_back_to_log_time_for_legacy_bags(
