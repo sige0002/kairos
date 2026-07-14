@@ -3,17 +3,23 @@
 This is the heart of Stage 1. It implements the lifecycle from
 ``api_orchestrator.md``:
 
-1. ``start``: allocate ``run_id`` (UTC), persist ``created``, call the
-   recorder, then ``recording`` + sync resolved topics/QoS from the recorder's
-   metadata. Recorder failure keeps the row and sets ``failed``.
-2. ``stop``: call the recorder, re-sync final metadata
-   (``message_count`` / ``bytes`` / ``ended_at``), set ``completed``.
-3. ``status``: proxy the recorder's status.
-4. reconciliation on startup: any run stuck ``recording`` / ``stopping`` with
+1. ``prepare`` (optional, two-phase start): allocate ``run_id``, resolve
+   topics, arm the recorder ahead of time — held only in memory
+   (``self._prepared``), no DB row yet.
+2. ``start``: allocate ``run_id`` (UTC) (or reuse a matching prepared one),
+   persist ``created``, call the recorder, then ``recording`` + sync resolved
+   topics/QoS from the recorder's metadata. Recorder failure keeps the row and
+   sets ``failed``.
+3. ``stop``: call the recorder, re-sync final metadata
+   (``message_count`` / ``bytes`` / ``ended_at``), set ``completed``. Also
+   disarms a still-armed prepared entry if no run was ever started.
+4. ``status``: proxy the recorder's status.
+5. reconciliation on startup: any run stuck ``recording`` / ``stopping`` with
    no matching active recorder session becomes ``interrupted``.
 
 The orchestrator's SQLite is the source of truth (``RunStore``); the recorder
-owns only the live recording session and its audit manifest.
+owns only the live recording session and its audit manifest. A ``prepare()``
+that never turns into a ``start()`` never touches SQLite at all.
 """
 
 from __future__ import annotations
@@ -24,6 +30,7 @@ import logging
 import os
 import shutil
 import tempfile
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -38,6 +45,7 @@ from kairos_common import (
 from api_orchestrator.events import EVENT_RECORD_STATUS, EventHub
 from api_orchestrator.models import (
     Episode,
+    RecordPrepareResponse,
     RecordStartRequest,
     RetentionCandidate,
     Run,
@@ -142,6 +150,25 @@ def allocate_run_id(now: datetime | None = None) -> str:
     return moment.strftime("run_%Y%m%d_%H%M%S")
 
 
+@dataclass
+class _PreparedEntry:
+    """An armed ``prepare()`` call held in memory (no DB row yet).
+
+    Lives only on ``RunService._prepared``, protected by ``_lifecycle_lock``,
+    until a matching ``start()`` consumes it (reuses ``run_id``) or it is
+    discarded (mismatch, replaced by a newer prepare, or the process restarts
+    and it simply evaporates). Never a leak either way: the recorder holds the
+    real armed session and auto-disarms it on its own timeout regardless of
+    what the orchestrator remembers.
+    """
+
+    run_id: str
+    # Normalized (topics, compression, split, qos_default, qos_overrides) —
+    # see ``RunService._prepare_match_key``. Session metadata (operator/task)
+    # is deliberately excluded: it's not part of the recorder's identity check.
+    match_key: tuple[Any, ...]
+
+
 class RunService:
     """Coordinates run state across the store and the recorder client.
 
@@ -178,6 +205,11 @@ class RunService:
         # recorder -> update state) so concurrent requests cannot interleave
         # and orphan a row or diverge from the recorder's single session.
         self._lifecycle_lock = asyncio.Lock()
+        # In-memory-only prepare state (two-phase start, Option B): a prepare()
+        # never inserts a Run row (a prepare that's abandoned would otherwise
+        # need its own reconciliation/cleanup), so it lives here instead,
+        # guarded by the same lifecycle lock. See _PreparedEntry.
+        self._prepared: _PreparedEntry | None = None
 
     @property
     def recorded_dir(self) -> Path:
@@ -311,6 +343,133 @@ class RunService:
         arming = start_body.get("arming")
         return arming if isinstance(arming, dict) else None
 
+    # ---- prepare ------------------------------------------------------------
+
+    async def prepare(self, req: RecordStartRequest) -> RecordPrepareResponse:
+        """Arm a recording ahead of time so a later matching ``start()`` is fast.
+
+        Resolves topics and builds the recorder payload exactly like
+        ``start()`` does, allocates a run_id, and hands it to the recorder's
+        ``POST /record/prepare`` — but, unlike ``start()``, does NOT insert a
+        ``Run`` row: prepare state lives only on ``self._prepared`` until a
+        matching ``start()`` actually persists it (see the module-level design
+        note above ``_PreparedEntry``). A previously-outstanding prepared entry
+        is simply replaced (last prepare wins); nothing leaks either way since
+        the recorder auto-disarms its own stale armed session on a timeout.
+
+        Unlike ``start()``, a recorder rejection (e.g. ``409`` because a
+        recording is genuinely already active) has no run row to record the
+        failure on, so it propagates as-is (mapped to its own status/code by
+        the unified :class:`ApiError` handler) rather than degrading to a
+        ``failed`` response body.
+        """
+        req.operator = _default_meta(req.operator, _UNKNOWN_OPERATOR)
+        req.task = _default_meta(req.task, _UNKNOWN_TASK)
+        topics = self._resolve_topics(req.topics)
+        async with self._lifecycle_lock:
+            run_id = self._allocate_prepare_run_id()
+            payload = self._build_recorder_payload(run_id, topics, req)
+            prepare_body = await self._recorder.prepare(payload)
+            self._prepared = _PreparedEntry(
+                run_id=run_id, match_key=self._prepare_match_key(topics, req)
+            )
+            arming = prepare_body.get("arming")
+            return RecordPrepareResponse(
+                run_id=run_id,
+                state="armed",
+                arming=arming if isinstance(arming, dict) else {},
+                disarm_at=prepare_body.get("disarm_at"),
+            )
+
+    def _allocate_prepare_run_id(self) -> str:
+        """Allocate a run_id for ``prepare()`` without inserting a store row.
+
+        Mirrors :meth:`_create_unique_run`'s collision-avoidance (same-second
+        bursts / an existing row) but checks the store read-only — prepare
+        deliberately never inserts a row (see :meth:`prepare`). Also avoids the
+        id currently held by an outstanding ``self._prepared`` entry, so a
+        second prepare arriving before the first is consumed gets a distinct
+        id instead of silently colliding with it.
+        """
+        base = allocate_run_id()
+        reserved = self._prepared.run_id if self._prepared is not None else None
+        for attempt in range(_MAX_RUN_ID_ATTEMPTS):
+            run_id = base if attempt == 0 else f"{base}_{attempt}"
+            if run_id != reserved and self._store.get(run_id) is None:
+                return run_id
+        raise ApiError(
+            status_code=409,
+            code="run_id_unavailable",
+            message="Could not allocate a unique run_id; retry shortly.",
+        )
+
+    @staticmethod
+    def _prepare_match_key(
+        topics: list[str] | str, req: RecordStartRequest
+    ) -> tuple[Any, ...]:
+        """Normalized identity used to decide "does this start() match a prepare".
+
+        Mirrors what the recorder itself compares (same normalized topics
+        list/compression/split/QoS) so the orchestrator and the recorder agree
+        on "matching". Session metadata (``operator``/``task``) is NOT part of
+        identity — it does not affect what gets recorded, only where it is
+        filed afterward.
+        """
+        return (
+            topics,
+            req.compression.value,
+            req.split.model_dump() if req.split is not None else None,
+            req.qos_default.model_dump() if req.qos_default is not None else None,
+            {name: qos.model_dump() for name, qos in (req.qos_overrides or {}).items()},
+        )
+
+    def _consume_matching_prepared(
+        self, topics: list[str] | str, req: RecordStartRequest
+    ) -> str | None:
+        """Pop a matching prepared entry's run_id, if the current one matches.
+
+        Must be called under the lifecycle lock. Any prepared entry is cleared
+        here regardless of outcome: a match must not be reused by a later
+        start(), and a mismatch means it is stale — the recorder will disarm
+        its own armed session independently when this start() call lands (see
+        the recorder-side contract), so the orchestrator does not need to tell
+        it to do so explicitly.
+        """
+        prepared = self._prepared
+        self._prepared = None
+        if prepared is None or prepared.match_key != self._prepare_match_key(
+            topics, req
+        ):
+            return None
+        return prepared.run_id
+
+    def _create_run_with_prepared_id(self, run_id: str, req: RecordStartRequest) -> Run:
+        """Insert the ``created`` row using a prepared run_id, not a fresh one.
+
+        Falls back to :meth:`_create_unique_run`'s fresh-allocation path if the
+        prepared id collides with an existing row — defensive only; it
+        shouldn't normally happen since a prepared run_id is never inserted
+        until this call succeeds.
+        """
+        run = Run(
+            run_id=run_id,
+            state=RunState.created,
+            started_at=utc_now_iso8601(),
+            compression=req.compression,
+            split=req.split,
+            operator=req.operator,
+            task=req.task,
+        )
+        try:
+            return self._store.create(run)
+        except RunExistsError:
+            logger.warning(
+                "prepared run_id collided with an existing row; "
+                "falling back to fresh allocation",
+                extra={"run_id": run_id},
+            )
+            return self._create_unique_run(req)
+
     # ---- start ------------------------------------------------------------
 
     async def start(self, req: RecordStartRequest) -> Run:
@@ -324,6 +483,13 @@ class RunService:
         reconciled against the recorder's real state (see
         :meth:`_verify_no_active_recording`), so a crash-left row can never
         block new recordings forever; a genuinely-active recording yields 409.
+
+        If a prior ``prepare()`` call is still outstanding and matches this
+        request (same normalized topics/compression/split/QoS — see
+        :meth:`_prepare_match_key`), its run_id is reused instead of allocating
+        a fresh one, so the recorder recognizes its own armed session and
+        resumes near-instantly. A non-matching or absent prepared entry falls
+        through to today's unchanged fresh-allocation path.
         """
         # Normalize session metadata so every recording is keyable for dataset
         # export: empty/whitespace operator/task become stable placeholders (the
@@ -334,7 +500,12 @@ class RunService:
         topics = self._resolve_topics(req.topics)
         async with self._lifecycle_lock:
             await self._verify_no_active_recording()
-            run = self._create_unique_run(req)
+            prepared_run_id = self._consume_matching_prepared(topics, req)
+            run = (
+                self._create_run_with_prepared_id(prepared_run_id, req)
+                if prepared_run_id is not None
+                else self._create_unique_run(req)
+            )
             run_id = run.run_id
 
             payload = self._build_recorder_payload(run_id, topics, req)
@@ -477,6 +648,15 @@ class RunService:
         async with self._lifecycle_lock:
             active = self._active_run()
             if active is None:
+                if self._prepared is not None:
+                    # An armed-but-never-started prepare has no DB row (there is
+                    # nothing here to finalize), but the recorder is holding a
+                    # live armed session (subscriptions established, same DDS
+                    # load as recording) that must not be left to leak until its
+                    # own ~120s auto-disarm. The recorder's stop contract now
+                    # disarms cleanly when called in the armed state.
+                    await self._recorder.stop()
+                    self._prepared = None
                 # Idempotent stop: nothing recording -> report the last run (or
                 # raise 404 only if there has never been a run at all).
                 return self._last_run_or_idle()

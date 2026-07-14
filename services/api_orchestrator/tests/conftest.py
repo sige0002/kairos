@@ -56,6 +56,18 @@ class FakeRecorder:
         self.arming: dict[str, Any] | None = None
         # Record of payloads received (for assertions).
         self.last_start_payload: dict[str, Any] | None = None
+        # ---- two-phase start (prepare) knobs ----
+        self.prepare_status: int = 201
+        self.prepare_error: dict[str, Any] | None = None
+        self.prepare_arming: dict[str, Any] = {
+            "active": True,
+            "matched_topics": [],
+            "missing_topics": [],
+        }
+        self.disarm_at: str | None = "2026-06-24T00:02:00.000Z"
+        self.last_prepare_payload: dict[str, Any] | None = None
+        self.prepare_call_count: int = 0
+        self.stop_call_count: int = 0
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         """Dispatch a mocked request to the matching recorder endpoint."""
@@ -64,6 +76,8 @@ class FakeRecorder:
         path = request.url.path
         if path == "/healthz":
             return self._healthz()
+        if path == "/record/prepare" and request.method == "POST":
+            return self._prepare(request)
         if path == "/record/start" and request.method == "POST":
             return self._start(request)
         if path == "/record/stop" and request.method == "POST":
@@ -107,11 +121,35 @@ class FakeRecorder:
             start_body["arming"] = self.arming
         return httpx.Response(201, json=start_body)
 
+    def _prepare(self, request: httpx.Request) -> httpx.Response:
+        """Fake the recorder's two-phase-start ``/record/prepare``.
+
+        Does not touch ``self.state``/``self.run_id`` (those model the *active
+        recording* session and are only set by ``_start``); prepare only stamps
+        the payload it was given for later assertions plus a fixed arming/
+        disarm_at body, mirroring that the real recorder tracks "armed" as a
+        separate thing from "recording".
+        """
+        self.prepare_call_count += 1
+        self.last_prepare_payload = json.loads(request.content)
+        if self.prepare_error is not None:
+            return httpx.Response(
+                self.prepare_status, json={"error": self.prepare_error}
+            )
+        body = {
+            "run_id": self.last_prepare_payload["run_id"],
+            "state": "armed",
+            "arming": self.prepare_arming,
+            "disarm_at": self.disarm_at,
+        }
+        return httpx.Response(201, json=body)
+
     def _stop(self) -> httpx.Response:
         # Idempotent: stopping when idle just returns the current state. On the
         # real recorder the bag is finalized here, so rosbag2_metadata appears.
         # The recorder reports its real terminal state (final_state), which may
         # be failed/interrupted, not necessarily completed.
+        self.stop_call_count += 1
         if self.state in ("recording", "stopping"):
             self.state = self.final_state
             self.finalized = True

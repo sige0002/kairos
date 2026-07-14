@@ -39,6 +39,8 @@ ROS 2 のトピックを **MCAP に正式記録する**コンテナ。公式の�
 
 ## API（サービス内部 API。公開は `api_orchestrator` 経由）
 
+- `POST /record/prepare`（two-phase start。[詳細](#録画開始レイテンシ多トピック時と-two-phase-start)）— body は `POST /record/start` と同じ形。
+  → `201 { run_id, state: "armed", arming, disarm_at }`。
 - `POST /record/start` — body:
   ```json
   {
@@ -50,12 +52,12 @@ ROS 2 のトピックを **MCAP に正式記録する**コンテナ。公式の�
     "qos_overrides": { "/topic": { "reliability": "reliable", "durability": "transient_local", "depth": 1 } }
   }
   ```
-  → `201 { run_id, state, started_at }`。`topics` の型は `string[] | "all"`。
-- `POST /record/stop` — **冪等**。記録中→停止して `200`、idle→`200`（現状態を返す）。
-- `GET /record/status` — `{ state, run_id?, started_at?, message_count, bytes, topics: [], dropped_messages?, integrity }`（`dropped_messages` / `integrity` は[取りこぼし検出](#取りこぼし検出記録キャッシュ整合性)を参照）
+  → `201 { run_id, state, started_at, arming? }`。`topics` の型は `string[] | "all"`。直前に一致する `armed` セッションがあれば resume するだけの高速パスになる（[詳細](#録画開始レイテンシ多トピック時と-two-phase-start)）。
+- `POST /record/stop` — **冪等**。記録中→停止して `200`、armed 中→disarm して `200`（idle 相当）、idle→`200`（現状態を返す）。
+- `GET /record/status` — `{ state, run_id?, started_at?, message_count, bytes, topics: [], dropped_messages?, integrity }`（`dropped_messages` / `integrity` は[取りこぼし検出](#取りこぼし検出記録キャッシュ整合性)を参照）。`state: "armed"` の間は `run_id`/`topics` が armed セッションのものを指し、`message_count`/`bytes` は `0`、`started_at` は `null`。
 - `GET /record/metadata` — 直近 run の metadata（rosbag2 標準 + kairos manifest）
 - `GET /healthz` / `GET /readyz`
-- 異常: `/data` 書込不可・空き容量不足は記録を拒否（`507` 相当）。多重 start は `409`。
+- 異常: `/data` 書込不可・空き容量不足は記録を拒否（`507` 相当）。多重 start / 多重 prepare は `409`。
 
 ## 開始時の取りこぼし対策（start-paused readiness gate, 任意）
 
@@ -65,20 +67,21 @@ ROS 2 のトピックを **MCAP に正式記録する**コンテナ。公式の�
 
 resume は **rosbag2 の `~/resume` サービス**で行うため、対話 SPACE キー（≒擬似 TTY/pty が必要）に依存しない。recorder には常時 `--disable-keyboard-controls` を渡し、キーボード制御を無効化する（不要なオーバーヘッドと TTY 依存の排除）。
 
-### 録画開始レイテンシ（多トピック時）と two-phase start — **TBD**
+### 録画開始レイテンシ（多トピック時）と two-phase start
 
 **現象**: トピック数が多い構成（例: カメラ 4 + 数値 27 = 31 topics）では、`POST /record/start` から実際の書き込み開始まで数秒かかる。内訳は ① `ros2 bag record` の**サブプロセス spawn**（Python CLI + rclcpp 初期化で 1〜3 秒）、② 新規 DDS participant の **discovery + 対象トピックの購読マッチング**（トピック数・グラフ規模に比例。グラフが混んでいるほど延びる）、③ writer 初期化。UI の「recording（赤）」は start 受理で点くため、`start_paused` 無効時は「**赤いのにまだ録れていない**」時間として現れる（有効時は同じ時間が start 応答待ちとして現れる — 見え方が違うだけで根は同じ）。
 
-**TBD（推奨案・要ユーザ判断）: two-phase start（prepare → resume）。** 既存の start-paused readiness gate をそのまま土台に、spawn とマッチングを**操作より前**に済ませる:
+**決定・実装済み（v1）: two-phase start（prepare → resume）。** 既存の start-paused readiness gate を土台に、spawn とマッチングを**操作（実際の start）より前**に済ませる。
 
-1. `POST /record/prepare`（新設）— recorder を `--start-paused` で spawn し、購読マッチングまで済ませて **armed** で待機。matched/missing は既存の arming 観測スナップショットを流用。run_id は prepare 時に採番（rosbag2 は spawn 時に出力先を開くため）。
-2. `POST /record/start` — armed なら `~/resume` を呼ぶだけ。**開始は実測ミリ秒オーダー**になり、「resume 以降は全購読 live」という現行ゲートの保証も維持。
-3. **auto-disarm** — armed のまま一定時間（例 120 秒）start が来なければ破棄し、空の run ディレクトリも削除（下記コスト対策として必須）。
+1. `POST /record/prepare` — `recording.start_paused` の設定値に関わらず**常に** `--start-paused` で recorder を spawn し、購読マッチングが済むまで待機（既存の readiness gate と同じロジック・同じ `start_delay_s`/`post_discovery_delay_s` の適用位置）。マッチング済みの `~/resume` / `~/is_paused` サービスクライアントと rclpy ノードは**破棄せず保持**する（後続の resume を高速化するため。ここで再生成すると DDS participant 生成・サービス discovery のコストを再び払うことになり two-phase start の意味がなくなる）。完了すると **`armed`** 状態で待機する。run_id はここで確定（rosbag2 が spawn 時に `--output` を開くため、以後固定）。応答: `201 { run_id, state: "armed", arming, disarm_at }`（`arming.matched_topics` / `missing_topics` は既存の arming 観測スナップショットを流用。`disarm_at` は下記 auto-disarm の期限で、既存の `resume_at`〔単発ゲート自身の readiness タイムアウト〕とは別概念）。記録中/停止処理中は `409 already_recording`（`armed` は多重 start をブロックしない `_ACTIVE_STATES` の対象外だが、`prepare` 自身は記録中には呼べない）。
+2. `POST /record/start` — armed セッションがあり、かつ **spawn に影響するフィールド**（正規化したトピック選択・`compression`・`split`・`qos_default`・`qos_overrides`）が prepare 時のリクエストと**一致**すれば高速パス: 保持していたクライアントで `~/resume` を呼ぶだけ（**再 spawn なし・discovery 待ちなし** — `start_delay_s`/`post_discovery_delay_s` も再適用しない）。resume を確認できなければ（サービス消失・resume 後も paused のまま等）既存のフェイルセーフと同じ扱い（プロセス終了・run dir 削除・`507 record_arm_failed`）。`run_id` はマッチ判定に含めない（prepare 時点で固定済みのため、コミットされる run_id は常に armed 側のもの）。`operator`/`task` もマッチ判定に含めない（spawn に影響しないメタデータであり、`session.json`/manifest には **start リクエスト側の値**が書かれる）。**不一致**なら古い armed セッションを disarm（後述、失敗記録は書かない）した上で、armed が無かった場合と同じ**従来のフル同期パス**にフォールバックする — 単独の `start()` はこれまで通り完結して正しく動く。
+3. **auto-disarm** — armed のまま `recording.prepare_disarm_timeout_s`（既定 **120 秒**）以内に一致する `start` が来なければ自動的に disarm する: paused のサブプロセスを終了（記録データが無いため SIGTERM。SIGINT によるグレースフルフラッシュは不要）、空の run ディレクトリと付随ファイル（`<run_id>.qos.yaml` / `<run_id>.mcap-storage.yaml` / recorder log）を削除し、保持していた rclpy ノードを破棄する。disarm は**失敗記録を書かない**（意図的なキャンセル・期限切れであり、記録失敗ではないため）。同じ disarm 経路は次からも呼ばれる: `POST /record/stop` を armed 中に呼んだ場合（呼ばないと armed のサブプロセスが永遠にリークする）、`start` が不一致だった場合、`armed` のまま再度 `prepare` が来た場合（**後勝ち** — 古い方を disarm してから新しい方を arm）。disarm 後の状態は `prepare()` 実行前の状態（`created`/`completed`/`failed`/`interrupted` のいずれか）に戻す — armed にする前に完了していた直近 run の可視性を消さないため。
 
 トレードオフ（明示）:
 
-- **armed 中も購読は live** = 記録と同じ DDS リーダ負荷がかかり続ける（paused の rosbag2 は受信して捨てる）。SHM が効かない構成（[deployment_topology](deployment_topology.md) の「単一ホスト SHM の成立条件」）ではフルコピー負荷なので、arm 窓は短く保ち、UI の操作意図（記録準備の明示操作）に連動させる。
-- prepare/armed/disarm の API・状態機械が増える（orchestrator / frontend の変更を伴う設計変更）。よって **TBD** とし、実装判断はユーザと行う。
+- **armed 中も購読は live** = 記録と同じ DDS リーダ負荷がかかり続ける（paused の rosbag2 は受信して捨てる）。SHM が効かない構成（[deployment_topology](deployment_topology.md) の「単一ホスト SHM の成立条件」）ではフルコピー負荷なので、arm 窓は短く保つ運用（UI の操作意図＝記録準備の明示操作に連動させる、`prepare_disarm_timeout_s` を短めに設定する）が前提になる。この運用判断（いつ prepare を呼ぶか）は `api_orchestrator` / frontend 側の設計であり、本ドキュメントのスコープ外。
+- prepare/armed/disarm という API・状態機械が増える。recorder 側は実装済みだが、`api_orchestrator` の中継・frontend の「準備」操作 UI は別途の設計判断・実装が要る。
+- **未検証点（実機/Docker 要検証）**: FastAPI の同期ルートは Starlette のスレッドプールで動くため、`prepare()` の rclpy ノード生成と `start()` の resume 呼び出し（`spin_until_future_complete`）は**別スレッドで実行され得る**上、その間 armed セッションは最大 `prepare_disarm_timeout_s`（既定 120 秒）アイドル状態になり得る。既存の単発ゲート（`_arm_and_resume`）はノード生成・spin・破棄を単一呼び出し・単一スレッド内で完結させており、この「呼び出しをまたぐ・スレッドをまたぐ・長時間アイドルの rclpy ノード再利用」は two-phase start で新たに導入されたパターンで、ユニットテスト（rclpy を使わない）ではカバーできない。resume が実際に高速であること、および別スレッドからの spin が問題なく動作することは ROS イメージでの実地検証が必要。
 
 **代替案 — `rosbag2_py.Recorder` による同一プロセス実装 — TBD（2026-07-09 追記・要再検討）**: 常駐 recorder（rosbag2_py で participant/購読を温存し spawn コストを恒久に消す）は、従来「実績ある `ros2 bag record` サブプロセスの挙動を自前実装で置き換えることになりリスク対効果が悪い」として非推奨としていた。しかし調査の結果、`ros2 bag record` CLI 自体が中身では `rosbag2_py.Recorder`（C++ `rosbag2_transport::Recorder` の pybind11 バインディング）を直接呼ぶ薄いラッパーであることを確認した（`ros2bag/ros2bag/verb/record.py`, jazzy ブランチ）。つまり `rosbag2_py.Recorder` を kairos の自プロセス内から直接呼んでも、cache 溢れ検出・split・SIGINT 相当の flush（`stop()`）は CLI と同一の実装を素通しで使えるだけで、「自前実装への置き換え」には当たらない。`pause()` / `resume()` / `is_paused()` もネイティブメソッド・オプションとして既にあり、上記 two-phase start の実装コストを下げる副次効果もある。サブプロセス spawn（1〜3 秒）を消せるため開始レイテンシの一部には効くが、DDS discovery/購読マッチングの待ち時間そのものは変わらない（two-phase start とは直交し併用可）。**新たな未検証点**: Jazzy でのこの API 対応はごく最近（`rosbag2_py` 0.26.8/0.26.9, 2025-07〜08）で枯れていない点、および `Recorder` のコンストラクタが自前で `rclcpp::init()` するため、既存の readiness gate（`_arm_and_resume()`）が持つ rclpy コンテキストと**同一プロセス内で 2 つの ROS コンテキストが共存**することになり動作未確認、の 2 点。よって非推奨の決定を覆すには実機検証が要る — **TBD** とし、実装判断はユーザと行う。DDS discovery チューニング（initial announcements 等）は短縮効果が小さく単独では解決しない（加点程度）。
 
@@ -98,13 +101,14 @@ resume は **rosbag2 の `~/resume` サービス**で行うため、対話 SPACE
   - **runs の正は `api_orchestrator` の SQLite**、manifest は監査用。
 - `recorder.log`（finalise 後に run ディレクトリへ移動）: recorder プロセスの stdout/stderr。`Total lost`（キャッシュ溢れ）等の解析元。
 - `session.json`（MCAP と同じディレクトリ）: operator / task（省略時は `unknown_operator` / `unknown_task` を既定）＋件数等。`dora_runner` の dataset export が保存先 `data/<operator>/<task>` を決めるのに使う。
-- run 状態: `created` | `recording` | `stopping` | `completed` | `failed` | `interrupted`。
+- run 状態: `created` | `recording` | `stopping` | `completed` | `failed` | `interrupted` | `armed`（two-phase start の `prepare()` 後、`start()` に消費されるまでの待機状態。[詳細](#録画開始レイテンシ多トピック時と-two-phase-start)）。
 
 ## 設定（config）
 
 - `run_id` の文字種は `[A-Za-z0-9_-]+`（パストラバーサル防止）。
 - `MAX_RECORD_BYTES > 0` で超過時に自動 stop。`MAX_RECORD_SECONDS`（既定 600・`0`=無効）は 1 録画の wall-clock 上限 — 誰も止めない孤児録画のディスク保護バックストップ。どちらの自動停止も orchestrator の遅延 reconciliation（status ポーリング）が通常の completed として確定する。
 - `default_topics` / `topic_qos_overrides` は `RECORDING_CONFIG` の YAML から（パターン一致）。`ROS_DOMAIN_ID` / `DATA_DIR` / `BIND_HOST` は共有 [config](config.md)。
+- `recording.prepare_disarm_timeout_s`（既定 **120 秒**）: two-phase start の `armed` セッションが `start()` に消費されないまま許容される時間（[詳細](#録画開始レイテンシ多トピック時と-two-phase-start)）。
 
 ## 設計ポイント
 

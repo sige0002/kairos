@@ -146,6 +146,14 @@ class RecordingTuning(_StrictModel):
     # real, not warm-up. Distinct from start_delay_s, which sleeps BEFORE spawn
     # (so it cannot see whether subscriptions actually matched). 0 disables.
     post_discovery_delay_s: Annotated[float, Field(ge=0)] = 0.0
+    # Two-phase start (prepare -> resume): how long an ``armed`` session (a
+    # ``POST /record/prepare`` that spawned + matched subscriptions but was
+    # never claimed by a matching ``POST /record/start``) is kept alive before
+    # it is auto-disarmed (subprocess killed, empty run dir removed). Bounds
+    # the cost of an armed-but-abandoned session: while armed its subscriptions
+    # are live (same DDS reader load as recording), so an unclaimed arm must
+    # not linger indefinitely.
+    prepare_disarm_timeout_s: Annotated[float, Field(gt=0)] = 120.0
     # rosbag2 in-recorder message cache (--max-cache-size, in MiB). The recorder
     # buffers incoming messages in RAM and a writer thread drains them to disk; if
     # the cache fills (burst / slow storage / constrained CPU) rosbag2 DROPS the

@@ -25,11 +25,25 @@ from rosbag2_recorder.manifest import (
 )
 from rosbag2_recorder.models import (
     QosProfile,
+    RecordArming,
     RecordStartRequest,
     RunState,
     SplitConfig,
 )
 from rosbag2_recorder.recorder import RecorderSession, run_dir
+
+
+class _FakeArmedNode:
+    """Placeholder for the rclpy Node kept alive across prepare() -> start().
+
+    ``_teardown_armed_rclpy`` calls ``.destroy_node()`` unconditionally, so the
+    fake needs that method; nothing else touches the node/clients in tests
+    that stub ``_prepare_arm``/``_resume_armed`` (the default in
+    :func:`_make_session`).
+    """
+
+    def destroy_node(self) -> None:
+        pass
 
 
 def _make_session(
@@ -70,12 +84,28 @@ def _make_session(
             rd.mkdir(parents=True, exist_ok=True)  # dir but no metadata
         return proc
 
+    def fake_prepare_arm(run_id: str, topics: list[str], all_mode: bool) -> Any:
+        # Mimic what the real _prepare_arm (via _await_subscription_match)
+        # would seed, so prepare()'s response/status carry a realistic arming
+        # snapshot without needing ROS.
+        session._arming = RecordArming(
+            active=True, matched_topics=list(topics), missing_topics=[]
+        )
+        return (_FakeArmedNode(), object(), object(), False)
+
     session._spawn_process = fake_spawn  # type: ignore[method-assign]
-    # FakeProcess shares our pid; never deliver a real OS signal from a unit test.
+    # FakeProcess shares our pid; never deliver a real OS signal from a unit test
+    # (killpg(getpgid(our own pid)) would SIGTERM/SIGINT the test runner itself).
     session._signal_and_wait = lambda _proc: None  # type: ignore[method-assign]
+    session._terminate_failed_start = lambda _proc: None  # type: ignore[method-assign]
     # Arming (subscription gate + resume) needs ROS; stub it to a no-op so the
     # state machine runs without ROS. Tests that exercise arming override this.
     session._arm_and_resume = lambda *_a, **_k: None  # type: ignore[method-assign]
+    # Two-phase start's rclpy-touching pieces also need ROS; stub them to a
+    # matched-but-inert pair so prepare()/the fast start() path run without ROS.
+    # Tests that exercise the fast path's failure mode override _resume_armed.
+    session._prepare_arm = fake_prepare_arm  # type: ignore[method-assign]
+    session._resume_armed = lambda _armed: None  # type: ignore[method-assign]
     return session
 
 
@@ -1127,3 +1157,255 @@ def test_cache_ram_preflight_passes_when_ram_unknown(
     monkeypatch.setattr(session, "_available_ram_bytes", lambda: None)
     started = session.start(_start_req("run_ok"))
     assert started.state is RunState.recording
+
+
+# -- two-phase start (prepare -> resume) -------------------------------------
+
+
+def test_prepare_then_start_fast_path_resumes_without_respawn(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    """A matching start() after prepare() is just a resume: no re-spawn."""
+    captured: list[Any] = []
+    session = _make_session(settings, fake_process, write_metadata, capture=captured)
+    resume_calls: list[Any] = []
+    session._resume_armed = lambda armed: resume_calls.append(armed)  # type: ignore[method-assign]
+
+    prepared = session.prepare(_start_req("run_p", topics=["/joint_states"]))
+    assert prepared.state is RunState.armed
+    assert prepared.run_id == "run_p"
+    assert prepared.arming is not None
+    assert prepared.disarm_at is not None
+    assert len(captured) == 1  # spawned once, by prepare()
+
+    status = session.status()
+    assert status.state is RunState.armed
+    assert status.run_id == "run_p"
+
+    started = session.start(_start_req("run_p", topics=["/joint_states"]))
+    assert started.state is RunState.recording
+    assert started.run_id == "run_p"
+    assert len(captured) == 1  # start() did NOT spawn a second process
+    assert len(resume_calls) == 1  # resumed exactly once, via the held clients
+
+    stopped = session.stop()
+    assert stopped.state is RunState.completed
+
+
+def test_prepare_then_start_fast_path_matches_on_all_topics(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    """topics="all" at prepare matches topics="all" at start (both normalise to
+    the "all" sentinel, never to an equivalent explicit list)."""
+    captured: list[Any] = []
+    session = _make_session(settings, fake_process, write_metadata, capture=captured)
+    session.prepare(RecordStartRequest(topics="all", run_id="run_all_p"))
+    started = session.start(RecordStartRequest(topics="all", run_id="run_all_s"))
+    assert started.state is RunState.recording
+    assert started.run_id == "run_all_p"  # armed run_id, fixed at prepare time
+    assert len(captured) == 1  # fast path: no second spawn
+
+
+def test_start_uses_armed_run_id_even_if_request_run_id_differs(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    """run_id is fixed at prepare time (the subprocess already opened that
+    --output dir); a start() whose OTHER fields match commits under the
+    ARMED run_id, even if the request itself names a different run_id."""
+    session = _make_session(settings, fake_process, write_metadata)
+    session.prepare(_start_req("run_armed_id", topics=["/joint_states"]))
+    started = session.start(_start_req("run_requested_id", topics=["/joint_states"]))
+    assert started.run_id == "run_armed_id"
+    assert session.status().run_id == "run_armed_id"
+
+
+def test_operator_task_come_from_start_request_not_prepare(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    """operator/task are metadata only; the fast path uses the START request's
+    values, not the (possibly placeholder) values passed to prepare()."""
+    session = _make_session(settings, fake_process, write_metadata)
+    session.prepare(_start_req("run_meta", operator="prep_operator", task="prep_task"))
+    session.start(_start_req("run_meta", operator="real_operator", task="real_task"))
+
+    payload = json.loads(session_path(settings.data_dir, "run_meta").read_text())
+    assert payload["operator"] == "real_operator"
+    assert payload["task"] == "real_task"
+
+
+def test_status_shape_while_armed(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    session = _make_session(settings, fake_process, write_metadata)
+    prepared = session.prepare(
+        _start_req("run_status", topics=["/joint_states", "/tf"])
+    )
+    assert prepared.state is RunState.armed
+    assert prepared.arming is not None
+    assert prepared.disarm_at is not None
+
+    status = session.status()
+    assert status.state is RunState.armed
+    assert status.run_id == "run_status"
+    assert status.started_at is None
+    assert status.message_count == 0
+    assert status.bytes == 0
+    assert {t.name for t in status.topics} == {"/joint_states", "/tf"}
+    assert status.arming is not None
+    assert status.arming.disarm_at is not None
+    assert status.dropped_messages is None
+    assert status.integrity == "unknown"
+
+
+def test_prepare_while_recording_is_409(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    session = _make_session(settings, fake_process, write_metadata)
+    session.start(_start_req("run_rec"))
+    with pytest.raises(ApiError) as exc:
+        session.prepare(_start_req("run_prep"))
+    assert exc.value.status_code == 409
+    assert exc.value.code == "already_recording"
+
+
+def test_prepare_while_already_armed_disarms_old_and_arms_new(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    session = _make_session(settings, fake_process, write_metadata)
+    session.prepare(_start_req("run_first"))
+    assert session.status().run_id == "run_first"
+
+    session.prepare(_start_req("run_second"))
+    status = session.status()
+    assert status.state is RunState.armed
+    assert status.run_id == "run_second"
+    assert not run_dir(Path(settings.data_dir), "run_first").exists()
+    assert run_dir(Path(settings.data_dir), "run_second").exists()
+
+
+def test_stop_while_armed_disarms(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    session = _make_session(settings, fake_process, write_metadata)
+    session.prepare(_start_req("run_arm_stop"))
+    assert session.status().state is RunState.armed
+
+    stopped = session.stop()
+    assert stopped.state is RunState.created  # reverted to the pre-arm state
+    assert not run_dir(Path(settings.data_dir), "run_arm_stop").exists()
+    assert session._armed is None  # type: ignore[attr-defined]
+
+
+def test_stop_while_armed_restores_previous_completed_status(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    """Disarming must not erase visibility of a genuinely-completed prior run."""
+    session = _make_session(settings, fake_process, write_metadata)
+    session.start(_start_req("run_done"))
+    session.stop()
+    assert session.status().state is RunState.completed
+
+    session.prepare(_start_req("run_arm_after"))
+    assert session.status().state is RunState.armed
+    stopped = session.stop()
+    assert stopped.state is RunState.completed
+    assert stopped.run_id == "run_done"
+
+
+def test_start_with_mismatched_armed_session_falls_back(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    captured: list[Any] = []
+    session = _make_session(settings, fake_process, write_metadata, capture=captured)
+    session.prepare(_start_req("run_armed_topics", topics=["/joint_states"]))
+    assert session.status().state is RunState.armed
+
+    # A start() with a DIFFERENT topic list does not match -> disarm + the
+    # full synchronous path (a fresh spawn for the new topic selection).
+    started = session.start(_start_req("run_full", topics=["/other_topic"]))
+    assert started.state is RunState.recording
+    assert started.run_id == "run_full"
+    assert [t.name for t in started.topics] == ["/other_topic"]
+    # The old armed run's dir was cleaned up (disarmed, not committed).
+    assert not run_dir(Path(settings.data_dir), "run_armed_topics").exists()
+    # Two spawns happened: one for prepare() (discarded), one for the full start.
+    assert len(captured) == 2
+
+
+def test_resume_failure_during_fast_start_fails_safely(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    """A+B fail-safe applies to the fast path too: if resume fails/doesn't
+    confirm, the start fails (507) rather than leaving a paused recorder."""
+    from rosbag2_recorder.manifest import read_failed_start_record
+
+    session = _make_session(settings, fake_process, write_metadata)
+    session.prepare(_start_req("run_resume_fail"))
+
+    def boom(_armed: Any) -> None:
+        raise RuntimeError("resume did not confirm")
+
+    session._resume_armed = boom  # type: ignore[method-assign]
+    with pytest.raises(ApiError) as exc:
+        session.start(_start_req("run_resume_fail"))
+    assert exc.value.status_code == 507
+    assert exc.value.code == "record_arm_failed"
+
+    # No leaked paused recorder: state reverted, run dir gone, failure recorded.
+    assert session.status().state is RunState.created
+    assert not run_dir(Path(settings.data_dir), "run_resume_fail").exists()
+    failed = read_failed_start_record(settings.data_dir, "run_resume_fail")
+    assert failed.state is RunState.failed
+
+
+def test_auto_disarm_fires_and_cleans_up_run_dir(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    from kairos_common import RecordingConfig, RecordingTuning
+
+    cfg = RecordingConfig(
+        robot_name="t",
+        recording=RecordingTuning(start_delay_s=0, prepare_disarm_timeout_s=0.05),
+    )
+    session = _make_session(settings, fake_process, write_metadata, config=cfg)
+    prepared = session.prepare(_start_req("run_auto"))
+    assert prepared.state is RunState.armed
+
+    deadline = time.monotonic() + 5.0
+    while session.status().state is RunState.armed and time.monotonic() < deadline:
+        time.sleep(0.02)
+
+    status = session.status()
+    assert status.state is RunState.created  # reverted to the pre-arm state
+    assert not run_dir(Path(settings.data_dir), "run_auto").exists()
+
+
+def test_stale_disarm_timer_is_a_noop_after_reprepare(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    """The ABA race: disarm -> re-prepare between the timer firing and its
+    callback acquiring the lock must not tear down the NEW armed session."""
+    session = _make_session(settings, fake_process, write_metadata)
+    session.prepare(_start_req("run_old"))
+    old_armed = session._armed  # type: ignore[attr-defined]
+    assert old_armed is not None
+    old_generation = old_armed.generation
+
+    # Disarm the old session directly (as stop()/a mismatch would), then arm
+    # a new one, BEFORE the stale timer callback runs.
+    session._disarm_locked()  # type: ignore[attr-defined]
+    new_prepared = session.prepare(_start_req("run_new"))
+    assert new_prepared.state is RunState.armed
+    new_armed = session._armed  # type: ignore[attr-defined]
+    assert new_armed is not None
+    assert new_armed.generation != old_generation
+
+    # Fire the STALE timer callback (captured the OLD generation) directly.
+    session._on_disarm_timer(old_generation)  # type: ignore[attr-defined]
+
+    # The new armed session must be entirely unaffected.
+    assert session._armed is new_armed  # type: ignore[attr-defined]
+    assert session.status().state is RunState.armed
+    assert session.status().run_id == "run_new"
+    assert run_dir(Path(settings.data_dir), "run_new").exists()
+    assert not run_dir(Path(settings.data_dir), "run_old").exists()  # disarmed earlier

@@ -19,6 +19,7 @@ import signal
 import subprocess
 import threading
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import IO, Any
@@ -46,6 +47,7 @@ from rosbag2_recorder.manifest import (
 from rosbag2_recorder.models import (
     QosProfile,
     RecordArming,
+    RecordPrepareResponse,
     RecordStartRequest,
     RecordStatusResponse,
     RunState,
@@ -158,6 +160,65 @@ def _iso8601_after(seconds: float) -> str:
     return moment.strftime("%Y-%m-%dT%H:%M:%S.") + f"{moment.microsecond // 1000:03d}Z"
 
 
+def _normalise_topics(topics: list[str] | str) -> list[str] | str:
+    """Normalise a topic selection for armed-session match comparison.
+
+    ``"all"`` only ever matches ``"all"`` (never an equivalent explicit list —
+    the live topic set at prepare time is not necessarily the live set at
+    start time). An explicit list matches order-insensitively (sorted).
+    """
+    if topics == "all":
+        return "all"
+    return sorted(topics)
+
+
+@dataclass
+class _Armed:
+    """Everything held while ``state is RunState.armed`` (two-phase start).
+
+    Populated once by :meth:`RecorderSession.prepare` and consumed exactly
+    once — either by :meth:`RecorderSession._start_from_armed` (a matching
+    ``start()``, which promotes these fields onto the session and commits) or
+    torn down by :meth:`RecorderSession._disarm_locked` (auto-disarm timeout,
+    ``stop()`` while armed, a mismatching ``start()``, or a re-``prepare()``).
+
+    ``generation`` is a per-arm identity token: the auto-disarm
+    :class:`threading.Timer` captures it when created, and its callback
+    re-checks — under the lock — that the session is still armed AND still
+    this same generation before disarming. That closes the ABA race where
+    disarm -> re-prepare happens between the timer firing and the callback
+    acquiring the lock, which would otherwise let a stale timer tear down an
+    unrelated, later armed session.
+    """
+
+    generation: int
+    run_id: str
+    # The PREPARE request: used to decide whether a later start() "matches"
+    # (spawn-affecting fields only — see RecorderSession._armed_matches).
+    request: RecordStartRequest
+    staged_topics: list[TopicEntry]
+    # Pre-spawn timestamp (for a failed-start record if arming/resume fails).
+    started_at: str
+    # State to restore on disarm — whatever self._state was before prepare()
+    # armed it (created / completed / failed / interrupted), so disarming
+    # does not erase visibility of a genuinely-completed previous run.
+    previous_state: RunState
+    process: subprocess.Popen[bytes]
+    qos_path: Path | None
+    storage_config_path: Path | None
+    pending_log_path: Path | None
+    log_file: IO[bytes] | None
+    # rclpy Node + matched Resume/IsPaused clients, kept ALIVE across
+    # prepare() -> start() so the fast start() path pays no DDS-participant or
+    # service-discovery cost (recreating them would defeat the entire point).
+    node: Any
+    resume_client: Any
+    is_paused_client: Any
+    owns_rclpy: bool
+    disarm_at: str
+    timer: threading.Timer | None = None
+
+
 class RecorderSession:
     """Owns at most one ``ros2 bag record`` subprocess and its run state.
 
@@ -202,6 +263,13 @@ class RecorderSession:
         # when start_paused is off or no arming has run for this session. Mutated
         # only under ``self._lock`` (the readiness loop runs inside ``start``).
         self._arming: RecordArming | None = None
+
+        # Two-phase start (prepare -> resume): the current armed session, if
+        # ``self._state is RunState.armed``; otherwise ``None``. See ``prepare()``,
+        # ``_start_from_armed()``, ``_disarm_locked()``.
+        self._armed: _Armed | None = None
+        # Monotonic identity counter for armed sessions (see `_Armed.generation`).
+        self._armed_generation: int = 0
 
         # Recording-integrity fields. The recorder's stdout+stderr go to a per-run
         # log FILE (``_log_file``); at finalise we scan it for rosbag2's
@@ -318,11 +386,16 @@ class RecorderSession:
         request: RecordStartRequest,
         qos_path: Path | None,
         storage_config_path: Path | None,
+        *,
+        force_paused: bool = False,
     ) -> list[str]:
         """Assemble the ``ros2 bag record`` argv for this run.
 
         ``--output`` is the run directory; rosbag2 writes
-        ``<run_id>_*.mcap`` + ``metadata.yaml`` inside it.
+        ``<run_id>_*.mcap`` + ``metadata.yaml`` inside it. ``force_paused``
+        always adds ``--start-paused`` regardless of ``recording.start_paused``
+        (used by ``prepare()``: arming without pausing first would begin
+        writing immediately, defeating the whole point of two-phase start).
         """
         out = run_dir(self._data_dir, run_id)
         cmd: list[str] = [
@@ -356,7 +429,7 @@ class RecorderSession:
         # the interactive SPACE key, so the keyboard handler is pure overhead and
         # an unwanted TTY dependency. Disable it unconditionally.
         cmd.append("--disable-keyboard-controls")
-        if self._start_paused_enabled():
+        if force_paused or self._start_paused_enabled():
             # Start paused; we resume only after subscriptions are matched (see
             # _arm_and_resume), so the bag begins with no dropped first frames.
             cmd.append("--start-paused")
@@ -375,6 +448,12 @@ class RecorderSession:
         if self._config is None:
             return 0
         return self._config.recording.max_cache_size_mb
+
+    def _prepare_disarm_timeout_s(self) -> float:
+        """Auto-disarm timeout for an unclaimed ``armed`` session (two-phase start)."""
+        if self._config is None:
+            return 120.0
+        return self._config.recording.prepare_disarm_timeout_s
 
     def _spawn_process(self, cmd: list[str]) -> subprocess.Popen[bytes]:
         """Spawn *cmd* in a new process group (test seam).
@@ -417,12 +496,356 @@ class RecorderSession:
                 details={"run_id": self._run_id, "state": self._state.value},
             )
 
-    def start(self, request: RecordStartRequest) -> RecordStatusResponse:
-        """Start a recording session; raise 409 if one is already active."""
+    # -- two-phase start (prepare -> resume) ---------------------------------
+
+    def prepare(self, request: RecordStartRequest) -> RecordPrepareResponse:
+        """Spawn ``ros2 bag record --start-paused`` and wait for subscription
+        match, parking the session ``armed`` — waiting for a later ``start()``.
+
+        Pays today's full spawn + DDS-discovery/subscription-match cost, but
+        BEFORE the operator's actual start action, so a later matching
+        ``start()`` is just a near-instant resume call. Raises 409 if a
+        session is already recording/stopping. If a session is already
+        ``armed``, last-wins: the old one is disarmed before this one arms
+        (mirrors ``start()``'s single-active-session model — there is only
+        ever at most one armed session, same as at most one recording one).
+        """
         run_id = validate_run_id(request.run_id)
         with self._lock:
             self._raise_if_active()
             self._check_writable_and_space()
+            if self._state is RunState.armed:
+                logger.info(
+                    "re-preparing while already armed; disarming the old session",
+                    extra={"component": "recorder"},
+                )
+                self._disarm_locked()
+
+        # Same pre-spawn ramp-up delay as start() (config-driven); done OUTSIDE
+        # the lock so /record/status stays responsive for the whole wait.
+        self._apply_start_delay()
+
+        with self._lock:
+            self._raise_if_active()
+            if self._state is RunState.armed:
+                # A concurrent prepare() could have armed a session while we
+                # slept above; last-wins here too.
+                self._disarm_locked()
+            previous_state = self._state
+
+            topics = request.topics
+            selected = list(topics) if topics != "all" else []
+            staged_topics = [
+                TopicEntry(name=name, qos=self._resolve_qos(name, request))
+                for name in selected
+            ]
+            qos_path = self._materialise_qos(run_id, selected, request)
+            storage_config_path = self._materialise_storage_config(run_id, request)
+            # ALWAYS spawn --start-paused here, regardless of recording.
+            # start_paused: arming without pausing first would begin writing
+            # immediately, defeating the whole point of two-phase start.
+            cmd = self._build_command(
+                run_id,
+                topics,
+                request,
+                qos_path,
+                storage_config_path,
+                force_paused=True,
+            )
+
+            self._dropped_messages = None
+            self._integrity = "unknown"
+            self._pending_log_path = _recorder_log_path(self._recorded_root(), run_id)
+
+            started_at = utc_now_iso8601()
+            try:
+                process = self._spawn_process(cmd)
+            except (OSError, ValueError) as exc:
+                self._fail(run_id, started_at, request, staged_topics, str(exc))
+                raise ApiError(
+                    status_code=507,
+                    code="record_spawn_failed",
+                    message="Failed to start the recording process.",
+                    details={"error": str(exc)},
+                ) from exc
+
+            if not self._await_started(run_id, process):
+                self._terminate_failed_start(process)
+                returncode = process.returncode
+                self._fail(
+                    run_id,
+                    started_at,
+                    request,
+                    staged_topics,
+                    f"ros2 bag record did not create the output dir (rc={returncode})",
+                )
+                raise ApiError(
+                    status_code=507,
+                    code="record_start_failed",
+                    message="The recording process failed to start.",
+                    details={"run_id": run_id, "returncode": returncode},
+                )
+
+            # Bag process is up, still paused. Wait for subscription match and
+            # hold the (now-matched) Resume/IsPaused clients — but do NOT
+            # resume. FAIL-SAFE: any failure here must not leave a paused
+            # process lying around silently; kill it and fail like today's
+            # single-call arm gate does.
+            self._arming = None
+            try:
+                node, resume_client, is_paused_client, owns_rclpy = self._prepare_arm(
+                    run_id, selected, topics == "all"
+                )
+            except Exception as exc:  # noqa: BLE001 - convert to a clean fail
+                self._terminate_failed_start(process)
+                shutil.rmtree(run_dir(self._data_dir, run_id), ignore_errors=True)
+                self._arming = None
+                self._fail(run_id, started_at, request, staged_topics, f"arming: {exc}")
+                raise ApiError(
+                    status_code=507,
+                    code="record_arm_failed",
+                    message="Recording failed to arm (subscribe + resume).",
+                    details={"run_id": run_id, "error": str(exc)},
+                ) from exc
+
+            # SUCCESS: detach the log handle from instance state into the armed
+            # bundle. self._log_file/_pending_log_path must not keep pointing
+            # at THIS run while the session sits armed — a later, unrelated
+            # start()/prepare() would otherwise clobber (or be clobbered by) it.
+            armed_log_file = self._log_file
+            armed_pending_log_path = self._pending_log_path
+            self._log_file = None
+            self._pending_log_path = None
+
+            self._armed_generation += 1
+            generation = self._armed_generation
+            disarm_timeout = self._prepare_disarm_timeout_s()
+            disarm_at = _iso8601_after(disarm_timeout)
+            if self._arming is not None:
+                self._arming.disarm_at = disarm_at
+
+            timer = threading.Timer(
+                disarm_timeout, self._on_disarm_timer, args=(generation,)
+            )
+            timer.daemon = True
+
+            armed = _Armed(
+                generation=generation,
+                run_id=run_id,
+                request=request,
+                staged_topics=staged_topics,
+                started_at=started_at,
+                previous_state=previous_state,
+                process=process,
+                qos_path=qos_path,
+                storage_config_path=storage_config_path,
+                pending_log_path=armed_pending_log_path,
+                log_file=armed_log_file,
+                node=node,
+                resume_client=resume_client,
+                is_paused_client=is_paused_client,
+                owns_rclpy=owns_rclpy,
+                disarm_at=disarm_at,
+                timer=timer,
+            )
+            self._armed = armed
+            self._state = RunState.armed
+            timer.start()
+
+            logger.info(
+                "recording session armed",
+                extra={"run_id": run_id, "component": "recorder"},
+            )
+            return RecordPrepareResponse(
+                run_id=run_id,
+                state=RunState.armed,
+                arming=self._arming.model_copy(deep=True) if self._arming else None,
+                disarm_at=disarm_at,
+            )
+
+    def _on_disarm_timer(self, generation: int) -> None:
+        """Auto-disarm callback (fires on a background timer thread).
+
+        Re-checks — under the lock — that the session is STILL armed AND
+        still this SAME armed session (``generation`` matches) before
+        disarming. Guards the ABA race where disarm -> re-prepare happens
+        between the timer firing and this callback acquiring the lock, which
+        would otherwise let a stale timer tear down a later, unrelated armed
+        session.
+        """
+        with self._lock:
+            if (
+                self._state is RunState.armed
+                and self._armed is not None
+                and self._armed.generation == generation
+            ):
+                logger.warning(
+                    "armed session auto-disarmed (prepare_disarm_timeout_s elapsed)",
+                    extra={"run_id": self._armed.run_id, "component": "recorder"},
+                )
+                self._disarm_locked()
+
+    def _armed_matches(self, armed: _Armed, request: RecordStartRequest) -> bool:
+        """Whether *request*'s spawn-affecting fields match *armed*'s.
+
+        Only fields that shape ``ros2 bag record``'s argv are compared: the
+        normalised topic selection, compression, split, and QoS. ``run_id`` is
+        deliberately NOT compared — it was fixed at prepare time (the
+        subprocess is already writing into that output dir) — and
+        ``operator``/``task`` are NOT compared either: they are metadata only,
+        applied from the *start* request at commit time (see
+        ``_start_from_armed``), not spawn-affecting.
+        """
+        prepared = armed.request
+        return (
+            _normalise_topics(prepared.topics) == _normalise_topics(request.topics)
+            and prepared.compression == request.compression
+            and prepared.split == request.split
+            and prepared.qos_default == request.qos_default
+            and prepared.qos_overrides == request.qos_overrides
+        )
+
+    def _start_from_armed(self, request: RecordStartRequest) -> RecordStatusResponse:
+        """Fast resume path: a matching armed session exists — resume + commit.
+
+        No spawn, no discovery wait: both already ran in ``prepare()``. Must be
+        called with ``self._lock`` held and ``self._armed`` set to a session
+        that :meth:`_armed_matches` has already confirmed matches *request*.
+        """
+        armed = self._armed
+        if armed is None:  # pragma: no cover - guarded by the caller
+            raise RuntimeError("_start_from_armed called with no armed session")
+        if armed.timer is not None:
+            armed.timer.cancel()
+
+        try:
+            self._resume_armed(armed)
+        except Exception as exc:  # noqa: BLE001 - convert to a clean fail
+            self._terminate_failed_start(armed.process)
+            shutil.rmtree(run_dir(self._data_dir, armed.run_id), ignore_errors=True)
+            self._teardown_armed_rclpy(armed)
+            # Restore the detached log handle so the existing _fail() cleanup
+            # (which closes/unlinks via self._log_file) finds and closes it.
+            self._log_file = armed.log_file
+            self._arming = None
+            self._armed = None
+            self._state = armed.previous_state
+            self._fail(
+                armed.run_id,
+                armed.started_at,
+                armed.request,
+                armed.staged_topics,
+                f"arming: {exc}",
+            )
+            raise ApiError(
+                status_code=507,
+                code="record_arm_failed",
+                message="Recording failed to arm (subscribe + resume).",
+                details={"run_id": armed.run_id, "error": str(exc)},
+            ) from exc
+
+        # Resumed: no longer waiting.
+        if self._arming is not None:
+            self._arming.active = False
+
+        # Commit: promote the armed subprocess/log-file onto the session's
+        # live fields, exactly like today's post-arm commit path in start().
+        self._process = armed.process
+        self._state = RunState.recording
+        self._run_id = armed.run_id
+        self._started_at = utc_now_iso8601()
+        self._compression = request.compression
+        self._split = request.split
+        # operator/task come from the START request (armed.request is stale
+        # prepare-time metadata; see _armed_matches).
+        self._operator = _default_meta(request.operator, _UNKNOWN_OPERATOR)
+        self._task = _default_meta(request.task, _UNKNOWN_TASK)
+        self._topics = armed.staged_topics
+        self._log_file = armed.log_file
+        self._pending_log_path = armed.pending_log_path
+        # Fresh integrity state for this run. prepare() already reset these
+        # before spawn (nothing mutates them while armed), but resetting here
+        # too keeps this commit point locally correct on its own, matching the
+        # full synchronous start() path's commit.
+        self._dropped_messages = None
+        self._integrity = "unknown"
+
+        # The node/clients are no longer needed: the subprocess now runs
+        # unattended (like any other recording) until stop().
+        self._teardown_armed_rclpy(armed)
+        self._armed = None
+
+        self._write_manifest()
+        self._start_size_watcher(armed.run_id)
+        logger.info(
+            "recording started (fast resume from armed)",
+            extra={"run_id": armed.run_id, "component": "recorder"},
+        )
+        return self._status_locked()
+
+    def _disarm_locked(self) -> None:
+        """Tear down the current armed session (caller must hold ``self._lock``).
+
+        Terminates the paused subprocess (process-group SIGTERM — there is no
+        recorded data to flush cleanly, the process never left the paused
+        state), removes the run dir + sibling qos/storage-config/log files,
+        destroys the held rclpy node (+ shuts down rclpy if this session owned
+        the context), cancels the auto-disarm timer, and restores the state to
+        whatever it was before ``prepare()`` armed it (so disarming a session
+        never erases visibility of a genuinely-completed previous run). Writes
+        NO failure record: a disarm is a deliberate or expired cancel, not a
+        recording failure.
+        """
+        armed = self._armed
+        if armed is None:
+            return
+        if armed.timer is not None:
+            armed.timer.cancel()
+        self._terminate_failed_start(armed.process)
+        shutil.rmtree(run_dir(self._data_dir, armed.run_id), ignore_errors=True)
+        self._teardown_armed_rclpy(armed)
+        # Restore the detached log handle so the existing cleanup helpers
+        # (which act on self._log_file) can close + unlink it normally.
+        self._log_file = armed.log_file
+        self._cleanup_qos_file(armed.run_id)
+        self._cleanup_storage_config(armed.run_id)
+        self._cleanup_log_file(armed.run_id)
+        self._armed = None
+        self._arming = None
+        self._state = armed.previous_state
+        logger.info(
+            "armed session disarmed",
+            extra={"run_id": armed.run_id, "component": "recorder"},
+        )
+
+    def start(self, request: RecordStartRequest) -> RecordStatusResponse:
+        """Start a recording session; raise 409 if one is already active.
+
+        If a matching ``armed`` session exists (from a prior ``prepare()``),
+        this is the two-phase fast path: resume the already-spawned,
+        already-matched subprocess and commit — no spawn, no discovery wait.
+        A non-matching armed session is disarmed first, then this falls
+        through to the full synchronous path unchanged, so ``start()`` alone
+        stays complete and correct on its own (see
+        ``docs/specs/ja/rosbag2_recorder.md``).
+        """
+        run_id = validate_run_id(request.run_id)
+        with self._lock:
+            self._raise_if_active()
+            self._check_writable_and_space()
+
+            if self._state is RunState.armed and self._armed is not None:
+                if self._armed_matches(self._armed, request):
+                    return self._start_from_armed(request)
+                logger.warning(
+                    "armed session does not match the start request; disarming",
+                    extra={
+                        "run_id": self._armed.run_id,
+                        "component": "recorder",
+                    },
+                )
+                self._disarm_locked()
+                # Falls through to the full synchronous path below.
 
         # Let drivers/cameras ramp up so they are publishing before recording
         # begins (RECORDING_CONFIG recording.start_delay_s). Done OUTSIDE the
@@ -688,6 +1111,36 @@ class RecorderSession:
 
     # -- start-paused readiness gate (A+B) ---------------------------------
 
+    def _await_subscription_match(
+        self,
+        node: Any,
+        rclpy_mod: Any,
+        topics: list[str],
+        all_mode: bool,
+        timeout: float,
+    ) -> None:
+        """Seed the arming snapshot and wait for the recorder to subscribe.
+
+        Shared by the single-call ``recording.start_paused`` gate
+        (:meth:`_arm_and_resume`) and the two-phase ``prepare()`` path
+        (:meth:`_prepare_arm`): both need the exact same "spawned paused ->
+        wait for subscription match -> settle" sequence, just followed by a
+        different next step (resume immediately vs. hold for a later resume).
+        """
+        # Seed the observational arming snapshot: active while we wait, with the
+        # auto-resume deadline (now + timeout) and every target still "missing"
+        # until the readiness poll confirms a subscription (OL-①.4).
+        self._arming = RecordArming(
+            active=True,
+            matched_topics=[],
+            missing_topics=list(topics),
+            resume_at=_iso8601_after(timeout),
+        )
+        self._await_recorder_subscribed(rclpy_mod, node, topics, all_mode, timeout)
+        # Settle time after subscriptions matched, before resume, so the bag
+        # opens past sensor/camera ramp-up rather than on warm-up frames (OL-①.2).
+        self._apply_post_discovery_delay()
+
     def _arm_and_resume(self, run_id: str, topics: list[str], all_mode: bool) -> None:
         """Wait until ``ros2 bag record`` has subscribed to the target topics,
         then resume it (it was spawned ``--start-paused``).
@@ -696,6 +1149,11 @@ class RecorderSession:
         leaving a paused recorder capturing nothing. rclpy + rosbag2_interfaces
         are imported lazily so the module imports without ROS; the live path runs
         in the ROS image (verified in Docker, like the monitor's rclpy paths).
+
+        This is the single-call gate (``recording.start_paused``): the node it
+        creates is transient — it exists purely to arm-then-resume within this
+        one call, unlike ``_prepare_arm``'s node, which is kept alive across
+        ``prepare()`` -> ``start()``.
         """
         import rclpy
         from rclpy.node import Node
@@ -706,24 +1164,12 @@ class RecorderSession:
             if self._config is not None
             else 5.0
         )
-        # Seed the observational arming snapshot: active while we wait, with the
-        # auto-resume deadline (now + timeout) and every target still "missing"
-        # until the readiness poll confirms a subscription (OL-①.4).
-        self._arming = RecordArming(
-            active=True,
-            matched_topics=[],
-            missing_topics=list(topics),
-            resume_at=_iso8601_after(timeout),
-        )
         owns_rclpy = not rclpy.ok()
         if owns_rclpy:
             rclpy.init()
         node = Node("kairos_recorder_arming")
         try:
-            self._await_recorder_subscribed(rclpy, node, topics, all_mode, timeout)
-            # Settle time after subscriptions matched, before resume, so the bag
-            # opens past sensor/camera ramp-up rather than on warm-up frames (OL-①.2).
-            self._apply_post_discovery_delay()
+            self._await_subscription_match(node, rclpy, topics, all_mode, timeout)
             self._resume_recorder(rclpy, node, Resume, IsPaused)
             # Resumed: no longer waiting. Keep the final matched/missing snapshot
             # (a non-empty ``missing`` means the gate timed out and resumed anyway).
@@ -734,6 +1180,99 @@ class RecorderSession:
             node.destroy_node()
             if owns_rclpy:
                 rclpy.shutdown()
+
+    def _prepare_arm(
+        self, run_id: str, topics: list[str], all_mode: bool
+    ) -> tuple[Any, Any, Any, bool]:
+        """Wait for subscription match and create MATCHED Resume/IsPaused clients.
+
+        Unlike :meth:`_arm_and_resume`, this does NOT call resume and does NOT
+        destroy the node on success: both the node and the clients are handed
+        back to the caller (:meth:`prepare`) to hold on the armed session, so a
+        later fast ``start()`` is just a resume call — no repeat DDS-participant
+        creation or service discovery (the whole point of two-phase start).
+
+        Returns ``(node, resume_client, is_paused_client, owns_rclpy)``. On any
+        failure the node/context are torn down here before raising, so the
+        caller's except-clause only has to deal with the subprocess + run dir.
+        """
+        import rclpy
+        from rclpy.node import Node
+        from rosbag2_interfaces.srv import IsPaused, Resume
+
+        timeout = (
+            self._config.recording.subscription_ready_timeout_s
+            if self._config is not None
+            else 5.0
+        )
+        owns_rclpy = not rclpy.ok()
+        if owns_rclpy:
+            rclpy.init()
+        node = Node("kairos_recorder_arming")
+        try:
+            self._await_subscription_match(node, rclpy, topics, all_mode, timeout)
+            resume_client = node.create_client(Resume, f"/{RECORDER_NODE_NAME}/resume")
+            is_paused_client = node.create_client(
+                IsPaused, f"/{RECORDER_NODE_NAME}/is_paused"
+            )
+            if not resume_client.wait_for_service(timeout_sec=RESUME_SERVICE_TIMEOUT_S):
+                raise RuntimeError("recorder resume service did not appear")
+            # is_paused is only used to CONFIRM resume; best-effort like
+            # _resume_recorder (arm anyway if it never appears).
+            is_paused_client.wait_for_service(timeout_sec=2.0)
+            logger.info("recording armed (two-phase prepare)", extra={"run_id": run_id})
+            return node, resume_client, is_paused_client, owns_rclpy
+        except Exception:
+            node.destroy_node()
+            if owns_rclpy:
+                rclpy.shutdown()
+            raise
+
+    def _resume_armed(self, armed: _Armed) -> None:
+        """Resume an armed subprocess via its already-matched clients.
+
+        No ``wait_for_service`` calls: ``prepare()`` (:meth:`_prepare_arm`)
+        already confirmed both services are present, so re-waiting here would
+        reintroduce the exact discovery latency two-phase start exists to
+        remove. Same fail-safe confirmation as :meth:`_resume_recorder`: raises
+        if resume doesn't return, or if ``is_paused`` still reports paused
+        afterwards.
+        """
+        import rclpy
+        from rosbag2_interfaces.srv import IsPaused, Resume
+
+        fut = armed.resume_client.call_async(Resume.Request())
+        rclpy.spin_until_future_complete(
+            armed.node, fut, timeout_sec=RESUME_SERVICE_TIMEOUT_S
+        )
+        if fut.result() is None:
+            raise RuntimeError("recorder resume call did not return")
+        f2 = armed.is_paused_client.call_async(IsPaused.Request())
+        rclpy.spin_until_future_complete(armed.node, f2, timeout_sec=3.0)
+        res = f2.result()
+        if res is not None and getattr(res, "paused", False):
+            raise RuntimeError("recorder still paused after resume")
+
+    def _teardown_armed_rclpy(self, armed: _Armed) -> None:
+        """Destroy the armed session's held rclpy node (+ shutdown if owned).
+
+        Called both when a session is committed (resume succeeded — the node
+        is no longer needed, the subprocess runs unattended until ``stop()``)
+        and when it is disarmed/failed. Best-effort: teardown must not raise
+        over a session that is being torn down anyway.
+        """
+        try:
+            armed.node.destroy_node()
+        except Exception:  # noqa: BLE001 - best-effort teardown
+            logger.exception("failed to destroy the armed rclpy node")
+        if armed.owns_rclpy:
+            import rclpy
+
+            try:
+                if rclpy.ok():
+                    rclpy.shutdown()
+            except Exception:  # noqa: BLE001
+                logger.exception("failed to shut down the armed rclpy context")
 
     def _readiness_targets(
         self, node: Any, topics: list[str], all_mode: bool
@@ -956,13 +1495,22 @@ class RecorderSession:
         """Stop the active session (idempotent).
 
         Recording -> SIGINT the process group, wait, finalise, return the
-        terminal status. Any other state — idle, or a stop already in progress
-        (``stopping``) — returns the current status unchanged.
+        terminal status. ``armed`` -> disarm (the paused subprocess is killed,
+        the empty run dir removed — there is nothing recorded to flush). Any
+        other state — idle, or a stop already in progress (``stopping``) —
+        returns the current status unchanged.
         """
         # Signal the size watcher to stop polling up front so it does not race
         # us into a second stop. (Safe if we ARE the watcher thread.)
         self._watcher_stop.set()
         with self._lock:
+            if self._state is RunState.armed:
+                # Without this, an operator-initiated cancel while armed would
+                # leak the paused subprocess forever (stop() would otherwise
+                # silently no-op below, since state is not `recording`).
+                self._disarm_locked()
+                return self._status_locked()
+
             # Only a live ``recording`` session transitions to ``stopping``.
             # Gating on ``recording`` (not ``_ACTIVE_STATES``, which includes
             # ``stopping``) makes the transition atomic, so a concurrent second
@@ -1180,6 +1728,22 @@ class RecorderSession:
             return self._status_locked()
 
     def _status_locked(self) -> RecordStatusResponse:
+        if self._state is RunState.armed and self._armed is not None:
+            # Nothing has been committed yet (no manifest/session.json, no
+            # capture) — report the ARMED run/topics, not the previous
+            # session's self._run_id/_topics (those stay untouched until a
+            # matching start() commits; see prepare()/_start_from_armed()).
+            return RecordStatusResponse(
+                state=self._state,
+                run_id=self._armed.run_id,
+                started_at=None,
+                message_count=0,
+                bytes=0,
+                topics=list(self._armed.staged_topics),
+                arming=self._arming.model_copy(deep=True) if self._arming else None,
+                dropped_messages=None,
+                integrity="unknown",
+            )
         message_count, size = 0, 0
         if self._run_id is not None:
             meta = self._read_rosbag2_metadata(self._run_id)

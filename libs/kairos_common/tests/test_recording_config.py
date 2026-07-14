@@ -63,6 +63,21 @@ def test_expected_hz_pattern_optional_hz(tmp_path: Path) -> None:
     assert cfg.expected_hz_patterns[1].hz == 30
 
 
+def test_prepare_disarm_timeout_default_and_override(tmp_path: Path) -> None:
+    """recording.prepare_disarm_timeout_s (two-phase start) defaults to 120s
+    and is overridable, following the same pattern as the other recording
+    tuning knobs."""
+    cfg = load_recording_config(TEMPLATE)
+    assert cfg.recording.prepare_disarm_timeout_s == 120.0
+
+    cfg_path = tmp_path / "c.yaml"
+    cfg_path.write_text(
+        "robot_name: r\nrecording:\n  prepare_disarm_timeout_s: 30\n",
+        encoding="utf-8",
+    )
+    assert load_recording_config(cfg_path).recording.prepare_disarm_timeout_s == 30
+
+
 def test_missing_robot_name_is_rejected(tmp_path: Path) -> None:
     cfg_path = tmp_path / "c.yaml"
     cfg_path.write_text("default_topics: [/tf]\n", encoding="utf-8")
