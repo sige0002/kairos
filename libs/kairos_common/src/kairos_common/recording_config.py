@@ -154,6 +154,15 @@ class RecordingTuning(_StrictModel):
     # are live (same DDS reader load as recording), so an unclaimed arm must
     # not linger indefinitely.
     prepare_disarm_timeout_s: Annotated[float, Field(gt=0)] = 120.0
+    # Whether the Console keeps a recording PRE-ARMED (two-phase start: a
+    # standing ``POST /record/prepare`` kept alive by matching re-prepares)
+    # while the Collect screen sits ready-to-record, so the operator's Start is
+    # a near-instant resume instead of a multi-second spawn + DDS-discovery
+    # wait. Read by the FRONTEND only — the recorder itself never acts on it.
+    # Cost while armed: the same DDS reader load as recording (a paused
+    # rosbag2 receives and discards), so turn this off for a robot whose
+    # receive-side budget is already tight (see rosbag2_recorder.md).
+    pre_arm: bool = True
     # rosbag2 in-recorder message cache (--max-cache-size, in MiB). The recorder
     # buffers incoming messages in RAM and a writer thread drains them to disk; if
     # the cache fills (burst / slow storage / constrained CPU) rosbag2 DROPS the

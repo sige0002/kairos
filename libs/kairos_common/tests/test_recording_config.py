@@ -78,6 +78,20 @@ def test_prepare_disarm_timeout_default_and_override(tmp_path: Path) -> None:
     assert load_recording_config(cfg_path).recording.prepare_disarm_timeout_s == 30
 
 
+def test_pre_arm_default_and_override(tmp_path: Path) -> None:
+    """recording.pre_arm (Console two-phase pre-arm, frontend-read) defaults to
+    on and is overridable per robot."""
+    cfg = load_recording_config(TEMPLATE)
+    assert cfg.recording.pre_arm is True
+
+    cfg_path = tmp_path / "c.yaml"
+    cfg_path.write_text(
+        "robot_name: r\nrecording:\n  pre_arm: false\n",
+        encoding="utf-8",
+    )
+    assert load_recording_config(cfg_path).recording.pre_arm is False
+
+
 def test_missing_robot_name_is_rejected(tmp_path: Path) -> None:
     cfg_path = tmp_path / "c.yaml"
     cfg_path.write_text("default_topics: [/tf]\n", encoding="utf-8")

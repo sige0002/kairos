@@ -1268,19 +1268,69 @@ def test_prepare_while_recording_is_409(
     assert exc.value.code == "already_recording"
 
 
-def test_prepare_while_already_armed_disarms_old_and_arms_new(
+def test_mismatching_re_prepare_disarms_old_and_arms_new(
     settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
 ) -> None:
+    """A re-prepare whose spawn-affecting fields DIFFER is last-wins: the old
+    armed session is torn down and a new one is spawned."""
     session = _make_session(settings, fake_process, write_metadata)
-    session.prepare(_start_req("run_first"))
+    session.prepare(_start_req("run_first", topics=["/joint_states"]))
     assert session.status().run_id == "run_first"
 
-    session.prepare(_start_req("run_second"))
+    session.prepare(_start_req("run_second", topics=["/joint_states", "/tf"]))
     status = session.status()
     assert status.state is RunState.armed
     assert status.run_id == "run_second"
     assert not run_dir(Path(settings.data_dir), "run_first").exists()
     assert run_dir(Path(settings.data_dir), "run_second").exists()
+
+
+def test_matching_re_prepare_extends_without_respawn(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    """A re-prepare whose spawn-affecting fields MATCH the armed session is a
+    keep-alive: the deadline moves, the run_id and subprocess stay (no churn)."""
+    captured: list[Any] = []
+    session = _make_session(settings, fake_process, write_metadata, capture=captured)
+    first = session.prepare(_start_req("run_keep", topics=["/joint_states"]))
+    assert len(captured) == 1
+
+    # Same spawn-affecting fields (metadata may differ) -> extend, not respawn.
+    second = session.prepare(
+        _start_req("run_other_id", topics=["/joint_states"], operator="someone")
+    )
+    assert second.state is RunState.armed
+    assert second.run_id == "run_keep"  # the armed session's id, not the new one
+    assert second.disarm_at is not None
+    assert first.disarm_at is not None
+    assert second.disarm_at >= first.disarm_at  # deadline extended (ISO sorts)
+    assert len(captured) == 1  # NOT respawned
+    assert run_dir(Path(settings.data_dir), "run_keep").exists()
+
+    # The extended session is still claimable by a matching start().
+    started = session.start(_start_req("run_started", topics=["/joint_states"]))
+    assert started.state is RunState.recording
+    assert started.run_id == "run_keep"
+    assert len(captured) == 1
+
+
+def test_stale_disarm_timer_is_a_noop_after_extend(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    """The extend ABA race: an old timer callback that already fired (but was
+    blocked on the lock while the session was extended) must not disarm the
+    extended session — extend bumps the generation exactly for this."""
+    session = _make_session(settings, fake_process, write_metadata)
+    session.prepare(_start_req("run_ext", topics=["/joint_states"]))
+    old_generation = session._armed.generation  # type: ignore[union-attr]
+
+    session.prepare(_start_req("run_ext2", topics=["/joint_states"]))  # extend
+    session._on_disarm_timer(old_generation)  # stale callback
+
+    status = session.status()
+    assert status.state is RunState.armed
+    assert status.run_id == "run_ext"
+    assert run_dir(Path(settings.data_dir), "run_ext").exists()
 
 
 def test_stop_while_armed_disarms(

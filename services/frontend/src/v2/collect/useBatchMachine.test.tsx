@@ -1964,3 +1964,110 @@ test('a failed stop stays in SAVING with a working Retry stop', async () => {
     fetchMock.mock.calls.filter(([u]) => String(u).includes('/record/stop')).length,
   ).toBe(stopsBefore + 1);
 });
+
+// ---------------------------------------------------------------------------
+// Pre-arm (two-phase start) engine: while the operator sits ready, the machine
+// keeps the recorder armed via /record/prepare — gated on recording.pre_arm
+// and on the recorder actually being between recordings.
+// ---------------------------------------------------------------------------
+
+function preArmFetch({
+  preArm = true,
+  recorderState = 'idle',
+  statusExtra = {} as Record<string, unknown>,
+} = {}) {
+  return vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/config/recording')) {
+      return Promise.resolve(
+        jsonResponse({ config: { recording: { pre_arm: preArm } }, path: 'p' }),
+      );
+    }
+    if (url.includes('/record/prepare')) {
+      return Promise.resolve(
+        jsonResponse({ run_id: 'run_armed', state: 'armed', disarm_at: null }),
+      );
+    }
+    if (url.includes('/record/status')) {
+      return Promise.resolve(
+        jsonResponse({ run_id: null, state: recorderState, ...statusExtra }),
+      );
+    }
+    return Promise.resolve(jsonResponse({}));
+  });
+}
+
+test('pre-arms via /record/prepare while ready, mirroring the start selection', async () => {
+  const fetchMock = preArmFetch();
+  renderHook(() => useBatchMachine({ defaultTopics: ['/tf', '/joint_states'] }), {
+    wrapper,
+  });
+  await waitFor(() =>
+    expect(
+      fetchMock.mock.calls.some(([u]) => String(u).includes('/record/prepare')),
+    ).toBe(true),
+  );
+  const call = fetchMock.mock.calls.find(([u]) =>
+    String(u).includes('/record/prepare'),
+  );
+  // The prepare body mirrors the next start's topic selection — anything else
+  // would arm a session the eventual start cannot claim.
+  expect(JSON.parse(String(call![1]!.body))).toMatchObject({
+    topics: ['/tf', '/joint_states'],
+  });
+});
+
+test('does NOT pre-arm when recording.pre_arm is off', async () => {
+  const fetchMock = preArmFetch({ preArm: false });
+  renderHook(() => useBatchMachine({ defaultTopics: ['/tf'] }), { wrapper });
+  await waitFor(() =>
+    expect(
+      fetchMock.mock.calls.some(([u]) => String(u).includes('/config/recording')),
+    ).toBe(true),
+  );
+  await waitFor(() =>
+    expect(
+      fetchMock.mock.calls.some(([u]) => String(u).includes('/record/status')),
+    ).toBe(true),
+  );
+  await new Promise((r) => setTimeout(r, 50));
+  expect(
+    fetchMock.mock.calls.some(([u]) => String(u).includes('/record/prepare')),
+  ).toBe(false);
+});
+
+test('does NOT pre-arm while the server reports an active recording', async () => {
+  const fetchMock = preArmFetch({
+    recorderState: 'recording',
+    statusExtra: { run_id: 'run_other' },
+  });
+  renderHook(() => useBatchMachine({ defaultTopics: ['/tf'] }), { wrapper });
+  await waitFor(() =>
+    expect(
+      fetchMock.mock.calls.some(([u]) => String(u).includes('/record/status')),
+    ).toBe(true),
+  );
+  await new Promise((r) => setTimeout(r, 50));
+  expect(
+    fetchMock.mock.calls.some(([u]) => String(u).includes('/record/prepare')),
+  ).toBe(false);
+});
+
+test('preArmed reflects the server-reported armed state, never a sent prepare', async () => {
+  preArmFetch({
+    recorderState: 'armed',
+    statusExtra: {
+      arming: {
+        active: true,
+        matched_topics: ['/tf'],
+        missing_topics: [],
+        disarm_at: new Date(Date.now() + 120_000).toISOString(),
+      },
+    },
+  });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: ['/tf'] }), {
+    wrapper,
+  });
+  await waitFor(() => expect(result.current.preArmed).toBe(true));
+  expect(result.current.recorderState).toBe('armed');
+});

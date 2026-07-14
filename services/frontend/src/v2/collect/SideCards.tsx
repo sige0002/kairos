@@ -70,6 +70,8 @@ export function SystemStatusCard({
   const recState = machine.recorderState;
   const recording = recState === 'recording';
   const stopping = recState === 'stopping';
+  // Pre-armed (two-phase start): spawned + subscribed, paused until Start.
+  const armed = recState === 'armed';
 
   // Real disk free/total for the data-dir filesystem (GET /api/v1/system). Null
   // until measured (older backend / missing data dir) -> honest "—", never a
@@ -125,8 +127,14 @@ export function SystemStatusCard({
     storageRow,
     {
       label: 'Recorder',
-      value: recording ? 'recording' : stopping ? 'stopping' : 'standby',
-      chip: recording ? 'REC' : stopping ? 'STOPPING' : 'READY',
+      value: recording
+        ? 'recording'
+        : stopping
+          ? 'stopping'
+          : armed
+            ? 'pre-armed'
+            : 'standby',
+      chip: recording ? 'REC' : stopping ? 'STOPPING' : armed ? 'ARMED' : 'READY',
       tone: recording ? 'red' : stopping ? 'amber' : 'teal',
     },
   ];

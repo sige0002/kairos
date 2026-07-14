@@ -103,7 +103,7 @@ topic_qos_overrides:       # パターン → QoS（recorder / monitor が適用
 # monitor / recording / validation は config/<robot>/recording/default.yaml を参照（dataset は stage3）
 ```
 
-- **`recording` チューニング**: `start_delay_s`（publisher ウォームアップ待ち）に加え、開始時の購読確立 lag 対策として `start_paused`（既定 `false`／`true` で `--start-paused`＋購読 readiness gate＋resume を有効化）と `subscription_ready_timeout_s`（既定 5.0）を持つ。詳細は [rosbag2_recorder](rosbag2_recorder.md)。
+- **`recording` チューニング**: `start_delay_s`（publisher ウォームアップ待ち）に加え、開始時の購読確立 lag 対策として `start_paused`（既定 `false`／`true` で `--start-paused`＋購読 readiness gate＋resume を有効化）と `subscription_ready_timeout_s`（既定 5.0）を持つ。two-phase start 用に `prepare_disarm_timeout_s`（既定 120 — 未消費 armed セッションの自動解消）と `pre_arm`（既定 `true` — **frontend が読む**: Collect 画面が ready の間 recorder を armed に保ち Start を即時化する。armed 中は記録相当の DDS 受信負荷が乗るため、受信余力の無いロボットは `false`）。詳細は [rosbag2_recorder](rosbag2_recorder.md)。
 - **UI からの編集・永続化**: この `RECORDING_CONFIG` 全体は Settings タブから編集できる（`GET/PUT /api/v1/config/recording`、[api_orchestrator](api_orchestrator.md)）。`PUT` は `RecordingConfig` で型検証し（失敗は `422`）、設定ファイルへアトミックに書き込んで在メモリ設定をホットスワップする。`default_topics` / `robot_name` は即時反映、`expected_hz` / QoS は各サービスの**再起動時**に反映される。
 
 ## ワンクリック検証プリセット（`config/<robot>/validation_presets.yaml`）

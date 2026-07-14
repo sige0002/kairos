@@ -72,6 +72,13 @@ recording:
   start_paused: true
   # Extra settle after subscriptions matched, before resume (camera ramp-up).
   post_discovery_delay_s: 0.5
+  # Console pre-arm (two-phase start): while the Collect screen sits ready the
+  # frontend keeps a recording armed (prepare + keep-alive), so Start is a
+  # near-instant resume. While armed the recorder carries the same DDS receive
+  # load as recording — set false for a robot with a tight receive-side budget.
+  pre_arm: true
+  # How long an unclaimed armed session lives without a keep-alive re-prepare.
+  prepare_disarm_timeout_s: 120.0
   # In-recorder cache (--max-cache-size, MiB). rosbag2 buffers messages in RAM
   # and DROPS the overflow if the writer can't keep up (burst / slow storage /
   # constrained CPU), logging "Total lost: N". rosbag2's default is 100 MiB; 512

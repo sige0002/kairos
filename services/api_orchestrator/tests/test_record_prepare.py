@@ -106,6 +106,42 @@ def test_prepare_match_ignores_operator_task_differences(
     assert run["task"] == "sort"
 
 
+def test_prepare_adopts_recorder_extended_run_id(
+    client: TestClient, fake_recorder: FakeRecorder, store: RunStore
+) -> None:
+    """A matching re-prepare is answered by the recorder with the run_id of the
+    session it ALREADY holds armed (keep-alive extend, no respawn). The
+    orchestrator must adopt that id — in its response AND in the prepared
+    entry a later start() claims — not the fresh id it allocated."""
+    with patch(
+        "api_orchestrator.runs.allocate_run_id",
+        side_effect=[
+            "run_20260624_100000",
+            "run_20260624_100100",
+            "run_20260624_100200",
+        ],
+    ):
+        first = client.post(
+            "/api/v1/record/prepare", json={"topics": ["/tf"], "compression": "none"}
+        ).json()
+        assert first["run_id"] == "run_20260624_100000"
+
+        # The recorder extends its armed session: answers with the FIRST id.
+        fake_recorder.prepare_extend_run_id = "run_20260624_100000"
+        second = client.post(
+            "/api/v1/record/prepare", json={"topics": ["/tf"], "compression": "none"}
+        ).json()
+        assert second["run_id"] == "run_20260624_100000"
+
+        resp = client.post(
+            "/api/v1/record/start", json={"topics": ["/tf"], "compression": "none"}
+        )
+    run = resp.json()
+    assert run["run_id"] == "run_20260624_100000"  # the extended armed session
+    assert fake_recorder.last_start_payload["run_id"] == "run_20260624_100000"
+    assert store.get("run_20260624_100000") is not None
+
+
 def test_prepare_then_mismatched_start_falls_back_to_fresh_run_id(
     client: TestClient, fake_recorder: FakeRecorder, store: RunStore
 ) -> None:

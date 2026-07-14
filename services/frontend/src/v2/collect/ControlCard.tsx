@@ -333,6 +333,18 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
             : machine.selection.topics === 'all'
               ? 'all topics'
               : `${machine.selection.count} configured topics`}
+          {/* Server-reported pre-armed (two-phase start): the recorder is
+              spawned + subscribed, so this Start is a near-instant resume.
+              Shown only when the recorder actually says so. */}
+          {machine.preArmed && (
+            <span
+              data-testid="prearmed-note"
+              className="ml-1.5 inline-flex items-center gap-1 font-medium text-teal-700"
+            >
+              <span className="inline-block h-1.5 w-1.5 rounded-full bg-teal-500" />
+              pre-armed · instant start
+            </span>
+          )}
         </span>
         <button
           ref={startRef}

@@ -33,6 +33,7 @@ import {
   saveEpisodeOutcome,
 } from '../episodeBridge';
 import { findProject, findTask, getPlans } from '../plans';
+import { RECORDING_CONFIG_KEY } from '../../features/config/ConfigTab';
 import type {
   BatchEpisodeSummary,
   BatchSummary,
@@ -42,8 +43,10 @@ import type {
   Page,
   RecordArming,
   RecordIntegrity,
+  RecordPrepareResponse,
   RecordStartRequest,
   RecordStatus,
+  RecordingConfigPayload,
   RunDetail,
   RunState,
   RunSummary,
@@ -163,6 +166,11 @@ const QUICKCHECK_FALLBACK_MS = 3000;
 const SAVED_FLASH_MS = 1200;
 // An unsaved take older than this is no longer offered for recovery.
 const UNSAVED_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+// Pre-arm keep-alive: re-prepare this long BEFORE the armed session's
+// disarm_at deadline (covers request latency + the status-poll lag).
+const PREARM_KEEPALIVE_LEAD_MS = 20_000;
+// Retry cadence after a failed prepare (or when disarm_at is unknown).
+const PREARM_RETRY_MS = 30_000;
 
 interface MachineState {
   phase: Phase;
@@ -933,6 +941,10 @@ export interface BatchMachine {
    *  SYSTEM STATUS Recorder row and the takeover card both read — so the two can
    *  never contradict. Null before the first poll. */
   recorderState: RunState | 'idle' | null;
+  /** True while the recorder holds a pre-armed (two-phase prepare) session:
+   *  the next matching Start is a near-instant resume. Server-reported, never
+   *  assumed from having sent a prepare. */
+  preArmed: boolean;
 
   // Takeover (D-1): a recording is running server-side that this screen is not
   // driving (another tab/session, or a reload of our own). Null in the normal
@@ -1193,6 +1205,139 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
       }
     : null;
   const takeoverResumedOwn = !!takeover && takeover.runId === state.lastRunId;
+
+  // ---- pre-arm (two-phase start) -------------------------------------------
+  // While the operator sits ready-to-record, keep the recorder ARMED — a
+  // standing /record/prepare, kept alive by matching re-prepares shortly before
+  // its disarm deadline — so Start is a near-instant resume instead of a
+  // multi-second spawn + DDS-discovery wait. Bounded and honest:
+  //  - config-gated (recording.pre_arm): an armed recorder carries
+  //    recording-level DDS receive load, so a tight-budget robot turns it off;
+  //  - only while this tab is visible and the phase is ready/result (the
+  //    recorder's own prepare_disarm_timeout_s cleans up an abandoned arm);
+  //  - best-effort: a failed prepare is never surfaced — Start simply falls
+  //    back to the full synchronous path.
+  const recordingConfigQuery = useQuery({
+    queryKey: RECORDING_CONFIG_KEY,
+    queryFn: ({ signal }) =>
+      apiGet<RecordingConfigPayload>('/config/recording', { signal }),
+    staleTime: 60_000,
+  });
+  const preArmEnabled = useMemo(() => {
+    const cfg = recordingConfigQuery.data?.config;
+    if (!cfg || typeof cfg !== 'object') return false; // unknown yet -> don't arm
+    const tuning = (cfg as { recording?: { pre_arm?: unknown } }).recording;
+    return tuning?.pre_arm !== false; // present-but-unset defaults on (model default)
+  }, [recordingConfigQuery.data]);
+
+  // Pause the engine while the tab is hidden (the recorder's TTL disarms an
+  // abandoned session on its own); resume re-arms on the next visibility.
+  const pageVisible = useSyncExternalStore(
+    (notify) => {
+      document.addEventListener('visibilitychange', notify);
+      return () => document.removeEventListener('visibilitychange', notify);
+    },
+    () => document.visibilityState === 'visible',
+    () => true,
+  );
+
+  // Arm while the operator is between recordings on this screen: 'ready' (about
+  // to start) and 'result' (labeling — the next start follows right after).
+  // recorderState gates out recording/stopping (incl. takeover) AND the
+  // pre-first-poll null, so we never prepare blind.
+  const preArmed = recorderState === 'armed';
+  const preArmEligible =
+    preArmEnabled &&
+    !noSelection &&
+    takeoverRunId == null &&
+    (state.phase === 'ready' || state.phase === 'result') &&
+    (preArmed ||
+      recorderState === 'idle' ||
+      recorderState === 'created' ||
+      recorderState === 'completed' ||
+      recorderState === 'failed' ||
+      recorderState === 'interrupted');
+
+  // operator/task ride along on prepare for completeness but are NOT part of
+  // the armed-session match (metadata comes from the eventual start request),
+  // so they are read via refs — typing in the operator field must not re-fire
+  // prepares.
+  const operatorRef = useRef(operator);
+  operatorRef.current = operator;
+  const taskRef = useRef(state.task);
+  taskRef.current = state.task;
+
+  const preArmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const preArmInFlightRef = useRef(false);
+  // JSON key of the last selection we prepared with: a selection change while
+  // armed must re-prepare now (the recorder swaps the mismatched session).
+  const lastPreparedKeyRef = useRef<string | null>(null);
+  const armingDisarmAt = arming?.disarm_at ?? null;
+
+  useEffect(() => {
+    if (!preArmEligible || !pageVisible) {
+      if (preArmTimerRef.current) {
+        clearTimeout(preArmTimerRef.current);
+        preArmTimerRef.current = null;
+      }
+      return;
+    }
+    let cancelled = false;
+    const topicsKey = JSON.stringify(selection.topics);
+
+    const schedule = (ms: number) => {
+      if (preArmTimerRef.current) clearTimeout(preArmTimerRef.current);
+      preArmTimerRef.current = setTimeout(fire, Math.max(ms, 1_000));
+    };
+    const fire = () => {
+      if (cancelled || preArmInFlightRef.current) return;
+      preArmInFlightRef.current = true;
+      const body: RecordStartRequest = { topics: selection.topics };
+      if (operatorRef.current.trim()) body.operator = operatorRef.current.trim();
+      if (taskRef.current.trim()) body.task = taskRef.current.trim();
+      apiPost<RecordPrepareResponse>('/record/prepare', body)
+        .then(() => {
+          lastPreparedKeyRef.current = topicsKey;
+          // Reflect armed + the new disarm_at on the shared status query; the
+          // effect re-runs off that data and schedules the next keep-alive.
+          void queryClient.invalidateQueries({ queryKey: queryKeys.recordStatus });
+        })
+        .catch(() => {
+          // Best-effort by design (e.g. 409 lost a race with a start, older
+          // backend without /record/prepare): retry later, never surface.
+          if (!cancelled) schedule(PREARM_RETRY_MS);
+        })
+        .finally(() => {
+          preArmInFlightRef.current = false;
+        });
+    };
+
+    if (!preArmed || lastPreparedKeyRef.current !== topicsKey) {
+      fire();
+    } else {
+      // Armed and matching — extend shortly before the recorder's deadline.
+      const deadlineMs = armingDisarmAt ? Date.parse(armingDisarmAt) : NaN;
+      schedule(
+        Number.isFinite(deadlineMs)
+          ? deadlineMs - Date.now() - PREARM_KEEPALIVE_LEAD_MS
+          : PREARM_RETRY_MS,
+      );
+    }
+    return () => {
+      cancelled = true;
+      if (preArmTimerRef.current) {
+        clearTimeout(preArmTimerRef.current);
+        preArmTimerRef.current = null;
+      }
+    };
+  }, [
+    preArmEligible,
+    pageVisible,
+    preArmed,
+    armingDisarmAt,
+    selection.topics,
+    queryClient,
+  ]);
 
   // ---- unsaved-take scan (D-3) ---------------------------------------------
   // A completed run with no episode label, recent, and not the run we're already
@@ -2049,6 +2194,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     droppedMessages,
     recordingBytes: currentRunBytes,
     recorderState,
+    preArmed,
 
     takeover,
     takeoverResumedOwn,

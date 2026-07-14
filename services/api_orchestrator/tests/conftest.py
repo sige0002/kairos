@@ -67,6 +67,10 @@ class FakeRecorder:
         self.disarm_at: str | None = "2026-06-24T00:02:00.000Z"
         self.last_prepare_payload: dict[str, Any] | None = None
         self.prepare_call_count: int = 0
+        # When set, /record/prepare answers with THIS run_id instead of the
+        # payload's — models the recorder extending an already-armed matching
+        # session (keep-alive), whose run_id was fixed at first arm time.
+        self.prepare_extend_run_id: str | None = None
         self.stop_call_count: int = 0
 
     def handler(self, request: httpx.Request) -> httpx.Response:
@@ -137,7 +141,7 @@ class FakeRecorder:
                 self.prepare_status, json={"error": self.prepare_error}
             )
         body = {
-            "run_id": self.last_prepare_payload["run_id"],
+            "run_id": self.prepare_extend_run_id or self.last_prepare_payload["run_id"],
             "state": "armed",
             "arming": self.prepare_arming,
             "disarm_at": self.disarm_at,

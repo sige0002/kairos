@@ -515,6 +515,14 @@ class RecorderSession:
             self._raise_if_active()
             self._check_writable_and_space()
             if self._state is RunState.armed:
+                if self._armed is not None and self._armed_matches(
+                    self._armed, request
+                ):
+                    # Keep-alive: a matching re-prepare only extends the
+                    # auto-disarm deadline — no kill/respawn churn (see
+                    # _extend_armed_locked). The caller-allocated run_id is
+                    # discarded; the response carries the armed session's.
+                    return self._extend_armed_locked()
                 logger.info(
                     "re-preparing while already armed; disarming the old session",
                     extra={"component": "recorder"},
@@ -529,7 +537,12 @@ class RecorderSession:
             self._raise_if_active()
             if self._state is RunState.armed:
                 # A concurrent prepare() could have armed a session while we
-                # slept above; last-wins here too.
+                # slept above. A matching one is extended (same keep-alive
+                # semantics as above); otherwise last-wins here too.
+                if self._armed is not None and self._armed_matches(
+                    self._armed, request
+                ):
+                    return self._extend_armed_locked()
                 self._disarm_locked()
             previous_state = self._state
 
@@ -684,6 +697,46 @@ class RecorderSession:
                     extra={"run_id": self._armed.run_id, "component": "recorder"},
                 )
                 self._disarm_locked()
+
+    def _extend_armed_locked(self) -> RecordPrepareResponse:
+        """Keep-alive: extend the current armed session's auto-disarm deadline.
+
+        Called (with ``self._lock`` held) when a re-``prepare()`` MATCHES the
+        already-armed session: the paused subprocess and its live
+        subscriptions are reused as-is — no kill/respawn churn for a caller
+        that re-prepares periodically to keep a session armed. The armed
+        ``generation`` is bumped so a cancelled-but-already-running old timer
+        callback (blocked on the lock while we extend) can no longer disarm
+        the extended session — same ABA guard as re-arming.
+        """
+        armed = self._armed
+        if armed is None:  # pragma: no cover - guarded by the caller
+            raise RuntimeError("_extend_armed_locked called with no armed session")
+        if armed.timer is not None:
+            armed.timer.cancel()
+        self._armed_generation += 1
+        armed.generation = self._armed_generation
+        disarm_timeout = self._prepare_disarm_timeout_s()
+        disarm_at = _iso8601_after(disarm_timeout)
+        armed.disarm_at = disarm_at
+        if self._arming is not None:
+            self._arming.disarm_at = disarm_at
+        timer = threading.Timer(
+            disarm_timeout, self._on_disarm_timer, args=(armed.generation,)
+        )
+        timer.daemon = True
+        armed.timer = timer
+        timer.start()
+        logger.info(
+            "armed session extended (matching re-prepare)",
+            extra={"run_id": armed.run_id, "component": "recorder"},
+        )
+        return RecordPrepareResponse(
+            run_id=armed.run_id,
+            state=RunState.armed,
+            arming=self._arming.model_copy(deep=True) if self._arming else None,
+            disarm_at=disarm_at,
+        )
 
     def _armed_matches(self, armed: _Armed, request: RecordStartRequest) -> bool:
         """Whether *request*'s spawn-affecting fields match *armed*'s.

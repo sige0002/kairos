@@ -7,7 +7,10 @@ export type RunState =
   | 'stopping'
   | 'completed'
   | 'failed'
-  | 'interrupted';
+  | 'interrupted'
+  /** Two-phase start: a `/record/prepare`d session is spawned + subscribed but
+   *  paused, waiting for a matching start (never persisted — no run row). */
+  | 'armed';
 
 export type JobState = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled';
 
@@ -54,6 +57,19 @@ export interface RecordArming {
   missing_topics: string[];
   /** ISO8601 instant the recorder auto-resumes anyway (readiness timeout). */
   resume_at?: string | null;
+  /** ISO8601 instant an `armed` (two-phase prepare) session auto-disarms if no
+   *  matching start claims it; the pre-arm keep-alive re-prepares before this. */
+  disarm_at?: string | null;
+}
+
+/** Body of `POST /api/v1/record/prepare` (two-phase start): the recorder is now
+ *  armed — spawned + subscribed but paused — until a matching start resumes it,
+ *  a mismatching one replaces it, or `disarm_at` passes unclaimed. */
+export interface RecordPrepareResponse {
+  run_id: string;
+  state: RunState;
+  arming?: RecordArming | null;
+  disarm_at?: string | null;
 }
 
 /**

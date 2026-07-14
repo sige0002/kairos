@@ -26,6 +26,7 @@ interface RecordingConfigView {
   topic_qos_overrides?: { pattern: string; reliability?: string; durability?: string; depth?: number }[];
   recording?: {
     start_paused?: boolean;
+    pre_arm?: boolean;
     compression?: string;
     max_cache_size_mb?: number;
   };
@@ -101,6 +102,20 @@ export function RecordingSection({ config }: { config: RuntimeConfig | undefined
                 </Badge>
               ) : (
                 <Badge tone="gray">off (record immediately)</Badge>
+              )}
+            </SummaryField>
+            {/* Console pre-arm (two-phase start): the Collect screen keeps a
+                recording armed while ready, so Start is a near-instant resume.
+                Edited like every other recording field, via Advanced JSON
+                (recording.pre_arm) — off is the escape hatch for a robot whose
+                receive-side budget can't carry recording-level load while idle. */}
+            <SummaryField label="Pre-arm (instant start)">
+              {rec.pre_arm !== false ? (
+                <Badge tone="green" dot>
+                  on — armed while Collect is ready
+                </Badge>
+              ) : (
+                <Badge tone="gray">off (arm on Start)</Badge>
               )}
             </SummaryField>
             <SummaryField label="In-recorder cache">

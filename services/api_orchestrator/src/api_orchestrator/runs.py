@@ -370,6 +370,13 @@ class RunService:
             run_id = self._allocate_prepare_run_id()
             payload = self._build_recorder_payload(run_id, topics, req)
             prepare_body = await self._recorder.prepare(payload)
+            # The recorder answers a MATCHING re-prepare by extending its
+            # already-armed session (keep-alive, no respawn) and returns THAT
+            # session's run_id — adopt it, or a later start() would claim an
+            # id the recorder never armed.
+            recorder_run_id = prepare_body.get("run_id")
+            if isinstance(recorder_run_id, str) and recorder_run_id:
+                run_id = recorder_run_id
             self._prepared = _PreparedEntry(
                 run_id=run_id, match_key=self._prepare_match_key(topics, req)
             )
