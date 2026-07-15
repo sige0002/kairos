@@ -9,27 +9,50 @@ function topic(over: Partial<SignalTopicReportExt> = {}): SignalTopicReportExt {
   return { t_ns: [0], fields: {}, ...over };
 }
 
-test('lists every topic loss event sorted by time, with severity', () => {
+test('ranks events worst-first: majors before minors even when later in time', () => {
   const report: SignalReportExt = {
     span: { duration_ns: 500 * MS },
     topics: {
       '/a': topic({
-        loss_events: [{ start_ns: 300 * MS, duration_ns: 20 * MS, estimated_lost: 2, severity: 'minor' }],
+        loss_events: [{ start_ns: 100 * MS, duration_ns: 20 * MS, estimated_lost: 2, severity: 'minor' }],
       }),
       '/b': topic({
-        loss_events: [{ start_ns: 100 * MS, duration_ns: 40 * MS, estimated_lost: 5, severity: 'major' }],
+        loss_events: [{ start_ns: 300 * MS, duration_ns: 40 * MS, estimated_lost: 5, severity: 'major' }],
       }),
     },
   };
   render(<LossEventList report={report} onSeekGlobal={() => {}} />);
   const rows = screen.getAllByTestId('review-loss-row');
   expect(rows).toHaveLength(2);
-  // Sorted by time: /b (100ms) before /a (300ms).
+  // Ranked: the MAJOR /b (300ms) outranks the earlier minor /a (100ms).
   expect(within(rows[0]!).getByText('/b')).toBeInTheDocument();
   expect(within(rows[0]!).getByText('major')).toBeInTheDocument();
   expect(within(rows[1]!).getByText('/a')).toBeInTheDocument();
   expect(within(rows[1]!).getByText('minor')).toBeInTheDocument();
   expect(screen.queryByTestId('review-loss-empty')).toBeNull();
+});
+
+test('folds beyond the first 8 events behind an explicit Show all', () => {
+  const report: SignalReportExt = {
+    span: { duration_ns: 500 * MS },
+    topics: {
+      '/a': topic({
+        loss_events: Array.from({ length: 10 }, (_, i) => ({
+          start_ns: i * 10 * MS,
+          duration_ns: (10 - i) * MS, // descending so the ranked order is stable
+          estimated_lost: 1,
+          severity: 'minor' as const,
+        })),
+      }),
+    },
+  };
+  render(<LossEventList report={report} onSeekGlobal={() => {}} />);
+  expect(screen.getAllByTestId('review-loss-row')).toHaveLength(8);
+  const toggle = screen.getByTestId('review-loss-show-all');
+  expect(toggle).toHaveTextContent('Show all 10 events (2 folded)');
+  fireEvent.click(toggle);
+  expect(screen.getAllByTestId('review-loss-row')).toHaveLength(10);
+  expect(toggle).toHaveTextContent('Show fewer events');
 });
 
 test('clicking a loss row seeks to its global start time', () => {

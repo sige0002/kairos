@@ -1,112 +1,32 @@
 import { expect, test } from 'vitest';
-import type { SignalTopicReport } from '../../api/types';
 import {
   type SignalReportExt,
   type SignalTopicReportExt,
+  aggregateBins,
   binColor,
-  chartXToVideoTime,
   collectEdgeRows,
   collectLossRows,
-  elapsedSeconds,
   episodeSpanNs,
-  episodeSpanSec,
   formatContinuity,
   formatNsShort,
   formatSecondsShort,
-  globalNsToChartSec,
-  greenIntensity,
+  globalNsToVideoSeconds,
   intervalsOverlap,
-  medianNonZero,
-  numericFieldPaths,
-  signalToUplot,
   topicActiveRangeNs,
   totalLossTruncated,
-  videoTimeToChartX,
 } from './signalReport';
 
 const MS = 1_000_000;
 
-function topic(over: Partial<SignalTopicReport> = {}): SignalTopicReport {
-  return {
-    t_ns: [0, 1_000_000_000, 2_000_000_000],
-    fields: { 'position[0]': [0.1, 0.2, 0.3], velocity: [1, null, 3] },
-    ...over,
-  };
-}
-
-test('elapsedSeconds is 0-based regardless of absolute vs relative t_ns', () => {
-  expect(elapsedSeconds([0, 1e9, 2e9])).toEqual([0, 1, 2]);
-  // Absolute epoch-ish nanoseconds: still 0-based after subtracting t[0].
-  expect(elapsedSeconds([1_700_000_000_000_000_000, 1_700_000_000_500_000_000])).toEqual([
-    0, 0.5,
-  ]);
-  expect(elapsedSeconds([])).toEqual([]);
-});
-
-test('episodeSpanSec covers first→last sample; 0 when under 2 points', () => {
-  expect(episodeSpanSec([0, 2e9])).toBe(2);
-  expect(episodeSpanSec([5e9])).toBe(0);
-  expect(episodeSpanSec([])).toBe(0);
-});
-
-test('signalToUplot builds AlignedData: elapsed-seconds x + one y per field', () => {
-  const { data, fields } = signalToUplot(topic(), ['position[0]', 'velocity']);
-  expect(fields).toEqual(['position[0]', 'velocity']);
-  expect(data).toEqual([
-    [0, 1, 2],
-    [0.1, 0.2, 0.3],
-    [1, null, 3], // nulls pass through (gaps in the plotted line)
-  ]);
-});
-
-test('signalToUplot drops unknown fields and preserves selection order', () => {
-  const { data, fields } = signalToUplot(topic(), ['velocity', 'nope', 'position[0]']);
-  expect(fields).toEqual(['velocity', 'position[0]']);
-  expect(data).toEqual([
-    [0, 1, 2],
-    [1, null, 3],
-    [0.1, 0.2, 0.3],
-  ]);
-});
-
-test('signalToUplot pads/trims a field column to the x length', () => {
-  const short = topic({ fields: { a: [1] } });
-  expect(signalToUplot(short, ['a']).data).toEqual([
-    [0, 1, 2],
-    [1, null, null],
-  ]);
-  const long = topic({ fields: { a: [1, 2, 3, 4, 5] } });
-  expect(signalToUplot(long, ['a']).data).toEqual([
-    [0, 1, 2],
-    [1, 2, 3],
-  ]);
-});
-
-test('signalToUplot with no fields selected yields x only', () => {
-  expect(signalToUplot(topic(), []).data).toEqual([[0, 1, 2]]);
-});
-
-test('numericFieldPaths lists the topic field keys', () => {
-  expect(numericFieldPaths(topic())).toEqual(['position[0]', 'velocity']);
-  expect(numericFieldPaths(topic({ fields: {} }))).toEqual([]);
-});
-
-test('video↔chart sync maps linearly by fraction and clamps', () => {
-  // 10s video ↔ 60s episode: halfway through the video is 30s into the chart.
-  expect(videoTimeToChartX(5, 10, 60)).toBe(30);
-  expect(chartXToVideoTime(30, 60, 10)).toBe(5);
+test('global↔video sync maps linearly by fraction and clamps', () => {
+  // 60s episode ↔ 10s video: halfway through the episode is 5s into the video.
+  expect(globalNsToVideoSeconds(30e9, 60e9, 10)).toBe(5);
   // Clamp out-of-range inputs to the valid span.
-  expect(videoTimeToChartX(15, 10, 60)).toBe(60);
-  expect(videoTimeToChartX(-1, 10, 60)).toBe(0);
-  expect(chartXToVideoTime(999, 60, 10)).toBe(10);
+  expect(globalNsToVideoSeconds(999e9, 60e9, 10)).toBe(10);
+  expect(globalNsToVideoSeconds(-1e9, 60e9, 10)).toBe(0);
   // Degenerate durations/spans never divide by zero.
-  expect(videoTimeToChartX(5, 0, 60)).toBe(0);
-  expect(chartXToVideoTime(5, 0, 10)).toBe(0);
-});
-
-test('video↔chart sync round-trips a mid-point', () => {
-  const x = videoTimeToChartX(7, 20, 90);
-  expect(chartXToVideoTime(x, 90, 20)).toBeCloseTo(7);
+  expect(globalNsToVideoSeconds(5e9, 0, 10)).toBe(0);
+  expect(globalNsToVideoSeconds(5e9, 60e9, 0)).toBe(0);
 });
 
 test('formatContinuity is a percent, or n/a when unknown', () => {
@@ -160,10 +80,13 @@ test('binColor: green inside active range with data and no events', () => {
   ).toBe('green');
 });
 
-test('binColor: red for an empty bin inside the active range', () => {
-  expect(
-    binColor({ binIndex: 5, binNs: 10, density: 0, activeStartNs: 0, activeEndNs: 100, lossEvents: [] }),
-  ).toBe('red');
+test('binColor: empty in-range bin is red ONLY for a dense topic (emptyIsLoss)', () => {
+  const args = { binIndex: 5, binNs: 10, density: 0, activeStartNs: 0, activeEndNs: 100, lossEvents: [] };
+  expect(binColor({ ...args, emptyIsLoss: true })).toBe('red');
+  // A sparse topic legitimately leaves bins empty (measured: ~10ms bins vs
+  // 20-30ms message periods) — emptiness is not evidence of loss there.
+  expect(binColor(args)).toBe('green');
+  expect(binColor({ ...args, emptyIsLoss: false })).toBe('green');
 });
 
 test('binColor: red when a major event overlaps, amber for a minor one', () => {
@@ -185,24 +108,88 @@ test('binColor: a major event outranks a minor overlap in the same bin', () => {
   ).toBe('red');
 });
 
-test('medianNonZero ignores empty bins', () => {
-  expect(medianNonZero([0, 0, 3, 0, 5])).toBe(4);
-  expect(medianNonZero([2])).toBe(2);
-  expect(medianNonZero([1, 2, 3])).toBe(2);
-  expect(medianNonZero([0, 0, 0])).toBe(0);
+// ---- Aggregated integrity timeline -------------------------------------------
+
+// Two topics on a 40ms span, 4 bins of 10ms:
+//  /a  active the whole span, empty (red) at bin 2, else data
+//  /b  active only [20,40) (gray at bins 0-1), a minor event over bin 3
+function aggReport(): SignalReportExt {
+  return extReport(
+    {
+      '/a': extTopic({
+        bins: { count: 4, bin_ns: 10 * MS, densities: [3, 3, 0, 3] },
+      }),
+      '/b': extTopic({
+        start_offset_ns: 20 * MS,
+        edges: { start_delay_ns: 20 * MS, end_early_ns: 0 },
+        bins: { count: 4, bin_ns: 10 * MS, densities: [0, 0, 2, 2] },
+        loss_events: [
+          { start_ns: 32 * MS, duration_ns: 4 * MS, estimated_lost: 1, severity: 'minor' },
+        ],
+      }),
+    },
+    40 * MS,
+  );
+}
+
+test('aggregateBins takes the worst per-topic colour per bin and names the degraded', () => {
+  const bins = aggregateBins(aggReport());
+  expect(bins.map((b) => b.color)).toEqual(['green', 'green', 'red', 'amber']);
+  expect(bins[2]!.degraded).toEqual(['/a']); // /a silent; /b's bin 2 is fine
+  expect(bins[3]!.degraded).toEqual(['/b']); // /b's minor event; /a fine
+  expect(bins[0]!.degraded).toEqual([]); // /b inactive (gray) is NOT degraded
+  expect(bins.map((b) => b.startNs)).toEqual([0, 10 * MS, 20 * MS, 30 * MS]);
 });
 
-test('greenIntensity is density/median clamped, 1 when median is 0', () => {
-  expect(greenIntensity(5, 10)).toBe(0.5);
-  expect(greenIntensity(20, 10)).toBe(1);
-  expect(greenIntensity(0, 10)).toBe(0);
-  expect(greenIntensity(3, 0)).toBe(1);
+test('aggregateBins is gray only when no topic is active', () => {
+  const report = extReport(
+    {
+      '/late': extTopic({
+        start_offset_ns: 20 * MS,
+        edges: { start_delay_ns: 20 * MS, end_early_ns: 0 },
+        bins: { count: 4, bin_ns: 10 * MS, densities: [0, 0, 2, 2] },
+      }),
+    },
+    40 * MS,
+  );
+  expect(aggregateBins(report).map((b) => b.color)).toEqual([
+    'gray',
+    'gray',
+    'green',
+    'green',
+  ]);
 });
 
-test('globalNsToChartSec offsets by the charted topic start_offset', () => {
-  expect(globalNsToChartSec(5e9, 2e9)).toBe(3);
-  // A bin before the charted topic began yields a negative (caller clamps).
-  expect(globalNsToChartSec(1e9, 2e9)).toBe(-1);
+test('aggregateBins never reds a sparse topic for expected emptiness', () => {
+  // median non-zero density 1 (< EMPTY_RED_MIN_MEDIAN): alternating empty bins
+  // are this topic's normal operation, so the lane stays green, not red.
+  const sparse = extReport(
+    {
+      '/slow': extTopic({
+        bins: { count: 4, bin_ns: 10 * MS, densities: [1, 0, 1, 0] },
+      }),
+    },
+    40 * MS,
+  );
+  expect(aggregateBins(sparse).map((b) => b.color)).toEqual([
+    'green',
+    'green',
+    'green',
+    'green',
+  ]);
+});
+
+test('aggregateBins skips topics without bins and is empty without span/bins', () => {
+  const mixed = extReport(
+    {
+      '/nobins': extTopic({ bins: null }),
+      '/a': extTopic({ bins: { count: 2, bin_ns: 20 * MS, densities: [1, 1] } }),
+    },
+    40 * MS,
+  );
+  expect(aggregateBins(mixed)).toHaveLength(2);
+  expect(aggregateBins(extReport({ '/nobins': extTopic({ bins: null }) }, 40 * MS))).toEqual([]);
+  expect(aggregateBins({ topics: {} })).toEqual([]);
 });
 
 test('collectLossRows flattens every topic and sorts by global start', () => {

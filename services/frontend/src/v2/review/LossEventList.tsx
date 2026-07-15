@@ -1,11 +1,17 @@
-// Compact loss-event table under the heatmap (signal_report v1.1). Lists every
-// topic's inferred loss events (topic / time / duration / est. lost / severity),
-// sorted by time; clicking a row seeks the same way a heatmap bin does. Below
+// Ranked loss-event table under the integrity timeline (signal_report v1.1).
+// Lists every topic's inferred loss events (topic / time / duration / est. lost
+// / severity) RANKED worst-first — majors before minors, longer before shorter —
+// so the reviewer reads the events that matter without wading through dozens of
+// near-identical minor hiccups; beyond the first few, the rest fold behind an
+// explicit "Show all" (the count stays visible — nothing is silently hidden).
+// Clicking a row seeks the synced video the same way a timeline bin does. Below
 // the events, nonzero per-topic edges (started late / ended early) render as two
 // subtle rows, and a truncation note appears when any topic's list was capped.
 // Honest empty state when no losses were detected.
 
+import { useState } from 'react';
 import {
+  type LossRow,
   type SignalReportExt,
   collectEdgeRows,
   collectLossRows,
@@ -19,6 +25,18 @@ const SEVERITY_CLASS: Record<'major' | 'minor', string> = {
   minor: 'text-amber-600',
 };
 
+// Events shown before the fold: enough to read every major on a typical run
+// without letting a flood of minors bury the table.
+const ROWS_SHOWN = 8;
+
+/** Worst first: majors before minors, longer duration first within a severity. */
+export function rankLossRows(rows: LossRow[]): LossRow[] {
+  return [...rows].sort((a, b) => {
+    if (a.severity !== b.severity) return a.severity === 'major' ? -1 : 1;
+    return b.duration_ns - a.duration_ns;
+  });
+}
+
 export function LossEventList({
   report,
   onSeekGlobal,
@@ -26,7 +44,10 @@ export function LossEventList({
   report: SignalReportExt;
   onSeekGlobal: (globalNs: number) => void;
 }) {
-  const rows = collectLossRows(report);
+  const [showAll, setShowAll] = useState(false);
+  const allRows = rankLossRows(collectLossRows(report));
+  const rows = showAll ? allRows : allRows.slice(0, ROWS_SHOWN);
+  const folded = allRows.length - rows.length;
   const edges = collectEdgeRows(report);
   const truncated = totalLossTruncated(report);
 
@@ -88,6 +109,18 @@ export function LossEventList({
             ))}
           </tbody>
         </table>
+      )}
+
+      {(folded > 0 || showAll) && (
+        <button
+          type="button"
+          data-testid="review-loss-show-all"
+          aria-expanded={showAll}
+          onClick={() => setShowAll((v) => !v)}
+          className="self-start text-[11px] text-gray-400 underline decoration-dotted transition-colors hover:text-gray-600"
+        >
+          {showAll ? 'Show fewer events' : `Show all ${allRows.length} events (${folded} folded)`}
+        </button>
       )}
 
       {truncated > 0 && (

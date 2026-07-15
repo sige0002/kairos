@@ -1,85 +1,24 @@
-// Pure transforms for the Review Signals section: signal_report topic payloads
-// -> uPlot AlignedData, and the linear chart<->video sync math. Kept DOM-free so
-// the mapping and sync are unit-testable without uPlot or a <video>.
+// Pure transforms for the Review "Data integrity" section: signal_report
+// sidecar payloads -> the aggregated loss timeline + event/summary rows, and
+// the linear timeline<->video sync math. Kept DOM-free so the aggregation and
+// sync are unit-testable without React or a <video>.
 
 import type { SignalReport, SignalTopicReport } from '../../api/types';
 
-/**
- * Elapsed seconds from the first sample (0-based). We always subtract t[0], so
- * this is correct whether the backend's `t_ns` is episode-relative (already
- * ~0-based, the documented shape) or absolute — and 0-based keeps the numbers
- * well within JS float precision for the chart's x-axis.
- */
-export function elapsedSeconds(tNs: number[]): number[] {
-  if (tNs.length === 0) return [];
-  const t0 = tNs[0]!;
-  return tNs.map((t) => (t - t0) / 1e9);
-}
-
-/** Episode span (seconds) a topic's samples cover; 0 when fewer than 2 points. */
-export function episodeSpanSec(tNs: number[]): number {
-  if (tNs.length < 2) return 0;
-  return (tNs[tNs.length - 1]! - tNs[0]!) / 1e9;
-}
-
-/** The field paths of a topic that carry a (possibly all-null) sample array. */
-export function numericFieldPaths(topic: SignalTopicReport): string[] {
-  return Object.keys(topic.fields ?? {});
-}
-
-export interface UplotSeriesData {
-  /** uPlot AlignedData: [xsSeconds, ...ysPerField]. */
-  data: (number | null)[][];
-  /** Field paths in the same order as the y-columns (only those that exist). */
-  fields: string[];
-}
-
-/**
- * uPlot AlignedData for the selected fields of one topic: x = elapsed seconds
- * (0-based), one y-column per selected field. Selections not present in the
- * payload are dropped; a field array shorter/longer than x is padded/trimmed so
- * uPlot never reads a mismatched column.
- */
-export function signalToUplot(
-  topic: SignalTopicReport,
-  selected: string[],
-): UplotSeriesData {
-  const xs = elapsedSeconds(topic.t_ns ?? []);
-  const fields = selected.filter((f) => f in (topic.fields ?? {}));
-  const ys = fields.map((f) => {
-    const col = topic.fields[f] ?? [];
-    if (col.length === xs.length) return col;
-    if (col.length > xs.length) return col.slice(0, xs.length);
-    return [...col, ...Array<number | null>(xs.length - col.length).fill(null)];
-  });
-  return { data: [xs, ...ys], fields };
-}
-
-// ---- Chart <-> video sync ---------------------------------------------------
+// ---- Timeline <-> video sync ------------------------------------------------
 // The synced video is the full-length encode (max_frames:0): video time 0..D
-// maps linearly to chart elapsed 0..spanSec. Fraction-based so a differing D and
-// spanSec still line up, and both directions clamp to their valid range.
+// maps linearly onto the episode-GLOBAL axis 0..spanNs. Fraction-based so a
+// differing D and span still line up, and it clamps to the valid range.
 
-/** Video currentTime (s) -> chart elapsed x (s). */
-export function videoTimeToChartX(
-  currentTime: number,
-  duration: number,
-  spanSec: number,
+/** A global-axis instant (ns) -> synced-video currentTime (s). */
+export function globalNsToVideoSeconds(
+  globalNs: number,
+  spanNs: number,
+  durationS: number,
 ): number {
-  if (duration <= 0 || spanSec <= 0) return 0;
-  const frac = Math.min(1, Math.max(0, currentTime / duration));
-  return frac * spanSec;
-}
-
-/** Chart elapsed x (s) -> video currentTime (s). */
-export function chartXToVideoTime(
-  chartX: number,
-  spanSec: number,
-  duration: number,
-): number {
-  if (spanSec <= 0 || duration <= 0) return 0;
-  const frac = Math.min(1, Math.max(0, chartX / spanSec));
-  return frac * duration;
+  if (spanNs <= 0 || durationS <= 0) return 0;
+  const frac = Math.min(1, Math.max(0, globalNs / spanNs));
+  return frac * durationS;
 }
 
 /** Continuity as a compact percentage; "n/a" when null/undefined/NaN. */
@@ -167,10 +106,17 @@ export function intervalsOverlap(
 }
 
 /**
- * The colour category for one heatmap bin, exactly per the L1 rules:
- * gray outside the topic's active range; red when a MAJOR event overlaps the
- * bin OR the bin is empty (density 0) inside the active range; amber when a
- * MINOR event overlaps; otherwise green (ok).
+ * The colour category for one timeline bin: gray outside the topic's active
+ * range; red when a MAJOR event overlaps the bin OR (`emptyIsLoss` only) the
+ * bin is empty inside the active range; amber when a MINOR event overlaps;
+ * otherwise green (= no evidence of loss).
+ *
+ * `emptyIsLoss` exists because "empty bin = red" is only honest for a topic
+ * that normally FILLS its bins: measured on a real recording, the backend's
+ * fixed-count grid gave ~10 ms bins against 20–30 ms message periods, so most
+ * bins of a perfectly healthy topic are legitimately empty — painting those
+ * red screamed loss where none was measured. Sparse topics rely on the
+ * backend's inferred loss_events (1.5× median-interval rule) instead.
  */
 export function binColor(args: {
   binIndex: number;
@@ -179,6 +125,8 @@ export function binColor(args: {
   activeStartNs: number;
   activeEndNs: number;
   lossEvents: LossEvent[];
+  /** Treat an empty in-range bin as loss (dense topics only); default false. */
+  emptyIsLoss?: boolean;
 }): BinColor {
   const binStart = args.binIndex * args.binNs;
   const binEnd = binStart + args.binNs;
@@ -191,7 +139,9 @@ export function binColor(args: {
         e.severity === sev &&
         intervalsOverlap(binStart, binEnd, e.start_ns, e.start_ns + e.duration_ns),
     );
-  if (overlapsSeverity('major') || args.density === 0) return 'red';
+  if (overlapsSeverity('major') || (args.emptyIsLoss === true && args.density === 0)) {
+    return 'red';
+  }
   if (overlapsSeverity('minor')) return 'amber';
   return 'green';
 }
@@ -204,21 +154,75 @@ export function medianNonZero(densities: number[]): number {
   return nz.length % 2 === 0 ? (nz[mid - 1]! + nz[mid]!) / 2 : nz[mid]!;
 }
 
-/** A green bin's fill fraction (0..1) relative to the topic's median-nonzero bin. */
-export function greenIntensity(density: number, medianNonZero: number): number {
-  if (medianNonZero <= 0) return 1;
-  return Math.min(1, Math.max(0, density / medianNonZero));
+/**
+ * A topic's empty bin only counts as loss when its typical occupied bin holds
+ * at least this many messages — then an empty bin is a ≥3× median-interval
+ * hole, comfortably beyond the backend's own 1.5× loss threshold (so the red
+ * corroborates measurement rather than inventing it).
+ */
+export const EMPTY_RED_MIN_MEDIAN = 3;
+
+// ---- Aggregated integrity timeline -------------------------------------------
+// ONE lane under the synced video instead of a per-topic grid: every bin shows
+// the WORST condition across all topics at that instant, and the tooltip names
+// which topics degraded. Per-topic detail lives in the event table below.
+
+/** One bin of the aggregated timeline. */
+export interface AggregateBin {
+  /** Bin start on the global axis (ns). */
+  startNs: number;
+  binNs: number;
+  /** Worst per-topic bin colour at this instant (red > amber > green > gray). */
+  color: BinColor;
+  /** Topics red/amber in this bin — the tooltip's "what degraded here". */
+  degraded: string[];
 }
 
+const SEVERITY_RANK: Record<BinColor, number> = { gray: 0, green: 1, amber: 2, red: 3 };
+
 /**
- * A global-axis time (ns) → the CHARTED topic's chart-elapsed seconds, by
- * subtracting that topic's `start_offset_ns`. May be <0 or >spanSec when the
- * clicked bin lies outside the charted topic's own range; the video-sync
- * helpers clamp it. This is what lets a click on another topic's row still seek
- * the charted topic's playhead + the synced video.
+ * Collapse every topic's density bins into the single worst-severity lane.
+ * Topics without bins (< 2 messages) don't participate; their loss events (if
+ * any) still show in the event table. Empty when the sidecar carries no global
+ * span or no binned topic (v1.0 sidecar) — the caller renders nothing (honest).
  */
-export function globalNsToChartSec(globalNs: number, chartStartOffsetNs: number): number {
-  return (globalNs - chartStartOffsetNs) / 1e9;
+export function aggregateBins(report: SignalReportExt): AggregateBin[] {
+  const spanNs = episodeSpanNs(report);
+  const topics = Object.entries(report.topics).filter(([, t]) => t.bins);
+  if (spanNs <= 0 || topics.length === 0) return [];
+  // Bins are fixed-count across the shared global span, so every topic's grid
+  // is the same; the first topic defines it. Per topic, decide once whether an
+  // empty bin is evidence of loss (dense topics only — see binColor).
+  const grid = topics[0]![1].bins!;
+  const emptyIsLoss = new Map(
+    topics.map(([name, t]) => [
+      name,
+      medianNonZero(t.bins!.densities) >= EMPTY_RED_MIN_MEDIAN,
+    ]),
+  );
+  const out: AggregateBin[] = [];
+  for (let i = 0; i < grid.densities.length; i++) {
+    let worst: BinColor = 'gray';
+    const degraded: string[] = [];
+    for (const [name, t] of topics) {
+      const bins = t.bins!;
+      if (i >= bins.densities.length) continue;
+      const [activeStart, activeEnd] = topicActiveRangeNs(t, spanNs);
+      const c = binColor({
+        binIndex: i,
+        binNs: bins.bin_ns,
+        density: bins.densities[i]!,
+        activeStartNs: activeStart,
+        activeEndNs: activeEnd,
+        lossEvents: t.loss_events ?? [],
+        emptyIsLoss: emptyIsLoss.get(name)!,
+      });
+      if (SEVERITY_RANK[c] > SEVERITY_RANK[worst]) worst = c;
+      if (c === 'amber' || c === 'red') degraded.push(name);
+    }
+    out.push({ startNs: i * grid.bin_ns, binNs: grid.bin_ns, color: worst, degraded });
+  }
+  return out;
 }
 
 /** One loss event flattened with its topic, for the aggregate event table. */
