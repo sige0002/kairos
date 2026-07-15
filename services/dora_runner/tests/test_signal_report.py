@@ -21,11 +21,15 @@ from dora_runner.registry import (
     build_default_registry,
 )
 from dora_runner.signal_report import (
+    BIN_COUNT,
     CONTINUITY_DEFINITION,
     DEFAULT_MAX_POINTS,
+    LOSS_EVENTS_CAP,
     MAX_TOPIC_FIELDS,
     _first_message_fields,
+    compute_bins,
     compute_continuity,
+    detect_loss_events,
     downsample_stride,
     run_signal_report,
 )
@@ -110,6 +114,101 @@ def test_downsample_points_never_exceed_cap(n: int) -> None:
     stride = downsample_stride(n, max_points)
     points = len(range(0, n, stride))
     assert points <= max_points
+
+
+# ---- detect_loss_events (pure) ----------------------------------------------
+
+
+def test_detect_loss_events_needs_four_intervals() -> None:
+    # 4 timestamps -> 3 intervals (< LOSS_MIN_INTERVALS) -> no cadence to judge.
+    times = [0, 100 * _MS, 200 * _MS, 700 * _MS]
+    assert detect_loss_events(times, 0) == ([], 0)
+
+
+def test_detect_loss_events_zero_median_is_empty() -> None:
+    # A burst of identical stamps then one gap: median interval 0 -> no rate.
+    times = [0, 0, 0, 0, 0, 500 * _MS]
+    assert detect_loss_events(times, 0) == ([], 0)
+
+
+def test_detect_loss_events_single_major_gap() -> None:
+    # intervals [100,100,100,100,500] ms; median 100 -> threshold 150; the 500
+    # gap is one event at the previous message's time. round(500/100)-1 = 4 -> major.
+    times = [t * _MS for t in (0, 100, 200, 300, 400, 900)]
+    events, dropped = detect_loss_events(times, 0)
+    assert dropped == 0
+    assert events == [
+        {
+            "start_ns": 400 * _MS,
+            "duration_ns": 500 * _MS,
+            "estimated_lost": 4,
+            "severity": "major",
+        }
+    ]
+
+
+def test_detect_loss_events_minor_severity() -> None:
+    # A 300 ms gap on a 100 ms cadence: round(3)-1 = 2 lost (< 3) -> minor.
+    times = [t * _MS for t in (0, 100, 200, 300, 400, 700)]
+    events, _ = detect_loss_events(times, 0)
+    assert [e["severity"] for e in events] == ["minor"]
+    assert events[0]["estimated_lost"] == 2
+
+
+def test_detect_loss_events_start_ns_is_global_relative() -> None:
+    # Same cadence shifted by an epoch-like global zero: start_ns stays small
+    # (previous-message time MINUS global zero), never the absolute stamp.
+    gz = 1_750_000_000_000_000_000
+    times = [gz + t * _MS for t in (0, 100, 200, 300, 400, 900)]
+    events, _ = detect_loss_events(times, gz)
+    assert events[0]["start_ns"] == 400 * _MS
+    assert events[0]["start_ns"] < 9_007_199_254_740_991  # under MAX_SAFE_INTEGER
+
+
+def test_detect_loss_events_caps_and_reports_dropped() -> None:
+    # 300 tight (100 ms) + 250 wide (1000 ms) intervals: median stays 100 ms, so
+    # every wide interval is an event (250) -> capped at LOSS_EVENTS_CAP, 50 dropped.
+    intervals_ms = [100] * 300 + [1000] * 250
+    ms = [0]
+    for iv in intervals_ms:
+        ms.append(ms[-1] + iv)
+    times = [m * _MS for m in ms]
+    events, dropped = detect_loss_events(times, 0)
+    assert len(events) == LOSS_EVENTS_CAP
+    assert dropped == 250 - LOSS_EVENTS_CAP
+    # Largest-duration first, and every kept event is one of the wide (major) gaps.
+    assert all(e["duration_ns"] == 1000 * _MS for e in events)
+    assert all(e["severity"] == "major" for e in events)
+
+
+# ---- compute_bins (pure) ----------------------------------------------------
+
+
+def test_compute_bins_under_two_messages_is_none() -> None:
+    assert compute_bins([5 * _MS], 0, 10 * _MS) is None
+
+
+def test_compute_bins_zero_span_is_none() -> None:
+    assert compute_bins([0, 0], 0, 0) is None
+
+
+def test_compute_bins_density_sums_to_message_count() -> None:
+    times = [i * _MS for i in range(100)]
+    bins = compute_bins(times, 0, 99 * _MS)
+    assert bins is not None
+    assert bins["count"] == BIN_COUNT
+    assert len(bins["densities"]) == BIN_COUNT
+    assert sum(bins["densities"]) == len(times)
+
+
+def test_compute_bins_bin_ns_is_ceil_of_span() -> None:
+    # span 600 ms across 600 bins -> exactly 1 ms per bin.
+    bins = compute_bins([0, 600 * _MS], 0, 600 * _MS)
+    assert bins is not None
+    assert bins["bin_ns"] == _MS
+    # A timestamp exactly at the global end clamps into the last bin (not #600).
+    assert sum(bins["densities"]) == 2
+    assert bins["densities"][-1] == 1
 
 
 # ---- _first_message_fields: field cap + truncated count (pure) --------------
@@ -335,6 +434,95 @@ def test_signal_report_gap_lowers_continuity(tmp_path: Path) -> None:
     ]
     assert topic["continuity"] is not None
     assert 0.0 < topic["continuity"] < 1.0
+
+
+def test_signal_report_injected_gap_becomes_loss_event(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    run_dir = data_dir / "recorded" / "run_gap"
+    run_dir.mkdir(parents=True)
+    # 5 messages at 100 ms, then one 500 ms after the last (400 ms hole). pub==log
+    # so the axis is log_time and the global zero is 0 -> loss start is 400 ms.
+    with (run_dir / "run_gap_0.mcap").open("wb") as fh:
+        w = Writer(fh)
+        schema = w.register_msgdef("sensor_msgs/msg/JointState", _JOINT_DEF)
+        for i, slot in enumerate((0, 1, 2, 3, 4, 9)):
+            ts = slot * 100 * _MS
+            w.write_message(
+                topic="/hsrb/joint_states",
+                schema=schema,
+                message={
+                    "header": _stamp(i),
+                    "name": ["j"],
+                    "position": [float(i)],
+                    "velocity": [0.0],
+                },
+                log_time=ts,
+                publish_time=ts,
+            )
+        w.finish()
+
+    summary = run_signal_report(run_id="run_gap", data_dir=data_dir)["summary"]
+    assert summary["version"] == "1.1.0"
+    assert summary["span"] == {"duration_ns": 900 * _MS}
+    topic = summary["topics"]["/hsrb/joint_states"]
+    assert topic["start_offset_ns"] == 0
+    assert topic["edges"] == {"start_delay_ns": 0, "end_early_ns": 0}
+    assert topic["loss_events"] == [
+        {
+            "start_ns": 400 * _MS,
+            "duration_ns": 500 * _MS,
+            "estimated_lost": 4,
+            "severity": "major",
+        }
+    ]
+    assert "loss_events_truncated" not in topic
+    # Bins cover the whole global span; every message is counted exactly once.
+    assert topic["bins"]["count"] == BIN_COUNT
+    assert sum(topic["bins"]["densities"]) == topic["message_count"] == 6
+
+
+def test_signal_report_multi_topic_global_alignment(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    run_dir = data_dir / "recorded" / "run_two"
+    run_dir.mkdir(parents=True)
+    # Topic A spans [0, 400] ms; topic B starts later at 200 ms and ends at 500 ms.
+    # Global zero = 0 (A's start), global end = 500 ms (B's end). pub==log.
+    with (run_dir / "run_two_0.mcap").open("wb") as fh:
+        w = Writer(fh)
+        schema = w.register_msgdef("sensor_msgs/msg/JointState", _JOINT_DEF)
+
+        def emit(topic: str, slots_ms: list[int]) -> None:
+            for i, ms in enumerate(slots_ms):
+                ts = ms * _MS
+                w.write_message(
+                    topic=topic,
+                    schema=schema,
+                    message={
+                        "header": _stamp(i),
+                        "name": ["j"],
+                        "position": [float(i)],
+                        "velocity": [0.0],
+                    },
+                    log_time=ts,
+                    publish_time=ts,
+                )
+
+        emit("/topic_a", [0, 100, 200, 300, 400])
+        emit("/topic_b", [200, 300, 400, 500])
+        w.finish()
+
+    summary = run_signal_report(run_id="run_two", data_dir=data_dir)["summary"]
+    assert summary["span"] == {"duration_ns": 500 * _MS}
+    a = summary["topics"]["/topic_a"]
+    b = summary["topics"]["/topic_b"]
+    # A is the global-zero topic: offset 0, no start delay, ends 100 ms early.
+    assert a["start_offset_ns"] == 0
+    assert a["edges"] == {"start_delay_ns": 0, "end_early_ns": 100 * _MS}
+    # B begins 200 ms into the episode and runs to the global end.
+    assert b["start_offset_ns"] == 200 * _MS
+    assert b["edges"] == {"start_delay_ns": 200 * _MS, "end_early_ns": 0}
+    # t_ns stays topic-relative for BOTH (first element 0), independent of offset.
+    assert a["t_ns"][0] == 0 and b["t_ns"][0] == 0
 
 
 def test_signal_report_excludes_images_and_no_numeric(tmp_path: Path) -> None:

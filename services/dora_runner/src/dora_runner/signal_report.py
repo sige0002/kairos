@@ -27,6 +27,21 @@ pass). Per topic:
   (offset from the topic's first timestamp, first element ``0``) so the values
   stay JS-safe (absolute epoch ns exceed ``Number.MAX_SAFE_INTEGER``).
 
+On top of the charting series (v1.1) the same single scan also feeds a
+**loss-location** view. An *episode-global relative clock* is defined once —
+its zero is the earliest full-resolution timestamp across all INCLUDED topics,
+and ``span.duration_ns`` is the latest minus that zero. Three additive per-topic
+fields live on that global axis (so they stay JS-safe like ``t_ns``): each
+topic's ``start_offset_ns`` (first timestamp − global zero), a list of
+``loss_events`` inferred from the FULL-resolution inter-arrival intervals
+(threshold ``1.5x`` the median interval; each over-long interval is one event
+with an estimated lost-message count and a major/minor severity), ``edges``
+(how much later than the global start the topic began / how much before the
+global end it stopped), and fixed-count density ``bins`` (message counts across
+600 equal slices of the global span) for a heatmap. The per-topic ``t_ns`` stays
+topic-relative (the chart contract is unchanged); the frontend maps chart-time
+to the global axis with ``start_offset_ns``.
+
 Image/camera topics (``sensor_msgs/msg/Image`` / ``CompressedImage``) are
 excluded up front — they are the ``video_check`` pipeline's job — as are topics
 with no numeric leaves and topics absent from the recording; each exclusion is
@@ -68,10 +83,25 @@ from dora_runner.mcap_utils import (
 # Pipeline identity stamped into the summary (reproducibility contract, shared
 # with the other bundled pipelines).
 PIPELINE_ID = "signal_report"
-PIPELINE_VERSION = "1.0.0"
+PIPELINE_VERSION = "1.1.0"
 
 # Default per-topic downsample cap (params.max_points overrides).
 DEFAULT_MAX_POINTS = 2000
+
+# Loss-event detection (full-resolution, per topic). An inter-arrival interval
+# longer than ``LOSS_THRESHOLD_FACTOR x median`` is one event; below the minimum
+# interval count there is no stable cadence to judge against, so no events. An
+# event's estimated_lost >= LOSS_MAJOR_LOST is "major", else "minor". The emitted
+# list is capped (largest-duration first) so a pathological run cannot bloat the
+# sidecar; the number dropped is reported, never silently swallowed.
+LOSS_MIN_INTERVALS = 4
+LOSS_THRESHOLD_FACTOR = 1.5
+LOSS_MAJOR_LOST = 3
+LOSS_EVENTS_CAP = 200
+
+# Density heatmap: a fixed number of equal slices across the GLOBAL span, so
+# every topic's bins line up on one axis (bin_ns = ceil(span / BIN_COUNT)).
+BIN_COUNT = 600
 
 # Charted numeric leaves per topic: reuse field_introspect's total-field cap so
 # the sidecar and topic_probe's live dropdown share one bound. Leaves beyond it
@@ -137,6 +167,81 @@ def downsample_stride(n: int, max_points: int) -> int:
     return math.ceil(n / max_points)
 
 
+def detect_loss_events(
+    times_sorted: list[int], global_zero: int
+) -> tuple[list[dict[str, Any]], int]:
+    """Infer loss events from FULL-resolution inter-arrival intervals.
+
+    An interval longer than ``1.5 x`` the median interval is one event, emitted
+    on the **episode-global** relative axis (subtract *global_zero* so the values
+    stay JS-safe):
+
+    - ``start_ns`` = the previous message's time − *global_zero*,
+    - ``duration_ns`` = the interval itself,
+    - ``estimated_lost`` = ``max(0, round(interval / median) - 1)`` (how many
+      messages the typical cadence would have placed inside the hole),
+    - ``severity`` = ``"major"`` when ``estimated_lost >= 3`` else ``"minor"``.
+
+    Returns ``(events, dropped)``. Fewer than :data:`LOSS_MIN_INTERVALS`
+    intervals (no stable cadence) or a non-positive median (a burst of identical
+    stamps — no meaningful rate) yields ``([], 0)``. The list is capped at
+    :data:`LOSS_EVENTS_CAP`, largest-duration first, and *dropped* counts the
+    events past the cap (surfaced as ``loss_events_truncated``, never silent).
+    """
+    intervals = [b - a for a, b in zip(times_sorted, times_sorted[1:], strict=False)]
+    if len(intervals) < LOSS_MIN_INTERVALS:
+        return [], 0
+    median = statistics.median(intervals)
+    if median <= 0:
+        return [], 0
+    threshold = LOSS_THRESHOLD_FACTOR * median
+    events: list[dict[str, Any]] = []
+    for prev, interval in zip(times_sorted, intervals, strict=False):
+        if interval > threshold:
+            estimated_lost = max(0, round(interval / median) - 1)
+            events.append(
+                {
+                    "start_ns": prev - global_zero,
+                    "duration_ns": interval,
+                    "estimated_lost": estimated_lost,
+                    "severity": "major"
+                    if estimated_lost >= LOSS_MAJOR_LOST
+                    else "minor",
+                }
+            )
+    events.sort(key=lambda e: e["duration_ns"], reverse=True)
+    if len(events) > LOSS_EVENTS_CAP:
+        return events[:LOSS_EVENTS_CAP], len(events) - LOSS_EVENTS_CAP
+    return events, 0
+
+
+def compute_bins(
+    times_sorted: list[int], global_zero: int, global_end: int
+) -> dict[str, Any] | None:
+    """Message-count density across :data:`BIN_COUNT` equal slices of the span.
+
+    Bins are on the episode-global axis so every topic lines up: ``bin_ns =
+    ceil(span / BIN_COUNT)`` (the last bin may be short) and ``densities[i]`` is
+    how many of this topic's full-resolution timestamps fall in slice ``i``
+    (a timestamp exactly at the global end clamps into the last bin). The sum of
+    ``densities`` therefore equals the topic's message count. Returns ``None``
+    for a topic with fewer than two messages or when the global span is zero
+    (no axis to bin against).
+    """
+    if len(times_sorted) < 2:
+        return None
+    duration = global_end - global_zero
+    if duration <= 0:
+        return None
+    bin_ns = math.ceil(duration / BIN_COUNT)
+    densities = [0] * BIN_COUNT
+    for ts in times_sorted:
+        idx = (ts - global_zero) // bin_ns
+        idx = min(BIN_COUNT - 1, max(0, idx))
+        densities[idx] += 1
+    return {"count": BIN_COUNT, "bin_ns": bin_ns, "densities": densities}
+
+
 @dataclass
 class _TopicAccum:
     """Full-resolution accumulator for one topic during the single decode pass."""
@@ -152,6 +257,47 @@ class _TopicAccum:
     rows: list[tuple[float | None, ...]] = field(default_factory=list)
 
 
+@dataclass
+class _Resolved:
+    """A topic's full-resolution series after clock-choice + co-sorting.
+
+    Computed once per topic before the episode-global zero is known, so the
+    global axis (loss_events / edges / bins) can be assembled in a second pass
+    over these in-memory results — NOT a second decode pass.
+    """
+
+    accum: _TopicAccum
+    # Chosen-clock timestamps, sorted ascending (full resolution).
+    times_sorted: list[int]
+    # Value rows co-sorted with ``times_sorted`` (aligned to ``accum.paths``).
+    rows_sorted: list[tuple[float | None, ...]]
+    time_source: str
+    continuity: float | None
+
+
+def _resolve_topic(accum: _TopicAccum) -> _Resolved:
+    """Pick the source clock and co-sort the value rows onto it (full-res).
+
+    The chosen clock (``source_times``) need not arrive in decode order, so the
+    value rows are co-sorted with it; continuity is scored on the same sorted
+    full-resolution series (before any downsample). This is split out from
+    :func:`_build_topic_entry` so the caller can compute the episode-global zero
+    across every resolved topic first.
+    """
+    chosen, time_source = source_times(accum.pairs)
+    n = len(chosen)
+    order = sorted(range(n), key=lambda i: chosen[i])
+    times_sorted = [chosen[i] for i in order]
+    rows_sorted = [accum.rows[i] for i in order]
+    return _Resolved(
+        accum=accum,
+        times_sorted=times_sorted,
+        rows_sorted=rows_sorted,
+        time_source=time_source,
+        continuity=compute_continuity(times_sorted),
+    )
+
+
 def _first_message_fields(ros_msg: object) -> tuple[list[str], int]:
     """Field paths (<= MAX_TOPIC_FIELDS) + overflow count for a topic's message 0.
 
@@ -164,30 +310,29 @@ def _first_message_fields(ros_msg: object) -> tuple[list[str], int]:
     return paths, len(all_paths) - len(paths)
 
 
-def _build_topic_entry(accum: _TopicAccum, max_points: int) -> dict[str, Any]:
-    """Assemble one topic's sidecar entry: continuity (full-res) + downsample.
+def _build_topic_entry(
+    resolved: _Resolved, max_points: int, global_zero: int, global_end: int
+) -> dict[str, Any]:
+    """Assemble one topic's sidecar entry: chart series + global loss view.
 
     ``t_ns`` is emitted **relative to ``start_ns``** (first element ``0``):
     absolute epoch nanoseconds (~1.75e18) exceed JS ``Number.MAX_SAFE_INTEGER``
     (~9.007e15), so a JSON consumer would quantize them (ULP ~256 ns). The
     absolute chosen-clock endpoints are kept as ``start_ns`` / ``end_ns``
     metadata — consumers must NOT do sub-microsecond math on those in JS.
-    """
-    chosen, time_source = source_times(accum.pairs)
-    n = len(chosen)
-    # Co-sort the value rows with the chosen clock so t_ns is monotonic for
-    # uPlot (publish_time need not arrive in log_time order); continuity is then
-    # computed on the same sorted full-resolution series.
-    order = sorted(range(n), key=lambda i: chosen[i])
-    times_sorted = [chosen[i] for i in order]
-    rows_sorted = [accum.rows[i] for i in order]
 
-    # Continuity runs on the full-resolution absolute series BEFORE the relative
-    # offset / downsample below (a subtraction constant would not change it, but
-    # keep it explicitly on the absolute values).
-    continuity = compute_continuity(times_sorted)
+    ``start_offset_ns`` / ``loss_events`` / ``edges`` / ``bins`` are on the
+    episode-global relative axis (offsets from *global_zero*, kept small and
+    JS-safe); ``edges`` says how much later than the global start this topic
+    began and how much before the global end it stopped.
+    """
+    accum = resolved.accum
+    times_sorted = resolved.times_sorted
+    rows_sorted = resolved.rows_sorted
+    n = len(times_sorted)
 
     start_ns = times_sorted[0]
+    end_ns = times_sorted[-1]
     stride = downsample_stride(n, max_points)
     keep = range(0, n, stride)
     # Relative to start_ns so the charted x-axis stays JS-safe (see docstring).
@@ -197,19 +342,31 @@ def _build_topic_entry(accum: _TopicAccum, max_points: int) -> dict[str, Any]:
         for col, path in enumerate(accum.paths)
     }
 
-    return {
+    loss_events, dropped = detect_loss_events(times_sorted, global_zero)
+
+    entry: dict[str, Any] = {
         "msg_type": accum.msg_type,
         "message_count": n,
         "start_ns": start_ns,
-        "end_ns": times_sorted[-1],
-        "continuity": continuity,
+        "end_ns": end_ns,
+        "start_offset_ns": start_ns - global_zero,
+        "continuity": resolved.continuity,
         "continuity_definition": CONTINUITY_DEFINITION,
-        "time_source": time_source,
+        "time_source": resolved.time_source,
         "downsample": {"stride": stride, "points": len(t_ns)},
         "t_ns": t_ns,
         "fields": fields,
         "truncated_fields": accum.truncated_fields,
+        "loss_events": loss_events,
+        "edges": {
+            "start_delay_ns": start_ns - global_zero,
+            "end_early_ns": global_end - end_ns,
+        },
+        "bins": compute_bins(times_sorted, global_zero, global_end),
     }
+    if dropped:
+        entry["loss_events_truncated"] = dropped
+    return entry
 
 
 def _select_topics(
@@ -299,8 +456,20 @@ def run_signal_report(
         if name not in accums and name not in skipped:
             skipped[name] = _SKIP_NO_MESSAGES
 
+    # Resolve every included topic (clock choice + co-sort) BEFORE building
+    # entries, so the episode-global relative clock — zero = earliest full-res
+    # timestamp across all included topics — is known when the per-topic global
+    # fields (loss_events / edges / bins) are assembled. No extra decode pass.
+    resolved = {name: _resolve_topic(accums[name]) for name in sorted(accums)}
+    if resolved:
+        global_zero = min(r.times_sorted[0] for r in resolved.values())
+        global_end = max(r.times_sorted[-1] for r in resolved.values())
+    else:
+        global_zero = global_end = 0
+
     topics_out = {
-        name: _build_topic_entry(accums[name], max_points) for name in sorted(accums)
+        name: _build_topic_entry(r, max_points, global_zero, global_end)
+        for name, r in resolved.items()
     }
 
     summary: dict[str, Any] = {
@@ -309,6 +478,7 @@ def run_signal_report(
         "run_id": run_id,
         "generated_at": utc_now_iso8601(),
         "params": {"topics": topics, "max_points": max_points},
+        "span": {"duration_ns": global_end - global_zero},
         "topics": topics_out,
         "skipped_topics": dict(sorted(skipped.items())),
     }
