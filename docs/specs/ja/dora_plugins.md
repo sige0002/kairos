@@ -219,6 +219,10 @@ def discover_plugins(registry: PipelineRegistry, plugins_dir: Path) -> list[Plug
 - **出力（結果表示）**: ジョブの `summary.json` を **汎用レンダラ `SummaryResult`** が shape を知らずにそのまま描く——
   `result`（PASS/FAIL バッジ）/ `message`（見出し行）/ `metrics`・その他フィールド（key-value ツリー、ネスト・配列対応）/
   `artifacts` / raw JSON。**新 pipeline 固有の結果ビューを frontend に足す必要はない**。
+- **出力（グラフ・画像＝JSON 以外の結果、2026-07-15）**: ノードが **report dir に画像（png/jpg/svg/gif/webp）を書くだけ**で
+  UI に出る。artifacts として収集されたパスは orchestrator がデータルート相対に正規化し（[api_orchestrator.md](api_orchestrator.md)
+  ジョブ実行）、`SummaryResult` が `GET /api/v1/files/{path}` 経由で**画像はインライン表示・その他ファイルはダウンロードリンク**として
+  レンダリングする。matplotlib 等でプロットを `${KAIROS_REPORT_DIR}/plot.png` に保存すれば、**UI 無改修でグラフ付きの結果画面**になる。
 - **唯一の例外（同梱 fast_validation のみ）**: 必須トピックの pass/fail は template の必須トピック一覧に対して見せた方が分かりやすいため、
   fast_validation だけ専用カードを保持する。それ以外（`loss_report` / `video_check` / **全プラグイン**）は `SummaryResult` に載る。
 

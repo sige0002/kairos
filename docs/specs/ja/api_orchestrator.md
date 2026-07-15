@@ -34,7 +34,7 @@
 - ワンクリック検証プリセット: `GET /api/v1/validation/presets`（config 定義のプリセット＋未検証 run 一覧）
 - 設定: `GET /api/v1/config`（frontend 実行時設定: endpoints / tabs / defaults（`ros_domain_id` を含む）/ stream / schemas）。〔`GET/POST /api/v1/settings` は**未実装**（将来）。現状は下の `PUT /api/v1/config/recording` が設定編集の入口〕
 - 収録設定（フル編集）: `GET /api/v1/config/recording` → `{ config: <RecordingConfig dump>|null, path }`、`PUT /api/v1/config/recording`（body `{ config }`。下記「収録設定のフル編集」参照）
-- Signals 既定表示 / アラート規則（単一ファイル・アスペクト編集）: `GET/PUT /api/v1/config/signals`（Review の既定表示。`config/<robot>/signals/default.yaml`。表示専用＝即時反映）／`GET/PUT /api/v1/config/alerts`（topic_monitor のアラート規則。`config/<robot>/monitoring/alerts.yaml`。monitor 再起動時に反映）。`GET` は `{ config, raw, path }`（alerts は `warnings` も）、`PUT` は body `{ config }`（フォーム）または `{ raw }`（生 YAML）。下記「Signals / アラート規則の編集」参照
+- アラート規則（単一ファイル・アスペクト編集）: `GET/PUT /api/v1/config/alerts`（topic_monitor のアラート規則。`config/<robot>/monitoring/alerts.yaml`。monitor 再起動時に反映）。`GET` は `{ config, raw, path, warnings }`、`PUT` は body `{ config }`（フォーム）または `{ raw }`（生 YAML）。下記「アラート規則の編集」参照（旧 `GET/PUT /api/v1/config/signals` は Review 波形チャートの撤去に伴い 2026-07-15 に削除）
 - 設定カタログ: `GET /api/v1/config/options`、`POST /api/v1/config/select`（検証テンプレート等のカテゴリ別選択肢と現在の選択）、`GET /api/v1/config/robots/{robot}`（**任意のカタログ機体の設定を read-only で返す** — aspect 毎のパース済み内容+要約。ライブ系を切り替えずに他機体を雛形参照するため（Settings）。未知の機体・不正なパス成分は `404`）
 - システム情報: `GET /api/v1/system` → `{ cpu: { model, cores }, gpu, cpu_percent, disk, gpu_percent }`（ホストの読み取り専用イントロスペクション。常に `200`）
   - `cpu` / `gpu`: 静的な情報（CPU モデル名・論理コア数は `/proc/cpuinfo`、GPU 名は `nvidia-smi`。取得不能時は各フィールド `null`）
@@ -129,15 +129,15 @@ UI（Settings タブ）から `RECORDING_CONFIG` 全体を編集・永続化す�
 - `PUT` — body `{ config }`。`config` を `RecordingConfig`（[config](config.md)）で型検証し、失敗時は **`422`**（違反フィールドを `details.errors` に返す）。成功時は **`RECORDING_CONFIG` のファイルへ YAML をアトミックに書き込み**（temp + `os.replace`。書き込み先は常に設定ファイルで、リクエスト由来のパスは使わない）、**メモリ上の設定をホットスワップ**する。
 - 反映タイミング: `GET /api/v1/config` と**次回記録の `default_topics`（robot_name 等を含む）は即時**反映。recorder の QoS / monitor の expected_hz・許可リストは各サービスの**次回再起動時**に適用される（UI もその旨を表示する）。
 
-## Signals / アラート規則の編集（`GET/PUT /api/v1/config/{signals,alerts}`）
+## アラート規則の編集（`GET/PUT /api/v1/config/alerts`）
 
-Settings > Data quality から、選択式カタログ（recording / stream / validation / validators）ではない**アクティブ機体の単一ファイル設定 2 種**を編集・永続化する（S1' / F2''）。いずれもカタログ経由でアクティブ機体のファイルを解決し（committed / local 両対応）、`PUT` は pydantic で検証（**未知キーは拒否**）してから `/recording` と同じ temp + `os.replace` でアトミックに書き込む。検証失敗は **`422`**（`details.errors`）でファイルは書き換えない。`GET` 応答は `{ config, raw, path }`（`raw` は on-disk の YAML 文字列＝Advanced 生 YAML エディタの初期値。未作成時は `null`）。`PUT` body は `{ config }`（フォーム）または `{ raw }`（生 YAML。frontend は YAML パーサを積まないためサーバ側で解析）で、書き込みは常に検証済みモデルの正規 YAML。
+Settings > Data quality から、選択式カタログ（recording / stream / validation / validators）ではない**アクティブ機体の単一ファイル設定**を編集・永続化する（F2''）。カタログ経由でアクティブ機体のファイルを解決し（committed / local 両対応）、`PUT` は pydantic で検証（**未知キーは拒否**）してから `/recording` と同じ temp + `os.replace` でアトミックに書き込む。検証失敗は **`422`**（`details.errors`）でファイルは書き換えない。`GET` 応答は `{ config, raw, path }`（`raw` は on-disk の YAML 文字列＝Advanced 生 YAML エディタの初期値。未作成時は `null`）。`PUT` body は `{ config }`（フォーム）または `{ raw }`（生 YAML。frontend は YAML パーサを積まないためサーバ側で解析）で、書き込みは常に検証済みモデルの正規 YAML。（旧 `signals` アスペクト＝Review 波形チャートの既定表示は、チャート撤去に伴い 2026-07-15 にエンドポイント・`config/<robot>/signals/` ごと削除。）
 
-- **`signals`**（`config/<robot>/signals/default.yaml`）: Review の Signals セクションの既定表示（`hidden_field_patterns` / `default_topic` / `defaults[{msg_type, fields}]` / `fallback_fields >= 0`）。**表示専用＝即時反映**（Review の消費フック `signalDefaults.ts` が再取得。ホットスワップ不要）。ファイル未作成の機体では `GET` は組み込み既定（`header.*` を隠す・先頭 4 リーフ）を `config` に返し `raw: null`。
 - **`alerts`**（`config/<robot>/monitoring/alerts.yaml`）: topic_monitor のアラート規則（`rules[{topic, metric, op, threshold, clear_after_s, cooldown_s, severity}]` ＋ 任意の `derived_rules`）。metric は `hz|bandwidth|gap|late|loss`、op は `lt|gt|le|ge`（monitor の `AlertRule` と同一集合＝有効な alerts.yaml が往復できる）。`metric: loss` は**受理するが応答 `warnings` で警告**（`loss_rate` は monitor で常に null のため発火しない）。**反映は topic_monitor 再起動時**（alerts.yaml は起動時に 1 回だけ読み込む。ライブ再読込経路は無い＝`topic_monitor/main.py`）。`GET`/`PUT` 応答は `warnings: string[]` を追加。
 
 ## ジョブ実行（`POST /api/v1/jobs`、`dora_runner` へプロキシ）
 
+- `GET /jobs/{id}/result` の **`artifacts` はデータルート相対に正規化**して返す（2026-07-15）: dora_runner はコンテナ絶対パス（例 `/data/report/<pipeline>/<run_id>/plot.png`）を報告するが、orchestrator が `data_dir` 配下のものを相対化するので、各 artifact はそのまま `GET /api/v1/files/{path}` で取得できる。これが**プラグインが UI 無改修で画像（プロット等）を表示させる可視化チャネル**（[dora_plugins.md §2.5](dora_plugins.md)）。`data_dir` 外の絶対パス・元から相対のパスは無変換。
 - `dataset_export`: 対象 run が未知なら **`404`**、まだ記録中 / 停止中（`created` / `recording` / `stopping`）なら **`409`**（書き込み途中の bag を export しない）。
 - `fast_validation`: `params.template` の **id（カタログのファイル stem。例 `airoa_hsr`）を Config カタログでフル template に解決**してから `dora_runner` へ転送する（dora_runner の template ストアは空起動のため、bare id は 404 になる）。id が空 / 不在なら現在の選択（active）にフォールバック。既に dict（フル template）ならそのまま通す。
 

@@ -12,6 +12,21 @@ Phase A hardening toward a supportable release
 
 ### Added
 
+- Collect operator early-warning integration: the Active warnings card now
+  unions the arming snapshot's missing targets with FIRING monitor alerts
+  (SSE buffer, restricted to recorded topics) so mid-recording degradation —
+  the hole the resume-frozen arming snapshot cannot see — surfaces where the
+  operator is looking, with measured values and an Open-in-Monitor path; the
+  System status card gains a `Topic rates` row (`N / M at expected`, from the
+  monitor's per-topic status; no composite health score by design).
+- Plugin artifact visualisation (zero-UI-edit graphs): the orchestrator
+  normalises `GET /jobs/{id}/result` artifact paths to data-root-relative,
+  making each fetchable via `GET /api/v1/files/{path}`; the generic
+  `SummaryResult` renderer shows image artifacts (png/jpg/svg/gif/webp)
+  inline and other files as download links — a dora plugin that writes
+  `plot.png` into its report dir gets a graph in the Validation result view
+  without touching the frontend.
+
 - Stop-time quick check settlement: when a recording stops, the orchestrator
   settles a two-layer quick check off the stop path (Layer 0 = monitor window
   deltas + incidents + recorder integrity; Layer 1 = MCAP summary-section read,
@@ -93,6 +108,16 @@ Phase A hardening toward a supportable release
 
 ### Changed
 
+- Review detail: the Signals section became "Data integrity" — synced video
+  first, an aggregated one-lane integrity timeline directly under it (worst
+  condition across topics per bin; click-to-seek; empty-bin-red restricted to
+  dense topics after real-data verification showed ~10 ms bins vs 20–30 ms
+  message periods painting healthy episodes solid red), a ranked loss-event
+  table (majors first, top 8, explicit "Show all n"), and a per-topic
+  continuity summary. The raw per-field waveform chart and its field pickers
+  were removed (a joint-angle plot doesn't answer "is this episode usable";
+  live waveforms remain in Monitor > Signals via topic_probe).
+
 - Reproducible image builds: every Python service Dockerfile installs its
   dependencies from the committed `uv.lock` (`uv sync --frozen`) instead of
   re-resolving `>=` specifiers at build time, and all previously floating base
@@ -104,6 +129,12 @@ Phase A hardening toward a supportable release
   container health: its `/readyz` includes downstream dependencies, so driving
   the healthcheck off it would restart the orchestrator whenever the recorder is
   down (documented inline in `compose.yaml`).
+
+### Removed
+
+- The Review signals-defaults config aspect, retired with the waveform chart
+  it configured: `GET/PUT /api/v1/config/signals`, the Settings > Data
+  quality SignalsCard, `signalDefaults.ts`, and `config/<robot>/signals/`.
 
 ### Fixed
 

@@ -221,6 +221,11 @@ Both the input form and the result view are auto-generated **backend-driven**, s
 - **Output (the result view)**: the generic renderer `SummaryResult` draws the job's `summary.json` without knowing its shape —
   `result` (a PASS/FAIL badge) / `message` (a headline) / `metrics` and other fields (a key/value tree with nesting and array support) /
   `artifacts` / raw JSON. **There is no need to add a pipeline-specific result view to the frontend.**
+- **Output (graphs/images — non-JSON results, 2026-07-15)**: a node just **writes an image (png/jpg/svg/gif/webp) into the report dir**
+  and it shows up in the UI. Collected artifact paths are normalised to data-root-relative by the orchestrator
+  ([api_orchestrator.md](api_orchestrator.md) Job execution), and `SummaryResult` renders them via `GET /api/v1/files/{path}` —
+  **images inline, other files as download links**. Save a matplotlib plot to `${KAIROS_REPORT_DIR}/plot.png` and the result view
+  carries the graph, **zero UI edits**.
 - **The one exception (bundled fast_validation only)**: the pass/fail of required topics reads better against the template's required-topic
   list, so fast_validation alone keeps a bespoke card. Everything else (`loss_report` / `video_check` / **all plugins**) lands in `SummaryResult`.
 
