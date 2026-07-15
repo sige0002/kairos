@@ -216,6 +216,10 @@ Both the input form and the result view are auto-generated **backend-driven**, s
 - **Input (the run form)**: the manifest's `params_schema` (JSON Schema) reaches the frontend via `GET /pipelines` → the
   `schemas.pipeline_forms[<id>]` of `GET /api/v1/config`, and the generic form `PipelineForm` renders it
   (the practical subset of string / number / integer / boolean / enum / array-of-string). The author writes no UI component.
+  A string property annotated **`x-suggest`** (`"camera_topics"` | `"topics"`, 2026-07-15) becomes a picker over the
+  selected target run's real topics in the Validation tab (first one auto-seeded) — no hand-typing topic paths
+  (the bundled video_check's `topic` is the reference use). With no candidates (e.g. a dataset target) it honestly
+  falls back to free text.
 - **Pipeline selection**: the Validation tab lists **every enabled pipeline** from `GET /pipelines` as options. Add a plugin and it
   appears in the list (**pipeline ids are not hardcoded** = the design policy of [frontend.md](frontend.md)). Placeholders (`enabled=false`) are not shown.
 - **Output (the result view)**: the generic renderer `SummaryResult` draws the job's `summary.json` without knowing its shape —

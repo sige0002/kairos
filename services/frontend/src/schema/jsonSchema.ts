@@ -28,6 +28,10 @@ export interface JSONSchema {
   items?: JSONSchema;
   minimum?: number;
   maximum?: number;
+  /** kairos form hint: offer context suggestions for this string field (e.g.
+   *  "camera_topics" / "topics" from the selected target run) instead of a
+   *  free-text box. Backend-owned (params_schema) so plugins can use it too. */
+  'x-suggest'?: string;
 }
 
 /** True if the schema's `type` includes the given primitive (handles unions). */

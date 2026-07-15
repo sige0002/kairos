@@ -59,3 +59,60 @@ test('renders a `template` field as a catalog select, not a text box', () => {
   expect(select.tagName).toBe('SELECT');
   expect(select.querySelector('option[value="airoa_hsr"]')).not.toBeNull();
 });
+
+// x-suggest (dora_plugins.md §2.5): a string param annotated by the backend
+// schema renders as a select of context suggestions (e.g. the target run's
+// camera topics) — no hand-typing topic paths — and falls back to a plain
+// text input when no suggestions are available (honest degradation).
+const VIDEO_SCHEMA: JSONSchema = {
+  type: 'object',
+  required: ['topic'],
+  properties: {
+    topic: { type: 'string', 'x-suggest': 'camera_topics' },
+  },
+};
+
+test('an x-suggest string param renders as a select of the provided suggestions', () => {
+  const onChange = vi.fn();
+  render(
+    <PipelineForm
+      schema={VIDEO_SCHEMA}
+      value={{ topic: '/cam/head/compressed' }}
+      onChange={onChange}
+      suggestions={{ camera_topics: ['/cam/head/compressed', '/cam/hand/compressed'] }}
+    />,
+  );
+  const select = screen.getByLabelText('topic') as HTMLSelectElement;
+  expect(select.tagName).toBe('SELECT');
+  expect(select.value).toBe('/cam/head/compressed');
+  fireEvent.change(select, { target: { value: '/cam/hand/compressed' } });
+  expect(onChange).toHaveBeenLastCalledWith(
+    expect.objectContaining({ topic: '/cam/hand/compressed' }),
+  );
+});
+
+test('a current value not in the suggestions stays selectable (preset survival)', () => {
+  render(
+    <PipelineForm
+      schema={VIDEO_SCHEMA}
+      value={{ topic: '/legacy/cam' }}
+      onChange={vi.fn()}
+      suggestions={{ camera_topics: ['/cam/head/compressed'] }}
+    />,
+  );
+  const select = screen.getByLabelText('topic') as HTMLSelectElement;
+  expect(select.value).toBe('/legacy/cam');
+  expect([...select.options].map((o) => o.value)).toEqual([
+    '/legacy/cam',
+    '/cam/head/compressed',
+  ]);
+});
+
+test('an x-suggest param without suggestions falls back to a text input', () => {
+  render(
+    <PipelineForm schema={VIDEO_SCHEMA} value={{ topic: '' }} onChange={vi.fn()} />,
+  );
+  const field = screen.getByLabelText('topic') as HTMLInputElement;
+  expect(field.tagName).toBe('INPUT');
+  expect(field.type).toBe('text');
+});

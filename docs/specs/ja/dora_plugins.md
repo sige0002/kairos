@@ -214,6 +214,9 @@ def discover_plugins(registry: PipelineRegistry, plugins_dir: Path) -> list[Plug
 - **入力（実行フォーム）**: manifest の `params_schema`（JSON Schema）が `GET /pipelines` → `GET /api/v1/config` の
   `schemas.pipeline_forms[<id>]` を経て frontend に届き、汎用フォーム `PipelineForm` がレンダリングする
   （string / number / integer / boolean / enum / array-of-string の実用サブセット）。作者は UI コンポーネントを書かない。
+  string プロパティに **`x-suggest` 注釈**（`"camera_topics"` | `"topics"`、2026-07-15）を付けると、Validation タブで
+  選択中のターゲット run の実トピックから **選択式（先頭を自動シード）** になる — トピックパスの手打ち不要
+  （同梱 video_check の `topic` が使用例）。候補が無い状況（dataset ターゲット等）は自由入力へ正直にフォールバック。
 - **パイプライン選択**: Validation タブは `GET /pipelines` の **enabled な全 pipeline** を選択肢に出す。プラグインを追加すれば
   そのまま選択肢に現れる（**pipeline id はハードコードしない**＝[frontend.md](frontend.md) の設計方針）。placeholder（`enabled=false`）は出さない。
 - **出力（結果表示）**: ジョブの `summary.json` を **汎用レンダラ `SummaryResult`** が shape を知らずにそのまま描く——

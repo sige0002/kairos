@@ -9,6 +9,7 @@ const PIPELINES = {
     { id: 'fast_validation', name: 'Fast validation', enabled: true },
     { id: 'hello_kairos', name: 'Hello kairos (greeting)', enabled: true },
     { id: 'loss_report', name: 'Loss report', enabled: true },
+    { id: 'video_check', name: 'Video check', enabled: true },
   ],
 };
 const RUNS = {
@@ -88,6 +89,11 @@ const RUNTIME_CONFIG = {
         },
       },
       loss_report: { type: 'object', properties: {} },
+      video_check: {
+        type: 'object',
+        required: ['topic'],
+        properties: { topic: { type: 'string', 'x-suggest': 'camera_topics' } },
+      },
     },
   },
 };
@@ -187,6 +193,22 @@ beforeEach(() => {
       };
       return Promise.resolve(
         jsonResponse({ job_id: jobId, state: 'succeeded', progress: 1 }),
+      );
+    }
+    if (url.match(/\/runs\/[^/?]+$/)) {
+      const id = url.split('/runs/')[1] ?? '';
+      return Promise.resolve(
+        jsonResponse({
+          run_id: id,
+          state: 'completed',
+          topics: [
+            { name: '/hsrb/joint_states', type: 'sensor_msgs/msg/JointState' },
+            {
+              name: '/hsrb/head_rgbd_sensor/rgb/image_rect_color/compressed',
+              type: 'sensor_msgs/msg/CompressedImage',
+            },
+          ],
+        }),
       );
     }
     if (url.includes('/runs')) return Promise.resolve(jsonResponse(RUNS));
@@ -407,4 +429,31 @@ test('a dataset target disables run-only pipelines with an "applies to runs" not
       'applies to runs',
     ),
   ).toBeNull();
+});
+
+test("video_check's topic param is a picker seeded from the target run's cameras", async () => {
+  renderWithClient(<ValidationScreen />);
+  fireEvent.click(await screen.findByTestId('pipeline-card-video_check'));
+
+  // The x-suggest select appears once the target run's detail (topics) loads,
+  // pre-seeded with its first camera topic — no hand-typing.
+  const select = (await screen.findByLabelText('topic')) as HTMLSelectElement;
+  await waitFor(() =>
+    expect(select.value).toBe(
+      '/hsrb/head_rgbd_sensor/rgb/image_rect_color/compressed',
+    ),
+  );
+  expect(select.tagName).toBe('SELECT');
+  // Only camera topics are offered (joint_states is not an option).
+  expect([...select.options].map((o) => o.value)).toEqual([
+    '/hsrb/head_rgbd_sensor/rgb/image_rect_color/compressed',
+  ]);
+
+  // Running submits the seeded camera topic.
+  fireEvent.click(screen.getByRole('button', { name: 'Run on selection' }));
+  await waitFor(() => expect(postedBodies.length).toBe(1));
+  expect(postedBodies[0]).toMatchObject({
+    pipeline: 'video_check',
+    params: { topic: '/hsrb/head_rgbd_sensor/rgb/image_rect_color/compressed' },
+  });
 });

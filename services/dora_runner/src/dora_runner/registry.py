@@ -278,7 +278,11 @@ _VIDEO_CHECK_SCHEMA = {
     "type": "object",
     "required": ["topic"],
     "properties": {
-        "topic": {"type": "string"},
+        # x-suggest: the UI-agnostic form hint (dora_plugins.md §2.5) — the
+        # generic PipelineForm offers the selected target run's camera topics
+        # as a picker (seeding the first one) instead of a free-text box.
+        # Plugins can use the same annotation ("camera_topics" | "topics").
+        "topic": {"type": "string", "x-suggest": "camera_topics"},
         # Results are cached per (run_id, topic); true re-encodes anyway.
         "force": {"type": "boolean", "default": False},
         # Post-export source: "<operator>/<task>/<NNN>" under data/ (the

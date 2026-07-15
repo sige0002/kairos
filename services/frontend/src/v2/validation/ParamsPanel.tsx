@@ -44,6 +44,7 @@ export function ParamsPanel({
   params,
   onParamsChange,
   templateOptions,
+  suggestions,
   runs,
   runsLoading,
   datasets,
@@ -66,6 +67,8 @@ export function ParamsPanel({
 }: {
   schema: JSONSchema;
   params: Record<string, unknown>;
+  /** Context suggestions for `x-suggest` string params (from the target run). */
+  suggestions?: Record<string, string[]>;
   onParamsChange: (next: Record<string, unknown>) => void;
   templateOptions: ValidationOption[];
   runs: RunSummary[];
@@ -176,6 +179,7 @@ export function ParamsPanel({
         value={params}
         onChange={onParamsChange}
         templateOptions={templateOptions}
+        suggestions={suggestions}
       />
 
       {/* Real one-click presets (GET /validation/presets): each runs its own

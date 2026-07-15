@@ -27,10 +27,12 @@ import type {
   JobStatus,
   Page,
   PipelineInfo,
+  RunDetail,
   RunSummary,
   ValidationOption,
   ValidationPreset,
 } from '../../api/types';
+import { cameraTopics } from '../../features/inspect/inspect';
 import type { Summary } from '../../features/validation/SummaryResult';
 import { Card } from '../../components/ui';
 import { PipelineRail } from './PipelineRail';
@@ -258,10 +260,42 @@ export function ValidationScreen() {
     () => (initialValueFor(schema) as Record<string, unknown>) ?? {},
     [schema],
   );
+
+  // The selected target run's topics feed `x-suggest` string params (e.g.
+  // video_check's `topic` becomes a picker of the run's camera topics instead
+  // of a hand-typed path). Only a single-run target has one topic list; batch
+  // and dataset targets keep the honest free-text fallback.
+  const targetRunQuery = useQuery({
+    queryKey: queryKeys.run(targetRunId),
+    queryFn: ({ signal }) =>
+      apiGet<RunDetail>(`/runs/${encodeURIComponent(targetRunId)}`, { signal }),
+    enabled: targetKind === 'run' && !!targetRunId,
+    staleTime: 30_000,
+  });
+  const targetTopics = useMemo(
+    () => (targetKind === 'run' ? (targetRunQuery.data?.topics ?? []) : []),
+    [targetKind, targetRunQuery.data],
+  );
+  const suggestions = useMemo(
+    () => ({
+      camera_topics: cameraTopics(targetTopics).map((t) => t.name),
+      topics: targetTopics.map((t) => t.name),
+    }),
+    [targetTopics],
+  );
+
   const params: Record<string, unknown> = { ...seeded, ...overrides };
   if (schema.properties?.template && !params.template) {
     params.template =
       optionsQuery.data?.aspects?.validation?.active || templates[0]?.id || '';
+  }
+  // Seed each empty x-suggest param with the first suggestion (same pattern as
+  // `template` above): pick a run with a camera and video_check is one click.
+  for (const [key, child] of Object.entries(schema.properties ?? {})) {
+    const kind = child['x-suggest'];
+    if (!kind || params[key]) continue;
+    const first = suggestions[kind as keyof typeof suggestions]?.[0];
+    if (first) params[key] = first;
   }
 
   const onJobUpdate = useCallback((u: JobProbeUpdate) => {
@@ -486,6 +520,7 @@ export function ValidationScreen() {
             params={params}
             onParamsChange={setOverrides}
             templateOptions={templates}
+            suggestions={suggestions}
             runs={runs}
             runsLoading={runsQuery.isPending}
             datasets={datasets}

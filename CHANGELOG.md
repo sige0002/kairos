@@ -19,6 +19,11 @@ Phase A hardening toward a supportable release
   operator is looking, with measured values and an Open-in-Monitor path; the
   System status card gains a `Topic rates` row (`N / M at expected`, from the
   monitor's per-topic status; no composite health score by design).
+- `x-suggest` form annotation: a pipeline's `params_schema` can mark a string
+  param as `"camera_topics"` / `"topics"` and the Validation tab renders it as
+  a picker over the selected target run's real topics (first one auto-seeded)
+  instead of a hand-typed path — video_check's `topic` uses it; plugins can
+  too. Falls back to free text when no candidates exist (dataset targets).
 - Plugin artifact visualisation (zero-UI-edit graphs): the orchestrator
   normalises `GET /jobs/{id}/result` artifact paths to data-root-relative,
   making each fetchable via `GET /api/v1/files/{path}`; the generic
