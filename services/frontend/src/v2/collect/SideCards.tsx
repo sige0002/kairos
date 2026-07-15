@@ -8,13 +8,19 @@ import { useQuery } from '@tanstack/react-query';
 import { apiGet } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
 import { Card, cn } from '../../components/ui';
-import type { DatasetsResponse, SystemInfo } from '../../api/types';
+import type {
+  AlertEvent,
+  DatasetsResponse,
+  MetricsSnapshot,
+  SystemInfo,
+} from '../../api/types';
 import { listBatches } from '../episodeBridge';
 import { findTask, usePlans } from '../plans';
 import type { SseStatus } from '../../store/uiStore';
 import { ADVICE_ITEMS, type BatchMachine } from './useBatchMachine';
 import { SIDE_PAD } from './compact';
 import { formatBytes } from '../review/format';
+import { firingAlertRows, topicRates } from './warnings';
 
 type Tone = 'green' | 'amber' | 'red' | 'teal' | 'gray';
 
@@ -100,6 +106,26 @@ export function SystemStatusCard({
   const matched = arming?.matched_topics.length ?? null;
   const missing = arming?.missing_topics.length ?? null;
 
+  // Live "at expected rate" count from the monitor's SSE metrics snapshot
+  // (read-only cache view; useEventStream writes it). Gated on the monitor
+  // bridge being up so a stale last snapshot never poses as live data.
+  const { data: metrics } = useQuery<MetricsSnapshot>({
+    queryKey: queryKeys.metrics,
+    queryFn: () => {
+      throw new Error('SSE-only cache: written by useEventStream');
+    },
+    enabled: false,
+  });
+  const rates = monitorBridge === 'down' ? null : topicRates(metrics);
+  const ratesRow: SysRow = rates
+    ? {
+        label: 'Topic rates',
+        value: `${rates.ok} / ${rates.judged} at expected`,
+        chip: rates.ok === rates.judged ? 'OK' : 'CHECK',
+        tone: rates.ok === rates.judged ? 'green' : 'amber',
+      }
+    : { label: 'Topic rates', value: '—', chip: '—', tone: 'gray' };
+
   const rows: SysRow[] = [
     matched !== null && missing !== null
       ? {
@@ -109,6 +135,7 @@ export function SystemStatusCard({
           tone: missing === 0 ? 'green' : 'amber',
         }
       : { label: 'Required data', value: '—', chip: '—', tone: 'gray' },
+    ratesRow,
     {
       // Health is measured on the main preview stream only (sub tiles run
       // their own streams but don't report here) — say that, don't invent
@@ -164,14 +191,38 @@ export function SystemStatusCard({
   );
 }
 
-export function WarningsCard({ machine }: { machine: BatchMachine }) {
-  // Driven by the REAL arming snapshot (OL-①.4), not a fabricated "camera rate
-  // dropped" — the honest live warning is target topics that aren't publishing
-  // while the recorder is armed/recording. Outside that window there's no live
-  // signal, so the card reads "No active warnings" (never a made-up one).
+// How many firing-alert lines the card shows before folding into "+N more".
+const ALERTS_SHOWN = 2;
+
+export function WarningsCard({
+  machine,
+  defaultTopics,
+}: {
+  machine: BatchMachine;
+  defaultTopics: string[];
+}) {
+  // Two REAL live signals, never a fabricated one (honesty rule):
+  //  - target topics not publishing (arming snapshot, OL-①.4 — start-time
+  //    coverage, frozen at resume), and
+  //  - FIRING monitor alerts (threshold breaches over SSE) restricted to the
+  //    recorded topics — the mid-recording degradation the snapshot can't see
+  //    ("camera dropped to 12 Hz"), surfaced where the operator is looking.
   const missing = machine.arming?.missing_topics ?? [];
-  const hasWarnings = missing.length > 0;
   const shown = missing.slice(0, 3);
+
+  // Read-only view of the SSE-populated alert buffer (useEventStream writes it).
+  const { data: alertBuffer } = useQuery<AlertEvent[]>({
+    queryKey: queryKeys.alerts,
+    queryFn: () => {
+      throw new Error('SSE-only cache: written by useEventStream');
+    },
+    enabled: false,
+  });
+  const firing = firingAlertRows(alertBuffer ?? [], machine.arming, defaultTopics);
+  const firingShown = firing.slice(0, ALERTS_SHOWN);
+
+  const count = missing.length + firing.length;
+  const hasWarnings = count > 0;
 
   return (
     <Card
@@ -185,39 +236,68 @@ export function WarningsCard({ machine }: { machine: BatchMachine }) {
           Active warnings
         </span>
         <div className="flex-1" />
-        <Chip tone={hasWarnings ? 'amber' : 'gray'}>
-          {hasWarnings ? `${missing.length} needs attention` : '0'}
+        <Chip tone={firing.length > 0 ? 'red' : hasWarnings ? 'amber' : 'gray'}>
+          {hasWarnings ? `${count} needs attention` : '0'}
         </Chip>
       </div>
-      {hasWarnings ? (
-        <>
-          <div className="flex flex-col gap-0.5 rounded-control border border-amber-200 bg-amber-50 px-3 py-2.5">
-            <div className="flex items-center gap-2">
-              <span className="h-[7px] w-[7px] shrink-0 rounded-sm bg-amber-600" />
-              <span className="text-[13px] font-semibold text-amber-800">
-                {missing.length} target topic{missing.length === 1 ? '' : 's'} not
-                publishing
-              </span>
-            </div>
-            <span className="pl-[15px] text-xs text-amber-700">
-              Recording continues, but these won't be captured until they appear.
-            </span>
-            <span
-              className="truncate pl-[15px] font-mono text-[11px] text-amber-600"
-              title={missing.join('\n')}
-            >
-              {shown.join(', ')}
-              {missing.length > shown.length ? ' …' : ''}
+      {missing.length > 0 && (
+        <div className="flex flex-col gap-0.5 rounded-control border border-amber-200 bg-amber-50 px-3 py-2.5">
+          <div className="flex items-center gap-2">
+            <span className="h-[7px] w-[7px] shrink-0 rounded-sm bg-amber-600" />
+            <span className="text-[13px] font-semibold text-amber-800">
+              {missing.length} target topic{missing.length === 1 ? '' : 's'} not
+              publishing
             </span>
           </div>
-          <button
-            type="button"
-            onClick={machine.goMonitor}
-            className="rounded-control border border-gray-200 bg-white py-2 text-[12.5px] font-semibold text-teal-700 hover:bg-teal-50"
+          <span className="pl-[15px] text-xs text-amber-700">
+            Recording continues, but these won't be captured until they appear.
+          </span>
+          <span
+            className="truncate pl-[15px] font-mono text-[11px] text-amber-600"
+            title={missing.join('\n')}
           >
-            Open in Monitor →
-          </button>
-        </>
+            {shown.join(', ')}
+            {missing.length > shown.length ? ' …' : ''}
+          </span>
+        </div>
+      )}
+      {firing.length > 0 && (
+        <div
+          data-testid="collect-firing-alerts"
+          className="flex flex-col gap-1 rounded-control border border-red-200 bg-red-50 px-3 py-2.5"
+        >
+          {firingShown.map((a) => (
+            <div key={a.key} className="flex flex-col gap-0.5">
+              <div className="flex items-center gap-2">
+                <span className="h-[7px] w-[7px] shrink-0 rounded-sm bg-red-600" />
+                <span
+                  className="truncate text-[13px] font-semibold text-red-800"
+                  title={a.topic}
+                >
+                  {a.title}
+                </span>
+              </div>
+              <span className="pl-[15px] font-mono text-[11px] text-red-600">
+                {a.detail}
+                {a.detail ? ' · ' : ''}since {a.time}
+              </span>
+            </div>
+          ))}
+          {firing.length > firingShown.length && (
+            <span className="pl-[15px] text-[11px] text-red-600">
+              +{firing.length - firingShown.length} more in Monitor
+            </span>
+          )}
+        </div>
+      )}
+      {hasWarnings ? (
+        <button
+          type="button"
+          onClick={machine.goMonitor}
+          className="rounded-control border border-gray-200 bg-white py-2 text-[12.5px] font-semibold text-teal-700 hover:bg-teal-50"
+        >
+          Open in Monitor →
+        </button>
       ) : (
         <div className="flex items-center gap-2 py-1">
           <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-green-100 text-xs font-bold text-green-600">
