@@ -135,6 +135,24 @@ recorder は MCAP を**ロボットのディスク**に書く。dora（CPU 重�
 - 注意: `dora_runner` の `dataset_export` は `recorded/` からファイルを **move** する
   （`dataset_export.py`）。**PC ローカルの複製に対しては安全**だが、**ロボット storage や read-only NFS を
   指すと破壊的**。必ず import 済みの PC ローカル複製に対して実行すること。
+- **Save 連動の自動 pull（オプション・既定 OFF）**: 録画 PC スタックに **importer サイドカー**
+  （`deploy/sync/`、`compose.recording.yaml` のみ — 単一ホスト `compose.yaml` には存在しないので
+  `make up` には一切影響しない）を同梱。recording config の
+  `transfer.auto_pull_on_save: true`（Settings > Advanced JSON で編集、`recording.pre_arm` と同じ流儀）
+  にすると、Collect の Save（`POST /api/v1/episodes`）直後に orchestrator が importer へ
+  `POST /pull {run_id}` を投げ、その run だけを rsync で取り込む（finalise 済みゲート・idempotent・
+  resume は手動と同一保証）。**既定 false = 明示オプトインなしには何も転送しない**。
+  ロボット側の複製は**残す**（pull は copy であって move ではない。ロボット側 retention は別課題 **TBD**）。
+  失敗時の回収は `IMPORT_SWEEP_S`（既定 0=off の定期スイープ）または手動 `make import-runs`。
+- **パスワードレス認証（rsync/ssh 共通・env で設定）**: `.env.split` に `ROBOT_SSH_PASSWORD`
+  （sshpass 経由 — 書くだけで動く。平文パスワードである点は信頼 LAN 前提）または
+  `ROBOT_SSH_KEY`（identity ファイルの絶対パス・推奨）を設定（`.env.split.example` 参照）。
+  `make import-runs` / `make push-config` / importer サイドカーの全経路が同じ設定を読む。
+- **転送×録画の重なりは実測済みで無害**: プロトコルと実測値は `deploy/test/overlap_eval/`。
+  実リンクの 30〜60 倍の悲観条件（loopback 715MB/s・ssh 暗号二重）でも drop 0・最悪トピック −0.1%
+  （§5 の一次基準 <1% を余裕でクリア）。`BWLIMIT` は録画保護ではなく、細いリンク
+  （WiFi/Tailscale）上の **WebRTC プレビュー帯域保護**用のレバー。HSR 実機投入前に同スクリプトの
+  再走を推奨（この実測は NVMe + 余裕ある CPU の箱での値）。
 
 ## 4. Option B（代替）: ロボット側 Zenoh ゲートウェイ（別 PC からライブ全データ記録）
 

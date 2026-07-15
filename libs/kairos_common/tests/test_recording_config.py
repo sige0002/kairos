@@ -149,3 +149,18 @@ def test_settings_cors_origins_split_from_string(
     monkeypatch.setenv("CORS_ORIGINS", "http://a:1, http://b:2")
     s = Settings(_env_file=None)
     assert s.cors_origins == ["http://a:1", "http://b:2"]
+
+
+def test_transfer_auto_pull_default_and_override(tmp_path: Path) -> None:
+    """transfer.auto_pull_on_save (split importer Save-trigger, orchestrator-
+    read) defaults to OFF — nothing transfers without an explicit opt-in — and
+    is overridable per robot. The section is optional for older configs."""
+    cfg = load_recording_config(TEMPLATE)
+    assert cfg.transfer.auto_pull_on_save is False
+
+    cfg_path = tmp_path / "c.yaml"
+    cfg_path.write_text(
+        "robot_name: r\ntransfer:\n  auto_pull_on_save: true\n",
+        encoding="utf-8",
+    )
+    assert load_recording_config(cfg_path).transfer.auto_pull_on_save is True

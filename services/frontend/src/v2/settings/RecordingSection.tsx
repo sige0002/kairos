@@ -30,6 +30,9 @@ interface RecordingConfigView {
     compression?: string;
     max_cache_size_mb?: number;
   };
+  transfer?: {
+    auto_pull_on_save?: boolean;
+  };
 }
 
 /** First matching expected-Hz pattern for a topic (glob, first-match-wins). */
@@ -122,6 +125,20 @@ export function RecordingSection({ config }: { config: RuntimeConfig | undefined
               <span className="font-mono">
                 {cacheMb > 0 ? `${cacheMb} MiB` : 'rosbag2 default'}
               </span>
+            </SummaryField>
+            {/* Cross-host split: pull the run's files from the robot right
+                after Collect Save (importer sidecar; compose.recording.yaml).
+                Default OFF — nothing transfers without an explicit opt-in.
+                Edited like pre_arm, via Advanced JSON
+                (transfer.auto_pull_on_save). Inert on a single-host deploy. */}
+            <SummaryField label="Auto-pull on Save (split)">
+              {cfg.transfer?.auto_pull_on_save ? (
+                <Badge tone="green" dot>
+                  on — pull from robot after Save
+                </Badge>
+              ) : (
+                <Badge tone="gray">off (manual import-runs)</Badge>
+              )}
             </SummaryField>
           </div>
 

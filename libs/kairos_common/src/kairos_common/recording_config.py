@@ -192,6 +192,23 @@ class ValidationConfig(_StrictModel):
     required_topics: list[RequiredTopic] = Field(default_factory=list)
 
 
+class TransferConfig(_StrictModel):
+    """Post-save run transfer (cross-host split; read by api_orchestrator).
+
+    In the robot-edge split the recorder writes MCAP on the ROBOT's disk and
+    the recording PC pulls finalised runs over rsync/ssh (``deploy/sync/``).
+    With ``auto_pull_on_save`` the orchestrator asks its importer sidecar
+    (``compose.recording.yaml``) to pull the run right after Collect Save
+    (``POST /api/v1/episodes``), so the run is reviewable seconds later with
+    no manual ``make import-runs``. Default OFF — nothing is ever transferred
+    without an explicit opt-in; the flag is inert on a single-host deploy
+    (the data is already local and no importer runs there). The robot-side
+    copy is left in place either way (robot-side retention is a separate TBD).
+    """
+
+    auto_pull_on_save: bool = False
+
+
 class RecordingConfig(_StrictModel):
     """Top-level recording/monitoring config (the RECORDING_CONFIG YAML)."""
 
@@ -205,6 +222,7 @@ class RecordingConfig(_StrictModel):
     monitor: MonitorConfig = Field(default_factory=MonitorConfig)
     recording: RecordingTuning = Field(default_factory=RecordingTuning)
     validation: ValidationConfig = Field(default_factory=ValidationConfig)
+    transfer: TransferConfig = Field(default_factory=TransferConfig)
 
 
 def _format_validation_error(path: Path, exc: ValidationError) -> str:

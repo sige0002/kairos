@@ -404,3 +404,92 @@ def test_patch_batch_target_episodes(client: TestClient) -> None:
         ).status_code
         == 422
     )
+
+
+# ---- auto-pull on Save (cross-host split) ----------------------------------
+
+
+class _FakeImporter:
+    """Spy stand-in for the importer sidecar client."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def pull(self, run_id: str) -> dict:
+        self.calls.append(run_id)
+        return {"queued": True, "run_id": run_id}
+
+
+def _save_episode(client: TestClient, store: RunStore, run_id: str) -> None:
+    """Seed a run and save an episode for it (the Collect Save path)."""
+    _seed_run(store, run_id)
+    batch_id = _new_batch(client)["batch_id"]
+    resp = client.post(
+        "/api/v1/episodes",
+        json={
+            "batch_id": batch_id,
+            "run_id": run_id,
+            "index_in_batch": 1,
+            "task_result": "success",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+
+
+def test_save_triggers_importer_pull_when_opted_in(
+    client: TestClient, store: RunStore
+) -> None:
+    """With transfer.auto_pull_on_save=true a Save fires one importer pull for
+    the saved run (fire-and-forget: the 201 must not wait on the importer)."""
+    import time
+
+    from kairos_common.recording_config import RecordingConfig, TransferConfig
+
+    fake = _FakeImporter()
+    client.app.state.importer_client = fake
+    client.app.state.recording_config = RecordingConfig(
+        robot_name="r", transfer=TransferConfig(auto_pull_on_save=True)
+    )
+    _save_episode(client, store, "run_pull_me")
+    # The pull is a background task on the app loop; give it a beat to land.
+    for _ in range(200):
+        if fake.calls:
+            break
+        time.sleep(0.01)
+    assert fake.calls == ["run_pull_me"]
+
+
+def test_save_does_not_pull_by_default(client: TestClient, store: RunStore) -> None:
+    """Default config (auto_pull_on_save=false — or no config at all, as here)
+    must NEVER transfer anything on its own."""
+    import time
+
+    fake = _FakeImporter()
+    client.app.state.importer_client = fake
+    _save_episode(client, store, "run_stay_put")
+    time.sleep(0.05)  # would-be task window
+    assert fake.calls == []
+
+
+def test_save_survives_importer_failure(client: TestClient, store: RunStore) -> None:
+    """An unreachable importer must not fail or delay the Save (fire-and-forget
+    logs the error; sweep / manual import-runs are the recovery paths)."""
+    import time
+
+    from kairos_common import ApiError
+    from kairos_common.recording_config import RecordingConfig, TransferConfig
+
+    class _DownImporter:
+        async def pull(self, run_id: str) -> dict:
+            raise ApiError(
+                status_code=503,
+                code="importer_unreachable",
+                message="down",
+            )
+
+    client.app.state.importer_client = _DownImporter()
+    client.app.state.recording_config = RecordingConfig(
+        robot_name="r", transfer=TransferConfig(auto_pull_on_save=True)
+    )
+    _save_episode(client, store, "run_importer_down")  # asserts the 201
+    time.sleep(0.05)  # let the background task run its error path

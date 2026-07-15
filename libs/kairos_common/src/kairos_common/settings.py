@@ -72,6 +72,7 @@ class Settings(BaseSettings):
     # Internal service ports (not public; on host networking they bind the host).
     recorder_port: Annotated[int, Field(ge=1, le=65535)] = 8010
     dora_runner_port: Annotated[int, Field(ge=1, le=65535)] = 8020
+    importer_port: Annotated[int, Field(ge=1, le=65535)] = 8030
     # topic_probe (OL-3.3): generic numeric-field live plotter. A SEPARATE
     # ROS 2 service that decodes only the one selected topic (sampled/throttled)
     # so it never touches topic_monitor (raw) or the recorder.
@@ -97,6 +98,10 @@ class Settings(BaseSettings):
     webrtc_host: str = "localhost"
     topic_probe_host: str = "localhost"
     dora_runner_host: str = "localhost"
+    # Importer sidecar (compose.recording.yaml only): pulls finalised runs from
+    # the robot on request. Co-located with the orchestrator on the recording
+    # PC, so it stays localhost even in the split (like dora_runner).
+    importer_host: str = "localhost"
 
     # ---- Frontend-facing URLs / CORS --------------------------------------
     # Browser-facing base URL of the webrtc_streamer signaling endpoints

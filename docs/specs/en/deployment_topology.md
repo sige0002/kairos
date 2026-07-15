@@ -133,6 +133,27 @@ The recorder writes MCAP to **the robot's disk**. dora (CPU-heavy) reads a **PC-
 - Do not let the recorder POST files (to avoid coupling upload failures to the recording lifecycle).
 - Note: `dora_runner`'s `dataset_export` **moves** files from `recorded/`
   (`dataset_export.py`). **It is safe against a PC-local copy**, but **destructive if it points at robot storage or a read-only NFS**. Always run it against an already-imported PC-local copy.
+- **Save-triggered auto-pull (optional, default OFF)**: the recording-PC stack bundles an **importer
+  sidecar** (`deploy/sync/`, defined ONLY in `compose.recording.yaml` — it does not exist in the
+  single-host `compose.yaml`, so `make up` is entirely unaffected). With
+  `transfer.auto_pull_on_save: true` in the recording config (edited via Settings > Advanced JSON,
+  the same way as `recording.pre_arm`), the orchestrator POSTs `/pull {run_id}` to the importer right
+  after a Collect Save (`POST /api/v1/episodes`) and only that run is rsynced in (same
+  finalised-only gate, idempotency and resume guarantees as the manual path). **Default false =
+  nothing is ever transferred without an explicit opt-in.** The robot-side copy is **kept** (a pull
+  is a copy, never a move; robot-side retention is a separate **TBD**). Recovery for failed pulls:
+  `IMPORT_SWEEP_S` (periodic sweep, default 0 = off) or the manual `make import-runs`.
+- **Passwordless auth (shared by all rsync/ssh paths, set via env)**: put `ROBOT_SSH_PASSWORD`
+  (via sshpass — write it and go; note it is a plaintext password, trusted-LAN posture) or
+  `ROBOT_SSH_KEY` (absolute path to an identity file, preferred) in `.env.split` (see
+  `.env.split.example`). `make import-runs` / `make push-config` / the importer sidecar all read
+  the same settings.
+- **Transfer × recording overlap is measured and harmless**: protocol and measured numbers in
+  `deploy/test/overlap_eval/`. Even at 30–60× any real link's intensity (loopback 715 MB/s with
+  doubled ssh crypto), 0 drops and a worst-topic rate change of −0.1 % (well inside §5's <1 %
+  primary criterion). `BWLIMIT` is therefore a lever to protect the **WebRTC preview's share of a
+  thin link** (WiFi/Tailscale), not the recording. Rerun the same scripts on the real robot before
+  relying on it there (the measurement box had NVMe + ample CPU).
 
 ## 4. Option B (alternative): robot-side Zenoh gateway (live full-data recording from a separate PC)
 

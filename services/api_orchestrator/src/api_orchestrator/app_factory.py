@@ -38,6 +38,7 @@ from kairos_common.stream_config import StreamConfig
 from api_orchestrator.config_catalog import ConfigCatalog
 from api_orchestrator.dora_runner_client import DoraRunnerClient
 from api_orchestrator.events import EventHub
+from api_orchestrator.importer_client import ImporterClient
 from api_orchestrator.monitor_client import MonitorClient
 from api_orchestrator.recorder_client import RecorderClient
 from api_orchestrator.routers import config as config_router
@@ -179,6 +180,13 @@ def create_orchestrator_app(
     dora_runner = DoraRunnerClient(
         f"http://{settings.dora_runner_host}:{settings.dora_runner_port}", client
     )
+    # Importer sidecar (split deploy only): pulls finalised runs from the robot
+    # after Collect Save when transfer.auto_pull_on_save is on. Single-host
+    # deploys have no importer container and keep the flag false, so this
+    # client is constructed but never called there.
+    importer = ImporterClient(
+        f"http://{settings.importer_host}:{settings.importer_port}", client
+    )
     event_hub = EventHub(monitor)
     config_catalog = ConfigCatalog(
         settings.config_dir, settings.config_local_dir, settings.robot
@@ -222,6 +230,7 @@ def create_orchestrator_app(
     app.state.monitor_client = monitor
     app.state.streamer_client = streamer
     app.state.dora_runner_client = dora_runner
+    app.state.importer_client = importer
     app.state.event_hub = event_hub
     app.state.config_catalog = config_catalog
     # Live RECORDING_CONFIG: read at request time by GET /api/v1/config and

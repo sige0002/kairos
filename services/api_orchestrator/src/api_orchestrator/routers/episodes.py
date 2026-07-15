@@ -14,6 +14,8 @@ is the single source of truth.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -41,8 +43,45 @@ from api_orchestrator.store import (
     RunStore,
 )
 
+logger = logging.getLogger("kairos")
+
 batches_router = APIRouter(prefix="/api/v1/batches", tags=["batches"])
 episodes_router = APIRouter(prefix="/api/v1/episodes", tags=["episodes"])
+
+# Strong references to in-flight auto-pull tasks (asyncio only keeps weak ones;
+# without this a fire-and-forget task can be garbage-collected mid-flight).
+_auto_pull_tasks: set[asyncio.Task[None]] = set()
+
+
+def _maybe_auto_pull(request: Request, run_id: str) -> None:
+    """Fire-and-forget importer pull of *run_id* after a successful Save.
+
+    Gated on the live recording config's ``transfer.auto_pull_on_save``
+    (default false — nothing is transferred without an explicit opt-in). Never
+    blocks or fails the save: the pull is queued as a background task and any
+    importer error is logged, not raised (single-host = no importer container;
+    robot offline = the manual ``make import-runs`` or the next save remain
+    the recovery paths). The robot-side copy is left in place.
+    """
+    config = getattr(request.app.state, "recording_config", None)
+    if config is None or not config.transfer.auto_pull_on_save:
+        return
+    importer = request.app.state.importer_client
+
+    async def _pull() -> None:
+        try:
+            await importer.pull(run_id)
+            logger.info("importer pull queued", extra={"run_id": run_id})
+        except ApiError as exc:
+            logger.warning(
+                "importer pull failed",
+                extra={"run_id": run_id, "error": exc.code},
+            )
+
+    task = asyncio.create_task(_pull())
+    _auto_pull_tasks.add(task)
+    task.add_done_callback(_auto_pull_tasks.discard)
+
 
 # Batch statuses whose entry stamps ``ended_at`` (a batch is done once).
 _TERMINAL_BATCH_STATUSES = {"completed", "ended_early"}
@@ -223,9 +262,13 @@ async def create_episode(request: Request, body: EpisodeCreateRequest) -> Episod
         updated_at=now,
     )
     try:
-        return store.create_episode(episode)
+        created = store.create_episode(episode)
     except EpisodeRunExistsError as exc:  # concurrent create for the same run
         raise _episode_exists(body.run_id) from exc
+    # Cross-host split: optionally pull the saved run's files from the robot
+    # now (fire-and-forget; default off — see _maybe_auto_pull).
+    _maybe_auto_pull(request, body.run_id)
+    return created
 
 
 @episodes_router.patch("/{episode_id}", response_model=Episode)
