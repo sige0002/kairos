@@ -46,6 +46,7 @@ from kairos_common import (
 from api_orchestrator.events import EVENT_RECORD_STATUS, EventHub
 from api_orchestrator.models import (
     Episode,
+    Quality,
     RecordPrepareResponse,
     RecordStartRequest,
     RetentionCandidate,
@@ -975,9 +976,53 @@ class RunService:
                     "elapsed_ms": elapsed_ms,
                 },
             )
+            # Late-settlement re-derive: correct an episode that was saved BEFORE
+            # this verdict landed (the save-before-settle race) so its auto
+            # quality matches the settled verdict rather than the conservative
+            # fallback the save fell back to.
+            self._reconcile_episode_quality(run.run_id, quick.verdict.quality)
         except Exception:  # noqa: BLE001 - settlement must never crash the app.
             logger.exception(
                 "quick_check settlement failed", extra={"run_id": run.run_id}
+            )
+
+    def _reconcile_episode_quality(self, run_id: str, quality: Quality) -> None:
+        """Bring a quick_check-sourced episode in line with the settled verdict.
+
+        The Collect save omits ``quality`` when the operator did not override, so
+        the server derives it from the run's ``quick_check.verdict``. When the
+        save lands before settlement, that derivation falls back to a
+        conservative ``needs_review`` with ``quality_source="quick_check"``. Once
+        the real verdict settles here, update any such episode to it.
+
+        Only ``quick_check``-sourced quality is touched — an ``operator`` or
+        ``validator`` call is a human/deep decision and is never overwritten.
+        A no-op when the run has no episode, or the episode already matches. Its
+        own guard keeps a failed reconcile from mislabeling the (already
+        persisted) quick_check as a settlement failure.
+        """
+        try:
+            episode = self._store.get_episode_by_run_id(run_id)
+            if episode is None or episode.quality_source != "quick_check":
+                return
+            if episode.quality == quality:
+                return
+            self._store.update_episode(
+                episode.episode_id,
+                quality=quality,
+                updated_at=utc_now_iso8601(),
+            )
+            logger.info(
+                "episode quality re-derived from settled quick_check",
+                extra={
+                    "run_id": run_id,
+                    "episode_id": episode.episode_id,
+                    "quality": quality,
+                },
+            )
+        except Exception:  # noqa: BLE001 - reconcile must never crash settlement.
+            logger.exception(
+                "episode quality reconcile failed", extra={"run_id": run_id}
             )
 
     async def _monitor_metric_topics(self) -> list[dict[str, Any]] | None:

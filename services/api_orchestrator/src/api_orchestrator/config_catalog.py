@@ -174,6 +174,24 @@ class ConfigCatalog:
         entry = self._aspect_files(self._active_robot, aspect).get(option_id)
         return entry[0] if entry else None
 
+    def robot_config_file(self, subdir: str, filename: str) -> Path | None:
+        """Absolute path to ``<active_robot>/<subdir>/<filename>`` (committed or
+        local base dir), whether or not the file exists yet.
+
+        Used by the config editors for aspects that are a single fixed file
+        rather than a selectable ``*.yaml`` option — Signals
+        (``signals/default.yaml``) and the monitor alerts
+        (``monitoring/alerts.yaml``). The base dir is the active robot's
+        committed dir when it has one, else its ``config/local`` dir, so a PUT
+        writes back to the same file the robot's own services read. Returns
+        ``None`` only when the active robot has no config dir at all (so there is
+        nowhere to read or write).
+        """
+        rdir, _ = self._robot_dir(self._active_robot)
+        if rdir is None:
+            return None
+        return rdir / subdir / filename
+
     def _option_meta(self, aspect: str, path: Path) -> dict:
         """Best-effort display metadata for an aspect option (never raises)."""
         try:

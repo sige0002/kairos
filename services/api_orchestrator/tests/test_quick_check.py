@@ -15,6 +15,8 @@ from pathlib import Path
 import httpx
 import pytest
 from api_orchestrator.models import (
+    Batch,
+    Episode,
     QuickCheck,
     QuickCheckLayer0,
     QuickCheckLayer1,
@@ -521,6 +523,143 @@ def test_quick_check_store_roundtrip() -> None:
         assert loaded.elapsed_ms == 42
         assert loaded.verdict.quality == "good"
         assert loaded.layer1.topics["/tf"].message_count == 10
+    finally:
+        store.close()
+
+
+# ---- late-settlement episode re-derive (F1) -------------------------------
+
+
+async def _drive_stop_with_episode(
+    store: RunStore,
+    fakes: _MonitorFakes,
+    *,
+    config: RecordingConfig | None,
+    recorded_dir: Path,
+    mcap_topics: dict[str, int] | None,
+    seed_quality: str | None,
+    seed_source: str,
+) -> Episode | None:
+    """start -> save an episode BEFORE settlement -> stop -> drain settlement.
+
+    Seeds an episode on the run while the quick_check is still unsettled (the
+    save-before-settle race), with the given quality + source, then returns the
+    episode after settlement so a test can assert whether it was re-derived.
+    ``seed_quality=None`` seeds no episode (the no-op case).
+    """
+    client = httpx.AsyncClient(transport=httpx.MockTransport(fakes.handler))
+    recorder = RecorderClient("http://recorder", client)
+    monitor = MonitorClient("http://monitor", client)
+    svc = RunService(
+        store,
+        recorder,
+        recording_config=config,
+        recorded_dir=recorded_dir,
+        monitor=monitor,
+    )
+    run = await svc.start(RecordStartRequest(topics=["/tf"]))
+    if mcap_topics is not None:
+        _write_tiny_mcap(
+            recorded_dir / run.run_id / f"{run.run_id}.mcap",
+            mcap_topics,
+            start_ns=1_000_000_000,
+            step_ns=100_000_000,
+        )
+    if seed_quality is not None:
+        store.create_batch(
+            Batch(batch_id="b_seed", project="p", task="t", status="active")
+        )
+        store.create_episode(
+            Episode(
+                episode_id="ep_seed",
+                batch_id="b_seed",
+                run_id=run.run_id,
+                index_in_batch=1,
+                task_result="success",
+                quality=seed_quality,
+                quality_source=seed_source,
+            )
+        )
+    await svc.stop()
+    await svc.drain_settlements()
+    await client.aclose()
+    return store.get_episode_by_run_id(run.run_id)
+
+
+def test_late_settlement_corrects_quick_check_sourced_episode(tmp_path: Path) -> None:
+    """An episode saved with the conservative needs_review fallback (source
+    quick_check) is corrected to the settled 'good' verdict; source stays."""
+    store = RunStore(":memory:")
+    try:
+        fakes = _MonitorFakes(FakeRecorder())
+        episode = asyncio.run(
+            _drive_stop_with_episode(
+                store,
+                fakes,
+                config=None,
+                recorded_dir=tmp_path,
+                mcap_topics={"/tf": 300},  # clean bag -> good verdict
+                seed_quality="needs_review",
+                seed_source="quick_check",
+            )
+        )
+        assert episode is not None
+        assert episode.quality == "good"
+        assert episode.quality_source == "quick_check"
+    finally:
+        store.close()
+
+
+def test_late_settlement_skips_operator_sourced_episode(tmp_path: Path) -> None:
+    """An operator's quality call is never overwritten by the settled verdict,
+    even when the verdict disagrees."""
+    store = RunStore(":memory:")
+    try:
+        cfg = RecordingConfig(
+            robot_name="t",
+            expected_hz_patterns=[ExpectedHzPattern(pattern="/tf", hz=30.0)],
+        )
+        fakes = _MonitorFakes(FakeRecorder())
+        episode = asyncio.run(
+            _drive_stop_with_episode(
+                store,
+                fakes,
+                config=cfg,
+                recorded_dir=tmp_path,
+                mcap_topics={"/tf": 30},  # ~10Hz -> needs_review verdict
+                seed_quality="good",  # operator said good
+                seed_source="operator",
+            )
+        )
+        assert episode is not None
+        # Operator call preserved despite the needs_review verdict.
+        assert episode.quality == "good"
+        assert episode.quality_source == "operator"
+    finally:
+        store.close()
+
+
+def test_late_settlement_no_episode_is_noop(tmp_path: Path) -> None:
+    """Settlement still persists the quick_check when the run has no episode."""
+    store = RunStore(":memory:")
+    try:
+        fakes = _MonitorFakes(FakeRecorder())
+        episode = asyncio.run(
+            _drive_stop_with_episode(
+                store,
+                fakes,
+                config=None,
+                recorded_dir=tmp_path,
+                mcap_topics={"/tf": 300},
+                seed_quality=None,  # no episode seeded
+                seed_source="quick_check",
+            )
+        )
+        assert episode is None
+        # The run itself still settled cleanly.
+        run = next(iter(store.list_by_states([RunState.completed])), None)
+        assert run is not None and run.quick_check is not None
+        assert run.quick_check.verdict.quality == "good"
     finally:
         store.close()
 
