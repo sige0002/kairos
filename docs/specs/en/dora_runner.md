@@ -52,25 +52,39 @@ The post-recording **validation / conversion / extension processing pipeline** c
 - **`signal_report`** — robot-independent, **generic** numeric time-series extraction (not JointState-specific; any message with numeric leaves — wrench / odom / cmd_vel, etc. — is in scope). It scans a completed MCAP once ("all numeric leaves in one pass") and walks each message's numeric leaves with the **same `field_introspect` logic** topic_probe's live Signals plotter uses (now shared in `libs/kairos_common`). Paths are dotted/indexed (`pose.position.x` / `position[2]`) — the **same vocabulary as the live view** (a value seen in the UI is addressable in the sidecar by the identical path). The field set is derived from each topic's **first message** (bagel-style episode-0 schema; a later message missing a leaf extracts to `null`), every numeric leaf value is extracted per message, and the aligned series is **downsampled by a uniform stride** so each topic emits at most `max_points` points (default 2000) — into one sidecar. **Image topics (`sensor_msgs/msg/Image` / `CompressedImage`) are excluded** (video_check's job), as are topics with no numeric leaves and topics absent from the recording; each is recorded with a reason in `skipped_topics`. A per-topic **continuity** score is computed from the **full-resolution** inter-arrival intervals (before downsampling): `1 - sum(gap - 1.5*median_interval for gaps > 1.5*median_interval)/duration` (clamped to `[0,1]`; `null` for fewer than 2 messages / zero duration). Using the median as the cadence baseline makes it robust to a handful of long gaps (only the **excess** of a gap beyond 1.5× the typical spacing counts, normalised by the total duration). Timestamps follow the same rule as loss_report / video_check — **`publish_time` preferred, `log_time` fallback** (the clock used is stated per topic as `time_source`). Output: `data/report/signal_report/<run_id>/summary.json`. The frontend charts it with uPlot, synced against the video_check mp4. Sidecar shape:
   ```json
   {
-    "pipeline": "signal_report", "version": "1.0.0", "run_id": "...",
+    "pipeline": "signal_report", "version": "1.1.0", "run_id": "...",
     "generated_at": "<iso8601>", "params": {"topics": null, "max_points": 2000},
+    "span": {"duration_ns": 20034502235},
     "topics": {
       "/hsrb/joint_states": {
         "msg_type": "sensor_msgs/msg/JointState",
         "message_count": 1780, "start_ns": 0, "end_ns": 0,
+        "start_offset_ns": 0,
         "continuity": 0.98,
         "continuity_definition": "1 - sum(gap - 1.5*median_interval for gaps > 1.5*median_interval)/duration, clamped to [0,1]",
         "time_source": "publish_time",
         "downsample": {"stride": 3, "points": 594},
         "t_ns": [ /* relative to start_ns (first 0), shared per topic, downsampled, <= max_points */ ],
         "fields": {"position[0]": [ /* aligned with t_ns, null for missing */ ], "...": []},
-        "truncated_fields": 0
+        "truncated_fields": 0,
+        "loss_events": [
+          {"start_ns": 5100000000, "duration_ns": 400000000, "estimated_lost": 11, "severity": "major"}
+        ],
+        "edges": {"start_delay_ns": 0, "end_early_ns": 120000000},
+        "bins": {"count": 600, "bin_ns": 33390837, "densities": [3, 3, 0, 4]}
       }
     },
     "skipped_topics": {"/cam/image": "image topic (use video_check)"}
   }
   ```
   `t_ns` is emitted **relative to `start_ns`** (first element 0): absolute epoch nanoseconds (~1.75e18) exceed JS `Number.MAX_SAFE_INTEGER` (~9.007e15) and would be quantized, so the charted x-axis is episode-relative. `start_ns` / `end_ns` keep the absolute (chosen-clock) values as metadata (do not do sub-microsecond math on them in JS). `t_ns` is shared per topic (all of a topic's fields use the same arrival times — the time array is not duplicated per field). `truncated_fields` is the number of leaves dropped past the per-topic display cap (`field_introspect`'s 256-leaf bound).
+  - **Loss-location visibility (v1.1)** — the same single scan also emits **loss events and time bins** for a Review heatmap. First an **episode-global relative clock** is defined once: the global zero is the minimum full-resolution timestamp across all **included** topics and `span.duration_ns` is the maximum minus that minimum. The following three per-topic fields are on this global axis (small and JS-safe, like `t_ns`):
+    - **`start_offset_ns`** = the topic's first timestamp − global zero.
+    - **`loss_events`** — from the topic's **full-resolution** inter-arrival intervals (empty with fewer than 4 intervals). Threshold = 1.5× the median interval; each interval **over** the threshold is one event with `start_ns` = (previous message time − global zero), `duration_ns` = the interval, `estimated_lost` = `max(0, round(interval/median) - 1)`, `severity` = `"major"` when `estimated_lost >= 3` else `"minor"`. Empty when the median is 0 (a burst of identical stamps). The list is capped at 200 per topic (**largest-duration first**), and the overflow is stated as `"loss_events_truncated": <dropped>` (never silently truncated).
+    - **`edges`** — `start_delay_ns` = topic first − global zero, `end_early_ns` = global end − topic last. Always present (0 when none).
+    - **`bins`** — a fixed 600-way split of the global span (`bin_ns = ceil(duration/600)`; the last bin may be short). `densities` is the message count per bin from the full-resolution timestamps (their sum equals `message_count`). A topic with fewer than 2 messages emits `"bins": null`.
+
+    The existing `t_ns` stays topic-relative (the chart contract is unchanged); the frontend converts chart-time ↔ the global axis with `start_offset_ns`.
 - **Post-export reads (`params.dataset_dir`)** — `loss_report` / `video_check` / `signal_report` accept an optional `dataset_dir` (`<operator>/<task>/<NNN>`, relative to `data/`) and **read the MCAP from the exported dataset directory** instead of `recorded/<run_id>` (`dataset_export` is a move, so after export there is no bag in `recorded/`). Outputs / caches stay **keyed by run_id** (`data/report/<pipeline>/<run_id>/`) as before, so a video_check mp4 cache generated before export is reused as-is after it (the move preserves mtimes). `dataset_dir` only allows exactly 3 plain-name components (traversal and the reserved names `recorded`/`report`/`datasets` are a `ValueError` → failed job).
 
 ## Validation (v1): required topics + template

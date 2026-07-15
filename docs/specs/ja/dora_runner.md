@@ -51,25 +51,39 @@
 - **`signal_report`** — ロボット非依存の**汎用**数値時系列抽出（JointState 専用ではなく、wrench / odom / cmd_vel など**数値リーフを持つ任意のメッセージ**が対象）。完了した MCAP を 1 回だけスキャンし（「全数値リーフ一括」）、topic_probe の Signals プロッタと**同じ `field_introspect` ロジック**（`libs/kairos_common` に共有）で各メッセージの数値リーフを走査する。パスは `pose.position.x` / `position[2]` のようなドット/添字表現で、**ライブ表示と同じ語彙**（UI で見えた値がサイドカー内で同じパスで引ける）。フィールド集合は各トピックの**先頭メッセージ**から決定し（bagel の episode-0 スキーマ方式。後続メッセージで欠けたリーフは `null`）、メッセージごとに全数値リーフ値を抽出、`max_points`（既定 2000）を超えないよう**均一ストライドでダウンサンプル**して 1 つのサイドカーに書く。**画像トピック（`sensor_msgs/msg/Image` / `CompressedImage`）は除外**（video_check の担当）、数値リーフが無いトピック・録画に存在しないトピックも除外し、いずれも理由付きで `skipped_topics` に記録する。トピックごとの**連続性スコア** `continuity` は**ダウンサンプル前の全解像度**の到着間隔から算出する: `1 - sum(gap - 1.5*median_interval for gaps > 1.5*median_interval)/duration`（`[0,1]` にクランプ。メッセージ 2 未満／継続時間 0 は `null`）。中央値をケイデンス基準に使うことで、少数の長いギャップに対して頑健になる（典型間隔の 1.5 倍を超えた**超過分だけ**が連続性を下げ、全体の継続時間で正規化する）。時刻は loss_report / video_check と同じ規則で **`publish_time` 優先・`log_time` フォールバック**（使ったクロックはトピックごとに `time_source` に明記）。出力: `data/report/signal_report/<run_id>/summary.json`。フロントエンドは uPlot でチャート化し video_check の mp4 と同期する。サイドカー構造:
   ```json
   {
-    "pipeline": "signal_report", "version": "1.0.0", "run_id": "...",
+    "pipeline": "signal_report", "version": "1.1.0", "run_id": "...",
     "generated_at": "<iso8601>", "params": {"topics": null, "max_points": 2000},
+    "span": {"duration_ns": 20034502235},
     "topics": {
       "/hsrb/joint_states": {
         "msg_type": "sensor_msgs/msg/JointState",
         "message_count": 1780, "start_ns": 0, "end_ns": 0,
+        "start_offset_ns": 0,
         "continuity": 0.98,
         "continuity_definition": "1 - sum(gap - 1.5*median_interval for gaps > 1.5*median_interval)/duration, clamped to [0,1]",
         "time_source": "publish_time",
         "downsample": {"stride": 3, "points": 594},
         "t_ns": [ /* start_ns 相対・先頭 0・トピック共有・ダウンサンプル済み・≤max_points */ ],
         "fields": {"position[0]": [ /* t_ns と整列、欠損は null */ ], "...": []},
-        "truncated_fields": 0
+        "truncated_fields": 0,
+        "loss_events": [
+          {"start_ns": 5100000000, "duration_ns": 400000000, "estimated_lost": 11, "severity": "major"}
+        ],
+        "edges": {"start_delay_ns": 0, "end_early_ns": 120000000},
+        "bins": {"count": 600, "bin_ns": 33390837, "densities": [3, 3, 0, 4]}
       }
     },
     "skipped_topics": {"/cam/image": "image topic (use video_check)"}
   }
   ```
   `t_ns` は **`start_ns` 相対**（先頭要素は 0）で出す: 絶対エポックナノ秒（〜1.75e18）は JS の `Number.MAX_SAFE_INTEGER`（〜9.007e15）を超えて量子化されるため、チャート x 軸はエピソード相対にする。`start_ns` / `end_ns` は絶対値（選択クロック）をメタデータとして保持する（JS でサブマイクロ秒演算はしない）。`t_ns` はトピックごとに共有（1 トピックの全フィールドが同じ到着時刻を使う＝時刻配列をフィールドごとに複製しない）。`truncated_fields` は 1 トピック当たりの表示上限（`field_introspect` の 256 リーフ上限）を超えて捨てたリーフ数。
+  - **ロス位置の可視化（v1.1）** — 同じ 1 回のスキャンで、Review のヒートマップ用に**ロスイベントと時間ビン**も出す。まず**エピソード全体の相対クロック**を 1 つ定義する: グローバル零点 = 全**対象トピック**の全解像度タイムスタンプの最小値、`span.duration_ns` = 最大値 − 最小値。以下の 3 フィールドはこのグローバル軸上の値（`t_ns` 同様に小さく JS 安全）:
+    - **`start_offset_ns`** = トピック先頭タイムスタンプ − グローバル零点。
+    - **`loss_events`** — トピックの**全解像度**到着間隔から算出（間隔が 4 未満なら空）。しきい値 = 中央値間隔 × 1.5。しきい値を**超える**間隔 1 つが 1 イベントで、`start_ns` = （直前メッセージ時刻 − グローバル零点）、`duration_ns` = その間隔、`estimated_lost` = `max(0, round(interval/median) - 1)`、`severity` = `estimated_lost >= 3` で `"major"` それ以外 `"minor"`。中央値が 0（同一スタンプの連続）なら空。リストはトピック当たり最大 200 件（**duration 降順**）に制限し、超過分は `"loss_events_truncated": <捨てた件数>` で明示（暗黙の切り捨て禁止）。
+    - **`edges`** — `start_delay_ns` = トピック先頭 − グローバル零点、`end_early_ns` = グローバル終端 − トピック末尾。常に存在（無ければ 0）。
+    - **`bins`** — グローバル span を固定 600 分割（`bin_ns = ceil(duration/600)`、最終ビンは短くなりうる）。`densities` は全解像度タイムスタンプから数えた各ビンのメッセージ数（合計 = `message_count`）。メッセージ 2 未満のトピックは `"bins": null`。
+
+    既存の `t_ns` はトピック相対のまま（チャート契約は不変）。フロントエンドは `start_offset_ns` でチャート時刻 ↔ グローバル軸を換算する。
 - **エクスポート後の読み出し（`params.dataset_dir`）** — `loss_report` / `video_check` / `signal_report` は省略可能な `dataset_dir`（`<operator>/<task>/<NNN>`、`data/` 相対）を受け付け、`recorded/<run_id>` の代わりに**エクスポート済みデータセットディレクトリの MCAP を読む**（`dataset_export` は移動のため、エクスポート後は `recorded/` に bag が無い）。出力・キャッシュは従来どおり **run_id キー**（`data/report/<pipeline>/<run_id>/`）のままなので、エクスポート前に生成した video_check の mp4 キャッシュはエクスポート後もそのまま再利用される（移動は mtime を保存する）。`dataset_dir` はちょうど 3 コンポーネントの単純名のみ許可（トラバーサル・予約名 `recorded`/`report`/`datasets` は `ValueError` → 失敗ジョブ）。
 
 ## 検証（v1）: 必須トピック + テンプレート
