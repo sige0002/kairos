@@ -1,5 +1,5 @@
 """Config endpoints (``/api/v1/config/options`` + ``/select`` + ``/recording``
-+ ``/signals`` + ``/alerts``).
++ ``/alerts``).
 
 The Config tab reads the per-category options and the active selection, and
 posts a selection. Phase 1 = the ``validation`` category (applies immediately;
@@ -12,16 +12,14 @@ the on-prem ``settings.recording_config`` file and updates the in-memory copy so
 and monitor expected_hz/allowlist still load at service startup, so those parts
 only fully apply on restart (the UI says so honestly).
 
-``/signals`` and ``/alerts`` are the two per-robot single-file aspect editors
-Settings > Data quality drives (S1' / F2''). Both resolve the ACTIVE robot's
-file through the catalog (``config/<robot>/signals/default.yaml`` and
-``config/<robot>/monitoring/alerts.yaml``), ``GET`` returns the parsed config +
+``/alerts`` is the per-robot single-file aspect editor Settings > Data quality
+drives (F2''). It resolves the ACTIVE robot's file through the catalog
+(``config/<robot>/monitoring/alerts.yaml``), ``GET`` returns the parsed config +
 raw YAML text + path, and ``PUT`` validates (pydantic, unknown keys rejected)
 then atomically rewrites the file with the same temp-file + ``os.replace`` path
-as ``/recording``. Signals is display-only (applies immediately — the Review
-consumption hook re-fetches it); alerts load once at topic_monitor startup, so
-an alerts edit applies on the next monitor restart (no live-reload path exists —
-see ``topic_monitor/main.py``).
+as ``/recording``. Alerts load once at topic_monitor startup, so an alerts edit
+applies on the next monitor restart (no live-reload path exists — see
+``topic_monitor/main.py``).
 """
 
 from __future__ import annotations
@@ -262,44 +260,15 @@ async def put_recording_config(
     return _recording_payload(config, settings.recording_config)
 
 
-# ---- signals + alerts config (per-robot single-file aspect editors) --------
-# S1' / F2'': the two config aspects Settings > Data quality reads and writes.
-# Neither is a selectable Config-tab option (each is a single fixed file per
-# robot), so they get dedicated GET/PUT endpoints rather than a catalog aspect,
-# resolving the ACTIVE robot's file through ConfigCatalog.robot_config_file.
+# ---- alerts config (per-robot single-file aspect editor) -------------------
+# F2'': the config aspect Settings > Data quality reads and writes. Not a
+# selectable Config-tab option (a single fixed file per robot), so it gets
+# dedicated GET/PUT endpoints rather than a catalog aspect, resolving the
+# ACTIVE robot's file through ConfigCatalog.robot_config_file. (A sibling
+# ``/config/signals`` editor existed until 2026-07-15; it configured the Review
+# waveform chart's default fields and was removed together with that chart.)
 
-SIGNALS_SUBDIR, SIGNALS_FILENAME = "signals", "default.yaml"
 ALERTS_SUBDIR, ALERTS_FILENAME = "monitoring", "alerts.yaml"
-
-
-class SignalDefaultRule(BaseModel):
-    """One per-msg_type default field selection for the Review Signals view."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    msg_type: str
-    fields: list[str] = Field(default_factory=list)
-
-
-class SignalsConfig(BaseModel):
-    """Signals default display config (``config/<robot>/signals/default.yaml``).
-
-    Display-only: the Review consumption hook (``signalDefaults.ts``) fetches it
-    and picks the default topic + fields per report. Unknown keys are rejected so
-    a typo surfaces as a 422 instead of being silently dropped at render time.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    hidden_field_patterns: list[str] = Field(default_factory=list)
-    default_topic: str | None = None
-    defaults: list[SignalDefaultRule] = Field(default_factory=list)
-    fallback_fields: Annotated[int, Field(ge=0)] = 4
-
-
-# Built-in fallback returned by GET when a robot has no signals file yet — the
-# same defaults signalDefaults.ts falls back to (hide header.*, first 4 leaves).
-DEFAULT_SIGNALS = SignalsConfig(hidden_field_patterns=["header.*"])
 
 # Alert vocabulary MIRRORS topic_monitor's AlertRule / DerivedRulesConfig (a
 # 1-folder-1-container service the orchestrator can't import from). Metric/op are
@@ -411,69 +380,6 @@ def _alert_loss_warnings(config: AlertsConfig) -> list[str]:
         for r in config.rules
         if r.metric == "loss"
     ]
-
-
-@router.get("/signals")
-async def get_signals_config(request: Request) -> dict[str, Any]:
-    """Return the active robot's Signals default-display config + raw YAML.
-
-    When the robot has no ``signals/default.yaml`` yet, ``config`` is the
-    built-in default (so the Settings form has something to edit) and ``raw`` is
-    ``null``. A present-but-invalid file returns its raw parsed mapping so the
-    editor can fix it in place.
-    """
-    path = _catalog(request).robot_config_file(SIGNALS_SUBDIR, SIGNALS_FILENAME)
-    raw, parsed = _read_yaml_text(path)
-    if raw is None:
-        config: dict[str, Any] | None = DEFAULT_SIGNALS.model_dump(mode="json")
-    else:
-        try:
-            config = SignalsConfig.model_validate(parsed or {}).model_dump(mode="json")
-        except ValidationError:
-            config = parsed  # present-but-invalid: hand back the raw mapping
-    return {"config": config, "raw": raw, "path": str(path) if path else None}
-
-
-@router.put("/signals")
-async def put_signals_config(
-    request: Request, body: AspectConfigBody
-) -> dict[str, Any]:
-    """Validate + atomically persist the active robot's Signals config.
-
-    Display-only, so there is nothing to hot-swap: the Review consumption hook
-    re-fetches ``GET /config/signals`` and the change applies immediately. A
-    schema error yields 422 and leaves the file untouched.
-    """
-    path = _catalog(request).robot_config_file(SIGNALS_SUBDIR, SIGNALS_FILENAME)
-    if path is None:
-        raise ApiError(
-            status_code=404,
-            code="config_not_found",
-            message="The active robot has no config dir to write signals config.",
-        )
-    data = _body_to_mapping(body)
-    try:
-        config = SignalsConfig.model_validate(data)
-    except ValidationError as exc:
-        raise ApiError(
-            status_code=422,
-            code="invalid_config",
-            message="Signals config failed validation.",
-            details={"errors": exc.errors(include_url=False)},
-        ) from exc
-    try:
-        _atomic_write_yaml(path, config.model_dump(mode="json"))
-    except OSError as exc:
-        logger.warning("signals config write failed", extra={"error": str(exc)})
-        raise ApiError(
-            status_code=500,
-            code="config_write_failed",
-            message="Could not persist the signals config.",
-            details={"path": str(path)},
-        ) from exc
-    logger.info("signals config updated", extra={"path": str(path)})
-    raw, _ = _read_yaml_text(path)
-    return {"config": config.model_dump(mode="json"), "raw": raw, "path": str(path)}
 
 
 @router.get("/alerts")

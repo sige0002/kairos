@@ -1,9 +1,8 @@
-"""Single-file aspect editors: ``GET/PUT /api/v1/config/{signals,alerts}``.
+"""Single-file aspect editor: ``GET/PUT /api/v1/config/alerts``.
 
-S1' / F2'': Settings > Data quality reads and writes two per-robot config files
-that are NOT selectable Config-tab options — the Review Signals defaults
-(``signals/default.yaml``) and the topic_monitor alert rules
-(``monitoring/alerts.yaml``). Each resolves the ACTIVE robot's file through the
+F2'': Settings > Data quality reads and writes a per-robot config file that is
+NOT a selectable Config-tab option — the topic_monitor alert rules
+(``monitoring/alerts.yaml``). It resolves the ACTIVE robot's file through the
 catalog, validates on PUT (unknown keys rejected), and atomically rewrites the
 file (temp + ``os.replace``) exactly like ``/config/recording``.
 """
@@ -24,15 +23,6 @@ _ROBOT = "testbot"
 # a minimal (valid) recording config; the app also loads it at startup.
 _MIN_RECORDING = {"robot_name": _ROBOT, "default_topics": ["/x"]}
 
-_SIGNALS = {
-    "hidden_field_patterns": ["header.*"],
-    "default_topic": "/hsrb/joint_states",
-    "defaults": [
-        {"msg_type": "sensor_msgs/msg/JointState", "fields": ["position[0]"]},
-    ],
-    "fallback_fields": 4,
-}
-
 _ALERTS = {
     "rules": [
         {"topic": "/hsrb/joint_states", "metric": "hz", "op": "lt", "threshold": 15},
@@ -40,9 +30,7 @@ _ALERTS = {
 }
 
 
-def _tree(
-    tmp_path: Path, *, signals: dict | None = None, alerts: dict | None = None
-) -> Path:
+def _tree(tmp_path: Path, *, alerts: dict | None = None) -> Path:
     """Build a tmp ``config/`` tree with the ``testbot`` robot; return its root."""
     root = tmp_path / "config"
     rdir = root / _ROBOT
@@ -50,11 +38,6 @@ def _tree(
     (rdir / "recording" / "default.yaml").write_text(
         yaml.safe_dump(_MIN_RECORDING), encoding="utf-8"
     )
-    if signals is not None:
-        (rdir / "signals").mkdir(parents=True)
-        (rdir / "signals" / "default.yaml").write_text(
-            yaml.safe_dump(signals), encoding="utf-8"
-        )
     if alerts is not None:
         (rdir / "monitoring").mkdir(parents=True)
         (rdir / "monitoring" / "alerts.yaml").write_text(
@@ -80,84 +63,20 @@ def _client(root: Path, fake_recorder) -> TestClient:
     return TestClient(app)
 
 
-# ---- signals -------------------------------------------------------------
+# ---- alerts --------------------------------------------------------------
 
 
-def test_get_signals_builtin_default_when_absent(tmp_path: Path, fake_recorder) -> None:
+def test_config_signals_endpoint_is_gone(tmp_path: Path, fake_recorder) -> None:
+    """The retired ``/config/signals`` editor 404s (removed with the Review chart)."""
     with _client(_tree(tmp_path), fake_recorder) as c:
-        body = c.get("/api/v1/config/signals").json()
-        # Built-in fallback (hide header.*, first 4 leaves); raw is null (unwritten).
-        assert body["config"]["hidden_field_patterns"] == ["header.*"]
-        assert body["config"]["fallback_fields"] == 4
-        assert body["raw"] is None
-        assert body["path"].endswith("signals/default.yaml")
+        assert c.get("/api/v1/config/signals").status_code == 404
 
 
-def test_get_signals_returns_seeded(tmp_path: Path, fake_recorder) -> None:
-    with _client(_tree(tmp_path, signals=_SIGNALS), fake_recorder) as c:
-        body = c.get("/api/v1/config/signals").json()
-        assert body["config"]["default_topic"] == "/hsrb/joint_states"
-        assert body["config"]["defaults"][0]["msg_type"] == "sensor_msgs/msg/JointState"
-        assert body["raw"] is not None and "header.*" in body["raw"]
-
-
-def test_put_signals_persists_and_reflects(tmp_path: Path, fake_recorder) -> None:
-    root = _tree(tmp_path)
-    target = root / _ROBOT / "signals" / "default.yaml"
-    with _client(root, fake_recorder) as c:
-        resp = c.put("/api/v1/config/signals", json={"config": _SIGNALS})
-        assert resp.status_code == 200
-        assert resp.json()["config"]["fallback_fields"] == 4
-
-        # Written to disk (parent dir created) as YAML.
-        assert target.exists()
-        on_disk = yaml.safe_load(target.read_text(encoding="utf-8"))
-        assert on_disk["default_topic"] == "/hsrb/joint_states"
-
-        # GET reflects it immediately (display-only, no restart).
-        got = c.get("/api/v1/config/signals").json()
-        assert got["config"]["default_topic"] == "/hsrb/joint_states"
-        assert got["raw"] is not None
-
-
-def test_put_signals_via_raw_yaml(tmp_path: Path, fake_recorder) -> None:
-    root = _tree(tmp_path)
-    target = root / _ROBOT / "signals" / "default.yaml"
-    raw = "hidden_field_patterns: ['header.*']\ndefault_topic: /a\nfallback_fields: 2\n"
-    with _client(root, fake_recorder) as c:
-        resp = c.put("/api/v1/config/signals", json={"raw": raw})
-        assert resp.status_code == 200
-        assert resp.json()["config"]["fallback_fields"] == 2
-        assert (
-            yaml.safe_load(target.read_text(encoding="utf-8"))["default_topic"] == "/a"
-        )
-
-
-def test_put_signals_rejects_unknown_key(tmp_path: Path, fake_recorder) -> None:
-    root = _tree(tmp_path)
-    target = root / _ROBOT / "signals" / "default.yaml"
-    with _client(root, fake_recorder) as c:
-        resp = c.put("/api/v1/config/signals", json={"config": {"bogus_key": 1}})
-        assert resp.status_code == 422
-        assert resp.json()["error"]["code"] == "invalid_config"
-        assert resp.json()["error"]["details"]["errors"]
-        assert not target.exists()  # nothing written on a failed validation
-
-
-def test_put_signals_rejects_negative_fallback(tmp_path: Path, fake_recorder) -> None:
+def test_put_alerts_rejects_bad_yaml(tmp_path: Path, fake_recorder) -> None:
     with _client(_tree(tmp_path), fake_recorder) as c:
-        resp = c.put("/api/v1/config/signals", json={"config": {"fallback_fields": -1}})
-        assert resp.status_code == 422
-
-
-def test_put_signals_rejects_bad_yaml(tmp_path: Path, fake_recorder) -> None:
-    with _client(_tree(tmp_path), fake_recorder) as c:
-        resp = c.put("/api/v1/config/signals", json={"raw": "key: [unterminated"})
+        resp = c.put("/api/v1/config/alerts", json={"raw": "key: [unterminated"})
         assert resp.status_code == 422
         assert resp.json()["error"]["code"] == "invalid_yaml"
-
-
-# ---- alerts --------------------------------------------------------------
 
 
 def test_get_alerts_seeded(tmp_path: Path, fake_recorder) -> None:

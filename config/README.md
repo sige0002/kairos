@@ -15,7 +15,6 @@ config/
 │  ├─ recording/<option>.yaml     # recording/monitoring (default.yaml is active)
 │  ├─ stream/<option>.yaml        # Stream tab initial layout
 │  ├─ monitoring/alerts.yaml      # topic_monitor alert definitions (optional, ALERT_CONFIG_PATH)
-│  ├─ signals/default.yaml        # Review > Signals default display (optional, S1')
 │  ├─ validation/<option>.yaml    # fast_validation template
 │  └─ validators/loss_report.yaml # validator parameters
 ├─ airoa_hsr/               # bundled sample robot (HSR, data/airoa-moma-mcap/)
@@ -40,11 +39,10 @@ make up ROBOT=<robot>        # config/local/<robot>/ (gitignored, your own robot
   (`GET /api/v1/config/options` · `POST /api/v1/config/select`). Local robots
   (gitignored) appear in the list too, and editing their recording config writes
   back to the gitignored file (never a committed one).
-- **Settings > Data quality** edits two single-file (non-selectable) configs:
-  `signals/default.yaml` (Review default display; `GET/PUT /api/v1/config/signals`;
-  display-only → applies immediately) and `monitoring/alerts.yaml` (alert rules;
-  `GET/PUT /api/v1/config/alerts`; applies on topic_monitor restart). Both write
-  back atomically to the active robot's file (see `docs/specs/en/api_orchestrator.md`).
+- **Settings > Data quality** edits one single-file (non-selectable) config:
+  `monitoring/alerts.yaml` (alert rules; `GET/PUT /api/v1/config/alerts`; applies
+  on topic_monitor restart). It writes back atomically to the active robot's
+  file (see `docs/specs/en/api_orchestrator.md`).
 - **A new robot**: copy `config/template/` into `config/<robot>/` (publishable) or
   `config/local/<robot>/` (private), then edit topic names / expected Hz / QoS.
 
@@ -58,7 +56,6 @@ make up ROBOT=<robot>        # config/local/<robot>/ (gitignored, your own robot
 - `topic_monitor` … recording `expected_hz_patterns` (Late judgement) + subscription QoS + `monitoring/alerts.yaml` (alert definitions; optional; empty = alerts disabled).
 - `dora_runner` … validation `required_topics` (fast_validation) + validators (loss_report).
 - `frontend` (UI) … via `GET /api/v1/config`: Record/Monitor pre-selection + badges, Stream initial panes.
-  The Review > Signals default display comes from `signals/default.yaml` (`GET /api/v1/config/signals`; display-only → applies immediately).
 
 Topics support globs (fnmatch), first-match-wins. See each YAML's comments and
 [`docs/specs/en/config.md`](../docs/specs/en/config.md), `config/local/README.md` for details.

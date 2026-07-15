@@ -47,17 +47,12 @@ const ROBOT = {
   },
 };
 
-// The two per-robot editor aspects the section now hosts (AlertsCard / SignalsCard).
+// The per-robot editor aspect the section hosts (AlertsCard).
 const ALERTS = {
   path: '/config/airoa_hsr/monitoring/alerts.yaml',
   raw: 'rules: []\n',
   warnings: [],
   config: { rules: [{ topic: '/hsrb/joint_states', metric: 'hz', op: 'lt', threshold: 15 }] },
-};
-const SIGNALS = {
-  path: '/config/airoa_hsr/signals/default.yaml',
-  raw: 'fallback_fields: 4\n',
-  config: { hidden_field_patterns: ['header.*'], default_topic: '/hsrb/joint_states', defaults: [], fallback_fields: 4 },
 };
 
 function mockFetch() {
@@ -66,7 +61,6 @@ function mockFetch() {
     if (url.includes('/config/robots/')) return Promise.resolve(jsonResponse(ROBOT));
     if (url.includes('/config/options')) return Promise.resolve(jsonResponse(OPTIONS));
     if (url.includes('/config/alerts')) return Promise.resolve(jsonResponse(ALERTS));
-    if (url.includes('/config/signals')) return Promise.resolve(jsonResponse(SIGNALS));
     return Promise.resolve(jsonResponse({}));
   });
 }
@@ -89,7 +83,7 @@ test('shows real expected rates, threshold convention, and required topics from 
   expect(screen.getByTestId('dq-required-topics')).toHaveTextContent('/hsrb/joint_states');
 });
 
-test('hosts the alert-rules and signals editors (the old "not exposed" note is gone)', async () => {
+test('hosts the alert-rules editor (the old "not exposed" note is gone)', async () => {
   renderWithClient(<DataQualitySection config={CONFIG} />);
 
   // The alert rules are now an editable surface (from GET /config/alerts), not a
@@ -100,8 +94,9 @@ test('hosts the alert-rules and signals editors (the old "not exposed" note is g
   expect((await screen.findByLabelText('rule topic 0')) as HTMLInputElement).toHaveValue(
     '/hsrb/joint_states',
   );
-  // The Signals defaults editor is present too.
-  expect(screen.getByTestId('settings-signals')).toBeInTheDocument();
+  // The retired Signals-defaults editor must be gone (removed with the Review
+  // waveform chart it configured).
+  expect(screen.queryByTestId('settings-signals')).not.toBeInTheDocument();
   // The removed note must be gone.
   expect(screen.queryByTestId('dq-alerts-note')).not.toBeInTheDocument();
   expect(screen.queryByText(/not exposed by the API/)).not.toBeInTheDocument();

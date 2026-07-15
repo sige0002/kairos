@@ -2,11 +2,10 @@
 // robot. The top card is a READ-ONLY view sourced from GET /api/v1/config/robots/
 // {robot} (RobotConfig): expected-Hz reference rates + the monitor's shortfall
 // status thresholds from the recording aspect, and the active validation
-// template's required topics. Below it are two per-robot EDITORS: the alert rules
-// (AlertsCard → /config/alerts) that used to be "not exposed by the API", and the
-// Review Signals defaults (SignalsCard → /config/signals). Both editable surfaces
-// live here because both define what the operator cares about in this robot's
-// data — the monitored thresholds and the surfaced review signals.
+// template's required topics. Below it is the per-robot alert-rules EDITOR
+// (AlertsCard → /config/alerts) that used to be "not exposed by the API".
+// (The Review Signals defaults editor was retired with the Review waveform
+// chart it configured — the integrity view has no per-field selection.)
 
 import { useQuery } from '@tanstack/react-query';
 import { apiGet } from '../../api/client';
@@ -16,7 +15,6 @@ import type { RuntimeConfig } from '../../config';
 import { Card } from '../../components/ui';
 import { ErrorMessage } from '../../components/ErrorMessage';
 import { AlertsCard } from './AlertsCard';
-import { SignalsCard } from './SignalsCard';
 
 interface RecordingContentView {
   expected_hz_patterns?: { pattern: string; hz?: number | null }[];
@@ -148,9 +146,6 @@ export function DataQualitySection({ config }: { config: RuntimeConfig | undefin
         <AlertsCard />
       </Card>
 
-      {/* Review Signals defaults — editable surface for config/<robot>/signals/
-          default.yaml (S1'). Its own Card (SignalsCard renders one). */}
-      <SignalsCard />
     </div>
   );
 }
