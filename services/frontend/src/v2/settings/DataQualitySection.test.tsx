@@ -47,11 +47,26 @@ const ROBOT = {
   },
 };
 
+// The two per-robot editor aspects the section now hosts (AlertsCard / SignalsCard).
+const ALERTS = {
+  path: '/config/airoa_hsr/monitoring/alerts.yaml',
+  raw: 'rules: []\n',
+  warnings: [],
+  config: { rules: [{ topic: '/hsrb/joint_states', metric: 'hz', op: 'lt', threshold: 15 }] },
+};
+const SIGNALS = {
+  path: '/config/airoa_hsr/signals/default.yaml',
+  raw: 'fallback_fields: 4\n',
+  config: { hidden_field_patterns: ['header.*'], default_topic: '/hsrb/joint_states', defaults: [], fallback_fields: 4 },
+};
+
 function mockFetch() {
   return vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
     if (url.includes('/config/robots/')) return Promise.resolve(jsonResponse(ROBOT));
     if (url.includes('/config/options')) return Promise.resolve(jsonResponse(OPTIONS));
+    if (url.includes('/config/alerts')) return Promise.resolve(jsonResponse(ALERTS));
+    if (url.includes('/config/signals')) return Promise.resolve(jsonResponse(SIGNALS));
     return Promise.resolve(jsonResponse({}));
   });
 }
@@ -74,12 +89,20 @@ test('shows real expected rates, threshold convention, and required topics from 
   expect(screen.getByTestId('dq-required-topics')).toHaveTextContent('/hsrb/joint_states');
 });
 
-test('honest pointer uses the robot DIRECTORY id (not robot_name) so the path exists', async () => {
+test('hosts the alert-rules and signals editors (the old "not exposed" note is gone)', async () => {
   renderWithClient(<DataQualitySection config={CONFIG} />);
+
+  // The alert rules are now an editable surface (from GET /config/alerts), not a
+  // note pointing at a file — the seeded rule's topic renders in the table.
   await waitFor(() =>
-    expect(screen.getByTestId('dq-alerts-note')).toHaveTextContent(
-      'config/airoa_hsr/monitoring/alerts.yaml',
-    ),
+    expect(screen.getByTestId('settings-alerts')).toHaveTextContent('applies on monitor restart'),
   );
-  expect(screen.getByTestId('dq-alerts-note')).toHaveTextContent(/not exposed by the API/);
+  expect((await screen.findByLabelText('rule topic 0')) as HTMLInputElement).toHaveValue(
+    '/hsrb/joint_states',
+  );
+  // The Signals defaults editor is present too.
+  expect(screen.getByTestId('settings-signals')).toBeInTheDocument();
+  // The removed note must be gone.
+  expect(screen.queryByTestId('dq-alerts-note')).not.toBeInTheDocument();
+  expect(screen.queryByText(/not exposed by the API/)).not.toBeInTheDocument();
 });

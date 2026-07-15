@@ -25,7 +25,6 @@ import { errorText } from '../../components/ErrorMessage';
 import { useUiStore } from '../../store/uiStore';
 import {
   createBatch,
-  createEpisode,
   getEpisodeOutcome,
   listBatches,
   patchBatch,
@@ -37,10 +36,12 @@ import { RECORDING_CONFIG_KEY } from '../../features/config/ConfigTab';
 import type {
   BatchEpisodeSummary,
   BatchSummary,
+  Episode,
   EpisodeCreateRequest,
   EpisodeQuality,
   EpisodeQualitySource,
   Page,
+  QuickCheckVerdict,
   RecordArming,
   RecordIntegrity,
   RecordPrepareResponse,
@@ -925,6 +926,15 @@ export interface BatchMachine {
   /** Set the operator override (null clears it back to auto). */
   setQuality: (q: QualityOverride | null) => void;
 
+  // Settled quick-check verdict (F1): the server's stop-time quality call plus
+  // its human-readable reasons, shown on the result panel when settled.
+  quickCheck: {
+    /** The settled verdict, or null while unsettled / on an older backend. */
+    verdict: QuickCheckVerdict | null;
+    /** True while on the result panel waiting for the verdict to settle. */
+    pending: boolean;
+  };
+
   // Real recorder signals from /record/status (never the mock quality flag).
   /** Live arming matched/missing snapshot (OL-①.4). Null unless the recorder
    *  reports it; a non-persisted live aid, never stored anywhere. */
@@ -1098,6 +1108,19 @@ function toMachineError(err: unknown): MachineError {
   };
 }
 
+// The Collect episode-save payload. The shared `EpisodeCreateRequest` marks
+// `quality` required, but F1 OMITS it (and `quality_source`) when the operator
+// did not override, so the server derives the auto quality from the run's
+// settled quick_check verdict. Kept feature-local — the shared api/types is
+// off-limits to this change (and the backend already accepts an absent quality).
+type CollectEpisodePayload = Omit<
+  EpisodeCreateRequest,
+  'quality' | 'quality_source'
+> & {
+  quality?: EpisodeQuality;
+  quality_source?: EpisodeQualitySource;
+};
+
 export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMachine {
   // State lives in the module-level store above (survives tab-switch unmounts);
   // `dispatch` is the module dispatch, `state` is this component's subscription.
@@ -1163,13 +1186,46 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   // and the takeover card both read (D-1), so they can never disagree.
   const recorderState: RunState | 'idle' | null = status?.state ?? null;
 
-  // ---- auto quality (D-2) --------------------------------------------------
-  // The quick-check quality is DERIVED from the recorder's real integrity — a
-  // clean run is 'good', a dropped/failed run is flagged for review. No fixed
-  // timer, no fabricated "camera rate dropped". `null` integrity (older backend)
-  // stays 'good' and the result panel notes the check was unavailable.
-  const autoQuality: Quality =
-    integrity === 'dropped' || integrity === 'failed' ? 'review' : 'good';
+  // ---- settled quick-check verdict (F1) ------------------------------------
+  // After stop the orchestrator settles a quick_check verdict on the run
+  // (good/needs_review + human-readable reasons). While the operator is on the
+  // result panel, poll the run detail gently so the panel shows the SERVER's
+  // verdict — the same value the server derives on save — instead of a client
+  // re-derivation. Bounded to ~3 fetches (~5s): settlement is sub-second in
+  // practice, and saving is never blocked on it (the operator may save before
+  // it lands; the server corrects a quick_check-sourced episode when it does).
+  const resultRunId =
+    state.phase === 'result' && state.currentRunId ? state.currentRunId : null;
+  const resultRunQuery = useQuery({
+    queryKey: queryKeys.run(resultRunId ?? ''),
+    queryFn: ({ signal }) =>
+      apiGet<RunDetail>(`/runs/${encodeURIComponent(resultRunId ?? '')}`, { signal }),
+    enabled: !!resultRunId,
+    refetchInterval: (query) => {
+      if (query.state.data?.quick_check?.verdict) return false; // settled -> stop
+      if (query.state.dataUpdateCount >= 3) return false; // bounded backstop
+      return 2000;
+    },
+  });
+  const settledVerdict: QuickCheckVerdict | null = resultRunId
+    ? (resultRunQuery.data?.quick_check?.verdict ?? null)
+    : null;
+  // True while the operator is on the result panel and the verdict has not
+  // settled yet — drives an honest "Quick check running…" note, never a value.
+  const quickCheckPending = !!resultRunId && settledVerdict == null;
+
+  // ---- auto quality (D-2 / F1) ---------------------------------------------
+  // Prefer the orchestrator's SETTLED verdict when available (the same value the
+  // server derives on save); fall back to the recorder's real integrity while it
+  // is still unsettled. Never a fabricated value — `null` integrity with no
+  // verdict stays 'good' and the panel notes the check was unavailable.
+  const autoQuality: Quality = settledVerdict
+    ? settledVerdict.quality === 'good'
+      ? 'good'
+      : 'review'
+    : integrity === 'dropped' || integrity === 'failed'
+      ? 'review'
+      : 'good';
   const setQuality = useCallback(
     (q: QualityOverride | null) => dispatch({ type: 'SET_QUALITY', quality: q }),
     [],
@@ -1659,20 +1715,24 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     const willComplete = nextIndex >= state.targetEpisodes;
     const isFail = state.pendingTask === 'fail';
     const reason = state.failReason;
-    // Effective quality (D-2): the operator's override if any, else the auto
-    // (real integrity) value. `quality_source` is honest — 'operator' only when
-    // they actually changed it. 'notusable' has no local axis (maps to 'review').
+    // Quality (D-2 / F1): the operator's override if any, else the auto value.
+    // `effective`/`localQuality` drive the LOCAL strip chip + the offline bridge
+    // fallback. The SERVER payload sends an explicit quality ONLY on an override
+    // (provenance 'operator'); with no override it is OMITTED below so the server
+    // derives it from the run's settled quick_check verdict — the single source
+    // of the auto quality, correct even when saved before the verdict settles.
+    // 'notusable' has no local axis (maps to 'review').
     const override = state.qualityOverride;
     const effective: QualityOverride = override ?? autoQuality;
     const localQuality: Quality = effective === 'good' ? 'good' : 'review';
-    const serverQuality: EpisodeQuality =
-      effective === 'good'
-        ? 'good'
-        : effective === 'review'
-          ? 'needs_review'
-          : 'not_usable';
-    const qualitySource: EpisodeQualitySource =
-      override != null ? 'operator' : 'quick_check';
+    const overrideServerQuality: EpisodeQuality | null =
+      override == null
+        ? null
+        : override === 'good'
+          ? 'good'
+          : override === 'review'
+            ? 'needs_review'
+            : 'not_usable';
     const runId = state.currentRunId;
     const batchId = state.batchId;
     // The bridge fallback (used only when the episode POST fails) keeps a local
@@ -1706,16 +1766,20 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
         showToast(`Episode ${nextIndex} saved locally — couldn't reach the server`);
       };
       if (batchId) {
-        const body: EpisodeCreateRequest = {
+        const body: CollectEpisodePayload = {
           batch_id: batchId,
           run_id: runId,
           index_in_batch: nextIndex,
           task_result: isFail ? 'failure' : 'success',
-          quality: serverQuality,
-          quality_source: qualitySource,
         };
+        // Explicit override -> send it with operator provenance. No override ->
+        // omit quality/quality_source so the server derives from quick_check.
+        if (overrideServerQuality != null) {
+          body.quality = overrideServerQuality;
+          body.quality_source = 'operator';
+        }
         if (isFail && reason) body.failure_reason = reason;
-        createEpisode(body)
+        apiPost<Episode>('/episodes', body)
           .then((ep) => {
             if (willComplete)
               void patchBatch(batchId, { status: 'completed' }).catch(() => {});
@@ -2188,6 +2252,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     autoQuality,
     qualityOverride: state.qualityOverride,
     setQuality,
+    quickCheck: { verdict: settledVerdict, pending: quickCheckPending },
 
     arming,
     integrity,

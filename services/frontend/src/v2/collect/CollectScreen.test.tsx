@@ -33,6 +33,8 @@ function mockFetch(recordStartBody: Record<string, unknown>) {
 function mockFetchWithStatus(opts: {
   start?: Record<string, unknown>;
   status?: Record<string, unknown>;
+  /** Body for the result-panel `GET /runs/{id}` quick_check poll (F1). */
+  detail?: Record<string, unknown>;
 }) {
   const start = opts.start ?? { run_id: 'run_1', state: 'recording' };
   let started = false;
@@ -48,6 +50,11 @@ function mockFetchWithStatus(opts: {
     }
     if (url.includes('/record/stop')) return Promise.resolve(jsonResponse({ run_id: 'run_1', state: 'completed' }));
     if (url.includes('/config')) return Promise.resolve(jsonResponse(CONFIG));
+    // GET /runs/{id} detail — the result-panel quick_check poll (F1).
+    if (/\/runs\/[^/?]+/.test(url))
+      return Promise.resolve(
+        jsonResponse({ run_id: 'run_1', state: 'completed', ...(opts.detail ?? {}) }),
+      );
     return Promise.resolve(jsonResponse({}));
   });
 }
@@ -250,6 +257,49 @@ test('no integrity banner when the run integrity is ok', async () => {
 
   expect(screen.getByText('QUICK: GOOD')).toBeInTheDocument();
   expect(screen.queryByTestId('integrity-banner')).toBeNull();
+});
+
+// F1 (settled): when the server verdict is needs_review, the result panel shows
+// its plain-language reasons verbatim and the chip reads NEEDS REVIEW even
+// though the recorder integrity is 'ok' (the verdict is the authority).
+test('result panel shows the settled quick-check reasons and a NEEDS REVIEW chip', async () => {
+  mockFetchWithStatus({
+    status: { run_id: 'run_1', state: 'completed', integrity: 'ok' },
+    detail: {
+      quick_check: {
+        verdict: {
+          quality: 'needs_review',
+          reasons: ['/hsrb/hand_camera/image_raw/compressed avg 9.982Hz < expected 30Hz'],
+        },
+      },
+    },
+  });
+  renderWithClient(<CollectScreen />);
+  await driveToResult();
+
+  const reasons = await screen.findByTestId('quickcheck-reasons');
+  expect(reasons).toHaveTextContent('9.982Hz < expected 30Hz');
+  expect(screen.getByText('QUICK: NEEDS REVIEW')).toBeInTheDocument();
+  // The settled verdict displaced the "running…" note.
+  expect(screen.queryByTestId('quickcheck-pending')).toBeNull();
+});
+
+// F1 (unsettled): while the verdict is still settling (no quick_check on the
+// run detail yet), the panel shows an honest subtle "Quick check running…" note
+// and never blocks Save.
+test('result panel shows a running note while the quick-check verdict is unsettled', async () => {
+  mockFetchWithStatus({
+    status: { run_id: 'run_1', state: 'completed', integrity: 'ok' },
+    // detail omitted -> GET /runs/{id} returns no quick_check (unsettled).
+  });
+  renderWithClient(<CollectScreen />);
+  await driveToResult();
+
+  expect(await screen.findByTestId('quickcheck-pending')).toHaveTextContent(
+    'Quick check running…',
+  );
+  // Saving is never gated on settlement — the primary Save is enabled.
+  expect(screen.getByRole('button', { name: /Save — success/ })).toBeEnabled();
 });
 
 test('recording phase shows the real arming matched/missing note from /record/status', async () => {

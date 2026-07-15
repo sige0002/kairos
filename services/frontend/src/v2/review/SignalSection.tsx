@@ -20,7 +20,6 @@ import type {
   JobResult,
   JobStatus,
   RunTopic,
-  SignalReport,
   VideoCheckSummary,
 } from '../../api/types';
 import { ErrorMessage } from '../../components/ErrorMessage';
@@ -30,17 +29,27 @@ import {
   chartXToVideoTime,
   episodeSpanSec,
   formatContinuity,
+  globalNsToChartSec,
   numericFieldPaths,
+  type SignalReportExt,
   signalToUplot,
   videoTimeToChartX,
 } from './signalReport';
+import { SignalHeatmap } from './SignalHeatmap';
+import { LossEventList } from './LossEventList';
+import {
+  applyDefaults,
+  loadSignalDefaults,
+  partitionFields,
+  type SignalDefaults,
+} from './signalDefaults';
 
 // Run the signal_report pipeline (one shot) and return its parsed summary. Same
 // POST /jobs → poll status → fetch result lifecycle the VideoPlayer uses, so a
 // missing/failed pipeline surfaces as an honest error instead of a dead chart.
 function useSignalReport(runId: string) {
   const [jobId, setJobId] = useState<string | null>(null);
-  const [report, setReport] = useState<SignalReport | null>(null);
+  const [report, setReport] = useState<SignalReportExt | null>(null);
   const [jobError, setJobError] = useState<string | null>(null);
 
   const mutation = useMutation({
@@ -70,7 +79,7 @@ function useSignalReport(runId: string) {
             `/jobs/${encodeURIComponent(jobId)}/result`,
             { signal },
           );
-          setReport(result.summary as unknown as SignalReport);
+          setReport(result.summary as unknown as SignalReportExt);
         } else {
           // failed/canceled: surface the terminal error (dora_runner nests the
           // ApiError under summary.error(.error)) instead of spinning forever.
@@ -129,26 +138,64 @@ export function SignalSection({ runId, topics }: { runId: string; topics: RunTop
 
   const numericTopics = report ? Object.keys(report.topics) : [];
 
-  // Seed / re-validate the selected topic when a report lands.
+  // Per-robot display defaults (S1'): loaded once; loadSignalDefaults falls back
+  // to the built-ins on any error, so `defaults` is only null while in flight.
+  // Seeding waits for it so the YAML-configured selection wins over a race.
+  const [defaults, setDefaults] = useState<SignalDefaults | null>(null);
+  const [showAllFields, setShowAllFields] = useState(false);
   useEffect(() => {
+    let alive = true;
+    loadSignalDefaults().then((d) => {
+      if (alive) setDefaults(d);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // Seed / re-validate the selected topic when a report lands: keep a still-valid
+  // manual choice, otherwise open on the YAML-configured default topic.
+  useEffect(() => {
+    if (!defaults) return;
     const ts = report ? Object.keys(report.topics) : [];
-    setTopic((prev) => (prev && ts.includes(prev) ? prev : (ts[0] ?? null)));
-  }, [report]);
+    setTopic((prev) =>
+      prev && ts.includes(prev)
+        ? prev
+        : report
+          ? applyDefaults(report, defaults).topic
+          : null,
+    );
+  }, [report, defaults]);
 
   const topicReport = topic && report ? report.topics[topic] : undefined;
 
-  // Seed / re-validate the selected fields for the current topic (default: the
-  // first field). Keyed on report + topic so switching topic reseeds.
+  // Seed / re-validate the selected fields for the current topic: keep the
+  // user's still-valid picks, otherwise apply the msg_type rule for THIS topic
+  // (defaultTopic pinned so applyDefaults resolves fields for it), falling back
+  // to the first non-hidden leaves. Keyed on report + topic so switching reseeds.
   useEffect(() => {
+    if (!defaults) return;
     const tr = topic && report ? report.topics[topic] : undefined;
     const af = tr ? numericFieldPaths(tr) : [];
     setFields((prev) => {
       const valid = prev.filter((f) => af.includes(f));
-      return valid.length > 0 ? valid : af.slice(0, 1);
+      if (valid.length > 0) return valid;
+      if (report && topic) {
+        return applyDefaults(report, { ...defaults, defaultTopic: topic }).fields;
+      }
+      return af.slice(0, 1);
     });
-  }, [report, topic]);
+  }, [report, topic, defaults]);
 
   const allFields = topicReport ? numericFieldPaths(topicReport) : [];
+  // "Show all fields" reveals YAML-hidden paths (header.* by default); a
+  // selected hidden field always stays visible so its series can be untoggled.
+  const { visible: visibleFields, hidden: hiddenFields } = partitionFields(
+    allFields,
+    fields,
+    defaults?.hiddenFieldPatterns ?? [],
+  );
+  const fieldChoices = showAllFields ? [...visibleFields, ...hiddenFields] : visibleFields;
   const spanSec = topicReport ? episodeSpanSec(topicReport.t_ns ?? []) : 0;
   const fieldsKey = fields.join('|');
   const { data, fields: plotFields } = useMemo(
@@ -179,6 +226,19 @@ export function SignalSection({ runId, topics }: { runId: string; topics: RunTop
   const onChartSeek = (xVal: number) => {
     setPlayheadX(xVal); // immediate feedback; the video's timeupdate confirms it
     setSeekTo({ seconds: chartXToVideoTime(xVal, spanSec, videoDur), nonce: Date.now() });
+  };
+
+  // Seek from the heatmap / event list, which speak the episode-GLOBAL axis:
+  // map the clicked global time into the CHARTED topic's chart-elapsed seconds
+  // (accounting for its start_offset_ns, so a click on another topic's row still
+  // lands on the charted playhead), move the playhead, and — when a full-length
+  // video is synced — seek it the same way the chart's own click does.
+  const onSeekGlobal = (globalNs: number) => {
+    const chartX = globalNsToChartSec(globalNs, topicReport?.start_offset_ns ?? 0);
+    setPlayheadX(Math.min(spanSec, Math.max(0, chartX)));
+    if (syncEnabled) {
+      setSeekTo({ seconds: chartXToVideoTime(chartX, spanSec, videoDur), nonce: Date.now() });
+    }
   };
 
   const toggleField = (f: string) =>
@@ -275,26 +335,58 @@ export function SignalSection({ runId, topics }: { runId: string; topics: RunTop
               This topic carries no numeric fields.
             </p>
           ) : (
-            <div
-              data-testid="review-signal-fields"
-              className="flex max-h-24 flex-wrap gap-x-3 gap-y-1 overflow-auto"
-            >
-              {allFields.map((f) => (
-                <label
-                  key={f}
-                  className="flex items-center gap-1 font-mono text-[11px] text-gray-600"
+            <>
+              <div
+                data-testid="review-signal-fields"
+                className="flex max-h-24 flex-wrap gap-x-3 gap-y-1 overflow-auto"
+              >
+                {fieldChoices.map((f) => (
+                  <label
+                    key={f}
+                    className="flex items-center gap-1 font-mono text-[11px] text-gray-600"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={fields.includes(f)}
+                      onChange={() => toggleField(f)}
+                      className="h-3 w-3 accent-teal-600"
+                    />
+                    {f}
+                  </label>
+                ))}
+              </div>
+              {hiddenFields.length > 0 && (
+                <button
+                  type="button"
+                  data-testid="review-signal-show-all"
+                  aria-expanded={showAllFields}
+                  onClick={() => setShowAllFields((v) => !v)}
+                  className="self-start text-[11px] text-gray-400 underline decoration-dotted transition-colors hover:text-gray-600"
                 >
-                  <input
-                    type="checkbox"
-                    checked={fields.includes(f)}
-                    onChange={() => toggleField(f)}
-                    className="h-3 w-3 accent-teal-600"
-                  />
-                  {f}
-                </label>
-              ))}
-            </div>
+                  {showAllFields
+                    ? 'Hide filtered fields'
+                    : `Show all fields (${hiddenFields.length} hidden)`}
+                </button>
+              )}
+            </>
           )}
+
+          {/* Loss-location view (signal_report v1.1): stacked per-topic heatmap
+              on the episode-global axis + a sortable event table, both seeking
+              the charted playhead / synced video. Above the chart so the loss
+              map reads as context for the signal below it. */}
+          <div className="flex flex-col gap-1.5 border-t border-gray-100 pt-2">
+            <SignalHeatmap
+              report={report}
+              selectedTopic={topic}
+              onSelectTopic={(t) => {
+                setTopic(t);
+                setFields([]);
+              }}
+              onSeekGlobal={onSeekGlobal}
+            />
+            <LossEventList report={report} onSeekGlobal={onSeekGlobal} />
+          </div>
 
           {plotFields.length > 0 ? (
             <UplotChart
@@ -302,7 +394,7 @@ export function SignalSection({ runId, topics }: { runId: string; topics: RunTop
               series={uplotSeries}
               height={200}
               xTime={false}
-              playhead={syncEnabled ? playheadX : null}
+              playhead={playheadX}
               onSeek={syncEnabled ? onChartSeek : undefined}
             />
           ) : (

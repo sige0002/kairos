@@ -772,6 +772,9 @@ interface Phase2Opts {
    *  the phantom-batch reconcile (a seeded local batch is real only when its
    *  runs are here). Defaults to none. */
   runs?: string[];
+  /** Extra fields merged into the `GET /runs/{id}` detail body (the result-panel
+   *  quick_check poll, F1) — e.g. `{ quick_check: { verdict: {...} } }`. */
+  runDetail?: Record<string, unknown>;
 }
 
 /** Mocks the record + batches + episodes endpoints, capturing every request. */
@@ -824,6 +827,13 @@ function phase2Fetch(opts: Phase2Opts = {}) {
         state: 'completed',
       }));
       return Promise.resolve(jsonResponse({ items, total: items.length }));
+    }
+    // GET /runs/{id} detail — the result-panel quick_check poll (F1). Any extra
+    // `runDetail` fields (e.g. a settled quick_check verdict) ride along.
+    if (method === 'GET' && /\/runs\/[^/?]+/.test(url)) {
+      return Promise.resolve(
+        jsonResponse({ run_id: runId, state: 'completed', ...(opts.runDetail ?? {}) }),
+      );
     }
     if (url.includes('/record/status')) {
       return Promise.resolve(
@@ -885,20 +895,55 @@ test('saving an episode POSTs it with enum-mapped fields; success does not touch
     ),
   );
   const post = calls.find((c) => c.url.includes('/episodes') && c.method === 'POST')!;
-  // Collect's 'fail' + a clean (integrity ok) recording map to the server
-  // vocabulary; the operator didn't touch quality, so the source is the honest
-  // 'quick_check' — NOT 'operator' (the D-2 provenance fix).
+  // F1: the operator did NOT override quality, so the payload OMITS quality and
+  // quality_source — the server derives them from the run's settled quick_check
+  // verdict (the single source of the auto quality). The task fields still ride.
   expect(post.body).toMatchObject({
     batch_id: 'batch_ep',
     run_id: 'run_ep',
     index_in_batch: 1,
     task_result: 'failure',
-    quality: 'good',
-    quality_source: 'quick_check',
     failure_reason: 'Object dropped',
   });
+  expect(post.body).not.toHaveProperty('quality');
+  expect(post.body).not.toHaveProperty('quality_source');
   // Server accepted it → the browser bridge is not written.
   expect(getEpisodeOutcome('run_ep')).toBeNull();
+});
+
+// F1: the QUICK auto quality prefers the run's SETTLED quick_check verdict over
+// the recorder integrity — a clean-integrity run whose verdict is needs_review
+// (e.g. an Hz shortfall the recorder can't see) reads NEEDS REVIEW.
+test('auto quality prefers the settled quick_check verdict over integrity', async () => {
+  phase2Fetch({
+    runId: 'run_v',
+    batchId: 'batch_v',
+    runDetail: {
+      quick_check: {
+        verdict: {
+          quality: 'needs_review',
+          reasons: ['/hsrb/hand_camera/image_raw/compressed avg 9.982Hz < expected 30Hz'],
+        },
+      },
+    },
+  });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+
+  act(() => result.current.startRecording());
+  await waitFor(() => expect(result.current.phase).toBe('recording'));
+  act(() => result.current.stopRecording());
+  await waitFor(() => expect(result.current.phase).toBe('result'), { timeout: 4000 });
+
+  // Integrity is 'ok' (status mock) but the settled verdict is needs_review —
+  // the verdict wins, and the settled reasons are surfaced to the panel.
+  await waitFor(() =>
+    expect(result.current.quickCheck.verdict?.quality).toBe('needs_review'),
+  );
+  expect(result.current.autoQuality).toBe('review');
+  expect(result.current.quickCheck.verdict?.reasons[0]).toContain('9.982Hz');
+  expect(result.current.quickCheck.pending).toBe(false);
 });
 
 // D-2: an operator override changes the quality AND records the honest

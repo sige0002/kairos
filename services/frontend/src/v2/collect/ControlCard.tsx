@@ -153,6 +153,31 @@ function IntegrityBanner({
   );
 }
 
+// The orchestrator's SETTLED quick-check reasons (F1): the plain-language "why
+// needs_review" list, shown verbatim so the operator sees exactly what the
+// server flagged (e.g. "/hsrb/hand_camera/image_raw/compressed avg 9.982Hz <
+// expected 30Hz") without opening JSON. Only rendered when the verdict is in.
+function QuickCheckReasons({ reasons }: { reasons: string[] }) {
+  return (
+    <div
+      data-testid="quickcheck-reasons"
+      className="flex flex-col gap-1 rounded-control border border-amber-200 bg-amber-50/60 px-3 py-2 text-amber-800"
+    >
+      <span className="text-[10.5px] font-semibold uppercase tracking-[0.08em]">
+        Quick check flagged
+      </span>
+      <ul className="flex flex-col gap-0.5">
+        {reasons.map((reason, i) => (
+          <li key={i} className="flex gap-1.5">
+            <span className="opacity-50">·</span>
+            <span className="font-mono text-[11px] leading-snug">{reason}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 // One "Label : value" row in the takeover card (D-1). Values are real recorder
 // data; missing ones render "—" (never fabricated).
 function FieldRow({
@@ -552,6 +577,12 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
             dropped={machine.droppedMessages}
           />
         )}
+        {/* Settled quick-check reasons (F1): the server's verdict "why", shown
+            verbatim when it flagged the run for review. */}
+        {machine.quickCheck.verdict &&
+          machine.quickCheck.verdict.reasons.length > 0 && (
+            <QuickCheckReasons reasons={machine.quickCheck.verdict.reasons} />
+          )}
         {/* Honest quality line (D-2): the effective quality + its provenance, with
             an override affordance — no fabricated "camera rate dropped". */}
         <div className="flex flex-col gap-1.5">
@@ -576,9 +607,16 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
               change
             </button>
           </div>
-          {machine.integrity == null && (
-            <span className="text-[11px] text-gray-400">
-              Quick check unavailable — verify in Review.
+          {/* Honest settlement status (F1): a subtle "running…" note while the
+              server verdict is still settling; once it lands the chip + reasons
+              carry the call, so nothing lingers here. Never a fabricated value,
+              and saving is never blocked on it. */}
+          {machine.quickCheck.pending && (
+            <span
+              data-testid="quickcheck-pending"
+              className="text-[11px] text-gray-400"
+            >
+              Quick check running…
             </span>
           )}
           {qualityOpen && (

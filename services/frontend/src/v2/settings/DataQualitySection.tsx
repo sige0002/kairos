@@ -1,14 +1,12 @@
-// Settings > Data quality — a READ-ONLY view of what "good" means for the active
-// robot. Sourced from GET /api/v1/config/robots/{robot} (RobotConfig), which
-// returns every aspect's parsed file content in one call, so we read:
-//   - expected-Hz reference rates + the monitor's shortfall status thresholds
-//     from the recording aspect (`expected_hz_patterns`, `monitor.*_shortfall`),
-//   - the active validation template's required topics from the validation aspect.
-// The response's `robot` field is the robot DIRECTORY id (not the friendly
-// `robot_name`), so the alerts.yaml pointer names a path that actually exists.
-// The explicit threshold ALERT rules live in config/<robot>/monitoring/alerts.yaml
-// and are NOT exposed by any endpoint, so we point at the file rather than
-// fabricating a rules table. Read-only; nothing here mutates state.
+// Settings > Data quality — what "good" and "important" mean for the active
+// robot. The top card is a READ-ONLY view sourced from GET /api/v1/config/robots/
+// {robot} (RobotConfig): expected-Hz reference rates + the monitor's shortfall
+// status thresholds from the recording aspect, and the active validation
+// template's required topics. Below it are two per-robot EDITORS: the alert rules
+// (AlertsCard → /config/alerts) that used to be "not exposed by the API", and the
+// Review Signals defaults (SignalsCard → /config/signals). Both editable surfaces
+// live here because both define what the operator cares about in this robot's
+// data — the monitored thresholds and the surfaced review signals.
 
 import { useQuery } from '@tanstack/react-query';
 import { apiGet } from '../../api/client';
@@ -17,6 +15,8 @@ import type { ConfigOptions, RobotConfig } from '../../api/types';
 import type { RuntimeConfig } from '../../config';
 import { Card } from '../../components/ui';
 import { ErrorMessage } from '../../components/ErrorMessage';
+import { AlertsCard } from './AlertsCard';
+import { SignalsCard } from './SignalsCard';
 
 interface RecordingContentView {
   expected_hz_patterns?: { pattern: string; hz?: number | null }[];
@@ -66,7 +66,8 @@ export function DataQualitySection({ config }: { config: RuntimeConfig | undefin
   const robot = robotCfg?.robot ?? active ?? config?.defaults.robot_name ?? '<robot>';
 
   return (
-    <Card className="flex min-w-0 flex-col gap-5 overflow-auto p-[18px] lg:col-span-2" data-testid="settings-data-quality">
+    <div className="flex min-w-0 flex-col gap-2.5 overflow-auto lg:col-span-2 lg:min-h-0" data-testid="settings-data-quality">
+      <Card className="flex min-w-0 flex-col gap-5 p-[18px]">
       <div className="flex items-center gap-2.5">
         <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           Data quality
@@ -137,13 +138,19 @@ export function DataQualitySection({ config }: { config: RuntimeConfig | undefin
             )}
           </Section>
 
-          <p className="rounded-control border border-gray-200 bg-gray-50 px-3.5 py-2.5 text-[11.5px] leading-relaxed text-gray-500" data-testid="dq-alerts-note">
-            Explicit threshold alert rules (per-topic Hz floors, clear/cooldown timing) live in{' '}
-            <code>config/{robot}/monitoring/alerts.yaml</code> and are not exposed by the API —
-            edit them on disk and restart the monitor to apply.
-          </p>
         </>
       )}
-    </Card>
+      </Card>
+
+      {/* Alert rules — editable surface for config/<robot>/monitoring/alerts.yaml
+          (F2''): replaces the old "not exposed by the API" note. */}
+      <Card className="flex min-w-0 flex-col p-[18px]">
+        <AlertsCard />
+      </Card>
+
+      {/* Review Signals defaults — editable surface for config/<robot>/signals/
+          default.yaml (S1'). Its own Card (SignalsCard renders one). */}
+      <SignalsCard />
+    </div>
   );
 }
