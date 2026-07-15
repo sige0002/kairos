@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import PurePosixPath
+
 from fastapi import APIRouter, Request, status
 from kairos_common import ApiError, JobState
 
@@ -118,11 +120,35 @@ async def job_status(request: Request, job_id: str) -> JobStatus:
     return job
 
 
+def _data_relative_artifacts(artifacts: list[str], data_dir: str) -> list[str]:
+    """Rewrite absolute artifact paths under ``data_dir`` to data-relative ones.
+
+    dora_runner reports artifacts as absolute container paths (e.g.
+    ``/data/report/<pipeline>/<run_id>/plot.png``); relative to ``data_dir``
+    they are directly fetchable through ``GET /api/v1/files/{path}`` — which is
+    what lets the UI render a plugin's image artifacts inline with zero UI
+    edits (the dora-only visualisation channel). Paths outside ``data_dir``
+    (or already relative) pass through unchanged.
+    """
+    root = PurePosixPath(data_dir)
+    out: list[str] = []
+    for artifact in artifacts:
+        path = PurePosixPath(artifact)
+        try:
+            out.append(str(path.relative_to(root)) if path.is_absolute() else artifact)
+        except ValueError:  # absolute but outside data_dir
+            out.append(artifact)
+    return out
+
+
 @router.get("/{job_id}/result", response_model=JobResult)
 async def job_result(request: Request, job_id: str) -> JobResult:
-    """Return a terminal job result."""
+    """Return a terminal job result (artifacts normalised to data-relative)."""
     body = await request.app.state.dora_runner_client.job_result(job_id)
     result = JobResult.model_validate(body)
+    result.artifacts = _data_relative_artifacts(
+        result.artifacts, request.app.state.settings.data_dir
+    )
     status_body = await request.app.state.dora_runner_client.job_status(job_id)
     job = JobStatus.model_validate(status_body)
     if job.state not in {JobState.succeeded, JobState.failed, JobState.canceled}:

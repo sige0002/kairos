@@ -242,3 +242,50 @@ def test_dataset_export_rejected_for_unfinished_run(
     assert active.status_code == 409
     assert active.json()["error"]["code"] == "run_not_finished"
     assert missing.status_code == 404
+
+
+def test_job_result_artifacts_are_normalised_to_data_relative(
+    store: RunStore, fake_recorder: FakeRecorder
+) -> None:
+    """Absolute artifact paths under data_dir become data-relative in the result.
+
+    That makes every artifact directly fetchable via ``GET /api/v1/files/{path}``
+    — the zero-UI-edit channel a plugin uses to surface an image (plot) from its
+    report dir. Paths outside data_dir (or already relative) pass through.
+    """
+    settings = Settings(
+        data_dir="/data",
+        recording_config="/nonexistent/recording.yaml",
+        stream_config="/nonexistent/stream.yaml",
+    )
+    fake_dora = FakeDoraRunner()
+    original = fake_dora.handler
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.port == settings.dora_runner_port:
+            if request.url.path == f"/jobs/{fake_dora.job_id}/result":
+                return httpx.Response(
+                    200,
+                    json={
+                        "summary": {"result": "pass"},
+                        "artifacts": [
+                            "/data/report/hello_kairos/run_a/plot.png",
+                            "/etc/passwd",  # outside data_dir: untouched
+                            "report/x/summary.json",  # already relative: untouched
+                        ],
+                    },
+                )
+            return original(request)
+        return fake_recorder.handler(request)
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_orchestrator_app(settings, store=store, http_client=http_client)
+    with TestClient(app) as client:
+        result = client.get("/api/v1/jobs/job_test/result")
+
+    assert result.status_code == 200
+    assert result.json()["artifacts"] == [
+        "report/hello_kairos/run_a/plot.png",
+        "/etc/passwd",
+        "report/x/summary.json",
+    ]

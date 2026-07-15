@@ -10,6 +10,7 @@
 // (loss_report, video_check, and any plugin) lands here.
 
 import type { ReactNode } from 'react';
+import { getApiBase } from '../../api/client';
 import { Badge, Card, SectionLabel } from '../../components/ui';
 
 /** A job summary is free-form JSON; only a handful of keys are conventional. */
@@ -55,6 +56,56 @@ function Value({ value }: { value: unknown }): ReactNode {
     );
   }
   return <Scalar value={value} />;
+}
+
+// ---- Artifacts ---------------------------------------------------------------
+// The zero-UI-edit visualisation channel for plugins: the orchestrator returns
+// artifact paths RELATIVE to the data dir (JobResult normalisation), which makes
+// each one fetchable via GET /api/v1/files/{path}. An image artifact (a plot a
+// pipeline wrote next to its summary.json) renders inline; any other fetchable
+// file becomes a download link; a path that couldn't be normalised (absolute =
+// outside the data dir) stays plain text — we never fabricate a link that 404s.
+
+const IMAGE_EXT = /\.(png|jpe?g|gif|svg|webp)$/i;
+
+/** `/api/v1/files/…` URL for a data-relative artifact path; null when absolute. */
+export function artifactHref(path: string): string | null {
+  if (path.startsWith('/')) return null;
+  return `${getApiBase()}/files/${path.split('/').map(encodeURIComponent).join('/')}`;
+}
+
+function Artifact({ path }: { path: string }) {
+  const href = artifactHref(path);
+  if (!href) {
+    return <p className="truncate font-mono text-[11px] text-gray-500">{path}</p>;
+  }
+  if (IMAGE_EXT.test(path)) {
+    return (
+      <figure className="my-1.5">
+        <img
+          src={href}
+          alt={path}
+          loading="lazy"
+          className="max-h-64 max-w-full rounded-control border border-gray-100"
+        />
+        <figcaption className="mt-0.5 truncate font-mono text-[11px] text-gray-500">
+          {path}
+        </figcaption>
+      </figure>
+    );
+  }
+  return (
+    <p className="truncate font-mono text-[11px]">
+      <a
+        href={href}
+        target="_blank"
+        rel="noreferrer"
+        className="text-teal-700 underline decoration-dotted hover:text-teal-800"
+      >
+        {path}
+      </a>
+    </p>
+  );
 }
 
 function KeyValueRows({ data, nested = false }: { data: Record<string, unknown>; nested?: boolean }) {
@@ -130,9 +181,7 @@ export function SummaryResult({
         <div className="border-t border-gray-100 px-[18px] py-3">
           <p className="mb-1 text-[10px] uppercase tracking-[0.05em] text-gray-400">Artifacts</p>
           {artifacts.map((path) => (
-            <p key={path} className="truncate font-mono text-[11px] text-gray-500">
-              {path}
-            </p>
+            <Artifact key={path} path={path} />
           ))}
         </div>
       )}
