@@ -510,10 +510,20 @@ class BatchCreateRequest(BaseModel):
 
 class BatchPatchRequest(BaseModel):
     """Body for ``PATCH /api/v1/batches/{id}`` (early stop / condition /
-    mid-batch target change)."""
+    mid-batch target change).
+
+    ``project``/``task`` are patchable for the empty-batch case only: Collect
+    updates a not-yet-recorded batch in place when the operator switches
+    project/task before the first recording (a batch with recordings rolls over
+    to a new one instead). Without these, such a batch kept its original
+    project/task server-side and later episodes drifted from the operator's
+    choice in ``index.jsonl``.
+    """
 
     status: BatchStatus | None = None
     ended_reason: str | None = None
+    project: str | None = None
+    task: str | None = None
     condition: str | None = None
     target_episodes: int | None = Field(default=None, ge=1, le=500)
 

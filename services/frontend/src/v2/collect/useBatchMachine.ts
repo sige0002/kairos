@@ -2193,9 +2193,18 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
         return;
       }
       dispatch({ type: 'SET_PROJECT', ...next });
+      // An empty batch may already exist (e.g. after Start next set → ensureBatch).
+      // Sync the relabel so later episodes don't drift from the operator's choice
+      // in index.jsonl. A '—' (no) condition is omitted, matching the create path.
+      if (state.batchId)
+        void patchBatch(state.batchId, {
+          project: next.project,
+          task: next.task,
+          condition: next.condition !== '—' ? next.condition : undefined,
+        }).catch(() => {});
       showToast('Project switched — plan reloaded');
     },
-    [rolloverSet, showToast],
+    [state.batchId, rolloverSet, showToast],
   );
   const pickTask = useCallback(
     (name: string) => {
@@ -2211,9 +2220,15 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
         return;
       }
       dispatch({ type: 'SET_TASK', task: next.task, condition: next.condition });
+      // Sync the relabel onto an already-created empty batch (see pickProject).
+      if (state.batchId)
+        void patchBatch(state.batchId, {
+          task: next.task,
+          condition: next.condition !== '—' ? next.condition : undefined,
+        }).catch(() => {});
       showToast('Task switched');
     },
-    [state.project, rolloverSet, showToast],
+    [state.project, state.batchId, rolloverSet, showToast],
   );
   const pickCustomTask = useCallback(
     (name: string) => {
@@ -2231,9 +2246,14 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
         return;
       }
       dispatch({ type: 'SET_TASK', task: trimmed, condition: '—' });
+      // Sync the task onto an already-created empty batch. A free-text task has
+      // no plan condition ('—'), so only the task is sent — the batch keeps any
+      // prior condition (PATCH can't clear it to null; a minor residual).
+      if (state.batchId)
+        void patchBatch(state.batchId, { task: trimmed }).catch(() => {});
       showToast('Custom task set');
     },
-    [state.project, rolloverSet, showToast],
+    [state.project, state.batchId, rolloverSet, showToast],
   );
   const pickCondition = useCallback(
     (condition: string) => {

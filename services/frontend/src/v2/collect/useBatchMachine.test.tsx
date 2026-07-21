@@ -1808,6 +1808,131 @@ test('pickCustomCondition trims whitespace and ignores an empty value', async ()
   );
 });
 
+test('changing the task before any recording PATCHes {task, condition} onto the empty batch in place', async () => {
+  const { calls } = phase2Fetch({
+    activeBatches: [
+      {
+        batch_id: 'batch0',
+        batch_seq: 4,
+        project: 'Tabletop Manipulation',
+        task: 'Pick and Place',
+        condition: 'Object: Left → Tray: Center',
+        target_episodes: 20,
+        status: 'active',
+        episode_count: 0,
+        episodes: [],
+      },
+    ],
+  });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  await waitFor(() => expect(result.current.batchSeq).toBe(4));
+
+  act(() => result.current.pickTask('Stacking'));
+
+  // In place: same set, task + its first condition synced to the server.
+  expect(result.current.batchSeq).toBe(4);
+  expect(result.current.task).toBe('Stacking');
+  expect(result.current.condition).toBe('Blocks: 3');
+  await waitFor(() =>
+    expect(
+      calls.some(
+        (c) =>
+          c.url.includes('/batches/batch0') &&
+          c.method === 'PATCH' &&
+          c.body?.task === 'Stacking' &&
+          c.body?.condition === 'Blocks: 3',
+      ),
+    ).toBe(true),
+  );
+  // Not a rollover — no terminal PATCH.
+  expect(
+    calls.some((c) => c.method === 'PATCH' && c.body?.status === 'ended_early'),
+  ).toBe(false);
+});
+
+test('changing the project before any recording PATCHes {project, task, condition} in place', async () => {
+  const { calls } = phase2Fetch({
+    activeBatches: [
+      {
+        batch_id: 'batch0',
+        batch_seq: 4,
+        project: 'Tabletop Manipulation',
+        task: 'Pick and Place',
+        condition: 'Object: Left → Tray: Center',
+        target_episodes: 20,
+        status: 'active',
+        episode_count: 0,
+        episodes: [],
+      },
+    ],
+  });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  await waitFor(() => expect(result.current.batchSeq).toBe(4));
+
+  act(() => result.current.pickProject('Bin Picking'));
+
+  expect(result.current.batchSeq).toBe(4);
+  expect(result.current.project).toBe('Bin Picking');
+  expect(result.current.task).toBe('Bin to Tray');
+  expect(result.current.condition).toBe('Bin: full');
+  await waitFor(() =>
+    expect(
+      calls.some(
+        (c) =>
+          c.url.includes('/batches/batch0') &&
+          c.method === 'PATCH' &&
+          c.body?.project === 'Bin Picking' &&
+          c.body?.task === 'Bin to Tray' &&
+          c.body?.condition === 'Bin: full',
+      ),
+    ).toBe(true),
+  );
+});
+
+test('a custom task before any recording PATCHes only {task} (no condition sent — batch keeps its prior one)', async () => {
+  const { calls } = phase2Fetch({
+    activeBatches: [
+      {
+        batch_id: 'batch0',
+        batch_seq: 4,
+        project: 'Tabletop Manipulation',
+        task: 'Pick and Place',
+        condition: 'Object: Left → Tray: Center',
+        target_episodes: 20,
+        status: 'active',
+        episode_count: 0,
+        episodes: [],
+      },
+    ],
+  });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  await waitFor(() => expect(result.current.batchSeq).toBe(4));
+
+  act(() => result.current.pickCustomTask('  Handover  '));
+
+  // In place, trimmed; the machine clears the condition to '—' locally.
+  expect(result.current.batchSeq).toBe(4);
+  expect(result.current.task).toBe('Handover');
+  expect(result.current.condition).toBe('—');
+  await waitFor(() =>
+    expect(
+      calls.some((c) => c.url.includes('/batches/batch0') && c.method === 'PATCH'),
+    ).toBe(true),
+  );
+  const patch = calls.find(
+    (c) => c.url.includes('/batches/batch0') && c.method === 'PATCH',
+  )!;
+  expect(patch.body).toEqual({ task: 'Handover' });
+  // A '—' condition is never sent (matches the create path's omit).
+  expect('condition' in (patch.body ?? {})).toBe(false);
+});
+
 test('changing the task once the set has a recording rolls over with a Task change reason', async () => {
   const { calls } = phase2Fetch({ runId: 'run_t', batchId: 'batch_t' });
   const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {

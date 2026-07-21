@@ -798,6 +798,11 @@ export interface BatchCreateRequest {
 export interface BatchPatchRequest {
   status?: BatchStatus;
   ended_reason?: string | null;
+  /** Empty-batch re-label only: Collect PATCHes project/task when the operator
+   *  switches them before the batch's first recording (a batch with recordings
+   *  rolls over to a new one instead). */
+  project?: string | null;
+  task?: string | null;
   condition?: string | null;
   /** Mid-batch plan-size change (Collect's Change target…). */
   target_episodes?: number;

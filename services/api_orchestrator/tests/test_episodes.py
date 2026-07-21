@@ -98,6 +98,37 @@ def test_patch_batch_condition_change(client: TestClient) -> None:
     assert body["ended_at"] is None  # non-terminal patch doesn't stamp end
 
 
+def test_patch_batch_project_task_relabel(client: TestClient) -> None:
+    # An empty batch the operator re-labels before its first recording: the
+    # project/task/condition patch reaches the batch row so later episodes don't
+    # drift from the operator's choice in index.jsonl.
+    batch_id = _new_batch(client, project="proj", task="pick", condition="cond_a")[
+        "batch_id"
+    ]
+    body = client.patch(
+        f"/api/v1/batches/{batch_id}",
+        json={"project": "proj2", "task": "place", "condition": "cond_b"},
+    ).json()
+    assert body["project"] == "proj2"
+    assert body["task"] == "place"
+    assert body["condition"] == "cond_b"
+    assert body["status"] == "active"  # non-terminal patch
+    assert body["ended_at"] is None
+
+
+def test_patch_batch_task_only_leaves_project_and_condition(client: TestClient) -> None:
+    # A free-text (custom) task sends only `task`; omitted fields keep their value.
+    batch_id = _new_batch(client, project="proj", task="pick", condition="cond_a")[
+        "batch_id"
+    ]
+    body = client.patch(
+        f"/api/v1/batches/{batch_id}", json={"task": "handover"}
+    ).json()
+    assert body["task"] == "handover"
+    assert body["project"] == "proj"  # unchanged
+    assert body["condition"] == "cond_a"  # unchanged (omitted → kept)
+
+
 def test_patch_missing_batch_is_404(client: TestClient) -> None:
     resp = client.patch("/api/v1/batches/batch_nope", json={"status": "completed"})
     assert resp.status_code == 404

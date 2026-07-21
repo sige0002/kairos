@@ -166,8 +166,10 @@ async def create_batch(request: Request, body: BatchCreateRequest) -> Batch:
 async def patch_batch(
     request: Request, batch_id: str, body: BatchPatchRequest
 ) -> Batch:
-    """Update a batch: early stop (``status``/``ended_reason``) or condition
-    change. Entering a terminal status stamps ``ended_at`` once."""
+    """Update a batch: early stop (``status``/``ended_reason``) or a
+    project/task/condition change (the latter used for an empty batch the
+    operator re-labels before its first recording). Entering a terminal status
+    stamps ``ended_at`` once."""
     store = _store(request)
     batch = store.get_batch(batch_id)
     if batch is None:
@@ -177,6 +179,10 @@ async def patch_batch(
         fields["status"] = body.status
     if body.ended_reason is not None:
         fields["ended_reason"] = body.ended_reason
+    if body.project is not None:
+        fields["project"] = body.project
+    if body.task is not None:
+        fields["task"] = body.task
     if body.condition is not None:
         fields["condition"] = body.condition
     if body.target_episodes is not None:
