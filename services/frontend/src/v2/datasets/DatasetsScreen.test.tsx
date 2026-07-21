@@ -247,18 +247,20 @@ test('recency sort lists newest-exported first; A–Z sort lists by task name', 
 
 // ---- selection: group -> episode table -> detail -------------------------
 
-test('selecting a leaf group lists its episodes in the center table', async () => {
+test('selecting a leaf group scopes the top pane to its episodes', async () => {
   mockFetch({ list: LIST_RESPONSE });
   renderWithClient(<DatasetsScreen />);
   await waitFor(() => expect(screen.getByTestId(shelfLeaf)).toBeInTheDocument());
 
-  // No group selected -> honest explanatory empty state, never blank.
-  expect(screen.getByTestId('dataset-center-empty')).toBeInTheDocument();
+  // No group selected -> the whole-catalog scope (title + summary), never blank.
+  expect(screen.getByTestId('dataset-scope-title')).toHaveTextContent('All datasets');
+  expect(screen.getByTestId('dataset-scope-summary')).toBeInTheDocument();
 
   fireEvent.click(screen.getByTestId(shelfLeaf));
-  await waitFor(() => expect(screen.getByTestId('dataset-episode-table')).toBeInTheDocument());
-  expect(screen.getByTestId('dataset-group-header')).toHaveTextContent('shelf_restock');
+  expect(screen.getByTestId('dataset-scope-title')).toHaveTextContent('shelf_restock');
+  // Scoped to shelf_restock: its episode is listed, the kitchen episodes are not.
   expect(screen.getByTestId(`dataset-episode-row-${SHELF_A.dataset_dir}`)).toBeInTheDocument();
+  expect(screen.queryByTestId(`dataset-episode-row-${KP_DIM_A.dataset_dir}`)).toBeNull();
 });
 
 test('selecting a condition group lists exactly that condition’s episodes', async () => {
@@ -269,8 +271,8 @@ test('selecting a condition group lists exactly that condition’s episodes', as
   fireEvent.click(screen.getByTestId(kitchenTask)); // expand
   fireEvent.click(screen.getByTestId(dimGroup));
 
-  await waitFor(() => expect(screen.getByTestId('dataset-episode-table')).toBeInTheDocument());
-  expect(screen.getByTestId('dataset-group-header')).toHaveTextContent('dim');
+  expect(screen.getByTestId('dataset-scope-title')).toHaveTextContent('kitchen_pick');
+  expect(within(screen.getByTestId('dataset-top-pane')).getByText('dim')).toBeInTheDocument();
   expect(screen.getByTestId(`dataset-episode-row-${KP_DIM_A.dataset_dir}`)).toBeInTheDocument();
   expect(screen.getByTestId(`dataset-episode-row-${KP_DIM_B.dataset_dir}`)).toBeInTheDocument();
   // The bright episode belongs to a different group and is absent.
@@ -354,11 +356,13 @@ test('selecting a different group clears the episode selection', async () => {
   fireEvent.click(await screen.findByTestId(`dataset-episode-row-${SHELF_A.dataset_dir}`));
   await waitFor(() => expect(screen.getByTestId('dataset-stats')).toBeInTheDocument());
 
-  // Switch to another group -> the detail (episode selection) is gone.
+  // Switch to another group -> the detail (episode selection) is gone, and the
+  // bottom pane falls back to that group's summary.
   fireEvent.click(screen.getByTestId(kitchenTask));
   fireEvent.click(screen.getByTestId(dimGroup));
   expect(screen.queryByTestId('dataset-stats')).toBeNull();
-  expect(screen.getByTestId('dataset-group-header')).toHaveTextContent('dim');
+  expect(screen.getByTestId('dataset-scope-title')).toHaveTextContent('kitchen_pick');
+  expect(screen.getByTestId('dataset-scope-summary')).toBeInTheDocument();
 });
 
 // ---- delete flow ---------------------------------------------------------
@@ -541,8 +545,9 @@ test('honest empty state when there are no exported datasets (not a blank panel)
   renderWithClient(<DatasetsScreen />);
   await waitFor(() => expect(screen.getByTestId('dataset-list-empty')).toBeInTheDocument());
   expect(screen.getByTestId('dataset-list-empty')).toHaveTextContent('No datasets yet.');
-  // The center + rail still render their skeletons, never blank.
-  expect(screen.getByTestId('dataset-center-empty')).toBeInTheDocument();
+  // The center shows the catalog summary (zero episodes) — honest, never blank.
+  expect(screen.getByTestId('dataset-scope-summary')).toBeInTheDocument();
+  expect(screen.getByTestId('dataset-summary-empty')).toBeInTheDocument();
   expect(screen.getByTestId('build-dataset-btn')).toBeInTheDocument();
 });
 
@@ -602,4 +607,134 @@ test('dataset inspection posts a loss_report job against the exported dir', asyn
     expect(body.run_id).toBe('r4');
     expect(body.params.dataset_dir).toBe(SHELF_A.dataset_dir);
   });
+});
+
+// ---- center split: panes, episode search, toggle, scope summary ----------
+
+test('the center is a top episode pane over a bottom detail/summary pane', async () => {
+  mockFetch({ list: LIST_RESPONSE });
+  renderWithClient(<DatasetsScreen />);
+  await waitFor(() => expect(screen.getByTestId('dataset-top-pane')).toBeInTheDocument());
+
+  expect(screen.getByTestId('dataset-bottom-pane')).toBeInTheDocument();
+  expect(screen.getByTestId('dataset-summary-row')).toBeInTheDocument();
+  // Default (no episode selected) -> the bottom pane shows the scope summary.
+  expect(
+    within(screen.getByTestId('dataset-bottom-pane')).getByTestId('dataset-scope-summary'),
+  ).toBeInTheDocument();
+});
+
+test('the episode list has a capped, internally-scrolling region', async () => {
+  mockFetch({ list: LIST_RESPONSE });
+  renderWithClient(<DatasetsScreen />);
+  await waitFor(() => expect(screen.getByTestId('dataset-episode-scroll')).toBeInTheDocument());
+  const scroll = screen.getByTestId('dataset-episode-scroll');
+  expect(scroll.className).toContain('overflow-y-auto');
+  expect(scroll.className).toContain('max-h-[370px]'); // ~10 rows
+});
+
+test('episode search filters rows by index, #set, operator, and failure reason', async () => {
+  // Whole-catalog scope lists all five episodes; the episode search narrows them.
+  mockFetch({ list: LIST_RESPONSE });
+  renderWithClient(<DatasetsScreen />);
+  await waitFor(() =>
+    expect(screen.getByTestId(`dataset-episode-row-${SHELF_A.dataset_dir}`)).toBeInTheDocument(),
+  );
+  const box = screen.getByTestId('dataset-episode-search');
+
+  // index NNN
+  fireEvent.change(box, { target: { value: '002' } });
+  expect(screen.getByTestId(`dataset-episode-row-${KP_DIM_B.dataset_dir}`)).toBeInTheDocument();
+  expect(screen.queryByTestId(`dataset-episode-row-${SHELF_A.dataset_dir}`)).toBeNull();
+
+  // operator
+  fireEvent.change(box, { target: { value: 'op_b' } });
+  expect(screen.getByTestId(`dataset-episode-row-${KP_DIM_B.dataset_dir}`)).toBeInTheDocument();
+  expect(screen.queryByTestId(`dataset-episode-row-${KP_DIM_A.dataset_dir}`)).toBeNull();
+
+  // set seq, # optional -> both KP_DIM rows (batch_seq 6)
+  fireEvent.change(box, { target: { value: '#6' } });
+  expect(screen.getByTestId(`dataset-episode-row-${KP_DIM_A.dataset_dir}`)).toBeInTheDocument();
+  expect(screen.getByTestId(`dataset-episode-row-${KP_DIM_B.dataset_dir}`)).toBeInTheDocument();
+
+  // failure reason
+  fireEvent.change(box, { target: { value: 'grasp' } });
+  expect(screen.getByTestId(`dataset-episode-row-${KP_DIM_B.dataset_dir}`)).toBeInTheDocument();
+  expect(screen.queryByTestId(`dataset-episode-row-${SHELF_A.dataset_dir}`)).toBeNull();
+
+  // A no-match search explains itself; the pinned Summary row survives it.
+  fireEvent.change(box, { target: { value: 'zzz-none' } });
+  expect(screen.getByTestId('dataset-episode-search-empty')).toBeInTheDocument();
+  expect(screen.getByTestId('dataset-summary-row')).toBeInTheDocument();
+});
+
+test('clicking a selected episode again toggles it off, back to the summary', async () => {
+  mockFetch({
+    list: LIST_RESPONSE,
+    details: { [detailUrlFor(SHELF_A)]: detailFor(SHELF_A) },
+  });
+  renderWithClient(<DatasetsScreen />);
+  const rowId = `dataset-episode-row-${SHELF_A.dataset_dir}`;
+  await waitFor(() => expect(screen.getByTestId(rowId)).toBeInTheDocument());
+
+  fireEvent.click(screen.getByTestId(rowId));
+  await waitFor(() => expect(screen.getByTestId('dataset-stats')).toBeInTheDocument());
+
+  // Toggle: clicking the same row again clears the selection.
+  fireEvent.click(screen.getByTestId(rowId));
+  expect(screen.queryByTestId('dataset-stats')).toBeNull();
+  expect(screen.getByTestId('dataset-scope-summary')).toBeInTheDocument();
+});
+
+test('the pinned Summary row clears the episode selection', async () => {
+  mockFetch({
+    list: LIST_RESPONSE,
+    details: { [detailUrlFor(SHELF_A)]: detailFor(SHELF_A) },
+  });
+  renderWithClient(<DatasetsScreen />);
+  await waitFor(() =>
+    expect(screen.getByTestId(`dataset-episode-row-${SHELF_A.dataset_dir}`)).toBeInTheDocument(),
+  );
+  fireEvent.click(screen.getByTestId(`dataset-episode-row-${SHELF_A.dataset_dir}`));
+  await waitFor(() => expect(screen.getByTestId('dataset-stats')).toBeInTheDocument());
+
+  fireEvent.click(screen.getByTestId('dataset-summary-row'));
+  expect(screen.queryByTestId('dataset-stats')).toBeNull();
+  expect(screen.getByTestId('dataset-scope-summary')).toBeInTheDocument();
+});
+
+test('the summary scope is the whole catalog by default, then the selected group', async () => {
+  mockFetch({ list: LIST_RESPONSE });
+  renderWithClient(<DatasetsScreen />);
+  await waitFor(() => expect(screen.getByTestId(shelfLeaf)).toBeInTheDocument());
+
+  expect(screen.getByTestId('dataset-summary-scope')).toHaveTextContent('All datasets');
+  fireEvent.click(screen.getByTestId(shelfLeaf));
+  expect(screen.getByTestId('dataset-summary-scope')).toHaveTextContent('shelf_restock');
+});
+
+test('the summary donut rate is over LABELED rows only; unlabeled are surfaced separately', async () => {
+  // Catalog: 3 success + 1 failure labeled, 1 unlabeled (LEGACY). 3/4 = 75%.
+  mockFetch({ list: LIST_RESPONSE });
+  renderWithClient(<DatasetsScreen />);
+  await waitFor(() => expect(screen.getByTestId('dataset-outcome-donut')).toBeInTheDocument());
+
+  expect(screen.getByTestId('dataset-success-rate')).toHaveTextContent('75%');
+  // The unlabeled row is stated, not folded into the rate as a success.
+  expect(screen.getByTestId('dataset-summary-unlabeled')).toHaveTextContent('1 without labels');
+  // Quality tallies are real (all four labeled rows are "good").
+  expect(screen.getByTestId('dataset-summary-quality')).toHaveTextContent('Good 4');
+});
+
+test('a scope with zero labeled rows shows an honest note, not a fabricated donut', async () => {
+  mockFetch({ list: { datasets: [LEGACY] } });
+  renderWithClient(<DatasetsScreen />);
+  // Wait for the (unlabeled) row to load so the scope has episodes but no labels.
+  await waitFor(() =>
+    expect(screen.getByTestId(`dataset-episode-row-${LEGACY.dataset_dir}`)).toBeInTheDocument(),
+  );
+
+  expect(screen.getByTestId('dataset-donut-empty')).toBeInTheDocument();
+  expect(screen.queryByTestId('dataset-outcome-donut')).toBeNull();
+  expect(screen.queryByTestId('dataset-success-rate')).toBeNull();
 });

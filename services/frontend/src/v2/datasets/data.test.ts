@@ -7,12 +7,14 @@ import {
   distinctOperators,
   entryMatchesFacets,
   entryMatchesSearch,
+  episodeMatchesSearch,
   filterEntries,
   findGroup,
   groupKey,
   groupSummarySegments,
   isLeafTask,
   operatorSegment,
+  outcomeBreakdown,
   rowEpisode,
 } from './data';
 
@@ -239,5 +241,72 @@ describe('rowEpisode', () => {
     expect(rowEpisode(entry({}))).toBeNull();
     // A partial label (result but no quality) still yields nothing fabricated.
     expect(rowEpisode(entry({ task_result: 'success' }))).toBeNull();
+  });
+});
+
+describe('aggregate — quality + totals (scope summary)', () => {
+  test('tallies quality labels and sums messages, independent of task_result', () => {
+    const agg = aggregate([
+      entry({ quality: 'good', message_count: 10 }),
+      entry({ quality: 'good', message_count: 20 }),
+      entry({ quality: 'needs_review', message_count: 5 }),
+      entry({ quality: 'not_usable', message_count: 1 }),
+      entry({ message_count: 4 }), // no quality
+    ]);
+    expect(agg.qualityGood).toBe(2);
+    expect(agg.qualityNeedsReview).toBe(1);
+    expect(agg.qualityNotUsable).toBe(1);
+    expect(agg.qualityLabeledCount).toBe(4);
+    expect(agg.totalMessages).toBe(40);
+  });
+});
+
+describe('outcomeBreakdown', () => {
+  test('rate is over labeled rows only; unlabeled surfaced separately, never a success', () => {
+    const agg = aggregate([
+      entry({ task_result: 'success' }),
+      entry({ task_result: 'success' }),
+      entry({ task_result: 'success' }),
+      entry({ task_result: 'failure' }),
+      entry({}), // unlabeled
+    ]);
+    const o = outcomeBreakdown(agg);
+    expect(o.labeled).toBe(4);
+    expect(o.success).toBe(3);
+    expect(o.failure).toBe(1);
+    expect(o.successRate).toBeCloseTo(0.75, 5);
+    expect(o.unlabeled).toBe(1);
+  });
+
+  test('successRate is null (not 0) when the scope has no labeled rows', () => {
+    const o = outcomeBreakdown(aggregate([entry({}), entry({})]));
+    expect(o.labeled).toBe(0);
+    expect(o.successRate).toBeNull();
+    expect(o.unlabeled).toBe(2);
+  });
+});
+
+describe('episodeMatchesSearch', () => {
+  const row = entry({
+    index: '017',
+    operator: 'alice',
+    failure_reason: 'Grasp missed',
+    batch_seq: 6,
+  });
+
+  test('matches index, operator, failure reason, and batch seq (# optional)', () => {
+    expect(episodeMatchesSearch(row, '017')).toBe(true);
+    expect(episodeMatchesSearch(row, 'ali')).toBe(true);
+    expect(episodeMatchesSearch(row, 'grasp')).toBe(true); // case-insensitive
+    expect(episodeMatchesSearch(row, '6')).toBe(true);
+    expect(episodeMatchesSearch(row, '#6')).toBe(true);
+    expect(episodeMatchesSearch(row, 'nope')).toBe(false);
+    expect(episodeMatchesSearch(row, '')).toBe(true);
+  });
+
+  test('does NOT match on task/condition (those live in the tree search)', () => {
+    const r = entry({ index: '1', task: 'kitchen_pick', condition: 'dim', operator: 'op' });
+    expect(episodeMatchesSearch(r, 'kitchen')).toBe(false);
+    expect(episodeMatchesSearch(r, 'dim')).toBe(false);
   });
 });

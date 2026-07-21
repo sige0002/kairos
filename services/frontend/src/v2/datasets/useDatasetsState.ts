@@ -17,18 +17,33 @@ import { queryKeys } from '../../api/queryKeys';
 import type { DatasetDetail, DatasetEntry, DatasetsResponse } from '../../api/types';
 import {
   ANY_OPERATOR,
+  aggregate,
   buildTaskTree,
   distinctOperators,
+  episodeMatchesSearch,
   filterEntries,
   findGroup,
   sameDataset,
+  sortEpisodes,
   type DatasetGroup,
+  type GroupAggregate,
   type SortMode,
   type TaskNode,
   type TaskResultFilter,
 } from './data';
 
 export type { TaskResultFilter } from './data';
+
+/** The scope the center's summary view describes: the selected (task, condition)
+ *  group, or — when none is selected — the whole filtered catalog. */
+export interface ScopeSummary {
+  kind: 'group' | 'catalog';
+  /** Header label ("kitchen_pick", "All datasets"). */
+  label: string;
+  /** The group's condition (null for a null-condition group and for catalog). */
+  condition: string | null;
+  aggregate: GroupAggregate;
+}
 
 export interface DatasetsState {
   /** The filtered task -> condition tree the left column renders. */
@@ -60,9 +75,26 @@ export interface DatasetsState {
   selectGroup: (key: string) => void;
   isGroupSelected: (key: string) => boolean;
 
+  // Episode selection within the scope. selectEntry TOGGLES: clicking the
+  // already-selected row (or the summary row) clears it and returns to summary.
   selected: DatasetEntry | null;
   selectEntry: (entry: DatasetEntry) => void;
   isEntrySelected: (entry: DatasetEntry) => boolean;
+  /** Clear the episode selection (the pinned Summary row does this). */
+  selectSummary: () => void;
+  /** True when no episode is selected — the bottom pane shows the scope summary. */
+  isSummaryActive: boolean;
+
+  /** Episode-row search inside the top pane (distinct from the tree search). */
+  episodeSearch: string;
+  setEpisodeSearch: (s: string) => void;
+  /** Every episode in the current scope (group's rows, else the filtered catalog),
+   *  sorted newest-first — the denominator for "n of m" in the top pane. */
+  scopeEpisodes: DatasetEntry[];
+  /** scopeEpisodes narrowed by episodeSearch — the rows actually rendered. */
+  episodeRows: DatasetEntry[];
+  /** The summary the bottom pane shows when no episode is selected. */
+  scope: ScopeSummary;
 
   detail: DatasetDetail | null;
   detailLoading: boolean;
@@ -99,6 +131,7 @@ export function useDatasetsState(): DatasetsState {
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [search, setSearch] = useState('');
+  const [episodeSearch, setEpisodeSearch] = useState('');
   const [sort, setSort] = useState<SortMode>('recent');
   const [taskResultFilter, setTaskResultFilter] = useState<TaskResultFilter>('all');
   const [operatorFilter, setOperatorFilter] = useState<string>(ANY_OPERATOR);
@@ -142,7 +175,45 @@ export function useDatasetsState(): DatasetsState {
   const selectGroup = useCallback((key: string) => {
     setSelectedGroupKey(key);
     setSelected(null); // switching groups clears the episode selection
+    setEpisodeSearch(''); // and its one-shot episode search
   }, []);
+
+  // Toggle: clicking the already-selected episode clears it (back to summary).
+  const selectEntry = useCallback((entry: DatasetEntry) => {
+    setSelected((cur) => (cur && cur.dataset_dir === entry.dataset_dir ? null : entry));
+  }, []);
+  const selectSummary = useCallback(() => setSelected(null), []);
+
+  // Scope for the top-pane episode list + the bottom-pane summary: the selected
+  // group, else the whole filtered catalog (this replaces the old "no group
+  // selected" empty state with a useful whole-catalog overview).
+  const scopeEpisodes = useMemo(
+    () => (selectedGroup ? selectedGroup.entries : sortEpisodes(filtered)),
+    [selectedGroup, filtered],
+  );
+  const scopeAggregate = useMemo(
+    () => (selectedGroup ? selectedGroup.aggregate : aggregate(filtered)),
+    [selectedGroup, filtered],
+  );
+  const scope: ScopeSummary = useMemo(
+    () =>
+      selectedGroup
+        ? {
+            kind: 'group',
+            label:
+              selectedGroup.task === 'unknown_task'
+                ? 'task not recorded'
+                : selectedGroup.task,
+            condition: selectedGroup.condition,
+            aggregate: scopeAggregate,
+          }
+        : { kind: 'catalog', label: 'All datasets', condition: null, aggregate: scopeAggregate },
+    [selectedGroup, scopeAggregate],
+  );
+  const episodeRows = useMemo(
+    () => scopeEpisodes.filter((e) => episodeMatchesSearch(e, episodeSearch)),
+    [scopeEpisodes, episodeSearch],
+  );
 
   const toggleTask = useCallback((task: string) => {
     setExpandedTasks((prev) => {
@@ -264,8 +335,15 @@ export function useDatasetsState(): DatasetsState {
     selectGroup,
     isGroupSelected: (key) => selectedGroupKey === key,
     selected,
-    selectEntry: setSelected,
+    selectEntry,
     isEntrySelected: (entry) => sameDataset(selected, entry),
+    selectSummary,
+    isSummaryActive: selected === null,
+    episodeSearch,
+    setEpisodeSearch,
+    scopeEpisodes,
+    episodeRows,
+    scope,
     detail: detailQuery.data ?? null,
     detailLoading: selected !== null && detailQuery.isPending,
     detailError: selected !== null && detailQuery.isError,
