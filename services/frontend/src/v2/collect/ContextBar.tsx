@@ -240,15 +240,16 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
         title="Change task (from plan)"
       />
       <Divider />
-      {/* Server batch number ("Batch N"), no fabricated "/5" planned-count.
-          Before the batch is created (on the first recording) we show an honest,
-          muted prediction of the number it will most likely get rather than a
-          bare "—". The real number is assigned server-side, hence "next". */}
+      {/* Server batch number (operator-facing "Set N"), no fabricated "/5"
+          planned-count. Before the set is created (on the first recording) we
+          show an honest, muted prediction of the number it will most likely get
+          rather than a bare "—". The real number is assigned server-side, hence
+          "next". */}
       <StaticCell
-        label="Batch"
+        label="Set"
         value={
           machine.batchSeq != null ? (
-            `Batch ${machine.batchSeq}`
+            `Set ${machine.batchSeq}`
           ) : (
             <span className="font-normal text-gray-400">
               next #{machine.predictedSeq ?? 1}
@@ -275,7 +276,7 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
         value={<span className="font-medium text-gray-700">{machine.condition}</span>}
         onClick={machine.openCondModal}
         disabled={!machine.condAllowed}
-        title="Change condition (applies from next episode)"
+        title="Change condition (starts a new set once this one has recordings)"
       />
       <Divider />
       <RobotCell disabled={!machine.ctxEditable} />
@@ -295,7 +296,7 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
         onClick={machine.toggleBatchMenu}
         className="inline-flex items-center gap-1.5 rounded-control border border-gray-200 bg-white px-3.5 py-2 text-[13px] font-semibold text-gray-700 hover:bg-gray-50"
       >
-        Batch menu <span className="text-[11px] text-gray-400">▾</span>
+        Set menu <span className="text-[11px] text-gray-400">▾</span>
       </button>
 
       {machine.projPickerOpen && (
@@ -340,12 +341,12 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
       {machine.batchMenuOpen && (
         <PickerPopover className="right-3.5 top-[58px] w-56">
           <MenuItem onClick={machine.pauseBatch} disabled={phase !== 'ready'}>
-            Pause batch
+            Pause set
           </MenuItem>
           <MenuItem onClick={machine.openEndModal} danger>
-            End batch early…
+            End set early…
           </MenuItem>
-          <MenuItem onClick={machine.openResetModal}>Reset batch…</MenuItem>
+          <MenuItem onClick={machine.openResetModal}>Reset set…</MenuItem>
           <MenuItem onClick={machine.openTargetModal}>Change target…</MenuItem>
           <MenuItem onClick={machine.openIssueModal}>Report issue…</MenuItem>
           <MenuItem onClick={machine.openCondModal} disabled={!machine.condAllowed}>

@@ -540,7 +540,7 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
     const saveLabel = isFail
       ? 'Save — failure'
       : willComplete
-        ? 'Save — success · finishes batch'
+        ? 'Save — success · finishes set'
         : 'Save — success';
     const effectiveQuality: QualityOverride =
       machine.qualityOverride ?? machine.autoQuality;
@@ -753,14 +753,14 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
           </span>
         </div>
         <span className="text-[12.5px] text-gray-500">
-          Batch is paused. Recorded episodes are safe.
+          Set is paused. Recorded episodes are safe.
         </span>
         <button
           type="button"
           onClick={machine.resumeBatch}
           className="h-[46px] rounded-control bg-teal-600 text-sm font-bold text-white hover:bg-teal-700"
         >
-          Resume batch
+          Resume set
         </button>
       </Card>
     );
@@ -779,7 +779,7 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
       >
         <div className="flex items-center gap-2">
           <span className="text-[15px] font-bold text-gray-900">
-            Batch {machine.batchSeq ?? '—'} ended early
+            Set {machine.batchSeq ?? '—'} ended early
           </span>
           <div className="flex-1" />
           <span className="rounded-chip bg-amber-100 px-2 py-0.5 text-[11px] font-bold text-amber-800">
@@ -795,7 +795,7 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
           onClick={machine.startNextBatch}
           className="h-[46px] rounded-control bg-teal-600 text-sm font-bold text-white hover:bg-teal-700"
         >
-          Set up next batch
+          Start next set
         </button>
       </Card>
     );
@@ -812,7 +812,7 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
     >
       <div className="flex items-center gap-2">
         <span className="text-[15px] font-bold text-gray-900">
-          Batch {machine.batchSeq ?? '—'} completed 🎉
+          Set {machine.batchSeq ?? '—'} completed 🎉
         </span>
         <div className="flex-1" />
         <span className="rounded-chip bg-green-100 px-2 py-0.5 text-[11px] font-bold text-green-700">
@@ -827,7 +827,7 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
         onClick={machine.startNextBatch}
         className="h-[46px] rounded-control bg-teal-600 text-sm font-bold text-white hover:bg-teal-700"
       >
-        Set up next batch
+        Start next set
       </button>
     </Card>
   );

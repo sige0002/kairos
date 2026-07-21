@@ -1,6 +1,6 @@
-// Collect-scoped modals (End batch early / Report issue / Change condition)
+// Collect-scoped modals (End set early / Report issue / Change condition)
 // plus the toast. Rendered at the screen level per the design mock's MODALS
-// section.
+// section. ("Set" is the operator-facing name for a batch.)
 
 import { useState } from 'react';
 import { Button, Modal, cn } from '../../components/ui';
@@ -41,8 +41,8 @@ function EndBatchModal({ machine }: { machine: BatchMachine }) {
       onClose={machine.closeModals}
       title={
         machine.batchSeq != null
-          ? `End batch ${machine.batchSeq} early?`
-          : 'End batch early?'
+          ? `End set ${machine.batchSeq} early?`
+          : 'End set early?'
       }
       footer={
         <>
@@ -54,7 +54,7 @@ function EndBatchModal({ machine }: { machine: BatchMachine }) {
             onClick={machine.confirmEndBatch}
             disabled={!canConfirm}
           >
-            End batch
+            End set
           </Button>
         </>
       }
@@ -80,7 +80,7 @@ function EndBatchModal({ machine }: { machine: BatchMachine }) {
         </div>
       </div>
       <p className="mt-3 text-[12.5px] leading-relaxed text-gray-500">
-        Recorded episodes are kept and stay visible in Review. This batch will be marked{' '}
+        Recorded episodes are kept and stay visible in Review. This set will be marked{' '}
         <strong className="text-gray-700">Incomplete</strong>.
       </p>
       <div className="mt-3 flex flex-col gap-1.5">
@@ -104,39 +104,39 @@ function EndBatchModal({ machine }: { machine: BatchMachine }) {
 }
 
 function ResetBatchModal({ machine }: { machine: BatchMachine }) {
-  // An empty batch (nothing recorded) has no server row and no number — resetting
-  // it is a pure local no-op that neither closes nor allocates any batch number.
+  // An empty set (nothing recorded) has no server row and no number — resetting
+  // it is a pure local no-op that neither closes nor allocates any set number.
   const empty = machine.stats.nRecorded === 0;
   const seq = machine.batchSeq != null ? ` ${machine.batchSeq}` : '';
   return (
     <Modal
       open={machine.resetModalOpen}
       onClose={machine.closeModals}
-      title={empty ? 'Reset batch?' : `Reset batch${seq}?`}
+      title={empty ? 'Reset set?' : `Reset set${seq}?`}
       footer={
         <>
           <Button variant="ghost" onClick={machine.closeModals}>
             Cancel
           </Button>
           <Button data-testid="reset-batch-confirm" onClick={machine.resetBatch}>
-            Reset batch
+            Reset set
           </Button>
         </>
       }
     >
       {empty ? (
         <p className="text-[12.5px] leading-relaxed text-gray-600">
-          Nothing has been recorded in this batch yet, so this just clears local state —
-          no batch is created or closed, and the batch number is unchanged.
+          Nothing has been recorded in this set yet, so this just clears local state —
+          no set is created or closed, and the set number is unchanged.
         </p>
       ) : (
         <>
           <p className="text-[12.5px] leading-relaxed text-gray-600">
-            This closes the current batch. The counter returns to{' '}
+            This closes the current set. The counter returns to{' '}
             <span className="font-mono text-gray-800">
               0 / {machine.targetEpisodes}
             </span>
-            ; the next batch number is assigned when you start your next recording.
+            ; the next set number is assigned when you start your next recording.
           </p>
           <p className="mt-2 text-[12.5px] leading-relaxed text-gray-600">
             The{' '}
@@ -176,7 +176,7 @@ function IssueModal({ machine }: { machine: BatchMachine }) {
       }
     >
       <p className="mb-2">
-        Attached to Batch {machine.batchSeq ?? '—'}, Episode {machine.stats.epNext}{' '}
+        Attached to Set {machine.batchSeq ?? '—'}, Episode {machine.stats.epNext}{' '}
         context automatically.
       </p>
       <textarea
@@ -193,6 +193,17 @@ function IssueModal({ machine }: { machine: BatchMachine }) {
 function ConditionModal({ machine }: { machine: BatchMachine }) {
   const plans = usePlans();
   const task = findTask(plans, machine.project, machine.task);
+  // Free-text condition input (mirrors the custom-task pattern: trim, ignore
+  // empty). A typed condition is just a string on the set — never added to the
+  // plan catalog.
+  const [custom, setCustom] = useState('');
+  const submitCustom = () => {
+    const trimmed = custom.trim();
+    if (!trimmed) return;
+    machine.pickCustomCondition(trimmed);
+    setCustom('');
+  };
+  const hasRecordings = machine.stats.nRecorded > 0;
   return (
     <Modal
       open={machine.condModalOpen}
@@ -205,7 +216,9 @@ function ConditionModal({ machine }: { machine: BatchMachine }) {
       }
     >
       <p className="mb-3">
-        Applies from the next episode. Current episode plans are unaffected.
+        {hasRecordings
+          ? 'This set already has recordings — changing the condition closes it and starts a new set, so earlier episodes keep their condition.'
+          : 'Applies to this set. No episodes are recorded yet.'}
       </p>
       <div className="flex flex-col gap-1.5">
         {task.conditions.map((c) => (
@@ -224,6 +237,29 @@ function ConditionModal({ machine }: { machine: BatchMachine }) {
           </button>
         ))}
       </div>
+      <div className="mt-3 flex gap-2">
+        <input
+          type="text"
+          value={custom}
+          onChange={(e) => setCustom(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              submitCustom();
+            }
+          }}
+          placeholder="Custom condition…"
+          data-testid="custom-condition-input"
+          className="min-w-0 flex-1 rounded-control border border-gray-200 px-3 py-2.5 text-sm text-gray-700 focus:border-teal-500 focus:outline-none"
+        />
+        <Button
+          data-testid="custom-condition-add"
+          disabled={!custom.trim()}
+          onClick={submitCustom}
+        >
+          Add
+        </Button>
+      </div>
     </Modal>
   );
 }
@@ -239,7 +275,7 @@ function TargetModal({ machine }: { machine: BatchMachine }) {
     <Modal
       open={machine.targetModalOpen}
       onClose={machine.closeModals}
-      title="Change batch target"
+      title="Change set target"
       footer={
         <>
           <Button variant="ghost" onClick={machine.closeModals}>
@@ -256,11 +292,11 @@ function TargetModal({ machine }: { machine: BatchMachine }) {
       }
     >
       <p className="mb-3 text-[12.5px] leading-relaxed text-gray-600">
-        Planned episodes for this batch (currently{' '}
+        Planned episodes for this set (currently{' '}
         <span className="font-mono text-gray-800">{machine.targetEpisodes}</span>,
         recorded{' '}
         <span className="font-mono text-gray-800">{machine.stats.nRecorded}</span>).
-        Applies to the current batch and is inherited by the next one.
+        Applies to the current set and is inherited by the next one.
       </p>
       <input
         type="number"
@@ -276,7 +312,7 @@ function TargetModal({ machine }: { machine: BatchMachine }) {
       {completesNow && (
         <p className="mt-2 text-[12px] leading-relaxed text-amber-700">
           {machine.stats.nRecorded} episode(s) are already recorded, so this target
-          marks the batch complete immediately.
+          marks the set complete immediately.
         </p>
       )}
     </Modal>

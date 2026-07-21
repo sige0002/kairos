@@ -456,27 +456,27 @@ test('Collect degrades gracefully when its selected project is absent from the s
   expect(screen.getByRole('button', { name: 'Only Task' })).toBeInTheDocument();
 });
 
-test('Batch menu → Reset batch on an empty batch is a no-op (honest wording)', async () => {
+test('Set menu → Reset set on an empty set is a no-op (honest wording)', async () => {
   mockFetch({ run_id: 'run_1', state: 'recording' });
   renderWithClient(<CollectScreen />);
   await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
-  // No recording yet → no server batch → the Batch cell shows an honest, muted
+  // No recording yet → no server set → the Set cell shows an honest, muted
   // prediction of the next number instead of a bare "—".
   expect(screen.getByText(/assigned on first recording/)).toBeInTheDocument();
-  expect(screen.queryByText('Batch —')).toBeNull();
+  expect(screen.queryByText('Set —')).toBeNull();
 
-  fireEvent.click(screen.getByText('Batch menu'));
-  fireEvent.click(screen.getByText('Reset batch…'));
+  fireEvent.click(screen.getByText('Set menu'));
+  fireEvent.click(screen.getByText('Reset set…'));
 
-  // Empty batch → no-number title + no-op wording (nothing created or closed).
-  expect(screen.getByText('Reset batch?')).toBeInTheDocument();
+  // Empty set → no-number title + no-op wording (nothing created or closed).
+  expect(screen.getByText('Reset set?')).toBeInTheDocument();
   expect(screen.getByText(/Nothing has been recorded/)).toBeInTheDocument();
 
   fireEvent.click(screen.getByTestId('reset-batch-confirm'));
-  await waitFor(() => expect(screen.queryByText('Reset batch?')).toBeNull());
+  await waitFor(() => expect(screen.queryByText('Reset set?')).toBeNull());
   // Still the prediction pre-state: an empty reset never allocates a number.
   expect(screen.getByText(/assigned on first recording/)).toBeInTheDocument();
-  expect(screen.queryByText('Batch —')).toBeNull();
+  expect(screen.queryByText('Set —')).toBeNull();
 });
 
 // ---------------------------------------------------------------------------

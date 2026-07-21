@@ -1,7 +1,7 @@
 // Bottom-right episode strip: N / target counter + a horizontally scrollable
 // row of `targetEpisodes` chips (done / review / fail / current / future) +
-// running totals. The chip count follows the batch's own target (editable via
-// the Batch menu), not a fixed 30.
+// running totals. The chip count follows the set's own target (editable via
+// the Set menu), not a fixed 30.
 
 import { Card, cn } from '../../components/ui';
 import type { BatchMachine, EpisodeRecord } from './useBatchMachine';

@@ -1603,6 +1603,303 @@ test('after a reset, the next recording start lazily creates a fresh server batc
   );
 });
 
+// ---------------------------------------------------------------------------
+// Auto-rollover: a context change (project/task/condition) once the current set
+// already holds a recording closes it and opens a fresh set, so earlier episodes
+// keep their original context. A set with nothing recorded yet is updated in
+// place (no empty set minted).
+// ---------------------------------------------------------------------------
+
+test('ROLLOVER_SET resets counts/handles, keeps the target, applies the new context, and predicts the next set number from a known seq', () => {
+  const s0 = {
+    ...createState(),
+    batchSeq: 5,
+    batchId: 'batch_5',
+    recordedCount: 3,
+    targetEpisodes: 20,
+    episodes: [
+      { index: 1, quality: 'good' as const, taskResult: 'ok' as const, runId: 'r1' },
+    ],
+    phase: 'ready' as const,
+    pendingTask: 'ok' as const,
+    failReason: 'x',
+    currentRunId: 'r_live',
+    predictedSeq: 1,
+  };
+  const s = reducer(s0, {
+    type: 'ROLLOVER_SET',
+    project: 'Bin Picking',
+    task: 'Bin to Tray',
+    condition: 'Bin: full',
+  });
+  expect(s.episodes).toHaveLength(0);
+  expect(s.recordedCount).toBe(0);
+  expect(s.batchId).toBeNull();
+  expect(s.batchSeq).toBeNull();
+  expect(s.targetEpisodes).toBe(20); // inherited, not reset to 30
+  expect(s.project).toBe('Bin Picking');
+  expect(s.task).toBe('Bin to Tray');
+  expect(s.condition).toBe('Bin: full');
+  expect(s.phase).toBe('ready');
+  // In-flight / result fields are cleared like a fresh set.
+  expect(s.pendingTask).toBeNull();
+  expect(s.failReason).toBe('');
+  expect(s.currentRunId).toBeNull();
+  // The next set most likely gets old seq + 1.
+  expect(s.predictedSeq).toBe(6);
+});
+
+test('ROLLOVER_SET leaves predictedSeq unchanged when the closing set had no known seq', () => {
+  const s0 = {
+    ...createState(),
+    batchSeq: null,
+    recordedCount: 1,
+    predictedSeq: 3,
+  };
+  const s = reducer(s0, {
+    type: 'ROLLOVER_SET',
+    project: 'Kitchen Mobile',
+    task: 'Drawer Open',
+    condition: 'Drawer: top',
+  });
+  expect(s.batchSeq).toBeNull();
+  expect(s.recordedCount).toBe(0);
+  expect(s.predictedSeq).toBe(3); // unknown old seq → left as-is
+});
+
+test('changing the condition once the set has a recording rolls the set over (old set PATCHed ended_early + Condition change, counts reset, target kept, next number predicted)', async () => {
+  const { calls } = phase2Fetch({
+    activeBatches: [
+      {
+        batch_id: 'batch_seed',
+        batch_seq: 5,
+        project: 'Tabletop Manipulation',
+        task: 'Pick and Place',
+        condition: 'Object: Left → Tray: Center',
+        target_episodes: 20,
+        status: 'active',
+        episode_count: 1,
+        episodes: [
+          {
+            index: 1,
+            run_id: 'r1',
+            task_result: 'success',
+            quality: 'good',
+            review_status: 'pending',
+          },
+        ],
+      },
+    ],
+  });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  // Server restore adopts the active set (1 recorded, seq 5, target 20).
+  await waitFor(() => expect(result.current.stats.nRecorded).toBe(1));
+  expect(result.current.batchSeq).toBe(5);
+
+  act(() => result.current.pickCondition('Object: Center → Tray: Center'));
+
+  // Rolled over: a fresh empty set, target inherited, next number predicted.
+  expect(result.current.stats.nRecorded).toBe(0);
+  expect(result.current.batchSeq).toBeNull();
+  expect(result.current.targetEpisodes).toBe(20);
+  expect(result.current.condition).toBe('Object: Center → Tray: Center');
+  expect(result.current.predictedSeq).toBe(6);
+  expect(result.current.phase).toBe('ready');
+
+  // The old set is closed server-side as ended_early / Condition change.
+  await waitFor(() =>
+    expect(
+      calls.some(
+        (c) =>
+          c.url.includes('/batches/batch_seed') &&
+          c.method === 'PATCH' &&
+          c.body?.status === 'ended_early' &&
+          c.body?.ended_reason === 'Condition change',
+      ),
+    ).toBe(true),
+  );
+});
+
+test('changing the condition before any recording updates in place (PATCH {condition}, no rollover, no new set minted)', async () => {
+  const { calls } = phase2Fetch({
+    activeBatches: [
+      {
+        batch_id: 'batch0',
+        batch_seq: 4,
+        project: 'Tabletop Manipulation',
+        task: 'Pick and Place',
+        condition: 'Object: Left → Tray: Center',
+        target_episodes: 20,
+        status: 'active',
+        episode_count: 0,
+        episodes: [],
+      },
+    ],
+  });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  await waitFor(() => expect(result.current.batchSeq).toBe(4));
+  expect(result.current.stats.nRecorded).toBe(0);
+
+  act(() => result.current.pickCondition('Object: Right → Tray: Center'));
+
+  // In place: same set (id + number), condition updated, nothing rolled over.
+  expect(result.current.batchSeq).toBe(4);
+  expect(result.current.stats.nRecorded).toBe(0);
+  expect(result.current.condition).toBe('Object: Right → Tray: Center');
+
+  await waitFor(() =>
+    expect(
+      calls.some(
+        (c) =>
+          c.url.includes('/batches/batch0') &&
+          c.method === 'PATCH' &&
+          c.body?.condition === 'Object: Right → Tray: Center',
+      ),
+    ).toBe(true),
+  );
+  // No terminal PATCH — the set was not ended.
+  expect(
+    calls.some((c) => c.method === 'PATCH' && c.body?.status === 'ended_early'),
+  ).toBe(false);
+});
+
+test('pickCustomCondition trims whitespace and ignores an empty value', async () => {
+  const { calls } = phase2Fetch({
+    activeBatches: [
+      {
+        batch_id: 'batch0',
+        batch_seq: 4,
+        project: 'Tabletop Manipulation',
+        task: 'Pick and Place',
+        condition: 'Object: Left → Tray: Center',
+        target_episodes: 20,
+        status: 'active',
+        episode_count: 0,
+        episodes: [],
+      },
+    ],
+  });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  await waitFor(() => expect(result.current.batchSeq).toBe(4));
+
+  // Empty / whitespace-only is a no-op (no condition change, no PATCH).
+  act(() => result.current.pickCustomCondition('   '));
+  expect(result.current.condition).toBe('Object: Left → Tray: Center');
+  expect(calls.some((c) => c.method === 'PATCH')).toBe(false);
+
+  // A trimmed custom string applies just like a catalog condition (in place at 0).
+  act(() => result.current.pickCustomCondition('  Wet floor  '));
+  expect(result.current.condition).toBe('Wet floor');
+  await waitFor(() =>
+    expect(
+      calls.some(
+        (c) =>
+          c.url.includes('/batches/batch0') &&
+          c.method === 'PATCH' &&
+          c.body?.condition === 'Wet floor',
+      ),
+    ).toBe(true),
+  );
+});
+
+test('changing the task once the set has a recording rolls over with a Task change reason', async () => {
+  const { calls } = phase2Fetch({ runId: 'run_t', batchId: 'batch_t' });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+
+  // Record + save one episode so the set has content.
+  act(() => result.current.startRecording());
+  await waitFor(() => expect(result.current.phase).toBe('recording'));
+  act(() => result.current.stopRecording());
+  await waitFor(() => expect(result.current.phase).toBe('result'), { timeout: 4000 });
+  act(() => result.current.pickSuccess());
+  act(() => result.current.confirmEpisode());
+  await waitFor(() => expect(result.current.stats.nRecorded).toBe(1));
+  const predictedBefore = result.current.predictedSeq;
+
+  act(() => result.current.pickCustomTask('Handover'));
+
+  // Rolled over to a fresh set carrying the new (free-text) task.
+  expect(result.current.stats.nRecorded).toBe(0);
+  expect(result.current.batchSeq).toBeNull();
+  expect(result.current.task).toBe('Handover');
+  expect(result.current.condition).toBe('—');
+  // The closing set's seq was never assigned (test fixture) → prediction untouched.
+  expect(result.current.predictedSeq).toBe(predictedBefore);
+
+  await waitFor(() =>
+    expect(
+      calls.some(
+        (c) =>
+          c.url.includes('/batches/batch_t') &&
+          c.method === 'PATCH' &&
+          c.body?.status === 'ended_early' &&
+          c.body?.ended_reason === 'Task change',
+      ),
+    ).toBe(true),
+  );
+});
+
+test('changing the project once the set has a recording rolls over with a Plan change reason and predicts the next number', async () => {
+  const { calls } = phase2Fetch({
+    activeBatches: [
+      {
+        batch_id: 'batch_pj',
+        batch_seq: 2,
+        project: 'Tabletop Manipulation',
+        task: 'Pick and Place',
+        condition: 'Object: Left → Tray: Center',
+        target_episodes: 30,
+        status: 'active',
+        episode_count: 1,
+        episodes: [
+          {
+            index: 1,
+            run_id: 'r1',
+            task_result: 'success',
+            quality: 'good',
+            review_status: 'pending',
+          },
+        ],
+      },
+    ],
+  });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  await waitFor(() => expect(result.current.stats.nRecorded).toBe(1));
+  expect(result.current.batchSeq).toBe(2);
+
+  act(() => result.current.pickProject('Bin Picking'));
+
+  // The new project reloads its first task + condition into a fresh set.
+  expect(result.current.stats.nRecorded).toBe(0);
+  expect(result.current.batchSeq).toBeNull();
+  expect(result.current.project).toBe('Bin Picking');
+  expect(result.current.task).toBe('Bin to Tray');
+  expect(result.current.condition).toBe('Bin: full');
+  expect(result.current.predictedSeq).toBe(3);
+
+  await waitFor(() =>
+    expect(
+      calls.some(
+        (c) =>
+          c.url.includes('/batches/batch_pj') &&
+          c.method === 'PATCH' &&
+          c.body?.status === 'ended_early' &&
+          c.body?.ended_reason === 'Plan change',
+      ),
+    ).toBe(true),
+  );
+});
+
 test('reset works with the API down (local-only reset, recordings untouched)', async () => {
   // /batches and /episodes reject; /record works so we can record locally.
   vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {

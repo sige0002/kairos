@@ -373,7 +373,7 @@ export function BatchStatsCard({ machine }: { machine: BatchMachine }) {
   return (
     <Card className={cn('flex shrink-0 flex-col gap-1.5', SIDE_PAD)}>
       <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
-        Batch stats
+        Set stats
       </span>
       <div className="flex gap-3.5">
         <div className="flex flex-col">
@@ -421,7 +421,7 @@ export function BatchStatsCard({ machine }: { machine: BatchMachine }) {
           data-testid="stats-footnote"
           className="text-[11px] leading-snug text-gray-400"
         >
-          recorded counts every take this batch; quality tallies reflect recordings
+          recorded counts every take this set; quality tallies reflect recordings
           still on disk
         </p>
       )}
@@ -520,7 +520,7 @@ export function CoverageCard({ machine }: { machine: BatchMachine }) {
         ))}
       </div>
       <p className="text-[10.5px] leading-snug text-gray-400">
-        rec counts every take in this task&apos;s batches (survives export); exp =
+        rec counts every take in this task&apos;s sets (survives export); exp =
         exported datasets with the condition label
       </p>
     </Card>

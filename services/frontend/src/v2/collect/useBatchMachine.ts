@@ -275,6 +275,12 @@ type Action =
   | { type: 'SET_CONDITION'; condition: string }
   | { type: 'SET_PROJECT'; project: string; task: string; condition: string }
   | { type: 'SET_TASK'; task: string; condition: string }
+  | {
+      type: 'ROLLOVER_SET';
+      project: string;
+      task: string;
+      condition: string;
+    }
   | { type: 'SET_BATCH'; batchId: string | null; batchSeq: number | null };
 
 function reducer(state: MachineState, action: Action): MachineState {
@@ -492,6 +498,39 @@ function reducer(state: MachineState, action: Action): MachineState {
       };
     case 'SET_TASK':
       return { ...state, task: action.task, condition: action.condition };
+    case 'ROLLOVER_SET': {
+      // A context change (project/task/condition) once this set already holds a
+      // recording: close the current set locally and open a fresh one with the
+      // new context. Earlier episodes keep their original context (condition is
+      // stored per-batch server-side, so relabeling in place would retroactively
+      // mislabel them). Mirrors START_NEXT_BATCH — counts/number/episodes reset,
+      // targetEpisodes inherited — but also applies the new context and predicts
+      // the next set number from the closing set's known seq. The new server
+      // batch is created lazily on the next recording (ensureBatch), which reads
+      // this new context from the store snapshot.
+      const nextPredicted =
+        state.batchSeq != null ? state.batchSeq + 1 : state.predictedSeq;
+      return {
+        ...state,
+        episodes: [],
+        recordedCount: 0,
+        batchSeq: null,
+        batchId: null,
+        predictedSeq: nextPredicted,
+        project: action.project,
+        task: action.task,
+        condition: action.condition,
+        phase: 'ready',
+        elapsedMs: 0,
+        qualityOverride: null,
+        pendingTask: null,
+        failReason: '',
+        startError: null,
+        stopError: null,
+        endReason: '',
+        currentRunId: null,
+      };
+    }
     case 'SET_BATCH':
       return { ...state, batchId: action.batchId, batchSeq: action.batchSeq };
     default:
@@ -1088,6 +1127,11 @@ export interface BatchMachine {
    *  /record/start and /batches as-is. */
   pickCustomTask: (name: string) => void;
   pickCondition: (condition: string) => void;
+  /** Set a free-text condition the operator typed in the condition modal. Not
+   *  added to the plans catalog; behaves exactly like a catalog condition
+   *  afterwards (a string on the batch). Rolls the set over when the current set
+   *  already has a recording, same as pickCondition. */
+  pickCustomCondition: (condition: string) => void;
   /** Jump to the Monitor tab (Warnings card's "Open in Monitor →"). */
   goMonitor: () => void;
 }
@@ -1745,7 +1789,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     const receipt = (index: number) => {
       flashSaved(index);
       const seqPart =
-        batchSeqForReceipt != null ? ` of Batch ${batchSeqForReceipt}` : '';
+        batchSeqForReceipt != null ? ` of Set ${batchSeqForReceipt}` : '';
       showToast(`Saved — Episode ${index}${seqPart}${op ? ` · ${op}` : ''}`);
     };
     dispatch({ type: 'CONFIRM_EPISODE', quality: localQuality });
@@ -1973,7 +2017,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     // START_NEXT_BATCH cleared batchId/batchSeq; create the new server batch now
     // (its batch_seq is assigned server-side).
     ensureBatch();
-    showToast(`Next batch ready — same condition, ${state.targetEpisodes} episodes`);
+    showToast(`Next set ready — same condition, ${state.targetEpisodes} episodes`);
   }, [state.targetEpisodes, state.phase, showToast, ensureBatch]);
 
   // Reset the batch: close the current one and start fresh (counts → 0/30). The
@@ -2004,8 +2048,8 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     setBatchMenuOpen(false);
     showToast(
       hadBatch
-        ? 'Batch reset — recordings already taken stay in Review'
-        : 'Batch reset (local) — recordings already taken stay in Review',
+        ? 'Set reset — recordings already taken stay in Review'
+        : 'Set reset (local) — recordings already taken stay in Review',
     );
   }, [state.phase, state.batchId, showToast]);
 
@@ -2072,7 +2116,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
       // later takes the value from the machine state at create time).
       if (state.batchId)
         void patchBatch(state.batchId, { target_episodes: t }).catch(() => {});
-      showToast(`Batch target set to ${t} episodes`);
+      showToast(`Set target: ${t} episodes`);
     },
     [state.batchId, showToast],
   );
@@ -2093,33 +2137,83 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     showToast('Issue logged with episode context');
   }, [showToast]);
 
+  // A context change (project/task/condition) once the current set already holds
+  // a recording rolls the set over: close the current one (server-side too, if
+  // it's still active) and open a fresh set carrying the new context. Earlier
+  // episodes keep their original context — condition lives per-batch server-side,
+  // so relabeling in place would retroactively mislabel them. A set with nothing
+  // recorded yet is updated in place instead (no empty set is ever minted).
+  const rolloverSet = useCallback(
+    (
+      endedReason: string,
+      changeLabel: string,
+      next: { project: string; task: string; condition: string },
+    ) => {
+      // Only close a set that's still active server-side. A 'completed'/'ended'
+      // set was already closed with its true terminal status (by confirmEpisode /
+      // confirmEndBatch) — re-PATCHing would overwrite that; skip it. 'ready' and
+      // 'paused' are the still-active at-rest phases.
+      const stillActive =
+        getStoreSnapshot().phase === 'ready' || getStoreSnapshot().phase === 'paused';
+      const s = getStoreSnapshot();
+      if (s.batchId && stillActive) {
+        void patchBatch(s.batchId, {
+          status: 'ended_early',
+          ended_reason: endedReason,
+        }).catch(() => {});
+      }
+      const oldSeq = s.batchSeq;
+      dispatch({
+        type: 'ROLLOVER_SET',
+        project: next.project,
+        task: next.task,
+        condition: next.condition,
+      });
+      showToast(
+        oldSeq != null
+          ? `Set #${oldSeq} closed (${changeLabel}) — next recording starts a new set`
+          : `Set closed (${changeLabel}) — next recording starts a new set`,
+      );
+    },
+    [showToast],
+  );
+
   const pickProject = useCallback(
     (name: string) => {
       const plan = findProject(getPlans(), name);
       const t0 = plan.tasks[0];
-      dispatch({
-        type: 'SET_PROJECT',
+      const next = {
         project: plan.name,
         task: t0?.name ?? '—',
         condition: t0?.conditions[0] ?? '—',
-      });
+      };
       setProjPickerOpen(false);
-      showToast('Project switched — batch plan reloaded');
+      if (getStoreSnapshot().recordedCount >= 1) {
+        rolloverSet('Plan change', 'project changed', next);
+        return;
+      }
+      dispatch({ type: 'SET_PROJECT', ...next });
+      showToast('Project switched — plan reloaded');
     },
-    [showToast],
+    [rolloverSet, showToast],
   );
   const pickTask = useCallback(
     (name: string) => {
       const t = findTask(getPlans(), state.project, name);
-      dispatch({
-        type: 'SET_TASK',
+      const next = {
+        project: state.project,
         task: t?.name ?? '—',
         condition: t?.conditions[0] ?? '—',
-      });
+      };
       setTaskPickerOpen(false);
-      showToast('Task switched — applies to next batch');
+      if (getStoreSnapshot().recordedCount >= 1) {
+        rolloverSet('Task change', 'task changed', next);
+        return;
+      }
+      dispatch({ type: 'SET_TASK', task: next.task, condition: next.condition });
+      showToast('Task switched');
     },
-    [state.project, showToast],
+    [state.project, rolloverSet, showToast],
   );
   const pickCustomTask = useCallback(
     (name: string) => {
@@ -2127,21 +2221,59 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
       if (!trimmed) return;
       // A free-text task has no plan-defined conditions; clear the condition to
       // '—' so a stale plan condition can't ride along with an unrelated task.
-      dispatch({ type: 'SET_TASK', task: trimmed, condition: '—' });
       setTaskPickerOpen(false);
-      showToast('Custom task set — applies to next recording');
+      if (getStoreSnapshot().recordedCount >= 1) {
+        rolloverSet('Task change', 'task changed', {
+          project: state.project,
+          task: trimmed,
+          condition: '—',
+        });
+        return;
+      }
+      dispatch({ type: 'SET_TASK', task: trimmed, condition: '—' });
+      showToast('Custom task set');
     },
-    [showToast],
+    [state.project, rolloverSet, showToast],
   );
   const pickCondition = useCallback(
     (condition: string) => {
-      dispatch({ type: 'SET_CONDITION', condition });
       setCondModalOpen(false);
+      if (getStoreSnapshot().recordedCount >= 1) {
+        rolloverSet('Condition change', 'condition changed', {
+          project: state.project,
+          task: state.task,
+          condition,
+        });
+        return;
+      }
+      dispatch({ type: 'SET_CONDITION', condition });
       // Persist the condition change on the current server batch (best-effort).
       if (state.batchId) void patchBatch(state.batchId, { condition }).catch(() => {});
-      showToast('Condition updated — applies from next episode');
+      showToast('Condition updated');
     },
-    [state.batchId, showToast],
+    [state.project, state.task, state.batchId, rolloverSet, showToast],
+  );
+  const pickCustomCondition = useCallback(
+    (condition: string) => {
+      const trimmed = condition.trim();
+      if (!trimmed) return;
+      setCondModalOpen(false);
+      if (getStoreSnapshot().recordedCount >= 1) {
+        rolloverSet('Condition change', 'condition changed', {
+          project: state.project,
+          task: state.task,
+          condition: trimmed,
+        });
+        return;
+      }
+      dispatch({ type: 'SET_CONDITION', condition: trimmed });
+      // A free-text condition is just a string on the batch — persist it in place
+      // the same way a catalog pick does (best-effort); never added to the plan.
+      if (state.batchId)
+        void patchBatch(state.batchId, { condition: trimmed }).catch(() => {});
+      showToast('Condition updated');
+    },
+    [state.project, state.task, state.batchId, rolloverSet, showToast],
   );
 
   const advicePrev = useCallback(
@@ -2343,6 +2475,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     pickTask,
     pickCustomTask,
     pickCondition,
+    pickCustomCondition,
     goMonitor,
   };
 }
