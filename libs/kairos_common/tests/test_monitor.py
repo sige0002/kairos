@@ -13,10 +13,15 @@ from kairos_common import (
     Reliability,
     TopicQosOverride,
 )
-from topic_monitor.metrics import SelfLoadMonitor
-from topic_monitor.models import AlertMetric, AlertOp, AlertRule, DerivedRulesConfig
-from topic_monitor.monitor import MonitorService
-from topic_monitor.subscriber import FakeSubscriber, TopicGraphEntry
+from kairos_common.monitoring.metrics import SelfLoadMonitor
+from kairos_common.monitoring.models import (
+    AlertMetric,
+    AlertOp,
+    AlertRule,
+    DerivedRulesConfig,
+)
+from kairos_common.monitoring.monitor import MonitorService
+from kairos_common.monitoring.subscriber import FakeSubscriber, TopicGraphEntry
 
 
 class FakeClock:

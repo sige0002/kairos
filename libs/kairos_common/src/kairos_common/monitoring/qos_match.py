@@ -25,8 +25,7 @@ from __future__ import annotations
 from fnmatch import fnmatch
 
 from kairos_common import Durability, RecordingConfig, Reliability
-
-from topic_monitor.models import QosInfo
+from kairos_common.monitoring.models import QosInfo
 
 # Fallback subscription QoS when nothing is known about the publishers.
 _FALLBACK_RELIABILITY = Reliability.best_effort.value

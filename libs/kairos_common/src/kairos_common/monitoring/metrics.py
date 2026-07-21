@@ -1,7 +1,7 @@
 """Windowed metric math for topic_monitor (the unit-testable core).
 
 This module computes per-topic monitoring metrics over sliding time windows from
-nothing but :class:`~topic_monitor.subscriber.Sample` records (arrival time,
+nothing but :class:`~kairos_common.monitoring.subscriber.Sample` records (arrival time,
 serialized size, optional ``header.stamp``). It has **no ROS dependency**: feed
 it synthetic ``(recv_t, size)`` sequences and assert on the numbers.
 
@@ -41,7 +41,7 @@ import threading
 from collections import deque
 from dataclasses import dataclass, field, replace
 
-from topic_monitor.subscriber import Sample
+from kairos_common.monitoring.subscriber import Sample
 
 # Default observed-shortfall thresholds for the per-topic status (OL-②.2). A
 # topic is "warning" once it drops >=2% under its expected rate over the window,

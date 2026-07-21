@@ -8,8 +8,8 @@ from kairos_common import (
     Reliability,
     TopicQosOverride,
 )
-from topic_monitor.models import QosInfo
-from topic_monitor.qos_match import resolve_subscription_qos
+from kairos_common.monitoring.models import QosInfo
+from kairos_common.monitoring.qos_match import resolve_subscription_qos
 
 
 def _qos(reliability: str, durability: str = "volatile", depth: int = 10) -> QosInfo:

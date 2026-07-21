@@ -7,13 +7,13 @@ and asserts the exact computed numbers.
 
 from __future__ import annotations
 
-from topic_monitor.metrics import (
+from kairos_common.monitoring.metrics import (
     BaselineLearner,
     MetricsRegistry,
     StatusSmoother,
     TopicWindow,
 )
-from topic_monitor.subscriber import Sample
+from kairos_common.monitoring.subscriber import Sample
 
 
 def _sample(recv_t: float, size: int, stamp: float | None = None) -> Sample:

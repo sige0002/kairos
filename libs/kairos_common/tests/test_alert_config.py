@@ -10,8 +10,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from topic_monitor.alert_config import load_alert_rules, load_derived_config
-from topic_monitor.models import AlertMetric, AlertOp
+from kairos_common.monitoring.alert_config import load_alert_rules, load_derived_config
+from kairos_common.monitoring.models import AlertMetric, AlertOp
 
 
 def _write(tmp_path: Path, text: str) -> str:

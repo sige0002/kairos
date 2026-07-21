@@ -1,8 +1,9 @@
-"""The rclpy-backed :class:`~topic_monitor.subscriber.TopicSubscriber`.
+"""The rclpy-backed :class:`~kairos_common.monitoring.subscriber.TopicSubscriber`.
 
 This is the real ROS seam: an rclpy node that subscribes to the allowlist
 topics with auto-matched QoS (``qos_match.py``) and emits one
-:class:`~topic_monitor.subscriber.Sample` per received message — recording only
+:class:`~kairos_common.monitoring.subscriber.Sample` per received message
+— recording only
 arrival time and serialized size, **never decoding the payload** (lightweight,
 non-destructive monitoring, per the spec). The executor spins on a background
 thread so it never blocks the asyncio web server.
@@ -23,10 +24,9 @@ from fnmatch import fnmatch
 from typing import Any
 
 from kairos_common import RecordingConfig
-
-from topic_monitor.models import QosInfo
-from topic_monitor.qos_match import resolve_subscription_qos
-from topic_monitor.subscriber import Sample, TopicGraphEntry
+from kairos_common.monitoring.models import QosInfo
+from kairos_common.monitoring.qos_match import resolve_subscription_qos
+from kairos_common.monitoring.subscriber import Sample, TopicGraphEntry
 
 logger = logging.getLogger("kairos.topic_monitor")
 

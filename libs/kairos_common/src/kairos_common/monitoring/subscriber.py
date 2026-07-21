@@ -20,7 +20,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
-from topic_monitor.models import QosInfo
+from kairos_common.monitoring.models import QosInfo
 
 
 @dataclass(frozen=True, slots=True)

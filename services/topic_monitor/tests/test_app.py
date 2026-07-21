@@ -14,8 +14,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 from kairos_common import get_settings
+from kairos_common.monitoring.subscriber import FakeSubscriber, TopicGraphEntry
 from topic_monitor.main import app, create_monitor_app
-from topic_monitor.subscriber import FakeSubscriber, TopicGraphEntry
 
 
 def test_rclpy_not_importable_in_test_env() -> None:
