@@ -3,7 +3,7 @@
 // See ../v2-screen-work/SKILL.md for the workflow this supports.
 //
 // Usage:
-//   node ui-check.mjs --port 5183 --tab review --shot .dev/shots/review-default.png \
+//   node ui-check.mjs --port 5183 --tab review --shot ../../dev_image/review-default.png \
 //     [--assert '<css-selector>']... [--click '<css-selector>']... \
 //     [--full-flow <path-to-module.mjs>] [--no-scroll]
 //

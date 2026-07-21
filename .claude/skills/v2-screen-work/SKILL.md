@@ -94,7 +94,7 @@ Before reporting a screen done or committing:
    npm run dev -- --port <pick-an-unused-port> &
    node ../../.claude/skills/v2-screen-work/ui-check.mjs \
      --port <port> --tab <screen> \
-     --shot .dev/shots/<screen>-default.png \
+     --shot ../../dev_image/<screen>-default.png \
      --assert '[data-testid="…"]' [--no-scroll]
    ```
    - Pick a port nobody else is using — check `ps aux | grep vite` first,
@@ -102,9 +102,15 @@ Before reporting a screen done or committing:
    - Add `data-testid` hooks to your own components as you go (see
      `v2/collect/ControlCard.tsx` for the convention — `phase-title`,
      `elapsed`, etc.) so assertions target stable hooks, not brittle CSS.
-   - Screenshots land in `.dev/shots/` **relative to `services/frontend`**
-     (i.e. `services/frontend/.dev/shots/`, confirmed by other agents'
-     existing output there) — not the worktree-root `.dev/`.
+   - ALL work-process screenshots — from ui-check.mjs, the Playwright MCP
+     browser, or any other tool — go into the **worktree-root `dev_image/`**
+     (gitignored). From `services/frontend` that's `../../dev_image/`. Never
+     drop them at the repo root, in `.dev/`, or in `.playwright-mcp/`.
+   - If the `playwright` npm package isn't installed (ui-check.mjs then fails
+     at import), don't `npm install` it — fall back to the Playwright MCP
+     browser tools for the same checks (navigate to the dev server, assert
+     your testids via snapshot, take a screenshot) and still save the
+     screenshot into `dev_image/`. Note the fallback in your report.
    - Pass `--no-scroll` for any screen whose brief requires no vertical
      scroll (Collect is the current example).
    - Kill your dev server when done so the port is free for others.

@@ -88,7 +88,9 @@ log/
 # 参考フォルダ
 /ref
 
-# Scratch UI verification shots (Playwright screenshots dropped at repo root or
-# into per-service .dev/shots/ during UI checks — local scratch, never tracked).
+# Work-process screenshots (UI checks, Playwright MCP shots, any dev imagery):
+# the ONE canonical scratch location is /dev_image (see the v2-screen-work
+# skill). The legacy patterns below stay as backstops for stray drops.
+/dev_image/
 /*.png
 .dev/
