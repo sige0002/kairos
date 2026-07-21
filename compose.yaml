@@ -230,6 +230,52 @@ services:
         - "import urllib.request; urllib.request.urlopen('http://localhost:${TOPIC_PROBE_PORT:-8003}/healthz', timeout=2)"
     restart: unless-stopped
 
+  # dora_live — live DDS ingest via dora-ros2-bridge (RustDDS) with in-process
+  # fan-out to metrics/probe consumers. Serves a topic_monitor-compatible API
+  # on DORA_LIVE_PORT and a topic_probe-compatible API on DORA_LIVE_PROBE_PORT;
+  # switching the stack over = pointing TOPIC_MONITOR_PORT / TOPIC_PROBE_PORT
+  # at these (orchestrator + nginx resolve backends via env — no code change).
+  # Opt-in via `--profile live` while the migration is being verified.
+  dora_live:
+    profiles: ["live"]
+    build:
+      context: .
+      dockerfile: services/dora_live/Dockerfile
+      network: host
+      args:
+        <<: *build-proxy-args
+        ROS_DISTRO: ${ROS_DISTRO:-jazzy}
+        # Pinned upstream-main dora (domain_id support; see the Dockerfile).
+        DORA_COMMIT: ${DORA_COMMIT:-de261f7773f7bdaa7e7044ec43122f1b0e821731}
+    image: kairos-dora-live:${ROS_DISTRO:-jazzy}
+    env_file:
+      - path: ${KAIROS_ENV_FILE:-.env}
+        required: false
+    environment:
+      <<: [*ros-env, *no-proxy]
+      RECORDING_CONFIG: ${RECORDING_CONFIG:-/config/${ROBOT:-airoa_hsr}/recording/default.yaml}
+      ALERT_CONFIG_PATH: ${ALERT_CONFIG_PATH:-}
+      DORA_LIVE_PORT: ${DORA_LIVE_PORT:-8005}
+      DORA_LIVE_PROBE_PORT: ${DORA_LIVE_PROBE_PORT:-8006}
+    network_mode: host
+    ipc: host
+    volumes:
+      - ${DATA_DIR:-./data}:/data
+      - ./config:/config:ro
+      # Same prebuilt custom-message overlay the recorder/monitor/probe mount;
+      # the bridge resolves custom .msg types ONLY from AMENT_PREFIX_PATH.
+      - ${MSGS_OVERLAY_DIR:-./deploy/msgs_overlay/robot}:/opt/msgs_overlay:ro
+    # Health = readiness (same rationale as the monitor): ready only once the
+    # feed subscriber is up AND the supervised `dora run` dataflow is alive.
+    healthcheck:
+      <<: *healthcheck
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:${DORA_LIVE_PORT:-8005}/readyz', timeout=2)"
+    restart: unless-stopped
+
   # ---- Pure-Python services (no rclpy) -------------------------------------
   orchestrator:
     build:
