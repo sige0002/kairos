@@ -1,68 +1,112 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
-import type {
-  DatasetDetail,
-  DatasetEntry,
-  DatasetsResponse,
-  RunEpisode,
-} from '../../api/types';
+import type { DatasetDetail, DatasetEntry, DatasetsResponse } from '../../api/types';
 import { useUiStore } from '../../store/uiStore';
 import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
 import { DatasetsScreen } from './DatasetsScreen';
+import { slugForTestId, taskTestId } from './data';
 
-/** A server episode join for the label-chip cases. */
-function epJoin(overrides: Partial<RunEpisode> = {}): RunEpisode {
-  return {
-    episode_id: 'e_1',
-    batch_id: 'b_4',
-    index_in_batch: 1,
-    task_result: 'success',
-    quality: 'good',
-    review_status: 'adopted',
-    batch_seq: 4,
-    batch_created_at: '2026-07-13T09:00:00Z',
-    ...overrides,
-  };
+/** Mirror the components' data-testid for a (task, condition) group row. */
+function groupId(task: string, condition: string | null): string {
+  return `dataset-group-${slugForTestId(task)}-${slugForTestId(condition ?? 'none')}`;
 }
 
-const ENTRY_A1: DatasetEntry = {
-  operator: 'operator_a',
-  task: 'pick_and_place',
+// ---- fixtures ------------------------------------------------------------
+// A small catalog exercising the task -> condition tree: kitchen_pick has two
+// conditions (dim, bright) = a collapsible task; shelf_restock has a single
+// (null) condition = a leaf task; a legacy unknown_task/operator row = the
+// muted bottom bucket. exported_at is staggered so recency sort is testable.
+
+const KP_DIM_A: DatasetEntry = {
+  operator: 'op_a',
+  task: 'kitchen_pick',
   index: '001',
-  dataset_dir: 'operator_a/pick_and_place/001',
-  run_id: 'run_1',
-  bytes: 1_200_000_000,
-  message_count: 48213,
-  exported_at: '2026-07-01T10:00:00Z',
+  dataset_dir: 'op_a/kitchen_pick/001',
+  condition: 'dim',
+  run_id: 'r1',
+  message_count: 100,
+  bytes: 1_000_000_000,
+  exported_at: '2026-07-20T10:00:00Z',
+  task_result: 'success',
+  quality: 'good',
+  review_status: 'adopted',
+  batch_seq: 6,
+  batch_id: 'b6',
+  index_in_batch: 1,
 };
-const ENTRY_A2: DatasetEntry = {
-  operator: 'operator_a',
-  task: 'stacking',
-  index: '001',
-  dataset_dir: 'operator_a/stacking/001',
-  run_id: 'run_2',
-  bytes: 300_000_000,
-  message_count: 9001,
-  exported_at: '2026-07-02T08:00:00Z',
-};
-const ENTRY_B1: DatasetEntry = {
-  operator: 'operator_b',
-  task: 'pick_and_place',
-  index: '001',
-  dataset_dir: 'operator_b/pick_and_place/001',
-  run_id: 'run_3',
+const KP_DIM_B: DatasetEntry = {
+  operator: 'op_b',
+  task: 'kitchen_pick',
+  index: '002',
+  dataset_dir: 'op_b/kitchen_pick/002',
+  condition: 'dim',
+  run_id: 'r2',
+  message_count: 120,
   bytes: 500_000_000,
-  message_count: 12000,
-  exported_at: '2026-07-03T11:00:00Z',
+  exported_at: '2026-07-19T10:00:00Z',
+  task_result: 'failure',
+  failure_reason: 'Grasp missed',
+  quality: 'good',
+  review_status: 'adopted',
+  batch_seq: 6,
+  batch_id: 'b6',
+  index_in_batch: 2,
+};
+const KP_BRIGHT_A: DatasetEntry = {
+  operator: 'op_a',
+  task: 'kitchen_pick',
+  index: '003',
+  dataset_dir: 'op_a/kitchen_pick/003',
+  condition: 'bright',
+  run_id: 'r3',
+  message_count: 90,
+  bytes: 300_000_000,
+  exported_at: '2026-07-18T10:00:00Z',
+  task_result: 'success',
+  quality: 'good',
+  review_status: 'adopted',
+  batch_seq: 7,
+  batch_id: 'b7',
+  index_in_batch: 1,
+};
+const SHELF_A: DatasetEntry = {
+  operator: 'op_a',
+  task: 'shelf_restock',
+  index: '001',
+  dataset_dir: 'op_a/shelf_restock/001',
+  run_id: 'r4',
+  message_count: 48213,
+  bytes: 1_200_000_000,
+  exported_at: '2026-07-21T10:00:00Z',
+  task_result: 'success',
+  quality: 'good',
+  review_status: 'adopted',
+  batch_seq: 2,
+  batch_id: 'b2',
+  index_in_batch: 1,
+};
+const LEGACY: DatasetEntry = {
+  operator: 'unknown_operator',
+  task: 'unknown_task',
+  index: '001',
+  dataset_dir: 'unknown_operator/unknown_task/001',
+  run_id: 'rL',
+  message_count: 100,
+  exported_at: '2026-06-01T10:00:00Z',
 };
 
-const LIST_RESPONSE: DatasetsResponse = { datasets: [ENTRY_A1, ENTRY_A2, ENTRY_B1] };
+const ALL: DatasetEntry[] = [KP_DIM_A, KP_DIM_B, KP_BRIGHT_A, SHELF_A, LEGACY];
+const LIST_RESPONSE: DatasetsResponse = { datasets: ALL };
 
-function detailFor(
-  entry: DatasetEntry,
-  overrides: Partial<DatasetDetail> = {},
-): DatasetDetail {
+// testid helpers (computed the same way the components do).
+const kitchenTask = taskTestId('kitchen_pick');
+const shelfLeaf = groupId('shelf_restock', null);
+const dimGroup = groupId('kitchen_pick', 'dim');
+const brightGroup = groupId('kitchen_pick', 'bright');
+const legacyGroup = groupId('unknown_task', null);
+
+function detailFor(entry: DatasetEntry, overrides: Partial<DatasetDetail> = {}): DatasetDetail {
   return {
     operator: entry.operator,
     task: entry.task,
@@ -99,24 +143,17 @@ interface MockOpts {
   details?: Record<string, DatasetDetail>;
 }
 
-// DELETE calls the mock served with 204 (reset per test); after a delete the
-// list route serves empty, mirroring the backend's post-delete refetch.
 let deletedUrls: string[] = [];
 
-// Routes the endpoints the catalog-only Datasets screen touches: the /jobs
-// route (post-export inspection) matches before the /datasets list and detail
-// routes. There is no per-run export path here anymore (Review owns export).
 function mockFetch(opts: MockOpts) {
   const details = opts.details ?? {};
   return vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     const url = String(input);
-
     if ((init as RequestInit | undefined)?.method === 'DELETE') {
       deletedUrls.push(url);
       return Promise.resolve(new Response(null, { status: 204 }));
     }
     if (url.includes('/jobs')) {
-      // Both the create POST and the status poll resolve terminal-succeeded.
       return Promise.resolve(
         jsonResponse({ job_id: 'job_1', pipeline: 'loss_report', state: 'succeeded' }),
       );
@@ -143,532 +180,317 @@ function mockFetch(opts: MockOpts) {
 beforeEach(() => {
   setApiBase('/api/v1');
   deletedUrls = [];
-  // The Go-to-Review pointer flips the shared tab store; reset it between tests.
   useUiStore.setState({ activeTab: 'datasets' });
 });
 afterEach(() => vi.restoreAllMocks());
 
-test('renders the real exported datasets, grouped by operator, with no fabricated names', async () => {
+// ---- the task -> condition tree ------------------------------------------
+
+test('folds the flat catalog into a task -> condition tree, not one card per episode', async () => {
   mockFetch({ list: LIST_RESPONSE });
   renderWithClient(<DatasetsScreen />);
 
-  await waitFor(() =>
-    expect(
-      screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`),
-    ).toBeInTheDocument(),
-  );
-  expect(screen.getByText('operator_a')).toBeInTheDocument();
-  expect(screen.getByText('operator_b')).toBeInTheDocument();
-  expect(
-    within(screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`)).getByText(
-      'pick_and_place',
-    ),
-  ).toBeInTheDocument();
-  expect(
-    within(screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`)).getByText(
-      '48,213 msgs',
-    ),
-  ).toBeInTheDocument();
+  await waitFor(() => expect(screen.getByTestId(shelfLeaf)).toBeInTheDocument());
 
-  // No trace of the earlier fabricated demo catalog anywhere on the screen.
-  expect(screen.queryByText(/PickPlace/)).not.toBeInTheDocument();
+  // shelf_restock is a single-(null-)condition leaf: its own selectable row.
+  expect(within(screen.getByTestId(shelfLeaf)).getByText('shelf_restock')).toBeInTheDocument();
+
+  // kitchen_pick has two conditions -> a collapsible header, collapsed by
+  // default (its condition rows are NOT rendered yet).
+  const header = screen.getByTestId(kitchenTask);
+  expect(header).toHaveTextContent('kitchen_pick');
+  expect(header).toHaveTextContent('3 eps · 2 conditions');
+  expect(screen.queryByTestId(dimGroup)).toBeNull();
+
+  // The legacy unknown_task bucket is present and labeled in plain language.
+  expect(screen.getByText('task not recorded')).toBeInTheDocument();
+  expect(screen.queryByText('unknown_task')).toBeNull();
+
+  // The counter is honest about how much is shown.
+  expect(screen.getByTestId('dataset-count')).toHaveTextContent('showing 5 of 5');
 });
 
-test('selecting a dataset fetches and shows its real detail metadata', async () => {
-  mockFetch({
-    list: LIST_RESPONSE,
-    details: { [detailUrlFor(ENTRY_A1)]: detailFor(ENTRY_A1) },
-  });
+test('a group row shows only real aggregates; an unlabeled group says "no labels"', async () => {
+  mockFetch({ list: LIST_RESPONSE });
   renderWithClient(<DatasetsScreen />);
 
-  await waitFor(() =>
-    expect(
-      screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`),
-    ).toBeInTheDocument(),
+  await waitFor(() => expect(screen.getByTestId(kitchenTask)).toBeInTheDocument());
+  fireEvent.click(screen.getByTestId(kitchenTask)); // expand
+
+  // dim = 1 success + 1 failure; bright = 1 success, 0 failure.
+  expect(within(screen.getByTestId(dimGroup)).getByText('✓1 ✗1')).toBeInTheDocument();
+  expect(within(screen.getByTestId(brightGroup)).getByText('✓1 ✗0')).toBeInTheDocument();
+
+  // The legacy group's rows carry no labels -> honest "no labels", not ✓0 ✗0.
+  expect(within(screen.getByTestId(legacyGroup)).getByText('no labels')).toBeInTheDocument();
+});
+
+test('recency sort lists newest-exported first; A–Z sort lists by task name', async () => {
+  mockFetch({ list: LIST_RESPONSE });
+  const { container } = renderWithClient(<DatasetsScreen />);
+  await waitFor(() => expect(screen.getByTestId(shelfLeaf)).toBeInTheDocument());
+
+  const firstTaskId = () =>
+    container.querySelector('[data-testid^="dataset-task-"]')?.getAttribute('data-testid');
+
+  // Default = recent: shelf_restock exported 07-21 is newest.
+  expect(firstTaskId()).toBe(taskTestId('shelf_restock'));
+
+  fireEvent.click(screen.getByTestId('dataset-sort-toggle'));
+  // A–Z: kitchen_pick precedes shelf_restock; the legacy bucket stays last.
+  expect(firstTaskId()).toBe(kitchenTask);
+  const ids = [...container.querySelectorAll('[data-testid^="dataset-task-"]')].map((el) =>
+    el.getAttribute('data-testid'),
   );
-  fireEvent.click(screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`));
+  expect(ids[ids.length - 1]).toBe(taskTestId('unknown_task'));
+});
+
+// ---- selection: group -> episode table -> detail -------------------------
+
+test('selecting a leaf group lists its episodes in the center table', async () => {
+  mockFetch({ list: LIST_RESPONSE });
+  renderWithClient(<DatasetsScreen />);
+  await waitFor(() => expect(screen.getByTestId(shelfLeaf)).toBeInTheDocument());
+
+  // No group selected -> honest explanatory empty state, never blank.
+  expect(screen.getByTestId('dataset-center-empty')).toBeInTheDocument();
+
+  fireEvent.click(screen.getByTestId(shelfLeaf));
+  await waitFor(() => expect(screen.getByTestId('dataset-episode-table')).toBeInTheDocument());
+  expect(screen.getByTestId('dataset-group-header')).toHaveTextContent('shelf_restock');
+  expect(screen.getByTestId(`dataset-episode-row-${SHELF_A.dataset_dir}`)).toBeInTheDocument();
+});
+
+test('selecting a condition group lists exactly that condition’s episodes', async () => {
+  mockFetch({ list: LIST_RESPONSE });
+  renderWithClient(<DatasetsScreen />);
+  await waitFor(() => expect(screen.getByTestId(kitchenTask)).toBeInTheDocument());
+
+  fireEvent.click(screen.getByTestId(kitchenTask)); // expand
+  fireEvent.click(screen.getByTestId(dimGroup));
+
+  await waitFor(() => expect(screen.getByTestId('dataset-episode-table')).toBeInTheDocument());
+  expect(screen.getByTestId('dataset-group-header')).toHaveTextContent('dim');
+  expect(screen.getByTestId(`dataset-episode-row-${KP_DIM_A.dataset_dir}`)).toBeInTheDocument();
+  expect(screen.getByTestId(`dataset-episode-row-${KP_DIM_B.dataset_dir}`)).toBeInTheDocument();
+  // The bright episode belongs to a different group and is absent.
+  expect(screen.queryByTestId(`dataset-episode-row-${KP_BRIGHT_A.dataset_dir}`)).toBeNull();
+});
+
+test('an episode row shows its label chips; a failure exposes the reason on the chip', async () => {
+  mockFetch({ list: LIST_RESPONSE });
+  renderWithClient(<DatasetsScreen />);
+  await waitFor(() => expect(screen.getByTestId(kitchenTask)).toBeInTheDocument());
+  fireEvent.click(screen.getByTestId(kitchenTask));
+  fireEvent.click(screen.getByTestId(dimGroup));
+
+  const row = await screen.findByTestId(`dataset-episode-row-${KP_DIM_B.dataset_dir}`);
+  const failure = within(row).getByText('FAILURE');
+  expect(failure.closest('[title]')?.getAttribute('title')).toBe(
+    'Failure reason: Grasp missed',
+  );
+});
+
+test('a legacy episode row shows the honest "no episode labels" note, no chips', async () => {
+  mockFetch({ list: LIST_RESPONSE });
+  renderWithClient(<DatasetsScreen />);
+  await waitFor(() => expect(screen.getByTestId(legacyGroup)).toBeInTheDocument());
+  fireEvent.click(screen.getByTestId(legacyGroup));
+
+  const row = await screen.findByTestId(`dataset-episode-row-${LEGACY.dataset_dir}`);
+  expect(within(row).getByTestId(`dataset-episode-legacy-${LEGACY.dataset_dir}`)).toHaveTextContent(
+    'no episode labels',
+  );
+  expect(screen.queryByTestId(`dataset-episode-labels-${LEGACY.dataset_dir}`)).toBeNull();
+});
+
+test('selecting an episode fetches + shows its real detail below the table', async () => {
+  mockFetch({
+    list: LIST_RESPONSE,
+    details: { [detailUrlFor(SHELF_A)]: detailFor(SHELF_A) },
+  });
+  renderWithClient(<DatasetsScreen />);
+  await waitFor(() => expect(screen.getByTestId(shelfLeaf)).toBeInTheDocument());
+
+  fireEvent.click(screen.getByTestId(shelfLeaf));
+  fireEvent.click(await screen.findByTestId(`dataset-episode-row-${SHELF_A.dataset_dir}`));
 
   await waitFor(() => expect(screen.getByTestId('dataset-stats')).toBeInTheDocument());
   const stats = screen.getByTestId('dataset-stats');
   expect(within(stats).getByText('48,213')).toBeInTheDocument(); // messages
   expect(within(stats).getByText('1.2 GB')).toBeInTheDocument(); // size
-  expect(within(stats).getByText('2')).toBeInTheDocument(); // topics count
   expect(screen.getByTestId('dataset-detail-name')).toHaveTextContent(
-    'operator_a / pick_and_place',
+    'op_a / shelf_restock',
   );
-
-  const rail = screen.getByTestId('export-details');
-  expect(within(rail).getByText('run_1')).toBeInTheDocument();
-  expect(within(rail).getByText('completed')).toBeInTheDocument();
+  // The rail's real export provenance renders for the selected episode.
+  expect(within(screen.getByTestId('export-details')).getByText('r4')).toBeInTheDocument();
 });
 
-test('sections with no real source render an honest note, not a fake chart', async () => {
+test('breakdown sections with no real source render an honest note, not a fake chart', async () => {
   mockFetch({
     list: LIST_RESPONSE,
-    details: { [detailUrlFor(ENTRY_A1)]: detailFor(ENTRY_A1) },
+    details: { [detailUrlFor(SHELF_A)]: detailFor(SHELF_A) },
   });
   renderWithClient(<DatasetsScreen />);
+  await waitFor(() => expect(screen.getByTestId(shelfLeaf)).toBeInTheDocument());
+  fireEvent.click(screen.getByTestId(shelfLeaf));
+  fireEvent.click(await screen.findByTestId(`dataset-episode-row-${SHELF_A.dataset_dir}`));
 
-  await waitFor(() =>
-    expect(
-      screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`),
-    ).toBeInTheDocument(),
-  );
-  fireEvent.click(screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`));
-
-  await waitFor(() =>
-    expect(screen.getByTestId('dataset-breakdown-note')).toBeInTheDocument(),
-  );
-  expect(screen.getByTestId('dataset-breakdown-note')).toHaveTextContent(
-    /not available yet|Phase 2/,
-  );
-  // No fake condition-coverage / operator-mix chart content.
-  expect(screen.queryByText(/underrepresented/)).not.toBeInTheDocument();
+  await waitFor(() => expect(screen.getByTestId('dataset-breakdown-note')).toBeInTheDocument());
+  expect(screen.getByTestId('dataset-breakdown-note')).toHaveTextContent(/Phase 2/);
   expect(screen.queryByText('Condition coverage')).not.toBeInTheDocument();
   expect(screen.queryByText('Episodes by operator')).not.toBeInTheDocument();
 });
 
-test('shows an honest empty state when there are no exported datasets (not a blank panel)', async () => {
-  mockFetch({ list: { datasets: [] } });
-  renderWithClient(<DatasetsScreen />);
-
-  await waitFor(() =>
-    expect(screen.getByTestId('dataset-list-empty')).toBeInTheDocument(),
-  );
-  const emptyState = screen.getByTestId('dataset-list-empty');
-  expect(within(emptyState).getByText('No datasets yet.')).toBeInTheDocument();
-  expect(within(emptyState).getByText(/Phase 2/)).toBeInTheDocument();
-  // The detail/rail columns still render their static skeleton, never blank.
-  expect(screen.getByText('① RECIPE')).toBeInTheDocument();
-  expect(screen.getByTestId('build-dataset-btn')).toBeInTheDocument();
-});
-
-test('renders the same honest empty state when the backend is unreachable', async () => {
-  mockFetch({ listStatus: 503 });
-  renderWithClient(<DatasetsScreen />);
-
-  await waitFor(() =>
-    expect(screen.getByTestId('dataset-list-empty')).toBeInTheDocument(),
-  );
-  const emptyState = screen.getByTestId('dataset-list-empty');
-  expect(within(emptyState).getByText('No datasets yet.')).toBeInTheDocument();
-  expect(within(emptyState).getByText(/backend/i)).toBeInTheDocument();
-});
-
-test('Delete confirms in a modal, calls DELETE, clears the selection, and toasts', async () => {
+test('selecting a different group clears the episode selection', async () => {
   mockFetch({
     list: LIST_RESPONSE,
-    details: { [detailUrlFor(ENTRY_A1)]: detailFor(ENTRY_A1) },
+    details: { [detailUrlFor(SHELF_A)]: detailFor(SHELF_A) },
   });
   renderWithClient(<DatasetsScreen />);
+  await waitFor(() => expect(screen.getByTestId(shelfLeaf)).toBeInTheDocument());
 
-  await waitFor(() =>
-    expect(
-      screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`),
-    ).toBeInTheDocument(),
-  );
-  fireEvent.click(screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`));
+  fireEvent.click(screen.getByTestId(shelfLeaf));
+  fireEvent.click(await screen.findByTestId(`dataset-episode-row-${SHELF_A.dataset_dir}`));
   await waitFor(() => expect(screen.getByTestId('dataset-stats')).toBeInTheDocument());
 
-  // The header Delete button opens a confirm modal; nothing is deleted yet.
-  fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
-  const dialog = await screen.findByRole('dialog');
-  expect(dialog).toHaveTextContent('operator_a/pick_and_place/001');
-  expect(deletedUrls).toHaveLength(0);
-
-  // Confirming issues DELETE /datasets/{op}/{task}/{index}.
-  fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
-  await waitFor(() =>
-    expect(deletedUrls[0]).toContain('/datasets/operator_a/pick_and_place/001'),
-  );
-
-  // Selection clears, a toast confirms, and the refetched (empty) list shows.
-  await waitFor(() =>
-    expect(screen.getByTestId('dataset-detail-name')).toHaveTextContent(
-      'No dataset selected',
-    ),
-  );
-  expect(screen.getByTestId('toast')).toHaveTextContent('Dataset deleted');
-  await waitFor(() =>
-    expect(screen.getByTestId('dataset-list-empty')).toBeInTheDocument(),
-  );
+  // Switch to another group -> the detail (episode selection) is gone.
+  fireEvent.click(screen.getByTestId(kitchenTask));
+  fireEvent.click(screen.getByTestId(dimGroup));
+  expect(screen.queryByTestId('dataset-stats')).toBeNull();
+  expect(screen.getByTestId('dataset-group-header')).toHaveTextContent('dim');
 });
 
-test('cancelling the delete modal leaves the dataset alone', async () => {
+// ---- delete flow ---------------------------------------------------------
+
+test('Delete confirms in a modal, calls DELETE, clears selection, and toasts', async () => {
   mockFetch({
     list: LIST_RESPONSE,
-    details: { [detailUrlFor(ENTRY_A1)]: detailFor(ENTRY_A1) },
+    details: { [detailUrlFor(SHELF_A)]: detailFor(SHELF_A) },
   });
   renderWithClient(<DatasetsScreen />);
+  await waitFor(() => expect(screen.getByTestId(shelfLeaf)).toBeInTheDocument());
+  fireEvent.click(screen.getByTestId(shelfLeaf));
+  fireEvent.click(await screen.findByTestId(`dataset-episode-row-${SHELF_A.dataset_dir}`));
+  await waitFor(() => expect(screen.getByTestId('dataset-stats')).toBeInTheDocument());
 
+  fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+  const dialog = await screen.findByRole('dialog');
+  expect(dialog).toHaveTextContent('op_a/shelf_restock/001');
+  expect(deletedUrls).toHaveLength(0);
+
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
   await waitFor(() =>
-    expect(
-      screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`),
-    ).toBeInTheDocument(),
+    expect(deletedUrls[0]).toContain('/datasets/op_a/shelf_restock/001'),
   );
-  fireEvent.click(screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`));
+  expect(screen.getByTestId('toast')).toHaveTextContent('Dataset deleted');
+  // The list refetches empty -> the honest empty state shows.
+  await waitFor(() => expect(screen.getByTestId('dataset-list-empty')).toBeInTheDocument());
+});
+
+test('cancelling the delete modal leaves the episode alone', async () => {
+  mockFetch({
+    list: LIST_RESPONSE,
+    details: { [detailUrlFor(SHELF_A)]: detailFor(SHELF_A) },
+  });
+  renderWithClient(<DatasetsScreen />);
+  await waitFor(() => expect(screen.getByTestId(shelfLeaf)).toBeInTheDocument());
+  fireEvent.click(screen.getByTestId(shelfLeaf));
+  fireEvent.click(await screen.findByTestId(`dataset-episode-row-${SHELF_A.dataset_dir}`));
   await waitFor(() => expect(screen.getByTestId('dataset-stats')).toBeInTheDocument());
 
   fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
   const dialog = await screen.findByRole('dialog');
   fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
-
   await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   expect(deletedUrls).toHaveLength(0);
-  // The selection (detail pane) is untouched.
-  expect(screen.getByTestId('dataset-detail-name')).toHaveTextContent(
-    'operator_a / pick_and_place',
-  );
+  expect(screen.getByTestId('dataset-stats')).toBeInTheDocument();
 });
 
-test('clicking "+ New" shows the Phase 2 toast', async () => {
+// ---- search + facets -----------------------------------------------------
+
+test('search narrows the tree by task, operator, and batch seq (# optional)', async () => {
   mockFetch({ list: LIST_RESPONSE });
   renderWithClient(<DatasetsScreen />);
+  await waitFor(() => expect(screen.getByTestId(shelfLeaf)).toBeInTheDocument());
+  const box = screen.getByTestId('dataset-search');
 
-  await waitFor(() =>
-    expect(
-      screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`),
-    ).toBeInTheDocument(),
-  );
-  fireEvent.click(screen.getByTestId('new-dataset-btn'));
+  // Task substring.
+  fireEvent.change(box, { target: { value: 'shelf' } });
+  expect(screen.getByTestId(shelfLeaf)).toBeInTheDocument();
+  expect(screen.queryByTestId(kitchenTask)).toBeNull();
+  expect(screen.getByTestId('dataset-count')).toHaveTextContent('showing 1 of 5');
 
-  expect(screen.getByTestId('toast')).toHaveTextContent(
-    'New dataset is a Phase 2 feature',
-  );
+  // Operator substring.
+  fireEvent.change(box, { target: { value: 'op_b' } });
+  expect(screen.getByTestId('dataset-count')).toHaveTextContent('showing 1 of 5');
+  // Only KP_DIM_B survives -> kitchen_pick collapses to a single-condition leaf.
+  expect(screen.getByTestId(dimGroup)).toBeInTheDocument();
+
+  // Batch seq, with and without '#' — both find seq 6 (KP_DIM_A + KP_DIM_B).
+  fireEvent.change(box, { target: { value: '#6' } });
+  expect(screen.getByTestId('dataset-count')).toHaveTextContent('showing 2 of 5');
+  fireEvent.change(box, { target: { value: '6' } });
+  expect(screen.getByTestId('dataset-count')).toHaveTextContent('showing 2 of 5');
 });
 
-test('clicking "Build dataset" toasts that it needs the Phase 2 recipe model, with no progress animation', async () => {
+test('task-result facet narrows; unlabeled rows only pass "All"', async () => {
   mockFetch({ list: LIST_RESPONSE });
   renderWithClient(<DatasetsScreen />);
-
-  await waitFor(() =>
-    expect(screen.getByTestId('build-dataset-btn')).toBeInTheDocument(),
-  );
-  fireEvent.click(screen.getByTestId('build-dataset-btn'));
-
-  expect(screen.getByTestId('toast')).toHaveTextContent(
-    'requires the Phase 2 recipe model',
-  );
-  expect(screen.queryByTestId('build-progress')).not.toBeInTheDocument();
-});
-
-// ---- Catalog-only: export lives in Review now ---------------------------
-
-test('the per-run export panel is gone; the rail points to Review instead', async () => {
-  mockFetch({ list: LIST_RESPONSE });
-  renderWithClient(<DatasetsScreen />);
-
-  await waitFor(() => expect(screen.getByTestId('review-pointer')).toBeInTheDocument());
-  // The old ExportRecordings working panel and its controls no longer exist.
-  expect(screen.queryByTestId('export-recordings')).toBeNull();
-  expect(screen.queryByTestId('export-all-btn')).toBeNull();
-  // The rail explains where export moved to.
-  expect(
-    within(screen.getByTestId('review-pointer')).getByText(/reviewed and exported in/),
-  ).toBeInTheDocument();
-});
-
-test('"Go to Review" switches the active tab to Review (real tab switch)', async () => {
-  mockFetch({ list: LIST_RESPONSE });
-  renderWithClient(<DatasetsScreen />);
-
-  await waitFor(() => expect(screen.getByTestId('go-to-review')).toBeInTheDocument());
-  expect(useUiStore.getState().activeTab).toBe('datasets');
-  fireEvent.click(screen.getByTestId('go-to-review'));
-  expect(useUiStore.getState().activeTab).toBe('review');
-});
-
-// ---- Block 3: dataset label chips (only when the backend attributes them) --
-
-const ENTRY_LABELED: DatasetEntry = {
-  operator: 'operator_a',
-  task: 'folding',
-  index: '002',
-  dataset_dir: 'operator_a/folding/002',
-  run_id: 'run_lab',
-  message_count: 5000,
-  exported_at: '2026-07-13T12:00:00Z',
-  // The list serves the label subset FLAT (episode.json is nested only on the
-  // detail payload) — mirror the real backend shape.
-  quality: 'good',
-  task_result: 'success',
-  review_status: 'adopted',
-  batch_seq: 4,
-  index_in_batch: 2,
-};
-const ENTRY_LEGACY: DatasetEntry = {
-  operator: 'unknown_operator',
-  task: 'unknown_task',
-  index: '001',
-  dataset_dir: 'unknown_operator/unknown_task/001',
-  run_id: 'run_leg',
-  message_count: 100,
-  exported_at: '2026-06-01T12:00:00Z',
-};
-
-test('a dataset card shows episode label chips when the backend attributes them', async () => {
-  mockFetch({ list: { datasets: [ENTRY_LABELED] } });
-  renderWithClient(<DatasetsScreen />);
-
-  const testId = `dataset-card-labels-${ENTRY_LABELED.dataset_dir}`;
-  await waitFor(() => expect(screen.getByTestId(testId)).toBeInTheDocument());
-  const labels = screen.getByTestId(testId);
-  expect(within(labels).getByText('GOOD')).toBeInTheDocument();
-  expect(within(labels).getByText('SUCCESS')).toBeInTheDocument();
-  expect(within(labels).getByText(/#4/)).toBeInTheDocument();
-  // Unified predicate: a labeled card NEVER also shows the "no episode labels"
-  // note (the Apple self-contradiction fix).
-  expect(
-    screen.queryByTestId(`dataset-card-legacy-${ENTRY_LABELED.dataset_dir}`),
-  ).toBeNull();
-});
-
-test('a dataset card shows the recording condition when the catalog carries it', async () => {
-  const entry: DatasetEntry = {
-    ...ENTRY_LABELED,
-    batch_id: 'batch_20260713_050000',
-    condition: 'Bin: full',
-  };
-  mockFetch({ list: { datasets: [entry] } });
-  renderWithClient(<DatasetsScreen />);
-
-  const testId = `dataset-card-condition-${entry.dataset_dir}`;
-  await waitFor(() => expect(screen.getByTestId(testId)).toBeInTheDocument());
-  expect(screen.getByTestId(testId).textContent).toBe('Bin: full');
-  // The tooltip carries the globally-unique batch id (batch_seq resets daily).
-  expect(screen.getByTestId(testId).getAttribute('title')).toContain(
-    'batch_20260713_050000',
-  );
-  // A row without a condition renders no line (nothing fabricated) — covered
-  // by ENTRY_LABELED itself in the chips test above (no condition field).
-});
-
-test('a dataset card shows NO label chips (but the honest note) when the episode is absent', async () => {
-  // ENTRY_A1 carries no `episode` field.
-  mockFetch({ list: { datasets: [ENTRY_A1] } });
-  renderWithClient(<DatasetsScreen />);
-
-  await waitFor(() =>
-    expect(
-      screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`),
-    ).toBeInTheDocument(),
-  );
-  // No chips (nothing fabricated) …
-  expect(
-    screen.queryByTestId(`dataset-card-labels-${ENTRY_A1.dataset_dir}`),
-  ).toBeNull();
-  // … and the same predicate surfaces the honest "no episode labels" note in
-  // their place — one or the other, never both, never neither.
-  expect(
-    screen.getByTestId(`dataset-card-legacy-${ENTRY_A1.dataset_dir}`),
-  ).toBeInTheDocument();
-});
-
-test('a labeled card with an unknown operator shows chips and NOT the legacy note (Apple P1 regression)', async () => {
-  // The exact self-contradiction Apple caught: real quality/task labels next to
-  // "no episode labels (exported before labeling)" on the same card. The
-  // operator being unattributed must not resurrect the note when labels exist.
-  const entry: DatasetEntry = {
-    ...ENTRY_LABELED,
-    operator: 'unknown_operator',
-    dataset_dir: 'unknown_operator/folding/002',
-  };
-  mockFetch({ list: { datasets: [entry] } });
-  renderWithClient(<DatasetsScreen />);
-
-  const chipsId = `dataset-card-labels-${entry.dataset_dir}`;
-  await waitFor(() => expect(screen.getByTestId(chipsId)).toBeInTheDocument());
-  expect(within(screen.getByTestId(chipsId)).getByText('GOOD')).toBeInTheDocument();
-  // The note must be absent even though the operator is unattributed.
-  expect(screen.queryByTestId(`dataset-card-legacy-${entry.dataset_dir}`)).toBeNull();
-  // The missing operator is still surfaced honestly, on its own (group header).
-  expect(screen.getByText('operator not recorded')).toBeInTheDocument();
-});
-
-test('an unattributed export is explained in plain language (no raw sentinels)', async () => {
-  mockFetch({ list: { datasets: [ENTRY_LEGACY] } });
-  renderWithClient(<DatasetsScreen />);
-
-  const legacyId = `dataset-card-legacy-${ENTRY_LEGACY.dataset_dir}`;
-  await waitFor(() => expect(screen.getByTestId(legacyId)).toBeInTheDocument());
-  // Plain-language note (not the internal "pre-label" jargon) with an
-  // explanatory tooltip.
-  expect(screen.getByTestId(legacyId)).toHaveTextContent(
-    'no episode labels (exported before labeling)',
-  );
-  expect(screen.getByTestId(legacyId)).toHaveAttribute(
-    'title',
-    expect.stringContaining('Exported before per-episode labels existed'),
-  );
-  // The raw unknown_operator / unknown_task sentinels are replaced with prose.
-  expect(screen.getByText('operator not recorded')).toBeInTheDocument();
-  expect(screen.getByText('task not recorded')).toBeInTheDocument();
-  expect(screen.queryByText('unknown_operator')).toBeNull();
-  expect(screen.queryByText('unknown_task')).toBeNull();
-});
-
-test('the dataset detail shows episode label chips when present', async () => {
-  const detail = detailFor(ENTRY_LABELED, {
-    episode: epJoin({ quality: 'good', task_result: 'success', batch_seq: 4 }),
-  });
-  mockFetch({
-    list: { datasets: [ENTRY_LABELED] },
-    details: { [detailUrlFor(ENTRY_LABELED)]: detail },
-  });
-  renderWithClient(<DatasetsScreen />);
-
-  await waitFor(() =>
-    expect(
-      screen.getByTestId(`dataset-card-${ENTRY_LABELED.dataset_dir}`),
-    ).toBeInTheDocument(),
-  );
-  fireEvent.click(screen.getByTestId(`dataset-card-${ENTRY_LABELED.dataset_dir}`));
-
-  await waitFor(() =>
-    expect(screen.getByTestId('dataset-detail-labels')).toBeInTheDocument(),
-  );
-  const labels = screen.getByTestId('dataset-detail-labels');
-  expect(within(labels).getByText('GOOD')).toBeInTheDocument();
-  expect(within(labels).getByText('SUCCESS')).toBeInTheDocument();
-});
-
-// ---- Dataset inspection (v1 parity via features/inspect) -----------------
-
-test('dataset inspection: loss report button posts a loss_report job against the exported dir', async () => {
-  const fetchSpy = mockFetch({
-    list: LIST_RESPONSE,
-    details: { [detailUrlFor(ENTRY_A1)]: detailFor(ENTRY_A1) },
-  });
-  renderWithClient(<DatasetsScreen />);
-
-  await waitFor(() =>
-    expect(
-      screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`),
-    ).toBeInTheDocument(),
-  );
-  fireEvent.click(screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`));
-
-  await waitFor(() =>
-    expect(screen.getByTestId('run-loss-report-btn')).toBeInTheDocument(),
-  );
-  fireEvent.click(screen.getByTestId('run-loss-report-btn'));
-
-  await waitFor(() => {
-    const call = fetchSpy.mock.calls.find(
-      ([u, i]) =>
-        String(u).includes('/jobs') && (i?.method ?? '').toUpperCase() === 'POST',
-    );
-    expect(call).toBeTruthy();
-    const body = JSON.parse(String(call?.[1]?.body));
-    expect(body.pipeline).toBe('loss_report');
-    expect(body.run_id).toBe('run_1');
-    expect(body.params.dataset_dir).toBe(ENTRY_A1.dataset_dir);
-  });
-});
-
-test('dataset inspection: shows the loss table + video check, and JSON sidecars when present', async () => {
-  mockFetch({
-    list: LIST_RESPONSE,
-    details: {
-      [detailUrlFor(ENTRY_A1)]: detailFor(ENTRY_A1, {
-        manifest: { compression: 'zstd' },
-        loss: {
-          run_id: 'run_1',
-          topics: [
-            { name: '/hsrb/joint_states', hz: 40, loss_rate: 0, gap_max_ms: 30 },
-          ],
-        },
-        episode: {
-          episode_id: 'ep_1',
-          batch_id: 'batch_20260713_050000',
-          index_in_batch: 2,
-          task_result: 'success',
-          quality: 'good',
-          review_status: 'adopted',
-          batch_seq: 4,
-        },
-      }),
-    },
-  });
-  renderWithClient(<DatasetsScreen />);
-
-  await waitFor(() =>
-    expect(
-      screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`),
-    ).toBeInTheDocument(),
-  );
-  fireEvent.click(screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`));
-
-  await waitFor(() =>
-    expect(screen.getByTestId('dataset-inspection')).toBeInTheDocument(),
-  );
-  const inspection = screen.getByTestId('dataset-inspection');
-  // Reused LossTable renders the computed per-topic row.
-  expect(within(inspection).getByText('/hsrb/joint_states')).toBeInTheDocument();
-  // Reused VideoCheckSection appears (there is a camera/image topic).
-  expect(within(inspection).getByText('Video check')).toBeInTheDocument();
-  // Reused JsonBlock renders the manifest sidecar.
-  expect(within(inspection).getByText('Manifest')).toBeInTheDocument();
-  // episode.json is a first-class sidecar too (user request 2026-07-14): the
-  // labels that survived export are inspectable right on the Datasets tab.
-  expect(within(inspection).getByText('Episode json')).toBeInTheDocument();
-});
-
-// ---------------------------------------------------------------------------
-// Label filters + manifest (2026-07-14 batch-label decision: no physical
-// success/failure split — the catalog filters, and the manifest materializes
-// the filter as a versionable training-set definition).
-// ---------------------------------------------------------------------------
-
-const ENTRY_FAILED: DatasetEntry = {
-  ...ENTRY_LABELED,
-  index: '003',
-  dataset_dir: 'operator_a/folding/003',
-  run_id: 'run_failed',
-  task_result: 'failure',
-  failure_reason: 'Grasp missed',
-  condition: 'Bin: full',
-};
-
-test('task-result filter chips narrow the list; unlabeled rows only pass "All"', async () => {
-  // ENTRY_A1 is unlabeled (pre-label export): it must not pass success/failure.
-  mockFetch({ list: { datasets: [ENTRY_LABELED, ENTRY_FAILED, ENTRY_A1] } });
-  renderWithClient(<DatasetsScreen />);
-  await waitFor(() =>
-    expect(
-      screen.getByTestId(`dataset-card-${ENTRY_LABELED.dataset_dir}`),
-    ).toBeInTheDocument(),
-  );
+  await waitFor(() => expect(screen.getByTestId(shelfLeaf)).toBeInTheDocument());
 
   fireEvent.click(screen.getByTestId('dataset-filter-failure'));
-  expect(screen.queryByTestId(`dataset-card-${ENTRY_LABELED.dataset_dir}`)).toBeNull();
-  expect(screen.queryByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`)).toBeNull();
-  expect(
-    screen.getByTestId(`dataset-card-${ENTRY_FAILED.dataset_dir}`),
-  ).toBeInTheDocument();
+  // Only KP_DIM_B is a failure; legacy (unlabeled) and successes drop out.
+  expect(screen.getByTestId('dataset-count')).toHaveTextContent('showing 1 of 5');
+  expect(screen.queryByTestId(shelfLeaf)).toBeNull();
+  expect(screen.queryByTestId(legacyGroup)).toBeNull();
 
   fireEvent.click(screen.getByTestId('dataset-filter-all'));
-  expect(
-    screen.getByTestId(`dataset-card-${ENTRY_A1.dataset_dir}`),
-  ).toBeInTheDocument();
+  expect(screen.getByTestId('dataset-count')).toHaveTextContent('showing 5 of 5');
+});
+
+test('operator facet narrows the tree to one operator', async () => {
+  mockFetch({ list: LIST_RESPONSE });
+  renderWithClient(<DatasetsScreen />);
+  await waitFor(() => expect(screen.getByTestId(shelfLeaf)).toBeInTheDocument());
+
+  fireEvent.change(screen.getByTestId('dataset-operator-filter'), {
+    target: { value: 'op_b' },
+  });
+  expect(screen.getByTestId('dataset-count')).toHaveTextContent('showing 1 of 5');
+  expect(screen.getByTestId(dimGroup)).toBeInTheDocument();
+  expect(screen.queryByTestId(shelfLeaf)).toBeNull();
 });
 
 test('an all-hidden filter result explains itself instead of claiming "no datasets"', async () => {
-  mockFetch({ list: { datasets: [ENTRY_LABELED] } });
+  mockFetch({ list: LIST_RESPONSE });
   renderWithClient(<DatasetsScreen />);
-  await waitFor(() =>
-    expect(
-      screen.getByTestId(`dataset-card-${ENTRY_LABELED.dataset_dir}`),
-    ).toBeInTheDocument(),
-  );
-  fireEvent.click(screen.getByTestId('dataset-filter-failure'));
+  await waitFor(() => expect(screen.getByTestId(shelfLeaf)).toBeInTheDocument());
+
+  fireEvent.change(screen.getByTestId('dataset-search'), { target: { value: 'zzz-nomatch' } });
   const empty = screen.getByTestId('dataset-list-empty');
-  expect(empty.textContent).toContain('No datasets match the filter');
-  expect(empty.textContent).toContain('1 dataset(s) are hidden');
+  expect(empty.textContent).toContain('No datasets match');
+  expect(empty.textContent).toContain('5 dataset(s) are hidden');
 });
 
-test('the manifest button downloads the FILTERED rows as JSON', async () => {
-  mockFetch({ list: { datasets: [ENTRY_LABELED, ENTRY_FAILED] } });
+// ---- manifest ------------------------------------------------------------
+
+test('the manifest button counts all filtered rows, or the selected group only', async () => {
+  mockFetch({ list: LIST_RESPONSE });
+  renderWithClient(<DatasetsScreen />);
+  await waitFor(() => expect(screen.getByTestId(shelfLeaf)).toBeInTheDocument());
+
+  // No group selected -> all filtered rows.
+  expect(screen.getByTestId('dataset-manifest-btn')).toHaveTextContent('Manifest (5)');
+
+  // Select the dim condition group -> restricted to its 2 rows.
+  fireEvent.click(screen.getByTestId(kitchenTask));
+  fireEvent.click(screen.getByTestId(dimGroup));
+  expect(screen.getByTestId('dataset-manifest-btn')).toHaveTextContent('Manifest (2)');
+});
+
+test('downloading the manifest emits the selected group’s rows with the group in the filter', async () => {
+  mockFetch({ list: LIST_RESPONSE });
   const created: Blob[] = [];
   const origCreate = URL.createObjectURL;
   const origRevoke = URL.revokeObjectURL;
@@ -677,21 +499,15 @@ test('the manifest button downloads the FILTERED rows as JSON', async () => {
     return 'blob:test';
   };
   URL.revokeObjectURL = () => {};
-  const clickSpy = vi
-    .spyOn(HTMLAnchorElement.prototype, 'click')
-    .mockImplementation(() => {});
+  const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
   try {
     renderWithClient(<DatasetsScreen />);
-    await waitFor(() =>
-      expect(
-        screen.getByTestId(`dataset-card-${ENTRY_FAILED.dataset_dir}`),
-      ).toBeInTheDocument(),
-    );
-    fireEvent.click(screen.getByTestId('dataset-filter-success'));
-    expect(screen.getByTestId('dataset-manifest-btn').textContent).toBe('Manifest (1)');
+    await waitFor(() => expect(screen.getByTestId(kitchenTask)).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId(kitchenTask));
+    fireEvent.click(screen.getByTestId(dimGroup));
+
     fireEvent.click(screen.getByTestId('dataset-manifest-btn'));
     expect(clickSpy).toHaveBeenCalled();
-    // jsdom's Blob lacks .text(); FileReader is the portable reader there.
     const text = await new Promise<string>((resolve, reject) => {
       const r = new FileReader();
       r.onload = () => resolve(String(r.result));
@@ -699,13 +515,18 @@ test('the manifest button downloads the FILTERED rows as JSON', async () => {
       r.readAsText(created[0]!);
     });
     const manifest = JSON.parse(text) as {
-      filter: { task_result: string };
+      filter: { group: { task: string; condition: string | null } | null };
       count: number;
-      episodes: { path: string; failure_reason: string | null }[];
+      episodes: { path: string; batch_id: string | null }[];
     };
-    expect(manifest.filter.task_result).toBe('success');
-    expect(manifest.count).toBe(1);
-    expect(manifest.episodes[0]!.path).toBe('operator_a/folding/002');
+    expect(manifest.filter.group).toEqual({ task: 'kitchen_pick', condition: 'dim' });
+    expect(manifest.count).toBe(2);
+    expect(manifest.episodes.map((e) => e.path).sort()).toEqual([
+      'op_a/kitchen_pick/001',
+      'op_b/kitchen_pick/002',
+    ]);
+    // batch_id stays in the manifest (ML-facing, per 2026-07-14 decision).
+    expect(manifest.episodes[0]!.batch_id).toBe('b6');
   } finally {
     URL.createObjectURL = origCreate;
     URL.revokeObjectURL = origRevoke;
@@ -713,14 +534,72 @@ test('the manifest button downloads the FILTERED rows as JSON', async () => {
   }
 });
 
-test('a failed dataset card exposes the failure reason on the FAILURE chip', async () => {
-  mockFetch({ list: { datasets: [ENTRY_FAILED] } });
+// ---- empty states + static affordances -----------------------------------
+
+test('honest empty state when there are no exported datasets (not a blank panel)', async () => {
+  mockFetch({ list: { datasets: [] } });
   renderWithClient(<DatasetsScreen />);
-  const testId = `dataset-card-labels-${ENTRY_FAILED.dataset_dir}`;
-  await waitFor(() => expect(screen.getByTestId(testId)).toBeInTheDocument());
-  const chips = screen.getByTestId(testId);
-  const failure = within(chips).getByText('FAILURE');
-  expect(failure.closest('[title]')?.getAttribute('title')).toBe(
-    'Failure reason: Grasp missed',
-  );
+  await waitFor(() => expect(screen.getByTestId('dataset-list-empty')).toBeInTheDocument());
+  expect(screen.getByTestId('dataset-list-empty')).toHaveTextContent('No datasets yet.');
+  // The center + rail still render their skeletons, never blank.
+  expect(screen.getByTestId('dataset-center-empty')).toBeInTheDocument();
+  expect(screen.getByTestId('build-dataset-btn')).toBeInTheDocument();
+});
+
+test('the same honest empty state when the backend is unreachable', async () => {
+  mockFetch({ listStatus: 503 });
+  renderWithClient(<DatasetsScreen />);
+  await waitFor(() => expect(screen.getByTestId('dataset-list-empty')).toBeInTheDocument());
+  const empty = screen.getByTestId('dataset-list-empty');
+  expect(empty).toHaveTextContent('No datasets yet.');
+  expect(empty.textContent).toMatch(/backend/i);
+});
+
+test('"+ New" and "Build dataset" only explain Phase 2, with no progress animation', async () => {
+  mockFetch({ list: LIST_RESPONSE });
+  renderWithClient(<DatasetsScreen />);
+  await waitFor(() => expect(screen.getByTestId('new-dataset-btn')).toBeInTheDocument());
+
+  fireEvent.click(screen.getByTestId('new-dataset-btn'));
+  expect(screen.getByTestId('toast')).toHaveTextContent('New dataset is a Phase 2 feature');
+
+  fireEvent.click(screen.getByTestId('build-dataset-btn'));
+  expect(screen.getByTestId('toast')).toHaveTextContent('requires the Phase 2 recipe model');
+  expect(screen.queryByTestId('build-progress')).not.toBeInTheDocument();
+});
+
+test('"Go to Review" switches the active tab (Review is the single export surface)', async () => {
+  mockFetch({ list: LIST_RESPONSE });
+  renderWithClient(<DatasetsScreen />);
+  await waitFor(() => expect(screen.getByTestId('go-to-review')).toBeInTheDocument());
+  expect(useUiStore.getState().activeTab).toBe('datasets');
+  fireEvent.click(screen.getByTestId('go-to-review'));
+  expect(useUiStore.getState().activeTab).toBe('review');
+});
+
+// ---- dataset inspection (reused features/inspect) ------------------------
+
+test('dataset inspection posts a loss_report job against the exported dir', async () => {
+  const fetchSpy = mockFetch({
+    list: LIST_RESPONSE,
+    details: { [detailUrlFor(SHELF_A)]: detailFor(SHELF_A) },
+  });
+  renderWithClient(<DatasetsScreen />);
+  await waitFor(() => expect(screen.getByTestId(shelfLeaf)).toBeInTheDocument());
+  fireEvent.click(screen.getByTestId(shelfLeaf));
+  fireEvent.click(await screen.findByTestId(`dataset-episode-row-${SHELF_A.dataset_dir}`));
+
+  await waitFor(() => expect(screen.getByTestId('run-loss-report-btn')).toBeInTheDocument());
+  fireEvent.click(screen.getByTestId('run-loss-report-btn'));
+
+  await waitFor(() => {
+    const call = fetchSpy.mock.calls.find(
+      ([u, i]) => String(u).includes('/jobs') && (i?.method ?? '').toUpperCase() === 'POST',
+    );
+    expect(call).toBeTruthy();
+    const body = JSON.parse(String(call?.[1]?.body));
+    expect(body.pipeline).toBe('loss_report');
+    expect(body.run_id).toBe('r4');
+    expect(body.params.dataset_dir).toBe(SHELF_A.dataset_dir);
+  });
 });

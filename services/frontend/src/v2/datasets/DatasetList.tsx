@@ -1,13 +1,24 @@
-// Left column: the real exported-dataset catalog (GET /api/v1/datasets),
-// grouped operator -> [task #index] (see data.ts). Selecting a card switches
-// the center/right columns' content (useDatasetsState owns the selection).
-// Renders an honest empty state both when there are genuinely no exports yet
-// and when the backend is unreachable — never a blank panel.
+// Left column (2026-07-21 IA overhaul): the exported-dataset catalog folded into
+// a task -> condition tree (GET /api/v1/datasets, grouped client-side in
+// data.ts). The (task, condition) pair — not the episode — is the selectable
+// unit, so a catalog of hundreds of episodes stays navigable. A search box, a
+// recency/A–Z sort toggle, and task-result + operator facets narrow BOTH the
+// tree and the center table. Operator is a facet, not a hierarchy level, but
+// stays visible on every group's aggregate line (user decision). Honest empty
+// states cover "no exports yet", "backend unreachable", and "filtered to none".
 
-import type { DatasetEntry, RunEpisode } from '../../api/types';
-import { Badge, cn } from '../../components/ui';
-import { EpisodeLabelChips } from '../episodeChips';
-import { formatCount, UNKNOWN_OPERATOR, UNKNOWN_TASK } from './data';
+import type { DatasetGroup, SummarySegment, TaskNode } from './data';
+import { cn } from '../../components/ui';
+import {
+  ANY_OPERATOR,
+  UNKNOWN_OPERATOR,
+  UNKNOWN_TASK,
+  NO_CONDITION_LABEL,
+  groupSummarySegments,
+  groupTestId,
+  isLeafTask,
+  taskTestId,
+} from './data';
 import type { DatasetsState, TaskResultFilter } from './useDatasetsState';
 
 const RESULT_FILTERS: { id: TaskResultFilter; label: string }[] = [
@@ -18,36 +29,147 @@ const RESULT_FILTERS: { id: TaskResultFilter; label: string }[] = [
 
 const MUTED = 'italic text-gray-400';
 
-/** The datasets LIST serves the episode-label subset as FLAT row fields
- *  (episode.json is nested only on the detail payload). Adapt a row into the
- *  RunEpisode shape the shared chips consume; null when no label survived
- *  export (pre-label datasets) so the card shows nothing fabricated. */
-function rowEpisode(entry: DatasetEntry): RunEpisode | null {
-  // The chips render task-result + quality unconditionally, so both must be
-  // real values (episode.json writes them together; absent file -> all null).
-  if (entry.task_result == null || entry.quality == null) return null;
-  return {
-    episode_id: '',
-    batch_id: '',
-    index_in_batch: entry.index_in_batch ?? 0,
-    task_result: entry.task_result,
-    failure_reason: entry.failure_reason ?? null,
-    quality: entry.quality,
-    review_status: entry.review_status ?? 'pending',
-    batch_seq: entry.batch_seq ?? null,
-  };
+function taskLabel(task: string): string {
+  return task === UNKNOWN_TASK ? 'task not recorded' : task;
 }
 
-/** A pre-label export: the backend couldn't attribute it to an operator/task
- *  (older exports predate the episode model). Shown muted, labeled honestly. */
-function isLegacy(operator: string, task: string): boolean {
-  return operator === 'unknown_operator' || task === 'unknown_task';
+function operatorLabel(op: string): string {
+  return op === UNKNOWN_OPERATOR ? 'operator not recorded' : op;
+}
+
+/** The honest one-line aggregate (eps · sets · ✓/✗ or "no labels" · size ·
+ *  last · operators) — every segment computed from real row fields. */
+function SummaryLine({ segments }: { segments: SummarySegment[] }) {
+  return (
+    <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10.5px] leading-tight text-gray-500">
+      {segments.map((s, i) => (
+        <span key={i} title={s.title} className="whitespace-nowrap">
+          {i > 0 && <span className="mr-1.5 text-gray-300">·</span>}
+          {s.text}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/** A selectable (task, condition) group row — either a leaf task's own row or a
+ *  condition child under an expanded multi-condition task. */
+function GroupRow({
+  group,
+  state,
+  title,
+  indented,
+}: {
+  group: DatasetGroup;
+  state: DatasetsState;
+  /** The row's headline (task name for a leaf, condition label for a child). */
+  title: string;
+  indented: boolean;
+}) {
+  const selected = state.isGroupSelected(group.key);
+  return (
+    <div
+      data-testid={groupTestId(group)}
+      role="button"
+      tabIndex={0}
+      onClick={() => state.selectGroup(group.key)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          state.selectGroup(group.key);
+        }
+      }}
+      className={cn(
+        'flex cursor-pointer flex-col gap-[3px] rounded-[10px] border px-[11px] py-[9px]',
+        indented && 'ml-3',
+        selected ? 'border-teal-200 bg-teal-50' : 'border-gray-100 hover:bg-gray-50',
+        group.isLegacy && !selected && 'opacity-70',
+      )}
+    >
+      <span
+        className={cn(
+          'text-[12.5px] font-semibold',
+          group.condition === null && !indented && group.isLegacy
+            ? MUTED
+            : group.condition === null && indented
+              ? 'text-gray-500'
+              : 'text-gray-900',
+          group.isLegacy && 'italic text-gray-400',
+        )}
+      >
+        {title}
+      </span>
+      <SummaryLine segments={groupSummarySegments(group.aggregate)} />
+    </div>
+  );
+}
+
+/** A leaf task (single condition group): the task row itself selects the group.
+ *  A non-null condition is shown as a small subtitle; a null one collapses away
+ *  ("a task with a single null condition collapses naturally"). */
+function LeafTask({ node, state }: { node: TaskNode; state: DatasetsState }) {
+  const group = node.conditions[0]!;
+  return (
+    <div data-testid={taskTestId(node.task)}>
+      <GroupRow
+        group={group}
+        state={state}
+        title={taskLabel(node.task)}
+        indented={false}
+      />
+      {group.condition !== null && (
+        <span className="ml-[11px] mt-0.5 block text-[10.5px] text-gray-400">
+          {group.condition}
+        </span>
+      )}
+    </div>
+  );
+}
+
+/** A multi-condition task: a collapsible header (cross-condition aggregate) over
+ *  the (task, condition) child rows. */
+function TaskGroup({ node, state }: { node: TaskNode; state: DatasetsState }) {
+  const expanded = state.isTaskExpanded(node.task);
+  return (
+    <div className="flex flex-col gap-1">
+      <button
+        type="button"
+        data-testid={taskTestId(node.task)}
+        onClick={() => state.toggleTask(node.task)}
+        aria-expanded={expanded}
+        className="flex items-center gap-1.5 rounded-[10px] px-[9px] py-[7px] text-left hover:bg-gray-50"
+      >
+        <span aria-hidden className="w-3 shrink-0 text-[11px] text-gray-400">
+          {expanded ? '▾' : '▸'}
+        </span>
+        <span className={cn('text-[12.5px] font-semibold', node.isLegacy ? MUTED : 'text-gray-800')}>
+          {taskLabel(node.task)}
+        </span>
+        <span className="text-[10.5px] text-gray-400">
+          ({node.aggregate.episodeCount} eps · {node.conditions.length} conditions)
+        </span>
+      </button>
+      {expanded &&
+        node.conditions.map((group) => (
+          <GroupRow
+            key={group.key}
+            group={group}
+            state={state}
+            title={group.condition ?? NO_CONDITION_LABEL}
+            indented
+          />
+        ))}
+    </div>
+  );
 }
 
 export function DatasetList({ state }: { state: DatasetsState }) {
-  const hasAny = state.groups.length > 0;
+  const hasAny = state.tree.length > 0;
   const filtersActive =
-    state.taskResultFilter !== 'all' || state.conditionFilter !== null;
+    state.search.trim() !== '' ||
+    state.taskResultFilter !== 'all' ||
+    state.operatorFilter !== ANY_OPERATOR;
+
   return (
     <div className="flex min-h-0 flex-col overflow-hidden rounded-card border border-gray-200 bg-white shadow-card">
       <div className="flex shrink-0 items-center gap-2.5 border-b border-gray-100 px-4 py-[13px]">
@@ -65,52 +187,90 @@ export function DatasetList({ state }: { state: DatasetsState }) {
         </button>
       </div>
 
-      {(state.total > 0 || filtersActive) && (
-        <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-gray-100 px-3 py-2">
-          {RESULT_FILTERS.map((f) => (
-            <button
-              key={f.id}
-              type="button"
-              data-testid={`dataset-filter-${f.id}`}
-              onClick={() => state.setTaskResultFilter(f.id)}
-              className={cn(
-                'rounded-chip px-2 py-0.5 text-[11px] font-semibold',
-                state.taskResultFilter === f.id
-                  ? 'bg-teal-600 text-white'
-                  : 'bg-gray-100 text-gray-500 hover:bg-gray-200',
-              )}
-            >
-              {f.label}
-            </button>
-          ))}
-          {state.conditions.length > 0 && (
-            <select
-              data-testid="dataset-filter-condition"
-              value={state.conditionFilter ?? ''}
-              onChange={(e) => state.setConditionFilter(e.target.value || null)}
-              className="max-w-[130px] rounded-chip border border-gray-200 bg-white px-1.5 py-0.5 text-[11px] text-gray-600"
-            >
-              <option value="">Any condition</option>
-              {state.conditions.map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
-            </select>
-          )}
+      {/* Toolbar: search, facets + sort, operator, then the counter + manifest. */}
+      <div className="flex shrink-0 flex-col gap-2 border-b border-gray-100 px-3 py-2.5">
+        <input
+          type="search"
+          data-testid="dataset-search"
+          value={state.search}
+          onChange={(e) => state.setSearch(e.target.value)}
+          placeholder="Search task, condition, operator, #set…"
+          className="w-full rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12.5px] text-gray-700 placeholder:text-gray-400"
+        />
+
+        <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1">
+            {RESULT_FILTERS.map((f) => (
+              <button
+                key={f.id}
+                type="button"
+                data-testid={`dataset-filter-${f.id}`}
+                onClick={() => state.setTaskResultFilter(f.id)}
+                className={cn(
+                  'rounded-chip px-2 py-0.5 text-[11px] font-semibold',
+                  state.taskResultFilter === f.id
+                    ? 'bg-teal-600 text-white'
+                    : 'bg-gray-100 text-gray-500 hover:bg-gray-200',
+                )}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+          <div className="flex-1" />
+          <button
+            type="button"
+            data-testid="dataset-sort-toggle"
+            onClick={state.toggleSort}
+            title={
+              state.sort === 'recent'
+                ? 'Sorted by most recent export — switch to A–Z'
+                : 'Sorted A–Z — switch to most recent'
+            }
+            className="flex items-center gap-1 rounded-chip border border-gray-200 px-2 py-0.5 text-[11px] font-semibold text-gray-600 hover:bg-gray-50"
+          >
+            <span aria-hidden>⇅</span>
+            {state.sort === 'recent' ? 'Recent' : 'A–Z'}
+          </button>
+        </div>
+
+        {state.operatorOptions.length > 0 && (
+          <select
+            data-testid="dataset-operator-filter"
+            value={state.operatorFilter}
+            onChange={(e) => state.setOperatorFilter(e.target.value)}
+            className="w-full rounded-control border border-gray-200 bg-white px-2 py-1 text-[12px] text-gray-600"
+          >
+            <option value={ANY_OPERATOR}>Any operator</option>
+            {state.operatorOptions.map((op) => (
+              <option key={op} value={op}>
+                {operatorLabel(op)}
+              </option>
+            ))}
+          </select>
+        )}
+
+        <div className="flex items-center gap-2">
+          <span data-testid="dataset-count" className="text-[11px] text-gray-400">
+            showing {state.shown} of {state.total}
+          </span>
           <div className="flex-1" />
           <button
             type="button"
             data-testid="dataset-manifest-btn"
             onClick={state.downloadManifest}
-            disabled={state.filtered.length === 0}
-            title="Download the filtered rows as a manifest JSON — a versionable training-set definition"
+            disabled={state.manifestCount === 0}
+            title={
+              state.selectedGroup
+                ? 'Download the selected group as a manifest JSON (a versionable training-set definition)'
+                : 'Download the filtered rows as a manifest JSON (a versionable training-set definition)'
+            }
             className="rounded-chip border border-teal-200 px-2 py-0.5 text-[11px] font-bold text-teal-700 hover:bg-teal-50 disabled:opacity-40"
           >
-            Manifest ({state.filtered.length})
+            Manifest ({state.manifestCount})
           </button>
         </div>
-      )}
+      </div>
 
       {state.isLoading ? (
         <div className="px-4 py-6 text-sm text-gray-400">Loading datasets…</div>
@@ -118,20 +278,18 @@ export function DatasetList({ state }: { state: DatasetsState }) {
         <div data-testid="dataset-list-empty" className="flex flex-col gap-1 px-4 py-6">
           {filtersActive && state.total > 0 ? (
             <>
-              <span className="text-sm text-gray-500">
-                No datasets match the filter.
-              </span>
+              <span className="text-sm text-gray-500">No datasets match.</span>
               <span className="text-xs leading-relaxed text-gray-400">
-                {state.total} dataset(s) are hidden by the current task-result/condition
-                filter — unlabeled (pre-label) exports only appear under “All”.
+                {state.total} dataset(s) are hidden by the current search / task-result /
+                operator filter — clear the search or set the filters to “All / Any” to see
+                them.
               </span>
             </>
           ) : (
             <>
               <span className="text-sm text-gray-500">No datasets yet.</span>
               <span className="text-xs leading-relaxed text-gray-400">
-                Exported datasets will appear here. Recipe-based builds arrive in Phase
-                2.
+                Exported datasets will appear here. Recipe-based builds arrive in Phase 2.
               </span>
             </>
           )}
@@ -144,99 +302,16 @@ export function DatasetList({ state }: { state: DatasetsState }) {
       ) : (
         <div
           data-testid="dataset-list-scroll"
-          className="min-h-0 flex-1 overflow-y-auto p-3"
+          className="min-h-0 flex-1 overflow-y-auto p-2.5"
         >
-          <div className="flex flex-col gap-3">
-            {state.groups.map((group) => (
-              <div key={group.operator} className="flex flex-col gap-[7px]">
-                <span
-                  className={cn(
-                    'px-1 text-[11px] font-semibold',
-                    group.operator === UNKNOWN_OPERATOR
-                      ? MUTED
-                      : 'font-mono text-gray-500',
-                  )}
-                >
-                  {group.operator === UNKNOWN_OPERATOR
-                    ? 'operator not recorded'
-                    : group.operator}
-                </span>
-                {group.entries.map((entry) => {
-                  const selected = state.isSelected(entry);
-                  const legacy = isLegacy(entry.operator, entry.task);
-                  const episode = rowEpisode(entry);
-                  return (
-                    <div
-                      key={entry.dataset_dir}
-                      data-testid={`dataset-card-${entry.dataset_dir}`}
-                      role="button"
-                      tabIndex={0}
-                      onClick={() => state.select(entry)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' || e.key === ' ') state.select(entry);
-                      }}
-                      className={cn(
-                        'flex cursor-pointer flex-col gap-[5px] rounded-[11px] border px-[13px] py-[11px]',
-                        selected ? 'border-teal-200 bg-teal-50' : 'border-gray-100',
-                        legacy && !selected && 'opacity-70',
-                      )}
-                    >
-                      <span
-                        className={cn(
-                          'text-[13px] font-semibold',
-                          entry.task === UNKNOWN_TASK ? MUTED : 'text-gray-900',
-                        )}
-                      >
-                        {entry.task === UNKNOWN_TASK ? 'task not recorded' : entry.task}
-                      </span>
-                      {entry.condition && (
-                        <span
-                          data-testid={`dataset-card-condition-${entry.dataset_dir}`}
-                          title={
-                            entry.batch_id
-                              ? `Recording condition (batch ${entry.batch_id})`
-                              : 'Recording condition'
-                          }
-                          className="text-[10.5px] text-gray-500"
-                        >
-                          {entry.condition}
-                        </span>
-                      )}
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono text-[11.5px] text-gray-500">
-                          {formatCount(entry.message_count)} msgs
-                        </span>
-                        <div className="flex-1" />
-                        <Badge tone={selected ? 'teal' : 'gray'} mono>
-                          #{entry.index}
-                        </Badge>
-                      </div>
-                      {/* One predicate — the presence of an episode label
-                        (`episode`) — drives BOTH sides so a card can never claim
-                        both at once: labels present → chips (no note); labels
-                        absent → the note (no chips). Operator/task attribution
-                        is a separate, independent axis (the muted group header
-                        and task label above), not this label axis. */}
-                      {episode ? (
-                        <EpisodeLabelChips
-                          episode={episode}
-                          isoFallback={entry.exported_at}
-                          testId={`dataset-card-labels-${entry.dataset_dir}`}
-                        />
-                      ) : (
-                        <span
-                          data-testid={`dataset-card-legacy-${entry.dataset_dir}`}
-                          title="Exported before per-episode labels existed, so quality and task labels aren't recorded."
-                          className="text-[10.5px] italic text-gray-400"
-                        >
-                          no episode labels (exported before labeling)
-                        </span>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            ))}
+          <div className="flex flex-col gap-1.5">
+            {state.tree.map((node) =>
+              isLeafTask(node) ? (
+                <LeafTask key={node.task} node={node} state={state} />
+              ) : (
+                <TaskGroup key={node.task} node={node} state={state} />
+              ),
+            )}
           </div>
         </div>
       )}

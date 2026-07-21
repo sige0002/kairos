@@ -1,0 +1,243 @@
+import { describe, expect, test } from 'vitest';
+import type { DatasetEntry } from '../../api/types';
+import {
+  ANY_OPERATOR,
+  aggregate,
+  buildTaskTree,
+  distinctOperators,
+  entryMatchesFacets,
+  entryMatchesSearch,
+  filterEntries,
+  findGroup,
+  groupKey,
+  groupSummarySegments,
+  isLeafTask,
+  operatorSegment,
+  rowEpisode,
+} from './data';
+
+/** A minimal exported-dataset row; override the fields a case cares about. */
+function entry(over: Partial<DatasetEntry> = {}): DatasetEntry {
+  const operator = over.operator ?? 'op_a';
+  const task = over.task ?? 'pick_place';
+  const index = over.index ?? '001';
+  return {
+    operator,
+    task,
+    index,
+    dataset_dir: over.dataset_dir ?? `${operator}/${task}/${index}`,
+    ...over,
+  };
+}
+
+describe('buildTaskTree', () => {
+  test('groups by task, then by condition; a single-condition task is a leaf', () => {
+    const rows = [
+      entry({ task: 'pick_place', condition: 'dim', index: '001' }),
+      entry({ task: 'pick_place', condition: 'bright', index: '002' }),
+      entry({ task: 'stack', condition: null, index: '003' }),
+    ];
+    const tree = buildTaskTree(rows, 'alpha');
+    const pick = tree.find((n) => n.task === 'pick_place')!;
+    const stack = tree.find((n) => n.task === 'stack')!;
+
+    expect(pick.conditions.map((c) => c.condition)).toEqual(['bright', 'dim']); // alpha
+    expect(isLeafTask(pick)).toBe(false); // two conditions -> collapsible
+
+    expect(stack.conditions).toHaveLength(1);
+    expect(stack.conditions[0]!.condition).toBeNull();
+    expect(isLeafTask(stack)).toBe(true); // single null condition -> leaf
+  });
+
+  test('the unknown_task bucket always sorts to the bottom, either sort mode', () => {
+    const rows = [
+      entry({ task: 'unknown_task', operator: 'unknown_operator', index: '001' }),
+      entry({ task: 'aaa_first', index: '002', exported_at: '2026-07-01T00:00:00Z' }),
+      entry({ task: 'zzz_last', index: '003', exported_at: '2026-07-20T00:00:00Z' }),
+    ];
+    for (const sort of ['recent', 'alpha'] as const) {
+      const tree = buildTaskTree(rows, sort);
+      expect(tree[tree.length - 1]!.task).toBe('unknown_task');
+      expect(tree[tree.length - 1]!.isLegacy).toBe(true);
+    }
+  });
+
+  test('recent sort orders tasks by newest export; alpha sort by name', () => {
+    const rows = [
+      entry({ task: 'older', index: '001', exported_at: '2026-07-01T00:00:00Z' }),
+      entry({ task: 'newer', index: '002', exported_at: '2026-07-20T00:00:00Z' }),
+    ];
+    expect(buildTaskTree(rows, 'recent').map((n) => n.task)).toEqual(['newer', 'older']);
+    expect(buildTaskTree(rows, 'alpha').map((n) => n.task)).toEqual(['newer', 'older']); // n<o
+  });
+
+  test('a group key round-trips through findGroup', () => {
+    const rows = [entry({ task: 'stack', condition: 'dim' })];
+    const tree = buildTaskTree(rows, 'alpha');
+    const key = groupKey('stack', 'dim');
+    expect(findGroup(tree, key)?.condition).toBe('dim');
+    expect(findGroup(tree, 'nope')).toBeNull();
+    expect(findGroup(tree, null)).toBeNull();
+  });
+});
+
+describe('aggregate', () => {
+  test('counts episodes, distinct sets, labeled success/failure, bytes, last export', () => {
+    const rows = [
+      entry({
+        index: '001',
+        task_result: 'success',
+        quality: 'good',
+        batch_id: 'b1',
+        batch_seq: 1,
+        bytes: 1_000_000_000,
+        exported_at: '2026-07-01T00:00:00Z',
+      }),
+      entry({
+        index: '002',
+        task_result: 'failure',
+        quality: 'good',
+        batch_id: 'b1',
+        batch_seq: 1,
+        bytes: 500_000_000,
+        exported_at: '2026-07-05T00:00:00Z',
+      }),
+      // Unlabeled row (pre-label export): counted as an episode, NOT a success.
+      entry({ index: '003', batch_id: 'b2', batch_seq: 2, bytes: 200_000_000 }),
+    ];
+    const agg = aggregate(rows);
+    expect(agg.episodeCount).toBe(3);
+    expect(agg.setCount).toBe(2); // b1, b2
+    expect(agg.labeledCount).toBe(2);
+    expect(agg.successCount).toBe(1);
+    expect(agg.failureCount).toBe(1);
+    expect(agg.totalBytes).toBe(1_700_000_000);
+    expect(agg.lastExportedAt).toBe('2026-07-05T00:00:00Z');
+  });
+
+  test('distinct operators exclude the unknown sentinel but flag it', () => {
+    const agg = aggregate([
+      entry({ operator: 'op_a' }),
+      entry({ operator: 'op_b' }),
+      entry({ operator: 'op_a' }),
+      entry({ operator: 'unknown_operator' }),
+    ]);
+    expect(agg.operators).toEqual(['op_a', 'op_b']);
+    expect(agg.hasUnknownOperator).toBe(true);
+  });
+});
+
+describe('entryMatchesSearch', () => {
+  const row = entry({
+    task: 'kitchen_pick',
+    condition: 'dim-light',
+    operator: 'alice',
+    index: '017',
+    batch_seq: 6,
+  });
+
+  test('matches task / condition / operator / index substrings, case-insensitively', () => {
+    expect(entryMatchesSearch(row, 'KITCHEN')).toBe(true);
+    expect(entryMatchesSearch(row, 'dim')).toBe(true);
+    expect(entryMatchesSearch(row, 'ali')).toBe(true);
+    expect(entryMatchesSearch(row, '017')).toBe(true);
+    expect(entryMatchesSearch(row, 'shelf')).toBe(false);
+  });
+
+  test('matches a batch seq with or without the leading #', () => {
+    expect(entryMatchesSearch(row, '6')).toBe(true);
+    expect(entryMatchesSearch(row, '#6')).toBe(true);
+    expect(entryMatchesSearch(row, '#9')).toBe(false);
+  });
+
+  test('an empty query matches everything', () => {
+    expect(entryMatchesSearch(row, '')).toBe(true);
+    expect(entryMatchesSearch(row, '   ')).toBe(true);
+  });
+});
+
+describe('facets', () => {
+  test('task-result facet: an unlabeled row only passes "all"', () => {
+    const labeled = entry({ task_result: 'failure' });
+    const unlabeled = entry({});
+    expect(entryMatchesFacets(labeled, 'failure', ANY_OPERATOR)).toBe(true);
+    expect(entryMatchesFacets(labeled, 'success', ANY_OPERATOR)).toBe(false);
+    expect(entryMatchesFacets(unlabeled, 'all', ANY_OPERATOR)).toBe(true);
+    expect(entryMatchesFacets(unlabeled, 'success', ANY_OPERATOR)).toBe(false);
+    expect(entryMatchesFacets(unlabeled, 'failure', ANY_OPERATOR)).toBe(false);
+  });
+
+  test('operator facet narrows to one operator', () => {
+    const a = entry({ operator: 'op_a' });
+    const b = entry({ operator: 'op_b' });
+    expect(entryMatchesFacets(a, 'all', 'op_a')).toBe(true);
+    expect(entryMatchesFacets(b, 'all', 'op_a')).toBe(false);
+    expect(entryMatchesFacets(b, 'all', ANY_OPERATOR)).toBe(true);
+  });
+
+  test('filterEntries composes search + facets', () => {
+    const rows = [
+      entry({ task: 'pick', operator: 'op_a', task_result: 'success', quality: 'good', index: '1' }),
+      entry({ task: 'pick', operator: 'op_b', task_result: 'failure', quality: 'good', index: '2' }),
+      entry({ task: 'stack', operator: 'op_a', index: '3' }),
+    ];
+    const out = filterEntries(rows, {
+      search: 'pick',
+      taskResultFilter: 'success',
+      operatorFilter: 'op_a',
+    });
+    expect(out.map((r) => r.index)).toEqual(['1']);
+  });
+
+  test('distinctOperators sorts the unknown sentinel last', () => {
+    const ops = distinctOperators([
+      entry({ operator: 'op_b' }),
+      entry({ operator: 'unknown_operator' }),
+      entry({ operator: 'op_a' }),
+    ]);
+    expect(ops).toEqual(['op_a', 'op_b', 'unknown_operator']);
+  });
+});
+
+describe('groupSummarySegments', () => {
+  test('a labeled group shows the ✓/✗ split with an accessible title', () => {
+    const agg = aggregate([
+      entry({ task_result: 'success', quality: 'good', operator: 'op_a', bytes: 1_000_000_000, exported_at: '2026-07-21T00:00:00Z', batch_seq: 1, batch_id: 'b1' }),
+      entry({ task_result: 'failure', quality: 'good', operator: 'op_a', batch_seq: 1, batch_id: 'b1' }),
+    ]);
+    const texts = groupSummarySegments(agg).map((s) => s.text);
+    expect(texts).toContain('2 eps');
+    expect(texts).toContain('✓1 ✗1');
+    expect(texts.some((t) => t.startsWith('last '))).toBe(true);
+    const vc = groupSummarySegments(agg).find((s) => s.text === '✓1 ✗1');
+    expect(vc?.title).toBe('1 success, 1 failure');
+  });
+
+  test('an all-unlabeled group shows "no labels", never a fabricated ✓0 ✗0', () => {
+    const agg = aggregate([entry({ index: '1' }), entry({ index: '2' })]);
+    const texts = groupSummarySegments(agg).map((s) => s.text);
+    expect(texts).toContain('no labels');
+    expect(texts.some((t) => t.includes('✓'))).toBe(false);
+  });
+
+  test('operatorSegment surfaces the operator name or an N-operators count', () => {
+    expect(operatorSegment(aggregate([entry({ operator: 'alice' })])).text).toBe('alice');
+    expect(
+      operatorSegment(aggregate([entry({ operator: 'a' }), entry({ operator: 'b' })])).text,
+    ).toBe('2 operators');
+    expect(operatorSegment(aggregate([entry({ operator: 'unknown_operator' })])).text).toBe(
+      'operator not recorded',
+    );
+  });
+});
+
+describe('rowEpisode', () => {
+  test('adapts a labeled row to a RunEpisode; null when labels are absent', () => {
+    expect(
+      rowEpisode(entry({ task_result: 'success', quality: 'good', batch_seq: 4 })),
+    ).toMatchObject({ task_result: 'success', quality: 'good', batch_seq: 4 });
+    expect(rowEpisode(entry({}))).toBeNull();
+    // A partial label (result but no quality) still yields nothing fabricated.
+    expect(rowEpisode(entry({ task_result: 'success' }))).toBeNull();
+  });
+});
