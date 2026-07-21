@@ -24,13 +24,8 @@ import type {
 import { useUiStore } from '../../store/uiStore';
 import { patchEpisode, removeEpisodeOutcome } from '../episodeBridge';
 import { mapRunsToEpisodes } from './mapRuns';
-import {
-  initialTransferSlot,
-  transferReducer,
-  TRANSFER_DURATION_MS,
-  TRANSFER_TICK_MS,
-} from './transfer';
-import { useSplitMode } from './splitMode';
+import { initialTransferSlot, transferReducer } from './transfer';
+import { setSplitMode, useSplitMode } from './splitMode';
 import type {
   Decision,
   DecoratedEpisode,
@@ -235,6 +230,25 @@ export function useReviewState(): ReviewState {
     queryFn: ({ signal }) => apiGet<RetentionInfo>('/retention', { signal }),
   });
   const retention = retentionQuery.data;
+
+  // ---- split mode: derived from the server's transfer channel ---------------
+  // The importer sidecar (the robot→PC pull channel) exists only on a split
+  // recording-PC deploy, so `available` IS "this is a split deployment". Read
+  // once per session (staleTime ∞) so the test/e2e setSplitMode override isn't
+  // clobbered by a later refetch; on error we keep the default (off) honestly.
+  const splitMode = useSplitMode();
+  const transferStatusQuery = useQuery({
+    queryKey: ['transfer', 'status'],
+    queryFn: ({ signal }) =>
+      apiGet<{ available?: boolean }>('/transfer/status', { signal }),
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    retry: false,
+  });
+  const transferAvailable = transferStatusQuery.data?.available;
+  useEffect(() => {
+    if (typeof transferAvailable === 'boolean') setSplitMode(transferAvailable);
+  }, [transferAvailable]);
 
   const isError = runsQuery.isError;
   const errorMessage =
@@ -789,9 +803,13 @@ export function useReviewState(): ReviewState {
     () =>
       readyRows.filter(
         (r) =>
-          r.state === 'completed' && (includeFailed || r.effectiveTask !== 'Failure'),
+          r.state === 'completed' &&
+          (includeFailed || r.effectiveTask !== 'Failure') &&
+          // Split deploy: export reads the local MCAP, so a run still only on
+          // the robot physically can't export — transfer it first.
+          (!splitMode || r.transferSlot.phase === 'transferred'),
       ),
-    [readyRows, includeFailed],
+    [readyRows, includeFailed, splitMode],
   );
   const readySkipped = useMemo(
     () => readyRows.filter((r) => r.state !== 'completed'),
@@ -948,47 +966,80 @@ export function useReviewState(): ReviewState {
   }, [selected, setActiveTab, setPendingRun]);
 
   // ---- transfer (split mode) ---------------------------------------------
-  const splitMode = useSplitMode();
-  const transferTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
-  useEffect(
-    () => () => {
-      Object.values(transferTimers.current).forEach(clearTimeout);
-    },
-    [],
-  );
+  // Real channel: POST /transfer/pull queues an rsync pull on the importer
+  // sidecar (202 ack, fire-and-forget). Completion is observed through the
+  // runs list — the server's bag_local (mapped to row.transfer) flips true
+  // once metadata.yaml lands locally — so there is no fabricated progress.
+
+  // Roll a slot back when its pull request itself failed to queue.
+  const failTransfer = useCallback((runIds: string[], message: string) => {
+    setTransfers((prev) => {
+      const next = { ...prev };
+      for (const id of runIds) {
+        const cur = next[id];
+        if (cur) next[id] = transferReducer(cur, { type: 'FAIL' });
+      }
+      return next;
+    });
+    showToast(message);
+  }, [showToast]);
+
   const transferOne = useCallback(
     (runId: string) => {
+      const seedRow = baseEpisodes.find((e) => e.runId === runId);
       setTransfers((prev) => {
-        const seedRow = baseEpisodes.find((e) => e.runId === runId);
         const cur = prev[runId] ?? initialTransferSlot(seedRow?.transfer ?? 'on_robot');
         if (cur.phase !== 'on_robot') return prev;
         return { ...prev, [runId]: transferReducer(cur, { type: 'START' }) };
       });
-      const start = Date.now();
-      const tick = () => {
-        setTransfers((prev) => {
-          const cur = prev[runId];
-          if (!cur || cur.phase !== 'transferring') return prev;
-          const elapsed = Date.now() - start;
-          if (elapsed >= TRANSFER_DURATION_MS) {
-            delete transferTimers.current[runId];
-            showToast('Episode transferred to the recording PC');
-            return { ...prev, [runId]: transferReducer(cur, { type: 'DONE' }) };
-          }
-          transferTimers.current[runId] = setTimeout(tick, TRANSFER_TICK_MS);
-          return {
-            ...prev,
-            [runId]: transferReducer(cur, {
-              type: 'TICK',
-              pct: Math.round((elapsed / TRANSFER_DURATION_MS) * 100),
-            }),
-          };
-        });
-      };
-      transferTimers.current[runId] = setTimeout(tick, TRANSFER_TICK_MS);
+      apiPost('/transfer/pull', { run_id: runId }).catch((err: unknown) => {
+        failTransfer(
+          [runId],
+          err instanceof Error
+            ? `Transfer couldn't start — ${err.message}`
+            : "Transfer couldn't start",
+        );
+      });
     },
-    [baseEpisodes, showToast],
+    [baseEpisodes, failTransfer],
   );
+
+  // Completion + reconcile: whenever the server says a run is now local but the
+  // session slot still says transferring, finalize it. This also covers pulls
+  // we didn't start here (auto_pull_on_save, manual make import-runs).
+  useEffect(() => {
+    const doneIds = baseEpisodes
+      .filter(
+        (e) => e.transfer === 'transferred' && transfers[e.runId]?.phase === 'transferring',
+      )
+      .map((e) => e.runId);
+    if (!doneIds.length) return;
+    setTransfers((prev) => {
+      const next = { ...prev };
+      for (const id of doneIds) next[id] = transferReducer(next[id]!, { type: 'DONE' });
+      return next;
+    });
+    showToast(
+      doneIds.length === 1
+        ? 'Episode transferred to the recording PC'
+        : `${doneIds.length} episodes transferred to the recording PC`,
+    );
+  }, [baseEpisodes, transfers, showToast]);
+
+  // While any transfer is in flight, poll the runs list so bag_local flips are
+  // seen within a few seconds (rsync of a long episode can take minutes — the
+  // slot honestly stays "transferring" until the server confirms).
+  const anyTransferring = useMemo(
+    () => Object.values(transfers).some((s) => s.phase === 'transferring'),
+    [transfers],
+  );
+  useEffect(() => {
+    if (!anyTransferring) return;
+    const timer = setInterval(() => {
+      void queryClient.invalidateQueries({ queryKey: REVIEW_RUNS_KEY });
+    }, 4000);
+    return () => clearInterval(timer);
+  }, [anyTransferring, queryClient]);
   const nUntransferred = useMemo(
     () =>
       decorated.filter((r) => !r.isArchived && r.transferSlot.phase === 'on_robot')

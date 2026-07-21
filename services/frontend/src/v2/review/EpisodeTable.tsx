@@ -52,7 +52,8 @@ function transferBadge(row: DecoratedEpisode): { tone: Tone; label: string } {
     case 'transferred':
       return { tone: 'green', label: 'transferred' };
     case 'transferring':
-      return { tone: 'amber', label: `${row.transferSlot.pct}%` };
+      // No % — rsync progress isn't observable through the pull channel.
+      return { tone: 'amber', label: 'transferring…' };
     default:
       return { tone: 'gray', label: 'on robot' };
   }

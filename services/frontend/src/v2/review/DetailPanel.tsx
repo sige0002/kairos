@@ -168,15 +168,14 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
               This episode hasn&apos;t been transferred to the recording PC yet.
             </span>
             {sel.transferSlot.phase === 'transferring' ? (
-              <div className="mt-1 flex w-full max-w-[220px] items-center gap-2">
-                <div className="relative h-[5px] flex-1 rounded-[3px] bg-gray-200">
-                  <span
-                    className="absolute bottom-0 left-0 top-0 rounded-[3px] bg-teal-600"
-                    style={{ width: `${sel.transferSlot.pct}%` }}
-                  />
+              // Indeterminate: rsync progress isn't observable through the pull
+              // channel, so we show motion + honest words instead of a fake %.
+              <div className="mt-1 flex w-full max-w-[220px] flex-col items-center gap-1.5">
+                <div className="relative h-[5px] w-full overflow-hidden rounded-[3px] bg-gray-200">
+                  <span className="absolute inset-0 animate-pulse rounded-[3px] bg-teal-600" />
                 </div>
-                <span className="font-mono text-[11px] text-gray-500">
-                  {sel.transferSlot.pct}%
+                <span data-testid="review-transferring" className="text-[11px] text-gray-500">
+                  Transferring from the robot… a long episode can take a while
                 </span>
               </div>
             ) : (
@@ -285,10 +284,20 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
           >
             Open in Monitor →
           </button>
+          {/* Validation reads the local MCAP — gated until it's on this PC. */}
           <button
             type="button"
             onClick={rv.goValidation}
-            className="text-[12.5px] font-semibold text-teal-700 hover:underline"
+            disabled={!showInspection}
+            title={
+              showInspection ? undefined : 'Transfer the recording to this PC first'
+            }
+            className={cn(
+              'text-[12.5px] font-semibold',
+              showInspection
+                ? 'text-teal-700 hover:underline'
+                : 'cursor-not-allowed text-gray-300',
+            )}
           >
             Open in Validation →
           </button>
@@ -346,8 +355,12 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
           )}
         </div>
 
-        {/* READY → the next pipeline step (export), right where the operator is. */}
-        {sel.reviewLane === 'ready' && sel.state === 'completed' && (
+        {/* READY → the next pipeline step (export), right where the operator is.
+            Hidden when nothing is exportable (e.g. split mode with every READY
+            run still on the robot — transfer first). */}
+        {sel.reviewLane === 'ready' &&
+          sel.state === 'completed' &&
+          rv.readyExportable.length > 0 && (
           <button
             type="button"
             data-testid="review-export-cta"

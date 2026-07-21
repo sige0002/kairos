@@ -1,40 +1,35 @@
 import { expect, test } from 'vitest';
 import { initialTransferSlot, transferReducer } from './transfer';
 
-test('initialTransferSlot seeds pct from the phase', () => {
-  expect(initialTransferSlot('on_robot')).toEqual({ phase: 'on_robot', pct: 0 });
-  expect(initialTransferSlot('transferred')).toEqual({ phase: 'transferred', pct: 100 });
+test('initialTransferSlot carries the server-seeded phase', () => {
+  expect(initialTransferSlot('on_robot')).toEqual({ phase: 'on_robot' });
+  expect(initialTransferSlot('transferred')).toEqual({ phase: 'transferred' });
 });
 
-test('START moves on_robot -> transferring at 0%', () => {
-  const next = transferReducer(initialTransferSlot('on_robot'), { type: 'START' });
-  expect(next).toEqual({ phase: 'transferring', pct: 0 });
-});
-
-test('START is a no-op once already transferring or transferred', () => {
-  const transferring = { phase: 'transferring' as const, pct: 40 };
+test('START moves on_robot -> transferring, and only from on_robot', () => {
+  expect(transferReducer(initialTransferSlot('on_robot'), { type: 'START' })).toEqual({
+    phase: 'transferring',
+  });
+  // No-op on an in-flight or already-transferred slot (guards double-clicks
+  // and "transfer all").
+  const transferring = { phase: 'transferring' as const };
   expect(transferReducer(transferring, { type: 'START' })).toBe(transferring);
   const transferred = initialTransferSlot('transferred');
   expect(transferReducer(transferred, { type: 'START' })).toBe(transferred);
 });
 
-test('TICK only applies while transferring, and clamps to 0..99', () => {
-  const onRobot = initialTransferSlot('on_robot');
-  expect(transferReducer(onRobot, { type: 'TICK', pct: 50 })).toBe(onRobot);
-
-  const transferring = { phase: 'transferring' as const, pct: 0 };
-  expect(transferReducer(transferring, { type: 'TICK', pct: 150 }).pct).toBe(99);
-  expect(transferReducer(transferring, { type: 'TICK', pct: -5 }).pct).toBe(0);
-  expect(transferReducer(transferring, { type: 'TICK', pct: 42 })).toEqual({
-    phase: 'transferring',
-    pct: 42,
+test('DONE (server confirmed bag_local) finalizes only an in-flight transfer', () => {
+  expect(transferReducer({ phase: 'transferring' }, { type: 'DONE' })).toEqual({
+    phase: 'transferred',
   });
-});
-
-test('DONE finalizes to transferred at 100%, only from transferring', () => {
-  const transferring = { phase: 'transferring' as const, pct: 87 };
-  expect(transferReducer(transferring, { type: 'DONE' })).toEqual({ phase: 'transferred', pct: 100 });
-
   const onRobot = initialTransferSlot('on_robot');
   expect(transferReducer(onRobot, { type: 'DONE' })).toBe(onRobot);
+});
+
+test('FAIL (pull never queued) rolls an in-flight transfer back to on_robot', () => {
+  expect(transferReducer({ phase: 'transferring' }, { type: 'FAIL' })).toEqual({
+    phase: 'on_robot',
+  });
+  const transferred = initialTransferSlot('transferred');
+  expect(transferReducer(transferred, { type: 'FAIL' })).toBe(transferred);
 });

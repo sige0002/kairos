@@ -1191,6 +1191,7 @@ class RunService:
         whose files were deleted still returns cleanly).
         """
         run = self.get(run_id)  # 404 if absent
+        run.bag_local = self._bag_local(run_id)
         detail = RunDetail(
             **run.model_dump(),
             manifest=self._read_json(self._recorded_dir / run_id / "manifest.json"),
@@ -1363,7 +1364,18 @@ class RunService:
         for run in runs:
             ep = episodes.get(run.run_id)
             run.episode = _run_episode(ep, seqs.get(ep.batch_id) if ep else None)
+            run.bag_local = self._bag_local(run.run_id)
         return runs, (str(next_seq) if next_seq is not None else None)
+
+    def _bag_local(self, run_id: str) -> bool:
+        """Whether a finalised local copy of the recording exists on this host.
+
+        Keys on ``recorded/<run_id>/metadata.yaml``: the recorder writes it only
+        on finalise, and the importer's rsync delivers it last — so its presence
+        means "complete, never partial" for both the single-host and the
+        imported-from-robot case (import_runs.sh documents this contract).
+        """
+        return (self._recorded_dir / run_id / "metadata.yaml").is_file()
 
     @staticmethod
     def _parse_cursor(cursor: str | None) -> int | None:

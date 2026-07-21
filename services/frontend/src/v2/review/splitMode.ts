@@ -3,12 +3,13 @@
 // that UI is gated behind this single flag, off by default, so the common
 // single-PC deployment never sees it.
 //
-// Phase 2 will derive this from whether the orchestrator's runtime config
-// references a remote recorder (cross-host split); until that signal exists,
-// it's a plain reactive flag nobody in production code ever flips. The setter
-// exists only for tests: unit tests call `setSplitMode` directly, and
-// Playwright (which drives the built app, not this module) flips it through
-// the `window.__reviewSetSplitMode` bridge below.
+// The flag is DERIVED FROM THE SERVER: useReviewState fetches
+// `GET /api/v1/transfer/status` once and calls `setSplitMode(available)` —
+// the importer sidecar (the pull channel) answers its healthz only on a
+// recording-PC split deploy, so `available` IS "this is a split deployment".
+// The setter is also the test seam: unit tests call `setSplitMode` directly,
+// and Playwright (which drives the built app, not this module) flips it
+// through the `window.__reviewSetSplitMode` bridge below.
 
 import { useSyncExternalStore } from 'react';
 
@@ -24,7 +25,7 @@ function subscribe(listener: () => void): () => void {
   return () => listeners.delete(listener);
 }
 
-/** Test/e2e hook only. */
+/** Server-derived (transfer channel available) — also the test/e2e seam. */
 export function setSplitMode(value: boolean): void {
   if (splitMode === value) return;
   splitMode = value;

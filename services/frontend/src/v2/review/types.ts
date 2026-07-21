@@ -21,13 +21,13 @@ export type ReviewStatus = 'pending' | 'adopted' | 'excluded';
 export type ReviewLane = 'ready' | 'needs_check' | 'excluded';
 
 /** MCAP transfer status for a split deployment: the episode's MCAP lives on
- *  the robot PC until explicitly transferred to the recording PC. */
+ *  the robot PC until pulled to the recording PC (importer sidecar). */
 export type TransferPhase = 'on_robot' | 'transferring' | 'transferred';
 
 export interface TransferSlot {
+  /** No percentage: rsync progress isn't observable through the pull channel,
+   *  so the UI shows an indeterminate "transferring" state, never a made-up %. */
   phase: TransferPhase;
-  /** 0-100; meaningful only while `phase === 'transferring'` (100 once done). */
-  pct: number;
 }
 
 /** One reviewable recording, before any local overrides are applied. */
@@ -74,8 +74,9 @@ export interface EpisodeRow {
   /** Real issue note when the run itself failed; null for a clean run (there's
    *  no list-time per-topic issue source — that's the on-demand loss report). */
   issues: string | null;
-  /** Initial transfer status; only surfaced when split mode is on. Seeds to
-   *  on_robot (nothing transferred yet this session) — no fabricated state. */
+  /** Server-derived transfer status (RunSummary.bag_local); only surfaced when
+   *  split mode is on. `transferred` = a finalised local copy exists on the
+   *  serving host; `on_robot` = the MCAP is still only on the robot. */
   transfer: TransferPhase;
 }
 

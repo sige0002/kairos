@@ -127,8 +127,10 @@ export function mapRunsToEpisodes(
       startedAt: run.started_at,
       bytes: bytes ?? null,
       issues: endedBadly ? 'Recording did not complete cleanly' : null,
-      // Honest default: nothing has been transferred this session yet.
-      transfer: 'on_robot',
+      // Server-derived: bag_local=false means the finalised MCAP is not on this
+      // host (split recording PC before pull). A missing field (older backend)
+      // maps to transferred so the UI never invites pulling already-local data.
+      transfer: run.bag_local === false ? 'on_robot' : 'transferred',
     };
   });
 }

@@ -203,6 +203,13 @@ class Run(BaseModel):
     # Stop-time quick-check settlement, persisted on the run row (null until the
     # stop-path settlement completes, or for runs that predate the feature).
     quick_check: QuickCheck | None = None
+    # Whether a FINALISED local copy of the recording exists on THIS host
+    # (``recorded/<run_id>/metadata.yaml`` present — the importer's rsync writes
+    # it last, so it doubles as the "fully imported" marker). False on a split
+    # recording PC until the run is pulled from the robot; the Review transfer
+    # UI keys on it. Derived at read time by the list/detail paths, never
+    # persisted (null on write-path responses that don't compute it).
+    bag_local: bool | None = None
 
 
 class RecordStartRequest(BaseModel):

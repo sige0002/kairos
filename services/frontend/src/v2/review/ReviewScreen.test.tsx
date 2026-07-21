@@ -201,19 +201,29 @@ test('bulk delete: count, listed run_ids, and list refresh after a mocked succes
 
 test('SPLIT_MODE on: transfer UI appears and a transfer can be started', async () => {
   setSplitMode(true);
-  mockApi([{ run_id: 'ep-a', state: 'completed', started_at: '2026-07-13T09:00:00Z' }]);
+  // bag_local=false — the server says the finalised MCAP is still robot-only.
+  mockApi([
+    {
+      run_id: 'ep-a',
+      state: 'completed',
+      started_at: '2026-07-13T09:00:00Z',
+      bag_local: false,
+    },
+  ]);
   renderWithClient(<ReviewScreen />);
   await waitFor(() => expect(screen.getByTestId('review-row-1')).toBeInTheDocument());
 
-  // The single run seeds on_robot, so the detail panel shows the transfer
-  // placeholder instead of inspecting an MCAP that's still on the robot PC.
+  // The row is on_robot, so the detail panel shows the transfer placeholder
+  // instead of inspecting an MCAP that's still on the robot PC.
   await waitFor(() => expect(screen.getByText('Data is on the robot PC')).toBeInTheDocument());
 
+  // Clicking posts the real pull; with no completion from the mock server the
+  // panel honestly stays in the indeterminate transferring state (no fake %).
   fireEvent.click(screen.getByTestId('review-transfer-button'));
-  await waitFor(
-    () => expect(screen.queryByTestId('review-transfer-button')).not.toBeInTheDocument(),
-    { timeout: 3000 },
+  await waitFor(() =>
+    expect(screen.getByTestId('review-transferring')).toBeInTheDocument(),
   );
+  expect(screen.queryByTestId('review-transfer-button')).not.toBeInTheDocument();
 });
 
 // ---------------------------------------------------------------------------

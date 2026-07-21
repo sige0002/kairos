@@ -54,6 +54,7 @@ from api_orchestrator.routers import retention as retention_router
 from api_orchestrator.routers import runs as runs_router
 from api_orchestrator.routers import system as system_router
 from api_orchestrator.routers import topics as topics_router
+from api_orchestrator.routers import transfer as transfer_router
 from api_orchestrator.routers import validation as validation_router
 from api_orchestrator.runs import RunService
 from api_orchestrator.store import RunStore
@@ -264,6 +265,7 @@ def create_orchestrator_app(
     app.include_router(files_router.router)
     app.include_router(datasets_router.router)
     app.include_router(retention_router.router)
+    app.include_router(transfer_router.router)
     _override_readyz(app, recorder, monitor, streamer)
 
     _register_root_and_config(app, settings)

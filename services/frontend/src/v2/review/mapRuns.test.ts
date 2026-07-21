@@ -77,11 +77,6 @@ test('carries the real run state and operator through', () => {
   expect(y?.operator).toBeNull();
 });
 
-test('transfer seeds to on_robot (nothing transferred this session yet)', () => {
-  const rows = mapRunsToEpisodes([run({ run_id: 'x' }), run({ run_id: 'y' })]);
-  expect(rows.every((r) => r.transfer === 'on_robot')).toBe(true);
-});
-
 test('duration falls back to started/ended span when duration_ms is absent', () => {
   const rows = mapRunsToEpisodes([
     run({
@@ -245,4 +240,23 @@ test('a server episode pins the displayed number to its persisted index_in_batch
     }),
   ]);
   expect(rows[0]?.ep).toBe(5);
+});
+
+test('transfer phase derives from the server bag_local (missing = transferred)', () => {
+  // bag_local=false → the finalised MCAP is only on the robot; true → local.
+  // A missing field (older backend) maps to transferred so the UI never
+  // invites pulling data that is already local.
+  const rows = mapRunsToEpisodes(
+    [
+      run({ run_id: 'a', started_at: '2026-07-14T09:00:00Z', bag_local: false }),
+      run({ run_id: 'b', started_at: '2026-07-14T09:01:00Z', bag_local: true }),
+      run({ run_id: 'c', started_at: '2026-07-14T09:02:00Z' }),
+    ],
+    () => null,
+  );
+  expect(rows.map((r) => [r.runId, r.transfer])).toEqual([
+    ['a', 'on_robot'],
+    ['b', 'transferred'],
+    ['c', 'transferred'],
+  ]);
 });

@@ -22,12 +22,14 @@ class ImporterClient(BaseServiceClient):
     def __init__(self, base_url: str, client: httpx.AsyncClient) -> None:
         super().__init__("importer", base_url, client)
 
-    async def pull(self, run_id: str) -> dict[str, Any]:
+    async def pull(self, run_id: str | None = None) -> dict[str, Any]:
         """Queue a pull of one run's files from the robot (returns 202-style ack).
 
-        The importer serialises pulls and rsyncs only FINALISED runs
-        (``metadata.yaml`` present on the robot), so calling this for a run
-        that is still finalising is safe — the importer retries the listing
-        on its next queued pull rather than half-copying.
+        ``run_id=None`` queues a pull of EVERY finalised run (the importer's
+        ``POST /pull {}`` form). The importer serialises pulls and rsyncs only
+        FINALISED runs (``metadata.yaml`` present on the robot), so calling
+        this for a run that is still finalising is safe — the importer retries
+        the listing on its next queued pull rather than half-copying.
         """
-        return await self._request("POST", "/pull", json={"run_id": run_id})
+        body = {} if run_id is None else {"run_id": run_id}
+        return await self._request("POST", "/pull", json=body)

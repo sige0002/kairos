@@ -6,6 +6,7 @@ import { setApiBase } from '../../api/client';
 import { makeTestClient, jsonResponse } from '../../test/renderWithClient';
 import { useUiStore } from '../../store/uiStore';
 import { __clearEpisodeOutcomes, saveEpisodeOutcome } from '../episodeBridge';
+import { setSplitMode } from './splitMode';
 import { useReviewState, ALL_OPERATORS } from './useReviewState';
 
 function wrapper({ children }: { children: ReactNode }) {
@@ -66,7 +67,10 @@ beforeEach(() => {
   // one test's seeded outcome can't bleed into another.
   __clearEpisodeOutcomes();
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  setSplitMode(false); // reset the module-level flag between tests
+});
 
 test('maps real /runs into rows and excludes runs that never finished', async () => {
   mockRuns([
@@ -222,33 +226,99 @@ test('requestArchive opens a pending confirm; confirming reclassifies as Not usa
   expect(result.current.rows.find((r) => r.runId === runId)?.isArchived).toBe(false);
 });
 
-test('transferOne drives on_robot -> transferring -> transferred over time', async () => {
-  mockRuns([
-    { run_id: 'ep-a', state: 'completed', started_at: '2026-07-13T09:00:00Z' },
-  ]);
+test('transferOne posts a real pull and completes when the server reports the bag local', async () => {
+  // Stateful mock: the run starts robot-only (bag_local=false); the POST
+  // /transfer/pull flips it, as if the importer's rsync then finished.
+  let bagLocal = false;
+  const pullBodies: string[] = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    const method = (init?.method ?? 'GET').toUpperCase();
+    if (url.includes('/transfer/pull') && method === 'POST') {
+      pullBodies.push(String(init?.body));
+      bagLocal = true;
+      return Promise.resolve(jsonResponse({ queued: true, run_id: 'ep-a' }, 202));
+    }
+    if (url.includes('/transfer/status'))
+      return Promise.resolve(jsonResponse({ available: true, auto_pull_on_save: false }));
+    if (url.includes('/runs'))
+      return Promise.resolve(
+        jsonResponse({
+          items: [
+            {
+              run_id: 'ep-a',
+              state: 'completed',
+              started_at: '2026-07-13T09:00:00Z',
+              bag_local: bagLocal,
+            },
+          ],
+          next_cursor: null,
+        }),
+      );
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  // A wrapper whose QueryClient the test can reach, to stand in for the
+  // in-flight poll (which invalidates the same key every few seconds).
+  const client = makeTestClient();
+  const testWrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+  const { result } = renderHook(() => useReviewState(), { wrapper: testWrapper });
+  await waitFor(() => expect(result.current.rows).toHaveLength(1));
+
+  // bag_local=false from the server seeds the row on_robot.
+  expect(result.current.rows[0]?.transferSlot.phase).toBe('on_robot');
+
+  act(() => result.current.transferOne('ep-a'));
+  expect(
+    result.current.rows.find((r) => r.runId === 'ep-a')?.transferSlot.phase,
+  ).toBe('transferring');
+  await waitFor(() => expect(pullBodies).toHaveLength(1));
+  expect(JSON.parse(pullBodies[0]!)).toEqual({ run_id: 'ep-a' });
+
+  // The next runs refetch reports bag_local=true → the slot completes.
+  await act(async () => {
+    await client.invalidateQueries({ queryKey: ['runs', 'review-list'] });
+  });
+  await waitFor(() =>
+    expect(
+      result.current.rows.find((r) => r.runId === 'ep-a')?.transferSlot.phase,
+    ).toBe('transferred'),
+  );
+});
+
+test('a failed pull request rolls the slot back to on_robot', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    const method = (init?.method ?? 'GET').toUpperCase();
+    if (url.includes('/transfer/pull') && method === 'POST')
+      return Promise.resolve(
+        jsonResponse(
+          { error: { code: 'importer_unreachable', message: 'importer down' } },
+          503,
+        ),
+      );
+    if (url.includes('/runs'))
+      return Promise.resolve(
+        jsonResponse({
+          items: [{ run_id: 'ep-a', state: 'completed', bag_local: false }],
+          next_cursor: null,
+        }),
+      );
+    return Promise.resolve(jsonResponse({}));
+  });
   const { result } = renderHook(() => useReviewState(), { wrapper });
   await waitFor(() => expect(result.current.rows).toHaveLength(1));
 
-  // Every real row seeds on_robot until explicitly transferred.
-  const onRobotRow = result.current.rows.find(
-    (r) => r.transferSlot.phase === 'on_robot',
+  act(() => result.current.transferOne('ep-a'));
+  await waitFor(() =>
+    expect(
+      result.current.rows.find((r) => r.runId === 'ep-a')?.transferSlot.phase,
+    ).toBe('on_robot'),
   );
-  expect(onRobotRow).toBeTruthy();
-  const runId = onRobotRow!.runId;
-
-  act(() => result.current.transferOne(runId));
-  await waitFor(() => {
-    const row = result.current.rows.find((r) => r.runId === runId);
-    expect(row?.transferSlot.phase).toBe('transferring');
-  });
-  await waitFor(
-    () => {
-      const row = result.current.rows.find((r) => r.runId === runId);
-      expect(row?.transferSlot.phase).toBe('transferred');
-    },
-    { timeout: 4000 },
-  );
-}, 8000);
+  expect(result.current.toast).toMatch(/Transfer couldn't start/);
+});
 
 test('search filters by episode number or run id', async () => {
   mockRuns([
