@@ -29,8 +29,16 @@
 #
 # Idempotent: a run already present locally with metadata.yaml is skipped. Safe
 # to run on a timer (cron/systemd) — rsync --partial --append-verify resumes
-# interrupted transfers; the dest run dir only gets metadata.yaml on the final
-# pass, so a consumer keying on metadata.yaml never sees a partial import.
+# interrupted transfers.
+#
+# Partial-import safety: rsync transfers files in SORTED order, so
+# metadata.yaml lands BEFORE the (much larger) *.mcap — an interrupted pull
+# would leave a final-looking dir with a truncated bag. Each run is therefore
+# rsynced into a .incoming/<run_id> staging dir (which keeps resume state
+# across retries) and moved to its final path with an atomic same-filesystem
+# rename only after rsync completes. metadata.yaml in the FINAL location thus
+# still means "complete, never partial" for every consumer (the skip check
+# here, the orchestrator's bag_local, dora's completed-only assumption).
 # =============================================================================
 set -euo pipefail
 
@@ -154,6 +162,13 @@ fi
 RSYNC_OPTS=(-a --partial --append-verify --human-readable -e "${SSH_CMD[*]}")
 [ "$BWLIMIT" != "0" ] && RSYNC_OPTS+=(--bwlimit="$BWLIMIT")
 
+# Staging area for in-flight pulls (same filesystem as the final dirs so the
+# finalize rename below is atomic). Hidden name: the orchestrator's run paths
+# are always recorded/<run_id>, so nothing ever reads .incoming as a run.
+DST_STAGING="$DST_RECORDED/.incoming"
+mkdir -p "$DST_STAGING"
+[ "$(id -u)" = "0" ] && chmod 0777 "$DST_STAGING" 2>/dev/null
+
 imported=0 skipped=0
 for run in "${RUNS[@]}"; do
   [ -z "$run" ] && continue
@@ -162,11 +177,22 @@ for run in "${RUNS[@]}"; do
     continue
   fi
   echo "import-runs: pulling $run"
-  # Trailing slash on the source copies the run dir's CONTENTS into dest/<run>/.
-  # rsync writes data files first; metadata.yaml lands in the same pass, so the
-  # presence of metadata.yaml locally is a reliable "fully imported" marker for
-  # the next run (and for dora's "completed only" assumption).
-  rsync "${RSYNC_OPTS[@]}" "$ROBOT_SSH:$SRC_RECORDED/$run/" "$DST_RECORDED/$run/"
+  # Legacy partial import (pre-staging versions rsynced straight into the
+  # final path): a final dir WITHOUT metadata.yaml can only be incomplete —
+  # fold it into staging so the transfer resumes rather than staying stuck.
+  if [ -d "$DST_RECORDED/$run" ] && [ ! -d "$DST_STAGING/$run" ]; then
+    mv "$DST_RECORDED/$run" "$DST_STAGING/$run"
+  fi
+  # Trailing slash on the source copies the run dir's CONTENTS into staging.
+  # An interrupted transfer stays in .incoming (with rsync resume state);
+  # only a completed rsync is renamed into the final, consumer-visible path.
+  rsync "${RSYNC_OPTS[@]}" "$ROBOT_SSH:$SRC_RECORDED/$run/" "$DST_STAGING/$run/"
+  if [ -d "$DST_RECORDED/$run" ]; then
+    # Raced by another importer that finished first: keep its complete copy.
+    rm -rf "$DST_STAGING/$run"
+  else
+    mv "$DST_STAGING/$run" "$DST_RECORDED/$run"
+  fi
   imported=$((imported + 1))
 done
 

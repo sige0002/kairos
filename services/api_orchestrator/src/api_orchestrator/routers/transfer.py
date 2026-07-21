@@ -17,8 +17,9 @@ recording PC copies finalised runs over through the importer sidecar
 
 Completion is NOT reported here — the importer ack is fire-and-forget. The
 frontend observes it through the runs list: ``bag_local`` flips true once
-``metadata.yaml`` lands locally (rsync writes it last, so it is the
-"fully imported, never partial" marker).
+``metadata.yaml`` appears in the run's FINAL path (the importer stages
+in-flight pulls under ``.incoming/`` and atomic-renames on completion, so
+that is the "fully imported, never partial" marker).
 """
 
 from __future__ import annotations

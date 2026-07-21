@@ -1,9 +1,10 @@
 // Pure transfer state machine (on_robot -> transferring -> transferred). Kept
 // separate from useReviewState so the transition logic itself is directly
 // unit-testable. No fabricated progress: START marks the pull request sent,
-// the only DONE signal is the server's `bag_local` flipping true (the run's
-// metadata.yaml landed locally — rsync writes it last), and FAIL rolls back a
-// slot whose pull request never got queued (importer unreachable).
+// the only DONE signal is the server's `bag_local` flipping true (the run
+// finished importing — the importer atomic-renames a completed pull into the
+// final path), and FAIL rolls back a slot whose pull request never got queued
+// (importer unreachable).
 
 import type { TransferPhase, TransferSlot } from './types';
 

@@ -1371,8 +1371,10 @@ class RunService:
         """Whether a finalised local copy of the recording exists on this host.
 
         Keys on ``recorded/<run_id>/metadata.yaml``: the recorder writes it only
-        on finalise, and the importer's rsync delivers it last — so its presence
-        means "complete, never partial" for both the single-host and the
+        on finalise, and the importer stages in-flight pulls under
+        ``.incoming/`` and atomically renames a run into ``recorded/<run_id>``
+        only once its rsync completed — so the file's presence in the FINAL
+        path means "complete, never partial" for both the single-host and the
         imported-from-robot case (import_runs.sh documents this contract).
         """
         return (self._recorded_dir / run_id / "metadata.yaml").is_file()

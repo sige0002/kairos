@@ -204,8 +204,9 @@ class Run(BaseModel):
     # stop-path settlement completes, or for runs that predate the feature).
     quick_check: QuickCheck | None = None
     # Whether a FINALISED local copy of the recording exists on THIS host
-    # (``recorded/<run_id>/metadata.yaml`` present — the importer's rsync writes
-    # it last, so it doubles as the "fully imported" marker). False on a split
+    # (``recorded/<run_id>/metadata.yaml`` present in the FINAL path — the
+    # importer stages pulls under .incoming/ and atomic-renames on completion,
+    # so this doubles as the "fully imported" marker). False on a split
     # recording PC until the run is pulled from the robot; the Review transfer
     # UI keys on it. Derived at read time by the list/detail paths, never
     # persisted (null on write-path responses that don't compute it).

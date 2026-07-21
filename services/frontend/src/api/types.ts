@@ -114,9 +114,10 @@ export interface RunSummary {
    *  terminal. Never persisted on the run row. */
   episode?: RunEpisode | null;
   /** Whether a finalised local copy of the recording exists on the serving
-   *  host (`recorded/<run_id>/metadata.yaml` present — the importer's rsync
-   *  writes it last, so it is the "fully imported" marker). False on a split
-   *  recording PC until the run is pulled; the Review transfer UI keys on it. */
+   *  host (`recorded/<run_id>/metadata.yaml` present in the FINAL path — the
+   *  importer stages in-flight pulls and atomic-renames on completion, so it
+   *  is the "fully imported" marker). False on a split recording PC until the
+   *  run is pulled; the Review transfer UI keys on it. */
   bag_local?: boolean | null;
 }
 

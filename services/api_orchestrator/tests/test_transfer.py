@@ -3,8 +3,8 @@
 The UI-triggered pull path for the cross-host split: ``GET /status`` is the
 frontend's split-mode signal (importer reachable = transfer channel exists),
 ``POST /pull`` proxies to the importer sidecar, and completion is observed via
-``bag_local`` on the runs list (``metadata.yaml`` present locally = fully
-imported, per import_runs.sh's "metadata.yaml lands last" contract).
+``bag_local`` on the runs list (``metadata.yaml`` present in the run's FINAL
+path = fully imported, per import_runs.sh's staging + atomic-rename contract).
 """
 
 from __future__ import annotations
