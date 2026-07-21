@@ -68,6 +68,26 @@ class ProbeHub:
         with self._lock:
             return self._latest.get(topic)
 
+    def wait_for_field(
+        self, topic: str, field: str, timeout: float
+    ) -> dict[str, Any] | None:
+        """Block until the latest push for ``topic`` covers ``field``.
+
+        A plain :meth:`wait_for` can return a push computed for an OLDER
+        active-field set (the probe node refreshes its set only every poll
+        tick), yielding a spurious ``null`` — so one-shot sampling waits until
+        the requested field key itself appears.
+        """
+        deadline = time.monotonic() + timeout
+        latest: dict[str, Any] | None = None
+        while time.monotonic() < deadline:
+            remaining = deadline - time.monotonic()
+            latest = self.wait_for(topic, min(0.25, max(0.01, remaining)))
+            if latest is not None and field in latest.get("values", {}):
+                return latest
+            time.sleep(0.02)
+        return latest
+
     # -- probe node side -------------------------------------------------------
 
     def active(self) -> dict[str, Any]:

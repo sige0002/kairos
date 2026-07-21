@@ -23,6 +23,8 @@ JOINT_STATE_TYPE = "sensor_msgs/JointState"
 Z_THRESHOLD = 4.0
 MIN_SAMPLES = 30
 STAMP_LAG_WARN_S = 0.5
+# Beyond this the "lag" is a different clock domain, not transport latency.
+CLOCK_MISMATCH_S = 3600.0
 
 
 @dataclass
@@ -71,12 +73,19 @@ class _Welford:
 
 @dataclass
 class JointVelocityDetector:
-    """Spike detection on mean |velocity| across joints."""
+    """Spike detection on mean |velocity| across joints.
+
+    ``cooldown_s`` rate-limits events per topic: a looping bag replay (or a
+    genuinely violent maneuver) would otherwise flood the event lane on every
+    discontinuity.
+    """
 
     threshold: float = Z_THRESHOLD
     min_samples: int = MIN_SAMPLES
+    cooldown_s: float = 5.0
     _last: dict[str, tuple[float, list[float]]] = field(default_factory=dict)
     _stats: dict[str, _Welford] = field(default_factory=dict)
+    _last_fire: dict[str, float] = field(default_factory=dict)
 
     def on_message(
         self, topic: str, decoded: dict[str, Any], recv_t: float
@@ -100,8 +109,11 @@ class JointVelocityDetector:
             # baseline (zero variance) must still let a violent spike score.
             std = max(stats.std(), 0.05 * abs(stats.mean), 1e-6)
             z = (speed - stats.mean) / std
-            if z >= self.threshold:
+            last_fire = self._last_fire.get(topic)
+            in_cooldown = last_fire is not None and recv_t - last_fire < self.cooldown_s
+            if z >= self.threshold and not in_cooldown:
                 stats.push(speed)
+                self._last_fire[topic] = recv_t
                 return Event(
                     detector="joint_velocity",
                     topic=topic,
@@ -133,6 +145,21 @@ class StampLagDetector:
             if topic in self._alerted:
                 return None
             self._alerted.add(topic)
+            if lag > CLOCK_MISMATCH_S:
+                # A multi-hour "lag" is a clock-domain difference (bag replay
+                # or an unsynced robot clock), not a stalled driver — say so
+                # instead of reporting a nonsensical latency.
+                return Event(
+                    detector="stamp_lag",
+                    topic=topic,
+                    t=wall_t,
+                    severity="info",
+                    value=round(lag, 1),
+                    message=(
+                        "header.stamp clock domain differs from wall clock "
+                        "(bag replay or unsynced clock)"
+                    ),
+                )
             return Event(
                 detector="stamp_lag",
                 topic=topic,

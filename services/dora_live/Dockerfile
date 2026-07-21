@@ -91,7 +91,8 @@ COPY --from=builder /dora_commit.txt /dora_commit.txt
 RUN chmod +x /opt/venv/bin/dora
 
 COPY services/dora_live/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+COPY services/dora_live/run_node.sh /run_node.sh
+RUN chmod +x /entrypoint.sh /run_node.sh
 
 WORKDIR /app
 ENTRYPOINT ["/entrypoint.sh"]

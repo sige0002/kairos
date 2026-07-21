@@ -22,6 +22,10 @@ METRICS_TICK = "dora/timer/millis/1000"
 PROBE_TICK = "dora/timer/millis/500"
 TIMER_PREFIX = "dora/timer/"
 
+DEFAULT_WEBRTC_PORT = "8007"
+# WebRTC node env keys the supervisor passes through from the container env.
+WEBRTC_ENV_KEYS = ("DORA_LIVE_WEBRTC_PORT", "WEBRTC_PACKET_MAX", "WEBRTC_KEEP_IPV6")
+
 
 def topic_token(topic: str) -> str:
     """Sanitize a ROS topic name into a dora node/input id fragment."""
@@ -33,14 +37,37 @@ def bridge_node_id(topic: str) -> str:
     return f"bridge__{topic_token(topic)}"
 
 
+def is_compressed_image(ros_type: str) -> bool:
+    """Whether *ros_type* is ``sensor_msgs/CompressedImage`` (any infix form).
+
+    Matches ``sensor_msgs/msg/CompressedImage`` and ``sensor_msgs/CompressedImage``.
+    Raw ``sensor_msgs/Image`` is deliberately excluded — the WebRTC lane only
+    consumes already-compressed camera topics (realman's uncompressed Image is
+    not a bus target).
+    """
+    return ros_type.rsplit("/", 1)[-1] == "CompressedImage"
+
+
 def generate_dataflow(
     manifest: LiveManifest,
     *,
-    python_bin: str = "/opt/venv/bin/python",
+    node_launcher: str = "/run_node.sh",
     common_env: dict[str, str] | None = None,
     control_url: str = "http://127.0.0.1:9601",
+    webrtc_env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Build the dataflow document (dict form; see :func:`to_yaml`)."""
+    """Build the dataflow document (dict form; see :func:`to_yaml`).
+
+    Nodes launch through ``node_launcher`` (a plain shell wrapper that execs
+    the venv python on ``DORA_NODE_MODULE``): dora runs ``*.py`` node paths
+    with the system python3, which lacks the dora wheel — the wrapper is the
+    bench-proven bypass.
+
+    A ``webrtc`` node is emitted only when the manifest has at least one
+    ``CompressedImage`` topic (its inputs are exactly those topics).
+    ``webrtc_env`` supplies its pass-through env (:data:`WEBRTC_ENV_KEYS`);
+    ``DORA_LIVE_WEBRTC_PORT`` defaults to :data:`DEFAULT_WEBRTC_PORT`.
+    """
     if manifest.queue_size < 1:
         raise ValueError(f"queue_size must be >= 1: {manifest.queue_size}")
     env = dict(common_env or {})
@@ -55,15 +82,18 @@ def generate_dataflow(
         nodes.append(
             {
                 "id": node_id,
-                "path": python_bin,
-                "args": "-m dora_live.nodes.bridge",
+                "path": node_launcher,
                 "env": {
                     **env,
+                    "DORA_NODE_MODULE": "dora_live.nodes.bridge",
                     "BRIDGE_TOPIC": t.name,
                     "BRIDGE_TYPE": dora_type_name(t.ros_type),
                     "BRIDGE_QOS": t.qos,
                     "BRIDGE_QOS_DEPTH": str(t.depth),
                 },
+                # Bench-proven: bridges keep a timer input so the event loop
+                # always has a wake source even before DDS traffic arrives.
+                "inputs": {"tick": METRICS_TICK},
                 "outputs": ["out"],
             }
         )
@@ -85,9 +115,12 @@ def generate_dataflow(
     nodes.append(
         {
             "id": "metrics",
-            "path": python_bin,
-            "args": "-m dora_live.nodes.metrics",
-            "env": {**env, "CONTROL_URL": control_url},
+            "path": node_launcher,
+            "env": {
+                **env,
+                "DORA_NODE_MODULE": "dora_live.nodes.metrics",
+                "CONTROL_URL": control_url,
+            },
             "inputs": metrics_inputs,
         }
     )
@@ -98,19 +131,54 @@ def generate_dataflow(
         nodes.append(
             {
                 "id": "probe",
-                "path": python_bin,
-                "args": "-m dora_live.nodes.probe",
-                "env": {**env, "CONTROL_URL": control_url},
+                "path": node_launcher,
+                "env": {
+                    **env,
+                    "DORA_NODE_MODULE": "dora_live.nodes.probe",
+                    "CONTROL_URL": control_url,
+                },
                 "inputs": probe_inputs,
             }
         )
+        ai_inputs = fan_in_all()
+        ai_inputs["tick"] = METRICS_TICK
         nodes.append(
             {
                 "id": "ai",
-                "path": python_bin,
-                "args": "-m dora_live.nodes.ai",
-                "env": {**env, "CONTROL_URL": control_url},
-                "inputs": fan_in_all(),
+                "path": node_launcher,
+                "env": {
+                    **env,
+                    "DORA_NODE_MODULE": "dora_live.nodes.ai",
+                    "CONTROL_URL": control_url,
+                },
+                "inputs": ai_inputs,
+            }
+        )
+
+    # WebRTC lane: taps ONLY the CompressedImage topics (media closes inside the
+    # node; no node when there is nothing to preview). realman's raw Image is
+    # excluded by is_compressed_image (decided: uncompressed Image is off-bus).
+    compressed = [t for t in manifest.topics if is_compressed_image(t.ros_type)]
+    if compressed:
+        webrtc_inputs = {
+            f"t__{topic_token(t.name)}": {
+                "source": f"{bridge_node_id(t.name)}/out",
+                "queue_size": manifest.queue_size,
+            }
+            for t in compressed
+        }
+        webrtc_node_env = {
+            **env,
+            "DORA_NODE_MODULE": "dora_live.nodes.webrtc",
+            **(webrtc_env or {}),
+        }
+        webrtc_node_env.setdefault("DORA_LIVE_WEBRTC_PORT", DEFAULT_WEBRTC_PORT)
+        nodes.append(
+            {
+                "id": "webrtc",
+                "path": node_launcher,
+                "env": webrtc_node_env,
+                "inputs": webrtc_inputs,
             }
         )
 

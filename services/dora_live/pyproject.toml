@@ -16,6 +16,13 @@ dependencies = [
     "httpx>=0.27",
     "pyyaml>=6.0",
     "pyarrow>=17.0",
+    # WebRTC lane (in-node camera preview): aiortc peer/offer-answer + JPEG
+    # decode to the video track. Same deps as webrtc_streamer;
+    # opencv-python-headless avoids GUI/X deps in the container.
+    "aiortc>=1.9",
+    "av>=12",
+    "opencv-python-headless>=4.9",
+    "numpy>=1.26",
 ]
 
 [project.optional-dependencies]

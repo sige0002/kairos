@@ -24,7 +24,7 @@ from typing import Any
 
 from kairos_common import RecordingConfig
 
-from dora_live.dataflow_gen import generate_dataflow, to_yaml
+from dora_live.dataflow_gen import WEBRTC_ENV_KEYS, generate_dataflow, to_yaml
 from dora_live.feed_subscriber import DoraFeedSubscriber
 from dora_live.manifest import LiveManifest, LiveTopic
 
@@ -65,7 +65,7 @@ class DataflowSupervisor:
         workdir: Path,
         control_url: str,
         dora_bin: str = "/opt/venv/bin/dora",
-        python_bin: str = "/opt/venv/bin/python",
+        node_launcher: str = "/run_node.sh",
         discovery_budget_s: float = DISCOVERY_BUDGET_S,
     ) -> None:
         self._allowlist = list(config.default_topics) if config else []
@@ -73,7 +73,7 @@ class DataflowSupervisor:
         self._workdir = workdir
         self._control_url = control_url
         self._dora_bin = dora_bin
-        self._python_bin = python_bin
+        self._node_launcher = node_launcher
         self._discovery_budget_s = discovery_budget_s
         self._proc: subprocess.Popen[bytes] | None = None
         self._manifest = LiveManifest()
@@ -184,11 +184,15 @@ class DataflowSupervisor:
             for key in ("ROS_DOMAIN_ID", "AMENT_PREFIX_PATH", "RMW_IMPLEMENTATION")
             if key in os.environ
         }
+        webrtc_env = {
+            key: os.environ[key] for key in WEBRTC_ENV_KEYS if key in os.environ
+        }
         dataflow = generate_dataflow(
             self._manifest,
-            python_bin=self._python_bin,
+            node_launcher=self._node_launcher,
             common_env=common_env,
             control_url=self._control_url,
+            webrtc_env=webrtc_env,
         )
         dataflow_path.write_text(to_yaml(dataflow))
         logger.info(

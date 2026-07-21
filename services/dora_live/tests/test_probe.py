@@ -22,6 +22,21 @@ def test_hub_refcount_and_active_set():
     assert hub.active()["topics"] == {}
 
 
+def test_hub_wait_for_field_skips_stale_push():
+    hub = ProbeHub()
+    hub.acquire("/x", ["a"])
+    # stale push from an older active-set (field "b" only)
+    hub.push_values("/x", 1.0, {"b": 2.0})
+
+    def _push_fresh():
+        time.sleep(0.1)
+        hub.push_values("/x", 2.0, {"a": 1.0, "b": 2.0})
+
+    threading.Thread(target=_push_fresh).start()
+    got = hub.wait_for_field("/x", "a", timeout=2.0)
+    assert got is not None and got["values"]["a"] == 1.0
+
+
 def test_hub_wait_for_unblocks_on_push():
     hub = ProbeHub()
     hub.acquire("/x", ["v"])

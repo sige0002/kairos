@@ -5,6 +5,7 @@ import yaml
 from dora_live.dataflow_gen import (
     bridge_node_id,
     generate_dataflow,
+    is_compressed_image,
     lint_queue_sizes,
     to_yaml,
     topic_token,
@@ -77,3 +78,38 @@ def test_bad_queue_size_rejected():
     m.queue_size = 0
     with pytest.raises(ValueError, match="queue_size"):
         generate_dataflow(m)
+
+
+def test_is_compressed_image():
+    assert is_compressed_image("sensor_msgs/msg/CompressedImage")
+    assert is_compressed_image("sensor_msgs/CompressedImage")
+    assert not is_compressed_image("sensor_msgs/msg/Image")
+
+
+def test_webrtc_node_taps_only_compressed_image():
+    df = generate_dataflow(_manifest(), webrtc_env={"WEBRTC_PACKET_MAX": "1200"})
+    webrtc = next(n for n in df["nodes"] if n["id"] == "webrtc")
+    # ONLY the CompressedImage topic is an input (JointState is excluded).
+    inputs = [k for k in webrtc["inputs"] if k.startswith("t__")]
+    assert inputs == ["t__hsrb_hand_camera_image_raw_compressed"]
+    assert webrtc["inputs"][inputs[0]]["queue_size"] == 1000
+    assert webrtc["env"]["DORA_NODE_MODULE"] == "dora_live.nodes.webrtc"
+    assert webrtc["env"]["DORA_LIVE_WEBRTC_PORT"] == "8007"  # default
+    assert webrtc["env"]["WEBRTC_PACKET_MAX"] == "1200"  # passed through
+    assert lint_queue_sizes(df) == []
+
+
+def test_webrtc_env_port_override():
+    df = generate_dataflow(_manifest(), webrtc_env={"DORA_LIVE_WEBRTC_PORT": "9099"})
+    webrtc = next(n for n in df["nodes"] if n["id"] == "webrtc")
+    assert webrtc["env"]["DORA_LIVE_WEBRTC_PORT"] == "9099"
+
+
+def test_no_webrtc_node_without_compressed_image():
+    m = LiveManifest(
+        topics=[
+            LiveTopic(name="/hsrb/joint_states", ros_type="sensor_msgs/msg/JointState")
+        ]
+    )
+    df = generate_dataflow(m)
+    assert not any(n["id"] == "webrtc" for n in df["nodes"])

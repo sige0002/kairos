@@ -122,7 +122,9 @@ def create_probe_compat_app(
     ) -> Sample:
         hub.acquire(topic, [field])
         try:
-            latest = await asyncio.to_thread(hub.wait_for, topic, _SAMPLE_TIMEOUT_S)
+            latest = await asyncio.to_thread(
+                hub.wait_for_field, topic, field, _SAMPLE_TIMEOUT_S
+            )
         finally:
             hub.release(topic, [field])
         if latest is None:
