@@ -314,6 +314,10 @@ services:
       WEBRTC_HOST: ${WEBRTC_HOST:-localhost}
       TOPIC_PROBE_HOST: ${TOPIC_PROBE_HOST:-localhost}
       DORA_RUNNER_HOST: ${DORA_RUNNER_HOST:-localhost}
+      # Listed here (environment overrides env_file) so a shell-scoped
+      # `TOPIC_MONITOR_PORT=8005 docker compose up -d orchestrator` actually
+      # reaches the container — the dora_live trial-switchover lever.
+      TOPIC_MONITOR_PORT: ${TOPIC_MONITOR_PORT:-8001}
     # Health = LIVENESS (/healthz), deliberately NOT readiness. The orchestrator's
     # /readyz aggregates downstream services (recorder/monitor/etc.), so wiring the
     # container healthcheck to it would flip the orchestrator to "unhealthy"
@@ -397,6 +401,9 @@ services:
       # orchestrator/streamer/probe bind.
       FRONTEND_PORT: ${FRONTEND_PORT:-8080}
       API_ORCH_PORT: ${API_ORCH_PORT:-8000}
+      # WEBRTC_PORT / TOPIC_PROBE_PORT double as the dora_live trial-switchover
+      # lever: `WEBRTC_PORT=8007 TOPIC_PROBE_PORT=8006 docker compose up -d
+      # frontend` repoints the proxies without touching .env.
       WEBRTC_PORT: ${WEBRTC_PORT:-8002}
       TOPIC_PROBE_PORT: ${TOPIC_PROBE_PORT:-8003}
       # Upstream HOSTS for the nginx proxy. Default 127.0.0.1 = single-host
