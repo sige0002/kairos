@@ -15,8 +15,17 @@
 # ---- config (robot-first) ---------------------------------------------------
 # Read a KEY=value from .env. `make` does not read .env by itself (compose
 # does), so without this a value set only in .env is invisible to make-derived
-# defaults. Precedence stays: command line > shell env > .env > built-in default.
+# defaults. Precedence: command line > .env > shell env > built-in default.
 _env_val = $(if $(wildcard .env),$(strip $(shell sed -n 's/^[[:space:]]*$(1)[[:space:]]*=[[:space:]]*//p' .env | tail -1)))
+
+# Resolve $(1) (a variable name) at that same precedence. Plain `VAR ?= ...`
+# can't express "  .env beats shell": `?=` treats a merely-exported shell env
+# var as "already set" and skips .env entirely, so a stray `export ROBOT=...`
+# left over in someone's shell profile silently wins over the .env this repo
+# ships. $(origin) tells apart a genuine `make VAR=x` (highest, left alone)
+# from an inherited-but-not-make-set shell var ($($(1)) below still holds it,
+# just at lower priority than .env) from unset ($($(1)) is empty).
+_prefer_env = $(if $(filter command line,$(origin $(1))),$($(1)),$(or $(call _env_val,$(1)),$($(1)),$(2)))
 
 # A single ROBOT selects the whole config set. compose mounts ./config -> /config,
 # so the services read /config/<robot>/{recording,stream,validation,validators}/...
@@ -30,7 +39,7 @@ _env_val = $(if $(wildcard .env),$(strip $(shell sed -n 's/^[[:space:]]*$(1)[[:s
 # every ${ROBOT:-airoa_hsr} fallback — if the bundled default ever changes, all
 # three must move together. Select your own robot via ROBOT (.env or command
 # line), never by editing this default.
-ROBOT ?= $(or $(call _env_val,ROBOT),airoa_hsr)
+ROBOT := $(call _prefer_env,ROBOT,airoa_hsr)
 export ROBOT
 # Resolve committed (config/<robot>) vs local (config/local/<robot>) -> container path.
 _ROBOT_REL := $(if $(wildcard config/$(ROBOT)),$(ROBOT),local/$(ROBOT))
@@ -71,8 +80,8 @@ BAG ?=
 # overridable per key via .env — the SAME keys compose interpolates (FRONTEND_PORT
 # / API_ORCH_PORT). Read .env (via _env_val above) so the banner shows the port
 # the container actually binds, not a hardcoded literal that drifts from .env.
-FRONTEND_PORT ?= $(or $(call _env_val,FRONTEND_PORT),8080)
-API_ORCH_PORT ?= $(or $(call _env_val,API_ORCH_PORT),8000)
+FRONTEND_PORT := $(call _prefer_env,FRONTEND_PORT,8080)
+API_ORCH_PORT := $(call _prefer_env,API_ORCH_PORT,8000)
 
 # Browser-facing base URL for camera (WebRTC) signaling. Default "/webrtc" is the
 # same-origin nginx proxy (services/frontend/nginx.conf), so the preview works
@@ -99,9 +108,9 @@ TEST_COMPOSE := docker compose $(if $(wildcard .env),--env-file .env,) -f deploy
 # ROS 2 distro for the images + the custom-message overlay build. Read from
 # .env (like ROBOT above) so a robot that needs a different distro can set it
 # there once: make exports the value, and an exported value is what compose's
-# ${ROS_DISTRO:-jazzy} interpolation sees — without this read, make would
-# always export the built-in default and silently beat the .env setting.
-ROS_DISTRO ?= $(or $(call _env_val,ROS_DISTRO),jazzy)
+# ${ROS_DISTRO:-jazzy} interpolation sees. Goes through _prefer_env (not a
+# plain `?=`) so .env wins over a stray shell export too, same as ROBOT.
+ROS_DISTRO := $(call _prefer_env,ROS_DISTRO,jazzy)
 export ROS_DISTRO
 
 # Custom-message overlay dir — PER-ROBOT, derived from ROBOT like the config
