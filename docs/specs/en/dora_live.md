@@ -87,13 +87,20 @@ the bridge parses the `.msg` files directly (Cell B: 660/660 field values matche
 ## Startup and switchover
 
 ```bash
-# opt-in start (default stack unchanged)
+# Recommended: a single make knob (same _prefer_env pattern as ROBOT;
+# persist with LIVE=1 in .env)
+make up LIVE=1   # start dora_live + stop legacy monitor/probe/streamer + repoint
+make up          # back to the legacy stack (dora_live stopped)
+
+# Manual (trial mode, legacy services keep running; caveats in .env.example):
 docker compose --profile live up -d dora_live
-# staged switchover (env only, no code changes):
-#   monitor: orchestrator TOPIC_MONITOR_PORT=8005
-#   probe:   nginx probe proxy target -> 8006
-#   webrtc:  WEBRTC_HOST/WEBRTC_PORT -> 8007
+TOPIC_MONITOR_PORT=8005 docker compose up -d orchestrator
+WEBRTC_PORT=8007 TOPIC_PROBE_PORT=8006 docker compose up -d frontend
 ```
+
+LIVE=1 STOPS the legacy trio because `TOPIC_PROBE_PORT` etc. double as the old
+services' bind ports and the proxy targets — flipping the values while they
+run collides ports on their next recreate.
 
 Note: when starting via raw `docker compose` (not `make`), beware the stale relative
 `RECORDING_CONFIG` in `.env` (set `RECORDING_CONFIG=/config/<robot>/recording/default.yaml`

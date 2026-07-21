@@ -134,6 +134,31 @@ SERVICES := recorder monitor streamer probe orchestrator dora_runner frontend do
 # Override explicitly with SVC=monitor if you prefer.
 SVC ?= $(filter $(SERVICES),$(MAKECMDGOALS))
 
+# ---- dora_live switchover (LIVE=1) ------------------------------------------
+# One knob, same pattern as ROBOT: `make up LIVE=1` (or LIVE=1 in .env) runs
+# the stack with dora_live REPLACING the legacy live trio (monitor/probe/
+# streamer). It enables the compose `live` profile, pins the shared bind/proxy
+# port vars to the dora_live values (exported here, so they beat .env in
+# compose interpolation), stops the trio, and excludes it from the default
+# service set. A plain `make up` (LIVE unset/0) restores the legacy stack and
+# stops dora_live. The trio cannot be managed positionally while LIVE=1 —
+# their bind ports would collide (probe would bind 8006) or their healthchecks
+# would probe dora_live's ports.
+LIVE := $(call _prefer_env,LIVE,0)
+LIVE_LEGACY := monitor probe streamer
+ifeq ($(LIVE),1)
+ifneq ($(filter $(LIVE_LEGACY),$(SVC)),)
+$(error LIVE=1 replaces "$(LIVE_LEGACY)" with dora_live — manage them only without LIVE=1)
+endif
+export COMPOSE_PROFILES := live
+export TOPIC_MONITOR_PORT := 8005
+export TOPIC_PROBE_PORT := 8006
+export WEBRTC_PORT := 8007
+_UP_SVC := $(if $(SVC),$(SVC),$(filter-out $(LIVE_LEGACY),$(SERVICES)))
+else
+_UP_SVC := $(SVC)
+endif
+
 PY_DIRS := libs/kairos_common services/rosbag2_recorder services/topic_monitor \
            services/topic_probe services/webrtc_streamer services/api_orchestrator \
            services/dora_live \
@@ -143,13 +168,24 @@ PY_DIRS := libs/kairos_common services/rosbag2_recorder services/topic_monitor \
 
 # ---- compose lifecycle ------------------------------------------------------
 .PHONY: up up-nobuild down build rebuild restart logs ps stop urls msgs-build
-up: ## build + start the stack detached (RECORDING_CONFIG-aware)
-	$(COMPOSE) up -d --build $(SVC)
+up: ## build + start the stack detached (LIVE=1 = dora_live replaces monitor/probe/streamer)
+	@$(_LIVE_SWAP)
+	$(COMPOSE) up -d --build $(_UP_SVC)
 	@$(MAKE) --no-print-directory urls
 
 up-nobuild: ## start the stack detached WITHOUT rebuilding (uses existing images)
-	$(COMPOSE) up -d $(SVC)
+	@$(_LIVE_SWAP)
+	$(COMPOSE) up -d $(_UP_SVC)
 	@$(MAKE) --no-print-directory urls
+
+# up/up-nobuild pre-step: entering LIVE mode stops the legacy trio; leaving it
+# stops dora_live (if it exists). Keeps `make up LIVE=1` <-> `make up` a true
+# toggle with no stale backend left serving.
+ifeq ($(LIVE),1)
+_LIVE_SWAP = $(COMPOSE) stop $(LIVE_LEGACY) 2>/dev/null || true
+else
+_LIVE_SWAP = COMPOSE_PROFILES=live $(COMPOSE) stop dora_live 2>/dev/null || true
+endif
 
 msgs-build: ## build custom ROS msgs (dir from MSGS_OVERLAY_DIR / .env; per-robot)
 	@dir="$(MSGS_OVERLAY_DIR)"; \
@@ -181,8 +217,8 @@ urls: ## print the Web UI access URLs (localhost + LAN IPs)
 	@echo "  ssh   : ssh -L $(FRONTEND_PORT):localhost:$(FRONTEND_PORT) -L $(API_ORCH_PORT):localhost:$(API_ORCH_PORT) <user>@<this-host>  # then http://localhost:$(FRONTEND_PORT)/"
 	@echo ""
 
-down: ## stop + remove the stack
-	$(COMPOSE) down
+down: ## stop + remove the stack (always includes dora_live, LIVE or not)
+	COMPOSE_PROFILES=live $(COMPOSE) down
 
 stop: ## stop the stack (keep containers)
 	$(COMPOSE) stop $(SVC)

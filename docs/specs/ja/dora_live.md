@@ -78,13 +78,18 @@ HTTP フィード + rclpy graph ポーラ)を注入するだけ。判定ロジ�
 ## 起動と切替
 
 ```bash
-# オプトイン起動(既定スタックは不変)
+# 推奨: make のノブ1つ(ROBOT と同じ _prefer_env 流儀。.env に LIVE=1 で恒久化)
+make up LIVE=1   # dora_live 起動 + 旧 monitor/probe/streamer 停止 + 向き先切替
+make up          # 旧構成へ戻す(dora_live は停止)
+
+# 手動(お試し・旧サービス並走。詳細と注意は .env.example の切替ブロック参照):
 docker compose --profile live up -d dora_live
-# 段階切替(すべて env のみ・コード無変更):
-#   monitor 置換: orchestrator の TOPIC_MONITOR_PORT=8005
-#   probe 置換:   nginx の probe プロキシ先を 8006 へ
-#   webrtc 置換:  WEBRTC_HOST/WEBRTC_PORT を 8007 へ
+TOPIC_MONITOR_PORT=8005 docker compose up -d orchestrator
+WEBRTC_PORT=8007 TOPIC_PROBE_PORT=8006 docker compose up -d frontend
 ```
+
+LIVE=1 が旧3サービスを**停止**するのは、`TOPIC_PROBE_PORT` 等が旧サービスの bind ポートと
+プロキシ向き先を兼ねており、並走させたまま値を切り替えると再作成時にポート衝突するため。
 
 注意: `make` を介さず素の `docker compose` で起動する場合、`.env` の stale な相対
 `RECORDING_CONFIG` に注意(`RECORDING_CONFIG=/config/<robot>/recording/default.yaml` を明示)。
