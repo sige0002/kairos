@@ -57,7 +57,7 @@ dora_live / 拡張)が全滅しても正本 MCAP 経路は無傷 — 安全は�
 
 ## 仕様ドキュメント
 
-各サービスの詳細仕様は [docs/specs/ja/](docs/specs/ja/README.md) を参照してください。`fig_const/` を基にした**設計の正本**です（未記載事項は推奨設計として確定。認証は不要）。
+各サービスの詳細仕様は [docs/specs/ja/](docs/specs/ja/README.md) を参照してください。 API の叩き方・トラブルシュートは [API の見方とデバッグガイド](docs/specs/ja/debugging.md) にまとまっています。`fig_const/` を基にした**設計の正本**です（未記載事項は推奨設計として確定。認証は不要）。
 
 ## 始め方
 

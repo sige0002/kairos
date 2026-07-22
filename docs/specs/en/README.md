@@ -7,6 +7,7 @@ Per-service specs. Based on each diagram in `fig_const/`, with unspecified items
 | Document | Role |
 |---|---|
 | [config](config.md) | Shared configuration (externalization of `ROS_DOMAIN_ID` / ports / paths, etc., and runtime configuration) |
+| [debugging](debugging.md) | **API exploration & debugging guide** (port map / Swagger UI / curl recipes / symptom playbook) |
 | [deployment_topology](deployment_topology.md) | Deployment topology (placement topology). A split deployment that records from a separate PC without overloading the robot |
 | [rosbag2_recorder](rosbag2_recorder.md) | ROS 2 topics → MCAP recording (canonical). QoS selection / image support |
 | [topic_monitor](topic_monitor.md) | Lightweight real-time monitoring (Hz / Late / Gap / Loss / bandwidth) |

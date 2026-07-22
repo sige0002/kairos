@@ -62,6 +62,7 @@ is untouched; safety lives in the topology.
 ## Specification docs
 
 For the detailed spec of each service, see [docs/specs/en/](docs/specs/en/README.md). Based on `fig_const/`, this is the **canonical design** (unspecified items fixed as recommended designs; no authentication).
+For hitting the APIs and troubleshooting, see the [API exploration & debugging guide](docs/specs/en/debugging.md).
 
 ## Getting started
 

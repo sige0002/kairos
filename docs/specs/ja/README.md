@@ -5,6 +5,7 @@
 | ドキュメント | 役割 |
 |---|---|
 | [config](config.md) | 共有設定（`ROS_DOMAIN_ID` / ポート / パス等の外出しと実行時設定） |
+| [debugging](debugging.md) | **API の見方とデバッグガイド**（ポートマップ / Swagger UI / curl 集 / 症状別プレイブック） |
 | [deployment_topology](deployment_topology.md) | デプロイ構成（配置トポロジ）。別 PC からロボットを圧迫せず記録する分割デプロイ |
 | [rosbag2_recorder](rosbag2_recorder.md) | ROS 2 topics → MCAP 記録（正本）。QoS 選択 / 画像対応 |
 | [topic_monitor](topic_monitor.md) | 軽量リアルタイム監視（Hz / Late / Gap / Loss / 帯域） |
