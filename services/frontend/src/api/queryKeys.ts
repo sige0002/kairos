@@ -26,6 +26,9 @@ export const queryKeys = {
   // banner. Cheap read; recomputed on request.
   retention: ['retention'] as const,
   // topic_probe (OL-③.3): topic list + per-topic numeric field introspection.
+  // dora_live extension-event ring (GET /api/v1/live/events) — the zero-cost
+  // UI surface for extension sidecars; absent under LIVE=0.
+  liveEvents: ['live', 'events'] as const,
   probeTopics: ['probe', 'topics'] as const,
   probeFields: (topic: string) => ['probe', 'fields', topic] as const,
 } as const;

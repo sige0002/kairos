@@ -194,10 +194,27 @@ contract it will attach to:
 - **Practice example**: the minimal template for a custom dora node attached to the pull
   contract (grayscale, verified working) → [`docs/examples/grayscale/`](../../examples/grayscale/README.md).
 - **Permanent user-extension home**: repo-root [`extensions/`](../../../extensions/README.md)
-  (gitignored). Copying `_template/` yields both a live sidecar attached to this
-  pull contract (`make ext-live EXT=<name>`) and a dora_runner validation plugin
-  (one-time `make rebuild dora_runner` on first use; afterwards a bare
-  `make restart dora_runner` activates changes).
+  (gitignored). Live sidecars are **auto-ingested by presence** (team-debated
+  ruling 2026-07-23: `make up` (LIVE=1) / `recording-up` starts them, `make down`
+  removes them, `ext-reload` applies edits; opt-out = one `x-kairos-autostart:
+  false` line. **`robot-up` never sweeps** — on-robot sidecars stay a manual
+  `ext-live`; under split, recording-up derives the robot's :8005 from
+  .env.split). dora_runner validation plugins activate on restart as before
+  (one-time rebuild on an existing stack). Ships `_template/` (both lanes) +
+  `_examples/grayscale/` (working example). The full **input catalog** and the
+  **UI output path** (below) live in extensions/README.
+- **Extension-event UI surface (implemented 2026-07-23)**: freeform bodies
+  POSTed to `/internal/analysis/events` render generically at **Monitor →
+  Events → "Extension events"** (kind/source/topic/t get dedicated slots, every
+  other key auto-renders as a `key=value` chip — zero frontend work for
+  extension authors). Path = the orchestrator's `GET /api/v1/live/events` proxy
+  (the legacy monitor (LIVE=0) 404s → degrades to `available:false` and the UI
+  hides the card entirely). The UI polls every 2 s, newest first, last 100
+  shown. Additionally the stop-time quick-check settlement carries home the
+  **extension events that overlapped the recording window** as
+  `quick_check.extension_events` (cap 50; never a verdict input), rendered as
+  the "Live extension events" text list on the Collect result panel (user ask
+  2026-07-23: post-take text visibility, no images).
 - **Analysis event ring** (the extension seam): any producer (a lane node or an external
   process) may push to `POST /internal/analysis/events`; consumers poll
   `GET /live/events?since=`. Filtering keys on the event's `t` (epoch seconds; the server

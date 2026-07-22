@@ -175,10 +175,24 @@ sudo sysctl -w net.core.rmem_default=16777216 net.core.rmem_max=16777216
 - **実践例**: pull 契約に接続する自作 dora ノードの最小テンプレ(グレースケール化・動作実証済み)
   → [`docs/examples/grayscale/`](../../examples/grayscale/README.ja.md)。
 - **常設のユーザー拡張置き場**: リポジトリ直下 [`extensions/`](../../../extensions/README.ja.md)
-  (gitignore 済み)。`_template/` をコピーすると、この pull 契約に接続する
-  ライブサイドカー(`make ext-live EXT=<name>`)と dora_runner の検証プラグイン
-  (初回のみ `make rebuild dora_runner`、以後は `make restart dora_runner` だけで反映)
-  の両テンプレが手に入る。
+  (gitignore 済み)。ライブサイドカーは**置くだけで自動取り込み**(チーム討議 2026-07-23
+  裁定: `make up`(LIVE=1)/`recording-up` が起動・`make down` が撤去・`ext-reload` で
+  編集反映・opt-out は compose の `x-kairos-autostart: false` 1 行。**`robot-up` は
+  絶対に走査しない** = ロボット上は手動 `ext-live` の明示操作のみ。split では
+  recording-up が .env.split からロボット :8005 を自動導出)。dora_runner 検証
+  プラグインは従来どおり restart で反映(既存スタック初回のみ rebuild)。
+  `_template/`(両レーン)+ `_examples/grayscale/`(実動サンプル)同梱。
+  拡張が使える**入力カタログ**と **UI 出力**(下記)は extensions/README に全記載。
+- **拡張イベントの UI 面(2026-07-23 実装)**: `POST /internal/analysis/events` の
+  自由形式ボディが **Monitor → Events →「Extension events」** に汎用描画される
+  (kind/source/topic/t = 専用スロット、他キー = `key=value` チップ自動表示 —
+  拡張作者のフロントエンド作業ゼロ)。経路 = orchestrator の
+  `GET /api/v1/live/events` プロキシ(旧 monitor(LIVE=0)では 404 →
+  `available:false` に縮退し UI はカード自体を非表示)。UI は 2 秒ポーリング・
+  新しい順・直近 100 件表示。さらに録画停止時の quick-check 清算が**録画窓に重なった
+  拡張イベント**を `quick_check.extension_events`(上限 50・verdict には不干渉)として
+  持ち帰り、Collect の結果パネルに「Live extension events」テキストで表示される
+  (ユーザー要望 2026-07-23: 取得後に文字で見えることに価値・画像は不要)。
 - **解析イベントリング**(拡張シーム): 任意のプロデューサ(lane ノードでも外部プロセスでも)が
   `POST /internal/analysis/events` へ push し、消費側は `GET /live/events?since=` を poll。
   フィルタはイベントの `t`(epoch 秒)キー — 省略時はサーバが受信時刻を付与。数値側の実例

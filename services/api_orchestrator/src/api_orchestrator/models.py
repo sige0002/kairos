@@ -179,6 +179,11 @@ class QuickCheck(BaseModel):
     layer0: QuickCheckLayer0 = Field(default_factory=QuickCheckLayer0)
     layer1: QuickCheckLayer1 = Field(default_factory=QuickCheckLayer1)
     verdict: QuickCheckVerdict = Field(default_factory=QuickCheckVerdict)
+    # Live extension events whose `t` fell inside the recording window
+    # (freeform bodies, capped, dora_live backend only). Informational text
+    # for the post-take panel — NEVER a verdict input. Empty on LIVE=0 or
+    # pre-feature runs (additive field).
+    extension_events: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class Run(BaseModel):

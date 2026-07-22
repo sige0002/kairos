@@ -376,6 +376,10 @@ export interface QuickCheck {
   layer0?: QuickCheckLayer0 | null;
   layer1?: QuickCheckLayer1 | null;
   verdict?: QuickCheckVerdict | null;
+  /** Live extension events whose `t` fell inside the recording window
+   *  (freeform, capped server-side; informational text — never a verdict
+   *  input). Empty/absent on LIVE=0 and pre-feature runs. */
+  extension_events?: LiveExtensionEvent[];
 }
 
 export interface RunDetail {
@@ -848,4 +852,23 @@ export interface SystemInfo {
   cpu_percent?: number | null;
   disk?: SystemDisk | null;
   gpu_percent?: number | null;
+}
+
+/**
+ * GET /api/v1/live/events: the dora_live extension-event ring, proxied by the
+ * orchestrator. Bodies are FREEFORM by contract (extensions POST anything);
+ * `t` (epoch seconds, server-stamped when absent) plus the kind/source/topic
+ * conventions are the only structure the UI may rely on. `available: false`
+ * means the live backend has no such surface (legacy monitor / LIVE=0) and
+ * the UI must hide the section rather than show a fabricated empty state.
+ */
+export type LiveExtensionEvent = { t?: number; kind?: string; source?: string; topic?: string } & Record<
+  string,
+  unknown
+>;
+
+export interface LiveEventsResponse {
+  available: boolean;
+  ts?: string;
+  events: LiveExtensionEvent[];
 }

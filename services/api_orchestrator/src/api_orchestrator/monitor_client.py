@@ -67,6 +67,29 @@ class MonitorClient(BaseServiceClient):
             retries=retries,
         )
 
+    async def live_events(
+        self,
+        since: float = 0.0,
+        *,
+        timeout: float | None = None,
+        retries: int | None = None,
+    ) -> dict[str, Any]:
+        """Call ``GET /live/events?since=<epoch>`` (extension analysis events).
+
+        Only the dora_live backend serves this route (the extension seam:
+        sidecars POST freeform events, consumers poll them). The legacy
+        monitor 404s — callers treat that as "surface absent", not an error.
+        ``timeout``/``retries`` override the default policy — the stop-time
+        settlement passes its short per-call budget, same as ``incidents``.
+        """
+        return await self._request(
+            "GET",
+            "/live/events",
+            params={"since": since},
+            timeout=timeout,
+            retries=retries,
+        )
+
     async def stream_sse(
         self, path: str, *, timeout: float | None = None
     ) -> AsyncIterator[tuple[str, str]]:

@@ -66,6 +66,14 @@ def test_monitor_contract_surface():
         assert client.get("/live/events").json()["events"] == [event]
         assert client.get("/live/events", params={"since": 200}).json()["events"] == []
 
+        # A poisoned `t` (null / string) must NOT 500 the ring: intake
+        # normalises it to the receive time (adversarial-review finding).
+        client.post("/internal/analysis/events", json={"kind": "bad", "t": None})
+        client.post("/internal/analysis/events", json={"kind": "worse", "t": "x"})
+        rows = client.get("/live/events", params={"since": 200}).json()["events"]
+        assert {r["kind"] for r in rows} == {"bad", "worse"}
+        assert all(isinstance(r["t"], float) for r in rows)
+
 
 def test_topics_reflects_discovery_graph():
     client, feed = _client()

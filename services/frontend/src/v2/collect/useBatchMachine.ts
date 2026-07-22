@@ -34,6 +34,7 @@ import {
 import { findProject, findTask, getPlans } from '../plans';
 import { RECORDING_CONFIG_KEY } from '../../features/config/ConfigTab';
 import type {
+  LiveExtensionEvent,
   BatchEpisodeSummary,
   BatchSummary,
   Episode,
@@ -972,6 +973,10 @@ export interface BatchMachine {
     verdict: QuickCheckVerdict | null;
     /** True while on the result panel waiting for the verdict to settle. */
     pending: boolean;
+    /** Live extension events that fell inside the take window (freeform,
+     *  server-capped; informational text only). Empty until settled and on
+     *  LIVE=0 / older backends. */
+    extensionEvents: LiveExtensionEvent[];
   };
 
   // Real recorder signals from /record/status (never the mock quality flag).
@@ -2404,7 +2409,11 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     autoQuality,
     qualityOverride: state.qualityOverride,
     setQuality,
-    quickCheck: { verdict: settledVerdict, pending: quickCheckPending },
+    quickCheck: {
+      verdict: settledVerdict,
+      pending: quickCheckPending,
+      extensionEvents: resultRunQuery.data?.quick_check?.extension_events ?? [],
+    },
 
     arming,
     integrity,

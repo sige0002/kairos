@@ -212,16 +212,27 @@ def create_control_app(
     @app.post("/internal/analysis/events")
     async def analysis_events_push(event: dict[str, Any]) -> dict[str, bool]:
         # CONTRACT (doc'd in the spec): the body is freeform EXCEPT `t` —
-        # epoch seconds used by /live/events?since= filtering. An absent `t`
-        # would default to 0.0 and silently vanish from any since>0 query
-        # (adversarial-review finding), so stamp it here for the producer.
-        event.setdefault("t", time.time())
+        # epoch seconds used by /live/events?since= filtering. An absent OR
+        # non-numeric `t` is replaced with the receive time: a single
+        # `{"t": null}` in the ring would otherwise 500 every subsequent
+        # /live/events read for up to 500 events (adversarial-review finding).
+        t = event.get("t")
+        if not isinstance(t, (int, float)) or isinstance(t, bool):
+            event["t"] = time.time()
         analysis_events.append(event)
         return {"ok": True}
 
     @app.get("/live/events")
     async def live_events(since: float = Query(0.0, ge=0.0)) -> dict[str, Any]:
-        rows = [e for e in analysis_events if float(e.get("t", 0.0)) >= since]
+        # Defensive on read too (the intake normalises `t`, but one bad row
+        # must degrade to "skipped", never poison the whole endpoint).
+        rows = []
+        for e in analysis_events:
+            try:
+                if float(e.get("t", 0.0)) >= since:
+                    rows.append(e)
+            except (TypeError, ValueError):
+                continue
         return {"ts": utc_now_iso8601(), "events": rows}
 
     # Live-frames lane: decimated compressed payloads from the frames node,

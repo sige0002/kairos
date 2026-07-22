@@ -339,12 +339,46 @@ def compute_verdict(
     return QuickCheckVerdict(quality=quality, reasons=reasons)
 
 
+# Extension events attached to a settlement are informational text, never a
+# verdict input; a runaway extension must not bloat the persisted run either.
+EXTENSION_EVENTS_CAP = 50
+
+
+def extension_events_in_window(
+    events: list[Any], start_ns: int | None, stop_ns: int | None
+) -> list[dict[str, Any]]:
+    """Keep live extension events whose ``t`` falls inside the recording window.
+
+    Event bodies are freeform by contract; ``t`` is epoch SECONDS (the intake
+    stamps it when absent). An event without a usable ``t`` cannot be placed in
+    the window and is dropped (unlike incidents there is no "still active"
+    semantic to be honest about). Unknown window bounds pass everything
+    through. Output is capped at :data:`EXTENSION_EVENTS_CAP` (newest kept) —
+    these are display text for the post-take panel, not a verdict input.
+    """
+    kept: list[dict[str, Any]] = []
+    for item in events:
+        if not isinstance(item, dict):
+            continue
+        t = item.get("t")
+        if not isinstance(t, (int, float)):
+            continue
+        t_ns = int(float(t) * 1e9)
+        if start_ns is not None and t_ns < start_ns:
+            continue
+        if stop_ns is not None and t_ns > stop_ns:
+            continue
+        kept.append(item)
+    return kept[-EXTENSION_EVENTS_CAP:]
+
+
 def assemble_quick_check(
     *,
     layer0: QuickCheckLayer0,
     layer1: QuickCheckLayer1,
     elapsed_ms: int,
     computed_at: str | None = None,
+    extension_events: list[dict[str, Any]] | None = None,
 ) -> QuickCheck:
     """Combine the two layers + verdict into the persisted :class:`QuickCheck`."""
     return QuickCheck(
@@ -353,6 +387,7 @@ def assemble_quick_check(
         layer0=layer0,
         layer1=layer1,
         verdict=compute_verdict(layer0, layer1),
+        extension_events=list(extension_events or []),
     )
 
 

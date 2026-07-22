@@ -11,6 +11,7 @@ import { queryKeys } from '../../api/queryKeys';
 import type { AlertEvent } from '../../api/types';
 import { Card, cn, StatusDot } from '../../components/ui';
 import { incidentCount, toAlertRows } from './alerts';
+import { ExtensionEventsCard } from './ExtensionEventsCard';
 
 type StateFilter = 'all' | 'firing' | 'cleared';
 const STATE_FILTERS: StateFilter[] = ['all', 'firing', 'cleared'];
@@ -43,6 +44,7 @@ export function EventsView() {
   const total = incidentCount(data ?? []);
 
   return (
+    <div className="flex flex-1 flex-col gap-4 lg:min-h-0">
     <Card className="flex flex-1 flex-col lg:min-h-0" data-testid="monitor-events">
       <div className="flex flex-wrap items-center gap-2.5 border-b border-gray-100 px-4 py-3">
         <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
@@ -127,5 +129,7 @@ export function EventsView() {
         )}
       </div>
     </Card>
+    <ExtensionEventsCard />
+    </div>
   );
 }

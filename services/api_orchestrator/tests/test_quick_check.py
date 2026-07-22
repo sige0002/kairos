@@ -120,6 +120,53 @@ def test_incidents_in_window_passthrough_when_bounds_unknown() -> None:
     assert len(incidents_in_window(incs, None, None)) == 2
 
 
+def test_extension_events_in_window() -> None:
+    from api_orchestrator.quick_check import (
+        EXTENSION_EVENTS_CAP,
+        extension_events_in_window,
+    )
+
+    s = 1_000_000_000  # ns per second
+    events = [
+        {"kind": "before", "t": 0.5},
+        {"kind": "inside", "t": 1.5},
+        {"kind": "after", "t": 3.5},
+        {"kind": "no_t"},  # unplaceable -> dropped
+        {"kind": "bad_t", "t": "x"},
+        "not-a-dict",
+    ]
+    kept = extension_events_in_window(events, 1 * s, 2 * s)
+    assert [e["kind"] for e in kept] == ["inside"]
+    # unknown bounds pass placeable events through
+    kept_all = extension_events_in_window(events, None, None)
+    assert [e["kind"] for e in kept_all] == ["before", "inside", "after"]
+    # cap keeps the NEWEST entries
+    many = [{"kind": f"e{i}", "t": float(i)} for i in range(100)]
+    capped = extension_events_in_window(many, None, None)
+    assert len(capped) == EXTENSION_EVENTS_CAP
+    assert capped[-1]["kind"] == "e99"
+
+
+def test_assemble_quick_check_carries_extension_events() -> None:
+    quick = assemble_quick_check(
+        layer0=build_layer0(
+            integrity="ok",
+            backstop=None,
+            monitor_topics=None,
+            baseline_dds=None,
+            incidents=None,
+            topic_names=[],
+            config=None,
+        ),
+        layer1=build_layer1(summary=None, config=None, required_topics=[]),
+        elapsed_ms=1,
+        extension_events=[{"kind": "dark_frame", "t": 1.0}],
+    )
+    assert quick.extension_events == [{"kind": "dark_frame", "t": 1.0}]
+    # informational only: the verdict must not mention extension events
+    assert all("extension" not in r for r in quick.verdict.reasons)
+
+
 # ---- MCAP summary reader --------------------------------------------------
 
 

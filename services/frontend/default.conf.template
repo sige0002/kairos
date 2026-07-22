@@ -28,9 +28,19 @@ server {
     root /usr/share/nginx/html;
     index index.html;
 
+    # Hashed build assets are immutable — cache them hard.
+    location /assets/ {
+        add_header Cache-Control "public, max-age=31536000, immutable";
+    }
+
     # SPA fallback: client-side routing serves index.html for unknown paths.
+    # no-cache (revalidate every load): index.html carries the hashed asset
+    # names, and without an explicit header browsers heuristic-cache it — after
+    # a frontend rebuild operators kept seeing the OLD bundle until a hard
+    # reload (found during the extension-events verification).
     location / {
         try_files $uri $uri/ /index.html;
+        add_header Cache-Control "no-cache";
     }
 
     # Proxy API + SSE to the orchestrator. compose.yaml runs every service on

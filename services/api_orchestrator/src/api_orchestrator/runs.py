@@ -64,6 +64,7 @@ from api_orchestrator.quick_check import (
     assemble_quick_check,
     build_layer0,
     build_layer1,
+    extension_events_in_window,
     incidents_in_window,
     read_mcap_summary,
 )
@@ -937,6 +938,12 @@ class RunService:
                 if incidents is not None
                 else None
             )
+            # Live extension events that fell inside the take (informational
+            # text for the post-take panel; never a verdict input).
+            live_events = await self._monitor_live_events()
+            events_window = extension_events_in_window(
+                live_events or [], start_ns, stop_ns
+            )
             layer0 = build_layer0(
                 integrity=integrity,
                 backstop=backstop,
@@ -965,7 +972,10 @@ class RunService:
 
             elapsed_ms = int((time.monotonic() - started) * 1000)
             quick = assemble_quick_check(
-                layer0=layer0, layer1=layer1, elapsed_ms=elapsed_ms
+                layer0=layer0,
+                layer1=layer1,
+                elapsed_ms=elapsed_ms,
+                extension_events=events_window,
             )
             self._update(run.run_id, quick_check=quick)
             logger.info(
@@ -1065,6 +1075,25 @@ class RunService:
         except ApiError:
             return None
         items = body.get("incidents")
+        return items if isinstance(items, list) else None
+
+    async def _monitor_live_events(self) -> list[Any] | None:
+        """Fetch the live extension-event ring (``None`` if unavailable).
+
+        dora_live-only surface (the extension seam); the legacy monitor 404s →
+        ``ApiError`` → ``None`` (honest degradation, same policy as
+        ``_monitor_incidents``). The whole ring is fetched (``since=0``) and
+        window-filtered client-side by ``extension_events_in_window``.
+        """
+        if self._monitor is None:
+            return None
+        try:
+            body = await self._monitor.live_events(
+                0.0, timeout=_SETTLE_MONITOR_TIMEOUT_S, retries=0
+            )
+        except ApiError:
+            return None
+        items = body.get("events")
         return items if isinstance(items, list) else None
 
     async def drain_settlements(self) -> None:

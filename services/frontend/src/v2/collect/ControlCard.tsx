@@ -8,6 +8,8 @@ import { Card, cn } from '../../components/ui';
 import type { RecordArming } from '../../api/types';
 import { formatBytes } from '../review/format';
 import { CARD_PAD } from './compact';
+import { eventLine, eventTime } from '../monitor/extensionEvents';
+import type { LiveExtensionEvent } from '../../api/types';
 import {
   describeTaskOutcome,
   FAIL_REASONS,
@@ -173,6 +175,41 @@ function QuickCheckReasons({ reasons }: { reasons: string[] }) {
             <span className="font-mono text-[11px] leading-snug">{reason}</span>
           </li>
         ))}
+      </ul>
+    </div>
+  );
+}
+
+// Live extension events that fell inside the take window (text-only, freeform;
+// see extensions/README.md). Informational — never part of the verdict; shown
+// so between-takes analysis (the live extension seam) lands where the operator
+// already looks after a take. Capped display; the server caps persistence.
+const EXT_EVENTS_SHOWN = 8;
+
+function TakeExtensionEvents({ events }: { events: LiveExtensionEvent[] }) {
+  if (events.length === 0) return null;
+  const shown = events.slice(-EXT_EVENTS_SHOWN).reverse(); // newest first
+  const hidden = events.length - shown.length;
+  return (
+    <div
+      data-testid="take-extension-events"
+      className="flex flex-col gap-1 rounded-control border border-gray-200 bg-gray-50/60 px-3 py-2 text-gray-600"
+    >
+      <span className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-gray-500">
+        Live extension events ({events.length})
+      </span>
+      <ul className="flex flex-col gap-0.5">
+        {shown.map((event, i) => (
+          <li key={i} className="flex gap-1.5" data-testid="take-extension-event">
+            <span className="opacity-50">·</span>
+            <span className="font-mono text-[11px] leading-snug">
+              {eventTime(event.t)} {eventLine(event)}
+            </span>
+          </li>
+        ))}
+        {hidden > 0 && (
+          <li className="font-mono text-[10.5px] text-gray-400">+{hidden} more (see Monitor → Events)</li>
+        )}
       </ul>
     </div>
   );
@@ -583,6 +620,7 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
           machine.quickCheck.verdict.reasons.length > 0 && (
             <QuickCheckReasons reasons={machine.quickCheck.verdict.reasons} />
           )}
+        <TakeExtensionEvents events={machine.quickCheck.extensionEvents} />
         {/* Honest quality line (D-2): the effective quality + its provenance, with
             an override affordance — no fabricated "camera rate dropped". */}
         <div className="flex flex-col gap-1.5">
