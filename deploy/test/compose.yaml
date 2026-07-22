@@ -1,5 +1,5 @@
 # Test harness: replay a recorded rosbag (MCAP) onto the ROS 2 graph
-# (ROS_DOMAIN_ID=0) so services can be exercised against real recorded data —
+# (ROS_DOMAIN_ID from env, default 0) so services can be exercised against real recorded data —
 # and *see* what is flowing while it plays.
 #
 # Two services:
@@ -39,7 +39,7 @@ services:
     <<: *ros-common
     environment:
       # Shared ROS 2 domain for all kairos containers/tests.
-      ROS_DOMAIN_ID: "0"
+      ROS_DOMAIN_ID: "${ROS_DOMAIN_ID:-0}"
       # Match the kairos services' DDS implementation (default Fast DDS; set to
       # rmw_cyclonedds_cpp to replay onto a Cyclone DDS graph).
       RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
@@ -70,7 +70,7 @@ services:
   topic_table:
     <<: *ros-common
     environment:
-      ROS_DOMAIN_ID: "0"
+      ROS_DOMAIN_ID: "${ROS_DOMAIN_ID:-0}"
       # Match the kairos services' DDS implementation (see rosbag_player above).
       RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
       # REFRESH=<s> table interval; DURATION=<s> auto-exits (handy for smoke tests).

@@ -154,9 +154,20 @@ export COMPOSE_PROFILES := live
 export TOPIC_MONITOR_PORT := 8005
 export TOPIC_PROBE_PORT := 8006
 export WEBRTC_PORT := 8007
+# Split placement: dora_live runs on the RECORDING host (compose.recording.yaml),
+# so the orchestrator/nginx proxy targets become LOCAL there instead of the
+# robot IP from .env.split. Exported => beats the split env file. RECORDER_HOST
+# stays untouched (the recorder remains on the robot).
+export TOPIC_MONITOR_HOST := 127.0.0.1
+export WEBRTC_HOST := 127.0.0.1
+export PROBE_HOST := 127.0.0.1
 _UP_SVC := $(if $(SVC),$(SVC),$(filter-out $(LIVE_LEGACY),$(SERVICES)))
+# Robot-edge default set under LIVE=1: the recorder ONLY (the live trio is
+# replaced by recording-side dora_live; the robot runs nothing else).
+_ROBOT_UP_SVC := $(if $(SVC),$(SVC),recorder)
 else
 _UP_SVC := $(SVC)
+_ROBOT_UP_SVC := $(SVC)
 endif
 
 PY_DIRS := libs/kairos_common services/rosbag2_recorder services/topic_monitor \
@@ -230,7 +241,7 @@ rebuild: ## rebuild + recreate service(s): `make rebuild frontend`
 	$(COMPOSE) up -d --build --force-recreate $(SVC)
 
 restart: ## restart service(s): `make restart monitor orchestrator`
-	$(COMPOSE) restart $(SVC)
+	$(COMPOSE) restart $(_UP_SVC)
 
 logs: ## follow logs: `make logs` (all) or `make logs streamer`
 	$(COMPOSE) logs -f --tail=100 $(SVC)
@@ -257,8 +268,9 @@ COMPOSE_RECORDING := $(if $(SPLIT_ENV),KAIROS_ENV_FILE=$(SPLIT_ENV),) docker com
         recording-ps recording-config-reload import-runs push-config
 # All robot-* / recording-* targets take positional service names like the
 # single-host ones (e.g. `make robot-rebuild recorder`, `make robot-logs monitor`).
-robot-up: ## [ON THE ROBOT] build + start the robot-edge services (recorder/monitor/streamer/probe)
-	$(COMPOSE_ROBOT) up -d --build $(SVC)
+robot-up: ## [ON THE ROBOT] build + start the robot-edge services (LIVE=1 = recorder only)
+	@$(if $(filter 1,$(LIVE)),$(COMPOSE_ROBOT) stop $(LIVE_LEGACY) 2>/dev/null || true,true)
+	$(COMPOSE_ROBOT) up -d --build $(_ROBOT_UP_SVC)
 
 robot-down: ## [ON THE ROBOT] stop + remove the robot-edge services
 	$(COMPOSE_ROBOT) down
@@ -279,9 +291,10 @@ robot-ps: ## [ON THE ROBOT] show robot-edge container status
 	$(COMPOSE_ROBOT) ps
 
 robot-config-reload: ## [ON THE ROBOT] apply config/*.yaml edits (restart monitor; recorder applies on next record)
-	$(COMPOSE_ROBOT) restart monitor
+	$(if $(filter 1,$(LIVE)),@echo "LIVE=1: no monitor on the robot — config lives with recording-side dora_live (make recording-config-reload)",$(COMPOSE_ROBOT) restart monitor)
 
-recording-up: ## [ON THE RECORDING PC] build + start orchestrator/dora/frontend (set *_HOST in .env)
+recording-up: ## [ON THE RECORDING PC] build + start orchestrator/dora/frontend (LIVE=1 adds dora_live)
+	@$(if $(filter 1,$(LIVE)),true,COMPOSE_PROFILES=live $(COMPOSE_RECORDING) stop dora_live 2>/dev/null || true)
 	$(COMPOSE_RECORDING) up -d --build $(SVC)
 	@$(MAKE) --no-print-directory urls
 
@@ -303,8 +316,8 @@ recording-logs: ## [ON THE RECORDING PC] follow recording-host logs: `make recor
 recording-ps: ## [ON THE RECORDING PC] show recording-host container status
 	$(COMPOSE_RECORDING) ps
 
-recording-config-reload: ## [ON THE RECORDING PC] apply config-catalog edits (restart orchestrator)
-	$(COMPOSE_RECORDING) restart orchestrator
+recording-config-reload: ## [ON THE RECORDING PC] apply config-catalog edits (restart orchestrator; +dora_live when LIVE=1)
+	$(COMPOSE_RECORDING) restart orchestrator $(if $(filter 1,$(LIVE)),dora_live,)
 
 import-runs: ## [ON THE RECORDING PC] rsync COMPLETED recordings from the robot into ./data/recorded
 	bash deploy/sync/import_runs.sh
@@ -313,8 +326,8 @@ push-config: ## [ON THE RECORDING PC] rsync config/local/<ROBOT>/ to the robot's
 	bash deploy/sync/push_config.sh
 
 .PHONY: config-reload config-show
-config-reload: ## apply config/*.yaml edits (restart monitor + orchestrator)
-	$(COMPOSE) restart monitor orchestrator
+config-reload: ## apply config/*.yaml edits (restart monitor + orchestrator; dora_live under LIVE=1)
+	$(COMPOSE) restart $(if $(filter 1,$(LIVE)),dora_live,monitor) orchestrator
 
 config-show: ## print the live GET /api/v1/config defaults
 	@curl -fsS --max-time 5 http://localhost:$(API_ORCH_PORT)/api/v1/config \
