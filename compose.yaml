@@ -265,6 +265,12 @@ services:
       ALERT_CONFIG_PATH: ${ALERT_CONFIG_PATH:-}
       DORA_LIVE_PORT: ${DORA_LIVE_PORT:-8005}
       DORA_LIVE_PROBE_PORT: ${DORA_LIVE_PROBE_PORT:-8006}
+      # Opt-in CPU-affinity cap (positive integer N). The entrypoint pins this
+      # container's processes to the first N cpus, bounding both the per-bridge
+      # tokio worker threads (num_cpus reads sched_affinity, which a cgroup
+      # `cpus:` quota does NOT shrink) AND worst-case CPU on a many-core host.
+      # Unset = unrestricted. See services/dora_live/entrypoint.sh.
+      DORA_LIVE_CPUS: ${DORA_LIVE_CPUS:-}
     network_mode: host
     ipc: host
     volumes:

@@ -213,6 +213,12 @@ LIVE=1 が旧3サービスを**停止**するのは、`TOPIC_PROBE_PORT` 等が�
   併せて Cyclone は bridge の param service に type hash USER_DATA が無い旨の WARN を
   endpoint 数だけ吐く(無害だがログ洪水)。1 participant 化は dora upstream の external-event
   帰属待ち(TBD)。
+- **`DORA_LIVE_CPUS`(オプトイン)= tokio ワーカースレッド床のキャップ**。bridge 1 本の tokio
+  ワーカー数はコンテナから見える CPU コア数比例(`num_cpus` が sched_affinity を読む)なので、
+  多コアのフィールド機(64+ コア)では 29 bridge で 6000+ スレッドに膨らむ。この env に正整数 N を
+  設定すると entrypoint がプロセス親和性を先頭 N コアに固定(全子プロセスが継承)し、各 tokio
+  ランタイムが N にサイズされ worst-case CPU も抑えられる。cgroup の `cpus:` クォータでは
+  `num_cpus` は縮まない(sched_affinity のみ有効)。目安 = 64 コア機で 8〜16、未設定=無制限。
 - **stamp_delay_ms は wall-clock 真値**(ingest で epoch→monotonic 変換済み)。bag リプレイ中は
   「録画時刻からの経過」= 数百日級の値が出るのが正しい挙動(実機ではミリ秒オーダー)。リプレイ中に
   stamp_delay 系のアラート閾値を掛けると常時発火する点に注意。

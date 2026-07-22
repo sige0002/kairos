@@ -237,6 +237,13 @@ explicitly).
   USER_DATA WARN per bridge
   param-service endpoint (harmless but noisy). Collapsing to one participant awaits
   external-event attribution in upstream dora (TBD).
+- **`DORA_LIVE_CPUS` (opt-in) caps the tokio-worker-thread floor.** Each bridge's tokio worker
+  count scales with the cpu cores VISIBLE to the container (`num_cpus` reads sched_affinity), so on
+  a many-core field host (64+ cores) the 29-bridge fleet balloons to 6000+ threads. Setting this env
+  to a positive integer N makes the entrypoint pin process affinity to the first N cpus (every child
+  inherits the mask), so each tokio runtime sizes to N and worst-case CPU is bounded too. A cgroup
+  `cpus:` quota does NOT shrink `num_cpus`; only sched_affinity does. Suggested: 8-16 on a 64-core
+  host; unset = unrestricted.
 - **stamp_delay_ms is the true wall-clock staleness** (epoch->monotonic conversion at ingest).
   During bag replay it correctly reads as "time since recording" — hundreds of days; on a live
   robot it is transport latency in milliseconds. Stamp-delay alert thresholds will fire
