@@ -142,9 +142,13 @@ def _kill_session(sid: int, sig: int) -> int:
 
 
 def _manifest_key(manifest: LiveManifest) -> tuple[Any, ...]:
-    """Comparable identity of everything the generated dataflow depends on."""
+    """Comparable identity of everything the generated dataflow depends on.
+
+    Deliberately EXCLUDES the raw ``queue_size``: the resolved ``queues``
+    fully determine the generated graph, and keying on the raw field would
+    restart the dataflow for an edit that changes nothing (review finding).
+    """
     return (
-        manifest.queue_size,
         tuple(manifest.queues.model_dump().items()),
         manifest.frames_enabled,
         manifest.frames_sample_hz,

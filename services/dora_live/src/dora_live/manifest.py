@@ -43,10 +43,10 @@ class LiveTopic(BaseModel):
 class LaneQueues(BaseModel):
     """Resolved per-consumer queue depths (see live_config.LiveQueuesConfig)."""
 
-    metrics: int = 1000
-    probe: int = 4
-    webrtc: int = 2
-    frames: int = 2
+    metrics: int = Field(default=1000, ge=1)
+    probe: int = Field(default=4, ge=1)
+    webrtc: int = Field(default=2, ge=1)
+    frames: int = Field(default=2, ge=1)
 
 
 class LiveManifest(BaseModel):
