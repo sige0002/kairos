@@ -185,6 +185,14 @@ LIVE=1 が旧3サービスを**停止**するのは、`TOPIC_PROBE_PORT` 等が�
   domain + 実 msgs overlay での再走。
 - **ffmpeg codec(FFMPEGPacket)と raw opt-in は実カメラ未検証**(ユニットテストは PyAV
   ラウンドトリップまで)。realman/aloha 等の実トピックでの初回検証が必要。
+- **1 トピック = 1 bridge = 1 DDS participant** のため、ライブトピック数だけホスト×ドメインの
+  participant index(有限資源)を消費する。29 bridge 実測で、後から起動した CycloneDDS ノードが
+  `RCLError: error creating node`(原因非表示)で作成不能になる枯渇を確認。ロボット側配置では
+  ロボット自身のノードと index 空間を共有する点に注意。緩和: live config の `topics`/`exclude` で
+  bridge 数を絞る / Cyclone 側 `ParticipantIndex=none` ないし `MaxAutoParticipantIndex` 引き上げ。
+  併せて Cyclone は bridge の param service に type hash USER_DATA が無い旨の WARN を
+  endpoint 数だけ吐く(無害だがログ洪水)。1 participant 化は dora upstream の external-event
+  帰属待ち(TBD)。
 - **stamp_delay_ms は wall-clock 真値**(ingest で epoch→monotonic 変換済み)。bag リプレイ中は
   「録画時刻からの経過」= 数百日級の値が出るのが正しい挙動(実機ではミリ秒オーダー)。リプレイ中に
   stamp_delay 系のアラート閾値を掛けると常時発火する点に注意。

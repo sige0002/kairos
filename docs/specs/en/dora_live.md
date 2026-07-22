@@ -207,6 +207,15 @@ explicitly).
 - **The ffmpeg codec (FFMPEGPacket) and the raw opt-in are unverified against a real camera**
   (unit tests cover the PyAV round trip). First validation on real realman/aloha-style topics
   is required.
+- **One topic = one bridge = one DDS participant**, so the live topic count consumes the
+  host×domain participant-index space (a finite resource). Measured at 29 bridges:
+  CycloneDDS nodes started afterwards fail with an opaque
+  `RCLError: error creating node`. Under the robot-side placement the bridges share that
+  index space with the robot's own nodes. Mitigations: trim the bridge count via the live
+  config `topics`/`exclude`; on the Cyclone side set `ParticipantIndex=none` or raise
+  `MaxAutoParticipantIndex`. Cyclone also logs one type-hash USER_DATA WARN per bridge
+  param-service endpoint (harmless but noisy). Collapsing to one participant awaits
+  external-event attribution in upstream dora (TBD).
 - **stamp_delay_ms is the true wall-clock staleness** (epoch->monotonic conversion at ingest).
   During bag replay it correctly reads as "time since recording" — hundreds of days; on a live
   robot it is transport latency in milliseconds. Stamp-delay alert thresholds will fire
