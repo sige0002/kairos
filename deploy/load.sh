@@ -33,7 +33,7 @@ read CPU_BUSY0 CPU_IDLE0 <<<"$(cpu_snap)"
 declare -A RX0 TX0
 IFS=$'\n'
 for i in $(phys_ifs); do
-    read -r r t <<<"$(net_snap "$i")" || continue
+    IFS=" 	" read -r r t <<<"$(net_snap "$i")" || continue
     RX0[$i]="${r:-0}"; TX0[$i]="${t:-0}"
 done
 unset IFS
@@ -56,7 +56,7 @@ docker stats --no-stream --format '{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.PI
 echo "== LAN  (per physical NIC, 1 s sample; util = max(rx,tx) vs link speed)"
 IFS=$'\n'
 for i in $(phys_ifs); do
-    read -r r1 t1 <<<"$(net_snap "$i")" || continue
+    IFS=" 	" read -r r1 t1 <<<"$(net_snap "$i")" || continue
     r0="${RX0[$i]:-$r1}"; t0="${TX0[$i]:-$t1}"
     speed="$(cat "/sys/class/net/$i/speed" 2>/dev/null || echo -1)"
     state="$(cat "/sys/class/net/$i/operstate" 2>/dev/null || echo '?')"
