@@ -52,7 +52,7 @@ def test_hub_wait_for_unblocks_on_push():
 
 def _probe_client() -> tuple[TestClient, ProbeHub, DoraFeedSubscriber]:
     hub = ProbeHub()
-    feed = DoraFeedSubscriber(enable_rclpy=False)
+    feed = DoraFeedSubscriber(enable_discovery=False)
     feed.start()
     feed._graph = [TopicGraphEntry(name="/x", type="std_msgs/msg/Float64")]
     feed.set_topic_types({"/x": "std_msgs/msg/Float64"})  # bridged
@@ -104,7 +104,7 @@ def test_probe_sample_flow():
 
 def test_probe_readyz_tracks_dataflow():
     hub = ProbeHub()
-    feed = DoraFeedSubscriber(enable_rclpy=False)
+    feed = DoraFeedSubscriber(enable_discovery=False)
     feed.start()
     alive = {"v": True}
     app = create_probe_compat_app(hub=hub, feed=feed, dataflow_alive=lambda: alive["v"])

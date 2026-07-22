@@ -3,8 +3,11 @@
 Implements the same seam Protocol as topic_monitor's rclpy subscriber, so
 ``MonitorService`` (kairos_common.monitoring) runs unmodified on top of the
 dora bridge. Samples arrive as HTTP batches pushed by the metrics dataflow
-node (``POST /internal/samples``); graph discovery runs on a subscription-free
-rclpy poller thread (rclpy is lazy-imported — unit tests never need ROS).
+node (``POST /internal/samples``); graph discovery runs on the carried dora
+patch's ``Ros2GraphWatcher`` (a bare RustDDS participant tracking SEDP
+endpoint events — no rosout, no parameter services). If the installed dora
+wheel lacks the patch, discovery falls back to the previous rclpy poller
+with a loud warning (both are lazy-imported — unit tests never need ROS).
 
 Honesty note: DDS ``message_lost`` events are an rclpy/RMW feature the RustDDS
 bridge does not surface, so the lost sink never fires in dora_live mode —
@@ -29,22 +32,26 @@ DISCOVERY_PERIOD_S = 2.0
 
 
 class DoraFeedSubscriber:
-    """Sample source = dora metrics node pushes; discovery = rclpy graph poll."""
+    """Sample source = dora metrics node pushes; discovery = DDS graph watch."""
 
     def __init__(
         self,
         *,
         topic_types: dict[str, str] | None = None,
         node_name: str = "dora_live_graph",
-        enable_rclpy: bool = True,
+        enable_discovery: bool = True,
     ) -> None:
+        # Which discovery backend actually runs: "dora_graph" (the carried
+        # patch's RustDDS watcher), "rclpy" (fallback), or "none" (neither
+        # importable / not started). Surfaced via /live/status for honesty.
+        self.discovery_source = "none"
         self._sink: Callable[[Sample], None] | None = None
         self._lost_sink: Callable[[str, int], None] | None = None
         self._paused = False
         self._up = False
         self._topic_types = dict(topic_types or {})
         self._node_name = node_name
-        self._enable_rclpy = enable_rclpy
+        self._enable_discovery = enable_discovery
         self._graph: list[TopicGraphEntry] = []
         self._publisher_qos: dict[str, list[QosInfo]] = {}
         self._graph_lock = threading.Lock()
@@ -65,7 +72,7 @@ class DoraFeedSubscriber:
     def start(self) -> None:
         self._paused = False
         self._up = True
-        if self._enable_rclpy and self._thread is None:
+        if self._enable_discovery and self._thread is None:
             self._stop_evt.clear()
             self._thread = threading.Thread(
                 target=self._graph_loop, name="dora-live-graph", daemon=True
@@ -84,6 +91,7 @@ class DoraFeedSubscriber:
         if self._thread is not None:
             self._thread.join(timeout=5.0)
             self._thread = None
+        self.discovery_source = "none"
 
     def is_up(self) -> bool:
         return self._up and self._dataflow_alive()
@@ -148,12 +156,80 @@ class DoraFeedSubscriber:
     # -- discovery poller ------------------------------------------------------
 
     def _graph_loop(self) -> None:
+        import os
+
+        watcher = None
+        mode = os.environ.get("DORA_LIVE_DISCOVERY", "").lower()
+        if mode == "rclpy":
+            # Operational escape hatch (and the honest A/B lever for load
+            # comparisons): force the previous rclpy poller.
+            logger.warning("DORA_LIVE_DISCOVERY=rclpy: using the rclpy poller")
+        else:
+            if mode:
+                logger.warning(
+                    "unknown DORA_LIVE_DISCOVERY=%r; using the dora graph watcher",
+                    mode,
+                )
+            # Import and construction failures are DIFFERENT diagnoses: a
+            # missing class means the wheel lacks the carried patch (rebuild
+            # the image); a constructor error is environmental (e.g. DDS
+            # participant creation failed — see the participant-index trap).
+            watcher_cls = None
+            try:
+                from dora import Ros2GraphWatcher as watcher_cls  # noqa: N813
+            except ImportError as exc:
+                logger.error(
+                    "dora Ros2GraphWatcher not importable (%s) — this dora "
+                    "wheel lacks the carried graph-watcher patch; falling "
+                    "back to the rclpy discovery poller",
+                    exc,
+                )
+            if watcher_cls is not None:
+                try:
+                    watcher = watcher_cls()
+                except Exception as exc:  # noqa: BLE001 - env failure, not wheel
+                    logger.error(
+                        "Ros2GraphWatcher creation failed (%s) — environmental "
+                        "(DDS participant creation?); falling back to the "
+                        "rclpy discovery poller",
+                        exc,
+                    )
+        if watcher is None:
+            self._graph_loop_rclpy()
+            return
+        self.discovery_source = "dora_graph"
+        snapshot_failing = False
+        try:
+            while not self._stop_evt.wait(DISCOVERY_PERIOD_S):
+                try:
+                    rows = watcher.snapshot()
+                except Exception:  # noqa: BLE001 - one bad poll, not fatal
+                    if not snapshot_failing:
+                        logger.exception(
+                            "graph snapshot failed; keeping last graph "
+                            "(silent until recovery)"
+                        )
+                        snapshot_failing = True
+                    continue
+                if snapshot_failing:
+                    logger.info("graph snapshot recovered")
+                    snapshot_failing = False
+                entries, qos = entries_from_snapshot(rows)
+                with self._graph_lock:
+                    self._graph = entries
+                    self._publisher_qos = qos
+        finally:
+            watcher.stop()
+
+    def _graph_loop_rclpy(self) -> None:
+        """Previous rclpy-node poller, kept as a loud-warning fallback only."""
         try:
             import rclpy
             from rclpy.node import Node
         except Exception:  # pragma: no cover - exercised only without ROS
             logger.warning("rclpy unavailable; discovery disabled")
             return
+        self.discovery_source = "rclpy"
         context = rclpy.Context()
         rclpy.init(context=context)
         node = Node(self._node_name, context=context)
@@ -180,3 +256,31 @@ class DoraFeedSubscriber:
         finally:
             node.destroy_node()
             rclpy.shutdown(context=context)
+
+
+def entries_from_snapshot(
+    rows: list[tuple[str, str, int, int, list[tuple[str, str, int]]]],
+) -> tuple[list[TopicGraphEntry], dict[str, list[QosInfo]]]:
+    """Convert ``Ros2GraphWatcher.snapshot()`` rows to the graph-poll shape.
+
+    Row: ``(name, type, publisher_count, subscriber_count,
+    [(reliability, durability, depth), ...])`` — same information the rclpy
+    poller produced, so ``resolve_subscription_qos`` and ``/topics`` see an
+    identical world.
+    """
+    entries: list[TopicGraphEntry] = []
+    qos: dict[str, list[QosInfo]] = {}
+    for name, type_name, n_pub, n_sub, publishers in rows:
+        entries.append(
+            TopicGraphEntry(
+                name=name,
+                type=type_name or None,
+                publisher_count=n_pub,
+                subscriber_count=n_sub,
+            )
+        )
+        qos[name] = [
+            QosInfo(reliability=rel, durability=dur, depth=depth)
+            for rel, dur, depth in publishers
+        ]
+    return entries, qos

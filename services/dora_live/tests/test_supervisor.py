@@ -38,7 +38,7 @@ def _await_session_gone(sid: int, timeout: float = 3.0) -> bool:
 def _supervisor(tmp_path: Path) -> DataflowSupervisor:
     return DataflowSupervisor(
         config=None,
-        feed=DoraFeedSubscriber(enable_rclpy=False),
+        feed=DoraFeedSubscriber(enable_discovery=False),
         workdir=tmp_path,
         control_url="http://127.0.0.1:9",
     )
@@ -129,7 +129,7 @@ def test_supervisor_allowlist_from_live_config():
         {"robot_name": "t", "default_topics": ["/a", "/b"]}
     )
     live = LiveConfig(extra_topics=["/c"], exclude=["/b"])
-    feed = DoraFeedSubscriber(enable_rclpy=False)
+    feed = DoraFeedSubscriber(enable_discovery=False)
     sup = DataflowSupervisor(
         config=rec,
         feed=feed,
@@ -146,7 +146,7 @@ def test_supervisor_allowlist_from_live_config():
 def test_degraded_cooloff_self_recovers(tmp_path: Path):
     import time
 
-    feed = DoraFeedSubscriber(enable_rclpy=False)
+    feed = DoraFeedSubscriber(enable_discovery=False)
     sup = DataflowSupervisor(
         config=None, feed=feed, workdir=tmp_path, control_url="http://127.0.0.1:9"
     )
@@ -162,7 +162,7 @@ def test_degraded_cooloff_self_recovers(tmp_path: Path):
 
 
 def test_supervisor_alive_semantics(tmp_path: Path):
-    feed = DoraFeedSubscriber(enable_rclpy=False)
+    feed = DoraFeedSubscriber(enable_discovery=False)
     sup = DataflowSupervisor(
         config=None,
         feed=feed,

@@ -85,7 +85,7 @@ def test_control_frames_routes():
     from fastapi.testclient import TestClient
 
     app = create_control_app(
-        subscriber=DoraFeedSubscriber(enable_rclpy=False), config=None
+        subscriber=DoraFeedSubscriber(enable_discovery=False), config=None
     )
     with TestClient(app) as client:
         assert client.get("/live/frames").json()["frames"] == []

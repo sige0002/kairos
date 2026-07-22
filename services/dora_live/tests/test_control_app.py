@@ -13,7 +13,7 @@ from kairos_common.monitoring import TopicGraphEntry
 
 
 def _client() -> tuple[TestClient, DoraFeedSubscriber]:
-    feed = DoraFeedSubscriber(enable_rclpy=False)
+    feed = DoraFeedSubscriber(enable_discovery=False)
     app = create_control_app(
         subscriber=feed,
         config=None,
@@ -78,7 +78,7 @@ def test_topics_reflects_discovery_graph():
 
 
 def test_readyz_reflects_subscriber_state():
-    feed = DoraFeedSubscriber(enable_rclpy=False)
+    feed = DoraFeedSubscriber(enable_discovery=False)
     app = create_control_app(subscriber=feed, config=None)
     with TestClient(app) as client:
         # lifespan started the subscriber -> ready

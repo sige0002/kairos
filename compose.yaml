@@ -271,6 +271,9 @@ services:
       # `cpus:` quota does NOT shrink) AND worst-case CPU on a many-core host.
       # Unset = unrestricted. See services/dora_live/entrypoint.sh.
       DORA_LIVE_CPUS: ${DORA_LIVE_CPUS:-}
+      # Discovery backend: default = the carried-patch RustDDS graph watcher;
+      # "rclpy" forces the previous poller (ops escape hatch / load A/B lever).
+      DORA_LIVE_DISCOVERY: ${DORA_LIVE_DISCOVERY:-}
     network_mode: host
     ipc: host
     volumes:
@@ -382,12 +385,16 @@ services:
       # loss_report validator defaults (config/<robot>/validators/loss_report.yaml).
       LOSS_REPORT_CONFIG: ${LOSS_REPORT_CONFIG:-/config/${ROBOT:-airoa_hsr}/validators/loss_report.yaml}
       RECORDING_CONFIG: ${RECORDING_CONFIG:-/config/${ROBOT:-airoa_hsr}/recording/default.yaml}
+      # User validation-pipeline drop-ins (extensions/<name>/kairos_plugin.yaml);
+      # see extensions/README.md. Scanned after the baked-in /app/plugins.
+      KAIROS_EXTENSIONS_DIR: /extensions
     # Run as the host user so the host-owned ./data mount is writable.
     user: "${UID:-1000}:${GID:-1000}"
     network_mode: host
     volumes:
       - ${DATA_DIR:-./data}:/data
       - ./config:/config:ro
+      - ./extensions:/extensions:ro
     healthcheck:
       <<: *healthcheck
       test:

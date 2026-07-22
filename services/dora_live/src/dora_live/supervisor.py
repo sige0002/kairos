@@ -231,6 +231,9 @@ class DataflowSupervisor:
             "dataflow_alive": self._proc is not None and self._proc.poll() is None,
             "degraded": self._degraded,
             "allowlist_total": len(self._allowlist),
+            # Which graph-discovery backend actually runs ("dora_graph" =
+            # carried-patch RustDDS watcher, "rclpy" = fallback poller).
+            "discovery_source": self._feed.discovery_source,
             # Honesty markers: where the live set came from and what the video
             # lane will actually decode (config rules + type defaults resolved).
             "topics_source": (

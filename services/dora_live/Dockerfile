@@ -50,18 +50,30 @@ RUN pip install --no-cache-dir --break-system-packages "maturin>=1.5"
 # and that panic poisons the RustDDS cache mutex — the whole participant
 # event loop dies and EVERY topic goes 0 Hz. Upstream dora bug (its defaults
 # path tests already use new_empty_fields; the production paths don't).
+# Fourth carried patch: Ros2GraphWatcher — ROS 2 graph discovery (topic
+# names/types, endpoint counts, per-publisher QoS) from a bare RustDDS
+# participant's SEDP status events. Lets the control sidecar drop its rclpy
+# graph-poller node (rosout + parameter services heavier than a bare
+# participant); rclpy remains only as a loud-warning fallback.
+#
+# PATCH ORDER IS LOAD-BEARING: metrics -> rustdds-bump -> empty-struct ->
+# graph-watcher (later patches are generated against a tree with the earlier
+# ones applied; metrics and graph-watcher both touch python/src/lib.rs).
 COPY services/dora_live/dora-metrics.patch /dora-metrics.patch
 COPY services/dora_live/dora-rustdds-bump.patch /dora-rustdds-bump.patch
 COPY services/dora_live/dora-empty-struct-fix.patch /dora-empty-struct-fix.patch
+COPY services/dora_live/dora-graph-watcher.patch /dora-graph-watcher.patch
 RUN git clone --filter=blob:none https://github.com/dora-rs/dora /src/dora \
     && cd /src/dora && git checkout "${DORA_COMMIT}" \
     && git apply /dora-metrics.patch \
     && git apply /dora-rustdds-bump.patch \
     && git apply /dora-empty-struct-fix.patch \
+    && git apply /dora-graph-watcher.patch \
     && git rev-parse HEAD > /dora_commit.txt \
     && echo "kairos-patch: dora-metrics" >> /dora_commit.txt \
     && echo "kairos-patch: dora-rustdds-bump (rustdds 0.13.1)" >> /dora_commit.txt \
     && echo "kairos-patch: dora-empty-struct-fix" >> /dora_commit.txt \
+    && echo "kairos-patch: dora-graph-watcher" >> /dora_commit.txt \
     && cat /dora_commit.txt
 
 # Build the CLI first (warms the shared target cache for the maturin build),
@@ -79,8 +91,10 @@ RUN cargo build --release -p dora-cli --bin dora \
 FROM ros:${ROS_DISTRO}-ros-base AS deps
 COPY --from=ghcr.io/astral-sh/uv:0.10.0@sha256:78a7ff97cd27b7124a5f3c2aefe146170793c56a1e03321dd31a289f6d82a04f /uv /usr/local/bin/uv
 
-# --system-site-packages keeps the ROS-provided rclpy importable (the control
-# sidecar's graph poller uses it); dora-rs comes from the source-built wheel.
+# --system-site-packages keeps the ROS-provided rclpy importable — since the
+# graph-watcher patch it is only the discovery FALLBACK (the primary path is
+# the patched dora wheel's Ros2GraphWatcher); dora-rs comes from the
+# source-built wheel.
 ENV VENV=/opt/venv \
     UV_PYTHON_PREFERENCE=only-system \
     UV_PROJECT_ENVIRONMENT=/opt/venv

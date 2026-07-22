@@ -1,0 +1,331 @@
+diff --git a/libraries/extensions/ros2-bridge/python/src/graph_watcher.rs b/libraries/extensions/ros2-bridge/python/src/graph_watcher.rs
+new file mode 100644
+index 00000000..bacdd1af
+--- /dev/null
++++ b/libraries/extensions/ros2-bridge/python/src/graph_watcher.rs
+@@ -0,0 +1,296 @@
++//! ROS 2 graph discovery via the RustDDS participant status stream (kairos).
++//!
++//! Replaces an rclpy graph-poller node: one bare `DomainParticipant` (no
++//! rosout, no parameter services) tracks WriterDetected/ReaderDetected/
++//! ParticipantLost events into a topic map, and `snapshot()` returns the
++//! ROS-level view (topic names, types, endpoint counts, per-publisher QoS).
++//! Detection is match-independent, so the graph mirrors what an rclpy
++//! `get_topic_names_and_types` + `get_publishers_info_by_topic` poll reports.
++
++use std::{
++    collections::{HashMap, HashSet},
++    sync::{
++        Arc, Mutex,
++        atomic::{AtomicBool, Ordering},
++    },
++    thread::JoinHandle,
++    time::Duration,
++};
++
++use ::dora_ros2_bridge::rustdds::{self, GUID, StatusEvented, policy};
++use eyre::eyre;
++use pyo3::prelude::*;
++
++use crate::resolve_domain_id;
++
++/// Event-drain cadence. Discovery events are rare (endpoint churn only) and
++/// the inner loop drains the channel to empty each pass; 50 ms keeps ample
++/// margin under the status channel's fixed capacity (2048) — an overflow
++/// would be unrecoverable since the watcher is purely event-sourced.
++const DRAIN_PERIOD: Duration = Duration::from_millis(50);
++
++/// Offered QoS of one discovered writer, in the kairos string vocabulary.
++#[derive(Clone)]
++struct WriterQos {
++    reliability: &'static str,
++    durability: &'static str,
++    depth: i32,
++}
++
++#[derive(Default)]
++struct TopicState {
++    type_name: String,
++    writers: HashMap<GUID, WriterQos>,
++    readers: HashSet<GUID>,
++}
++
++#[derive(Default)]
++struct GraphDb {
++    /// DDS topic name -> live endpoint state.
++    topics: HashMap<String, TopicState>,
++    /// Endpoint GUID -> (topic, is_writer), for Lost removal.
++    endpoints: HashMap<GUID, (String, bool)>,
++    /// Participant prefix (Debug-formatted: `GuidPrefix` is not a public
++    /// type) -> its endpoint GUIDs, for ParticipantLost sweeps.
++    by_participant: HashMap<String, HashSet<GUID>>,
++}
++
++impl GraphDb {
++    fn add_endpoint(&mut self, ep: &rustdds::EndpointDescription, is_writer: bool) {
++        let state = self.topics.entry(ep.topic_name.clone()).or_default();
++        state.type_name = ep.type_name.clone();
++        if is_writer {
++            state.writers.insert(ep.guid, writer_qos(&ep.qos));
++        } else {
++            state.readers.insert(ep.guid);
++        }
++        self.endpoints
++            .insert(ep.guid, (ep.topic_name.clone(), is_writer));
++        self.by_participant
++            .entry(format!("{:?}", ep.guid.prefix))
++            .or_default()
++            .insert(ep.guid);
++    }
++
++    fn remove_endpoint(&mut self, guid: GUID) {
++        let Some((topic, is_writer)) = self.endpoints.remove(&guid) else {
++            return;
++        };
++        if let Some(state) = self.topics.get_mut(&topic) {
++            if is_writer {
++                state.writers.remove(&guid);
++            } else {
++                state.readers.remove(&guid);
++            }
++            if state.writers.is_empty() && state.readers.is_empty() {
++                self.topics.remove(&topic);
++            }
++        }
++        if let Some(set) = self.by_participant.get_mut(&format!("{:?}", guid.prefix)) {
++            set.remove(&guid);
++        }
++    }
++
++    fn remove_participant(&mut self, prefix_key: &str) {
++        for guid in self
++            .by_participant
++            .remove(prefix_key)
++            .unwrap_or_default()
++        {
++            self.remove_endpoint(guid);
++        }
++    }
++}
++
++fn writer_qos(qos: &rustdds::QosPolicies) -> WriterQos {
++    WriterQos {
++        reliability: match qos.reliability() {
++            Some(policy::Reliability::BestEffort { .. }) => "best_effort",
++            // DDS defaults a writer without an announced policy to reliable,
++            // matching the rclpy-side vocabulary fallback.
++            _ => "reliable",
++        },
++        durability: match qos.durability() {
++            None | Some(policy::Durability::Volatile) => "volatile",
++            // Anything at least transient-local satisfies a transient_local
++            // subscription; the kairos vocabulary is binary.
++            Some(_) => "transient_local",
++        },
++        // History depth is endpoint-local and not part of SEDP announcements
++        // (rclpy reports it as unknown too); 1 keeps the resolver's
++        // default-depth floor in charge, exactly as on the rclpy path.
++        depth: match qos.history() {
++            Some(policy::History::KeepLast { depth }) if depth > 0 => depth,
++            _ => 1,
++        },
++    }
++}
++
++/// `rt/<topic>` -> `/<topic>`; non-ROS-topic DDS names (builtin, services) -> None.
++fn dds_topic_to_ros(dds: &str) -> Option<String> {
++    dds.strip_prefix("rt/").map(|rest| format!("/{rest}"))
++}
++
++/// `sensor_msgs::msg::dds_::Image_` -> `sensor_msgs/msg/Image`.
++fn dds_type_to_ros(type_name: &str) -> String {
++    let parts: Vec<&str> = type_name.split("::").filter(|p| *p != "dds_").collect();
++    match parts.split_last() {
++        Some((last, init)) => {
++            let mut v: Vec<&str> = init.to_vec();
++            v.push(last.strip_suffix('_').unwrap_or(last));
++            v.join("/")
++        }
++        None => type_name.to_string(),
++    }
++}
++
++/// One snapshot row: (name, type, publisher_count, subscriber_count,
++/// publishers as (reliability, durability, depth)).
++type SnapshotRow = (String, String, usize, usize, Vec<(String, String, i32)>);
++
++/// ROS 2 graph watcher on a bare RustDDS participant (kairos carried patch).
++///
++/// ```python
++/// w = Ros2GraphWatcher()          # domain from ROS_DOMAIN_ID, else 0
++/// rows = w.snapshot()             # [(name, type, n_pub, n_sub, [(rel, dur, depth), ...])]
++/// w.stop()
++/// ```
++#[pyclass]
++pub struct Ros2GraphWatcher {
++    db: Arc<Mutex<GraphDb>>,
++    stop: Arc<AtomicBool>,
++    // False once the drain thread has exited FOR ANY REASON (panic included).
++    // snapshot() then errors instead of silently serving frozen data forever
++    // (adversarial-review finding: a dead drain thread was undetectable).
++    alive: Arc<AtomicBool>,
++    drainer: Option<JoinHandle<()>>,
++    // Keeps the DDS participant (and thus the status channel) alive.
++    _participant: rustdds::DomainParticipant,
++    #[pyo3(get)]
++    domain_id: u16,
++}
++
++#[pymethods]
++impl Ros2GraphWatcher {
++    #[new]
++    #[pyo3(signature = (domain_id=None))]
++    pub fn new(domain_id: Option<u16>) -> eyre::Result<Self> {
++        let domain_id = resolve_domain_id(domain_id, std::env::var("ROS_DOMAIN_ID"))?;
++        let participant = rustdds::DomainParticipant::new(domain_id)
++            .map_err(|e| eyre!("failed to create DDS participant: {e:?}"))?;
++        let listener = participant.status_listener();
++        let db = Arc::new(Mutex::new(GraphDb::default()));
++        let stop = Arc::new(AtomicBool::new(false));
++        let alive = Arc::new(AtomicBool::new(true));
++        let drainer = {
++            let db = Arc::clone(&db);
++            let stop = Arc::clone(&stop);
++            let alive = Arc::clone(&alive);
++            std::thread::Builder::new()
++                .name("ros2-graph-watcher".into())
++                .spawn(move || {
++                    use rustdds::DomainParticipantStatusEvent as Ev;
++                    // catch_unwind so ANY exit path (including a panic inside
++                    // rustdds' try_recv_status lock) flips `alive` — a frozen
++                    // graph must be an error, never silent staleness.
++                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++                        while !stop.load(Ordering::Relaxed) {
++                            while let Some(event) = listener.try_recv_status() {
++                                let Ok(mut db) = db.lock() else { return };
++                                match event {
++                                    Ev::WriterDetected { writer } => {
++                                        db.add_endpoint(&writer, true)
++                                    }
++                                    Ev::ReaderDetected { reader } => {
++                                        db.add_endpoint(&reader, false)
++                                    }
++                                    Ev::WriterLost { guid, .. }
++                                    | Ev::ReaderLost { guid, .. } => {
++                                        db.remove_endpoint(guid);
++                                    }
++                                    Ev::ParticipantLost { id, .. } => {
++                                        db.remove_participant(&format!("{id:?}"));
++                                    }
++                                    _ => {}
++                                }
++                            }
++                            std::thread::sleep(DRAIN_PERIOD);
++                        }
++                    }));
++                    alive.store(false, Ordering::Relaxed);
++                })
++                .map_err(|e| eyre!("failed to spawn graph drainer: {e}"))?
++        };
++        Ok(Self {
++            db,
++            stop,
++            alive,
++            drainer: Some(drainer),
++            _participant: participant,
++            domain_id,
++        })
++    }
++
++    /// Current ROS-level graph (rt/ topics only), sorted by topic name.
++    pub fn snapshot(&self) -> eyre::Result<Vec<SnapshotRow>> {
++        if !self.alive.load(Ordering::Relaxed) && !self.stop.load(Ordering::Relaxed) {
++            return Err(eyre!(
++                "graph drain thread died — discovery is frozen (restart dora_live)"
++            ));
++        }
++        let db = self.db.lock().map_err(|_| eyre!("graph state poisoned"))?;
++        let mut rows: Vec<SnapshotRow> = db
++            .topics
++            .iter()
++            .filter_map(|(dds_name, state)| {
++                let name = dds_topic_to_ros(dds_name)?;
++                Some((
++                    name,
++                    dds_type_to_ros(&state.type_name),
++                    state.writers.len(),
++                    state.readers.len(),
++                    state
++                        .writers
++                        .values()
++                        .map(|w| (w.reliability.to_string(), w.durability.to_string(), w.depth))
++                        .collect(),
++                ))
++            })
++            .collect();
++        rows.sort_by(|a, b| a.0.cmp(&b.0));
++        Ok(rows)
++    }
++
++    /// Stop the drain thread (the participant itself drops with the object).
++    pub fn stop(&mut self) {
++        self.stop.store(true, Ordering::Relaxed);
++        if let Some(handle) = self.drainer.take() {
++            let _ = handle.join();
++        }
++    }
++}
++
++impl Drop for Ros2GraphWatcher {
++    fn drop(&mut self) {
++        self.stop();
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn topic_mapping() {
++        assert_eq!(dds_topic_to_ros("rt/hsrb/joint_states").as_deref(), Some("/hsrb/joint_states"));
++        assert_eq!(dds_topic_to_ros("ros_discovery_info"), None);
++        assert_eq!(dds_topic_to_ros("rq/some_serviceRequest"), None);
++    }
++
++    #[test]
++    fn type_mapping() {
++        assert_eq!(dds_type_to_ros("sensor_msgs::msg::dds_::Image_"), "sensor_msgs/msg/Image");
++        assert_eq!(dds_type_to_ros("std_msgs::msg::dds_::Empty_"), "std_msgs/msg/Empty");
++        assert_eq!(dds_type_to_ros("weird"), "weird");
++    }
++}
+diff --git a/libraries/extensions/ros2-bridge/python/src/lib.rs b/libraries/extensions/ros2-bridge/python/src/lib.rs
+index e3bd5d10..4bc6406d 100644
+--- a/libraries/extensions/ros2-bridge/python/src/lib.rs
++++ b/libraries/extensions/ros2-bridge/python/src/lib.rs
+@@ -31,6 +31,7 @@ use typed::{
+     deserialize::StructDeserializer,
+ };
+ 
++pub mod graph_watcher;
+ pub mod qos;
+ pub mod typed;
+ 
+@@ -77,7 +78,7 @@ pub struct Ros2Context {
+ /// Resolve the DDS domain: explicit `domain_id` wins, else `ROS_DOMAIN_ID`, else 0.
+ /// A `ROS_DOMAIN_ID` that is set but unparsable is an error (as rcl treats it), not a
+ /// silent fall back to domain 0 — which would surface as "no ROS topics visible".
+-fn resolve_domain_id(
++pub(crate) fn resolve_domain_id(
+     explicit: Option<u16>,
+     env: Result<String, std::env::VarError>,
+ ) -> eyre::Result<u16> {
+@@ -1948,6 +1949,7 @@ pub fn create_dora_ros2_bridge_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
+     m.add_class::<Ros2Publisher>()?;
+     m.add_class::<Ros2Subscription>()?;
+     m.add_class::<Ros2MetricsSubscription>()?;
++    m.add_class::<graph_watcher::Ros2GraphWatcher>()?;
+     m.add_class::<Ros2ServiceClient>()?;
+     m.add_class::<Ros2ServiceServer>()?;
+     m.add_class::<Ros2ActionClient>()?;
