@@ -20,7 +20,9 @@
 set -uo pipefail
 
 ORCH="${ORCH:-http://localhost:8000}"
-MON="${MON:-http://localhost:8001}"
+# Monitor-compatible backend. Honors TOPIC_MONITOR_PORT so `make smoke` under
+# LIVE=1 (exported port 8005) targets dora_live instead of the legacy monitor.
+MON="${MON:-http://localhost:${TOPIC_MONITOR_PORT:-8001}}"
 BAG="${BAG:-/data/airoa-moma-mcap/235210}"
 COMPOSE_TEST="deploy/test/compose.yaml"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
