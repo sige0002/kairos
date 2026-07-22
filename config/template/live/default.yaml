@@ -1,0 +1,71 @@
+# =============================================================================
+# config/<robot>/live/default.yaml — LIVE lane config (dora_live)
+# =============================================================================
+# What the LIVE lanes (metrics / probe / realtime analysis / WebRTC preview)
+# ingest through the dora bridge, SEPARATE from what the recorder captures
+# (recording/default.yaml). Recording is the canonical-data decision; live is
+# an operator-UX decision — this file keeps one from distorting the other.
+#
+# Every field is optional and robot-independent by default: a new robot needs
+# NO live config at all (the live set inherits the recording default_topics,
+# QoS auto-matches the discovered publishers, and camera topics join the
+# preview lane by message type). Add entries only to deviate.
+#
+# NOTE: live metrics (Monitor tab Hz/bandwidth) cover exactly the live set —
+# a recorded topic excluded here still records fine but shows no live Hz.
+# =============================================================================
+
+# --- Topic set ---------------------------------------------------------------
+# topics: null (or omitted) = inherit recording default_topics (recommended).
+# An explicit list fully REPLACES the recording set for the live lanes.
+topics: null
+
+# Live-only additions on top of the base set (monitored but not recorded).
+extra_topics: []
+
+# Glob patterns removed from the final live set (e.g. keep a raw camera out
+# of the bridge while the recorder still captures it).
+exclude: []
+
+# --- Per-topic subscription QoS ----------------------------------------------
+# First match wins. Falls back to recording/default.yaml topic_qos_overrides,
+# then to auto-match against the offered publisher QoS (same resolver as the
+# monitor: best_effort if any publisher is best_effort; volatile; min depth).
+# qos_overrides:
+#   - pattern: "**/compressed"
+#     reliability: best_effort   # reliable | best_effort
+#     durability: volatile       # volatile | transient_local
+#     depth: 5
+qos_overrides: []
+
+# --- Video (WebRTC preview) lane ---------------------------------------------
+# First match wins; unmatched topics resolve by message type:
+#   sensor_msgs/CompressedImage            -> image  (JPEG/PNG via cv2)
+#   ffmpeg_image_transport(FFMPEGPacket)   -> ffmpeg (H.264/HEVC via PyAV)
+#   sensor_msgs/Image (raw)                -> NOT previewed unless a rule
+#                                             opts it in with codec: raw
+# codec: image | ffmpeg | raw | off
+# CAUTION on raw: >55 MB/s uncompressed camera flow enters the RustDDS
+# fragmentation-loss regime (bench-measured); prefer compressed/ffmpeg topics.
+# video:
+#   - pattern: "/camera/color/image_raw"
+#     codec: raw
+#   - pattern: "**/compressedDepth"
+#     codec: "off"               # cv2 cannot decode depth PNG16 -> black pane
+video: []
+
+# --- Live-frames lane (pullable decimated payloads) --------------------------
+# The frames node forwards the video lane's ALREADY-COMPRESSED payloads
+# (image topics as-is, ffmpeg topics keyframes-only, raw never) to the control
+# sidecar at sample_hz per topic. Any container on the wired LAN pulls them:
+#   GET :8005/live/frames            -> per-topic metadata index (seq/ETag)
+#   GET :8005/live/frame?topic=...   -> latest payload (304 via If-None-Match)
+# This is the robot-side contract for future off-robot image analysis; no
+# consumer ships yet. Costs nothing on the wire until something pulls.
+frames:
+  enabled: true
+  sample_hz: 2.0
+
+# Bridge->consumer queue size for every generated dataflow edge (the dora
+# default queue drops bursty high-rate messages; keep >= 1000).
+queue_size: 1000

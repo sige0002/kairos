@@ -16,6 +16,7 @@ Additions beyond the monitor contract:
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 from collections import deque
@@ -23,7 +24,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, Query, Response
+from fastapi import FastAPI, Header, Query, Response
 from fastapi.responses import StreamingResponse
 from kairos_common import (
     RecordingConfig,
@@ -46,6 +47,7 @@ from kairos_common.monitoring import (
 from pydantic import BaseModel
 
 from dora_live.feed_subscriber import DoraFeedSubscriber
+from dora_live.frames_lane import FrameStore, content_type
 from dora_live.probe_state import ProbeHub
 
 logger = logging.getLogger("kairos.dora_live")
@@ -193,21 +195,71 @@ def create_control_app(
         async def live_reload() -> dict[str, Any]:
             return await asyncio.to_thread(reload_manifest)
 
-    # Realtime-analysis event ring (Phase 2 lane). Demo-grade detectors push
-    # here; the ring is queryable but intentionally not persisted (parity with
-    # the monitor's live-only alerts; durable incidents stay a TBD).
-    ai_events: deque[dict[str, Any]] = deque(maxlen=500)
-    app.state.ai_events = ai_events
+    # Analysis event ring — the EXTENSION SEAM for future lane nodes (the
+    # built-in demo detectors were removed by ruling 2026-07-22): any dataflow
+    # node may POST events here and consumers poll /live/events. Queryable but
+    # intentionally not persisted (parity with the monitor's live-only alerts;
+    # durable incidents stay a TBD).
+    analysis_events: deque[dict[str, Any]] = deque(maxlen=500)
+    app.state.analysis_events = analysis_events
 
-    @app.post("/internal/ai/events")
-    async def ai_events_push(event: dict[str, Any]) -> dict[str, bool]:
-        ai_events.append(event)
+    @app.post("/internal/analysis/events")
+    async def analysis_events_push(event: dict[str, Any]) -> dict[str, bool]:
+        analysis_events.append(event)
         return {"ok": True}
 
     @app.get("/live/events")
     async def live_events(since: float = Query(0.0, ge=0.0)) -> dict[str, Any]:
-        rows = [e for e in ai_events if float(e.get("t", 0.0)) >= since]
+        rows = [e for e in analysis_events if float(e.get("t", 0.0)) >= since]
         return {"ts": utc_now_iso8601(), "events": rows}
+
+    # Live-frames lane: decimated compressed payloads from the frames node,
+    # pullable by any LAN container (the robot-side half of future off-robot
+    # image analysis — the consumer does not exist yet; this is its contract).
+    frames = FrameStore()
+    app.state.frames = frames
+
+    @app.post("/internal/frames")
+    async def frames_push(body: dict[str, Any]) -> dict[str, int]:
+        seq = frames.put(
+            str(body["topic"]),
+            codec=str(body["codec"]),
+            encoding=str(body.get("encoding") or ""),
+            data=base64.b64decode(body["data_b64"]),
+            stamp_ns=(
+                int(body["stamp_ns"]) if body.get("stamp_ns") is not None else None
+            ),
+            recv_t=float(body.get("recv_t") or 0.0),
+        )
+        return {"seq": seq}
+
+    @app.get("/live/frames")
+    async def live_frames_index() -> dict[str, Any]:
+        return {"ts": utc_now_iso8601(), "frames": frames.index()}
+
+    @app.get("/live/frame")
+    async def live_frame(
+        topic: str = Query(...),
+        if_none_match: str | None = Header(None),
+    ) -> Response:
+        record = frames.get(topic)
+        if record is None:
+            return Response(status_code=404)
+        etag = f'"{record.seq}"'
+        if if_none_match == etag:
+            return Response(status_code=304, headers={"ETag": etag})
+        return Response(
+            content=record.data,
+            media_type=content_type(record.codec, record.encoding),
+            headers={
+                "ETag": etag,
+                "X-Frame-Topic": record.topic,
+                "X-Frame-Codec": record.codec,
+                "X-Frame-Encoding": record.encoding,
+                "X-Frame-Stamp-Ns": str(record.stamp_ns or ""),
+                "X-Frame-Recv-T": str(record.recv_t),
+            },
+        )
 
     if probe_hub is not None:
         hub = probe_hub

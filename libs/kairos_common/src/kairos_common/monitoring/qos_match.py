@@ -16,8 +16,9 @@ section):
    ``best_effort`` / ``keep_last`` at the configured default depth — the most
    permissive choice, so a late-appearing publisher of any QoS still connects.
 
-This module is pure (no rclpy): it operates on :class:`QosInfo` values, so the
-resolution can be unit-tested by passing synthetic publisher lists.
+This module imports no rclpy at module level (the ``*_str`` normalisers import
+it lazily): resolution operates on :class:`QosInfo` values, so it can be
+unit-tested by passing synthetic publisher lists.
 """
 
 from __future__ import annotations
@@ -30,6 +31,34 @@ from kairos_common.monitoring.models import QosInfo
 # Fallback subscription QoS when nothing is known about the publishers.
 _FALLBACK_RELIABILITY = Reliability.best_effort.value
 _FALLBACK_DURABILITY = Durability.volatile.value
+
+
+def reliability_str(value: object) -> str:
+    """Normalise an rclpy reliability policy to our string vocabulary."""
+    from rclpy.qos import ReliabilityPolicy
+
+    return "best_effort" if value == ReliabilityPolicy.BEST_EFFORT else "reliable"
+
+
+def durability_str(value: object) -> str:
+    """Normalise an rclpy durability policy to our string vocabulary."""
+    from rclpy.qos import DurabilityPolicy
+
+    return (
+        "transient_local" if value == DurabilityPolicy.TRANSIENT_LOCAL else "volatile"
+    )
+
+
+def publisher_qos_infos(node: object, topic: str) -> list[QosInfo]:
+    """Offered QoS of every publisher on *topic*, via an rclpy node's graph API."""
+    return [
+        QosInfo(
+            reliability=reliability_str(info.qos_profile.reliability),
+            durability=durability_str(info.qos_profile.durability),
+            depth=getattr(info.qos_profile, "depth", 1) or 1,
+        )
+        for info in node.get_publishers_info_by_topic(topic)  # type: ignore[attr-defined]
+    ]
 
 
 def _config_override(topic: str, config: RecordingConfig | None) -> QosInfo | None:

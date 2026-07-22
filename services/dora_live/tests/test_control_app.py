@@ -52,16 +52,17 @@ def test_monitor_contract_surface():
         assert status["metrics_source"] == "dora_bridge"
         assert status["dds_samples_lost_available"] is False
 
-        # AI event lane: push -> ring -> since filter
+        # Analysis event lane (extension seam): push -> ring -> since filter
         event = {
-            "detector": "stamp_lag",
+            "detector": "custom",
             "topic": "/x",
             "t": 100.0,
             "severity": "warn",
             "message": "demo",
-            "grade": "demo",
         }
-        assert client.post("/internal/ai/events", json=event).json() == {"ok": True}
+        assert client.post("/internal/analysis/events", json=event).json() == {
+            "ok": True
+        }
         assert client.get("/live/events").json()["events"] == [event]
         assert client.get("/live/events", params={"since": 200}).json()["events"] == []
 

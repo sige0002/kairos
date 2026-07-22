@@ -7,8 +7,9 @@ cell-B verified); those are still forwarded as arrival events — Hz stays
 measurable for unbridged topics, size/stamp do not.
 
 Env: BRIDGE_TOPIC, BRIDGE_TYPE (``pkg/Type``), BRIDGE_QOS
-(reliable|best_effort), BRIDGE_QOS_DEPTH, plus AMENT_PREFIX_PATH /
-ROS_DOMAIN_ID consumed by dora itself.
+(reliable|best_effort), BRIDGE_QOS_DURABILITY (volatile|transient_local),
+BRIDGE_QOS_DEPTH, plus AMENT_PREFIX_PATH / ROS_DOMAIN_ID consumed by dora
+itself.
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ def main() -> int:
     topic = os.environ["BRIDGE_TOPIC"]
     ros_type = os.environ["BRIDGE_TYPE"]
     qos_name = os.environ.get("BRIDGE_QOS", "best_effort")
+    durability_name = os.environ.get("BRIDGE_QOS_DURABILITY", "volatile")
     depth = int(os.environ.get("BRIDGE_QOS_DEPTH", "30"))
 
     ctx = Ros2Context()
@@ -40,9 +42,30 @@ def main() -> int:
         "/kairos_live",
         Ros2NodeOptions(rosout=False),
     )
-    qos = Ros2QosPolicies(
-        reliable=(qos_name == "reliable"), keep_last=depth, max_blocking_time=0.1
-    )
+    qos_kwargs: dict = {
+        "reliable": qos_name == "reliable",
+        "keep_last": depth,
+        "max_blocking_time": 0.1,
+    }
+    if durability_name == "transient_local":
+        # Durability is best-effort against the pinned dora API: fall back to
+        # the (volatile) default rather than dying — a transient_local
+        # subscription is an optimisation (receive latched history), never a
+        # correctness requirement for the live lanes.
+        try:
+            from dora import Ros2Durability
+
+            qos_kwargs["durability"] = Ros2Durability.TransientLocal
+        except (ImportError, AttributeError) as exc:
+            log(topic, "durability transient_local unsupported by dora:", exc)
+    try:
+        qos = Ros2QosPolicies(**qos_kwargs)
+    except TypeError as exc:
+        if "durability" not in qos_kwargs:
+            raise
+        log(topic, "durability kwarg rejected by dora; using volatile:", exc)
+        qos_kwargs.pop("durability")
+        qos = Ros2QosPolicies(**qos_kwargs)
     sub = ros2_node.create_subscription(ros2_node.create_topic(topic, ros_type, qos))
 
     node = Node()

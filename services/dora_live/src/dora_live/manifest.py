@@ -12,23 +12,32 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 QOS_VALUES = ("reliable", "best_effort")
+DURABILITY_VALUES = ("volatile", "transient_local")
 
 
 class LiveTopic(BaseModel):
-    """One ROS 2 topic bridged into the dataflow."""
+    """One ROS 2 topic bridged into the dataflow.
+
+    ``qos``/``durability``/``depth`` are the RESOLVED subscription QoS (live
+    config override > recording override > publisher auto-match — see
+    :mod:`dora_live.live_config`). ``video`` names the video-lane codec
+    (``image``/``ffmpeg``/``raw``) or ``None`` when the topic is not previewed.
+    """
 
     name: str
     ros_type: str
     qos: str = "best_effort"
+    durability: str = "volatile"
     depth: int = 30
-    # Consumers beyond metrics (which always taps every topic).
-    probe: bool = False
-    webrtc: bool = False
-    ai: bool = False
+    video: str | None = None
 
     def model_post_init(self, __context: object) -> None:
         if self.qos not in QOS_VALUES:
             raise ValueError(f"qos must be one of {QOS_VALUES}: {self.qos}")
+        if self.durability not in DURABILITY_VALUES:
+            raise ValueError(
+                f"durability must be one of {DURABILITY_VALUES}: {self.durability}"
+            )
 
 
 class LiveManifest(BaseModel):
@@ -38,6 +47,10 @@ class LiveManifest(BaseModel):
     # Bridge->consumer queue size. Mandatory practice (report §4.3): the dora
     # default queue drops bursty small messages once a slow consumer blocks.
     queue_size: int = 1000
+    # Live-frames lane (frames node): resolved from LIVE_CONFIG. Part of the
+    # manifest so a config change restarts the dataflow like any other change.
+    frames_enabled: bool = True
+    frames_sample_hz: float = 2.0
 
     def topic(self, name: str) -> LiveTopic | None:
         for t in self.topics:

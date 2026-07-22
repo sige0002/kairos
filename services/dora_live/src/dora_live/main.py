@@ -15,6 +15,7 @@ from kairos_common import get_settings, resolve_config_path
 
 from dora_live.control import create_control_app, load_config
 from dora_live.feed_subscriber import DoraFeedSubscriber
+from dora_live.live_config import load_live_config
 from dora_live.probe_app import create_probe_compat_app
 from dora_live.probe_state import ProbeHub
 from dora_live.supervisor import DataflowSupervisor
@@ -42,6 +43,18 @@ def main() -> None:
     port = service_port(settings)
     probe_port = int(os.environ.get("DORA_LIVE_PROBE_PORT", DEFAULT_PROBE_PORT))
     config = load_config(resolve_config_path(settings.recording_config))
+    # LIVE_CONFIG separates the live topic set / QoS / video lane from the
+    # recording decision; absent = inherit the recording default_topics. A
+    # malformed file is a loud startup failure (see load_live_config), so a
+    # typo cannot silently revert the live lanes to defaults.
+    live_config_path = os.environ.get("LIVE_CONFIG")
+    try:
+        live_config = load_live_config(
+            resolve_config_path(live_config_path) if live_config_path else None
+        )
+    except Exception:
+        logger.exception("invalid LIVE_CONFIG %s", live_config_path)
+        raise
 
     feed = DoraFeedSubscriber()
     hub = ProbeHub()
@@ -50,6 +63,7 @@ def main() -> None:
         feed=feed,
         workdir=Path(os.environ.get("DORA_LIVE_WORKDIR", "/tmp/dora_live")),
         control_url=f"http://127.0.0.1:{port}",
+        live_config=live_config,
     )
     app = create_control_app(
         subscriber=feed,

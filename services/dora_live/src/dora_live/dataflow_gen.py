@@ -10,12 +10,14 @@ lints the emitted graph.
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
 import yaml
 
 from dora_live.bridge_logic import dora_type_name
+from dora_live.frames_lane import FRAMES_CODECS
 from dora_live.manifest import LiveManifest
 
 METRICS_TICK = "dora/timer/millis/1000"
@@ -62,17 +64,6 @@ def bridge_node_id(topic: str) -> str:
     return f"bridge__{topic_token(topic)}"
 
 
-def is_compressed_image(ros_type: str) -> bool:
-    """Whether *ros_type* is ``sensor_msgs/CompressedImage`` (any infix form).
-
-    Matches ``sensor_msgs/msg/CompressedImage`` and ``sensor_msgs/CompressedImage``.
-    Raw ``sensor_msgs/Image`` is deliberately excluded — the WebRTC lane only
-    consumes already-compressed camera topics (realman's uncompressed Image is
-    not a bus target).
-    """
-    return ros_type.rsplit("/", 1)[-1] == "CompressedImage"
-
-
 def generate_dataflow(
     manifest: LiveManifest,
     *,
@@ -88,8 +79,8 @@ def generate_dataflow(
     with the system python3, which lacks the dora wheel — the wrapper is the
     bench-proven bypass.
 
-    A ``webrtc`` node is emitted only when the manifest has at least one
-    ``CompressedImage`` topic (its inputs are exactly those topics).
+    The ``webrtc`` node taps exactly the topics whose manifest entry carries a
+    ``video`` codec (their topic->codec map travels as ``DORA_LIVE_VIDEO_MAP``).
     ``webrtc_env`` supplies its pass-through env (:data:`WEBRTC_ENV_KEYS`);
     ``DORA_LIVE_WEBRTC_PORT`` defaults to :data:`DEFAULT_WEBRTC_PORT`.
     """
@@ -112,6 +103,7 @@ def generate_dataflow(
                     "BRIDGE_TOPIC": t.name,
                     "BRIDGE_TYPE": dora_type_name(t.ros_type),
                     "BRIDGE_QOS": t.qos,
+                    "BRIDGE_QOS_DURABILITY": t.durability,
                     "BRIDGE_QOS_DEPTH": str(t.depth),
                 },
                 # Bench-proven: bridges keep a timer input so the event loop
@@ -163,42 +155,61 @@ def generate_dataflow(
                 "inputs": probe_inputs,
             }
         )
-        ai_inputs = fan_in_all()
-        ai_inputs["tick"] = METRICS_TICK
+
+    # Live-frames lane: decimated compressed payloads -> the control store,
+    # for LAN consumers to pull (future off-robot image analysis). Taps only
+    # the codecs the lane forwards (image / ffmpeg-keyframes; raw excluded —
+    # see frames_lane). Emitted only when enabled and something qualifies.
+    frames_topics = [t for t in manifest.topics if t.video in FRAMES_CODECS]
+    if manifest.frames_enabled and frames_topics:
+        frames_inputs: dict[str, Any] = {
+            f"t__{tokens[t.name]}": {
+                "source": f"bridge__{tokens[t.name]}/out",
+                "queue_size": manifest.queue_size,
+            }
+            for t in frames_topics
+        }
+        frames_inputs["tick"] = METRICS_TICK
         nodes.append(
             {
-                "id": "ai",
+                "id": "frames",
                 "path": node_launcher,
                 "env": {
                     **env,
-                    "DORA_NODE_MODULE": "dora_live.nodes.ai",
+                    "DORA_NODE_MODULE": "dora_live.nodes.frames",
                     "CONTROL_URL": control_url,
+                    "DORA_LIVE_FRAMES_MAP": json.dumps(
+                        {t.name: t.video for t in frames_topics}, sort_keys=True
+                    ),
+                    "FRAMES_SAMPLE_HZ": str(manifest.frames_sample_hz),
                 },
-                "inputs": ai_inputs,
+                "inputs": frames_inputs,
             }
         )
 
-    # WebRTC lane: taps ONLY the CompressedImage topics (media closes inside
-    # the node; realman's raw Image is excluded by is_compressed_image —
-    # uncompressed Image is off-bus by ruling). The node is emitted even with
-    # ZERO camera topics: something must always listen on the signaling port,
-    # or nginx /webrtc/ 502s during discovery settle and on camera-less robots
-    # (review finding). DORA_LIVE_WEBRTC_TOPICS lets the signaling app reject
-    # start requests for topics that are not on the bus instead of streaming
-    # silent black.
-    compressed = [t for t in manifest.topics if is_compressed_image(t.ros_type)]
+    # WebRTC lane: taps ONLY topics with a resolved video codec (manifest
+    # ``video`` — config rules over type defaults, see live_config; media
+    # closes inside the node). The node is emitted even with ZERO camera
+    # topics: something must always listen on the signaling port, or nginx
+    # /webrtc/ 502s during discovery settle and on camera-less robots (review
+    # finding). DORA_LIVE_VIDEO_MAP tells the node how to decode each topic
+    # and lets the signaling app reject start requests for topics that are
+    # not on the bus instead of streaming silent black.
+    video_topics = [t for t in manifest.topics if t.video]
     webrtc_inputs: dict[str, Any] = {
         f"t__{tokens[t.name]}": {
             "source": f"bridge__{tokens[t.name]}/out",
             "queue_size": manifest.queue_size,
         }
-        for t in compressed
+        for t in video_topics
     }
     webrtc_inputs["tick"] = METRICS_TICK
     webrtc_node_env = {
         **env,
         "DORA_NODE_MODULE": "dora_live.nodes.webrtc",
-        "DORA_LIVE_WEBRTC_TOPICS": ",".join(t.name for t in compressed),
+        "DORA_LIVE_VIDEO_MAP": json.dumps(
+            {t.name: t.video for t in video_topics}, sort_keys=True
+        ),
         **(webrtc_env or {}),
     }
     webrtc_node_env.setdefault("DORA_LIVE_WEBRTC_PORT", DEFAULT_WEBRTC_PORT)

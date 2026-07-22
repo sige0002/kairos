@@ -79,8 +79,12 @@ ARG ROS_DISTRO
 
 # rmw_cyclonedds: RMW is deploy-switchable; bridge interop is verified clean
 # for both FastDDS (UDP) and Cyclone without extra profiles (cells A / report).
+# ffmpeg-image-transport-msgs: ships FFMPEGPacket.msg so the bridge can resolve
+# H.264/HEVC camera topics (the video lane's ffmpeg codec) on ANY robot without
+# a per-robot msgs overlay; decode itself uses the PyAV wheel (no ffmpeg apt).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ros-${ROS_DISTRO}-rmw-cyclonedds-cpp \
+        ros-${ROS_DISTRO}-ffmpeg-image-transport-msgs \
     && rm -rf /var/lib/apt/lists/*
 
 ENV VENV=/opt/venv

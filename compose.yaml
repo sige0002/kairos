@@ -254,6 +254,9 @@ services:
     environment:
       <<: [*ros-env, *no-proxy]
       RECORDING_CONFIG: ${RECORDING_CONFIG:-/config/${ROBOT:-airoa_hsr}/recording/default.yaml}
+      # Live lane config: topic set (recording-independent), per-topic QoS,
+      # video codec rules. Absent file = inherit recording default_topics.
+      LIVE_CONFIG: ${LIVE_CONFIG:-/config/${ROBOT:-airoa_hsr}/live/default.yaml}
       ALERT_CONFIG_PATH: ${ALERT_CONFIG_PATH:-}
       DORA_LIVE_PORT: ${DORA_LIVE_PORT:-8005}
       DORA_LIVE_PROBE_PORT: ${DORA_LIVE_PROBE_PORT:-8006}

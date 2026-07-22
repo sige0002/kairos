@@ -1,11 +1,12 @@
 """Dataflow generation: wiring, id sanitization, and the queue_size lint."""
 
+import json
+
 import pytest
 import yaml
 from dora_live.dataflow_gen import (
     bridge_node_id,
     generate_dataflow,
-    is_compressed_image,
     lint_queue_sizes,
     to_yaml,
     topic_token,
@@ -20,12 +21,11 @@ def _manifest() -> LiveManifest:
                 name="/hsrb/joint_states",
                 ros_type="sensor_msgs/msg/JointState",
                 qos="best_effort",
-                probe=True,
             ),
             LiveTopic(
                 name="/hsrb/hand_camera/image_raw/compressed",
                 ros_type="sensor_msgs/msg/CompressedImage",
-                webrtc=True,
+                video="image",
             ),
         ]
     )
@@ -42,7 +42,7 @@ def test_generated_graph_wiring():
     assert "bridge__hsrb_joint_states" in ids
     assert "metrics" in ids
     assert "probe" in ids
-    assert "ai" in ids
+    assert "ai" not in ids  # removed by ruling 2026-07-22 (extension seam only)
 
     metrics = next(n for n in df["nodes"] if n["id"] == "metrics")
     # metrics and probe both tap every topic (probe decodes on demand,
@@ -80,23 +80,98 @@ def test_bad_queue_size_rejected():
         generate_dataflow(m)
 
 
-def test_is_compressed_image():
-    assert is_compressed_image("sensor_msgs/msg/CompressedImage")
-    assert is_compressed_image("sensor_msgs/CompressedImage")
-    assert not is_compressed_image("sensor_msgs/msg/Image")
-
-
-def test_webrtc_node_taps_only_compressed_image():
+def test_webrtc_node_taps_only_video_topics():
     df = generate_dataflow(_manifest(), webrtc_env={"WEBRTC_PACKET_MAX": "1200"})
     webrtc = next(n for n in df["nodes"] if n["id"] == "webrtc")
-    # ONLY the CompressedImage topic is an input (JointState is excluded).
+    # ONLY the topic with a resolved video codec is an input.
     inputs = [k for k in webrtc["inputs"] if k.startswith("t__")]
     assert inputs == ["t__hsrb_hand_camera_image_raw_compressed"]
     assert webrtc["inputs"][inputs[0]]["queue_size"] == 1000
     assert webrtc["env"]["DORA_NODE_MODULE"] == "dora_live.nodes.webrtc"
     assert webrtc["env"]["DORA_LIVE_WEBRTC_PORT"] == "8007"  # default
     assert webrtc["env"]["WEBRTC_PACKET_MAX"] == "1200"  # passed through
+    assert json.loads(webrtc["env"]["DORA_LIVE_VIDEO_MAP"]) == {
+        "/hsrb/hand_camera/image_raw/compressed": "image"
+    }
     assert lint_queue_sizes(df) == []
+
+
+def test_webrtc_video_map_carries_ffmpeg_codec():
+    m = LiveManifest(
+        topics=[
+            LiveTopic(
+                name="/cam/ffmpeg",
+                ros_type="ffmpeg_image_transport_msgs/msg/FFMPEGPacket",
+                video="ffmpeg",
+            ),
+        ]
+    )
+    df = generate_dataflow(m)
+    webrtc = next(n for n in df["nodes"] if n["id"] == "webrtc")
+    assert [k for k in webrtc["inputs"] if k.startswith("t__")] == ["t__cam_ffmpeg"]
+    assert json.loads(webrtc["env"]["DORA_LIVE_VIDEO_MAP"]) == {"/cam/ffmpeg": "ffmpeg"}
+
+
+def test_frames_node_taps_forwardable_codecs_only():
+    m = LiveManifest(
+        topics=[
+            LiveTopic(name="/j", ros_type="sensor_msgs/msg/JointState"),
+            LiveTopic(
+                name="/cam/c",
+                ros_type="sensor_msgs/msg/CompressedImage",
+                video="image",
+            ),
+            LiveTopic(
+                name="/cam/f",
+                ros_type="ffmpeg_image_transport_msgs/msg/FFMPEGPacket",
+                video="ffmpeg",
+            ),
+            LiveTopic(name="/cam/r", ros_type="sensor_msgs/msg/Image", video="raw"),
+        ],
+        frames_sample_hz=1.5,
+    )
+    df = generate_dataflow(m)
+    frames = next(n for n in df["nodes"] if n["id"] == "frames")
+    inputs = sorted(k for k in frames["inputs"] if k.startswith("t__"))
+    # image + ffmpeg forward; raw is excluded (no robot-side re-encode).
+    assert inputs == ["t__cam_c", "t__cam_f"]
+    assert json.loads(frames["env"]["DORA_LIVE_FRAMES_MAP"]) == {
+        "/cam/c": "image",
+        "/cam/f": "ffmpeg",
+    }
+    assert frames["env"]["FRAMES_SAMPLE_HZ"] == "1.5"
+    assert lint_queue_sizes(df) == []
+
+
+def test_frames_node_absent_when_disabled_or_no_topics():
+    m = _manifest()
+    m.frames_enabled = False
+    assert not any(n["id"] == "frames" for n in generate_dataflow(m)["nodes"])
+    only_numeric = LiveManifest(
+        topics=[LiveTopic(name="/j", ros_type="sensor_msgs/msg/JointState")]
+    )
+    assert not any(
+        n["id"] == "frames" for n in generate_dataflow(only_numeric)["nodes"]
+    )
+
+
+def test_bridge_env_carries_durability():
+    m = LiveManifest(
+        topics=[
+            LiveTopic(
+                name="/tf_static",
+                ros_type="tf2_msgs/msg/TFMessage",
+                qos="reliable",
+                durability="transient_local",
+                depth=1,
+            ),
+        ]
+    )
+    df = generate_dataflow(m)
+    bridge = next(n for n in df["nodes"] if n["id"].startswith("bridge__"))
+    assert bridge["env"]["BRIDGE_QOS"] == "reliable"
+    assert bridge["env"]["BRIDGE_QOS_DURABILITY"] == "transient_local"
+    assert bridge["env"]["BRIDGE_QOS_DEPTH"] == "1"
 
 
 def test_webrtc_env_port_override():
@@ -117,7 +192,7 @@ def test_webrtc_node_always_present_even_without_cameras():
     df = generate_dataflow(m)
     webrtc = next(n for n in df["nodes"] if n["id"] == "webrtc")
     assert list(webrtc["inputs"]) == ["tick"]
-    assert webrtc["env"]["DORA_LIVE_WEBRTC_TOPICS"] == ""
+    assert json.loads(webrtc["env"]["DORA_LIVE_VIDEO_MAP"]) == {}
 
 
 def test_token_collisions_deduped():

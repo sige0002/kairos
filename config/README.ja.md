@@ -12,6 +12,7 @@ config/
 ├─ <robot>/                  # 機体ごと（committed）
 │  ├─ recording/<option>.yaml     # 収録/監視（default.yaml がアクティブ）
 │  ├─ stream/<option>.yaml        # Stream タブの初期レイアウト
+│  ├─ live/default.yaml           # dora_live のライブレーン（任意・省略時は recording を継承）
 │  ├─ monitoring/alerts.yaml      # topic_monitor のアラート定義（任意・ALERT_CONFIG_PATH）
 │  ├─ validation/<option>.yaml    # fast_validation テンプレ
 │  └─ validators/loss_report.yaml # validator パラメータ
@@ -29,7 +30,7 @@ make up ROBOT=airoa_hsr      # 同梱 HSR サンプル（既定）
 make up ROBOT=<robot>        # config/local/<robot>/（gitignored・自分のロボット）
 ```
 
-- `ROBOT` を選ぶと recording / stream / validation / validators が**一括**で切り替わる。
+- `ROBOT` を選ぶと recording / stream / live / validation / validators が**一括**で切り替わる。
   Makefile が `config/<robot>/`（committed）と `config/local/<robot>/`（gitignored）を自動解決し、
   各サービスへ渡す（`docker compose` もネスト補間で `ROBOT` を尊重する）。
 - **Config タブ**でも機体 → aspect → option を選択・編集できる

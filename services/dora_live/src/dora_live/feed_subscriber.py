@@ -20,7 +20,8 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from kairos_common.monitoring import Sample, TopicGraphEntry
+from kairos_common.monitoring import Sample, TopicGraphEntry, publisher_qos_infos
+from kairos_common.monitoring.models import QosInfo
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,7 @@ class DoraFeedSubscriber:
         self._node_name = node_name
         self._enable_rclpy = enable_rclpy
         self._graph: list[TopicGraphEntry] = []
+        self._publisher_qos: dict[str, list[QosInfo]] = {}
         self._graph_lock = threading.Lock()
         self._stop_evt = threading.Event()
         self._thread: threading.Thread | None = None
@@ -89,6 +91,15 @@ class DoraFeedSubscriber:
     def discover_topics(self) -> list[TopicGraphEntry]:
         with self._graph_lock:
             return list(self._graph)
+
+    def publisher_qos(self) -> dict[str, list[QosInfo]]:
+        """Offered publisher QoS per topic (same poll as the graph snapshot).
+
+        Feeds the supervisor's per-topic QoS resolution; empty until the first
+        poll (the resolver's no-publisher fallback covers that window).
+        """
+        with self._graph_lock:
+            return {k: list(v) for k, v in self._publisher_qos.items()}
 
     # -- dora_live wiring -----------------------------------------------------
 
@@ -149,6 +160,7 @@ class DoraFeedSubscriber:
         try:
             while not self._stop_evt.wait(DISCOVERY_PERIOD_S):
                 entries: list[TopicGraphEntry] = []
+                qos: dict[str, list[QosInfo]] = {}
                 for name, types in node.get_topic_names_and_types():
                     entries.append(
                         TopicGraphEntry(
@@ -158,8 +170,13 @@ class DoraFeedSubscriber:
                             subscriber_count=node.count_subscribers(name),
                         )
                     )
+                    try:
+                        qos[name] = publisher_qos_infos(node, name)
+                    except Exception:  # noqa: BLE001 - one bad graph query, not fatal
+                        qos[name] = []
                 with self._graph_lock:
                     self._graph = entries
+                    self._publisher_qos = qos
         finally:
             node.destroy_node()
             rclpy.shutdown(context=context)

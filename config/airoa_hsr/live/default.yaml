@@ -1,0 +1,14 @@
+# Live (dora_live) lane config for the bundled HSR sample.
+# All defaults: the live set inherits recording/default.yaml default_topics,
+# QoS auto-matches the discovered publishers, and the two compressed camera
+# topics join the WebRTC preview lane by type. See config/template/live/ for
+# the full annotated schema.
+topics: null
+extra_topics: []
+exclude: []
+qos_overrides: []
+video: []
+frames:
+  enabled: true
+  sample_hz: 2.0
+queue_size: 1000

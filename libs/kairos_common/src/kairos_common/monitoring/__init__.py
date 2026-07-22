@@ -48,7 +48,12 @@ from kairos_common.monitoring.models import (
     TopicStatus,
 )
 from kairos_common.monitoring.monitor import MonitorService
-from kairos_common.monitoring.qos_match import resolve_subscription_qos
+from kairos_common.monitoring.qos_match import (
+    durability_str,
+    publisher_qos_infos,
+    reliability_str,
+    resolve_subscription_qos,
+)
 from kairos_common.monitoring.subscriber import (
     FakeSubscriber,
     PublisherInfo,
@@ -95,5 +100,8 @@ __all__ = [
     "load_derived_config",
     "make_expected_hz_resolver",
     "metric_value",
+    "durability_str",
+    "publisher_qos_infos",
+    "reliability_str",
     "resolve_subscription_qos",
 ]

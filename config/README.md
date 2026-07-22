@@ -14,6 +14,7 @@ config/
 ├─ <robot>/                  # one folder per robot (committed)
 │  ├─ recording/<option>.yaml     # recording/monitoring (default.yaml is active)
 │  ├─ stream/<option>.yaml        # Stream tab initial layout
+│  ├─ live/default.yaml           # dora_live live lanes (optional; absent = inherit recording)
 │  ├─ monitoring/alerts.yaml      # topic_monitor alert definitions (optional, ALERT_CONFIG_PATH)
 │  ├─ validation/<option>.yaml    # fast_validation template
 │  └─ validators/loss_report.yaml # validator parameters
@@ -31,7 +32,7 @@ make up ROBOT=airoa_hsr      # bundled HSR sample (default)
 make up ROBOT=<robot>        # config/local/<robot>/ (gitignored, your own robot)
 ```
 
-- Choosing `ROBOT` switches recording / stream / validation / validators **together**.
+- Choosing `ROBOT` switches recording / stream / live / validation / validators **together**.
   The Makefile resolves `config/<robot>/` (committed) vs `config/local/<robot>/`
   (gitignored) and passes the paths to each service (`docker compose` honors `ROBOT`
   too, via nested interpolation).

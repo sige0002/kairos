@@ -23,9 +23,16 @@ from pathlib import Path
 from typing import Any
 
 from kairos_common import RecordingConfig
+from kairos_common.monitoring.models import QosInfo
 
 from dora_live.dataflow_gen import WEBRTC_ENV_KEYS, generate_dataflow, to_yaml
 from dora_live.feed_subscriber import DoraFeedSubscriber
+from dora_live.live_config import (
+    LiveConfig,
+    resolve_live_topics,
+    resolve_topic_qos,
+    resolve_video_codec,
+)
 from dora_live.manifest import LiveManifest, LiveTopic
 
 logger = logging.getLogger("kairos.dora_live.supervisor")
@@ -44,9 +51,22 @@ def derive_manifest(
     allowlist: list[str],
     discovered: dict[str, str],
     *,
-    queue_size: int = 1000,
+    publisher_qos: dict[str, list[QosInfo]] | None = None,
+    live_config: LiveConfig | None = None,
+    recording_config: RecordingConfig | None = None,
+    queue_size: int | None = None,
 ) -> tuple[LiveManifest, list[str]]:
-    """Allowlist + discovered types -> (manifest, pending-without-type)."""
+    """Allowlist + discovery -> (manifest, pending-without-type).
+
+    Each resolved topic carries its subscription QoS (live override >
+    recording override > publisher auto-match) and its video-lane codec
+    (config rules > ros-type default) — see :mod:`dora_live.live_config`.
+    """
+    live = live_config or LiveConfig()
+    pub_qos = publisher_qos or {}
+    default_depth = (
+        recording_config.monitor.qos_depth if recording_config is not None else 30
+    )
     topics: list[LiveTopic] = []
     pending: list[str] = []
     for name in allowlist:
@@ -54,8 +74,45 @@ def derive_manifest(
         if ros_type is None:
             pending.append(name)
             continue
-        topics.append(LiveTopic(name=name, ros_type=ros_type))
-    return LiveManifest(topics=topics, queue_size=queue_size), pending
+        qos = resolve_topic_qos(
+            name,
+            pub_qos.get(name, []),
+            live,
+            recording_config,
+            default_depth=default_depth,
+        )
+        topics.append(
+            LiveTopic(
+                name=name,
+                ros_type=ros_type,
+                qos=qos.reliability,
+                durability=qos.durability,
+                depth=max(1, qos.depth),
+                video=resolve_video_codec(name, ros_type, live),
+            )
+        )
+    return (
+        LiveManifest(
+            topics=topics,
+            queue_size=live.queue_size if queue_size is None else queue_size,
+            frames_enabled=live.frames.enabled,
+            frames_sample_hz=live.frames.sample_hz,
+        ),
+        pending,
+    )
+
+
+def _manifest_key(manifest: LiveManifest) -> tuple[Any, ...]:
+    """Comparable identity of everything the generated dataflow depends on."""
+    return (
+        manifest.queue_size,
+        manifest.frames_enabled,
+        manifest.frames_sample_hz,
+        tuple(
+            (t.name, t.ros_type, t.qos, t.durability, t.depth, t.video)
+            for t in manifest.topics
+        ),
+    )
 
 
 class DataflowSupervisor:
@@ -68,11 +125,14 @@ class DataflowSupervisor:
         feed: DoraFeedSubscriber,
         workdir: Path,
         control_url: str,
+        live_config: LiveConfig | None = None,
         dora_bin: str = "/opt/venv/bin/dora",
         node_launcher: str = "/run_node.sh",
         discovery_budget_s: float = DISCOVERY_BUDGET_S,
     ) -> None:
-        self._allowlist = list(config.default_topics) if config else []
+        self._config = config
+        self._live_config = live_config or LiveConfig()
+        self._allowlist = resolve_live_topics(self._live_config, config)
         self._feed = feed
         self._workdir = workdir
         self._control_url = control_url
@@ -125,6 +185,22 @@ class DataflowSupervisor:
             "dataflow_alive": self._proc is not None and self._proc.poll() is None,
             "degraded": self._degraded,
             "allowlist_total": len(self._allowlist),
+            # Honesty markers: where the live set came from and what the video
+            # lane will actually decode (config rules + type defaults resolved).
+            "topics_source": (
+                "live_config" if self._live_config.topics is not None else "recording"
+            ),
+            "qos": {
+                t.name: {
+                    "reliability": t.qos,
+                    "durability": t.durability,
+                    "depth": t.depth,
+                }
+                for t in self._manifest.topics
+            },
+            "video": {
+                t.name: t.video for t in self._manifest.topics if t.video is not None
+            },
         }
 
     # -- internals ----------------------------------------------------------
@@ -190,7 +266,11 @@ class DataflowSupervisor:
     def _rederive_and_maybe_restart(self, *, force_log: bool = False) -> bool:
         with self._lock:
             manifest, pending = derive_manifest(
-                self._allowlist, self._discovered_types()
+                self._allowlist,
+                self._discovered_types(),
+                publisher_qos=self._feed.publisher_qos(),
+                live_config=self._live_config,
+                recording_config=self._config,
             )
             if pending and (force_log or pending != self._pending):
                 logger.warning(
@@ -198,9 +278,11 @@ class DataflowSupervisor:
                     "down? cross-RMW settle?): %s",
                     pending,
                 )
-            changed = [t.name for t in manifest.topics] != [
-                t.name for t in self._manifest.topics
-            ]
+            # Restart on ANY effective change — topic set, resolved QoS, or the
+            # video lane — because a running dataflow can apply none of them.
+            # (QoS resolution only re-runs on the rederive cadence: pending
+            # retry / explicit /live/reload — publisher churn cannot flap it.)
+            changed = _manifest_key(manifest) != _manifest_key(self._manifest)
             self._manifest = manifest
             self._pending = pending
             self._feed.set_topic_types({t.name: t.ros_type for t in manifest.topics})
