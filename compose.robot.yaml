@@ -12,6 +12,14 @@
 # data ever leaves the robot (monitor metrics JSON, the already-encoded WebRTC
 # preview, and recorded MCAP via post-run file sync — never a heavy DDS flow).
 #
+# LIVE=1 keeps that same topology: dora_live replaces the monitor/streamer/probe
+# trio ON this host (`make robot-up LIVE=1` = recorder + dora_live), consolidating
+# their N DDS subscriptions into 1 per topic with in-process fan-out. Live topics
+# never cross the wire as DDS; what leaves is the same lightweight derived data
+# (metrics JSON on :8005/:8006, encoded WebRTC on :8007). Heavy analysis stays
+# post-MCAP in dora_runner on the recording PC — the live lanes carry only what
+# settles between takes (user ruling 2026-07-22, docs/specs/ja/dora_live.md).
+#
 # This is a STANDALONE file (not an overlay): it contains ONLY the robot-edge
 # services, so you physically cannot start the orchestrator/dora/frontend here.
 # Service definitions are pulled from compose.yaml via `extends`, so they never
@@ -43,3 +51,14 @@ services:
     extends:
       file: compose.yaml
       service: probe
+
+  # dora_live — the LIVE=1 replacement for the monitor/streamer/probe trio,
+  # co-located with the robot's DDS graph (see the header). Opt-in via the
+  # `live` profile; `make robot-up LIVE=1` enables it and stops the trio.
+  # Its canonical-path independence is unchanged: the recorder keeps its own
+  # subscriptions, so dora_live dying degrades only the live UX, never MCAP.
+  dora_live:
+    profiles: ["live"]
+    extends:
+      file: compose.yaml
+      service: dora_live

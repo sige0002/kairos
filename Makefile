@@ -45,8 +45,9 @@ export ROBOT
 _ROBOT_REL := $(if $(wildcard config/$(ROBOT)),$(ROBOT),local/$(ROBOT))
 RECORDING_CONFIG   ?= /config/$(_ROBOT_REL)/recording/default.yaml
 STREAM_CONFIG      ?= /config/$(_ROBOT_REL)/stream/default.yaml
+LIVE_CONFIG        ?= /config/$(_ROBOT_REL)/live/default.yaml
 LOSS_REPORT_CONFIG ?= /config/$(_ROBOT_REL)/validators/loss_report.yaml
-export RECORDING_CONFIG STREAM_CONFIG LOSS_REPORT_CONFIG
+export RECORDING_CONFIG STREAM_CONFIG LIVE_CONFIG LOSS_REPORT_CONFIG
 
 # Alert rules are OPTIONAL (the monitor runs fine without them). Resolve a local
 # override first, then the committed file; empty (= alerts disabled) if neither
@@ -160,17 +161,15 @@ export COMPOSE_PROFILES := live
 export TOPIC_MONITOR_PORT := 8005
 export TOPIC_PROBE_PORT := 8006
 export WEBRTC_PORT := 8007
-# Split placement: dora_live runs on the RECORDING host (compose.recording.yaml),
-# so the orchestrator/nginx proxy targets become LOCAL there instead of the
-# robot IP from .env.split. Exported => beats the split env file. RECORDER_HOST
-# stays untouched (the recorder remains on the robot).
-export TOPIC_MONITOR_HOST := 127.0.0.1
-export WEBRTC_HOST := 127.0.0.1
-export PROBE_HOST := 127.0.0.1
+# Split placement: dora_live is a ROBOT-EDGE service (compose.robot.yaml), the
+# same topology as the legacy trio it replaces — live topics never cross the
+# wire as DDS. The recording PC's proxy targets keep the .env.split robot-IP
+# HOSTs; only the ports above move to the dora_live values.
 _UP_SVC := $(if $(SVC),$(SVC),$(filter-out $(LIVE_LEGACY),$(SERVICES)))
-# Robot-edge default set under LIVE=1: the recorder ONLY (the live trio is
-# replaced by recording-side dora_live; the robot runs nothing else).
-_ROBOT_UP_SVC := $(if $(SVC),$(SVC),recorder)
+# Robot-edge default set under LIVE=1: recorder + dora_live (dora_live
+# replaces the trio ON the robot; heavy analysis stays in recording-side
+# dora_runner).
+_ROBOT_UP_SVC := $(if $(SVC),$(SVC),recorder dora_live)
 else
 _UP_SVC := $(SVC)
 _ROBOT_UP_SVC := $(SVC)
@@ -274,12 +273,12 @@ COMPOSE_RECORDING := $(if $(SPLIT_ENV),KAIROS_ENV_FILE=$(SPLIT_ENV),) docker com
         recording-ps recording-config-reload import-runs push-config
 # All robot-* / recording-* targets take positional service names like the
 # single-host ones (e.g. `make robot-rebuild recorder`, `make robot-logs monitor`).
-robot-up: ## [ON THE ROBOT] build + start the robot-edge services (LIVE=1 = recorder only)
-	@$(if $(filter 1,$(LIVE)),$(COMPOSE_ROBOT) stop $(LIVE_LEGACY) 2>/dev/null || true,true)
+robot-up: ## [ON THE ROBOT] build + start the robot-edge services (LIVE=1 = recorder + dora_live)
+	@$(if $(filter 1,$(LIVE)),$(COMPOSE_ROBOT) stop $(LIVE_LEGACY) 2>/dev/null || true,COMPOSE_PROFILES=live $(COMPOSE_ROBOT) stop dora_live 2>/dev/null || true)
 	$(COMPOSE_ROBOT) up -d --build $(_ROBOT_UP_SVC)
 
-robot-down: ## [ON THE ROBOT] stop + remove the robot-edge services
-	$(COMPOSE_ROBOT) down
+robot-down: ## [ON THE ROBOT] stop + remove the robot-edge services (always includes dora_live)
+	COMPOSE_PROFILES=live $(COMPOSE_ROBOT) down
 
 robot-build: ## [ON THE ROBOT] build robot-edge images: `make robot-build` (all) or `make robot-build recorder`
 	$(COMPOSE_ROBOT) build $(SVC)
@@ -296,12 +295,11 @@ robot-logs: ## [ON THE ROBOT] follow robot-edge logs: `make robot-logs recorder`
 robot-ps: ## [ON THE ROBOT] show robot-edge container status
 	$(COMPOSE_ROBOT) ps
 
-robot-config-reload: ## [ON THE ROBOT] apply config/*.yaml edits (restart monitor; recorder applies on next record)
-	$(if $(filter 1,$(LIVE)),@echo "LIVE=1: no monitor on the robot — config lives with recording-side dora_live (make recording-config-reload)",$(COMPOSE_ROBOT) restart monitor)
+robot-config-reload: ## [ON THE ROBOT] apply config/*.yaml edits (restart monitor / dora_live under LIVE=1; recorder applies on next record)
+	$(if $(filter 1,$(LIVE)),$(COMPOSE_ROBOT) restart dora_live,$(COMPOSE_ROBOT) restart monitor)
 
-recording-up: ## [ON THE RECORDING PC] build + start orchestrator/dora/frontend (LIVE=1 adds dora_live)
-	@$(if $(filter 1,$(LIVE)),true,COMPOSE_PROFILES=live $(COMPOSE_RECORDING) stop dora_live 2>/dev/null || true)
-	$(COMPOSE_RECORDING) up -d --build $(SVC)
+recording-up: ## [ON THE RECORDING PC] build + start orchestrator/dora/frontend
+	$(COMPOSE_RECORDING) up -d --build --remove-orphans $(SVC)
 	@$(MAKE) --no-print-directory urls
 
 recording-down: ## [ON THE RECORDING PC] stop + remove the recording-host services
@@ -322,8 +320,8 @@ recording-logs: ## [ON THE RECORDING PC] follow recording-host logs: `make recor
 recording-ps: ## [ON THE RECORDING PC] show recording-host container status
 	$(COMPOSE_RECORDING) ps
 
-recording-config-reload: ## [ON THE RECORDING PC] apply config-catalog edits (restart orchestrator; +dora_live when LIVE=1)
-	$(COMPOSE_RECORDING) restart orchestrator $(if $(filter 1,$(LIVE)),dora_live,)
+recording-config-reload: ## [ON THE RECORDING PC] apply config-catalog edits (restart orchestrator; live config lives with robot-side dora_live)
+	$(COMPOSE_RECORDING) restart orchestrator
 
 import-runs: ## [ON THE RECORDING PC] rsync COMPLETED recordings from the robot into ./data/recorded
 	bash deploy/sync/import_runs.sh

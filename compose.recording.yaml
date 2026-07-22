@@ -44,19 +44,11 @@ services:
     # to the orchestrator). The robot-edge streamer/probe it also proxies to are
     # reached lazily at request time, so they need no ordering.
 
-  # dora_live — live DDS ingest via the dora bridge (LIVE=1 / --profile live).
-  # In the split it runs HERE, on the recording host: the robot keeps ONLY the
-  # recorder (its canonical MCAP path never depends on this service), and the
-  # live topics cross the wire as a second DDS reader. That trade is deliberate:
-  # wire loss can only ever degrade the live UX (metrics/probe/preview), never
-  # the recording, and it moves every live-processing CPU off the robot.
-  # Delivery over an emulated GbE link measured 0 loss (see
-  # docs/specs/ja/dora_live.md); real-NIC two-host validation is still pending.
-  dora_live:
-    profiles: ["live"]
-    extends:
-      file: compose.yaml
-      service: dora_live
+  # NOTE: dora_live is a ROBOT-EDGE service (compose.robot.yaml) — under LIVE=1
+  # it replaces the monitor/streamer/probe trio ON the robot host, so live
+  # topics never cross the wire as DDS (user ruling 2026-07-22; the earlier
+  # recording-host placement is superseded). This PC only points its proxy
+  # targets at the robot's :8005/:8006/:8007 (make exports the ports).
 
   # Pull sidecar (recording-host ONLY — deliberately NOT in compose.yaml, so the
   # single-host `make up` never runs it): rsyncs FINALISED runs from the robot
