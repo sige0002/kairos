@@ -254,16 +254,8 @@ logs: ## follow logs: `make logs` (all) or `make logs streamer`
 ps: ## show container status
 	$(COMPOSE) ps
 
-# docker stats reports CPU% where 100% = ONE core, which reads scary on a
-# many-core host (400% on a 64-thread Xeon is ~6% of the machine). This view
-# shows both normalizations so load discussions use the same denominator.
-load: ## per-container CPU as %/core AND %/machine (docker stats normalized by nproc)
-	@docker stats --no-stream --format '{{.Name}}\t{{.CPUPerc}}\t{{.PIDs}}' \
-	| grep kairos | sort -t'	' -k2 -rn \
-	| awk -F'\t' -v n=$$(nproc) '{v=$$2; sub(/%/,"",v); total+=v; \
-	  printf "%-34s %8.1f%%/core %7.2f%%/machine  pids=%s\n", $$1, v, v/n, $$3} \
-	  END {printf "%.68s\n", "--------------------------------------------------------------------"; \
-	  printf "%-34s %8.1f%%/core %7.2f%%/machine  (%d threads)\n", "TOTAL (kairos)", total, total/n, n}'
+load: ## load overview: CPU (%/core AND %/machine) + LAN throughput/util + live DDS bandwidth + data disk
+	@bash deploy/load.sh
 
 # ---- config -----------------------------------------------------------------
 # ---- cross-host split (robot-edge / recording-host) -------------------------
