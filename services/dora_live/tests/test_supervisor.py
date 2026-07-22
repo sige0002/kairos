@@ -21,6 +21,24 @@ def test_derive_manifest_empty_allowlist():
     assert manifest.topics == [] and pending == []
 
 
+def test_degraded_cooloff_self_recovers(tmp_path: Path):
+    import time
+
+    feed = DoraFeedSubscriber(enable_rclpy=False)
+    sup = DataflowSupervisor(
+        config=None, feed=feed, workdir=tmp_path, control_url="http://127.0.0.1:9"
+    )
+    sup._degraded = True
+    sup._crashes = [time.monotonic() - 700.0]  # last crash beyond the cooloff
+    sup._ensure_running()
+    assert sup._degraded is False and sup._crashes == []
+    # a fresh crash inside the window keeps it degraded
+    sup._degraded = True
+    sup._crashes = [time.monotonic()]
+    sup._ensure_running()
+    assert sup._degraded is True
+
+
 def test_supervisor_alive_semantics(tmp_path: Path):
     feed = DoraFeedSubscriber(enable_rclpy=False)
     sup = DataflowSupervisor(

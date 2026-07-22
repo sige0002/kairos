@@ -106,9 +106,22 @@ Note: when starting via raw `docker compose` (not `make`), beware the stale rela
 `RECORDING_CONFIG` in `.env` (set `RECORDING_CONFIG=/config/<robot>/recording/default.yaml`
 explicitly).
 
-## Known limitations (TBD)
+## Known limitations (TBD — includes the 2026-07-22 independent-audit residue)
 
-- Real-NIC / physical two-host wired verification is pending (Cell C was veth+netem emulation).
+- **Physical two-host validation is pending** (single-host split rehearsal + netem emulation so
+  far). Remaining: real-NIC/switch bandwidth + receive-side drop measurement, real-switch
+  multicast discovery (fall back to fastdds `initialPeers` unicast or a Discovery Server if it
+  fails), the importer/rsync path over a real wire, and a rerun on the real robot's domain 1
+  with its msgs overlay.
+- **stamp_delay_ms is the true wall-clock staleness** (epoch->monotonic conversion at ingest).
+  During bag replay it correctly reads as "time since recording" — hundreds of days; on a live
+  robot it is transport latency in milliseconds. Stamp-delay alert thresholds will fire
+  continuously during replay by construction.
+- The live Monitor is a reduced variant: `dds_samples_lost` is always 0 (RustDDS exposes no RMW
+  events) and some baseline-derived fields can stay null; loss detection rests on the
+  expected_hz shortfall floor.
 - A live plugin contract (extending dora_runner's kairos_plugin.yaml to live lanes) is not yet
   designed — the analysis lane currently ships built-in demo detectors only.
 - `/metrics/stream` SSE keeps the monitor's full-snapshot-per-tick shape (not diffs).
+- make resolves env from `.env` first (`_prefer_env`); split-specific values live in
+  `.env.split` — only LIVE has a `.env.split` fallback so far. Beware double definitions.

@@ -144,7 +144,13 @@ SVC ?= $(filter $(SERVICES),$(MAKECMDGOALS))
 # stops dora_live. The trio cannot be managed positionally while LIVE=1 —
 # their bind ports would collide (probe would bind 8006) or their healthchecks
 # would probe dora_live's ports.
-LIVE := $(call _prefer_env,LIVE,0)
+# LIVE resolves like ROBOT (cmdline > .env > shell) and additionally falls
+# back to .env.split — the split entry points read that file, so putting
+# LIVE=1 there makes the cutover sticky per host: a plain `make robot-up` /
+# `make recording-up` then stays in live mode instead of silently reviving
+# the legacy trio / stopping dora_live (audit finding).
+_LIVE_SPLIT_DEFAULT := $(if $(wildcard .env.split),$(strip $(shell sed -n 's/^[[:space:]]*LIVE[[:space:]]*=[[:space:]]*//p' .env.split | tail -1)),)
+LIVE := $(call _prefer_env,LIVE,$(or $(_LIVE_SPLIT_DEFAULT),0))
 LIVE_LEGACY := monitor probe streamer
 ifeq ($(LIVE),1)
 ifneq ($(filter $(LIVE_LEGACY),$(SVC)),)

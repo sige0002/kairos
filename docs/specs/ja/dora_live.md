@@ -94,9 +94,19 @@ LIVE=1 が旧3サービスを**停止**するのは、`TOPIC_PROBE_PORT` 等が�
 注意: `make` を介さず素の `docker compose` で起動する場合、`.env` の stale な相対
 `RECORDING_CONFIG` に注意(`RECORDING_CONFIG=/config/<robot>/recording/default.yaml` を明示)。
 
-## 既知の制約(TBD)
+## 既知の制約(TBD — 独立監査 2026-07-22 の残条件を含む)
 
-- 実 NIC・実 2 台構成での有線越え検証は未了(Cell C は veth+netem エミュレーション)。
+- **実 2 台検証は未了**(単一ホスト split リハーサル+netem エミュレーションまで)。残: 実 NIC/
+  スイッチ越えの帯域・受信側ドロップ実測、実スイッチのマルチキャスト discovery(不成立なら
+  fastdds の `initialPeers` ユニキャスト化 or Discovery Server 化)、importer/rsync の実機経路、
+  実機 domain 1 + 実 msgs overlay での再走。
+- **stamp_delay_ms は wall-clock 真値**(ingest で epoch→monotonic 変換済み)。bag リプレイ中は
+  「録画時刻からの経過」= 数百日級の値が出るのが正しい挙動(実機ではミリ秒オーダー)。リプレイ中に
+  stamp_delay 系のアラート閾値を掛けると常時発火する点に注意。
+- ライブ Monitor は縮退版: `dds_samples_lost` は常に 0(RustDDS は RMW イベント非提供)、
+  `loss_rate`/baseline 由来の一部指標は null になり得る。損失検出は expected_hz shortfall の床。
 - ライブプラグイン契約(dora_runner の kairos_plugin.yaml のライブ拡張)は未設計 — 現状の解析
   レーンは組込みデモ判定器のみ。
 - SSE の `/metrics/stream` は monitor と同じ全量スナップショット方式(diff ではない)。
+- make の env 解決は `.env` 優先(`_prefer_env`)で、split 固有値は `.env.split` — LIVE のみ
+  `.env.split` フォールバックを実装済み。他キーの二重定義には注意。

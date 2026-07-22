@@ -34,6 +34,10 @@ DISCOVERY_BUDGET_S = 15.0
 RETRY_PERIOD_S = 60.0
 CRASH_WINDOW_S = 120.0
 CRASH_LIMIT = 3
+# Degraded is a cooloff, not a tombstone: after this long the supervisor
+# retries on its own (audit finding — a flaky wire tripping the crash-loop
+# guard would otherwise brick the live lanes until a manual restart).
+DEGRADED_COOLOFF_S = 600.0
 
 
 def derive_manifest(
@@ -161,7 +165,17 @@ class DataflowSupervisor:
     def _ensure_running(self) -> None:
         """Keep the dataflow process alive; all _proc access under the lock."""
         with self._lock:
-            if self._degraded or not self._manifest.topics:
+            if self._degraded:
+                last = self._crashes[-1] if self._crashes else 0.0
+                if time.monotonic() - last < DEGRADED_COOLOFF_S:
+                    return
+                logger.warning(
+                    "degraded cooloff (%.0fs) elapsed — retrying the dataflow",
+                    DEGRADED_COOLOFF_S,
+                )
+                self._degraded = False
+                self._crashes.clear()
+            if not self._manifest.topics:
                 return
             proc = self._proc
             if proc is not None and proc.poll() is None:
