@@ -149,8 +149,11 @@ contract it will attach to:
   robot nothing, and the consumer paces its own intake. Nobody pulling = zero wire cost.
 - **Practice example**: the minimal template for a custom dora node attached to the pull
   contract (grayscale, verified working) → [`docs/examples/grayscale/`](../../examples/grayscale/README.md).
-- **Analysis event ring** (the extension seam): any lane node may push events to
-  `POST /internal/analysis/events`; consumers poll `GET /live/events`. The built-in demo
+- **Analysis event ring** (the extension seam): any producer (a lane node or an external
+  process) may push to `POST /internal/analysis/events`; consumers poll
+  `GET /live/events?since=`. Filtering keys on the event's `t` (epoch seconds; the server
+  stamps arrival time when omitted). Numeric-side worked example →
+  [`docs/examples/range_check/`](../../examples/range_check/README.md). The built-in demo
   detectors (the old ai node) were **removed by ruling** — only this generic intake remains.
 - **Design guidance for the future consumer (not built, TBD)**: the image validator lives on
   the recording PC (a streaming intake in dora_runner, or a separate container); results go

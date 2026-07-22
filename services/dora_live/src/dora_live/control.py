@@ -19,6 +19,7 @@ import asyncio
 import base64
 import json
 import logging
+import time
 from collections import deque
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -210,6 +211,11 @@ def create_control_app(
 
     @app.post("/internal/analysis/events")
     async def analysis_events_push(event: dict[str, Any]) -> dict[str, bool]:
+        # CONTRACT (doc'd in the spec): the body is freeform EXCEPT `t` —
+        # epoch seconds used by /live/events?since= filtering. An absent `t`
+        # would default to 0.0 and silently vanish from any since>0 query
+        # (adversarial-review finding), so stamp it here for the producer.
+        event.setdefault("t", time.time())
         analysis_events.append(event)
         return {"ok": True}
 

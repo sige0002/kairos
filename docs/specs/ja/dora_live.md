@@ -138,8 +138,10 @@ per-topic プロセス艦隊(RustDDS participant ×29=固定床+index 空間消�
   ワイヤコストもゼロ。
 - **実践例**: pull 契約に接続する自作 dora ノードの最小テンプレ(グレースケール化・動作実証済み)
   → [`docs/examples/grayscale/`](../../examples/grayscale/README.ja.md)。
-- **解析イベントリング**(拡張シーム): 任意の lane ノードが `POST /internal/analysis/events`
-  へイベントを push し、消費側は `GET /live/events` を poll。組込みデモ判定器(旧 ai ノード)は
+- **解析イベントリング**(拡張シーム): 任意のプロデューサ(lane ノードでも外部プロセスでも)が
+  `POST /internal/analysis/events` へ push し、消費側は `GET /live/events?since=` を poll。
+  フィルタはイベントの `t`(epoch 秒)キー — 省略時はサーバが受信時刻を付与。数値側の実例
+  → [`docs/examples/range_check/`](../../examples/range_check/README.ja.md)。組込みデモ判定器(旧 ai ノード)は
   **裁定により削除** — 残るのはこの汎用 intake のみ。
 - **将来の消費側の設計指針(未実装・TBD)**: 画像 validator は録画 PC 側
   (dora_runner の streaming 取り込み口 or 別コンテナ)に置き、結果は `report/live_image/` に

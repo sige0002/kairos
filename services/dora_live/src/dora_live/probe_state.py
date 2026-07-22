@@ -1,6 +1,6 @@
 """ProbeHub: shared state between the probe HTTP app and the probe node.
 
-The probe dataflow node polls ``active()`` (via ``GET /internal/probe/active``
+The live_ingest feeder polls ``active()`` (via ``GET /internal/probe/active``
 each 500 ms tick) and pushes values back; SSE streams and one-shot samples
 read the latest cache. Ref-counting mirrors topic_probe: a topic stays active
 while at least one stream (or a pending one-shot) references it.

@@ -1,0 +1,20 @@
+# My OWN dataflow: one node that polls the dora_live PUBLIC probe contract
+# (:8006) for a numeric field, applies a range rule, and POSTs verdicts to the
+# analysis-event ring (:8005). Run with the dora CLI bundled in the
+# dora_live image -- it is outside the kairos-supervised dataflow, and touches
+# no kairos file.
+nodes:
+  - id: range_check
+    # Wrapper: dora runs .py nodes with the SYSTEM python (ignoring the venv),
+    # so run_node.sh execs the venv python -- the same bypass the grayscale
+    # example and kairos's own nodes use.
+    path: /example/run_node.sh
+    inputs:
+      tick: dora/timer/millis/500
+    env:
+      PROBE_URL: http://127.0.0.1:8006
+      DORA_LIVE_URL: http://127.0.0.1:8005
+      TOPIC: /left_arm_controller/joint_states
+      # FIELD:            # empty = auto-pick first numeric field via /fields
+      LO: "0.0"
+      HI: "0.001"         # trivial rule: any real joint value is out of range

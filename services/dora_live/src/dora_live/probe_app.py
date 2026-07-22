@@ -125,7 +125,11 @@ def create_probe_compat_app(
                 ts=utc_now_iso8601(),
                 topic=topic,
                 type=_topic_type(topic),
-                reason="no message received in time (topic silent or not bridged)",
+                reason=(
+                    "no sample arrived in time — publisher silent, OR the "
+                    "live bus is not receiving this topic (check /metrics hz; "
+                    "0 Hz with an active publisher = ingest-side issue)"
+                ),
             )
         field_list, reason = got
         return FieldsResponse(
