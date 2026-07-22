@@ -78,10 +78,6 @@ def decode_first(value: Any) -> dict | None:
     return rows[0]
 
 
-# One feed batch flushes at this size even between ticks (burst protection).
-FLUSH_MAX_ROWS = 500
-
-
 def feed_row(
     topic: str,
     t_recv_ns: int,

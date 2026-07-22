@@ -79,3 +79,60 @@ def test_decode_first_guards():
             return []
 
     assert decode_first(Empty()) is None
+
+
+def test_control_feeder_buffers_and_flushes():
+    from dora_live.nodes.bridge import MAX_BUFFERED_ROWS, ControlFeeder
+
+    feeder = ControlFeeder("http://c", "/a")  # thread NOT started: test pieces
+
+    class FakeClient:
+        def __init__(self):
+            self.posts = []
+
+        def post(self, url, json=None):
+            self.posts.append((url, json))
+
+        def get(self, url):
+            raise RuntimeError("down")
+
+    feeder.add_row({"topic": "/a", "recv_t": 1.0})
+    feeder.post_probe("/internal/probe/values", {"topic": "/a"})
+    client = FakeClient()
+    feeder._flush(client)
+    urls = [u for u, _ in client.posts]
+    assert urls == ["http://c/internal/samples", "http://c/internal/probe/values"]
+    assert client.posts[0][1] == {"rows": [{"topic": "/a", "recv_t": 1.0}]}
+    # Buffers drained; a second flush posts nothing.
+    client.posts.clear()
+    feeder._flush(client)
+    assert client.posts == []
+    # Overflow cap: buffer never exceeds MAX_BUFFERED_ROWS.
+    for i in range(MAX_BUFFERED_ROWS + 100):
+        feeder.add_row({"n": i})
+    assert len(feeder._rows) == MAX_BUFFERED_ROWS
+    assert feeder._rows[-1] == {"n": MAX_BUFFERED_ROWS + 99}  # newest kept
+    # Poll failure keeps previous probe state (no exception).
+    feeder.active_fields = ["x"]
+    feeder._poll_probe(client)
+    assert feeder.active_fields == ["x"]
+
+
+def test_control_feeder_introspect_is_one_shot():
+    from dora_live.nodes.bridge import ControlFeeder
+
+    feeder = ControlFeeder("http://c", "/a")
+
+    class OkClient:
+        def get(self, url):
+            class R:
+                @staticmethod
+                def json():
+                    return {"topics": {"/a": ["f1"]}, "introspect": ["/a"]}
+
+            return R()
+
+    feeder._poll_probe(OkClient())
+    assert feeder.active_fields == ["f1"]
+    assert feeder.take_introspect() is True
+    assert feeder.take_introspect() is False  # consumed

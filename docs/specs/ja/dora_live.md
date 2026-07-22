@@ -6,8 +6,9 @@
 
 ## 目的と位置づけ
 
-ライブ系消費者(メトリクス・プローブ・リアルタイム解析・WebRTC プレビュー)の DDS 購読を
-**1 トピック 1 購読**に集約し、dora の共有メモリファンアウトで配る。録画系(rosbag2_recorder)は
+ライブ系消費者の DDS 購読を**1 トピック 1 購読**に集約する。ペイロードを要する video/frames
+レーンは dora の共有メモリファンアウトで配り、metrics/probe は bridge が control へ**HTTP で
+自己申告**する(下記フィールドスケール改修)。録画系(rosbag2_recorder)は
 **独立購読のまま不変** — dora_live が全停止しても正本 MCAP 経路は無傷(安全は topology が担う)。
 
 **配置はロボット側**(split では `compose.robot.yaml`。裁定 2026-07-22 — 旧 recording 側配置を

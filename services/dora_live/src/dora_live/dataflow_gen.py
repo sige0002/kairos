@@ -27,11 +27,6 @@ from dora_live.frames_lane import FRAMES_CODECS
 from dora_live.manifest import LiveManifest
 
 METRICS_TICK = "dora/timer/millis/1000"
-# Feed flush tick: the metrics node ships sample batches to the control app on
-# this tick, and the delivery lag directly depresses the hz the monitor windows
-# compute (review finding: a 1 s flush made hz sawtooth up to 20% low). 100 ms
-# keeps the bias under ~2% on the default 5 s window at negligible POST cost.
-FEED_TICK = "dora/timer/millis/100"
 TIMER_PREFIX = "dora/timer/"
 
 DEFAULT_WEBRTC_PORT = "8007"
@@ -119,10 +114,10 @@ def generate_dataflow(
                     "BRIDGE_FORWARD": "1" if forward else "0",
                     "CONTROL_URL": control_url,
                 },
-                # The tick doubles as the feed flush cadence: the delivery lag
-                # directly depresses the hz the monitor windows compute
-                # (review finding: a 1 s flush made hz sawtooth up to 20% low).
-                "inputs": {"tick": FEED_TICK},
+                # Bench-proven: bridges keep a timer input so the event loop
+                # always has a wake source; feed flushing runs on the bridge's
+                # own feeder thread (100 ms), not on this tick.
+                "inputs": {"tick": METRICS_TICK},
                 # Declare the output only where something consumes it; dora
                 # then has no edge at all for feed-only bridges.
                 **({"outputs": ["out"]} if forward else {}),

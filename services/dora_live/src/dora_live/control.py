@@ -177,6 +177,11 @@ def create_control_app(
 
     @app.post("/internal/samples")
     async def internal_samples(batch: FeedBatch) -> dict[str, int]:
+        # THREAD-SAFETY INVARIANT: this must stay `async def` and the app must
+        # run single-worker — every poster (N self-reporting bridges) then
+        # serializes on the one event loop, and ingest_batch -> the monitor
+        # registry needs no further locking. A sync `def` (threadpool) or
+        # workers>1 would race the registry immediately.
         return {"delivered": sub.ingest_batch(batch.rows)}
 
     @app.get("/live/status")

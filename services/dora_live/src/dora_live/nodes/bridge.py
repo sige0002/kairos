@@ -3,9 +3,11 @@
 Runs forever (until STOP): subscribes to ``BRIDGE_TOPIC`` via Ros2Context
 (RustDDS) and, per message:
 
-- accounts a metrics feed row locally and POSTs batches straight to the
-  control sidecar on the 100 ms flush tick (``/internal/samples`` — the same
-  contract the central metrics node used to feed);
+- accounts a metrics feed row locally; a background feeder thread POSTs
+  batches to the control sidecar every 100 ms (``/internal/samples`` — the
+  same contract the central metrics node used to feed). The ingest loop
+  NEVER blocks on HTTP (review finding: a stalled control loop would freeze
+  the video path and cluster recv_t stamps, distorting the reported Hz);
 - serves the probe contract for ITS OWN topic (polls
   ``/internal/probe/active`` on a ~1 s cadence; when active, decodes and
   pushes values at <=20 Hz, introspects fields on demand);
@@ -33,10 +35,10 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import time
 
 from dora_live.bridge_logic import (
-    FLUSH_MAX_ROWS,
     classify_value,
     decode_first,
     extract_stamp_ns,
@@ -44,9 +46,112 @@ from dora_live.bridge_logic import (
 )
 from dora_live.fieldpath import extract_value, iter_numeric_paths
 
-# Poll /internal/probe/active every N flush ticks (N x 100 ms ~= 1 s).
-PROBE_POLL_TICKS = 10
+# Feeder cadence: rows flush every 100 ms (the delivery lag directly
+# depresses the hz the monitor windows compute — a 1 s flush made hz sawtooth
+# up to 20% low, review finding), probe-active polls every 5th cycle (500 ms,
+# parity with the retired probe node's tick).
+FLUSH_INTERVAL_S = 0.1
+PROBE_POLL_CYCLES = 5
+# Row-buffer hard cap (~10x a 100 ms burst at extreme rates): protects memory
+# if control stalls; dropping rows undercounts Hz, so it logs once.
+MAX_BUFFERED_ROWS = 5000
 _PUSH_MIN_INTERVAL_S = 1.0 / 20.0
+
+
+class ControlFeeder(threading.Thread):
+    """Owns ALL HTTP to the control sidecar, off the ingest thread.
+
+    The ingest loop must NEVER block on HTTP (review finding): a stalled
+    control loop would freeze the video forwarding path of forward=1 bridges
+    and cluster ``recv_t`` stamps — the act of reporting would distort the
+    very Hz/gap numbers being reported. The loop only appends to the row
+    buffer / probe-post queue and reads the polled probe state; this thread
+    does the POSTs on its own clock.
+    """
+
+    def __init__(self, control_url: str, topic: str) -> None:
+        super().__init__(name="bridge-feeder", daemon=True)
+        self._url = control_url
+        self._topic = topic
+        self._lock = threading.Lock()
+        self._rows: list[dict] = []
+        self._probe_posts: list[tuple[str, dict]] = []
+        self._stop_evt = threading.Event()
+        self._post_failing = False
+        self._overflow_logged = False
+        # Read by the ingest loop (whole-list swap = GIL-atomic).
+        self.active_fields: list[str] = []
+        self._introspect = False
+
+    # -- ingest-thread side (never blocks) ---------------------------------
+
+    def add_row(self, row: dict) -> None:
+        with self._lock:
+            if len(self._rows) >= MAX_BUFFERED_ROWS:
+                if not self._overflow_logged:
+                    self._overflow_logged = True
+                    log(self._topic, "feed buffer overflow — dropping rows")
+                del self._rows[: len(self._rows) - MAX_BUFFERED_ROWS + 1]
+            self._rows.append(row)
+
+    def post_probe(self, path: str, payload: dict) -> None:
+        with self._lock:
+            self._probe_posts.append((path, payload))
+
+    def take_introspect(self) -> bool:
+        with self._lock:
+            want, self._introspect = self._introspect, False
+            return want
+
+    def stop(self) -> None:
+        self._stop_evt.set()
+        self.join(timeout=3.0)
+
+    # -- feeder-thread side -------------------------------------------------
+
+    def run(self) -> None:  # pragma: no cover - thread glue; pieces unit-tested
+        import httpx
+
+        client = httpx.Client(timeout=2.0)
+        cycle = 0
+        while not self._stop_evt.wait(FLUSH_INTERVAL_S):
+            cycle += 1
+            self._flush(client)
+            if cycle % PROBE_POLL_CYCLES == 0:
+                self._poll_probe(client)
+        self._flush(client)  # final drain
+
+    def _flush(self, client: object) -> None:
+        with self._lock:
+            rows, self._rows = self._rows, []
+            posts, self._probe_posts = self._probe_posts, []
+        if rows:
+            try:
+                client.post(f"{self._url}/internal/samples", json={"rows": rows})
+                if self._post_failing:
+                    log(self._topic, "feed POST recovered")
+                    self._post_failing = False
+            except Exception as exc:  # noqa: BLE001 - lossy-tolerant feed
+                if not self._post_failing:
+                    log(self._topic, "feed POST failed (dropping until recovery):", exc)
+                    self._post_failing = True
+        for path, payload in posts:
+            try:
+                client.post(f"{self._url}{path}", json=payload)
+            except Exception:  # noqa: BLE001 - lossy-tolerant, like the feed
+                pass
+
+    def _poll_probe(self, client: object) -> None:
+        try:
+            data = client.get(f"{self._url}/internal/probe/active").json()
+            fields = list((data.get("topics") or {}).get(self._topic, []))
+            introspect = self._topic in set(data.get("introspect") or [])
+        except Exception:  # noqa: BLE001 - control may be restarting
+            return  # keep the previous probe state
+        with self._lock:
+            self.active_fields = fields
+            if introspect:
+                self._introspect = True
 
 
 def log(*parts: object) -> None:
@@ -55,7 +160,6 @@ def log(*parts: object) -> None:
 
 def main() -> int:
     # Heavy imports stay inside main() so unit tests import the module freely.
-    import httpx
     from dora import Node, Ros2Context, Ros2NodeOptions, Ros2QosPolicies
 
     topic = os.environ["BRIDGE_TOPIC"]
@@ -100,65 +204,24 @@ def main() -> int:
 
     node = Node()
     node.merge_external_events(sub)
-    client = httpx.Client(timeout=2.0)
+    feeder = ControlFeeder(control_url, topic)
+    feeder.start()
     log(topic, "subscribed", ros_type, qos_name, "forward" if forward else "no-fwd")
 
-    batch: list[dict] = []
-    post_failing = False
-
-    def flush() -> None:
-        nonlocal post_failing
-        if not batch:
-            return
-        try:
-            client.post(f"{control_url}/internal/samples", json={"rows": batch})
-            if post_failing:
-                log(topic, "feed POST recovered")
-                post_failing = False
-        except Exception as exc:  # noqa: BLE001 - lossy-tolerant feed
-            if not post_failing:
-                log(topic, "feed POST failed (dropping until recovery):", exc)
-                post_failing = True
-        finally:
-            batch.clear()
-
-    active_fields: list[str] = []
     want_introspect = False
     last_value_push = 0.0
-    tick_count = 0
-
-    def poll_probe() -> None:
-        nonlocal active_fields, want_introspect
-        try:
-            data = client.get(f"{control_url}/internal/probe/active").json()
-            active_fields = list((data.get("topics") or {}).get(topic, []))
-            want_introspect = topic in set(data.get("introspect") or [])
-        except Exception:  # noqa: BLE001 - control may be restarting
-            pass  # keep the previous probe state
-
-    def post_probe(path: str, payload: dict) -> None:
-        try:
-            client.post(f"{control_url}{path}", json=payload)
-        except Exception:  # noqa: BLE001 - lossy-tolerant, like the feed
-            pass
-
     unbridged_reported = False
     while True:
         ev = node.next(timeout=1.0)
         if ev is None:
-            flush()
             continue
         kind = ev["kind"]
         if kind == "dora":
             if ev.get("type") == "STOP":
-                flush()
                 log(topic, "STOP")
                 break
-            if ev.get("type") == "INPUT" and ev.get("id") == "tick":
-                flush()
-                tick_count += 1
-                if tick_count % PROBE_POLL_TICKS == 0:
-                    poll_probe()
+            # The tick input is only the bench-proven event-loop wake source;
+            # all HTTP runs on the feeder thread's own clock.
             continue
         if kind != "external":
             continue
@@ -166,16 +229,15 @@ def main() -> int:
         t_recv_ns = time.monotonic_ns()
         info = classify_value(ev["value"])
         stamp_ns = extract_stamp_ns(ev["value"]) if info.bridged else None
-        batch.append(feed_row(topic, t_recv_ns, info, stamp_ns))
-        if len(batch) >= FLUSH_MAX_ROWS:
-            flush()
+        feeder.add_row(feed_row(topic, t_recv_ns, info, stamp_ns))
+        want_introspect = want_introspect or feeder.take_introspect()
 
         if not info.bridged:
             if not unbridged_reported:
                 log(topic, "UNBRIDGED (type unresolved):", info.error)
                 unbridged_reported = True
             if want_introspect:
-                post_probe(
+                feeder.post_probe(
                     "/internal/probe/fields",
                     {
                         "topic": topic,
@@ -188,6 +250,7 @@ def main() -> int:
 
         # Probe for THIS topic only; the expensive decode runs solely behind
         # the introspect flag / active-fields + 20 Hz throttle.
+        active_fields = feeder.active_fields
         wants_values = bool(active_fields) and (
             time.monotonic() - last_value_push >= _PUSH_MIN_INTERVAL_S
         )
@@ -196,7 +259,7 @@ def main() -> int:
             if decoded is not None:
                 if want_introspect:
                     paths = list(iter_numeric_paths(decoded))
-                    post_probe(
+                    feeder.post_probe(
                         "/internal/probe/fields",
                         {
                             "topic": topic,
@@ -208,7 +271,7 @@ def main() -> int:
                 if wants_values:
                     last_value_push = time.monotonic()
                     values = {f: extract_value(decoded, f) for f in active_fields}
-                    post_probe(
+                    feeder.post_probe(
                         "/internal/probe/values",
                         {"topic": topic, "t": time.time(), "values": values},
                     )
@@ -226,6 +289,7 @@ def main() -> int:
                     **({"stamp_ns": str(stamp_ns)} if stamp_ns is not None else {}),
                 },
             )
+    feeder.stop()
     return 0
 
 

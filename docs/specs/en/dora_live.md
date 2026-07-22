@@ -7,8 +7,9 @@
 
 ## Purpose and position
 
-Collapses the DDS subscriptions of every live consumer (metrics, probe, realtime analysis,
-WebRTC preview) into **one subscription per topic**, fanned out over dora shared memory. The
+Collapses the DDS subscriptions of every live consumer into **one subscription per topic**.
+The payload lanes (video/frames) fan out over dora shared memory; metrics/probe are
+**self-reported by the bridge over HTTP** (see the field-scale rework below). The
 recording side (rosbag2_recorder) keeps its **own independent subscription, unchanged** — if
 dora_live dies entirely, the canonical MCAP path is untouched (safety lives in the topology).
 
