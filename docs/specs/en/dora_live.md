@@ -31,12 +31,35 @@ flowchart LR
     ROS["ROS 2 graph"] -->|"raw CDR (sub 1)"| REC["rosbag2_recorder → MCAP (canonical, unchanged)"]
     ROS -->|"N subs (ONE participant)"| ING["live_ingest (one process)<br/>Rust-side metrics subs ×N<br/>counting/probe shipped as 100 ms HTTP batches"]
     ROS -->|"CDR→Arrow (video topics only)"| B["bridge nodes ×V (video)"]
-    ING -->|"HTTP feed"| C["control sidecar<br/>:8005 monitor-compat / :8006 probe-compat"]
+    ROS -.->|"SEDP status events"| GW["Ros2GraphWatcher<br/>(bare RustDDS participant, discovery)"]
+    subgraph CTRL["control sidecar (supervisor + HTTP)"]
+        GW --> C[":8005 monitor-compat / :8006 probe-compat<br/>/live/* extension surface"]
+    end
+    ING -->|"HTTP feed"| C
     B -->|"SHM"| F["frames node"] & W["webrtc node"]
     F -->|"decimated compressed payloads"| C
     W -->|":8007 signaling + media"| BR["browser"]
-    C -->|generates & supervises| DF["dora run (generated dataflow)"]
-    C -.->|"GET /live/frames (pull)"| EXT["any LAN container (future image validation etc.)"]
+    C -->|"generates & supervises"| DF["dora run (generated dataflow = ING/B/F/W)"]
+    C -.->|"GET /live/frames (pull) · POST /internal/analysis/events"| EXT["extension sidecars (any LAN host)"]
+```
+
+**The dora flow (startup-to-steady lifecycle)**:
+
+```mermaid
+sequenceDiagram
+    participant SUP as supervisor (in control)
+    participant GW as GraphWatcher (discovery)
+    participant DORA as dora run
+    participant NODES as live_ingest / bridges / webrtc / frames
+    participant CTRL as control HTTP (:8005/:8006)
+    SUP->>GW: start (bare RustDDS participant)
+    GW-->>SUP: topics/types/publisher QoS (from SEDP)
+    SUP->>SUP: derive manifest from LIVE_CONFIG + real QoS<br/>(undiscovered topics stay pending)
+    SUP->>DORA: generate dataflow.yml → dora run (one session)
+    DORA->>NODES: spawn nodes (via run_node.sh, venv python)
+    NODES->>CTRL: 100 ms /internal/samples batches (counting)<br/>probe taps / frames decimation / webrtc media
+    CTRL-->>SUP: dataflow liveness · /live/status
+    Note over SUP,DORA: on crash: session sweep (/proc SID) → restart<br/>3 abnormal exits in 120 s → degraded (readyz 503)
 ```
 
 **Field-scale FINAL form (late 2026-07-22, the user-ruled live_ingest layout)**:
@@ -146,6 +169,13 @@ robot works with NO live config** (the key to low-effort onboarding). `make` der
 | `qos_overrides` | `[]` | per-topic subscription QoS (first match wins). Falls back to the recording `topic_qos_overrides`, then **auto-match against the offered publisher QoS** (reusing the monitor's own `resolve_subscription_qos` — no second QoS brain) |
 | `video` | `[]` | video-lane rules (first match wins); `codec: image\|ffmpeg\|raw\|off` |
 | `video_defaults` | `{max_fps: 15, max_width: null, max_height: null}` | server-side defaults applied when the client's `/stream/start` omits a hint. **On HD cameras the `max_width` cap is the single biggest decode/encode CPU lever** (explicit client values always win) |
+
+Measured (2026-07-23, real aiortc receiving client): 26.4 Hz source → **15.00 fps
+received** (gap p50 67 ms / p95 71 ms) — `max_fps` is honored exactly. A slower
+camera (HSR hand at 9 Hz) is **source-rate bound** (the encoder repeats the last
+frame to hold the 15 fps pace, so motion updates at 9 Hz). The `fps` in
+`/stream/status` is the **consumption-following value** — it reads low when the
+connected client is dead; it is not a delivery-capability metric.
 | `frames` | `{enabled: true, sample_hz: 2.0}` | live-frames lane (below): enablement + per-topic decimation rate |
 | `queues` | `{metrics: null, probe: 4, webrtc: 2, frames: 2}` | **per-consumer queue depths**. Preview lanes are latest-wins, so shallow — a deep queue there turns a briefly-slow decoder into seconds of stale-frame lag + pinned shared memory (the choppy-preview field incident). NOTE: after the self-reporting rework the `metrics`/`probe` keys are **unused** (those edges no longer exist; still accepted for config compat) |
 | `queue_size` | `1000` | former metrics-lane depth (unused after the rework; accepted only) |

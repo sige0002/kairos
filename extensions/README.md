@@ -20,6 +20,35 @@ Start from either:
 Folders starting with `_` (`_template`/`_examples`) are scaffolding and are
 **never loaded by either lane** (copy them out to use them).
 
+## The whole picture with an extension installed
+
+```mermaid
+flowchart LR
+    subgraph ROBOT["robot side"]
+        DL["dora_live<br/>:8005 frames index / events intake"]
+    end
+    subgraph PC["recording-PC side"]
+        subgraph EXT["extensions/my_ext (your repo)"]
+            L["live/ sidecar<br/>(own container, auto-started)"]
+            V["kairos_plugin.yaml + nodes/<br/>(validation plugin)"]
+        end
+        RUN["dora_runner"]
+        ORCH["api_orchestrator"]
+        FE["Web UI"]
+    end
+    L -->|"① GET /live/frames · /live/frame (ETag/304 pull)"| DL
+    L -->|"② POST /internal/analysis/events (freeform JSON)"| DL
+    DL -->|"③ GET /api/v1/live/events (proxy)"| ORCH
+    ORCH --> FE
+    FE -->|"Monitor→Events 'Extension events'<br/>+ post-take Collect result panel (text)"| UIVIEW["rendered (zero frontend work)"]
+    V -.->|"/extensions scan (activates on restart)"| RUN
+    RUN -->|"params_schema→form / summary.json→result card"| FE
+```
+
+Key point: none of ①–③ touches kairos itself. Live-side verdicts flow to the
+UI as events, and at recording stop the events that overlapped the take are
+**shown as text on the Collect result panel** (the post-take review path).
+
 ## The two seams — both are "just drop it in"
 
 | Seam | Runs where | Activation |

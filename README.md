@@ -12,21 +12,38 @@ organized around this "source of truth."
 
 ## Architecture
 
+DDS-reading services can live on the robot; everything else on the recording PC
+(cross-host split; a single host runs it all together). The live tier is
+switchable between the **legacy trio** and **dora_live (`LIVE=1`)** — the
+external HTTP contracts are identical, so the frontend never changes:
+
+```mermaid
+flowchart TB
+    subgraph ROBOT["robot side (split: compose.robot.yaml / co-located on a single host)"]
+        ROS["ROS 2 graph"]
+        REC["rosbag2_recorder<br/>→ MCAP (the single source of truth)"]
+        TRIO["legacy trio<br/>topic_monitor / topic_probe / webrtc_streamer"]
+        DL["dora_live (LIVE=1, dora-based)<br/>trio-compatible :8005/:8006/:8007<br/>+ frames/events extension seams"]
+        ROS -->|"independent subscription (unchanged)"| REC
+        ROS --> TRIO
+        ROS --> DL
+    end
+    subgraph PC["recording-PC side (split: compose.recording.yaml)"]
+        ORCH["api_orchestrator<br/>(single API hub)"]
+        RUN["dora_runner<br/>(post-recording validation & conversion)"]
+        FE["frontend (Web UI)"]
+        EXTL["live extension sidecars<br/>extensions/&lt;name&gt;/live (auto-started)"]
+    end
+    REC -->|"rsync (import-runs)"| RUN
+    TRIO & DL -->|"HTTP (metrics/video/plots)"| ORCH
+    EXTL -.->|"pull :8005 frames · POST events"| DL
+    EXTP["validation plugins<br/>extensions/&lt;name&gt;/ (drop-in)"] -.->|"/extensions scan"| RUN
+    ORCH <-->|"REST / SSE"| FE
 ```
-              ROS 2 Robot / Sim  ──►  ROS 2 Topics
-                                        │
-     ┌──────────────┬────────────┬──────┼────────────────────────┐
-     ▼              ▼            ▼       ▼                        ▼
-webrtc_streamer topic_monitor topic_probe rosbag2_recorder  (selected topics)
- (live video)   (live monitoring) (numeric plots) ──► MCAP  /data/recorded/run_xxxx.mcap ◄─ canonical
-     │              │            │        │
-     ▼              ▼            ▼        ▼  (after recording)
-   Browser  ◄────  api_orchestrator  ──►  dora_runner ──► report / converted dataset
-                  (job & state hub)        (validation & conversion pipeline)
-                         ▲
-                         │ REST / WebSocket / SSE
-                      frontend (Vite + React + TS)
-```
+
+Recording runs on rosbag2_recorder's **independent subscription** — even if the
+whole live tier (trio / dora_live / extensions) dies, the canonical MCAP path
+is untouched; safety lives in the topology.
 
 ## Service composition
 
@@ -38,7 +55,9 @@ webrtc_streamer topic_monitor topic_probe rosbag2_recorder  (selected topics)
 | [webrtc_streamer](docs/specs/en/webrtc_streamer.md) | Low-latency camera **preview** (ROS 2 image → browser). Not a recording path. |
 | [api_orchestrator](docs/specs/en/api_orchestrator.md) | The single API hub. Handles job lifecycle, state, configuration, and result aggregation. |
 | [dora_runner](docs/specs/en/dora_runner.md) | Post-recording **validation & conversion** pipeline (dora-based). Enabled: `fast_validation` / `dataset_export` / `loss_report` / `video_check`. |
+| [dora_live](docs/specs/en/dora_live.md) | `LIVE=1` replaces the three live services above with **one dora dataflow** (HTTP-contract compatible, frontend untouched). Carries the frames/events **extension seams**. |
 | [frontend](docs/specs/en/frontend.md) | A backend-driven Web UI (UI labels in English). Role tabs (Console v2): Collect / Review / Datasets / Validation / Monitor / Settings. |
+| [extensions/](extensions/README.md) | **User extension drop-ins** (gitignored). Placing a folder auto-ingests a live sidecar + a post-recording validation plugin. |
 
 ## Specification docs
 

@@ -27,12 +27,35 @@ flowchart LR
     ROS["ROS 2 graph"] -->|"raw CDR (購読1)"| REC["rosbag2_recorder → MCAP(正本・不変)"]
     ROS -->|"N購読(1 participant)"| ING["live_ingest(1プロセス)<br/>Rust側metrics購読×N<br/>計数/probe を100msバッチでHTTP直送"]
     ROS -->|"CDR→Arrow(videoトピックのみ)"| B["bridge ノード ×V(video)"]
-    ING -->|"HTTP feed"| C["control サイドカー<br/>:8005 monitor互換 / :8006 probe互換"]
+    ROS -.->|"SEDP status イベント"| GW["Ros2GraphWatcher<br/>(素のRustDDS participant・discovery)"]
+    subgraph CTRL["control サイドカー(supervisor + HTTP)"]
+        GW --> C[":8005 monitor互換 / :8006 probe互換<br/>/live/* 拡張面"]
+    end
+    ING -->|"HTTP feed"| C
     B -->|"SHM"| F["frames ノード"] & W["webrtc ノード"]
     F -->|"間引いた圧縮ペイロード"| C
     W -->|":8007 シグナリング+メディア"| BR["ブラウザ"]
-    C -->|生成・監督| DF["dora run(生成 dataflow)"]
-    C -.->|"GET /live/frames(pull)"| EXT["LAN 内の任意コンテナ(将来の画像検証など)"]
+    C -->|"生成・監督"| DF["dora run(生成 dataflow = ING/B/F/W)"]
+    C -.->|"GET /live/frames(pull)・POST /internal/analysis/events"| EXT["拡張サイドカー(LAN 内任意ホスト)"]
+```
+
+**dora の流れ(起動〜運転のライフサイクル)**:
+
+```mermaid
+sequenceDiagram
+    participant SUP as supervisor(control 内)
+    participant GW as GraphWatcher(discovery)
+    participant DORA as dora run
+    participant NODES as live_ingest / bridges / webrtc / frames
+    participant CTRL as control HTTP(:8005/:8006)
+    SUP->>GW: 起動(素の RustDDS participant)
+    GW-->>SUP: トピック/型/publisher QoS(SEDP から)
+    SUP->>SUP: LIVE_CONFIG + 実 QoS から manifest 導出<br/>(discovery 未確立トピックは pending)
+    SUP->>DORA: dataflow.yml 生成 → dora run(1 セッション)
+    DORA->>NODES: ノード spawn(run_node.sh 経由・venv python)
+    NODES->>CTRL: 100ms バッチ /internal/samples(計数)<br/>probe tap / frames 間引き / webrtc メディア
+    CTRL-->>SUP: dataflow 生死・/live/status
+    Note over SUP,DORA: クラッシュ時: セッション掃討(/proc SID)→ 再起動<br/>120s に 3 回で degraded(readyz 503)
 ```
 
 **フィールドスケール最終形(2026-07-22 深夜・ユーザー裁定の live_ingest 構成)**:
@@ -129,6 +152,8 @@ sudo sysctl -w net.core.rmem_default=16777216 net.core.rmem_max=16777216
 | `qos_overrides` | `[]` | per-topic 購読 QoS(先勝ち)。フォールバックは recording の `topic_qos_overrides` → **publisher 実 QoS の自動マッチ**(monitor と同一の `resolve_subscription_qos` を再利用 — QoS 判断の二重実装はない) |
 | `video` | `[]` | video レーン規則(先勝ち)。`codec: image\|ffmpeg\|raw\|off` |
 | `video_defaults` | `{max_fps: 15, max_width: null, max_height: null}` | クライアントが `/stream/start` で指定を省略した時のサーバ側既定。**HD カメラでは `max_width` キャップがデコード/エンコード CPU の最大レバー**(明示指定は常に優先) |
+
+実測(2026-07-23・aiortc 実受信クライアント): 26.4Hz ソース → **受信 15.00fps**(gap p50 67ms/p95 71ms)で `max_fps` は正確に効く。ソースが遅いカメラ(HSR hand 9Hz など)は**ソースレートが上限**(エンコーダは 15fps ペース維持のため同一フレームを繰り返す=動きは 9Hz)。`/stream/status` の `fps` は**消費追従値**で、クライアント接続が死んでいると実力より低く出る(実受信の指標ではない)。
 | `frames` | `{enabled: true, sample_hz: 2.0}` | ライブフレームレーン(下記)の有効化と per-topic 間引きレート |
 | `queues` | `{metrics: null, probe: 4, webrtc: 2, frames: 2}` | **consumer 別キュー深さ**。プレビュー系は latest-wins なので浅く — 深いキューは消費側が一瞬遅れただけで「古いフレームの滞留=秒級遅延+SHM ピン留め」になる(かくつき実障害の主因)。※self-reporting 化後、`metrics`/`probe` キーは**エッジが存在しないため不使用**(設定互換のため受理はする) |
 | `queue_size` | `1000` | 旧 metrics レーン深さ(self-reporting 化後は不使用・受理のみ) |

@@ -10,21 +10,36 @@ ROS 2 のロボットデータを **収録・監視・検証・変換** する�
 
 ## アーキテクチャ
 
+DDS を読むサービスはロボット側、それ以外は録画 PC 側に置ける(cross-host split。
+単一ホストでは全部同居)。ライブ系は **legacy trio** と **dora_live(`LIVE=1`)** の
+切替式で、どちらでも外部 HTTP 契約は同一のためフロントエンドは無改修:
+
+```mermaid
+flowchart TB
+    subgraph ROBOT["ロボット側(split: compose.robot.yaml / 単一ホストでは同居)"]
+        ROS["ROS 2 graph"]
+        REC["rosbag2_recorder<br/>→ MCAP(唯一の正本)"]
+        TRIO["legacy trio<br/>topic_monitor / topic_probe / webrtc_streamer"]
+        DL["dora_live(LIVE=1・dora ベース)<br/>trio 互換 :8005/:8006/:8007<br/>+ frames/events 拡張シーム"]
+        ROS -->|"独立購読(不変)"| REC
+        ROS --> TRIO
+        ROS --> DL
+    end
+    subgraph PC["録画 PC 側(split: compose.recording.yaml)"]
+        ORCH["api_orchestrator<br/>(単一 API ハブ)"]
+        RUN["dora_runner<br/>(録画後の検証・変換)"]
+        FE["frontend(Web UI)"]
+        EXTL["ライブ拡張サイドカー<br/>extensions/&lt;name&gt;/live(自動起動)"]
+    end
+    REC -->|"rsync(import-runs)"| RUN
+    TRIO & DL -->|"HTTP(メトリクス/映像/プロット)"| ORCH
+    EXTL -.->|"pull :8005 frames · POST events"| DL
+    EXTP["検証プラグイン<br/>extensions/&lt;name&gt;/(drop-in)"] -.->|"/extensions スキャン"| RUN
+    ORCH <-->|"REST / SSE"| FE
 ```
-              ROS 2 Robot / Sim  ──►  ROS 2 Topics
-                                        │
-     ┌──────────────┬────────────┬──────┼────────────────────────┐
-     ▼              ▼            ▼       ▼                        ▼
-webrtc_streamer topic_monitor topic_probe rosbag2_recorder  (選択されたトピック)
- (ライブ映像)    (ライブ監視)  (数値プロット) ──► MCAP  /data/recorded/run_xxxx.mcap ◄─ 正本
-     │              │            │        │
-     ▼              ▼            ▼        ▼  (収録後)
-   Browser  ◄────  api_orchestrator  ──►  dora_runner ──► レポート / 変換済みデータセット
-                  (ジョブ・状態ハブ)        (検証・変換パイプライン)
-                         ▲
-                         │ REST / WebSocket / SSE
-                      frontend (Vite + React + TS)
-```
+
+トピックの記録は rosbag2_recorder の**独立購読**で行われ、ライブ系(trio /
+dora_live / 拡張)が全滅しても正本 MCAP 経路は無傷 — 安全はトポロジが担う。
 
 ## サービス構成
 
@@ -36,7 +51,9 @@ webrtc_streamer topic_monitor topic_probe rosbag2_recorder  (選択されたト�
 | [webrtc_streamer](docs/specs/ja/webrtc_streamer.md) | 低遅延のカメラ**プレビュー**（ROS 2 image → ブラウザ）。記録パスではない。 |
 | [api_orchestrator](docs/specs/ja/api_orchestrator.md) | 単一の API ハブ。ジョブのライフサイクル・状態・設定・結果集約を担う。 |
 | [dora_runner](docs/specs/ja/dora_runner.md) | 収録後の**検証・変換**パイプライン（dora ベース）。有効: `fast_validation` / `dataset_export` / `loss_report` / `video_check`。 |
+| [dora_live](docs/specs/ja/dora_live.md) | `LIVE=1` で上記ライブ 3 サービスを **dora データフロー 1 本**に置換（外部 HTTP 契約は互換・フロント無改修）。frames/events の**拡張シーム**を持つ。 |
 | [frontend](docs/specs/ja/frontend.md) | backend-driven な Web UI（UI 表記は英語）。役割タブ構成（Console v2）: Collect / Review / Datasets / Validation / Monitor / Settings。 |
+| [extensions/](extensions/README.ja.md) | **ユーザー拡張の drop-in**（gitignored）。置くだけでライブサイドカー＋録画後検証プラグインが自動で取り込まれる。 |
 
 ## 仕様ドキュメント
 

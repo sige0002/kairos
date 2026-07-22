@@ -19,6 +19,35 @@ git clone https://github.com/you/my-ext extensions/my_ext
 `_` で始まるフォルダ(`_template`/`_examples`)はテンプレ扱いで、
 どちらのレーンにも**ロードされません**(コピーして使う)。
 
+## 拡張を入れた時の全体像
+
+```mermaid
+flowchart LR
+    subgraph ROBOT["ロボット側"]
+        DL["dora_live<br/>:8005 frames索引/events受け"]
+    end
+    subgraph PC["録画 PC 側"]
+        subgraph EXT["extensions/my_ext(あなたのリポジトリ)"]
+            L["live/ サイドカー<br/>(自コンテナ・自動起動)"]
+            V["kairos_plugin.yaml + nodes/<br/>(検証プラグイン)"]
+        end
+        RUN["dora_runner"]
+        ORCH["api_orchestrator"]
+        FE["Web UI"]
+    end
+    L -->|"① GET /live/frames · /live/frame(ETag/304 pull)"| DL
+    L -->|"② POST /internal/analysis/events(自由形式JSON)"| DL
+    DL -->|"③ GET /api/v1/live/events(プロキシ)"| ORCH
+    ORCH --> FE
+    FE -->|"Monitor→Events『Extension events』<br/>+ 録画停止後の Collect 結果パネル(テキスト)"| UIVIEW["表示(フロント改修ゼロ)"]
+    V -.->|"/extensions スキャン(restart で反映)"| RUN
+    RUN -->|"params_schema→フォーム / summary.json→結果カード"| FE
+```
+
+ポイント: ①〜③のどこにも kairos 本体の改修は無い。ライブ側の判定結果は
+イベントとして UI に流れ、録画停止時にはその録画窓に重なったイベントが
+**Collect の結果パネルにテキスト表示**される(取得後レビューの動線)。
+
 ## 2 つの組み込み面 — どちらも「置くだけ」
 
 | 面 | 実行場所 | 反映方法 |
