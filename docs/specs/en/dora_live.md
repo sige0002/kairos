@@ -28,15 +28,22 @@ lightweight derived data leaves the robot (metrics JSON on :8005/:8006, encoded 
 ```mermaid
 flowchart LR
     ROS["ROS 2 graph"] -->|"raw CDR (sub 1)"| REC["rosbag2_recorder → MCAP (canonical, unchanged)"]
-    ROS -->|"CDR→Arrow (sub 2/topic)"| B["bridge nodes ×N<br/>(one topic = one node)"]
-    B -->|SHM| M["metrics node"] & P["probe node"] & F["frames node"] & W["webrtc node"]
-    M -->|HTTP feed| C["control sidecar<br/>:8005 monitor-compat / :8006 probe-compat"]
-    P --> C
+    ROS -->|"CDR→Arrow (sub 2/topic)"| B["bridge nodes ×N (self-reporting)<br/>one topic = one node<br/>metrics rows + own-topic probe via HTTP"]
+    B -->|"HTTP feed (ALL topics)"| C["control sidecar<br/>:8005 monitor-compat / :8006 probe-compat"]
+    B -->|"SHM (video topics only)"| F["frames node"] & W["webrtc node"]
     F -->|"decimated compressed payloads"| C
     W -->|":8007 signaling + media"| BR["browser"]
     C -->|generates & supervises| DF["dora run (generated dataflow)"]
     C -.->|"GET /live/frames (pull)"| EXT["any LAN container<br/>(future image validation etc., not built)"]
 ```
+
+**Field-scale rework (late 2026-07-22)**: the central metrics/probe consumer nodes are
+**gone**. On a real deployment (29 topics, ~1000 msg/s) their all-topic fan-in cost
+per-message dora-daemon routing plus two Python event wakeups — the dominant container
+CPU. Each bridge now posts its own metrics rows and serves probe for its own topic
+directly over HTTP (the feed contract and the :8005/:8006 external APIs are unchanged).
+Bridges of topics without a video codec never call ``send_output`` at all — **only camera
+topics traverse the daemon/SHM**.
 
 ## dora pinning policy (important)
 
@@ -79,8 +86,8 @@ robot works with NO live config** (the key to low-effort onboarding). `make` der
 | `video` | `[]` | video-lane rules (first match wins); `codec: image\|ffmpeg\|raw\|off` |
 | `video_defaults` | `{max_fps: 15, max_width: null, max_height: null}` | server-side defaults applied when the client's `/stream/start` omits a hint. **On HD cameras the `max_width` cap is the single biggest decode/encode CPU lever** (explicit client values always win) |
 | `frames` | `{enabled: true, sample_hz: 2.0}` | live-frames lane (below): enablement + per-topic decimation rate |
-| `queues` | `{metrics: null, probe: 4, webrtc: 2, frames: 2}` | **per-consumer queue depths**. metrics COUNTS arrivals (drop = mis-measured Hz — keep deep); the preview lanes are latest-wins, so shallow — a deep queue there turns a briefly-slow decoder into seconds of stale-frame lag + pinned shared memory (the choppy-preview field incident) |
-| `queue_size` | `1000` | metrics-lane depth (legacy name; `queues.metrics` overrides) |
+| `queues` | `{metrics: null, probe: 4, webrtc: 2, frames: 2}` | **per-consumer queue depths**. Preview lanes are latest-wins, so shallow — a deep queue there turns a briefly-slow decoder into seconds of stale-frame lag + pinned shared memory (the choppy-preview field incident). NOTE: after the self-reporting rework the `metrics`/`probe` keys are **unused** (those edges no longer exist; still accepted for config compat) |
+| `queue_size` | `1000` | former metrics-lane depth (unused after the rework; accepted only) |
 
 - The auto-match input is the publishers' **real offered QoS** (reliability/durability/depth),
   collected by the rclpy graph poller via `get_publishers_info_by_topic`. The resolution lands
@@ -138,6 +145,8 @@ contract it will attach to:
 Metric math, alerting and baseline learning reuse `kairos_common.monitoring` (extracted from
 topic_monitor) **unmodified**; dora_live merely injects a different `TopicSubscriber`
 implementation (`DoraFeedSubscriber` = HTTP feed + rclpy graph poller). No duplicated logic.
+The feed's producer changed from one central metrics node to N bridges POSTing concurrently
+(100 ms flush, batched); the `/internal/samples` contract and row shape are identical.
 
 ## Dataflow generation discipline
 

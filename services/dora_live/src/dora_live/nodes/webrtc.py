@@ -29,8 +29,7 @@ import os
 import sys
 import time
 
-from dora_live.bridge_logic import classify_value
-from dora_live.nodes.probe import decode_first
+from dora_live.bridge_logic import classify_value, decode_first
 from dora_live.video_decode import VideoDecoder, make_decoder
 from dora_live.webrtc_frame import FrameRouter
 

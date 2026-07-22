@@ -61,3 +61,40 @@ def extract_stamp_ns(value: Any) -> int | None:
 def dora_type_name(ros_type: str) -> str:
     """``pkg/msg/Type`` -> ``pkg/Type`` (create_topic rejects the infix)."""
     return ros_type.replace("/msg/", "/")
+
+
+def decode_first(value: Any) -> dict | None:
+    """Arrow struct array -> the first element as a nested dict.
+
+    The whole-struct conversion is EXPENSIVE for camera payloads (~ms) — call
+    it only behind a gate (probe active / rate gate / keyframe gate).
+    """
+    try:
+        rows = value.to_pylist()
+    except Exception:
+        return None
+    if not rows or not isinstance(rows[0], dict):
+        return None
+    return rows[0]
+
+
+# One feed batch flushes at this size even between ticks (burst protection).
+FLUSH_MAX_ROWS = 500
+
+
+def feed_row(
+    topic: str,
+    t_recv_ns: int,
+    info: ValueInfo,
+    stamp_ns: int | None,
+) -> dict[str, Any]:
+    """Build one ``POST /internal/samples`` row from a bridge arrival."""
+    row: dict[str, Any] = {
+        "topic": topic,
+        "recv_t": t_recv_ns / 1e9,
+        "size": info.size_bytes or 0,
+        "bridged": info.bridged,
+    }
+    if stamp_ns is not None:
+        row["stamp_s"] = stamp_ns / 1e9
+    return row

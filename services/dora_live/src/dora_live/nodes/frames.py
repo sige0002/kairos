@@ -18,9 +18,8 @@ import json
 import os
 import sys
 
-from dora_live.bridge_logic import classify_value
+from dora_live.bridge_logic import classify_value, decode_first
 from dora_live.frames_lane import SampleGate, frame_eligible
-from dora_live.nodes.probe import decode_first
 
 DEFAULT_SAMPLE_HZ = 2.0
 

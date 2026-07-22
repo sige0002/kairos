@@ -40,29 +40,36 @@ def test_generated_graph_wiring():
     df = generate_dataflow(_manifest(), common_env={"ROS_DOMAIN_ID": "1"})
     ids = [n["id"] for n in df["nodes"]]
     assert "bridge__hsrb_joint_states" in ids
-    assert "metrics" in ids
-    assert "probe" in ids
+    # Central consumers are GONE (field-scale rework): bridges self-report
+    # metrics + probe over HTTP; only payload lanes remain on the bus.
+    assert "metrics" not in ids
+    assert "probe" not in ids
     assert "ai" not in ids  # removed by ruling 2026-07-22 (extension seam only)
-
-    metrics = next(n for n in df["nodes"] if n["id"] == "metrics")
-    # metrics and probe both tap every topic (probe decodes on demand,
-    # so the graph never restarts on probe selection)
-    assert len([k for k in metrics["inputs"] if k.startswith("t__")]) == 2
-    probe = next(n for n in df["nodes"] if n["id"] == "probe")
-    assert len([k for k in probe["inputs"] if k.startswith("t__")]) == 2
 
     bridge = next(n for n in df["nodes"] if n["id"] == "bridge__hsrb_joint_states")
     assert bridge["env"]["BRIDGE_TYPE"] == "sensor_msgs/JointState"
     assert bridge["env"]["ROS_DOMAIN_ID"] == "1"
+    assert bridge["env"]["CONTROL_URL"].startswith("http://")
+    # Feed-only bridge (no video codec): never forwards, declares no output.
+    assert bridge["env"]["BRIDGE_FORWARD"] == "0"
+    assert "outputs" not in bridge
+
+    cam = next(
+        n
+        for n in df["nodes"]
+        if n["id"] == "bridge__hsrb_hand_camera_image_raw_compressed"
+    )
+    assert cam["env"]["BRIDGE_FORWARD"] == "1"
+    assert cam["outputs"] == ["out"]
 
 
 def test_queue_size_lint_enforced():
     df = generate_dataflow(_manifest())
     assert lint_queue_sizes(df) == []
     # sabotage one input -> to_yaml must refuse
-    metrics = next(n for n in df["nodes"] if n["id"] == "metrics")
-    key = next(k for k in metrics["inputs"] if k.startswith("t__"))
-    metrics["inputs"][key] = metrics["inputs"][key]["source"]
+    webrtc = next(n for n in df["nodes"] if n["id"] == "webrtc")
+    key = next(k for k in webrtc["inputs"] if k.startswith("t__"))
+    webrtc["inputs"][key] = webrtc["inputs"][key]["source"]
     with pytest.raises(ValueError, match="queue_size lint failed"):
         to_yaml(df)
 
@@ -70,7 +77,7 @@ def test_queue_size_lint_enforced():
 def test_yaml_round_trip():
     text = to_yaml(generate_dataflow(_manifest()))
     doc = yaml.safe_load(text)
-    assert {n["id"] for n in doc["nodes"]} >= {"metrics", "probe"}
+    assert {n["id"] for n in doc["nodes"]} >= {"webrtc", "frames"}
 
 
 def test_bad_queue_size_rejected():
@@ -198,15 +205,10 @@ def test_webrtc_node_always_present_even_without_cameras():
 
 def test_per_lane_queue_depths():
     df = generate_dataflow(_manifest())
-    metrics = next(n for n in df["nodes"] if n["id"] == "metrics")
-    probe = next(n for n in df["nodes"] if n["id"] == "probe")
     frames = next(n for n in df["nodes"] if n["id"] == "frames")
-    m_key = next(k for k in metrics["inputs"] if k.startswith("t__"))
-    p_key = next(k for k in probe["inputs"] if k.startswith("t__"))
     f_key = next(k for k in frames["inputs"] if k.startswith("t__"))
-    # Counting lane deep; latest-wins lanes shallow.
-    assert metrics["inputs"][m_key]["queue_size"] == 1000
-    assert probe["inputs"][p_key]["queue_size"] == 4
+    # Latest-wins payload lanes are shallow (metrics/probe have no edges at
+    # all anymore — bridges self-report over HTTP).
     assert frames["inputs"][f_key]["queue_size"] == 2
 
 

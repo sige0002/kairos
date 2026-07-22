@@ -24,15 +24,21 @@
 ```mermaid
 flowchart LR
     ROS["ROS 2 graph"] -->|"raw CDR (購読1)"| REC["rosbag2_recorder → MCAP(正本・不変)"]
-    ROS -->|"CDR→Arrow (購読2/トピック)"| B["bridge ノード ×N<br/>(1トピック=1ノード)"]
-    B -->|SHM| M["metrics ノード"] & P["probe ノード"] & F["frames ノード"] & W["webrtc ノード"]
-    M -->|HTTP feed| C["control サイドカー<br/>:8005 monitor互換 / :8006 probe互換"]
-    P --> C
+    ROS -->|"CDR→Arrow (購読2/トピック)"| B["bridge ノード ×N(self-reporting)<br/>1トピック=1ノード<br/>metrics行+自トピックprobeをHTTPで直送"]
+    B -->|"HTTP feed(全トピック)"| C["control サイドカー<br/>:8005 monitor互換 / :8006 probe互換"]
+    B -->|"SHM(videoトピックのみ)"| F["frames ノード"] & W["webrtc ノード"]
     F -->|"間引いた圧縮ペイロード"| C
     W -->|":8007 シグナリング+メディア"| BR["ブラウザ"]
     C -->|生成・監督| DF["dora run(生成 dataflow)"]
     C -.->|"GET /live/frames(pull)"| EXT["LAN 内の任意コンテナ<br/>(将来の画像検証など・未実装)"]
 ```
+
+**フィールドスケール改修(2026-07-22 深夜)**: 中央 metrics/probe 消費ノードは**廃止**。
+29 トピック×~1000msg/s の実機で、全トピック fan-in の「メッセージ毎の dora デーモン
+ルーティング+消費ノードの Python イベント起床×2」がコンテナ CPU の支配項だったため、
+bridge が自トピックの metrics 行と probe を control へ**直接 HTTP 送信**する(feed 契約・
+:8005/:8006 の外部 API は不変)。video codec の無いトピックの bridge は `send_output`
+自体をしない = **デーモン/SHM を通るのはカメラトピックのみ**。
 
 ## dora のピン方針(重要)
 
@@ -71,8 +77,8 @@ flowchart LR
 | `video` | `[]` | video レーン規則(先勝ち)。`codec: image\|ffmpeg\|raw\|off` |
 | `video_defaults` | `{max_fps: 15, max_width: null, max_height: null}` | クライアントが `/stream/start` で指定を省略した時のサーバ側既定。**HD カメラでは `max_width` キャップがデコード/エンコード CPU の最大レバー**(明示指定は常に優先) |
 | `frames` | `{enabled: true, sample_hz: 2.0}` | ライブフレームレーン(下記)の有効化と per-topic 間引きレート |
-| `queues` | `{metrics: null, probe: 4, webrtc: 2, frames: 2}` | **consumer 別キュー深さ**。metrics は到着を「数える」ので深く(drop = Hz 誤計測)、プレビュー系は latest-wins なので浅く — 深いキューは消費側が一瞬遅れただけで「古いフレームの滞留=秒級遅延+SHM ピン留め」になる(かくつき実障害の主因) |
-| `queue_size` | `1000` | metrics レーンの深さ(旧名。`queues.metrics` が優先) |
+| `queues` | `{metrics: null, probe: 4, webrtc: 2, frames: 2}` | **consumer 別キュー深さ**。プレビュー系は latest-wins なので浅く — 深いキューは消費側が一瞬遅れただけで「古いフレームの滞留=秒級遅延+SHM ピン留め」になる(かくつき実障害の主因)。※self-reporting 化後、`metrics`/`probe` キーは**エッジが存在しないため不使用**(設定互換のため受理はする) |
+| `queue_size` | `1000` | 旧 metrics レーン深さ(self-reporting 化後は不使用・受理のみ) |
 
 - QoS 自動マッチの素材は rclpy graph ポーラが `get_publishers_info_by_topic` で収集した
   publisher の**実 offered QoS**(reliability/durability/depth)。解決結果は bridge の購読
@@ -126,6 +132,8 @@ flowchart LR
 メトリクス演算・アラート・ベースライン学習は `kairos_common.monitoring`(topic_monitor から抽出)を
 **無改造で再利用**。dora_live は `TopicSubscriber` Protocol の別実装(`DoraFeedSubscriber` =
 HTTP フィード + rclpy graph ポーラ)を注入するだけ。判定ロジックの二重実装はない。
+フィードの供給者は self-reporting 化で「中央 metrics ノード1個」から「bridge ×N の並行 POST
+(100ms flush/バッチ)」に変わったが、`/internal/samples` の契約と行の形は同一。
 
 ## dataflow 生成の規律
 

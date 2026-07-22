@@ -1,11 +1,17 @@
 """Generate the dora dataflow for a live manifest.
 
-Layout (cell-verified): one bridge node per topic (external events carry no
-topic attribution; metadata on ``send_output`` does), plus fan-in consumer
-nodes. Every node-to-node input carries an explicit ``queue_size`` — the dora
-default queue drops bursty high-rate messages (report §4.3), so generation
-fails closed if the manifest queue size is missing/invalid, and a unit test
-lints the emitted graph.
+Layout (cell-verified + field-scale rework 2026-07-22): one SELF-REPORTING
+bridge node per topic — it feeds metrics rows and its own probe data straight
+to the control sidecar over HTTP, and ``send_output``s the Arrow payload ONLY
+when the topic is on a payload lane (video/frames). There are no central
+metrics/probe consumer nodes: at field scale (29 topics, ~1000 msg/s) their
+all-topic fan-in cost dora-daemon routing plus a Python event wakeup per
+message per consumer, which dominated the container CPU. The daemon now
+routes camera topics only.
+
+Every node-to-node input still carries an explicit ``queue_size`` (the dora
+default queue drops bursty high-rate messages, report §4.3); generation fails
+closed if missing/invalid and a unit test lints the emitted graph.
 """
 
 from __future__ import annotations
@@ -26,7 +32,6 @@ METRICS_TICK = "dora/timer/millis/1000"
 # compute (review finding: a 1 s flush made hz sawtooth up to 20% low). 100 ms
 # keeps the bias under ~2% on the default 5 s window at negligible POST cost.
 FEED_TICK = "dora/timer/millis/100"
-PROBE_TICK = "dora/timer/millis/500"
 TIMER_PREFIX = "dora/timer/"
 
 DEFAULT_WEBRTC_PORT = "8007"
@@ -90,9 +95,15 @@ def generate_dataflow(
 
     tokens = unique_tokens([t.name for t in manifest.topics])
 
+    # Payload lanes: only these topics are forwarded onto the dora bus at all
+    # (webrtc consumes t.video topics; frames consumes the FRAMES_CODECS
+    # subset). Every other bridge is feed-only — zero daemon/SHM traffic.
+    forwarded = {t.name for t in manifest.topics if t.video}
+
     nodes: list[dict[str, Any]] = []
     for t in manifest.topics:
         node_id = f"bridge__{tokens[t.name]}"
+        forward = t.name in forwarded
         nodes.append(
             {
                 "id": node_id,
@@ -105,54 +116,16 @@ def generate_dataflow(
                     "BRIDGE_QOS": t.qos,
                     "BRIDGE_QOS_DURABILITY": t.durability,
                     "BRIDGE_QOS_DEPTH": str(t.depth),
-                },
-                # Bench-proven: bridges keep a timer input so the event loop
-                # always has a wake source even before DDS traffic arrives.
-                "inputs": {"tick": METRICS_TICK},
-                "outputs": ["out"],
-            }
-        )
-
-    def fan_in_all(queue_size: int) -> dict[str, Any]:
-        # Both metrics and probe tap every topic: metrics needs universal
-        # coverage, and the probe decodes on demand so the operator can pick
-        # any topic without a dataflow restart (the graph stays static).
-        return {
-            f"t__{tokens[t.name]}": {
-                "source": f"bridge__{tokens[t.name]}/out",
-                "queue_size": queue_size,
-            }
-            for t in manifest.topics
-        }
-
-    metrics_inputs = fan_in_all(manifest.queues.metrics)
-    metrics_inputs["tick"] = FEED_TICK
-    nodes.append(
-        {
-            "id": "metrics",
-            "path": node_launcher,
-            "env": {
-                **env,
-                "DORA_NODE_MODULE": "dora_live.nodes.metrics",
-                "CONTROL_URL": control_url,
-            },
-            "inputs": metrics_inputs,
-        }
-    )
-
-    if manifest.topics:
-        probe_inputs = fan_in_all(manifest.queues.probe)
-        probe_inputs["tick"] = PROBE_TICK
-        nodes.append(
-            {
-                "id": "probe",
-                "path": node_launcher,
-                "env": {
-                    **env,
-                    "DORA_NODE_MODULE": "dora_live.nodes.probe",
+                    "BRIDGE_FORWARD": "1" if forward else "0",
                     "CONTROL_URL": control_url,
                 },
-                "inputs": probe_inputs,
+                # The tick doubles as the feed flush cadence: the delivery lag
+                # directly depresses the hz the monitor windows compute
+                # (review finding: a 1 s flush made hz sawtooth up to 20% low).
+                "inputs": {"tick": FEED_TICK},
+                # Declare the output only where something consumes it; dora
+                # then has no edge at all for feed-only bridges.
+                **({"outputs": ["out"]} if forward else {}),
             }
         )
 

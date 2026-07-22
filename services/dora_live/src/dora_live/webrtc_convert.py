@@ -1,7 +1,7 @@
 """CompressedImage (dora Arrow struct form) -> BGR ``numpy`` array, + downscale.
 
 The bridge delivers each ``sensor_msgs/CompressedImage`` as a pyarrow struct;
-:func:`dora_live.nodes.probe.decode_first` turns it into a dict
+:func:`dora_live.bridge_logic.decode_first` turns it into a dict
 ``{header, format, data}``. ``data`` is a JPEG/PNG byte buffer — ``bytes`` on
 most Arrow builds, ``list[int]`` on some — so it is normalised to ``bytes``
 before OpenCV decodes it to BGR (exactly what the aiortc track encodes).

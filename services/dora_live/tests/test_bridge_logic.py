@@ -44,3 +44,38 @@ def test_extract_stamp_ns_absent():
 def test_dora_type_name_strips_msg_infix():
     assert dora_type_name("sensor_msgs/msg/JointState") == "sensor_msgs/JointState"
     assert dora_type_name("sensor_msgs/JointState") == "sensor_msgs/JointState"
+
+
+def test_feed_row_shapes():
+    from dora_live.bridge_logic import ValueInfo, feed_row
+
+    bridged = ValueInfo(bridged=True, size_bytes=123, error=None)
+    row = feed_row("/a", 2_000_000_000, bridged, 1_500_000_000)
+    assert row == {
+        "topic": "/a",
+        "recv_t": 2.0,
+        "size": 123,
+        "bridged": True,
+        "stamp_s": 1.5,
+    }
+    unbridged = ValueInfo(bridged=False, size_bytes=None, error="no type")
+    row = feed_row("/a", 1_000_000_000, unbridged, None)
+    assert row == {"topic": "/a", "recv_t": 1.0, "size": 0, "bridged": False}
+
+
+def test_decode_first_guards():
+    from dora_live.bridge_logic import decode_first
+
+    assert decode_first(object()) is None  # no to_pylist
+
+    class Fake:
+        def to_pylist(self):
+            return [{"x": 1}]
+
+    assert decode_first(Fake()) == {"x": 1}
+
+    class Empty:
+        def to_pylist(self):
+            return []
+
+    assert decode_first(Empty()) is None
