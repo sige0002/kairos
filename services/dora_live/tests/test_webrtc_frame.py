@@ -70,3 +70,30 @@ def test_router_frame_source_lifecycle() -> None:
     assert router.wants("/cam") is False
     assert src.frames.closed
     assert src.fps == 0.0
+
+
+def test_decode_fps_tracks_fastest_sink():
+    from dora_live.webrtc_frame import FrameRouter, LatestFrame
+
+    router = FrameRouter()
+    assert router.decode_fps("/cam") == 0.0  # nobody watching
+    slow, fast = LatestFrame(), LatestFrame()
+    router.attach("/cam", slow, max_fps=10)
+    assert router.decode_fps("/cam") == 10.0
+    router.attach("/cam", fast, max_fps=30)
+    assert router.decode_fps("/cam") == 30.0  # fastest client wins
+    router.detach("/cam", fast)
+    assert router.decode_fps("/cam") == 10.0
+    router.detach("/cam", slow)
+    assert router.decode_fps("/cam") == 0.0
+
+
+def test_source_start_registers_its_fps():
+    from dora_live.webrtc_frame import FrameRouter, RouterFrameSource
+
+    router = FrameRouter()
+    src = RouterFrameSource(router, "/cam", max_fps=25)
+    src.start()
+    assert router.decode_fps("/cam") == 25.0
+    src.stop()
+    assert router.decode_fps("/cam") == 0.0

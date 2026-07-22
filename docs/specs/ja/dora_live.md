@@ -70,7 +70,8 @@ flowchart LR
 | `qos_overrides` | `[]` | per-topic 購読 QoS(先勝ち)。フォールバックは recording の `topic_qos_overrides` → **publisher 実 QoS の自動マッチ**(monitor と同一の `resolve_subscription_qos` を再利用 — QoS 判断の二重実装はない) |
 | `video` | `[]` | video レーン規則(先勝ち)。`codec: image\|ffmpeg\|raw\|off` |
 | `frames` | `{enabled: true, sample_hz: 2.0}` | ライブフレームレーン(下記)の有効化と per-topic 間引きレート |
-| `queue_size` | `1000` | 生成 dataflow の全エッジに付く queue_size |
+| `queues` | `{metrics: null, probe: 4, webrtc: 2, frames: 2}` | **consumer 別キュー深さ**。metrics は到着を「数える」ので深く(drop = Hz 誤計測)、プレビュー系は latest-wins なので浅く — 深いキューは消費側が一瞬遅れただけで「古いフレームの滞留=秒級遅延+SHM ピン留め」になる(かくつき実障害の主因) |
+| `queue_size` | `1000` | metrics レーンの深さ(旧名。`queues.metrics` が優先) |
 
 - QoS 自動マッチの素材は rclpy graph ポーラが `get_publishers_info_by_topic` で収集した
   publisher の**実 offered QoS**(reliability/durability/depth)。解決結果は bridge の購読
@@ -127,8 +128,9 @@ HTTP フィード + rclpy graph ポーラ)を注入するだけ。判定ロジ�
 
 ## dataflow 生成の規律
 
-- **全ノード間入力に `queue_size`(既定 1000)必須** — 生成器が欠落を拒否し、ユニットテストが lint
-  する(dora 既定キューは高頻度小メッセージを落とす: ベンチ §4.3 で実証・反証済み)。
+- **全ノード間入力に明示 `queue_size` 必須** — 生成器が欠落を拒否し、ユニットテストが lint
+  する(dora 既定キューは高頻度小メッセージを落とす: ベンチ §4.3 で実証・反証済み)。深さは
+  consumer 別(上の `queues`): 数えるレーンは深く・latest-wins レーンは浅く。
 - ノードは `run_node.sh` ラッパー経由で起動(dora は `*.py` を system python で実行し venv を
   無視するため。ベンチ実証のバイパス)。
 - webrtc ノードの入力は **manifest 上で video codec が解決したトピックのみ**(LIVE_CONFIG の
@@ -188,8 +190,9 @@ LIVE=1 が旧3サービスを**停止**するのは、`TOPIC_PROBE_PORT` 等が�
 - **1 トピック = 1 bridge = 1 DDS participant** のため、ライブトピック数だけホスト×ドメインの
   participant index(有限資源)を消費する。29 bridge 実測で、後から起動した CycloneDDS ノードが
   `RCLError: error creating node`(原因非表示)で作成不能になる枯渇を確認。ロボット側配置では
-  ロボット自身のノードと index 空間を共有する点に注意。緩和: live config の `topics`/`exclude` で
-  bridge 数を絞る / Cyclone 側 `ParticipantIndex=none` ないし `MaxAutoParticipantIndex` 引き上げ。
+  ロボット自身のノードと index 空間を共有する点に注意。緩和: 同梱の `config/cyclonedds.xml`
+  (`MaxAutoParticipantIndex=119`、compose が `CYCLONEDDS_URI` 既定で配線済み)/ live config の
+  `topics`/`exclude` で bridge 数を絞る。
   併せて Cyclone は bridge の param service に type hash USER_DATA が無い旨の WARN を
   endpoint 数だけ吐く(無害だがログ洪水)。1 participant 化は dora upstream の external-event
   帰属待ち(TBD)。

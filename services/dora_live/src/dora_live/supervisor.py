@@ -34,7 +34,7 @@ from dora_live.live_config import (
     resolve_topic_qos,
     resolve_video_codec,
 )
-from dora_live.manifest import LiveManifest, LiveTopic
+from dora_live.manifest import LaneQueues, LiveManifest, LiveTopic
 
 logger = logging.getLogger("kairos.dora_live.supervisor")
 
@@ -92,10 +92,21 @@ def derive_manifest(
                 video=resolve_video_codec(name, ros_type, live),
             )
         )
+    metrics_queue = live.queue_size if queue_size is None else queue_size
     return (
         LiveManifest(
             topics=topics,
-            queue_size=live.queue_size if queue_size is None else queue_size,
+            queue_size=metrics_queue,
+            queues=LaneQueues(
+                metrics=(
+                    live.queues.metrics
+                    if live.queues.metrics is not None
+                    else metrics_queue
+                ),
+                probe=live.queues.probe,
+                webrtc=live.queues.webrtc,
+                frames=live.queues.frames,
+            ),
             frames_enabled=live.frames.enabled,
             frames_sample_hz=live.frames.sample_hz,
         ),
@@ -134,6 +145,7 @@ def _manifest_key(manifest: LiveManifest) -> tuple[Any, ...]:
     """Comparable identity of everything the generated dataflow depends on."""
     return (
         manifest.queue_size,
+        tuple(manifest.queues.model_dump().items()),
         manifest.frames_enabled,
         manifest.frames_sample_hz,
         tuple(

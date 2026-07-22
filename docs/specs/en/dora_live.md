@@ -78,7 +78,8 @@ robot works with NO live config** (the key to low-effort onboarding). `make` der
 | `qos_overrides` | `[]` | per-topic subscription QoS (first match wins). Falls back to the recording `topic_qos_overrides`, then **auto-match against the offered publisher QoS** (reusing the monitor's own `resolve_subscription_qos` — no second QoS brain) |
 | `video` | `[]` | video-lane rules (first match wins); `codec: image\|ffmpeg\|raw\|off` |
 | `frames` | `{enabled: true, sample_hz: 2.0}` | live-frames lane (below): enablement + per-topic decimation rate |
-| `queue_size` | `1000` | queue_size stamped on every generated dataflow edge |
+| `queues` | `{metrics: null, probe: 4, webrtc: 2, frames: 2}` | **per-consumer queue depths**. metrics COUNTS arrivals (drop = mis-measured Hz — keep deep); the preview lanes are latest-wins, so shallow — a deep queue there turns a briefly-slow decoder into seconds of stale-frame lag + pinned shared memory (the choppy-preview field incident) |
+| `queue_size` | `1000` | metrics-lane depth (legacy name; `queues.metrics` overrides) |
 
 - The auto-match input is the publishers' **real offered QoS** (reliability/durability/depth),
   collected by the rclpy graph poller via `get_publishers_info_by_topic`. The resolution lands
@@ -139,9 +140,10 @@ implementation (`DoraFeedSubscriber` = HTTP feed + rclpy graph poller). No dupli
 
 ## Dataflow generation discipline
 
-- **Every node-to-node input carries `queue_size` (default 1000)** — the generator refuses to
+- **Every node-to-node input carries an explicit `queue_size`** — the generator refuses to
   emit without it and a unit test lints the graph (dora's default queue drops bursty
-  high-rate messages; proven and counter-proven in bench §4.3).
+  high-rate messages; proven and counter-proven in bench §4.3). Depths are per consumer
+  (the `queues` table above): deep where events are counted, shallow on latest-wins lanes.
 - Nodes launch through the `run_node.sh` wrapper (dora execs `*.py` with the system python,
   ignoring the venv — bench-proven bypass).
 - The webrtc node's inputs are **exactly the topics whose manifest entry resolved a video
@@ -211,9 +213,10 @@ explicitly).
   host×domain participant-index space (a finite resource). Measured at 29 bridges:
   CycloneDDS nodes started afterwards fail with an opaque
   `RCLError: error creating node`. Under the robot-side placement the bridges share that
-  index space with the robot's own nodes. Mitigations: trim the bridge count via the live
-  config `topics`/`exclude`; on the Cyclone side set `ParticipantIndex=none` or raise
-  `MaxAutoParticipantIndex`. Cyclone also logs one type-hash USER_DATA WARN per bridge
+  index space with the robot's own nodes. Mitigations: the bundled `config/cyclonedds.xml`
+  (`MaxAutoParticipantIndex=119`, wired as the compose `CYCLONEDDS_URI` default), or trim
+  the bridge count via the live config `topics`/`exclude`. Cyclone also logs one type-hash
+  USER_DATA WARN per bridge
   param-service endpoint (harmless but noisy). Collapsing to one participant awaits
   external-event attribution in upstream dora (TBD).
 - **stamp_delay_ms is the true wall-clock staleness** (epoch->monotonic conversion at ingest).

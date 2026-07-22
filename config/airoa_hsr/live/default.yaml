@@ -11,4 +11,9 @@ video: []
 frames:
   enabled: true
   sample_hz: 2.0
+queues:
+  metrics: null
+  probe: 4
+  webrtc: 2
+  frames: 2
 queue_size: 1000

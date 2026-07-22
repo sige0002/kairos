@@ -66,6 +66,15 @@ frames:
   enabled: true
   sample_hz: 2.0
 
-# Bridge->consumer queue size for every generated dataflow edge (the dora
-# default queue drops bursty high-rate messages; keep >= 1000).
+# --- Per-consumer queue depths -----------------------------------------------
+# metrics COUNTS arrivals (drop = mis-measured Hz -> keep deep). The preview
+# lanes (webrtc/frames) are latest-wins: a deep queue there turns a briefly
+# slow decoder into seconds of stale-frame lag + pinned shared memory.
+queues:
+  metrics: null      # null = inherit queue_size below
+  probe: 4
+  webrtc: 2
+  frames: 2
+
+# Metrics-lane queue depth (legacy name; queues.metrics overrides when set).
 queue_size: 1000

@@ -113,19 +113,19 @@ def generate_dataflow(
             }
         )
 
-    def fan_in_all() -> dict[str, Any]:
+    def fan_in_all(queue_size: int) -> dict[str, Any]:
         # Both metrics and probe tap every topic: metrics needs universal
         # coverage, and the probe decodes on demand so the operator can pick
         # any topic without a dataflow restart (the graph stays static).
         return {
             f"t__{tokens[t.name]}": {
                 "source": f"bridge__{tokens[t.name]}/out",
-                "queue_size": manifest.queue_size,
+                "queue_size": queue_size,
             }
             for t in manifest.topics
         }
 
-    metrics_inputs = fan_in_all()
+    metrics_inputs = fan_in_all(manifest.queues.metrics)
     metrics_inputs["tick"] = FEED_TICK
     nodes.append(
         {
@@ -141,7 +141,7 @@ def generate_dataflow(
     )
 
     if manifest.topics:
-        probe_inputs = fan_in_all()
+        probe_inputs = fan_in_all(manifest.queues.probe)
         probe_inputs["tick"] = PROBE_TICK
         nodes.append(
             {
@@ -165,7 +165,7 @@ def generate_dataflow(
         frames_inputs: dict[str, Any] = {
             f"t__{tokens[t.name]}": {
                 "source": f"bridge__{tokens[t.name]}/out",
-                "queue_size": manifest.queue_size,
+                "queue_size": manifest.queues.frames,
             }
             for t in frames_topics
         }
@@ -196,10 +196,13 @@ def generate_dataflow(
     # and lets the signaling app reject start requests for topics that are
     # not on the bus instead of streaming silent black.
     video_topics = [t for t in manifest.topics if t.video]
+    # Shallow queue on purpose: the preview is latest-wins, and a deep queue
+    # here turns a briefly-slow decoder into seconds of stale-frame latency
+    # plus pinned shared memory (field incident: choppy preview + ~1 GB RES).
     webrtc_inputs: dict[str, Any] = {
         f"t__{tokens[t.name]}": {
             "source": f"bridge__{tokens[t.name]}/out",
-            "queue_size": manifest.queue_size,
+            "queue_size": manifest.queues.webrtc,
         }
         for t in video_topics
     }

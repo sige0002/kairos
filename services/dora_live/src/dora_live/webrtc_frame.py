@@ -113,11 +113,12 @@ class _RateMeter:
 
 @dataclass
 class _Sink:
-    """One stream's buffer plus its per-stream downscale caps."""
+    """One stream's buffer plus its per-stream downscale caps and pace."""
 
     buffer: LatestFrame[Frame]
     max_width: int | None
     max_height: int | None
+    max_fps: int
 
 
 class FrameRouter:
@@ -142,11 +143,12 @@ class FrameRouter:
         buffer: LatestFrame[Frame],
         max_width: int | None = None,
         max_height: int | None = None,
+        max_fps: int = 15,
     ) -> None:
         """Register a stream's buffer to receive *topic*'s frames."""
         with self._lock:
             self._sinks.setdefault(topic, []).append(
-                _Sink(buffer, max_width, max_height)
+                _Sink(buffer, max_width, max_height, max_fps)
             )
             self._meters.setdefault(topic, _RateMeter())
 
@@ -167,6 +169,18 @@ class FrameRouter:
         """Whether any stream is currently attached to *topic* (gates decode)."""
         with self._lock:
             return bool(self._sinks.get(topic))
+
+    def decode_fps(self, topic: str) -> float:
+        """Highest fps any attached stream consumes *topic* at (0 = none).
+
+        The tracks pace their OUTPUT to ``max_fps``, so decoding faster than
+        the fastest consumer only produces frames that are overwritten unseen
+        — the node gates its decode rate on this (stateless codecs only; an
+        inter-frame codec must decode every frame to stay coherent).
+        """
+        with self._lock:
+            sinks = self._sinks.get(topic)
+            return float(max(s.max_fps for s in sinks)) if sinks else 0.0
 
     def feed(self, topic: str, frame: Frame) -> None:
         """Fan one decoded BGR frame out to *topic*'s sinks (latest-frame-wins).
@@ -232,11 +246,13 @@ class RouterFrameSource:
         *,
         max_width: int | None = None,
         max_height: int | None = None,
+        max_fps: int = 15,
     ) -> None:
         self._router = router
         self._topic = topic
         self._max_width = max_width
         self._max_height = max_height
+        self._max_fps = max_fps
         self._frames: LatestFrame[Frame] = LatestFrame()
         self._started = False
 
@@ -253,7 +269,11 @@ class RouterFrameSource:
             return
         self._started = True
         self._router.attach(
-            self._topic, self._frames, self._max_width, self._max_height
+            self._topic,
+            self._frames,
+            self._max_width,
+            self._max_height,
+            self._max_fps,
         )
 
     def stop(self) -> None:

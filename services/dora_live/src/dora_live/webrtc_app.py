@@ -56,6 +56,7 @@ def _router_source_factory(router: FrameRouter) -> SourceFactory:
             request.topic,
             max_width=request.max_width,
             max_height=request.max_height,
+            max_fps=request.max_fps,
         )
 
     return factory

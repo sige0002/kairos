@@ -53,6 +53,25 @@ class LiveVideoRule(BaseModel):
     codec: VideoCodec
 
 
+class LiveQueuesConfig(BaseModel):
+    """Per-consumer dataflow queue depths.
+
+    One size never fit all: metrics COUNTS arrivals (a dropped event is a
+    mis-measured Hz — keep it deep), while the preview lanes are latest-wins
+    (a queued stale camera frame is pure decode waste and, at depth 1000,
+    ~33 s of latency + pinned shared memory once the consumer falls behind —
+    the field incident behind the choppy-preview report).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    # None = inherit the top-level queue_size (back-compat).
+    metrics: int | None = Field(default=None, ge=1)
+    probe: int = Field(default=4, ge=1)
+    webrtc: int = Field(default=2, ge=1)
+    frames: int = Field(default=2, ge=1)
+
+
 class LiveFramesConfig(BaseModel):
     """Live-frames lane knobs (see :mod:`dora_live.frames_lane`).
 
@@ -88,7 +107,9 @@ class LiveConfig(BaseModel):
     video: list[LiveVideoRule] = Field(default_factory=list)
     # Live-frames lane (decimated compressed payloads for LAN pull).
     frames: LiveFramesConfig = Field(default_factory=LiveFramesConfig)
-    # Bridge->consumer queue size (mandatory on every generated edge).
+    # Per-consumer queue depths (see LiveQueuesConfig).
+    queues: LiveQueuesConfig = Field(default_factory=LiveQueuesConfig)
+    # Metrics-lane queue depth (legacy name; queues.metrics overrides).
     queue_size: int = Field(default=1000, ge=1)
 
 

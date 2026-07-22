@@ -40,13 +40,26 @@ class LiveTopic(BaseModel):
             )
 
 
+class LaneQueues(BaseModel):
+    """Resolved per-consumer queue depths (see live_config.LiveQueuesConfig)."""
+
+    metrics: int = 1000
+    probe: int = 4
+    webrtc: int = 2
+    frames: int = 2
+
+
 class LiveManifest(BaseModel):
     """Full topic manifest for one dataflow run."""
 
     topics: list[LiveTopic] = Field(default_factory=list)
-    # Bridge->consumer queue size. Mandatory practice (report §4.3): the dora
-    # default queue drops bursty small messages once a slow consumer blocks.
+    # Metrics-lane depth (legacy field; kept as the queues.metrics fallback).
+    # Explicit queues stay mandatory practice (report §4.3): the dora default
+    # queue drops bursty small messages once a slow consumer blocks.
     queue_size: int = 1000
+    # Per-consumer depths: deep where events are COUNTED (metrics), shallow
+    # where only the freshest payload matters (preview lanes).
+    queues: LaneQueues = Field(default_factory=LaneQueues)
     # Live-frames lane (frames node): resolved from LIVE_CONFIG. Part of the
     # manifest so a config change restarts the dataflow like any other change.
     frames_enabled: bool = True

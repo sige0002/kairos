@@ -94,6 +94,7 @@ def main() -> int:
     node = Node()
     decoders: dict[str, VideoDecoder] = {}
     decode_warned: set[str] = set()
+    last_decode: dict[str, float] = {}
     log("up; signaling on", port, "video:", video_map or "(none)")
     try:
         while True:
@@ -113,6 +114,21 @@ def main() -> int:
             # Gate on wants(): decode only topics a client is actually watching.
             if not topic or not router.wants(topic):
                 continue
+            # Rate gate for STATELESS codecs: the tracks pace their output to
+            # max_fps, so decoding a 30 Hz camera to show 15 fps burns half
+            # the decode CPU on frames that are overwritten unseen (field
+            # incident: choppy preview at ~150% CPU). ffmpeg (inter-frame)
+            # is exempt — delta frames need every predecessor to stay
+            # coherent, so it must decode at full rate while watched.
+            codec = video_map.get(topic, "image")
+            if codec != "ffmpeg":
+                now = time.monotonic()
+                fps = router.decode_fps(topic)
+                # 10% slack: discrete ~30 Hz arrivals against a strict 1/fps
+                # interval would alias the effective rate visibly below fps.
+                if fps > 0 and now - last_decode.get(topic, 0.0) < 0.9 / fps:
+                    continue
+                last_decode[topic] = now
             info = classify_value(ev["value"])
             if not info.bridged:
                 continue
@@ -122,9 +138,7 @@ def main() -> int:
             try:
                 decoder = decoders.get(topic)
                 if decoder is None:
-                    decoder = decoders[topic] = make_decoder(
-                        video_map.get(topic, "image")
-                    )
+                    decoder = decoders[topic] = make_decoder(codec)
                 bgr = decoder.decode(decoded)
             except Exception as exc:  # noqa: BLE001 - a bad frame must not kill the node
                 if topic not in decode_warned:

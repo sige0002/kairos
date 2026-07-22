@@ -86,7 +86,8 @@ def test_webrtc_node_taps_only_video_topics():
     # ONLY the topic with a resolved video codec is an input.
     inputs = [k for k in webrtc["inputs"] if k.startswith("t__")]
     assert inputs == ["t__hsrb_hand_camera_image_raw_compressed"]
-    assert webrtc["inputs"][inputs[0]]["queue_size"] == 1000
+    # Latest-wins lane: shallow queue (stale frames = decode waste + latency).
+    assert webrtc["inputs"][inputs[0]]["queue_size"] == 2
     assert webrtc["env"]["DORA_NODE_MODULE"] == "dora_live.nodes.webrtc"
     assert webrtc["env"]["DORA_LIVE_WEBRTC_PORT"] == "8007"  # default
     assert webrtc["env"]["WEBRTC_PACKET_MAX"] == "1200"  # passed through
@@ -193,6 +194,20 @@ def test_webrtc_node_always_present_even_without_cameras():
     webrtc = next(n for n in df["nodes"] if n["id"] == "webrtc")
     assert list(webrtc["inputs"]) == ["tick"]
     assert json.loads(webrtc["env"]["DORA_LIVE_VIDEO_MAP"]) == {}
+
+
+def test_per_lane_queue_depths():
+    df = generate_dataflow(_manifest())
+    metrics = next(n for n in df["nodes"] if n["id"] == "metrics")
+    probe = next(n for n in df["nodes"] if n["id"] == "probe")
+    frames = next(n for n in df["nodes"] if n["id"] == "frames")
+    m_key = next(k for k in metrics["inputs"] if k.startswith("t__"))
+    p_key = next(k for k in probe["inputs"] if k.startswith("t__"))
+    f_key = next(k for k in frames["inputs"] if k.startswith("t__"))
+    # Counting lane deep; latest-wins lanes shallow.
+    assert metrics["inputs"][m_key]["queue_size"] == 1000
+    assert probe["inputs"][p_key]["queue_size"] == 4
+    assert frames["inputs"][f_key]["queue_size"] == 2
 
 
 def test_token_collisions_deduped():
