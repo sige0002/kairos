@@ -43,9 +43,15 @@ services:
       # Match the kairos services' DDS implementation (default Fast DDS; set to
       # rmw_cyclonedds_cpp to replay onto a Cyclone DDS graph).
       RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
+      # Same participant-index headroom as the stack (see config/cyclonedds.xml):
+      # under LIVE=1 the per-topic bridges consume indexes first, and the player
+      # would otherwise die with "Failed to find a free participant index".
+      CYCLONEDDS_URI: ${CYCLONEDDS_URI:-file:///config/cyclonedds.xml}
     volumes:
       # Share recorded bags read-only (repo data/ -> /data).
       - ../../data:/data:ro
+      # DDS tuning files (cyclonedds.xml etc.).
+      - ../../config:/config:ro
       # Custom-message overlays (whole tree, read-only). `ros2 bag play` needs the
       # typesupport to PUBLISH custom-type topics, so the player sources the same
       # robot overlay the recorder/monitor use (selected by MSGS_OVERLAY_DIR).
@@ -73,11 +79,13 @@ services:
       ROS_DOMAIN_ID: "${ROS_DOMAIN_ID:-0}"
       # Match the kairos services' DDS implementation (see rosbag_player above).
       RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
+      CYCLONEDDS_URI: ${CYCLONEDDS_URI:-file:///config/cyclonedds.xml}
       # REFRESH=<s> table interval; DURATION=<s> auto-exits (handy for smoke tests).
       REFRESH: ${REFRESH:-1.0}
       DURATION: ${DURATION:-}
     volumes:
       - ../../data:/data:ro
+      - ../../config:/config:ro
       # The live-table script (mounted, so editing it needs no rebuild).
       - ./topic_table.py:/topic_table.py:ro
     command: ["python3", "/topic_table.py"]

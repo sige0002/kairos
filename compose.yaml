@@ -44,6 +44,11 @@ name: kairos
 x-ros-env: &ros-env
   ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
   RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
+  # Raises Cyclone's per-host participant-index ceiling (~32 stock): dora_live
+  # is one DDS participant PER bridged topic, so a busy live set exhausts the
+  # index space and later Cyclone nodes die with "Failed to find a free
+  # participant index". Harmless when RMW is Fast DDS (ignored).
+  CYCLONEDDS_URI: ${CYCLONEDDS_URI:-file:///config/cyclonedds.xml}
   # Active robot — config/<robot>/ (committed) or config/local/<robot>/ (gitignored).
   ROBOT: ${ROBOT:-airoa_hsr}
 

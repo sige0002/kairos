@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!-- Cyclone DDS defaults for the kairos stack (CYCLONEDDS_URI points here).
+
+     MaxAutoParticipantIndex: Cyclone refuses to create a participant once the
+     per-host/per-domain unicast index space is exhausted ("Failed to find a
+     free participant index") — with an opaque follow-up ("rmw_create_node:
+     failed to create domain" / "error not set") from rcl. The stock limit
+     (~32) is easily consumed here because dora_live runs ONE DDS participant
+     per bridged topic (29 topics = 29 indexes) before the recorder, graph
+     pollers, bag player, and the robot's own nodes take theirs. 119 keeps the
+     port arithmetic sane while lifting the ceiling far above any realistic
+     kairos deployment.
+
+     Everything else stays at Cyclone defaults on purpose. -->
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain Id="any">
+    <Discovery>
+      <MaxAutoParticipantIndex>119</MaxAutoParticipantIndex>
+    </Discovery>
+  </Domain>
+</CycloneDDS>
