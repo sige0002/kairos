@@ -68,6 +68,17 @@ def test_payload_bytes_normalises_arrow_lists():
     assert payload_bytes({}) is None
 
 
+def test_extract_flags_reads_arrow_column_cheaply():
+    import pyarrow as pa
+    from dora_live.nodes.frames import extract_flags
+
+    with_flags = pa.array([{"flags": 1, "data": [0] * 8}])
+    assert extract_flags(with_flags) == 1
+    without = pa.array([{"data": [0] * 8}])
+    assert extract_flags(without) is None
+    assert extract_flags(object()) is None
+
+
 def test_control_frames_routes():
     from dora_live.control import create_control_app
     from dora_live.feed_subscriber import DoraFeedSubscriber
