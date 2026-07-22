@@ -1,5 +1,8 @@
 """Manifest derivation and liveness semantics (no dora binary involved)."""
 
+import os
+import subprocess
+import time
 from pathlib import Path
 
 from dora_live.feed_subscriber import DoraFeedSubscriber
@@ -7,6 +10,70 @@ from dora_live.live_config import LiveConfig
 from dora_live.supervisor import DataflowSupervisor, derive_manifest
 from kairos_common import RecordingConfig
 from kairos_common.monitoring.models import QosInfo
+
+
+def _session_members(sid: int) -> list[int]:
+    pids = []
+    for pid_s in os.listdir("/proc"):
+        if not pid_s.isdigit():
+            continue
+        try:
+            with open(f"/proc/{pid_s}/stat") as f:
+                if int(f.read().rsplit(")", 1)[1].split()[3]) == sid:
+                    pids.append(int(pid_s))
+        except (OSError, ValueError, IndexError):
+            continue
+    return pids
+
+
+def _await_session_gone(sid: int, timeout: float = 3.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not _session_members(sid):
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def _supervisor(tmp_path: Path) -> DataflowSupervisor:
+    return DataflowSupervisor(
+        config=None,
+        feed=DoraFeedSubscriber(enable_rclpy=False),
+        workdir=tmp_path,
+        control_url="http://127.0.0.1:9",
+    )
+
+
+def test_terminate_proc_kills_whole_session(tmp_path: Path):
+    # Faithful stand-in for `dora run` + a node: with job control (set -m)
+    # bash puts the background child into its OWN process group — exactly
+    # what dora does to its nodes — so a killpg on the leader misses it and
+    # only the session sweep can reach it.
+    proc = subprocess.Popen(
+        ["bash", "-c", "set -m; sleep 30 & wait"], start_new_session=True
+    )
+    time.sleep(0.3)
+    assert len(_session_members(proc.pid)) >= 2  # leader + own-group child
+    sup = _supervisor(tmp_path)
+    sup._proc = proc
+    sup._terminate_proc()
+    assert _await_session_gone(proc.pid), "own-group child survived terminate"
+
+
+def test_dead_leader_leftovers_swept(tmp_path: Path):
+    # Leader dies on its own (the crash path) leaving an own-group orphan in
+    # the session — the field incident: an orphaned webrtc node reparented to
+    # PID 1 kept port 8007 LISTENing and every respawn died on EADDRINUSE.
+    proc = subprocess.Popen(
+        ["bash", "-c", "set -m; sleep 30 & exec sleep 0.05"],
+        start_new_session=True,
+    )
+    proc.wait(timeout=5.0)  # leader gone, `sleep 30` orphan remains
+    assert _session_members(proc.pid), "orphan should keep the session alive"
+    sup = _supervisor(tmp_path)
+    sup._proc = proc
+    sup._terminate_proc()
+    assert _await_session_gone(proc.pid), "dead-leader orphan not swept"
 
 
 def test_derive_manifest_splits_pending():

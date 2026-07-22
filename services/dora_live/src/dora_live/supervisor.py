@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
+import signal
 import subprocess
 import threading
 import time
@@ -100,6 +101,33 @@ def derive_manifest(
         ),
         pending,
     )
+
+
+def _kill_session(sid: int, sig: int) -> int:
+    """Signal every process in session *sid*; returns how many were signalled.
+
+    killpg is NOT enough here: ``dora run`` puts each spawned node into its
+    OWN process group (PGID = the node's pid, verified on the pinned build),
+    so the leader's group contains only the leader. The session id, however,
+    is shared by the whole tree and is immutable — it survives both the
+    leader's death and orphan reparenting to PID 1 — and POSIX has no
+    ``killsid``, so we sweep ``/proc`` for members. Linux-only, like the rest
+    of the deployment.
+    """
+    count = 0
+    for pid_s in os.listdir("/proc"):
+        if not pid_s.isdigit():
+            continue
+        try:
+            with open(f"/proc/{pid_s}/stat") as f:
+                # Fields after the comm's closing paren: state ppid pgrp session
+                if int(f.read().rsplit(")", 1)[1].split()[3]) != sid:
+                    continue
+            os.kill(int(pid_s), sig)
+            count += 1
+        except (OSError, ValueError, IndexError):
+            continue  # raced away or unreadable — fine
+    return count
 
 
 def _manifest_key(manifest: LiveManifest) -> tuple[Any, ...]:
@@ -258,6 +286,13 @@ class DataflowSupervisor:
                 return
             if proc is not None:
                 logger.error("dora run exited rc=%s; restarting", proc.returncode)
+                # A dead `dora run` can strand node processes (verified: an
+                # orphaned webrtc node keeps port 8007 LISTENing and every
+                # respawn then dies on EADDRINUSE) — sweep the run's whole
+                # SESSION before spawning the replacement.
+                swept = _kill_session(proc.pid, signal.SIGKILL)
+                if swept:
+                    logger.warning("swept %d stranded node process(es)", swept)
                 self._note_crash()
                 self._proc = None
             if not self._degraded:
@@ -317,9 +352,16 @@ class DataflowSupervisor:
             dataflow_path,
         )
         try:
+            # New session => `dora run` leads a process group containing every
+            # node it spawns, so termination can address the WHOLE tree. A bare
+            # terminate() only reached the parent, and its surviving children
+            # (the webrtc node holds a LISTEN socket) got reparented to PID 1
+            # still owning port 8007 — the next spawn then crash-looped on
+            # EADDRINUSE (field incident 2026-07-22, reproduced locally).
             self._proc = subprocess.Popen(  # noqa: S603 - fixed binary, our file
                 [self._dora_bin, "run", str(dataflow_path)],
                 cwd=self._workdir,
+                start_new_session=True,
             )
         except OSError:
             # Missing/broken dora binary: count toward the crash-loop guard so
@@ -330,14 +372,22 @@ class DataflowSupervisor:
     def _terminate_proc(self) -> None:
         proc = self._proc
         self._proc = None
-        if proc is None or proc.poll() is not None:
+        if proc is None:
             return
-        proc.terminate()
+        if proc.poll() is not None:
+            # Already dead — but its nodes may not be (see _kill_session); the
+            # session id outlives the leader while any member remains.
+            _kill_session(proc.pid, signal.SIGKILL)
+            return
+        _kill_session(proc.pid, signal.SIGTERM)
         try:
             proc.wait(timeout=10.0)
         except subprocess.TimeoutExpired:
-            proc.kill()
+            _kill_session(proc.pid, signal.SIGKILL)
             proc.wait(timeout=5.0)
+        # Late stragglers: a node that ignored/outraced SIGTERM would keep its
+        # LISTEN socket and EADDRINUSE the next spawn.
+        _kill_session(proc.pid, signal.SIGKILL)
 
     def _note_crash(self) -> None:
         now = time.monotonic()

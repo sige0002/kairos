@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 
 from dora_live.bridge_logic import classify_value
 from dora_live.nodes.probe import decode_first
@@ -78,6 +79,17 @@ def main() -> int:
     )
     thread = threading.Thread(target=server.run, name="dora-live-webrtc", daemon=True)
     thread.start()
+    # Fail LOUDLY when signaling cannot bind (port still held by an orphaned
+    # predecessor, the legacy streamer, ...): uvicorn's failure kills only its
+    # thread, which would leave a healthy-looking node with dead signaling —
+    # "camera silently gone". Exiting nonzero routes the fault into the
+    # supervisor's crash-loop guard instead (degraded + readyz 503 = visible).
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline and thread.is_alive() and not server.started:
+        time.sleep(0.1)
+    if not server.started:
+        log("signaling failed to start on port", port, "- exiting for restart")
+        return 1
 
     node = Node()
     decoders: dict[str, VideoDecoder] = {}
