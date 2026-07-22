@@ -152,6 +152,48 @@ def test_discover_missing_dir_is_noop(tmp_path: Path) -> None:
     assert discover_plugins(registry, tmp_path / "nope") == []
 
 
+def test_discover_skips_underscore_template_dirs(tmp_path: Path) -> None:
+    # extensions/_template ships a REAL manifest as scaffolding; the underscore
+    # convention keeps it (and any _wip folder) from loading as a live plugin.
+    plugins_dir = tmp_path / "plugins"
+    _make_plugin(
+        plugins_dir / "_template",
+        "apiVersion: kairos.plugin/v1\n"
+        "id: tmpl\n"
+        "name: T\n"
+        "entrypoint: {dataflow: dataflow.yml}\n",
+    )
+    registry = PipelineRegistry()
+    assert discover_plugins(registry, plugins_dir) == []
+    assert registry.get("tmpl") is None
+
+
+def test_extension_plugin_dirs_env(monkeypatch) -> None:
+    from dora_runner.plugin_loader import extension_plugin_dirs
+
+    monkeypatch.delenv("KAIROS_EXTENSIONS_DIR", raising=False)
+    assert extension_plugin_dirs() == []
+    monkeypatch.setenv("KAIROS_EXTENSIONS_DIR", "/extensions")
+    assert extension_plugin_dirs() == [Path("/extensions")]
+
+
+def test_registry_surfaces_plugin_errors(tmp_path: Path, monkeypatch) -> None:
+    # A silently-absent extension is undiagnosable; load failures must land on
+    # registry.plugin_errors (served via /pipelines).
+    from dora_runner.registry import build_default_registry
+
+    ext = tmp_path / "extensions"
+    _make_plugin(
+        ext / "broken",
+        "apiVersion: kairos.plugin/v1\nid: BROKEN\nname: Broken\n",
+    )
+    monkeypatch.setenv("KAIROS_EXTENSIONS_DIR", str(ext))
+    registry = build_default_registry(plugins_dir=tmp_path / "none")
+    assert len(registry.plugin_errors) == 1
+    assert "broken" in registry.plugin_errors[0]["source"]
+    assert registry.plugin_errors[0]["error"]
+
+
 # ---- bundled hello_dora plugin ------------------------------------------------
 
 

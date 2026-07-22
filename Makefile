@@ -381,6 +381,18 @@ smoke: ## end-to-end smoke test (health -> config -> discovery -> metrics)
 smoke-record: ## smoke test incl. record start/stop
 	RECORD=1 bash deploy/test/smoke.sh
 
+# ---- user extensions (extensions/README.md) ---------------------------------
+.PHONY: ext-live ext-live-down
+ext-live: ## start an extension's live sidecar (EXT=<name> -> extensions/<name>/live/compose.yaml)
+	@test -n "$(EXT)" || { echo "usage: make ext-live EXT=<name>"; exit 2; }
+	@test -d "extensions/$(EXT)/live" || { echo "extensions/$(EXT)/live not found (see extensions/README.md)"; exit 2; }
+	docker compose -p "kairos-ext-$(EXT)" -f "extensions/$(EXT)/live/compose.yaml" up -d
+
+ext-live-down: ## stop an extension's live sidecar (EXT=<name>)
+	@test -n "$(EXT)" || { echo "usage: make ext-live-down EXT=<name>"; exit 2; }
+	@test -d "extensions/$(EXT)/live" || { echo "extensions/$(EXT)/live not found"; exit 2; }
+	docker compose -p "kairos-ext-$(EXT)" -f "extensions/$(EXT)/live/compose.yaml" down
+
 # ---- tests / lint -----------------------------------------------------------
 .PHONY: test test-py test-fe lint fmt
 test: test-py test-fe ## run all unit tests (Python + frontend)

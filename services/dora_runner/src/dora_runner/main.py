@@ -7,6 +7,7 @@ import logging
 import os
 import uuid
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, Query, status
 from fastapi.routing import APIRoute
@@ -130,9 +131,17 @@ def create_dora_app(
     async def root() -> dict[str, str]:
         return {"service": SERVICE_NAME, "stage": "stage3"}
 
-    @app.get("/pipelines", response_model=dict[str, list[PipelineDefinition]])
-    async def pipelines() -> dict[str, list[PipelineDefinition]]:
-        return {"items": [_to_definition(p) for p in DEFAULT_REGISTRY.all()]}
+    @app.get("/pipelines")
+    async def pipelines() -> dict[str, Any]:
+        # plugin_errors: folders that failed discovery ({source, error}) —
+        # the only API-visible diagnostic for "my extension doesn't appear".
+        return {
+            "items": [
+                _to_definition(p).model_dump(by_alias=True)
+                for p in DEFAULT_REGISTRY.all()
+            ],
+            "plugin_errors": DEFAULT_REGISTRY.plugin_errors,
+        }
 
     @app.post(
         "/jobs", response_model=JobCreateResponse, status_code=status.HTTP_201_CREATED

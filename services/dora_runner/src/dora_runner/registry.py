@@ -65,6 +65,11 @@ class PipelineRegistry:
 
     def __init__(self) -> None:
         self._items: dict[str, RegisteredPipeline] = {}
+        # Plugin folders that FAILED to load ({source, error} dicts). Kept on
+        # the registry so /pipelines can surface them — a silently absent
+        # extension is otherwise undiagnosable from the API/UI side
+        # (adversarial-review finding).
+        self.plugin_errors: list[dict[str, str]] = []
 
     def register(self, pipeline: RegisteredPipeline) -> None:
         self._items[pipeline.id] = pipeline
@@ -468,9 +473,20 @@ def build_default_registry(
         )
     if discover:
         # Local import avoids a cycle: plugin_loader imports names from this module.
-        from dora_runner.plugin_loader import default_plugins_dir, discover_plugins
+        from dora_runner.plugin_loader import (
+            default_plugins_dir,
+            discover_plugins,
+            extension_plugin_dirs,
+        )
 
-        discover_plugins(registry, plugins_dir or default_plugins_dir())
+        errors = discover_plugins(registry, plugins_dir or default_plugins_dir())
+        # User extensions (mounted extensions/ dir) load after the in-tree
+        # plugins, so a clashing id keeps the bundled behavior.
+        for extra in extension_plugin_dirs():
+            errors.extend(discover_plugins(registry, extra))
+        registry.plugin_errors = [
+            {"source": e.source, "error": e.error} for e in errors
+        ]
     return registry
 
 

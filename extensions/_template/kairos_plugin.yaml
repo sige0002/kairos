@@ -1,0 +1,33 @@
+# Extension template — post-recording validation plugin (kairos.plugin/v1).
+#
+# Copy the whole _template folder to extensions/<your_name>/ and change `id`
+# (folders starting with "_" are never loaded). After that, `make restart
+# dora_runner` is enough — except the FIRST use of the extension mechanism on
+# an existing stack, which needs a one-time `make rebuild dora_runner` (the
+# container must be recreated to gain the /extensions mount + env). The runner
+# scans the mounted /extensions and the Validation tab renders the form below
+# from `params_schema` — no core edit, no frontend change.
+apiVersion: kairos.plugin/v1
+id: topic_census
+name: Topic census (extension template)
+description: >-
+  Counts the messages per topic in the recorded MCAP and fails when the busiest
+  topic has fewer than `min_messages`. The smallest real "read the recording ->
+  summary.json" starting point for your own validator.
+executor: dora
+version: 0.1.0
+required_inputs: [run_id]
+params_schema:
+  type: object
+  properties:
+    min_messages:
+      type: integer
+      title: Minimum messages (busiest topic)
+      description: Fail when even the busiest topic has fewer messages.
+      default: 1
+outputs:
+  - "report/topic_census/<run_id>/summary.json"
+entrypoint:
+  dataflow: dataflow.yml
+requires:
+  gpu: false

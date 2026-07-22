@@ -1,0 +1,40 @@
+# Extension template — live sidecar. Started with:
+#   make ext-live EXT=<your_name>          (up)
+#   make ext-live-down EXT=<your_name>     (down)
+#
+# Reuses the kairos-dora-live image (dora CLI + venv already inside); your
+# node runs under its OWN `dora run`, fully outside the supervisor-managed
+# dataflow.
+#
+# PLACEMENT: this sidecar may run on ANY wired-LAN host that can reach the
+# robot's dora_live control port — that is the point of the pull contract.
+# The default DORA_LIVE_URL targets localhost (single-host dev); in the split
+# deployment run it as
+#   DORA_LIVE_URL=http://<robot>:8005 make ext-live EXT=<your_name>
+# (the kairos-dora-live image must exist on that host: `make build dora_live`).
+#
+# `dora run` writes next to the dataflow YAML, so the read-only extension
+# mount is copied to a writable /tmp location first (documented trap).
+services:
+  live_ext:
+    image: kairos-dora-live:${ROS_DISTRO:-jazzy}
+    network_mode: host
+    volumes:
+      - .:/ext:ro
+    environment:
+      DORA_LIVE_URL: ${DORA_LIVE_URL:-http://127.0.0.1:8005}
+      # FRAME_TOPIC: /camera/color/image_raw0   # empty = auto-pick from the index
+      DARK_THRESHOLD: "40"
+    entrypoint: ["bash", "-lc"]
+    command:
+      - |
+        rm -rf /tmp/ext && cp -r /ext /tmp/ext && cd /tmp/ext && \
+        chmod +x run_node.sh && \
+        exec /opt/venv/bin/dora run dataflow.yml
+    restart: unless-stopped
+    # A long dora_live outage must not grow an unbounded json log.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

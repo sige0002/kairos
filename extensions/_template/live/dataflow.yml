@@ -1,0 +1,11 @@
+# Extension template live dataflow: ONE tick-driven node that pulls decimated
+# camera frames from dora_live and posts analysis events back. This is YOUR
+# dataflow — the kairos supervisor never sees it.
+nodes:
+  - id: brightness
+    # NOTE the wrapper: dora executes .py nodes with the SYSTEM python and
+    # ignores both the venv and a python `path:` — run_node.sh execs the venv
+    # python instead (the same bypass kairos's own nodes use; see the spec).
+    path: run_node.sh
+    inputs:
+      tick: dora/timer/millis/500

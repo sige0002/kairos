@@ -1,0 +1,10 @@
+# Extension template dataflow: ONE node that reads the recorded MCAP and
+# writes summary.json. On hosts without the dora CLI the runner executes this
+# same file through its in-process interpreter (calling each node's
+# `process()`), so keep nodes dual-mode (see nodes/report.py).
+nodes:
+  - id: census
+    path: nodes/report.py
+    inputs: {}
+    outputs:
+      - summary

@@ -67,6 +67,20 @@ def default_plugins_dir() -> Path:
     return Path(__file__).resolve().parents[2] / "plugins"
 
 
+def extension_plugin_dirs() -> list[Path]:
+    """User-extension plugin roots (``KAIROS_EXTENSIONS_DIR``, may be unset).
+
+    This is the non-destructive drop-in seam: compose mounts the repo's
+    ``extensions/`` here read-only, so a user adds a validation pipeline by
+    cloning (or ``git submodule add``-ing) a repo under ``extensions/<name>/``
+    with a ``kairos_plugin.yaml`` — no image rebuild, no core edit. Scanned
+    AFTER the in-tree dir, so an id clash resolves in favor of the bundled
+    plugin (first registration wins).
+    """
+    env = os.environ.get("KAIROS_EXTENSIONS_DIR")
+    return [Path(env)] if env else []
+
+
 class PluginManifest(BaseModel):
     """Validated ``kairos_plugin.yaml``. Unknown keys are rejected (typo guard)."""
 
@@ -125,6 +139,10 @@ def discover_plugins(
     if not plugins_dir.is_dir():
         return errors
     for manifest_path in sorted(plugins_dir.glob("*/kairos_plugin.yaml")):
+        if manifest_path.parent.name.startswith("_"):
+            # Convention: underscore-prefixed folders are templates/scaffolding
+            # (extensions/_template ships a manifest users copy), never loaded.
+            continue
         try:
             manifest = _load_manifest(manifest_path)
             if registry.get(manifest.id) is not None:

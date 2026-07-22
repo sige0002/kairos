@@ -17,6 +17,16 @@ config/local/*
 !config/local/.gitkeep
 !config/local/README.md
 
+# User extensions (UNTRACKED): drop-in dirs — `git clone`/`git submodule add`
+# a repo under extensions/<name>/ and it is picked up non-destructively (the
+# runner scans mounted /extensions for kairos_plugin.yaml; live sidecars run
+# from extensions/<name>/live/compose.yaml). Only the mechanism docs and the
+# copy-me template stay tracked. See extensions/README.md.
+extensions/*
+!extensions/README.md
+!extensions/README.ja.md
+!extensions/_template/
+
 # Secrets
 .env
 .env.*
