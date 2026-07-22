@@ -34,11 +34,18 @@ flowchart LR
 ```
 
 **フィールドスケール改修(2026-07-22 深夜)**: 中央 metrics/probe 消費ノードは**廃止**。
-29 トピック×~1000msg/s の実機で、全トピック fan-in の「メッセージ毎の dora デーモン
-ルーティング+消費ノードの Python イベント起床×2」がコンテナ CPU の支配項だったため、
-bridge が自トピックの metrics 行と probe を control へ**直接 HTTP 送信**する(feed 契約・
-:8005/:8006 の外部 API は不変)。video codec の無いトピックの bridge は `send_output`
+bridge が自トピックの metrics 行と probe を control へ**直接 HTTP 送信**し(feed 契約・
+:8005/:8006 の外部 API は不変)、video codec の無いトピックの bridge は `send_output`
 自体をしない = **デーモン/SHM を通るのはカメラトピックのみ**。
+
+実測の正直な整理(29 トピック・~975msg/s 合成ベースライン): 削れたのは「メッセージ毎の
+デーモンルーティング+消費者起床×2」(この負荷帯で計 ~20〜25%、**メッセージレート比例**で
+増える項)+プロセス2本/~100 スレッド。bridge 側には feed POST の固定費(~0.5-1%/bridge)が
+乗るため、**低レートでは中立・高レート(実機の関節系)で効く**改修である。残る支配項は
+**bridge 1 本あたりの固定床**(RustDDS participant 30 スレッド+tokio ワーカー(ホストコア数
+比例)+zenoh で ~88 スレッド・~3%/本 @20-100Hz)×トピック数 — これを下げる手段は live config
+でのトピック絞り込み(即効)と、dora upstream の external-event 帰属による 1 participant 化
+(TBD)のみ。
 
 ## dora のピン方針(重要)
 

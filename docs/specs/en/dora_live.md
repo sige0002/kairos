@@ -38,12 +38,19 @@ flowchart LR
 ```
 
 **Field-scale rework (late 2026-07-22)**: the central metrics/probe consumer nodes are
-**gone**. On a real deployment (29 topics, ~1000 msg/s) their all-topic fan-in cost
-per-message dora-daemon routing plus two Python event wakeups — the dominant container
-CPU. Each bridge now posts its own metrics rows and serves probe for its own topic
-directly over HTTP (the feed contract and the :8005/:8006 external APIs are unchanged).
-Bridges of topics without a video codec never call ``send_output`` at all — **only camera
+**gone**. Each bridge posts its own metrics rows and serves probe for its own topic
+directly over HTTP (the feed contract and the :8005/:8006 external APIs are unchanged);
+bridges of topics without a video codec never call ``send_output`` at all — **only camera
 topics traverse the daemon/SHM**.
+
+Honest accounting (29-topic / ~975 msg/s synthetic baseline): what the rework removes is
+the per-message daemon routing + two consumer wakeups (~20-25% at that load, a term that
+**scales with message rate**) plus two processes / ~100 threads; the bridges gain a fixed
+feed-POST cost (~0.5-1% each), so the rework is **neutral at low rates and pays off at
+high rates** (real joint-state streams). The remaining dominant term is the **per-bridge
+floor** (~88 threads each: 30 RustDDS + tokio workers scaling with host cores + zenoh;
+~3%/bridge at 20-100 Hz) × topic count — reducible only by trimming the live topic set
+(immediate) or the upstream single-participant bridge (TBD).
 
 ## dora pinning policy (important)
 
