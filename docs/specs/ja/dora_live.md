@@ -127,6 +127,8 @@ bridge が自トピックの metrics 行と probe を control へ**直接 HTTP �
   ロボットが消費側のアドレスを知る必要がなく(env 依存が増えない)、消費側停止のコストが
   ロボットにゼロで、取り込みペースを消費側が自律制御できる。誰も pull しなければ
   ワイヤコストもゼロ。
+- **実践例**: pull 契約に接続する自作 dora ノードの最小テンプレ(グレースケール化・動作実証済み)
+  → [`docs/examples/grayscale/`](../../examples/grayscale/README.ja.md)。
 - **解析イベントリング**(拡張シーム): 任意の lane ノードが `POST /internal/analysis/events`
   へイベントを push し、消費側は `GET /live/events` を poll。組込みデモ判定器(旧 ai ノード)は
   **裁定により削除** — 残るのはこの汎用 intake のみ。

@@ -138,6 +138,8 @@ contract it will attach to:
   latest-wins; ETag=seq with `If-None-Match` → 304). **Pull, not push**, on purpose: the
   robot never needs a consumer's address (no new env dependency), a dead consumer costs the
   robot nothing, and the consumer paces its own intake. Nobody pulling = zero wire cost.
+- **Practice example**: the minimal template for a custom dora node attached to the pull
+  contract (grayscale, verified working) → [`docs/examples/grayscale/`](../../examples/grayscale/README.md).
 - **Analysis event ring** (the extension seam): any lane node may push events to
   `POST /internal/analysis/events`; consumers poll `GET /live/events`. The built-in demo
   detectors (the old ai node) were **removed by ruling** — only this generic intake remains.

@@ -1,0 +1,16 @@
+# Practice dataflow: ONE node that pulls dora_live camera frames and
+# grayscales them. Run it with the dora CLI bundled in the dora_live image
+# (see README.ja.md) — it is YOUR dataflow, fully outside the one the
+# kairos supervisor manages.
+nodes:
+  - id: grayscale
+    # NOTE the wrapper: dora executes .py nodes with the SYSTEM python and
+    # ignores both the venv and a python `path:` — run_node.sh execs the venv
+    # python instead (the same bypass kairos's own nodes use; see the spec).
+    path: /example/run_node.sh
+    inputs:
+      tick: dora/timer/millis/500
+    env:
+      DORA_LIVE_URL: http://127.0.0.1:8005
+      # FRAME_TOPIC: /hsrb/hand_camera/image_raw/compressed   # empty = auto-pick
+      OUT_DIR: /out
