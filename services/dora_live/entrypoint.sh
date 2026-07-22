@@ -33,16 +33,30 @@ if [ -n "${DORA_LIVE_CPUS:-}" ]; then
     elif ! command -v taskset >/dev/null 2>&1; then
         echo "[dora_live] DORA_LIVE_CPUS set but 'taskset' (util-linux) is unavailable; running unrestricted." >&2
     else
-        cpu_n="${DORA_LIVE_CPUS}"
-        cpu_online="$(nproc 2>/dev/null || echo 0)"
-        if [ "${cpu_online}" -gt 0 ] && [ "${cpu_n}" -gt "${cpu_online}" ]; then
-            echo "[dora_live] DORA_LIVE_CPUS=${cpu_n} exceeds ${cpu_online} online cpus; clamping to ${cpu_online}." >&2
-            cpu_n="${cpu_online}"
-        fi
-        if taskset -pc "0-$((cpu_n - 1))" "$$" >/dev/null 2>&1; then
-            echo "[dora_live] CPU affinity restricted to cpus 0-$((cpu_n - 1)) (DORA_LIVE_CPUS=${DORA_LIVE_CPUS})." >&2
+        # Pick the first N of the CURRENTLY ALLOWED cpus (not a literal 0..N-1
+        # range): under a docker --cpuset-cpus like "4-19" the low cpus are not
+        # ours to take, and pinning to them would fail (team review note).
+        cpu_list="$(python3 - "${DORA_LIVE_CPUS}" <<'PYEOF' 2>/dev/null || true
+import sys
+
+n = int(sys.argv[1])
+allowed: list[int] = []
+with open("/proc/self/status") as f:
+    for line in f:
+        if line.startswith("Cpus_allowed_list:"):
+            for part in line.split(":", 1)[1].strip().split(","):
+                if "-" in part:
+                    lo, hi = part.split("-")
+                    allowed.extend(range(int(lo), int(hi) + 1))
+                elif part:
+                    allowed.append(int(part))
+print(",".join(str(c) for c in allowed[:n]))
+PYEOF
+)"
+        if [ -n "${cpu_list}" ] && taskset -pc "${cpu_list}" "$$" >/dev/null 2>&1; then
+            echo "[dora_live] CPU affinity restricted to cpus ${cpu_list} (DORA_LIVE_CPUS=${DORA_LIVE_CPUS})." >&2
         else
-            echo "[dora_live] taskset could not set affinity to cpus 0-$((cpu_n - 1)); running unrestricted." >&2
+            echo "[dora_live] taskset could not restrict affinity (wanted ${DORA_LIVE_CPUS} cpus); running unrestricted." >&2
         fi
     fi
 fi

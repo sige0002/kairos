@@ -161,9 +161,21 @@ class RosTopicSubscriber:
             logger.exception("discovery refresh failed; will retry next tick")
 
     def _resolve_qos(self, node: Any, topic: str) -> QosInfo:
-        """Auto-match a subscription QoS from the topic's publishers."""
+        """Auto-match a subscription QoS from the topic's publishers.
+
+        ``monitor.qos_depth`` is the configured depth FLOOR (team finding:
+        without it the floor fell back to the function default of 10, while
+        dora_live already floored at the configured 30 — the monitor would
+        still undercount faster bursts than the ~50 Hz case that exposed it).
+        """
+        default_depth = (
+            self._config.monitor.qos_depth if self._config is not None else 10
+        )
         return resolve_subscription_qos(
-            topic, publisher_qos_infos(node, topic), self._config
+            topic,
+            publisher_qos_infos(node, topic),
+            self._config,
+            default_depth=default_depth,
         )
 
     def _subscribe(
