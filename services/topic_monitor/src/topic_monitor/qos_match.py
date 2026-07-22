@@ -90,7 +90,13 @@ def resolve_subscription_qos(
     # and transient_local publishers, and we do not want replayed history.
     durability = Durability.volatile.value
 
-    # Smallest offered depth (keep_last), floored at 1 — keep the monitor light.
-    depth = min((max(1, p.depth) for p in publishers), default=default_depth)
+    # Smallest offered depth (keep_last), but never shallower than
+    # default_depth: a depth-1 subscriber was field-measured undercounting a
+    # bursty topic (26.8 Hz observed vs ~50 Hz true) — with publishers offering
+    # depth 1 the 1-slot history queue drops bursts between executor picks, so
+    # arrivals are lost BEFORE they are counted. A deeper subscriber queue
+    # never breaks DDS QoS compatibility.
+    min_offered = min((max(1, p.depth) for p in publishers), default=default_depth)
+    depth = max(min_offered, default_depth)
 
     return QosInfo(reliability=reliability, durability=durability, depth=depth)

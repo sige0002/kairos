@@ -22,8 +22,8 @@ def test_any_best_effort_publisher_forces_best_effort() -> None:
     # A best_effort subscriber is compatible with both pub kinds.
     assert qos.reliability == Reliability.best_effort.value
     assert qos.durability == Durability.volatile.value
-    # Smallest offered depth keeps the monitor light.
-    assert qos.depth == 5
+    # Smallest offered depth, floored at default_depth (10 here).
+    assert qos.depth == 10
 
 
 def test_all_reliable_publishers_resolve_reliable() -> None:
@@ -78,9 +78,19 @@ def test_config_override_only_applies_on_pattern_match() -> None:
         "/joint_states", [_qos("best_effort", depth=2)], config=config
     )
     assert qos.reliability == Reliability.best_effort.value
-    assert qos.depth == 2
+    assert qos.depth == 10  # offered 2 is floored at default_depth
 
 
-def test_depth_floored_at_one() -> None:
+def test_depth_floored_at_default() -> None:
+    # A nonsense offered depth (0) resolves to the default floor, never 0/1.
     qos = resolve_subscription_qos("/t", [_qos("reliable", depth=0)])
-    assert qos.depth == 1
+    assert qos.depth == 10
+
+
+def test_default_depth_is_a_floor_for_auto_match():
+    # Shallow publishers no longer force a burst-dropping shallow subscriber.
+    pubs = [_qos("reliable", depth=1), _qos("reliable", depth=5)]
+    assert resolve_subscription_qos("/t", pubs, default_depth=30).depth == 30
+    # A deeper offer than the floor is kept as-is.
+    pubs = [_qos("reliable", depth=50)]
+    assert resolve_subscription_qos("/t", pubs, default_depth=30).depth == 50

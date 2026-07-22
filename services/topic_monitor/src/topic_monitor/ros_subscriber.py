@@ -167,7 +167,12 @@ class RosTopicSubscriber:
             )
             for info in node.get_publishers_info_by_topic(topic)
         ]
-        return resolve_subscription_qos(topic, publishers, self._config)
+        default_depth = (
+            self._config.monitor.qos_depth if self._config is not None else 10
+        )
+        return resolve_subscription_qos(
+            topic, publishers, self._config, default_depth=default_depth
+        )
 
     def _subscribe(
         self, node: Any, topic: str, type_str: str | None, qos: QosInfo
