@@ -65,15 +65,41 @@ per-topic プロセス艦隊(RustDDS participant ×29=固定床+index 空間消�
 - CLI と Python wheel は**同一コミットから**ビルド(混在不可)。
 - **撤退線**: domain_id 対応入りの正式リリースが出たら PyPI wheel へ戻す(dora-rs/dora#1626)。
 
-### carried パッチ(3 本・ビルド時に `git apply`、いずれも upstream 提案候補)
+### carried パッチ(4 本・ビルド時にこの順で `git apply`、いずれも upstream 提案候補)
+
+**適用順序は固定**(metrics → rustdds-bump → empty-struct → graph-watcher。後段の
+パッチは前段適用済みの木に対して生成されており、metrics と graph-watcher は同じ
+`python/src/lib.rs` に触る)。
 
 | パッチ | 内容 | 撤退線 |
 |---|---|---|
 | `dora-metrics.patch` | `Ros2MetricsSubscription`(Rust 側計数・drain バッチ・probe tap)。live_ingest 1 プロセス集約の土台 | 同等機能の dora release(dora-rs/dora#2801) |
 | `dora-rustdds-bump.patch` | rustdds **0.11.4→0.13.1** + ros2-client 0.10.0。ピン版の RustDDS(2025-03)は FastDDS との SEDP マッチングを高負荷時に失う(publisher 側 `Subscription count: 0` のまま全トピック 0Hz 恒久ウェッジ、58 トピック実データ再現で実証)。0.12.0〜0.13.1(2026-06/07)の相互運用集中修正(SPDP 即応・QoS マッチング・NACK_FRAG)で解消を実測確認。upstream dora の `=0.11.4` ピンは **Windows 専用の pnet ビルド問題**(Atostek/RustDDS#375)が理由で、本イメージ(Linux)には該当しない | upstream dora が rustdds ≥0.13 へ更新したら |
-| `dora-empty-struct-fix.patch` | 空メッセージ型(`std_msgs/Empty` 等)の CDR→Arrow 変換 panic 修正(`StructArray::from(vec![])` は arrow が拒否)。この panic は RustDDS キャッシュ Mutex を毒化し **participant イベントループごと死んで全トピック 0Hz** になる(相互運用が直った 0.13.1 で初めて顕在化) | upstream dora へ修正が入ったら |
+| `dora-empty-struct-fix.patch` | 空メッセージ型(`std_msgs/Empty` 等)の CDR→Arrow 変換 panic 修正(`StructArray::from(vec![])` は arrow が拒否)。この panic は RustDDS キャッシュ Mutex を毒化し **participant イベントループごと死んで全トピック 0Hz** になる(相互運用が直った 0.13.1 で初めて顕在化)。upstream 報告済み = dora-rs/dora#2804 | #2804 の修正が dora に入ったら |
+| `dora-graph-watcher.patch` | `Ros2GraphWatcher` — 素の RustDDS participant の SEDP status イベント(WriterDetected/ReaderDetected/Lost)からグラフ(トピック名/型/endpoint 数/publisher 提供 QoS)を追跡。control サイドカーの **rclpy graph poller ノードを置換**(rosout+パラメータサービス付き rclpy ノードより軽い)。rclpy は「パッチ無し wheel」時の loud-warning フォールバックとしてのみ残置。実効バックエンドは `/live/status` の `discovery_source`(`dora_graph`/`rclpy`)で確認可能、`DORA_LIVE_DISCOVERY=rclpy` で強制切替(運用逃げ道 + 負荷 A/B レバー) | dora が graph introspection API を出したら |
 
-検証(2026-07-23、realman 実データ 58 トピック・bag ループ連続再生): 旧構成 = 全トピック 0Hz ウェッジ(3 時間継続)→ 3 パッチ構成 = **ブリッジ 43 トピック全て健全**(positive 41-43/46 を 5 分間維持・panic 0・Empty 17 通受信済み。0 のままの 5 本は publisher 不在 3 + 疎トピック 2 で全数説明済み)。
+検証(2026-07-23、realman 実データ 58 トピック・bag ループ連続再生): 旧構成 = 全トピック 0Hz ウェッジ(3 時間継続)→ パッチ構成 = **ブリッジ 43 トピック全て健全**(positive 41-43/46 を 5 分間維持・panic 0・Empty 17 通受信済み。0 のままの 5 本は publisher 不在 3 + 疎トピック 2 で全数説明済み)。graph-watcher 置換後も 43 bridged / 15 pending / QoS 解決は同一値で、`/topics` は 221 トピック(型解決 218)を列挙。discovery 置換の負荷 A/B(同一 58 トピック負荷): control プロセス CPU 6.4% vs rclpy 5.8%(ノイズ内)・**スレッド 10 vs 38**・コンテナ PIDS 195 vs 223 = 負荷増なし。
+
+**publisher RMW マトリクス(2026-07-23 実測・同一 58 トピック構成)**:
+
+| publisher 側 RMW | discovery | データ | 残課題 |
+|---|---|---|---|
+| FastDDS(既定) | 221 トピック全解決 | 41-43/46 positive を維持・panic 0 | なし(クリーン) |
+| CycloneDDS | 221 トピック全解決・panic 0 | 初期は全数流れる(累計 ~2000 通/topic)が、**数分で 4/43 トピックの reader マッチが脱落**(publisher 側 `Subscription count: 0`・安定縮退で連鎖なし・残り 37-39 は健全継続) | RustDDS↔Cyclone の per-reader マッチ喪失(upstream 残課題)。**録画・再生の既定は FastDDS のままにすること** |
+
+### デプロイ要件(高レートトピック時の host sysctl)
+
+Linux 既定の UDP 受信バッファは `net.core.rmem_default/rmem_max = 212992`(208KB)で、
+RustDDS は `SO_RCVBUF` を明示設定しない。生画像級(数十 MB/s)のトピックを流すと
+受信ドロップ(`/proc/net/snmp` の `RcvbufErrors` 増加、実測 +45k/12s)の増幅器になる。
+`network_mode: host` のためコンテナ内 sysctl では効かず、**ホスト側で**:
+
+```sh
+sudo sysctl -w net.core.rmem_default=16777216 net.core.rmem_max=16777216
+# 恒久化は /etc/sysctl.d/99-kairos.conf に同キーを記載
+```
+
+(0Hz ウェッジの根治は上記パッチ側。これは高レート時のドロップ低減のハードニング。)
 
 ## HTTP 契約(すべて既存契約の互換面 — フロントエンド無改修)
 
@@ -148,6 +174,11 @@ per-topic プロセス艦隊(RustDDS participant ×29=固定床+index 空間消�
   ワイヤコストもゼロ。
 - **実践例**: pull 契約に接続する自作 dora ノードの最小テンプレ(グレースケール化・動作実証済み)
   → [`docs/examples/grayscale/`](../../examples/grayscale/README.ja.md)。
+- **常設のユーザー拡張置き場**: リポジトリ直下 [`extensions/`](../../../extensions/README.ja.md)
+  (gitignore 済み)。`_template/` をコピーすると、この pull 契約に接続する
+  ライブサイドカー(`make ext-live EXT=<name>`)と dora_runner の検証プラグイン
+  (初回のみ `make rebuild dora_runner`、以後は `make restart dora_runner` だけで反映)
+  の両テンプレが手に入る。
 - **解析イベントリング**(拡張シーム): 任意のプロデューサ(lane ノードでも外部プロセスでも)が
   `POST /internal/analysis/events` へ push し、消費側は `GET /live/events?since=` を poll。
   フィルタはイベントの `t`(epoch 秒)キー — 省略時はサーバが受信時刻を付与。数値側の実例

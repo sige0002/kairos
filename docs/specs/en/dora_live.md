@@ -72,19 +72,49 @@ upstream (dora-rs/dora#2801) — drop it once an equivalent ships in a release.
 - **Exit condition**: switch back to the PyPI wheel once an official release ships domain_id
   support (dora-rs/dora#1626).
 
-### Carried patches (3, `git apply`ed at build time; all upstream candidates)
+### Carried patches (4, `git apply`ed at build time in this order; all upstream candidates)
+
+**The apply order is fixed** (metrics → rustdds-bump → empty-struct → graph-watcher:
+later patches are generated against a tree with the earlier ones applied, and
+metrics + graph-watcher both touch `python/src/lib.rs`).
 
 | Patch | What it does | Exit condition |
 |---|---|---|
 | `dora-metrics.patch` | `Ros2MetricsSubscription` (Rust-side counting, drain batching, probe tap). Foundation of the single-process live_ingest | A dora release with an equivalent (dora-rs/dora#2801) |
 | `dora-rustdds-bump.patch` | rustdds **0.11.4→0.13.1** + ros2-client 0.10.0. The pinned RustDDS (2025-03) loses SEDP matching against FastDDS under load (publisher stuck at `Subscription count: 0`, every topic 0 Hz permanently — proven on the 58-topic real-data repro). The 0.12.0–0.13.1 interop push (2026-06/07: prompt SPDP response, QoS-matching logic, NACK_FRAG handling) fixes it — verified live. Upstream dora's `=0.11.4` pin exists only for a **Windows-only pnet build issue** (Atostek/RustDDS#375), which does not apply to this Linux image | Upstream dora moving to rustdds ≥0.13 |
-| `dora-empty-struct-fix.patch` | Fixes the CDR→Arrow panic on empty message types (`std_msgs/Empty` etc.; arrow rejects `StructArray::from(vec![])`). The panic poisons the RustDDS cache mutex and **kills the whole participant event loop — every topic goes 0 Hz** (surfaced only once 0.13.1 repaired interop) | The fix landing upstream in dora |
+| `dora-empty-struct-fix.patch` | Fixes the CDR→Arrow panic on empty message types (`std_msgs/Empty` etc.; arrow rejects `StructArray::from(vec![])`). The panic poisons the RustDDS cache mutex and **kills the whole participant event loop — every topic goes 0 Hz** (surfaced only once 0.13.1 repaired interop). Reported upstream = dora-rs/dora#2804 | The #2804 fix landing in dora |
+| `dora-graph-watcher.patch` | `Ros2GraphWatcher` — tracks the graph (topic names/types, endpoint counts, offered publisher QoS) from a bare RustDDS participant's SEDP status events (WriterDetected/ReaderDetected/Lost). **Replaces the control sidecar's rclpy graph-poller node** (lighter than an rclpy node with rosout + parameter services). rclpy remains only as the loud-warning fallback for a patch-less wheel. The effective backend is visible as `discovery_source` (`dora_graph`/`rclpy`) in `/live/status`; `DORA_LIVE_DISCOVERY=rclpy` forces the fallback (ops escape hatch + load A/B lever) | dora shipping a graph-introspection API |
 
 Verification (2026-07-23, realman real-data 58 topics, looping bag replay): old build =
-all-topic 0 Hz wedge (persisted 3 h) → three-patch build = **all 43 bridged topics
+all-topic 0 Hz wedge (persisted 3 h) → patched build = **all 43 bridged topics
 healthy** (positive 41–43/46 held for 5 min, 0 panics, 17 Empty messages received; the
 5 remaining zeros are fully accounted for: 3 publisher-less config topics + 2 sparse
-topics).
+topics). After the graph-watcher swap: identical 43 bridged / 15 pending / QoS
+resolution, and `/topics` enumerates 221 topics (218 with resolved types). Discovery
+load A/B (same 58-topic load): control process CPU 6.4% vs rclpy 5.8% (noise),
+**threads 10 vs 38**, container PIDS 195 vs 223 — no load increase.
+
+**Publisher RMW matrix (measured 2026-07-23, same 58-topic config)**:
+
+| Publisher RMW | Discovery | Data | Residual |
+|---|---|---|---|
+| FastDDS (default) | all 221 topics resolved | 41–43/46 positive sustained, 0 panics | none (clean) |
+| CycloneDDS | all 221 topics resolved, 0 panics | everything flows initially (~2000 msgs/topic accumulated), then **4/43 topics lose their reader match after minutes** (publisher-side `Subscription count: 0`; stable degradation, no cascade — the remaining 37–39 stay healthy) | RustDDS↔Cyclone per-reader match loss (upstream residual). **Keep FastDDS as the recording/replay default** |
+
+### Deployment requirement (host sysctl for high-rate topics)
+
+Linux defaults the UDP receive buffer to `net.core.rmem_default/rmem_max = 212992`
+(208 KB) and RustDDS does not set `SO_RCVBUF`. Raw-image-class topics (tens of MB/s)
+then amplify receive drops (`RcvbufErrors` in `/proc/net/snmp`; measured +45k/12 s).
+`network_mode: host` means a container-local sysctl does nothing — set it **on the host**:
+
+```sh
+sudo sysctl -w net.core.rmem_default=16777216 net.core.rmem_max=16777216
+# persist via the same keys in /etc/sysctl.d/99-kairos.conf
+```
+
+(The 0 Hz wedge itself is fixed by the patches above; this hardening reduces
+drops under high rates.)
 
 ## HTTP contracts (all compatibility surfaces — frontend untouched)
 
@@ -163,6 +193,11 @@ contract it will attach to:
   robot nothing, and the consumer paces its own intake. Nobody pulling = zero wire cost.
 - **Practice example**: the minimal template for a custom dora node attached to the pull
   contract (grayscale, verified working) → [`docs/examples/grayscale/`](../../examples/grayscale/README.md).
+- **Permanent user-extension home**: repo-root [`extensions/`](../../../extensions/README.md)
+  (gitignored). Copying `_template/` yields both a live sidecar attached to this
+  pull contract (`make ext-live EXT=<name>`) and a dora_runner validation plugin
+  (one-time `make rebuild dora_runner` on first use; afterwards a bare
+  `make restart dora_runner` activates changes).
 - **Analysis event ring** (the extension seam): any producer (a lane node or an external
   process) may push to `POST /internal/analysis/events`; consumers poll
   `GET /live/events?since=`. Filtering keys on the event's `t` (epoch seconds; the server
