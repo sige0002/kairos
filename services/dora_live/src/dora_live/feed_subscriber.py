@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -97,25 +98,37 @@ class DoraFeedSubscriber:
     def set_topic_types(self, topic_types: dict[str, str]) -> None:
         self._topic_types = dict(topic_types)
 
+    def bridged_topics(self) -> set[str]:
+        """Topics currently wired onto the live bus (manifest-derived)."""
+        return set(self._topic_types)
+
     def ingest_batch(self, rows: list[dict[str, Any]]) -> int:
         """Feed one pushed batch; returns the number of samples delivered.
 
         Row shape (metrics node contract): ``{"topic": str, "recv_t": float,
-        "size": int, "stamp_s": float|None, "bridged": bool}``.
+        "size": int, "stamp_s": float|None, "bridged": bool}``. ``recv_t`` is
+        CLOCK_MONOTONIC while ``header.stamp`` is epoch — the engine compares
+        the two directly (``stamp_delay = recv_t - stamp_s``), so the stamp is
+        shifted into the monotonic domain here; without this the delay is
+        either discarded or garbage (review finding: 63-day "delays").
         """
         sink = self._sink
         if sink is None or self._paused:
             return 0
+        # Epoch -> monotonic offset, computed per batch (sub-ms drift is far
+        # below the stamp-quality thresholds this feeds).
+        offset = time.time() - time.monotonic()
         delivered = 0
         for row in rows:
             topic = row["topic"]
+            stamp_s = row.get("stamp_s")
             sink(
                 Sample(
                     topic=topic,
                     type=self._topic_types.get(topic),
                     recv_t=float(row["recv_t"]),
                     size_bytes=int(row.get("size") or 0),
-                    stamp_s=row.get("stamp_s"),
+                    stamp_s=None if stamp_s is None else float(stamp_s) - offset,
                 )
             )
             delivered += 1

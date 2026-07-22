@@ -46,7 +46,12 @@ def main() -> int:
     port = int(os.environ.get("DORA_LIVE_WEBRTC_PORT", str(DEFAULT_WEBRTC_PORT)))
     settings = get_settings()
     router = FrameRouter()
-    app = create_webrtc_app(router)
+    # Bus topic set (from the dataflow generator): /stream/start for anything
+    # else is rejected honestly instead of streaming the black fallback.
+    bus_topics = {
+        t for t in os.environ.get("DORA_LIVE_WEBRTC_TOPICS", "").split(",") if t
+    }
+    app = create_webrtc_app(router, bus_topics=bus_topics)
 
     # Signaling HTTP runs on its own thread in this process (media is fed from
     # the dora event loop below into the shared, thread-safe router).

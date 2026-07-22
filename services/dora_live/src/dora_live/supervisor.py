@@ -138,20 +138,40 @@ class DataflowSupervisor:
             if set(self._allowlist) <= set(self._discovered_types()):
                 break
             time.sleep(0.5)
-        self._rederive_and_maybe_restart(force_log=True)
 
+        # Every iteration is exception-guarded: one bad derive/spawn must never
+        # kill the supervision thread (review finding — a dead thread left the
+        # service 503 forever with no retry and no crash-loop accounting).
         last_retry = time.monotonic()
-        while not self._stop_evt.wait(1.0):
+        first = True
+        while not self._stop_evt.wait(0.0 if first else 1.0):
+            try:
+                if first or (
+                    self._pending and time.monotonic() - last_retry > RETRY_PERIOD_S
+                ):
+                    if not first:
+                        last_retry = time.monotonic()
+                    self._rederive_and_maybe_restart(force_log=first)
+                    first = False
+                self._ensure_running()
+            except Exception:
+                first = False
+                logger.exception("supervisor iteration failed (retrying)")
+
+    def _ensure_running(self) -> None:
+        """Keep the dataflow process alive; all _proc access under the lock."""
+        with self._lock:
+            if self._degraded or not self._manifest.topics:
+                return
             proc = self._proc
-            if proc is not None and proc.poll() is not None:
+            if proc is not None and proc.poll() is None:
+                return
+            if proc is not None:
                 logger.error("dora run exited rc=%s; restarting", proc.returncode)
                 self._note_crash()
                 self._proc = None
-                if not self._degraded:
-                    self._spawn()
-            if self._pending and time.monotonic() - last_retry > RETRY_PERIOD_S:
-                last_retry = time.monotonic()
-                self._rederive_and_maybe_restart()
+            if not self._degraded:
+                self._spawn()
 
     def _rederive_and_maybe_restart(self, *, force_log: bool = False) -> bool:
         with self._lock:
@@ -200,10 +220,16 @@ class DataflowSupervisor:
             len(self._manifest.topics),
             dataflow_path,
         )
-        self._proc = subprocess.Popen(  # noqa: S603 - fixed binary, our file
-            [self._dora_bin, "run", str(dataflow_path)],
-            cwd=self._workdir,
-        )
+        try:
+            self._proc = subprocess.Popen(  # noqa: S603 - fixed binary, our file
+                [self._dora_bin, "run", str(dataflow_path)],
+                cwd=self._workdir,
+            )
+        except OSError:
+            # Missing/broken dora binary: count toward the crash-loop guard so
+            # persistent failure degrades loudly instead of retrying forever.
+            self._note_crash()
+            raise
 
     def _terminate_proc(self) -> None:
         proc = self._proc

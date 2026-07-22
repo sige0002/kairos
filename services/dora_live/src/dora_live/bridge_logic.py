@@ -49,6 +49,10 @@ def extract_stamp_ns(value: Any) -> int | None:
         stamp = header.field("stamp")
         sec = stamp.field("sec")[0].as_py()
         nanosec = stamp.field("nanosec")[0].as_py()
+        if not sec and not nanosec:
+            # Zero stamp = "not stamped" by convention (Sample contract);
+            # treating it as epoch 0 would fabricate epoch-sized delays.
+            return None
         return int(sec) * 1_000_000_000 + int(nanosec)
     except Exception:
         return None

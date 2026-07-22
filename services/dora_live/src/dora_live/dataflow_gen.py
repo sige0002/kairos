@@ -19,6 +19,11 @@ from dora_live.bridge_logic import dora_type_name
 from dora_live.manifest import LiveManifest
 
 METRICS_TICK = "dora/timer/millis/1000"
+# Feed flush tick: the metrics node ships sample batches to the control app on
+# this tick, and the delivery lag directly depresses the hz the monitor windows
+# compute (review finding: a 1 s flush made hz sawtooth up to 20% low). 100 ms
+# keeps the bias under ~2% on the default 5 s window at negligible POST cost.
+FEED_TICK = "dora/timer/millis/100"
 PROBE_TICK = "dora/timer/millis/500"
 TIMER_PREFIX = "dora/timer/"
 
@@ -31,6 +36,26 @@ def topic_token(topic: str) -> str:
     """Sanitize a ROS topic name into a dora node/input id fragment."""
     token = re.sub(r"[^a-z0-9_]", "_", topic.lower()).strip("_")
     return token or "root"
+
+
+def unique_tokens(topics: list[str]) -> dict[str, str]:
+    """Map each topic to a collision-free token.
+
+    Sanitization can collide (``/cam/left`` and ``/cam_left`` both become
+    ``cam_left``); a numeric suffix disambiguates instead of refusing the
+    whole manifest (review finding: the ValueError killed supervision).
+    """
+    mapping: dict[str, str] = {}
+    used: set[str] = set()
+    for topic in topics:
+        token = topic_token(topic)
+        candidate, n = token, 2
+        while candidate in used:
+            candidate = f"{token}_{n}"
+            n += 1
+        used.add(candidate)
+        mapping[topic] = candidate
+    return mapping
 
 
 def bridge_node_id(topic: str) -> str:
@@ -72,13 +97,11 @@ def generate_dataflow(
         raise ValueError(f"queue_size must be >= 1: {manifest.queue_size}")
     env = dict(common_env or {})
 
+    tokens = unique_tokens([t.name for t in manifest.topics])
+
     nodes: list[dict[str, Any]] = []
-    seen_ids: set[str] = set()
     for t in manifest.topics:
-        node_id = bridge_node_id(t.name)
-        if node_id in seen_ids:
-            raise ValueError(f"duplicate bridge node id {node_id} ({t.name})")
-        seen_ids.add(node_id)
+        node_id = f"bridge__{tokens[t.name]}"
         nodes.append(
             {
                 "id": node_id,
@@ -103,15 +126,15 @@ def generate_dataflow(
         # coverage, and the probe decodes on demand so the operator can pick
         # any topic without a dataflow restart (the graph stays static).
         return {
-            f"t__{topic_token(t.name)}": {
-                "source": f"{bridge_node_id(t.name)}/out",
+            f"t__{tokens[t.name]}": {
+                "source": f"bridge__{tokens[t.name]}/out",
                 "queue_size": manifest.queue_size,
             }
             for t in manifest.topics
         }
 
     metrics_inputs = fan_in_all()
-    metrics_inputs["tick"] = METRICS_TICK
+    metrics_inputs["tick"] = FEED_TICK
     nodes.append(
         {
             "id": "metrics",
@@ -155,32 +178,38 @@ def generate_dataflow(
             }
         )
 
-    # WebRTC lane: taps ONLY the CompressedImage topics (media closes inside the
-    # node; no node when there is nothing to preview). realman's raw Image is
-    # excluded by is_compressed_image (decided: uncompressed Image is off-bus).
+    # WebRTC lane: taps ONLY the CompressedImage topics (media closes inside
+    # the node; realman's raw Image is excluded by is_compressed_image —
+    # uncompressed Image is off-bus by ruling). The node is emitted even with
+    # ZERO camera topics: something must always listen on the signaling port,
+    # or nginx /webrtc/ 502s during discovery settle and on camera-less robots
+    # (review finding). DORA_LIVE_WEBRTC_TOPICS lets the signaling app reject
+    # start requests for topics that are not on the bus instead of streaming
+    # silent black.
     compressed = [t for t in manifest.topics if is_compressed_image(t.ros_type)]
-    if compressed:
-        webrtc_inputs = {
-            f"t__{topic_token(t.name)}": {
-                "source": f"{bridge_node_id(t.name)}/out",
-                "queue_size": manifest.queue_size,
-            }
-            for t in compressed
+    webrtc_inputs: dict[str, Any] = {
+        f"t__{tokens[t.name]}": {
+            "source": f"bridge__{tokens[t.name]}/out",
+            "queue_size": manifest.queue_size,
         }
-        webrtc_node_env = {
-            **env,
-            "DORA_NODE_MODULE": "dora_live.nodes.webrtc",
-            **(webrtc_env or {}),
+        for t in compressed
+    }
+    webrtc_inputs["tick"] = METRICS_TICK
+    webrtc_node_env = {
+        **env,
+        "DORA_NODE_MODULE": "dora_live.nodes.webrtc",
+        "DORA_LIVE_WEBRTC_TOPICS": ",".join(t.name for t in compressed),
+        **(webrtc_env or {}),
+    }
+    webrtc_node_env.setdefault("DORA_LIVE_WEBRTC_PORT", DEFAULT_WEBRTC_PORT)
+    nodes.append(
+        {
+            "id": "webrtc",
+            "path": node_launcher,
+            "env": webrtc_node_env,
+            "inputs": webrtc_inputs,
         }
-        webrtc_node_env.setdefault("DORA_LIVE_WEBRTC_PORT", DEFAULT_WEBRTC_PORT)
-        nodes.append(
-            {
-                "id": "webrtc",
-                "path": node_launcher,
-                "env": webrtc_node_env,
-                "inputs": webrtc_inputs,
-            }
-        )
+    )
 
     return {"nodes": nodes}
 

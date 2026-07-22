@@ -31,6 +31,10 @@ def test_extract_stamp_ns():
     assert extract_stamp_ns(val) == 7_000_000_250
 
 
+def test_extract_stamp_ns_zero_stamp_is_none():
+    assert extract_stamp_ns(_stamped_struct(0, 0)) is None
+
+
 def test_extract_stamp_ns_absent():
     assert extract_stamp_ns(pa.array([{"x": 1}])) is None
     assert extract_stamp_ns(pa.array([1.0])) is None

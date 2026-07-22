@@ -317,7 +317,11 @@ services:
       # Listed here (environment overrides env_file) so a shell-scoped
       # `TOPIC_MONITOR_PORT=8005 docker compose up -d orchestrator` actually
       # reaches the container — the dora_live trial-switchover lever.
+      # WEBRTC_PORT likewise: without it a LIVE=1 cutover leaves the
+      # orchestrator's streamer health probing the retired 8002 and /readyz
+      # reports a permanently degraded streamer (review finding).
       TOPIC_MONITOR_PORT: ${TOPIC_MONITOR_PORT:-8001}
+      WEBRTC_PORT: ${WEBRTC_PORT:-8002}
     # Health = LIVENESS (/healthz), deliberately NOT readiness. The orchestrator's
     # /readyz aggregates downstream services (recorder/monitor/etc.), so wiring the
     # container healthcheck to it would flip the orchestrator to "unhealthy"

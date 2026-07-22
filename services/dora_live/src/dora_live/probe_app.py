@@ -35,6 +35,11 @@ _SAMPLE_TIMEOUT_S = 5.0
 class TopicInfo(BaseModel):
     name: str
     type: str | None = None
+    # Additive honesty flag (absent from topic_probe's shape; extra keys are
+    # harmless to the frontend): only bridged topics can actually be probed —
+    # the bus carries the recording config's default_topics, not the whole
+    # graph, which is a real capability difference vs the legacy prober.
+    bridged: bool | None = None
 
 
 class TopicsResponse(BaseModel):
@@ -90,13 +95,29 @@ def create_probe_compat_app(
     @app.get("/topics", response_model=TopicsResponse)
     async def topics() -> TopicsResponse:
         entries = feed.discover_topics()
+        bridged = feed.bridged_topics()
         return TopicsResponse(
             ts=utc_now_iso8601(),
-            topics=[TopicInfo(name=e.name, type=e.type) for e in entries],
+            topics=[
+                TopicInfo(name=e.name, type=e.type, bridged=e.name in bridged)
+                for e in entries
+            ],
         )
 
     @app.get("/fields", response_model=FieldsResponse)
     async def fields(topic: str = Query(..., min_length=1)) -> FieldsResponse:
+        if topic not in feed.bridged_topics():
+            # Fast, honest refusal instead of a 5 s timeout that reads like a
+            # dead topic (review finding: silent capability regression).
+            return FieldsResponse(
+                ts=utc_now_iso8601(),
+                topic=topic,
+                type=_topic_type(topic),
+                reason=(
+                    "topic is not on the live bus (only the recording config's "
+                    "default_topics are bridged); add it there to probe it"
+                ),
+            )
         hub.request_introspect(topic)
         got = await asyncio.to_thread(hub.wait_for_fields, topic, _FIELDS_TIMEOUT_S)
         if got is None:
@@ -120,6 +141,8 @@ def create_probe_compat_app(
         topic: str = Query(..., min_length=1),
         field: str = Query(..., min_length=1),
     ) -> Sample:
+        if topic not in feed.bridged_topics():
+            return Sample(topic=topic, field=field, t=0.0, value=None)
         hub.acquire(topic, [field])
         try:
             latest = await asyncio.to_thread(

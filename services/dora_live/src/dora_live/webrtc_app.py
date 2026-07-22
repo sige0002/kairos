@@ -81,6 +81,7 @@ def create_webrtc_app(
     peer_factory: PeerFactory | None = None,
     h264_supported: bool | None = None,
     idle_timeout_s: float = DEFAULT_IDLE_TIMEOUT_S,
+    bus_topics: set[str] | None = None,
 ) -> FastAPI:
     """Build the WebRTC signaling FastAPI app with the registry and routes wired.
 
@@ -128,6 +129,19 @@ def create_webrtc_app(
 
     @app.post("/stream/start", status_code=201, response_model=StreamStartResponse)
     async def stream_start(request: StreamStartRequest) -> StreamStartResponse:
+        # Honesty guard: a topic that is not wired onto the bus would stream
+        # the black fallback forever (the legacy streamer subscribed to any
+        # topic directly, so this is a real contract difference — fail loudly).
+        if bus_topics is not None and request.topic not in bus_topics:
+            raise ApiError(
+                status_code=409,
+                code="topic_not_on_live_bus",
+                message=(
+                    "Topic is not bridged onto the live bus (compressed camera "
+                    "topics come from the recording config's default_topics)."
+                ),
+                details={"topic": request.topic, "bus_topics": sorted(bus_topics)},
+            )
         if request.encoding is Encoding.h264 and not h264:
             raise ApiError(
                 status_code=409,

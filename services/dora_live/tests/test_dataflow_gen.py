@@ -105,11 +105,32 @@ def test_webrtc_env_port_override():
     assert webrtc["env"]["DORA_LIVE_WEBRTC_PORT"] == "9099"
 
 
-def test_no_webrtc_node_without_compressed_image():
+def test_webrtc_node_always_present_even_without_cameras():
+    # Something must always listen on the signaling port (nginx /webrtc/ 502s
+    # otherwise); with no cameras the node has only its tick input and an
+    # empty bus-topic list so /stream/start refuses honestly.
     m = LiveManifest(
         topics=[
             LiveTopic(name="/hsrb/joint_states", ros_type="sensor_msgs/msg/JointState")
         ]
     )
     df = generate_dataflow(m)
-    assert not any(n["id"] == "webrtc" for n in df["nodes"])
+    webrtc = next(n for n in df["nodes"] if n["id"] == "webrtc")
+    assert list(webrtc["inputs"]) == ["tick"]
+    assert webrtc["env"]["DORA_LIVE_WEBRTC_TOPICS"] == ""
+
+
+def test_token_collisions_deduped():
+    from dora_live.dataflow_gen import unique_tokens
+
+    tokens = unique_tokens(["/cam/left", "/cam_left", "/cam.left"])
+    assert len(set(tokens.values())) == 3
+    m = LiveManifest(
+        topics=[
+            LiveTopic(name="/cam/left", ros_type="std_msgs/msg/String"),
+            LiveTopic(name="/cam_left", ros_type="std_msgs/msg/String"),
+        ]
+    )
+    df = generate_dataflow(m)  # must not raise
+    bridge_ids = [n["id"] for n in df["nodes"] if n["id"].startswith("bridge__")]
+    assert len(bridge_ids) == len(set(bridge_ids)) == 2

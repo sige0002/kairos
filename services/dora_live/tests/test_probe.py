@@ -55,6 +55,7 @@ def _probe_client() -> tuple[TestClient, ProbeHub, DoraFeedSubscriber]:
     feed = DoraFeedSubscriber(enable_rclpy=False)
     feed.start()
     feed._graph = [TopicGraphEntry(name="/x", type="std_msgs/msg/Float64")]
+    feed.set_topic_types({"/x": "std_msgs/msg/Float64"})  # bridged
     app = create_probe_compat_app(hub=hub, feed=feed)
     return TestClient(app), hub, feed
 
@@ -63,7 +64,9 @@ def test_probe_topics_and_fields_flow():
     client, hub, _ = _probe_client()
     with client:
         topics = client.get("/topics").json()["topics"]
-        assert topics == [{"name": "/x", "type": "std_msgs/msg/Float64"}]
+        assert topics == [
+            {"name": "/x", "type": "std_msgs/msg/Float64", "bridged": True}
+        ]
 
         # fields: node pushes the introspection result while the app waits
         def _answer():
