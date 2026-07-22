@@ -37,12 +37,31 @@ RUN pip install --no-cache-dir --break-system-packages "maturin>=1.5"
 # feed-only bridges — the measured ~0.55 ms/event structural cost (see
 # dev_docs/codex_dora_bottleneck.md). Upstream candidate; drop the patch once
 # an equivalent ships in a dora release.
+# Second carried patch: rustdds 0.11.4 -> 0.13.1 (+ ros2-client 0.10.0). The
+# pinned dora ships a 16-month-old RustDDS whose FastDDS interop loses SEDP
+# reader announcements under load (proven: FastDDS `Subscription count: 0`
+# while the ingest participant is alive -> all topics 0 Hz until publisher
+# restart); 0.12.0-0.13.1 (2026-06/07) carry the upstream interop fixes (SPDP
+# response, QoS-matching logic, NACK_FRAG handling). Upstream dora keeps
+# =0.11.4 only for a Windows-only pnet build issue (Atostek/RustDDS#375),
+# which does not apply to this Linux image.
+# Third carried patch: empty message types (std_msgs/Empty) panic dora's
+# CDR->Arrow deserializer (StructArray::from(vec![]) is rejected by arrow),
+# and that panic poisons the RustDDS cache mutex — the whole participant
+# event loop dies and EVERY topic goes 0 Hz. Upstream dora bug (its defaults
+# path tests already use new_empty_fields; the production paths don't).
 COPY services/dora_live/dora-metrics.patch /dora-metrics.patch
+COPY services/dora_live/dora-rustdds-bump.patch /dora-rustdds-bump.patch
+COPY services/dora_live/dora-empty-struct-fix.patch /dora-empty-struct-fix.patch
 RUN git clone --filter=blob:none https://github.com/dora-rs/dora /src/dora \
     && cd /src/dora && git checkout "${DORA_COMMIT}" \
     && git apply /dora-metrics.patch \
+    && git apply /dora-rustdds-bump.patch \
+    && git apply /dora-empty-struct-fix.patch \
     && git rev-parse HEAD > /dora_commit.txt \
     && echo "kairos-patch: dora-metrics" >> /dora_commit.txt \
+    && echo "kairos-patch: dora-rustdds-bump (rustdds 0.13.1)" >> /dora_commit.txt \
+    && echo "kairos-patch: dora-empty-struct-fix" >> /dora_commit.txt \
     && cat /dora_commit.txt
 
 # Build the CLI first (warms the shared target cache for the maturin build),

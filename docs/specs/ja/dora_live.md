@@ -65,6 +65,16 @@ per-topic プロセス艦隊(RustDDS participant ×29=固定床+index 空間消�
 - CLI と Python wheel は**同一コミットから**ビルド(混在不可)。
 - **撤退線**: domain_id 対応入りの正式リリースが出たら PyPI wheel へ戻す(dora-rs/dora#1626)。
 
+### carried パッチ(3 本・ビルド時に `git apply`、いずれも upstream 提案候補)
+
+| パッチ | 内容 | 撤退線 |
+|---|---|---|
+| `dora-metrics.patch` | `Ros2MetricsSubscription`(Rust 側計数・drain バッチ・probe tap)。live_ingest 1 プロセス集約の土台 | 同等機能の dora release(dora-rs/dora#2801) |
+| `dora-rustdds-bump.patch` | rustdds **0.11.4→0.13.1** + ros2-client 0.10.0。ピン版の RustDDS(2025-03)は FastDDS との SEDP マッチングを高負荷時に失う(publisher 側 `Subscription count: 0` のまま全トピック 0Hz 恒久ウェッジ、58 トピック実データ再現で実証)。0.12.0〜0.13.1(2026-06/07)の相互運用集中修正(SPDP 即応・QoS マッチング・NACK_FRAG)で解消を実測確認。upstream dora の `=0.11.4` ピンは **Windows 専用の pnet ビルド問題**(Atostek/RustDDS#375)が理由で、本イメージ(Linux)には該当しない | upstream dora が rustdds ≥0.13 へ更新したら |
+| `dora-empty-struct-fix.patch` | 空メッセージ型(`std_msgs/Empty` 等)の CDR→Arrow 変換 panic 修正(`StructArray::from(vec![])` は arrow が拒否)。この panic は RustDDS キャッシュ Mutex を毒化し **participant イベントループごと死んで全トピック 0Hz** になる(相互運用が直った 0.13.1 で初めて顕在化) | upstream dora へ修正が入ったら |
+
+検証(2026-07-23、realman 実データ 58 トピック・bag ループ連続再生): 旧構成 = 全トピック 0Hz ウェッジ(3 時間継続)→ 3 パッチ構成 = **ブリッジ 43 トピック全て健全**(positive 41-43/46 を 5 分間維持・panic 0・Empty 17 通受信済み。0 のままの 5 本は publisher 不在 3 + 疎トピック 2 で全数説明済み)。
+
 ## HTTP 契約(すべて既存契約の互換面 — フロントエンド無改修)
 
 | ポート | 互換対象 | 切替レバー |

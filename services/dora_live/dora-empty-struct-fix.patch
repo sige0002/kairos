@@ -1,0 +1,41 @@
+diff --git a/libraries/extensions/ros2-bridge/arrow/src/deserialize/mod.rs b/libraries/extensions/ros2-bridge/arrow/src/deserialize/mod.rs
+index 56142df4..b01611f8 100644
+--- a/libraries/extensions/ros2-bridge/arrow/src/deserialize/mod.rs
++++ b/libraries/extensions/ros2-bridge/arrow/src/deserialize/mod.rs
+@@ -217,7 +217,16 @@ impl<'de> serde::de::Visitor<'de> for StructVisitor<'_> {
+             ));
+         }
+ 
+-        let struct_array: StructArray = fields.into();
++        // Empty message types (e.g. std_msgs/Empty) produce zero fields;
++        // StructArray::from(vec![]) panics in arrow (length would be
++        // ambiguous), and that panic poisons the DDS cache mutex and kills
++        // the whole participant event loop. Construct with an explicit
++        // length-1 instead (one message was deserialized).
++        let struct_array: StructArray = if fields.is_empty() {
++            StructArray::new_empty_fields(1, None)
++        } else {
++            fields.into()
++        };
+ 
+         Ok(struct_array.into())
+     }
+diff --git a/libraries/extensions/ros2-bridge/arrow/src/serialize/defaults.rs b/libraries/extensions/ros2-bridge/arrow/src/serialize/defaults.rs
+index f9423d77..a592ad4e 100644
+--- a/libraries/extensions/ros2-bridge/arrow/src/serialize/defaults.rs
++++ b/libraries/extensions/ros2-bridge/arrow/src/serialize/defaults.rs
+@@ -241,7 +241,13 @@ fn default_for_referenced_message(
+         })
+         .collect::<Result<_, _>>()?;
+ 
+-    let struct_array: StructArray = fields.into();
++    // Same empty-fields guard as deserialize/mod.rs: StructArray::from(vec![])
++    // panics for field-less message types (e.g. std_msgs/Empty).
++    let struct_array: StructArray = if fields.is_empty() {
++        StructArray::new_empty_fields(1, None)
++    } else {
++        fields.into()
++    };
+     Ok(struct_array.into())
+ }
+ 

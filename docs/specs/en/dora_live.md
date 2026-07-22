@@ -72,6 +72,20 @@ upstream (dora-rs/dora#2801) — drop it once an equivalent ships in a release.
 - **Exit condition**: switch back to the PyPI wheel once an official release ships domain_id
   support (dora-rs/dora#1626).
 
+### Carried patches (3, `git apply`ed at build time; all upstream candidates)
+
+| Patch | What it does | Exit condition |
+|---|---|---|
+| `dora-metrics.patch` | `Ros2MetricsSubscription` (Rust-side counting, drain batching, probe tap). Foundation of the single-process live_ingest | A dora release with an equivalent (dora-rs/dora#2801) |
+| `dora-rustdds-bump.patch` | rustdds **0.11.4→0.13.1** + ros2-client 0.10.0. The pinned RustDDS (2025-03) loses SEDP matching against FastDDS under load (publisher stuck at `Subscription count: 0`, every topic 0 Hz permanently — proven on the 58-topic real-data repro). The 0.12.0–0.13.1 interop push (2026-06/07: prompt SPDP response, QoS-matching logic, NACK_FRAG handling) fixes it — verified live. Upstream dora's `=0.11.4` pin exists only for a **Windows-only pnet build issue** (Atostek/RustDDS#375), which does not apply to this Linux image | Upstream dora moving to rustdds ≥0.13 |
+| `dora-empty-struct-fix.patch` | Fixes the CDR→Arrow panic on empty message types (`std_msgs/Empty` etc.; arrow rejects `StructArray::from(vec![])`). The panic poisons the RustDDS cache mutex and **kills the whole participant event loop — every topic goes 0 Hz** (surfaced only once 0.13.1 repaired interop) | The fix landing upstream in dora |
+
+Verification (2026-07-23, realman real-data 58 topics, looping bag replay): old build =
+all-topic 0 Hz wedge (persisted 3 h) → three-patch build = **all 43 bridged topics
+healthy** (positive 41–43/46 held for 5 min, 0 panics, 17 Empty messages received; the
+5 remaining zeros are fully accounted for: 3 publisher-less config topics + 2 sparse
+topics).
+
 ## HTTP contracts (all compatibility surfaces — frontend untouched)
 
 | Port | Compatible with | Switch lever |
