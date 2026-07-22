@@ -188,11 +188,13 @@ up: ## build + start the stack detached (LIVE=1 = dora_live replaces monitor/pro
 	@$(_LIVE_SWAP)
 	$(COMPOSE) up -d --build $(_UP_SVC)
 	@$(MAKE) --no-print-directory urls
+	@$(MAKE) --no-print-directory _ext-autostart LIVE=$(LIVE)
 
 up-nobuild: ## start the stack detached WITHOUT rebuilding (uses existing images)
 	@$(_LIVE_SWAP)
 	$(COMPOSE) up -d $(_UP_SVC)
 	@$(MAKE) --no-print-directory urls
+	@$(MAKE) --no-print-directory _ext-autostart LIVE=$(LIVE)
 
 # up/up-nobuild pre-step: entering LIVE mode stops the legacy trio; leaving it
 # stops dora_live (if it exists). Keeps `make up LIVE=1` <-> `make up` a true
@@ -233,8 +235,9 @@ urls: ## print the Web UI access URLs (localhost + LAN IPs)
 	@echo "  ssh   : ssh -L $(FRONTEND_PORT):localhost:$(FRONTEND_PORT) -L $(API_ORCH_PORT):localhost:$(API_ORCH_PORT) <user>@<this-host>  # then http://localhost:$(FRONTEND_PORT)/"
 	@echo ""
 
-down: ## stop + remove the stack (always includes dora_live, LIVE or not)
+down: ## stop + remove the stack (always includes dora_live AND every extension sidecar)
 	COMPOSE_PROFILES=live $(COMPOSE) down
+	@$(MAKE) --no-print-directory ext-sweep-down
 
 stop: ## stop the stack (keep containers)
 	$(COMPOSE) stop $(SVC)
@@ -251,8 +254,11 @@ restart: ## restart service(s): `make restart monitor orchestrator`
 logs: ## follow logs: `make logs` (all) or `make logs streamer`
 	$(COMPOSE) logs -f --tail=100 $(SVC)
 
-ps: ## show container status
+ps: ## show container status (main stack + extension sidecars)
 	$(COMPOSE) ps
+	@if docker ps -a --filter name=kairos-ext- --format '{{.Names}}' | grep -q .; then \
+	  echo ""; $(MAKE) --no-print-directory ext-ps; \
+	fi
 
 load: ## load overview: CPU (%/core AND %/machine) + LAN throughput/util + live DDS bandwidth + data disk
 	@bash deploy/load.sh
@@ -301,12 +307,40 @@ robot-ps: ## [ON THE ROBOT] show robot-edge container status
 robot-config-reload: ## [ON THE ROBOT] apply config/*.yaml edits (restart monitor / dora_live under LIVE=1; recorder applies on next record)
 	$(if $(filter 1,$(LIVE)),$(COMPOSE_ROBOT) restart dora_live,$(COMPOSE_ROBOT) restart monitor)
 
-recording-up: ## [ON THE RECORDING PC] build + start orchestrator/dora/frontend
+recording-up: ## [ON THE RECORDING PC] build + start orchestrator/dora/frontend (+ extension sidecars, robot-targeted)
 	$(COMPOSE_RECORDING) up -d --build --remove-orphans $(SVC)
 	@$(MAKE) --no-print-directory urls
+	@$(MAKE) --no-print-directory _ext-autostart-recording
 
-recording-down: ## [ON THE RECORDING PC] stop + remove the recording-host services
+# Split sweep: sidecars run HERE (recording PC — the designed off-robot
+# placement) but pull from the robot's dora_live. The target host is read from
+# the split env with the repo's self-referential pattern expanded EXPLICITLY
+# (TOPIC_MONITOR_HOST=$${ROBOT_IP} — a plain sed would yield the literal
+# "$${ROBOT_IP}", and sourcing the file trips on its readonly UID= line; both
+# adversarial-review findings). The port is LIVE-aware: under LIVE=1 make
+# resolves 8005 (dora_live) regardless of the split file's legacy 8001.
+.PHONY: _ext-autostart-recording
+_ext-autostart-recording:
+	@tmh=""; tmp=""; \
+	 if [ -n "$(SPLIT_ENV)" ]; then \
+	   robot_ip=$$(sed -n 's/^[[:space:]]*ROBOT_IP[[:space:]]*=[[:space:]]*//p' $(SPLIT_ENV) | tail -1); \
+	   tmh=$$(sed -n 's/^[[:space:]]*TOPIC_MONITOR_HOST[[:space:]]*=[[:space:]]*//p' $(SPLIT_ENV) | tail -1); \
+	   tmp=$$(sed -n 's/^[[:space:]]*TOPIC_MONITOR_PORT[[:space:]]*=[[:space:]]*//p' $(SPLIT_ENV) | tail -1); \
+	   tmh=$$(printf '%s' "$$tmh" | sed "s|\$$\{ROBOT_IP\}|$$robot_ip|g; s|\$$ROBOT_IP|$$robot_ip|g"); \
+	 fi; \
+	 $(if $(filter 1,$(LIVE)),tmp=8005;,) \
+	 url="http://$${tmh:-127.0.0.1}:$${tmp:-8005}"; \
+	 for e in $(_EXT_LIVE_AUTO); do \
+	   if DORA_LIVE_URL="$$url" docker compose -p "kairos-ext-$$e" -f "extensions/$$e/live/compose.yaml" up -d >/dev/null 2>&1; then \
+	     echo "ext-live: $$e up (pulling $$url)"; \
+	   else \
+	     echo "WARN: extension '$$e' failed to start (main stack unaffected) — full error: make ext-live EXT=$$e"; \
+	   fi; \
+	 done
+
+recording-down: ## [ON THE RECORDING PC] stop + remove the recording-host services (+ extension sidecars)
 	$(COMPOSE_RECORDING) down
+	@$(MAKE) --no-print-directory ext-sweep-down
 
 recording-build: ## [ON THE RECORDING PC] build recording-host images: `make recording-build` (all) or `... frontend`
 	$(COMPOSE_RECORDING) build $(SVC)
@@ -382,16 +416,64 @@ smoke-record: ## smoke test incl. record start/stop
 	RECORD=1 bash deploy/test/smoke.sh
 
 # ---- user extensions (extensions/README.md) ---------------------------------
-.PHONY: ext-live ext-live-down
-ext-live: ## start an extension's live sidecar (EXT=<name> -> extensions/<name>/live/compose.yaml)
+# Live-lane sidecars AUTO-START with the stack (team-debated, user-ratified
+# model: consent = the folder's presence, mirroring the validation lane).
+# `_`-prefixed dirs (_template, _examples) never auto-start; a per-extension
+# opt-out is a top-level `x-kairos-autostart: false` line in its
+# live/compose.yaml. `robot-up` NEVER sweeps (robot-budget ruling) — starting
+# a sidecar ON the robot stays a deliberate manual `make ext-live`.
+_EXT_LIVE_ALL := $(patsubst extensions/%/live/compose.yaml,%,$(wildcard extensions/*/live/compose.yaml))
+_EXT_LIVE_AUTO = $(strip $(foreach e,$(filter-out _%,$(_EXT_LIVE_ALL)),$(if $(shell grep -Ei '^x-kairos-autostart:[[:space:]]*["'"'"']?false' "extensions/$(e)/live/compose.yaml" 2>/dev/null),,$(e))))
+
+.PHONY: ext-live ext-live-down ext-sweep-up ext-sweep-down ext-reload ext-ps _ext-autostart
+ext-live: ## start ONE extension sidecar manually (EXT=<name>; the auto path is plain `make up`)
 	@test -n "$(EXT)" || { echo "usage: make ext-live EXT=<name>"; exit 2; }
 	@test -d "extensions/$(EXT)/live" || { echo "extensions/$(EXT)/live not found (see extensions/README.md)"; exit 2; }
 	docker compose -p "kairos-ext-$(EXT)" -f "extensions/$(EXT)/live/compose.yaml" up -d
 
-ext-live-down: ## stop an extension's live sidecar (EXT=<name>)
+ext-live-down: ## stop ONE extension sidecar (EXT=<name>)
 	@test -n "$(EXT)" || { echo "usage: make ext-live-down EXT=<name>"; exit 2; }
 	@test -d "extensions/$(EXT)/live" || { echo "extensions/$(EXT)/live not found"; exit 2; }
 	docker compose -p "kairos-ext-$(EXT)" -f "extensions/$(EXT)/live/compose.yaml" down
+
+ext-sweep-up: ## start every auto-start extension sidecar (failure is per-extension, never the stack's)
+	@for e in $(_EXT_LIVE_AUTO); do \
+	  if docker compose -p "kairos-ext-$$e" -f "extensions/$$e/live/compose.yaml" up -d >/dev/null 2>&1; then \
+	    echo "ext-live: $$e up"; \
+	  else \
+	    echo "WARN: extension '$$e' failed to start (main stack unaffected) — full error: make ext-live EXT=$$e"; \
+	  fi; \
+	done
+
+# Scoped to THIS checkout via the compose working_dir label — parallel kairos
+# worktrees (a real workflow here) must not tear down each other's sidecars.
+# Also removes sidecars whose extension folder was deleted (label persists).
+ext-sweep-down: ## remove this checkout's kairos-ext-* sidecars (deleted folders included)
+	@docker ps -a --format '{{.Names}}\t{{.Label "com.docker.compose.project"}}\t{{.Label "com.docker.compose.project.working_dir"}}' \
+	  | awk -F'\t' -v wd="$(CURDIR)/extensions/" '$$2 ~ /^kairos-ext-/ && index($$3, wd) == 1 {print $$1}' \
+	  | xargs -r docker rm -f -v >/dev/null 2>&1 || true
+
+ext-reload: ## apply extension CODE edits (restart; compose.yaml changes need make ext-live / recording-up)
+	@for e in $(_EXT_LIVE_AUTO); do \
+	  docker compose -p "kairos-ext-$$e" -f "extensions/$$e/live/compose.yaml" restart >/dev/null 2>&1 \
+	    && echo "ext-live: $$e reloaded" \
+	    || echo "WARN: extension '$$e' failed to reload — full error: make ext-live EXT=$$e"; \
+	done
+	# restart (not recreate) is deliberate: it preserves the container env —
+	# including the robot-targeted DORA_LIVE_URL recording-up derived — and the
+	# template entrypoint re-copies /ext on every start, so node.py edits apply.
+
+ext-ps: ## show extension sidecar containers
+	@docker ps -a --filter name=kairos-ext- --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}'
+
+_ext-autostart: # internal: called by up/up-nobuild after the main stack is up
+ifeq ($(LIVE),1)
+	@$(MAKE) --no-print-directory ext-sweep-up
+else
+	@if [ -n "$(_EXT_LIVE_AUTO)" ]; then \
+	  echo "NOTE: live extensions present ($(_EXT_LIVE_AUTO)) but LIVE=0 — the live seam needs dora_live (make up LIVE=1); not started"; \
+	fi
+endif
 
 # ---- tests / lint -----------------------------------------------------------
 .PHONY: test test-py test-fe lint fmt

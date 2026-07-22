@@ -1,6 +1,10 @@
-# Extension template — live sidecar. Started with:
-#   make ext-live EXT=<your_name>          (up)
-#   make ext-live-down EXT=<your_name>     (down)
+# Extension template — live sidecar. Lifecycle is AUTOMATIC: once this folder
+# is copied to extensions/<your_name>/, `make up` (LIVE=1) / `make
+# recording-up` starts it, `make down` removes it, `make ext-reload` applies
+# edits. Manual escape hatches: make ext-live EXT=<your_name> / ext-live-down.
+#
+# To keep the folder but stop auto-starting, uncomment:
+# x-kairos-autostart: false
 #
 # Reuses the kairos-dora-live image (dora CLI + venv already inside); your
 # node runs under its OWN `dora run`, fully outside the supervisor-managed
@@ -32,6 +36,10 @@ services:
         chmod +x run_node.sh && \
         exec /opt/venv/bin/dora run dataflow.yml
     restart: unless-stopped
+    # Default resource caps: an extension must never compete with the
+    # recorder. Raise them deliberately if your analysis needs more.
+    cpus: "1.0"
+    mem_limit: 1g
     # A long dora_live outage must not grow an unbounded json log.
     logging:
       driver: json-file

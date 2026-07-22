@@ -1,0 +1,32 @@
+# Working example — grayscale converter sidecar (copy me out of _examples/):
+#   cp -r extensions/_examples/grayscale extensions/grayscale && make up LIVE=1
+# From then on the stack lifecycle manages it (make down / ext-reload / ps).
+#
+# To keep the folder but stop auto-starting, uncomment:
+# x-kairos-autostart: false
+services:
+  live_ext:
+    image: kairos-dora-live:${ROS_DISTRO:-jazzy}
+    network_mode: host
+    volumes:
+      - .:/ext:ro
+      # Host-visible output (latest_gray.jpg lands here).
+      - ${EXT_OUT_DIR:-/tmp/kairos_ext_grayscale}:/out
+    environment:
+      DORA_LIVE_URL: ${DORA_LIVE_URL:-http://127.0.0.1:8005}
+      # FRAME_TOPIC: /hsrb/hand_camera/image_raw/compressed   # empty = auto-pick
+      OUT_DIR: /out
+    entrypoint: ["bash", "-lc"]
+    command:
+      - |
+        rm -rf /tmp/ext && cp -r /ext /tmp/ext && cd /tmp/ext && \
+        chmod +x run_node.sh && \
+        exec /opt/venv/bin/dora run dataflow.yml
+    restart: unless-stopped
+    cpus: "1.0"
+    mem_limit: 1g
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

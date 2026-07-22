@@ -26,6 +26,7 @@ extensions/*
 !extensions/README.md
 !extensions/README.ja.md
 !extensions/_template/
+!extensions/_examples/
 
 # Secrets
 .env

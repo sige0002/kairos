@@ -1,0 +1,8 @@
+# Grayscale example dataflow: ONE tick-driven node pulling dora_live frames.
+nodes:
+  - id: grayscale
+    # dora runs .py nodes with the SYSTEM python and ignores `path:` python
+    # binaries — the wrapper execs the venv python (documented trap).
+    path: run_node.sh
+    inputs:
+      tick: dora/timer/millis/500

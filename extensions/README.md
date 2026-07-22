@@ -1,86 +1,101 @@
-# extensions/ — user extension drop-ins (non-destructive)
+# extensions/ — user extension drop-ins (non-destructive, auto-ingested)
 
-This directory lets you plug your own processing into two seams **without
-touching kairos code**. Everything directly under `extensions/` (except this
-README and `_template/`) is **gitignored**, so you can place your own repo here:
+This directory plugs your own processing into two seams **without touching
+kairos code**. Everything directly under `extensions/` (except this README,
+`_template/`, and `_examples/`) is **gitignored**, so you can place your own
+repo here:
 
 ```bash
 git clone https://github.com/you/my-ext extensions/my_ext
 ```
 
-If you want `git submodule add`, two caveats (the path is gitignored): it
-needs `-f`, and it records `.gitmodules` + a gitlink **in your kairos
-checkout's history** (fine on your own fork; prefer a plain clone if you want
-kairos history untouched).
+If you want `git submodule add`, two caveats (the path is gitignored): it needs
+`-f`, and it records `.gitmodules` + a gitlink **in your kairos checkout's
+history** (fine on your own fork; prefer a plain clone otherwise).
 
-Getting started: `cp -r extensions/_template extensions/my_ext` and follow the
-README inside (folders starting with `_` are templates and are **never loaded**).
+Start from either:
+- `cp -r extensions/_template extensions/my_ext` — the **template** with both lanes
+- `cp -r extensions/_examples/grayscale extensions/grayscale` — a **working example**
 
-## The two seams
+Folders starting with `_` (`_template`/`_examples`) are scaffolding and are
+**never loaded by either lane** (copy them out to use them).
 
-| Seam | Runs where | Contract | Activation |
-|---|---|---|---|
-| ① Live (dora_live side) | **your own container** (`live/compose.yaml`) | frames pull (`GET :8005/live/frames` index + `GET /live/frame?topic=` ETag/304) and the generic event intake (`POST :8005/internal/analysis/events` → `GET /live/events`) | `make ext-live EXT=my_ext` |
-| ② Post-recording validation (dora_runner side) | inside dora_runner (loaded from the mounted `/extensions`) | `kairos_plugin.yaml` manifest + dora `dataflow.yml` + `nodes/` (the kairos.plugin/v1 contract, `docs/specs/en/dora_plugins.md`) | **first time only**: `make rebuild dora_runner` (or `make up`) — the container must be recreated to pick up the mount and env. **Every later add/update needs only `make restart dora_runner`** (no rebuild) |
+## The two seams — both are "just drop it in"
 
-### Why the live seam is a sidecar, and where it runs
+| Seam | Runs where | Activation |
+|---|---|---|
+| ① Live (dora_live side) | **your own container** (`live/compose.yaml`, own project `kairos-ext-<name>`) | **Automatic**: `make up` (LIVE=1) / `make recording-up` starts it, `make down` removes it, code edits apply via `make ext-reload` (changes to compose.yaml itself need a re-create: `make ext-live EXT=` / `recording-up`), state shows in `make ps`. Opt out per extension with one **top-level** `x-kairos-autostart: false` line |
+| ② Post-recording validation (dora_runner side) | inside dora_runner (mounted `/extensions`) | **Automatic**: scanned on `make restart dora_runner` (one-time `make rebuild dora_runner` on an existing stack's first use) |
 
-The robot-side dora_live is never modified; **a separate LAN container pulls**
-(push was rejected by user ruling: the robot must not depend on knowing any
-consumer's address). A dead sidecar costs recording/monitoring nothing. Event
-bodies are freeform (`t` = epoch seconds is the only reserved key; stamped with
-the receive time when absent).
+Manual escape hatches (①): `make ext-live EXT=<name>` / `make ext-live-down
+EXT=<name>` — for starting on an arbitrary LAN host. **`make robot-up` never
+starts extensions** (robot-budget ruling); running one ON the robot is a
+deliberate manual ext-live only.
 
-**Placement is any wired-LAN host** (that is the point of the pull contract).
-In the split deployment start it from the recording PC as
-`DORA_LIVE_URL=http://<robot>:8005 make ext-live EXT=my_ext` (the default
-targets localhost = single-host dev).
+In the split deployment **`make recording-up` starts extensions on the
+recording PC and auto-targets the robot's `:8005`** (derived from
+TOPIC_MONITOR_HOST in .env.split — no hand-typed robot IP).
 
-### Why the validation seam is a plugin
+## ① What a live extension can consume today (the full input catalog)
 
-dora_runner additionally scans `KAIROS_EXTENSIONS_DIR=/extensions` at startup
-(compose mounts the repo's `extensions/` read-only). If an id clashes with a
-bundled plugin, **the bundled one wins** (first registration). A broken plugin
-is skipped; every other pipeline keeps working. The UI (Validation tab) renders
-the form from the manifest's `params_schema` — no frontend change needed.
+All on dora_live's HTTP surface (default `http://<robot>:8005`; probe on
+`:8006`). Everything is pull-based — read at your own pace:
 
-**When your extension doesn't appear**: check `plugin_errors` in
-`GET :8020/pipelines` (folders that failed to load, with the reason), and
-`make logs dora_runner` for `plugin load failed`.
+| Endpoint | What you get | Notes |
+|---|---|---|
+| `GET /live/frames` → `GET /live/frame?topic=` | **decimated compressed camera frames** (topic/codec/encoding/size/stamp_ns/recv_t/seq, ETag/304) | `codec: image` = JPEG/PNG passthrough (cv2-decodable). `ffmpeg` = H.264/HEVC **keyframes only** (needs PyAV). Decimation = `frames.sample_hz` (default 2 Hz). **No raw pixels, no full frame rate** (that is lane ②'s job, post-recording) |
+| `GET /metrics` (SSE: `/metrics/stream`) | per-topic **Hz/bandwidth/gap/status** snapshot | topic_monitor-compatible; Rust-side counting |
+| `GET /topics` | **graph discovery** (name/type/publisher/subscriber counts) | sees the whole graph beyond the live set (221 topics measured) |
+| `GET /alerts` (SSE: `/alerts/stream`) / `GET /incidents?since_ns=` | threshold-alert state + fired history | thresholds from the config's alert rules |
+| `GET /live/events?since=` | **events other extensions posted** | extensions can compose (filter on `t` = epoch seconds) |
+| `GET /live/status` | manifest, resolved QoS, dataflow liveness, discovery source | for self-diagnosis / health gating |
+| `:8006 /topics /fields?topic= /sample?topic=&fields=` | **numeric field values of any topic** (on demand) | probe-compatible surface; payloads materialize only while watched (tap) |
+
+## ① Passing output to the UI (zero frontend cost)
+
+POST **freeform JSON** to `http://<robot>:8005/internal/analysis/events` and it
+renders in the Web UI at **Monitor → Events → "Extension events"**:
+
+- `kind` / `source` / `topic` / `t` (epoch seconds; server-stamped when absent)
+  get dedicated slots
+- **every other key renders automatically as a `key=value` chip** — new event
+  shapes never require frontend changes (the live twin of the validation
+  lane's params_schema/SummaryResult contract)
+- ring-buffered (last 500, not persisted); the UI polls every 2 s, newest first
+- under LIVE=0 (legacy monitor) the surface doesn't exist and the UI card stays
+  hidden
+
+Lane ②'s UI output is unchanged: the manifest's `params_schema` renders the
+form, `summary.json` (`result: pass|fail` + metrics) renders the result card.
+
+## Diagnostics
+
+- ① not running: `make ps` (kairos-ext-* status) → `make ext-live EXT=<name>`
+  for the full error. Events missing from the UI: `curl -s localhost:8005/live/events`.
+- ② not listed: `plugin_errors` in `GET :8020/pipelines` and
+  `make logs dora_runner` for `plugin load failed`.
 
 ## Security (honest premise)
 
-An extension is **arbitrary Python executed inside the dora_runner process**
-(with write access to /data). `entrypoint.callable` plugins are imported —
-i.e. executed — **at discovery time on boot**, before any job runs. "Broken
-plugins are skipped" is accident tolerance, not a security boundary — **only
-install code you trust**.
+Extensions are **arbitrary code** — lane ① is your own container (the compose
+definition is yours too); lane ② executes inside the dora_runner process
+(/data-writable), and `entrypoint.callable` plugins run **at boot-time
+discovery**. Placing a folder means it auto-starts from the next `make up` —
+that placement IS the ingestion consent. **Only install code you trust.**
 
 ## Constraints (honest fine print)
 
-- Live frames are **compressed payloads decimated** to `frames.sample_hz`
-  (default 2 Hz). Anything needing every frame / raw pixels belongs in
-  post-recording (②), not live.
-- `dora run` writes **next to the dataflow YAML**, so the template compose
-  copies the extension folder to a writable location before starting (pointing
-  it at a read-only mount fails).
-- Live events live in a ring (last 500) and are **not persisted**.
-- On hosts without the dora CLI, ② runs the same `dataflow.yml` through the
-  in-process interpreter (which is why nodes must expose `process(inputs, ctx)`).
-- **`git clean -fdx` deletes any unpushed extension placed here** (the path is
-  gitignored). Stash/push before repo-wide cleans.
+- `dora run` writes **next to the dataflow YAML**; the template compose copies
+  the extension to a writable location first.
+- The template ships caps: CPU 1.0 / mem 1 GB / logs 10 MB×3 (never compete
+  with the recorder by default; raise deliberately).
+- Hosts without the dora CLI run lane ② through the in-process interpreter
+  (hence the mandatory `process(inputs, ctx)`).
+- **`git clean -fdx` deletes unpushed extensions placed here.**
 
-## Template contents
+## Contents
 
 ```
-_template/
-├─ kairos_plugin.yaml   # manifest for ② (change the id after copying)
-├─ dataflow.yml         # the ② dora dataflow
-├─ nodes/report.py      # the ② node (dual-mode: process() + main(), split-recording aware)
-├─ live/
-│  ├─ compose.yaml      # the ① sidecar definition (reuses the kairos-dora-live image)
-│  ├─ dataflow.yml      # the ① one-node dataflow (tick-driven)
-│  ├─ node.py           # the ① node: frames pull → mean brightness → events POST
-│  └─ run_node.sh       # wrapper exec'ing the venv python (mandatory-trap fix)
-└─ README.ja.md / README.md
+_template/            # both-lane template (brightness watcher + topic_census)
+_examples/grayscale/  # working example (frames → grayscale → UI events)
 ```

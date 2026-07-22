@@ -14,9 +14,9 @@ dora_live の frames pull 契約から間引きフレームを取得し、平均
 `POST /internal/analysis/events` へ送ります。確認は:
 
 ```bash
-make ext-live EXT=<your_name>          # 起動(リポジトリルートで)
+make up LIVE=1                          # 置いてあれば自動起動(以後 down/ext-reload/ps が効く)
 curl -s localhost:8005/live/events | python3 -m json.tool   # イベント確認
-make ext-live-down EXT=<your_name>     # 停止
+# UI: Monitor → Events → Extension events にも同じものが出ます
 ```
 
 書き換えるのは `live/node.py` の判定ロジックだけ。イベント本文は自由形式です
@@ -24,8 +24,7 @@ make ext-live-down EXT=<your_name>     # 停止
 
 制限: 自動選択は `codec: image`(JPEG/PNG)のトピックを優先します。**ffmpeg
 レーン(H.264/HEVC)のペイロードは cv2 では復号できない**ため(要 PyAV)、
-image コーデックのカメラが無い環境ではその旨がログに出ます。split 構成では
-`DORA_LIVE_URL=http://<robot>:8005 make ext-live EXT=<your_name>` で起動。
+image コーデックのカメラが無い環境ではその旨がログに出ます。split 構成では録画 PC 側の `make recording-up` が自動でロボットの :8005 へ接続します。
 
 ## ② 検証面(ルート): topic_census パイプライン
 

@@ -1,8 +1,8 @@
-# extensions/ — ユーザー拡張の置き場(非破壊・drop-in)
+# extensions/ — ユーザー拡張の置き場(非破壊・drop-in・自動取り込み)
 
 kairos 本体のコードを**一切変更せずに**、自作の処理を 2 つの側面に組み込むための
-ディレクトリです。`extensions/` 直下は(この README と `_template/` を除き)
-**gitignore 済み**なので、自分のリポジトリをそのまま置けます:
+ディレクトリです。`extensions/` 直下は(この README と `_template/`・`_examples/`
+を除き)**gitignore 済み**なので、自分のリポジトリをそのまま置けます:
 
 ```bash
 git clone https://github.com/you/my-ext extensions/my_ext
@@ -12,71 +12,86 @@ git clone https://github.com/you/my-ext extensions/my_ext
 `-f` が必要で、`.gitmodules` + gitlink が **kairos 側のコミット履歴に入ります**
 (自分の fork なら問題なし。kairos の履歴を汚したくなければ plain clone を推奨)。
 
-はじめ方: `cp -r extensions/_template extensions/my_ext` → 中の README に従って
-編集(`_` で始まるフォルダはテンプレ扱いで**ロードされません**)。
+はじめ方はどちらでも:
+- `cp -r extensions/_template extensions/my_ext` — 両レーン入りの**テンプレ**
+- `cp -r extensions/_examples/grayscale extensions/grayscale` — そのまま動く**実例**
 
-## 2 つの組み込み面
+`_` で始まるフォルダ(`_template`/`_examples`)はテンプレ扱いで、
+どちらのレーンにも**ロードされません**(コピーして使う)。
 
-| 面 | 実行場所 | 契約 | 反映方法 |
-|---|---|---|---|
-| ① ライブ(dora_live 側) | **自分のコンテナ**(`live/compose.yaml`) | frames pull(`GET :8005/live/frames` 索引 + `GET /live/frame?topic=` ETag/304)と汎用イベント intake(`POST :8005/internal/analysis/events` → `GET /live/events`) | `make ext-live EXT=my_ext` |
-| ② 録画後検証(dora_runner 側) | dora_runner コンテナ内(マウントされた `/extensions` から読み込み) | `kairos_plugin.yaml` マニフェスト + dora `dataflow.yml` + `nodes/`(`docs/specs/ja/dora_plugins.md` の kairos.plugin/v1 契約) | **初回のみ** `make rebuild dora_runner`(または `make up`)— mount と env をコンテナに反映するため。**以後の追加/更新は `make restart dora_runner` だけ**(リビルド不要) |
+## 2 つの組み込み面 — どちらも「置くだけ」
 
-### ① ライブ面(サイドカー方式)の設計根拠と配置
+| 面 | 実行場所 | 反映方法 |
+|---|---|---|
+| ① ライブ(dora_live 側) | **自分のコンテナ**(`live/compose.yaml`・別プロジェクト `kairos-ext-<name>`) | **自動**: `make up`(LIVE=1)/ `make recording-up` が起動、`make down` が撤去、コード編集の反映は `make ext-reload`(compose.yaml 自体の変更は `make ext-live EXT=` / `recording-up` で再作成)、状態は `make ps`。除外したい拡張は compose の**行頭**に `x-kairos-autostart: false` を 1 行 |
+| ② 録画後検証(dora_runner 側) | dora_runner コンテナ内(マウントされた `/extensions`) | **自動**: `make restart dora_runner` でスキャン(既存スタックでの初回だけ `make rebuild dora_runner`) |
 
-ロボット側の dora_live には手を入れず、**LAN 内の別コンテナが pull で購読**します
-(push 不採用 = ロボットが消費側のアドレスを知る依存を作らない、というユーザー裁定)。
-サイドカーが落ちても録画・監視には一切影響しません。イベント本文は自由形式
-(`t` = epoch 秒だけ予約、未指定なら受信時刻が自動付与)。
+手動の逃げ道(①): `make ext-live EXT=<name>` / `make ext-live-down EXT=<name>` —
+LAN 内の任意ホストで個別起動したい時用。**`make robot-up` は拡張を絶対に起動しません**
+(ロボット予算裁定)。ロボット上でどうしても動かすなら手動 ext-live の明示操作のみ。
 
-**配置は任意の有線 LAN ホスト**(それが pull 契約の狙い)。split 構成では
-録画 PC 側から `DORA_LIVE_URL=http://<robot>:8005 make ext-live EXT=my_ext`
-で起動する(既定はローカルホスト=単一ホスト開発向け)。
+split 構成では **`make recording-up` が録画 PC 側で拡張を起動し、ロボットの
+`:8005` へ自動接続**します(.env.split の TOPIC_MONITOR_HOST から導出 —
+robot IP の手打ちは不要)。
 
-### ② 検証面(プラグイン方式)の設計根拠
+## ① ライブ拡張が「入力」に使えるもの(現状の全カタログ)
 
-dora_runner は起動時に `KAIROS_EXTENSIONS_DIR=/extensions`(compose がリポジトリの
-`extensions/` を read-only マウント)を追加スキャンします。同梱プラグインと id が
-衝突した場合は**同梱側が勝ち**ます(先勝ち)。壊れたプラグインはスキップされ、
-他のパイプラインは動き続けます。UI(Validation タブ)はマニフェストの
-`params_schema` からフォームを自動生成するため、フロントエンドの変更も不要です。
+すべて dora_live の HTTP 面(既定 `http://<robot>:8005`、probe は `:8006`)。
+pull 型なので好きな周期で読めます:
 
-**出てこない時の診断**: `GET :8020/pipelines` の `plugin_errors`(読込失敗の
-フォルダと理由)を見る。コンテナログ側は `make logs dora_runner` で
-`plugin load failed` を探す。
+| エンドポイント | 得られるもの | 備考 |
+|---|---|---|
+| `GET /live/frames` → `GET /live/frame?topic=` | **間引き済み圧縮カメラフレーム**(topic/codec/encoding/size/stamp_ns/recv_t/seq、ETag/304) | `codec: image` = JPEG/PNG そのまま(cv2 で復号可)。`ffmpeg` = H.264/HEVC **keyframe のみ**(復号には PyAV)。間引きは `frames.sample_hz`(既定 2Hz)。**raw 画素・全フレームは来ない**(それは録画後②の仕事) |
+| `GET /metrics`(SSE: `/metrics/stream`) | 全トピックの **Hz/帯域/ギャップ/ステータス**スナップショット | topic_monitor 互換。数値は Rust 側計数の実測 |
+| `GET /topics` | **グラフ discovery**(名前/型/publisher・subscriber 数) | ライブ集合の外のトピックも全部見える(実測 221 トピック) |
+| `GET /alerts`(SSE: `/alerts/stream`)/ `GET /incidents?since_ns=` | 閾値アラートの現在状態と発火履歴 | しきい値は config の alert rules |
+| `GET /live/events?since=` | **他の拡張が POST したイベント** | 拡張同士の合成が可能(t = epoch 秒でフィルタ) |
+| `GET /live/status` | manifest・QoS 解決結果・dataflow 生死・discovery ソース | 自己診断/ヘルスゲート用 |
+| `:8006 /topics /fields?topic= /sample?topic=&fields=` | **任意トピックの数値フィールド値**(オンデマンド) | probe 互換面。視聴中だけペイロードが具現化される(tap) |
+
+## ① ライブ拡張の「UI への出力」(フロント改造コスト 0)
+
+`POST http://<robot>:8005/internal/analysis/events` に**自由形式 JSON** を送るだけで、
+Web UI の **Monitor → Events → 「Extension events」** に汎用描画されます:
+
+- `kind` / `source` / `topic` / `t`(epoch 秒・省略時サーバが付与)は専用スロット表示
+- **それ以外のキーは全て `key=value` チップとして自動表示** — 新しいイベント形を
+  作ってもフロントエンドの変更は不要(検証レーンの params_schema/SummaryResult と
+  同じ UI 非依存契約)
+- リング保持(直近 500 件・非永続)。UI は 2 秒ポーリング・新しい順表示
+- LIVE=0(旧 monitor)ではこの面自体が無いため、UI のカードは表示されません
+
+検証レーン(②)の UI 出力は従来どおり: マニフェストの `params_schema` が
+フォームに、`summary.json`(`result: pass|fail` + metrics)が結果カードになります。
+
+## 診断
+
+- ①が動かない: `make ps`(kairos-ext-* の状態)→ `make ext-live EXT=<name>` で
+  フルエラー表示。イベントが UI に出ない: `curl -s localhost:8005/live/events`。
+- ②が出てこない: `GET :8020/pipelines` の `plugin_errors` と
+  `make logs dora_runner` の `plugin load failed`。
 
 ## セキュリティ(正直な前提)
 
-拡張は **dora_runner プロセス内で実行される任意の Python コード**です(/data へ
-書き込み可)。さらに `entrypoint.callable` 型プラグインは**起動時の discovery の
-時点で import = 実行**されます(ジョブ未実行でも)。「壊れたプラグインはスキップ」
-は事故への耐性であって、悪意への防御ではありません — **信頼できるコードだけを
-置いてください**。
+拡張は**任意のコード**です — ①は自分のコンテナ(compose 定義もあなたのもの)、
+②は dora_runner プロセス内で実行され(/data 書き込み可)、`entrypoint.callable`
+型は**起動時 discovery の時点で import = 実行**されます。フォルダを置いた時点で
+次の `make up` から自動起動します(それが取り込み同意です)。**信頼できるコード
+だけを置いてください**。
 
 ## 制約(正直な注意書き)
 
-- ライブ面の frames は `frames.sample_hz`(既定 2Hz)で間引かれた**圧縮ペイロード**
-  です。全フレーム・生画素が必要な処理はライブではなく録画後(②)へ。
 - `dora run` はデータフロー YAML の**隣に書き込む**ため、テンプレの compose は
-  拡張フォルダを writable な場所へコピーしてから起動します(read-only
-  マウント直指定は失敗します)。
-- ライブ面のイベントはリング(直近 500 件)保持で**永続化されません**。
-- dora_runner に dora CLI が無いホストでは、②は同一 `dataflow.yml` を
-  in-process インタプリタで実行します(`process(inputs, ctx)` が必須な理由)。
-- **`git clean -fdx` はここに置いた未 push の拡張ごと消します**(gitignore 対象
-  のため)。リポジトリ全体のクリーンをかける前に退避を。
+  拡張フォルダを writable な場所へコピーしてから起動します。
+- テンプレには CPU 1.0 / メモリ 1GB / ログ 10MB×3 の上限を同梱(録画と競合させない
+  既定。必要なら意図的に引き上げる)。
+- dora CLI の無いホストでは②は in-process インタプリタ実行(`process(inputs, ctx)`
+  が必須な理由)。
+- **`git clean -fdx` はここに置いた未 push の拡張ごと消します**。
 
-## テンプレの内容
+## 内容物
 
 ```
-_template/
-├─ kairos_plugin.yaml   # ②のマニフェスト(コピー後に id を変える)
-├─ dataflow.yml         # ②の dora データフロー
-├─ nodes/report.py      # ②のノード(dual-mode: process() + main()・split録画対応)
-├─ live/
-│  ├─ compose.yaml      # ①のサイドカー定義(kairos-dora-live イメージ流用)
-│  ├─ dataflow.yml      # ①の 1 ノードデータフロー(tick 駆動)
-│  ├─ node.py           # ①のノード: frames pull → 平均輝度 → events POST
-│  └─ run_node.sh       # venv python で exec するラッパー(必須の罠対策)
-└─ README.ja.md / README.md
+_template/            # 両レーン入りテンプレ(輝度watcher + topic_census)
+_examples/grayscale/  # そのまま動く実例(frames → グレースケール → UIイベント)
 ```

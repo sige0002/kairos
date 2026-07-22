@@ -14,9 +14,9 @@ Pulls decimated frames from dora_live's frames pull contract and posts a
 `brightness_heartbeat` every ~10 s, to `POST /internal/analysis/events`:
 
 ```bash
-make ext-live EXT=<your_name>          # start (from the repo root)
+make up LIVE=1                          # auto-starts once the folder exists (down/ext-reload/ps manage it)
 curl -s localhost:8005/live/events | python3 -m json.tool   # see the events
-make ext-live-down EXT=<your_name>     # stop
+# UI: the same events appear at Monitor → Events → Extension events
 ```
 
 The only thing to rewrite is the decision logic in `live/node.py`. Event
@@ -25,8 +25,7 @@ with the receive time when absent).
 
 Limitations: auto-pick prefers `codec: image` (JPEG/PNG) topics. **ffmpeg-lane
 payloads (H.264/HEVC) cannot be decoded by cv2** (PyAV would be needed); when
-only ffmpeg cameras exist, that is logged loudly. In the split deployment start
-with `DORA_LIVE_URL=http://<robot>:8005 make ext-live EXT=<your_name>`.
+only ffmpeg cameras exist, that is logged loudly. In the split deployment `make recording-up` on the recording PC auto-targets the robot's :8005.
 
 ## ② Validation lane (root): the topic_census pipeline
 
