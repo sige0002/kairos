@@ -1,0 +1,320 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index c9c1218d..ca08f60d 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -2563,6 +2563,7 @@ dependencies = [
+  "eyre",
+  "futures",
+  "futures-timer",
++ "libc",
+  "pyo3",
+  "pyo3-build-config",
+  "serde",
+diff --git a/libraries/extensions/ros2-bridge/python/Cargo.toml b/libraries/extensions/ros2-bridge/python/Cargo.toml
+index 461804f1..166de9f9 100644
+--- a/libraries/extensions/ros2-bridge/python/Cargo.toml
++++ b/libraries/extensions/ros2-bridge/python/Cargo.toml
+@@ -15,6 +15,7 @@ serde = "1.0.228"
+ arrow = { workspace = true, features = ["pyarrow"] }
+ futures = "0.3.32"
+ futures-timer = "3"
++libc = "0.2"
+ 
+ [build-dependencies]
+ pyo3-build-config = { workspace = true }
+diff --git a/libraries/extensions/ros2-bridge/python/src/lib.rs b/libraries/extensions/ros2-bridge/python/src/lib.rs
+index 9d469561..e3bd5d10 100644
+--- a/libraries/extensions/ros2-bridge/python/src/lib.rs
++++ b/libraries/extensions/ros2-bridge/python/src/lib.rs
+@@ -1,13 +1,18 @@
+ use std::{
+     borrow::Cow,
+-    collections::HashMap,
++    collections::{HashMap, VecDeque},
+     path::{Path, PathBuf},
+-    sync::Arc,
++    sync::{
++        Arc, Mutex,
++        atomic::{AtomicBool, Ordering},
++    },
++    thread::{self, JoinHandle},
+ };
+ 
+ use ::dora_ros2_bridge::{ros2_client, rustdds};
+ use arrow::{
+     array::{ArrayData, make_array},
++    datatypes::DataType,
+     pyarrow::{FromPyArrow, ToPyArrow},
+ };
+ use dora_ros2_bridge_msg_gen::types::Message;
+@@ -408,6 +413,28 @@ impl Ros2Node {
+         })
+     }
+ 
++    /// Create a subscription that batches compact per-message metrics in Rust.
++    ///
++    /// It uses the same typed Arrow deserialization as [`Ros2Subscription`],
++    /// but does not construct Python objects on its receive thread.
++    ///
++    /// :type topic: dora.Ros2Topic
++    /// :type qos: dora.Ros2QosPolicies
++    /// :rtype: dora.Ros2MetricsSubscription
++    pub fn create_metrics_subscription(
++        &mut self,
++        topic: &Ros2Topic,
++        qos: qos::Ros2QosPolicies,
++    ) -> eyre::Result<Ros2MetricsSubscription> {
++        let subscription = self
++            .node
++            .create_subscription(&topic.topic, Some(qos.into()))?;
++        Ok(Ros2MetricsSubscription::new(
++            subscription,
++            StructDeserializer::new(Cow::Owned(topic.type_info.clone())),
++        ))
++    }
++
+     /// Create a ROS2 service client.
+     ///
+     /// Waits (bounded) for a matching service server to become available
+@@ -1022,6 +1049,233 @@ impl Stream for Ros2SubscriptionStream {
+     }
+ }
+ 
++const METRICS_RING_CAPACITY: usize = 10_000;
++const METRICS_RECEIVE_POLL: Duration = Duration::from_millis(50);
++
++#[derive(Debug)]
++struct MetricsSample {
++    recv_ns: u64,
++    size_bytes: usize,
++    stamp_ns: Option<i64>,
++    bridged: bool,
++}
++
++struct MetricsState {
++    rows: VecDeque<MetricsSample>,
++    latest: Option<ArrayData>,
++    tap_enabled: bool,
++    dropped: u64,
++}
++
++impl MetricsState {
++    fn push(&mut self, sample: MetricsSample) {
++        if self.rows.len() == METRICS_RING_CAPACITY {
++            self.rows.pop_front();
++            self.dropped = self.dropped.saturating_add(1);
++        }
++        self.rows.push_back(sample);
++    }
++}
++
++/// Rust-side, bounded metrics subscription. The receive thread deliberately
++/// retains only Arrow data: PyArrow conversion happens only in `take_latest`.
++#[pyclass]
++pub struct Ros2MetricsSubscription {
++    state: Arc<Mutex<MetricsState>>,
++    stop: Arc<AtomicBool>,
++    receiver: Option<JoinHandle<()>>,
++}
++
++#[pymethods]
++impl Ros2MetricsSubscription {
++    /// Drain metrics collected since the preceding call, in arrival order.
++    pub fn drain(&self) -> eyre::Result<Vec<(u64, usize, Option<i64>, bool)>> {
++        let mut state = self.state.lock().map_err(|_| eyre!("metrics state poisoned"))?;
++        Ok(state
++            .rows
++            .drain(..)
++            .map(|sample| {
++                (
++                    sample.recv_ns,
++                    sample.size_bytes,
++                    sample.stamp_ns,
++                    sample.bridged,
++                )
++            })
++            .collect())
++    }
++
++    /// Enable or disable retaining the latest bridged payload for inspection.
++    pub fn set_tap(&self, enabled: bool) -> eyre::Result<()> {
++        let mut state = self.state.lock().map_err(|_| eyre!("metrics state poisoned"))?;
++        state.tap_enabled = enabled;
++        if !enabled {
++            state.latest = None;
++        }
++        Ok(())
++    }
++
++    /// Return the latest successfully-deserialized payload since the prior call.
++    pub fn take_latest(&self, py: Python<'_>) -> eyre::Result<Option<Py<PyAny>>> {
++        let latest = {
++            let mut state = self.state.lock().map_err(|_| eyre!("metrics state poisoned"))?;
++            if !state.tap_enabled {
++                return Ok(None);
++            }
++            state.latest.take()
++        };
++
++        latest
++            .map(|data| data.to_pyarrow(py).map(|data| data.unbind()))
++            .transpose()
++            .map_err(Into::into)
++    }
++
++    /// Return cumulative samples discarded from the full ring buffer.
++    pub fn dropped(&self) -> eyre::Result<u64> {
++        let state = self.state.lock().map_err(|_| eyre!("metrics state poisoned"))?;
++        Ok(state.dropped)
++    }
++}
++
++impl Ros2MetricsSubscription {
++    fn new(
++        subscription: ros2_client::Subscription<ArrayData>,
++        deserializer: StructDeserializer<'static>,
++    ) -> Self {
++        let state = Arc::new(Mutex::new(MetricsState {
++            rows: VecDeque::with_capacity(METRICS_RING_CAPACITY),
++            latest: None,
++            tap_enabled: false,
++            dropped: 0,
++        }));
++        let stop = Arc::new(AtomicBool::new(false));
++        let receive_state = state.clone();
++        let receive_stop = stop.clone();
++
++        let receiver = thread::spawn(move || {
++            futures::executor::block_on(async move {
++                let stream = subscription.async_stream_seed(deserializer);
++                futures::pin_mut!(stream);
++
++                while !receive_stop.load(Ordering::Acquire) {
++                    let next = stream.next();
++                    futures::pin_mut!(next);
++                    let timeout = futures_timer::Delay::new(METRICS_RECEIVE_POLL);
++                    futures::pin_mut!(timeout);
++
++                    match futures::future::select(next, timeout).await {
++                        futures::future::Either::Left((Some(Ok((data, _))), _)) => {
++                            let sample = MetricsSample {
++                                recv_ns: monotonic_ns(),
++                                size_bytes: logical_data_size(&data),
++                                stamp_ns: header_stamp_ns(&data),
++                                bridged: true,
++                            };
++                            let mut state = receive_state.lock().expect("metrics state poisoned");
++                            state.push(sample);
++                            if state.tap_enabled {
++                                state.latest = Some(data);
++                            }
++                        }
++                        futures::future::Either::Left((Some(Err(_)), _)) => {
++                            let recv_ns = monotonic_ns();
++                            let mut state = receive_state.lock().expect("metrics state poisoned");
++                            state.push(MetricsSample {
++                                recv_ns,
++                                size_bytes: 0,
++                                stamp_ns: None,
++                                bridged: false,
++                            });
++                        }
++                        futures::future::Either::Left((None, _)) => break,
++                        futures::future::Either::Right(_) => {}
++                    }
++                }
++            });
++        });
++
++        Self {
++            state,
++            stop,
++            receiver: Some(receiver),
++        }
++    }
++}
++
++impl Drop for Ros2MetricsSubscription {
++    fn drop(&mut self) {
++        self.stop.store(true, Ordering::Release);
++        if let Some(receiver) = self.receiver.take()
++            && receiver.join().is_err()
++        {
++            eprintln!("ros2 metrics subscription receive thread panicked");
++        }
++    }
++}
++
++/// Sample the operating system's CLOCK_MONOTONIC clock in nanoseconds.
++fn monotonic_ns() -> u64 {
++    let mut time = std::mem::MaybeUninit::<libc::timespec>::uninit();
++    // SAFETY: `time` points to writable storage for `clock_gettime`.
++    let result = unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, time.as_mut_ptr()) };
++    if result == 0 {
++        // SAFETY: a successful `clock_gettime` fully initializes `time`.
++        let time = unsafe { time.assume_init() };
++        (time.tv_sec as u64)
++            .saturating_mul(1_000_000_000)
++            .saturating_add(time.tv_nsec as u64)
++    } else {
++        0
++    }
++}
++
++/// Read `header.stamp.{sec,nanosec}` from typed Arrow data by ROS field name.
++fn header_stamp_ns(data: &ArrayData) -> Option<i64> {
++    let header = struct_child_named(data, "header")?;
++    let stamp = struct_child_named(header, "stamp")?;
++    let sec = primitive_i32(struct_child_named(stamp, "sec")?)?;
++    let nanosec = primitive_u32(struct_child_named(stamp, "nanosec")?)?;
++    if sec == 0 && nanosec == 0 {
++        return None;
++    }
++    i64::from(sec)
++        .checked_mul(1_000_000_000)?
++        .checked_add(i64::from(nanosec))
++}
++
++fn struct_child_named<'a>(data: &'a ArrayData, name: &str) -> Option<&'a ArrayData> {
++    let DataType::Struct(fields) = data.data_type() else {
++        return None;
++    };
++    let index = fields.iter().position(|field| field.name() == name)?;
++    let child = data.child_data().get(index)?;
++    (!child.is_empty() && !child.is_null(0)).then_some(child)
++}
++
++/// Logical byte size of the array (buffer LENGTHS, recursively), matching
++/// pyarrow's `nbytes` semantics closely. `get_*_memory_size` counts allocated
++/// CAPACITY, which the deserializer's builders over-allocate (~1024 slots), so
++/// tiny messages would report tens of KB and poison bandwidth stats.
++fn logical_data_size(data: &ArrayData) -> usize {
++    data.buffers().iter().map(|b| b.len()).sum::<usize>()
++        + data.child_data().iter().map(logical_data_size).sum::<usize>()
++}
++
++fn primitive_i32(data: &ArrayData) -> Option<i32> {
++    if !matches!(data.data_type(), DataType::Int32) || data.is_empty() || data.is_null(0) {
++        return None;
++    }
++    data.buffers().first()?.typed_data::<i32>().get(data.offset()).copied()
++}
++
++fn primitive_u32(data: &ArrayData) -> Option<u32> {
++    if !matches!(data.data_type(), DataType::UInt32) || data.is_empty() || data.is_null(0) {
++        return None;
++    }
++    data.buffers().first()?.typed_data::<u32>().get(data.offset()).copied()
++}
++
+ /// ROS2 service client. Create via [`Ros2Node::create_service_client`].
+ ///
+ /// warnings:
+@@ -1693,6 +1947,7 @@ pub fn create_dora_ros2_bridge_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
+     m.add_class::<Ros2Topic>()?;
+     m.add_class::<Ros2Publisher>()?;
+     m.add_class::<Ros2Subscription>()?;
++    m.add_class::<Ros2MetricsSubscription>()?;
+     m.add_class::<Ros2ServiceClient>()?;
+     m.add_class::<Ros2ServiceServer>()?;
+     m.add_class::<Ros2ActionClient>()?;

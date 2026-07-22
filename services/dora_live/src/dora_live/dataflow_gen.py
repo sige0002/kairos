@@ -90,18 +90,48 @@ def generate_dataflow(
 
     tokens = unique_tokens([t.name for t in manifest.topics])
 
-    # Payload lanes: only these topics are forwarded onto the dora bus at all
+    # Payload lanes: only video topics get a per-topic forwarding bridge
     # (webrtc consumes t.video topics; frames consumes the FRAMES_CODECS
-    # subset). Every other bridge is feed-only — zero daemon/SHM traffic.
-    forwarded = {t.name for t in manifest.topics if t.video}
+    # subset). ALL feed-only topics share ONE live_ingest node — one process,
+    # ONE DDS participant, N Rust-side metrics subscriptions (the carried
+    # dora patch): the measured cost floor was the per-topic process fleet
+    # (~3% + ~90 threads each), and one participant also stops eating the
+    # host's DDS participant-index space.
+    video = [t for t in manifest.topics if t.video]
+    feed_only = [t for t in manifest.topics if not t.video]
 
     nodes: list[dict[str, Any]] = []
-    for t in manifest.topics:
-        node_id = f"bridge__{tokens[t.name]}"
-        forward = t.name in forwarded
+    if feed_only:
         nodes.append(
             {
-                "id": node_id,
+                "id": "live_ingest",
+                "path": node_launcher,
+                "env": {
+                    **env,
+                    "DORA_NODE_MODULE": "dora_live.nodes.ingest",
+                    "CONTROL_URL": control_url,
+                    "INGEST_TOPICS": json.dumps(
+                        {
+                            t.name: {
+                                "type": dora_type_name(t.ros_type),
+                                "qos": t.qos,
+                                "durability": t.durability,
+                                "depth": t.depth,
+                            }
+                            for t in feed_only
+                        },
+                        sort_keys=True,
+                    ),
+                },
+                # Wake source only; all work runs on the ingest feeder thread.
+                "inputs": {"tick": METRICS_TICK},
+            }
+        )
+
+    for t in video:
+        nodes.append(
+            {
+                "id": f"bridge__{tokens[t.name]}",
                 "path": node_launcher,
                 "env": {
                     **env,
@@ -111,16 +141,14 @@ def generate_dataflow(
                     "BRIDGE_QOS": t.qos,
                     "BRIDGE_QOS_DURABILITY": t.durability,
                     "BRIDGE_QOS_DEPTH": str(t.depth),
-                    "BRIDGE_FORWARD": "1" if forward else "0",
+                    "BRIDGE_FORWARD": "1",
                     "CONTROL_URL": control_url,
                 },
                 # Bench-proven: bridges keep a timer input so the event loop
                 # always has a wake source; feed flushing runs on the bridge's
                 # own feeder thread (100 ms), not on this tick.
                 "inputs": {"tick": METRICS_TICK},
-                # Declare the output only where something consumes it; dora
-                # then has no edge at all for feed-only bridges.
-                **({"outputs": ["out"]} if forward else {}),
+                "outputs": ["out"],
             }
         )
 

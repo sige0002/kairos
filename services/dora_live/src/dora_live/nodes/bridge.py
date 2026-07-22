@@ -43,6 +43,7 @@ from dora_live.bridge_logic import (
     decode_first,
     extract_stamp_ns,
     feed_row,
+    feed_row_from_tuple,
 )
 from dora_live.fieldpath import extract_value, iter_numeric_paths
 
@@ -79,6 +80,9 @@ class ControlFeeder(threading.Thread):
         self._stop_evt = threading.Event()
         self._post_failing = False
         self._overflow_logged = False
+        self._msub: object | None = None
+        self._tap = False
+        self._rust_dropped = 0
         # Read by the ingest loop (whole-list swap = GIL-atomic).
         self.active_fields: list[str] = []
         self._introspect = False
@@ -107,6 +111,12 @@ class ControlFeeder(threading.Thread):
         self._stop_evt.set()
         self.join(timeout=3.0)
 
+    def attach_metrics(self, sub: object) -> None:
+        """Metrics-subscription mode (the carried dora patch): the feeder
+        drains Rust-batched samples and serves probe via the tap slot — the
+        ingest loop then never sees per-message events at all."""
+        self._msub = sub
+
     # -- feeder-thread side -------------------------------------------------
 
     def run(self) -> None:  # pragma: no cover - thread glue; pieces unit-tested
@@ -116,9 +126,13 @@ class ControlFeeder(threading.Thread):
         cycle = 0
         while not self._stop_evt.wait(FLUSH_INTERVAL_S):
             cycle += 1
+            self._drain_metrics()
             self._flush(client)
             if cycle % PROBE_POLL_CYCLES == 0:
                 self._poll_probe(client)
+                self._sync_tap()
+            self._serve_tap()
+        self._drain_metrics()
         self._flush(client)  # final drain
 
     def _flush(self, client: object) -> None:
@@ -153,14 +167,123 @@ class ControlFeeder(threading.Thread):
             if introspect:
                 self._introspect = True
 
+    # -- metrics-subscription mode (Rust-batched samples + probe tap) --------
+
+    def _drain_metrics(self) -> None:
+        if self._msub is None:
+            return
+        try:
+            samples = self._msub.drain()  # type: ignore[attr-defined]
+            dropped = self._msub.dropped()  # type: ignore[attr-defined]
+        except Exception as exc:  # noqa: BLE001 - never kill the feeder
+            log(self._topic, "metrics drain failed:", exc)
+            return
+        if dropped > self._rust_dropped:
+            log(self._topic, "rust ring dropped", dropped - self._rust_dropped, "rows")
+            self._rust_dropped = dropped
+        # Parity with the per-message path: an unresolved type still answers
+        # probe introspection honestly instead of timing out.
+        if samples and self._introspect and not any(s_[3] for s_ in samples):
+            if self.take_introspect():
+                self.post_probe(
+                    "/internal/probe/fields",
+                    {
+                        "topic": self._topic,
+                        "fields": [],
+                        "reason": "type not bridged (no .msg on AMENT_PREFIX_PATH)",
+                    },
+                )
+        if samples:
+            with self._lock:
+                for sample in samples:
+                    self._rows.append(feed_row_from_tuple(self._topic, sample))
+                if len(self._rows) > MAX_BUFFERED_ROWS:
+                    del self._rows[: len(self._rows) - MAX_BUFFERED_ROWS]
+
+    def _sync_tap(self) -> None:
+        """Payload materialisation only while probe wants THIS topic."""
+        if self._msub is None:
+            return
+        want = bool(self.active_fields) or self._introspect
+        if want != self._tap:
+            try:
+                self._msub.set_tap(want)  # type: ignore[attr-defined]
+                self._tap = want
+            except Exception as exc:  # noqa: BLE001
+                log(self._topic, "set_tap failed:", exc)
+
+    def _serve_tap(self) -> None:
+        """Probe fields/values from the latest tapped payload (<=10 Hz)."""
+        if self._msub is None or not self._tap:
+            return
+        try:
+            value = self._msub.take_latest()  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            return
+        if value is None:
+            return
+        decoded = decode_first(value)
+        if decoded is None:
+            return
+        want_introspect = self.take_introspect()
+        if want_introspect:
+            paths = list(iter_numeric_paths(decoded))
+            self.post_probe(
+                "/internal/probe/fields",
+                {
+                    "topic": self._topic,
+                    "fields": paths,
+                    "reason": None if paths else "no numeric fields",
+                },
+            )
+        fields = self.active_fields
+        if fields:
+            values = {f: extract_value(decoded, f) for f in fields}
+            self.post_probe(
+                "/internal/probe/values",
+                {"topic": self._topic, "t": time.time(), "values": values},
+            )
+
 
 def log(*parts: object) -> None:
     print("[bridge]", *parts, file=sys.stderr, flush=True)
 
 
+def build_ros2_qos(qos_name: str, durability_name: str, depth: int, topic: str):
+    """Ros2QosPolicies with the transient_local fallback (shared with ingest).
+
+    Durability is best-effort against the pinned dora API: fall back to the
+    (volatile) default rather than dying — a transient_local subscription is
+    an optimisation (receive latched history), never a correctness
+    requirement for the live lanes.
+    """
+    from dora import Ros2QosPolicies
+
+    qos_kwargs: dict = {
+        "reliable": qos_name == "reliable",
+        "keep_last": depth,
+        "max_blocking_time": 0.1,
+    }
+    if durability_name == "transient_local":
+        try:
+            from dora import Ros2Durability
+
+            qos_kwargs["durability"] = Ros2Durability.TransientLocal
+        except (ImportError, AttributeError) as exc:
+            log(topic, "durability transient_local unsupported by dora:", exc)
+    try:
+        return Ros2QosPolicies(**qos_kwargs)
+    except TypeError as exc:
+        if "durability" not in qos_kwargs:
+            raise
+        log(topic, "durability kwarg rejected by dora; using volatile:", exc)
+        qos_kwargs.pop("durability")
+        return Ros2QosPolicies(**qos_kwargs)
+
+
 def main() -> int:
     # Heavy imports stay inside main() so unit tests import the module freely.
-    from dora import Node, Ros2Context, Ros2NodeOptions, Ros2QosPolicies
+    from dora import Node, Ros2Context, Ros2NodeOptions
 
     topic = os.environ["BRIDGE_TOPIC"]
     ros_type = os.environ["BRIDGE_TYPE"]
@@ -176,37 +299,25 @@ def main() -> int:
         "/kairos_live",
         Ros2NodeOptions(rosout=False),
     )
-    qos_kwargs: dict = {
-        "reliable": qos_name == "reliable",
-        "keep_last": depth,
-        "max_blocking_time": 0.1,
-    }
-    if durability_name == "transient_local":
-        # Durability is best-effort against the pinned dora API: fall back to
-        # the (volatile) default rather than dying — a transient_local
-        # subscription is an optimisation (receive latched history), never a
-        # correctness requirement for the live lanes.
-        try:
-            from dora import Ros2Durability
-
-            qos_kwargs["durability"] = Ros2Durability.TransientLocal
-        except (ImportError, AttributeError) as exc:
-            log(topic, "durability transient_local unsupported by dora:", exc)
-    try:
-        qos = Ros2QosPolicies(**qos_kwargs)
-    except TypeError as exc:
-        if "durability" not in qos_kwargs:
-            raise
-        log(topic, "durability kwarg rejected by dora; using volatile:", exc)
-        qos_kwargs.pop("durability")
-        qos = Ros2QosPolicies(**qos_kwargs)
-    sub = ros2_node.create_subscription(ros2_node.create_topic(topic, ros_type, qos))
+    qos = build_ros2_qos(qos_name, durability_name, depth, topic)
+    ros2_topic = ros2_node.create_topic(topic, ros_type, qos)
 
     node = Node()
-    node.merge_external_events(sub)
     feeder = ControlFeeder(control_url, topic)
+    metrics_sub = None
+    if not forward and hasattr(ros2_node, "create_metrics_subscription"):
+        # Carried-patch fast path: counting happens in Rust, Python drains a
+        # compact batch every 100 ms — no per-message pyo3 event boundary.
+        metrics_sub = ros2_node.create_metrics_subscription(ros2_topic, qos)
+        feeder.attach_metrics(metrics_sub)
+        log(topic, "subscribed", ros_type, qos_name, "metrics-batched (rust)")
+    else:
+        sub = ros2_node.create_subscription(ros2_topic)
+        node.merge_external_events(sub)
+        if not forward:
+            log(topic, "metrics-subscription API unavailable; per-message fallback")
+        log(topic, "subscribed", ros_type, qos_name, "forward" if forward else "no-fwd")
     feeder.start()
-    log(topic, "subscribed", ros_type, qos_name, "forward" if forward else "no-fwd")
 
     want_introspect = False
     last_value_push = 0.0

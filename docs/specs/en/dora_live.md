@@ -29,29 +29,38 @@ lightweight derived data leaves the robot (metrics JSON on :8005/:8006, encoded 
 ```mermaid
 flowchart LR
     ROS["ROS 2 graph"] -->|"raw CDR (sub 1)"| REC["rosbag2_recorder → MCAP (canonical, unchanged)"]
-    ROS -->|"CDR→Arrow (sub 2/topic)"| B["bridge nodes ×N (self-reporting)<br/>one topic = one node<br/>metrics rows + own-topic probe via HTTP"]
-    B -->|"HTTP feed (ALL topics)"| C["control sidecar<br/>:8005 monitor-compat / :8006 probe-compat"]
-    B -->|"SHM (video topics only)"| F["frames node"] & W["webrtc node"]
+    ROS -->|"N subs (ONE participant)"| ING["live_ingest (one process)<br/>Rust-side metrics subs ×N<br/>counting/probe shipped as 100 ms HTTP batches"]
+    ROS -->|"CDR→Arrow (video topics only)"| B["bridge nodes ×V (video)"]
+    ING -->|"HTTP feed"| C["control sidecar<br/>:8005 monitor-compat / :8006 probe-compat"]
+    B -->|"SHM"| F["frames node"] & W["webrtc node"]
     F -->|"decimated compressed payloads"| C
     W -->|":8007 signaling + media"| BR["browser"]
     C -->|generates & supervises| DF["dora run (generated dataflow)"]
-    C -.->|"GET /live/frames (pull)"| EXT["any LAN container<br/>(future image validation etc., not built)"]
+    C -.->|"GET /live/frames (pull)"| EXT["any LAN container (future image validation etc.)"]
 ```
 
-**Field-scale rework (late 2026-07-22)**: the central metrics/probe consumer nodes are
-**gone**. Each bridge posts its own metrics rows and serves probe for its own topic
-directly over HTTP (the feed contract and the :8005/:8006 external APIs are unchanged);
-bridges of topics without a video codec never call ``send_output`` at all — **only camera
-topics traverse the daemon/SHM**.
+**Field-scale FINAL form (late 2026-07-22, the user-ruled live_ingest layout)**:
+counting (metrics/probe) collapses into **ONE live_ingest process / ONE DDS
+participant** hanging N `Ros2MetricsSubscription`s — provided by the **carried
+dora patch** (`services/dora_live/dora-metrics.patch`, `git apply`'d in the
+source-pinned build). Rust extracts arrival/size/stamp per message; Python
+drains a compact batch every 100 ms into ONE `/internal/samples` POST. Payload
+only materialises in Python through the probe tap (latest-wins, while
+watched). Only video topics keep per-topic bridges (SHM to webrtc/frames).
+The external APIs (:8005/:8006) are unchanged.
 
-Honest accounting (29-topic / ~975 msg/s synthetic baseline): what the rework removes is
-the per-message daemon routing + two consumer wakeups (~20-25% at that load, a term that
-**scales with message rate**) plus two processes / ~100 threads; the bridges gain a fixed
-feed-POST cost (~0.5-1% each), so the rework is **neutral at low rates and pays off at
-high rates** (real joint-state streams). The remaining dominant term is the **per-bridge
-floor** (~88 threads each: 30 RustDDS + tokio workers scaling with host cores + zenoh;
-~3%/bridge at 20-100 Hz) × topic count — reducible only by trimming the live topic set
-(immediate) or the upstream single-participant bridge (TBD).
+Measured (29 topics, ~970 msg/s synthetic, same conditions across generations):
+
+| Generation | container CPU | PIDS | MEM |
+|---|---|---|---|
+| central metrics/probe consumers | 118-136% | 2833 | 3.9GB |
+| per-topic self-reporting bridges | 130.7% | 2726 | 3.9GB |
+| **live_ingest (current)** | **30%** | **495** | **0.65GB** |
+
+The per-topic process fleet (RustDDS participant ×29 = fixed floor + DDS
+participant-index consumption) was the real bottleneck; one participant also
+structurally removes the participant-index exhaustion. The patch is proposed
+upstream (dora-rs/dora#2801) — drop it once an equivalent ships in a release.
 
 ## dora pinning policy (important)
 

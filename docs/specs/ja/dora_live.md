@@ -25,28 +25,37 @@
 ```mermaid
 flowchart LR
     ROS["ROS 2 graph"] -->|"raw CDR (購読1)"| REC["rosbag2_recorder → MCAP(正本・不変)"]
-    ROS -->|"CDR→Arrow (購読2/トピック)"| B["bridge ノード ×N(self-reporting)<br/>1トピック=1ノード<br/>metrics行+自トピックprobeをHTTPで直送"]
-    B -->|"HTTP feed(全トピック)"| C["control サイドカー<br/>:8005 monitor互換 / :8006 probe互換"]
-    B -->|"SHM(videoトピックのみ)"| F["frames ノード"] & W["webrtc ノード"]
+    ROS -->|"N購読(1 participant)"| ING["live_ingest(1プロセス)<br/>Rust側metrics購読×N<br/>計数/probe を100msバッチでHTTP直送"]
+    ROS -->|"CDR→Arrow(videoトピックのみ)"| B["bridge ノード ×V(video)"]
+    ING -->|"HTTP feed"| C["control サイドカー<br/>:8005 monitor互換 / :8006 probe互換"]
+    B -->|"SHM"| F["frames ノード"] & W["webrtc ノード"]
     F -->|"間引いた圧縮ペイロード"| C
     W -->|":8007 シグナリング+メディア"| BR["ブラウザ"]
     C -->|生成・監督| DF["dora run(生成 dataflow)"]
-    C -.->|"GET /live/frames(pull)"| EXT["LAN 内の任意コンテナ<br/>(将来の画像検証など・未実装)"]
+    C -.->|"GET /live/frames(pull)"| EXT["LAN 内の任意コンテナ(将来の画像検証など)"]
 ```
 
-**フィールドスケール改修(2026-07-22 深夜)**: 中央 metrics/probe 消費ノードは**廃止**。
-bridge が自トピックの metrics 行と probe を control へ**直接 HTTP 送信**し(feed 契約・
-:8005/:8006 の外部 API は不変)、video codec の無いトピックの bridge は `send_output`
-自体をしない = **デーモン/SHM を通るのはカメラトピックのみ**。
+**フィールドスケール最終形(2026-07-22 深夜・ユーザー裁定の live_ingest 構成)**:
+計数(metrics/probe)は **live_ingest 1プロセス・1 DDS participant** に集約。同梱の
+**carried dora パッチ**(`services/dora_live/dora-metrics.patch`、ソースピンビルドに
+`git apply`)が提供する `Ros2MetricsSubscription` ×N をぶら下げ、Rust 側で
+到着時刻/サイズ/stamp を抽出、Python は 100ms 毎にバッチを drain して
+`/internal/samples` へ 1 POST。ペイロードの Python 具現化は probe の tap
+(視聴中のみ・latest-wins)だけ。video トピックのみ per-topic bridge が残り、
+webrtc/frames へ SHM 転送する。外部 API(:8005/:8006)は完全不変。
 
-実測の正直な整理(29 トピック・~975msg/s 合成ベースライン): 削れたのは「メッセージ毎の
-デーモンルーティング+消費者起床×2」(この負荷帯で計 ~20〜25%、**メッセージレート比例**で
-増える項)+プロセス2本/~100 スレッド。bridge 側には feed POST の固定費(~0.5-1%/bridge)が
-乗るため、**低レートでは中立・高レート(実機の関節系)で効く**改修である。残る支配項は
-**bridge 1 本あたりの固定床**(RustDDS participant 30 スレッド+tokio ワーカー(ホストコア数
-比例)+zenoh で ~88 スレッド・~3%/本 @20-100Hz)×トピック数 — これを下げる手段は live config
-でのトピック絞り込み(即効)と、dora upstream の external-event 帰属による 1 participant 化
-(TBD)のみ。
+実測(29トピック・~970msg/s 合成、同一条件の世代比較):
+
+| 世代 | コンテナCPU | PIDS | MEM |
+|---|---|---|---|
+| 中央 metrics/probe 消費ノード | 118-136% | 2833 | 3.9GB |
+| per-topic self-reporting bridge | 130.7% | 2726 | 3.9GB |
+| **live_ingest(現行)** | **30%** | **495** | **0.65GB** |
+
+per-topic プロセス艦隊(RustDDS participant ×29=固定床+index 空間消費)が真の
+ボトルネックだった。1 participant 化で participant-index 枯渇問題も構造的に消滅。
+パッチは upstream 提案済み(dora-rs/dora#2801)— 同等機能が release されたら
+パッチを落とす。
 
 ## dora のピン方針(重要)
 

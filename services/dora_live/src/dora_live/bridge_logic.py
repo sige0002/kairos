@@ -78,6 +78,26 @@ def decode_first(value: Any) -> dict | None:
     return rows[0]
 
 
+def feed_row_from_tuple(
+    topic: str, sample: tuple[int, int, int | None, bool]
+) -> dict[str, Any]:
+    """One drained metrics-subscription sample -> a ``/internal/samples`` row.
+
+    Sample shape (frozen pyo3 contract of the carried dora patch):
+    ``(recv_ns_monotonic, size_bytes, stamp_ns | None, bridged)``.
+    """
+    recv_ns, size, stamp_ns, bridged = sample
+    row: dict[str, Any] = {
+        "topic": topic,
+        "recv_t": recv_ns / 1e9,
+        "size": size,
+        "bridged": bridged,
+    }
+    if stamp_ns is not None:
+        row["stamp_s"] = stamp_ns / 1e9
+    return row
+
+
 def feed_row(
     topic: str,
     t_recv_ns: int,

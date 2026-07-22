@@ -39,20 +39,19 @@ def test_topic_token_sanitizes():
 def test_generated_graph_wiring():
     df = generate_dataflow(_manifest(), common_env={"ROS_DOMAIN_ID": "1"})
     ids = [n["id"] for n in df["nodes"]]
-    assert "bridge__hsrb_joint_states" in ids
-    # Central consumers are GONE (field-scale rework): bridges self-report
-    # metrics + probe over HTTP; only payload lanes remain on the bus.
-    assert "metrics" not in ids
-    assert "probe" not in ids
-    assert "ai" not in ids  # removed by ruling 2026-07-22 (extension seam only)
+    # Central consumers gone; feed-only topics collapse into ONE live_ingest
+    # node (one process / one DDS participant); only video topics get bridges.
+    assert "metrics" not in ids and "probe" not in ids and "ai" not in ids
+    assert "bridge__hsrb_joint_states" not in ids
+    assert "live_ingest" in ids
 
-    bridge = next(n for n in df["nodes"] if n["id"] == "bridge__hsrb_joint_states")
-    assert bridge["env"]["BRIDGE_TYPE"] == "sensor_msgs/JointState"
-    assert bridge["env"]["ROS_DOMAIN_ID"] == "1"
-    assert bridge["env"]["CONTROL_URL"].startswith("http://")
-    # Feed-only bridge (no video codec): never forwards, declares no output.
-    assert bridge["env"]["BRIDGE_FORWARD"] == "0"
-    assert "outputs" not in bridge
+    ingest = next(n for n in df["nodes"] if n["id"] == "live_ingest")
+    assert ingest["env"]["DORA_NODE_MODULE"] == "dora_live.nodes.ingest"
+    assert ingest["env"]["ROS_DOMAIN_ID"] == "1"
+    topics = json.loads(ingest["env"]["INGEST_TOPICS"])
+    assert topics["/hsrb/joint_states"]["type"] == "sensor_msgs/JointState"
+    assert topics["/hsrb/joint_states"]["qos"] == "best_effort"
+    assert "outputs" not in ingest and list(ingest["inputs"]) == ["tick"]
 
     cam = next(
         n
@@ -163,7 +162,7 @@ def test_frames_node_absent_when_disabled_or_no_topics():
     )
 
 
-def test_bridge_env_carries_durability():
+def test_qos_travels_to_ingest_and_bridge():
     m = LiveManifest(
         topics=[
             LiveTopic(
@@ -173,13 +172,27 @@ def test_bridge_env_carries_durability():
                 durability="transient_local",
                 depth=1,
             ),
+            LiveTopic(
+                name="/cam",
+                ros_type="sensor_msgs/msg/CompressedImage",
+                qos="best_effort",
+                depth=5,
+                video="image",
+            ),
         ]
     )
     df = generate_dataflow(m)
+    ingest = next(n for n in df["nodes"] if n["id"] == "live_ingest")
+    cfg = json.loads(ingest["env"]["INGEST_TOPICS"])["/tf_static"]
+    assert cfg == {
+        "type": "tf2_msgs/TFMessage",
+        "qos": "reliable",
+        "durability": "transient_local",
+        "depth": 1,
+    }
     bridge = next(n for n in df["nodes"] if n["id"].startswith("bridge__"))
-    assert bridge["env"]["BRIDGE_QOS"] == "reliable"
-    assert bridge["env"]["BRIDGE_QOS_DURABILITY"] == "transient_local"
-    assert bridge["env"]["BRIDGE_QOS_DEPTH"] == "1"
+    assert bridge["env"]["BRIDGE_QOS"] == "best_effort"
+    assert bridge["env"]["BRIDGE_QOS_DEPTH"] == "5"
 
 
 def test_webrtc_env_port_override():
@@ -219,8 +232,16 @@ def test_token_collisions_deduped():
     assert len(set(tokens.values())) == 3
     m = LiveManifest(
         topics=[
-            LiveTopic(name="/cam/left", ros_type="std_msgs/msg/String"),
-            LiveTopic(name="/cam_left", ros_type="std_msgs/msg/String"),
+            LiveTopic(
+                name="/cam/left",
+                ros_type="sensor_msgs/msg/CompressedImage",
+                video="image",
+            ),
+            LiveTopic(
+                name="/cam_left",
+                ros_type="sensor_msgs/msg/CompressedImage",
+                video="image",
+            ),
         ]
     )
     df = generate_dataflow(m)  # must not raise

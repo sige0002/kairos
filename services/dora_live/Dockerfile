@@ -8,8 +8,8 @@
 # commit (mixing them breaks the internal protocol). Exit condition: switch to
 # the PyPI wheel once an official release ships domain support (dora-rs/dora#1626).
 #
-# The builder stage is textually identical to the benchmark image
-# (~/ros2_to_dora/docker/Dockerfile.main) so the Docker layer cache is shared.
+# The builder stage diverges from the benchmark image since the carried
+# metrics patch below (no cross-image layer-cache sharing anymore).
 ARG ROS_DISTRO=jazzy
 
 # ---------------------------------------------------------------------------
@@ -31,10 +31,18 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 
 RUN pip install --no-cache-dir --break-system-packages "maturin>=1.5"
 
-# Pin the source to the requested commit and record it.
+# Pin the source to the requested commit, then apply the carried kairos patch:
+# a Rust-side "metrics subscription" (drain-batched arrival/size/stamp rows +
+# probe tap slot) that removes the per-message Python event boundary for
+# feed-only bridges — the measured ~0.55 ms/event structural cost (see
+# dev_docs/codex_dora_bottleneck.md). Upstream candidate; drop the patch once
+# an equivalent ships in a dora release.
+COPY services/dora_live/dora-metrics.patch /dora-metrics.patch
 RUN git clone --filter=blob:none https://github.com/dora-rs/dora /src/dora \
     && cd /src/dora && git checkout "${DORA_COMMIT}" \
+    && git apply /dora-metrics.patch \
     && git rev-parse HEAD > /dora_commit.txt \
+    && echo "kairos-patch: dora-metrics" >> /dora_commit.txt \
     && cat /dora_commit.txt
 
 # Build the CLI first (warms the shared target cache for the maturin build),
