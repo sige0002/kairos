@@ -17,13 +17,13 @@ def _qos(reliability: str, durability: str = "volatile", depth: int = 10) -> Qos
 
 
 def test_any_best_effort_publisher_forces_best_effort() -> None:
-    pubs = [_qos("reliable", depth=10), _qos("best_effort", depth=5)]
+    pubs = [_qos("reliable", depth=20), _qos("best_effort", depth=15)]
     qos = resolve_subscription_qos("/cam", pubs)
     # A best_effort subscriber is compatible with both pub kinds.
     assert qos.reliability == Reliability.best_effort.value
     assert qos.durability == Durability.volatile.value
-    # Smallest offered depth keeps the monitor light.
-    assert qos.depth == 5
+    # Smallest offered depth wins when it clears the default floor (10).
+    assert qos.depth == 15
 
 
 def test_all_reliable_publishers_resolve_reliable() -> None:
@@ -75,12 +75,31 @@ def test_config_override_only_applies_on_pattern_match() -> None:
     )
     # Non-matching topic falls through to publisher auto-match.
     qos = resolve_subscription_qos(
-        "/joint_states", [_qos("best_effort", depth=2)], config=config
+        "/joint_states", [_qos("best_effort", depth=20)], config=config
     )
     assert qos.reliability == Reliability.best_effort.value
-    assert qos.depth == 2
+    # Auto-matched to the offered depth (above the floor), not the override's 3.
+    assert qos.depth == 20
 
 
 def test_depth_floored_at_one() -> None:
-    qos = resolve_subscription_qos("/t", [_qos("reliable", depth=0)])
+    # A degenerate depth-0 publisher never yields a depth-0 subscription; with
+    # the floor set to 1 the max(1, ...) guard still lands the result at 1.
+    qos = resolve_subscription_qos("/t", [_qos("reliable", depth=0)], default_depth=1)
     assert qos.depth == 1
+
+
+def test_default_depth_is_a_floor_for_auto_match() -> None:
+    # Field fix: a shallow publisher must not force a shallow (undercounting)
+    # subscriber. The auto-matched depth is floored at default_depth.
+    shallow = resolve_subscription_qos(
+        "/burst",
+        [_qos("best_effort", depth=1), _qos("reliable", depth=5)],
+        default_depth=30,
+    )
+    assert shallow.depth == 30
+    # A deeper offer above the floor is honoured (smallest offered wins).
+    deep = resolve_subscription_qos(
+        "/deep", [_qos("reliable", depth=50)], default_depth=30
+    )
+    assert deep.depth == 50

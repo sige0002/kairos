@@ -125,12 +125,21 @@ def test_qos_falls_back_to_recording_override():
 
 def test_qos_auto_matches_publishers():
     pubs = [
-        QosInfo(reliability="reliable", durability="volatile", depth=10),
-        QosInfo(reliability="best_effort", durability="volatile", depth=5),
+        QosInfo(reliability="reliable", durability="volatile", depth=100),
+        QosInfo(reliability="best_effort", durability="volatile", depth=50),
     ]
     qos = resolve_topic_qos("/a", pubs, LiveConfig(), _recording())
-    # Compatible side: best_effort if any publisher is best_effort.
-    assert qos.reliability == "best_effort" and qos.depth == 5
+    # Compatible side: best_effort if any publisher is best_effort; smallest
+    # offered depth wins when it clears the default floor (30).
+    assert qos.reliability == "best_effort" and qos.depth == 50
+
+
+def test_qos_auto_match_floors_shallow_publishers():
+    # A depth-1 publisher must not force a depth-1 (undercounting) subscriber;
+    # the auto-matched depth is floored at default_depth.
+    pubs = [QosInfo(reliability="best_effort", durability="volatile", depth=1)]
+    qos = resolve_topic_qos("/a", pubs, LiveConfig(), _recording(), default_depth=30)
+    assert qos.reliability == "best_effort" and qos.depth == 30
 
 
 def test_qos_no_publishers_uses_default_depth():
