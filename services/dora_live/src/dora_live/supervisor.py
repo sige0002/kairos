@@ -109,6 +109,7 @@ def derive_manifest(
             ),
             frames_enabled=live.frames.enabled,
             frames_sample_hz=live.frames.sample_hz,
+            video_defaults=live.video_defaults.model_dump(),
         ),
         pending,
     )
@@ -150,6 +151,7 @@ def _manifest_key(manifest: LiveManifest) -> tuple[Any, ...]:
     """
     return (
         tuple(manifest.queues.model_dump().items()),
+        tuple(sorted(manifest.video_defaults.items())),
         manifest.frames_enabled,
         manifest.frames_sample_hz,
         tuple(

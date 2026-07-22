@@ -129,3 +129,33 @@ def test_invalid_start_request_is_422() -> None:
         resp = client.post("/stream/start", json={"topic": ""})
         assert resp.status_code == 422
         assert resp.json()["error"]["code"] == "validation_error"
+
+
+def test_video_defaults_fill_unset_hints() -> None:
+    from dora_live.webrtc_models import VideoDefaults
+
+    router = FrameRouter()
+    seen: list[StreamStartRequest] = []
+
+    def spy_source_factory(request: StreamStartRequest):
+        from dora_live.webrtc_frame import RouterFrameSource
+
+        seen.append(request)
+        return RouterFrameSource(router, request.topic)
+
+    app = create_webrtc_app(
+        router,
+        source_factory=spy_source_factory,
+        peer_factory=lambda request, source: FakePeerManager(),
+        h264_supported=False,
+        video_defaults=VideoDefaults(max_fps=10, max_width=640),
+    )
+    with TestClient(app) as client:
+        # No hints -> server defaults fill in.
+        client.post("/stream/start", json={"topic": "/cam/a"})
+        assert (seen[0].max_fps, seen[0].max_width) == (10, 640)
+        # Explicit client hints always win over the defaults.
+        client.post(
+            "/stream/start", json={"topic": "/cam/b", "max_fps": 30, "max_width": 1280}
+        )
+        assert (seen[1].max_fps, seen[1].max_width) == (30, 1280)

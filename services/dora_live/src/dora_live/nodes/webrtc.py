@@ -63,6 +63,7 @@ def main() -> int:
     from kairos_common import get_settings
 
     from dora_live.webrtc_app import create_webrtc_app
+    from dora_live.webrtc_models import VideoDefaults
 
     port = int(os.environ.get("DORA_LIVE_WEBRTC_PORT", str(DEFAULT_WEBRTC_PORT)))
     settings = get_settings()
@@ -70,7 +71,14 @@ def main() -> int:
     # Bus topic->codec map (from the dataflow generator): /stream/start for
     # anything else is rejected honestly instead of streaming silent black.
     video_map = load_video_map(os.environ.get("DORA_LIVE_VIDEO_MAP"))
-    app = create_webrtc_app(router, bus_topics=set(video_map))
+    try:
+        defaults = VideoDefaults.model_validate(
+            json.loads(os.environ.get("DORA_LIVE_VIDEO_DEFAULTS") or "{}")
+        )
+    except Exception as exc:  # noqa: BLE001 - bad env must not kill the lane
+        log("bad DORA_LIVE_VIDEO_DEFAULTS (using built-ins):", exc)
+        defaults = VideoDefaults()
+    app = create_webrtc_app(router, bus_topics=set(video_map), video_defaults=defaults)
 
     # Signaling HTTP runs on its own thread in this process (media is fed from
     # the dora event loop below into the shared, thread-safe router).

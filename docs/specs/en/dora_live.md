@@ -77,6 +77,7 @@ robot works with NO live config** (the key to low-effort onboarding). `make` der
 | `exclude` | `[]` | glob patterns removed from the final set (still recorded; kept off the bridge) |
 | `qos_overrides` | `[]` | per-topic subscription QoS (first match wins). Falls back to the recording `topic_qos_overrides`, then **auto-match against the offered publisher QoS** (reusing the monitor's own `resolve_subscription_qos` — no second QoS brain) |
 | `video` | `[]` | video-lane rules (first match wins); `codec: image\|ffmpeg\|raw\|off` |
+| `video_defaults` | `{max_fps: 15, max_width: null, max_height: null}` | server-side defaults applied when the client's `/stream/start` omits a hint. **On HD cameras the `max_width` cap is the single biggest decode/encode CPU lever** (explicit client values always win) |
 | `frames` | `{enabled: true, sample_hz: 2.0}` | live-frames lane (below): enablement + per-topic decimation rate |
 | `queues` | `{metrics: null, probe: 4, webrtc: 2, frames: 2}` | **per-consumer queue depths**. metrics COUNTS arrivals (drop = mis-measured Hz — keep deep); the preview lanes are latest-wins, so shallow — a deep queue there turns a briefly-slow decoder into seconds of stale-frame lag + pinned shared memory (the choppy-preview field incident) |
 | `queue_size` | `1000` | metrics-lane depth (legacy name; `queues.metrics` overrides) |

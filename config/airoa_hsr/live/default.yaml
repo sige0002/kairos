@@ -8,6 +8,10 @@ extra_topics: []
 exclude: []
 qos_overrides: []
 video: []
+video_defaults:
+  max_fps: 15
+  max_width: null
+  max_height: null
 frames:
   enabled: true
   sample_hz: 2.0

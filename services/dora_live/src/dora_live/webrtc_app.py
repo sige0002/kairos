@@ -30,6 +30,7 @@ from dora_live.webrtc_models import (
     StreamStartResponse,
     StreamStatusResponse,
     StreamStopRequest,
+    VideoDefaults,
 )
 from dora_live.webrtc_peer import PeerManager, apply_rtp_packet_max, h264_available
 from dora_live.webrtc_registry import (
@@ -56,7 +57,7 @@ def _router_source_factory(router: FrameRouter) -> SourceFactory:
             request.topic,
             max_width=request.max_width,
             max_height=request.max_height,
-            max_fps=request.max_fps,
+            max_fps=request.max_fps or 15,
         )
 
     return factory
@@ -70,7 +71,7 @@ def _real_peer_factory(request: StreamStartRequest, source: FrameSource) -> Peer
     return AiortcPeerManager(
         source.frames,
         encoding=request.encoding,
-        max_fps=request.max_fps,
+        max_fps=request.max_fps or 15,
         ice_servers=settings.webrtc_ice_servers,
     )
 
@@ -83,6 +84,7 @@ def create_webrtc_app(
     h264_supported: bool | None = None,
     idle_timeout_s: float = DEFAULT_IDLE_TIMEOUT_S,
     bus_topics: set[str] | None = None,
+    video_defaults: VideoDefaults | None = None,
 ) -> FastAPI:
     """Build the WebRTC signaling FastAPI app with the registry and routes wired.
 
@@ -97,6 +99,7 @@ def create_webrtc_app(
         idle_timeout_s: seconds a client-less stream lives before auto-stop.
     """
     apply_rtp_packet_max()  # before any PeerConnection packetizes media
+    defaults = video_defaults or VideoDefaults()
     settings = get_settings()
     h264 = h264_available() if h264_supported is None else h264_supported
     registry = StreamRegistry(
@@ -150,6 +153,15 @@ def create_webrtc_app(
                 message="H.264 encoding is not available in this build.",
                 details={"encoding": request.encoding.value},
             )
+        # Fill unset quality hints from the server-side defaults (config-
+        # driven decode/encode budget; the frontend sends none today).
+        request = request.model_copy(
+            update={
+                "max_fps": request.max_fps or defaults.max_fps,
+                "max_width": request.max_width or defaults.max_width,
+                "max_height": request.max_height or defaults.max_height,
+            }
+        )
         # Source start may touch shared router state; keep the event loop free.
         sid = await asyncio.to_thread(registry.start, request)
         return StreamStartResponse(stream_id=sid)

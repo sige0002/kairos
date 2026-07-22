@@ -69,6 +69,7 @@ flowchart LR
 | `exclude` | `[]` | glob で最終集合から除外(録画は継続・ブリッジには入れない等) |
 | `qos_overrides` | `[]` | per-topic 購読 QoS(先勝ち)。フォールバックは recording の `topic_qos_overrides` → **publisher 実 QoS の自動マッチ**(monitor と同一の `resolve_subscription_qos` を再利用 — QoS 判断の二重実装はない) |
 | `video` | `[]` | video レーン規則(先勝ち)。`codec: image\|ffmpeg\|raw\|off` |
+| `video_defaults` | `{max_fps: 15, max_width: null, max_height: null}` | クライアントが `/stream/start` で指定を省略した時のサーバ側既定。**HD カメラでは `max_width` キャップがデコード/エンコード CPU の最大レバー**(明示指定は常に優先) |
 | `frames` | `{enabled: true, sample_hz: 2.0}` | ライブフレームレーン(下記)の有効化と per-topic 間引きレート |
 | `queues` | `{metrics: null, probe: 4, webrtc: 2, frames: 2}` | **consumer 別キュー深さ**。metrics は到着を「数える」ので深く(drop = Hz 誤計測)、プレビュー系は latest-wins なので浅く — 深いキューは消費側が一瞬遅れただけで「古いフレームの滞留=秒級遅延+SHM ピン留め」になる(かくつき実障害の主因) |
 | `queue_size` | `1000` | metrics レーンの深さ(旧名。`queues.metrics` が優先) |

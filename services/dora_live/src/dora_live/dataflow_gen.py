@@ -213,6 +213,9 @@ def generate_dataflow(
         "DORA_LIVE_VIDEO_MAP": json.dumps(
             {t.name: t.video for t in video_topics}, sort_keys=True
         ),
+        # Server-side stream defaults (fps / resolution caps for clients that
+        # omit them — the operator's decode/encode budget lever).
+        "DORA_LIVE_VIDEO_DEFAULTS": json.dumps(manifest.video_defaults, sort_keys=True),
         **(webrtc_env or {}),
     }
     webrtc_node_env.setdefault("DORA_LIVE_WEBRTC_PORT", DEFAULT_WEBRTC_PORT)

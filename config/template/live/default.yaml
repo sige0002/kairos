@@ -66,6 +66,16 @@ frames:
   enabled: true
   sample_hz: 2.0
 
+# --- Preview stream defaults (decode/encode CPU budget) ----------------------
+# Applied when the client's /stream/start omits the field (the frontend sends
+# none today). max_width/max_height cap BOTH decode-fed frames and the encode
+# size — on HD cameras native-size VP8 encode is the dominant webrtc-node CPU
+# cost, so setting e.g. max_width: 960 is the single biggest load lever.
+video_defaults:
+  max_fps: 15
+  max_width: null      # e.g. 960 to cap HD cameras
+  max_height: null
+
 # --- Per-consumer queue depths -----------------------------------------------
 # metrics COUNTS arrivals (drop = mis-measured Hz -> keep deep). The preview
 # lanes (webrtc/frames) are latest-wins: a deep queue there turns a briefly

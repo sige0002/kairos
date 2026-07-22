@@ -64,6 +64,11 @@ class LiveManifest(BaseModel):
     # manifest so a config change restarts the dataflow like any other change.
     frames_enabled: bool = True
     frames_sample_hz: float = 2.0
+    # Server-side stream defaults for the webrtc node (fps / resolution caps
+    # applied when the client omits them). Keys: max_fps/max_width/max_height.
+    video_defaults: dict[str, int | None] = Field(
+        default_factory=lambda: {"max_fps": 15, "max_width": None, "max_height": None}
+    )
 
     def topic(self, name: str) -> LiveTopic | None:
         for t in self.topics:

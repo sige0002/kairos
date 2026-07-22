@@ -224,3 +224,15 @@ def test_token_collisions_deduped():
     df = generate_dataflow(m)  # must not raise
     bridge_ids = [n["id"] for n in df["nodes"] if n["id"].startswith("bridge__")]
     assert len(bridge_ids) == len(set(bridge_ids)) == 2
+
+
+def test_webrtc_env_carries_video_defaults():
+    m = _manifest()
+    m.video_defaults = {"max_fps": 10, "max_width": 960, "max_height": None}
+    df = generate_dataflow(m)
+    webrtc = next(n for n in df["nodes"] if n["id"] == "webrtc")
+    assert json.loads(webrtc["env"]["DORA_LIVE_VIDEO_DEFAULTS"]) == {
+        "max_fps": 10,
+        "max_width": 960,
+        "max_height": None,
+    }

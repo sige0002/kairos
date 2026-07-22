@@ -53,6 +53,21 @@ class LiveVideoRule(BaseModel):
     codec: VideoCodec
 
 
+class LiveVideoDefaults(BaseModel):
+    """Server-side stream defaults when the client omits a quality hint.
+
+    The decode/encode budget lever: without a resolution cap every preview
+    stream decodes AND encodes at the camera's native size — on HD cameras
+    that (not transport) dominates the webrtc node's CPU.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_fps: int = Field(default=15, ge=1, le=60)
+    max_width: int | None = Field(default=None, ge=16, le=7680)
+    max_height: int | None = Field(default=None, ge=16, le=4320)
+
+
 class LiveQueuesConfig(BaseModel):
     """Per-consumer dataflow queue depths.
 
@@ -105,6 +120,8 @@ class LiveConfig(BaseModel):
     qos_overrides: list[TopicQosOverride] = Field(default_factory=list)
     # First match wins; unmatched topics resolve by ros type.
     video: list[LiveVideoRule] = Field(default_factory=list)
+    # Applied when a /stream/start omits max_fps / max_width / max_height.
+    video_defaults: LiveVideoDefaults = Field(default_factory=LiveVideoDefaults)
     # Live-frames lane (decimated compressed payloads for LAN pull).
     frames: LiveFramesConfig = Field(default_factory=LiveFramesConfig)
     # Per-consumer queue depths (see LiveQueuesConfig).

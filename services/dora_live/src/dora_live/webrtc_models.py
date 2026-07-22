@@ -56,10 +56,26 @@ class StreamStartRequest(BaseModel):
 
     topic: str = Field(min_length=1)
     encoding: Encoding = Encoding.vp8
-    max_fps: Annotated[int, Field(ge=1, le=60)] = 15
+    # None = "client did not ask" -> the server-side VideoDefaults apply
+    # (config-driven; previously a hard 15 baked in here).
+    max_fps: Annotated[int, Field(ge=1, le=60)] | None = None
     max_width: Annotated[int, Field(ge=16, le=7680)] | None = None
     max_height: Annotated[int, Field(ge=16, le=4320)] | None = None
     bitrate_kbps: Annotated[int, Field(ge=64, le=50_000)] | None = None
+
+
+class VideoDefaults(BaseModel):
+    """Server-side stream defaults applied when the client omits a field.
+
+    The operator's decode/encode budget lever (LIVE_CONFIG ``video_defaults``):
+    the frontend does not pass resolution today, so without a default cap every
+    stream decodes AND encodes at the camera's native size — on HD cameras that
+    is the dominant CPU cost, not the transport.
+    """
+
+    max_fps: Annotated[int, Field(ge=1, le=60)] = 15
+    max_width: Annotated[int, Field(ge=16, le=7680)] | None = None
+    max_height: Annotated[int, Field(ge=16, le=4320)] | None = None
 
 
 class StreamStopRequest(BaseModel):
