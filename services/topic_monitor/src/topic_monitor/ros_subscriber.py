@@ -1,8 +1,9 @@
-"""The rclpy-backed :class:`~topic_monitor.subscriber.TopicSubscriber`.
+"""The rclpy-backed :class:`~kairos_common.monitoring.subscriber.TopicSubscriber`.
 
 This is the real ROS seam: an rclpy node that subscribes to the allowlist
 topics with auto-matched QoS (``qos_match.py``) and emits one
-:class:`~topic_monitor.subscriber.Sample` per received message — recording only
+:class:`~kairos_common.monitoring.subscriber.Sample` per received message
+— recording only
 arrival time and serialized size, **never decoding the payload** (lightweight,
 non-destructive monitoring, per the spec). The executor spins on a background
 thread so it never blocks the asyncio web server.
@@ -23,10 +24,12 @@ from fnmatch import fnmatch
 from typing import Any
 
 from kairos_common import RecordingConfig
-
-from topic_monitor.models import QosInfo
-from topic_monitor.qos_match import resolve_subscription_qos
-from topic_monitor.subscriber import Sample, TopicGraphEntry
+from kairos_common.monitoring.models import QosInfo
+from kairos_common.monitoring.qos_match import (
+    publisher_qos_infos,
+    resolve_subscription_qos,
+)
+from kairos_common.monitoring.subscriber import Sample, TopicGraphEntry
 
 logger = logging.getLogger("kairos.topic_monitor")
 
@@ -158,20 +161,21 @@ class RosTopicSubscriber:
             logger.exception("discovery refresh failed; will retry next tick")
 
     def _resolve_qos(self, node: Any, topic: str) -> QosInfo:
-        """Auto-match a subscription QoS from the topic's publishers."""
-        publishers = [
-            QosInfo(
-                reliability=_reliability_str(info.qos_profile.reliability),
-                durability=_durability_str(info.qos_profile.durability),
-                depth=getattr(info.qos_profile, "depth", 1) or 1,
-            )
-            for info in node.get_publishers_info_by_topic(topic)
-        ]
+        """Auto-match a subscription QoS from the topic's publishers.
+
+        ``monitor.qos_depth`` is the configured depth FLOOR (team finding:
+        without it the floor fell back to the function default of 10, while
+        dora_live already floored at the configured 30 — the monitor would
+        still undercount faster bursts than the ~50 Hz case that exposed it).
+        """
         default_depth = (
             self._config.monitor.qos_depth if self._config is not None else 10
         )
         return resolve_subscription_qos(
-            topic, publishers, self._config, default_depth=default_depth
+            topic,
+            publisher_qos_infos(node, topic),
+            self._config,
+            default_depth=default_depth,
         )
 
     def _subscribe(
@@ -315,19 +319,4 @@ def _to_qos_profile(qos: QosInfo) -> Any:
         durability=durability,
         history=HistoryPolicy.KEEP_LAST,
         depth=max(1, qos.depth),
-    )
-
-
-def _reliability_str(value: Any) -> str:
-    """Normalise an rclpy reliability policy to our string vocabulary."""
-    from rclpy.qos import ReliabilityPolicy
-
-    return "best_effort" if value == ReliabilityPolicy.BEST_EFFORT else "reliable"
-
-
-def _durability_str(value: Any) -> str:
-    from rclpy.qos import DurabilityPolicy
-
-    return (
-        "transient_local" if value == DurabilityPolicy.TRANSIENT_LOCAL else "volatile"
     )

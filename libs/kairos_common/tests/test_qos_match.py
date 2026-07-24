@@ -8,8 +8,8 @@ from kairos_common import (
     Reliability,
     TopicQosOverride,
 )
-from topic_monitor.models import QosInfo
-from topic_monitor.qos_match import resolve_subscription_qos
+from kairos_common.monitoring.models import QosInfo
+from kairos_common.monitoring.qos_match import resolve_subscription_qos
 
 
 def _qos(reliability: str, durability: str = "volatile", depth: int = 10) -> QosInfo:
@@ -17,13 +17,13 @@ def _qos(reliability: str, durability: str = "volatile", depth: int = 10) -> Qos
 
 
 def test_any_best_effort_publisher_forces_best_effort() -> None:
-    pubs = [_qos("reliable", depth=10), _qos("best_effort", depth=5)]
+    pubs = [_qos("reliable", depth=20), _qos("best_effort", depth=15)]
     qos = resolve_subscription_qos("/cam", pubs)
     # A best_effort subscriber is compatible with both pub kinds.
     assert qos.reliability == Reliability.best_effort.value
     assert qos.durability == Durability.volatile.value
-    # Smallest offered depth, floored at default_depth (10 here).
-    assert qos.depth == 10
+    # Smallest offered depth wins when it clears the default floor (10).
+    assert qos.depth == 15
 
 
 def test_all_reliable_publishers_resolve_reliable() -> None:
@@ -75,22 +75,31 @@ def test_config_override_only_applies_on_pattern_match() -> None:
     )
     # Non-matching topic falls through to publisher auto-match.
     qos = resolve_subscription_qos(
-        "/joint_states", [_qos("best_effort", depth=2)], config=config
+        "/joint_states", [_qos("best_effort", depth=20)], config=config
     )
     assert qos.reliability == Reliability.best_effort.value
-    assert qos.depth == 10  # offered 2 is floored at default_depth
+    # Auto-matched to the offered depth (above the floor), not the override's 3.
+    assert qos.depth == 20
 
 
-def test_depth_floored_at_default() -> None:
-    # A nonsense offered depth (0) resolves to the default floor, never 0/1.
-    qos = resolve_subscription_qos("/t", [_qos("reliable", depth=0)])
-    assert qos.depth == 10
+def test_depth_floored_at_one() -> None:
+    # A degenerate depth-0 publisher never yields a depth-0 subscription; with
+    # the floor set to 1 the max(1, ...) guard still lands the result at 1.
+    qos = resolve_subscription_qos("/t", [_qos("reliable", depth=0)], default_depth=1)
+    assert qos.depth == 1
 
 
-def test_default_depth_is_a_floor_for_auto_match():
-    # Shallow publishers no longer force a burst-dropping shallow subscriber.
-    pubs = [_qos("reliable", depth=1), _qos("reliable", depth=5)]
-    assert resolve_subscription_qos("/t", pubs, default_depth=30).depth == 30
-    # A deeper offer than the floor is kept as-is.
-    pubs = [_qos("reliable", depth=50)]
-    assert resolve_subscription_qos("/t", pubs, default_depth=30).depth == 50
+def test_default_depth_is_a_floor_for_auto_match() -> None:
+    # Field fix: a shallow publisher must not force a shallow (undercounting)
+    # subscriber. The auto-matched depth is floored at default_depth.
+    shallow = resolve_subscription_qos(
+        "/burst",
+        [_qos("best_effort", depth=1), _qos("reliable", depth=5)],
+        default_depth=30,
+    )
+    assert shallow.depth == 30
+    # A deeper offer above the floor is honoured (smallest offered wins).
+    deep = resolve_subscription_qos(
+        "/deep", [_qos("reliable", depth=50)], default_depth=30
+    )
+    assert deep.depth == 50

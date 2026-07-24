@@ -1,14 +1,15 @@
 """The monitoring service: subscriber -> registry -> snapshot (ROS-free core).
 
 :class:`MonitorService` is the heart of topic_monitor. It owns a
-:class:`~topic_monitor.subscriber.TopicSubscriber` (the ROS seam), wires its
-samples into the :class:`~topic_monitor.metrics.MetricsRegistry`, and turns the
+:class:`~kairos_common.monitoring.subscriber.TopicSubscriber` (the ROS seam), wires its
+samples into the :class:`~kairos_common.monitoring.metrics.MetricsRegistry`, and
+turns the
 accumulated windows into the API response models (``MetricsSnapshot`` /
 ``TopicsResponse`` / ``AlertsResponse``). Pause/resume forward to the subscriber.
 
 It depends only on the :class:`TopicSubscriber` Protocol, never on rclpy, so the
 full path — sample in, snapshot out, alerts evaluated — is unit-testable by
-injecting a :class:`~topic_monitor.subscriber.FakeSubscriber` and feeding
+injecting a :class:`~kairos_common.monitoring.subscriber.FakeSubscriber` and feeding
 synthetic samples. ``main.py`` injects the real rclpy-backed subscriber instead.
 """
 
@@ -21,11 +22,14 @@ from datetime import UTC, datetime, timedelta
 from fnmatch import fnmatch
 
 from kairos_common import RecordingConfig, utc_now_iso8601
-
-from topic_monitor.alerts import AlertEngine
-from topic_monitor.expected_hz import make_expected_hz_resolver
-from topic_monitor.metrics import MetricsRegistry, SelfLoadMonitor, TopicState
-from topic_monitor.models import (
+from kairos_common.monitoring.alerts import AlertEngine
+from kairos_common.monitoring.expected_hz import make_expected_hz_resolver
+from kairos_common.monitoring.metrics import (
+    MetricsRegistry,
+    SelfLoadMonitor,
+    TopicState,
+)
+from kairos_common.monitoring.models import (
     Alert,
     AlertRule,
     DerivedRulesConfig,
@@ -37,7 +41,7 @@ from topic_monitor.models import (
     TopicMetrics,
     TopicsResponse,
 )
-from topic_monitor.subscriber import Sample, TopicSubscriber
+from kairos_common.monitoring.subscriber import Sample, TopicSubscriber
 
 # Default sliding windows if the RECORDING_CONFIG monitor block is unavailable.
 _DEFAULT_WINDOWS_S: list[float] = [1.0, 5.0]

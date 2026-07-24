@@ -1,6 +1,7 @@
 """Alert incident evaluation with hysteresis (the unit-testable core).
 
-Each :class:`~topic_monitor.models.AlertRule` watches one metric of one topic and
+Each :class:`~kairos_common.monitoring.models.AlertRule` watches one metric
+of one topic and
 fires when ``metric op threshold`` holds. To avoid flapping, two timers add
 hysteresis (per ``docs/specs/ja/topic_monitor.md``):
 
@@ -51,7 +52,7 @@ from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from topic_monitor.models import (
+from kairos_common.monitoring.models import (
     Alert,
     AlertMetric,
     AlertOp,

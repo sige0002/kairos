@@ -1,7 +1,7 @@
 """topic_monitor service entry point (Stage 2).
 
 Lightweight, non-destructive ROS 2 topic monitoring. This module wires the
-monitoring service (:mod:`topic_monitor.monitor`) — which owns the rclpy
+monitoring service (:mod:`kairos_common.monitoring.monitor`) — which owns the rclpy
 subscriber, the windowed-metric registry, and the alert engine — to the HTTP API
 the spec defines (``/topics``, ``/metrics`` + SSE, pause/resume, ``/alerts``).
 Cross-cutting plumbing (health, error shape, CORS, logging) comes from
@@ -31,19 +31,19 @@ from kairos_common import (
     resolve_config_path,
     utc_now_iso8601,
 )
-from pydantic import BaseModel
-
-from topic_monitor.alert_config import load_alert_rules, load_derived_config
-from topic_monitor.models import (
+from kairos_common.monitoring.alert_config import load_alert_rules, load_derived_config
+from kairos_common.monitoring.models import (
     AlertsResponse,
     IncidentsResponse,
     MetricsSnapshot,
     PauseResponse,
     TopicsResponse,
 )
-from topic_monitor.monitor import MonitorService
+from kairos_common.monitoring.monitor import MonitorService
+from kairos_common.monitoring.subscriber import TopicSubscriber
+from pydantic import BaseModel
+
 from topic_monitor.ros_subscriber import RosTopicSubscriber
-from topic_monitor.subscriber import TopicSubscriber
 
 logger = logging.getLogger("kairos.topic_monitor")
 

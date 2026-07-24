@@ -1,9 +1,11 @@
 """Load topic_monitor alert rules from the ALERT_CONFIG_PATH YAML (MON-C1).
 
-The alert engine (:mod:`topic_monitor.alerts`) only does anything in production if
+The alert engine (:mod:`kairos_common.monitoring.alerts`) only does anything
+in production if
 the rules it evaluates are loaded here and injected into :class:`MonitorService`.
 The file is optional; its schema is a single top-level ``rules:`` list, each entry
-an :class:`~topic_monitor.models.AlertRule`. The canonical, documented template is
+an :class:`~kairos_common.monitoring.models.AlertRule`. The canonical,
+documented template is
 ``config/template/monitoring/alerts.yaml``.
 
 Failure policy (never hide a config mistake):
@@ -24,7 +26,7 @@ from pathlib import Path
 import yaml
 from pydantic import ValidationError
 
-from topic_monitor.models import AlertRule, DerivedRulesConfig
+from kairos_common.monitoring.models import AlertRule, DerivedRulesConfig
 
 logger = logging.getLogger("kairos.topic_monitor")
 

@@ -3,8 +3,13 @@ cleared-state retention, and the default DANGER incident (D-9 ③)."""
 
 from __future__ import annotations
 
-from topic_monitor.alerts import AlertEngine, metric_value
-from topic_monitor.models import AlertMetric, AlertOp, AlertRule, DerivedRulesConfig
+from kairos_common.monitoring.alerts import AlertEngine, metric_value
+from kairos_common.monitoring.models import (
+    AlertMetric,
+    AlertOp,
+    AlertRule,
+    DerivedRulesConfig,
+)
 
 
 def _snapshot(hz: float | None) -> dict[str, dict[str, object]]:

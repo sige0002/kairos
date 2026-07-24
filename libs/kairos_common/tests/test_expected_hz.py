@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from kairos_common import ExpectedHzPattern, RecordingConfig
-from topic_monitor.expected_hz import make_expected_hz_resolver
+from kairos_common.monitoring.expected_hz import make_expected_hz_resolver
 
 
 def _config(patterns: list[ExpectedHzPattern]) -> RecordingConfig:
