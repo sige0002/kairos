@@ -212,7 +212,6 @@ def run_dataset_archive(
     data_dir: Path,
     dataset_dir: str,
     destination: str,
-    archive_roots: str | None = None,
     reason: str | None = None,
 ) -> dict[str, Any]:
     """Copy the dataset to *destination*, verify it, then delete the source.
@@ -226,16 +225,18 @@ def run_dataset_archive(
     path-taking, source-deleting operation should not depend on its caller
     having been careful.
     """
-    # The allow-list comes from THIS service's environment. `archive_roots` is
-    # honoured only for tests, which pass it explicitly; the job runner never
-    # forwards a caller's value (see registry._run_dataset_archive), because a
-    # path-taking, source-deleting operation must not let its caller widen its
-    # own boundary.
-    roots = parse_archive_roots(
-        archive_roots
-        if archive_roots is not None
-        else os.environ.get("KAIROS_ARCHIVE_ROOTS")
-    )
+    # The allow-list is deployment configuration and is read from THIS
+    # service's environment, from nowhere else. It is deliberately NOT a
+    # parameter: a path-taking, source-deleting operation must not let its
+    # caller widen its own boundary, and a parameter is something a caller can
+    # eventually be wired to — which is exactly how this went wrong once
+    # (a job param let any LAN caller pass "/" and archive anywhere writable,
+    # then delete the original).
+    #
+    # Tests set the variable itself rather than injecting a value, so they
+    # exercise the same branch a deployment does; a misspelling here would fail
+    # them instead of silently shipping an unconfigured archive path.
+    roots = parse_archive_roots(os.environ.get("KAIROS_ARCHIVE_ROOTS"))
     target = resolve_archive_destination(destination, roots)
     source = _resolve_source(data_dir, dataset_dir)
     # An archive root that happens to contain the data directory would otherwise

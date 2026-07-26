@@ -235,11 +235,14 @@ async def _run_dataset_archive(
         data_dir=data_dir,
         dataset_dir=dataset_dir,
         destination=destination,
-        # NOT job.params: the allow-list is deployment configuration, and a
-        # job parameter is caller-controlled. POST /jobs forwards params
-        # verbatim and neither service authenticates, so accepting it here let
-        # any LAN caller pass archive_roots="/" and have the runner copy a
-        # dataset anywhere writable and then delete the original. Verified.
+        # No allow-list is passed from here, and there is no parameter left to
+        # pass it through: run_dataset_archive reads KAIROS_ARCHIVE_ROOTS from
+        # this service's own environment. The allow-list is deployment
+        # configuration, and a job parameter is caller-controlled — POST /jobs
+        # forwards params verbatim and neither service authenticates, so when
+        # this WAS a parameter any LAN caller could pass archive_roots="/" and
+        # have the runner copy a dataset anywhere writable, then delete the
+        # original. Verified, then removed rather than merely left unwired.
         reason=job.params.get("reason"),
     )
 
