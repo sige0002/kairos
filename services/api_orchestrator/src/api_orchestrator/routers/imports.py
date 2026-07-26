@@ -152,6 +152,11 @@ async def _run_import(
             extra={"run_id": record.run_id, "source": record.source_path},
         )
     except Exception as exc:  # noqa: BLE001 - any failure must land in the record
+        # Clean up BEFORE publishing the terminal state. A caller that polls
+        # until "failed" is entitled to find nothing half-imported at that
+        # moment; announcing the outcome first leaves a window where the
+        # status says the import is over and its debris is still on disk.
+        await asyncio.to_thread(shutil.rmtree, staging, True)
         record.state = "failed"
         record.finished_at = utc_now_iso8601()
         if isinstance(exc, ApiError):
@@ -159,8 +164,6 @@ async def _run_import(
         else:
             record.error_code = "import_failed"
             record.error_message = str(exc) or exc.__class__.__name__
-        # Leave nothing half-imported; the source is untouched either way.
-        await asyncio.to_thread(shutil.rmtree, staging, True)
         logger.warning(
             "bag import failed",
             extra={

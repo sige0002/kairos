@@ -11,9 +11,11 @@ in the router for why the two differ.
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import httpx
+from api_orchestrator import datasets_index
 from api_orchestrator.app_factory import create_orchestrator_app
 from api_orchestrator.store import RunStore
 from conftest import FakeRecorder
@@ -405,3 +407,37 @@ def test_the_job_never_carries_an_allow_list(
         )
 
     assert "archive_roots" not in archiver.created[0]["params"]
+
+
+def test_a_row_whose_dataset_is_gone_is_dropped_on_read(tmp_path: Path) -> None:
+    """Verified by codex review, 2026-07-27.
+
+    Archiving removes the files and the catalog row as two separate steps, and
+    the orchestrator can die between them — after which the catalog kept
+    advertising a dataset that had left, and every action offered on it would
+    fail on a missing directory. The tree is the ground truth; reads now apply
+    that rule instead of trusting a row that outlived its data.
+    """
+    data_dir = tmp_path / "data"
+    _make_dataset(data_dir, "yuki", "pick", "001")
+    _make_dataset(data_dir, "yuki", "pick", "002")
+    for index in ("001", "002"):
+        datasets_index.append_row(
+            data_dir,
+            {
+                "operator": "yuki",
+                "task": "pick",
+                "index": index,
+                "run_id": f"run_{index}",
+                "dataset_dir": f"yuki/pick/{index}",
+                "schema_version": 1,
+            },
+        )
+    # 002 leaves (archived), but the crash happens before the row is dropped.
+    shutil.rmtree(data_dir / "yuki" / "pick" / "002")
+
+    listed = datasets_index.list_from_index(data_dir)
+
+    assert [r["index"] for r in listed] == ["001"]
+    # The stale row is not merely hidden — it is gone from the catalog file.
+    assert [r["index"] for r in datasets_index.read_rows(data_dir)] == ["001"]

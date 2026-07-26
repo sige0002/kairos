@@ -216,6 +216,16 @@ def backfill_topic_signature(data_dir: Path, rows: list[dict[str, Any]]) -> int:
     return len(stale)
 
 
+def _dataset_present(data_dir: Path, row: dict[str, Any]) -> bool:
+    """Whether the row's dataset directory still exists (its `dataset.json`)."""
+    operator, task, index = row.get("operator"), row.get("task"), row.get("index")
+    if not (operator and task and index):
+        return False
+    return (
+        Path(data_dir) / str(operator) / str(task) / str(index) / "dataset.json"
+    ).is_file()
+
+
 def list_from_index(data_dir: Path) -> list[dict[str, Any]] | None:
     """Serve the dataset list from the catalog, or ``None`` to fall back.
 
@@ -229,6 +239,17 @@ def list_from_index(data_dir: Path) -> list[dict[str, Any]] | None:
         rows = read_rows(data_dir)
         if rows is None:
             return None
+        # Drop rows whose dataset is no longer on disk. Archiving and deleting
+        # both remove the row as a separate step from removing the files, and
+        # the orchestrator can die in between — after which the catalog would
+        # keep advertising a dataset that has left, and every action offered on
+        # it (validate, loss report, archive again) would fail on a missing
+        # directory. The tree is the ground truth this module already defers to;
+        # this is the same rule applied on read.
+        live = [r for r in rows if _dataset_present(data_dir, r)]
+        if len(live) != len(rows):
+            _atomic_write(index_path(data_dir), live)
+            rows = live
         backfill_topic_signature(data_dir, rows)
     out = [to_list_row(r, data_dir) for r in rows]
     out.sort(key=lambda d: (d["operator"], d["task"], d["index"]))

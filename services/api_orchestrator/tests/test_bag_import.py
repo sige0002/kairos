@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -427,3 +428,25 @@ def test_move_removes_the_source_directory_when_it_held_only_the_bag(
 
     assert bag_import.remove_moved_source(SimpleNamespace(path=source)) == []
     assert not source.exists()
+
+
+def test_two_imports_in_the_same_second_get_different_run_ids(tmp_path: Path) -> None:
+    """Verified by codex review, 2026-07-27.
+
+    The id is second-resolution, so two requests arriving together used to pass
+    the same free-checks, share one staging directory, interleave their copies
+    into it, and finalize a bag assembled from two sources — after which `move`
+    could delete a source whose data is not what landed. The staging directory
+    is reserved, not merely checked.
+    """
+    recorded = tmp_path / "recorded"
+    recorded.mkdir()
+    moment = datetime(2026, 7, 27, 3, 4, 5, tzinfo=UTC)
+
+    first = bag_import.unique_run_id(recorded, lambda _rid: False, moment)
+    second = bag_import.unique_run_id(recorded, lambda _rid: False, moment)
+
+    assert first != second
+    # Both reservations exist, so neither import can adopt the other's staging.
+    assert (recorded / bag_import.INCOMING_DIRNAME / first).is_dir()
+    assert (recorded / bag_import.INCOMING_DIRNAME / second).is_dir()

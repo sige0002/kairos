@@ -400,10 +400,24 @@ def unique_run_id(recorded_dir: Path, taken: Any, now: datetime | None = None) -
     and either collision would corrupt the import.
     """
     base = allocate_import_run_id(now)
+    incoming = recorded_dir / INCOMING_DIRNAME
+    incoming.mkdir(parents=True, exist_ok=True)
     for attempt in range(_MAX_RUN_ID_ATTEMPTS):
         candidate = base if attempt == 0 else f"{base}_{attempt}"
-        if not (recorded_dir / candidate).exists() and not taken(candidate):
-            return candidate
+        if (recorded_dir / candidate).exists() or taken(candidate):
+            continue
+        # RESERVE the staging directory, don't just check for it. The id is
+        # second-resolution, so two requests in the same second used to pass
+        # the same checks, both `mkdir(exist_ok=True)` the same staging dir,
+        # interleave their copies into it, and finalize one bag built from two
+        # sources — after which `move` could delete a source whose data is not
+        # what landed. `exist_ok=False` makes the winner unambiguous and sends
+        # the loser to the next candidate.
+        try:
+            (incoming / candidate).mkdir(exist_ok=False)
+        except FileExistsError:
+            continue
+        return candidate
     raise ApiError(
         status_code=409,
         code="run_id_unavailable",
@@ -419,6 +433,8 @@ def copy_into_staging(bag: SourceBag, staging: Path) -> int:
     ``copy2`` preserves mtimes, so the imported bag keeps the timestamps the
     recording actually had.
     """
+    # The directory was already reserved by unique_run_id; creating it here
+    # would paper over a lost reservation.
     staging.mkdir(parents=True, exist_ok=True)
     written = 0
     for child in sorted(bag.path.iterdir()):
