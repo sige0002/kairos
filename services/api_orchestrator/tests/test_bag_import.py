@@ -19,7 +19,6 @@ import yaml
 from api_orchestrator import bag_import
 from fastapi.testclient import TestClient
 from kairos_common import ApiError, Settings
-from kairos_common.errors import ApiError
 
 
 @pytest.fixture

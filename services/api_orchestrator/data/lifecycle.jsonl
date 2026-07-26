@@ -14,3 +14,6 @@
 {"event": "deleted", "operator": "recorded", "task": "run", "index": "run_20260726_231303", "at": "2026-07-26T23:13:03.230Z", "run_id": "run_20260726_231303", "reason": "run deleted", "bytes": 567890, "message_count": 1234}
 {"event": "deleted", "operator": "recorded", "task": "run", "index": "run_cascade", "at": "2026-07-26T23:13:03.588Z", "run_id": "run_cascade", "reason": "run deleted"}
 {"event": "deleted", "operator": "recorded", "task": "run", "index": "run_rec_2", "at": "2026-07-26T23:13:03.603Z", "run_id": "run_rec_2", "reason": "run deleted"}
+{"event": "deleted", "operator": "recorded", "task": "run", "index": "run_20260726_231320", "at": "2026-07-26T23:13:20.021Z", "run_id": "run_20260726_231320", "reason": "run deleted", "bytes": 567890, "message_count": 1234}
+{"event": "deleted", "operator": "recorded", "task": "run", "index": "run_cascade", "at": "2026-07-26T23:13:20.457Z", "run_id": "run_cascade", "reason": "run deleted"}
+{"event": "deleted", "operator": "recorded", "task": "run", "index": "run_rec_2", "at": "2026-07-26T23:13:20.484Z", "run_id": "run_rec_2", "reason": "run deleted"}
