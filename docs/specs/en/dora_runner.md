@@ -254,6 +254,43 @@ are recorded in `VENDOR.md`.
 
 MCAP → dora dataflow (validator / converter / AI nodes) → reports / converted dataset
 
+What one validation job actually is (as of 2026-07-26; `fast_validation` and `full_validation` share the machinery):
+
+```mermaid
+flowchart LR
+  subgraph orc["api_orchestrator (a separate container)"]
+    J["POST /api/v1/jobs<br/>resolves a template id into the object"]
+  end
+
+  subgraph runner["the dora_runner container (the scope of this spec)"]
+    API["FastAPI + job store<br/>(SQLite)"]
+    REG["pipeline registry"]
+    PIPE["bagflow_pipeline.py<br/>materialize · timeout · cleanup"]
+    SUM["summarize()<br/>report.json → summary.json"]
+
+    subgraph dora["bundled bagflow + dora 0.5 (in the image only)"]
+      CO["dora coordinator/daemon<br/>127.0.0.1:6112 loopback"]
+      SRC["bagflow-source"]
+      CHK["check nodes<br/>-topic-presence / -topic-rate<br/>-decode / -blur / -brightness<br/>-freeze / -stamp-gap"]
+      RPT["bagflow-report"]
+    end
+  end
+
+  FLOWB[/"the bundled flow<br/>/opt/kairos/flows/fast_validation.yml"/]
+  FLOWC[/"the robot's config (read-only)<br/>config&lt;robot&gt;/flows/*.yml"/]
+  BAG[("/data/recorded/&lt;run_id&gt;<br/>*.mcap + metadata.yaml")]
+  OUT[("/data/report/&lt;pipeline&gt;/&lt;run_id&gt;/<br/>summary.json · report.json · flow/")]
+
+  J --> API --> REG --> PIPE
+  FLOWC -. "wins when it has the same name" .-> PIPE
+  FLOWB --> PIPE
+  PIPE -->|"bagflow run --name job_id"| CO
+  CO --> SRC
+  BAG -.->|"full reads the messages<br/>fast reads only the metadata"| SRC
+  SRC --> CHK --> RPT --> SUM --> OUT
+```
+
+
 ## Design points
 
 - validator / converter / AI are dora nodes (plugins). I/O is a contract.

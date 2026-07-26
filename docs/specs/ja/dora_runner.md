@@ -238,6 +238,42 @@ bagflow は「事実」だけを報告する（ノードごとの `ok`・エッ�
 
 MCAP → dora dataflow（validator / converter / AI nodes）→ reports / converted dataset
 
+検証 1 ジョブの実体（2026-07-26 現在。`fast_validation` / `full_validation` は同じ機構）:
+
+```mermaid
+flowchart LR
+  subgraph orc["api_orchestrator（別コンテナ）"]
+    J["POST /api/v1/jobs<br/>テンプレ id を実体へ解決"]
+  end
+
+  subgraph runner["dora_runner コンテナ（この仕様の範囲）"]
+    API["FastAPI + job store<br/>(SQLite)"]
+    REG["pipeline registry"]
+    PIPE["bagflow_pipeline.py<br/>実体化・timeout・後始末"]
+    SUM["summarize()<br/>report.json → summary.json"]
+
+    subgraph dora["同梱 bagflow + dora 0.5（イメージ内のみ）"]
+      CO["dora coordinator/daemon<br/>127.0.0.1:6112 loopback"]
+      SRC["bagflow-source"]
+      CHK["検査ノード群<br/>-topic-presence / -topic-rate<br/>-decode / -blur / -brightness<br/>-freeze / -stamp-gap"]
+      RPT["bagflow-report"]
+    end
+  end
+
+  FLOWB[/"同梱フロー<br/>/opt/kairos/flows/fast_validation.yml"/]
+  FLOWC[/"ロボット config（読み取り専用）<br/>config&lt;robot&gt;/flows/*.yml"/]
+  BAG[("/data/recorded/&lt;run_id&gt;<br/>*.mcap + metadata.yaml")]
+  OUT[("/data/report/&lt;pipeline&gt;/&lt;run_id&gt;/<br/>summary.json · report.json · flow/")]
+
+  J --> API --> REG --> PIPE
+  FLOWC -. "同名なら優先" .-> PIPE
+  FLOWB --> PIPE
+  PIPE -->|"bagflow run --name job_id"| CO
+  CO --> SRC
+  BAG -.->|"full のみ実データを読む<br/>fast は metadata だけ"| SRC
+  SRC --> CHK --> RPT --> SUM --> OUT
+```
+
 ## 設計ポイント
 
 - validator / converter / AI は dora node（プラグイン）。I/O は契約。
