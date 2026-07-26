@@ -28,7 +28,15 @@ export interface ActiveOutcome {
   requiredTopics?: RequiredTopic[];
 }
 
-/** fast_validation gets its bespoke checklist; every other pipeline is generic. */
+/**
+ * fast_validation leads with its bespoke checklist — "are my required topics
+ * there" is the question it exists to answer — but the generic card follows it
+ * rather than replacing it. Since the port to bagflow, the summary also carries
+ * the evidence behind that verdict (which node checked what, the bag's own
+ * figures, the flow that ran), and hiding it meant a PASS was the least
+ * inspectable outcome: exactly backwards, because a pass is what you most often
+ * want to talk yourself into trusting.
+ */
 function DetailCard({
   pipeline,
   summary,
@@ -41,7 +49,12 @@ function DetailCard({
   requiredTopics?: RequiredTopic[];
 }) {
   if (pipeline === FAST_VALIDATION) {
-    return <ChecklistCard summary={summary} required={requiredTopics ?? []} />;
+    return (
+      <div className="flex flex-col gap-3">
+        <ChecklistCard summary={summary} required={requiredTopics ?? []} />
+        <SummaryResult pipeline={pipeline} summary={summary} artifacts={artifacts} />
+      </div>
+    );
   }
   return <SummaryResult pipeline={pipeline} summary={summary} artifacts={artifacts} />;
 }

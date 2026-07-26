@@ -342,10 +342,14 @@ async def _run_locked(
     summary_path = report_dir / "summary.json"
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
-    produced = [summary_path, report_path]
+    # The materialized flow is published on every run, pass or fail: "what did
+    # this validation actually check?" is asked most often about a run that
+    # PASSED, and the flow file (with ${KAIROS_*} already expanded) is the only
+    # honest answer — the flow in config/ is a template, not what ran.
+    produced = [summary_path, report_path, flow_file]
     if summary["result"] != "pass":
-        # Only worth surfacing when something needs explaining; on a clean pass
-        # they are noise in the UI's artifact list.
+        # Node logs stay conditional: on a clean pass they are 8 files of noise
+        # in the UI's artifact list, and the report already carries every check.
         produced.extend(node_logs(workdir))
     artifacts = [reported_artifact(p, data_dir, configured_dir) for p in produced]
     return {"summary": summary, "artifacts": artifacts}

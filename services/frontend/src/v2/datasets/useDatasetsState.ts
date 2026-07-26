@@ -125,7 +125,8 @@ const TOAST_MS = 2400;
 export function useDatasetsState(): DatasetsState {
   const queryClient = useQueryClient();
   const [selectedGroupKey, setSelectedGroupKey] = useState<string | null>(null);
-  const [selected, setSelected] = useState<DatasetEntry | null>(null);
+  // Raw click state; `selected` below is this reconciled against the filter.
+  const [selectedEntry, setSelectedEntry] = useState<DatasetEntry | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [toast, setToast] = useState('');
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -172,17 +173,36 @@ export function useDatasetsState(): DatasetsState {
     [tree, selectedGroupKey],
   );
 
+  // The selected EPISODE is derived the same way, and for a sharper reason than
+  // stale rows: the detail pane carries a live Delete. Without this, narrowing
+  // the catalog left that Delete bound to an episode the list no longer shows —
+  // the operator reads "quickcheck-smoke, 1 episode" on screen and deletes
+  // something else entirely. A filter must never leave a destructive control
+  // pointed at an off-screen target.
+  const selected = useMemo(
+    () =>
+      selectedEntry &&
+      filtered.some((entry) => sameDataset(entry, selectedEntry)) &&
+      (!selectedGroup ||
+        selectedGroup.entries.some((entry) => sameDataset(entry, selectedEntry)))
+        ? selectedEntry
+        : null,
+    [selectedEntry, filtered, selectedGroup],
+  );
+
   const selectGroup = useCallback((key: string) => {
     setSelectedGroupKey(key);
-    setSelected(null); // switching groups clears the episode selection
+    setSelectedEntry(null); // switching groups clears the episode selection
     setEpisodeSearch(''); // and its one-shot episode search
   }, []);
 
   // Toggle: clicking the already-selected episode clears it (back to summary).
   const selectEntry = useCallback((entry: DatasetEntry) => {
-    setSelected((cur) => (cur && cur.dataset_dir === entry.dataset_dir ? null : entry));
+    setSelectedEntry((cur) =>
+      cur && cur.dataset_dir === entry.dataset_dir ? null : entry,
+    );
   }, []);
-  const selectSummary = useCallback(() => setSelected(null), []);
+  const selectSummary = useCallback(() => setSelectedEntry(null), []);
 
   // Scope for the top-pane episode list + the bottom-pane summary: the selected
   // group, else the whole filtered catalog (this replaces the old "no group
@@ -309,7 +329,7 @@ export function useDatasetsState(): DatasetsState {
       queryClient.removeQueries({
         queryKey: queryKeys.dataset(entry.operator, entry.task, entry.index),
       });
-      setSelected(null);
+      setSelectedEntry(null);
       setConfirmingDelete(false);
       showToast('Dataset deleted');
     },

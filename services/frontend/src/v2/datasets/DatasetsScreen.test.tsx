@@ -738,3 +738,34 @@ test('a scope with zero labeled rows shows an honest note, not a fabricated donu
   expect(screen.queryByTestId('dataset-outcome-donut')).toBeNull();
   expect(screen.queryByTestId('dataset-success-rate')).toBeNull();
 });
+
+test('narrowing the catalog cannot leave Delete pointed at an off-screen episode', async () => {
+  // Regression (2026-07-27 UX review, blocker): selecting an episode and then
+  // typing an unrelated search left the detail pane — and its live Delete —
+  // bound to a row the list no longer showed. The operator would be reading one
+  // dataset on screen while the destructive control pointed at another.
+  mockFetch({
+    list: LIST_RESPONSE,
+    details: { [detailUrlFor(SHELF_A)]: detailFor(SHELF_A) },
+  });
+  renderWithClient(<DatasetsScreen />);
+  await waitFor(() => expect(screen.getByTestId(shelfLeaf)).toBeInTheDocument());
+  fireEvent.click(screen.getByTestId(shelfLeaf));
+  fireEvent.click(await screen.findByTestId(`dataset-episode-row-${SHELF_A.dataset_dir}`));
+  await waitFor(() => expect(screen.getByTestId('dataset-stats')).toBeInTheDocument());
+  expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument();
+
+  // Narrow to something that excludes the selected episode.
+  fireEvent.change(screen.getByTestId('dataset-search'), {
+    target: { value: 'kitchen' },
+  });
+
+  // The detail pane and its Delete are gone; the scope summary takes over.
+  await waitFor(() => expect(screen.queryByTestId('dataset-stats')).toBeNull());
+  expect(screen.queryByRole('button', { name: 'Delete' })).toBeNull();
+  expect(screen.getByTestId('dataset-scope-summary')).toBeInTheDocument();
+
+  // Clearing the search restores the selection rather than losing it.
+  fireEvent.change(screen.getByTestId('dataset-search'), { target: { value: '' } });
+  await waitFor(() => expect(screen.getByTestId('dataset-stats')).toBeInTheDocument());
+});
