@@ -157,7 +157,7 @@ flowchart TB
   `fast_validation` looks in the robot's config and then in the service's bundled flows
   (`/opt/kairos/flows/`), and has no `params.flow` — its flow name is fixed (`fast_validation`), so placing
   a file of that name in config IS the override mechanism.
-- **`${KAIROS_*}` substitution** is the seam between the Config tab's validation template and the flow.
+- **`${KAIROS_*}` substitution** is the seam between the validation template (chosen under **Settings → Validation** in Console v2; the Config tab in the v1 UI) and the flow.
   Usable inside any string value:
   | Token | Contents |
   |---|---|
@@ -167,7 +167,7 @@ flowchart TB
   | `${KAIROS_RUN_ID}` / `${KAIROS_BAG_DIR}` / `${KAIROS_REPORT_DIR}` / `${KAIROS_REPORT}` | the run and its output locations |
   - Required topics come from **`params.template` → (else) `RECORDING_CONFIG.validation.required_topics`**.
     The orchestrator resolves a template id into the full object for `full_validation` just as it does for
-    `fast_validation`, so **choosing a template in the Config tab drives both pipelines from one
+    `fast_validation`, so **choosing a template under Settings → Validation drives both pipelines from one
     definition**. There is deliberately **no** fallback to "a draft generated from the run itself" (that
     would make the check trivially true).
   - An unknown `${KAIROS_…}` is an **error** — never passed through silently.

@@ -468,7 +468,7 @@ def full_validation_schema(flows: list[str]) -> dict:
             "flow": flow_property,
             # Named `template` so the UI renders its catalog picker (a field with
             # this exact name is special-cased in PipelineForm); empty = the
-            # Config tab's active template, injected by the orchestrator.
+            # active template (Settings -> Validation), injected by the orchestrator.
             "template": {
                 "type": "string",
                 "title": "Validation template",

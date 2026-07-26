@@ -150,7 +150,7 @@ flowchart TB
   **フローの探索順**: `full_validation` はロボット config のみ（`params.flow` で選ぶ）。`fast_validation` は
   ロボット config → サービス同梱（`/opt/kairos/flows/`）の順で、`params.flow` を持たない（フロー名は固定で
   `fast_validation`＝同名ファイルを config に置くことが上書き手段）。
-- **`${KAIROS_*}` 置換**が「Config タブの検証テンプレ」とフローの結節点。文字列値の中に書ける:
+- **`${KAIROS_*}` 置換**が「検証テンプレ（Console v2 の **Settings → Validation** で選ぶ。v1 UI では Config タブ）」とフローの結節点。文字列値の中に書ける:
   | トークン | 中身 |
   |---|---|
   | `${KAIROS_EXPECT_HZ}` | `{topic: hz}` の JSON。**必須トピックは `hz=0`**（＝存在必須・レート不問。`bagflow-topic-rate` は bag に無いトピックを失敗として報告し、0 を下回るレートは存在しない）。`RECORDING_CONFIG` の `expected_hz_patterns` に一致するトピックは実レートで上書き |
@@ -159,7 +159,7 @@ flowchart TB
   | `${KAIROS_RUN_ID}` / `${KAIROS_BAG_DIR}` / `${KAIROS_REPORT_DIR}` / `${KAIROS_REPORT}` | run と出力先 |
   - 必須トピックの出どころは **`params.template` →（無ければ）`RECORDING_CONFIG.validation.required_topics`**。
     orchestrator は `fast_validation` と同様に `full_validation` でもテンプレ id を実体へ解決して注入するので、
-    **Config タブでテンプレを選ぶと 2 つのパイプラインが同じ必須トピック定義を見る**。
+    **Settings → Validation でテンプレを選ぶと 2 つのパイプラインが同じ必須トピック定義を見る**。
     未指定時に「run 自身から生成した雛形」へフォールバックは**しない**（それでは検査が自明に真になる）。
   - 未知の `${KAIROS_…}` は**エラー**（黙って素通しさせない）。
 - **node `path` の解決**: 名前だけ（`bagflow-blur`）＝同梱バイナリ、相対パス＝**元のフローファイルの

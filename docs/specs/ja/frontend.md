@@ -76,11 +76,11 @@ backend-driven な軽量 Web UI（Vite + React + TypeScript）。タブは技術
 ### Datasets — エクスポート済みデータセットのカタログ
 
 - **カタログ専用**。export 操作は置かない（「Recordings are reviewed and exported in Review → Go to Review」の誘導のみ）。v1 の無判断一括ダンプ（Export all）は**意図的に廃止**し、Review 経由に一本化した。
-- **ラベルフィルタ+マニフェスト（2026-07-14 分割ヒアリング第2回の裁定 = 物理分割しない）**: task result（All / Success / Failure）チップ+condition セレクトで一覧を絞り込み（**ラベル無しの旧 export は All でのみ表示** — 答えられない述語を通さない）。「Manifest (n)」でフィルタ結果を JSON マニフェスト（`data_dir` 相対パス+全ラベル）としてダウンロード — **学習セット定義をバージョン管理可能な1ファイルに実体化**する。全件非表示時は「フィルタで n 件隠れている」と明示。
-- 一覧: `GET /api/v1/datasets` の operator › task › NNN ツリー。各カードに **episode ラベルチップ**（`episode.json` 由来: batch / task result / quality / review status）＋ **condition の 1 行**（カタログ行の `condition`。tooltip にグローバル一意の `batch_id`。無ければ非表示 — 値をでっち上げない）。**ラベルの無い旧 export は「legacy (pre-label)」として淡色表示**する。**一覧は左カラム内で独立スクロール**（グリッド行を `minmax(0,1fr)` で viewport に固定・ヘッダはピン留め。件数が増えても過去のデータセットに必ず到達できる）。
+- **ラベルフィルタ+マニフェスト（2026-07-14 分割ヒアリング第2回の裁定 = 物理分割しない）**: task result（All / Success / Failure）チップ + operator セレクト + 検索ボックス（task / condition / operator / #set を横断）で一覧を絞り込み（**ラベル無しの旧 export は All でのみ表示** — 答えられない述語を通さない）。「Manifest (n)」でフィルタ結果を JSON マニフェスト（`data_dir` 相対パス+全ラベル）としてダウンロード — **学習セット定義をバージョン管理可能な1ファイルに実体化**する。全件非表示時は「フィルタで n 件隠れている」と明示。
+- 一覧: `GET /api/v1/datasets` の **task › condition ツリー**（2026-07-21 の IA 改修。operator は階層ではなく facet に降ろした＝実運用では大半が単一 operator で、階層にすると無意味な1段が挟まる）。選択の単位は `(task, condition)` の組。各カードに **episode ラベルチップ**（`episode.json` 由来: batch / task result / quality / review status）＋ **condition の 1 行**（カタログ行の `condition`。tooltip にグローバル一意の `batch_id`。無ければ非表示 — 値をでっち上げない）。**ラベルの無い旧 export は「legacy (pre-label)」として淡色表示**する。**一覧は左カラム内で独立スクロール**（グリッド行を `minmax(0,1fr)` で viewport に固定・ヘッダはピン留め。件数が増えても過去のデータセットに必ず到達できる）。
 - 詳細 = DatasetDetail（メタデータ / トピック一覧 / loss report / mp4 Video check / dataset.json・episode.json 等の JSON）。Sidecars セクションには **episode.json ブロックも並ぶ**（エクスポートを生き残ったラベル+バッチコンテキストをその場で閲覧。2026-07-14 ユーザー要望）。loss / video のジョブは `params.dataset_dir` でエクスポート先の MCAP を読む。
 - **Delete**（確認モーダル・Recordings の削除と同 UX）で `DELETE /api/v1/datasets/{op}/{task}/{index}`。
-- **Build**（LeRobot v3 等への変換）と **Recipe 型データセット構築は未実装（TBD: Phase 3）** — UI は淡色の枠のみで、動くコントロールに見せない。
+- **Build**（LeRobot v3 等への変換）と **Recipe 型データセット構築は未実装（TBD: Phase 2）** — UI は淡色の枠のみで、動くコントロールに見せない。
 
 ### Validation — pipeline 実行・標準化
 

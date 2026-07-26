@@ -83,9 +83,10 @@ def required_topics(
     """Topics a flow may treat as mandatory (``${KAIROS_REQUIRED_TOPIC_SPECS}``).
 
     Precedence mirrors what the operator sees in the UI: the job's template (the
-    Config tab's active one, injected by the orchestrator, or a preset's named
-    one) first, then ``RECORDING_CONFIG``'s ``validation.required_topics``. Both
-    absent means an empty list — a flow decides what that means for it.
+    active one from Settings -> Validation, injected by the orchestrator, or a
+    preset's named one) first, then ``RECORDING_CONFIG``'s
+    ``validation.required_topics``. Both absent means an empty list — a flow
+    decides what that means for it.
     """
     if template is not None and template.required_topics:
         source = template.required_topics
@@ -106,8 +107,8 @@ def topic_expectations(
 
     * every required topic starts at ``0``. The check node reports a topic that
       is absent from the bag as a failure and never flags a rate below ``0``, so
-      ``0`` reads exactly as "must exist, any rate" — this is how the Config
-      tab's validation template reaches the flow;
+      ``0`` reads exactly as "must exist, any rate" — this is how the active
+      validation template (Settings -> Validation) reaches the flow;
     * a topic with a static ``expected_hz_patterns`` match (recorder/monitor
       resolver, first match wins) overrides that with its real rate — including
       required topics, which then get presence AND rate checked.

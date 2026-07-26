@@ -5,8 +5,8 @@ flow run on dora (``fast_validation.py`` + ``flows/fast_validation.yml``), and
 the required-topic comparison itself lives in the ``bagflow-topic-presence``
 node. What stays here is the MCAP-side helper the HTTP API needs — the topic
 enumeration behind ``POST /validation/templates/generate``, which turns a
-recording into a first draft of the template an operator then edits in the
-Config tab.
+recording into a first draft of the template an operator then edits under
+Settings -> Validation.
 """
 
 from __future__ import annotations
