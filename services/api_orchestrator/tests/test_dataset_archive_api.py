@@ -274,8 +274,8 @@ def test_archive_returns_202_with_a_job_and_records_the_departure(
     # Provenance carried forward: which embodiment this was.
     assert isinstance(entry["topics_hash"], str) and entry["topics_hash"]
     assert entry["topic_count"] == 1
-    # The allow-list travels with the job so the runner enforces it too.
-    assert archiver.created[0]["params"]["archive_roots"] == str(nas)
+    # The allow-list deliberately does NOT travel with the job — see
+    # test_the_job_never_carries_an_allow_list.
     assert archiver.created[0]["pipeline"] == "dataset_archive"
 
 
@@ -379,3 +379,29 @@ def test_a_ledger_that_cannot_be_written_aborts_the_delete(
     assert res.status_code == 500
     assert res.json()["error"]["code"] == "ledger_write_failed"
     assert source.is_dir()  # the data is still there
+
+
+def test_the_job_never_carries_an_allow_list(
+    tmp_path: Path, store: RunStore, fake_recorder: FakeRecorder
+) -> None:
+    """The allow-list must not travel with the request.
+
+    The runner reads its own KAIROS_ARCHIVE_ROOTS. Sending one in the job params
+    made it caller-controlled — a LAN caller could pass archive_roots="/" and
+    have the runner copy a dataset anywhere writable and delete the original.
+    The field is gone from the wire as well as from the runner, so there is
+    nothing for a future reader to "helpfully" reconnect.
+    """
+    data_dir = tmp_path / "data"
+    _make_dataset(data_dir, "yuki", "pick", "001")
+    nas = tmp_path / "nas"
+    archiver = FakeArchiver(data_dir)
+    app = _build(tmp_path, store, fake_recorder, archiver, roots=str(nas))
+
+    with TestClient(app) as client:
+        client.post(
+            "/api/v1/datasets/yuki/pick/001/archive",
+            json={"destination": str(nas / "ep001")},
+        )
+
+    assert "archive_roots" not in archiver.created[0]["params"]

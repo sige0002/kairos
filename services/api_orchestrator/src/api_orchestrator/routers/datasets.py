@@ -34,7 +34,6 @@ from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Request, Response
 from kairos_common import (
-    ARCHIVE_ROOTS_SEPARATOR,
     ApiError,
     JobState,
     archive_enabled,
@@ -671,10 +670,13 @@ async def archive_dataset(
             "params": {
                 "dataset_dir": f"{operator}/{task}/{index}",
                 "destination": str(destination),
-                # Passed explicitly so the runner enforces the SAME allow-list
-                # this request was checked against, even if the two services'
-                # environments ever drift.
-                "archive_roots": ARCHIVE_ROOTS_SEPARATOR.join(str(r) for r in roots),
+                # NO archive_roots here, deliberately. The runner reads its own
+                # KAIROS_ARCHIVE_ROOTS and ignores anything a caller sends: an
+                # allow-list that travels with the request is not a second
+                # check, it is the same check twice with the caller holding the
+                # pen. Sending an inert field anyway would be bait — the next
+                # reader finds a parameter the runner "forgets" to use and
+                # helpfully wires it back up.
                 # Recorded by the job itself, together with the departure it
                 # is about to make (see dataset_archive._departure_entry).
                 "reason": body.reason or None,
