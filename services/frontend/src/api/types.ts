@@ -164,6 +164,16 @@ export interface DatasetEntry {
   bytes?: number;
   message_count?: number | null;
   exported_at?: string;
+  /** Stable hash of the topics the bag ACTUALLY contains (name + type of every
+   *  topic that recorded at least one message), derived at export from the
+   *  bag's rosbag2 `metadata.yaml`. Two episodes with the same hash share an
+   *  observation/action space; a differing hash inside one group means the
+   *  group can't convert into a single training set. Null when the export's
+   *  metadata was unreadable — an honest UNKNOWN that must be kept OUT of the
+   *  comparison, never treated as its own set. */
+  topics_hash?: string | null;
+  /** How many topics fed `topics_hash` (shown as "7 topics"). */
+  topic_count?: number | null;
   /** Console v2 Phase 2: episode-label subset for catalog cards. The backend
    *  serves these FLAT on each list row (mirroring its per-row dataset.json
    *  read); null/absent on older backends or pre-label exports. The full

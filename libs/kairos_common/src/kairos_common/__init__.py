@@ -10,6 +10,13 @@ See ``docs/specs/ja/config.md`` for the canonical three-layer config design.
 from __future__ import annotations
 
 from kairos_common.app import REQUEST_ID_HEADER, create_app, error_response
+from kairos_common.bag_metadata import (
+    TOPIC_SIGNATURE_ALGO,
+    TopicSignature,
+    read_bag_metadata,
+    signature_from_metadata,
+    topic_signature,
+)
 from kairos_common.config_path import resolve_config_path
 from kairos_common.errors import ApiError, ErrorBody, ErrorModel
 from kairos_common.field_introspect import (
@@ -68,7 +75,9 @@ __all__ = [
     "Storage",
     "StreamConfig",
     "StreamPane",
+    "TOPIC_SIGNATURE_ALGO",
     "TopicQosOverride",
+    "TopicSignature",
     "ValidationConfig",
     "ValidationRequiredTopic",
     "ValidationTemplate",
@@ -82,8 +91,11 @@ __all__ = [
     "load_stream_config",
     "load_validation_template",
     "parse_path",
+    "read_bag_metadata",
     "reset_request_id",
     "resolve_config_path",
     "set_request_id",
+    "signature_from_metadata",
+    "topic_signature",
     "utc_now_iso8601",
 ]

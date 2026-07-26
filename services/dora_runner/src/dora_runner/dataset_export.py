@@ -25,7 +25,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from kairos_common import utc_now_iso8601
+from kairos_common import TOPIC_SIGNATURE_ALGO, topic_signature, utc_now_iso8601
 
 from dora_runner.mcap_utils import validate_run_id
 
@@ -138,6 +138,13 @@ def run_dataset_export(*, run_id: str, data_dir: Path) -> dict[str, Any]:
         for name in moved
         if (dataset_dir / name).is_file()
     )
+    # Topic signature of the MOVED bag: what the recording actually contains, so
+    # a catalog consumer can tell whether a group's episodes share one
+    # observation/action space before spending a conversion on them. Read from
+    # the bag's own metadata.yaml (a few kB), never from the MCAP. Absent /
+    # unreadable metadata leaves both fields null — an honest "unknown", which
+    # the UI keeps out of the comparison rather than folding into a set.
+    signature = topic_signature(dataset_dir)
     summary: dict[str, Any] = {
         "pipeline": PIPELINE_ID,
         "version": PIPELINE_VERSION,
@@ -152,6 +159,10 @@ def run_dataset_export(*, run_id: str, data_dir: Path) -> dict[str, Any]:
         # Provenance: the recorded topics (names), so dataset.json is a
         # self-contained record without needing the sibling session.json.
         "topics": session.get("topics", []),
+        # Comparable identity of that topic set (see kairos_common.bag_metadata).
+        "topics_hash": signature.hash if signature else None,
+        "topic_count": signature.count if signature else None,
+        "topic_signature_algo": TOPIC_SIGNATURE_ALGO if signature else None,
         "exported_at": utc_now_iso8601(),
     }
     (dataset_dir / "dataset.json").write_text(

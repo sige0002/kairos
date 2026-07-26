@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request, Response
-from kairos_common import ApiError, JobState
+from kairos_common import ApiError, JobState, topic_signature
 from pydantic import BaseModel
 
 from api_orchestrator import datasets_index
@@ -189,6 +189,29 @@ def _opt_str(value: Any) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def _topic_fields(dataset_dir: Path, meta: dict[str, Any]) -> dict[str, Any]:
+    """The row's topic signature: from ``dataset.json``, else from the bag.
+
+    Exports written before the signature existed have neither field in their
+    ``dataset.json``, so the scan recomputes them from the dataset dir's own
+    ``metadata.yaml`` (a few kB — the whole point of not hashing the MCAP).
+    That makes the legacy catalog self-healing: one rebuild, or one fallback
+    scan, and old episodes become comparable to new ones instead of sitting
+    permanently "unknown".
+
+    Both keys are always present in the returned dict (``None`` when the bag's
+    metadata is missing or unreadable) so the row shape never varies.
+    """
+    hash_ = meta.get("topics_hash")
+    count = meta.get("topic_count")
+    if isinstance(hash_, str) and hash_:
+        return {"topics_hash": hash_, "topic_count": count}
+    signature = topic_signature(dataset_dir)
+    if signature is None:
+        return {"topics_hash": None, "topic_count": None}
+    return {"topics_hash": signature.hash, "topic_count": signature.count}
+
+
 def _run_report(data_dir: Path, run_id: str | None, pipeline: str) -> dict | None:
     """Best-effort read of a run-keyed report summary that survived export."""
     if not (isinstance(run_id, str) and _RUN_ID_RE.match(run_id)):
@@ -229,6 +252,7 @@ def _scan_datasets(data_dir: Path) -> list[dict[str, Any]]:
                     "message_count": meta.get("message_count"),
                     "exported_at": meta.get("exported_at"),
                 }
+                row.update(_topic_fields(index_dir, meta))
                 # Cheap episode-label subset for cards (mirrors the per-row
                 # dataset.json read). Absent episode.json -> keys stay null.
                 # The SAME flattening the catalog rows use, so the two serving

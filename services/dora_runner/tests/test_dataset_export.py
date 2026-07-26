@@ -119,6 +119,70 @@ def test_sanitize_component_keeps_unicode_but_stays_safe() -> None:
     assert _sanitize_component("🤖robot", "d") == "robot"
 
 
+def test_export_records_the_bags_topic_signature(tmp_path: Path) -> None:
+    """dataset.json carries a comparable identity of the bag's topic set.
+
+    2026-07-26 ML finding F1: without it, two robots' recordings sit in one
+    dataset group looking homogeneous. The signature comes from the bag's own
+    metadata.yaml (what LANDED), never from session.json's requested topics —
+    here the two deliberately disagree, and the signature follows the bag.
+    """
+    import yaml
+    from kairos_common.bag_metadata import signature_from_metadata
+
+    data_dir = tmp_path / "data"
+    run_dir = _make_run(data_dir, "run_a", operator="yuki", task="pick")
+    metadata = {
+        "rosbag2_bagfile_information": {
+            "topics_with_message_count": [
+                {
+                    "topic_metadata": {
+                        "name": "/hsrb/joint_states",
+                        "type": "sensor_msgs/msg/JointState",
+                    },
+                    "message_count": 600,
+                },
+                # Requested (session.json lists it) but recorded NOTHING, so it
+                # is not part of the signature: a missing modality must change
+                # the signature rather than hide inside it.
+                {
+                    "topic_metadata": {
+                        "name": "/hsrb/odom",
+                        "type": "nav_msgs/msg/Odometry",
+                    },
+                    "message_count": 0,
+                },
+            ]
+        }
+    }
+    (run_dir / "metadata.yaml").write_text(yaml.safe_dump(metadata), encoding="utf-8")
+
+    out = run_dataset_export(run_id="run_a", data_dir=data_dir)
+
+    expected = signature_from_metadata(metadata)
+    assert expected is not None
+    summary = out["summary"]
+    assert summary["topics_hash"] == expected.hash
+    assert summary["topic_count"] == 1
+    assert summary["topic_signature_algo"] == "sha256/name+type/v1"
+    # Written to the sidecar, not only returned — the catalog reads it there.
+    written = json.loads((Path(summary["dataset_dir"]) / "dataset.json").read_text())
+    assert written["topics_hash"] == expected.hash
+
+
+def test_export_leaves_the_signature_null_when_the_bag_has_no_metadata(
+    tmp_path: Path,
+) -> None:
+    """An unreadable bag is honestly UNKNOWN — never a fabricated hash."""
+    data_dir = tmp_path / "data"
+    run_dir = _make_run(data_dir, "run_a", operator="yuki", task="pick")
+    (run_dir / "metadata.yaml").unlink()
+
+    summary = run_dataset_export(run_id="run_a", data_dir=data_dir)["summary"]
+    assert summary["topics_hash"] is None
+    assert summary["topic_count"] is None
+
+
 def test_export_rejects_traversal_run_id(tmp_path: Path) -> None:
     """A path-traversal run_id must be refused before any filesystem access."""
     import pytest

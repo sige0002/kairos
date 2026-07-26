@@ -9,6 +9,20 @@
 // No mock data and no fake "build progress" — see data.ts for the 2026-07-13
 // directive. "+ New" / "Build dataset" only explain that recipe-based builds are
 // a Phase 2 feature (no backend endpoint yet).
+//
+// 2026-07-26 addressability round: the addressable slice of this state (both
+// searches, the facets, the sort, the selected group + episode) is seeded from
+// the query string on mount and mirrored back into it on every change, so a
+// view is shareable, survives a reload, and survives a tab round-trip — the
+// shell unmounts this screen on a tab switch, which used to discard everything.
+// See url.ts for the key contract; `replaceState` (not push) keeps a
+// keystroke-by-keystroke search out of the browser's history.
+//
+// Two selections are stored as IDENTITY, not as objects: the group as its
+// (task, condition) pair and the episode as its `dataset_dir`. Both are then
+// DERIVED from the freshly loaded/filtered data, which is what lets a deep link
+// restore a selection before the catalog has finished loading, and what makes a
+// vanished row degrade to "nothing selected" instead of showing stale detail.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -17,12 +31,14 @@ import { queryKeys } from '../../api/queryKeys';
 import type { DatasetDetail, DatasetEntry, DatasetsResponse } from '../../api/types';
 import {
   ANY_OPERATOR,
+  EPISODE_PAGE_SIZE,
   aggregate,
   buildTaskTree,
   distinctOperators,
   episodeMatchesSearch,
   filterEntries,
   findGroup,
+  groupKey,
   sameDataset,
   sortEpisodes,
   type DatasetGroup,
@@ -31,6 +47,7 @@ import {
   type TaskNode,
   type TaskResultFilter,
 } from './data';
+import { readDatasetsUrl, writeDatasetsUrl } from './url';
 
 export type { TaskResultFilter } from './data';
 
@@ -69,10 +86,13 @@ export interface DatasetsState {
   isTaskExpanded: (task: string) => boolean;
   toggleTask: (task: string) => void;
 
-  // Selection: a (task, condition) group, then an episode within it.
+  // Selection: a (task, condition) group, then an episode within it. The group
+  // is selected BY VALUE (its task + condition), not by its composed key — the
+  // key packs both into one string, which can't be split back apart for the URL
+  // when a task name itself contains the separator.
   selectedGroupKey: string | null;
   selectedGroup: DatasetGroup | null;
-  selectGroup: (key: string) => void;
+  selectGroup: (group: DatasetGroup) => void;
   isGroupSelected: (key: string) => boolean;
 
   // Episode selection within the scope. selectEntry TOGGLES: clicking the
@@ -91,8 +111,18 @@ export interface DatasetsState {
   /** Every episode in the current scope (group's rows, else the filtered catalog),
    *  sorted newest-first — the denominator for "n of m" in the top pane. */
   scopeEpisodes: DatasetEntry[];
-  /** scopeEpisodes narrowed by episodeSearch — the rows actually rendered. */
+  /** scopeEpisodes narrowed by episodeSearch and CAPPED at the current render
+   *  limit — the rows actually built into the DOM. */
   episodeRows: DatasetEntry[];
+  /** How many episodes match in the scope before the cap (>= episodeRows.length)
+   *  — the honest denominator for the table's overflow line. */
+  episodeMatchCount: number;
+  /** True when the cap is holding matches back (the overflow line shows). */
+  hasMoreEpisodes: boolean;
+  /** How many more rows the next "show more" would build. */
+  nextPageSize: number;
+  /** Raise the cap by one more page. */
+  showMoreEpisodes: () => void;
   /** The summary the bottom pane shows when no episode is selected. */
   scope: ScopeSummary;
 
@@ -122,21 +152,53 @@ export interface DatasetsState {
 
 const TOAST_MS = 2400;
 
+/** A selected group's identity: the (task, condition) pair itself, kept apart
+ *  from the composed `groupKey` string so each half survives a URL round-trip
+ *  (the key packs both into one string and a task name may contain the
+ *  separator, so the key alone cannot be split back apart). */
+interface GroupId {
+  task: string;
+  condition: string | null;
+}
+
 export function useDatasetsState(): DatasetsState {
   const queryClient = useQueryClient();
-  const [selectedGroupKey, setSelectedGroupKey] = useState<string | null>(null);
-  // Raw click state; `selected` below is this reconciled against the filter.
-  const [selectedEntry, setSelectedEntry] = useState<DatasetEntry | null>(null);
+  // Seed every addressable field from the query string ONCE — this is what a
+  // deep link, a reload, and a return to the tab (the shell unmounts this
+  // screen on a tab switch) all restore from.
+  const [seed] = useState(() => readDatasetsUrl(window.location.search));
+
+  const [selectedGroupId, setSelectedGroupId] = useState<GroupId | null>(
+    seed.task !== null ? { task: seed.task, condition: seed.condition } : null,
+  );
+  // Raw click state, held as IDENTITY (`dataset_dir`) rather than as the row
+  // object, so a deep link can carry it before the catalog has loaded.
+  // `selectedEntry` resolves it against the loaded rows; `selected` below is
+  // that reconciled against the filter.
+  const [selectedDir, setSelectedDir] = useState<string | null>(seed.datasetDir);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [toast, setToast] = useState('');
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const [search, setSearch] = useState('');
-  const [episodeSearch, setEpisodeSearch] = useState('');
-  const [sort, setSort] = useState<SortMode>('recent');
-  const [taskResultFilter, setTaskResultFilter] = useState<TaskResultFilter>('all');
-  const [operatorFilter, setOperatorFilter] = useState<string>(ANY_OPERATOR);
-  const [expandedTasks, setExpandedTasks] = useState<Set<string>>(new Set());
+  const [search, setSearch] = useState(seed.search);
+  const [episodeSearch, setEpisodeSearch] = useState(seed.episodeSearch);
+  const [sort, setSort] = useState<SortMode>(seed.sort);
+  const [taskResultFilter, setTaskResultFilter] = useState<TaskResultFilter>(
+    seed.taskResultFilter,
+  );
+  const [operatorFilter, setOperatorFilter] = useState<string>(seed.operatorFilter);
+  // A restored group under a multi-condition task must arrive EXPANDED, or its
+  // selected child row would be invisible inside a collapsed task.
+  const [expandedTasks, setExpandedTasks] = useState<Set<string>>(
+    () => new Set(seed.task !== null ? [seed.task] : []),
+  );
+  // How many episode rows the center table may build right now — see
+  // EPISODE_PAGE_SIZE (the default scope is the WHOLE filtered catalog).
+  const [rowLimit, setRowLimit] = useState(EPISODE_PAGE_SIZE);
+
+  const selectedGroupKey = selectedGroupId
+    ? groupKey(selectedGroupId.task, selectedGroupId.condition)
+    : null;
 
   const showToast = useCallback((message: string) => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
@@ -156,6 +218,14 @@ export function useDatasetsState(): DatasetsState {
     queryFn: ({ signal }) => apiGet<DatasetsResponse>('/datasets', { signal }),
   });
   const datasets = useMemo(() => listQuery.data?.datasets ?? [], [listQuery.data]);
+
+  // Resolve the raw click identity against the loaded catalog. A dir that no
+  // longer exists (deleted, or a shared link that outlived its export) resolves
+  // to null — the tab degrades to its summary instead of showing a phantom row.
+  const selectedEntry = useMemo(
+    () => datasets.find((entry) => entry.dataset_dir === selectedDir) ?? null,
+    [datasets, selectedDir],
+  );
 
   const operatorOptions = useMemo(() => distinctOperators(datasets), [datasets]);
 
@@ -190,19 +260,17 @@ export function useDatasetsState(): DatasetsState {
     [selectedEntry, filtered, selectedGroup],
   );
 
-  const selectGroup = useCallback((key: string) => {
-    setSelectedGroupKey(key);
-    setSelectedEntry(null); // switching groups clears the episode selection
+  const selectGroup = useCallback((group: DatasetGroup) => {
+    setSelectedGroupId({ task: group.task, condition: group.condition });
+    setSelectedDir(null); // switching groups clears the episode selection
     setEpisodeSearch(''); // and its one-shot episode search
   }, []);
 
   // Toggle: clicking the already-selected episode clears it (back to summary).
   const selectEntry = useCallback((entry: DatasetEntry) => {
-    setSelectedEntry((cur) =>
-      cur && cur.dataset_dir === entry.dataset_dir ? null : entry,
-    );
+    setSelectedDir((cur) => (cur === entry.dataset_dir ? null : entry.dataset_dir));
   }, []);
-  const selectSummary = useCallback(() => setSelectedEntry(null), []);
+  const selectSummary = useCallback(() => setSelectedDir(null), []);
 
   // Scope for the top-pane episode list + the bottom-pane summary: the selected
   // group, else the whole filtered catalog (this replaces the old "no group
@@ -230,9 +298,24 @@ export function useDatasetsState(): DatasetsState {
         : { kind: 'catalog', label: 'All datasets', condition: null, aggregate: scopeAggregate },
     [selectedGroup, scopeAggregate],
   );
-  const episodeRows = useMemo(
+  const matchedEpisodes = useMemo(
     () => scopeEpisodes.filter((e) => episodeMatchesSearch(e, episodeSearch)),
     [scopeEpisodes, episodeSearch],
+  );
+  // Anything that changes WHICH episodes are on screen restarts at page one —
+  // otherwise a limit raised to see the tail of one group would silently rebuild
+  // the next group at that size.
+  useEffect(() => {
+    setRowLimit(EPISODE_PAGE_SIZE);
+  }, [selectedGroupKey, episodeSearch, search, taskResultFilter, operatorFilter]);
+  const episodeRows = useMemo(
+    () =>
+      matchedEpisodes.length > rowLimit ? matchedEpisodes.slice(0, rowLimit) : matchedEpisodes,
+    [matchedEpisodes, rowLimit],
+  );
+  const showMoreEpisodes = useCallback(
+    () => setRowLimit((limit) => limit + EPISODE_PAGE_SIZE),
+    [],
   );
 
   const toggleTask = useCallback((task: string) => {
@@ -248,6 +331,44 @@ export function useDatasetsState(): DatasetsState {
     () => setSort((s) => (s === 'recent' ? 'alpha' : 'recent')),
     [],
   );
+
+  // Mirror the addressable state back into the query string, so the view is
+  // shareable, survives a reload, and is still there after a tab round-trip.
+  // `replaceState` (not push) — a search box typed character by character must
+  // not fill the history stack. `tab` / `solo` are carried through untouched:
+  // they belong to the shell, which likewise rebuilds the query string from
+  // window.location.search and so preserves these keys in return.
+  //
+  // The episode is written from the STORED identity rather than the resolved
+  // row, so a deep link isn't erased by the catalog still loading (or by a
+  // filter that is temporarily hiding the row).
+  useEffect(() => {
+    const current = window.location.search;
+    const next = writeDatasetsUrl(current, {
+      search,
+      episodeSearch,
+      sort,
+      taskResultFilter,
+      operatorFilter,
+      task: selectedGroupId?.task ?? null,
+      condition: selectedGroupId?.condition ?? null,
+      datasetDir: selectedDir,
+    });
+    if (next === current.replace(/^\?/, '')) return;
+    window.history.replaceState(
+      null,
+      '',
+      next ? `${window.location.pathname}?${next}` : window.location.pathname,
+    );
+  }, [
+    search,
+    episodeSearch,
+    sort,
+    taskResultFilter,
+    operatorFilter,
+    selectedGroupId,
+    selectedDir,
+  ]);
 
   // Manifest scope: the selected group's rows, else every filtered row.
   const manifestRows = selectedGroup ? selectedGroup.entries : filtered;
@@ -329,7 +450,7 @@ export function useDatasetsState(): DatasetsState {
       queryClient.removeQueries({
         queryKey: queryKeys.dataset(entry.operator, entry.task, entry.index),
       });
-      setSelectedEntry(null);
+      setSelectedDir(null);
       setConfirmingDelete(false);
       showToast('Dataset deleted');
     },
@@ -363,6 +484,10 @@ export function useDatasetsState(): DatasetsState {
     setEpisodeSearch,
     scopeEpisodes,
     episodeRows,
+    episodeMatchCount: matchedEpisodes.length,
+    hasMoreEpisodes: matchedEpisodes.length > episodeRows.length,
+    nextPageSize: Math.min(EPISODE_PAGE_SIZE, matchedEpisodes.length - episodeRows.length),
+    showMoreEpisodes,
     scope,
     detail: detailQuery.data ?? null,
     detailLoading: selected !== null && detailQuery.isPending,

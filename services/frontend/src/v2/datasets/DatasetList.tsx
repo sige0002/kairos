@@ -45,7 +45,7 @@ function SummaryLine({ segments }: { segments: SummarySegment[] }) {
       {segments.map((s, i) => (
         <span key={i} title={s.title} className="whitespace-nowrap">
           {i > 0 && <span className="mr-1.5 text-gray-300">·</span>}
-          {s.text}
+          <span className={cn(s.warn && 'font-semibold text-amber-700')}>{s.text}</span>
         </span>
       ))}
     </div>
@@ -72,11 +72,11 @@ function GroupRow({
       data-testid={groupTestId(group)}
       role="button"
       tabIndex={0}
-      onClick={() => state.selectGroup(group.key)}
+      onClick={() => state.selectGroup(group)}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
-          state.selectGroup(group.key);
+          state.selectGroup(group);
         }
       }}
       className={cn(

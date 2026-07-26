@@ -1,8 +1,12 @@
 // Center column (2026-07-21 center-split round). Two vertically stacked panes:
-//   TOP  — the scope's episode table, capped at ~10 rows with internal scroll,
+//   TOP  — the scope's episode table, ~10 rows tall with internal scroll,
 //          fronted by a pinned Summary row and its own episode search box (a
 //          one-shot "jump to episode NNN / #set / operator / failure" find,
-//          distinct from the left tree search).
+//          distinct from the left tree search). It BUILDS at most
+//          EPISODE_PAGE_SIZE rows at a time (2026-07-26) — the scope defaults
+//          to the whole catalog, so rendering it whole made the tab's first
+//          paint its worst case. The boundary is stated, not silent, and
+//          "show more" extends it (see EpisodeOverflow).
 //   BOTTOM — the selected episode's detail (reused DatasetDetail +
 //          DatasetInspection), OR — whenever no episode is selected — the scope
 //          SUMMARY (ScopeSummary: success/failure donut + real aggregates).
@@ -30,7 +34,9 @@ import {
   UNKNOWN_OPERATOR,
   formatCount,
   formatShortDate,
+  isSchemaOutlier,
   rowEpisode,
+  schemaOf,
 } from './data';
 import type { DatasetsState } from './useDatasetsState';
 
@@ -72,7 +78,14 @@ function SummaryGlyph({ active }: { active: boolean }) {
 }
 
 function ScopeHeaderBar({ state }: { state: DatasetsState }) {
-  const { scope, scopeEpisodes } = state;
+  const { scope, scopeEpisodes, episodeRows } = state;
+  // The header used to print the SCOPE's size while the table below rendered
+  // something smaller — an episode search left it reading "11 episodes" over a
+  // single row, and the render cap would do the same. Whenever the two differ,
+  // the count leads with what is actually on screen and keeps the scope total
+  // as the denominator, so the header can never claim more than it shows.
+  const total = scopeEpisodes.length;
+  const rendered = episodeRows.length;
   return (
     <div className="flex flex-wrap items-center gap-2 border-b border-gray-100 px-[18px] py-[11px]">
       <span data-testid="dataset-scope-title" className="text-[15px] font-bold text-gray-900">
@@ -83,7 +96,11 @@ function ScopeHeaderBar({ state }: { state: DatasetsState }) {
           {scope.condition ?? NO_CONDITION_LABEL}
         </Badge>
       )}
-      <span className="text-[11.5px] text-gray-400">{scopeEpisodes.length} episodes</span>
+      <span data-testid="dataset-scope-count" className="text-[11.5px] text-gray-400">
+        {rendered === total
+          ? `${formatCount(total)} episodes`
+          : `showing ${formatCount(rendered)} of ${formatCount(total)} episodes`}
+      </span>
       <div className="flex-1" />
       <input
         type="search"
@@ -123,6 +140,30 @@ function SummaryRow({ state }: { state: DatasetsState }) {
   );
 }
 
+/** Marks the episodes whose topic set isn't the scope's majority — the rows that
+ *  would break a conversion. Shown ONLY inside a selected (task, condition)
+ *  group that actually mixes sets: a homogeneous group stays visually quiet, and
+ *  the whole-catalog view is EXPECTED to span several topic sets, so flagging
+ *  rows there would just train people to ignore the colour. */
+function SchemaOutlierChip({ entry, state }: { entry: DatasetEntry; state: DatasetsState }) {
+  const agg = state.scope.aggregate;
+  if (state.scope.kind !== 'group' || !isSchemaOutlier(entry, agg)) return null;
+  const variant = schemaOf(entry, agg);
+  return (
+    <span
+      data-testid={`dataset-schema-outlier-${entry.dataset_dir}`}
+      title={
+        `This episode's topic set (${variant?.topicCount ?? '?'} topics, ` +
+        `${entry.topics_hash?.slice(0, 8)}) differs from the rest of this scope — ` +
+        `it can't go into the same training set.`
+      }
+      className="shrink-0 rounded-chip border border-amber-300 bg-amber-50 px-1.5 py-[1px] text-[10px] font-bold text-amber-800"
+    >
+      Topic set {variant?.label ?? '?'}
+    </span>
+  );
+}
+
 function EpisodeRow({ entry, state }: { entry: DatasetEntry; state: DatasetsState }) {
   const selected = state.isEntrySelected(entry);
   const episode = rowEpisode(entry);
@@ -155,26 +196,58 @@ function EpisodeRow({ entry, state }: { entry: DatasetEntry; state: DatasetsStat
       >
         {operatorLabel(entry.operator)}
       </span>
-      {episode ? (
-        <EpisodeLabelChips
-          episode={episode}
-          isoFallback={entry.exported_at}
-          testId={`dataset-episode-labels-${entry.dataset_dir}`}
-        />
-      ) : (
-        <span
-          data-testid={`dataset-episode-legacy-${entry.dataset_dir}`}
-          title="Exported before per-episode labels existed, so quality and task labels aren't recorded."
-          className="text-[11px] italic text-gray-400"
-        >
-          no episode labels
-        </span>
-      )}
+      <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+        {episode ? (
+          <EpisodeLabelChips
+            episode={episode}
+            isoFallback={entry.exported_at}
+            testId={`dataset-episode-labels-${entry.dataset_dir}`}
+          />
+        ) : (
+          <span
+            data-testid={`dataset-episode-legacy-${entry.dataset_dir}`}
+            title="Exported before per-episode labels existed, so quality and task labels aren't recorded."
+            className="text-[11px] italic text-gray-400"
+          >
+            no episode labels
+          </span>
+        )}
+        <SchemaOutlierChip entry={entry} state={state} />
+      </div>
       <span className="justify-self-end font-mono text-xs text-gray-500">
         {formatCount(entry.message_count)}
       </span>
       <span className="justify-self-end font-mono text-[11px] text-gray-400">
         {formatShortDate(entry.exported_at)}
+      </span>
+    </div>
+  );
+}
+
+/** The render cap's honest boundary (2026-07-26): says exactly how many rows are
+ *  built out of how many matched, and extends the list on demand. Never a silent
+ *  truncation — the catalog has to stay fully reachable however large it grows,
+ *  so this is a "show more", not a "the rest is hidden". */
+function EpisodeOverflow({ state }: { state: DatasetsState }) {
+  return (
+    <div
+      data-testid="dataset-episode-overflow"
+      className="flex flex-wrap items-center gap-x-2 gap-y-1.5 border-t border-gray-100 bg-gray-50 px-[18px] py-2.5"
+    >
+      <span className="text-[11.5px] text-gray-500">
+        Showing {formatCount(state.episodeRows.length)} of{' '}
+        {formatCount(state.episodeMatchCount)} episodes.
+      </span>
+      <button
+        type="button"
+        data-testid="dataset-episode-show-more"
+        onClick={state.showMoreEpisodes}
+        className="rounded-chip border border-teal-200 px-2 py-0.5 text-[11px] font-bold text-teal-700 hover:bg-teal-50"
+      >
+        Show {formatCount(state.nextPageSize)} more
+      </button>
+      <span className="text-[11px] text-gray-400">
+        or narrow it down with the search above, or a task on the left.
       </span>
     </div>
   );
@@ -215,9 +288,12 @@ export function DatasetCenter({ state }: { state: DatasetsState }) {
                 : `No episode matches “${state.episodeSearch}”.`}
             </p>
           ) : (
-            episodeRows.map((entry) => (
-              <EpisodeRow key={entry.dataset_dir} entry={entry} state={state} />
-            ))
+            <>
+              {episodeRows.map((entry) => (
+                <EpisodeRow key={entry.dataset_dir} entry={entry} state={state} />
+              ))}
+              {state.hasMoreEpisodes && <EpisodeOverflow state={state} />}
+            </>
           )}
         </div>
       </div>

@@ -181,6 +181,10 @@ beforeEach(() => {
   setApiBase('/api/v1');
   deletedUrls = [];
   useUiStore.setState({ activeTab: 'datasets' });
+  // The screen seeds its selection/filters from the query string and mirrors
+  // them back (see url.ts), and jsdom shares one location across a file — so
+  // reset it, or each test would inherit the previous test's selection.
+  window.history.replaceState(null, '', '/');
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -768,4 +772,278 @@ test('narrowing the catalog cannot leave Delete pointed at an off-screen episode
   // Clearing the search restores the selection rather than losing it.
   fireEvent.change(screen.getByTestId('dataset-search'), { target: { value: '' } });
   await waitFor(() => expect(screen.getByTestId('dataset-stats')).toBeInTheDocument());
+});
+
+// ---- addressability + the render cap (2026-07-26) -------------------------
+
+/** A catalog big enough to exercise the render cap (one leaf task). */
+function bigCatalog(n: number): DatasetsResponse {
+  return {
+    datasets: Array.from({ length: n }, (_, i) => {
+      const index = String(i + 1).padStart(4, '0');
+      return {
+        operator: 'op_a',
+        task: 'bulk_task',
+        index,
+        dataset_dir: `op_a/bulk_task/${index}`,
+        run_id: `r${index}`,
+        message_count: 10,
+        bytes: 1000,
+        exported_at: new Date(Date.UTC(2026, 6, 1, 0, 0, i)).toISOString(),
+        task_result: 'success' as const,
+        quality: 'good' as const,
+        review_status: 'adopted' as const,
+        batch_seq: 1,
+        batch_id: 'bulk',
+        index_in_batch: i + 1,
+      };
+    }),
+  };
+}
+
+function episodeRowCount(): number {
+  return screen.getAllByTestId(/^dataset-episode-row-/).length;
+}
+
+test('a deep link restores the group, expands its task, and opens the episode', async () => {
+  window.history.replaceState(
+    null,
+    '',
+    `/?tab=datasets&dstask=kitchen_pick&dscond=dim&dsep=${encodeURIComponent(KP_DIM_A.dataset_dir)}`,
+  );
+  mockFetch({ list: LIST_RESPONSE, details: { [detailUrlFor(KP_DIM_A)]: detailFor(KP_DIM_A) } });
+  renderWithClient(<DatasetsScreen />);
+
+  // The scope is the linked group, not the whole catalog...
+  await waitFor(() =>
+    expect(screen.getByTestId('dataset-scope-title')).toHaveTextContent('kitchen_pick'),
+  );
+  // ...the multi-condition task arrives EXPANDED, so the selected child row is
+  // actually visible rather than hidden inside a collapsed task...
+  expect(screen.getByTestId(dimGroup)).toBeInTheDocument();
+  // ...and the linked episode's own detail is open.
+  await waitFor(() =>
+    expect(screen.getByTestId('dataset-detail-index')).toHaveTextContent(KP_DIM_A.index),
+  );
+});
+
+test('a deep link with no condition restores the null-condition group', async () => {
+  window.history.replaceState(null, '', '/?tab=datasets&dstask=shelf_restock');
+  mockFetch({ list: LIST_RESPONSE });
+  renderWithClient(<DatasetsScreen />);
+
+  await waitFor(() =>
+    expect(screen.getByTestId('dataset-scope-title')).toHaveTextContent('shelf_restock'),
+  );
+});
+
+test('a deep link to an episode that no longer exists degrades to the summary', async () => {
+  window.history.replaceState(null, '', '/?tab=datasets&dsep=op_a/kitchen_pick/999');
+  mockFetch({ list: LIST_RESPONSE });
+  renderWithClient(<DatasetsScreen />);
+
+  await waitFor(() => expect(screen.getByTestId(shelfLeaf)).toBeInTheDocument());
+  // No phantom detail pane — the scope summary is what shows.
+  expect(screen.getByTestId('dataset-scope-summary')).toBeInTheDocument();
+  expect(screen.queryByTestId('dataset-stats')).toBeNull();
+});
+
+test('selecting a group and an episode makes the view addressable', async () => {
+  mockFetch({ list: LIST_RESPONSE, details: { [detailUrlFor(SHELF_A)]: detailFor(SHELF_A) } });
+  renderWithClient(<DatasetsScreen />);
+  await waitFor(() => expect(screen.getByTestId(shelfLeaf)).toBeInTheDocument());
+
+  fireEvent.click(screen.getByTestId(shelfLeaf));
+  await waitFor(() => {
+    const p = new URLSearchParams(window.location.search);
+    expect(p.get('dstask')).toBe('shelf_restock');
+    // A null condition is written as an ABSENT key, not an empty one.
+    expect(p.has('dscond')).toBe(false);
+  });
+
+  fireEvent.click(await screen.findByTestId(`dataset-episode-row-${SHELF_A.dataset_dir}`));
+  await waitFor(() =>
+    expect(new URLSearchParams(window.location.search).get('dsep')).toBe(SHELF_A.dataset_dir),
+  );
+
+  // Toggling the row back off drops the key rather than leaving it stale.
+  fireEvent.click(screen.getByTestId(`dataset-episode-row-${SHELF_A.dataset_dir}`));
+  await waitFor(() =>
+    expect(new URLSearchParams(window.location.search).has('dsep')).toBe(false),
+  );
+});
+
+test('the search and the facets are addressable too', async () => {
+  mockFetch({ list: LIST_RESPONSE });
+  renderWithClient(<DatasetsScreen />);
+  await waitFor(() => expect(screen.getByTestId(shelfLeaf)).toBeInTheDocument());
+
+  fireEvent.change(screen.getByTestId('dataset-search'), { target: { value: 'kitchen' } });
+  fireEvent.click(screen.getByTestId('dataset-filter-failure'));
+
+  await waitFor(() => {
+    const p = new URLSearchParams(window.location.search);
+    expect(p.get('dsq')).toBe('kitchen');
+    expect(p.get('dsresult')).toBe('failure');
+  });
+
+  // Back to the default view = back to a clean URL (no dsq=&dsresult=all noise).
+  fireEvent.change(screen.getByTestId('dataset-search'), { target: { value: '' } });
+  fireEvent.click(screen.getByTestId('dataset-filter-all'));
+  await waitFor(() => {
+    const p = new URLSearchParams(window.location.search);
+    expect(p.has('dsq')).toBe(false);
+    expect(p.has('dsresult')).toBe(false);
+  });
+});
+
+test('the episode table caps the rows it builds and states the boundary', async () => {
+  mockFetch({ list: bigCatalog(450) });
+  renderWithClient(<DatasetsScreen />);
+
+  await waitFor(() => expect(screen.getByTestId('dataset-episode-overflow')).toBeInTheDocument());
+  expect(episodeRowCount()).toBe(200);
+  expect(screen.getByTestId('dataset-episode-overflow')).toHaveTextContent(
+    'Showing 200 of 450 episodes',
+  );
+  // The cap is a RENDER limit only — the manifest still covers every row.
+  expect(screen.getByTestId('dataset-manifest-btn')).toHaveTextContent('Manifest (450)');
+
+  fireEvent.click(screen.getByTestId('dataset-episode-show-more'));
+  await waitFor(() => expect(episodeRowCount()).toBe(400));
+  // The last page offers exactly what remains, not a round number it can't fill.
+  expect(screen.getByTestId('dataset-episode-show-more')).toHaveTextContent('Show 50 more');
+
+  fireEvent.click(screen.getByTestId('dataset-episode-show-more'));
+  await waitFor(() => expect(episodeRowCount()).toBe(450));
+  // Everything is reachable, so there is no boundary left to state.
+  expect(screen.queryByTestId('dataset-episode-overflow')).toBeNull();
+});
+
+test('a catalog under the cap shows no overflow line at all', async () => {
+  mockFetch({ list: LIST_RESPONSE });
+  renderWithClient(<DatasetsScreen />);
+
+  await waitFor(() => expect(screen.getByTestId(shelfLeaf)).toBeInTheDocument());
+  expect(screen.queryByTestId('dataset-episode-overflow')).toBeNull();
+});
+
+test('a new query restarts the cap at one page', async () => {
+  mockFetch({ list: bigCatalog(450) });
+  renderWithClient(<DatasetsScreen />);
+
+  await waitFor(() => expect(screen.getByTestId('dataset-episode-overflow')).toBeInTheDocument());
+  fireEvent.click(screen.getByTestId('dataset-episode-show-more'));
+  await waitFor(() => expect(episodeRowCount()).toBe(400));
+
+  // Every row matches "op_a", so this narrows nothing — but it IS a new query,
+  // and a limit raised on the previous one must not carry into it.
+  fireEvent.change(screen.getByTestId('dataset-episode-search'), {
+    target: { value: 'op_a' },
+  });
+  await waitFor(() => expect(episodeRowCount()).toBe(200));
+});
+
+// ---- topic signature (2026-07-26 ML finding F1) ---------------------------
+// A (task, condition) group can silently mix two robots' topic sets — nine
+// /hsrb/* episodes and two /camera/* ones sat in one real group behind a single
+// success rate. The catalog now carries a per-episode signature; these pin that
+// the mix is stated on the list row, in the summary, and on the offending rows.
+
+const HSR_HASH = 'a'.repeat(64);
+const CAM_HASH = 'b'.repeat(64);
+
+const MIXED: DatasetEntry[] = [
+  { ...KP_DIM_A, topics_hash: HSR_HASH, topic_count: 7 },
+  { ...KP_DIM_B, topics_hash: CAM_HASH, topic_count: 8 },
+];
+
+test('a group mixing two topic sets says so on its list row and in the summary', async () => {
+  mockFetch({ list: { datasets: MIXED } });
+  renderWithClient(<DatasetsScreen />);
+
+  await waitFor(() => expect(screen.getByTestId(dimGroup)).toBeInTheDocument());
+
+  // Visible BEFORE selecting: the cost of finding out later is a wasted build.
+  expect(screen.getByTestId(dimGroup)).toHaveTextContent('2 topic sets');
+
+  fireEvent.click(screen.getByTestId(dimGroup));
+
+  const callout = await screen.findByTestId('dataset-schema-mixed');
+  expect(callout).toHaveTextContent('2 different topic sets in this scope');
+  expect(callout).toHaveTextContent("don't share one observation/action space");
+  // Each set is named with its real episode + topic counts.
+  expect(screen.getByTestId('dataset-schema-variant-A')).toHaveTextContent('1 episode');
+  expect(screen.getByTestId('dataset-schema-variant-A')).toHaveTextContent('7 topics');
+  expect(screen.getByTestId('dataset-schema-variant-B')).toHaveTextContent('8 topics');
+
+  // And the minority episode is marked in the table.
+  expect(screen.getByTestId(`dataset-schema-outlier-${KP_DIM_B.dataset_dir}`)).toBeInTheDocument();
+  expect(screen.queryByTestId(`dataset-schema-outlier-${KP_DIM_A.dataset_dir}`)).toBeNull();
+});
+
+test('a homogeneous group states its single topic set and marks no rows', async () => {
+  const same: DatasetEntry[] = [
+    { ...KP_DIM_A, topics_hash: HSR_HASH, topic_count: 7 },
+    { ...KP_DIM_B, topics_hash: HSR_HASH, topic_count: 7 },
+  ];
+  mockFetch({ list: { datasets: same } });
+  renderWithClient(<DatasetsScreen />);
+
+  await waitFor(() => expect(screen.getByTestId(dimGroup)).toBeInTheDocument());
+  expect(screen.getByTestId(dimGroup)).not.toHaveTextContent('topic sets');
+
+  fireEvent.click(screen.getByTestId(dimGroup));
+
+  const single = await screen.findByTestId('dataset-schema-single');
+  expect(single).toHaveTextContent('1 topic set');
+  expect(single).toHaveTextContent('7 topics');
+  expect(screen.queryByTestId('dataset-schema-mixed')).toBeNull();
+  expect(screen.queryByTestId(`dataset-schema-outlier-${KP_DIM_B.dataset_dir}`)).toBeNull();
+});
+
+test('exports with no signature say so instead of implying agreement', async () => {
+  mockFetch({ list: LIST_RESPONSE }); // the base fixture carries no topics_hash
+  renderWithClient(<DatasetsScreen />);
+
+  await waitFor(() => expect(screen.getByTestId(shelfLeaf)).toBeInTheDocument());
+  fireEvent.click(screen.getByTestId(shelfLeaf));
+
+  const unknown = await screen.findByTestId('dataset-schema-unknown');
+  expect(unknown).toHaveTextContent("can't be compared");
+  expect(screen.queryByTestId('dataset-schema-single')).toBeNull();
+  expect(screen.queryByTestId('dataset-schema-mixed')).toBeNull();
+});
+
+test('unsigned episodes are excluded from the comparison, not counted into a set', async () => {
+  const partial: DatasetEntry[] = [
+    { ...KP_DIM_A, topics_hash: HSR_HASH, topic_count: 7 },
+    KP_DIM_B, // no signature
+  ];
+  mockFetch({ list: { datasets: partial } });
+  renderWithClient(<DatasetsScreen />);
+
+  await waitFor(() => expect(screen.getByTestId(dimGroup)).toBeInTheDocument());
+  fireEvent.click(screen.getByTestId(dimGroup));
+
+  // One KNOWN set -> not a mixed scope, and the unsigned row is reported apart.
+  expect(await screen.findByTestId('dataset-schema-single')).toHaveTextContent('1 topic set');
+  expect(screen.getByTestId('dataset-schema-unsigned')).toHaveTextContent(
+    '1 without a topic signature',
+  );
+  expect(screen.queryByTestId(`dataset-schema-outlier-${KP_DIM_B.dataset_dir}`)).toBeNull();
+});
+
+test('the whole-catalog view states the spread neutrally and flags no rows', async () => {
+  mockFetch({ list: { datasets: MIXED } });
+  renderWithClient(<DatasetsScreen />);
+
+  // No group selected: the scope is the whole catalog, which is EXPECTED to
+  // span several topic sets — so it is reported without the build-blocking
+  // wording and without marking any row.
+  const callout = await screen.findByTestId('dataset-schema-mixed');
+  expect(callout).toHaveTextContent('2 different topic sets in this scope');
+  expect(callout).toHaveTextContent('expected here');
+  expect(callout).not.toHaveTextContent("can't be converted into a single training set");
+  expect(screen.queryByTestId(`dataset-schema-outlier-${KP_DIM_B.dataset_dir}`)).toBeNull();
 });

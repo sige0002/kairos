@@ -12,12 +12,16 @@ second source of truth (the ML-hearing requirement: sidecars stay canonical).
 One line per exported dataset::
 
     {"operator","task","index","dataset_dir"(relative),"run_id","bytes",
-     "message_count","exported_at","task_result","quality","review_status",
-     "batch_seq","index_in_batch","batch_id","condition","schema_version":1}
+     "message_count","exported_at","topics_hash","topic_count","task_result",
+     "quality","review_status","batch_seq","index_in_batch","batch_id",
+     "condition","schema_version":1}
 
 (``batch_id`` / ``condition`` are additive, nullable; rows written before they
 existed serve ``None`` until a ``POST /datasets/index/rebuild`` heals them from
-the sidecars.)
+the sidecars. ``topics_hash`` / ``topic_count`` are additive too, but heal
+LAZILY on the first read — see :func:`backfill_topic_signature` — so a legacy
+catalog becomes comparable without anyone having to know about the rebuild
+endpoint.)
 
 ``dataset_dir`` is stored RELATIVE to ``data_dir`` so a moved/restored ``data/``
 tree keeps working; the served row reconstructs the absolute path so the
@@ -33,6 +37,8 @@ import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+
+from kairos_common import topic_signature
 
 # Catalog schema generation stamped on each row (and on episode.json). Bump when
 # the row shape changes; readers default to 1 when the field is absent.
@@ -54,6 +60,15 @@ _EPISODE_KEYS = (
     "batch_id",
     "condition",
 )
+
+# Provenance carried per row alongside the labels: the bag's topic signature
+# (``kairos_common.bag_metadata``). It answers the question a training-set
+# assembler asks before converting anything — "do these episodes share one
+# observation/action space?" — without opening a single MCAP. Nullable: an
+# export whose ``metadata.yaml`` was unreadable has an honestly UNKNOWN
+# signature, which readers must keep out of the comparison rather than treat as
+# a set of its own.
+_TOPIC_KEYS = ("topics_hash", "topic_count")
 
 
 def episode_subset(episode: dict[str, Any] | None) -> dict[str, Any]:
@@ -115,6 +130,8 @@ def index_row(
         "message_count": meta.get("message_count"),
         "exported_at": meta.get("exported_at"),
     }
+    for key in _TOPIC_KEYS:
+        row[key] = meta.get(key)
     row.update(episode_subset(episode))
     row["schema_version"] = INDEX_SCHEMA_VERSION
     return row
@@ -136,7 +153,7 @@ def to_list_row(row: dict[str, Any], data_dir: Path) -> dict[str, Any]:
         "message_count": row.get("message_count"),
         "exported_at": row.get("exported_at"),
     }
-    for key in _EPISODE_KEYS:
+    for key in (*_TOPIC_KEYS, *_EPISODE_KEYS):
         out[key] = row.get(key)
     return out
 
@@ -167,15 +184,52 @@ def read_rows(data_dir: Path) -> list[dict[str, Any]] | None:
     return rows
 
 
+def backfill_topic_signature(data_dir: Path, rows: list[dict[str, Any]]) -> int:
+    """Fill in the topic signature of rows written before it existed; returns the
+    number healed (0 when there was nothing to do).
+
+    LAZY, and paid at most once per row: a row is "already attempted" when the
+    ``topics_hash`` KEY is present — including when its value is ``None``. That
+    distinction matters, because a dataset whose ``metadata.yaml`` is
+    permanently unreadable would otherwise be re-read on every single list
+    request. Healed rows are persisted back to the catalog, so the cost is a
+    one-time ~5 ms per legacy episode rather than a per-request cost.
+
+    Mutates *rows* in place. Best-effort: an unreadable bag records an honest
+    ``None`` (never a fabricated hash, never folded into another row's set), and
+    a failed persist just means the work is redone on the next request.
+    """
+    stale = [r for r in rows if "topics_hash" not in r]
+    if not stale:
+        return 0
+    for row in stale:
+        rel = row.get("dataset_dir")
+        signature = (
+            topic_signature(data_dir / rel) if isinstance(rel, str) and rel else None
+        )
+        row["topics_hash"] = signature.hash if signature else None
+        row["topic_count"] = signature.count if signature else None
+    try:
+        _atomic_write(index_path(data_dir), rows)
+    except OSError:
+        pass  # keep serving the healed rows; the catalog heals next time
+    return len(stale)
+
+
 def list_from_index(data_dir: Path) -> list[dict[str, Any]] | None:
     """Serve the dataset list from the catalog, or ``None`` to fall back.
 
     Rows are returned in the same ``(operator, task, index)`` order as the tree
-    scan so the two paths are indistinguishable to the UI.
+    scan so the two paths are indistinguishable to the UI — which is also why
+    the topic signature is backfilled here: a catalog written before the field
+    existed would otherwise serve ``None`` forever while the fallback scan
+    derived it, and the two paths would disagree.
     """
-    rows = read_rows(data_dir)
-    if rows is None:
-        return None
+    with _lock:
+        rows = read_rows(data_dir)
+        if rows is None:
+            return None
+        backfill_topic_signature(data_dir, rows)
     out = [to_list_row(r, data_dir) for r in rows]
     out.sort(key=lambda d: (d["operator"], d["task"], d["index"]))
     return out
@@ -235,6 +289,7 @@ def rebuild(data_dir: Path, scan_rows: list[dict[str, Any]]) -> int:
                 "bytes": scan.get("bytes"),
                 "message_count": scan.get("message_count"),
                 "exported_at": scan.get("exported_at"),
+                **{k: scan.get(k) for k in _TOPIC_KEYS},
             },
             {k: scan.get(k) for k in _EPISODE_KEYS},
             data_dir,
