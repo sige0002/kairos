@@ -24,6 +24,11 @@ path = "src/bin/stamp_gap.rs"
 name = "bagflow-topic-rate"
 path = "src/bin/topic_rate.rs"
 
+# kairos vendoring: added for fast_validation (see bagflow/VENDOR.md).
+[[bin]]
+name = "bagflow-topic-presence"
+path = "src/bin/topic_presence.rs"
+
 [dependencies]
 anyhow = { workspace = true }
 arrow = { version = "54.2", default-features = false }

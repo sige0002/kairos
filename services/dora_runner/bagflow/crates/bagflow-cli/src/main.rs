@@ -347,8 +347,15 @@ fn preflight(
                 .insert(input_name.clone(), re.to_string());
         }
     }
-    if subscribed.is_empty() {
-        bail!("no rostopic inputs — at least one node must subscribe to a bag topic");
+    // kairos vendoring: a flow whose checks read only the bag metadata
+    // (`bagflow-topic-presence`, `bagflow-topic-rate`) subscribes to nothing and
+    // is still a complete flow — the source node then skips the scan entirely
+    // and only reports its counts. Upstream rejected this case.
+    if subscribed.is_empty() && !flow.nodes.is_empty() {
+        eprintln!("note: no rostopic inputs — metadata-only flow (the bag is not read)");
+    }
+    if flow.nodes.is_empty() {
+        bail!("flow declares no nodes");
     }
 
     let workdir = flow_dir.join(".bagflow");
@@ -397,6 +404,12 @@ fn preflight(
 
     let expected: BTreeMap<&String, u64> = bag_topics.iter().map(|(k, (_, c))| (k, *c)).collect();
     let expected_json = serde_json::to_string(&expected)?;
+    // kairos vendoring: the message type per topic, the metadata counterpart of
+    // BAGFLOW_EXPECTED. `bagflow-topic-presence` needs it to check that a
+    // required topic carries the type the recording template declares.
+    let topic_types: BTreeMap<&String, &String> =
+        bag_topics.iter().map(|(k, (ty, _))| (k, ty)).collect();
+    let topic_types_json = serde_json::to_string(&topic_types)?;
     let bag_info = serde_json::json!({
         "path": bag.display().to_string(),
         "duration_s": meta.as_ref().and_then(|m| m.duration.as_ref()).map(|d| d.nanoseconds as f64 / 1e9),
@@ -432,6 +445,7 @@ fn preflight(
         env.insert("BAGFLOW_OUTPUTS".to_string(), n.outputs.join(","));
         env.insert("BAGFLOW_NODE_ID".to_string(), n.id.clone());
         env.insert("BAGFLOW_EXPECTED".to_string(), expected_json.clone());
+        env.insert("BAGFLOW_TOPIC_TYPES".to_string(), topic_types_json.clone());
         env.insert("BAGFLOW_BAGINFO".to_string(), bag_info.to_string());
         let pypath = pylib.display().to_string();
         env.entry("PYTHONPATH".to_string())

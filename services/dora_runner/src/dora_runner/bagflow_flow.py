@@ -41,9 +41,14 @@ from kairos_common import resolve_config_path
 
 # Env overrides (in-tree KAIROS_*/BAGFLOW_* convention, see plugin_loader).
 FLOWS_DIR_ENV = "BAGFLOW_FLOWS_DIR"
+BUNDLED_FLOWS_DIR_ENV = "BAGFLOW_BUNDLED_FLOWS_DIR"
 BIN_DIR_ENV = "BAGFLOW_BIN_DIR"
 
 DEFAULT_BIN_DIR = "/usr/local/bin"
+# Flows baked into the image (services/dora_runner/flows/). fast_validation must
+# work for a robot whose operator never wrote a flow, so its flow ships with the
+# service; a file of the same name under config/<robot>/flows/ overrides it.
+DEFAULT_BUNDLED_FLOWS_DIR = "/opt/kairos/flows"
 DEFAULT_FLOW = "default"
 FLOW_SUFFIXES = (".yml", ".yaml")
 
@@ -68,6 +73,21 @@ def flows_dir() -> Path:
     return Path(
         resolve_config_path(os.environ.get(FLOWS_DIR_ENV) or default_flows_dir())
     )
+
+
+def bundled_flows_dir() -> Path:
+    """Directory holding the flows shipped with the service (in-image).
+
+    Falls back to the in-tree ``services/dora_runner/flows/`` so a source
+    checkout / unit test resolves the same files the image carries.
+    """
+    override = os.environ.get(BUNDLED_FLOWS_DIR_ENV)
+    if override:
+        return Path(override)
+    image = Path(DEFAULT_BUNDLED_FLOWS_DIR)
+    if image.is_dir():
+        return image
+    return Path(__file__).resolve().parents[2] / "flows"
 
 
 def bin_dir() -> Path:
@@ -95,16 +115,32 @@ def flow_path(name: str, directory: Path | None = None) -> Path:
     The name is a single path component by construction (charset guard), so a
     job param can never reach outside the flows dir.
     """
+    return resolve_flow(name, [directory] if directory is not None else None)
+
+
+def resolve_flow(name: str, directories: list[Path] | None = None) -> Path:
+    """First file named *name* across *directories*, searched in order.
+
+    The order IS the override rule: ``fast_validation`` searches the robot's
+    ``config/<robot>/flows/`` before the flow bundled in the image, so an
+    operator replaces a bundled gate by dropping a file with the same name into
+    their robot's config — without editing the service.
+    """
     if not _FLOW_NAME_RE.match(name):
         raise ValueError(f"invalid flow name (must match ^[A-Za-z0-9_-]+$): {name!r}")
-    resolved = directory if directory is not None else flows_dir()
-    for suffix in FLOW_SUFFIXES:
-        candidate = resolved / f"{name}{suffix}"
-        if candidate.is_file():
-            return candidate
-    available = ", ".join(list_flows(resolved)) or "(none)"
+    resolved = directories if directories is not None else [flows_dir()]
+    for directory in resolved:
+        for suffix in FLOW_SUFFIXES:
+            candidate = directory / f"{name}{suffix}"
+            if candidate.is_file():
+                return candidate
+    searched = ", ".join(str(directory) for directory in resolved)
+    available = (
+        ", ".join(sorted({flow for d in resolved for flow in list_flows(d)}))
+        or "(none)"
+    )
     raise FileNotFoundError(
-        f"validation flow not found: {name} in {resolved} — available: {available}"
+        f"validation flow not found: {name} in {searched} — available: {available}"
     )
 
 
@@ -112,11 +148,14 @@ def flow_path(name: str, directory: Path | None = None) -> Path:
 class FlowBindings:
     """Values a flow may reference through ``${KAIROS_…}``.
 
-    ``required_topics`` comes from the same validation template ``fast_validation``
-    uses (job param, else the recording config's ``validation.required_topics``);
-    ``expect_hz`` merges those with ``RECORDING_CONFIG``'s ``expected_hz_patterns``
-    into the ``{topic: hz}`` map ``bagflow-topic-rate`` consumes (0 = must exist,
-    any rate — see ``full_validation.topic_expectations``). A flow therefore never
+    ``required_topics`` comes from the validation template both gates use (job
+    param, else the recording config's ``validation.required_topics``) and is
+    offered in two shapes: ``${KAIROS_REQUIRED_TOPICS}`` is the bare name list,
+    ``${KAIROS_REQUIRED_TOPIC_SPECS}`` keeps each entry's declared message type
+    (what ``bagflow-topic-presence`` checks). ``expect_hz`` merges the same
+    topics with ``RECORDING_CONFIG``'s ``expected_hz_patterns`` into the
+    ``{topic: hz}`` map ``bagflow-topic-rate`` consumes (0 = must exist, any rate
+    — see ``bagflow_pipeline.topic_expectations``). A flow therefore never
     restates a topic list or a threshold that already has a home in kairos config.
     """
 
@@ -124,7 +163,8 @@ class FlowBindings:
     bag_dir: Path
     report_path: Path
     report_dir: Path
-    required_topics: list[str]
+    # [{"name": <topic or glob>, "type": <msg type or None>}, …]
+    required_topics: list[dict[str, str | None]]
     expect_hz: dict[str, float]
 
     def tokens(self) -> dict[str, str]:
@@ -135,7 +175,10 @@ class FlowBindings:
             "KAIROS_BAG_DIR": str(self.bag_dir),
             "KAIROS_REPORT": str(self.report_path),
             "KAIROS_REPORT_DIR": str(self.report_dir),
-            "KAIROS_REQUIRED_TOPICS": json.dumps(self.required_topics),
+            "KAIROS_REQUIRED_TOPICS": json.dumps(
+                [topic["name"] for topic in self.required_topics]
+            ),
+            "KAIROS_REQUIRED_TOPIC_SPECS": json.dumps(self.required_topics),
             "KAIROS_EXPECT_HZ": json.dumps(self.expect_hz),
         }
 
@@ -176,15 +219,19 @@ def materialize_flow(
     workdir: Path,
     *,
     directory: Path | None = None,
+    directories: list[Path] | None = None,
     binaries: Path | None = None,
 ) -> Path:
     """Write the runnable flow for one job into *workdir* and return its path.
 
-    Raises ``ValueError`` (bad name / unknown placeholder / malformed file) or
-    ``FileNotFoundError`` (no such flow), which the pipeline turns into a job
-    failure with the message intact.
+    *directories* is the search order (see ``resolve_flow``); *directory* is the
+    single-directory shorthand. Raises ``ValueError`` (bad name / unknown
+    placeholder / malformed file) or ``FileNotFoundError`` (no such flow), which
+    the pipeline turns into a job failure with the message intact.
     """
-    source = flow_path(name, directory)
+    if directories is None and directory is not None:
+        directories = [directory]
+    source = resolve_flow(name, directories)
     raw = yaml.safe_load(source.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ValueError(f"flow root must be a mapping: {source}")

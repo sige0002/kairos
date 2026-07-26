@@ -1,7 +1,8 @@
 # Vendored: bagflow + mcap2dora
 
 This directory is a **vendored copy** of two upstream repositories, built into the
-`dora_runner` image and used by the `full_validation` pipeline. They are vendored
+`dora_runner` image and used by the `fast_validation` / `full_validation`
+pipelines — every validation kairos performs runs on this code. They are vendored
 rather than referenced as submodules/clones so that a kairos checkout builds a
 runnable image with no extra fetch step (user ruling, 2026-07-26).
 
@@ -41,6 +42,24 @@ framework's own documentation — how kairos *uses* it is specified in
      `dora coordinator` / `dora daemon` yourself (dora_runner does that at
      service start). Without this, a bagflow run on a host that also runs
      dora_live would talk to *whatever* coordinator answers on 127.0.0.1:6012.
+5. **A new check node: `bagflow-topic-presence`** (`crates/bagflow-checks/src/bin/
+   topic_presence.rs`). kairos' `fast_validation` gate asks a question upstream
+   has no node for: *are the topics this recording template declares mandatory in
+   the bag, with the message type it declares* — glob names, optional type, and
+   **0-message topics count as present** (a "record everything" bag legitimately
+   carries dozens of empty service-result topics, which `bagflow-topic-rate`
+   fails by design). Judged from the metadata inventory, subscribing to nothing.
+6. **`BAGFLOW_TOPIC_TYPES` is injected into every node's env** by the CLI, next
+   to the existing `BAGFLOW_EXPECTED` (counts): the same `metadata.yaml` table,
+   message type instead of message count. Needed by the node above; harmless to
+   nodes that ignore it.
+7. **A metadata-only flow is legal.** Upstream bails with "no rostopic inputs —
+   at least one node must subscribe to a bag topic"; a flow whose checks read
+   only the inventory (`-topic-presence`, `-topic-rate`) is now accepted and
+   prints a note instead. `bagflow-source` additionally **skips the bag scan
+   entirely** when nothing is subscribed — otherwise it would walk every message
+   only to discard it (seconds on a multi-GB recording), which would defeat the
+   point of the fast gate.
 
 ## Re-syncing with upstream
 
@@ -52,8 +71,9 @@ cp -r ~/bagflow/python    services/dora_runner/bagflow/python
 cp -r ~/mcap2dora/src ~/mcap2dora/tests services/dora_runner/bagflow/crates/mcap2dora/
 ```
 
-Then re-apply the four changes above (`git diff` against the previous vendored
-tree is the quickest check) and rebuild:
+Then re-apply the seven changes above (`git diff` against the previous vendored
+tree is the quickest check — the kairos-added source carries a `kairos vendoring`
+marker comment) and rebuild:
 `make rebuild dora_runner`.
 
 ## Python nodes

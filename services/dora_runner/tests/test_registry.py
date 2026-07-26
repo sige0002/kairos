@@ -14,35 +14,40 @@ def test_default_registry_has_runnable_and_placeholders() -> None:
     reg = build_default_registry()
     ids = {p.id for p in reg.all()}
     assert {"fast_validation", "dataset_export", "loss_report", "video_check"} <= ids
-    # The four implemented pipelines are runnable; placeholders are not.
-    for pid in ("fast_validation", "dataset_export", "loss_report", "video_check"):
+    # The MCAP-reading pipelines are runnable wherever the service runs;
+    # placeholders are not. (The two validation gates need the bagflow binaries
+    # and are covered by their own availability test below.)
+    for pid in ("dataset_export", "loss_report", "video_check", "signal_report"):
         assert reg.runnable(pid), pid
     for pid in ("dataset_convert", "dataset_validation"):
         assert not reg.runnable(pid), pid
         assert reg.get(pid) is not None and reg.get(pid).enabled is False
 
 
-def test_full_validation_follows_bagflow_availability(monkeypatch) -> None:
-    """full_validation is the one pipeline gated on binaries the source tree does
+def test_validation_gates_follow_bagflow_availability(monkeypatch) -> None:
+    """Both gates run on dora, so both are gated on binaries the source tree does
     not carry: runnable in the image, an honest placeholder anywhere else."""
     import dora_runner.registry as registry_module
 
     monkeypatch.setattr(registry_module, "bagflow_available", lambda: False)
-    absent = registry_module.build_default_registry(discover=False).get(
-        "full_validation"
-    )
-    assert absent is not None and absent.enabled is False
-    assert "bagflow" in absent.description
+    absent_registry = registry_module.build_default_registry(discover=False)
+    for pid in ("fast_validation", "full_validation"):
+        absent = absent_registry.get(pid)
+        assert absent is not None and absent.enabled is False, pid
+        assert "bagflow" in absent.description, pid
 
     monkeypatch.setattr(registry_module, "bagflow_available", lambda: True)
     monkeypatch.setattr(registry_module, "list_flows", lambda: ["default", "cameras"])
-    present = registry_module.build_default_registry(discover=False).get(
-        "full_validation"
-    )
+    present_registry = registry_module.build_default_registry(discover=False)
+    present = present_registry.get("full_validation")
     assert present is not None and present.enabled is True
     # Discovered flows drive the auto-rendered form (a picker, not free text).
     assert present.params_schema["properties"]["flow"]["enum"] == ["default", "cameras"]
     assert present.executor == "dora"
+    # fast_validation needs no authored flow: its own ships with the service.
+    fast = present_registry.get("fast_validation")
+    assert fast is not None and fast.enabled is True
+    assert fast.executor == "dora"
 
 
 def test_runnable_unknown_pipeline_is_false() -> None:
@@ -54,7 +59,7 @@ def test_metadata_carries_schema_outputs_executor() -> None:
     fv = DEFAULT_REGISTRY.get("fast_validation")
     assert fv is not None
     assert fv.params_schema["required"] == ["template"]
-    assert fv.executor == "in_process"
+    assert fv.executor == "dora"
     assert fv.outputs  # non-empty output contract
     assert fv.required_inputs == ["run_id"]
 

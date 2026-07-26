@@ -3,8 +3,9 @@
 # so it needs no rclpy and is built FROM the slim Python image. Multi-stage:
 # build a venv from the committed uv.lock, copy only the venv into the runtime.
 #
-# It ALSO carries the real dora runtime for the `full_validation` pipeline: the
-# vendored bagflow workspace (services/dora_runner/bagflow, see its VENDOR.md)
+# It ALSO carries the real dora runtime for the validation pipelines
+# (`fast_validation` / `full_validation`): the vendored bagflow workspace
+# (services/dora_runner/bagflow, see its VENDOR.md)
 # compiles to the CLI + source/report/decode/check node binaries, and the dora
 # CLI release binary provides `dora coordinator/daemon/start/stop`. dora keeps
 # every queued message in /dev/shm, so the container needs `shm_size` well above
@@ -81,6 +82,7 @@ RUN cargo build --release --locked \
           target/release/bagflow-freeze \
           target/release/bagflow-stamp-gap \
           target/release/bagflow-topic-rate \
+          target/release/bagflow-topic-presence \
           /out/
 
 # ---- runtime ----------------------------------------------------------------
@@ -102,6 +104,12 @@ COPY --from=bagflow-builder /out/ /usr/local/bin/
 # the explicit env in the image.
 COPY services/dora_runner/plugins /app/plugins
 ENV KAIROS_PLUGINS_DIR=/app/plugins
+
+# Flows shipped with the service. fast_validation must work on a robot whose
+# operator never authored a flow, so its bagflow flow lives here rather than in
+# config/<robot>/flows/ — where a file of the same name still overrides it
+# (bagflow_flow.resolve_flow searches the robot's dir first).
+COPY services/dora_runner/flows /opt/kairos/flows
 
 RUN useradd --create-home --uid 10001 appuser
 USER appuser

@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 
 import pytest
+from dora_runner.bagflow_runtime import bagflow_available
 from dora_runner.main import create_dora_app
 from dora_runner.validation import generate_template
 from fastapi.testclient import TestClient
@@ -20,11 +21,18 @@ from kairos_common import Settings
 DATA_DIR = Path(__file__).resolve().parents[3] / "data"
 RUN_ID = "run_20260623_232808"
 
-# Skip the whole module unless the sample recording is present locally.
-pytestmark = pytest.mark.skipif(
-    not (DATA_DIR / "recorded" / RUN_ID).is_dir(),
-    reason=f"needs a local sample recording at data/recorded/{RUN_ID}",
-)
+# fast_validation now runs on dora, so this needs both the sample recording AND
+# the bundled bagflow/dora binaries (the dora_runner image; see bagflow/VENDOR.md).
+pytestmark = [
+    pytest.mark.skipif(
+        not (DATA_DIR / "recorded" / RUN_ID).is_dir(),
+        reason=f"needs a local sample recording at data/recorded/{RUN_ID}",
+    ),
+    pytest.mark.skipif(
+        not bagflow_available(),
+        reason="needs the bagflow + dora binaries (dora_runner image)",
+    ),
+]
 
 
 def test_generate_template_reads_real_mcap() -> None:

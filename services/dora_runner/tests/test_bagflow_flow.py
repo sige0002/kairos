@@ -12,6 +12,7 @@ from dora_runner.bagflow_flow import (
     flow_path,
     list_flows,
     materialize_flow,
+    resolve_flow,
     resolve_node_path,
 )
 
@@ -22,7 +23,9 @@ def _bindings(tmp_path: Path) -> FlowBindings:
         bag_dir=tmp_path / "recorded" / "run_1",
         report_path=tmp_path / "report" / "report.json",
         report_dir=tmp_path / "report",
-        required_topics=["/joint_states"],
+        required_topics=[
+            {"name": "/joint_states", "type": "sensor_msgs/msg/JointState"}
+        ],
         expect_hz={"/joint_states": 100.0},
     )
 
@@ -134,3 +137,79 @@ def test_bare_name_without_a_bundled_binary_stays_relative(tmp_path: Path) -> No
     flow file, rather than silently pointing into the binary dir."""
     resolved = resolve_node_path("nope", tmp_path / "flows", tmp_path / "bin")
     assert resolved == str((tmp_path / "flows" / "nope").resolve())
+
+
+def test_required_topic_specs_carry_types_and_names_stay_bare(tmp_path: Path) -> None:
+    """Two shapes of the same list: ``${KAIROS_REQUIRED_TOPICS}`` for a node that
+    only wants names, ``${KAIROS_REQUIRED_TOPIC_SPECS}`` for one that checks the
+    declared message type too (bagflow-topic-presence)."""
+    flows = tmp_path / "flows"
+    _write_flow(
+        flows,
+        "default",
+        {
+            "nodes": [
+                {
+                    "id": "presence",
+                    "path": "bagflow-topic-presence",
+                    "env": {
+                        "NAMES": "${KAIROS_REQUIRED_TOPICS}",
+                        "SPECS": "${KAIROS_REQUIRED_TOPIC_SPECS}",
+                    },
+                }
+            ]
+        },
+    )
+
+    written = materialize_flow(
+        "default", _bindings(tmp_path), tmp_path / "work", directory=flows
+    )
+    node = yaml.safe_load(written.read_text(encoding="utf-8"))["nodes"][0]
+
+    assert json.loads(node["env"]["NAMES"]) == ["/joint_states"]
+    assert json.loads(node["env"]["SPECS"]) == [
+        {"name": "/joint_states", "type": "sensor_msgs/msg/JointState"}
+    ]
+
+
+def test_flow_search_order_lets_a_robot_shadow_a_bundled_flow(tmp_path: Path) -> None:
+    """fast_validation's flow ships with the service; a file of the same name in
+    the robot's config dir must win, which is what makes it overridable without
+    touching the image."""
+    robot = tmp_path / "robot_flows"
+    bundled = tmp_path / "bundled_flows"
+    _write_flow(bundled, "fast_validation", {"nodes": [{"id": "bundled", "path": "x"}]})
+
+    # Nothing in the robot's dir: the bundled file answers.
+    assert resolve_flow("fast_validation", [robot, bundled]).parent == bundled
+
+    _write_flow(robot, "fast_validation", {"nodes": [{"id": "robot", "path": "x"}]})
+    assert resolve_flow("fast_validation", [robot, bundled]).parent == robot
+
+    # A name neither directory carries names both in the error.
+    with pytest.raises(FileNotFoundError, match=str(bundled)):
+        resolve_flow("nope", [robot, bundled])
+
+
+def test_the_bundled_fast_validation_flow_is_shipped_and_materializes(
+    tmp_path: Path,
+) -> None:
+    """The in-tree flow is the same file the image carries at /opt/kairos/flows;
+    a typo in its ``${KAIROS_…}`` tokens would only surface at job time."""
+    from dora_runner.bagflow_flow import bundled_flows_dir
+
+    written = materialize_flow(
+        "fast_validation",
+        _bindings(tmp_path),
+        tmp_path / "work",
+        directories=[bundled_flows_dir()],
+    )
+    spec = yaml.safe_load(written.read_text(encoding="utf-8"))
+    node = spec["nodes"][0]
+
+    assert node["path"].endswith("bagflow-topic-presence")
+    assert json.loads(node["env"]["REQUIRED_TOPICS"]) == [
+        {"name": "/joint_states", "type": "sensor_msgs/msg/JointState"}
+    ]
+    # Metadata-only by construction: reading the bag is what makes a gate slow.
+    assert "inputs" not in node

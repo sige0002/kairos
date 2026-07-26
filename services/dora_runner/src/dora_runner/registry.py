@@ -25,6 +25,7 @@ from kairos_common import ApiError, ValidationTemplate
 from dora_runner.bagflow_flow import DEFAULT_FLOW, list_flows
 from dora_runner.bagflow_runtime import DoraEndpoint, bagflow_available
 from dora_runner.dataset_export import run_dataset_export
+from dora_runner.fast_validation import run_fast_validation
 from dora_runner.full_validation import run_full_validation
 from dora_runner.loss_report import run_loss_report
 from dora_runner.loss_report_config import (
@@ -35,7 +36,7 @@ from dora_runner.loss_report_config import (
 )
 from dora_runner.signal_report import DEFAULT_MAX_POINTS, run_signal_report
 from dora_runner.store import JobRecord, RunnerStore
-from dora_runner.validation import generate_template, run_fast_validation
+from dora_runner.validation import generate_template
 from dora_runner.video_check import MAX_FRAMES, run_video_check
 
 # A pipeline runner: takes the job + shared store + data root, returns the raw
@@ -113,8 +114,14 @@ async def _run_fast_validation(
 ) -> dict:
     template = await _resolve_template(job, store, data_dir)
     job.progress = 0.4
-    return await asyncio.to_thread(
-        run_fast_validation, run_id=job.run_id, data_dir=data_dir, template=template
+    return await run_fast_validation(
+        run_id=job.run_id,
+        data_dir=data_dir,
+        endpoint=DoraEndpoint.from_env(),
+        # Naming the dataflow after the job is what makes cleanup targeted:
+        # `dora stop --name <job_id>` can only ever reach this job's flow.
+        job_name=job.job_id,
+        template=template,
     )
 
 
@@ -504,15 +511,44 @@ _PLACEHOLDERS = [
 ]
 
 
-def _full_validation_pipeline() -> RegisteredPipeline:
-    """``full_validation``: the bagflow flow gate, registered honestly.
+def _fast_validation_pipeline() -> RegisteredPipeline:
+    """``fast_validation``: the required-topic gate, registered honestly.
 
-    It is the one pipeline that needs binaries the source tree does not carry
+    Since the port to bagflow it runs on dora like ``full_validation`` and needs
+    the same bundled binaries, so it follows the same rule: where they are absent
+    (a host checkout, CI, a hand-rolled deployment) the pipeline is advertised
+    with the reason instead of accepting jobs that can only fail at execution
+    time. Its flow ships with the service, so — unlike full_validation — there is
+    nothing for the operator to author before it works.
+    """
+    available = bagflow_available()
+    return RegisteredPipeline(
+        id="fast_validation",
+        name="Fast validation",
+        description=(
+            "Required-topic presence check for recorded MCAP runs "
+            "(bagflow flow on dora; reads the bag's metadata only)."
+            if available
+            else (
+                "Unavailable here: needs the bagflow + dora binaries bundled in "
+                "the dora_runner image."
+            )
+        ),
+        params_schema=_FAST_VALIDATION_SCHEMA,
+        outputs=["report/fast_validation/<run_id>/summary.json"],
+        executor="dora",
+        runner=_run_fast_validation if available else None,
+    )
+
+
+def _full_validation_pipeline() -> RegisteredPipeline:
+    """``full_validation``: the operator-authored flow gate, registered honestly.
+
+    Like ``fast_validation`` it needs binaries the source tree does not carry
     (the bagflow CLI + node binaries + the dora daemon, all built into the
-    dora_runner image). Where they are absent — a host checkout, CI, a
-    hand-rolled deployment — it stays an advertised-but-not-runnable placeholder
-    with the reason in its description, instead of accepting jobs that can only
-    fail at execution time.
+    dora_runner image), and additionally a flow to run: with no
+    ``config/<robot>/flows/`` the ``flow`` enum has nothing to offer, so the form
+    degrades to a text field rather than an empty dropdown.
     """
     available = bagflow_available()
     flows = list_flows() if available else []
@@ -554,16 +590,7 @@ def build_default_registry(
     """
     config = loss_config or load_loss_report_config()
     registry = PipelineRegistry()
-    registry.register(
-        RegisteredPipeline(
-            id="fast_validation",
-            name="Fast validation",
-            description="Required-topic presence check for recorded MCAP runs.",
-            params_schema=_FAST_VALIDATION_SCHEMA,
-            outputs=["report/fast_validation/<run_id>/summary.json"],
-            runner=_run_fast_validation,
-        )
-    )
+    registry.register(_fast_validation_pipeline())
     registry.register(_full_validation_pipeline())
     registry.register(
         RegisteredPipeline(

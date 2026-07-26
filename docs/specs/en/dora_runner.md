@@ -42,7 +42,7 @@ The post-recording **validation / conversion / extension processing pipeline** c
 
 - `fast_validation` / `full_validation` / `dataset_convert` / `dataset_validation`
 - **Implemented (`enabled=true`)**: `fast_validation` / `full_validation` / `dataset_export` / `loss_report` / `video_check` / `signal_report` (below). `dataset_convert` / `dataset_validation` are interface and plugin slots only (`enabled=false`).
-- **`full_validation` alone depends on bundled binaries** (bagflow + the dora CLI). Outside the image (a source checkout / CI) it **degrades to an `enabled=false` placeholder** whose description says why — we never advertise something that cannot run as runnable.
+- **Both validation gates (`fast_validation` / `full_validation`) depend on bundled binaries** (bagflow + the dora CLI). Outside the image (a source checkout / CI) they **degrade to `enabled=false` placeholders** whose description says why — we never advertise something that cannot run as runnable.
 - All jobs are launched via `POST /jobs` (proxied by `api_orchestrator`). Each pipeline validates `run_id` (`^[A-Za-z0-9_-]+$`) to prevent path traversal.
 
 ## Implemented pipelines
@@ -88,7 +88,10 @@ The post-recording **validation / conversion / extension processing pipeline** c
     The existing `t_ns` stays topic-relative (the chart contract is unchanged); the frontend converts chart-time ↔ the global axis with `start_offset_ns`.
 - **Post-export reads (`params.dataset_dir`)** — `loss_report` / `video_check` / `signal_report` accept an optional `dataset_dir` (`<operator>/<task>/<NNN>`, relative to `data/`) and **read the MCAP from the exported dataset directory** instead of `recorded/<run_id>` (`dataset_export` is a move, so after export there is no bag in `recorded/`). Outputs / caches stay **keyed by run_id** (`data/report/<pipeline>/<run_id>/`) as before, so a video_check mp4 cache generated before export is reused as-is after it (the move preserves mtimes). `dataset_dir` only allows exactly 3 plain-name components (traversal and the reserved names `recorded`/`report`/`datasets` are a `ValueError` → failed job).
 
-## Validation (v1): required topics + template
+## `fast_validation`: the required-topic gate (**real dora execution**)
+
+The default gate every recording passes through. It asks one question: does this bag contain the topics
+the operator declared mandatory?
 
 - **Validation template** (YAML / JSON): defines the topics required for that dataset / robot.
   ```yaml
@@ -99,16 +102,38 @@ The post-recording **validation / conversion / extension processing pipeline** c
     - { name: "/camera/*/image_raw" }                                 # glob allowed
   # optional: expected_hz, min_duration_s, etc. can be added later
   ```
-- **Automatic template generation**: generate a draft template from the topic list of an existing good run (`metadata.yaml` / MCAP) → a human selects and finalizes it.
-- **`fast_validation`**: matches the target run's topic list against the template and judges the **presence/absence of required topics**. No decode required, short duration.
-  - Output `summary.json`: `{ template, result: "pass"|"fail", missing: [], extra: [], checked_at }`.
+- **Automatic template generation**: generate a draft template from the topic list of an existing good run (`metadata.yaml` / MCAP) → a human selects and finalizes it (`POST /validation/templates/generate`, `validation.py`).
+- **The execution engine is bagflow** (the same as `full_validation`; the section below is the shared
+  specification for flows, verdicts and the runtime environment). The only difference is **whose flow it
+  is**:
+  - The flow **ships with the service**: `services/dora_runner/flows/fast_validation.yml` (in the image at
+    `/opt/kairos/flows/`), so it works on a robot whose operator never authored a flow. Dropping
+    `config/<robot>/flows/fast_validation.yml` **overrides it** (search order: robot config, then bundled).
+  - It has exactly one check node, `bagflow-topic-presence`, and it **subscribes to no topic** — it judges
+    from the `metadata.yaml` inventory alone. **Not a single MCAP byte is read, so the runtime does not
+    depend on bag size** (4.4 GB costs about the same as 30 MB). Being fast is this pipeline's reason to
+    exist, so nodes that decode belong in `full_validation` (i.e. in the robot's config).
+  - `${KAIROS_REQUIRED_TOPIC_SPECS}` (`[{name, type}]`) carries the template to the node. `name` is a glob
+    (fnmatch); `type` is optional (= any type). **A topic with 0 messages still counts as present** (a
+    "record everything" bag permanently carries service-result topics with no messages); raise the flow's
+    `MIN_MESSAGES` to demand a minimum count.
+- Output `summary.json`: `{ template, result: "pass"|"fail", missing: [], extra: [], checked_at, engine: "bagflow", … }`.
+  `missing` / `extra` / `result` are a **contract with the frontend** (the Validation screen's required-topic
+  checklist reads them directly) and were kept unchanged across the port from the in-process implementation.
+  What is new: `missing[].reason` (`topic not in bag` / `message type mismatch` / too few messages) and
+  bagflow's own `checks` / `metrics`.
+- **Migration from v1 (in-process)**: the Python `validator()` is gone; glob and type matching now live in
+  `bagflow-topic-presence` (Rust, with unit tests). `summary.json` carries `version: "2.0.0"` and
+  `engine: "bagflow"` (no such key exists in files written by v1).
 
 ## `full_validation`: declarative flows (**real dora execution**)
 
 The pipeline that runs the heavy post-recording checks (decode, image quality, dropouts) **as a
-YAML-declared flow on real dora**. It is the only path in kairos where the dora runtime actually runs; the
-execution engine is the bundled **bagflow** (`services/dora_runner/bagflow/`; the upstream revisions and
-local modifications are in that directory's `VENDOR.md`).
+YAML-declared flow on real dora**. The execution engine is shared with `fast_validation`: the bundled
+**bagflow** (`services/dora_runner/bagflow/`; the upstream revisions and local modifications are in that
+directory's `VENDOR.md`). The shared execution machinery (per-job materialization, timeouts, cleanup,
+artifacts) lives in `bagflow_pipeline.py`; each pipeline supplies only *which flow to run* and *how to
+summarize it*.
 
 ```
 config/<robot>/flows/<flow>.yml   ← written by the operator (= a bagflow flow.yml verbatim)
@@ -127,12 +152,17 @@ report.json ──adapter (bagflow_summary.py)──► summary.json (pass/fail)
   `default`), and `GET /pipelines` lists the **discovered flow names as an `enum`** in `params_schema`, so
   the auto-rendered form becomes a picker. A one-click button is just an entry in
   `validation_presets.yaml` (`{pipeline: full_validation, params: {flow: …}}`) — no UI change.
+  **Flow search order**: `full_validation` looks only in the robot's config (picked with `params.flow`).
+  `fast_validation` looks in the robot's config and then in the service's bundled flows
+  (`/opt/kairos/flows/`), and has no `params.flow` — its flow name is fixed (`fast_validation`), so placing
+  a file of that name in config IS the override mechanism.
 - **`${KAIROS_*}` substitution** is the seam between the Config tab's validation template and the flow.
   Usable inside any string value:
   | Token | Contents |
   |---|---|
   | `${KAIROS_EXPECT_HZ}` | JSON `{topic: hz}`. **Required topics enter at `hz=0`** (= must exist, any rate: `bagflow-topic-rate` reports a topic missing from the bag as a failure and no rate can fall below 0). Topics matching `RECORDING_CONFIG`'s `expected_hz_patterns` are overridden with their real rate |
-  | `${KAIROS_REQUIRED_TOPICS}` | JSON array of required topic names (for custom nodes) |
+  | `${KAIROS_REQUIRED_TOPICS}` | JSON array of required topic **names** (for nodes that only need names) |
+  | `${KAIROS_REQUIRED_TOPIC_SPECS}` | JSON array of `[{name, type}]` for the required topics (for a node that also checks the declared **message type**, i.e. `bagflow-topic-presence`). Used by `fast_validation`'s bundled flow |
   | `${KAIROS_RUN_ID}` / `${KAIROS_BAG_DIR}` / `${KAIROS_REPORT_DIR}` / `${KAIROS_REPORT}` | the run and its output locations |
   - Required topics come from **`params.template` → (else) `RECORDING_CONFIG.validation.required_topics`**.
     The orchestrator resolves a template id into the full object for `full_validation` just as it does for
@@ -192,7 +222,7 @@ logs' location in `details` — and no summary.json is written, so the run stays
    our own coordinator, `dora destroy` is both equivalent and safe).
 
 Bundled nodes (Rust): `bagflow-decode` (JPEG → raw frames) / `-blur` / `-brightness` / `-freeze` /
-`-stamp-gap` / `-topic-rate`. Measured **0.56s wall, 3.7 CPU-s** (a 101s / 780MB / 29-topic bag with 3037 VGA
+`-stamp-gap` / `-topic-rate` / `-topic-presence` (for `fast_validation`; added by kairos). Measured **0.56s wall, 3.7 CPU-s** (a 101s / 780MB / 29-topic bag with 3037 VGA
 frames, warm, daemon already up). The **Python check nodes and the CUDA decoder are not bundled** (the
 former need pyarrow/dora-rs/opencv; the latter measured slower than the CPU path on small images) — reasons
 are recorded in `VENDOR.md`.
@@ -249,13 +279,14 @@ restart reconciliation** (see "Persistence and restart reconciliation" above). E
 encoding are offloaded to worker threads.
 
 **dora bundling status (updated 2026-07-26)**: the **dora CLI (0.5.0) and the bundled bagflow Rust nodes
-now ship in the dora_runner image**. Only **`full_validation`** runs on real dora, though; a plugin's
-`executor: dora` still goes through the in-process interpreter (moving plugin dataflows onto real dora is
-separate work). `/readyz` therefore honestly reports two components: `components.dora` (is the `dora` binary
+now ship in the dora_runner image**. What runs on real dora is **both validation gates
+(`fast_validation` / `full_validation`)**; a plugin's `executor: dora` still goes through the in-process
+interpreter (moving plugin dataflows onto real dora is separate work). `/readyz` therefore honestly reports two components: `components.dora` (is the `dora` binary
 present — `available` / `in-process`) and `components.bagflow` (are the bagflow binaries present —
 `available` / `unavailable`). Each `PipelineDefinition` returned by `/pipelines` also reports
 `effective_executor` (how it actually runs), distinct from the declared `executor`. Outside the image (a
-source run / CI) bagflow is absent, so `full_validation` degrades to `enabled=false`. **AI nodes**
+source run / CI) bagflow is absent, so both `fast_validation` and `full_validation` degrade to
+`enabled=false`. **AI nodes**
 (inference / LeRobot conversion) are not implemented.
 
 For how to add validation checks, unit testing, and debugging procedures via the local CLI (`python -m dora_runner.cli`),

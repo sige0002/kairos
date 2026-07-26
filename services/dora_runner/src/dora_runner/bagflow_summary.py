@@ -37,7 +37,7 @@ PIPELINE_VERSION = "1.0.0"
 _RATIO_KEYS = ("ratio_vs_bag", "ratio_vs_upstream")
 
 
-def _checks(report: dict[str, Any]) -> list[dict[str, Any]]:
+def flatten_checks(report: dict[str, Any]) -> list[dict[str, Any]]:
     """Flatten ``results: {node: [record, …]}`` into rows tagged with their node."""
     rows: list[dict[str, Any]] = []
     results = report.get("results")
@@ -71,7 +71,7 @@ def _coverage_min(report: dict[str, Any]) -> float | None:
     return min(ratios) if ratios else None
 
 
-def _incomplete(report: dict[str, Any]) -> list[str]:
+def incomplete_nodes(report: dict[str, Any]) -> list[str]:
     """Nodes that never sent end-of-stream (bagflow names them ``result_<node>``)."""
     raw = report.get("incomplete")
     if not isinstance(raw, list):
@@ -79,7 +79,7 @@ def _incomplete(report: dict[str, Any]) -> list[str]:
     return [str(item).removeprefix("result_") for item in raw]
 
 
-def _label(check: dict[str, Any]) -> str:
+def check_label(check: dict[str, Any]) -> str:
     name = check.get("check")
     node = check.get("node", "?")
     return f"{node}.{name}" if name else str(node)
@@ -105,7 +105,7 @@ def _message(
             f"{len(incomplete)} node(s) did not finish: {', '.join(incomplete)}"
         )
     if failed:
-        names = ", ".join(_label(check) for check in failed[:4])
+        names = ", ".join(check_label(check) for check in failed[:4])
         more = "" if len(failed) <= 4 else f" (+{len(failed) - 4})"
         parts.append(f"{len(failed)}/{total} checks failed: {names}{more}")
     elif total and not incomplete:
@@ -133,9 +133,9 @@ def summarize(
     *wall_s* is the wall time kairos measured for the whole ``bagflow run`` (the
     report's own ``wall_s`` covers only the report node's lifetime).
     """
-    checks = _checks(report)
+    checks = flatten_checks(report)
     failed = [check for check in checks if check.get("ok") is False]
-    incomplete = _incomplete(report)
+    incomplete = incomplete_nodes(report)
     coverage_min = _coverage_min(report)
     coverage_short = (
         min_coverage > 0 and coverage_min is not None and coverage_min < min_coverage

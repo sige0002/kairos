@@ -98,8 +98,9 @@ def _override_readyz(app: FastAPI) -> None:
     async def readyz() -> dict[str, object]:
         dora = "available" if dora_cli_available() else "in-process"
         # `bagflow` is separate from `dora`: plugin dataflows degrade to the
-        # in-process interpreter without the CLI, but full_validation cannot —
-        # it needs the bagflow binaries too (see registry._full_validation_pipeline).
+        # in-process interpreter without the CLI, but the validation gates
+        # cannot — they need the bagflow binaries too (see
+        # registry._fast_validation_pipeline / _full_validation_pipeline).
         bagflow = "available" if bagflow_available() else "unavailable"
         return {
             "status": "ready",
@@ -135,7 +136,7 @@ def create_dora_app(
     job_timeout_s = _job_timeout_s()
 
     # The service owns its dora coordinator/daemon (see bagflow_runtime): started
-    # here so the first full_validation job doesn't pay for it, torn down with
+    # here so the first validation job doesn't pay for it, torn down with
     # `dora destroy` so no dataflow (and no /dev/shm it holds) outlives us. A
     # deployment without the binaries never starts anything.
     dora_stack = DoraStack(DoraEndpoint.from_env(), data_dir / ".dora")

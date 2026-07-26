@@ -74,7 +74,16 @@ fn main() -> Result<()> {
     // for an end-of-stream that can no longer come.
     let mut read_error: Option<String> = None;
 
-    'files: for file in mcap_files(&bag)? {
+    // kairos vendoring: a metadata-only flow (only `bagflow-topic-presence` /
+    // `bagflow-topic-rate`) subscribes to nothing. Scanning the bag would then
+    // walk every message just to discard it — seconds on a multi-GB recording —
+    // so skip the read and report empty counts.
+    let files = if topics.is_empty() {
+        Vec::new()
+    } else {
+        mcap_files(&bag)?
+    };
+    'files: for file in files {
         let mapped = match map_file(&file) {
             Ok(m) => m,
             Err(e) => {

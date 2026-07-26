@@ -41,7 +41,7 @@
 
 - `fast_validation` / `full_validation` / `dataset_convert` / `dataset_validation`
 - **実装済み（`enabled=true`）**: `fast_validation` / `full_validation` / `dataset_export` / `loss_report` / `video_check` / `signal_report`（下記）。`dataset_convert` / `dataset_validation` は I/F とプラグイン枠のみ（`enabled=false`）。
-- **`full_validation` だけは同梱バイナリ依存**（bagflow + dora CLI）。イメージ以外の環境（ソースチェックアウト / CI）では `enabled=false` の**プレースホルダに落ちる**（理由を description に出す）＝実行できないものを実行できると宣伝しない。
+- **検証 2 本（`fast_validation` / `full_validation`）は同梱バイナリ依存**（bagflow + dora CLI）。イメージ以外の環境（ソースチェックアウト / CI）では `enabled=false` の**プレースホルダに落ちる**（理由を description に出す）＝実行できないものを実行できると宣伝しない。
 - すべてのジョブは `POST /jobs`（`api_orchestrator` がプロキシ）経由で起動する。各パイプラインは `run_id`（`^[A-Za-z0-9_-]+$`）を検証してパストラバーサルを防ぐ。
 
 ## 実装済みパイプライン
@@ -87,7 +87,9 @@
     既存の `t_ns` はトピック相対のまま（チャート契約は不変）。フロントエンドは `start_offset_ns` でチャート時刻 ↔ グローバル軸を換算する。
 - **エクスポート後の読み出し（`params.dataset_dir`）** — `loss_report` / `video_check` / `signal_report` は省略可能な `dataset_dir`（`<operator>/<task>/<NNN>`、`data/` 相対）を受け付け、`recorded/<run_id>` の代わりに**エクスポート済みデータセットディレクトリの MCAP を読む**（`dataset_export` は移動のため、エクスポート後は `recorded/` に bag が無い）。出力・キャッシュは従来どおり **run_id キー**（`data/report/<pipeline>/<run_id>/`）のままなので、エクスポート前に生成した video_check の mp4 キャッシュはエクスポート後もそのまま再利用される（移動は mtime を保存する）。`dataset_dir` はちょうど 3 コンポーネントの単純名のみ許可（トラバーサル・予約名 `recorded`/`report`/`datasets` は `ValueError` → 失敗ジョブ）。
 
-## 検証（v1）: 必須トピック + テンプレート
+## `fast_validation`: 必須トピックゲート（**実 dora 実行**）
+
+全録画が通る既定のゲート。「この bag に、運用者が必須と宣言したトピックが入っているか」だけを見る。
 
 - **検証テンプレート**（YAML / JSON）: そのデータセット / ロボットで必須のトピックを定義する。
   ```yaml
@@ -98,15 +100,34 @@
     - { name: "/camera/*/image_raw" }                                 # glob 可
   # 任意: expected_hz, min_duration_s などは後で追加
   ```
-- **テンプレート自動生成**: 既存の良好な run の topic 一覧（`metadata.yaml` / MCAP）から雛形テンプレートを生成 → 人が取捨選択して確定する。
-- **`fast_validation`**: 対象 run の topic 一覧をテンプレートと照合し、**必須トピックの過不足**を判定。decode 不要・短時間。
-  - 出力 `summary.json`: `{ template, result: "pass"|"fail", missing: [], extra: [], checked_at }`。
+- **テンプレート自動生成**: 既存の良好な run の topic 一覧（`metadata.yaml` / MCAP）から雛形テンプレートを生成 → 人が取捨選択して確定する（`POST /validation/templates/generate`。`validation.py`）。
+- **実行エンジンは bagflow**（`full_validation` と同じ。下の節がフロー・判定・実行環境の共通仕様）。
+  違いは**フローが誰のものか**だけ:
+  - フローは**サービス同梱** = `services/dora_runner/flows/fast_validation.yml`（イメージ内 `/opt/kairos/flows/`）。
+    運用者がフローを 1 本も書いていないロボットでも動く。
+    `config/<robot>/flows/fast_validation.yml` を置けば**そちらが優先**される（探索順＝ロボット config → 同梱）。
+  - 検査ノードは `bagflow-topic-presence` 1 本のみで、**トピックを 1 本も購読しない**（`metadata.yaml` の
+    トピック一覧だけを見る）。したがって **MCAP は 1 バイトも読まれず、実行時間は bag のサイズに依存しない**
+    （4.4GB でも 30MB でもほぼ同じ）。「速い」ことがこのパイプラインの存在意義なので、
+    デコードするノードを足すのは `full_validation`（＝ロボット config 側）で行う。
+  - `${KAIROS_REQUIRED_TOPIC_SPECS}`（`[{name, type}]`）でテンプレをノードへ渡す。`name` は glob（fnmatch）、
+    `type` は省略可＝型不問。**メッセージ 0 件のトピックも「存在する」**とみなす（全トピック録画の bag は
+    service 応答トピックが常時 0 件になるため）。最低件数を要求したければフローの `MIN_MESSAGES` を上げる。
+- 出力 `summary.json`: `{ template, result: "pass"|"fail", missing: [], extra: [], checked_at, engine: "bagflow", … }`。
+  `missing` / `extra` / `result` は**フロントエンドとの契約**（Validation 画面の必須トピック・チェックリストが
+  そのまま読む）で、in-process 実装からの移行で変えていない。`missing[].reason`（`topic not in bag` /
+  `message type mismatch` / 件数不足）と bagflow 由来の `checks` / `metrics` が追加分。
+- **v1（in-process）からの移行**: `validator()` の Python 実装は廃止し、glob・型照合は
+  `bagflow-topic-presence`（Rust・単体テスト付き）が持つ。`summary.json` の `version` は `2.0.0`、
+  `engine: "bagflow"` が付く（v1 が書いたファイルにこのキーは無い）。
 
 ## `full_validation`: 宣言的フロー（**実 dora 実行**）
 
 録画後の重い検証（デコード・画質・欠落）を、**YAML で宣言したフローとして実 dora 上で**回すパイプライン。
-kairos 内で唯一「dora ランタイムが実際に動く」経路であり、実行エンジンは同梱の **bagflow**
+実行エンジンは `fast_validation` と共通で、同梱の **bagflow**
 （`services/dora_runner/bagflow/`、ベンダリング元と改変点は同ディレクトリの `VENDOR.md`）。
+共通の実行機構（ジョブごとの実体化・タイムアウト・後始末・成果物）は `bagflow_pipeline.py` にあり、
+両パイプラインはそこへ「どのフローを・どう要約するか」だけを渡す。
 
 ```
 config/<robot>/flows/<flow>.yml   ← 運用者が書く（＝bagflow の flow.yml そのもの）
@@ -125,11 +146,15 @@ report.json ──アダプタ（bagflow_summary.py）──► summary.json（p
   選び、`GET /pipelines` の `params_schema` には**発見できたフロー名が enum で載る**ので、UI のフォームは
   自動でピッカーになる。ワンクリック実行は `validation_presets.yaml` に `{pipeline: full_validation,
   params: {flow: …}}` を足すだけ（UI 改修不要）。
+  **フローの探索順**: `full_validation` はロボット config のみ（`params.flow` で選ぶ）。`fast_validation` は
+  ロボット config → サービス同梱（`/opt/kairos/flows/`）の順で、`params.flow` を持たない（フロー名は固定で
+  `fast_validation`＝同名ファイルを config に置くことが上書き手段）。
 - **`${KAIROS_*}` 置換**が「Config タブの検証テンプレ」とフローの結節点。文字列値の中に書ける:
   | トークン | 中身 |
   |---|---|
   | `${KAIROS_EXPECT_HZ}` | `{topic: hz}` の JSON。**必須トピックは `hz=0`**（＝存在必須・レート不問。`bagflow-topic-rate` は bag に無いトピックを失敗として報告し、0 を下回るレートは存在しない）。`RECORDING_CONFIG` の `expected_hz_patterns` に一致するトピックは実レートで上書き |
-  | `${KAIROS_REQUIRED_TOPICS}` | 必須トピック名の JSON 配列（独自ノード向け） |
+  | `${KAIROS_REQUIRED_TOPICS}` | 必須トピック**名**の JSON 配列（名前しか要らないノード向け） |
+  | `${KAIROS_REQUIRED_TOPIC_SPECS}` | 必須トピックの `[{name, type}]` JSON 配列（宣言された**メッセージ型**まで見るノード向け＝`bagflow-topic-presence`）。`fast_validation` の同梱フローが使う |
   | `${KAIROS_RUN_ID}` / `${KAIROS_BAG_DIR}` / `${KAIROS_REPORT_DIR}` / `${KAIROS_REPORT}` | run と出力先 |
   - 必須トピックの出どころは **`params.template` →（無ければ）`RECORDING_CONFIG.validation.required_topics`**。
     orchestrator は `fast_validation` と同様に `full_validation` でもテンプレ id を実体へ解決して注入するので、
@@ -181,7 +206,8 @@ bagflow は「事実」だけを報告する（ノードごとの `ok`・エッ�
    「動いているもの全部止める」も**実装しない**（自前 coordinator なので `dora destroy` が同義かつ安全）。
 
 同梱ノード（Rust）: `bagflow-decode`（JPEG→生フレーム）/ `-blur` / `-brightness` / `-freeze` /
-`-stamp-gap` / `-topic-rate`。実測 **0.56s wall・3.7 CPU秒**（101秒・780MB・29トピック・VGA 3037 フレームの bag、
+`-stamp-gap` / `-topic-rate` / `-topic-presence`（`fast_validation` 用・kairos 追加）。
+実測 **0.56s wall・3.7 CPU秒**（101秒・780MB・29トピック・VGA 3037 フレームの bag、
 `dora up` 済み warm）。**Python 版チェックノードと CUDA デコードは同梱しない**（前者は pyarrow/dora-rs/opencv が
 必要、後者は小画像では CPU 版より遅い実測）＝ `VENDOR.md` に理由を記載。
 
@@ -236,13 +262,13 @@ in-process インタプリタ**（プラグインの `executor: dora` は下記�
 各パイプラインの重い読込・エンコードは worker スレッドに退避する。
 
 **dora の同梱状況（2026-07-26 更新）**: **dora CLI（0.5.0）と同梱 bagflow の Rust ノードは dora_runner
-イメージに入っている**。ただし実 dora で動くのは **`full_validation` だけ**で、プラグインの
-`executor: dora` は従来どおり in-process インタプリタで実行する（プラグインの dataflow を実 dora へ
-載せ替えるのは別作業）。したがって `/readyz` は 2 成分を誠実に返す: `components.dora`（`dora` バイナリの
+イメージに入っている**。実 dora で動くのは **検証 2 本（`fast_validation` / `full_validation`）**で、
+プラグインの `executor: dora` は従来どおり in-process インタプリタで実行する（プラグインの dataflow を
+実 dora へ載せ替えるのは別作業）。したがって `/readyz` は 2 成分を誠実に返す: `components.dora`（`dora` バイナリの
 有無 = `available` / `in-process`）と `components.bagflow`（bagflow バイナリの有無 = `available` /
 `unavailable`）。`/pipelines` の各 `PipelineDefinition` も宣言上の `executor` とは別に
 `effective_executor`（実際にどう動くか）を返す。イメージ以外（ソース実行 / CI）では bagflow が無いので
-`full_validation` は `enabled=false` に落ちる。**AI node（推論・LeRobot 変換）**は未実装。
+`fast_validation` / `full_validation` はどちらも `enabled=false` に落ちる。**AI node（推論・LeRobot 変換）**は未実装。
 
 validation チェックの追加方法・単体試験・ローカル CLI（`python -m dora_runner.cli`）でのデバッグ手順は、
 開発者ガイド [docs/dora/README.ja.md](../../dora/README.ja.md) を参照。
