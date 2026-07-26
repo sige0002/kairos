@@ -68,6 +68,26 @@ def test_a_pattern_without_hz_is_not_an_expectation() -> None:
     assert topic_expectations(["/tf"], [], config) == {}
 
 
+def test_artifacts_keep_the_configured_data_dir_shape(tmp_path) -> None:
+    """The orchestrator rewrites artifacts relative to the CONFIGURED data dir
+    (``./data`` by default) before the UI links them; reporting the resolved
+    absolute path would make every artifact unclickable text."""
+    from pathlib import Path
+
+    from dora_runner.full_validation import reported_artifact
+
+    resolved = tmp_path / "data"
+    summary = resolved / "report" / "full_validation" / "run_1" / "summary.json"
+
+    assert (
+        reported_artifact(summary, resolved, Path("data"))
+        == "data/report/full_validation/run_1/summary.json"
+    )
+    # A path outside the data root is passed through rather than mangled.
+    outside = tmp_path / "elsewhere" / "x.json"
+    assert reported_artifact(outside, resolved, Path("data")) == str(outside)
+
+
 def test_unavailable_bagflow_is_a_clear_error(tmp_path, monkeypatch) -> None:
     import asyncio
 

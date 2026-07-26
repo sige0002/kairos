@@ -128,22 +128,40 @@ async def job_status(request: Request, job_id: str) -> JobStatus:
 
 
 def _data_relative_artifacts(artifacts: list[str], data_dir: str) -> list[str]:
-    """Rewrite absolute artifact paths under ``data_dir`` to data-relative ones.
+    """Strip the data root from artifact paths so they are fetchable.
 
-    dora_runner reports artifacts as absolute container paths (e.g.
-    ``/data/report/<pipeline>/<run_id>/plot.png``); relative to ``data_dir``
-    they are directly fetchable through ``GET /api/v1/files/{path}`` — which is
-    what lets the UI render a plugin's image artifacts inline with zero UI
-    edits (the dora-only visualisation channel). Paths outside ``data_dir``
-    (or already relative) pass through unchanged.
+    ``GET /api/v1/files/{path}`` resolves its path INSIDE the data dir, so an
+    artifact must be reported without that prefix — that is what lets the UI
+    render a plugin's image artifacts inline with zero UI edits (the dora-only
+    visualisation channel).
+
+    dora_runner reports artifacts prefixed with its own ``data_dir``, which is
+    ``./data`` by default and ``/data`` when a deployment sets an absolute one —
+    so BOTH forms are stripped here (``data/report/x`` and ``/data/report/x``
+    against a configured ``./data``). Matching only the absolute form left every
+    artifact link 404ing on the default config. Paths under neither root pass
+    through unchanged.
     """
-    root = PurePosixPath(data_dir)
+    configured = PurePosixPath(data_dir)
+    # Both spellings of the configured root: the services run with the image
+    # root as cwd, so "./data" and "/data" name the same tree (compose mounts
+    # ${DATA_DIR} at /data), and the two sides may report either one.
+    twin = (
+        PurePosixPath("/") / configured
+        if not configured.is_absolute()
+        else PurePosixPath(*configured.parts[1:])
+    )
+    roots = {configured, twin}
     out: list[str] = []
     for artifact in artifacts:
         path = PurePosixPath(artifact)
-        try:
-            out.append(str(path.relative_to(root)) if path.is_absolute() else artifact)
-        except ValueError:  # absolute but outside data_dir
+        for root in roots:
+            try:
+                out.append(str(path.relative_to(root)))
+                break
+            except ValueError:
+                continue
+        else:  # under no known root: leave it exactly as reported
             out.append(artifact)
     return out
 

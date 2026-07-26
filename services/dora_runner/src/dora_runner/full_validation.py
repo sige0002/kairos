@@ -141,6 +141,22 @@ def _node_logs(workdir: Path) -> list[Path]:
     return sorted(workdir.glob(".bagflow/out/*/log_*.txt"))
 
 
+def reported_artifact(path: Path, resolved_root: Path, configured_root: Path) -> str:
+    """Re-express an artifact path in the CONFIGURED data-dir shape.
+
+    Internally every path is absolute (the flow runs in a subprocess with its own
+    cwd), but a job result must keep the same shape as every other pipeline —
+    ``data/report/…`` when ``DATA_DIR`` is ``./data`` — because the orchestrator
+    rewrites artifacts *relative to the configured root* before the UI turns them
+    into ``GET /api/v1/files/{path}`` links. Reporting the absolute path silently
+    downgrades every artifact to unclickable text.
+    """
+    try:
+        return str(configured_root / path.relative_to(resolved_root))
+    except ValueError:  # outside the data root (should not happen)
+        return str(path)
+
+
 def _flow_failure(
     message: str, *, run_id: str, flow: str, workdir: Path, log_tail: list[str]
 ) -> ApiError:
@@ -210,6 +226,8 @@ async def _run_locked(
     # Every path below is handed to a subprocess whose cwd is the flow's workdir,
     # so they must be absolute: `data_dir` is "./data" by default (settings.py),
     # which the bagflow CLI would otherwise resolve against the wrong directory.
+    # Artifacts are reported back in the CONFIGURED shape (see _reported).
+    configured_dir = data_dir
     data_dir = data_dir.resolve()
     bag_dir = resolve_source_dir(data_dir, run_id, dataset_dir)
     # Fail before starting a dataflow when the run holds no MCAP at all.
@@ -289,9 +307,10 @@ async def _run_locked(
     summary_path = report_dir / "summary.json"
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
-    artifacts = [str(summary_path), str(report_path)]
+    produced = [summary_path, report_path]
     if summary["result"] != "pass":
         # Only worth surfacing when something needs explaining; on a clean pass
         # they are noise in the UI's artifact list.
-        artifacts.extend(str(path) for path in _node_logs(workdir))
+        produced.extend(_node_logs(workdir))
+    artifacts = [reported_artifact(p, data_dir, configured_dir) for p in produced]
     return {"summary": summary, "artifacts": artifacts}

@@ -289,3 +289,23 @@ def test_job_result_artifacts_are_normalised_to_data_relative(
         "/etc/passwd",
         "report/x/summary.json",
     ]
+
+
+def test_job_result_artifacts_strip_a_relative_data_dir_prefix() -> None:
+    """With the DEFAULT ``DATA_DIR=./data``, dora_runner reports artifacts as
+    ``data/report/…`` — the prefix must still be stripped, or every artifact
+    link 404s (``/api/v1/files/{path}`` resolves inside the data dir already)."""
+    from api_orchestrator.routers.jobs import _data_relative_artifacts
+
+    assert _data_relative_artifacts(
+        [
+            "data/report/full_validation/run_a/summary.json",  # runner's shape
+            "/data/report/full_validation/run_a/report.json",  # absolute twin
+            "elsewhere/x.json",  # under no root: untouched
+        ],
+        "./data",
+    ) == [
+        "report/full_validation/run_a/summary.json",
+        "report/full_validation/run_a/report.json",
+        "elsewhere/x.json",
+    ]
