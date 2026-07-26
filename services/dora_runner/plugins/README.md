@@ -47,10 +47,11 @@ The same `dataflow.yml` drives two execution paths:
 So each node module is **dual-mode**:
 
 ```python
-def process(inputs, ctx):       # pure logic — in-process interpreter
+def process(inputs, ctx):  # pure logic — in-process interpreter
     ...
-def main():                     # dora event loop — `dora start`
+def main():  # dora event loop — `dora start`
     from dora import Node
+
     ...
 ```
 

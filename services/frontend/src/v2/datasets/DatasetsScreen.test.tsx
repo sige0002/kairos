@@ -1047,3 +1047,57 @@ test('the whole-catalog view states the spread neutrally and flags no rows', asy
   expect(callout).not.toHaveTextContent("can't be converted into a single training set");
   expect(screen.queryByTestId(`dataset-schema-outlier-${KP_DIM_B.dataset_dir}`)).toBeNull();
 });
+
+test('the header counts what is on screen, not the whole scope', async () => {
+  mockFetch({ list: LIST_RESPONSE });
+  renderWithClient(<DatasetsScreen />);
+  await waitFor(() => expect(screen.getByTestId(kitchenTask)).toBeInTheDocument());
+
+  // Nothing hidden: the plain total.
+  expect(screen.getByTestId('dataset-scope-count')).toHaveTextContent('5 episodes');
+
+  // An episode search matching one row must not leave "5 episodes" standing
+  // over a single-row table.
+  fireEvent.change(screen.getByTestId('dataset-episode-search'), { target: { value: '003' } });
+  await waitFor(() =>
+    expect(screen.getByTestId('dataset-scope-count')).toHaveTextContent('showing 1 of 5 episodes'),
+  );
+});
+
+test('the header states the render cap too', async () => {
+  mockFetch({ list: bigCatalog(450) });
+  renderWithClient(<DatasetsScreen />);
+
+  await waitFor(() =>
+    expect(screen.getByTestId('dataset-scope-count')).toHaveTextContent(
+      'showing 200 of 450 episodes',
+    ),
+  );
+});
+
+test('a URL whose own filter excludes the linked episode does not resurrect its Delete', async () => {
+  window.history.replaceState(
+    null,
+    '',
+    `/?tab=datasets&dstask=kitchen_pick&dscond=dim&dsresult=success&dsep=${encodeURIComponent(
+      KP_DIM_B.dataset_dir,
+    )}`,
+  );
+  mockFetch({ list: LIST_RESPONSE, details: { [detailUrlFor(KP_DIM_B)]: detailFor(KP_DIM_B) } });
+  renderWithClient(<DatasetsScreen />);
+
+  await waitFor(() =>
+    expect(screen.getByTestId('dataset-scope-title')).toHaveTextContent('kitchen_pick'),
+  );
+  // KP_DIM_B is a FAILURE and the link's own facet is success-only, so the row
+  // is not in the filtered set. Restoring from the URL goes through the same
+  // reconciliation as a click, so the detail pane — and the live Delete it
+  // carries — must stay shut rather than being resurrected by the link.
+  expect(screen.getByTestId('dataset-scope-summary')).toBeInTheDocument();
+  expect(screen.queryByTestId('dataset-stats')).toBeNull();
+  expect(screen.queryByRole('button', { name: /delete/i })).toBeNull();
+
+  // The link isn't discarded either — relaxing the facet brings the episode back.
+  fireEvent.click(screen.getByTestId('dataset-filter-all'));
+  await waitFor(() => expect(screen.getByTestId('dataset-stats')).toBeInTheDocument());
+});

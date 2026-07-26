@@ -25,7 +25,12 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from kairos_common import TOPIC_SIGNATURE_ALGO, topic_signature, utc_now_iso8601
+from kairos_common import (
+    TOPIC_SIGNATURE_ALGO,
+    lifecycle_ledger,
+    topic_signature,
+    utc_now_iso8601,
+)
 
 from dora_runner.mcap_utils import validate_run_id
 
@@ -69,19 +74,28 @@ def _read_session(run_dir: Path) -> dict[str, Any]:
         return {}
 
 
-def _next_index_dir(parent: Path) -> Path:
+def _next_index_dir(parent: Path, retired: set[int] | None = None) -> Path:
     """Atomically create the next ``NNN`` dir under *parent* (001, 002, …).
 
     Computes the start from existing numeric dirs, then races ``mkdir`` with
     ``exist_ok=False`` so concurrent exports never collide on the same index.
     Claiming the empty ``NNN`` dir first is what makes the subsequent move safe:
     nothing is moved until a destination is reserved.
+
+    *retired* carries the numbers that once existed here and have since left —
+    archived to a storage server, or deleted (``kairos_common.lifecycle_ledger``).
+    Without it the high-water mark comes from the filesystem alone, so archiving
+    ``003`` frees ``003`` and the next export re-issues it: two recordings share
+    one path over time, and a manifest pinning ``…/003`` resolves to whichever
+    one happens to be there now, with nothing raising an error. A retired number
+    stays retired; the gap it leaves is a fact, not something to fill in.
     """
     parent.mkdir(parents=True, exist_ok=True)
     existing = [
         int(p.name) for p in parent.iterdir() if p.is_dir() and p.name.isdigit()
     ]
-    start = (max(existing) + 1) if existing else 1
+    used = existing + sorted(retired or ())
+    start = (max(used) + 1) if used else 1
     for n in range(start, start + _MAX_INDEX_ATTEMPTS):
         candidate = parent / str(n).zfill(_INDEX_WIDTH)
         try:
@@ -117,7 +131,10 @@ def run_dataset_export(*, run_id: str, data_dir: Path) -> dict[str, Any]:
     task = _sanitize_component(session.get("task"), _DEFAULT_TASK)
 
     # Claim the destination FIRST (empty NNN dir); only then move into it.
-    dataset_dir = _next_index_dir(data_dir / operator / task)
+    dataset_dir = _next_index_dir(
+        data_dir / operator / task,
+        lifecycle_ledger.retired_indices(data_dir, operator, task),
+    )
     moved: list[str] = []
     for child in sorted(run_dir.iterdir()):
         shutil.move(str(child), str(dataset_dir))

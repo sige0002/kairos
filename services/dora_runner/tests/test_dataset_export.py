@@ -10,7 +10,11 @@ import json
 import time
 from pathlib import Path
 
-from dora_runner.dataset_export import _sanitize_component, run_dataset_export
+from dora_runner.dataset_export import (
+    _next_index_dir,
+    _sanitize_component,
+    run_dataset_export,
+)
 from dora_runner.main import create_dora_app
 from fastapi.testclient import TestClient
 from kairos_common import Settings
@@ -223,3 +227,60 @@ def test_dataset_export_job_end_to_end(tmp_path: Path) -> None:
         # MOVED into NNN, and gone from recorded/.
         assert (data_dir / "yuki" / "pick" / "001" / "run_a_0.mcap").exists()
         assert not (data_dir / "recorded" / "run_a").exists()
+
+
+def test_an_archived_or_deleted_index_is_never_reissued(tmp_path) -> None:
+    """The integrity guarantee behind the lifecycle ledger.
+
+    `_next_index_dir` takes its high-water mark from the filesystem, so moving
+    003 to a storage server (or deleting it) frees the number and the next
+    export re-issues it — two recordings wearing one path over time, and a
+    manifest that pinned `.../003` months ago silently resolves to the wrong
+    data. Demonstrated before the fix: 001,002,003 -> remove 003 -> allocator
+    returns 003.
+    """
+    from kairos_common import lifecycle_ledger
+
+    parent = tmp_path / "op_a" / "pick"
+    for name in ("001", "002", "003"):
+        (parent / name).mkdir(parents=True)
+
+    # 003 leaves the catalog (archived to a NAS): the directory is gone.
+    (parent / "003").rmdir()
+
+    # Without the ledger the number comes straight back.
+    assert _next_index_dir(parent).name == "003"
+    (parent / "003").rmdir()
+
+    # With it recorded, the number stays retired and the gap is preserved.
+    lifecycle_ledger.append(
+        tmp_path,
+        lifecycle_ledger.LedgerEntry(
+            event="archived", operator="op_a", task="pick", index="003"
+        ),
+    )
+    retired = lifecycle_ledger.retired_indices(tmp_path, "op_a", "pick")
+    assert _next_index_dir(parent, retired).name == "004"
+
+
+def test_export_consults_the_ledger_for_its_next_index(tmp_path) -> None:
+    """End to end: a real export after a departure must not reuse the number."""
+    from kairos_common import lifecycle_ledger
+
+    run_dir = tmp_path / "recorded" / "run_x"
+    run_dir.mkdir(parents=True)
+    (run_dir / "run_x_0.mcap").write_bytes(b"\x00")
+    (run_dir / "session.json").write_text(
+        json.dumps({"operator": "op_a", "task": "pick"}), encoding="utf-8"
+    )
+    (tmp_path / "op_a" / "pick" / "001").mkdir(parents=True)
+    lifecycle_ledger.append(
+        tmp_path,
+        lifecycle_ledger.LedgerEntry(
+            event="deleted", operator="op_a", task="pick", index="002"
+        ),
+    )
+
+    result = run_dataset_export(run_id="run_x", data_dir=tmp_path)
+
+    assert result["summary"]["index"] == "003"  # 002 is retired, not free

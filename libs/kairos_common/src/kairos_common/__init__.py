@@ -9,6 +9,7 @@ See ``docs/specs/ja/config.md`` for the canonical three-layer config design.
 
 from __future__ import annotations
 
+from kairos_common import lifecycle_ledger
 from kairos_common.app import REQUEST_ID_HEADER, create_app, error_response
 from kairos_common.bag_metadata import (
     TOPIC_SIGNATURE_ALGO,
@@ -97,5 +98,6 @@ __all__ = [
     "set_request_id",
     "signature_from_metadata",
     "topic_signature",
+    "lifecycle_ledger",
     "utc_now_iso8601",
 ]
