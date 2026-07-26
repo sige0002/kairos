@@ -18,7 +18,7 @@ import pytest
 import yaml
 from api_orchestrator import bag_import
 from fastapi.testclient import TestClient
-from kairos_common import Settings
+from kairos_common import ApiError, Settings
 from kairos_common.errors import ApiError
 
 
@@ -407,7 +407,8 @@ def test_move_never_deletes_what_it_did_not_import(tmp_path: Path) -> None:
     (source / "notes").mkdir()
     (source / "notes" / "calibration.md").write_text("hand-eye offsets\n")
 
-    bag = SimpleNamespace(path=source)
+    # `copied_names` is what copy_into_staging actually imported and verified.
+    bag = SimpleNamespace(path=source, copied_names=["bag_0.mcap", "metadata.yaml"])
     remaining = bag_import.remove_moved_source(bag)
 
     # The imported files are gone…
@@ -426,7 +427,8 @@ def test_move_removes_the_source_directory_when_it_held_only_the_bag(
     (source / "bag_0.mcap").write_bytes(b"x" * 32)
     (source / "metadata.yaml").write_text("rosbag2: {}\n", encoding="utf-8")
 
-    assert bag_import.remove_moved_source(SimpleNamespace(path=source)) == []
+    bag = SimpleNamespace(path=source, copied_names=["bag_0.mcap", "metadata.yaml"])
+    assert bag_import.remove_moved_source(bag) == []
     assert not source.exists()
 
 
@@ -450,3 +452,56 @@ def test_two_imports_in_the_same_second_get_different_run_ids(tmp_path: Path) ->
     # Both reservations exist, so neither import can adopt the other's staging.
     assert (recorded / bag_import.INCOMING_DIRNAME / first).is_dir()
     assert (recorded / bag_import.INCOMING_DIRNAME / second).is_dir()
+
+
+def test_move_ignores_a_file_that_appeared_during_the_copy(tmp_path: Path) -> None:
+    """Verified by a reliability review, 2026-07-27.
+
+    The copy and the delete each listed the source directory, minutes apart on
+    a multi-GB bag. A file written into the source in between was therefore
+    deleted having never been imported. `move` now deletes the set that was
+    actually copied and verified.
+    """
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "bag_0.mcap").write_bytes(b"x" * 32)
+    (source / "metadata.yaml").write_text("rosbag2: {}\n", encoding="utf-8")
+    bag = SimpleNamespace(path=source, copied_names=["bag_0.mcap", "metadata.yaml"])
+
+    # Arrives after the copy finished.
+    (source / "late_arrival.mcap").write_bytes(b"newer recording")
+
+    remaining = bag_import.remove_moved_source(bag)
+
+    assert remaining == ["late_arrival.mcap"]
+    assert (source / "late_arrival.mcap").read_bytes() == b"newer recording"
+
+
+def test_a_corrupted_staged_copy_is_caught_before_anything_is_deleted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`move` deletes the operator's only remaining copy, so the copy is
+    verified by read-back first — the standard the archive pipeline already
+    holds itself to."""
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "bag_0.mcap").write_bytes(b"y" * 4096)
+    (source / "metadata.yaml").write_text("rosbag2: {}\n", encoding="utf-8")
+    bag = SimpleNamespace(path=source, copied_names=[])
+    staging = tmp_path / "staging"
+
+    real_copy = bag_import._sha256_and_copy
+
+    def corrupt(src: Path, dst: Path):
+        digest, size = real_copy(src, dst)
+        dst.write_bytes(b"corrupted")  # something else wrote to the destination
+        return digest, size
+
+    monkeypatch.setattr(bag_import, "_sha256_and_copy", corrupt)
+
+    with pytest.raises(ApiError) as excinfo:
+        bag_import.copy_into_staging(bag, staging)
+
+    assert excinfo.value.code == "import_verify_failed"
+    # The operator's data is untouched — the point of verifying first.
+    assert (source / "bag_0.mcap").read_bytes() == b"y" * 4096

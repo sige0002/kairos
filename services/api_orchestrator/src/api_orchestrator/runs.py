@@ -40,6 +40,7 @@ from kairos_common import (
     ApiError,
     Compression,
     RecordingConfig,
+    lifecycle_ledger,
     utc_now_iso8601,
 )
 
@@ -1304,6 +1305,35 @@ class RunService:
             return None
         return payload
 
+    def _record_deletion(self, run: Run) -> None:
+        """Append this run's deletion to the lifecycle ledger.
+
+        Deliberately non-fatal, unlike the dataset paths. A recorded run has no
+        index number to protect from re-issue — the ledger's job here is purely
+        to answer "where did it go?", and refusing to delete a run because a log
+        line could not be written would trade a real capability for a record.
+        The failure is logged loudly instead.
+        """
+        try:
+            lifecycle_ledger.append(
+                self._data_dir,
+                lifecycle_ledger.LedgerEntry(
+                    event="deleted",
+                    operator="recorded",
+                    task="run",
+                    index=run.run_id,
+                    run_id=run.run_id,
+                    reason="run deleted",
+                    bytes=getattr(run, "bytes", None),
+                    message_count=getattr(run, "message_count", None),
+                ),
+            )
+        except OSError as exc:
+            logger.error(
+                "run deleted but NOT recorded in the lifecycle ledger",
+                extra={"run_id": run.run_id, "error": str(exc)},
+            )
+
     def delete(self, run_id: str, *, keep_reports: bool = False) -> None:
         """Delete a run: its recording directory + session.json and the row.
 
@@ -1325,6 +1355,16 @@ class RunService:
                 message="Cannot delete a run that is still recording; stop it first.",
                 details={"run_id": run_id, "state": run.state.value},
             )
+        # Record the departure BEFORE destroying anything. This is the endpoint
+        # the 2026-07-26 incident actually went through: a recording vanished
+        # and nobody could reconstruct whether it had been deleted or exported,
+        # because nothing here wrote anything down. The lifecycle ledger was
+        # built for exactly that question and initially covered only the
+        # exported catalog — the smaller, later, rarer tree. `keep_reports`
+        # marks the export path, which records its own departure, so only a
+        # real deletion is logged here.
+        if not keep_reports:
+            self._record_deletion(run)
         # Remove the run dir (best-effort; ignore_errors covers a missing dir,
         # e.g. a failed-start run that never created one).
         shutil.rmtree(self._recorded_dir / run_id, ignore_errors=True)

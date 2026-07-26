@@ -31,6 +31,7 @@ warning — see :func:`inspect_source`.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import shutil
@@ -50,6 +51,9 @@ logger = logging.getLogger(__name__)
 # Staging directory for in-flight imports, a sibling of the finalised runs.
 # Dot-prefixed so it sorts and globs out of the way of real run directories.
 INCOMING_DIRNAME = ".incoming"
+
+# Read size for the verified copy (matches the archive pipeline).
+_COPY_CHUNK = 4 * 1024 * 1024
 
 # Prefix for a generated run_id. Satisfies ``^[A-Za-z0-9_-]+$`` (the charset
 # mcap_utils.validate_run_id and the recorder both enforce) by construction,
@@ -79,6 +83,11 @@ class SourceBag:
     started_at: str | None
     ended_at: str | None
     bytes: int
+    # Filled in by copy_into_staging: the exact file names that were imported
+    # and verified. `move` deletes THIS set — not whatever a second listing of
+    # the source finds minutes later, which would sweep up a file dropped in
+    # during the copy that was never imported at all.
+    copied_names: list[str] = field(default_factory=list)
 
     @property
     def file_count(self) -> int:
@@ -437,12 +446,72 @@ def copy_into_staging(bag: SourceBag, staging: Path) -> int:
     # would paper over a lost reservation.
     staging.mkdir(parents=True, exist_ok=True)
     written = 0
+    copied: list[str] = []
     for child in sorted(bag.path.iterdir()):
         if not child.is_file():
             continue
-        shutil.copy2(child, staging / child.name)
-        written += child.stat().st_size
+        digest, size = _sha256_and_copy(child, staging / child.name)
+        _verify(staging / child.name, digest, size)
+        written += size
+        copied.append(child.name)
+    _fsync_dir(staging)
+    # The exact set that arrived. `move` deletes THIS, not whatever a second
+    # `iterdir()` finds minutes later: a file dropped into the source during a
+    # long copy would otherwise be deleted having never been imported.
+    bag.copied_names = copied
     return written
+
+
+def _sha256_and_copy(source: Path, target: Path) -> tuple[str, int]:
+    """Copy, hashing the same read that feeds the write; fsync before close.
+
+    Same contract as the archive pipeline's copy. `move` deletes the operator's
+    only remaining copy, so it has to be held to the standard archive already
+    is: an unverified copy followed by a delete is how both copies are lost.
+    """
+    digest = hashlib.sha256()
+    total = 0
+    with source.open("rb") as src, target.open("wb") as dst:
+        while chunk := src.read(_COPY_CHUNK):
+            digest.update(chunk)
+            dst.write(chunk)
+            total += len(chunk)
+        dst.flush()
+        os.fsync(dst.fileno())
+    shutil.copystat(source, target)
+    return digest.hexdigest(), total
+
+
+def _verify(written: Path, digest: str, size: int) -> None:
+    """Read the staged file back and compare. Raises ``ApiError`` on mismatch."""
+    actual = hashlib.sha256()
+    with written.open("rb") as handle:
+        while chunk := handle.read(_COPY_CHUNK):
+            actual.update(chunk)
+    if written.stat().st_size != size or actual.hexdigest() != digest:
+        raise ApiError(
+            status_code=500,
+            code="import_verify_failed",
+            message=(
+                f"{written.name} does not match its source after copying. "
+                "The source is untouched."
+            ),
+            details={"file": written.name},
+        )
+
+
+def _fsync_dir(path: Path) -> None:
+    """Persist the directory entries (fsync on the files is not enough)."""
+    try:
+        fd = os.open(str(path), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
 
 
 def remove_moved_source(bag: SourceBag) -> list[str]:
@@ -455,9 +524,8 @@ def remove_moved_source(bag: SourceBag) -> list[str]:
     which refuses a directory that still holds something; what survives is
     named in the return value rather than destroyed.
     """
-    for child in sorted(bag.path.iterdir()):
-        if child.is_file():
-            child.unlink(missing_ok=True)
+    for name in bag.copied_names or []:
+        (bag.path / name).unlink(missing_ok=True)
     remaining = sorted(p.name for p in bag.path.iterdir())
     if not remaining:
         bag.path.rmdir()
