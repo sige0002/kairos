@@ -458,22 +458,36 @@ test('search narrows the tree by task, operator, and batch seq (# optional)', as
   const box = screen.getByTestId('dataset-search');
 
   // Task substring.
+  // Filtering is debounced (the box stays instant, the catalog work settles),
+  // so every assertion below waits rather than reading the same tick.
   fireEvent.change(box, { target: { value: 'shelf' } });
+  await waitFor(() =>
+    expect(screen.getByTestId('dataset-count')).toHaveTextContent('showing 1 of 5'),
+  );
   expect(screen.getByTestId(shelfLeaf)).toBeInTheDocument();
   expect(screen.queryByTestId(kitchenTask)).toBeNull();
-  expect(screen.getByTestId('dataset-count')).toHaveTextContent('showing 1 of 5');
 
-  // Operator substring.
+  // Operator substring. Waiting on the count alone would be a trap here: the
+  // previous query also showed "1 of 5", so the assertion would pass on stale
+  // state before the debounce fired. Wait for what DISTINGUISHES the result.
   fireEvent.change(box, { target: { value: 'op_b' } });
-  expect(screen.getByTestId('dataset-count')).toHaveTextContent('showing 1 of 5');
   // Only KP_DIM_B survives -> kitchen_pick collapses to a single-condition leaf.
-  expect(screen.getByTestId(dimGroup)).toBeInTheDocument();
+  await waitFor(() => expect(screen.getByTestId(dimGroup)).toBeInTheDocument());
+  expect(screen.getByTestId('dataset-count')).toHaveTextContent('showing 1 of 5');
 
   // Batch seq, with and without '#' — both find seq 6 (KP_DIM_A + KP_DIM_B).
   fireEvent.change(box, { target: { value: '#6' } });
-  expect(screen.getByTestId('dataset-count')).toHaveTextContent('showing 2 of 5');
+  await waitFor(() =>
+    expect(screen.getByTestId('dataset-count')).toHaveTextContent('showing 2 of 5'),
+  );
+  fireEvent.change(box, { target: { value: 'nothing-matches-this' } });
+  await waitFor(() =>
+    expect(screen.getByTestId('dataset-count')).toHaveTextContent('showing 0 of 5'),
+  );
   fireEvent.change(box, { target: { value: '6' } });
-  expect(screen.getByTestId('dataset-count')).toHaveTextContent('showing 2 of 5');
+  await waitFor(() =>
+    expect(screen.getByTestId('dataset-count')).toHaveTextContent('showing 2 of 5'),
+  );
 });
 
 test('task-result facet narrows; unlabeled rows only pass "All"', async () => {
@@ -510,7 +524,7 @@ test('an all-hidden filter result explains itself instead of claiming "no datase
   await waitFor(() => expect(screen.getByTestId(shelfLeaf)).toBeInTheDocument());
 
   fireEvent.change(screen.getByTestId('dataset-search'), { target: { value: 'zzz-nomatch' } });
-  const empty = screen.getByTestId('dataset-list-empty');
+  const empty = await screen.findByTestId('dataset-list-empty');
   expect(empty.textContent).toContain('No datasets match');
   expect(empty.textContent).toContain('5 dataset(s) are hidden');
 });
@@ -680,29 +694,43 @@ test('episode search filters rows by index, #set, operator, and failure reason',
   );
   const box = screen.getByTestId('dataset-episode-search');
 
+  // The episode search is debounced too, so each step waits for the row set to
+  // settle rather than reading the same tick.
   // index NNN
   fireEvent.change(box, { target: { value: '002' } });
+  await waitFor(() =>
+    expect(screen.queryByTestId(`dataset-episode-row-${SHELF_A.dataset_dir}`)).toBeNull(),
+  );
   expect(screen.getByTestId(`dataset-episode-row-${KP_DIM_B.dataset_dir}`)).toBeInTheDocument();
-  expect(screen.queryByTestId(`dataset-episode-row-${SHELF_A.dataset_dir}`)).toBeNull();
 
   // operator
   fireEvent.change(box, { target: { value: 'op_b' } });
+  await waitFor(() =>
+    expect(screen.queryByTestId(`dataset-episode-row-${KP_DIM_A.dataset_dir}`)).toBeNull(),
+  );
   expect(screen.getByTestId(`dataset-episode-row-${KP_DIM_B.dataset_dir}`)).toBeInTheDocument();
-  expect(screen.queryByTestId(`dataset-episode-row-${KP_DIM_A.dataset_dir}`)).toBeNull();
 
   // set seq, # optional -> both KP_DIM rows (batch_seq 6)
   fireEvent.change(box, { target: { value: '#6' } });
-  expect(screen.getByTestId(`dataset-episode-row-${KP_DIM_A.dataset_dir}`)).toBeInTheDocument();
+  await waitFor(() =>
+    expect(
+      screen.getByTestId(`dataset-episode-row-${KP_DIM_A.dataset_dir}`),
+    ).toBeInTheDocument(),
+  );
   expect(screen.getByTestId(`dataset-episode-row-${KP_DIM_B.dataset_dir}`)).toBeInTheDocument();
 
   // failure reason
   fireEvent.change(box, { target: { value: 'grasp' } });
+  await waitFor(() =>
+    expect(screen.queryByTestId(`dataset-episode-row-${SHELF_A.dataset_dir}`)).toBeNull(),
+  );
   expect(screen.getByTestId(`dataset-episode-row-${KP_DIM_B.dataset_dir}`)).toBeInTheDocument();
-  expect(screen.queryByTestId(`dataset-episode-row-${SHELF_A.dataset_dir}`)).toBeNull();
 
   // A no-match search explains itself; the pinned Summary row survives it.
   fireEvent.change(box, { target: { value: 'zzz-none' } });
-  expect(screen.getByTestId('dataset-episode-search-empty')).toBeInTheDocument();
+  await waitFor(() =>
+    expect(screen.getByTestId('dataset-episode-search-empty')).toBeInTheDocument(),
+  );
   expect(screen.getByTestId('dataset-summary-row')).toBeInTheDocument();
 });
 
@@ -931,51 +959,69 @@ test('the search and the facets are addressable too', async () => {
   });
 });
 
-test('the episode table caps the rows it builds and states the boundary', async () => {
+test('the episode table pages rather than growing, and states the range', async () => {
   mockFetch({ list: bigCatalog(450) });
   renderWithClient(<DatasetsScreen />);
 
-  await waitFor(() => expect(screen.getByTestId('dataset-episode-overflow')).toBeInTheDocument());
+  await waitFor(() => expect(screen.getByTestId('dataset-episode-pager')).toBeInTheDocument());
   expect(episodeRowCount()).toBe(200);
-  expect(screen.getByTestId('dataset-episode-overflow')).toHaveTextContent(
-    'Showing 200 of 450 episodes',
+  expect(screen.getByTestId('dataset-episode-range')).toHaveTextContent(
+    '1–200 of 450 episodes',
   );
-  // The cap is a RENDER limit only — the manifest still covers every row.
+  expect(screen.getByTestId('dataset-episode-page')).toHaveTextContent('Page 1 / 3');
+  // Paging is a RENDER concern only — the manifest still covers every row.
   expect(screen.getByTestId('dataset-manifest-btn')).toHaveTextContent('Manifest (450)');
+  expect(screen.getByTestId('dataset-episode-prev')).toBeDisabled();
 
-  fireEvent.click(screen.getByTestId('dataset-episode-show-more'));
-  await waitFor(() => expect(episodeRowCount()).toBe(400));
-  // The last page offers exactly what remains, not a round number it can't fill.
-  expect(screen.getByTestId('dataset-episode-show-more')).toHaveTextContent('Show 50 more');
+  fireEvent.click(screen.getByTestId('dataset-episode-next'));
+  await waitFor(() =>
+    expect(screen.getByTestId('dataset-episode-range')).toHaveTextContent(
+      '201–400 of 450 episodes',
+    ),
+  );
+  // A page is always exactly one page — the table does not creep upward as an
+  // operator walks a large group.
+  expect(episodeRowCount()).toBe(200);
 
-  fireEvent.click(screen.getByTestId('dataset-episode-show-more'));
-  await waitFor(() => expect(episodeRowCount()).toBe(450));
-  // Everything is reachable, so there is no boundary left to state.
-  expect(screen.queryByTestId('dataset-episode-overflow')).toBeNull();
+  fireEvent.click(screen.getByTestId('dataset-episode-next'));
+  await waitFor(() =>
+    expect(screen.getByTestId('dataset-episode-range')).toHaveTextContent(
+      '401–450 of 450 episodes',
+    ),
+  );
+  expect(episodeRowCount()).toBe(50); // the last page holds what remains
+  expect(screen.getByTestId('dataset-episode-next')).toBeDisabled();
+
+  fireEvent.click(screen.getByTestId('dataset-episode-prev'));
+  await waitFor(() => expect(episodeRowCount()).toBe(200));
 });
 
-test('a catalog under the cap shows no overflow line at all', async () => {
+test('a catalog that fits on one page shows no pager at all', async () => {
   mockFetch({ list: LIST_RESPONSE });
   renderWithClient(<DatasetsScreen />);
 
   await waitFor(() => expect(screen.getByTestId(shelfLeaf)).toBeInTheDocument());
-  expect(screen.queryByTestId('dataset-episode-overflow')).toBeNull();
+  expect(screen.queryByTestId('dataset-episode-pager')).toBeNull();
 });
 
-test('a new query restarts the cap at one page', async () => {
+test('a new query returns to page one', async () => {
   mockFetch({ list: bigCatalog(450) });
   renderWithClient(<DatasetsScreen />);
 
-  await waitFor(() => expect(screen.getByTestId('dataset-episode-overflow')).toBeInTheDocument());
-  fireEvent.click(screen.getByTestId('dataset-episode-show-more'));
-  await waitFor(() => expect(episodeRowCount()).toBe(400));
+  await waitFor(() => expect(screen.getByTestId('dataset-episode-pager')).toBeInTheDocument());
+  fireEvent.click(screen.getByTestId('dataset-episode-next'));
+  await waitFor(() =>
+    expect(screen.getByTestId('dataset-episode-page')).toHaveTextContent('Page 2 / 3'),
+  );
 
-  // Every row matches "op_a", so this narrows nothing — but it IS a new query,
-  // and a limit raised on the previous one must not carry into it.
+  // Every row matches "op_a", so this narrows nothing — but page 2 of a
+  // different result set is not where the operator asked to be.
   fireEvent.change(screen.getByTestId('dataset-episode-search'), {
     target: { value: 'op_a' },
   });
-  await waitFor(() => expect(episodeRowCount()).toBe(200));
+  await waitFor(() =>
+    expect(screen.getByTestId('dataset-episode-page')).toHaveTextContent('Page 1 / 3'),
+  );
 });
 
 // ---- topic signature (2026-07-26 ML finding F1) ---------------------------

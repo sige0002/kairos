@@ -124,12 +124,13 @@ export interface DatasetsState {
   /** How many episodes match in the scope before the cap (>= episodeRows.length)
    *  — the honest denominator for the table's overflow line. */
   episodeMatchCount: number;
-  /** True when the cap is holding matches back (the overflow line shows). */
-  hasMoreEpisodes: boolean;
-  /** How many more rows the next "show more" would build. */
-  nextPageSize: number;
-  /** Raise the cap by one more page. */
-  showMoreEpisodes: () => void;
+  /** 1-based page currently shown (clamped into range). */
+  page: number;
+  /** Total pages for the current scope + search (>= 1, even when empty). */
+  pageCount: number;
+  /** Rows per page. */
+  pageSize: number;
+  goToPage: (page: number) => void;
   /** The summary the bottom pane shows when no episode is selected. */
   scope: ScopeSummary;
 
@@ -180,6 +181,21 @@ export interface DatasetsState {
   toast: string;
   toastNewDataset: () => void;
   toastBuild: () => void;
+}
+
+/** Milliseconds a search box may keep typing before the catalog is refiltered.
+ *  Long enough to swallow a fast typist's keystrokes, short enough that a pause
+ *  reads as "it kept up" rather than "it is thinking". */
+const SEARCH_DEBOUNCE_MS = 150;
+
+/** *value*, but only after it has stopped changing for *delay* ms. */
+function useDebounced<T>(value: T, delay: number): T {
+  const [settled, setSettled] = useState(value);
+  useEffect(() => {
+    const timer = setTimeout(() => setSettled(value), delay);
+    return () => clearTimeout(timer);
+  }, [value, delay]);
+  return settled;
 }
 
 const TOAST_MS = 2400;
@@ -235,7 +251,7 @@ export function useDatasetsState(): DatasetsState {
   );
   // How many episode rows the center table may build right now — see
   // EPISODE_PAGE_SIZE (the default scope is the WHOLE filtered catalog).
-  const [rowLimit, setRowLimit] = useState(EPISODE_PAGE_SIZE);
+  const [page, setPage] = useState(1);
 
   const selectedGroupKey = selectedGroupId
     ? groupKey(selectedGroupId.task, selectedGroupId.condition)
@@ -270,9 +286,16 @@ export function useDatasetsState(): DatasetsState {
 
   const operatorOptions = useMemo(() => distinctOperators(datasets), [datasets]);
 
+  // The box stays instant (`search` is the controlled value); the EXPENSIVE
+  // work — refiltering every row and rebuilding the tree — runs on the settled
+  // query. Without this, each keystroke re-ran both over the whole catalog and
+  // the UI fell 149 ms behind a typist at 10,000 episodes (40 ms at twelve).
+  const debouncedSearch = useDebounced(search, SEARCH_DEBOUNCE_MS);
+  const debouncedEpisodeSearch = useDebounced(episodeSearch, SEARCH_DEBOUNCE_MS);
+
   const filtered = useMemo(
-    () => filterEntries(datasets, { search, taskResultFilter, operatorFilter }),
-    [datasets, search, taskResultFilter, operatorFilter],
+    () => filterEntries(datasets, { search: debouncedSearch, taskResultFilter, operatorFilter }),
+    [datasets, debouncedSearch, taskResultFilter, operatorFilter],
   );
   const tree = useMemo(() => buildTaskTree(filtered, sort), [filtered, sort]);
 
@@ -340,22 +363,36 @@ export function useDatasetsState(): DatasetsState {
     [selectedGroup, scopeAggregate],
   );
   const matchedEpisodes = useMemo(
-    () => scopeEpisodes.filter((e) => episodeMatchesSearch(e, episodeSearch)),
-    [scopeEpisodes, episodeSearch],
+    () => scopeEpisodes.filter((e) => episodeMatchesSearch(e, debouncedEpisodeSearch)),
+    [scopeEpisodes, debouncedEpisodeSearch],
   );
-  // Anything that changes WHICH episodes are on screen restarts at page one —
-  // otherwise a limit raised to see the tail of one group would silently rebuild
-  // the next group at that size.
+  const pageCount = Math.max(1, Math.ceil(matchedEpisodes.length / EPISODE_PAGE_SIZE));
+  // Anything that changes WHICH episodes are on screen returns to page one —
+  // page 4 of a group that no longer has 800 rows is an empty table, and the
+  // operator did not ask to go there.
   useEffect(() => {
-    setRowLimit(EPISODE_PAGE_SIZE);
-  }, [selectedGroupKey, episodeSearch, search, taskResultFilter, operatorFilter]);
+    setPage(1);
+  }, [
+    selectedGroupKey,
+    debouncedEpisodeSearch,
+    debouncedSearch,
+    taskResultFilter,
+    operatorFilter,
+  ]);
+  // Clamp rather than trust: a page can fall out of range when rows disappear
+  // under an already-open view (a delete, a refetch), and reading past the end
+  // must never render a blank table.
+  const currentPage = Math.min(Math.max(1, page), pageCount);
   const episodeRows = useMemo(
     () =>
-      matchedEpisodes.length > rowLimit ? matchedEpisodes.slice(0, rowLimit) : matchedEpisodes,
-    [matchedEpisodes, rowLimit],
+      matchedEpisodes.slice(
+        (currentPage - 1) * EPISODE_PAGE_SIZE,
+        currentPage * EPISODE_PAGE_SIZE,
+      ),
+    [matchedEpisodes, currentPage],
   );
-  const showMoreEpisodes = useCallback(
-    () => setRowLimit((limit) => limit + EPISODE_PAGE_SIZE),
+  const goToPage = useCallback(
+    (next: number) => setPage(Math.max(1, next)),
     [],
   );
 
@@ -590,9 +627,10 @@ export function useDatasetsState(): DatasetsState {
     scopeEpisodes,
     episodeRows,
     episodeMatchCount: matchedEpisodes.length,
-    hasMoreEpisodes: matchedEpisodes.length > episodeRows.length,
-    nextPageSize: Math.min(EPISODE_PAGE_SIZE, matchedEpisodes.length - episodeRows.length),
-    showMoreEpisodes,
+    page: currentPage,
+    pageCount,
+    pageSize: EPISODE_PAGE_SIZE,
+    goToPage,
     scope,
     detail: detailQuery.data ?? null,
     detailLoading: selected !== null && detailQuery.isPending,

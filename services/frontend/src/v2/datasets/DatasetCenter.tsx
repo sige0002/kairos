@@ -225,29 +225,44 @@ function EpisodeRow({ entry, state }: { entry: DatasetEntry; state: DatasetsStat
 }
 
 /** The render cap's honest boundary (2026-07-26): says exactly how many rows are
- *  built out of how many matched, and extends the list on demand. Never a silent
- *  truncation — the catalog has to stay fully reachable however large it grows,
- *  so this is a "show more", not a "the rest is hidden". */
-function EpisodeOverflow({ state }: { state: DatasetsState }) {
+ *  built out of how many matched, and pages through the rest. Never a silent
+ *  truncation — the catalog stays fully reachable however large it grows — and
+ *  a page is always exactly one page, so the table's size does not creep upward
+ *  as an operator walks a large group. */
+function EpisodePager({ state }: { state: DatasetsState }) {
+  const { page, pageCount, pageSize, episodeMatchCount, goToPage } = state;
+  const first = (page - 1) * pageSize + 1;
+  const last = Math.min(page * pageSize, episodeMatchCount);
   return (
     <div
-      data-testid="dataset-episode-overflow"
+      data-testid="dataset-episode-pager"
       className="flex flex-wrap items-center gap-x-2 gap-y-1.5 border-t border-gray-100 bg-gray-50 px-[18px] py-2.5"
     >
-      <span className="text-[11.5px] text-gray-500">
-        Showing {formatCount(state.episodeRows.length)} of{' '}
-        {formatCount(state.episodeMatchCount)} episodes.
+      <span className="text-[11.5px] text-gray-500" data-testid="dataset-episode-range">
+        {formatCount(first)}–{formatCount(last)} of {formatCount(episodeMatchCount)} episodes
       </span>
-      <button
-        type="button"
-        data-testid="dataset-episode-show-more"
-        onClick={state.showMoreEpisodes}
-        className="rounded-chip border border-teal-200 px-2 py-0.5 text-[11px] font-bold text-teal-700 hover:bg-teal-50"
-      >
-        Show {formatCount(state.nextPageSize)} more
-      </button>
-      <span className="text-[11px] text-gray-400">
-        or narrow it down with the search above, or a task on the left.
+      <span className="ml-auto flex items-center gap-1.5">
+        <button
+          type="button"
+          data-testid="dataset-episode-prev"
+          onClick={() => goToPage(page - 1)}
+          disabled={page <= 1}
+          className="rounded-chip border border-gray-200 px-2 py-0.5 text-[11px] font-bold text-gray-600 hover:bg-white disabled:cursor-default disabled:opacity-40"
+        >
+          ← Prev
+        </button>
+        <span className="text-[11px] text-gray-500" data-testid="dataset-episode-page">
+          Page {formatCount(page)} / {formatCount(pageCount)}
+        </span>
+        <button
+          type="button"
+          data-testid="dataset-episode-next"
+          onClick={() => goToPage(page + 1)}
+          disabled={page >= pageCount}
+          className="rounded-chip border border-teal-200 px-2 py-0.5 text-[11px] font-bold text-teal-700 hover:bg-teal-50 disabled:cursor-default disabled:border-gray-200 disabled:text-gray-400 disabled:opacity-60"
+        >
+          Next →
+        </button>
       </span>
     </div>
   );
@@ -292,7 +307,7 @@ export function DatasetCenter({ state }: { state: DatasetsState }) {
               {episodeRows.map((entry) => (
                 <EpisodeRow key={entry.dataset_dir} entry={entry} state={state} />
               ))}
-              {state.hasMoreEpisodes && <EpisodeOverflow state={state} />}
+              {state.pageCount > 1 && <EpisodePager state={state} />}
             </>
           )}
         </div>
