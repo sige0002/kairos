@@ -24,6 +24,7 @@ from kairos_common import ApiError, ValidationTemplate
 
 from dora_runner.bagflow_flow import DEFAULT_FLOW, list_flows
 from dora_runner.bagflow_runtime import DoraEndpoint, bagflow_available
+from dora_runner.dataset_archive import run_dataset_archive
 from dora_runner.dataset_export import run_dataset_export
 from dora_runner.fast_validation import run_fast_validation
 from dora_runner.full_validation import run_full_validation
@@ -201,6 +202,45 @@ async def _run_dataset_export(
 ) -> dict:
     return await asyncio.to_thread(
         run_dataset_export, run_id=job.run_id, data_dir=data_dir
+    )
+
+
+async def _run_dataset_archive(
+    job: JobRecord, store: RunnerStore, data_dir: Path
+) -> dict:
+    """``dataset_archive``: copy out, verify, then delete the source.
+
+    Runs on a thread because it is long, blocking I/O over (usually) a network
+    filesystem — the event loop must stay responsive so the job's own status
+    can be polled while multi-GB bags copy.
+    """
+    dataset_dir = _dataset_dir_param(job.params)
+    if not dataset_dir:
+        raise ApiError(
+            status_code=400,
+            code="dataset_dir_required",
+            message="dataset_archive needs a dataset_dir param.",
+            details={"pipeline": "dataset_archive"},
+        )
+    destination = job.params.get("destination")
+    if not isinstance(destination, str) or not destination.strip():
+        raise ApiError(
+            status_code=400,
+            code="destination_required",
+            message="dataset_archive needs a destination param.",
+            details={"pipeline": "dataset_archive"},
+        )
+    return await asyncio.to_thread(
+        run_dataset_archive,
+        data_dir=data_dir,
+        dataset_dir=dataset_dir,
+        destination=destination,
+        # NOT job.params: the allow-list is deployment configuration, and a
+        # job parameter is caller-controlled. POST /jobs forwards params
+        # verbatim and neither service authenticates, so accepting it here let
+        # any LAN caller pass archive_roots="/" and have the runner copy a
+        # dataset anywhere writable and then delete the original. Verified.
+        reason=job.params.get("reason"),
     )
 
 
@@ -399,6 +439,25 @@ _SIGNAL_REPORT_SCHEMA = {
     },
 }
 _NO_PARAMS_SCHEMA = {"type": "object", "properties": {}}
+
+# dataset_archive takes the SOURCE (data-relative) and the DESTINATION. The
+# destination is allow-listed by KAIROS_ARCHIVE_ROOTS, which is why it is a
+# plain string here rather than an x-suggest enum: the legal values are a
+# deployment setting, served by the orchestrator's archive-config endpoint.
+_DATASET_ARCHIVE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "dataset_dir": {
+            "type": "string",
+            "description": "Data-relative '<operator>/<task>/<NNN>' to archive.",
+        },
+        "destination": {
+            "type": "string",
+            "description": "Absolute destination path, inside an archive root.",
+        },
+    },
+    "required": ["dataset_dir", "destination"],
+}
 
 
 def loss_report_schema(config: LossReportConfig) -> dict:
@@ -603,6 +662,21 @@ def build_default_registry(
             params_schema=_NO_PARAMS_SCHEMA,
             outputs=["data/<operator>/<task>/<NNN>/"],
             runner=_run_dataset_export,
+        )
+    )
+    registry.register(
+        RegisteredPipeline(
+            id="dataset_archive",
+            name="Dataset archive",
+            description=(
+                "COPY an exported dataset to an allow-listed destination, verify "
+                "it byte-for-byte (sha256), then remove the source. The source is "
+                "only ever deleted after the destination verifies."
+            ),
+            params_schema=_DATASET_ARCHIVE_SCHEMA,
+            required_inputs=["dataset_dir", "destination"],
+            outputs=["<destination>/"],
+            runner=_run_dataset_archive,
         )
     )
     registry.register(

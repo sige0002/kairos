@@ -201,6 +201,26 @@ export interface DatasetsResponse {
 }
 
 /**
+ * GET /api/v1/datasets/archive/config — whether a dataset may be archived off
+ * this machine, and to which roots. `enabled: false` (KAIROS_ARCHIVE_ROOTS
+ * unset) means the feature is not offered: the UI renders no archive control
+ * at all rather than one whose only possible outcome is a 400.
+ */
+export interface ArchiveConfig {
+  enabled: boolean;
+  /** Absolute paths a destination must sit inside. Empty when disabled. */
+  roots: string[];
+}
+
+/** 202 body of POST /api/v1/datasets/{op}/{task}/{index}/archive. The copy runs
+ *  as a job (multi-GB over a NAS), so this carries the id to poll. */
+export interface DatasetArchiveResponse {
+  job_id: string;
+  pipeline: string;
+  destination: string;
+}
+
+/**
  * GET /api/v1/datasets/{operator}/{task}/{index} — one exported dataset plus
  * its on-disk sidecars: the post-export counterpart of RunDetail, so the
  * Datasets tab can show the same inspection view as Recordings. All sidecar

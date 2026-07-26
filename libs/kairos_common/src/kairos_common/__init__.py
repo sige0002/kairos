@@ -11,6 +11,12 @@ from __future__ import annotations
 
 from kairos_common import lifecycle_ledger
 from kairos_common.app import REQUEST_ID_HEADER, create_app, error_response
+from kairos_common.archive_paths import (
+    ARCHIVE_ROOTS_SEPARATOR,
+    archive_enabled,
+    parse_archive_roots,
+    resolve_archive_destination,
+)
 from kairos_common.bag_metadata import (
     TOPIC_SIGNATURE_ALGO,
     TopicSignature,
@@ -56,6 +62,7 @@ from kairos_common.validation_config import (
 )
 
 __all__ = [
+    "ARCHIVE_ROOTS_SEPARATOR",
     "ApiError",
     "Compression",
     "DEFAULT_MAX_ARRAY",
@@ -82,6 +89,7 @@ __all__ = [
     "ValidationConfig",
     "ValidationRequiredTopic",
     "ValidationTemplate",
+    "archive_enabled",
     "create_app",
     "error_response",
     "extract_value",
@@ -91,9 +99,11 @@ __all__ = [
     "load_recording_config",
     "load_stream_config",
     "load_validation_template",
+    "parse_archive_roots",
     "parse_path",
     "read_bag_metadata",
     "reset_request_id",
+    "resolve_archive_destination",
     "resolve_config_path",
     "set_request_id",
     "signature_from_metadata",

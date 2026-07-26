@@ -141,9 +141,14 @@ interface MockOpts {
   list?: DatasetsResponse;
   listStatus?: number;
   details?: Record<string, DatasetDetail>;
+  /** GET /datasets/archive/config — absent means the feature is off. */
+  archive?: { enabled: boolean; roots: string[] };
+  /** Terminal state the polled archive job reports (default succeeded). */
+  archiveJobState?: string;
 }
 
 let deletedUrls: string[] = [];
+let archivePosts: { url: string; body: Record<string, unknown> }[] = [];
 
 function mockFetch(opts: MockOpts) {
   const details = opts.details ?? {};
@@ -152,6 +157,34 @@ function mockFetch(opts: MockOpts) {
     if ((init as RequestInit | undefined)?.method === 'DELETE') {
       deletedUrls.push(url);
       return Promise.resolve(new Response(null, { status: 204 }));
+    }
+    if (url.endsWith('/datasets/archive/config')) {
+      return Promise.resolve(
+        jsonResponse(opts.archive ?? { enabled: false, roots: [] }),
+      );
+    }
+    if (url.endsWith('/archive') && (init as RequestInit | undefined)?.method === 'POST') {
+      const body = JSON.parse(String((init as RequestInit).body)) as Record<string, unknown>;
+      archivePosts.push({ url, body });
+      return Promise.resolve(
+        jsonResponse(
+          {
+            job_id: 'job_archive',
+            pipeline: 'dataset_archive',
+            destination: body.destination,
+          },
+          202,
+        ),
+      );
+    }
+    if (url.includes('/jobs/job_archive/status')) {
+      return Promise.resolve(
+        jsonResponse({
+          job_id: 'job_archive',
+          pipeline: 'dataset_archive',
+          state: opts.archiveJobState ?? 'succeeded',
+        }),
+      );
     }
     if (url.includes('/jobs')) {
       return Promise.resolve(
@@ -180,6 +213,7 @@ function mockFetch(opts: MockOpts) {
 beforeEach(() => {
   setApiBase('/api/v1');
   deletedUrls = [];
+  archivePosts = [];
   useUiStore.setState({ activeTab: 'datasets' });
   // The screen seeds its selection/filters from the query string and mirrors
   // them back (see url.ts), and jsdom shares one location across a file — so
@@ -382,12 +416,12 @@ test('Delete confirms in a modal, calls DELETE, clears selection, and toasts', a
   fireEvent.click(await screen.findByTestId(`dataset-episode-row-${SHELF_A.dataset_dir}`));
   await waitFor(() => expect(screen.getByTestId('dataset-stats')).toBeInTheDocument());
 
-  fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+  fireEvent.click(screen.getByRole('button', { name: /Delete permanently/ }));
   const dialog = await screen.findByRole('dialog');
   expect(dialog).toHaveTextContent('op_a/shelf_restock/001');
   expect(deletedUrls).toHaveLength(0);
 
-  fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Delete permanently' }));
   await waitFor(() =>
     expect(deletedUrls[0]).toContain('/datasets/op_a/shelf_restock/001'),
   );
@@ -407,7 +441,7 @@ test('cancelling the delete modal leaves the episode alone', async () => {
   fireEvent.click(await screen.findByTestId(`dataset-episode-row-${SHELF_A.dataset_dir}`));
   await waitFor(() => expect(screen.getByTestId('dataset-stats')).toBeInTheDocument());
 
-  fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+  fireEvent.click(screen.getByRole('button', { name: /Delete permanently/ }));
   const dialog = await screen.findByRole('dialog');
   fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
   await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
@@ -757,7 +791,7 @@ test('narrowing the catalog cannot leave Delete pointed at an off-screen episode
   fireEvent.click(screen.getByTestId(shelfLeaf));
   fireEvent.click(await screen.findByTestId(`dataset-episode-row-${SHELF_A.dataset_dir}`));
   await waitFor(() => expect(screen.getByTestId('dataset-stats')).toBeInTheDocument());
-  expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: /Delete permanently/ })).toBeInTheDocument();
 
   // Narrow to something that excludes the selected episode.
   fireEvent.change(screen.getByTestId('dataset-search'), {
@@ -766,7 +800,7 @@ test('narrowing the catalog cannot leave Delete pointed at an off-screen episode
 
   // The detail pane and its Delete are gone; the scope summary takes over.
   await waitFor(() => expect(screen.queryByTestId('dataset-stats')).toBeNull());
-  expect(screen.queryByRole('button', { name: 'Delete' })).toBeNull();
+  expect(screen.queryByRole('button', { name: /Delete permanently/ })).toBeNull();
   expect(screen.getByTestId('dataset-scope-summary')).toBeInTheDocument();
 
   // Clearing the search restores the selection rather than losing it.
@@ -1100,4 +1134,147 @@ test('a URL whose own filter excludes the linked episode does not resurrect its 
   // The link isn't discarded either — relaxing the facet brings the episode back.
   fireEvent.click(screen.getByTestId('dataset-filter-all'));
   await waitFor(() => expect(screen.getByTestId('dataset-stats')).toBeInTheDocument());
+});
+
+// ---- archive vs delete (2026-07-26) ---------------------------------------
+// Archiving is the only control that moves data off this machine, and it sits
+// next to the one that destroys it. These pin the two things that make that
+// safe: the feature is not offered unless the deployment configured a root,
+// and the two controls never read alike.
+
+const ARCHIVE_ON = { enabled: true, roots: ['/mnt/nas/datasets'] };
+
+async function selectShelfEpisode() {
+  await waitFor(() => expect(screen.getByTestId(shelfLeaf)).toBeInTheDocument());
+  fireEvent.click(screen.getByTestId(shelfLeaf));
+  fireEvent.click(await screen.findByTestId(`dataset-episode-row-${SHELF_A.dataset_dir}`));
+  await waitFor(() => expect(screen.getByTestId('dataset-stats')).toBeInTheDocument());
+}
+
+test('no archive control at all when the deployment configured no roots', async () => {
+  mockFetch({ list: LIST_RESPONSE, details: { [detailUrlFor(SHELF_A)]: detailFor(SHELF_A) } });
+  renderWithClient(<DatasetsScreen />);
+  await selectShelfEpisode();
+
+  // Not disabled, not a 400-on-click: absent.
+  expect(screen.queryByTestId('archive-dataset-btn')).toBeNull();
+  // Delete is still offered, and still states what it does.
+  expect(screen.getByTestId('delete-dataset-btn')).toHaveTextContent('Delete permanently');
+});
+
+test('the two departures state their own consequence and never read alike', async () => {
+  mockFetch({
+    list: LIST_RESPONSE,
+    details: { [detailUrlFor(SHELF_A)]: detailFor(SHELF_A) },
+    archive: ARCHIVE_ON,
+  });
+  renderWithClient(<DatasetsScreen />);
+  await selectShelfEpisode();
+
+  const archive = await screen.findByTestId('archive-dataset-btn');
+  const remove = screen.getByTestId('delete-dataset-btn');
+  expect(archive).toHaveTextContent('keeps the data');
+  expect(remove).toHaveTextContent('Delete permanently');
+  expect(archive.textContent).not.toEqual(remove.textContent);
+});
+
+test('the archive dialog composes the destination from an allow-listed root', async () => {
+  mockFetch({
+    list: LIST_RESPONSE,
+    details: { [detailUrlFor(SHELF_A)]: detailFor(SHELF_A) },
+    archive: ARCHIVE_ON,
+  });
+  renderWithClient(<DatasetsScreen />);
+  await selectShelfEpisode();
+  fireEvent.click(screen.getByTestId('archive-dataset-btn'));
+
+  const dialog = await screen.findByTestId('archive-dialog');
+  // The root is shown as a boundary, not typed by hand…
+  expect(screen.getByTestId('archive-root')).toHaveTextContent('/mnt/nas/datasets');
+  // …the subpath defaults to the catalog's own coordinates…
+  expect(screen.getByTestId('archive-subpath')).toHaveValue('op_a/shelf_restock/001');
+  // …and the resulting absolute path is echoed back before committing.
+  expect(screen.getByTestId('archive-destination')).toHaveTextContent(
+    '/mnt/nas/datasets/op_a/shelf_restock/001',
+  );
+  // The consequence is stated, in order.
+  expect(dialog).toHaveTextContent('verified');
+  expect(dialog).toHaveTextContent('Only after it verifies is the copy here removed.');
+});
+
+test('archiving posts the destination + reason and drops the dataset once verified', async () => {
+  mockFetch({
+    list: LIST_RESPONSE,
+    details: { [detailUrlFor(SHELF_A)]: detailFor(SHELF_A) },
+    archive: ARCHIVE_ON,
+  });
+  renderWithClient(<DatasetsScreen />);
+  await selectShelfEpisode();
+  fireEvent.click(screen.getByTestId('archive-dataset-btn'));
+  await screen.findByTestId('archive-dialog');
+
+  fireEvent.change(screen.getByTestId('archive-subpath'), {
+    target: { value: 'cold/2026/shelf_001' },
+  });
+  fireEvent.change(screen.getByTestId('archive-reason'), {
+    target: { value: 'moved to the NAS' },
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'Copy, verify, then remove' }));
+
+  await waitFor(() => expect(archivePosts).toHaveLength(1));
+  expect(archivePosts[0]!.url).toContain('/datasets/op_a/shelf_restock/001/archive');
+  expect(archivePosts[0]!.body).toEqual({
+    destination: '/mnt/nas/datasets/cold/2026/shelf_001',
+    reason: 'moved to the NAS',
+  });
+  // The success wording says what actually happened, in the order it happened.
+  expect(
+    await screen.findByText(/verified at the destination, then removed here/),
+  ).toBeInTheDocument();
+});
+
+test('a failed archive says the dataset is still here', async () => {
+  mockFetch({
+    list: LIST_RESPONSE,
+    details: { [detailUrlFor(SHELF_A)]: detailFor(SHELF_A) },
+    archive: ARCHIVE_ON,
+    archiveJobState: 'failed',
+  });
+  renderWithClient(<DatasetsScreen />);
+  await selectShelfEpisode();
+  fireEvent.click(screen.getByTestId('archive-dataset-btn'));
+  await screen.findByTestId('archive-dialog');
+  fireEvent.click(screen.getByRole('button', { name: 'Copy, verify, then remove' }));
+
+  expect(await screen.findByText(/still here/)).toBeInTheDocument();
+});
+
+test('the delete dialog names archive as the way to keep the data, and takes a reason', async () => {
+  mockFetch({
+    list: LIST_RESPONSE,
+    details: { [detailUrlFor(SHELF_A)]: detailFor(SHELF_A) },
+    archive: ARCHIVE_ON,
+  });
+  renderWithClient(<DatasetsScreen />);
+  await selectShelfEpisode();
+  fireEvent.click(screen.getByTestId('delete-dataset-btn'));
+
+  const dialog = await screen.findByTestId('delete-dialog');
+  expect(dialog).toHaveTextContent('destroyed');
+  expect(dialog).toHaveTextContent('To keep the data');
+  expect(dialog).toHaveTextContent('Archive');
+
+  fireEvent.change(screen.getByTestId('delete-reason'), {
+    target: { value: 'teleop aborted' },
+  });
+  // Scoped to the dialog: the toolbar button carries the same label by design.
+  fireEvent.click(
+    within(dialog.closest('[role="dialog"]') ?? dialog).getByRole('button', {
+      name: 'Delete permanently',
+    }),
+  );
+
+  await waitFor(() => expect(deletedUrls).toHaveLength(1));
+  // The reason travels to the ledger, which is all that will remain.
+  expect(deletedUrls[0]).toContain('reason=teleop%20aborted');
 });

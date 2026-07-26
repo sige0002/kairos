@@ -10,6 +10,7 @@
 import { ErrorMessage } from '../../components/ErrorMessage';
 import { Badge, Button, Modal, TrashIcon } from '../../components/ui';
 import { EpisodeLabelChips } from '../episodeChips';
+import { ArchiveDialog } from './ArchiveDialog';
 import { DatasetInspection } from './DatasetInspection';
 import { formatBytes, formatCount, formatWhen } from './data';
 import type { DatasetsState } from './useDatasetsState';
@@ -34,13 +35,31 @@ export function DatasetDetail({ state }: { state: DatasetsState }) {
             <span className="text-xs text-gray-400">
               exported {formatWhen(selected.exported_at)}
             </span>
+            {/* The two departures sit side by side and must never read alike:
+                archive KEEPS the data elsewhere, delete DESTROYS it. Each label
+                carries its own consequence rather than relying on the icon or
+                the colour to carry it. */}
+            {state.archiveEnabled && (
+              <button
+                type="button"
+                data-testid="archive-dataset-btn"
+                onClick={state.openArchive}
+                disabled={state.archiving}
+                title="Copy to an archive root, verify it, then remove it from this machine"
+                className="inline-flex shrink-0 items-center gap-1 rounded-control border border-teal-200 px-2.5 py-1 text-xs font-semibold text-teal-700 hover:bg-teal-50 disabled:opacity-50"
+              >
+                {state.archiving ? 'Archiving…' : 'Archive (keeps the data)'}
+              </button>
+            )}
             <button
               type="button"
+              data-testid="delete-dataset-btn"
               onClick={state.requestDelete}
+              title="Destroy the recording. Irreversible — use Archive to keep it."
               className="inline-flex shrink-0 items-center gap-1 rounded-control border border-red-200 px-2.5 py-1 text-xs font-semibold text-red-700 hover:bg-red-50"
             >
               <TrashIcon />
-              Delete
+              Delete permanently
             </button>
           </>
         )}
@@ -101,29 +120,54 @@ export function DatasetDetail({ state }: { state: DatasetsState }) {
       <Modal
         open={state.confirmingDelete}
         onClose={state.cancelDelete}
-        title="Delete dataset"
+        title="Delete dataset permanently"
         footer={
           <>
             <Button variant="ghost" onClick={state.cancelDelete} disabled={state.deleting}>
               Cancel
             </Button>
             <Button variant="danger" onClick={state.confirmDelete} disabled={state.deleting}>
-              {state.deleting ? 'Deleting…' : 'Delete'}
+              {state.deleting ? 'Deleting…' : 'Delete permanently'}
             </Button>
           </>
         }
       >
-        Permanently delete{' '}
-        <span className="font-mono text-gray-800">
-          {selected ? `${selected.operator}/${selected.task}/${selected.index}` : ''}
-        </span>
-        ? The exported files are removed from disk. This cannot be undone.
-        {state.deleteError && (
-          <div className="mt-2">
-            <ErrorMessage error={state.deleteError} />
-          </div>
-        )}
+        <div data-testid="delete-dialog" className="flex flex-col gap-3">
+          <p className="text-[13px] leading-relaxed text-gray-600">
+            <span className="font-mono text-gray-800">
+              {selected ? `${selected.operator}/${selected.task}/${selected.index}` : ''}
+            </span>{' '}
+            is <span className="font-semibold text-red-700">destroyed</span> — the
+            recording is removed from disk and cannot be recovered.
+            {state.archiveEnabled && (
+              <>
+                {' '}
+                To keep the data, close this and use{' '}
+                <span className="font-semibold text-teal-700">Archive</span> instead.
+              </>
+            )}
+          </p>
+          <label className="flex flex-col gap-1">
+            <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+              Reason{' '}
+              <span className="font-normal normal-case text-gray-400">(optional)</span>
+            </span>
+            <input
+              data-testid="delete-reason"
+              value={state.departureReason}
+              onChange={(e) => state.setDepartureReason(e.target.value)}
+              placeholder="e.g. teleop aborted, unusable"
+              className="rounded-control border border-gray-200 bg-white px-2 py-1.5 text-[12.5px] text-gray-700"
+            />
+            <span className="text-[11px] text-gray-400">
+              Kept in the lifecycle ledger — the only record that will remain.
+            </span>
+          </label>
+          {state.deleteError && <ErrorMessage error={state.deleteError} />}
+        </div>
       </Modal>
+
+      <ArchiveDialog state={state} />
     </div>
   );
 }

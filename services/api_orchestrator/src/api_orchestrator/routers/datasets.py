@@ -26,21 +26,39 @@ export so the dataset detail view can keep showing them.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import shutil
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request, Response
-from kairos_common import ApiError, JobState, topic_signature
-from pydantic import BaseModel
+from fastapi import APIRouter, BackgroundTasks, Depends, Request, Response
+from kairos_common import (
+    ARCHIVE_ROOTS_SEPARATOR,
+    ApiError,
+    JobState,
+    archive_enabled,
+    lifecycle_ledger,
+    parse_archive_roots,
+    resolve_archive_destination,
+    topic_signature,
+)
+from pydantic import BaseModel, Field
 
 from api_orchestrator import datasets_index
 from api_orchestrator.deps import get_run_service
 from api_orchestrator.models import DatasetDetail, RunState, RunTopic, TopicQos
 from api_orchestrator.runs import RunService
 
+logger = logging.getLogger("kairos")
+
 router = APIRouter(prefix="/api/v1/datasets", tags=["datasets"])
+
+# How long the background bookkeeping waits for an archive job. Deliberately
+# hours, not the client's 120 s default: this is a multi-GB copy plus a full
+# read-back over a network filesystem, and giving up early would only orphan
+# the bookkeeping — the job itself would keep running.
+_ARCHIVE_TIMEOUT_S = 6 * 60 * 60
 
 # Top-level dirs under data_dir that are NOT operators (they hold staging /
 # reports), so the dataset scan must skip them.
@@ -54,6 +72,17 @@ _COMPONENT_RE = re.compile(r"^[^/\\\x00]+$")
 # A run_id read from dataset.json is joined into data/report/<pipeline>/<run_id>;
 # guard its charset (mirrors the recorder's RUN_ID_PATTERN) before any join.
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+class DatasetArchiveRequest(BaseModel):
+    """Body of ``POST /api/v1/datasets/{op}/{task}/{index}/archive``."""
+
+    # Absolute path INSIDE one of KAIROS_ARCHIVE_ROOTS; validated server-side
+    # (kairos_common.archive_paths) — never trusted as given.
+    destination: str
+    # Free text kept in the ledger. Archiving is not an accident, but "why did
+    # this leave?" is the question a ledger without it cannot answer.
+    reason: str | None = Field(default=None, max_length=500)
 
 
 class DatasetExportRequest(BaseModel):
@@ -410,6 +439,7 @@ async def delete_dataset(
     operator: str,
     task: str,
     index: str,
+    reason: str | None = None,
     service: RunService = Depends(get_run_service),
 ) -> Response:
     """Delete one exported dataset — the post-export ``DELETE /runs/{id}``.
@@ -420,10 +450,34 @@ async def delete_dataset(
     any now-empty ``<task>`` / ``<operator>`` parent dirs. Same path rules as
     the detail view: 400 on an unsafe component, 404 when the directory or its
     ``dataset.json`` is missing. Returns 204 on success.
+
+    The departure is recorded in the lifecycle ledger first (optional ``reason``
+    query param), so "where did 011 go?" stays answerable and the retired
+    ``NNN`` is never handed to a later export.
     """
     data_dir = Path(request.app.state.settings.data_dir)
     dataset_dir, meta = _resolve_dataset_dir(data_dir, operator, task, index)
     run_id = meta.get("run_id")
+    # Record the departure BEFORE destroying anything. The two orderings fail
+    # differently and only one of them fails safely: append-then-delete can
+    # leave a ledger entry for a delete that then failed (a retired number and
+    # a visible gap — recoverable, and the ledger's docstring calls a gap
+    # information), while delete-then-append can lose the record entirely and
+    # silently make NNN reusable, which is the exact bug the ledger exists to
+    # prevent. append() raises on failure, so nothing is destroyed if the
+    # record cannot be written.
+    _append_ledger(
+        data_dir,
+        lifecycle_ledger.LedgerEntry(
+            event="deleted",
+            operator=operator,
+            task=task,
+            index=index,
+            run_id=_opt_str(run_id),
+            reason=(reason or None),
+            **_ledger_provenance(dataset_dir, meta),
+        ),
+    )
     try:
         shutil.rmtree(dataset_dir)
     except OSError as exc:
@@ -463,6 +517,185 @@ async def delete_dataset(
             for pipeline_dir in report_root.iterdir():
                 shutil.rmtree(pipeline_dir / run_id, ignore_errors=True)
     return Response(status_code=204)
+
+
+def _ledger_provenance(dataset_dir: Path, meta: dict[str, Any]) -> dict[str, Any]:
+    """The identifying facts a ledger entry carries forward from the sidecar.
+
+    Once the directory is gone the ledger line is all that is left, so it keeps
+    the topic signature (which embodiment this was — see ``bag_metadata``) plus
+    size and message count. Derived through the same helper the catalog uses, so
+    a legacy export with no signature in its sidecar still gets one.
+    """
+    fields = _topic_fields(dataset_dir, meta)
+    return {
+        "topics_hash": fields.get("topics_hash"),
+        "topic_count": fields.get("topic_count"),
+        "bytes": meta.get("bytes") if isinstance(meta.get("bytes"), int) else None,
+        "message_count": (
+            meta.get("message_count")
+            if isinstance(meta.get("message_count"), int)
+            else None
+        ),
+    }
+
+
+def _append_ledger(data_dir: Path, entry: lifecycle_ledger.LedgerEntry) -> None:
+    """Append a departure, turning a write failure into a loud 500.
+
+    :func:`lifecycle_ledger.append` raises deliberately — a departure that
+    cannot be recorded must not proceed quietly, because the cost is a reusable
+    ``NNN`` and two recordings that later share one path.
+    """
+    try:
+        lifecycle_ledger.append(data_dir, entry)
+    except OSError as exc:
+        raise ApiError(
+            status_code=500,
+            code="ledger_write_failed",
+            message=(
+                "Could not record this dataset's departure in the lifecycle "
+                "ledger, so nothing was removed."
+            ),
+            details={
+                "operator": entry.operator,
+                "task": entry.task,
+                "index": entry.index,
+                "error": str(exc),
+            },
+        ) from exc
+
+
+def _archive_roots(request: Request) -> list[Path]:
+    """The deployment's configured archive roots (empty = feature off)."""
+    return parse_archive_roots(getattr(request.app.state.settings, "archive_roots", ""))
+
+
+@router.get("/archive/config")
+async def archive_config(request: Request) -> dict[str, Any]:
+    """Whether archiving is offered here, and to which roots.
+
+    The UI asks this before showing any archive control: with
+    ``KAIROS_ARCHIVE_ROOTS`` unset the answer is ``enabled: false`` and the
+    control is not rendered at all, rather than offering a button whose only
+    possible outcome is a 400.
+    """
+    roots = _archive_roots(request)
+    return {"enabled": archive_enabled(roots), "roots": [str(r) for r in roots]}
+
+
+async def _finish_archive(
+    *,
+    dora_client: Any,
+    data_dir: Path,
+    job_id: str,
+    operator: str,
+    task: str,
+    index: str,
+) -> None:
+    """Await the archive job, then drop the catalog row.
+
+    Runs AFTER the response (FastAPI background task): the copy is multi-GB over
+    a network filesystem, so the request that started it must not wait.
+
+    The lifecycle ledger is deliberately NOT written here. The job is what
+    deletes the source, so the job records the departure first (see
+    ``dataset_archive._departure_entry``) — recording from this side would
+    reopen the window where the data is gone and nothing says where it went,
+    which is the whole reason the ledger exists.
+
+    Every failure path logs rather than raises: the response is long gone, and
+    the job's own status still carries the real outcome for the UI. A failed
+    archive leaves the dataset exactly where it was, still in the catalog.
+    """
+    try:
+        outcome = await dora_client.await_job(job_id, timeout=_ARCHIVE_TIMEOUT_S)
+    except Exception as exc:  # noqa: BLE001 - background task, nothing to raise to
+        logger.error(
+            "archive job could not be awaited",
+            extra={"job_id": job_id, "error": str(exc)},
+        )
+        return
+    if outcome.get("state") != JobState.succeeded.value:
+        logger.warning(
+            "archive job did not succeed; dataset left in place",
+            extra={"job_id": job_id, "state": outcome.get("state")},
+        )
+        return
+    datasets_index.remove_rows(
+        data_dir,
+        lambda r: (
+            r.get("operator") == operator
+            and r.get("task") == task
+            and r.get("index") == index
+        ),
+    )
+    logger.info(
+        "dataset archived",
+        extra={"operator": operator, "task": task, "index": index},
+    )
+
+
+@router.post("/{operator}/{task}/{index}/archive", status_code=202)
+async def archive_dataset(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    operator: str,
+    task: str,
+    index: str,
+    body: DatasetArchiveRequest,
+) -> dict[str, Any]:
+    """Start archiving one dataset to an allow-listed destination (202).
+
+    Copies the dataset to ``destination``, verifies it byte-for-byte, and only
+    then removes the source; on success the dataset leaves the catalog and the
+    departure is recorded in the lifecycle ledger. Returns immediately with a
+    ``job_id`` to poll (``GET /api/v1/jobs/{job_id}/status``) — a multi-GB copy
+    over a NAS cannot be held open on a request.
+
+    400 when archiving is unconfigured or the destination is outside every
+    configured root; 404 when the dataset does not exist.
+    """
+    data_dir = Path(request.app.state.settings.data_dir)
+    dataset_dir, meta = _resolve_dataset_dir(data_dir, operator, task, index)
+    roots = _archive_roots(request)
+    # Raises 400 (not configured / not absolute / outside the roots) before the
+    # job — and therefore before a single byte is read.
+    destination = resolve_archive_destination(body.destination, roots)
+
+    dora_client = request.app.state.dora_runner_client
+    created = await dora_client.create_job(
+        {
+            "run_id": _opt_str(meta.get("run_id")) or "",
+            "pipeline": "dataset_archive",
+            "params": {
+                "dataset_dir": f"{operator}/{task}/{index}",
+                "destination": str(destination),
+                # Passed explicitly so the runner enforces the SAME allow-list
+                # this request was checked against, even if the two services'
+                # environments ever drift.
+                "archive_roots": ARCHIVE_ROOTS_SEPARATOR.join(str(r) for r in roots),
+                # Recorded by the job itself, together with the departure it
+                # is about to make (see dataset_archive._departure_entry).
+                "reason": body.reason or None,
+            },
+        }
+    )
+    job_id = str(created["job_id"])
+    background_tasks.add_task(
+        _finish_archive,
+        dora_client=dora_client,
+        data_dir=data_dir,
+        job_id=job_id,
+        operator=operator,
+        task=task,
+        index=index,
+    )
+    return {
+        "job_id": job_id,
+        "pipeline": "dataset_archive",
+        "destination": str(destination),
+    }
 
 
 def _run_exists(service: RunService, run_id: str) -> bool:

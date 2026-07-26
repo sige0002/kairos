@@ -185,7 +185,9 @@ test('bulk delete: count, listed run_ids, and list refresh after a mocked succes
   excludeRow(1); // ep-a (older, #1)
   excludeRow(2); // ep-b (newer, #2)
   const bulk = await screen.findByTestId('review-bulk-delete');
-  expect(bulk).toHaveTextContent('Delete excluded (2)');
+  // The label carries the consequence (2026-07-26): "excluded" is a reversible
+  // label, this button destroys the files.
+  expect(bulk).toHaveTextContent('Delete excluded from disk (2)');
 
   fireEvent.click(bulk);
   const list = await screen.findByTestId('review-bulk-list');

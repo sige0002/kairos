@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -96,12 +97,30 @@ def ledger_path(data_dir: Path) -> Path:
 
 
 def append(data_dir: Path, entry: LedgerEntry) -> None:
-    """Append one entry. Raises ``OSError`` — a departure that cannot be
-    recorded must fail loudly, or the number would be quietly reusable."""
+    """Append one entry, durably. Raises ``OSError`` — a departure that cannot
+    be recorded must fail loudly, or the number would be quietly reusable.
+
+    The write is ``fsync``\ ed before returning, and so is the directory that
+    holds the file. The caller's next act is to delete the data this line
+    describes: without the flush, a power loss can keep the removal and lose
+    the record, which is exactly the state that frees the index number again.
+    Buffered durability is not durability when the very next step is
+    destructive.
+    """
     path = ledger_path(data_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(entry.to_json(), ensure_ascii=False) + "\n"
     with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(entry.to_json(), ensure_ascii=False) + "\n")
+        handle.write(line)
+        handle.flush()
+        os.fsync(handle.fileno())
+    # The file's own fsync does not persist the directory ENTRY when the ledger
+    # is created by this very call.
+    fd = os.open(str(path.parent), os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def read_all(data_dir: Path) -> list[dict[str, Any]]:

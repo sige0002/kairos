@@ -20,6 +20,9 @@ export const queryKeys = {
   configOptions: ['config', 'options'] as const,
   configRobot: (robot: string) => ['config', 'robot', robot] as const,
   datasets: ['datasets'] as const,
+  // Whether this deployment offers archiving at all, and to which roots
+  // (KAIROS_ARCHIVE_ROOTS). Read before any archive control is rendered.
+  archiveConfig: ['datasets', 'archive', 'config'] as const,
   dataset: (operator: string, task: string, index: string) =>
     ['datasets', 'detail', operator, task, index] as const,
   // Advisory retention candidates (old, un-exported recordings) for the Review

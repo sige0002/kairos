@@ -26,9 +26,16 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiDelete, apiGet } from '../../api/client';
+import { apiDelete, apiGet, apiPost } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
-import type { DatasetDetail, DatasetEntry, DatasetsResponse } from '../../api/types';
+import type {
+  ArchiveConfig,
+  DatasetArchiveResponse,
+  DatasetDetail,
+  DatasetEntry,
+  DatasetsResponse,
+  JobStatus,
+} from '../../api/types';
 import {
   ANY_OPERATOR,
   EPISODE_PAGE_SIZE,
@@ -144,6 +151,31 @@ export interface DatasetsState {
   confirmDelete: () => void;
   deleting: boolean;
   deleteError: Error | null;
+  /** Free-text reason kept in the lifecycle ledger (optional, both flows). */
+  departureReason: string;
+  setDepartureReason: (s: string) => void;
+
+  // ---- archive ----------------------------------------------------------
+  // Archiving copies the dataset to an allow-listed path, verifies it, and
+  // only then removes it here. `archiveEnabled` is false when the deployment
+  // set no roots — the control is then not rendered at all.
+  archiveEnabled: boolean;
+  archiveRoots: string[];
+  archiving: boolean;
+  archiveOpen: boolean;
+  openArchive: () => void;
+  cancelArchive: () => void;
+  /** Chosen root (defaults to the first) + the subpath under it. */
+  archiveRoot: string;
+  setArchiveRoot: (root: string) => void;
+  archiveSubpath: string;
+  setArchiveSubpath: (path: string) => void;
+  /** The absolute destination the two fields add up to (shown before sending). */
+  archiveDestination: string;
+  confirmArchive: () => void;
+  archiveError: Error | null;
+  /** Terminal state of the running archive job, or null when none is running. */
+  archiveJobState: string | null;
 
   toast: string;
   toastNewDataset: () => void;
@@ -151,6 +183,9 @@ export interface DatasetsState {
 }
 
 const TOAST_MS = 2400;
+
+/** Job states that end the archive poll (mirrors features/inspect's TERMINAL). */
+const ARCHIVE_TERMINAL = new Set(['succeeded', 'failed', 'canceled']);
 
 /** A selected group's identity: the (task, condition) pair itself, kept apart
  *  from the composed `groupKey` string so each half survives a URL round-trip
@@ -177,6 +212,12 @@ export function useDatasetsState(): DatasetsState {
   // that reconciled against the filter.
   const [selectedDir, setSelectedDir] = useState<string | null>(seed.datasetDir);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [departureReason, setDepartureReason] = useState('');
+  const [archiveOpen, setArchiveOpen] = useState(false);
+  const [archiveRoot, setArchiveRoot] = useState('');
+  const [archiveSubpath, setArchiveSubpath] = useState('');
+  const [archiveJobId, setArchiveJobId] = useState<string | null>(null);
+  const [archiveJobState, setArchiveJobState] = useState<string | null>(null);
   const [toast, setToast] = useState('');
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -438,12 +479,75 @@ export function useDatasetsState(): DatasetsState {
     enabled: selected !== null,
   });
 
+  // Capability first: with no roots configured the archive control never
+  // renders (honesty rule — do not offer what cannot run).
+  const archiveConfigQuery = useQuery({
+    queryKey: queryKeys.archiveConfig,
+    queryFn: ({ signal }) => apiGet<ArchiveConfig>('/datasets/archive/config', { signal }),
+  });
+  const archiveRoots = useMemo(
+    () => archiveConfigQuery.data?.roots ?? [],
+    [archiveConfigQuery.data],
+  );
+  const archiveEnabled = (archiveConfigQuery.data?.enabled ?? false) && archiveRoots.length > 0;
+
+  const effectiveRoot = archiveRoot || archiveRoots[0] || '';
+  // Default subpath mirrors the catalog layout, so an archive tree stays
+  // navigable by the same <operator>/<task>/<NNN> coordinates.
+  const defaultSubpath = selected
+    ? `${selected.operator}/${selected.task}/${selected.index}`
+    : '';
+  const subpath = archiveSubpath || defaultSubpath;
+  const archiveDestination = effectiveRoot
+    ? `${effectiveRoot.replace(/\/+$/, '')}/${subpath.replace(/^\/+/, '')}`
+    : '';
+
+  const archiveMutation = useMutation({
+    mutationFn: (entry: DatasetEntry) =>
+      apiPost<DatasetArchiveResponse>(
+        `/datasets/${encodeURIComponent(entry.operator)}/${encodeURIComponent(
+          entry.task,
+        )}/${encodeURIComponent(entry.index)}/archive`,
+        { destination: archiveDestination, reason: departureReason || null },
+      ),
+    onSuccess: (res) => {
+      setArchiveJobId(res.job_id);
+      setArchiveOpen(false);
+      showToast('Archiving — copying, then verifying before anything is removed');
+    },
+  });
+
+  // Poll the copy job. The dataset only leaves the catalog once the job has
+  // SUCCEEDED, so the list is refetched then and not before.
+  useQuery({
+    queryKey: queryKeys.job(archiveJobId ?? ''),
+    queryFn: ({ signal }) =>
+      apiGet<JobStatus>(`/jobs/${encodeURIComponent(archiveJobId ?? '')}/status`, { signal }),
+    enabled: archiveJobId !== null,
+    refetchInterval: (q) => {
+      const state = q.state.data?.state;
+      if (!state || !ARCHIVE_TERMINAL.has(state)) return 1500;
+      setArchiveJobState(state);
+      setArchiveJobId(null);
+      if (state === 'succeeded') {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.datasets });
+        setSelectedDir(null);
+        setDepartureReason('');
+        showToast('Archived — verified at the destination, then removed here');
+      } else {
+        showToast(`Archive ${state} — the dataset is still here`);
+      }
+      return false;
+    },
+  });
+
   const deleteMutation = useMutation({
     mutationFn: (entry: DatasetEntry) =>
       apiDelete(
         `/datasets/${encodeURIComponent(entry.operator)}/${encodeURIComponent(
           entry.task,
-        )}/${encodeURIComponent(entry.index)}`,
+        )}/${encodeURIComponent(entry.index)}` +
+          (departureReason ? `?reason=${encodeURIComponent(departureReason)}` : ''),
       ),
     onSuccess: (_data, entry) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.datasets });
@@ -452,7 +556,8 @@ export function useDatasetsState(): DatasetsState {
       });
       setSelectedDir(null);
       setConfirmingDelete(false);
-      showToast('Dataset deleted');
+      setDepartureReason('');
+      showToast('Dataset deleted — recorded in the lifecycle ledger');
     },
   });
 
@@ -504,6 +609,24 @@ export function useDatasetsState(): DatasetsState {
     },
     deleting: deleteMutation.isPending,
     deleteError: deleteMutation.isError ? deleteMutation.error : null,
+    departureReason,
+    setDepartureReason,
+    archiveEnabled,
+    archiveRoots,
+    archiving: archiveMutation.isPending || archiveJobId !== null,
+    archiveOpen,
+    openArchive: () => setArchiveOpen(selected !== null),
+    cancelArchive: () => setArchiveOpen(false),
+    archiveRoot: effectiveRoot,
+    setArchiveRoot,
+    archiveSubpath: subpath,
+    setArchiveSubpath,
+    archiveDestination,
+    confirmArchive: () => {
+      if (selected) archiveMutation.mutate(selected);
+    },
+    archiveError: archiveMutation.isError ? archiveMutation.error : null,
+    archiveJobState,
     toast,
     toastNewDataset: () => showToast('New dataset is a Phase 2 feature'),
     toastBuild: () => showToast('Building datasets requires the Phase 2 recipe model'),
