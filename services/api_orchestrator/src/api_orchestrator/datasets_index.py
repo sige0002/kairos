@@ -239,19 +239,27 @@ def list_from_index(data_dir: Path) -> list[dict[str, Any]] | None:
         rows = read_rows(data_dir)
         if rows is None:
             return None
-        # Drop rows whose dataset is no longer on disk. Archiving and deleting
-        # both remove the row as a separate step from removing the files, and
-        # the orchestrator can die in between — after which the catalog would
-        # keep advertising a dataset that has left, and every action offered on
-        # it (validate, loss report, archive again) would fail on a missing
-        # directory. The tree is the ground truth this module already defers to;
-        # this is the same rule applied on read.
-        live = [r for r in rows if _dataset_present(data_dir, r)]
-        if len(live) != len(rows):
-            _atomic_write(index_path(data_dir), live)
-            rows = live
+        # Hide rows whose dataset is no longer on disk, WITHOUT rewriting the
+        # catalog. Archiving and deleting remove the files and the row as
+        # separate steps and the orchestrator can die in between, after which
+        # the catalog would keep advertising a dataset that has left and every
+        # action offered on it would fail on a missing directory. The tree is
+        # the ground truth this module already defers to, so a read applies the
+        # same rule — but only to what it serves.
+        #
+        # Deliberately not persisted. `is_file()` returning false does not
+        # prove a dataset left: an unmounted data volume looks identical, and
+        # one GET would then empty the catalog. A read that quietly destroys
+        # state with no operator and no log line is the exact shape of the
+        # incident this module's ledger exists to prevent. Reconciling the file
+        # is `rebuild`'s job, which an operator invokes.
+        # Backfill sees the WHOLE catalog: it persists what it heals, so handing
+        # it a filtered list would delete the hidden rows through the back door
+        # — which is how the first version of this filter turned into a
+        # destructive read without saying so.
         backfill_topic_signature(data_dir, rows)
-    out = [to_list_row(r, data_dir) for r in rows]
+        visible = [r for r in rows if _dataset_present(data_dir, r)]
+    out = [to_list_row(r, data_dir) for r in visible]
     out.sort(key=lambda d: (d["operator"], d["task"], d["index"]))
     return out
 

@@ -439,5 +439,7 @@ def test_a_row_whose_dataset_is_gone_is_dropped_on_read(tmp_path: Path) -> None:
     listed = datasets_index.list_from_index(data_dir)
 
     assert [r["index"] for r in listed] == ["001"]
-    # The stale row is not merely hidden — it is gone from the catalog file.
-    assert [r["index"] for r in datasets_index.read_rows(data_dir)] == ["001"]
+    # Hidden, NOT deleted: `is_file()` returning false does not prove the
+    # dataset left — an unmounted volume looks the same, and one GET would then
+    # empty the catalog. Reconciling the file is `rebuild`'s job.
+    assert [r["index"] for r in datasets_index.read_rows(data_dir)] == ["001", "002"]
