@@ -129,14 +129,15 @@
 共通の実行機構（ジョブごとの実体化・タイムアウト・後始末・成果物）は `bagflow_pipeline.py` にあり、
 両パイプラインはそこへ「どのフローを・どう要約するか」だけを渡す。
 
-```
-config/<robot>/flows/<flow>.yml   ← 運用者が書く（＝bagflow の flow.yml そのもの）
-   │  実体化（bag/report 注入・${KAIROS_*} 展開・path 解決）
-   ▼
-data/report/full_validation/<run_id>/flow/flow.yml
-   │  bagflow run --no-attach --name <job_id>（自前 dora coordinator 上で dataflow 生成・実行）
-   ▼
-report.json ──アダプタ（bagflow_summary.py）──► summary.json（pass/fail）
+```mermaid
+flowchart TB
+  A["config/&lt;robot&gt;/flows/&lt;flow&gt;.yml<br/>運用者が書く（＝bagflow の flow.yml そのもの）"]
+  B["data/report/full_validation/&lt;run_id&gt;/flow/flow.yml"]
+  C["report.json"]
+  D["summary.json（pass / fail）"]
+  A -->|"実体化: bag/report 注入・${KAIROS_*} 展開・path 解決"| B
+  B -->|"bagflow run --no-attach --name &lt;job_id&gt;<br/>（自前 dora coordinator 上で dataflow 生成・実行）"| C
+  C -->|"アダプタ bagflow_summary.py"| D
 ```
 
 ### フローと config の関係
@@ -195,6 +196,12 @@ bagflow は「事実」だけを報告する（ノードごとの `ok`・エッ�
    （`KAIROS_DORA_CONTROL_PORT` 6112 / `KAIROS_DORA_DAEMON_PORT` 53390 /
    `KAIROS_DORA_DAEMON_LISTEN_PORT` 53391）。同梱 bagflow CLI は `DORA_COORDINATOR_ADDR/PORT` で
    そこへ向く（`VENDOR.md`）。サービス停止時は自分の coordinator を `dora destroy` する。
+   **ready の定義は「ポートが開く」ではなく「dataflow を start できる」**。coordinator は bind した
+   瞬間から TCP を受けるが、**daemon が coordinator に登録し終わるまで `dora start` は
+   `no unnamed daemon connections` で失敗する**（実測でこの窓は存在する）。起動時は
+   `dora check`（= `system status`。daemon 未登録なら exit 1）が通るまで待ってから ready にする。
+   これを待たないと**サービス再起動直後の 1 本目の検証ジョブが必ず失敗する**（`/readyz` は 200 を
+   返しているのに、である）。
 2. **`shm_size` が必須**。dora はノード間メッセージを全て `/dev/shm` に置き、**Docker 既定の 64MB では
    枯渇したノードがログを 1 行も残さずに死ぬ**。compose は `shm_size: 2gb`（`DORA_RUNNER_SHM_SIZE`）。
 3. **タイムアウトは 3 段**（短い順に、診断が濃い層が先に鳴る）: `bagflow run --timeout`

@@ -227,6 +227,19 @@ class DoraStack:
             )
         finally:
             log.close()
+        if not self._wait_daemon_registered():
+            # The coordinator answers as soon as it binds, but a dataflow cannot
+            # start until the DAEMON has registered with it — `dora start` fails
+            # with "no unnamed daemon connections" in that window (measured: the
+            # coordinator is reachable ~2 polls before the daemon registers).
+            # Readiness therefore means "a dataflow can start", not "the port
+            # accepts a connection", or the first job after every restart dies.
+            logger.error(
+                "dora daemon did not register with the coordinator",
+                extra={"port": self.endpoint.control_port, "log": str(log_path)},
+            )
+            self.stop()
+            return False
         logger.info(
             "dora stack up",
             extra={
@@ -255,6 +268,22 @@ class DoraStack:
             if any(p.poll() is not None for p in self._procs):
                 return False
             time.sleep(0.1)
+        return False
+
+    def _wait_daemon_registered(self) -> bool:
+        """Block until ``dora check`` reports a registered daemon.
+
+        ``dora check`` (alias of ``system status``) exits non-zero while the
+        daemon has not connected — it prints ``Daemon: Not running`` even with a
+        healthy coordinator — and 0 once a dataflow could actually be started.
+        """
+        deadline = time.monotonic() + _STACK_READY_TIMEOUT_S
+        while time.monotonic() < deadline:
+            if _run_dora(["check", *self.endpoint.cli_args]).returncode == 0:
+                return True
+            if any(p.poll() is not None for p in self._procs):
+                return False
+            time.sleep(0.2)
         return False
 
     def stop(self) -> None:

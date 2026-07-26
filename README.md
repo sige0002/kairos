@@ -12,20 +12,50 @@ organized around this "source of truth."
 
 ## Architecture
 
+**1 folder = 1 container.** Responsibilities are split across processes so that heavy work
+(decoding, validation) never bleeds into recording and monitoring.
+
+```mermaid
+flowchart TB
+  ROBOT["ROS 2 Robot / Sim"] --> TOPICS(["ROS 2 Topics (DDS)"])
+
+  subgraph live["live path — ROS 2 containers (rclpy)"]
+    REC["rosbag2_recorder<br/>selected topics → MCAP"]
+    MON["topic_monitor<br/>Hz / latency / loss / bandwidth<br/>(never decodes)"]
+    PROBE["topic_probe<br/>numeric-field plots<br/>(decoding is isolated here)"]
+    WEB["webrtc_streamer<br/>low-latency preview"]
+  end
+
+  subgraph post["post-recording path"]
+    ORC["api_orchestrator<br/>job / state / config hub"]
+    DR["dora_runner<br/>validation &amp; conversion<br/>(bundled bagflow + dora)"]
+  end
+
+  FE["frontend<br/>Vite + React + TS"]
+  MCAP[("/data/recorded/&lt;run_id&gt;/*.mcap<br/>= the source of truth")]
+  OUT[("/data/report/, /data/&lt;operator&gt;/&lt;task&gt;/<br/>reports &amp; datasets")]
+
+  TOPICS --> REC & MON & PROBE & WEB
+  REC --> MCAP
+  MCAP --> DR --> OUT
+  FE <-->|"REST / SSE / WebRTC"| ORC
+  ORC <--> REC & MON & PROBE & WEB
+  ORC <-->|"POST /jobs"| DR
+  WEB -.->|"media goes direct"| FE
 ```
-              ROS 2 Robot / Sim  ──►  ROS 2 Topics
-                                        │
-     ┌──────────────┬────────────┬──────┼────────────────────────┐
-     ▼              ▼            ▼       ▼                        ▼
-webrtc_streamer topic_monitor topic_probe rosbag2_recorder  (selected topics)
- (live video)   (live monitoring) (numeric plots) ──► MCAP  /data/recorded/run_xxxx.mcap ◄─ canonical
-     │              │            │        │
-     ▼              ▼            ▼        ▼  (after recording)
-   Browser  ◄────  api_orchestrator  ──►  dora_runner ──► report / converted dataset
-                  (job & state hub)        (validation & conversion pipeline)
-                         ▲
-                         │ REST / WebSocket / SSE
-                      frontend (Vite + React + TS)
+
+Post-recording validation is contained **entirely inside the dora_runner container** (a bundled
+bagflow flow run on its own dora coordinator; see the
+[dora_runner spec](docs/specs/en/dora_runner.md)):
+
+```mermaid
+flowchart LR
+  J["POST /api/v1/jobs"] --> API["dora_runner API"]
+  API --> PIPE["bagflow_pipeline<br/>materialize · timeout · cleanup"]
+  FLOW[/"flow definition (YAML)<br/>bundled or config/&lt;robot&gt;/flows/"/] --> PIPE
+  PIPE -->|"bagflow run"| CO["dora coordinator/daemon<br/>127.0.0.1:6112 loopback"]
+  CO --> NODES["check nodes (Rust)<br/>topic-presence / topic-rate<br/>decode / blur / brightness<br/>freeze / stamp-gap"]
+  NODES --> RPT["report.json"] --> SUM["summary.json<br/>pass / fail"]
 ```
 
 ## Service composition
@@ -37,7 +67,7 @@ webrtc_streamer topic_monitor topic_probe rosbag2_recorder  (selected topics)
 | [topic_probe](docs/specs/en/topic_probe.md) | A generic probe that live-plots **numeric fields** of selected topics. Decoding is **isolated** to this service so it doesn't affect recording or monitoring. |
 | [webrtc_streamer](docs/specs/en/webrtc_streamer.md) | Low-latency camera **preview** (ROS 2 image → browser). Not a recording path. |
 | [api_orchestrator](docs/specs/en/api_orchestrator.md) | The single API hub. Handles job lifecycle, state, configuration, and result aggregation. |
-| [dora_runner](docs/specs/en/dora_runner.md) | Post-recording **validation & conversion** pipeline (dora-based). Enabled: `fast_validation` / `dataset_export` / `loss_report` / `video_check`. |
+| [dora_runner](docs/specs/en/dora_runner.md) | Post-recording **validation & conversion** pipeline. Validation runs as a bundled **bagflow flow on real dora**. Enabled: `fast_validation` / `full_validation` / `dataset_export` / `loss_report` / `video_check` / `signal_report`. |
 | [frontend](docs/specs/en/frontend.md) | A backend-driven Web UI (UI labels in English). Role tabs (Console v2): Collect / Review / Datasets / Validation / Monitor / Settings. |
 
 ## Specification docs

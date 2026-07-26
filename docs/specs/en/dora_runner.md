@@ -135,14 +135,15 @@ directory's `VENDOR.md`). The shared execution machinery (per-job materializatio
 artifacts) lives in `bagflow_pipeline.py`; each pipeline supplies only *which flow to run* and *how to
 summarize it*.
 
-```
-config/<robot>/flows/<flow>.yml   ← written by the operator (= a bagflow flow.yml verbatim)
-   │  materialization (bag/report injection, ${KAIROS_*} expansion, path resolution)
-   ▼
-data/report/full_validation/<run_id>/flow/flow.yml
-   │  bagflow run --no-attach --name <job_id> (generates + runs a dataflow on our own dora coordinator)
-   ▼
-report.json ──adapter (bagflow_summary.py)──► summary.json (pass/fail)
+```mermaid
+flowchart TB
+  A["config/&lt;robot&gt;/flows/&lt;flow&gt;.yml<br/>authored by the operator (= a bagflow flow.yml)"]
+  B["data/report/full_validation/&lt;run_id&gt;/flow/flow.yml"]
+  C["report.json"]
+  D["summary.json (pass / fail)"]
+  A -->|"materialize: inject bag/report · expand ${KAIROS_*} · resolve paths"| B
+  B -->|"bagflow run --no-attach --name &lt;job_id&gt;<br/>(generates and runs the dataflow on our own coordinator)"| C
+  C -->|"adapter bagflow_summary.py"| D
 ```
 
 ### How a flow relates to config
@@ -209,6 +210,12 @@ logs' location in `details` — and no summary.json is written, so the run stays
    `KAIROS_DORA_DAEMON_LISTEN_PORT` 53391). The bundled bagflow CLI targets them via
    `DORA_COORDINATOR_ADDR/PORT` (see `VENDOR.md`). On shutdown the service runs `dora destroy` against its
    own coordinator.
+   **Ready means "a dataflow can start", not "the port accepts a connection".** The coordinator answers
+   from the moment it binds, but `dora start` fails with `no unnamed daemon connections` until the
+   **daemon has registered** with it — that window is real (measured). Startup therefore waits until
+   `dora check` (alias of `system status`; exit 1 while the daemon is unregistered) succeeds. Without
+   that wait the **first validation job after every service restart fails**, while `/readyz` is already
+   returning 200.
 2. **`shm_size` is mandatory.** dora places every inter-node message in `/dev/shm`, and **with Docker's
    64 MB default a node that runs out is killed without writing a single log line**. compose sets
    `shm_size: 2gb` (`DORA_RUNNER_SHM_SIZE`).

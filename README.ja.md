@@ -10,20 +10,49 @@ ROS 2 のロボットデータを **収録・監視・検証・変換** する�
 
 ## アーキテクチャ
 
+**1 フォルダ = 1 コンテナ**。責務ごとにプロセスを分け、重い処理（デコード・検証）が
+収録と監視に波及しないようにしています。
+
+```mermaid
+flowchart TB
+  ROBOT["ROS 2 Robot / Sim"] --> TOPICS(["ROS 2 Topics (DDS)"])
+
+  subgraph live["ライブ経路 — ROS 2 コンテナ (rclpy)"]
+    REC["rosbag2_recorder<br/>選択トピック → MCAP"]
+    MON["topic_monitor<br/>Hz/遅延/ロス/帯域<br/>（デコードしない）"]
+    PROBE["topic_probe<br/>数値フィールドのプロット<br/>（decode はここに隔離）"]
+    WEB["webrtc_streamer<br/>低遅延プレビュー"]
+  end
+
+  subgraph post["収録後の経路"]
+    ORC["api_orchestrator<br/>ジョブ・状態・設定のハブ"]
+    DR["dora_runner<br/>検証・変換<br/>（同梱 bagflow + dora）"]
+  end
+
+  FE["frontend<br/>Vite + React + TS"]
+  MCAP[("/data/recorded/&lt;run_id&gt;/*.mcap<br/>＝ 正本")]
+  OUT[("/data/report/, /data/&lt;operator&gt;/&lt;task&gt;/<br/>レポート・データセット")]
+
+  TOPICS --> REC & MON & PROBE & WEB
+  REC --> MCAP
+  MCAP --> DR --> OUT
+  FE <-->|"REST / SSE / WebRTC"| ORC
+  ORC <--> REC & MON & PROBE & WEB
+  ORC <-->|"POST /jobs"| DR
+  WEB -.->|"映像は直接"| FE
 ```
-              ROS 2 Robot / Sim  ──►  ROS 2 Topics
-                                        │
-     ┌──────────────┬────────────┬──────┼────────────────────────┐
-     ▼              ▼            ▼       ▼                        ▼
-webrtc_streamer topic_monitor topic_probe rosbag2_recorder  (選択されたトピック)
- (ライブ映像)    (ライブ監視)  (数値プロット) ──► MCAP  /data/recorded/run_xxxx.mcap ◄─ 正本
-     │              │            │        │
-     ▼              ▼            ▼        ▼  (収録後)
-   Browser  ◄────  api_orchestrator  ──►  dora_runner ──► レポート / 変換済みデータセット
-                  (ジョブ・状態ハブ)        (検証・変換パイプライン)
-                         ▲
-                         │ REST / WebSocket / SSE
-                      frontend (Vite + React + TS)
+
+収録後の検証は **dora_runner コンテナの中だけ**で完結します（同梱の bagflow フローを
+自前の dora coordinator 上で実行。詳細は [dora_runner 仕様](docs/specs/ja/dora_runner.md)）:
+
+```mermaid
+flowchart LR
+  J["POST /api/v1/jobs"] --> API["dora_runner API"]
+  API --> PIPE["bagflow_pipeline<br/>フロー実体化・timeout・後始末"]
+  FLOW[/"フロー定義（YAML）<br/>同梱 or config/&lt;robot&gt;/flows/"/] --> PIPE
+  PIPE -->|"bagflow run"| CO["dora coordinator/daemon<br/>127.0.0.1:6112 loopback"]
+  CO --> NODES["検証ノード群（Rust）<br/>topic-presence / topic-rate<br/>decode / blur / brightness<br/>freeze / stamp-gap"]
+  NODES --> RPT["report.json"] --> SUM["summary.json<br/>pass / fail"]
 ```
 
 ## サービス構成
@@ -35,7 +64,7 @@ webrtc_streamer topic_monitor topic_probe rosbag2_recorder  (選択されたト�
 | [topic_probe](docs/specs/ja/topic_probe.md) | 選択トピックの**数値フィールド**をライブプロットする汎用プローブ。decode は本サービスに**隔離**し、収録・監視に波及させない。 |
 | [webrtc_streamer](docs/specs/ja/webrtc_streamer.md) | 低遅延のカメラ**プレビュー**（ROS 2 image → ブラウザ）。記録パスではない。 |
 | [api_orchestrator](docs/specs/ja/api_orchestrator.md) | 単一の API ハブ。ジョブのライフサイクル・状態・設定・結果集約を担う。 |
-| [dora_runner](docs/specs/ja/dora_runner.md) | 収録後の**検証・変換**パイプライン（dora ベース）。有効: `fast_validation` / `dataset_export` / `loss_report` / `video_check`。 |
+| [dora_runner](docs/specs/ja/dora_runner.md) | 収録後の**検証・変換**パイプライン。検証は**実 dora 上の bagflow フロー**（同梱）。有効: `fast_validation` / `full_validation` / `dataset_export` / `loss_report` / `video_check` / `signal_report`。 |
 | [frontend](docs/specs/ja/frontend.md) | backend-driven な Web UI（UI 表記は英語）。役割タブ構成（Console v2）: Collect / Review / Datasets / Validation / Monitor / Settings。 |
 
 ## 仕様ドキュメント

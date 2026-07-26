@@ -18,21 +18,12 @@
 
 ## 全体像
 
-```
-                         ┌─────────────────────────────────────────────┐
- POST /jobs ──▶ worker ──▶ Pipeline Registry  (manifest scan で構築)     │
- (api_orchestrator 経由)  │   - 同梱 4本 + plugins/<name> を自動登録      │
-                         │   RegisteredPipeline(executor="dora",        │
-                         │     runner=make_dora_runner(dataflow, manif))│
-                         └───────────────┬─────────────────────────────┘
-                                         │ dora start <dataflow.yml>
-                         ┌───────────────▼─────────────────────────────┐
-                         │ dora coordinator + daemon  (entrypoint で up)│
-                         │   MCAP Loader → validator/AI node → Writer   │
-                         │   （node 間は Arrow ゼロコピー）              │
-                         └───────────────┬─────────────────────────────┘
-                                         │ summary.json / artifacts
-                              /data/report/<pipeline>/<run_id>/
+```mermaid
+flowchart TB
+  P["POST /jobs<br/>（api_orchestrator 経由）"] --> W["worker"]
+  W --> REG["Pipeline Registry（manifest scan で構築）<br/>同梱パイプライン + plugins/&lt;name&gt; を自動登録<br/>RegisteredPipeline(executor=&quot;dora&quot;,<br/>runner=make_dora_runner(dataflow, manifest))"]
+  REG -->|"dora start &lt;dataflow.yml&gt;"| EX["dora coordinator + daemon（サービス起動時に up）<br/>MCAP Loader → validator / AI node → Writer<br/>（node 間は Arrow ゼロコピー）"]
+  EX -->|"summary.json / artifacts"| OUT[("/data/report/&lt;pipeline&gt;/&lt;run_id&gt;/")]
 ```
 
 - **Plugin/Pipeline Registry**: `registry.py` の `PipelineRegistry` を拡張。同梱 pipeline に加え `discover_plugins()` が submodule を登録する。
