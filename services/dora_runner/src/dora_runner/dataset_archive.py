@@ -20,6 +20,15 @@ otherwise be discovered only when someone tries to use the data and the source
 is long gone. The cost is one extra read of the destination; the job is async
 precisely so that cost is affordable.
 
+What the read-back does NOT prove is that the bytes reached the media. The
+destination is fsynced before it is re-read, but the re-read is an ordinary
+open, so a filesystem is free to answer it from cache — and nothing here
+defends against a third party rewriting the destination between the hash and
+the source's removal. So this is "kairos wrote what it meant to write, and
+could read it back", not an end-to-end integrity guarantee against the storage
+itself. Claiming the stronger thing would be worse than claiming nothing,
+because the operator's next decision is whether to keep a second copy.
+
 Failure leaves the SOURCE intact, always. A partially-written destination is
 left in place rather than cleaned up, because deleting files at a path that
 just failed a safety check is the last thing this pipeline should do; the next
@@ -359,7 +368,9 @@ def run_dataset_archive(
         "files": copied,
         "file_count": len(copied),
         "bytes": total_bytes,
-        "verified": "sha256",
+        # Named for what was actually done: a SHA-256 read-back of the
+        # destination, which is not a media-level integrity proof.
+        "verified": "sha256-readback",
         "source_removed": True,
         "archived_at": utc_now_iso8601(),
     }

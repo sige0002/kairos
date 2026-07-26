@@ -56,7 +56,7 @@ def test_copies_verifies_then_removes_the_source(tmp_path: Path) -> None:
     assert {p.name: p.read_bytes() for p in destination.iterdir()} == original
     # …the summary is auditable without the source (it is gone)…
     assert summary["file_count"] == 3
-    assert summary["verified"] == "sha256"
+    assert summary["verified"] == "sha256-readback"
     assert summary["source_removed"] is True
     assert all(len(f["sha256"]) == 64 for f in summary["files"])
     assert summary["bytes"] == sum(len(b) for b in original.values())
