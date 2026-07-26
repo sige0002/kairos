@@ -1,0 +1,87 @@
+"""full_validation bindings: how kairos config reaches a bagflow flow."""
+
+from __future__ import annotations
+
+import pytest
+from dora_runner.full_validation import (
+    required_topic_names,
+    run_full_validation,
+    topic_expectations,
+)
+from kairos_common import ApiError, RecordingConfig, ValidationTemplate
+
+# NOTE: `RequiredTopic` exists twice (recording_config's own + validation_config's
+# for templates), so these fixtures build each side from plain dicts rather than
+# passing one module's model into the other's field.
+
+
+def _config(**overrides) -> RecordingConfig:
+    return RecordingConfig(robot_name="test", **overrides)
+
+
+def test_required_topics_prefer_the_job_template() -> None:
+    template = ValidationTemplate(
+        name="t", version=1, required_topics=[{"name": "/from_template"}]
+    )
+    config = _config(validation={"required_topics": [{"name": "/from_config"}]})
+
+    assert required_topic_names(template, config) == ["/from_template"]
+    assert required_topic_names(None, config) == ["/from_config"]
+    assert required_topic_names(None, None) == []
+
+
+def test_required_topics_become_presence_only_expectations() -> None:
+    """hz 0 is how a required topic reaches bagflow-topic-rate: it reports a
+    topic missing from the bag and never flags a rate below 0."""
+    expectations = topic_expectations(["/present"], ["/required"], None)
+
+    assert expectations == {"/required": 0.0}
+
+
+def test_static_expected_hz_overrides_and_covers_recorded_topics() -> None:
+    config = _config(
+        expected_hz_patterns=[
+            {"pattern": "**/compressed", "hz": 10.0},
+            {"pattern": "/joint_states", "hz": 100.0},
+        ]
+    )
+
+    expectations = topic_expectations(
+        ["/cam/image_raw/compressed", "/joint_states", "/tf"],
+        ["/joint_states", "/never_recorded"],
+        config,
+    )
+
+    assert expectations == {
+        "/cam/image_raw/compressed": 10.0,  # recorded, has a pattern
+        "/joint_states": 100.0,  # required AND rated -> the rate wins
+        "/never_recorded": 0.0,  # required, absent from the run -> presence only
+        # "/tf" is neither required nor rated: nothing to assert about it.
+    }
+
+
+def test_a_pattern_without_hz_is_not_an_expectation() -> None:
+    """`hz:` omitted means 'learn it dynamically' — inventing 0 there would turn
+    a monitoring hint into a hard presence requirement."""
+    config = _config(expected_hz_patterns=[{"pattern": "/tf"}])
+
+    assert topic_expectations(["/tf"], [], config) == {}
+
+
+def test_unavailable_bagflow_is_a_clear_error(tmp_path, monkeypatch) -> None:
+    import asyncio
+
+    import dora_runner.full_validation as module
+
+    monkeypatch.setattr(module, "bagflow_available", lambda: False)
+    with pytest.raises(ApiError) as excinfo:
+        asyncio.run(
+            run_full_validation(
+                run_id="run_1",
+                data_dir=tmp_path,
+                flow="default",
+                endpoint=module.DoraEndpoint(),
+                job_name="job_1",
+            )
+        )
+    assert excinfo.value.code == "bagflow_unavailable"

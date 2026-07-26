@@ -12,6 +12,24 @@ Phase A hardening toward a supportable release
 
 ### Added
 
+- `full_validation` on **real dora**: the placeholder pipeline is now a
+  declarative post-recording gate. A robot's `config/<robot>/flows/<flow>.yml`
+  is a bagflow flow (vendored into `services/dora_runner/bagflow/` together with
+  mcap2dora — see its `VENDOR.md`), materialized per job (bag/report injection,
+  `${KAIROS_*}` expansion, node-path resolution) and executed by the bundled
+  bagflow CLI + dora 0.5 CLI on a coordinator the service starts on its own
+  loopback ports (so a co-located dora_live is never touched). bagflow's
+  `report.json` is adapted to kairos' `summary.json` contract, with the overall
+  pass/fail decided in dora_runner: any failed check, any node that died before
+  end-of-stream, no results at all, or coverage below `params.min_coverage`.
+  The Config tab's validation template feeds the flow as `${KAIROS_EXPECT_HZ}`
+  (required topics enter at `hz=0` = must exist), merged with the recording
+  config's `expected_hz_patterns`. Measured 0.57s wall for the 6-node quick gate
+  on the bundled 44s HSR sample. Image gains the Rust nodes + dora CLI
+  (357 MB → 477 MB) and compose gains `shm_size: 2gb` (dora queues live in
+  `/dev/shm`; the 64 MB default kills nodes silently). Where the binaries are
+  absent (source checkout / CI) the pipeline stays an honest `enabled=false`
+  placeholder and `/readyz` reports `components.bagflow: unavailable`.
 - Collect operator early-warning integration: the Active warnings card now
   unions the arming snapshot's missing targets with FIRING monitor alerts
   (SSE buffer, restricted to recorded topics) so mid-recording degradation —

@@ -57,11 +57,13 @@ x-no-proxy: &no-proxy
   NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
   no_proxy: ${NO_PROXY:-localhost,127.0.0.1}
 
-# Build-time proxy passthrough for the 4 ROS service images: their builder
-# stage runs `uv pip install` against PyPI, which needs the same corporate
-# proxy the host uses (empty defaults are a no-op off-proxy). Paired with
-# `build: network: host` below so DNS resolution uses the host's resolver
-# instead of Docker's isolated build-bridge network.
+# Build-time proxy passthrough for the images whose builder stage fetches from
+# the internet: the 4 ROS ones run `uv pip install` against PyPI, and
+# dora_runner additionally builds the vendored bagflow crates (crates.io) and
+# downloads the dora CLI release. They need the same corporate proxy the host
+# uses (empty defaults are a no-op off-proxy). Paired with `build: network: host`
+# below so DNS resolution uses the host's resolver instead of Docker's isolated
+# build-bridge network.
 x-build-proxy-args: &build-proxy-args
   HTTP_PROXY: ${HTTP_PROXY:-}
   HTTPS_PROXY: ${HTTPS_PROXY:-}
@@ -303,6 +305,9 @@ services:
     build:
       context: .
       dockerfile: services/dora_runner/Dockerfile
+      network: host
+      args:
+        <<: *build-proxy-args
     image: kairos-dora-runner:${KAIROS_VERSION:-dev}
     env_file:
       - path: ${KAIROS_ENV_FILE:-.env}
@@ -314,9 +319,21 @@ services:
       # loss_report validator defaults (config/<robot>/validators/loss_report.yaml).
       LOSS_REPORT_CONFIG: ${LOSS_REPORT_CONFIG:-/config/${ROBOT:-airoa_hsr}/validators/loss_report.yaml}
       RECORDING_CONFIG: ${RECORDING_CONFIG:-/config/${ROBOT:-airoa_hsr}/recording/default.yaml}
+      # full_validation flows (bagflow flow.yml files) for the active robot.
+      BAGFLOW_FLOWS_DIR: ${BAGFLOW_FLOWS_DIR:-/config/${ROBOT:-airoa_hsr}/flows}
+      # This service runs its OWN dora coordinator/daemon (loopback only). With
+      # host networking those ports are host-wide, so they deliberately differ
+      # from dora's defaults (6012/53290/53291) that a co-located dora_live uses.
+      KAIROS_DORA_CONTROL_PORT: ${KAIROS_DORA_CONTROL_PORT:-6112}
+      KAIROS_DORA_DAEMON_PORT: ${KAIROS_DORA_DAEMON_PORT:-53390}
+      KAIROS_DORA_DAEMON_LISTEN_PORT: ${KAIROS_DORA_DAEMON_LISTEN_PORT:-53391}
     # Run as the host user so the host-owned ./data mount is writable.
     user: "${UID:-1000}:${GID:-1000}"
     network_mode: host
+    # dora passes every inter-node message through /dev/shm; a decoded-image
+    # flow holds queue_size x frame-size per edge, which blows past Docker's
+    # 64 MB default — and a node that runs out is killed WITHOUT a log line.
+    shm_size: ${DORA_RUNNER_SHM_SIZE:-2gb}
     volumes:
       - ${DATA_DIR:-./data}:/data
       - ./config:/config:ro

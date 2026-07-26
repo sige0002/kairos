@@ -46,7 +46,9 @@ _ROBOT_REL := $(if $(wildcard config/$(ROBOT)),$(ROBOT),local/$(ROBOT))
 RECORDING_CONFIG   ?= /config/$(_ROBOT_REL)/recording/default.yaml
 STREAM_CONFIG      ?= /config/$(_ROBOT_REL)/stream/default.yaml
 LOSS_REPORT_CONFIG ?= /config/$(_ROBOT_REL)/validators/loss_report.yaml
-export RECORDING_CONFIG STREAM_CONFIG LOSS_REPORT_CONFIG
+# full_validation reads its bagflow flows from this DIRECTORY (one file per flow).
+BAGFLOW_FLOWS_DIR  ?= /config/$(_ROBOT_REL)/flows
+export RECORDING_CONFIG STREAM_CONFIG LOSS_REPORT_CONFIG BAGFLOW_FLOWS_DIR
 
 # Alert rules are OPTIONAL (the monitor runs fine without them). Resolve a local
 # override first, then the committed file; empty (= alerts disabled) if neither

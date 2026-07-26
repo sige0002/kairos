@@ -22,6 +22,13 @@ router = APIRouter(prefix="/api/v1/jobs", tags=["jobs"])
 # written; exporting it would copy a partial/active recording).
 _UNFINISHED_STATES = {RunState.created, RunState.recording, RunState.stopping}
 
+# Pipelines whose `template` param is a Config-catalog template id: the id is
+# resolved to the full object before forwarding (dora_runner's template store is
+# empty at boot). fast_validation matches the template's topics directly;
+# full_validation hands them to its flow as ${KAIROS_REQUIRED_TOPICS}, so the
+# Config tab's active template drives both.
+_TEMPLATE_PIPELINES = {"fast_validation", "full_validation"}
+
 
 async def _emit_job(request: Request, job: JobStatus | JobCreateResponse) -> None:
     await request.app.state.event_hub.publish(
@@ -56,7 +63,7 @@ def _job_event_changed(
 async def create_job(request: Request, body: JobCreateRequest) -> JobCreateResponse:
     """Create a dora_runner job and persist its initial status.
 
-    For a ``fast_validation`` job, resolve the ``template`` param into the FULL
+    For a template-driven job, resolve the ``template`` param into the FULL
     template object before forwarding. The UI sends a template *id* (file stem,
     e.g. ``airoa_hsr``), but dora_runner's template store starts empty, so a bare
     id always 404s — we look the id up in the Config catalog and inject the
@@ -83,7 +90,7 @@ async def create_job(request: Request, body: JobCreateRequest) -> JobCreateRespo
                 message="Cannot export a run that has not finished recording.",
                 details={"run_id": body.run_id, "state": run.state.value},
             )
-    if body.pipeline == "fast_validation":
+    if body.pipeline in _TEMPLATE_PIPELINES:
         raw = body.params.get("template")
         if not isinstance(raw, dict):
             catalog = request.app.state.config_catalog

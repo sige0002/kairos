@@ -26,7 +26,7 @@
 
 - `/data/recorded/<run>/*.mcap`（+ `metadata.yaml` / `manifest.json`）
 - pipeline 定義（dataflow YAML）
-- config（[config](config.md)、検証テンプレート等）
+- config（[config](config.md)、検証テンプレート、`config/<robot>/flows/*.yml`＝`full_validation` の検証フロー）
 - job record（`api_orchestrator` 由来）
 
 ## 構成コンポーネント
@@ -40,7 +40,8 @@
 ## 実行可能パイプライン（図）
 
 - `fast_validation` / `full_validation` / `dataset_convert` / `dataset_validation`
-- **実装済み（`enabled=true`）**: `fast_validation` / `dataset_export` / `loss_report` / `video_check` / `signal_report`（下記）。`full_validation` / `dataset_convert` / `dataset_validation` は I/F とプラグイン枠のみ（`enabled=false`）。
+- **実装済み（`enabled=true`）**: `fast_validation` / `full_validation` / `dataset_export` / `loss_report` / `video_check` / `signal_report`（下記）。`dataset_convert` / `dataset_validation` は I/F とプラグイン枠のみ（`enabled=false`）。
+- **`full_validation` だけは同梱バイナリ依存**（bagflow + dora CLI）。イメージ以外の環境（ソースチェックアウト / CI）では `enabled=false` の**プレースホルダに落ちる**（理由を description に出す）＝実行できないものを実行できると宣伝しない。
 - すべてのジョブは `POST /jobs`（`api_orchestrator` がプロキシ）経由で起動する。各パイプラインは `run_id`（`^[A-Za-z0-9_-]+$`）を検証してパストラバーサルを防ぐ。
 
 ## 実装済みパイプライン
@@ -101,6 +102,89 @@
 - **`fast_validation`**: 対象 run の topic 一覧をテンプレートと照合し、**必須トピックの過不足**を判定。decode 不要・短時間。
   - 出力 `summary.json`: `{ template, result: "pass"|"fail", missing: [], extra: [], checked_at }`。
 
+## `full_validation`: 宣言的フロー（**実 dora 実行**）
+
+録画後の重い検証（デコード・画質・欠落）を、**YAML で宣言したフローとして実 dora 上で**回すパイプライン。
+kairos 内で唯一「dora ランタイムが実際に動く」経路であり、実行エンジンは同梱の **bagflow**
+（`services/dora_runner/bagflow/`、ベンダリング元と改変点は同ディレクトリの `VENDOR.md`）。
+
+```
+config/<robot>/flows/<flow>.yml   ← 運用者が書く（＝bagflow の flow.yml そのもの）
+   │  実体化（bag/report 注入・${KAIROS_*} 展開・path 解決）
+   ▼
+data/report/full_validation/<run_id>/flow/flow.yml
+   │  bagflow run --no-attach --name <job_id>（自前 dora coordinator 上で dataflow 生成・実行）
+   ▼
+report.json ──アダプタ（bagflow_summary.py）──► summary.json（pass/fail）
+```
+
+### フローと config の関係
+
+- フローは **kairos 方言ではない**。`config/<robot>/flows/*.yml` は bagflow の flow.yml をそのまま置く
+  （`bag:` / `report:` は kairos が run ごとに注入するので書かない）。ジョブは `params.flow`（既定 `default`）で
+  選び、`GET /pipelines` の `params_schema` には**発見できたフロー名が enum で載る**ので、UI のフォームは
+  自動でピッカーになる。ワンクリック実行は `validation_presets.yaml` に `{pipeline: full_validation,
+  params: {flow: …}}` を足すだけ（UI 改修不要）。
+- **`${KAIROS_*}` 置換**が「Config タブの検証テンプレ」とフローの結節点。文字列値の中に書ける:
+  | トークン | 中身 |
+  |---|---|
+  | `${KAIROS_EXPECT_HZ}` | `{topic: hz}` の JSON。**必須トピックは `hz=0`**（＝存在必須・レート不問。`bagflow-topic-rate` は bag に無いトピックを失敗として報告し、0 を下回るレートは存在しない）。`RECORDING_CONFIG` の `expected_hz_patterns` に一致するトピックは実レートで上書き |
+  | `${KAIROS_REQUIRED_TOPICS}` | 必須トピック名の JSON 配列（独自ノード向け） |
+  | `${KAIROS_RUN_ID}` / `${KAIROS_BAG_DIR}` / `${KAIROS_REPORT_DIR}` / `${KAIROS_REPORT}` | run と出力先 |
+  - 必須トピックの出どころは **`params.template` →（無ければ）`RECORDING_CONFIG.validation.required_topics`**。
+    orchestrator は `fast_validation` と同様に `full_validation` でもテンプレ id を実体へ解決して注入するので、
+    **Config タブでテンプレを選ぶと 2 つのパイプラインが同じ必須トピック定義を見る**。
+    未指定時に「run 自身から生成した雛形」へフォールバックは**しない**（それでは検査が自明に真になる）。
+  - 未知の `${KAIROS_…}` は**エラー**（黙って素通しさせない）。
+- **node `path` の解決**: 名前だけ（`bagflow-blur`）＝同梱バイナリ、相対パス＝**元のフローファイルの
+  ディレクトリ基準**（実体化で場所が変わっても壊れない）、絶対パス＝そのまま。
+- 実体化先が `/config` ではなく `data/report/.../flow/` なのは、bagflow/dora が**フローファイルの隣に書く**ため
+  （`.bagflow/dataflow.yml`・`.bagflow/out/<uuid>/log_<node>.txt`）。`/config` は読み取り専用マウント。
+
+### 判定（総合 pass/fail の所在）
+
+bagflow は「事実」だけを報告する（ノードごとの `ok`・エッジごとの `coverage`・異常終了ノードの `incomplete`）。
+**総合判定は kairos 側のアダプタが決める**（`bagflow_summary.summarize`）:
+
+- `ok: false` のチェックが 1 つでもあれば **fail**（ソース自身の `source_read` を含む＝途中で切れた MCAP は fail）
+- `incomplete` が空でなければ **fail**（そのノードの検査は実行されていないので「失敗なし」は嘘になる）
+- チェック結果が 1 件も無ければ **fail**
+- `coverage`（各エッジが bag のどれだけを実際に見たか）が `params.min_coverage` 未満なら **fail**。
+  既定 `0` は**ゲートせずに数字だけ出す**（キューあふれによる間引きは coverage に必ず出る＝黙って欠けない）。
+
+出力は `data/report/full_validation/<run_id>/` に `summary.json`（判定）・`report.json`（bagflow 原本）・
+`flow/`（実体化フローと各ノードのログ）。summary は汎用 `SummaryResult` がそのまま描ける形
+（`metrics.coverage` は 0-100 で、Validation 画面のカバレッジ列がそのまま読む）。**フロー開始前に前回の
+`summary.json` / `report.json` を消す**ので、失敗したのに前回の合格が残って「検証済み」に見えることはない。
+
+**ジョブ失敗と検証 fail の区別**（kairos の既存規約）: フローが走って「録画が悪い」と判定したら
+**成功ジョブ + `result: fail`**。フローが判定を出せなかった（入力欠落・フロー不正・dataflow の異常終了/
+タイムアウト）場合は**ジョブ自体を失敗**させ、`details` にノードログの位置を載せる（summary.json は書かない
+＝その run は未検証のまま）。
+
+### 実行環境（4つの運用上の必須事項）
+
+1. **自前の dora coordinator/daemon**。全サービスが `network_mode: host` で、dora 0.5 の `dora up` は
+   既定ポート（6012）しか掴めない＝同居する `dora_live` と衝突しうる。そこで dora_runner は
+   `dora coordinator` / `dora daemon` を**自分で loopback 限定の別ポートに起動**する
+   （`KAIROS_DORA_CONTROL_PORT` 6112 / `KAIROS_DORA_DAEMON_PORT` 53390 /
+   `KAIROS_DORA_DAEMON_LISTEN_PORT` 53391）。同梱 bagflow CLI は `DORA_COORDINATOR_ADDR/PORT` で
+   そこへ向く（`VENDOR.md`）。サービス停止時は自分の coordinator を `dora destroy` する。
+2. **`shm_size` が必須**。dora はノード間メッセージを全て `/dev/shm` に置き、**Docker 既定の 64MB では
+   枯渇したノードがログを 1 行も残さずに死ぬ**。compose は `shm_size: 2gb`（`DORA_RUNNER_SHM_SIZE`）。
+3. **タイムアウトは 3 段**（短い順に、診断が濃い層が先に鳴る）: `bagflow run --timeout`
+   （`KAIROS_BAGFLOW_TIMEOUT_S` 既定 600s。どのノードのプロセスが消えたかを出す）→ サブプロセスの +30s 猶予
+   → ジョブ全体の `KAIROS_DORA_JOB_TIMEOUT_S`（既定 900s）。
+4. **後始末は名前指定で行う**。dora 0.5 はノードの異常終了を下流に伝播しないため、生き残ったノードは
+   EOS を待って止まり `/dev/shm` を掴み続ける。失敗・タイムアウト・キャンセルのたびに
+   `dora stop --name <job_id>`（残っていれば `--force`）を実行する。dora 0.5 に `stop --all` は無く、
+   「動いているもの全部止める」も**実装しない**（自前 coordinator なので `dora destroy` が同義かつ安全）。
+
+同梱ノード（Rust）: `bagflow-decode`（JPEG→生フレーム）/ `-blur` / `-brightness` / `-freeze` /
+`-stamp-gap` / `-topic-rate`。実測 **0.56s wall・3.7 CPU秒**（101秒・780MB・29トピック・VGA 3037 フレームの bag、
+`dora up` 済み warm）。**Python 版チェックノードと CUDA デコードは同梱しない**（前者は pyarrow/dora-rs/opencv が
+必要、後者は小画像では CPU 版より遅い実測）＝ `VENDOR.md` に理由を記載。
+
 ## 出力
 
 - `/data/report/<pipeline>/<run>/`（`summary.json` / preview / logs）
@@ -138,23 +222,27 @@ MCAP → dora dataflow（validator / converter / AI nodes）→ reports / conver
 
 ## 実装状況と開発ガイド
 
-本書は**設計の正本（将来像を含む）**。**現状の有効 pipeline は `fast_validation` / `dataset_export` /
-`loss_report` / `video_check` / `signal_report`** の 5 本（上記「実装済みパイプライン」参照）。`full_validation` /
+本書は**設計の正本（将来像を含む）**。**現状の有効 pipeline は `fast_validation` / `full_validation` /
+`dataset_export` / `loss_report` / `video_check` / `signal_report`** の 6 本（上記「実装済みパイプライン」参照）。
 `dataset_convert` / `dataset_validation` は I/F だけ（`enabled=false`。`POST /jobs` は
 `pipeline_unavailable` で拒否）。
 
-**実装済み**: **Plugin/Pipeline Registry**（`registry.py` の `build_default_registry()` が同梱 5 本を登録し、
+**実装済み**: **Plugin/Pipeline Registry**（`registry.py` の `build_default_registry()` が同梱 6 本を登録し、
 `plugin_loader.discover_plugins()` が `KAIROS_PLUGINS_DIR`（既定 `services/dora_runner/plugins/`）配下の
 manifest をスキャンして自動登録する。例として `hello_dora` プラグインを同梱）、**dora dataflow の
-in-process インタプリタ**（`executor: dora` を宣言したプラグインも、後述の理由で in-process で実行）、
+in-process インタプリタ**（プラグインの `executor: dora` は下記の理由で in-process 実行）、
 **ジョブの並行度上限・per-job timeout**（`KAIROS_DORA_MAX_CONCURRENCY` / `KAIROS_DORA_JOB_TIMEOUT_S`）、
 **job/template の SQLite 永続化と再起動リコンサイル**（上記「永続化と再起動リコンサイル」）。
 各パイプラインの重い読込・エンコードは worker スレッドに退避する。
 
-**未実装 / 未同梱**: **Rust の dora CLI/daemon（coordinator）は同梱していない**。そのため `/readyz` は
-`components.dora` に**実際の実行系**（`dora` バイナリがあれば `available`、無ければ `in-process`）を誠実に
-返し、`status` は dora 不在でも `ready`（in-process で動くため）。`/pipelines` の各 `PipelineDefinition` も
-宣言上の `executor` とは別に `effective_executor`（実際にどう動くか）を返す。**AI node（推論・LeRobot 変換）**は未実装。
+**dora の同梱状況（2026-07-26 更新）**: **dora CLI（0.5.0）と同梱 bagflow の Rust ノードは dora_runner
+イメージに入っている**。ただし実 dora で動くのは **`full_validation` だけ**で、プラグインの
+`executor: dora` は従来どおり in-process インタプリタで実行する（プラグインの dataflow を実 dora へ
+載せ替えるのは別作業）。したがって `/readyz` は 2 成分を誠実に返す: `components.dora`（`dora` バイナリの
+有無 = `available` / `in-process`）と `components.bagflow`（bagflow バイナリの有無 = `available` /
+`unavailable`）。`/pipelines` の各 `PipelineDefinition` も宣言上の `executor` とは別に
+`effective_executor`（実際にどう動くか）を返す。イメージ以外（ソース実行 / CI）では bagflow が無いので
+`full_validation` は `enabled=false` に落ちる。**AI node（推論・LeRobot 変換）**は未実装。
 
 validation チェックの追加方法・単体試験・ローカル CLI（`python -m dora_runner.cli`）でのデバッグ手順は、
 開発者ガイド [docs/dora/README.ja.md](../../dora/README.ja.md) を参照。

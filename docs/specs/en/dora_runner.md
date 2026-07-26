@@ -27,7 +27,7 @@ The post-recording **validation / conversion / extension processing pipeline** c
 
 - `/data/recorded/<run>/*.mcap` (+ `metadata.yaml` / `manifest.json`)
 - pipeline definitions (dataflow YAML)
-- config ([config](config.md), validation templates, etc.)
+- config ([config](config.md), validation templates, `config/<robot>/flows/*.yml` = `full_validation`'s validation flows)
 - job record (originating from `api_orchestrator`)
 
 ## Constituent components
@@ -41,7 +41,8 @@ The post-recording **validation / conversion / extension processing pipeline** c
 ## Runnable pipelines (figure)
 
 - `fast_validation` / `full_validation` / `dataset_convert` / `dataset_validation`
-- **Implemented (`enabled=true`)**: `fast_validation` / `dataset_export` / `loss_report` / `video_check` / `signal_report` (below). `full_validation` / `dataset_convert` / `dataset_validation` are interface and plugin slots only (`enabled=false`).
+- **Implemented (`enabled=true`)**: `fast_validation` / `full_validation` / `dataset_export` / `loss_report` / `video_check` / `signal_report` (below). `dataset_convert` / `dataset_validation` are interface and plugin slots only (`enabled=false`).
+- **`full_validation` alone depends on bundled binaries** (bagflow + the dora CLI). Outside the image (a source checkout / CI) it **degrades to an `enabled=false` placeholder** whose description says why — we never advertise something that cannot run as runnable.
 - All jobs are launched via `POST /jobs` (proxied by `api_orchestrator`). Each pipeline validates `run_id` (`^[A-Za-z0-9_-]+$`) to prevent path traversal.
 
 ## Implemented pipelines
@@ -102,6 +103,100 @@ The post-recording **validation / conversion / extension processing pipeline** c
 - **`fast_validation`**: matches the target run's topic list against the template and judges the **presence/absence of required topics**. No decode required, short duration.
   - Output `summary.json`: `{ template, result: "pass"|"fail", missing: [], extra: [], checked_at }`.
 
+## `full_validation`: declarative flows (**real dora execution**)
+
+The pipeline that runs the heavy post-recording checks (decode, image quality, dropouts) **as a
+YAML-declared flow on real dora**. It is the only path in kairos where the dora runtime actually runs; the
+execution engine is the bundled **bagflow** (`services/dora_runner/bagflow/`; the upstream revisions and
+local modifications are in that directory's `VENDOR.md`).
+
+```
+config/<robot>/flows/<flow>.yml   ← written by the operator (= a bagflow flow.yml verbatim)
+   │  materialization (bag/report injection, ${KAIROS_*} expansion, path resolution)
+   ▼
+data/report/full_validation/<run_id>/flow/flow.yml
+   │  bagflow run --no-attach --name <job_id> (generates + runs a dataflow on our own dora coordinator)
+   ▼
+report.json ──adapter (bagflow_summary.py)──► summary.json (pass/fail)
+```
+
+### How a flow relates to config
+
+- A flow is **not a kairos dialect**. `config/<robot>/flows/*.yml` holds a bagflow flow.yml as-is (omit
+  `bag:` / `report:` — kairos injects the run's own). A job picks one with `params.flow` (default
+  `default`), and `GET /pipelines` lists the **discovered flow names as an `enum`** in `params_schema`, so
+  the auto-rendered form becomes a picker. A one-click button is just an entry in
+  `validation_presets.yaml` (`{pipeline: full_validation, params: {flow: …}}`) — no UI change.
+- **`${KAIROS_*}` substitution** is the seam between the Config tab's validation template and the flow.
+  Usable inside any string value:
+  | Token | Contents |
+  |---|---|
+  | `${KAIROS_EXPECT_HZ}` | JSON `{topic: hz}`. **Required topics enter at `hz=0`** (= must exist, any rate: `bagflow-topic-rate` reports a topic missing from the bag as a failure and no rate can fall below 0). Topics matching `RECORDING_CONFIG`'s `expected_hz_patterns` are overridden with their real rate |
+  | `${KAIROS_REQUIRED_TOPICS}` | JSON array of required topic names (for custom nodes) |
+  | `${KAIROS_RUN_ID}` / `${KAIROS_BAG_DIR}` / `${KAIROS_REPORT_DIR}` / `${KAIROS_REPORT}` | the run and its output locations |
+  - Required topics come from **`params.template` → (else) `RECORDING_CONFIG.validation.required_topics`**.
+    The orchestrator resolves a template id into the full object for `full_validation` just as it does for
+    `fast_validation`, so **choosing a template in the Config tab drives both pipelines from one
+    definition**. There is deliberately **no** fallback to "a draft generated from the run itself" (that
+    would make the check trivially true).
+  - An unknown `${KAIROS_…}` is an **error** — never passed through silently.
+- **Node `path` resolution**: a bare name (`bagflow-blur`) = a bundled binary; a relative path = relative to
+  **the original flow file's directory** (so it survives materialization elsewhere); an absolute path is
+  left alone.
+- Materialization targets `data/report/.../flow/` rather than `/config` because bagflow/dora write **next to
+  the flow file** (`.bagflow/dataflow.yml`, `.bagflow/out/<uuid>/log_<node>.txt`), and `/config` is a
+  read-only mount.
+
+### The verdict (where overall pass/fail lives)
+
+bagflow only reports facts (per-node `ok`, per-edge `coverage`, the `incomplete` list of nodes that died).
+**The overall verdict is decided by the kairos adapter** (`bagflow_summary.summarize`):
+
+- any check with `ok: false` → **fail** (including the source's own `source_read`, so a truncated MCAP fails)
+- a non-empty `incomplete` → **fail** (that node's checks never ran, so "no failures" would be a lie)
+- no check results at all → **fail**
+- `coverage` (how much of the bag each edge actually saw) below `params.min_coverage` → **fail**. The
+  default `0` **reports the number without gating on it** (queue-overflow thinning always shows up in
+  coverage — nothing goes missing silently).
+
+Outputs land in `data/report/full_validation/<run_id>/`: `summary.json` (the verdict), `report.json`
+(bagflow's own), and `flow/` (the materialized flow plus each node's logs). The summary is shaped for the
+generic `SummaryResult` (`metrics.coverage` is 0-100, which the Validation screen's coverage column reads
+directly). The previous `summary.json` / `report.json` are **deleted before the flow starts**, so a failed
+attempt can never leave last time's pass behind looking like "validated".
+
+**Job failure vs. validation fail** (the existing kairos convention): if the flow runs and judges the
+recording bad, that is a **succeeded job with `result: fail`**. If the flow could not produce a verdict
+(missing input, invalid flow, a dataflow that crashed or timed out), the **job itself fails**, with the node
+logs' location in `details` — and no summary.json is written, so the run stays un-validated.
+
+### Runtime environment (four operational must-haves)
+
+1. **Its own dora coordinator/daemon.** Every service uses `network_mode: host`, and dora 0.5's `dora up`
+   can only bind the default control port (6012) — the same one a co-located `dora_live` uses. dora_runner
+   therefore starts `dora coordinator` / `dora daemon` itself on **loopback-only ports of its own**
+   (`KAIROS_DORA_CONTROL_PORT` 6112 / `KAIROS_DORA_DAEMON_PORT` 53390 /
+   `KAIROS_DORA_DAEMON_LISTEN_PORT` 53391). The bundled bagflow CLI targets them via
+   `DORA_COORDINATOR_ADDR/PORT` (see `VENDOR.md`). On shutdown the service runs `dora destroy` against its
+   own coordinator.
+2. **`shm_size` is mandatory.** dora places every inter-node message in `/dev/shm`, and **with Docker's
+   64 MB default a node that runs out is killed without writing a single log line**. compose sets
+   `shm_size: 2gb` (`DORA_RUNNER_SHM_SIZE`).
+3. **Timeouts are layered** (shortest first, so the layer with the best diagnostics fires first):
+   `bagflow run --timeout` (`KAIROS_BAGFLOW_TIMEOUT_S`, default 600s; prints which node's process is gone)
+   → a +30s grace on the subprocess → the whole-job `KAIROS_DORA_JOB_TIMEOUT_S` (default 900s).
+4. **Cleanup is by name.** dora 0.5 does not propagate a node's abnormal exit downstream, so the survivors
+   wait for an end-of-stream that never comes and keep `/dev/shm` pinned. Every failure, timeout or cancel
+   is followed by `dora stop --name <job_id>` (escalating to `--force` if it is still listed). dora 0.5 has
+   no `stop --all`, and a "stop everything running" equivalent is deliberately **not** reimplemented (with
+   our own coordinator, `dora destroy` is both equivalent and safe).
+
+Bundled nodes (Rust): `bagflow-decode` (JPEG → raw frames) / `-blur` / `-brightness` / `-freeze` /
+`-stamp-gap` / `-topic-rate`. Measured **0.56s wall, 3.7 CPU-s** (a 101s / 780MB / 29-topic bag with 3037 VGA
+frames, warm, daemon already up). The **Python check nodes and the CUDA decoder are not bundled** (the
+former need pyarrow/dora-rs/opencv; the latter measured slower than the CPU path on small images) — reasons
+are recorded in `VENDOR.md`.
+
 ## Output
 
 - `/data/report/<pipeline>/<run>/` (`summary.json` / preview / logs)
@@ -139,26 +234,29 @@ MCAP → dora dataflow (validator / converter / AI nodes) → reports / converte
 
 ## Implementation status and development guide
 
-This document is the **source of truth for the design (including the future vision)**. **The currently enabled pipelines are these five: `fast_validation` / `dataset_export` /
-`loss_report` / `video_check` / `signal_report`** (see "Implemented pipelines" above). `full_validation` /
+This document is the **source of truth for the design (including the future vision)**. **The currently enabled pipelines are these six: `fast_validation` / `full_validation` / `dataset_export` /
+`loss_report` / `video_check` / `signal_report`** (see "Implemented pipelines" above).
 `dataset_convert` / `dataset_validation` are interface only (`enabled=false`; `POST /jobs`
 rejects them with `pipeline_unavailable`).
 
 **Implemented**: the **Plugin/Pipeline Registry** (`registry.py`'s `build_default_registry()` registers the
-5 bundled pipelines, and `plugin_loader.discover_plugins()` scans manifests under `KAIROS_PLUGINS_DIR`
+6 bundled pipelines, and `plugin_loader.discover_plugins()` scans manifests under `KAIROS_PLUGINS_DIR`
 (default `services/dora_runner/plugins/`) for automatic registration; an example `hello_dora` plugin is
-bundled), the **in-process dora dataflow interpreter** (plugins that declare `executor: dora` also run
+bundled), the **in-process dora dataflow interpreter** (a plugin's `executor: dora` still runs
 in-process, for the reasons below), and **job concurrency limits and per-job timeouts**
 (`KAIROS_DORA_MAX_CONCURRENCY` / `KAIROS_DORA_JOB_TIMEOUT_S`), and **SQLite persistence of jobs/templates with
 restart reconciliation** (see "Persistence and restart reconciliation" above). Each pipeline's heavy reads and
 encoding are offloaded to worker threads.
 
-**Not implemented / not bundled**: the Rust **dora CLI/daemon (coordinator) is not bundled**. Accordingly,
-`/readyz` honestly reports the **actual execution backend** in `components.dora` (`available` if the `dora`
-binary is present, otherwise `in-process`), while `status` stays `ready` even without dora (since it runs
-in-process). Each `PipelineDefinition` returned by `/pipelines` also reports `effective_executor` (how it
-actually runs), distinct from the declared `executor`. **AI nodes** (inference / LeRobot conversion) are not
-implemented.
+**dora bundling status (updated 2026-07-26)**: the **dora CLI (0.5.0) and the bundled bagflow Rust nodes
+now ship in the dora_runner image**. Only **`full_validation`** runs on real dora, though; a plugin's
+`executor: dora` still goes through the in-process interpreter (moving plugin dataflows onto real dora is
+separate work). `/readyz` therefore honestly reports two components: `components.dora` (is the `dora` binary
+present — `available` / `in-process`) and `components.bagflow` (are the bagflow binaries present —
+`available` / `unavailable`). Each `PipelineDefinition` returned by `/pipelines` also reports
+`effective_executor` (how it actually runs), distinct from the declared `executor`. Outside the image (a
+source run / CI) bagflow is absent, so `full_validation` degrades to `enabled=false`. **AI nodes**
+(inference / LeRobot conversion) are not implemented.
 
 For how to add validation checks, unit testing, and debugging procedures via the local CLI (`python -m dora_runner.cli`),
 see the developer guide [docs/dora/README.md](../../dora/README.md).

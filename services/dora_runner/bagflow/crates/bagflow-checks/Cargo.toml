@@ -1,0 +1,31 @@
+[package]
+name = "bagflow-checks"
+version = "0.1.0"
+edition = "2021"
+description = "Rust standard check nodes (blur / brightness / freeze), drop-in for the Python ones"
+
+[[bin]]
+name = "bagflow-blur"
+path = "src/bin/blur.rs"
+
+[[bin]]
+name = "bagflow-brightness"
+path = "src/bin/brightness.rs"
+
+[[bin]]
+name = "bagflow-freeze"
+path = "src/bin/freeze.rs"
+
+[[bin]]
+name = "bagflow-stamp-gap"
+path = "src/bin/stamp_gap.rs"
+
+[[bin]]
+name = "bagflow-topic-rate"
+path = "src/bin/topic_rate.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+arrow = { version = "54.2", default-features = false }
+bagflow-node = { path = "../bagflow-node" }
+serde_json = { workspace = true }

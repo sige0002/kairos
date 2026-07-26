@@ -1,0 +1,99 @@
+# =============================================================================
+# config/<robot>/flows/default.yml — full_validation の検証フロー（テンプレ）
+# =============================================================================
+# 録画後の検証を「どのノードに何を流すか」で宣言するファイル。中身は
+# **bagflow の flow.yml そのもの**（services/dora_runner/bagflow/README.md）で、
+# dora 上で実行される。ノードを1行足せば検証が増え、path を差し替えれば実装を
+# 入れ替えられる（コード変更なし・UI 変更なし）。
+#
+# 実行のされ方（詳細: docs/specs/ja/dora_runner.md）:
+#   POST /api/v1/jobs {pipeline: "full_validation", run_id, params: {flow: "default"}}
+#   → kairos が per-run の作業ディレクトリにこのファイルを実体化し
+#     （bag/report 注入・${KAIROS_*} 展開・path 解決）、bagflow CLI が dora の
+#     dataflow を生成して実行 → report.json → summary.json（pass/fail）。
+#
+# kairos が足すので **ここには書かない**もの:
+#   bag:     data/recorded/<run_id>（または params.dataset_dir の書き出し先）
+#   report:  data/report/full_validation/<run_id>/report.json
+#
+# 使える置換トークン（文字列値のどこにでも書ける。未知の ${KAIROS_*} はエラー）:
+#   ${KAIROS_EXPECT_HZ}        {topic: hz} の JSON。必須トピック（Config タブの
+#                              検証テンプレ → 無ければ RECORDING_CONFIG の
+#                              validation.required_topics）は hz=0 で入る
+#                              ＝「存在必須・レート不問」。expected_hz_patterns に
+#                              一致するトピックは実レートで上書きされる。
+#   ${KAIROS_REQUIRED_TOPICS}  必須トピック名の JSON 配列（独自ノード向け）
+#   ${KAIROS_RUN_ID}           run_id
+#   ${KAIROS_BAG_DIR}          収録ディレクトリ（metadata.yaml + *.mcap）
+#   ${KAIROS_REPORT_DIR}       data/report/full_validation/<run_id>
+#   ${KAIROS_REPORT}           上記 + /report.json
+#
+# ノードの path:
+#   bagflow-*            同梱の Rust チェックノード（下表）。名前だけで解決される
+#   ./my_node            このファイルからの相対パス（実体化後も元の場所を指す）
+#   /opt/...             絶対パスはそのまま
+#   ※ Python ノードはイメージに pyarrow/dora-rs を入れていないので現状使えない
+#     （services/dora_runner/bagflow/VENDOR.md）。
+#
+# 同梱ノードと env（既定値はノードの docstring 参照）:
+#   bagflow-decode      JPEG→生フレーム       RESIZE, PIXEL_FORMAT(gray/bgr), WORKERS
+#   bagflow-blur        ブレ・ピンボケ         BLUR_MIN, MAX_RATIO, RESIZE, STRIDE
+#   bagflow-brightness  露出異常               DARK_MEAN, BRIGHT_MEAN, MAX_RATIO
+#   bagflow-freeze      カメラ固まり           FREEZE_EPS, MAX_RUN
+#   bagflow-stamp-gap   トピックの欠落・停止    GAP_MS / GAP_FACTOR, MAX_GAPS
+#   bagflow-topic-rate  記録有無・レート        EXPECT_HZ, TOLERANCE
+#
+# queue_size は「エッジごとの共有メモリ滞留の上限（メッセージ数）」で
+# 入力ごと > ノード > defaults > 組み込み既定(256) の順に効く。あふれた分は
+# 間引きになり、その割合は report.json の coverage に必ず数字で出る
+# （params.min_coverage を上げると、その割合を下回った検証は fail になる）。
+# =============================================================================
+defaults:
+  queue_size: 256
+
+nodes:
+  # ---- 画像レーン: デコードは1回だけ、下流はゼロコピーで共有 -----------------
+  - id: decode
+    path: bagflow-decode
+    inputs:
+      images: /camera/color/image_raw/compressed   # ← ロボットのカメラに変更
+    outputs: [frames]
+    env:
+      RESIZE: 224x224
+      PIXEL_FORMAT: gray     # 輝度しか見ないチェックだけなら gray が最速
+
+  - id: blur
+    path: bagflow-blur
+    inputs:
+      frames: decode/frames
+    env:
+      RESIZE: 224x224
+
+  - id: brightness
+    path: bagflow-brightness
+    inputs:
+      frames: decode/frames
+
+  - id: freeze
+    path: bagflow-freeze
+    queue_size: 1024         # 最も重いチェック。デコーダのバーストを吸わせる
+    inputs:
+      frames: decode/frames
+
+  # ---- 状態レーン ---------------------------------------------------------
+  - id: stamp_gap
+    path: bagflow-stamp-gap
+    inputs:
+      msgs: /joint_states    # ← ロボットの状態トピックに変更
+    env:
+      # 既定は「中央値 x GAP_FACTOR(3)」。到着が二峰性のトピック（バースト＋
+      # 小休止）では健全でも大量に引っかかるので、実データを1本流して
+      # median_interval_ms / max_gap_ms を見てから GAP_MS で絶対値に固定する。
+      GAP_MS: '200'
+
+  # ---- 全トピックの記録有無・レート（デコード無し・metadata 由来） ----------
+  - id: topic_rate
+    path: bagflow-topic-rate
+    env:
+      EXPECT_HZ: '${KAIROS_EXPECT_HZ}'
+      TOLERANCE: '0.9'

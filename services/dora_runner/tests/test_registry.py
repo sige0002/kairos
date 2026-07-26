@@ -17,9 +17,32 @@ def test_default_registry_has_runnable_and_placeholders() -> None:
     # The four implemented pipelines are runnable; placeholders are not.
     for pid in ("fast_validation", "dataset_export", "loss_report", "video_check"):
         assert reg.runnable(pid), pid
-    for pid in ("full_validation", "dataset_convert", "dataset_validation"):
+    for pid in ("dataset_convert", "dataset_validation"):
         assert not reg.runnable(pid), pid
         assert reg.get(pid) is not None and reg.get(pid).enabled is False
+
+
+def test_full_validation_follows_bagflow_availability(monkeypatch) -> None:
+    """full_validation is the one pipeline gated on binaries the source tree does
+    not carry: runnable in the image, an honest placeholder anywhere else."""
+    import dora_runner.registry as registry_module
+
+    monkeypatch.setattr(registry_module, "bagflow_available", lambda: False)
+    absent = registry_module.build_default_registry(discover=False).get(
+        "full_validation"
+    )
+    assert absent is not None and absent.enabled is False
+    assert "bagflow" in absent.description
+
+    monkeypatch.setattr(registry_module, "bagflow_available", lambda: True)
+    monkeypatch.setattr(registry_module, "list_flows", lambda: ["default", "cameras"])
+    present = registry_module.build_default_registry(discover=False).get(
+        "full_validation"
+    )
+    assert present is not None and present.enabled is True
+    # Discovered flows drive the auto-rendered form (a picker, not free text).
+    assert present.params_schema["properties"]["flow"]["enum"] == ["default", "cameras"]
+    assert present.executor == "dora"
 
 
 def test_runnable_unknown_pipeline_is_false() -> None:
