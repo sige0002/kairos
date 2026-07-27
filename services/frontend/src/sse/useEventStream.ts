@@ -61,13 +61,52 @@ function summarizeJob(data: JobStatus): string {
   return `${data.pipeline} · ${data.state}${run}`;
 }
 
+// How far through one run's lifecycle a state is. Within a SINGLE run the
+// recorder only ever moves forward, so a lower rank arriving after a higher one
+// is a stale event, not news. Across runs it says nothing (a new run legitimately
+// starts at `recording` after the previous one `completed`), which is why the
+// guard below only applies when the run_id matches.
+const STATE_RANK: Record<string, number> = {
+  idle: 0,
+  created: 1,
+  armed: 2,
+  recording: 3,
+  stopping: 4,
+  completed: 5,
+  failed: 5,
+  interrupted: 5,
+};
+
+/**
+ * True when *data* would move the cached status BACKWARDS within the same run.
+ * Such an event must be dropped: rewinding to `recording` after the stop landed
+ * makes the Collect screen believe a recording it is not driving is running, and
+ * it shows the takeover card ("RECORDING IN PROGRESS") over a take the operator
+ * has already stopped.
+ */
+function isStaleRecordStatus(
+  prev: RecordStatus | undefined,
+  data: RecordStatusEvent,
+): boolean {
+  if (!prev || prev.run_id !== data.run_id) return false;
+  const before = STATE_RANK[prev.state ?? ''];
+  const after = STATE_RANK[data.state ?? ''];
+  if (before === undefined || after === undefined) return false;
+  return after < before;
+}
+
 function applyRecordStatus(qc: QueryClient, data: RecordStatusEvent): void {
   // Merge onto the previous cache entry rather than replacing it. The arming
   // snapshot (OL-①.4) rides only on the post-arming `recording` event; a later
   // counters-only event omits it, so spreading `prev` first preserves the
   // last-known arming instead of wiping the poll/SSE value to undefined. An
   // explicit `null` from the backend still clears it (handled below).
+  let dropped = false;
   qc.setQueryData<RecordStatus>(queryKeys.recordStatus, (prev) => {
+    if (isStaleRecordStatus(prev, data)) {
+      dropped = true;
+      return prev;
+    }
     const next: RecordStatus = {
       ...prev,
       run_id: data.run_id,
@@ -78,7 +117,13 @@ function applyRecordStatus(qc: QueryClient, data: RecordStatusEvent): void {
     if (data.arming !== undefined) next.arming = data.arming;
     return next;
   });
-  appendLog(qc, 'record_status', summarizeRecordStatus(data));
+  // Still logged when dropped — silently swallowing it would hide a real
+  // ordering problem behind a UI that merely looks correct.
+  appendLog(
+    qc,
+    'record_status',
+    `${summarizeRecordStatus(data)}${dropped ? ' (stale — ignored)' : ''}`,
+  );
 }
 
 function applyMetrics(qc: QueryClient, data: MetricsSnapshot): void {

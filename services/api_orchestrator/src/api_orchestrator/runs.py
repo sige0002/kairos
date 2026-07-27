@@ -745,6 +745,16 @@ class RunService:
                     # disarms cleanly when called in the armed state.
                     await self._recorder.stop()
                     self._prepared = None
+                    return self._last_run_or_idle()
+                # "No row claims to be active" is NOT "nothing is recording":
+                # a row can be missing or in the wrong state (a start whose row
+                # never committed, a crash/restart, a reconcile that raced).
+                # Returning the last run here would report SUCCESS for a stop
+                # that stopped nothing — the operator walks on to labelling a
+                # take the recorder is still writing, and only the
+                # MAX_RECORD_SECONDS backstop ever ends it. A Stop must stop.
+                active = await self._adopt_recorder_session()
+            if active is None:
                 # Idempotent stop: nothing recording -> report the last run (or
                 # raise 404 only if there has never been a run at all).
                 return self._last_run_or_idle()
@@ -1073,6 +1083,40 @@ class RunService:
         tasks = list(self._settlement_tasks)
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _adopt_recorder_session(self) -> Run | None:
+        """Adopt a recording the DB does not know is active, so Stop stops it.
+
+        Called from :meth:`stop` when no row claims to be recording. Asks the
+        recorder what it is actually doing:
+
+        - not recording -> ``None`` (a genuinely idempotent no-op stop);
+        - recording a run we HAVE a row for -> return that row, so the caller
+          runs the normal stop+finalize path over it;
+        - recording a run we have NO row for -> stop it here (there is nothing
+          to finalize) and return ``None``.
+
+        Either way the recorder does not keep writing after the operator asked
+        it to stop. Both adopting branches are logged at warning: reaching here
+        means the DB and the recorder had already drifted apart.
+        """
+        status = await self._recorder.status()
+        if not self._recorder_is_active(status):
+            return None
+        run_id = status.get("run_id")
+        run = self._store.get(run_id) if isinstance(run_id, str) else None
+        if run is None:
+            await self._recorder.stop()
+            logger.warning(
+                "stopped a recorder session that has no run row",
+                extra={"recorder_run_id": run_id},
+            )
+            return None
+        logger.warning(
+            "adopting a recording the run store did not have as active",
+            extra={"run_id": run.run_id, "row_state": run.state.value},
+        )
+        return run
 
     def _last_run_or_idle(self) -> Run:
         """Return the newest run for an idempotent stop with nothing active.

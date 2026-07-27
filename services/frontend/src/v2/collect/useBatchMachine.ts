@@ -1641,7 +1641,32 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   });
 
   const stopMutation = useMutation({
-    mutationFn: () => apiPost<RunDetail>('/record/stop', {}),
+    mutationFn: async () => {
+      const run = await apiPost<RunDetail>('/record/stop', {});
+      // A 200 does not on its own prove the recorder stopped. /record/stop is
+      // idempotent and answers with the last run when it finds nothing active,
+      // so a recorder still holding the bag can look like success — and then
+      // this screen walks on to labelling a take that is still being written,
+      // with nothing to end it but the MAX_RECORD_SECONDS backstop. Confirm
+      // against the recorder before advancing; a still-running recorder routes
+      // to onError -> STOP_FAILED, which keeps the operator on SAVING with the
+      // Retry-stop button instead of pretending the take is done.
+      const after = await apiGet<RecordStatus>('/record/status');
+      if (after.state === 'recording' || after.state === 'stopping') {
+        throw new ApiError(
+          409,
+          {
+            error: {
+              code: 'stop_not_confirmed',
+              message: `The recorder is still ${after.state}. The recording was not stopped — retry.`,
+              details: {},
+            },
+          },
+          'the recorder did not stop',
+        );
+      }
+      return run;
+    },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.recordStatus });
       // The stop returned the finalised run: advance SAVING → QUICK CHECK on the

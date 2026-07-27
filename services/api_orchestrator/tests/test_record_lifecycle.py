@@ -150,6 +150,54 @@ def test_stop_is_idempotent_returns_last_run(client: TestClient) -> None:
     assert body["state"] == "completed"
 
 
+def test_stop_stops_a_recording_the_store_lost_track_of(
+    client: TestClient, fake_recorder: FakeRecorder, store: RunStore
+) -> None:
+    """A Stop must STOP, even when no row claims to be recording.
+
+    Regression: the idempotent branch returned the last run whenever no row was
+    active, so a recorder still holding a bag (row missing/in the wrong state)
+    answered the operator's Stop with SUCCESS while it kept writing. The console
+    then walked on to labelling a take that was still recording, and only the
+    MAX_RECORD_SECONDS backstop ever ended it.
+    """
+    started = client.post("/api/v1/record/start", json={"topics": ["/tf"]}).json()
+    run_id = started["run_id"]
+    # Drift the DB away from reality: the row is no longer 'recording', but the
+    # recorder still is (what a lost/raced row looks like from here).
+    store.update(run_id, state=RunState.created)
+    assert fake_recorder.state == "recording"
+
+    resp = client.post("/api/v1/record/stop")
+
+    assert resp.status_code == 200
+    assert fake_recorder.state != "recording", "the recorder must actually be stopped"
+    body = resp.json()
+    assert body["run_id"] == run_id
+    assert body["state"] == "completed"
+
+
+def test_stop_stops_an_orphan_recording_with_no_row_at_all(
+    client: TestClient, fake_recorder: FakeRecorder
+) -> None:
+    """The recorder is recording a run this orchestrator has never seen.
+
+    There is nothing to finalize, but leaving it running would be the same
+    silent failure — so it is stopped, and the response stays the idempotent
+    last-run answer.
+    """
+    client.post("/api/v1/record/start", json={"topics": ["/tf"]})
+    client.post("/api/v1/record/stop")
+    # A recording appears that belongs to no row (another client, a restart...).
+    fake_recorder.state = "recording"
+    fake_recorder.run_id = "run_not_in_this_store"
+
+    resp = client.post("/api/v1/record/stop")
+
+    assert resp.status_code == 200
+    assert fake_recorder.state != "recording"
+
+
 def test_start_omitted_topics_without_defaults_is_400(client: TestClient) -> None:
     """Omitting topics with no default_topics configured is a clear 400."""
     resp = client.post("/api/v1/record/start", json={})
