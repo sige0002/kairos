@@ -161,6 +161,32 @@ Phase A hardening toward a supportable release
 
 ### Fixed
 
+- **A Stop now actually stops** (user report 2026-07-27). `POST /record/stop`
+  treated "no run row claims to be recording" as "nothing is recording" and
+  returned the last run with `200` — but a row can be missing or in the wrong
+  state, so a recorder still writing answered the operator's Stop with success.
+  The console then advanced to labelling a take that was still being recorded,
+  and only the `MAX_RECORD_SECONDS` backstop ever ended it. The stop now asks
+  the recorder what it is actually doing: a run with a row is adopted and
+  finalized normally, an orphan with no row is stopped anyway, and both are
+  logged at WARNING. The console no longer trusts the `200` on its own either —
+  it confirms against `/record/status` and, if the recorder is still recording,
+  stays on SAVING with `Retry stop` instead of pretending the take is done.
+- **A stale `record_status` SSE event can no longer rewind the UI.** The event
+  writer set the cached state unconditionally, so an event arriving late could
+  move it back to `recording` — which is exactly what renders the takeover card
+  ("RECORDING IN PROGRESS") over a take the operator already stopped. Rewinds
+  are dropped within a run (a different run_id is not a rewind) and logged as
+  ignored rather than swallowed.
+- **Collect's Active warnings no longer calls a live topic dead** (user report
+  2026-07-27). The recorder's arming snapshot was frozen at the FIRST prepare
+  and never re-read, so a target that was down then — and live seconds later —
+  stayed "not publishing" through every pre-arm keep-alive, through the start,
+  and for the whole recording, while Monitor showed it at full rate. The graph
+  is now re-read while armed and frozen at resume (real start-time coverage),
+  and `RecordArming` gains `unsubscribed_topics` so "no publisher" and
+  "published but the recorder has not subscribed yet" are reported as the
+  different problems they are.
 - Review now shows WHY a task failed (user report 2026-07-14): the
   `failure_reason` picked at save time surfaces as the FAILURE chip tooltip
   (Review list + Datasets cards) and in the Review detail panel; it also rides

@@ -55,6 +55,13 @@ The **job management / state management / API hub** container. The single public
 2. Calls the recorder's `POST /record/start` (passing `run_id`). On success, `state=recording`; on failure, the **run row is kept and updated to `state=failed`** (recording the reason. The DB row is not deleted).
 3. Immediately after a successful start, fetches the recorder's `GET /record/metadata` and **syncs the finalized topics / type / QoS (including the result of `"all"` expansion) to the run row**. On fetch failure, keeps it `recording`, records the reason in `error`, and retries.
 4. `POST /api/v1/record/stop` → recorder stop → re-syncs the final metadata (`message_count` / `bytes` / `ended_at` / topics) and sets `state=completed`. If it completes while still unable to sync, it is set to `state=completed` and the sync failure is left in `error` (subject to reconciliation). After finalizing, it **runs the stop-time quick check off the stop response** and writes `quick_check` onto the run row when it lands (see "Stop-time quick check" below).
+
+   **A stop must STOP (revised 2026-07-27).** Idempotent does not mean "do nothing when no DB row claims to be recording": a row can be missing or in the wrong state (a start whose row never committed, a crash, a reconcile that raced). So when no row is active, `stop` asks the recorder what it is ACTUALLY doing:
+   - recorder not recording → the idempotent no-op as before (return the last run; 404 only if no run has ever existed)
+   - recorder recording a run we **have a row for** → adopt that row and run the normal stop+finalize path over it
+   - recorder recording with **no row** (an orphan) → nothing to finalize, but stop it anyway
+
+   Both adopting branches log at WARNING (reaching them means the DB and the recorder had already drifted). Without this, a stop that stopped nothing answers `200`, the console walks on to labelling a take that is still being written, and the `MAX_RECORD_SECONDS` backstop is the only thing that ever ends it.
 5. **Reconciliation on restart**: at startup, reconciles `recording` / `stopping` runs against the recorder's `GET /record/status`, and if no actual entity exists, updates to `state=interrupted`.
 
 - The `run_id` is owned by the orchestrator and passed to the recorder. **SQLite is the single source of truth**; the recorder's `manifest.json` is for auditing.
@@ -158,7 +165,7 @@ An operation that **moves a recording from the canonical staging (`recorded/`) t
 
 - Format: `id:` (monotonically increasing integer) / `event:` (kind) / `data:` (JSON).
 - Kinds and payloads:
-  - `record_status`: `{ run_id, state, message_count, bytes, started_at }` (`started_at` is additive — a page that missed the start transition can still render the elapsed time of an in-progress recording)
+  - `record_status`: `{ run_id, state, message_count, bytes, started_at }` (`started_at` is additive — a page that missed the start transition can still render the elapsed time of an in-progress recording). **Receivers must drop a rewind within the same run** (2026-07-27): one run's state only moves `created → armed → recording → stopping → terminal`, so a lower state arriving late is old information, not news. A rewind to `recording` makes the console believe a recording it is not driving is running, and it puts the takeover card over an already-stopped take. A differing run_id is not a rewind (a new run legitimately goes `recording` right after the previous one reached a terminal state).
   - `metrics`: `topic_monitor`'s periodic snapshot (the output schema of [topic_monitor](topic_monitor.md))
   - `alert`: `{ topic, metric, level, value, threshold }`
   - `job`: `{ job_id, run_id, pipeline, state, progress }`
