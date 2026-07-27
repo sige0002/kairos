@@ -1,0 +1,18 @@
+# Build context is the repo root (compose builds every service with `context: .`).
+# Exclude host-generated, architecture-specific artifacts so a `COPY <dir> ./`
+# in a Dockerfile can never clobber the deps installed inside the image
+# (e.g. an arm64 host node_modules/.venv overwriting the linux-x64 install and
+# breaking `tsc`/native binaries). Keeps the context small too.
+**/node_modules
+**/.venv
+**/dist
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.ruff_cache
+**/.mypy_cache
+
+.git
+data
+backups
+*.tar.gz
