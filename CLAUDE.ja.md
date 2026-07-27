@@ -105,7 +105,7 @@ kairos/
 - **結合テスト（実データ再生）**: テスト用に **rosbag2 を再生 + 可視化するコンテナ**を用意済み。
   - 定義: `deploy/test/`（`Dockerfile` + `compose.yaml` + `topic_table.py` + `smoke.sh`）。
   - `data/` を**ボリューム共有**（`/data` に read-only マウント）し、収録済み MCAP を ROS 2 グラフへ流す。
-  - **`ROS_DOMAIN_ID=0`**、`network_mode: host` / `ipc: host`（ホストの DDS グラフ・SHM を共有）。
+  - **`ROS_DOMAIN_ID`** はスタックと同じ `.env` の値に追従（既定 0）、`network_mode: host` / `ipc: host`（ホストの DDS グラフ・SHM を共有）。
   - 2 サービス（**別ターミナルで併用**）:
     ```
     # ① 流れている topic を“見える化”（全 topic の Hz/帯域/件数を定期表示）

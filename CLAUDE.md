@@ -107,7 +107,7 @@ kairos/
 - **Integration tests (real-data replay)**: a **rosbag2 replay + visualization container** is provided.
   - Definition: `deploy/test/` (`Dockerfile` + `compose.yaml` + `topic_table.py` + `smoke.sh`).
   - Shares `data/` as a **volume** (read-only mount at `/data`) and streams recorded MCAP onto the ROS 2 graph.
-  - **`ROS_DOMAIN_ID=0`**, `network_mode: host` / `ipc: host` (shares the host's DDS graph and SHM).
+  - **`ROS_DOMAIN_ID`** follows the stack's `.env` value (default 0), `network_mode: host` / `ipc: host` (shares the host's DDS graph and SHM).
   - Two services (**use them together in separate terminals**):
     ```
     # ① "see" what is flowing (periodic table of every topic's Hz/bandwidth/count)

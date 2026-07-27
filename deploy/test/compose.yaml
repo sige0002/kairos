@@ -1,5 +1,5 @@
 # Test harness: replay a recorded rosbag (MCAP) onto the ROS 2 graph
-# (ROS_DOMAIN_ID=0) so services can be exercised against real recorded data —
+# (the stack's ROS_DOMAIN_ID, from .env) so services can be exercised against real data —
 # and *see* what is flowing while it plays.
 #
 # Two services:
@@ -38,8 +38,11 @@ services:
   rosbag_player:
     <<: *ros-common
     environment:
-      # Shared ROS 2 domain for all kairos containers/tests.
-      ROS_DOMAIN_ID: "0"
+      # Shared ROS 2 domain for all kairos containers/tests. Follows the SAME
+      # .env key the stack uses: replaying onto domain 0 while the recorder and
+      # monitor sit on the robot's domain means the bag plays to nobody, and the
+      # only symptom is "no topics" — so it must never be a literal here.
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
       # Match the kairos services' DDS implementation (default Fast DDS; set to
       # rmw_cyclonedds_cpp to replay onto a Cyclone DDS graph).
       RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
@@ -70,7 +73,8 @@ services:
   topic_table:
     <<: *ros-common
     environment:
-      ROS_DOMAIN_ID: "0"
+      # Same .env key as the stack (see rosbag_player above).
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
       # Match the kairos services' DDS implementation (see rosbag_player above).
       RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
       # REFRESH=<s> table interval; DURATION=<s> auto-exits (handy for smoke tests).
