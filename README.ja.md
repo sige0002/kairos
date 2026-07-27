@@ -175,20 +175,10 @@ make recording-up
 足りないかを表示して止まります（compose に任せると build か pull でネットを掴みに行き、オフライン
 では原因の分からないまま固まるため）。
 
-**イメージだけでは足りません。** 以下も一緒に持ち込む必要があります（`git clone` 自体がネット必須
-なので、リポジトリはディレクトリごと rsync / USB で運ぶ）。
-
-| 持ち込むもの | 理由 |
-|---|---|
-| リポジトリ一式（`compose.yaml` / `Makefile` / `config/<robot>/`） | `make` と compose が読む。Git 管理下なので clone かコピー |
-| `.env` | `.gitignore` 済み。`.env.example` をコピーして作る（`ROBOT=` を実機に合わせる） |
-| `config/local/<robot>/` | `.gitignore` 済み。自分のロボットの設定一式。`make push-config` で送れる |
-| `deploy/msgs_overlay/<robot>/` | `.gitignore` 済み。カスタムメッセージ型を使うロボットのみ |
-| コンテナイメージ（下記） | ビルドを避けるため |
-
-`deploy/msgs_overlay/<robot>/install/` が未ビルドなら、持ち込んだ先で `make msgs-build` を実行すれば
-作れます（ローカルの recorder イメージの中で `colcon build` するだけなのでネットワーク不要）。
-`data/` は空で構いません（実運用の録画は現地で作られる）。
+**イメージだけでは足りません。** `make` と compose が読むリポジトリ、そして `.gitignore` 済みの
+`.env` / `config/local/<robot>/` / `deploy/msgs_overlay/<robot>/` も要ります（`git clone` 自体が
+ネット必須）。**rsync でディレクトリごと運べば `.gitignore` 済みのファイルも一緒に行く**ので、
+実務上は「①イメージを焼く → ②リポジトリを rsync → ③現地で load して起動」の 3 手です。
 
 ```bash
 # ① ネットワークのあるマシンで（イメージ一覧は compose から自動導出されるのでズレません）
@@ -196,13 +186,40 @@ make images-save                    # 全サービス + 再生/確認ハーネ�
 make robot-images-save              # ロボット側の 4 サービスだけ（split 構成）
 make recording-images-save          # 録画 PC 側の 3 サービスだけ（split 構成）
 
-# ② コピー
-scp kairos-images.tar.gz <robot>:/tmp/
+# ② リポジトリを丸ごと運ぶ（除外必須。素の scp -r は data/ を巻き込んで数十 GB になる）
+rsync -av \
+  --exclude='/data/*' \
+  --exclude='.venv/' \
+  --exclude='node_modules/' \
+  --exclude='/deploy/msgs_overlay/*/build/' \
+  --exclude='/deploy/msgs_overlay/*/log/' \
+  --exclude='/backups/' --exclude='*.tar.gz' \
+  ~/kairos/ <user>@<host>:~/kairos/
+scp kairos-images.tar.gz <user>@<host>:~/
 
 # ③ 持ち込んだマシンで
-make images-load IMAGES_FILE=/tmp/kairos-images.tar.gz
+make images-load IMAGES_FILE=~/kairos-images.tar.gz
 make up                             # あるいは make robot-up
+make smoke                          # 動作確認（ハーネスも同梱されているので通る）
 ```
+
+除外の理由と実測値（この構成での測定値。環境で変わります）:
+
+| 対象 | サイズ | なぜ除外 / 必要 |
+|---|---|---|
+| `data/` | **20 GB** | 録画とサンプル bag。現地では空でよい |
+| `.venv` ×8・`node_modules` | 約 950 MB | ホスト側の開発用。イメージの中に別途入っている |
+| overlay の `build/` `log/` | 65 MB | colcon の中間生成物。**`install/` だけ**あればよい |
+| **除外後の実転送量** | **40 MB**（`.git` 込み・9,337 ファイル） | |
+
+`--exclude='/data/*'` を `/data/` ではなく `/data/*` にするのは**意図的**です。`data/` ディレクトリ
+自体は空で存在させる必要があります — 無いと `./data:/data` バインドマウントを Docker が root 所有で
+作ってしまい、非 root で動く orchestrator が書けなくなります。
+
+この rsync で `.env` / `config/local/<robot>/` / `deploy/msgs_overlay/<robot>/install/` が実際に
+運ばれることは dry-run で確認済みです。`install/` が未ビルドなら現地で `make msgs-build`（ローカルの
+recorder イメージ内で `colcon build` するだけなのでネット不要）。split 構成なら現地で `.env` の
+`*_HOST` / `ROBOT_IP` を実機の IP に直します。
 
 出力先は `IMAGES_FILE=` で変えられます。実測: robot-edge の 4 イメージ = **384 MB / 約 35 秒**、
 全サービス + ハーネスの 8 イメージ = **562 MB**（共通レイヤは 1 回だけ保存されるので、数だけ増えても

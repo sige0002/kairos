@@ -179,20 +179,10 @@ of making it build. `make up` checks — using local information only — that t
 present, and stops naming the missing ones if they are not (left to compose, a missing image means
 either a build or a pull, so offline it just hangs on the network with no useful message).
 
-**Images alone are not enough.** These have to travel too (`git clone` itself needs the network, so
-carry the repository as a directory via rsync/USB):
-
-| What to carry | Why |
-|---|---|
-| The repository (`compose.yaml` / `Makefile` / `config/<robot>/`) | What `make` and compose read. Tracked in Git — clone or copy |
-| `.env` | Gitignored. Make it from `.env.example` (set `ROBOT=` to the real robot) |
-| `config/local/<robot>/` | Gitignored. Your robot's own config set — `make push-config` can send it |
-| `deploy/msgs_overlay/<robot>/` | Gitignored. Only for robots with custom message types |
-| The container images (below) | So nothing has to be built there |
-
-If `deploy/msgs_overlay/<robot>/install/` has not been built, run `make msgs-build` on the target
-machine — it only runs `colcon build` inside the local recorder image, so it needs no network. `data/`
-can be empty (real recordings are made on site).
+**Images alone are not enough.** The repository `make` and compose read has to travel, and so do the
+gitignored `.env`, `config/local/<robot>/` and `deploy/msgs_overlay/<robot>/` (`git clone` itself needs
+the network). **rsync of the directory carries the gitignored files along with it**, so in practice
+this is three steps: build the archive, rsync the tree, load and start.
 
 ```bash
 # 1. where there IS network (the image list is derived from compose, so it cannot drift)
@@ -200,13 +190,40 @@ make images-save                    # all services + the replay/inspection harne
 make robot-images-save              # only the robot-edge 4 (split deployment)
 make recording-images-save          # only the recording-host 3 (split deployment)
 
-# 2. copy it across
-scp kairos-images.tar.gz <robot>:/tmp/
+# 2. carry the repository (excludes are mandatory — a plain `scp -r` drags data/ along, tens of GB)
+rsync -av \
+  --exclude='/data/*' \
+  --exclude='.venv/' \
+  --exclude='node_modules/' \
+  --exclude='/deploy/msgs_overlay/*/build/' \
+  --exclude='/deploy/msgs_overlay/*/log/' \
+  --exclude='/backups/' --exclude='*.tar.gz' \
+  ~/kairos/ <user>@<host>:~/kairos/
+scp kairos-images.tar.gz <user>@<host>:~/
 
 # 3. on that machine
-make images-load IMAGES_FILE=/tmp/kairos-images.tar.gz
+make images-load IMAGES_FILE=~/kairos-images.tar.gz
 make up                             # or make robot-up
+make smoke                          # check it works (the harness travelled too)
 ```
+
+Why each exclusion, with measured sizes (from this setup — yours will differ):
+
+| What | Size | Why excluded / needed |
+|---|---|---|
+| `data/` | **20 GB** | Recordings and sample bags. Empty is fine on site |
+| 8× `.venv` + `node_modules` | ~950 MB | Host-side dev only; the images carry their own |
+| overlay `build/` + `log/` | 65 MB | colcon intermediates — only **`install/`** is needed |
+| **actually transferred** | **40 MB** (incl. `.git`, 9,337 files) | |
+
+`--exclude='/data/*'` rather than `/data/` is **deliberate**: the `data/` directory itself must exist
+and be empty. Without it Docker creates the `./data:/data` bind mount root-owned, and the orchestrator
+(which runs non-root) cannot write to it.
+
+A dry run confirms this rsync really carries `.env`, `config/local/<robot>/` and
+`deploy/msgs_overlay/<robot>/install/`. If `install/` has not been built, run `make msgs-build` on the
+target machine (just `colcon build` inside the local recorder image — no network). For a split
+deployment, fix `*_HOST` / `ROBOT_IP` in `.env` to the real robot's IP on site.
 
 Change the destination with `IMAGES_FILE=`. Measured: the 4 robot-edge images → **384 MB in about
 35 s**; all services plus the harness (8 images) → **562 MB** (shared layers are stored once, so the
