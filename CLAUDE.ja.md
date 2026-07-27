@@ -84,9 +84,12 @@ kairos/
   機体設定は単一 `ROBOT`（既定 `airoa_hsr`）で選ぶ。`make` が `config/<robot>/`（committed）/
   `config/local/<robot>/`（gitignored）を解決し、recording/stream/validation/validators の各パスを
   派生して各サービスへ渡す（`.env` の陳腐化パス回避）。
-  主なもの: `make up` / `make rebuild <svc>` / `make restart <svc>` / `make logs <svc>` /
-  `make config-reload`（config 反映）/ `make rosbag-loop` / `make table` / `make smoke[-record]` /
-  `make test` / `make lint` / `make fmt`。以下は各コマンドの実体。
+  主なもの: `make up`（**起動のみ・build しない**）/ `make build` / `make rebuild <svc>`（コード変更の反映）/
+  `make restart <svc>` / `make logs <svc>` / `make config-reload`（config 反映）/ `make rosbag-loop` /
+  `make table` / `make smoke[-record]` / `make test` / `make lint` / `make fmt`。以下は各コマンドの実体。
+  **build と起動は意図的に分離**している（build は変更が無くてもネットワークを要するため、`up` が毎回
+  build するとネットの無い現場で起動できない）。イメージの無いマシンへは
+  `make images-save` → コピー → `make images-load` で持ち込む。
 - **単体テスト（Python）**: 各サービス／共有ライブラリ内で `uv run --extra test pytest -q`。
   ```
   for d in libs/kairos_common services/rosbag2_recorder services/topic_monitor \

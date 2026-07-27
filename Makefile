@@ -1,9 +1,17 @@
 # kairos — convenience targets around docker compose + the test harness.
 #
 #   make                      # show this help
-#   make up                   # build + start the whole stack (detached)
+#   make up                   # start the whole stack (detached) from existing images
+#   make rebuild frontend     # apply code changes: build + recreate that service
 #   make build monitor        # build one service (positional); `make build` = all
 #   make restart monitor orchestrator   # restart service(s)
+#
+# BUILD vs START are separate on purpose: building needs the network even when
+# nothing changed, so `up` never builds — that is what lets the stack come up in
+# the field. On a machine that has no images at all, carry them in as a file:
+#   make images-save          # where there IS network (robot-images-save for the split)
+#   make images-load IMAGES_FILE=kairos-images.tar.gz   # on the offline machine
+#   make build-pull           # refresh the upstream base images (needs network)
 #   make rosbag-loop          # replay the sample bag on a loop (separate terminal)
 #   make table                # live "what's flowing" topic Hz table
 #   make smoke                # end-to-end PASS/FAIL check
@@ -143,14 +151,43 @@ PY_DIRS := libs/kairos_common services/rosbag2_recorder services/topic_monitor \
 .DEFAULT_GOAL := help
 
 # ---- compose lifecycle ------------------------------------------------------
-.PHONY: up up-nobuild down build rebuild restart logs ps stop urls msgs-build
-up: ## build + start the stack detached (RECORDING_CONFIG-aware)
-	$(COMPOSE) up -d --build $(SVC)
-	@$(MAKE) --no-print-directory urls
+# `up` STARTS; it does not build. Building needs the network even when nothing
+# changed (BuildKit resolves base images / the Dockerfile frontend), so an `up`
+# that always built could not bring the stack up in the field with no network.
+# Starting from EXISTING images touches the network not at all.
+#
+# A missing image is checked LOCALLY first (require_images below) because compose
+# reaches for the network either way when one is absent, and neither way says
+# what is wrong: plain `up` BUILDS it (needs the registry), and `up --no-build`
+# falls back to PULLING `kairos-*` from a registry that does not host them —
+# measured: "pull access denied ... repository does not exist", after a round
+# trip that simply hangs when there is no network. So we refuse early, on local
+# information only, and name the two ways forward.
+#
+# $(1) = compose invocation, $(2) = the make target that builds this half.
+define require_images
+	@missing=""; \
+	 for img in $$($(1) config --images $(SVC) | sort -u); do \
+	   docker image inspect "$$img" >/dev/null 2>&1 || missing="$$missing $$img"; \
+	 done; \
+	 if [ -n "$$missing" ]; then \
+	   echo "not started: this machine has no image for:"; \
+	   for m in $$missing; do echo "    $$m"; done; \
+	   echo ""; \
+	   echo "  with network:     make $(2)"; \
+	   echo "  without network:  make images-load IMAGES_FILE=<archive>"; \
+	   echo "                    (produced by 'make images-save' on a machine that has them)"; \
+	   exit 1; \
+	 fi
+endef
 
-up-nobuild: ## start the stack detached WITHOUT rebuilding (uses existing images)
+.PHONY: up up-nobuild down build build-pull rebuild restart logs ps stop urls msgs-build
+up: ## start the stack detached, using existing images (RECORDING_CONFIG-aware)
+	$(call require_images,$(COMPOSE),build)
 	$(COMPOSE) up -d $(SVC)
 	@$(MAKE) --no-print-directory urls
+
+up-nobuild: up ## deprecated alias of `up` (which no longer builds); kept for muscle memory
 
 msgs-build: ## build custom ROS msgs (dir from MSGS_OVERLAY_DIR / .env; per-robot)
 	@dir="$(MSGS_OVERLAY_DIR)"; \
@@ -191,8 +228,11 @@ stop: ## stop the stack (keep containers)
 build: ## build images: `make build` (all) or `make build monitor`
 	$(COMPOSE) build $(SVC)
 
-rebuild: ## rebuild + recreate service(s): `make rebuild frontend`
+rebuild: ## rebuild + recreate service(s) — the "apply my code changes" command
 	$(COMPOSE) up -d --build --force-recreate $(SVC)
+
+build-pull: ## rebuild pulling FRESH base images (ros/python/node upstream). NEEDS NETWORK
+	$(COMPOSE) build --pull $(SVC)
 
 restart: ## restart service(s): `make restart monitor orchestrator`
 	$(COMPOSE) restart $(SVC)
@@ -202,6 +242,37 @@ logs: ## follow logs: `make logs` (all) or `make logs streamer`
 
 ps: ## show container status
 	$(COMPOSE) ps
+
+# ---- carrying images to a machine with no network ---------------------------
+# For a machine that has never built these images (a fresh robot / a field PC),
+# `up` has nothing to start from and compose would try to build. Move the built
+# images over as a file instead: `make images-save` where there IS network, copy
+# the archive across, `make images-load` there, then `make up`.
+# The image list comes from `compose config --images`, so it cannot drift from
+# the compose files (and each half of the split saves only its own services).
+# ARCHITECTURE: images are per-arch. An amd64 archive will NOT run on an arm64
+# robot — build there while it has network, or use `docker buildx --platform`.
+IMAGES_FILE ?= kairos-images.tar.gz
+
+# $(1) = compose invocation, $(2) = label for the log.
+define save_images
+	@imgs="$$($(1) config --images | sort -u)"; \
+	 [ -n "$$imgs" ] || { echo "no images resolved for $(2)"; exit 1; }; \
+	 echo "$(2): saving these images -> $(IMAGES_FILE)"; \
+	 echo "$$imgs" | sed 's/^/  /'; \
+	 docker save $$imgs | gzip > "$(IMAGES_FILE)"; \
+	 echo "OK -> $(IMAGES_FILE) ($$(du -h "$(IMAGES_FILE)" | cut -f1))"; \
+	 echo "next: copy it over, then on that machine: make images-load IMAGES_FILE=<file>"
+endef
+
+.PHONY: images-save images-load robot-images-save recording-images-save
+images-save: ## save ALL stack images -> kairos-images.tar.gz (IMAGES_FILE=... to change)
+	$(call save_images,$(COMPOSE),single-host)
+
+images-load: ## load images from kairos-images.tar.gz (IMAGES_FILE=...) on the offline machine
+	@[ -f "$(IMAGES_FILE)" ] || { echo "not found: $(IMAGES_FILE) (set IMAGES_FILE=...)"; exit 1; }
+	gunzip -c "$(IMAGES_FILE)" | docker load
+	@echo "loaded — now: make up"
 
 # ---- config -----------------------------------------------------------------
 # ---- cross-host split (robot-edge / recording-host) -------------------------
@@ -218,12 +289,13 @@ COMPOSE_ROBOT     := $(if $(SPLIT_ENV),KAIROS_ENV_FILE=$(SPLIT_ENV),) docker com
 COMPOSE_RECORDING := $(if $(SPLIT_ENV),KAIROS_ENV_FILE=$(SPLIT_ENV),) docker compose $(if $(SPLIT_ENV),--env-file $(SPLIT_ENV),) -f compose.recording.yaml
 
 .PHONY: robot-up robot-down robot-build robot-rebuild robot-restart robot-logs robot-ps robot-config-reload \
-        recording-up recording-down recording-build recording-rebuild recording-restart recording-logs \
-        recording-ps recording-config-reload import-runs push-config
+        robot-images-save recording-up recording-down recording-build recording-rebuild recording-restart \
+        recording-logs recording-ps recording-config-reload recording-images-save import-runs push-config
 # All robot-* / recording-* targets take positional service names like the
 # single-host ones (e.g. `make robot-rebuild recorder`, `make robot-logs monitor`).
-robot-up: ## [ON THE ROBOT] build + start the robot-edge services (recorder/monitor/streamer/probe)
-	$(COMPOSE_ROBOT) up -d --build $(SVC)
+robot-up: ## [ON THE ROBOT] start the robot-edge services (recorder/monitor/streamer/probe)
+	$(call require_images,$(COMPOSE_ROBOT),robot-build)
+	$(COMPOSE_ROBOT) up -d $(SVC)
 
 robot-down: ## [ON THE ROBOT] stop + remove the robot-edge services
 	$(COMPOSE_ROBOT) down
@@ -246,8 +318,12 @@ robot-ps: ## [ON THE ROBOT] show robot-edge container status
 robot-config-reload: ## [ON THE ROBOT] apply config/*.yaml edits (restart monitor; recorder applies on next record)
 	$(COMPOSE_ROBOT) restart monitor
 
-recording-up: ## [ON THE RECORDING PC] build + start orchestrator/dora/frontend (set *_HOST in .env)
-	$(COMPOSE_RECORDING) up -d --build $(SVC)
+robot-images-save: ## save ONLY the robot-edge images (carry to an offline robot)
+	$(call save_images,$(COMPOSE_ROBOT),robot-edge)
+
+recording-up: ## [ON THE RECORDING PC] start orchestrator/dora/frontend (set *_HOST in .env)
+	$(call require_images,$(COMPOSE_RECORDING),recording-build)
+	$(COMPOSE_RECORDING) up -d $(SVC)
 	@$(MAKE) --no-print-directory urls
 
 recording-down: ## [ON THE RECORDING PC] stop + remove the recording-host services
@@ -270,6 +346,9 @@ recording-ps: ## [ON THE RECORDING PC] show recording-host container status
 
 recording-config-reload: ## [ON THE RECORDING PC] apply config-catalog edits (restart orchestrator)
 	$(COMPOSE_RECORDING) restart orchestrator
+
+recording-images-save: ## save ONLY the recording-host images -> kairos-images.tar.gz
+	$(call save_images,$(COMPOSE_RECORDING),recording-host)
 
 import-runs: ## [ON THE RECORDING PC] rsync COMPLETED recordings from the robot into ./data/recorded
 	bash deploy/sync/import_runs.sh

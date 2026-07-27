@@ -18,7 +18,12 @@
 # drift from the single-host default.
 #
 #   # on the ROBOT:
-#   ROBOT=airoa_hsr ROS_DOMAIN_ID=<robot's domain> docker compose -f compose.robot.yaml up -d --build
+#   # first time (or after a code change): build, then start
+#   ROBOT=airoa_hsr ROS_DOMAIN_ID=<robot's domain> docker compose -f compose.robot.yaml build
+#   ROBOT=airoa_hsr ROS_DOMAIN_ID=<robot's domain> docker compose -f compose.robot.yaml up -d
+#   # no network here? carry the images in instead of building:
+#   #   (where there IS network)  make robot-images-save
+#   #   (here)                    make images-load IMAGES_FILE=kairos-images.tar.gz
 #   # (or:  make robot-up)
 #
 # The recording PC runs compose.recording.yaml and points its service HOSTs at

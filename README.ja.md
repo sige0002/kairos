@@ -82,12 +82,19 @@ flowchart LR
 ### 全サービスの起動（Docker）
 
 ```bash
-make up                       # = build + 起動（detached）。機体は ROBOT で選択（既定 airoa_hsr）
+make build                    # イメージを作る（初回とコード変更時だけ。ネットが要る）
+make up                       # 起動（detached）。機体は ROBOT で選択（既定 airoa_hsr）
 # あるいは素の docker compose で:
 cp .env.example .env          # 必要に応じて編集
 docker compose build
 docker compose up
 ```
+
+> **`make up` はビルドしません**（起動するだけ）。ビルドは変更が無くてもネットワークを必要とする
+> ため、`up` が毎回ビルドしていると**ネットの無い現場でスタックを起動できない**からです。コード変更を
+> 反映したいときは `make rebuild <サービス名>`、上流のベースイメージごと更新したいときは
+> `make build-pull` を使います。イメージが 1 つも無いマシンへの持ち込みは
+> [オフラインのマシンで動かす](#オフラインのマシンで動かすイメージの持ち込み)を参照。
 
 全サービスは host networking で起動します。ROS 2 サービス（`recorder` / `monitor` / `streamer`）は
 ホストの DDS グラフ（`ROS_DOMAIN_ID=0`）を共有し、純 Python サービス（`orchestrator` / `dora_runner`）
@@ -141,9 +148,11 @@ make recording-up
 
 | コマンド | 内容 |
 |---|---|
-| `make up` / `make down` / `make ps` | スタックの起動（build込み）/ 停止削除 / 状態 |
+| `make up` / `make down` / `make ps` | スタックの起動（**build しない**）/ 停止削除 / 状態 |
 | `make build monitor` / `make build` | サービス build（位置引数で1つ / 無指定や `all` で全部） |
-| `make rebuild frontend` | build + 強制再作成（コード変更を反映） |
+| `make rebuild frontend` | build + 強制再作成（コード変更を反映）**＝コンテナを新しくするコマンド** |
+| `make build-pull` | 上流のベースイメージを取り直して build（ネット必須） |
+| `make images-save` / `make images-load` | イメージを 1 ファイルに書き出す / 読み込む（オフライン機への持ち込み） |
 | `make restart monitor orchestrator` | サービス再起動 |
 | `make logs streamer` | ログ追従 |
 | `make config-reload` / `make config-show` | `config/*.yaml` 編集の反映（monitor+orchestrator 再起動）/ 現在の config 表示 |
@@ -154,6 +163,56 @@ make recording-up
 別ロボットを使う場合は `make up ROBOT=<robot>` のように `ROBOT` を切り替えます（`make` が
 `config/<robot>/`（committed）/ `config/local/<robot>/`（gitignored）を解決して各サービスへ渡す）。
 別 bag は `make rosbag BAG=/data/<robot>/<run>` のように上書きできます。
+
+### オフラインのマシンで動かす（イメージの持ち込み）
+
+**ビルドは変更が無くてもネットワークを使います**（BuildKit がベースイメージ等をレジストリに解決しに
+行くため）。そのため `make up` は**起動だけ**にしてあり、イメージが既にあるマシンならネットワークに
+一切触れずに起動できます。
+
+イメージが 1 つも無いマシン（新しい実機・現場の PC）には、ビルドさせるのではなく**ファイルとして
+持ち込みます**。`make up` は起動前に**ローカルだけで**必要なイメージの有無を確認し、無ければ何が
+足りないかを表示して止まります（compose に任せると build か pull でネットを掴みに行き、オフライン
+では原因の分からないまま固まるため）。
+
+**イメージだけでは足りません。** 以下も一緒に持ち込む必要があります（`git clone` 自体がネット必須
+なので、リポジトリはディレクトリごと rsync / USB で運ぶ）。
+
+| 持ち込むもの | 理由 |
+|---|---|
+| リポジトリ一式（`compose.yaml` / `Makefile` / `config/<robot>/`） | `make` と compose が読む。Git 管理下なので clone かコピー |
+| `.env` | `.gitignore` 済み。`.env.example` をコピーして作る（`ROBOT=` を実機に合わせる） |
+| `config/local/<robot>/` | `.gitignore` 済み。自分のロボットの設定一式。`make push-config` で送れる |
+| `deploy/msgs_overlay/<robot>/` | `.gitignore` 済み。カスタムメッセージ型を使うロボットのみ |
+| コンテナイメージ（下記） | ビルドを避けるため |
+
+`deploy/msgs_overlay/<robot>/install/` が未ビルドなら、持ち込んだ先で `make msgs-build` を実行すれば
+作れます（ローカルの recorder イメージの中で `colcon build` するだけなのでネットワーク不要）。
+`data/` は空で構いません（実運用の録画は現地で作られる）。
+
+```bash
+# ① ネットワークのあるマシンで（イメージ一覧は compose から自動導出されるのでズレません）
+make images-save                    # 全サービス   -> kairos-images.tar.gz
+make robot-images-save              # ロボット側の 4 サービスだけ（split 構成）
+make recording-images-save          # 録画 PC 側の 3 サービスだけ（split 構成）
+
+# ② コピー
+scp kairos-images.tar.gz <robot>:/tmp/
+
+# ③ 持ち込んだマシンで
+make images-load IMAGES_FILE=/tmp/kairos-images.tar.gz
+make up                             # あるいは make robot-up
+```
+
+出力先は `IMAGES_FILE=` で変えられます。実測では robot-edge の 4 イメージ（展開後およそ 4 GB・共通
+レイヤは 1 回だけ保存）が **384 MB / 約 35 秒**でした。
+
+> **アーキテクチャに注意**: イメージは CPU アーキテクチャごとに別物です。amd64 で焼いたものは arm64
+> の実機では動きません。実機がネットワークに繋がるうちにそこでビルドしておくか、
+> `docker buildx build --platform linux/arm64` で焼いてください。
+
+上流のベースイメージ（`ros` / `python` / `node`）を新しくしたいときは、ネットワークのある場所で
+`make build-pull` を実行してから ① をやり直します。
 
 ### 追加ロボットを使う（カスタムメッセージ型を含む）
 

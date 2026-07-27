@@ -85,12 +85,19 @@ For the detailed spec of each service, see [docs/specs/en/](docs/specs/en/README
 ### Start all services (Docker)
 
 ```bash
-make up                       # = build + start (detached). Robot selected via ROBOT (default airoa_hsr)
+make build                    # build the images (first time and after code changes; needs network)
+make up                       # start (detached). Robot selected via ROBOT (default airoa_hsr)
 # or with plain docker compose:
 cp .env.example .env          # edit as needed
 docker compose build
 docker compose up
 ```
+
+> **`make up` does not build** (it only starts). Building needs the network even when nothing changed,
+> so an `up` that always built could not bring the stack up **in the field with no network**. To apply
+> code changes use `make rebuild <service>`; to refresh the upstream base images too, `make build-pull`.
+> For a machine with no images at all, see
+> [Running on an offline machine](#running-on-an-offline-machine-carrying-the-images-in).
 
 All services start with host networking. The ROS 2 services (`recorder` / `monitor` / `streamer`)
 share the host DDS graph (`ROS_DOMAIN_ID=0`), and the pure-Python services (`orchestrator` / `dora_runner`)
@@ -145,9 +152,11 @@ selected with a single `ROBOT` (default `airoa_hsr`); `make` resolves `config/<r
 
 | Command | What it does |
 |---|---|
-| `make up` / `make down` / `make ps` | Start the stack (with build) / stop & remove / status |
+| `make up` / `make down` / `make ps` | Start the stack (**does not build**) / stop & remove / status |
 | `make build monitor` / `make build` | Build a service (positional for one / no arg or `all` for all) |
-| `make rebuild frontend` | Build + force re-create (apply code changes) |
+| `make rebuild frontend` | Build + force re-create (apply code changes) — **the "refresh the container" command** |
+| `make build-pull` | Build pulling fresh upstream base images (needs network) |
+| `make images-save` / `make images-load` | Write the images to one file / load them (carrying them to an offline machine) |
 | `make restart monitor orchestrator` | Restart services |
 | `make logs streamer` | Follow logs |
 | `make config-reload` / `make config-show` | Apply `config/*.yaml` edits (restart monitor+orchestrator) / show current config |
@@ -158,6 +167,55 @@ selected with a single `ROBOT` (default `airoa_hsr`); `make` resolves `config/<r
 To use a different robot, switch `ROBOT` like `make up ROBOT=<robot>` (`make` resolves `config/<robot>/`
 (committed) / `config/local/<robot>/` (gitignored) and passes them to each service). For a different bag,
 override like `make rosbag BAG=/data/<robot>/<run>`.
+
+### Running on an offline machine (carrying the images in)
+
+**A build uses the network even when nothing changed** (BuildKit resolves the base images and the
+Dockerfile frontend against the registry). That is why `make up` only **starts**: on a machine that
+already has the images, bringing the stack up touches the network not at all.
+
+For a machine with no images at all (a fresh robot, a field PC), carry them over **as a file** instead
+of making it build. `make up` checks — using local information only — that the images it needs are
+present, and stops naming the missing ones if they are not (left to compose, a missing image means
+either a build or a pull, so offline it just hangs on the network with no useful message).
+
+**Images alone are not enough.** These have to travel too (`git clone` itself needs the network, so
+carry the repository as a directory via rsync/USB):
+
+| What to carry | Why |
+|---|---|
+| The repository (`compose.yaml` / `Makefile` / `config/<robot>/`) | What `make` and compose read. Tracked in Git — clone or copy |
+| `.env` | Gitignored. Make it from `.env.example` (set `ROBOT=` to the real robot) |
+| `config/local/<robot>/` | Gitignored. Your robot's own config set — `make push-config` can send it |
+| `deploy/msgs_overlay/<robot>/` | Gitignored. Only for robots with custom message types |
+| The container images (below) | So nothing has to be built there |
+
+If `deploy/msgs_overlay/<robot>/install/` has not been built, run `make msgs-build` on the target
+machine — it only runs `colcon build` inside the local recorder image, so it needs no network. `data/`
+can be empty (real recordings are made on site).
+
+```bash
+# 1. where there IS network (the image list is derived from compose, so it cannot drift)
+make images-save                    # all services      -> kairos-images.tar.gz
+make robot-images-save              # only the robot-edge 4 (split deployment)
+make recording-images-save          # only the recording-host 3 (split deployment)
+
+# 2. copy it across
+scp kairos-images.tar.gz <robot>:/tmp/
+
+# 3. on that machine
+make images-load IMAGES_FILE=/tmp/kairos-images.tar.gz
+make up                             # or make robot-up
+```
+
+Change the destination with `IMAGES_FILE=`. Measured: the 4 robot-edge images (~4 GB expanded, shared
+layers stored once) → **384 MB in about 35 s**.
+
+> **Architecture matters**: images are per-arch. One built on amd64 will not run on an arm64 robot —
+> build there while it still has network, or use `docker buildx build --platform linux/arm64`.
+
+To refresh the upstream base images (`ros` / `python` / `node`), run `make build-pull` where there is
+network and redo step 1.
 
 ### Adding a robot (including custom message types)
 

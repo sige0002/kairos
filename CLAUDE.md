@@ -85,10 +85,13 @@ kairos/
   `make restart monitor orchestrator`). A robot's config is selected with a single `ROBOT`
   (default `airoa_hsr`); `make` resolves `config/<robot>/` (committed) / `config/local/<robot>/`
   (gitignored) and derives the recording/stream/validation/validators paths for each service
-  (avoiding the stale path in `.env`). Key ones: `make up` /
-  `make rebuild <svc>` / `make restart <svc>` / `make logs <svc>` / `make config-reload` (apply config
-  edits) / `make rosbag-loop` / `make table` / `make smoke[-record]` / `make test` / `make lint` /
-  `make fmt`. The rest of this section documents what each command runs.
+  (avoiding the stale path in `.env`). Key ones: `make up` (**starts only — does not build**) /
+  `make build` / `make rebuild <svc>` (apply code changes) / `make restart <svc>` / `make logs <svc>` /
+  `make config-reload` (apply config edits) / `make rosbag-loop` / `make table` / `make smoke[-record]` /
+  `make test` / `make lint` / `make fmt`. The rest of this section documents what each command runs.
+  **Build and start are deliberately separate**: a build needs the network even when nothing changed, so
+  an `up` that always built could not start the stack in the field. Carry images to a machine that has
+  none with `make images-save` → copy → `make images-load`.
 - **Unit tests (Python)**: inside each service / the shared library, `uv run --extra test pytest -q`.
   ```
   for d in libs/kairos_common services/rosbag2_recorder services/topic_monitor \

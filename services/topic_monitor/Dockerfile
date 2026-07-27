@@ -1,4 +1,6 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1@sha256:87999aa3d42bdc6bea60565083ee17e86d1f3339802f543c0d03998580f9cb89
+# Digest-pinned on purpose: an unpinned tag makes BuildKit resolve it against the
+# registry on EVERY build, which fails where there is no network (robot in the field).
 # topic_monitor — ROS 2 node that subscribes non-intrusively (raw/no-decode) for
 # lightweight liveness metrics, so it is built FROM the ROS base image. rclpy is
 # lazy-imported, so the FastAPI health endpoints serve even before ROS spins up.

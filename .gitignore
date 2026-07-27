@@ -88,6 +88,10 @@ log/
 # 参考フォルダ
 /ref
 
+# Image archives written by `make images-save` (multi-GB; carried by hand to an
+# offline machine, never committed).
+/kairos-images*.tar.gz
+
 # Work-process screenshots (UI checks, Playwright MCP shots, any dev imagery):
 # the ONE canonical scratch location is /dev_image (see the v2-screen-work
 # skill). The legacy patterns below stay as backstops for stray drops.
