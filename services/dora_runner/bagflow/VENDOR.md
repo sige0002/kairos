@@ -40,8 +40,8 @@ framework's own documentation — how kairos *uses* it is specified in
      0.5's `dora up` cannot bind a custom port, so with a non-default endpoint
      the CLI refuses to fall back to `dora up` and tells you to start
      `dora coordinator` / `dora daemon` yourself (dora_runner does that at
-     service start). Without this, a bagflow run on a host that also runs
-     dora_live would talk to *whatever* coordinator answers on 127.0.0.1:6012.
+     service start). Without this, a bagflow run on a host that also runs any
+     other dora would talk to *whatever* answers on 127.0.0.1:6012.
 5. **A new check node: `bagflow-topic-presence`** (`crates/bagflow-checks/src/bin/
    topic_presence.rs`). kairos' `fast_validation` gate asks a question upstream
    has no node for: *are the topics this recording template declares mandatory in

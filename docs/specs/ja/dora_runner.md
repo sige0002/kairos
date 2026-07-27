@@ -191,7 +191,7 @@ bagflow は「事実」だけを報告する（ノードごとの `ok`・エッ�
 ### 実行環境（4つの運用上の必須事項）
 
 1. **自前の dora coordinator/daemon**。全サービスが `network_mode: host` で、dora 0.5 の `dora up` は
-   既定ポート（6012）しか掴めない＝同居する `dora_live` と衝突しうる。そこで dora_runner は
+   既定ポート（6012）しか掴めない＝ホスト上の他の dora と衝突しうる。そこで dora_runner は
    `dora coordinator` / `dora daemon` を**自分で loopback 限定の別ポートに起動**する
    （`KAIROS_DORA_CONTROL_PORT` 6112 / `KAIROS_DORA_DAEMON_PORT` 53390 /
    `KAIROS_DORA_DAEMON_LISTEN_PORT` 53391）。同梱 bagflow CLI は `DORA_COORDINATOR_ADDR/PORT` で

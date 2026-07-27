@@ -323,7 +323,8 @@ services:
       BAGFLOW_FLOWS_DIR: ${BAGFLOW_FLOWS_DIR:-/config/${ROBOT:-airoa_hsr}/flows}
       # This service runs its OWN dora coordinator/daemon (loopback only). With
       # host networking those ports are host-wide, so they deliberately differ
-      # from dora's defaults (6012/53290/53291) that a co-located dora_live uses.
+      # from dora's own defaults (6012/53290/53291) — any other dora on this
+      # host keeps its endpoint, and we never adopt one we do not own.
       KAIROS_DORA_CONTROL_PORT: ${KAIROS_DORA_CONTROL_PORT:-6112}
       KAIROS_DORA_DAEMON_PORT: ${KAIROS_DORA_DAEMON_PORT:-53390}
       KAIROS_DORA_DAEMON_LISTEN_PORT: ${KAIROS_DORA_DAEMON_LISTEN_PORT:-53391}

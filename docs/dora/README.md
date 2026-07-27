@@ -123,8 +123,8 @@ cargo test -p bagflow-checks --manifest-path services/dora_runner/bagflow/Cargo.
     --bag /data/recorded/<run_id> --report /tmp/report.json /opt/kairos/flows/fast_validation.yml
   ```
 - **Note**: dora_runner owns its coordinator/daemon (127.0.0.1:6112 by default). Pass
-  `--coordinator-port 6112` when running `dora list` and friends by hand (the default 6012 belongs to
-  dora_live).
+  `--coordinator-port 6112` when running `dora list` and friends by hand (6012 is dora's own default,
+  deliberately left to any other dora on the host).
 
 ## Known gaps (vs the spec / TODO)
 - **A plugin's `executor: dora` still runs through the in-process interpreter.** Real dora is used by

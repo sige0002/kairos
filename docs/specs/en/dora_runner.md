@@ -204,7 +204,7 @@ logs' location in `details` — and no summary.json is written, so the run stays
 ### Runtime environment (four operational must-haves)
 
 1. **Its own dora coordinator/daemon.** Every service uses `network_mode: host`, and dora 0.5's `dora up`
-   can only bind the default control port (6012) — the same one a co-located `dora_live` uses. dora_runner
+   can only bind the default control port (6012) — the same one any other dora on the host takes. dora_runner
    therefore starts `dora coordinator` / `dora daemon` itself on **loopback-only ports of its own**
    (`KAIROS_DORA_CONTROL_PORT` 6112 / `KAIROS_DORA_DAEMON_PORT` 53390 /
    `KAIROS_DORA_DAEMON_LISTEN_PORT` 53391). The bundled bagflow CLI targets them via

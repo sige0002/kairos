@@ -165,7 +165,8 @@ class RosTopicSubscriber:
 
         ``monitor.qos_depth`` is the configured depth FLOOR (team finding:
         without it the floor fell back to the function default of 10, while
-        dora_live already floored at the configured 30 — the monitor would
+        the (now-retired) dora_live lane already floored at the configured
+        30 — the monitor would
         still undercount faster bursts than the ~50 Hz case that exposed it).
         """
         default_depth = (

@@ -106,7 +106,8 @@ cargo test -p bagflow-checks --manifest-path services/dora_runner/bagflow/Cargo.
     --bag /data/recorded/<run_id> --report /tmp/report.json /opt/kairos/flows/fast_validation.yml
   ```
 - **注意**: dora_runner は自前の coordinator/daemon（既定 127.0.0.1:6112）を持つ。`dora list` などを
-  手で叩くときは `--coordinator-port 6112` を付けること（既定 6012 は dora_live 側）。
+  手で叩くときは `--coordinator-port 6112` を付けること（6012 は dora 本来の既定で、ホスト上の他の
+  dora のために意図的に空けてある）。
 
 ## 未実装 / 仕様との差分
 - **プラグインの `executor: dora` は依然 in-process インタプリタ**。実 dora を使うのは検証 2 本だけで、

@@ -6,7 +6,7 @@ coordinator/daemon pair. Three deployment realities shape this module.
 
 **The dora stack is private to dora_runner.** Every kairos service runs with
 ``network_mode: host``, and dora 0.5's ``dora up`` can only bind its default
-control port (6012) — the same port a co-located ``dora_live`` stack uses. A
+control port (6012) — so any other dora on the host would answer there. A
 shared coordinator would mean bagflow dataflows landing on a differently-patched
 dora build, and a "stop everything" cleanup reaching flows we do not own. So the
 service spawns ``dora coordinator`` + ``dora daemon`` itself on loopback-only
@@ -51,7 +51,8 @@ BAGFLOW_BIN = "bagflow"
 DORA_BIN = "dora"
 
 # Private dora endpoint (loopback only). Defaults deliberately differ from dora's
-# own (6012 / 53290 / 53291) so a co-located dora_live keeps working untouched.
+# own (6012 / 53290 / 53291) so any other dora on this host keeps working
+# untouched — and so we never adopt a coordinator we do not own.
 COORDINATOR_ADDR_ENV = "KAIROS_DORA_COORDINATOR_ADDR"
 CONTROL_PORT_ENV = "KAIROS_DORA_CONTROL_PORT"
 DAEMON_PORT_ENV = "KAIROS_DORA_DAEMON_PORT"
