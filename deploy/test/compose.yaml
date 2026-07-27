@@ -84,4 +84,15 @@ services:
       - ../../data:/data:ro
       # The live-table script (mounted, so editing it needs no rebuild).
       - ./topic_table.py:/topic_table.py:ro
-    command: ["python3", "/topic_table.py"]
+      # Custom-message overlays (same mount as rosbag_player): without the
+      # typesupport, custom-type topics show as "unresolved types, not counted".
+      - ../../deploy/msgs_overlay:/overlays:ro
+    # Source the selected robot's overlay (same convention as rosbag_player) so
+    # the table can subscribe to and count custom-type topics too.
+    command:
+      - bash
+      - -lc
+      - 'R="$$(basename "${MSGS_OVERLAY_DIR:-robot}")";
+         OVL="/overlays/$$R/install/setup.bash";
+         if [ -f "$$OVL" ]; then . "$$OVL"; echo "topic_table: sourced overlay $$R"; else echo "topic_table: no overlay for $$R (custom-type topics not counted)"; fi;
+         exec python3 /topic_table.py'
