@@ -53,8 +53,13 @@ export interface RecordArming {
   active: boolean;
   /** Target topics already present on the ROS graph (recorder subscribed). */
   matched_topics: string[];
-  /** Target topics still missing (recorder waiting on these). */
+  /** Target topics with NO publisher on the graph — genuinely not publishing. */
   missing_topics: string[];
+  /** Target topics that ARE published but the recorder has not subscribed to
+   *  yet (DDS discovery catching up). Absent on an older recorder — treat as
+   *  empty, never fold it into `missing_topics`: these ARE publishing, and the
+   *  operator can see them live in Monitor. */
+  unsubscribed_topics?: string[];
   /** ISO8601 instant the recorder auto-resumes anyway (readiness timeout). */
   resume_at?: string | null;
   /** ISO8601 instant an `armed` (two-phase prepare) session auto-disarms if no

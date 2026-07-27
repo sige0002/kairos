@@ -20,7 +20,7 @@ import type { SseStatus } from '../../store/uiStore';
 import { ADVICE_ITEMS, type BatchMachine } from './useBatchMachine';
 import { SIDE_PAD } from './compact';
 import { formatBytes } from '../review/format';
-import { firingAlertRows, topicRates } from './warnings';
+import { armingWarning, firingAlertRows, topicRates } from './warnings';
 
 type Tone = 'green' | 'amber' | 'red' | 'teal' | 'gray';
 
@@ -202,13 +202,14 @@ export function WarningsCard({
   defaultTopics: string[];
 }) {
   // Two REAL live signals, never a fabricated one (honesty rule):
-  //  - target topics not publishing (arming snapshot, OL-①.4 — start-time
-  //    coverage, frozen at resume), and
+  //  - target topics the recorder is not capturing (arming snapshot, OL-①.4 —
+  //    re-read live while armed, then frozen at resume as start-time coverage),
+  //    reported by CAUSE so a topic that is publishing is never called dead, and
   //  - FIRING monitor alerts (threshold breaches over SSE) restricted to the
   //    recorded topics — the mid-recording degradation the snapshot can't see
   //    ("camera dropped to 12 Hz"), surfaced where the operator is looking.
-  const missing = machine.arming?.missing_topics ?? [];
-  const shown = missing.slice(0, 3);
+  const uncaptured = armingWarning(machine.arming);
+  const shown = uncaptured?.topics.slice(0, 3) ?? [];
 
   // Read-only view of the SSE-populated alert buffer (useEventStream writes it).
   const { data: alertBuffer } = useQuery<AlertEvent[]>({
@@ -221,7 +222,7 @@ export function WarningsCard({
   const firing = firingAlertRows(alertBuffer ?? [], machine.arming, defaultTopics);
   const firingShown = firing.slice(0, ALERTS_SHOWN);
 
-  const count = missing.length + firing.length;
+  const count = (uncaptured?.topics.length ?? 0) + firing.length;
   const hasWarnings = count > 0;
 
   return (
@@ -240,24 +241,24 @@ export function WarningsCard({
           {hasWarnings ? `${count} needs attention` : '0'}
         </Chip>
       </div>
-      {missing.length > 0 && (
-        <div className="flex flex-col gap-0.5 rounded-control border border-amber-200 bg-amber-50 px-3 py-2.5">
+      {uncaptured && (
+        <div
+          data-testid="collect-uncaptured-topics"
+          className="flex flex-col gap-0.5 rounded-control border border-amber-200 bg-amber-50 px-3 py-2.5"
+        >
           <div className="flex items-center gap-2">
             <span className="h-[7px] w-[7px] shrink-0 rounded-sm bg-amber-600" />
             <span className="text-[13px] font-semibold text-amber-800">
-              {missing.length} target topic{missing.length === 1 ? '' : 's'} not
-              publishing
+              {uncaptured.title}
             </span>
           </div>
-          <span className="pl-[15px] text-xs text-amber-700">
-            Recording continues, but these won't be captured until they appear.
-          </span>
+          <span className="pl-[15px] text-xs text-amber-700">{uncaptured.detail}</span>
           <span
             className="truncate pl-[15px] font-mono text-[11px] text-amber-600"
-            title={missing.join('\n')}
+            title={uncaptured.topics.join('\n')}
           >
             {shown.join(', ')}
-            {missing.length > shown.length ? ' …' : ''}
+            {uncaptured.topics.length > shown.length ? ' …' : ''}
           </span>
         </div>
       )}

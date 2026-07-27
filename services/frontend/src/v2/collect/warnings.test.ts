@@ -2,7 +2,7 @@
 
 import { expect, test } from 'vitest';
 import type { AlertEvent, MetricsSnapshot, RecordArming } from '../../api/types';
-import { firingAlertRows, topicRates } from './warnings';
+import { armingWarning, firingAlertRows, topicRates } from './warnings';
 
 function alert(over: Partial<AlertEvent>): AlertEvent {
   return {
@@ -48,6 +48,50 @@ test('with an arming snapshot, only its target topics (matched OR missing) pass'
     '/hsrb/joint_states',
     '/hsrb/wrist_wrench',
   ]);
+});
+
+test('unsubscribed targets are targets too: their alerts pass the arming filter', () => {
+  const rows = firingAlertRows(
+    [alert({ topic: '/camera/head' }), alert({ topic: '/tf' })],
+    { ...ARMING, unsubscribed_topics: ['/camera/head'] },
+    [],
+  );
+  expect(rows.map((r) => r.topic)).toEqual(['/camera/head']);
+});
+
+test('armingWarning: no publisher -> "not publishing"', () => {
+  expect(armingWarning(ARMING)).toMatchObject({
+    topics: ['/hsrb/wrist_wrench'],
+    title: '1 target topic not publishing',
+  });
+});
+
+test('armingWarning: published-but-unsubscribed is NEVER called "not publishing"', () => {
+  // The exact reported bug: the topic is live (visible in Monitor) and the card
+  // claimed it was not publishing.
+  const warning = armingWarning({
+    ...ARMING,
+    missing_topics: [],
+    unsubscribed_topics: ['/camera/head'],
+  });
+  expect(warning?.title).toBe('1 target topic not subscribed yet');
+  expect(warning?.title).not.toContain('not publishing');
+  expect(warning?.detail).toContain('These are publishing');
+});
+
+test('armingWarning: mixed causes claim neither, and count both', () => {
+  const warning = armingWarning({
+    ...ARMING,
+    missing_topics: ['/lidar'],
+    unsubscribed_topics: ['/camera/head'],
+  });
+  expect(warning?.title).toBe('2 target topics not being captured');
+  expect(warning?.topics).toEqual(['/lidar', '/camera/head']);
+});
+
+test('armingWarning is null when every target matched, or with no snapshot', () => {
+  expect(armingWarning({ ...ARMING, missing_topics: [] })).toBeNull();
+  expect(armingWarning(null)).toBeNull();
 });
 
 test('without arming, default_topics patterns filter (glob supported)', () => {
