@@ -57,6 +57,12 @@ jobs:
           version: "0.10.0"
       - name: Build recorder env from lock + run integration test
         working-directory: services/rosbag2_recorder
+        # MUST be bash: ROS's setup.bash is not POSIX sh (it uses `builtin` and
+        # ${var//} substitution), and inside this container Actions otherwise
+        # runs the step under dash — which fails with the misleading
+        # "/opt/ros/jazzy/setup.bash: builtin: not found" (exit 127). Verified by
+        # running the same source line under sh vs bash in ros:jazzy-ros-base.
+        shell: bash
         run: |
           set -e
           . /opt/ros/jazzy/setup.bash

@@ -121,9 +121,7 @@ def test_patch_batch_task_only_leaves_project_and_condition(client: TestClient) 
     batch_id = _new_batch(client, project="proj", task="pick", condition="cond_a")[
         "batch_id"
     ]
-    body = client.patch(
-        f"/api/v1/batches/{batch_id}", json={"task": "handover"}
-    ).json()
+    body = client.patch(f"/api/v1/batches/{batch_id}", json={"task": "handover"}).json()
     assert body["task"] == "handover"
     assert body["project"] == "proj"  # unchanged
     assert body["condition"] == "cond_a"  # unchanged (omitted → kept)
