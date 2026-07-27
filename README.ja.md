@@ -192,7 +192,7 @@ make recording-up
 
 ```bash
 # ① ネットワークのあるマシンで（イメージ一覧は compose から自動導出されるのでズレません）
-make images-save                    # 全サービス   -> kairos-images.tar.gz
+make images-save                    # 全サービス + 再生/確認ハーネス -> kairos-images.tar.gz
 make robot-images-save              # ロボット側の 4 サービスだけ（split 構成）
 make recording-images-save          # 録画 PC 側の 3 サービスだけ（split 構成）
 
@@ -204,8 +204,12 @@ make images-load IMAGES_FILE=/tmp/kairos-images.tar.gz
 make up                             # あるいは make robot-up
 ```
 
-出力先は `IMAGES_FILE=` で変えられます。実測では robot-edge の 4 イメージ（展開後およそ 4 GB・共通
-レイヤは 1 回だけ保存）が **384 MB / 約 35 秒**でした。
+出力先は `IMAGES_FILE=` で変えられます。実測: robot-edge の 4 イメージ = **384 MB / 約 35 秒**、
+全サービス + ハーネスの 8 イメージ = **562 MB**（共通レイヤは 1 回だけ保存されるので、数だけ増えても
+あまり膨らみません）。`make images-save` には**再生/確認ハーネス**（`make smoke` / `make rosbag` /
+`make table` が使うイメージ。別 compose プロジェクトなので取りこぼしやすい）も含めてあります —
+「現地で何も出てこない」を切り分けるときに使うものが、まさにその現地でビルドを要求してくるのを
+避けるためです。
 
 > **アーキテクチャに注意**: イメージは CPU アーキテクチャごとに別物です。amd64 で焼いたものは arm64
 > の実機では動きません。実機がネットワークに繋がるうちにそこでビルドしておくか、

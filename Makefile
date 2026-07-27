@@ -254,9 +254,9 @@ ps: ## show container status
 # robot — build there while it has network, or use `docker buildx --platform`.
 IMAGES_FILE ?= kairos-images.tar.gz
 
-# $(1) = compose invocation, $(2) = label for the log.
+# $(1) = shell command(s) printing image names, $(2) = label for the log.
 define save_images
-	@imgs="$$($(1) config --images | sort -u)"; \
+	@imgs="$$( { $(1); } | sort -u )"; \
 	 [ -n "$$imgs" ] || { echo "no images resolved for $(2)"; exit 1; }; \
 	 echo "$(2): saving these images -> $(IMAGES_FILE)"; \
 	 echo "$$imgs" | sed 's/^/  /'; \
@@ -266,8 +266,13 @@ define save_images
 endef
 
 .PHONY: images-save images-load robot-images-save recording-images-save
-images-save: ## save ALL stack images -> kairos-images.tar.gz (IMAGES_FILE=... to change)
-	$(call save_images,$(COMPOSE),single-host)
+# Includes the replay/inspection harness image (deploy/test/compose.yaml, a
+# SEPARATE compose project): `make smoke` / `rosbag` / `table` are exactly what
+# you reach for when "nothing comes out" on a machine you just set up, and they
+# would otherwise try to build it — i.e. need the network — right when you have
+# none. It shares the ROS base layer with the others, so it costs little here.
+images-save: ## save ALL stack images + the test harness -> kairos-images.tar.gz (IMAGES_FILE=...)
+	$(call save_images,$(COMPOSE) config --images; $(TEST_COMPOSE) config --images,single-host + test harness)
 
 images-load: ## load images from kairos-images.tar.gz (IMAGES_FILE=...) on the offline machine
 	@[ -f "$(IMAGES_FILE)" ] || { echo "not found: $(IMAGES_FILE) (set IMAGES_FILE=...)"; exit 1; }
@@ -319,7 +324,7 @@ robot-config-reload: ## [ON THE ROBOT] apply config/*.yaml edits (restart monito
 	$(COMPOSE_ROBOT) restart monitor
 
 robot-images-save: ## save ONLY the robot-edge images (carry to an offline robot)
-	$(call save_images,$(COMPOSE_ROBOT),robot-edge)
+	$(call save_images,$(COMPOSE_ROBOT) config --images,robot-edge)
 
 recording-up: ## [ON THE RECORDING PC] start orchestrator/dora/frontend (set *_HOST in .env)
 	$(call require_images,$(COMPOSE_RECORDING),recording-build)
@@ -348,7 +353,7 @@ recording-config-reload: ## [ON THE RECORDING PC] apply config-catalog edits (re
 	$(COMPOSE_RECORDING) restart orchestrator
 
 recording-images-save: ## save ONLY the recording-host images -> kairos-images.tar.gz
-	$(call save_images,$(COMPOSE_RECORDING),recording-host)
+	$(call save_images,$(COMPOSE_RECORDING) config --images,recording-host)
 
 import-runs: ## [ON THE RECORDING PC] rsync COMPLETED recordings from the robot into ./data/recorded
 	bash deploy/sync/import_runs.sh

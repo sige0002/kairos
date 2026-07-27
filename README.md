@@ -196,7 +196,7 @@ can be empty (real recordings are made on site).
 
 ```bash
 # 1. where there IS network (the image list is derived from compose, so it cannot drift)
-make images-save                    # all services      -> kairos-images.tar.gz
+make images-save                    # all services + the replay/inspection harness
 make robot-images-save              # only the robot-edge 4 (split deployment)
 make recording-images-save          # only the recording-host 3 (split deployment)
 
@@ -208,8 +208,12 @@ make images-load IMAGES_FILE=/tmp/kairos-images.tar.gz
 make up                             # or make robot-up
 ```
 
-Change the destination with `IMAGES_FILE=`. Measured: the 4 robot-edge images (~4 GB expanded, shared
-layers stored once) → **384 MB in about 35 s**.
+Change the destination with `IMAGES_FILE=`. Measured: the 4 robot-edge images → **384 MB in about
+35 s**; all services plus the harness (8 images) → **562 MB** (shared layers are stored once, so the
+count matters less than it looks). `make images-save` deliberately includes the **replay/inspection
+harness** (the image behind `make smoke` / `make rosbag` / `make table` — easy to miss because it is a
+separate compose project): the tools you reach for to work out why nothing is coming out should not
+themselves demand a build on the machine where you have no network.
 
 > **Architecture matters**: images are per-arch. One built on amd64 will not run on an arm64 robot —
 > build there while it still has network, or use `docker buildx build --platform linux/arm64`.
