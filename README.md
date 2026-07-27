@@ -161,6 +161,7 @@ selected with a single `ROBOT` (default `airoa_hsr`); `make` resolves `config/<r
 | `make logs streamer` | Follow logs |
 | `make config-reload` / `make config-show` | Apply `config/*.yaml` edits (restart monitor+orchestrator) / show current config |
 | `make rosbag` / `make rosbag-loop` / `make table` | Sample bag single playback / loop playback / Hz table for all topics |
+| `make load` | Load overview: CPU (per-core **and** per-machine) / measured NIC throughput + link utilization / measured DDS bandwidth / data disk free |
 | `make smoke` / `make smoke-record` | End-to-end check (PASS/FAIL) / with record start/stop |
 | `make test` / `make test-py` / `make test-fe` / `make lint` / `make fmt` | Test, lint, format |
 

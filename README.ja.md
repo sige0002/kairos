@@ -157,6 +157,7 @@ make recording-up
 | `make logs streamer` | ログ追従 |
 | `make config-reload` / `make config-show` | `config/*.yaml` 編集の反映（monitor+orchestrator 再起動）/ 現在の config 表示 |
 | `make rosbag` / `make rosbag-loop` / `make table` | サンプル bag 単発再生 / ループ再生 / 全 topic の Hz テーブル |
+| `make load` | 負荷概観: CPU（コア単位**と**マシン単位の両方）/ NIC 実測スループットとリンク利用率 / 実測 DDS 帯域 / データディスク空き |
 | `make smoke` / `make smoke-record` | 通し確認（PASS/FAIL）/ 記録 start/stop 込み |
 | `make test` / `make test-py` / `make test-fe` / `make lint` / `make fmt` | テスト・lint・整形 |
 

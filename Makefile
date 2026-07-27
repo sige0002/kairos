@@ -394,7 +394,7 @@ backup: ## consistent snapshot -> backups/<ts>.tar.gz: DB (.backup) + recordings
 	echo "backup: wrote $$out (restore: docs/specs/en/config.md 'Operations')"
 
 # ---- test-data replay harness ----------------------------------------------
-.PHONY: rosbag rosbag-loop table smoke smoke-record
+.PHONY: rosbag rosbag-loop table load smoke smoke-record
 rosbag: ## replay a bag under data/ ONCE (BAG=airoa-moma-mcap/000730 to pick another)
 	$(if $(BAG),BAG="$(BAG)") $(TEST_COMPOSE) run --rm rosbag_player
 
@@ -403,6 +403,12 @@ rosbag-loop: ## replay a bag under data/ on a LOOP (BAG=... to pick another)
 
 table: ## live table of every topic's Hz/bandwidth (the observable view)
 	$(TEST_COMPOSE) run --rm topic_table
+
+# Every number with its DENOMINATOR spelled out — `docker stats` alone reports
+# 100% = ONE core, so 400% on a 64-thread host reads alarming when it is ~6% of
+# the machine, and a NIC's MB/s means nothing without the link speed beside it.
+load: ## load overview: CPU (%/core AND %/machine) + NIC throughput/util + live DDS bandwidth + disk
+	@bash deploy/load.sh
 
 smoke: ## end-to-end smoke test (health -> config -> discovery -> metrics)
 	bash deploy/test/smoke.sh
