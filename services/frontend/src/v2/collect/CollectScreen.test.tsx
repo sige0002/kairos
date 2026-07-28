@@ -368,7 +368,7 @@ test('Robot cell lists real robots and switches via POST /config/select', async 
     active_robot: 'airoa_hsr',
     robots: [
       { id: 'airoa_hsr', local: false },
-      { id: 'realman', local: false },
+      { id: 'myrobot', local: false },
     ],
     aspects: {},
   };
@@ -376,7 +376,7 @@ test('Robot cell lists real robots and switches via POST /config/select', async 
     const url = String(input);
     if (url.includes('/config/options')) return Promise.resolve(jsonResponse(OPTIONS));
     if (url.includes('/config/select'))
-      return Promise.resolve(jsonResponse({ ...OPTIONS, active_robot: 'realman' }));
+      return Promise.resolve(jsonResponse({ ...OPTIONS, active_robot: 'myrobot' }));
     if (url.includes('/config')) return Promise.resolve(jsonResponse(CONFIG));
     return Promise.resolve(jsonResponse({}));
   });
@@ -386,18 +386,18 @@ test('Robot cell lists real robots and switches via POST /config/select', async 
   await waitFor(() => expect(cell()).toHaveTextContent('airoa_hsr'));
 
   fireEvent.click(cell());
-  fireEvent.click(await screen.findByRole('button', { name: /realman/ }));
+  fireEvent.click(await screen.findByRole('button', { name: /myrobot/ }));
 
   await waitFor(() => {
     const call = fetchSpy.mock.calls.find((c) => String(c[0]).includes('/config/select'));
     expect(call).toBeTruthy();
     expect(JSON.parse(String((call![1] as RequestInit).body))).toEqual({
       category: 'robot',
-      id: 'realman',
+      id: 'myrobot',
     });
   });
   // The cell reflects the response's new active robot (cache updated in place).
-  await waitFor(() => expect(cell()).toHaveTextContent('realman'));
+  await waitFor(() => expect(cell()).toHaveTextContent('myrobot'));
 });
 
 // ---------------------------------------------------------------------------

@@ -42,7 +42,7 @@ HSR = _meta(
     ("/hsrb/joint_states", "sensor_msgs/msg/JointState", 600),
     ("/hsrb/hand_camera/image_raw/compressed", "sensor_msgs/msg/CompressedImage", 300),
 )
-REALMAN = _meta(
+MYROBOT = _meta(
     ("/left_arm_controller/joint_states", "sensor_msgs/msg/JointState", 600),
     ("/camera/head/color/image_raw/compressed", "sensor_msgs/msg/CompressedImage", 300),
 )
@@ -64,10 +64,10 @@ def test_same_topics_hash_equal_regardless_of_order() -> None:
 def test_disjoint_topic_sets_hash_differently() -> None:
     """The real finding: one group held both of these and looked homogeneous."""
     hsr = signature_from_metadata(HSR)
-    realman = signature_from_metadata(REALMAN)
-    assert hsr is not None and realman is not None
-    assert hsr.hash != realman.hash
-    assert hsr.count == realman.count == 2  # same size, different set
+    myrobot = signature_from_metadata(MYROBOT)
+    assert hsr is not None and myrobot is not None
+    assert hsr.hash != myrobot.hash
+    assert hsr.count == myrobot.count == 2  # same size, different set
 
 
 def test_same_name_different_type_is_a_different_schema() -> None:

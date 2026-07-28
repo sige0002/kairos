@@ -371,10 +371,11 @@ config-show: ## print the live GET /api/v1/config defaults
 
 # ---- backup -----------------------------------------------------------------
 # Where snapshots land, and which top-level data/ dirs are RAW SAMPLE INPUTS
-# (reproducible source, NOT system state) to exclude. Override to match your
-# sample layout: `make backup BACKUP_SAMPLE_DIRS="airoa-moma-mcap my-bags"`.
+# (reproducible source, NOT system state) to exclude. Only the committed sample
+# is excluded by default; add your own sample dirs (a local robot's bags are one)
+# via the override: `make backup BACKUP_SAMPLE_DIRS="airoa-moma-mcap my-bags"`.
 BACKUP_DIR ?= backups
-BACKUP_SAMPLE_DIRS ?= airoa-moma-mcap realman
+BACKUP_SAMPLE_DIRS ?= airoa-moma-mcap
 .PHONY: backup
 backup: ## consistent snapshot -> backups/<ts>.tar.gz: DB (.backup) + recordings/reports/datasets/index + config/. See docs/specs/en/config.md (restore).
 	@ts=$$(date +%Y%m%d_%H%M%S); out="$(BACKUP_DIR)/$$ts.tar.gz"; \

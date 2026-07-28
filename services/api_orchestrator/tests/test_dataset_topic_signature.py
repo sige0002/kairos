@@ -24,7 +24,7 @@ HSR_TOPICS = [
     ("/hsrb/joint_states", "sensor_msgs/msg/JointState", 600),
     ("/hsrb/hand_camera/image_raw/compressed", "sensor_msgs/msg/CompressedImage", 300),
 ]
-REALMAN_TOPICS = [
+MYROBOT_TOPICS = [
     ("/left_arm_controller/joint_states", "sensor_msgs/msg/JointState", 600),
     ("/camera/head/color/image_raw/compressed", "sensor_msgs/msg/CompressedImage", 300),
 ]
@@ -102,7 +102,7 @@ def test_disjoint_topic_sets_are_distinguishable_on_the_catalog(tmp_path: Path) 
     """The finding itself: same task+condition, two different embodiments."""
     data_dir = tmp_path / "data"
     _make_dataset(data_dir, "yuki", "pick", "001", topics=HSR_TOPICS, signed=True)
-    _make_dataset(data_dir, "yuki", "pick", "002", topics=REALMAN_TOPICS, signed=True)
+    _make_dataset(data_dir, "yuki", "pick", "002", topics=MYROBOT_TOPICS, signed=True)
 
     rows = _scan_datasets(data_dir)
     hashes = {r["index"]: r["topics_hash"] for r in rows}
@@ -148,7 +148,7 @@ def test_a_legacy_catalog_heals_lazily_on_the_first_read(tmp_path: Path) -> None
     """
     data_dir = tmp_path / "data"
     _make_dataset(data_dir, "yuki", "pick", "001", topics=HSR_TOPICS, signed=False)
-    _make_dataset(data_dir, "yuki", "pick", "002", topics=REALMAN_TOPICS, signed=False)
+    _make_dataset(data_dir, "yuki", "pick", "002", topics=MYROBOT_TOPICS, signed=False)
     legacy_rows = [
         {
             "operator": "yuki",
@@ -211,7 +211,7 @@ def test_rebuild_preserves_the_signature_and_matches_the_scan(tmp_path: Path) ->
     """The two serving paths must stay byte-for-byte identical."""
     data_dir = tmp_path / "data"
     _make_dataset(data_dir, "yuki", "pick", "001", topics=HSR_TOPICS, signed=False)
-    _make_dataset(data_dir, "yuki", "pick", "002", topics=REALMAN_TOPICS, signed=True)
+    _make_dataset(data_dir, "yuki", "pick", "002", topics=MYROBOT_TOPICS, signed=True)
 
     scan = _scan_datasets(data_dir)
     assert datasets_index.rebuild(data_dir, scan) == 2
