@@ -122,6 +122,51 @@ test('a record_status event without arming preserves a prior arming value', () =
   });
 });
 
+// Regression: a stale `recording` event landing after the stop must not rewind
+// the cache. The Collect screen reads this cache to decide whether a recording
+// it is NOT driving is running, so a rewind puts the takeover card
+// ("RECORDING IN PROGRESS") over a take the operator already stopped.
+test('a record_status event that rewinds the SAME run is dropped', () => {
+  const qc = new QueryClient();
+  const recording: RecordStatusEvent = {
+    run_id: 'run-9',
+    state: 'recording',
+    message_count: 10,
+  };
+  const completed: RecordStatusEvent = {
+    run_id: 'run-9',
+    state: 'completed',
+    message_count: 99,
+  };
+  dispatchSseEvent(qc, 'record_status', JSON.stringify(recording));
+  dispatchSseEvent(qc, 'record_status', JSON.stringify(completed));
+  // ...and now the stale one arrives late.
+  dispatchSseEvent(qc, 'record_status', JSON.stringify(recording));
+
+  const cached = qc.getQueryData<RecordStatus>(queryKeys.recordStatus);
+  expect(cached?.state).toBe('completed');
+  expect(cached?.message_count).toBe(99);
+});
+
+// The guard is per-run: a NEW run legitimately starts recording after the
+// previous one completed, and must not be mistaken for a rewind.
+test('a new run may go recording right after the previous run completed', () => {
+  const qc = new QueryClient();
+  dispatchSseEvent(
+    qc,
+    'record_status',
+    JSON.stringify({ run_id: 'run-9', state: 'completed', message_count: 99 }),
+  );
+  dispatchSseEvent(
+    qc,
+    'record_status',
+    JSON.stringify({ run_id: 'run-10', state: 'recording', message_count: 0 }),
+  );
+  const cached = qc.getQueryData<RecordStatus>(queryKeys.recordStatus);
+  expect(cached?.run_id).toBe('run-10');
+  expect(cached?.state).toBe('recording');
+});
+
 test('malformed payloads are ignored', () => {
   const qc = new QueryClient();
   dispatchSseEvent(qc, 'metrics', 'not json');

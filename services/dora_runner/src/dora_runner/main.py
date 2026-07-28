@@ -6,12 +6,15 @@ import asyncio
 import logging
 import os
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Query, status
 from fastapi.routing import APIRoute
 from kairos_common import ApiError, JobState, Settings, create_app, get_settings
 
+from dora_runner.bagflow_runtime import DoraEndpoint, DoraStack, bagflow_available
 from dora_runner.models import (
     JobCreateRequest,
     JobCreateResponse,
@@ -94,7 +97,15 @@ def _override_readyz(app: FastAPI) -> None:
     @app.get("/readyz", tags=["health"])
     async def readyz() -> dict[str, object]:
         dora = "available" if dora_cli_available() else "in-process"
-        return {"status": "ready", "components": {"dora": dora}}
+        # `bagflow` is separate from `dora`: plugin dataflows degrade to the
+        # in-process interpreter without the CLI, but the validation gates
+        # cannot — they need the bagflow binaries too (see
+        # registry._fast_validation_pipeline / _full_validation_pipeline).
+        bagflow = "available" if bagflow_available() else "unavailable"
+        return {
+            "status": "ready",
+            "components": {"dora": dora, "bagflow": bagflow},
+        }
 
 
 def create_dora_app(
@@ -123,6 +134,23 @@ def create_dora_app(
     # concurrent TestClients don't share a cross-loop primitive.
     job_slots = asyncio.Semaphore(_job_max_concurrency())
     job_timeout_s = _job_timeout_s()
+
+    # The service owns its dora coordinator/daemon (see bagflow_runtime): started
+    # here so the first validation job doesn't pay for it, torn down with
+    # `dora destroy` so no dataflow (and no /dev/shm it holds) outlives us. A
+    # deployment without the binaries never starts anything.
+    dora_stack = DoraStack(DoraEndpoint.from_env(), data_dir / ".dora")
+    app.state.dora_stack = dora_stack
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        await asyncio.to_thread(dora_stack.start)
+        try:
+            yield
+        finally:
+            await asyncio.to_thread(dora_stack.stop)
+
+    app.router.lifespan_context = lifespan
 
     _override_readyz(app)
 

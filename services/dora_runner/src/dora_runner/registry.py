@@ -22,7 +22,12 @@ from pathlib import Path
 
 from kairos_common import ApiError, ValidationTemplate
 
+from dora_runner.bagflow_flow import DEFAULT_FLOW, list_flows
+from dora_runner.bagflow_runtime import DoraEndpoint, bagflow_available
+from dora_runner.dataset_archive import run_dataset_archive
 from dora_runner.dataset_export import run_dataset_export
+from dora_runner.fast_validation import run_fast_validation
+from dora_runner.full_validation import run_full_validation
 from dora_runner.loss_report import run_loss_report
 from dora_runner.loss_report_config import (
     LossReportConfig,
@@ -32,7 +37,7 @@ from dora_runner.loss_report_config import (
 )
 from dora_runner.signal_report import DEFAULT_MAX_POINTS, run_signal_report
 from dora_runner.store import JobRecord, RunnerStore
-from dora_runner.validation import generate_template, run_fast_validation
+from dora_runner.validation import generate_template
 from dora_runner.video_check import MAX_FRAMES, run_video_check
 
 # A pipeline runner: takes the job + shared store + data root, returns the raw
@@ -110,8 +115,85 @@ async def _run_fast_validation(
 ) -> dict:
     template = await _resolve_template(job, store, data_dir)
     job.progress = 0.4
-    return await asyncio.to_thread(
-        run_fast_validation, run_id=job.run_id, data_dir=data_dir, template=template
+    return await run_fast_validation(
+        run_id=job.run_id,
+        data_dir=data_dir,
+        endpoint=DoraEndpoint.from_env(),
+        # Naming the dataflow after the job is what makes cleanup targeted:
+        # `dora stop --name <job_id>` can only ever reach this job's flow.
+        job_name=job.job_id,
+        template=template,
+    )
+
+
+async def _resolve_optional_template(
+    job: JobRecord, store: RunnerStore
+) -> ValidationTemplate | None:
+    """Resolve a template for a pipeline where it is OPTIONAL (full_validation).
+
+    Same inline/named resolution as ``_resolve_template``, but an omitted param
+    yields ``None`` instead of a draft generated from the run itself: a flow that
+    asks for ``${KAIROS_REQUIRED_TOPICS}`` then falls back to the recording
+    config's required topics, and "every topic this run happens to contain" would
+    make such a check vacuously true.
+    """
+    raw = job.params.get("template")
+    if isinstance(raw, dict):
+        return ValidationTemplate.model_validate(raw)
+    if isinstance(raw, str) and raw:
+        template = await store.get_template(raw)
+        if template is not None:
+            return template
+        raise ApiError(
+            status_code=400,
+            code="template_not_found",
+            message=f"Validation template not found: {raw}",
+            details={"template": raw},
+        )
+    return None
+
+
+def _flow_param(params: dict) -> str:
+    """``flow`` job param: which ``config/<robot>/flows/<name>.yml`` to run."""
+    raw = params.get("flow")
+    name = str(raw).strip() if raw is not None else ""
+    return name or DEFAULT_FLOW
+
+
+def _min_coverage_param(params: dict) -> float:
+    """``min_coverage`` job param: 0-1 fraction of the bag a verdict must cover."""
+    raw = params.get("min_coverage")
+    if raw is None:
+        return 0.0
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = -1.0
+    if not 0.0 <= value <= 1.0:
+        raise ApiError(
+            status_code=400,
+            code="invalid_min_coverage",
+            message="min_coverage must be a number between 0 and 1.",
+        )
+    return value
+
+
+async def _run_full_validation(
+    job: JobRecord, store: RunnerStore, data_dir: Path
+) -> dict:
+    template = await _resolve_optional_template(job, store)
+    job.progress = 0.3
+    return await run_full_validation(
+        run_id=job.run_id,
+        data_dir=data_dir,
+        flow=_flow_param(job.params),
+        endpoint=DoraEndpoint.from_env(),
+        # Naming the dataflow after the job is what makes cleanup targeted:
+        # `dora stop --name <job_id>` can only ever reach this job's flow.
+        job_name=job.job_id,
+        template=template,
+        min_coverage=_min_coverage_param(job.params),
+        dataset_dir=_dataset_dir_param(job.params),
     )
 
 
@@ -120,6 +202,48 @@ async def _run_dataset_export(
 ) -> dict:
     return await asyncio.to_thread(
         run_dataset_export, run_id=job.run_id, data_dir=data_dir
+    )
+
+
+async def _run_dataset_archive(
+    job: JobRecord, store: RunnerStore, data_dir: Path
+) -> dict:
+    """``dataset_archive``: copy out, verify, then delete the source.
+
+    Runs on a thread because it is long, blocking I/O over (usually) a network
+    filesystem — the event loop must stay responsive so the job's own status
+    can be polled while multi-GB bags copy.
+    """
+    dataset_dir = _dataset_dir_param(job.params)
+    if not dataset_dir:
+        raise ApiError(
+            status_code=400,
+            code="dataset_dir_required",
+            message="dataset_archive needs a dataset_dir param.",
+            details={"pipeline": "dataset_archive"},
+        )
+    destination = job.params.get("destination")
+    if not isinstance(destination, str) or not destination.strip():
+        raise ApiError(
+            status_code=400,
+            code="destination_required",
+            message="dataset_archive needs a destination param.",
+            details={"pipeline": "dataset_archive"},
+        )
+    return await asyncio.to_thread(
+        run_dataset_archive,
+        data_dir=data_dir,
+        dataset_dir=dataset_dir,
+        destination=destination,
+        # No allow-list is passed from here, and there is no parameter left to
+        # pass it through: run_dataset_archive reads KAIROS_ARCHIVE_ROOTS from
+        # this service's own environment. The allow-list is deployment
+        # configuration, and a job parameter is caller-controlled — POST /jobs
+        # forwards params verbatim and neither service authenticates, so when
+        # this WAS a parameter any LAN caller could pass archive_roots="/" and
+        # have the runner copy a dataset anywhere writable, then delete the
+        # original. Verified, then removed rather than merely left unwired.
+        reason=job.params.get("reason"),
     )
 
 
@@ -319,6 +443,25 @@ _SIGNAL_REPORT_SCHEMA = {
 }
 _NO_PARAMS_SCHEMA = {"type": "object", "properties": {}}
 
+# dataset_archive takes the SOURCE (data-relative) and the DESTINATION. The
+# destination is allow-listed by KAIROS_ARCHIVE_ROOTS, which is why it is a
+# plain string here rather than an x-suggest enum: the legal values are a
+# deployment setting, served by the orchestrator's archive-config endpoint.
+_DATASET_ARCHIVE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "dataset_dir": {
+            "type": "string",
+            "description": "Data-relative '<operator>/<task>/<NNN>' to archive.",
+        },
+        "destination": {
+            "type": "string",
+            "description": "Absolute destination path, inside an archive root.",
+        },
+    },
+    "required": ["dataset_dir", "destination"],
+}
+
 
 def loss_report_schema(config: LossReportConfig) -> dict:
     """Build loss_report's params_schema with *config*-driven defaults (OL-④.3).
@@ -364,14 +507,59 @@ def loss_report_schema(config: LossReportConfig) -> dict:
     }
 
 
+def full_validation_schema(flows: list[str]) -> dict:
+    """``full_validation`` params. *flows* are the discovered flow files.
+
+    The flow list becomes an ``enum`` so the auto-rendered form is a picker over
+    what this robot actually ships (no free-text guessing); with no flows found
+    it degrades to a text field rather than an empty, unselectable dropdown.
+    """
+    flow_property: dict = {
+        "type": "string",
+        "title": "Flow",
+        "description": (
+            "Validation flow from config/<robot>/flows/ (a bagflow flow.yml)."
+        ),
+        "default": DEFAULT_FLOW if DEFAULT_FLOW in flows or not flows else flows[0],
+    }
+    if flows:
+        flow_property["enum"] = flows
+    return {
+        "type": "object",
+        "properties": {
+            "flow": flow_property,
+            # Named `template` so the UI renders its catalog picker (a field with
+            # this exact name is special-cased in PipelineForm); empty = the
+            # active template (Settings -> Validation), injected by the orchestrator.
+            "template": {
+                "type": "string",
+                "title": "Validation template",
+                "description": (
+                    "Supplies ${KAIROS_REQUIRED_TOPICS} to the flow; empty uses "
+                    "the active template, then the recording config."
+                ),
+            },
+            "min_coverage": {
+                "type": "number",
+                "title": "Minimum coverage",
+                "description": (
+                    "Fail when the least-covered edge saw less than this fraction "
+                    "of the bag (0 = report coverage without gating)."
+                ),
+                "minimum": 0,
+                "maximum": 1,
+                "default": 0,
+            },
+            # Post-export source: "<operator>/<task>/<NNN>" under data/; omitted =
+            # read recorded/<run_id>.
+            "dataset_dir": {"type": "string"},
+        },
+    }
+
+
 # Interface-only placeholders (no runner yet): advertised so the registry/UI show
 # the roadmap, but POST /jobs rejects them as not-implemented.
 _PLACEHOLDERS = [
-    (
-        "full_validation",
-        "Full validation",
-        "Interface-only placeholder for deeper validation.",
-    ),
     (
         "dataset_convert",
         "Dataset conversion",
@@ -385,13 +573,73 @@ _PLACEHOLDERS = [
 ]
 
 
+def _fast_validation_pipeline() -> RegisteredPipeline:
+    """``fast_validation``: the required-topic gate, registered honestly.
+
+    Since the port to bagflow it runs on dora like ``full_validation`` and needs
+    the same bundled binaries, so it follows the same rule: where they are absent
+    (a host checkout, CI, a hand-rolled deployment) the pipeline is advertised
+    with the reason instead of accepting jobs that can only fail at execution
+    time. Its flow ships with the service, so — unlike full_validation — there is
+    nothing for the operator to author before it works.
+    """
+    available = bagflow_available()
+    return RegisteredPipeline(
+        id="fast_validation",
+        name="Fast validation",
+        description=(
+            "Required-topic presence check for recorded MCAP runs "
+            "(bagflow flow on dora; reads the bag's metadata only)."
+            if available
+            else (
+                "Unavailable here: needs the bagflow + dora binaries bundled in "
+                "the dora_runner image."
+            )
+        ),
+        params_schema=_FAST_VALIDATION_SCHEMA,
+        outputs=["report/fast_validation/<run_id>/summary.json"],
+        executor="dora",
+        runner=_run_fast_validation if available else None,
+    )
+
+
+def _full_validation_pipeline() -> RegisteredPipeline:
+    """``full_validation``: the operator-authored flow gate, registered honestly.
+
+    Like ``fast_validation`` it needs binaries the source tree does not carry
+    (the bagflow CLI + node binaries + the dora daemon, all built into the
+    dora_runner image), and additionally a flow to run: with no
+    ``config/<robot>/flows/`` the ``flow`` enum has nothing to offer, so the form
+    degrades to a text field rather than an empty dropdown.
+    """
+    available = bagflow_available()
+    flows = list_flows() if available else []
+    return RegisteredPipeline(
+        id="full_validation",
+        name="Full validation",
+        description=(
+            "Declarative post-recording gate: runs config/<robot>/flows/<flow>.yml "
+            "on dora (decode/blur/brightness/freeze/stamp-gap/topic-rate)."
+            if available
+            else (
+                "Unavailable here: needs the bagflow + dora binaries bundled in "
+                "the dora_runner image."
+            )
+        ),
+        params_schema=full_validation_schema(flows),
+        outputs=["report/full_validation/<run_id>/summary.json"],
+        executor="dora",
+        runner=_run_full_validation if available else None,
+    )
+
+
 def build_default_registry(
     loss_config: LossReportConfig | None = None,
     *,
     discover: bool = True,
     plugins_dir: Path | None = None,
 ) -> PipelineRegistry:
-    """Construct the registry with the four implemented pipelines + placeholders.
+    """Construct the registry with the implemented pipelines + placeholders.
 
     *loss_config* supplies loss_report's config-driven defaults (OL-④.3); it
     defaults to loading ``config/<robot>/validators/loss_report.yaml`` (env
@@ -404,16 +652,8 @@ def build_default_registry(
     """
     config = loss_config or load_loss_report_config()
     registry = PipelineRegistry()
-    registry.register(
-        RegisteredPipeline(
-            id="fast_validation",
-            name="Fast validation",
-            description="Required-topic presence check for recorded MCAP runs.",
-            params_schema=_FAST_VALIDATION_SCHEMA,
-            outputs=["report/fast_validation/<run_id>/summary.json"],
-            runner=_run_fast_validation,
-        )
-    )
+    registry.register(_fast_validation_pipeline())
+    registry.register(_full_validation_pipeline())
     registry.register(
         RegisteredPipeline(
             id="dataset_export",
@@ -425,6 +665,21 @@ def build_default_registry(
             params_schema=_NO_PARAMS_SCHEMA,
             outputs=["data/<operator>/<task>/<NNN>/"],
             runner=_run_dataset_export,
+        )
+    )
+    registry.register(
+        RegisteredPipeline(
+            id="dataset_archive",
+            name="Dataset archive",
+            description=(
+                "COPY an exported dataset to an allow-listed destination, verify "
+                "it byte-for-byte (sha256), then remove the source. The source is "
+                "only ever deleted after the destination verifies."
+            ),
+            params_schema=_DATASET_ARCHIVE_SCHEMA,
+            required_inputs=["dataset_dir", "destination"],
+            outputs=["<destination>/"],
+            runner=_run_dataset_archive,
         )
     )
     registry.register(

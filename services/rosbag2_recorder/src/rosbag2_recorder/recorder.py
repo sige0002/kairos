@@ -712,6 +712,9 @@ class RecorderSession:
         armed = self._armed
         if armed is None:  # pragma: no cover - guarded by the caller
             raise RuntimeError("_extend_armed_locked called with no armed session")
+        # Re-read readiness: reusing the subprocess must not also mean reusing a
+        # stale view of which targets are live (this response feeds the console).
+        self._refresh_arming_locked()
         if armed.timer is not None:
             armed.timer.cancel()
         self._armed_generation += 1
@@ -770,6 +773,10 @@ class RecorderSession:
             raise RuntimeError("_start_from_armed called with no armed session")
         if armed.timer is not None:
             armed.timer.cancel()
+        # Freeze the snapshot on what is live NOW, not at the first prepare:
+        # this is the value the whole recording is judged by ("start-time
+        # coverage"), and the node is destroyed a few lines below.
+        self._refresh_arming_locked()
 
         try:
             self._resume_armed(armed)
@@ -1181,12 +1188,15 @@ class RecorderSession:
         different next step (resume immediately vs. hold for a later resume).
         """
         # Seed the observational arming snapshot: active while we wait, with the
-        # auto-resume deadline (now + timeout) and every target still "missing"
-        # until the readiness poll confirms a subscription (OL-①.4).
+        # auto-resume deadline (now + timeout) and every target still unmatched
+        # until the readiness poll confirms a subscription (OL-①.4). They seed as
+        # "unsubscribed", not "missing": we have not read the graph yet, and the
+        # one thing we do know is that the recorder has not subscribed — claiming
+        # "not publishing" before looking would be a guess.
         self._arming = RecordArming(
             active=True,
             matched_topics=[],
-            missing_topics=list(topics),
+            unsubscribed_topics=list(topics),
             resume_at=_iso8601_after(timeout),
         )
         self._await_recorder_subscribed(rclpy_mod, node, topics, all_mode, timeout)
@@ -1349,6 +1359,27 @@ class RecorderSession:
             for info in node.get_subscriptions_info_by_topic(topic)
         )
 
+    def _readiness_view(
+        self, node: Any, topics: list[str], all_mode: bool
+    ) -> tuple[list[str], list[str], list[str]]:
+        """One graph read -> ``(matched, unsubscribed, missing)`` for the targets.
+
+        The gate's "pending" set is ``unsubscribed + missing``; splitting it by
+        CAUSE is what lets the UI say "not publishing" only about a topic that
+        really has no publisher (see :class:`RecordArming`).
+        """
+        matched: list[str] = []
+        unsubscribed: list[str] = []
+        missing: list[str] = []
+        for topic in self._readiness_targets(node, topics, all_mode):
+            if node.count_publishers(topic) == 0:
+                missing.append(topic)
+            elif self._recorder_subscribed(node, topic):
+                matched.append(topic)
+            else:
+                unsubscribed.append(topic)
+        return matched, unsubscribed, missing
+
     def _await_recorder_subscribed(
         self,
         rclpy_mod: Any,
@@ -1365,12 +1396,12 @@ class RecorderSession:
         deadline = time.monotonic() + timeout
         while True:
             rclpy_mod.spin_once(node, timeout_sec=SUBSCRIPTION_POLL_S)
-            targets = self._readiness_targets(node, topics, all_mode)
-            subscribed = {t: self._recorder_subscribed(node, t) for t in targets}
-            matched = [t for t, ok in subscribed.items() if ok]
-            pending = [t for t, ok in subscribed.items() if not ok]
-            self._update_arming(matched, pending)
-            if targets and not pending:
+            matched, unsubscribed, missing = self._readiness_view(
+                node, topics, all_mode
+            )
+            pending = unsubscribed + missing
+            self._update_arming(matched, unsubscribed, missing)
+            if matched and not pending:
                 return
             if time.monotonic() >= deadline:
                 if pending:
@@ -1380,15 +1411,50 @@ class RecorderSession:
                     )
                 return
 
-    def _update_arming(self, matched: list[str], missing: list[str]) -> None:
-        """Refresh the observational arming snapshot's matched/missing lists.
+    def _update_arming(
+        self, matched: list[str], unsubscribed: list[str], missing: list[str]
+    ) -> None:
+        """Refresh the observational arming snapshot's readiness lists.
 
-        Called from each readiness poll (under ``self._lock``). Purely
-        observational: it never affects subscription timing or the resume path.
+        Called from each readiness poll and from :meth:`_refresh_arming_locked`
+        (both under ``self._lock``). Purely observational: it never affects
+        subscription timing or the resume path.
         """
         if self._arming is not None:
             self._arming.matched_topics = matched
+            self._arming.unsubscribed_topics = unsubscribed
             self._arming.missing_topics = missing
+
+    def _refresh_arming_locked(self) -> None:
+        """Re-evaluate the ARMED session's snapshot against the live ROS graph.
+
+        A ``prepare()`` arms once but the session then sits armed indefinitely
+        (the console's pre-arm keep-alive re-prepares it, and a matching
+        re-prepare deliberately reuses the paused subprocess rather than
+        respawning it). Without this, the readiness snapshot stayed frozen at
+        the FIRST arm: a topic that was down then — and came up seconds later —
+        was still reported "not publishing" through the keep-alives, through the
+        start, and for the whole recording.
+
+        Best-effort and observational: the armed session's rclpy node is only
+        read (graph queries, no spin), and any failure keeps the last snapshot
+        rather than blanking it. Caller must hold ``self._lock`` (which also
+        serialises this against the node's teardown).
+        """
+        armed = self._armed
+        if armed is None or self._arming is None:
+            return
+        requested = armed.request.topics
+        all_mode = requested == "all"
+        targets = [] if all_mode else list(requested or [])
+        try:
+            matched, unsubscribed, missing = self._readiness_view(
+                armed.node, targets, all_mode
+            )
+        except Exception:  # noqa: BLE001 - observational; keep the last snapshot
+            logger.exception("failed to refresh the arming snapshot")
+            return
+        self._update_arming(matched, unsubscribed, missing)
 
     def _resume_recorder(
         self, rclpy_mod: Any, node: Any, resume_srv: Any, is_paused_srv: Any
@@ -1782,6 +1848,11 @@ class RecorderSession:
 
     def _status_locked(self) -> RecordStatusResponse:
         if self._state is RunState.armed and self._armed is not None:
+            # Live readiness, not the first-arm snapshot: an armed session can
+            # sit armed for a long time (pre-arm keep-alive), and the console
+            # renders this as a CURRENT warning ("target topics not
+            # publishing"), so it must be re-read here.
+            self._refresh_arming_locked()
             # Nothing has been committed yet (no manifest/session.json, no
             # capture) — report the ARMED run/topics, not the previous
             # session's self._run_id/_topics (those stay untouched until a

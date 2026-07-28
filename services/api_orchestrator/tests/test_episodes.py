@@ -42,8 +42,8 @@ def test_create_batch_defaults_robot_and_target(client: TestClient) -> None:
 
 
 def test_create_batch_accepts_explicit_robot_and_target(client: TestClient) -> None:
-    batch = _new_batch(client, robot="realman", target_episodes=10, operator="yuki")
-    assert batch["robot"] == "realman"
+    batch = _new_batch(client, robot="myrobot", target_episodes=10, operator="yuki")
+    assert batch["robot"] == "myrobot"
     assert batch["target_episodes"] == 10
     assert batch["operator"] == "yuki"
 
@@ -55,7 +55,7 @@ def test_batch_seq_allocated_and_increments_same_day(client: TestClient) -> None
     second = _new_batch(client)
     assert first["batch_seq"] == 1
     assert second["batch_seq"] == 2  # same (default) robot, same local day
-    other = _new_batch(client, robot="realman")
+    other = _new_batch(client, robot="myrobot")
     assert other["batch_seq"] == 1  # different robot -> restarts at 1
 
 
@@ -121,9 +121,7 @@ def test_patch_batch_task_only_leaves_project_and_condition(client: TestClient) 
     batch_id = _new_batch(client, project="proj", task="pick", condition="cond_a")[
         "batch_id"
     ]
-    body = client.patch(
-        f"/api/v1/batches/{batch_id}", json={"task": "handover"}
-    ).json()
+    body = client.patch(f"/api/v1/batches/{batch_id}", json={"task": "handover"}).json()
     assert body["task"] == "handover"
     assert body["project"] == "proj"  # unchanged
     assert body["condition"] == "cond_a"  # unchanged (omitted → kept)
@@ -400,10 +398,10 @@ def test_list_batches_robot_and_operator_filters(client: TestClient) -> None:
     """Collect scopes its active-batch restore by robot/operator so one
     terminal never adopts another robot's or operator's batch."""
     _new_batch(client, robot="airoa_hsr", operator="alice")
-    _new_batch(client, robot="realman", operator="bob")
+    _new_batch(client, robot="myrobot", operator="bob")
 
-    by_robot = client.get("/api/v1/batches", params={"robot": "realman"}).json()
-    assert [b["robot"] for b in by_robot["items"]] == ["realman"]
+    by_robot = client.get("/api/v1/batches", params={"robot": "myrobot"}).json()
+    assert [b["robot"] for b in by_robot["items"]] == ["myrobot"]
 
     by_op = client.get("/api/v1/batches", params={"operator": "alice"}).json()
     assert [b["operator"] for b in by_op["items"]] == ["alice"]

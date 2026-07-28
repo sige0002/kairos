@@ -12,20 +12,50 @@ organized around this "source of truth."
 
 ## Architecture
 
+**1 folder = 1 container.** Responsibilities are split across processes so that heavy work
+(decoding, validation) never bleeds into recording and monitoring.
+
+```mermaid
+flowchart TB
+  ROBOT["ROS 2 Robot / Sim"] --> TOPICS(["ROS 2 Topics (DDS)"])
+
+  subgraph live["live path — ROS 2 containers (rclpy)"]
+    REC["rosbag2_recorder<br/>selected topics → MCAP"]
+    MON["topic_monitor<br/>Hz / latency / loss / bandwidth<br/>(never decodes)"]
+    PROBE["topic_probe<br/>numeric-field plots<br/>(decoding is isolated here)"]
+    WEB["webrtc_streamer<br/>low-latency preview"]
+  end
+
+  subgraph post["post-recording path"]
+    ORC["api_orchestrator<br/>job / state / config hub"]
+    DR["dora_runner<br/>validation &amp; conversion<br/>(bundled bagflow + dora)"]
+  end
+
+  FE["frontend<br/>Vite + React + TS"]
+  MCAP[("/data/recorded/&lt;run_id&gt;/*.mcap<br/>= the source of truth")]
+  OUT[("/data/report/, /data/&lt;operator&gt;/&lt;task&gt;/<br/>reports &amp; datasets")]
+
+  TOPICS --> REC & MON & PROBE & WEB
+  REC --> MCAP
+  MCAP --> DR --> OUT
+  FE <-->|"REST / SSE / WebRTC"| ORC
+  ORC <--> REC & MON & PROBE & WEB
+  ORC <-->|"POST /jobs"| DR
+  WEB -.->|"media goes direct"| FE
 ```
-              ROS 2 Robot / Sim  ──►  ROS 2 Topics
-                                        │
-     ┌──────────────┬────────────┬──────┼────────────────────────┐
-     ▼              ▼            ▼       ▼                        ▼
-webrtc_streamer topic_monitor topic_probe rosbag2_recorder  (selected topics)
- (live video)   (live monitoring) (numeric plots) ──► MCAP  /data/recorded/run_xxxx.mcap ◄─ canonical
-     │              │            │        │
-     ▼              ▼            ▼        ▼  (after recording)
-   Browser  ◄────  api_orchestrator  ──►  dora_runner ──► report / converted dataset
-                  (job & state hub)        (validation & conversion pipeline)
-                         ▲
-                         │ REST / WebSocket / SSE
-                      frontend (Vite + React + TS)
+
+Post-recording validation is contained **entirely inside the dora_runner container** (a bundled
+bagflow flow run on its own dora coordinator; see the
+[dora_runner spec](docs/specs/en/dora_runner.md)):
+
+```mermaid
+flowchart LR
+  J["POST /api/v1/jobs"] --> API["dora_runner API"]
+  API --> PIPE["bagflow_pipeline<br/>materialize · timeout · cleanup"]
+  FLOW[/"flow definition (YAML)<br/>bundled or config/&lt;robot&gt;/flows/"/] --> PIPE
+  PIPE -->|"bagflow run"| CO["dora coordinator/daemon<br/>127.0.0.1:6112 loopback"]
+  CO --> NODES["check nodes (Rust)<br/>topic-presence / topic-rate<br/>decode / blur / brightness<br/>freeze / stamp-gap"]
+  NODES --> RPT["report.json"] --> SUM["summary.json<br/>pass / fail"]
 ```
 
 ## Service composition
@@ -37,7 +67,7 @@ webrtc_streamer topic_monitor topic_probe rosbag2_recorder  (selected topics)
 | [topic_probe](docs/specs/en/topic_probe.md) | A generic probe that live-plots **numeric fields** of selected topics. Decoding is **isolated** to this service so it doesn't affect recording or monitoring. |
 | [webrtc_streamer](docs/specs/en/webrtc_streamer.md) | Low-latency camera **preview** (ROS 2 image → browser). Not a recording path. |
 | [api_orchestrator](docs/specs/en/api_orchestrator.md) | The single API hub. Handles job lifecycle, state, configuration, and result aggregation. |
-| [dora_runner](docs/specs/en/dora_runner.md) | Post-recording **validation & conversion** pipeline (dora-based). Enabled: `fast_validation` / `dataset_export` / `loss_report` / `video_check`. |
+| [dora_runner](docs/specs/en/dora_runner.md) | Post-recording **validation & conversion** pipeline. Validation runs as a bundled **bagflow flow on real dora**. Enabled: `fast_validation` / `full_validation` / `dataset_export` / `loss_report` / `video_check` / `signal_report`. |
 | [frontend](docs/specs/en/frontend.md) | A backend-driven Web UI (UI labels in English). Role tabs (Console v2): Collect / Review / Datasets / Validation / Monitor / Settings. |
 
 ## Specification docs
@@ -55,12 +85,19 @@ For the detailed spec of each service, see [docs/specs/en/](docs/specs/en/README
 ### Start all services (Docker)
 
 ```bash
-make up                       # = build + start (detached). Robot selected via ROBOT (default airoa_hsr)
+make build                    # build the images (first time and after code changes; needs network)
+make up                       # start (detached). Robot selected via ROBOT (default airoa_hsr)
 # or with plain docker compose:
 cp .env.example .env          # edit as needed
 docker compose build
 docker compose up
 ```
+
+> **`make up` does not build** (it only starts). Building needs the network even when nothing changed,
+> so an `up` that always built could not bring the stack up **in the field with no network**. To apply
+> code changes use `make rebuild <service>`; to refresh the upstream base images too, `make build-pull`.
+> For a machine with no images at all, see
+> [Running on an offline machine](#running-on-an-offline-machine-carrying-the-images-in).
 
 All services start with host networking. The ROS 2 services (`recorder` / `monitor` / `streamer`)
 share the host DDS graph (`ROS_DOMAIN_ID=0`), and the pure-Python services (`orchestrator` / `dora_runner`)
@@ -115,19 +152,92 @@ selected with a single `ROBOT` (default `airoa_hsr`); `make` resolves `config/<r
 
 | Command | What it does |
 |---|---|
-| `make up` / `make down` / `make ps` | Start the stack (with build) / stop & remove / status |
+| `make up` / `make down` / `make ps` | Start the stack (**does not build**) / stop & remove / status |
 | `make build monitor` / `make build` | Build a service (positional for one / no arg or `all` for all) |
-| `make rebuild frontend` | Build + force re-create (apply code changes) |
+| `make rebuild frontend` | Build + force re-create (apply code changes) — **the "refresh the container" command** |
+| `make build-pull` | Build pulling fresh upstream base images (needs network) |
+| `make images-save` / `make images-load` | Write the images to one file / load them (carrying them to an offline machine) |
 | `make restart monitor orchestrator` | Restart services |
 | `make logs streamer` | Follow logs |
 | `make config-reload` / `make config-show` | Apply `config/*.yaml` edits (restart monitor+orchestrator) / show current config |
 | `make rosbag` / `make rosbag-loop` / `make table` | Sample bag single playback / loop playback / Hz table for all topics |
+| `make load` | Load overview: CPU (per-core **and** per-machine) / measured NIC throughput + link utilization / measured DDS bandwidth / data disk free |
 | `make smoke` / `make smoke-record` | End-to-end check (PASS/FAIL) / with record start/stop |
 | `make test` / `make test-py` / `make test-fe` / `make lint` / `make fmt` | Test, lint, format |
 
 To use a different robot, switch `ROBOT` like `make up ROBOT=<robot>` (`make` resolves `config/<robot>/`
 (committed) / `config/local/<robot>/` (gitignored) and passes them to each service). For a different bag,
 override like `make rosbag BAG=/data/<robot>/<run>`.
+
+### Running on an offline machine (carrying the images in)
+
+**A build uses the network even when nothing changed** (BuildKit resolves the base images and the
+Dockerfile frontend against the registry). That is why `make up` only **starts**: on a machine that
+already has the images, bringing the stack up touches the network not at all.
+
+For a machine with no images at all (a fresh robot, a field PC), carry them over **as a file** instead
+of making it build. `make up` checks — using local information only — that the images it needs are
+present, and stops naming the missing ones if they are not (left to compose, a missing image means
+either a build or a pull, so offline it just hangs on the network with no useful message).
+
+**Images alone are not enough.** The repository `make` and compose read has to travel, and so do the
+gitignored `.env`, `config/local/<robot>/` and `deploy/msgs_overlay/<robot>/` (`git clone` itself needs
+the network). **rsync of the directory carries the gitignored files along with it**, so in practice
+this is three steps: build the archive, rsync the tree, load and start.
+
+```bash
+# 1. where there IS network (the image list is derived from compose, so it cannot drift)
+make images-save                    # all services + the replay/inspection harness
+make robot-images-save              # only the robot-edge 4 (split deployment)
+make recording-images-save          # only the recording-host 3 (split deployment)
+
+# 2. carry the repository (excludes are mandatory — a plain `scp -r` drags data/ along, tens of GB)
+rsync -av \
+  --exclude='/data/*' \
+  --exclude='.venv/' \
+  --exclude='node_modules/' \
+  --exclude='/deploy/msgs_overlay/*/build/' \
+  --exclude='/deploy/msgs_overlay/*/log/' \
+  --exclude='/backups/' --exclude='*.tar.gz' \
+  ~/kairos/ <user>@<host>:~/kairos/
+scp kairos-images.tar.gz <user>@<host>:~/
+
+# 3. on that machine
+make images-load IMAGES_FILE=~/kairos-images.tar.gz
+make up                             # or make robot-up
+make smoke                          # check it works (the harness travelled too)
+```
+
+Why each exclusion, with measured sizes (from this setup — yours will differ):
+
+| What | Size | Why excluded / needed |
+|---|---|---|
+| `data/` | **20 GB** | Recordings and sample bags. Empty is fine on site |
+| 8× `.venv` + `node_modules` | ~950 MB | Host-side dev only; the images carry their own |
+| overlay `build/` + `log/` | 65 MB | colcon intermediates — only **`install/`** is needed |
+| **actually transferred** | **40 MB** (incl. `.git`, 9,337 files) | |
+
+`--exclude='/data/*'` rather than `/data/` is **deliberate**: the `data/` directory itself must exist
+and be empty. Without it Docker creates the `./data:/data` bind mount root-owned, and the orchestrator
+(which runs non-root) cannot write to it.
+
+A dry run confirms this rsync really carries `.env`, `config/local/<robot>/` and
+`deploy/msgs_overlay/<robot>/install/`. If `install/` has not been built, run `make msgs-build` on the
+target machine (just `colcon build` inside the local recorder image — no network). For a split
+deployment, fix `*_HOST` / `ROBOT_IP` in `.env` to the real robot's IP on site.
+
+Change the destination with `IMAGES_FILE=`. Measured: the 4 robot-edge images → **384 MB in about
+35 s**; all services plus the harness (8 images) → **562 MB** (shared layers are stored once, so the
+count matters less than it looks). `make images-save` deliberately includes the **replay/inspection
+harness** (the image behind `make smoke` / `make rosbag` / `make table` — easy to miss because it is a
+separate compose project): the tools you reach for to work out why nothing is coming out should not
+themselves demand a build on the machine where you have no network.
+
+> **Architecture matters**: images are per-arch. One built on amd64 will not run on an arm64 robot —
+> build there while it still has network, or use `docker buildx build --platform linux/arm64`.
+
+To refresh the upstream base images (`ros` / `python` / `node`), run `make build-pull` where there is
+network and redo step 1.
 
 ### Adding a robot (including custom message types)
 

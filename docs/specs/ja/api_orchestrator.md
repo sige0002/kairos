@@ -54,6 +54,13 @@
 2. recorder の `POST /record/start`（`run_id` を渡す）を呼ぶ。成功で `state=recording`、失敗なら **run 行は残したまま `state=failed` に更新**（理由を記録。DB 行は削除しない）。
 3. start 成功直後に recorder の `GET /record/metadata` を取得し、**確定した topics / type / QoS（`"all"` 展開結果を含む）を run 行へ同期**する。取得失敗時は `recording` のまま `error` に理由を記録して再試行する。
 4. `POST /api/v1/record/stop` → recorder stop → 最終 metadata（`message_count` / `bytes` / `ended_at` / topics）を再同期して `state=completed`。同期不能のまま完了した場合は `state=completed` とし `error` に同期失敗を残す（reconciliation 対象）。確定後、**停止時クイックチェックを stop 応答の外で走らせ**、完了時に `quick_check` を run 行へ書き込む（下記「停止時クイックチェック」）。
+
+   **stop は必ず「止める」（2026-07-27 改訂）**: 冪等性は「recording を主張する DB 行が無ければ何もしない」ではない。行は欠けたり別状態になったりする（start の行が未コミット、クラッシュ、reconcile の競合）ので、`stop` は行が無いときに **recorder の実状態を問い合わせる**:
+   - recorder が非稼働 → 従来どおりの冪等 no-op（直近 run を返す／run が皆無なら 404）
+   - recorder が録画中で**その run の行がある** → その行を採用し、通常の停止・確定経路を通す
+   - recorder が録画中で**行が無い**（orphan）→ 確定するものは無いが**停止はする**
+
+   採用・orphan 停止のどちらも WARNING でログする（ここに到達した時点で DB と recorder が乖離している）。これを欠くと、止まっていないのに `200` を返し、コンソールは録画中のテイクのラベル付けへ進み、`MAX_RECORD_SECONDS` の自動停止だけが唯一の終端になる。
 5. **再起動時の reconciliation**: 起動時に `recording` / `stopping` の run を recorder の `GET /record/status` と突き合わせ、実体が無ければ `state=interrupted` に更新する。
 
 - `run_id` は orchestrator が所有して recorder へ渡す。**SQLite が唯一の正**、recorder の `manifest.json` は監査用。
@@ -157,7 +164,7 @@ Settings > Data quality から、選択式カタログ（recording / stream / va
 
 - 形式: `id:`（単調増加の整数）/ `event:`（種別）/ `data:`（JSON）。
 - 種別と payload:
-  - `record_status`: `{ run_id, state, message_count, bytes, started_at }`（`started_at` は additive — start 遷移を見逃したページも進行中録画の経過を描ける）
+  - `record_status`: `{ run_id, state, message_count, bytes, started_at }`（`started_at` は additive — start 遷移を見逃したページも進行中録画の経過を描ける）。**受信側は同一 run 内の巻き戻しを破棄すること**（2026-07-27）: 1 つの run の状態は `created → armed → recording → stopping → 終端` としか進まないので、遅れて届いた低位イベントは新情報ではなく古い情報である。`recording` への巻き戻しはコンソールに「この画面が駆動していない録画が走っている」と誤認させ、停止済みのテイクの上に takeover カードを出す。run_id が異なる場合は巻き戻しではない（前の run の終端直後に新しい run が `recording` になるのは正常）。
   - `metrics`: `topic_monitor` の周期 snapshot（[topic_monitor](topic_monitor.md) の出力スキーマ）
   - `alert`: `{ topic, metric, level, value, threshold }`
   - `job`: `{ job_id, run_id, pipeline, state, progress }`

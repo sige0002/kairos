@@ -25,6 +25,15 @@ presets:
     params:
       template: airoa_hsr
 
+  - id: hsr_quick_gate
+    name: HSR quick gate
+    description: >-
+      Decode/blur/brightness/freeze + gap and rate checks on real dora
+      (config/airoa_hsr/flows/default.yml).
+    pipeline: full_validation
+    params:
+      flow: default
+
   - id: loss_scan
     name: Loss scan
     description: Per-topic gap-based loss estimate across every topic.

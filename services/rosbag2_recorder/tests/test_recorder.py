@@ -12,6 +12,7 @@ import json
 import time
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -30,17 +31,38 @@ from rosbag2_recorder.models import (
     RunState,
     SplitConfig,
 )
-from rosbag2_recorder.recorder import RecorderSession, run_dir
+from rosbag2_recorder.recorder import RECORDER_NODE_NAME, RecorderSession, run_dir
 
 
 class _FakeArmedNode:
-    """Placeholder for the rclpy Node kept alive across prepare() -> start().
+    """Stand-in for the rclpy Node kept alive across prepare() -> start().
 
-    ``_teardown_armed_rclpy`` calls ``.destroy_node()`` unconditionally, so the
-    fake needs that method; nothing else touches the node/clients in tests
-    that stub ``_prepare_arm``/``_resume_armed`` (the default in
-    :func:`_make_session`).
+    ``_teardown_armed_rclpy`` calls ``.destroy_node()``, and the armed session's
+    readiness refresh (``_refresh_arming_locked``) reads the ROS graph through
+    this node, so the fake answers both. It defaults to a fully-healthy graph
+    (every target published and subscribed by the recorder); a test that wants a
+    degraded graph passes explicit ``pubs``/``subs`` maps.
     """
+
+    def __init__(
+        self,
+        pubs: dict[str, int] | None = None,
+        subs: dict[str, list[str]] | None = None,
+    ) -> None:
+        self._pubs = pubs
+        self._subs = subs
+
+    def count_publishers(self, topic: str) -> int:
+        return 1 if self._pubs is None else self._pubs.get(topic, 0)
+
+    def get_subscriptions_info_by_topic(self, topic: str) -> list[Any]:
+        names = (
+            [RECORDER_NODE_NAME] if self._subs is None else self._subs.get(topic, [])
+        )
+        return [SimpleNamespace(node_name=n) for n in names]
+
+    def get_topic_names_and_types(self) -> list[tuple[str, list[str]]]:
+        return [(name, []) for name in (self._pubs or {})]
 
     def destroy_node(self) -> None:
         pass
@@ -585,47 +607,39 @@ def test_arming_snapshot_starts_none_and_resets(
     assert session.status().arming is None
 
 
-def test_await_subscribed_populates_arming_matched_missing(
+class _FakeRclpy:
+    @staticmethod
+    def spin_once(node: Any, timeout_sec: float) -> None:
+        pass
+
+
+def test_await_subscribed_splits_matched_unsubscribed_and_missing(
     settings: Settings,
 ) -> None:
-    """The readiness poll refreshes matched vs missing on the arming snapshot.
+    """The readiness poll refreshes the arming snapshot, split by CAUSE.
 
     Pure-logic: drive ``_await_recorder_subscribed`` with a fake ROS node so the
     rclpy graph queries are deterministic (no ROS needed)."""
-    from types import SimpleNamespace
-
     from rosbag2_recorder.models import RecordArming
-    from rosbag2_recorder.recorder import RECORDER_NODE_NAME
-
-    class _FakeNode:
-        def __init__(self, pubs: dict[str, int], subs: dict[str, list[str]]) -> None:
-            self._pubs = pubs
-            self._subs = subs
-
-        def count_publishers(self, topic: str) -> int:
-            return self._pubs.get(topic, 0)
-
-        def get_subscriptions_info_by_topic(self, topic: str) -> list[Any]:
-            return [SimpleNamespace(node_name=n) for n in self._subs.get(topic, [])]
-
-    class _FakeRclpy:
-        @staticmethod
-        def spin_once(node: Any, timeout_sec: float) -> None:
-            pass
 
     session = RecorderSession(settings, None)
-    session._arming = RecordArming(active=True, missing_topics=["/a", "/b"])
-    # /a has a publisher AND the recorder subscribed; /b has a publisher but the
-    # recorder has not subscribed yet -> still missing.
-    node = _FakeNode(
-        pubs={"/a": 1, "/b": 1},
-        subs={"/a": [RECORDER_NODE_NAME], "/b": []},
+    session._arming = RecordArming(active=True, unsubscribed_topics=["/a", "/b", "/c"])
+    # /a: published + recorder subscribed -> matched.
+    # /b: published, recorder not subscribed yet -> unsubscribed (NOT "missing":
+    #     it is live, and the operator can see it in Monitor).
+    # /c: no publisher at all -> missing.
+    node = _FakeArmedNode(
+        pubs={"/a": 1, "/b": 1, "/c": 0},
+        subs={"/a": [RECORDER_NODE_NAME], "/b": [], "/c": []},
     )
-    # timeout=0 -> one poll, then the deadline check resumes (still pending /b).
-    session._await_recorder_subscribed(_FakeRclpy(), node, ["/a", "/b"], False, 0.0)
+    # timeout=0 -> one poll, then the deadline check resumes (still pending).
+    session._await_recorder_subscribed(
+        _FakeRclpy(), node, ["/a", "/b", "/c"], False, 0.0
+    )
     assert session._arming is not None
     assert session._arming.matched_topics == ["/a"]
-    assert session._arming.missing_topics == ["/b"]
+    assert session._arming.unsubscribed_topics == ["/b"]
+    assert session._arming.missing_topics == ["/c"]
 
 
 def test_arming_snapshot_surfaced_on_status_after_start_paused(
@@ -1231,6 +1245,99 @@ def test_operator_task_come_from_start_request_not_prepare(
     payload = json.loads(session_path(settings.data_dir, "run_meta").read_text())
     assert payload["operator"] == "real_operator"
     assert payload["task"] == "real_task"
+
+
+def _armed_with_late_topic(
+    settings: Settings,
+    fake_process: type,
+    write_metadata: Callable[..., Path],
+) -> tuple[RecorderSession, _FakeArmedNode]:
+    """Arm a session whose ``/late`` target had no publisher at prepare time."""
+    graph = _FakeArmedNode(
+        pubs={"/joint_states": 1, "/late": 0},
+        subs={"/joint_states": [RECORDER_NODE_NAME], "/late": []},
+    )
+    session = _make_session(settings, fake_process, write_metadata)
+
+    def prepare_arm(run_id: str, topics: list[str], all_mode: bool) -> Any:
+        session._await_subscription_match(graph, _FakeRclpy(), topics, all_mode, 0.0)
+        return (graph, object(), object(), False)
+
+    session._prepare_arm = prepare_arm  # type: ignore[method-assign]
+    prepared = session.prepare(
+        _start_req("run_late", topics=["/joint_states", "/late"])
+    )
+    assert prepared.arming is not None
+    assert prepared.arming.missing_topics == ["/late"]
+    return session, graph
+
+
+def test_armed_status_re_reads_readiness_instead_of_the_first_arm_snapshot(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    """A target that comes up AFTER prepare stops being reported as missing.
+
+    Regression: the snapshot was frozen at the first prepare, so a topic that
+    was down then — and live seconds later — was still reported "not publishing"
+    for as long as the session stayed armed (the console's pre-arm keep-alive
+    holds it armed indefinitely), while Monitor showed it at full rate.
+    """
+    session, graph = _armed_with_late_topic(settings, fake_process, write_metadata)
+
+    graph._pubs["/late"] = 1  # the publisher appears
+    graph._subs["/late"] = [RECORDER_NODE_NAME]  # ...and the recorder subscribes
+
+    arming = session.status().arming
+    assert arming is not None
+    assert arming.missing_topics == []
+    assert arming.unsubscribed_topics == []
+    assert set(arming.matched_topics) == {"/joint_states", "/late"}
+
+
+def test_keepalive_re_prepare_re_reads_readiness(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    """A matching re-prepare reuses the subprocess but NOT the stale snapshot."""
+    session, graph = _armed_with_late_topic(settings, fake_process, write_metadata)
+
+    graph._pubs["/late"] = 1
+    graph._subs["/late"] = [RECORDER_NODE_NAME]
+
+    extended = session.prepare(
+        _start_req("run_other", topics=["/joint_states", "/late"])
+    )
+    assert extended.run_id == "run_late"  # keep-alive: same armed session
+    assert extended.arming is not None
+    assert extended.arming.missing_topics == []
+    assert set(extended.arming.matched_topics) == {"/joint_states", "/late"}
+
+
+def test_fast_start_freezes_readiness_at_resume_not_at_prepare(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    """The snapshot the recording is judged by is start-time, not prepare-time."""
+    session, graph = _armed_with_late_topic(settings, fake_process, write_metadata)
+
+    graph._pubs["/late"] = 1
+    graph._subs["/late"] = [RECORDER_NODE_NAME]
+
+    started = session.start(_start_req("run_late", topics=["/joint_states", "/late"]))
+    assert started.state is RunState.recording
+    assert started.arming is not None
+    assert started.arming.missing_topics == []
+    assert started.arming.active is False
+
+
+def test_armed_status_reports_a_target_that_really_has_no_publisher(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    """The refresh must not paper over a genuinely absent target."""
+    session, _graph = _armed_with_late_topic(settings, fake_process, write_metadata)
+
+    arming = session.status().arming
+    assert arming is not None
+    assert arming.missing_topics == ["/late"]
+    assert arming.matched_topics == ["/joint_states"]
 
 
 def test_status_shape_while_armed(

@@ -1,25 +1,25 @@
-"""fast_validation nodes and in-process executor."""
+"""Validation templates: reading a run's topic inventory, drafting a template.
+
+The *checking* moved out of this module: ``fast_validation`` is now a bagflow
+flow run on dora (``fast_validation.py`` + ``flows/fast_validation.yml``), and
+the required-topic comparison itself lives in the ``bagflow-topic-presence``
+node. What stays here is the MCAP-side helper the HTTP API needs — the topic
+enumeration behind ``POST /validation/templates/generate``, which turns a
+recording into a first draft of the template an operator then edits under
+Settings -> Validation.
+"""
 
 from __future__ import annotations
 
-import fnmatch
-import json
 from pathlib import Path
 from typing import Any
-
-from kairos_common import utc_now_iso8601
 
 from dora_runner.mcap_utils import enumerate_topics, find_mcap, validate_run_id
 from dora_runner.models import ValidationTemplate
 
-# Pipeline identity stamped into the summary (reproducibility contract, shared
-# with the other bundled pipelines and the hello_dora plugin example).
-PIPELINE_ID = "fast_validation"
-PIPELINE_VERSION = "1.0.0"
-
 
 def mcap_loader(run_id: str, data_dir: Path) -> dict[str, Any]:
-    """Node contract: load run paths and enumerate MCAP topics."""
+    """Load a run's paths and enumerate its MCAP topics."""
     validate_run_id(run_id)
     run_dir = data_dir / "recorded" / run_id
     mcap_path = find_mcap(run_dir)
@@ -29,74 +29,6 @@ def mcap_loader(run_id: str, data_dir: Path) -> dict[str, Any]:
         "mcap_path": str(mcap_path),
         "topics": enumerate_topics(mcap_path),
     }
-
-
-def validator(loaded: dict[str, Any], template: ValidationTemplate) -> dict[str, Any]:
-    """Node contract: compare enumerated topics to the validation template."""
-    actual = {
-        str(topic["name"]): str(topic.get("type") or "") for topic in loaded["topics"]
-    }
-    missing: list[dict[str, str | None]] = []
-    matched_names: set[str] = set()
-    for required in template.required_topics:
-        matches = [
-            (name, type_)
-            for name, type_ in actual.items()
-            if fnmatch.fnmatch(name, required.name)
-        ]
-        if required.type is not None:
-            matches = [
-                (name, type_) for name, type_ in matches if type_ == required.type
-            ]
-        if not matches:
-            missing.append(required.model_dump())
-            continue
-        matched_names.update(name for name, _type in matches)
-
-    extra = [
-        {"name": name, "type": type_}
-        for name, type_ in sorted(actual.items())
-        if name not in matched_names
-    ]
-    return {
-        "pipeline": PIPELINE_ID,
-        "version": PIPELINE_VERSION,
-        "template": {"name": template.name, "version": template.version},
-        "result": "fail" if missing else "pass",
-        "missing": missing,
-        "extra": extra,
-        "checked_at": utc_now_iso8601(),
-    }
-
-
-def result_writer(
-    summary: dict[str, Any], data_dir: Path, run_id: str
-) -> dict[str, Any]:
-    """Node contract: persist the validation summary artifact."""
-    report_dir = data_dir / "report" / "fast_validation" / run_id
-    report_dir.mkdir(parents=True, exist_ok=True)
-    summary_path = report_dir / "summary.json"
-    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
-    return {
-        "summary": summary,
-        "artifacts": [str(summary_path)],
-    }
-
-
-def run_fast_validation(
-    *,
-    run_id: str,
-    data_dir: Path,
-    template: ValidationTemplate,
-) -> dict[str, Any]:
-    """Run the v1 dataflow in-process.
-
-    This intentionally keeps dora-style node boundaries while avoiding a dora
-    coordinator/daemon, so CI and unit tests can execute the v1 pipeline.
-    """
-    loaded = mcap_loader(run_id, data_dir)
-    summary = validator(loaded, template)
-    return result_writer(summary, data_dir, run_id)
 
 
 def generate_template(run_id: str, data_dir: Path) -> ValidationTemplate:

@@ -35,6 +35,7 @@ from kairos_common import (
 from kairos_common.recording_config import RecordingConfig
 from kairos_common.stream_config import StreamConfig
 
+from api_orchestrator import bag_import
 from api_orchestrator.config_catalog import ConfigCatalog
 from api_orchestrator.dora_runner_client import DoraRunnerClient
 from api_orchestrator.events import EventHub
@@ -46,6 +47,7 @@ from api_orchestrator.routers import datasets as datasets_router
 from api_orchestrator.routers import episodes as episodes_router
 from api_orchestrator.routers import events as events_router
 from api_orchestrator.routers import files as files_router
+from api_orchestrator.routers import imports as imports_router
 from api_orchestrator.routers import jobs as jobs_router
 from api_orchestrator.routers import pipelines as pipelines_router
 from api_orchestrator.routers import plans as plans_router
@@ -232,6 +234,10 @@ def create_orchestrator_app(
     app.state.streamer_client = streamer
     app.state.dora_runner_client = dora_runner
     app.state.importer_client = importer
+    # In-flight rosbag imports (POST /api/v1/imports). Progress only — the run
+    # row and the bag on disk are the durable outcome, and both appear only
+    # once an import has finalised, so this is safe to lose on restart.
+    app.state.import_registry = bag_import.ImportRegistry()
     app.state.event_hub = event_hub
     app.state.config_catalog = config_catalog
     # Live RECORDING_CONFIG: read at request time by GET /api/v1/config and
@@ -266,6 +272,7 @@ def create_orchestrator_app(
     app.include_router(datasets_router.router)
     app.include_router(retention_router.router)
     app.include_router(transfer_router.router)
+    app.include_router(imports_router.router)
     _override_readyz(app, recorder, monitor, streamer)
 
     _register_root_and_config(app, settings)

@@ -53,8 +53,13 @@ export interface RecordArming {
   active: boolean;
   /** Target topics already present on the ROS graph (recorder subscribed). */
   matched_topics: string[];
-  /** Target topics still missing (recorder waiting on these). */
+  /** Target topics with NO publisher on the graph — genuinely not publishing. */
   missing_topics: string[];
+  /** Target topics that ARE published but the recorder has not subscribed to
+   *  yet (DDS discovery catching up). Absent on an older recorder — treat as
+   *  empty, never fold it into `missing_topics`: these ARE publishing, and the
+   *  operator can see them live in Monitor. */
+  unsubscribed_topics?: string[];
   /** ISO8601 instant the recorder auto-resumes anyway (readiness timeout). */
   resume_at?: string | null;
   /** ISO8601 instant an `armed` (two-phase prepare) session auto-disarms if no
@@ -164,6 +169,16 @@ export interface DatasetEntry {
   bytes?: number;
   message_count?: number | null;
   exported_at?: string;
+  /** Stable hash of the topics the bag ACTUALLY contains (name + type of every
+   *  topic that recorded at least one message), derived at export from the
+   *  bag's rosbag2 `metadata.yaml`. Two episodes with the same hash share an
+   *  observation/action space; a differing hash inside one group means the
+   *  group can't convert into a single training set. Null when the export's
+   *  metadata was unreadable — an honest UNKNOWN that must be kept OUT of the
+   *  comparison, never treated as its own set. */
+  topics_hash?: string | null;
+  /** How many topics fed `topics_hash` (shown as "7 topics"). */
+  topic_count?: number | null;
   /** Console v2 Phase 2: episode-label subset for catalog cards. The backend
    *  serves these FLAT on each list row (mirroring its per-row dataset.json
    *  read); null/absent on older backends or pre-label exports. The full
@@ -188,6 +203,26 @@ export interface DatasetEntry {
 /** GET /api/v1/datasets — the flat list of exported datasets (grouped in the UI). */
 export interface DatasetsResponse {
   datasets: DatasetEntry[];
+}
+
+/**
+ * GET /api/v1/datasets/archive/config — whether a dataset may be archived off
+ * this machine, and to which roots. `enabled: false` (KAIROS_ARCHIVE_ROOTS
+ * unset) means the feature is not offered: the UI renders no archive control
+ * at all rather than one whose only possible outcome is a 400.
+ */
+export interface ArchiveConfig {
+  enabled: boolean;
+  /** Absolute paths a destination must sit inside. Empty when disabled. */
+  roots: string[];
+}
+
+/** 202 body of POST /api/v1/datasets/{op}/{task}/{index}/archive. The copy runs
+ *  as a job (multi-GB over a NAS), so this carries the id to poll. */
+export interface DatasetArchiveResponse {
+  job_id: string;
+  pipeline: string;
+  destination: string;
 }
 
 /**

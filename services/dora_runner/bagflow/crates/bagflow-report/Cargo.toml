@@ -1,0 +1,16 @@
+[package]
+name = "bagflow-report"
+version = "0.1.0"
+edition = "2021"
+description = "bagflow report aggregator: collects node results, computes coverage, writes report.json"
+
+[[bin]]
+name = "bagflow-report"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+arrow = { version = "54.2", default-features = false }
+dora-node-api = "0.5"
+serde_json = { workspace = true }
+tokio = { version = "1", features = ["rt-multi-thread"] }

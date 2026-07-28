@@ -148,10 +148,10 @@ function Row({
         }}
         title={
           row.isArchived
-            ? 'Restore to dataset use'
-            : 'Exclude from dataset use (recording is kept)'
+            ? 'Return to review — the exclusion is a label, not a deletion'
+            : 'Exclude from training use. The recording is kept and this can be undone.'
         }
-        className="flex h-[26px] w-[26px] items-center justify-center rounded-[7px] text-gray-300 transition-colors hover:bg-red-50 hover:text-red-600"
+        className="flex h-[26px] w-[26px] items-center justify-center rounded-[7px] text-gray-300 transition-colors hover:bg-amber-50 hover:text-amber-700"
       >
         {row.isArchived ? (
           <span className="text-sm text-teal-700">↺</span>
@@ -214,10 +214,13 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
             type="button"
             data-testid="review-bulk-delete"
             onClick={rv.requestBulkDelete}
-            title="Permanently delete every excluded recording from disk"
-            className="rounded-control border border-red-200 bg-white px-3 py-1.5 text-[12.5px] font-semibold text-red-700 transition-colors hover:bg-red-50"
+            title={
+              'Destroys the recordings on disk — irreversible. Excluding only ' +
+              'labels them; this removes the data itself.'
+            }
+            className="rounded-control border border-red-300 bg-white px-3 py-1.5 text-[12.5px] font-bold text-red-700 transition-colors hover:bg-red-50"
           >
-            Delete excluded ({rv.nArchived})…
+            Delete excluded from disk ({rv.nArchived})…
           </button>
         )}
         {rv.splitMode && (
@@ -249,10 +252,10 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
               data-testid="review-exclude-batch"
               onClick={rv.requestExcludeBatch}
               disabled={rv.batchExcludable.length === 0}
-              title="Exclude every not-yet-excluded episode of this batch (recordings kept, reversible)"
-              className="rounded-control border border-red-200 bg-white px-3 py-1.5 text-[12.5px] font-semibold text-red-700 transition-colors hover:bg-red-50 disabled:cursor-not-allowed disabled:border-gray-100 disabled:text-gray-300 disabled:hover:bg-white"
+              title="Marks them unusable for training. The recordings are kept and this can be undone."
+              className="rounded-control border border-amber-300 bg-white px-3 py-1.5 text-[12.5px] font-semibold text-amber-700 transition-colors hover:bg-amber-50 disabled:cursor-not-allowed disabled:border-gray-100 disabled:text-gray-300 disabled:hover:bg-white"
             >
-              Exclude batch ({rv.batchExcludable.length})…
+              Exclude batch — keeps files ({rv.batchExcludable.length})…
             </button>
             {rv.batchExcluded.length > 0 && (
               <button

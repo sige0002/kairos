@@ -103,3 +103,45 @@ def test_delete_active_is_409(tmp_path: Path, fake_recorder, store: RunStore):
         resp = client.delete(f"/api/v1/runs/{run_id}")
         assert resp.status_code == 409
         assert client.get(f"/api/v1/runs/{run_id}").status_code == 200  # kept
+
+
+def test_delete_is_recorded_in_the_lifecycle_ledger(
+    tmp_path: Path, fake_recorder, store: RunStore
+):
+    """The endpoint the 2026-07-26 incident actually went through.
+
+    A recording vanished from this machine and nobody could reconstruct whether
+    it had been deleted or exported, because this path wrote nothing down. The
+    ledger was built for that question and at first covered only the exported
+    catalog — the smaller, later, far more rarely deleted tree.
+    """
+    from kairos_common import lifecycle_ledger
+
+    data_dir = tmp_path / "data"
+    settings = Settings(
+        recording_config="/nonexistent/recording.yaml",
+        data_dir=str(data_dir),
+        recorded_dir=str(data_dir / "recorded"),
+    )
+    http_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(fake_recorder.handler)
+    )
+    app = create_orchestrator_app(settings, store=store, http_client=http_client)
+
+    with TestClient(app) as client:
+        run_id = client.post("/api/v1/record/start", json={"topics": "all"}).json()[
+            "run_id"
+        ]
+        client.post("/api/v1/record/stop")
+        run_dir = data_dir / "recorded" / run_id
+        run_dir.mkdir(parents=True)
+        (run_dir / f"{run_id}_0.mcap").write_bytes(b"\x00" * 128)
+
+        assert client.delete(f"/api/v1/runs/{run_id}").status_code == 204
+
+    entries = [
+        e for e in lifecycle_ledger.read_all(data_dir) if e.get("run_id") == run_id
+    ]
+    assert len(entries) == 1, "the deletion left no trace"
+    assert entries[0]["event"] == "deleted"
+    assert entries[0]["index"] == run_id

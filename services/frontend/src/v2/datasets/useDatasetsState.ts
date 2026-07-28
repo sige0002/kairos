@@ -9,20 +9,43 @@
 // No mock data and no fake "build progress" — see data.ts for the 2026-07-13
 // directive. "+ New" / "Build dataset" only explain that recipe-based builds are
 // a Phase 2 feature (no backend endpoint yet).
+//
+// 2026-07-26 addressability round: the addressable slice of this state (both
+// searches, the facets, the sort, the selected group + episode) is seeded from
+// the query string on mount and mirrored back into it on every change, so a
+// view is shareable, survives a reload, and survives a tab round-trip — the
+// shell unmounts this screen on a tab switch, which used to discard everything.
+// See url.ts for the key contract; `replaceState` (not push) keeps a
+// keystroke-by-keystroke search out of the browser's history.
+//
+// Two selections are stored as IDENTITY, not as objects: the group as its
+// (task, condition) pair and the episode as its `dataset_dir`. Both are then
+// DERIVED from the freshly loaded/filtered data, which is what lets a deep link
+// restore a selection before the catalog has finished loading, and what makes a
+// vanished row degrade to "nothing selected" instead of showing stale detail.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiDelete, apiGet } from '../../api/client';
+import { apiDelete, apiGet, apiPost } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
-import type { DatasetDetail, DatasetEntry, DatasetsResponse } from '../../api/types';
+import type {
+  ArchiveConfig,
+  DatasetArchiveResponse,
+  DatasetDetail,
+  DatasetEntry,
+  DatasetsResponse,
+  JobStatus,
+} from '../../api/types';
 import {
   ANY_OPERATOR,
+  EPISODE_PAGE_SIZE,
   aggregate,
   buildTaskTree,
   distinctOperators,
   episodeMatchesSearch,
   filterEntries,
   findGroup,
+  groupKey,
   sameDataset,
   sortEpisodes,
   type DatasetGroup,
@@ -31,6 +54,7 @@ import {
   type TaskNode,
   type TaskResultFilter,
 } from './data';
+import { readDatasetsUrl, writeDatasetsUrl } from './url';
 
 export type { TaskResultFilter } from './data';
 
@@ -69,10 +93,13 @@ export interface DatasetsState {
   isTaskExpanded: (task: string) => boolean;
   toggleTask: (task: string) => void;
 
-  // Selection: a (task, condition) group, then an episode within it.
+  // Selection: a (task, condition) group, then an episode within it. The group
+  // is selected BY VALUE (its task + condition), not by its composed key — the
+  // key packs both into one string, which can't be split back apart for the URL
+  // when a task name itself contains the separator.
   selectedGroupKey: string | null;
   selectedGroup: DatasetGroup | null;
-  selectGroup: (key: string) => void;
+  selectGroup: (group: DatasetGroup) => void;
   isGroupSelected: (key: string) => boolean;
 
   // Episode selection within the scope. selectEntry TOGGLES: clicking the
@@ -91,8 +118,19 @@ export interface DatasetsState {
   /** Every episode in the current scope (group's rows, else the filtered catalog),
    *  sorted newest-first — the denominator for "n of m" in the top pane. */
   scopeEpisodes: DatasetEntry[];
-  /** scopeEpisodes narrowed by episodeSearch — the rows actually rendered. */
+  /** scopeEpisodes narrowed by episodeSearch and CAPPED at the current render
+   *  limit — the rows actually built into the DOM. */
   episodeRows: DatasetEntry[];
+  /** How many episodes match in the scope before the cap (>= episodeRows.length)
+   *  — the honest denominator for the table's overflow line. */
+  episodeMatchCount: number;
+  /** 1-based page currently shown (clamped into range). */
+  page: number;
+  /** Total pages for the current scope + search (>= 1, even when empty). */
+  pageCount: number;
+  /** Rows per page. */
+  pageSize: number;
+  goToPage: (page: number) => void;
   /** The summary the bottom pane shows when no episode is selected. */
   scope: ScopeSummary;
 
@@ -114,28 +152,110 @@ export interface DatasetsState {
   confirmDelete: () => void;
   deleting: boolean;
   deleteError: Error | null;
+  /** Free-text reason kept in the lifecycle ledger (optional, both flows). */
+  departureReason: string;
+  setDepartureReason: (s: string) => void;
+
+  // ---- archive ----------------------------------------------------------
+  // Archiving copies the dataset to an allow-listed path, verifies it, and
+  // only then removes it here. `archiveEnabled` is false when the deployment
+  // set no roots — the control is then not rendered at all.
+  archiveEnabled: boolean;
+  archiveRoots: string[];
+  archiving: boolean;
+  archiveOpen: boolean;
+  openArchive: () => void;
+  cancelArchive: () => void;
+  /** Chosen root (defaults to the first) + the subpath under it. */
+  archiveRoot: string;
+  setArchiveRoot: (root: string) => void;
+  archiveSubpath: string;
+  setArchiveSubpath: (path: string) => void;
+  /** The absolute destination the two fields add up to (shown before sending). */
+  archiveDestination: string;
+  confirmArchive: () => void;
+  archiveError: Error | null;
+  /** Terminal state of the running archive job, or null when none is running. */
+  archiveJobState: string | null;
 
   toast: string;
   toastNewDataset: () => void;
   toastBuild: () => void;
 }
 
+/** Milliseconds a search box may keep typing before the catalog is refiltered.
+ *  Long enough to swallow a fast typist's keystrokes, short enough that a pause
+ *  reads as "it kept up" rather than "it is thinking". */
+const SEARCH_DEBOUNCE_MS = 150;
+
+/** *value*, but only after it has stopped changing for *delay* ms. */
+function useDebounced<T>(value: T, delay: number): T {
+  const [settled, setSettled] = useState(value);
+  useEffect(() => {
+    const timer = setTimeout(() => setSettled(value), delay);
+    return () => clearTimeout(timer);
+  }, [value, delay]);
+  return settled;
+}
+
 const TOAST_MS = 2400;
+
+/** Job states that end the archive poll (mirrors features/inspect's TERMINAL). */
+const ARCHIVE_TERMINAL = new Set(['succeeded', 'failed', 'canceled']);
+
+/** A selected group's identity: the (task, condition) pair itself, kept apart
+ *  from the composed `groupKey` string so each half survives a URL round-trip
+ *  (the key packs both into one string and a task name may contain the
+ *  separator, so the key alone cannot be split back apart). */
+interface GroupId {
+  task: string;
+  condition: string | null;
+}
 
 export function useDatasetsState(): DatasetsState {
   const queryClient = useQueryClient();
-  const [selectedGroupKey, setSelectedGroupKey] = useState<string | null>(null);
-  const [selected, setSelected] = useState<DatasetEntry | null>(null);
+  // Seed every addressable field from the query string ONCE — this is what a
+  // deep link, a reload, and a return to the tab (the shell unmounts this
+  // screen on a tab switch) all restore from.
+  const [seed] = useState(() => readDatasetsUrl(window.location.search));
+
+  const [selectedGroupId, setSelectedGroupId] = useState<GroupId | null>(
+    seed.task !== null ? { task: seed.task, condition: seed.condition } : null,
+  );
+  // Raw click state, held as IDENTITY (`dataset_dir`) rather than as the row
+  // object, so a deep link can carry it before the catalog has loaded.
+  // `selectedEntry` resolves it against the loaded rows; `selected` below is
+  // that reconciled against the filter.
+  const [selectedDir, setSelectedDir] = useState<string | null>(seed.datasetDir);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [departureReason, setDepartureReason] = useState('');
+  const [archiveOpen, setArchiveOpen] = useState(false);
+  const [archiveRoot, setArchiveRoot] = useState('');
+  const [archiveSubpath, setArchiveSubpath] = useState('');
+  const [archiveJobId, setArchiveJobId] = useState<string | null>(null);
+  const [archiveJobState, setArchiveJobState] = useState<string | null>(null);
   const [toast, setToast] = useState('');
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const [search, setSearch] = useState('');
-  const [episodeSearch, setEpisodeSearch] = useState('');
-  const [sort, setSort] = useState<SortMode>('recent');
-  const [taskResultFilter, setTaskResultFilter] = useState<TaskResultFilter>('all');
-  const [operatorFilter, setOperatorFilter] = useState<string>(ANY_OPERATOR);
-  const [expandedTasks, setExpandedTasks] = useState<Set<string>>(new Set());
+  const [search, setSearch] = useState(seed.search);
+  const [episodeSearch, setEpisodeSearch] = useState(seed.episodeSearch);
+  const [sort, setSort] = useState<SortMode>(seed.sort);
+  const [taskResultFilter, setTaskResultFilter] = useState<TaskResultFilter>(
+    seed.taskResultFilter,
+  );
+  const [operatorFilter, setOperatorFilter] = useState<string>(seed.operatorFilter);
+  // A restored group under a multi-condition task must arrive EXPANDED, or its
+  // selected child row would be invisible inside a collapsed task.
+  const [expandedTasks, setExpandedTasks] = useState<Set<string>>(
+    () => new Set(seed.task !== null ? [seed.task] : []),
+  );
+  // How many episode rows the center table may build right now — see
+  // EPISODE_PAGE_SIZE (the default scope is the WHOLE filtered catalog).
+  const [page, setPage] = useState(1);
+
+  const selectedGroupKey = selectedGroupId
+    ? groupKey(selectedGroupId.task, selectedGroupId.condition)
+    : null;
 
   const showToast = useCallback((message: string) => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
@@ -156,11 +276,26 @@ export function useDatasetsState(): DatasetsState {
   });
   const datasets = useMemo(() => listQuery.data?.datasets ?? [], [listQuery.data]);
 
+  // Resolve the raw click identity against the loaded catalog. A dir that no
+  // longer exists (deleted, or a shared link that outlived its export) resolves
+  // to null — the tab degrades to its summary instead of showing a phantom row.
+  const selectedEntry = useMemo(
+    () => datasets.find((entry) => entry.dataset_dir === selectedDir) ?? null,
+    [datasets, selectedDir],
+  );
+
   const operatorOptions = useMemo(() => distinctOperators(datasets), [datasets]);
 
+  // The box stays instant (`search` is the controlled value); the EXPENSIVE
+  // work — refiltering every row and rebuilding the tree — runs on the settled
+  // query. Without this, each keystroke re-ran both over the whole catalog and
+  // the UI fell 149 ms behind a typist at 10,000 episodes (40 ms at twelve).
+  const debouncedSearch = useDebounced(search, SEARCH_DEBOUNCE_MS);
+  const debouncedEpisodeSearch = useDebounced(episodeSearch, SEARCH_DEBOUNCE_MS);
+
   const filtered = useMemo(
-    () => filterEntries(datasets, { search, taskResultFilter, operatorFilter }),
-    [datasets, search, taskResultFilter, operatorFilter],
+    () => filterEntries(datasets, { search: debouncedSearch, taskResultFilter, operatorFilter }),
+    [datasets, debouncedSearch, taskResultFilter, operatorFilter],
   );
   const tree = useMemo(() => buildTaskTree(filtered, sort), [filtered, sort]);
 
@@ -172,17 +307,34 @@ export function useDatasetsState(): DatasetsState {
     [tree, selectedGroupKey],
   );
 
-  const selectGroup = useCallback((key: string) => {
-    setSelectedGroupKey(key);
-    setSelected(null); // switching groups clears the episode selection
+  // The selected EPISODE is derived the same way, and for a sharper reason than
+  // stale rows: the detail pane carries a live Delete. Without this, narrowing
+  // the catalog left that Delete bound to an episode the list no longer shows —
+  // the operator reads "quickcheck-smoke, 1 episode" on screen and deletes
+  // something else entirely. A filter must never leave a destructive control
+  // pointed at an off-screen target.
+  const selected = useMemo(
+    () =>
+      selectedEntry &&
+      filtered.some((entry) => sameDataset(entry, selectedEntry)) &&
+      (!selectedGroup ||
+        selectedGroup.entries.some((entry) => sameDataset(entry, selectedEntry)))
+        ? selectedEntry
+        : null,
+    [selectedEntry, filtered, selectedGroup],
+  );
+
+  const selectGroup = useCallback((group: DatasetGroup) => {
+    setSelectedGroupId({ task: group.task, condition: group.condition });
+    setSelectedDir(null); // switching groups clears the episode selection
     setEpisodeSearch(''); // and its one-shot episode search
   }, []);
 
   // Toggle: clicking the already-selected episode clears it (back to summary).
   const selectEntry = useCallback((entry: DatasetEntry) => {
-    setSelected((cur) => (cur && cur.dataset_dir === entry.dataset_dir ? null : entry));
+    setSelectedDir((cur) => (cur === entry.dataset_dir ? null : entry.dataset_dir));
   }, []);
-  const selectSummary = useCallback(() => setSelected(null), []);
+  const selectSummary = useCallback(() => setSelectedDir(null), []);
 
   // Scope for the top-pane episode list + the bottom-pane summary: the selected
   // group, else the whole filtered catalog (this replaces the old "no group
@@ -210,9 +362,38 @@ export function useDatasetsState(): DatasetsState {
         : { kind: 'catalog', label: 'All datasets', condition: null, aggregate: scopeAggregate },
     [selectedGroup, scopeAggregate],
   );
+  const matchedEpisodes = useMemo(
+    () => scopeEpisodes.filter((e) => episodeMatchesSearch(e, debouncedEpisodeSearch)),
+    [scopeEpisodes, debouncedEpisodeSearch],
+  );
+  const pageCount = Math.max(1, Math.ceil(matchedEpisodes.length / EPISODE_PAGE_SIZE));
+  // Anything that changes WHICH episodes are on screen returns to page one —
+  // page 4 of a group that no longer has 800 rows is an empty table, and the
+  // operator did not ask to go there.
+  useEffect(() => {
+    setPage(1);
+  }, [
+    selectedGroupKey,
+    debouncedEpisodeSearch,
+    debouncedSearch,
+    taskResultFilter,
+    operatorFilter,
+  ]);
+  // Clamp rather than trust: a page can fall out of range when rows disappear
+  // under an already-open view (a delete, a refetch), and reading past the end
+  // must never render a blank table.
+  const currentPage = Math.min(Math.max(1, page), pageCount);
   const episodeRows = useMemo(
-    () => scopeEpisodes.filter((e) => episodeMatchesSearch(e, episodeSearch)),
-    [scopeEpisodes, episodeSearch],
+    () =>
+      matchedEpisodes.slice(
+        (currentPage - 1) * EPISODE_PAGE_SIZE,
+        currentPage * EPISODE_PAGE_SIZE,
+      ),
+    [matchedEpisodes, currentPage],
+  );
+  const goToPage = useCallback(
+    (next: number) => setPage(Math.max(1, next)),
+    [],
   );
 
   const toggleTask = useCallback((task: string) => {
@@ -228,6 +409,44 @@ export function useDatasetsState(): DatasetsState {
     () => setSort((s) => (s === 'recent' ? 'alpha' : 'recent')),
     [],
   );
+
+  // Mirror the addressable state back into the query string, so the view is
+  // shareable, survives a reload, and is still there after a tab round-trip.
+  // `replaceState` (not push) — a search box typed character by character must
+  // not fill the history stack. `tab` / `solo` are carried through untouched:
+  // they belong to the shell, which likewise rebuilds the query string from
+  // window.location.search and so preserves these keys in return.
+  //
+  // The episode is written from the STORED identity rather than the resolved
+  // row, so a deep link isn't erased by the catalog still loading (or by a
+  // filter that is temporarily hiding the row).
+  useEffect(() => {
+    const current = window.location.search;
+    const next = writeDatasetsUrl(current, {
+      search,
+      episodeSearch,
+      sort,
+      taskResultFilter,
+      operatorFilter,
+      task: selectedGroupId?.task ?? null,
+      condition: selectedGroupId?.condition ?? null,
+      datasetDir: selectedDir,
+    });
+    if (next === current.replace(/^\?/, '')) return;
+    window.history.replaceState(
+      null,
+      '',
+      next ? `${window.location.pathname}?${next}` : window.location.pathname,
+    );
+  }, [
+    search,
+    episodeSearch,
+    sort,
+    taskResultFilter,
+    operatorFilter,
+    selectedGroupId,
+    selectedDir,
+  ]);
 
   // Manifest scope: the selected group's rows, else every filtered row.
   const manifestRows = selectedGroup ? selectedGroup.entries : filtered;
@@ -297,21 +516,85 @@ export function useDatasetsState(): DatasetsState {
     enabled: selected !== null,
   });
 
+  // Capability first: with no roots configured the archive control never
+  // renders (honesty rule — do not offer what cannot run).
+  const archiveConfigQuery = useQuery({
+    queryKey: queryKeys.archiveConfig,
+    queryFn: ({ signal }) => apiGet<ArchiveConfig>('/datasets/archive/config', { signal }),
+  });
+  const archiveRoots = useMemo(
+    () => archiveConfigQuery.data?.roots ?? [],
+    [archiveConfigQuery.data],
+  );
+  const archiveEnabled = (archiveConfigQuery.data?.enabled ?? false) && archiveRoots.length > 0;
+
+  const effectiveRoot = archiveRoot || archiveRoots[0] || '';
+  // Default subpath mirrors the catalog layout, so an archive tree stays
+  // navigable by the same <operator>/<task>/<NNN> coordinates.
+  const defaultSubpath = selected
+    ? `${selected.operator}/${selected.task}/${selected.index}`
+    : '';
+  const subpath = archiveSubpath || defaultSubpath;
+  const archiveDestination = effectiveRoot
+    ? `${effectiveRoot.replace(/\/+$/, '')}/${subpath.replace(/^\/+/, '')}`
+    : '';
+
+  const archiveMutation = useMutation({
+    mutationFn: (entry: DatasetEntry) =>
+      apiPost<DatasetArchiveResponse>(
+        `/datasets/${encodeURIComponent(entry.operator)}/${encodeURIComponent(
+          entry.task,
+        )}/${encodeURIComponent(entry.index)}/archive`,
+        { destination: archiveDestination, reason: departureReason || null },
+      ),
+    onSuccess: (res) => {
+      setArchiveJobId(res.job_id);
+      setArchiveOpen(false);
+      showToast('Archiving — copying, then verifying before anything is removed');
+    },
+  });
+
+  // Poll the copy job. The dataset only leaves the catalog once the job has
+  // SUCCEEDED, so the list is refetched then and not before.
+  useQuery({
+    queryKey: queryKeys.job(archiveJobId ?? ''),
+    queryFn: ({ signal }) =>
+      apiGet<JobStatus>(`/jobs/${encodeURIComponent(archiveJobId ?? '')}/status`, { signal }),
+    enabled: archiveJobId !== null,
+    refetchInterval: (q) => {
+      const state = q.state.data?.state;
+      if (!state || !ARCHIVE_TERMINAL.has(state)) return 1500;
+      setArchiveJobState(state);
+      setArchiveJobId(null);
+      if (state === 'succeeded') {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.datasets });
+        setSelectedDir(null);
+        setDepartureReason('');
+        showToast('Archived — verified at the destination, then removed here');
+      } else {
+        showToast(`Archive ${state} — the dataset is still here`);
+      }
+      return false;
+    },
+  });
+
   const deleteMutation = useMutation({
     mutationFn: (entry: DatasetEntry) =>
       apiDelete(
         `/datasets/${encodeURIComponent(entry.operator)}/${encodeURIComponent(
           entry.task,
-        )}/${encodeURIComponent(entry.index)}`,
+        )}/${encodeURIComponent(entry.index)}` +
+          (departureReason ? `?reason=${encodeURIComponent(departureReason)}` : ''),
       ),
     onSuccess: (_data, entry) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.datasets });
       queryClient.removeQueries({
         queryKey: queryKeys.dataset(entry.operator, entry.task, entry.index),
       });
-      setSelected(null);
+      setSelectedDir(null);
       setConfirmingDelete(false);
-      showToast('Dataset deleted');
+      setDepartureReason('');
+      showToast('Dataset deleted — recorded in the lifecycle ledger');
     },
   });
 
@@ -343,6 +626,11 @@ export function useDatasetsState(): DatasetsState {
     setEpisodeSearch,
     scopeEpisodes,
     episodeRows,
+    episodeMatchCount: matchedEpisodes.length,
+    page: currentPage,
+    pageCount,
+    pageSize: EPISODE_PAGE_SIZE,
+    goToPage,
     scope,
     detail: detailQuery.data ?? null,
     detailLoading: selected !== null && detailQuery.isPending,
@@ -359,6 +647,24 @@ export function useDatasetsState(): DatasetsState {
     },
     deleting: deleteMutation.isPending,
     deleteError: deleteMutation.isError ? deleteMutation.error : null,
+    departureReason,
+    setDepartureReason,
+    archiveEnabled,
+    archiveRoots,
+    archiving: archiveMutation.isPending || archiveJobId !== null,
+    archiveOpen,
+    openArchive: () => setArchiveOpen(selected !== null),
+    cancelArchive: () => setArchiveOpen(false),
+    archiveRoot: effectiveRoot,
+    setArchiveRoot,
+    archiveSubpath: subpath,
+    setArchiveSubpath,
+    archiveDestination,
+    confirmArchive: () => {
+      if (selected) archiveMutation.mutate(selected);
+    },
+    archiveError: archiveMutation.isError ? archiveMutation.error : null,
+    archiveJobState,
     toast,
     toastNewDataset: () => showToast('New dataset is a Phase 2 feature'),
     toastBuild: () => showToast('Building datasets requires the Phase 2 recipe model'),

@@ -176,7 +176,11 @@ function StartingNote() {
 // start that streams arming progress).
 function ArmingNote({ arming }: { arming: RecordArming }) {
   const matched = arming.matched_topics ?? [];
-  const missing = arming.missing_topics ?? [];
+  // Both not-captured causes: no publisher, and published-but-not-subscribed.
+  const missing = [
+    ...(arming.missing_topics ?? []),
+    ...(arming.unsubscribed_topics ?? []),
+  ];
   if (matched.length === 0 && missing.length === 0) return null;
   const ok = missing.length === 0;
   const shown = missing.slice(0, 4);

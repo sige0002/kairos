@@ -70,10 +70,16 @@ function MachineErrorBanner({ label, error }: { label: string; error: MachineErr
 // Real arming matched/missing note (OL-①.4): a live, non-persisted aid read
 // straight from /record/status — NOT a mock hold. A non-empty `missing` is the
 // useful signal: the readiness gate resumed with those target topics still not
-// publishing. Mirrors v1 LiveTab's ArmingNote wording.
+// matched. Mirrors v1 LiveTab's ArmingNote wording.
 function ArmingNote({ arming }: { arming: RecordArming }) {
   const matched = arming.matched_topics ?? [];
-  const missing = arming.missing_topics ?? [];
+  // Both not-captured causes (no publisher / not subscribed yet) — this note
+  // counts what the gate is still waiting on, and the Active warnings card is
+  // where the two are told apart.
+  const missing = [
+    ...(arming.missing_topics ?? []),
+    ...(arming.unsubscribed_topics ?? []),
+  ];
   if (matched.length === 0 && missing.length === 0) return null;
   const ok = missing.length === 0;
   const shown = missing.slice(0, 4);

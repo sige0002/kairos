@@ -60,6 +60,13 @@ class Settings(BaseSettings):
     robot: str = "airoa_hsr"
     config_dir: str = "config"
     config_local_dir: str = "config/local"
+    # Destinations a dataset may be ARCHIVED to (colon-separated absolute paths,
+    # PATH convention) — e.g. "/mnt/nas/datasets:/mnt/backup". Archiving copies,
+    # verifies, then DELETES the source, so the destination is allow-listed
+    # rather than free-form; see kairos_common.archive_paths. Empty (the
+    # default) means the feature is not offered at all, and the API advertises
+    # it as disabled instead of exposing a control that can only ever fail.
+    archive_roots: str = ""
 
     # ---- HTTP bind + ports -------------------------------------------------
     # BIND_HOST defaults to 0.0.0.0: LAN exposure is allowed on a trusted LAN

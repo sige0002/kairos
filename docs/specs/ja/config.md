@@ -198,7 +198,7 @@ presets:
 - `make backup` で一貫スナップショットを `backups/<timestamp>.tar.gz` に作成する:
   - `data/kairos.db` を **`sqlite3 .backup`** で一貫コピー（WAL 込み。`sqlite3` が無ければ db + `-wal` / `-shm` を best-effort コピー）。
   - `data/index.jsonl` / `data/recorded/` / `data/report/` とエクスポート済みデータセット（`data/<operator>/<task>/<NNN>/`）、および `config/`。
-  - **含まれないもの**: 生サンプル rosbag 入力（`data/` 直下のサンプルディレクトリ。`BACKUP_SAMPLE_DIRS` で指定、既定 `airoa-moma-mcap realman` — 自分のサンプル名に合わせて上書きする）、mp4 プレビューキャッシュ（`data/report/video_check/`）、`.env` などリポジトリ外の秘密情報。稼働中は録画/レポートが書き換わり得るため、完全な一貫性が要るときは停止中（`make down`）に実行する。
+  - **含まれないもの**: 生サンプル rosbag 入力（`data/` 直下のサンプルディレクトリ。`BACKUP_SAMPLE_DIRS` で指定、既定は同梱サンプルのみの `airoa-moma-mcap` — 自分のサンプル（ローカルロボットの bag など）は上書きで足す）、mp4 プレビューキャッシュ（`data/report/video_check/`）、`.env` などリポジトリ外の秘密情報。稼働中は録画/レポートが書き換わり得るため、完全な一貫性が要るときは停止中（`make down`）に実行する。
 - **リストア手順**:
   1. スタックを停止: `make down`。
   2. リポジトリルート（`<restore_root>`）で展開: `tar xzf backups/<timestamp>.tar.gz -C <restore_root>`。

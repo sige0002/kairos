@@ -101,6 +101,13 @@ class RecordArming(BaseModel):
     UI can show arming progress. Purely observational — it never changes the
     recording behaviour, timing, or QoS. Field names match the frozen frontend
     ``RecordArming`` contract exactly.
+
+    The not-yet-captured targets are split by CAUSE, because the UI states one
+    as fact: ``missing_topics`` is "nobody is publishing this" and
+    ``unsubscribed_topics`` is "it IS being published, the recorder just has not
+    subscribed to it yet". Reporting the second as the first tells the operator a
+    live topic is dead (it shows up fine in Monitor) and sends them to fix the
+    wrong thing.
     """
 
     # True while paused and waiting for target topics (pre-resume); the final
@@ -108,8 +115,12 @@ class RecordArming(BaseModel):
     active: bool = False
     # Target topics already present on the graph (recorder subscribed).
     matched_topics: list[str] = Field(default_factory=list)
-    # Target topics still missing (recorder waiting on these).
+    # Target topics with NO publisher on the graph — genuinely not publishing.
     missing_topics: list[str] = Field(default_factory=list)
+    # Target topics that ARE published but the recorder has not subscribed to
+    # yet (DDS discovery still catching up). Additive field: an older frontend
+    # that does not know it simply shows one fewer category.
+    unsubscribed_topics: list[str] = Field(default_factory=list)
     # ISO8601 instant the recorder auto-resumes anyway (readiness timeout).
     resume_at: str | None = None
     # ISO8601 instant an ``armed`` (two-phase ``prepare()``) session auto-

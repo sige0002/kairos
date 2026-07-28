@@ -12,6 +12,24 @@ Phase A hardening toward a supportable release
 
 ### Added
 
+- `full_validation` on **real dora**: the placeholder pipeline is now a
+  declarative post-recording gate. A robot's `config/<robot>/flows/<flow>.yml`
+  is a bagflow flow (vendored into `services/dora_runner/bagflow/` together with
+  mcap2dora — see its `VENDOR.md`), materialized per job (bag/report injection,
+  `${KAIROS_*}` expansion, node-path resolution) and executed by the bundled
+  bagflow CLI + dora 0.5 CLI on a coordinator the service starts on its own
+  loopback ports (so a co-located dora_live is never touched). bagflow's
+  `report.json` is adapted to kairos' `summary.json` contract, with the overall
+  pass/fail decided in dora_runner: any failed check, any node that died before
+  end-of-stream, no results at all, or coverage below `params.min_coverage`.
+  The Config tab's validation template feeds the flow as `${KAIROS_EXPECT_HZ}`
+  (required topics enter at `hz=0` = must exist), merged with the recording
+  config's `expected_hz_patterns`. Measured 0.57s wall for the 6-node quick gate
+  on the bundled 44s HSR sample. Image gains the Rust nodes + dora CLI
+  (357 MB → 477 MB) and compose gains `shm_size: 2gb` (dora queues live in
+  `/dev/shm`; the 64 MB default kills nodes silently). Where the binaries are
+  absent (source checkout / CI) the pipeline stays an honest `enabled=false`
+  placeholder and `/readyz` reports `components.bagflow: unavailable`.
 - Collect operator early-warning integration: the Active warnings card now
   unions the arming snapshot's missing targets with FIRING monitor alerts
   (SSE buffer, restricted to recorded topics) so mid-recording degradation —
@@ -143,6 +161,32 @@ Phase A hardening toward a supportable release
 
 ### Fixed
 
+- **A Stop now actually stops** (user report 2026-07-27). `POST /record/stop`
+  treated "no run row claims to be recording" as "nothing is recording" and
+  returned the last run with `200` — but a row can be missing or in the wrong
+  state, so a recorder still writing answered the operator's Stop with success.
+  The console then advanced to labelling a take that was still being recorded,
+  and only the `MAX_RECORD_SECONDS` backstop ever ended it. The stop now asks
+  the recorder what it is actually doing: a run with a row is adopted and
+  finalized normally, an orphan with no row is stopped anyway, and both are
+  logged at WARNING. The console no longer trusts the `200` on its own either —
+  it confirms against `/record/status` and, if the recorder is still recording,
+  stays on SAVING with `Retry stop` instead of pretending the take is done.
+- **A stale `record_status` SSE event can no longer rewind the UI.** The event
+  writer set the cached state unconditionally, so an event arriving late could
+  move it back to `recording` — which is exactly what renders the takeover card
+  ("RECORDING IN PROGRESS") over a take the operator already stopped. Rewinds
+  are dropped within a run (a different run_id is not a rewind) and logged as
+  ignored rather than swallowed.
+- **Collect's Active warnings no longer calls a live topic dead** (user report
+  2026-07-27). The recorder's arming snapshot was frozen at the FIRST prepare
+  and never re-read, so a target that was down then — and live seconds later —
+  stayed "not publishing" through every pre-arm keep-alive, through the start,
+  and for the whole recording, while Monitor showed it at full rate. The graph
+  is now re-read while armed and frozen at resume (real start-time coverage),
+  and `RecordArming` gains `unsubscribed_topics` so "no publisher" and
+  "published but the recorder has not subscribed yet" are reported as the
+  different problems they are.
 - Review now shows WHY a task failed (user report 2026-07-14): the
   `failure_reason` picked at save time surfaces as the FAILURE chip tooltip
   (Review list + Datasets cards) and in the Review detail panel; it also rides

@@ -13,9 +13,13 @@ import {
   groupKey,
   groupSummarySegments,
   isLeafTask,
+  isMixedSchema,
+  isSchemaOutlier,
+  majoritySchema,
   operatorSegment,
   outcomeBreakdown,
   rowEpisode,
+  schemaOf,
 } from './data';
 
 /** A minimal exported-dataset row; override the fields a case cares about. */
@@ -308,5 +312,75 @@ describe('episodeMatchesSearch', () => {
     const r = entry({ index: '1', task: 'kitchen_pick', condition: 'dim', operator: 'op' });
     expect(episodeMatchesSearch(r, 'kitchen')).toBe(false);
     expect(episodeMatchesSearch(r, 'dim')).toBe(false);
+  });
+});
+
+// 2026-07-26 ML finding F1: a (task, condition) group held nine /hsrb/* episodes
+// and two /camera/* ones — disjoint observation/action spaces shown as one
+// dataset. These pin the comparison that makes the split visible.
+describe('topic signature (schema)', () => {
+  const HSR = 'a'.repeat(64);
+  const MYROBOT = 'b'.repeat(64);
+
+  const hsr = (index: string) =>
+    entry({ index, topics_hash: HSR, topic_count: 7 });
+  const myrobot = (index: string) =>
+    entry({ index, topics_hash: MYROBOT, topic_count: 8 });
+
+  test('one topic set across the rows is not flagged', () => {
+    const agg = aggregate([hsr('001'), hsr('002')]);
+    expect(agg.schemas).toHaveLength(1);
+    expect(agg.schemas[0]).toMatchObject({ hash: HSR, label: 'A', episodeCount: 2, topicCount: 7 });
+    expect(isMixedSchema(agg)).toBe(false);
+    expect(isSchemaOutlier(hsr('001'), agg)).toBe(false);
+  });
+
+  test('two disjoint sets are ranked by frequency and the minority is the outlier', () => {
+    const rows = [hsr('001'), hsr('002'), hsr('003'), myrobot('010'), myrobot('011')];
+    const agg = aggregate(rows);
+
+    expect(isMixedSchema(agg)).toBe(true);
+    expect(agg.schemas.map((s) => [s.label, s.hash, s.episodeCount])).toEqual([
+      ['A', HSR, 3],
+      ['B', MYROBOT, 2],
+    ]);
+    // Only the minority rows are marked — the majority is the baseline.
+    expect(isSchemaOutlier(rows[0]!, agg)).toBe(false);
+    expect(isSchemaOutlier(rows[3]!, agg)).toBe(true);
+    expect(schemaOf(rows[3]!, agg)?.label).toBe('B');
+  });
+
+  test('the label ranking is deterministic when two sets tie on episode count', () => {
+    const first = aggregate([hsr('001'), myrobot('010')]).schemas.map((s) => s.hash);
+    const again = aggregate([myrobot('010'), hsr('001')]).schemas.map((s) => s.hash);
+    expect(first).toEqual(again); // hash tiebreak — labels never flicker
+  });
+
+  test('an unsigned row is counted apart, never treated as a set or an outlier', () => {
+    const rows = [hsr('001'), entry({ index: '002' }), entry({ index: '003', topics_hash: null })];
+    const agg = aggregate(rows);
+
+    expect(agg.schemas).toHaveLength(1); // the unknowns did NOT become a set
+    expect(agg.schemaUnknown).toBe(2);
+    expect(isMixedSchema(agg)).toBe(false); // one known set = not a mixed scope
+    expect(schemaOf(rows[1]!, agg)).toBeNull();
+    expect(isSchemaOutlier(rows[1]!, agg)).toBe(false);
+  });
+
+  test('unknown-only rows leave the comparison empty rather than agreeing', () => {
+    const agg = aggregate([entry({ index: '1' }), entry({ index: '2' })]);
+    expect(agg.schemas).toEqual([]);
+    expect(agg.schemaUnknown).toBe(2);
+    expect(majoritySchema(agg)).toBeNull();
+    expect(isMixedSchema(agg)).toBe(false);
+  });
+
+  test('a mixed group is called out on its list row, before it is selected', () => {
+    const mixed = groupSummarySegments(aggregate([hsr('001'), myrobot('010')]));
+    const seg = mixed.find((s) => s.text === '2 topic sets');
+    expect(seg?.warn).toBe(true);
+
+    const clean = groupSummarySegments(aggregate([hsr('001'), hsr('002')]));
+    expect(clean.some((s) => s.text.includes('topic set'))).toBe(false);
   });
 });

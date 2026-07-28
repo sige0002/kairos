@@ -14,8 +14,17 @@
 // labels + a 2px surface gap as the required secondary encoding. Quality uses the
 // app's reserved status tones (green/amber/red), always paired with a text label.
 
+import { cn } from '../../components/ui';
 import { red, teal } from '../tokens';
-import { formatBytes, formatCount, formatWhen, operatorSegment, outcomeBreakdown } from './data';
+import {
+  formatBytes,
+  formatCount,
+  formatWhen,
+  isMixedSchema,
+  operatorSegment,
+  outcomeBreakdown,
+} from './data';
+import type { GroupAggregate } from './data';
 import type { ScopeSummary as Scope } from './useDatasetsState';
 
 const NO_CONDITION_LABEL = '(no condition)';
@@ -102,6 +111,117 @@ function OutcomeDonut({
   );
 }
 
+/** Topic-set (schema) section — the answer to "can these episodes convert into
+ *  ONE training set?", which nothing in the UI used to state.
+ *
+ *  One set = a quiet confirmation line. More than one = the split is named.
+ *  Rows without a signature are reported separately and never folded into
+ *  either verdict.
+ *
+ *  The WARNING is scoped to a selected (task, condition) group, because that is
+ *  the thing someone builds from. The whole-catalog view is expected to hold
+ *  many topic sets — alarming there would train people to ignore the amber, so
+ *  the catalog states the same fact neutrally. */
+function SchemaSection({ agg, scopeKind }: { agg: GroupAggregate; scopeKind: Scope['kind'] }) {
+  const mixed = isMixedSchema(agg);
+  const known = agg.schemas.length > 0;
+  const alarming = mixed && scopeKind === 'group';
+
+  return (
+    <div className="flex flex-col gap-1.5 border-t border-gray-100 pt-3">
+      <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        Topic set
+      </span>
+
+      {!known ? (
+        <span data-testid="dataset-schema-unknown" className="text-[12px] text-gray-400">
+          No topic signature recorded for these exports — the topic sets can&apos;t be
+          compared.
+        </span>
+      ) : mixed ? (
+        <div
+          data-testid="dataset-schema-mixed"
+          className={cn(
+            'flex flex-col gap-2 rounded-[10px] border px-3 py-[10px]',
+            alarming ? 'border-amber-200 bg-amber-50' : 'border-gray-100 bg-gray-50',
+          )}
+        >
+          <span
+            className={cn(
+              'text-[12.5px] font-semibold',
+              alarming ? 'text-amber-800' : 'text-gray-700',
+            )}
+          >
+            {agg.schemas.length} different topic sets in this scope
+          </span>
+          <span
+            className={cn(
+              'text-[11.5px] leading-relaxed',
+              alarming ? 'text-amber-900/80' : 'text-gray-500',
+            )}
+          >
+            {alarming
+              ? "These episodes don't share one observation/action space, so they can't be converted into a single training set. Filter or split the scope before building."
+              : 'The catalog spans several observation/action spaces — expected here. Select a task / condition to check whether that group is uniform.'}
+          </span>
+          <ul className="flex flex-col gap-1">
+            {agg.schemas.map((s) => (
+              <li
+                key={s.hash}
+                data-testid={`dataset-schema-variant-${s.label}`}
+                className={cn(
+                  'flex flex-wrap items-center gap-x-2 text-[11.5px]',
+                  alarming ? 'text-amber-900' : 'text-gray-600',
+                )}
+              >
+                <span
+                  className={cn(
+                    'rounded-chip px-1.5 py-[1px] font-mono text-[10.5px] font-bold',
+                    alarming ? 'bg-amber-200/70' : 'bg-gray-200/70',
+                  )}
+                >
+                  {s.label}
+                </span>
+                <span>
+                  {s.episodeCount} {s.episodeCount === 1 ? 'episode' : 'episodes'}
+                </span>
+                {s.topicCount !== null && (
+                  <span className={alarming ? 'text-amber-900/70' : 'text-gray-400'}>
+                    · {s.topicCount} topics
+                  </span>
+                )}
+                <span
+                  className={cn(
+                    'font-mono text-[10.5px]',
+                    alarming ? 'text-amber-900/60' : 'text-gray-400',
+                  )}
+                  title={s.hash}
+                >
+                  · {s.hash.slice(0, 8)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : (
+        <span data-testid="dataset-schema-single" className="text-[12px] text-gray-600">
+          1 topic set
+          {agg.schemas[0]!.topicCount !== null && ` · ${agg.schemas[0]!.topicCount} topics`}
+          <span className="ml-1.5 font-mono text-[10.5px] text-gray-400" title={agg.schemas[0]!.hash}>
+            {agg.schemas[0]!.hash.slice(0, 8)}
+          </span>
+        </span>
+      )}
+
+      {known && agg.schemaUnknown > 0 && (
+        <span data-testid="dataset-schema-unsigned" className="text-[11.5px] text-gray-400">
+          {agg.schemaUnknown} without a topic signature — excluded from this comparison.
+        </span>
+      )}
+    </div>
+  );
+}
+
 function StatTile({ value, label }: { value: string; label: string }) {
   return (
     <div className="flex flex-col gap-0.5 rounded-[10px] border border-gray-100 px-[12px] py-[9px]">
@@ -178,6 +298,8 @@ export function ScopeSummary({ scope }: { scope: Scope }) {
               <StatTile value={formatWhen(agg.lastExportedAt).split(',')[0] ?? '—'} label="last exported" />
             </div>
           </div>
+
+          <SchemaSection agg={agg} scopeKind={scope.kind} />
 
           <div className="flex flex-col gap-1.5 border-t border-gray-100 pt-3">
             <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">

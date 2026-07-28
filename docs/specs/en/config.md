@@ -201,7 +201,7 @@ What `api_orchestrator` returns for the frontend (example):
 - `make backup` writes a consistent snapshot to `backups/<timestamp>.tar.gz`:
   - `data/kairos.db` copied consistently via **`sqlite3 .backup`** (WAL included; if `sqlite3` is unavailable, best-effort copy of the db + `-wal` / `-shm`).
   - `data/index.jsonl` / `data/recorded/` / `data/report/` and the exported datasets (`data/<operator>/<task>/<NNN>/`), plus `config/`.
-  - **Not included**: raw sample rosbag inputs (top-level sample dirs under `data/`, named by `BACKUP_SAMPLE_DIRS`, default `airoa-moma-mcap realman` — override to match your sample names), the mp4 preview cache (`data/report/video_check/`), and repo-external secrets such as `.env`. Recordings/reports can change under a live stack, so for a fully consistent snapshot run it while stopped (`make down`).
+  - **Not included**: raw sample rosbag inputs (top-level sample dirs under `data/`, named by `BACKUP_SAMPLE_DIRS`, default `airoa-moma-mcap` — the committed sample only; add your own sample dirs (a local robot's bags among them) via the override), the mp4 preview cache (`data/report/video_check/`), and repo-external secrets such as `.env`. Recordings/reports can change under a live stack, so for a fully consistent snapshot run it while stopped (`make down`).
 - **Restore runbook**:
   1. Stop the stack: `make down`.
   2. Extract at the repo root (`<restore_root>`): `tar xzf backups/<timestamp>.tar.gz -C <restore_root>`.

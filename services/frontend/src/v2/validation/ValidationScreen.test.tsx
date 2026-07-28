@@ -351,6 +351,39 @@ test('a fast_validation run renders the bespoke required-topics checklist', asyn
   expect(within(card).getByText('+1 extra topics not required')).toBeInTheDocument();
 });
 
+test('fast_validation shows bagflow\'s evidence under the checklist', async () => {
+  // The checklist answers "are my topics there"; the generic card below it
+  // answers "on what basis" — which used to be visible only when the run
+  // FAILED, i.e. never when you most wanted to check a pass.
+  resultByRunId['for:run_002'] = {
+    summary: {
+      pipeline: 'fast_validation',
+      version: '2.0.0',
+      engine: 'bagflow',
+      result: 'pass',
+      message: '2/2 required topic pattern(s) matched (2 topic(s))',
+      missing: [],
+      extra: [],
+      checks: [{ node: 'topic_presence', check: 'topic_presence', ok: true }],
+    },
+    artifacts: ['report/fast_validation/run_002/flow/flow.yml'],
+  };
+  renderWithClient(<ValidationScreen />);
+  await screen.findByTestId('pipeline-card-fast_validation');
+  await waitFor(() =>
+    expect((screen.getByLabelText('target') as HTMLSelectElement).value).toBe(
+      'run_002',
+    ),
+  );
+  fireEvent.click(screen.getByRole('button', { name: 'Run on selection' }));
+
+  // Both cards, not one instead of the other.
+  await screen.findByTestId('fast-validation-checklist');
+  expect(await screen.findByText('bagflow')).toBeInTheDocument();
+  // The flow that actually ran is reachable from the result.
+  expect(await screen.findByText(/flow\.yml/)).toBeInTheDocument();
+});
+
 test('the target selector offers exported datasets grouped separately from runs', async () => {
   renderWithClient(<ValidationScreen />);
   const target = (await screen.findByLabelText('target')) as HTMLSelectElement;

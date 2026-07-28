@@ -14,7 +14,8 @@ config/
 │  ├─ stream/<option>.yaml        # Stream タブの初期レイアウト
 │  ├─ monitoring/alerts.yaml      # topic_monitor のアラート定義（任意・ALERT_CONFIG_PATH）
 │  ├─ validation/<option>.yaml    # fast_validation テンプレ
-│  └─ validators/loss_report.yaml # validator パラメータ
+│  ├─ validators/loss_report.yaml # validator パラメータ
+│  └─ flows/<flow>.yml            # full_validation の検証フロー（bagflow flow.yml）
 ├─ airoa_hsr/               # 同梱サンプル機体（HSR, data/airoa-moma-mcap/）
 ├─ template/                # 新機体の出発点（airoa_hsr を参考にコピー）
 └─ local/<robot>/           # 自分の機体（gitignored）
@@ -48,7 +49,10 @@ make up ROBOT=<robot>        # config/local/<robot>/（gitignored・自分のロ
 
 - `rosbag2_recorder` … recording の `default_topics`（既定の収録対象）＋ 収録 QoS。
 - `topic_monitor` … recording の `expected_hz_patterns`（Late 判定）＋ 購読 QoS ＋ `monitoring/alerts.yaml`（アラート定義。任意。空＝アラート無効）。
-- `dora_runner` … validation の `required_topics`（fast_validation）＋ validators（loss_report）。
+- `dora_runner` … validation の `required_topics`（fast_validation。`full_validation` のフローにも
+  `${KAIROS_EXPECT_HZ}` として届く）＋ validators（loss_report）＋ `flows/`（`full_validation` が
+  実 dora 上で回す検証フロー。ジョブの `params.flow` で選ぶ。詳細は
+  [`docs/specs/ja/dora_runner.md`](../docs/specs/ja/dora_runner.md)）。
 - `frontend`（UI）… `GET /api/v1/config` 経由で Record / Monitor の事前選択・バッジ、Stream の初期ペイン。
 
 topic はグロブ（fnmatch）対応・first-match-wins。詳細は各 YAML のコメントと

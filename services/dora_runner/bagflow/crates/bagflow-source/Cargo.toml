@@ -1,0 +1,14 @@
+[package]
+name = "bagflow-source"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = { workspace = true }
+arrow = { version = "54.2", default-features = false }
+dora-node-api = "0.5"
+# kairos vendoring: mcap2dora is a sibling crate of this workspace (upstream
+# bagflow points at a checkout next to the repo). See ../../VENDOR.md.
+mcap2dora = { path = "../mcap2dora" }
+serde_json = { workspace = true }
+tokio = { version = "1", features = ["rt-multi-thread"] }

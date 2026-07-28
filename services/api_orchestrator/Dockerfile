@@ -1,4 +1,6 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1@sha256:87999aa3d42bdc6bea60565083ee17e86d1f3339802f543c0d03998580f9cb89
+# Digest-pinned on purpose: an unpinned tag makes BuildKit resolve it against the
+# registry on EVERY build, which fails where there is no network (robot in the field).
 # api_orchestrator — pure-Python API hub; no rclpy, so it is built FROM the
 # slim Python image (not the heavy ROS base). Multi-stage: build a venv from the
 # committed uv.lock, copy only the venv into the runtime image.

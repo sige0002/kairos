@@ -374,6 +374,39 @@ test('stopRecording() optimistically moves to saving and calls /record/stop', as
   );
 });
 
+// Regression: /record/stop is idempotent and answers with the last run when it
+// finds nothing active, so a 200 alone does not prove the recorder stopped. If
+// it is still recording we must NOT advance to labelling a take that is still
+// being written — stay on SAVING with the Retry-stop button.
+test('a stop the recorder did not honour keeps the screen on saving', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/record/start')) {
+      return Promise.resolve(jsonResponse({ run_id: 'run_1', state: 'recording' }));
+    }
+    if (url.includes('/record/stop')) {
+      // 200 with the last run — the idempotent no-op answer.
+      return Promise.resolve(jsonResponse({ run_id: 'run_1', state: 'completed' }));
+    }
+    if (url.includes('/record/status')) {
+      // ...but the recorder is still going.
+      return Promise.resolve(jsonResponse({ run_id: 'run_1', state: 'recording' }));
+    }
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  act(() => result.current.startRecording());
+  await waitFor(() => expect(result.current.phase).toBe('recording'));
+
+  act(() => result.current.stopRecording());
+  await waitFor(() => expect(result.current.stopError).not.toBeNull());
+  expect(result.current.phase).toBe('saving');
+  expect(result.current.stopError?.code).toBe('stop_not_confirmed');
+});
+
 // ---------------------------------------------------------------------------
 // Real recorder status: arming (matched/missing) + integrity (drop/fail).
 // ---------------------------------------------------------------------------

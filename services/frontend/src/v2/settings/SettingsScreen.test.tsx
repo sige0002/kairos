@@ -26,7 +26,7 @@ const OPTIONS = {
     { id: 'airoa_hsr', local: false },
     { id: 'template', local: false },
     { id: 'isaac_sim', local: true },
-    { id: 'realman', local: true },
+    { id: 'myrobot', local: true },
   ],
   aspects: {
     recording: {

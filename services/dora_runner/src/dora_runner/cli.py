@@ -1,14 +1,19 @@
 """Local CLI for iterating on validation without the HTTP server.
 
-The whole point is fast, debuggable iteration: point it at a recorded run and
-it runs the ``fast_validation`` dataflow in-process, prints the summary, and
-writes ``report/fast_validation/<run_id>/summary.json`` — no uvicorn, no job
-queue, no orchestrator. Swap the template and re-run to try different rules.
+The whole point is fast, debuggable iteration: point it at a recorded run and it
+runs the ``fast_validation`` flow on dora, prints the summary, and writes
+``report/fast_validation/<run_id>/summary.json`` — no uvicorn, no job queue, no
+orchestrator. Swap the template and re-run to try different rules.
+
+It runs the same flow the service runs, so it needs the same bundled binaries
+(bagflow + dora): use it inside the dora_runner image, e.g.
+
+    docker compose exec dora_runner python -m dora_runner.cli <run_id>
 
 Usage::
 
     uv run python -m dora_runner.cli <run_id> [--data-dir DIR]
-                                    [--template FILE] [--json]
+                                    [--template FILE] [--flow NAME] [--json]
     # or, once installed: dora-validate <run_id> ...
 
 ``--template`` is a YAML or JSON file matching :class:`ValidationTemplate`
@@ -20,14 +25,17 @@ pass, ``1`` on fail (handy in scripts/CI).
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import sys
 from pathlib import Path
 
 import yaml
 
+from dora_runner.bagflow_runtime import DoraEndpoint, bagflow_available
+from dora_runner.fast_validation import DEFAULT_FLOW, run_fast_validation
 from dora_runner.models import ValidationTemplate
-from dora_runner.validation import generate_template, run_fast_validation
+from dora_runner.validation import generate_template
 
 
 def _load_template(path: Path) -> ValidationTemplate:
@@ -54,17 +62,41 @@ def main(argv: list[str] | None = None) -> int:
         help="template YAML/JSON; omit to auto-generate from the run's topics",
     )
     parser.add_argument(
+        "--flow",
+        default=DEFAULT_FLOW,
+        help=(
+            "flow name to run (default %(default)s): config/<robot>/flows/ first, "
+            "then the flow bundled with the service"
+        ),
+    )
+    parser.add_argument(
         "--json", action="store_true", help="print the raw summary JSON only"
     )
     args = parser.parse_args(argv)
+
+    if not bagflow_available():
+        print(
+            "fast_validation runs on dora: the bagflow + dora binaries are only "
+            "in the dora_runner image (try `docker compose exec dora_runner "
+            "python -m dora_runner.cli ...`).",
+            file=sys.stderr,
+        )
+        return 2
 
     template = (
         _load_template(args.template)
         if args.template
         else generate_template(args.run_id, args.data_dir)
     )
-    result = run_fast_validation(
-        run_id=args.run_id, data_dir=args.data_dir, template=template
+    result = asyncio.run(
+        run_fast_validation(
+            run_id=args.run_id,
+            data_dir=args.data_dir,
+            endpoint=DoraEndpoint.from_env(),
+            job_name=f"cli-{args.run_id}",
+            template=template,
+            flow=args.flow,
+        )
     )
     summary = result["summary"]
 
@@ -75,12 +107,13 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"template: {summary['template']['name']} v{summary['template']['version']}"
         )
-        print(f"result:   {summary['result'].upper()}")
+        print(f"result:   {summary['result'].upper()}  ({summary['message']})")
         if summary["missing"]:
             print("missing:")
             for item in summary["missing"]:
                 suffix = f" [{item['type']}]" if item.get("type") else ""
-                print(f"  - {item['name']}{suffix}")
+                reason = f"  — {item['reason']}" if item.get("reason") else ""
+                print(f"  - {item['name']}{suffix}{reason}")
         print(f"extra:    {len(summary['extra'])} topic(s) not in template")
         print(f"report:   {result['artifacts'][0]}")
 

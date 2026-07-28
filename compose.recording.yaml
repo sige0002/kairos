@@ -15,7 +15,8 @@
 #   # on the RECORDING PC:
 #   cp .env.split.example .env   # set RECORDER_HOST/TOPIC_MONITOR_HOST/WEBRTC_HOST/
 #                                #     TOPIC_PROBE_HOST/WEBRTC_HOST/PROBE_HOST = robot IP
-#   docker compose -f compose.recording.yaml up -d --build
+#   docker compose -f compose.recording.yaml build   # first time / after a code change
+#   docker compose -f compose.recording.yaml up -d
 #   # (or:  make recording-up)
 #
 # MCAP boundary: the recorder writes bags on the ROBOT's disk. Pull COMPLETED runs

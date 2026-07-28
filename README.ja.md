@@ -10,20 +10,49 @@ ROS 2 のロボットデータを **収録・監視・検証・変換** する�
 
 ## アーキテクチャ
 
+**1 フォルダ = 1 コンテナ**。責務ごとにプロセスを分け、重い処理（デコード・検証）が
+収録と監視に波及しないようにしています。
+
+```mermaid
+flowchart TB
+  ROBOT["ROS 2 Robot / Sim"] --> TOPICS(["ROS 2 Topics (DDS)"])
+
+  subgraph live["ライブ経路 — ROS 2 コンテナ (rclpy)"]
+    REC["rosbag2_recorder<br/>選択トピック → MCAP"]
+    MON["topic_monitor<br/>Hz/遅延/ロス/帯域<br/>（デコードしない）"]
+    PROBE["topic_probe<br/>数値フィールドのプロット<br/>（decode はここに隔離）"]
+    WEB["webrtc_streamer<br/>低遅延プレビュー"]
+  end
+
+  subgraph post["収録後の経路"]
+    ORC["api_orchestrator<br/>ジョブ・状態・設定のハブ"]
+    DR["dora_runner<br/>検証・変換<br/>（同梱 bagflow + dora）"]
+  end
+
+  FE["frontend<br/>Vite + React + TS"]
+  MCAP[("/data/recorded/&lt;run_id&gt;/*.mcap<br/>＝ 正本")]
+  OUT[("/data/report/, /data/&lt;operator&gt;/&lt;task&gt;/<br/>レポート・データセット")]
+
+  TOPICS --> REC & MON & PROBE & WEB
+  REC --> MCAP
+  MCAP --> DR --> OUT
+  FE <-->|"REST / SSE / WebRTC"| ORC
+  ORC <--> REC & MON & PROBE & WEB
+  ORC <-->|"POST /jobs"| DR
+  WEB -.->|"映像は直接"| FE
 ```
-              ROS 2 Robot / Sim  ──►  ROS 2 Topics
-                                        │
-     ┌──────────────┬────────────┬──────┼────────────────────────┐
-     ▼              ▼            ▼       ▼                        ▼
-webrtc_streamer topic_monitor topic_probe rosbag2_recorder  (選択されたトピック)
- (ライブ映像)    (ライブ監視)  (数値プロット) ──► MCAP  /data/recorded/run_xxxx.mcap ◄─ 正本
-     │              │            │        │
-     ▼              ▼            ▼        ▼  (収録後)
-   Browser  ◄────  api_orchestrator  ──►  dora_runner ──► レポート / 変換済みデータセット
-                  (ジョブ・状態ハブ)        (検証・変換パイプライン)
-                         ▲
-                         │ REST / WebSocket / SSE
-                      frontend (Vite + React + TS)
+
+収録後の検証は **dora_runner コンテナの中だけ**で完結します（同梱の bagflow フローを
+自前の dora coordinator 上で実行。詳細は [dora_runner 仕様](docs/specs/ja/dora_runner.md)）:
+
+```mermaid
+flowchart LR
+  J["POST /api/v1/jobs"] --> API["dora_runner API"]
+  API --> PIPE["bagflow_pipeline<br/>フロー実体化・timeout・後始末"]
+  FLOW[/"フロー定義（YAML）<br/>同梱 or config/&lt;robot&gt;/flows/"/] --> PIPE
+  PIPE -->|"bagflow run"| CO["dora coordinator/daemon<br/>127.0.0.1:6112 loopback"]
+  CO --> NODES["検証ノード群（Rust）<br/>topic-presence / topic-rate<br/>decode / blur / brightness<br/>freeze / stamp-gap"]
+  NODES --> RPT["report.json"] --> SUM["summary.json<br/>pass / fail"]
 ```
 
 ## サービス構成
@@ -35,7 +64,7 @@ webrtc_streamer topic_monitor topic_probe rosbag2_recorder  (選択されたト�
 | [topic_probe](docs/specs/ja/topic_probe.md) | 選択トピックの**数値フィールド**をライブプロットする汎用プローブ。decode は本サービスに**隔離**し、収録・監視に波及させない。 |
 | [webrtc_streamer](docs/specs/ja/webrtc_streamer.md) | 低遅延のカメラ**プレビュー**（ROS 2 image → ブラウザ）。記録パスではない。 |
 | [api_orchestrator](docs/specs/ja/api_orchestrator.md) | 単一の API ハブ。ジョブのライフサイクル・状態・設定・結果集約を担う。 |
-| [dora_runner](docs/specs/ja/dora_runner.md) | 収録後の**検証・変換**パイプライン（dora ベース）。有効: `fast_validation` / `dataset_export` / `loss_report` / `video_check`。 |
+| [dora_runner](docs/specs/ja/dora_runner.md) | 収録後の**検証・変換**パイプライン。検証は**実 dora 上の bagflow フロー**（同梱）。有効: `fast_validation` / `full_validation` / `dataset_export` / `loss_report` / `video_check` / `signal_report`。 |
 | [frontend](docs/specs/ja/frontend.md) | backend-driven な Web UI（UI 表記は英語）。役割タブ構成（Console v2）: Collect / Review / Datasets / Validation / Monitor / Settings。 |
 
 ## 仕様ドキュメント
@@ -53,12 +82,19 @@ webrtc_streamer topic_monitor topic_probe rosbag2_recorder  (選択されたト�
 ### 全サービスの起動（Docker）
 
 ```bash
-make up                       # = build + 起動（detached）。機体は ROBOT で選択（既定 airoa_hsr）
+make build                    # イメージを作る（初回とコード変更時だけ。ネットが要る）
+make up                       # 起動（detached）。機体は ROBOT で選択（既定 airoa_hsr）
 # あるいは素の docker compose で:
 cp .env.example .env          # 必要に応じて編集
 docker compose build
 docker compose up
 ```
+
+> **`make up` はビルドしません**（起動するだけ）。ビルドは変更が無くてもネットワークを必要とする
+> ため、`up` が毎回ビルドしていると**ネットの無い現場でスタックを起動できない**からです。コード変更を
+> 反映したいときは `make rebuild <サービス名>`、上流のベースイメージごと更新したいときは
+> `make build-pull` を使います。イメージが 1 つも無いマシンへの持ち込みは
+> [オフラインのマシンで動かす](#オフラインのマシンで動かすイメージの持ち込み)を参照。
 
 全サービスは host networking で起動します。ROS 2 サービス（`recorder` / `monitor` / `streamer`）は
 ホストの DDS グラフ（`ROS_DOMAIN_ID=0`）を共有し、純 Python サービス（`orchestrator` / `dora_runner`）
@@ -112,19 +148,93 @@ make recording-up
 
 | コマンド | 内容 |
 |---|---|
-| `make up` / `make down` / `make ps` | スタックの起動（build込み）/ 停止削除 / 状態 |
+| `make up` / `make down` / `make ps` | スタックの起動（**build しない**）/ 停止削除 / 状態 |
 | `make build monitor` / `make build` | サービス build（位置引数で1つ / 無指定や `all` で全部） |
-| `make rebuild frontend` | build + 強制再作成（コード変更を反映） |
+| `make rebuild frontend` | build + 強制再作成（コード変更を反映）**＝コンテナを新しくするコマンド** |
+| `make build-pull` | 上流のベースイメージを取り直して build（ネット必須） |
+| `make images-save` / `make images-load` | イメージを 1 ファイルに書き出す / 読み込む（オフライン機への持ち込み） |
 | `make restart monitor orchestrator` | サービス再起動 |
 | `make logs streamer` | ログ追従 |
 | `make config-reload` / `make config-show` | `config/*.yaml` 編集の反映（monitor+orchestrator 再起動）/ 現在の config 表示 |
 | `make rosbag` / `make rosbag-loop` / `make table` | サンプル bag 単発再生 / ループ再生 / 全 topic の Hz テーブル |
+| `make load` | 負荷概観: CPU（コア単位**と**マシン単位の両方）/ NIC 実測スループットとリンク利用率 / 実測 DDS 帯域 / データディスク空き |
 | `make smoke` / `make smoke-record` | 通し確認（PASS/FAIL）/ 記録 start/stop 込み |
 | `make test` / `make test-py` / `make test-fe` / `make lint` / `make fmt` | テスト・lint・整形 |
 
 別ロボットを使う場合は `make up ROBOT=<robot>` のように `ROBOT` を切り替えます（`make` が
 `config/<robot>/`（committed）/ `config/local/<robot>/`（gitignored）を解決して各サービスへ渡す）。
 別 bag は `make rosbag BAG=/data/<robot>/<run>` のように上書きできます。
+
+### オフラインのマシンで動かす（イメージの持ち込み）
+
+**ビルドは変更が無くてもネットワークを使います**（BuildKit がベースイメージ等をレジストリに解決しに
+行くため）。そのため `make up` は**起動だけ**にしてあり、イメージが既にあるマシンならネットワークに
+一切触れずに起動できます。
+
+イメージが 1 つも無いマシン（新しい実機・現場の PC）には、ビルドさせるのではなく**ファイルとして
+持ち込みます**。`make up` は起動前に**ローカルだけで**必要なイメージの有無を確認し、無ければ何が
+足りないかを表示して止まります（compose に任せると build か pull でネットを掴みに行き、オフライン
+では原因の分からないまま固まるため）。
+
+**イメージだけでは足りません。** `make` と compose が読むリポジトリ、そして `.gitignore` 済みの
+`.env` / `config/local/<robot>/` / `deploy/msgs_overlay/<robot>/` も要ります（`git clone` 自体が
+ネット必須）。**rsync でディレクトリごと運べば `.gitignore` 済みのファイルも一緒に行く**ので、
+実務上は「①イメージを焼く → ②リポジトリを rsync → ③現地で load して起動」の 3 手です。
+
+```bash
+# ① ネットワークのあるマシンで（イメージ一覧は compose から自動導出されるのでズレません）
+make images-save                    # 全サービス + 再生/確認ハーネス -> kairos-images.tar.gz
+make robot-images-save              # ロボット側の 4 サービスだけ（split 構成）
+make recording-images-save          # 録画 PC 側の 3 サービスだけ（split 構成）
+
+# ② リポジトリを丸ごと運ぶ（除外必須。素の scp -r は data/ を巻き込んで数十 GB になる）
+rsync -av \
+  --exclude='/data/*' \
+  --exclude='.venv/' \
+  --exclude='node_modules/' \
+  --exclude='/deploy/msgs_overlay/*/build/' \
+  --exclude='/deploy/msgs_overlay/*/log/' \
+  --exclude='/backups/' --exclude='*.tar.gz' \
+  ~/kairos/ <user>@<host>:~/kairos/
+scp kairos-images.tar.gz <user>@<host>:~/
+
+# ③ 持ち込んだマシンで
+make images-load IMAGES_FILE=~/kairos-images.tar.gz
+make up                             # あるいは make robot-up
+make smoke                          # 動作確認（ハーネスも同梱されているので通る）
+```
+
+除外の理由と実測値（この構成での測定値。環境で変わります）:
+
+| 対象 | サイズ | なぜ除外 / 必要 |
+|---|---|---|
+| `data/` | **20 GB** | 録画とサンプル bag。現地では空でよい |
+| `.venv` ×8・`node_modules` | 約 950 MB | ホスト側の開発用。イメージの中に別途入っている |
+| overlay の `build/` `log/` | 65 MB | colcon の中間生成物。**`install/` だけ**あればよい |
+| **除外後の実転送量** | **40 MB**（`.git` 込み・9,337 ファイル） | |
+
+`--exclude='/data/*'` を `/data/` ではなく `/data/*` にするのは**意図的**です。`data/` ディレクトリ
+自体は空で存在させる必要があります — 無いと `./data:/data` バインドマウントを Docker が root 所有で
+作ってしまい、非 root で動く orchestrator が書けなくなります。
+
+この rsync で `.env` / `config/local/<robot>/` / `deploy/msgs_overlay/<robot>/install/` が実際に
+運ばれることは dry-run で確認済みです。`install/` が未ビルドなら現地で `make msgs-build`（ローカルの
+recorder イメージ内で `colcon build` するだけなのでネット不要）。split 構成なら現地で `.env` の
+`*_HOST` / `ROBOT_IP` を実機の IP に直します。
+
+出力先は `IMAGES_FILE=` で変えられます。実測: robot-edge の 4 イメージ = **384 MB / 約 35 秒**、
+全サービス + ハーネスの 8 イメージ = **562 MB**（共通レイヤは 1 回だけ保存されるので、数だけ増えても
+あまり膨らみません）。`make images-save` には**再生/確認ハーネス**（`make smoke` / `make rosbag` /
+`make table` が使うイメージ。別 compose プロジェクトなので取りこぼしやすい）も含めてあります —
+「現地で何も出てこない」を切り分けるときに使うものが、まさにその現地でビルドを要求してくるのを
+避けるためです。
+
+> **アーキテクチャに注意**: イメージは CPU アーキテクチャごとに別物です。amd64 で焼いたものは arm64
+> の実機では動きません。実機がネットワークに繋がるうちにそこでビルドしておくか、
+> `docker buildx build --platform linux/arm64` で焼いてください。
+
+上流のベースイメージ（`ros` / `python` / `node`）を新しくしたいときは、ネットワークのある場所で
+`make build-pull` を実行してから ① をやり直します。
 
 ### 追加ロボットを使う（カスタムメッセージ型を含む）
 

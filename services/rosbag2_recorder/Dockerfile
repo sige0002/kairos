@@ -1,4 +1,6 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1@sha256:87999aa3d42bdc6bea60565083ee17e86d1f3339802f543c0d03998580f9cb89
+# Digest-pinned on purpose: an unpinned tag makes BuildKit resolve it against the
+# registry on EVERY build, which fails where there is no network (robot in the field).
 # rosbag2_recorder — ROS 2 node using rosbag2 MCAP storage, built FROM the ROS
 # base image so `ros2 bag record` and (later) rclpy are available.
 #

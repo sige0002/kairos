@@ -67,13 +67,25 @@ ROS 2 のトピックを **MCAP に正式記録する**コンテナ。公式の�
 
 resume は **rosbag2 の `~/resume` サービス**で行うため、対話 SPACE キー（≒擬似 TTY/pty が必要）に依存しない。recorder には常時 `--disable-keyboard-controls` を渡し、キーボード制御を無効化する（不要なオーバーヘッドと TTY 依存の排除）。
 
+#### arming 観測スナップショット（`arming`, 2026-07-27 改訂）
+
+未捕捉のターゲットは**原因で分ける**。UI がこれを事実として断言するためで、混ぜると「Monitor では 30 Hz で見えているトピック」を「配信されていない」と言い切ってしまう（オペレータを誤った復旧作業に送る）。
+
+- `matched_topics` — publisher があり、recorder も購読済み。
+- `missing_topics` — グラフ上に **publisher が無い**（＝本当に配信されていない）。
+- `unsubscribed_topics` — **配信はされている**が recorder がまだ購読していない（DDS discovery 追随中）。追加フィールドであり、知らない旧フロントエンドは 1 カテゴリ少なく表示するだけ。
+
+readiness gate の待機条件（`missing ∪ unsubscribed` が空になるまで、最大 `subscription_ready_timeout_s`）は不変 — 分割は観測の粒度だけを変える。
+
+スナップショットは**最初の arm で凍結しない**。`armed` セッションは（コンソールの pre-arm keep-alive により）長時間 armed のまま維持されるため、`GET /record/status`・一致する re-prepare（keep-alive）・fast start の resume 時に、保持している rclpy ノードでグラフを読み直す（購読・spin は行わない純粋な読み取り。失敗時は直前のスナップショットを保つ）。これにより `armed` 中の表示は常に現在の readiness、録画中に凍結される値は「**最初の prepare 時点**」ではなく「**開始時点**」のカバレッジになる。
+
 ### 録画開始レイテンシ（多トピック時）と two-phase start
 
 **現象**: トピック数が多い構成（例: カメラ 4 + 数値 27 = 31 topics）では、`POST /record/start` から実際の書き込み開始まで数秒かかる。内訳は ① `ros2 bag record` の**サブプロセス spawn**（Python CLI + rclcpp 初期化で 1〜3 秒）、② 新規 DDS participant の **discovery + 対象トピックの購読マッチング**（トピック数・グラフ規模に比例。グラフが混んでいるほど延びる）、③ writer 初期化。UI の「recording（赤）」は start 受理で点くため、`start_paused` 無効時は「**赤いのにまだ録れていない**」時間として現れる（有効時は同じ時間が start 応答待ちとして現れる — 見え方が違うだけで根は同じ）。
 
 **決定・実装済み（v1）: two-phase start（prepare → resume）。** 既存の start-paused readiness gate を土台に、spawn とマッチングを**操作（実際の start）より前**に済ませる。
 
-1. `POST /record/prepare` — `recording.start_paused` の設定値に関わらず**常に** `--start-paused` で recorder を spawn し、購読マッチングが済むまで待機（既存の readiness gate と同じロジック・同じ `start_delay_s`/`post_discovery_delay_s` の適用位置）。マッチング済みの `~/resume` / `~/is_paused` サービスクライアントと rclpy ノードは**破棄せず保持**する（後続の resume を高速化するため。ここで再生成すると DDS participant 生成・サービス discovery のコストを再び払うことになり two-phase start の意味がなくなる）。完了すると **`armed`** 状態で待機する。run_id はここで確定（rosbag2 が spawn 時に `--output` を開くため、以後固定）。応答: `201 { run_id, state: "armed", arming, disarm_at }`（`arming.matched_topics` / `missing_topics` は既存の arming 観測スナップショットを流用。`disarm_at` は下記 auto-disarm の期限で、既存の `resume_at`〔単発ゲート自身の readiness タイムアウト〕とは別概念）。記録中/停止処理中は `409 already_recording`（`armed` は多重 start をブロックしない `_ACTIVE_STATES` の対象外だが、`prepare` 自身は記録中には呼べない）。
+1. `POST /record/prepare` — `recording.start_paused` の設定値に関わらず**常に** `--start-paused` で recorder を spawn し、購読マッチングが済むまで待機（既存の readiness gate と同じロジック・同じ `start_delay_s`/`post_discovery_delay_s` の適用位置）。マッチング済みの `~/resume` / `~/is_paused` サービスクライアントと rclpy ノードは**破棄せず保持**する（後続の resume を高速化するため。ここで再生成すると DDS participant 生成・サービス discovery のコストを再び払うことになり two-phase start の意味がなくなる）。完了すると **`armed`** 状態で待機する。run_id はここで確定（rosbag2 が spawn 時に `--output` を開くため、以後固定）。応答: `201 { run_id, state: "armed", arming, disarm_at }`（`arming` は既存の観測スナップショットを流用〔[上記](#arming-観測スナップショットarming-2026-07-27-改訂)〕。keep-alive の re-prepare は subprocess を再利用するが**スナップショットは読み直す**。`disarm_at` は下記 auto-disarm の期限で、既存の `resume_at`〔単発ゲート自身の readiness タイムアウト〕とは別概念）。記録中/停止処理中は `409 already_recording`（`armed` は多重 start をブロックしない `_ACTIVE_STATES` の対象外だが、`prepare` 自身は記録中には呼べない）。
 2. `POST /record/start` — armed セッションがあり、かつ **spawn に影響するフィールド**（正規化したトピック選択・`compression`・`split`・`qos_default`・`qos_overrides`）が prepare 時のリクエストと**一致**すれば高速パス: 保持していたクライアントで `~/resume` を呼ぶだけ（**再 spawn なし・discovery 待ちなし** — `start_delay_s`/`post_discovery_delay_s` も再適用しない）。resume を確認できなければ（サービス消失・resume 後も paused のまま等）既存のフェイルセーフと同じ扱い（プロセス終了・run dir 削除・`507 record_arm_failed`）。`run_id` はマッチ判定に含めない（prepare 時点で固定済みのため、コミットされる run_id は常に armed 側のもの）。`operator`/`task` もマッチ判定に含めない（spawn に影響しないメタデータであり、`session.json`/manifest には **start リクエスト側の値**が書かれる）。**不一致**なら古い armed セッションを disarm（後述、失敗記録は書かない）した上で、armed が無かった場合と同じ**従来のフル同期パス**にフォールバックする — 単独の `start()` はこれまで通り完結して正しく動く。
 3. **auto-disarm** — armed のまま `recording.prepare_disarm_timeout_s`（既定 **120 秒**）以内に一致する `start` が来なければ自動的に disarm する: paused のサブプロセスを終了（記録データが無いため SIGTERM。SIGINT によるグレースフルフラッシュは不要）、空の run ディレクトリと付随ファイル（`<run_id>.qos.yaml` / `<run_id>.mcap-storage.yaml` / recorder log）を削除し、保持していた rclpy ノードを破棄する。disarm は**失敗記録を書かない**（意図的なキャンセル・期限切れであり、記録失敗ではないため）。同じ disarm 経路は次からも呼ばれる: `POST /record/stop` を armed 中に呼んだ場合（呼ばないと armed のサブプロセスが永遠にリークする）、`start` が不一致だった場合、`armed` のまま**不一致の** `prepare` が来た場合（**後勝ち** — 古い方を disarm してから新しい方を arm）。
 4. **keep-alive（一致 re-prepare = extend）** — `armed` のまま**一致する** `prepare` が来た場合は disarm/respawn せず、auto-disarm 期限だけを延長する（応答は既存 armed セッションの `run_id` と新しい `disarm_at`。orchestrator は応答の `run_id` を採用する）。呼び出し側（frontend の pre-arm エンジン）が期限前に再 prepare し続けることで、プロセス churn ゼロで armed を維持できる（実測 10ms 程度）。延長時は armed の generation も進める — キャンセル済みだが既にロック待ちに入っていた旧タイマーのコールバックが、延長後のセッションを誤って disarm する ABA を塞ぐため。disarm 後の状態は `prepare()` 実行前の状態（`created`/`completed`/`failed`/`interrupted` のいずれか）に戻す — armed にする前に完了していた直近 run の可視性を消さないため。
