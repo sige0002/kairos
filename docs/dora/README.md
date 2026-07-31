@@ -100,7 +100,7 @@ cargo test -p bagflow-checks --manifest-path services/dora_runner/bagflow/Cargo.
 - **Real-MCAP flow test** — `tests/test_fast_validation.py`. Depends on a real recording at
   `data/recorded/<RUN_ID>` **and** on the bagflow/dora binaries; it auto-skips when either is missing
   (i.e. it only runs inside the image). For how to produce a recording, see the integration recipes in
-  [CLAUDE.md](../../CLAUDE.md).
+  [AGENTS.md](../../AGENTS.md).
 
 ## Debugging / iteration (an easy-to-debug workflow)
 - **Local CLI** (no HTTP server needed). It uses real dora, so run it **inside the image**:

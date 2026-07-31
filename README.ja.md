@@ -320,7 +320,7 @@ backend 駆動で描画します（タブは Console v2 の役割 6 タブ = Col
   結果を出力します（`make smoke-record` で記録 start/stop も実行）。「テストしたのに何も出ない」を解消する入口です。
 - **可視化付き再生**: `make table`（全 topic の Hz/帯域を定期表示）と `make rosbag` / `make rosbag-loop`（再生）。
 
-詳しいコマンド・確認済みレシピは [CLAUDE.ja.md](CLAUDE.ja.md) の「ビルド / テスト / 実行コマンド」を参照してください。
+詳しいコマンド・確認済みレシピは [AGENTS.md](AGENTS.md) の「ビルド / テスト / 実行コマンド」を参照してください。
 
 ## リリース
 
@@ -349,7 +349,10 @@ backend 駆動で描画します（タブは Console v2 の役割 6 タブ = Col
 **日本語が正本**です。日本語ファイル（`*.ja.md`）を編集し、英語版（`*.md`）は日本語の変更に**手動で追随**させて
 再生成します。英語版は手で編集しないでください。
 
+例外として、コーディングエージェント向けの [`AGENTS.md`](AGENTS.md) と [`CLAUDE.md`](CLAUDE.md) は**日本語のみ**
+（英語ミラーを作りません）。
+
 ## コントリビュート
 
 - コード・コメント・コミットメッセージは英語で記述します。
-- 作業上の取り決め・規約は [CLAUDE.ja.md](CLAUDE.ja.md) を参照してください。
+- 作業上の取り決め・規約は [AGENTS.md](AGENTS.md) を参照してください（コーディングエージェント・人間の共通ルールの正本。Claude Code は [CLAUDE.md](CLAUDE.md) から `@AGENTS.md` で読み込みます）。

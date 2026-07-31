@@ -11,7 +11,7 @@
 #      hint when it measures 0 (the classic RECORDING_CONFIG mismatch).
 #
 # Prerequisites: the stack is up (`docker compose up`) and a sample bag exists
-# under data/ (see CLAUDE.md). Run from the repo root:
+# under data/ (see AGENTS.md). Run from the repo root:
 #
 #   bash deploy/test/smoke.sh
 #   BAG=/data/airoa-moma-mcap/000730 bash deploy/test/smoke.sh

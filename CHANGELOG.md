@@ -131,6 +131,15 @@ Phase A hardening toward a supportable release
 
 ### Changed
 
+- Agent instructions reorganized around `AGENTS.md`: the working rules shared by
+  every coding agent and by humans (project status, layout, stack, code
+  conventions, build/test/run commands, git rules) now live in a single
+  Japanese `AGENTS.md`, which Codex-style agents read directly. `CLAUDE.md`
+  imports it with `@AGENTS.md` and keeps only Claude Code specifics (skills,
+  parallel-session isolation, how to approach a change). `CLAUDE.ja.md` is
+  removed — these two files are Japanese-only and have no English mirror,
+  the one exception to the Japanese-canonical / English-mirror doc rule.
+
 - Review detail: the Signals section became "Data integrity" — synced video
   first, an aggregated one-lane integrity timeline directly under it (worst
   condition across topics per bin; click-to-seek; empty-bin-red restricted to

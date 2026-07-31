@@ -327,7 +327,7 @@ Collect / Review / Datasets / Validation / Monitor / Settings).
   prints the result (`make smoke-record` also runs record start/stop). This is the entry point for resolving "I tested it but nothing comes out."
 - **Playback with visualization**: `make table` (periodically show Hz/bandwidth for all topics) and `make rosbag` / `make rosbag-loop` (playback).
 
-For detailed commands and verified recipes, see "Build / test / run commands" in [CLAUDE.md](CLAUDE.md).
+For detailed commands and verified recipes, see "ビルド / テスト / 実行コマンド" in [AGENTS.md](AGENTS.md) (Japanese).
 
 ## Releases
 
@@ -359,7 +359,11 @@ To cut a release:
 **Japanese is the source of truth.** Edit the Japanese files (`*.ja.md`), and regenerate the English
 versions (`*.md`) by hand to match the Japanese changes. Do not author content in the English versions directly.
 
+The coding-agent instructions — [`AGENTS.md`](AGENTS.md) and [`CLAUDE.md`](CLAUDE.md) — are an exception:
+they are **Japanese only** and have no English mirror.
+
 ## Contributing
 
 - Write code, comments, and commit messages in English.
-- For working conventions and rules, see [CLAUDE.md](CLAUDE.md).
+- For working conventions and rules, see [AGENTS.md](AGENTS.md) (Japanese) — the canonical rules shared by
+  coding agents and humans. Claude Code loads it from [CLAUDE.md](CLAUDE.md) via `@AGENTS.md`.

@@ -1,17 +1,30 @@
-# CLAUDE.md（日本語・正本）
+# AGENTS.md — kairos 共通ルール（正本）
 
-このリポジトリで Claude Code（および人間）が作業するためのメモ。
+このリポジトリで作業する**すべてのコーディングエージェント（Claude Code / Codex など）と人間**に共通のルール。
+
+- Claude Code は [`CLAUDE.md`](CLAUDE.md) の `@AGENTS.md` により本ファイルを読み込む。Claude 固有のルールだけが `CLAUDE.md` にある。
+- Codex など `AGENTS.md` を直接読むエージェントは、本ファイルだけで足りる。
+- 共通ルールの追記・修正は**本ファイルにのみ**行う（`CLAUDE.md` に共通ルールを二重に書かない）。
+
 プロジェクト概要: [README.ja.md](README.ja.md)（English: [README.md](README.md)）。
 現時点の設計は `docs/specs/ja/`（`fig_const/` の図を基にした**正本**）にある。詳細はそこを見ること。ここで設計を再記述しない。
 
 > ステータス: **実装済み（v1）。** 全 7 サービス + frontend が動作する（Stage 1〜4）。技術スタック・
 > ディレクトリ構成・API 契約は確定済みで、設計の正本は `docs/specs/ja/` にある。
-> **大きな設計変更はユーザーと決める** — 実装済みの機能・挙動を勝手に作り替えない。未確定の論点は **TBD** と明記する。
+
+## 基本方針
+
+- **既存コードを確認してから変更する。** 推測だけで実装しない。
+- **変更範囲は必要最小限。** 依頼されていないファイルを巻き込まない。
+- **大きな設計変更はユーザーと決める** — 実装済みの機能・挙動を勝手に作り替えない。未確定の論点は **TBD** と明記する。
+- エラーを握りつぶさない。不要な依存関係を追加しない。
+- 変更後は関連するテストを実行する（→ ビルド / テスト / 実行コマンド）。
 
 ## ドキュメントの言語ルール（重要）
 
 - ドキュメントは **日本語が正本**。著者は日本語ファイル（`*.ja.md`）だけを編集する。
 - 英語ファイル（`*.md`）は日本語正本の**ミラー** — 内容の編集は必ず日本語側で行い、英語は日本語の変更に**手動で追随**させる（/sync-docs スキルは 2026-07-13 に撤去済み。ミラー更新は日本語 diff の忠実な英訳で行う）。
+- **例外: `AGENTS.md` と `CLAUDE.md` はエージェント向け指示なので日本語のみ**とし、英語ミラー（`*.ja.md` / 英訳）を作らない。
 - **コード・コメント・識別子・コミットメッセージは英語。**
 
 ## 規約
@@ -70,6 +83,7 @@ kairos/
 - **Python**
   - フォーマッタ / リンタ: **Ruff**（format + lint）。行長は Ruff 既定（88）。
   - 型: パブリック I/F に type hints を付ける。`mypy` は任意（CI で段階導入）。
+  - 例外を握りつぶさない。大きなデータを不要にコピーしない。
   - テスト: **pytest**（ROS 2 ノードの結合は `launch_testing` を任意で）。
   - パッケージ: 各サービスに `pyproject.toml`（PEP 621）。
 - **TypeScript / frontend**: ESLint + Prettier、テストは Vitest、`tsconfig` は strict。
@@ -129,6 +143,20 @@ kairos/
       自体は discovery で全 topic を常時表示する）。
     - **Stage 3 検証**: `dora_runner` 単体起動 + `POST /jobs {pipeline:"fast_validation", run_id, params:{template}}`、または orchestrator 経由 `POST /api/v1/jobs`。`/data/report/fast_validation/<run_id>/summary.json` に `result: pass|fail` を出力。MCAP は `mcap` + `mcap-ros2-support` で直接読む（ROS 不要）。
 
-## 仕様 docs
+## Git
 
-各サービスの仕様は `docs/specs/ja/<service>.md`（英語ミラー: `docs/specs/en/<service>.md`）。`fig_const/` を基にした**設計の正本**（未記載事項は推奨設計として確定。認証は不要）。共有設定は [`docs/specs/ja/config.md`](docs/specs/ja/config.md)。
+- **ユーザーの指示なしにコミットしない。** push・PR 作成・マージも同様。
+- 依頼と関係のないファイルを変更しない。既存の未コミット変更を勝手に消さない。
+- コミットメッセージは英語（Conventional Commits 準拠: `feat:` / `fix:` / `chore:` …）。
+- 既定ブランチは `main`、開発は `develop`。
+- **秘匿ロボット名を追跡ファイル・コミットメッセージに書かない。** 対象名は gitignore された
+  `config/local/<robot>/` と `deploy/msgs_overlay/<robot>/` から実行時に判る。追跡ファイル側では
+  `myrobot` などの一般名を使う。
+
+## ドキュメントの置き場所
+
+- `docs/specs/ja/<service>.md` — 各サービスの仕様（英語ミラー: `docs/specs/en/<service>.md`）。`fig_const/` を基にした**設計の正本**（未記載事項は推奨設計として確定。認証は不要）。共有設定は [`docs/specs/ja/config.md`](docs/specs/ja/config.md)。
+- `docs/dora/` — dora まわりの利用ガイド。
+- `dev_docs/` — 作業ドキュメント（調査・レビュー・設計討議）。索引は [`dev_docs/README.md`](dev_docs/README.md)。
+- `issue/` — 作業中に遭遇した問題と解決策の蓄積（1 問題 = 1 エントリ）。
+- `CHANGELOG.md` — 変更履歴（Keep a Changelog）。ユーザーに見える変更は `## [Unreleased]` に追記する。
