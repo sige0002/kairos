@@ -531,8 +531,8 @@ const DEFAULT_COORDINATOR_PORT: &str = "6012";
 ///
 /// dora 0.5's `dora up` has no port option, so a service that wants its own
 /// coordinator has to spawn `dora coordinator` / `dora daemon` itself. kairos
-/// does exactly that on a private port so a co-located dora stack (dora_live
-/// shares the host network namespace) can never be reached by accident.
+/// does exactly that on a private port so a co-located dora stack on the same
+/// host network can never be reached by accident.
 fn coordinator_endpoint() -> (String, String) {
     (
         std::env::var("DORA_COORDINATOR_ADDR")
