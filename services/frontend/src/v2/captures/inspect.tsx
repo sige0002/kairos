@@ -20,6 +20,7 @@ import type {
   VideoCheckSummary,
 } from '../../api/types';
 import { JobErrorNote } from './JobErrorNote';
+import { useJobSlot } from './jobQueue';
 
 // Terminal job states; while a job is non-terminal we keep polling.
 export const TERMINAL = new Set(['succeeded', 'failed', 'canceled']);
@@ -140,6 +141,9 @@ export function VideoPlayer({
   const [summary, setSummary] = useState<VideoCheckSummary | null>(null);
   const [jobError, setJobError] = useState<string | null>(null);
   const started = useRef(false);
+  // Set when the operator asked for a full re-encode, so the queued submission
+  // carries the knobs the click meant rather than the mount defaults.
+  const reencodeRef = useRef(false);
   // Sync plumbing: the <video> element + latest callbacks (refs keep the query
   // callbacks and event handlers out of effect deps).
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -147,6 +151,12 @@ export function VideoPlayer({
   onTimeUpdateRef.current = onTimeUpdate;
   const onSummaryRef = useRef(onSummary);
   onSummaryRef.current = onSummary;
+
+  // This player wants to run a job until it has an answer. The slot is what
+  // keeps five camera tiles from submitting at once and losing four of them to
+  // the per-capture lease (§7.1) — see jobQueue.ts.
+  const wantSlot = summary === null && jobError === null;
+  const slot = useJobSlot(captureId, wantSlot);
 
   const mutation = useMutation({
     // `extra` carries the re-encode knobs (force + max_frames); the initial
@@ -158,22 +168,31 @@ export function VideoPlayer({
         params: { topic, ...(extra ?? {}) },
       }),
     onSuccess: (job) => setJobId(job.job_id),
+    // A submission that never became a job holds nothing, so the next preview
+    // must not wait on it.
+    onError: () => slot.release(),
   });
 
   // Re-encode the WHOLE episode (force bypasses the cache; 0 = no frame cap).
   // The old mp4 keeps playing elsewhere until the new encode atomically lands.
+  // It joins the same queue: a manual click during a burst of auto-submits is
+  // the same contention as any other.
   const reencodeFull = () => {
     setSummary(null);
     setJobError(null);
-    mutation.mutate({ force: true, max_frames: 0 });
+    reencodeRef.current = true;
+    started.current = false;
   };
 
-  // Kick the job off once (StrictMode-safe) when this player appears.
+  // Submit once this player holds the capture (StrictMode-safe). Waiting is not
+  // an error state — the tile says where it is in the queue instead.
   useEffect(() => {
-    if (started.current) return;
+    if (!slot.granted || started.current) return;
     started.current = true;
-    mutation.mutate();
-  }, [mutation]);
+    const extra = reencodeRef.current ? { force: true, max_frames: 0 } : undefined;
+    reencodeRef.current = false;
+    mutation.mutate(extra);
+  }, [slot.granted, mutation]);
 
   // Apply a seek from the chart. `seekTo` is a fresh object per seek, so the
   // effect fires exactly on a real seek (not on every parent re-render).
@@ -220,6 +239,10 @@ export function VideoPlayer({
           setJobError(message);
         }
         setJobId(null);
+        // Terminal either way: hand the capture to the next preview. A failed
+        // job must release exactly like a successful one, or one broken topic
+        // strands every tile queued behind it.
+        slot.release();
       }
       return status;
     },
@@ -240,6 +263,13 @@ export function VideoPlayer({
       ) : jobError ? (
         <p role="alert" className="text-xs text-red-600">
           {jobError}
+        </p>
+      ) : !slot.granted && wantSlot ? (
+        // Waiting for its turn is not a failure, and must not read as one:
+        // only one job may hold a capture at a time (§7.1), so the tiles take
+        // turns rather than four of them being refused.
+        <p className="text-xs text-gray-500" data-testid="video-queued">
+          Queued behind {slot.ahead} other preview{slot.ahead === 1 ? '' : 's'}…
         </p>
       ) : summary && summary.file ? (
         <>
