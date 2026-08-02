@@ -279,6 +279,18 @@ class TestTransferApi:
         # cannot address a capture across hosts.
         assert fake_importer.pulled == [capture_id]
 
+    def test_a_pull_of_everything_is_the_explicit_all_form(
+        self, client: TestClient, fake_importer
+    ) -> None:
+        # The importer 400s an empty body by design (a lost key must never
+        # degrade a targeted pull into a sweep), so "pull everything" has to
+        # travel as the explicit {"all": true} opt-in. The fake mirrors that
+        # strictness — this test fails against a client that still sends {}.
+        fake_importer.present = True
+        response = client.post("/api/v1/transfer/pull", json={})
+        assert response.status_code == 202
+        assert fake_importer.pull_bodies == [{"all": True}]
+
     def test_an_absent_importer_reports_the_channel_as_unavailable(
         self, client: TestClient
     ) -> None:

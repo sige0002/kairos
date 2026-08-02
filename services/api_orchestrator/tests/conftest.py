@@ -429,6 +429,7 @@ class FakeImporter:
     def __init__(self) -> None:
         self.present: bool = False
         self.pulled: list[str | None] = []
+        self.pull_bodies: list[dict[str, object]] = []
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         if not self.present:
@@ -437,6 +438,14 @@ class FakeImporter:
             return httpx.Response(200, json={"status": "ok"})
         if request.url.path == "/pull" and request.method == "POST":
             body = json.loads(request.content or b"{}")
+            # Mirror the real sidecar's strictness: an empty body is a 400,
+            # never a sweep (deploy/sync/importer_httpd.parse_pull_body).
+            if "capture_id" not in body and body.get("all") is not True:
+                return httpx.Response(
+                    400,
+                    json={"error": {"code": "bad_request", "message": "capture_id"}},
+                )
+            self.pull_bodies.append(body)
             self.pulled.append(body.get("capture_id"))
             return httpx.Response(202, json={"queued": True})
         return httpx.Response(404, json={"error": {"code": "nf", "message": "?"}})

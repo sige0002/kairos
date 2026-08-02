@@ -22,12 +22,16 @@ class ImporterClient(BaseServiceClient):
     async def pull(self, capture_id: str | None = None) -> dict[str, Any]:
         """Queue a pull of one capture's files (202-style ack).
 
-        ``capture_id=None`` queues a pull of EVERY finished capture. The
-        importer serialises pulls and copies only captures whose manifest is
-        terminal (§10.6), so calling this for one that is still finalising is
-        safe — it is simply skipped until the next pull.
+        ``capture_id=None`` queues a pull of EVERY finished capture via the
+        importer's explicit ``{"all": true}`` opt-in — an empty body is a 400
+        there, deliberately, so a lost key can never degrade a targeted pull
+        into a sweep. The importer serialises pulls and copies only captures
+        whose manifest is terminal (§10.6), so calling this for one that is
+        still finalising is safe — it is simply skipped until the next pull.
         """
-        body = {} if capture_id is None else {"capture_id": capture_id}
+        body: dict[str, Any] = (
+            {"all": True} if capture_id is None else {"capture_id": capture_id}
+        )
         return await self._request("POST", "/pull", json=body)
 
     def __init__(self, base_url: str, client: httpx.AsyncClient) -> None:

@@ -29,8 +29,9 @@ router = APIRouter(prefix="/api/v1/transfer", tags=["transfer"])
 class TransferPullRequest(BaseModel):
     """Body for ``POST /api/v1/transfer/pull``.
 
-    No ``capture_id`` means "pull every finished capture" — the importer's
-    ``POST /pull {}`` form.
+    No ``capture_id`` means "pull every finished capture" — forwarded to the
+    importer as its explicit ``{"all": true}`` opt-in (an empty body is a 400
+    on that side, so a sweep is always a deliberate request).
     """
 
     capture_id: str | None = None
