@@ -142,15 +142,21 @@ export function SystemStatusCard({
   // Every pane, not just the main stream. A silent sub camera used to have
   // nothing on the screen accounting for it: the row spoke for the main tile
   // alone while the others advertised a live frame rate beside it.
-  const { streamFailed, framesStale, silentTopics, totalCameras } = cameraHealth;
+  const { streamFailed, framesStale, silentTopics, unmonitoredTopics, totalCameras } =
+    cameraHealth;
   const cameraRow: SysRow = ((): SysRow => {
     if (totalCameras === 0) {
       return { label: 'Cameras', value: 'none open', chip: '—', tone: 'gray' };
     }
+    // Cameras nobody measures are named in every branch below rather than
+    // counted as fine. A pane outside the monitored set gets no answer about
+    // its source at all, and folding it into "3 cameras OK" is the row telling
+    // the operator something it does not know.
+    const gap = unmonitoredTopics > 0 ? ` · ${unmonitoredTopics} not monitored` : '';
     if (silentTopics > 0) {
       return {
         label: 'Cameras',
-        value: `${silentTopics} of ${totalCameras} cameras: topic silent`,
+        value: `${silentTopics} of ${totalCameras} cameras: topic silent${gap}`,
         chip: 'CHECK',
         tone: 'amber',
       };
@@ -158,9 +164,25 @@ export function SystemStatusCard({
     if (streamFailed || framesStale) {
       return {
         label: 'Cameras',
-        value: framesStale ? 'main stream: no frames' : 'main stream failed',
+        value: `${framesStale ? 'main stream: no frames' : 'main stream failed'}${gap}`,
         chip: 'CHECK',
         tone: 'amber',
+      };
+    }
+    const known = totalCameras - unmonitoredTopics;
+    if (unmonitoredTopics > 0) {
+      // Gray, not green: nothing is wrong here, but neither is everything
+      // confirmed — the same "no claim" tone this card uses for Topic rates
+      // when the monitor is not answering.
+      return {
+        label: 'Cameras',
+        value: `${known} of ${totalCameras} cameras OK${gap}`,
+        title:
+          'These panes are outside the monitored set, so nothing measures ' +
+          'whether their source topics are still publishing. The preview keeps ' +
+          'showing frames either way.',
+        chip: '—',
+        tone: 'gray',
       };
     }
     return {

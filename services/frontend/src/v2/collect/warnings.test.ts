@@ -201,3 +201,28 @@ test('topicLiveness says unknown when there is no monitor data at all', () => {
   // Nothing has been established, and that must not render as either answer.
   expect(topicLiveness([], '/cam/head')).toBe('unknown');
 });
+
+// UNMONITORED TILE: being on the graph is not evidence of publishing. A topic
+// stays in discovery for as long as anything is attached to it, and the
+// streamer's own preview subscription keeps it there after the publisher dies —
+// which is how an unmeasured camera earned a confident frame rate.
+test('topicLiveness will not call a topic live just because discovery lists it', () => {
+  const rows = [
+    row({ name: '/cam/head', status: 'ok' }),
+    row({ name: '/cam/depth', measured: false }),
+  ];
+  expect(topicLiveness(rows, '/cam/depth')).toBe('unmonitored');
+  // The measured neighbour is unaffected — this is a coverage gap, not doubt
+  // about the monitor.
+  expect(topicLiveness(rows, '/cam/head')).toBe('live');
+});
+
+test('topicLiveness keeps an unmeasured topic apart from a blind monitor', () => {
+  // Nothing measured anywhere: the monitor is not answering, so we have not
+  // established that this topic is unwatched — only that we cannot see.
+  const discoveryOnly = [
+    row({ name: '/cam/head', measured: false }),
+    row({ name: '/cam/depth', measured: false }),
+  ];
+  expect(topicLiveness(discoveryOnly, '/cam/depth')).toBe('unknown');
+});

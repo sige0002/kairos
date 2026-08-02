@@ -3,6 +3,7 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
 import type { SystemInfo } from '../../api/types';
 import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
+import type { CameraHealth } from './Cameras';
 import { BatchStatsCard, CoverageCard, SystemStatusCard } from './SideCards';
 import type { BatchMachine, BatchStats } from './useBatchMachine';
 
@@ -34,23 +35,32 @@ function renderCard(m: BatchMachine = machine) {
       machine={m}
       sseStatus="closed"
       monitorBridge={null}
-      cameraHealth={{ streamFailed: false, framesStale: false, silentTopics: 0, totalCameras: 1 }}
+      cameraHealth={{
+        streamFailed: false,
+        framesStale: false,
+        silentTopics: 0,
+        unmonitoredTopics: 0,
+        totalCameras: 1,
+      }}
     />,
   );
 }
 
-function renderCardWithCameras(cameraHealth: {
-  streamFailed: boolean;
-  framesStale: boolean;
-  silentTopics: number;
-  totalCameras: number;
-}) {
+// Only the camera facts a test cares about; the rest read "nothing wrong".
+function renderCardWithCameras(cameraHealth: Partial<CameraHealth>) {
   return renderWithClient(
     <SystemStatusCard
       machine={machine}
       sseStatus="closed"
       monitorBridge={null}
-      cameraHealth={cameraHealth}
+      cameraHealth={{
+        streamFailed: false,
+        framesStale: false,
+        silentTopics: 0,
+        unmonitoredTopics: 0,
+        totalCameras: 0,
+        ...cameraHealth,
+      }}
     />,
   );
 }
@@ -284,4 +294,28 @@ test('no cameras open is stated honestly, not as OK', async () => {
     totalCameras: 0,
   });
   expect(await screen.findByTestId('sys-cameras')).toHaveTextContent('none open');
+});
+
+// A camera outside the monitored set gets NO answer about its source topic.
+// Counting it among the healthy ones is the row asserting something nobody
+// measured — the same lie as the tile's confident frame rate, one line up.
+test('a camera nobody measures is named, not folded into the OK count', async () => {
+  mockSystem({ cpu: { model: null, cores: null }, gpu: null });
+  renderCardWithCameras({ unmonitoredTopics: 1, totalCameras: 3 });
+  const row = await screen.findByTestId('sys-cameras');
+  expect(row).toHaveTextContent('2 of 3 cameras OK · 1 not monitored');
+  // Not a green OK — two of three is what we can vouch for, and the chip must
+  // not certify the third. Gray "—" is this card's established no-claim mark.
+  expect(within(row).getByText('—')).toBeInTheDocument();
+  expect(row).not.toHaveTextContent('CHECK');
+});
+
+test('a silent camera and an unmeasured one are both accounted for', async () => {
+  mockSystem({ cpu: { model: null, cores: null }, gpu: null });
+  renderCardWithCameras({ silentTopics: 2, unmonitoredTopics: 1, totalCameras: 4 });
+  const row = await screen.findByTestId('sys-cameras');
+  // The silent ones are the actionable fact and lead; the gap is still stated
+  // rather than leaving the reader to assume the other two are fine.
+  expect(row).toHaveTextContent('2 of 4 cameras: topic silent · 1 not monitored');
+  expect(row).toHaveTextContent('CHECK');
 });

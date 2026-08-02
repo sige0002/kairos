@@ -282,3 +282,29 @@ test('an open detail turns terminal on its own, without a click', async () => {
   );
   expect(screen.queryByTestId('review-run-loss')).toBeNull();
 }, 25000);
+
+// m9 in Review's detail: the panel led with the raw code —
+// "recorder_failed: recorder restarted while the capture was recording" — so
+// the reader stepped over an identifier to reach the only part that says what
+// happened. Same treatment as the Collect banner: sentence first, code muted
+// and last.
+test('a failed capture leads with the sentence and trails the code', async () => {
+  mockApi({
+    capture: detail({
+      state: 'failed',
+      error: {
+        code: 'recorder_failed',
+        message: 'recorder restarted while the capture was recording',
+      },
+    }),
+  });
+  renderWithClient(<CaptureInspection captureId={CAP} />);
+
+  const note = await screen.findByTestId('review-capture-error');
+  expect(note).toHaveAttribute('data-error-code', 'recorder_failed');
+  // The code is still on the page — it is what a bug report needs — but the
+  // sentence starts the note.
+  expect(note.textContent?.startsWith('recorder restarted while the capture')).toBe(true);
+  expect(note).toHaveTextContent('(recorder_failed)');
+  expect(note.textContent).not.toMatch(/^recorder_failed:/);
+});

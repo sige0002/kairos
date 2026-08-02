@@ -435,7 +435,7 @@ test('an unmeasurable frame count is not reported as stale', () => {
 // topic dead qa-ui saw one tile owning up beside others still advertising
 // "8ms · 15fps" — one screen giving two answers about the same dead graph.
 test('any tile whose source topic is silent says so, not a frame rate', () => {
-  render(<StatsBadge stats={stats(15, 8)} topicSilent />);
+  render(<StatsBadge stats={stats(15, 8)} sourceLiveness="silent" />);
   const chip = screen.getByTestId('camera-stats');
   expect(chip).toHaveAttribute('data-topic-silent', 'true');
   expect(chip).toHaveTextContent('topic silent — showing the last frame');
@@ -445,10 +445,36 @@ test('any tile whose source topic is silent says so, not a frame rate', () => {
 });
 
 test('a tile with a live topic still shows its measured rate', () => {
-  render(<StatsBadge stats={stats(15, 8)} topicSilent={false} />);
+  render(<StatsBadge stats={stats(15, 8)} sourceLiveness="live" />);
   const chip = screen.getByTestId('camera-stats');
   expect(chip).not.toHaveAttribute('data-topic-silent');
   expect(chip).toHaveTextContent('15fps');
+});
+
+// UNMONITORED TILE: the same lie as A1, reachable by design. Nothing measures a
+// topic outside the monitored set — on the HSR profile that is every camera the
+// add-camera picker offers — so the tile fell back to the transport rate and
+// reported a confident 15fps for a source that had stopped.
+test('a tile nobody measures says so instead of showing the transport rate', () => {
+  render(<StatsBadge stats={stats(15, 8)} sourceLiveness="unmonitored" />);
+  const chip = screen.getByTestId('camera-stats');
+  expect(chip).toHaveAttribute('data-topic-unmonitored', 'true');
+  expect(chip).toHaveTextContent('not monitored — no rate available');
+  // The rate is what read as "the picture is current", which is the one thing
+  // nobody here can vouch for.
+  expect(chip).not.toHaveTextContent('15fps');
+  // And it does not claim the topic is dead either — that is not established.
+  expect(chip).not.toHaveTextContent('silent');
+});
+
+test('a blind monitor makes no claim about the tile at all', () => {
+  // Genuine unknown: the monitor is not answering, so this stays exactly as it
+  // was — the measured transport values, with no verdict attached.
+  render(<StatsBadge stats={stats(15, 8)} sourceLiveness="unknown" />);
+  const chip = screen.getByTestId('camera-stats');
+  expect(chip).toHaveTextContent('15fps');
+  expect(chip).not.toHaveAttribute('data-topic-unmonitored');
+  expect(chip).not.toHaveAttribute('data-topic-silent');
 });
 
 // ---------------------------------------------------------------------------
@@ -495,6 +521,7 @@ test('camera health is reported once per fact, not once per render', async () =>
       streamFailed: false,
       framesStale: false,
       silentTopics: 0,
+      unmonitoredTopics: 0,
       totalCameras: 2,
     });
 
@@ -530,6 +557,7 @@ test('a health comparison covers every field of the report', () => {
     streamFailed: false,
     framesStale: false,
     silentTopics: 0,
+    unmonitoredTopics: 0,
     totalCameras: 2,
   };
   expect(sameCameraHealth(base, { ...base })).toBe(true);
@@ -539,6 +567,7 @@ test('a health comparison covers every field of the report', () => {
     { ...base, streamFailed: true },
     { ...base, framesStale: true },
     { ...base, silentTopics: 1 },
+    { ...base, unmonitoredTopics: 1 },
     { ...base, totalCameras: 3 },
   ];
   for (const next of differing) expect(sameCameraHealth(base, next)).toBe(false);

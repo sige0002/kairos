@@ -165,8 +165,27 @@ export function CaptureInspection({ captureId }: { captureId: string }) {
         </div>
       )}
       {capture.error && (
-        <p className="rounded-control bg-red-50 px-3 py-2 text-[12px] text-red-700">
-          {capture.error.code}: {capture.error.message}
+        // m9, same shape as the Collect banner: the sentence an operator can act
+        // on leads, and the raw code trails it muted. "recorder_failed: recorder
+        // restarted while the capture was recording" made the reader step over
+        // an identifier to reach the only part that says what happened.
+        //
+        // No per-code copy table here on purpose. This is the recorder's own
+        // account of THIS capture, written into the manifest — unlike an API
+        // refusal (errors.ts) or a control action (ControlCard), there is no
+        // next step for the UI to add, and inventing one would be a second
+        // voice over the record.
+        <p
+          data-testid="review-capture-error"
+          data-error-code={capture.error.code}
+          className="rounded-control bg-red-50 px-3 py-2 text-[12px] text-red-700"
+        >
+          <span>{capture.error.message || 'This recording failed.'}</span>
+          {capture.error.code && (
+            <span className="mt-0.5 block font-mono text-[11px] opacity-70">
+              ({capture.error.code})
+            </span>
+          )}
         </p>
       )}
 

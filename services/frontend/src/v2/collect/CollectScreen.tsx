@@ -110,6 +110,7 @@ export function CollectScreen() {
     streamFailed: false,
     framesStale: false,
     silentTopics: 0,
+    unmonitoredTopics: 0,
     totalCameras: 0,
   });
   // Only re-render when a FACT changed, not merely the object carrying it. The

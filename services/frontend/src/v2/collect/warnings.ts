@@ -148,8 +148,16 @@ export function configMismatchHint(
 
 // ---- per-topic liveness ----------------------------------------------------
 
-/** Whether a topic is publishing, silent, or beyond what we can tell. */
-export type TopicLiveness = 'live' | 'silent' | 'unknown';
+/**
+ * Whether a topic is publishing, silent, outside what anyone measures, or
+ * beyond what we can tell at all.
+ *
+ * `unmonitored` and `unknown` are both "we cannot say", kept apart because they
+ * have different fixes: `unmonitored` is a topic nobody was asked to watch (add
+ * it to the monitored set and the answer appears), `unknown` is the monitor
+ * itself not answering (nothing about any topic is established).
+ */
+export type TopicLiveness = 'live' | 'silent' | 'unmonitored' | 'unknown';
 
 /**
  * Whether a camera tile's SOURCE topic is still publishing.
@@ -162,8 +170,8 @@ export type TopicLiveness = 'live' | 'silent' | 'unknown';
  * picker drops to "No image topics found"), so the honest signal is there; it
  * just was not being read.
  *
- * `unknown` is its own answer and never rendered as either of the others: with
- * no monitor data at all we have not established anything.
+ * Neither "we cannot say" answer is ever rendered as one of the others: with no
+ * measurement we have not established anything.
  */
 export function topicLiveness(rows: MonitorRow[], topic: string): TopicLiveness {
   if (rows.length === 0) return 'unknown';
@@ -172,6 +180,18 @@ export function topicLiveness(rows: MonitorRow[], topic: string): TopicLiveness 
   // add-camera picker already surfaces as "No image topics found".
   if (!row) return 'silent';
   if (row.status === 'inactive') return 'silent';
-  if (row.measured || row.live) return 'live';
-  return 'unknown';
+  // Measured and not flagged inactive: the monitor is seeing traffic on it.
+  if (row.measured) return 'live';
+  // On the graph, but nobody is measuring it — which is NOT the same as
+  // publishing, and used to be read that way. A topic stays in discovery for as
+  // long as anything is attached to it, and the streamer's own preview
+  // subscription is enough to keep it there after the publisher dies. So graph
+  // presence was being turned into a confident frame rate for a picture that
+  // had stopped changing — the same lie the silent overlay was built to stop,
+  // reachable by design for any camera outside the monitored set (on the HSR
+  // profile that is everything the add-camera picker offers).
+  //
+  // One measured row anywhere proves the monitor is answering, which is what
+  // makes this a gap in COVERAGE rather than a blind monitor.
+  return rows.some((r) => r.measured) ? 'unmonitored' : 'unknown';
 }

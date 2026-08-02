@@ -33,7 +33,7 @@ export function isFramesStale(stats: StreamStats): boolean {
 }
 import type { RuntimeConfig } from '../../config';
 import { useMonitorRows } from '../../features/monitor/useMonitorRows';
-import { topicLiveness } from './warnings';
+import { topicLiveness, type TopicLiveness } from './warnings';
 import type { BatchMachine } from './useBatchMachine';
 import {
   MAIN_RES_PRESETS,
@@ -93,6 +93,8 @@ export interface CameraHealth {
   framesStale: boolean;
   /** Panes whose source topic the monitor reports as silent. */
   silentTopics: number;
+  /** Panes whose source topic nobody measures, so neither answer is available. */
+  unmonitoredTopics: number;
   /** Panes that have a topic at all. */
   totalCameras: number;
 }
@@ -113,16 +115,17 @@ export function sameCameraHealth(a: CameraHealth, b: CameraHealth): boolean {
 export function StatsBadge({
   stats,
   className,
-  topicSilent = false,
+  sourceLiveness = 'unknown',
 }: {
   stats: StreamStats;
   className?: string;
-  /** The SOURCE topic has stopped publishing per the monitor. The stream keeps
-   *  delivering a real frame rate — it re-encodes the frozen last frame — so
-   *  this is the only signal that says the picture is no longer current. */
-  topicSilent?: boolean;
+  /** What the monitor can say about the SOURCE topic. The stream keeps
+   *  delivering a real frame rate whatever the source does — it re-encodes the
+   *  frozen last frame — so the transport rate may only be shown when nothing
+   *  contradicts it, and never as evidence that the picture is current. */
+  sourceLiveness?: TopicLiveness;
 }) {
-  if (topicSilent) {
+  if (sourceLiveness === 'silent') {
     return (
       <span
         data-testid="camera-stats"
@@ -138,6 +141,31 @@ export function StatsBadge({
         )}
       >
         topic silent — showing the last frame
+      </span>
+    );
+  }
+  if (sourceLiveness === 'unmonitored') {
+    // Nobody is measuring this topic, so the only rate available is the
+    // transport's — and that one keeps reading 15fps over a dead source. Grey,
+    // not amber: this is an absence of evidence, not a fault. The chip says
+    // what it cannot tell rather than filling the slot with a number that means
+    // something else.
+    return (
+      <span
+        data-testid="camera-stats"
+        data-topic-unmonitored="true"
+        title={
+          'This topic is outside the monitored set, so nothing measures whether ' +
+          'it is still publishing. The preview keeps delivering frames either ' +
+          'way — including re-encodings of a frozen last frame — so no rate is ' +
+          'shown here. The picture may or may not be current.'
+        }
+        className={cn(
+          'inline-flex items-center gap-1.5 rounded-chip bg-gray-900/75 px-2.5 py-1 font-mono text-[11px] text-gray-300',
+          className,
+        )}
+      >
+        not monitored — no rate available
       </span>
     );
   }
@@ -307,7 +335,7 @@ function SubCameraTile({
   onSelect,
   onRemove,
   style,
-  topicSilent = false,
+  sourceLiveness = 'unknown',
 }: {
   pane: CameraPane;
   config: RuntimeConfig;
@@ -315,8 +343,8 @@ function SubCameraTile({
   /** Provided only for operator-added panes (config cameras aren't removable). */
   onRemove?: () => void;
   style: React.CSSProperties;
-  /** This pane's SOURCE topic has stopped publishing (§ monitor data). */
-  topicSilent?: boolean;
+  /** What the monitor can say about this pane's SOURCE topic. */
+  sourceLiveness?: TopicLiveness;
 }) {
   const { w, h } = resBounds(pane.subResLabel);
   const { phase, stream, stats, error, retry } = useWebRtcStream({
@@ -373,7 +401,7 @@ function SubCameraTile({
         {connected && (
           <StatsBadge
             stats={stats}
-            topicSilent={topicSilent}
+            sourceLiveness={sourceLiveness}
             className="px-1.5 py-0.5 text-[10px]"
           />
         )}
@@ -502,16 +530,16 @@ export function Cameras({
   // left the sub tiles advertising a live rate beside a main tile that had
   // already owned up — one screen giving two answers about the same dead graph.
   const { rows: monitorRows } = useMonitorRows();
-  const silentTopics = useMemo(() => {
-    const silent = new Set<string>();
+  const paneLiveness = useMemo(() => {
+    const byTopic = new Map<string, TopicLiveness>();
     for (const pane of panes) {
-      if (pane.topic && topicLiveness(monitorRows, pane.topic) === 'silent') {
-        silent.add(pane.topic);
-      }
+      if (pane.topic) byTopic.set(pane.topic, topicLiveness(monitorRows, pane.topic));
     }
-    return silent;
+    return byTopic;
   }, [panes, monitorRows]);
-  const mainTopicSilent = !!mainTopic && silentTopics.has(mainTopic);
+  const livenessOf = (topic: string | undefined): TopicLiveness =>
+    (topic && paneLiveness.get(topic)) || 'unknown';
+  const mainLiveness = livenessOf(mainTopic);
 
   // A connected stream with frames standing still is NOT ok, and neither is one
   // whose source topic has gone quiet. The connection being up says nothing
@@ -524,14 +552,25 @@ export function Cameras({
   // Built from PRIMITIVES in a memo, deliberately. `stats` is a fresh object on
   // every poll, so an effect depending on it produced a new health object every
   // render — and the parent's setState, seeing a new reference each time, never
-  // settled. The values here change only when one of the four facts does.
+  // settled. The values here change only when one of the facts does.
   const framesStale = isFramesStale(stats);
-  const silentCount = silentTopics.size;
+  const silentCount = [...paneLiveness.values()].filter((l) => l === 'silent').length;
+  // Counted, not folded into the OK total: a camera nobody measures is not a
+  // camera known to be fine, and the row has to be able to say so.
+  const unmonitoredCount = [...paneLiveness.values()].filter(
+    (l) => l === 'unmonitored',
+  ).length;
   const cameraCount = panes.filter((p) => !!p.topic).length;
   const streamFailed = phase === 'failed';
   const health = useMemo<CameraHealth>(
-    () => ({ streamFailed, framesStale, silentTopics: silentCount, totalCameras: cameraCount }),
-    [streamFailed, framesStale, silentCount, cameraCount],
+    () => ({
+      streamFailed,
+      framesStale,
+      silentTopics: silentCount,
+      unmonitoredTopics: unmonitoredCount,
+      totalCameras: cameraCount,
+    }),
+    [streamFailed, framesStale, silentCount, unmonitoredCount, cameraCount],
   );
   useEffect(() => {
     onHealthChange?.(health);
@@ -631,7 +670,7 @@ export function Cameras({
             />
             {recording ? `REC ${elapsedText}` : 'STANDBY'}
           </span>
-          {connected && <StatsBadge stats={stats} topicSilent={mainTopicSilent} />}
+          {connected && <StatsBadge stats={stats} sourceLiveness={mainLiveness} />}
         </div>
         {/* Bottom row as ONE flex strip (topic left, RES right) so the two
             chips share the width and can never overlap, whatever the topic
@@ -672,7 +711,7 @@ export function Cameras({
           onSelect={() => setMainCameraPane(pane.id)}
           onRemove={pane.source === 'operator' ? () => removeCameraPane(pane.id) : undefined}
           style={{ gridColumn: 2, gridRow: i + 1 }}
-          topicSilent={!!pane.topic && silentTopics.has(pane.topic)}
+          sourceLiveness={livenessOf(pane.topic)}
         />
       ))}
       {addVisible && (
