@@ -46,10 +46,6 @@ class Settings(BaseSettings):
     # ---- Data / config paths ----------------------------------------------
     data_dir: str = "./data"
     recording_config: str = "config/airoa_hsr/recording/default.yaml"
-    # Recording output root (where the recorder writes <run_id>/...). The
-    # orchestrator uses it to delete a run's directory; the recorder relaxes its
-    # mode to 0o777 so the orchestrator (uid 1000) can remove it.
-    recorded_dir: str = "/data/recorded"
     # Stream tab layout config (initial preview panes); surfaced UI-side via
     # GET /api/v1/config. Optional — missing file just means a single empty pane.
     stream_config: str = "config/airoa_hsr/stream/default.yaml"

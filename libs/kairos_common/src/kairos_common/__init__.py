@@ -21,7 +21,6 @@ from kairos_common import (
     ids,
     instance,
     ledger_v2,
-    lifecycle_ledger,
     rebuild,
 )
 from kairos_common.app import REQUEST_ID_HEADER, create_app, error_response
@@ -128,6 +127,5 @@ __all__ = [
     "set_request_id",
     "signature_from_metadata",
     "topic_signature",
-    "lifecycle_ledger",
     "utc_now_iso8601",
 ]

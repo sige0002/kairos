@@ -388,7 +388,7 @@ backup: ## consistent snapshot -> backups/<ts>.tar.gz: DB (.backup) + recordings
 			cp data/kairos.db "$$tmp/kairos.db"; \
 		fi; \
 	fi; \
-	excl="--exclude=data/kairos.db --exclude=data/kairos.db-wal --exclude=data/kairos.db-shm --exclude=data/report/video_check"; \
+	excl="--exclude=data/kairos.db --exclude=data/kairos.db-wal --exclude=data/kairos.db-shm --exclude=data/report/video_check --exclude=data/.trash --exclude=data/.incoming"; \
 	for d in $(BACKUP_SAMPLE_DIRS); do excl="$$excl --exclude=data/$$d"; done; \
 	tar czf "$$out" $$excl -C "$$tmp" . -C "$(CURDIR)" config $$( [ -d data ] && echo data ); \
 	rm -rf "$$tmp"; \
@@ -426,6 +426,8 @@ test-py: ## run the Python unit-test loop (all services + libs)
 		printf '### %-32s -> ' "$$d"; \
 		(cd "$$d" && uv run --extra test pytest -q 2>&1 | tail -1); \
 	done
+	@printf '### %-32s -> ' "deploy/sync"; \
+	(cd services/api_orchestrator && uv run --extra test pytest -q ../../deploy/sync/tests 2>&1 | tail -1)
 
 test-fe: ## frontend build + test + lint
 	cd services/frontend && npm run build && npm test && npm run lint

@@ -273,7 +273,12 @@ class TestOtherPinnedShapes:
         client.post("/api/v1/record/start", json={"topics": ["/joint_states"]})
         # §10: the recorder stamps this into the manifest, which is what makes
         # the manifest rather than our row authoritative about the robot.
-        assert fake_recorder.last_start_payload["robot"] == "airoa_hsr"
+        # Asserted against the app's OWN active robot, not a literal name:
+        # under `make` the developer's .env exports ROBOT and the catalog
+        # resolves their local robot — the pinned property is "start forwards
+        # whatever is active", which must hold in every environment.
+        expected = client.app.state.config_catalog.active_robot()
+        assert fake_recorder.last_start_payload["robot"] == expected
 
     def test_the_manifests_robot_wins_over_what_we_asked_for(
         self, client: TestClient, fake_recorder: FakeRecorder
