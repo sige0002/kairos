@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 
 __all__ = [
     "TERMINAL_STATES",
+    "ArchivedFile",
     "UNFINALIZED_STATES",
     "Batch",
     "BatchCreateRequest",
@@ -310,12 +311,17 @@ class CaptureDetail(Capture):
     The database row stays the queryable cache; these are read best-effort from
     disk and are ``null`` when absent, so a capture whose files were deleted
     still returns cleanly.
+
+    There is deliberately no ``dataset_stats``: it pointed at the
+    ``dataset_export`` pipeline, which §6 retired along with the physical
+    dataset tree, so the field could only ever be ``null``. A field that is
+    structurally incapable of holding a value is worse than a missing one — it
+    invites a client to keep checking it.
     """
 
     manifest: dict[str, Any] | None = None
     record: dict[str, Any] | None = None
     validation: dict[str, Any] | None = None
-    dataset_stats: dict[str, Any] | None = None
     loss: dict[str, Any] | None = None
 
 
@@ -375,13 +381,33 @@ class CaptureArchiveRequest(BaseModel):
     reason: str | None = Field(default=None, max_length=500)
 
 
+class ArchivedFile(BaseModel):
+    """One file as written to the archive destination.
+
+    Same ``{path, size, sha256}`` shape as ``object_manifest.json``'s file list
+    (§3.2), so an archived capture and a local one describe their bytes in one
+    vocabulary.
+    """
+
+    path: str
+    size: int
+    sha256: str
+
+
 class CaptureArchiveResponse(BaseModel):
-    """Result of a completed capture archive."""
+    """Result of a completed capture archive.
+
+    ``files`` carries the per-file hashes rather than a count because the
+    source is deleted moments after this is computed: these digests and the
+    matching ``capture_archived`` ledger event are the only things left that
+    can answer "is the archived copy still intact?".
+    """
 
     capture_id: str
     destination: str
     bytes: int
-    files: int
+    file_count: int
+    files: list[ArchivedFile] = Field(default_factory=list)
     verified: bool = True
 
 

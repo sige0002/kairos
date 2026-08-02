@@ -2,8 +2,8 @@
 #
 # Run it under the dora daemon (when the `dora` CLI is installed):
 #     dora up                       # start coordinator + daemon (once)
-#     KAIROS_RUN_ID=<run> KAIROS_DATA_DIR=/data \
-#     KAIROS_REPORT_DIR=/data/report/hello_dora/<run> \
+#     KAIROS_CAPTURE_ID=<capture_id> KAIROS_DATA_DIR=/data \
+#     KAIROS_REPORT_DIR=/data/report/hello_dora/<capture_id> \
 #     dora start dataflow.yml
 #
 # kairos runs this same graph in-process when the dora CLI is absent (a tiny

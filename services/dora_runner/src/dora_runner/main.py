@@ -13,6 +13,7 @@ from pathlib import Path
 from fastapi import FastAPI, Query, status
 from fastapi.routing import APIRoute
 from kairos_common import ApiError, JobState, Settings, create_app, get_settings
+from kairos_common.ids import is_uuid7
 
 from dora_runner.bagflow_runtime import DoraEndpoint, DoraStack, bagflow_available
 from dora_runner.models import (
@@ -172,9 +173,19 @@ def create_dora_app(
                 code="pipeline_unavailable",
                 message=f"Pipeline is not implemented: {body.pipeline}",
             )
+        # Refused HERE rather than at the first path join (§10.5): a capture_id
+        # is the job's only input, so a value that can never name a capture is a
+        # bad request — not a job that is accepted, queued, and then fails.
+        if not is_uuid7(body.capture_id):
+            raise ApiError(
+                status_code=400,
+                code="invalid_capture_id",
+                message=f"capture_id must be a UUIDv7: {body.capture_id}",
+                details={"capture_id": body.capture_id},
+            )
         job = JobRecord(
             job_id=f"job_{uuid.uuid4().hex}",
-            run_id=body.run_id,
+            capture_id=body.capture_id,
             pipeline=body.pipeline,
             params=body.params,
         )
@@ -276,20 +287,20 @@ def create_dora_app(
     @app.post("/validation/templates/generate", response_model=ValidationTemplate)
     async def generate(body: TemplateGenerateRequest) -> ValidationTemplate:
         try:
-            return generate_template(body.run_id, data_dir)
+            return generate_template(body.capture_id, data_dir)
         except ValueError as exc:
             raise ApiError(
                 status_code=400,
-                code="invalid_run_id",
+                code="invalid_capture_id",
                 message=str(exc),
-                details={"run_id": body.run_id},
+                details={"capture_id": body.capture_id},
             ) from exc
         except FileNotFoundError as exc:
             raise ApiError(
                 status_code=404,
-                code="run_mcap_not_found",
+                code="capture_mcap_not_found",
                 message=str(exc),
-                details={"run_id": body.run_id},
+                details={"capture_id": body.capture_id},
             ) from exc
 
     return app

@@ -23,36 +23,34 @@ from dora_runner.bagflow_summary import PIPELINE_ID, summarize
 
 async def run_full_validation(
     *,
-    run_id: str,
+    capture_id: str,
     data_dir: Path,
     flow: str,
     endpoint: DoraEndpoint,
     job_name: str,
     template: ValidationTemplate | None = None,
     min_coverage: float = 0.0,
-    dataset_dir: str | None = None,
     timeout_s: float | None = None,
 ) -> dict[str, Any]:
-    """Run *flow* over a recorded run and return the job result dict."""
+    """Run *flow* over one capture's bag and return the job result dict."""
 
     def _summarize(outcome: FlowOutcome) -> dict[str, Any]:
         return summarize(
             outcome.report,
             flow=outcome.flow,
-            run_id=outcome.run_id,
+            capture_id=outcome.capture_id,
             min_coverage=min_coverage,
             wall_s=outcome.wall_s,
         )
 
     return await run_bagflow_pipeline(
         pipeline_id=PIPELINE_ID,
-        run_id=run_id,
+        capture_id=capture_id,
         data_dir=data_dir,
         flow=flow,
         endpoint=endpoint,
         job_name=job_name,
         summarize=_summarize,
         template=template,
-        dataset_dir=dataset_dir,
         timeout_s=timeout_s,
     )

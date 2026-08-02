@@ -55,7 +55,7 @@ def main():  # dora event loop — `dora start`
     ...
 ```
 
-`ctx` is a `NodeContext(plugin_id, run_id, data_dir, params, report_dir)`. The
+`ctx` is a `NodeContext(plugin_id, capture_id, data_dir, params, report_dir)`. The
 terminal node must write `report_dir/summary.json`; the runner reads it back and
 collects every file under `report_dir` as the job's `artifacts`.
 

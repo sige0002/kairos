@@ -391,3 +391,97 @@ def test_a_non_enospc_failure_is_not_retried(tmp_path: Path, monkeypatch) -> Non
     assert len(calls) == 1
     # The reservation is untouched: it is only spent on the failure it can fix.
     assert ledger.slack_path(tmp_path).exists()
+
+
+# ---- capture_archived: the per-file audit record --------------------------
+
+
+def _file(path: str = "bag_0.mcap", **overrides: object) -> dict[str, object]:
+    record: dict[str, object] = {"path": path, "size": 1024, "sha256": "a" * 64}
+    record.update(overrides)
+    return record
+
+
+def test_an_archive_can_carry_per_file_hashes(tmp_path: Path) -> None:
+    """The ledger ALONE has to be able to audit an archive.
+
+    Once the source is deleted the manifest goes with it, so without these an
+    archive event can say "N bytes went to /mnt/nas" and nothing that would let
+    anyone check the copy years later.
+    """
+    capture_id = new_capture_id()
+    files = [_file("bag_0.mcap"), _file("metadata.yaml", size=64, sha256="b" * 64)]
+
+    _append(
+        tmp_path,
+        "capture_archived",
+        capture_id=capture_id,
+        payload={"destination": "/mnt/nas/2026-08", "files": files},
+    )
+
+    stored = ledger.archive_events(tmp_path)[capture_id]
+    assert stored["files"] == files
+
+
+def test_the_file_list_is_optional(tmp_path: Path) -> None:
+    # §9-1 puts the append before the archive proceeds, so an archive must stay
+    # possible even where hashing did not happen.
+    event = _append(
+        tmp_path,
+        "capture_archived",
+        capture_id=new_capture_id(),
+        payload={"destination": "/mnt/nas"},
+    )
+    assert "files" not in event
+
+
+@pytest.mark.parametrize(
+    ("files", "match"),
+    [
+        ("not-a-list", "must be a list"),
+        ([["path", "size"]], "must be objects"),
+        ([_file(size="1024")], r"files\[\]\.size"),
+        ([_file(path=None)], r"files\[\]\.path"),
+        ([_file(size=-1)], "must be >= 0"),
+        ([_file(sha256="A" * 64)], "lowercase hex"),
+        ([_file(sha256="abc")], "lowercase hex"),
+        ([{"path": "x", "size": 1}], r"files\[\]\.sha256"),
+        ([_file(size=True)], r"files\[\]\.size"),
+    ],
+)
+def test_a_malformed_file_record_is_refused(
+    tmp_path: Path, files: object, match: str
+) -> None:
+    """Validated field by field, not waved through as "a list".
+
+    This list is an audit record that outlives everything else about the
+    capture. A malformed entry is discovered when someone is trying to prove an
+    archived recording is intact — the worst possible moment to learn the
+    hashes were never usable.
+    """
+    with pytest.raises(ValueError, match=match):
+        _append(
+            tmp_path,
+            "capture_archived",
+            capture_id=new_capture_id(),
+            payload={"destination": "/mnt/nas", "files": files},
+        )
+
+
+def test_the_file_record_shape_matches_the_manifest(tmp_path: Path) -> None:
+    """Same ``{path, size, sha256}`` vocabulary as object_manifest.json (§3.2).
+
+    One shape across both means an archived capture and a local one describe
+    their bytes identically, and a caller can hand a manifest's file list
+    straight to the ledger without re-keying it.
+    """
+    from kairos_common.capture_sidecars import ManifestFile
+
+    entry = ManifestFile(path="bag_0.mcap", size=1024, sha256="a" * 64).to_json()
+    event = _append(
+        tmp_path,
+        "capture_archived",
+        capture_id=new_capture_id(),
+        payload={"destination": "/mnt/nas", "files": [entry]},
+    )
+    assert event["files"] == [entry]

@@ -3,10 +3,39 @@
 Keyed by ``capture_id`` (§10.5): a job resolves its source as
 ``objects/<capture_id>`` — there is no ``dataset_dir`` parameter any more — and
 writes to ``report/<pipeline>/<capture_id>/``.
+
+**The capture lease lives here** (§7.1). dora_runner is deliberately
+lease-ignorant: it reads a capture and writes a report, and knows nothing about
+deletion. So the orchestrator — which owns both the catalog and the deletion
+path — takes the lease on the job's behalf at submission, extends it whenever it
+sees the job still running, and drops it as soon as it sees the job finish.
+While the lease is live, discard and delete answer 409 ``capture_busy`` rather
+than renaming ``objects/<id>`` out from under a running job.
+
+**What the TTL actually guarantees** (rev.2.6). The lease is renewed on
+observation, not on a timer, so the promise is bounded by when someone last
+looked:
+
+* from the last observation of a live job, the lease covers a full per-job
+  budget plus a margin — so a job that is *executing* is protected, because the
+  UI polls its status while it runs and each poll pushes the expiry out;
+* it does **not** cover an unbounded queue wait. dora_runner bounds concurrency,
+  so a submitted job can sit behind others; if nobody polls it during that wait,
+  its lease expires and a delete may then win. The job later fails cleanly on a
+  directory that moved to ``.trash`` — a late clean failure, not corruption,
+  which is why this is accepted rather than papered over with a renewal loop the
+  orchestrator would have to run for jobs it is not watching.
+
+An expired lease is already not-a-lease (``store.acquire_lease`` compares
+against *now*), so a job whose process died never locks its capture out of
+deletion forever. That is the property the whole design leans on: every failure
+here resolves toward "deletable again", never toward "permanently stuck".
 """
 
 from __future__ import annotations
 
+import logging
+import os
 from pathlib import PurePosixPath
 
 from fastapi import APIRouter, Request, status
@@ -15,17 +44,92 @@ from kairos_common import ApiError, JobState
 from api_orchestrator.events import EVENT_JOB
 from api_orchestrator.models import (
     UNFINALIZED_STATES,
+    Capture,
+    CaptureState,
     JobCreateRequest,
     JobCreateResponse,
     JobResult,
     JobStatus,
 )
+from api_orchestrator.store import CaptureStore
+
+logger = logging.getLogger("kairos")
 
 router = APIRouter(prefix="/api/v1/jobs", tags=["jobs"])
 
 # Capture states for which an export must be refused: the bag is still being
 # written, so exporting it would read a recording mid-flight.
 _UNFINISHED_STATES = UNFINALIZED_STATES
+
+# The same knob dora_runner reads for its own per-job wall-clock budget. Both
+# services load the root .env (compose `env_file`), so tuning it there moves the
+# timeout and this lease TTL together — which is the point: a TTL derived from a
+# different number than the timeout it is supposed to cover would drift silently.
+_JOB_TIMEOUT_ENV = "KAIROS_DORA_JOB_TIMEOUT_S"
+_DEFAULT_JOB_TIMEOUT_S = 900.0
+
+# Added on top of the per-job timeout, and re-applied in full on every
+# observation of a live job. It buys slack for the gap between two polls (a UI
+# that is closed and reopened, a slow client) on top of the job's own budget.
+#
+# The margin errs long on purpose. Too short and a delete could rename
+# ``objects/<id>`` out from under a job that is still reading it; too long and a
+# capture stays undeletable for a while after a job died, with the UI naming the
+# owner and the expiry. The second is the recoverable failure, and the one an
+# operator can understand from the 409 alone.
+_LEASE_MARGIN_S = 300.0
+
+# States after which the job will not touch ``objects/<capture_id>`` again.
+_TERMINAL_STATES = frozenset({JobState.succeeded, JobState.failed, JobState.canceled})
+
+
+def _job_timeout_s() -> float:
+    """dora_runner's per-job wall-clock budget (default 900s)."""
+    try:
+        return max(1.0, float(os.environ.get(_JOB_TIMEOUT_ENV, "")))
+    except ValueError:
+        return _DEFAULT_JOB_TIMEOUT_S
+
+
+def _lease_ttl_s() -> float:
+    return _job_timeout_s() + _LEASE_MARGIN_S
+
+
+def _lease_owner(job_id: str) -> str:
+    """The lease owner string for a job. Also what the 409 shows an operator."""
+    return f"job:{job_id}"
+
+
+def _sync_lease(request: Request, job: JobStatus) -> None:
+    """Extend the job's lease while it runs; drop it once it cannot run again.
+
+    Every endpoint that observes a job's state — status, result, cancel — calls
+    this, because an observation is the only moment the orchestrator learns
+    anything about a job: dora_runner does not call back. So the lease follows
+    what was just seen.
+
+    * **Terminal** — release. The job will not touch ``objects/<capture_id>``
+      again, and holding the lease for the rest of the TTL would refuse deletes
+      for no reason.
+    * **Still running** — re-acquire with a full TTL. This is the renewal, and
+      it is driven by polling rather than a background timer: the Validation UI
+      polls a running job's status, so an executing job's lease keeps moving
+      ahead of it without the orchestrator having to track jobs nobody is
+      watching. A job that is queued and unobserved can therefore still lose its
+      lease (see the module docstring) — an accepted, clean-failure case.
+
+    Both operations are owner-scoped: ``release_lease`` only clears a lease this
+    job still owns, and ``acquire_lease`` refuses to take one held by a
+    different live owner. A stale poll for a finished job can neither drop nor
+    steal the lease of whichever job holds the capture now.
+    """
+    store = request.app.state.capture_store
+    owner = _lease_owner(job.job_id)
+    if job.state in _TERMINAL_STATES:
+        store.release_lease(job.capture_id, owner)
+        return
+    store.acquire_lease(job.capture_id, owner, ttl_s=_lease_ttl_s())
+
 
 # Pipelines whose `template` param is a Config-catalog template id: the id is
 # resolved to the full object before forwarding (dora_runner's template store is
@@ -93,6 +197,13 @@ async def create_job(request: Request, body: JobCreateRequest) -> JobCreateRespo
             message="Cannot run a job on a capture that is still recording.",
             details={"capture_id": body.capture_id, "state": str(capture.state)},
         )
+    _reject_tombstoned(capture)
+    # Checked before anything is created: another job already working on this
+    # capture is the common case, and refusing here means no doomed job row is
+    # ever written. The authoritative check is the acquire below — this one only
+    # keeps the compensating cancel rare.
+    if store.has_live_lease(body.capture_id):
+        raise _capture_busy(store, body.capture_id)
     if body.pipeline in _TEMPLATE_PIPELINES:
         raw = body.params.get("template")
         if not isinstance(raw, dict):
@@ -105,11 +216,123 @@ async def create_job(request: Request, body: JobCreateRequest) -> JobCreateRespo
             if template is not None:
                 payload["params"] = {**body.params, "template": template.model_dump()}
     created = await client.create_job(payload)
-    status_body = await client.job_status(str(created["job_id"]))
-    job = JobCreateResponse.model_validate(status_body)
-    store.upsert_job(job)
+    job_id = str(created["job_id"])
+    # The lease can only be taken once the job has an id, because the id is what
+    # ties the lease to the work: the owner string is what a 409 shows an
+    # operator, and what the release below matches on. dora_runner mints it, so
+    # the acquire necessarily follows the create — and if the capture turns out
+    # to be busy after all, the job we just created is cancelled rather than
+    # left running against a capture someone else holds.
+    if not store.acquire_lease(
+        body.capture_id, _lease_owner(job_id), ttl_s=_lease_ttl_s()
+    ):
+        await _abandon_job(client, job_id, body.capture_id)
+        raise _capture_busy(store, body.capture_id)
+    try:
+        status_body = await client.job_status(job_id)
+        job = JobCreateResponse.model_validate(status_body)
+        store.upsert_job(job)
+    except Exception:
+        # We hold the lease but have no row for the job and no id to hand back,
+        # so nothing downstream will ever observe this job and nothing would
+        # ever release the lease — it would sit there refusing deletes until the
+        # TTL ran out. Undo both halves: drop the lease and call the job off.
+        store.release_lease(body.capture_id, _lease_owner(job_id))
+        await _abandon_job(client, job_id, body.capture_id)
+        raise
+    # A job that already finished (a fast failure) must not keep the lease it
+    # was just handed — nothing else observes this one.
+    _sync_lease(request, JobStatus.model_validate(status_body))
     await _emit_job(request, job)
     return job
+
+
+async def _abandon_job(client, job_id: str, capture_id: str) -> None:
+    """Call off a job the orchestrator has decided not to own.
+
+    Best-effort by design: this runs while another error is already on its way
+    to the caller, and a failed cancel must not replace it with a less useful
+    one. The job it leaves behind is read-only — it produces a report nobody
+    asked for — so the honest thing is to log it and let the original error
+    stand.
+    """
+    try:
+        await client.cancel_job(job_id)
+    except Exception:  # noqa: BLE001 - the original error is the answer
+        logger.warning(
+            "could not cancel an abandoned job; it will run read-only and its "
+            "report is harmless",
+            extra={"job_id": job_id, "capture_id": capture_id},
+        )
+
+
+def _reject_tombstoned(capture: Capture) -> None:
+    """Refuse a job on a capture that is being, or has been, deleted (§7).
+
+    ``delete_pending`` is included for the same reason review saves include it
+    (``captures._reject_review_on_delete``): it is the window between the ledger
+    append and the rename, and a job admitted inside it would read a capture
+    whose bytes are already on their way to ``.trash`` — and write a report for
+    it, leaving ``report/<pipeline>/<capture_id>/`` behind for a recording that
+    no longer exists. The operator's delete already won.
+
+    A capture whose bytes were removed *outside* kairos (``rm -rf``) is
+    deliberately NOT covered here: its row still says ``completed``, which is an
+    honest claim that the bytes should be there, and the job fails late with a
+    clear "No capture found". Guessing at the filesystem on every submission
+    would trade that clarity for a check that races anyway.
+    """
+    if capture.state not in (
+        CaptureState.delete_pending,
+        CaptureState.discarded,
+        CaptureState.deleted,
+    ):
+        return
+    pending = capture.state == CaptureState.delete_pending
+    kind = capture.delete_kind or ("delete" if pending else "deleted")
+    raise ApiError(
+        status_code=409,
+        code="capture_deleting" if pending else "capture_deleted",
+        message=(
+            f"{capture.capture_id} is being {kind}d; no new job can be run against it."
+            if pending
+            else (
+                f"{capture.capture_id} was {kind}"
+                f"{f' on {capture.deleted_at}' if capture.deleted_at else ''}; "
+                "no job can be run against it."
+            )
+        ),
+        details={"capture_id": capture.capture_id, "state": str(capture.state)},
+    )
+
+
+def _capture_busy(store: CaptureStore, capture_id: str) -> ApiError:
+    """The 409 §7.1 requires, naming who holds the capture and until when.
+
+    Worded like the delete path's ``capture_busy`` so an operator meets the same
+    sentence whichever action they were refused.
+    """
+    capture = store.get_capture(capture_id)
+    owner = capture.lease_owner if capture else None
+    expires = capture.lease_expires_at if capture else None
+    # The lease can be gone by the time this message is built (it expired, or
+    # its job finished between the refusal and this read), so the deadline is
+    # only promised when there is one to promise — "until None" is worse than
+    # saying nothing.
+    until = f" until {expires}" if expires else ""
+    return ApiError(
+        status_code=409,
+        code="capture_busy",
+        message=(
+            f"{owner or 'Another job'} is working on {capture_id}"
+            f"{until}; try again in a moment."
+        ),
+        details={
+            "capture_id": capture_id,
+            "lease_owner": owner,
+            "lease_expires_at": expires,
+        },
+    )
 
 
 @router.get("/{job_id}/status", response_model=JobStatus)
@@ -125,6 +348,7 @@ async def job_status(request: Request, job_id: str) -> JobStatus:
     store = request.app.state.capture_store
     previous = store.get_job(job_id)
     store.upsert_job(job)
+    _sync_lease(request, job)
     if _job_event_changed(previous, job):
         await _emit_job(request, job)
     return job
@@ -179,7 +403,10 @@ async def job_result(request: Request, job_id: str) -> JobResult:
     )
     status_body = await request.app.state.dora_runner_client.job_status(job_id)
     job = JobStatus.model_validate(status_body)
-    if job.state not in {JobState.succeeded, JobState.failed, JobState.canceled}:
+    # Before the 409 below, so that reading the result of a job that turns out
+    # to still be running counts as an observation and extends its lease.
+    _sync_lease(request, job)
+    if job.state not in _TERMINAL_STATES:
         raise ApiError(
             status_code=409,
             code="job_not_terminal",
@@ -197,5 +424,6 @@ async def cancel_job(request: Request, job_id: str) -> JobStatus:
     body = await request.app.state.dora_runner_client.cancel_job(job_id)
     job = JobStatus.model_validate(body)
     request.app.state.capture_store.upsert_job(job)
+    _sync_lease(request, job)
     await _emit_job(request, job)
     return job

@@ -16,6 +16,7 @@ import shutil
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 # 4 MiB: large enough that the syscall overhead disappears against a multi-GB
 # bag, small enough to stay off the large-object heap and out of the way of a
@@ -27,14 +28,35 @@ class VerificationError(RuntimeError):
     """A copied file did not match its source. The source is untouched."""
 
 
+class DestinationNotEmptyError(RuntimeError):
+    """The copy target already holds something, so it is not a clean landing.
+
+    Refusing beats merging. The caller deletes the source once the copy
+    verifies, and verification only ever inspects the files this copy wrote —
+    so debris from an earlier failed attempt would sit alongside them,
+    unexamined, and be counted as part of a successful archive. Worse, a
+    same-named leftover would be overwritten, which is a silent data loss on a
+    path the operator believes is an archive.
+    """
+
+
 @dataclass
 class CopyResult:
-    """What one verified tree copy produced."""
+    """What one verified tree copy produced.
+
+    ``entries`` uses the same ``{path, size, sha256}`` shape as
+    ``object_manifest.json``'s file list (§3.2) so a caller can hand it
+    straight to the ledger or a manifest without re-keying it — an archived
+    capture and a local one then describe their bytes identically.
+    """
 
     bytes: int = 0
-    files: int = 0
-    # relative path -> sha256 hex, so the caller can record what it moved.
-    digests: dict[str, str] = field(default_factory=dict)
+    entries: list[dict[str, Any]] = field(default_factory=list)
+
+    @property
+    def files(self) -> int:
+        """How many files were copied."""
+        return len(self.entries)
 
 
 def sha256_file(path: Path, *, chunk: int = COPY_CHUNK) -> tuple[str, int]:
@@ -81,6 +103,7 @@ def copy_tree_verified(
     source: Path,
     target: Path,
     *,
+    require_empty: bool = True,
     progress: Callable[[int], None] | None = None,
 ) -> CopyResult:
     """Copy every file under *source* into *target*, verifying each one.
@@ -88,7 +111,18 @@ def copy_tree_verified(
     Symlinks are skipped rather than followed: a link inside a capture would
     make the archive copy pull in bytes from outside the capture, and the
     delete that follows would then not be deleting what was archived.
+
+    *target* must not already exist as a non-empty directory (or as a file).
+    The guard lives here rather than only at the caller because every user of
+    this function is about to delete its source on the strength of the result —
+    see :class:`DestinationNotEmptyError`. Pass ``require_empty=False`` only for
+    a caller that genuinely means "merge into whatever is there".
     """
+    if require_empty and target.exists():
+        if not target.is_dir():
+            raise DestinationNotEmptyError(f"{target} exists and is not a directory")
+        if any(target.iterdir()):
+            raise DestinationNotEmptyError(f"{target} already contains files")
     result = CopyResult()
     target.mkdir(parents=True, exist_ok=True)
     for child in sorted(source.rglob("*")):
@@ -96,9 +130,9 @@ def copy_tree_verified(
             continue
         relative = child.relative_to(source)
         digest, size = copy_file_verified(child, target / relative)
-        result.digests[str(relative)] = digest
+        result.entries.append({"path": str(relative), "size": size, "sha256": digest})
         result.bytes += size
-        result.files += 1
         if progress is not None:
             progress(result.bytes)
+    result.entries.sort(key=lambda entry: entry["path"])
     return result

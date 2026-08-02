@@ -2,7 +2,7 @@
 
 The pure helpers (topic -> filename sanitization, fps estimate, frame cap) are
 fully unit-testable without the encode deps (``av`` / ``Pillow``); the missing
-run_id / missing topic / traversal guards are checked directly. The full encode
+capture_id / missing topic guards are checked directly. The full encode
 path is gated on a real local sample recording with a camera topic (skipped
 otherwise, like test_fast_validation), and additionally on ``av`` + ``Pillow``
 being importable.
@@ -18,6 +18,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -31,6 +32,7 @@ from dora_runner.video_check import (
 )
 from fastapi.testclient import TestClient
 from kairos_common import Settings
+from kairos_common.ids import new_capture_id
 
 _MS = 1_000_000  # nanoseconds per millisecond
 
@@ -82,36 +84,42 @@ def test_frame_cap_constant_is_bounded() -> None:
 # ---- Job-level guards (no encode deps needed) -----------------------------
 
 
-def test_video_check_rejects_traversal_run_id(tmp_path: Path) -> None:
+@pytest.mark.parametrize("bad", ["../../etc", "run_20260623_232808", "", "nope"])
+def test_video_check_rejects_non_uuid7_capture_id(tmp_path: Path, bad: str) -> None:
     data_dir = tmp_path / "data"
-    (data_dir / "recorded").mkdir(parents=True)
-    with pytest.raises(ValueError, match="invalid run_id"):
-        run_video_check(run_id="../../etc", data_dir=data_dir, topic="/cam")
+    (data_dir / "objects").mkdir(parents=True)
+    with pytest.raises(ValueError, match="capture_id must be a UUIDv7"):
+        run_video_check(capture_id=bad, data_dir=data_dir, topic="/cam")
 
 
 def test_video_check_rejects_empty_topic(tmp_path: Path) -> None:
     data_dir = tmp_path / "data"
-    (data_dir / "recorded").mkdir(parents=True)
+    (data_dir / "objects").mkdir(parents=True)
     with pytest.raises(ValueError, match="topic is required"):
-        run_video_check(run_id="run_ok", data_dir=data_dir, topic="")
+        run_video_check(capture_id=new_capture_id(), data_dir=data_dir, topic="")
 
 
-def test_video_check_missing_run_dir_raises(tmp_path: Path) -> None:
+def test_video_check_missing_capture_dir_raises(tmp_path: Path) -> None:
     data_dir = tmp_path / "data"
-    (data_dir / "recorded").mkdir(parents=True)
-    with pytest.raises(FileNotFoundError):
-        run_video_check(run_id="run_absent", data_dir=data_dir, topic="/cam")
+    (data_dir / "objects").mkdir(parents=True)
+    with pytest.raises(FileNotFoundError, match="No capture found"):
+        run_video_check(capture_id=new_capture_id(), data_dir=data_dir, topic="/cam")
 
 
 def test_create_job_rejects_missing_topic(tmp_path: Path) -> None:
     """A video_check job with no topic param fails fast with topic_required."""
-    # A writable data dir (the app now opens a SQLite store beneath it); the run
-    # dir stays absent, but the worker rejects on the missing topic before any read.
+    # A writable data dir (the app now opens a SQLite store beneath it); the
+    # capture dir stays absent, but the worker rejects on the missing topic
+    # before any read.
     app = create_dora_app(Settings(data_dir=str(tmp_path)))
     with TestClient(app) as client:
         created = client.post(
             "/jobs",
-            json={"run_id": "run_x", "pipeline": "video_check", "params": {}},
+            json={
+                "capture_id": new_capture_id(),
+                "pipeline": "video_check",
+                "params": {},
+            },
         )
         # The job is accepted (201) but the worker fails it on the missing topic.
         assert created.status_code == 201
@@ -129,52 +137,14 @@ def test_create_job_rejects_missing_topic(tmp_path: Path) -> None:
         assert body["summary"]["error"]["error"]["code"] == "topic_required"
 
 
-# ---- Post-export source (dataset_dir) --------------------------------------
-
-
-def test_video_check_rejects_unsafe_dataset_dir(tmp_path: Path) -> None:
-    """dataset_dir must be exactly <operator>/<task>/<index>, non-reserved."""
-    for bad in ("../x/y", "a/b", "a/b/c/d", "a//b", "recorded/a/b", "report/a/b"):
-        with pytest.raises(ValueError, match="invalid dataset_dir"):
-            run_video_check(
-                run_id="run_x", data_dir=tmp_path, topic="/cam", dataset_dir=bad
-            )
-
-
-def test_video_check_missing_dataset_dir_raises(tmp_path: Path) -> None:
-    with pytest.raises(FileNotFoundError, match="No dataset directory"):
-        run_video_check(
-            run_id="run_x", data_dir=tmp_path, topic="/cam", dataset_dir="a/b/001"
-        )
-
-
-def test_video_check_dataset_dir_serves_cache_without_recorded_run(
-    tmp_path: Path,
-) -> None:
-    """Post-export: recorded/<run_id> is gone (the export MOVED it into the
-    dataset tree), yet the pre-export (run_id, topic) cache is still served
-    when the job points at the dataset dir."""
-    topic = "/cam/image/compressed"
-    seeded = _seed_cached_result(tmp_path, "run_d", topic)
-    # Simulate the export MOVE: relocate the run dir into the dataset tree.
-    dataset = tmp_path / "yuki" / "pick" / "001"
-    dataset.parent.mkdir(parents=True)
-    (tmp_path / "recorded" / "run_d").rename(dataset)
-    result = run_video_check(
-        run_id="run_d", data_dir=tmp_path, topic=topic, dataset_dir="yuki/pick/001"
-    )
-    assert result["summary"]["cached"] is True
-    assert result["summary"]["file"] == seeded["file"]
-
-
-# ---- Cache: (run_id, topic) results are reused without re-encoding ---------
+# ---- Cache: (capture_id, topic) results are reused without re-encoding -----
 # A cache hit is decided before the lazy av/Pillow import, so these run without
 # the encode deps and without a real MCAP (the bag is never parsed on a hit).
 
 
 def _seed_cached_result(
     data_dir: Path,
-    run_id: str,
+    capture_id: str,
     topic: str,
     *,
     with_mp4: bool = True,
@@ -182,17 +152,17 @@ def _seed_cached_result(
     truncated: bool = False,
     max_frames: int = MAX_FRAMES,
 ) -> dict:
-    """Create recorded/<run_id>/x.mcap + a valid sidecar (and mp4) for *topic*."""
-    (data_dir / "recorded" / run_id).mkdir(parents=True)
-    (data_dir / "recorded" / run_id / "x.mcap").write_bytes(b"not-a-real-mcap")
-    out_dir = data_dir / "report" / "video_check" / run_id
+    """Create objects/<capture_id>/x.mcap + a valid sidecar (and mp4) for *topic*."""
+    (data_dir / "objects" / capture_id).mkdir(parents=True)
+    (data_dir / "objects" / capture_id / "x.mcap").write_bytes(b"not-a-real-mcap")
+    out_dir = data_dir / "report" / "video_check" / capture_id
     out_dir.mkdir(parents=True)
     slug = sanitize_topic(topic)
-    rel = f"report/video_check/{run_id}/{slug}.mp4"
+    rel = f"report/video_check/{capture_id}/{slug}.mp4"
     summary = {
         "pipeline": "video_check",
         "version": PIPELINE_VERSION,
-        "run_id": run_id,
+        "capture_id": capture_id,
         "topic": topic,
         "frames": frames,
         "total_messages": frames,
@@ -213,12 +183,13 @@ def _seed_cached_result(
 
 
 def test_video_check_reuses_cached_result(tmp_path: Path) -> None:
-    """A second job for the same (run_id, topic) returns the cached summary
+    """A second job for the same (capture_id, topic) returns the cached summary
     instantly — the fake MCAP would crash any real decode, proving the bag is
     never re-parsed on a hit."""
-    seeded = _seed_cached_result(tmp_path, "run_c", "/cam/image/compressed")
+    capture_id = new_capture_id()
+    seeded = _seed_cached_result(tmp_path, capture_id, "/cam/image/compressed")
     result = run_video_check(
-        run_id="run_c", data_dir=tmp_path, topic="/cam/image/compressed"
+        capture_id=capture_id, data_dir=tmp_path, topic="/cam/image/compressed"
     )
     assert result["summary"]["cached"] is True
     assert result["summary"]["frames"] == seeded["frames"]
@@ -236,30 +207,38 @@ def test_video_check_cache_invalidated_by_missing_mp4_or_version(
     """
     slug = sanitize_topic("/cam/image/compressed")
     # Deleted mp4.
-    _seed_cached_result(tmp_path, "run_m", "/cam/image/compressed", with_mp4=False)
+    missing_mp4 = new_capture_id()
+    _seed_cached_result(tmp_path, missing_mp4, "/cam/image/compressed", with_mp4=False)
     with pytest.raises(Exception):  # noqa: B017 - any decode-path error proves the miss
         run_video_check(
-            run_id="run_m", data_dir=tmp_path, topic="/cam/image/compressed"
+            capture_id=missing_mp4, data_dir=tmp_path, topic="/cam/image/compressed"
         )
     # Version mismatch.
-    _seed_cached_result(tmp_path, "run_v", "/cam/image/compressed")
-    sidecar = tmp_path / "report" / "video_check" / "run_v" / f"{slug}.summary.json"
+    stale_version = new_capture_id()
+    _seed_cached_result(tmp_path, stale_version, "/cam/image/compressed")
+    sidecar = (
+        tmp_path / "report" / "video_check" / stale_version / f"{slug}.summary.json"
+    )
     stale = json.loads(sidecar.read_text())
     stale["version"] = "0.0.1"
     sidecar.write_text(json.dumps(stale))
     with pytest.raises(Exception):  # noqa: B017
         run_video_check(
-            run_id="run_v", data_dir=tmp_path, topic="/cam/image/compressed"
+            capture_id=stale_version, data_dir=tmp_path, topic="/cam/image/compressed"
         )
 
 
 def test_video_check_force_bypasses_cache(tmp_path: Path) -> None:
     """``force=True`` must skip a perfectly valid cache and re-encode (which
     fails here on the fake MCAP — proving the cache was bypassed)."""
-    _seed_cached_result(tmp_path, "run_f", "/cam/image/compressed")
+    capture_id = new_capture_id()
+    _seed_cached_result(tmp_path, capture_id, "/cam/image/compressed")
     with pytest.raises(Exception):  # noqa: B017
         run_video_check(
-            run_id="run_f", data_dir=tmp_path, topic="/cam/image/compressed", force=True
+            capture_id=capture_id,
+            data_dir=tmp_path,
+            topic="/cam/image/compressed",
+            force=True,
         )
 
 
@@ -269,9 +248,10 @@ def test_video_check_truncated_cache_misses_on_a_different_cap(
     """A head-only (truncated) cache must NOT satisfy a full-episode request —
     that is the whole point of the "re-encode full" path. The miss proceeds to
     the decode path, which fails on the fake MCAP, proving the rejection."""
+    capture_id = new_capture_id()
     _seed_cached_result(
         tmp_path,
-        "run_h",
+        capture_id,
         "/cam/image/compressed",
         frames=MAX_FRAMES,
         truncated=True,
@@ -279,7 +259,7 @@ def test_video_check_truncated_cache_misses_on_a_different_cap(
     )
     with pytest.raises(Exception):  # noqa: B017
         run_video_check(
-            run_id="run_h",
+            capture_id=capture_id,
             data_dir=tmp_path,
             topic="/cam/image/compressed",
             max_frames=0,
@@ -290,11 +270,12 @@ def test_video_check_complete_cache_satisfies_a_larger_cap(tmp_path: Path) -> No
     """An UNTRUNCATED cache that fits the requested cap is byte-identical to a
     fresh capped encode, so it is served regardless of the cap it was made
     with (here: a full-episode encode answering the default capped request)."""
+    capture_id = new_capture_id()
     seeded = _seed_cached_result(
-        tmp_path, "run_full", "/cam/image/compressed", frames=42, max_frames=0
+        tmp_path, capture_id, "/cam/image/compressed", frames=42, max_frames=0
     )
     result = run_video_check(
-        run_id="run_full", data_dir=tmp_path, topic="/cam/image/compressed"
+        capture_id=capture_id, data_dir=tmp_path, topic="/cam/image/compressed"
     )
     assert result["summary"]["cached"] is True
     assert result["summary"]["file"] == seeded["file"]
@@ -303,22 +284,26 @@ def test_video_check_complete_cache_satisfies_a_larger_cap(tmp_path: Path) -> No
 def test_video_check_complete_cache_misses_when_over_the_cap(tmp_path: Path) -> None:
     """An untruncated cache LONGER than the requested cap is not the capped
     artifact — it must regenerate (decode fails on the fake MCAP = miss)."""
+    capture_id = new_capture_id()
     _seed_cached_result(
-        tmp_path, "run_big", "/cam/image/compressed", frames=42, max_frames=0
+        tmp_path, capture_id, "/cam/image/compressed", frames=42, max_frames=0
     )
     with pytest.raises(Exception):  # noqa: B017
         run_video_check(
-            run_id="run_big",
+            capture_id=capture_id,
             data_dir=tmp_path,
             topic="/cam/image/compressed",
             max_frames=10,
         )
 
 
-def test_video_check_rejects_negative_max_frames(tmp_path: Path) -> None:
+def test_video_check_rejects_negative_max_frames(
+    tmp_path: Path, make_capture: Callable[[Path], tuple[str, Path]]
+) -> None:
+    capture_id, _ = make_capture(tmp_path)
     with pytest.raises(ValueError):
         run_video_check(
-            run_id="run_x",
+            capture_id=capture_id,
             data_dir=tmp_path,
             topic="/cam/image/compressed",
             max_frames=-1,
@@ -328,7 +313,6 @@ def test_video_check_rejects_negative_max_frames(tmp_path: Path) -> None:
 # ---- Integration (real sample bag + encode deps, skipped when absent) ------
 
 DATA_DIR = Path(__file__).resolve().parents[3] / "data"
-RUN_ID = "run_20260623_232808"
 # A camera topic in the HSR sample bag (CompressedImage / JPEG).
 CAMERA_TOPIC = "/hsrb/head_rgbd_sensor/rgb/image_rect_color/compressed"
 
@@ -337,17 +321,16 @@ CAMERA_TOPIC = "/hsrb/head_rgbd_sensor/rgb/image_rect_color/compressed"
     not _HAS_ENCODE_DEPS,
     reason="needs the 'av' and 'Pillow' packages installed",
 )
-@pytest.mark.skipif(
-    not (DATA_DIR / "recorded" / RUN_ID).is_dir(),
-    reason=f"needs a local sample recording at data/recorded/{RUN_ID}",
-)
-def test_video_check_job_encodes_mp4() -> None:
+def test_video_check_job_encodes_mp4(sample_capture: tuple[str, Path] | None) -> None:
+    if sample_capture is None:
+        pytest.skip("needs a local sample recording under data/objects/")
+    capture_id, _ = sample_capture
     app = create_dora_app(Settings(data_dir=str(DATA_DIR)))
     with TestClient(app) as client:
         created = client.post(
             "/jobs",
             json={
-                "run_id": RUN_ID,
+                "capture_id": capture_id,
                 "pipeline": "video_check",
                 "params": {"topic": CAMERA_TOPIC},
             },
@@ -376,14 +359,15 @@ def test_video_check_job_encodes_mp4() -> None:
     not _HAS_ENCODE_DEPS,
     reason="needs the 'av' and 'Pillow' packages installed",
 )
-@pytest.mark.skipif(
-    not (DATA_DIR / "recorded" / RUN_ID).is_dir(),
-    reason=f"needs a local sample recording at data/recorded/{RUN_ID}",
-)
-def test_video_check_max_frames_caps_the_encode() -> None:
+def test_video_check_max_frames_caps_the_encode(
+    sample_capture: tuple[str, Path] | None,
+) -> None:
     """A tiny explicit cap stops the encode early and marks the truncation."""
+    if sample_capture is None:
+        pytest.skip("needs a local sample recording under data/objects/")
+    capture_id, _ = sample_capture
     result = run_video_check(
-        run_id=RUN_ID,
+        capture_id=capture_id,
         data_dir=DATA_DIR,
         topic=CAMERA_TOPIC,
         force=True,
@@ -442,7 +426,9 @@ def _write_compressed_image_mcap(path: Path, count: int) -> None:
     not _HAS_ENCODE_DEPS,
     reason="needs the 'av' and 'Pillow' packages installed",
 )
-def test_video_check_max_frames_zero_streams_beyond_default(tmp_path: Path) -> None:
+def test_video_check_max_frames_zero_streams_beyond_default(
+    tmp_path: Path, make_capture: Callable[[Path], tuple[str, Path]]
+) -> None:
     """max_frames=0 must NOT stop at the 900 default — it encodes the full bag.
 
     Regression guard for the "Re-encode full episode" path (params
@@ -450,19 +436,18 @@ def test_video_check_max_frames_zero_streams_beyond_default(tmp_path: Path) -> N
     while the default cap still stops there and marks ``truncated``.
     """
     topic = "/cam/image/compressed"
-    run_dir = tmp_path / "recorded" / "run_full"
-    run_dir.mkdir(parents=True)
-    _write_compressed_image_mcap(run_dir / "run_full_0.mcap", MAX_FRAMES + 1)
+    capture_id, capture_dir = make_capture(tmp_path)
+    _write_compressed_image_mcap(capture_dir / "run_full_0.mcap", MAX_FRAMES + 1)
 
     full = run_video_check(
-        run_id="run_full", data_dir=tmp_path, topic=topic, max_frames=0
+        capture_id=capture_id, data_dir=tmp_path, topic=topic, max_frames=0
     )
     assert full["summary"]["frames"] == MAX_FRAMES + 1
     assert full["summary"]["truncated"] is False
     assert full["summary"]["max_frames"] == 0
 
     capped = run_video_check(
-        run_id="run_full", data_dir=tmp_path, topic=topic, force=True
+        capture_id=capture_id, data_dir=tmp_path, topic=topic, force=True
     )
     assert capped["summary"]["frames"] == MAX_FRAMES
     assert capped["summary"]["truncated"] is True

@@ -124,7 +124,7 @@ def summarize(
     report: dict[str, Any],
     *,
     flow: str,
-    run_id: str,
+    capture_id: str,
     min_coverage: float = 0.0,
     wall_s: float | None = None,
 ) -> dict[str, Any]:
@@ -165,7 +165,7 @@ def summarize(
         ),
         "checked_at": utc_now_iso8601(),
         "flow": flow,
-        "run_id": run_id,
+        "capture_id": capture_id,
         "metrics": {
             "checks_total": len(checks),
             "checks_failed": len(failed),

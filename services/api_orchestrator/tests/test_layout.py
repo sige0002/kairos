@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from api_orchestrator import fileops
 from api_orchestrator import layout as layout_mod
 from api_orchestrator.layout import (
     VOLUME_MARKER_NAME,
@@ -26,7 +27,9 @@ from api_orchestrator.layout import (
     is_reserved_name,
     move_to_trash,
     purge_from_trash,
+    purge_reports,
     read_volume_marker,
+    report_remnants,
     trash_remnants,
 )
 from kairos_common.ids import new_capture_id
@@ -268,3 +271,126 @@ class TestDuplicateParkings:
         self, layout: DataLayout
     ) -> None:
         assert trash_remnants(layout, new_capture_id()) == []
+
+
+class TestVerifiedCopy:
+    """``copy_tree_verified`` refuses a dirty landing zone (B)."""
+
+    def _tree(self, root: Path) -> Path:
+        source = root / "source"
+        (source / "nested").mkdir(parents=True)
+        (source / "a.mcap").write_bytes(b"a" * 100)
+        (source / "nested" / "b.mcap").write_bytes(b"b" * 50)
+        return source
+
+    def test_a_copy_records_every_file_with_its_hash(self, tmp_path: Path) -> None:
+        source = self._tree(tmp_path)
+        result = fileops.copy_tree_verified(source, tmp_path / "dest")
+
+        assert result.files == 2
+        assert result.bytes == 150
+        # Sorted and manifest-shaped, so it can go straight into the ledger.
+        assert [entry["path"] for entry in result.entries] == [
+            "a.mcap",
+            "nested/b.mcap",
+        ]
+        assert all(len(entry["sha256"]) == 64 for entry in result.entries)
+
+    def test_a_non_empty_target_is_refused(self, tmp_path: Path) -> None:
+        source = self._tree(tmp_path)
+        target = tmp_path / "dest"
+        target.mkdir()
+        (target / "debris.mcap").write_bytes(b"from a failed attempt")
+
+        with pytest.raises(fileops.DestinationNotEmptyError):
+            fileops.copy_tree_verified(source, target)
+        # Verification only inspects what THIS copy wrote, so debris would ride
+        # along unexamined inside an archive the caller then deletes the source
+        # for.
+        assert (target / "debris.mcap").exists()
+        assert not (target / "a.mcap").exists()
+
+    def test_a_target_that_is_a_file_is_refused(self, tmp_path: Path) -> None:
+        source = self._tree(tmp_path)
+        target = tmp_path / "dest"
+        target.write_text("not a directory")
+
+        with pytest.raises(fileops.DestinationNotEmptyError):
+            fileops.copy_tree_verified(source, target)
+
+    def test_an_empty_target_is_accepted(self, tmp_path: Path) -> None:
+        source = self._tree(tmp_path)
+        target = tmp_path / "dest"
+        target.mkdir()
+        assert fileops.copy_tree_verified(source, target).files == 2
+
+    def test_merging_is_possible_but_must_be_asked_for(self, tmp_path: Path) -> None:
+        source = self._tree(tmp_path)
+        target = tmp_path / "dest"
+        target.mkdir()
+        (target / "unrelated.txt").write_text("kept")
+
+        result = fileops.copy_tree_verified(source, target, require_empty=False)
+        assert result.files == 2
+        assert (target / "unrelated.txt").exists()
+
+    def test_symlinks_are_skipped_not_followed(self, tmp_path: Path) -> None:
+        source = self._tree(tmp_path)
+        outside = tmp_path / "outside.mcap"
+        outside.write_bytes(b"not part of the capture")
+        (source / "link.mcap").symlink_to(outside)
+
+        result = fileops.copy_tree_verified(source, tmp_path / "dest")
+        # Following it would archive bytes from outside the capture, and the
+        # delete that follows would not be deleting what was archived.
+        assert [entry["path"] for entry in result.entries] == [
+            "a.mcap",
+            "nested/b.mcap",
+        ]
+
+
+class TestReportPurge:
+    def _reports(self, layout: DataLayout, capture_id: str) -> list[Path]:
+        made = []
+        for pipeline in ("fast_validation", "video_check"):
+            report = layout.report_dir(pipeline, capture_id)
+            report.mkdir(parents=True, exist_ok=True)
+            (report / "artifact").write_bytes(b"derived")
+            made.append(report)
+        return made
+
+    def test_remnants_find_every_pipeline(self, layout: DataLayout) -> None:
+        capture_id = new_capture_id()
+        made = self._reports(layout, capture_id)
+        assert sorted(report_remnants(layout, capture_id)) == sorted(made)
+
+    def test_purge_removes_them_all(self, layout: DataLayout) -> None:
+        capture_id = new_capture_id()
+        self._reports(layout, capture_id)
+        assert purge_reports(layout, capture_id) is True
+        assert report_remnants(layout, capture_id) == []
+
+    def test_purge_is_a_no_op_when_there_are_none(self, layout: DataLayout) -> None:
+        # The common case: most captures never had a pipeline run on them.
+        assert purge_reports(layout, new_capture_id()) is True
+
+    def test_purge_reports_failure_when_something_survives(
+        self, layout: DataLayout
+    ) -> None:
+        capture_id = new_capture_id()
+        self._reports(layout, capture_id)
+        with patch("api_orchestrator.layout.shutil.rmtree"):
+            # Same residue discipline as the trash: a removal that did not
+            # happen must not report success.
+            assert purge_reports(layout, capture_id) is False
+
+    def test_the_pipeline_directory_itself_survives(self, layout: DataLayout) -> None:
+        capture_id, other = new_capture_id(), new_capture_id()
+        self._reports(layout, capture_id)
+        self._reports(layout, other)
+
+        purge_reports(layout, capture_id)
+        # Only this capture's subdirectory goes; the pipeline directory is
+        # shared with every other capture.
+        assert (layout.report / "video_check").is_dir()
+        assert (layout.report / "video_check" / other).is_dir()

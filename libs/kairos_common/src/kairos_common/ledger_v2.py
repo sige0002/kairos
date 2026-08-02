@@ -40,6 +40,7 @@ import errno
 import json
 import logging
 import os
+import re
 import secrets
 from pathlib import Path
 from typing import Any
@@ -57,6 +58,11 @@ SLACK_NAME = ".ledger-slack"
 # Enough for thousands of ledger lines — the point is not capacity but having
 # *any* free block to write into once the filesystem reports ENOSPC.
 SLACK_BYTES = 1024 * 1024
+
+# What ``hashlib.sha256().hexdigest()`` produces. Shared with
+# ``capture_sidecars`` by convention rather than by import: this module is the
+# ledger's own validation and must not depend on the sidecar schema.
+_SHA256_HEX = re.compile(r"\A[0-9a-f]{64}\Z")
 
 
 class LedgerUnreadableError(OSError):
@@ -110,6 +116,19 @@ _ARCHIVE_OPTIONAL_FIELDS: dict[str, type | tuple[type, ...]] = {
     "bytes": int,
     "message_count": int,
 }
+
+# ``files`` is validated separately from the scalars above because its shape,
+# not just its type, is what makes it useful: one record per archived file,
+# ``{"path", "size", "sha256"}`` — the same vocabulary
+# ``object_manifest.json`` uses for the digest (§3.2), so an archived capture
+# and a local one describe their bytes identically.
+#
+# This is what lets the ledger ALONE audit an archive. Once the source is
+# deleted the manifest goes with it, and without per-file hashes the event can
+# say only "N bytes went to /mnt/nas" — which cannot answer "is the copy still
+# intact?" years later. Optional like the rest: §9-1 puts the append before the
+# archive proceeds, so an archive must remain possible even if hashing did not.
+_ARCHIVE_FILE_FIELDS: dict[str, type] = {"path": str, "size": int, "sha256": str}
 
 
 def ledger_path(data_dir: str | Path) -> Path:
@@ -180,6 +199,42 @@ def _validate_archive_payload(payload: dict[str, Any]) -> None:
             raise ValueError(
                 f"capture_archived {key} must be "
                 f"{getattr(expected, '__name__', expected)} or absent: {value!r}"
+            )
+    _validate_archive_files(payload.get("files"))
+
+
+def _validate_archive_files(files: Any) -> None:
+    """Check the optional per-file digest list. Raises ``ValueError``.
+
+    Validated field by field rather than waved through as "a list", because
+    this list is an audit record that outlives everything else about the
+    capture: a malformed entry is discovered when someone is trying to prove an
+    archived recording is intact, which is the worst possible moment to find
+    out the hashes were never usable.
+    """
+    if files is None:
+        return
+    if not isinstance(files, list):
+        raise ValueError(f"capture_archived files must be a list or absent: {files!r}")
+    for entry in files:
+        if not isinstance(entry, dict):
+            raise ValueError(f"capture_archived files[] must be objects: {entry!r}")
+        for key, expected in _ARCHIVE_FILE_FIELDS.items():
+            value = entry.get(key)
+            if isinstance(value, bool) or not isinstance(value, expected):
+                raise ValueError(
+                    f"capture_archived files[].{key} must be "
+                    f"{expected.__name__}: {entry!r}"
+                )
+        if entry["size"] < 0:
+            raise ValueError(f"capture_archived files[].size must be >= 0: {entry!r}")
+        if not _SHA256_HEX.match(entry["sha256"]):
+            # Lowercase hex specifically, matching §3.2's digest input: an
+            # uppercase spelling of the same hash would compare unequal against
+            # a manifest that recorded it the canonical way.
+            raise ValueError(
+                f"capture_archived files[].sha256 must be 64 lowercase hex "
+                f"characters: {entry!r}"
             )
 
 

@@ -162,7 +162,7 @@ _TOTAL_LOST_RE = re.compile(r"Total lost:\s*(\d+)")
 # compression (via --storage-config-file) rather than rosbag2 file-level
 # compression (--compression-mode file): file-level produces a `<run>_0.mcap.zstd`
 # that breaks every `*.mcap` glob + the MCAP reader (recorder bytes check, dora
-# fast_validation/video_check/dataset_export/loss_report). Chunk compression keeps
+# fast_validation/video_check/loss_report). Chunk compression keeps
 # the output a normal `<run>_0.mcap` that the MCAP library transparently inflates,
 # so all readers work unchanged. `Fastest` + noChunkCRC keeps live-record CPU low.
 _MCAP_ZSTD_STORAGE_CONFIG = (

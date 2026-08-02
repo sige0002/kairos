@@ -35,8 +35,8 @@ from kairos_common import JobState, utc_now_iso8601
 from dora_runner.models import JobResult, JobStatus, ValidationTemplate
 
 # Bumped whenever the schema changes in a non-additive way; recorded via
-# ``PRAGMA user_version`` so a future migration can branch on the on-disk version.
-_SCHEMA_VERSION = 1
+# ``PRAGMA user_version``. Version 2 keys jobs by capture_id (§10.5).
+_SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     -- keeps a stable ordering key for a future job list).
     seq        INTEGER PRIMARY KEY AUTOINCREMENT,
     job_id     TEXT NOT NULL UNIQUE,
-    run_id     TEXT NOT NULL,
+    capture_id TEXT NOT NULL,
     pipeline   TEXT NOT NULL,
     -- The job's params (JSON): makes the persisted row self-describing.
     params     TEXT NOT NULL DEFAULT '{}',
@@ -92,7 +92,7 @@ class JobRecord:
     """
 
     job_id: str
-    run_id: str
+    capture_id: str
     pipeline: str
     params: dict[str, Any]
     state: JobState = JobState.queued
@@ -105,7 +105,7 @@ class JobRecord:
         """Return the public status view."""
         return JobStatus(
             job_id=self.job_id,
-            run_id=self.run_id,
+            capture_id=self.capture_id,
             pipeline=self.pipeline,
             state=self.state,
             progress=self.progress,
@@ -151,19 +151,28 @@ class RunnerStore:
             self._shared = sqlite3.connect(self._path, check_same_thread=False)
             self._shared.row_factory = sqlite3.Row
         with self._conn() as conn:
+            self._recreate_outdated(conn)
             conn.executescript(_SCHEMA)
-            self._migrate(conn)
+            conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
 
     @staticmethod
-    def _migrate(conn: sqlite3.Connection) -> None:
-        """Record the schema version (``PRAGMA user_version``).
+    def _recreate_outdated(conn: sqlite3.Connection) -> None:
+        """Drop a ``jobs`` table written by an older schema, before recreating it.
 
-        No legacy DB exists, so fresh ``CREATE TABLE IF NOT EXISTS`` is enough; this
-        stamps the version so a future non-additive change can branch on it.
+        Contract §8 calls jobs **volatile** — they are excluded from rebuild
+        precisely because nothing downstream depends on a finished job's row
+        surviving. So a schema change here recreates the table instead of
+        migrating it: the v1 table is keyed by ``run_id``, and a run_id is not a
+        capture_id that a v2 job could resolve to a directory. Keeping those rows
+        would mean serving job history that points at a source layout which no
+        longer exists.
+
+        ``validation_templates`` is deliberately left alone: it is a cache the
+        orchestrator refills (it injects the full template object into a job's
+        params), and it has not changed shape.
         """
-        version = conn.execute("PRAGMA user_version").fetchone()[0]
-        if version < _SCHEMA_VERSION:
-            conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+        if conn.execute("PRAGMA user_version").fetchone()[0] < _SCHEMA_VERSION:
+            conn.execute("DROP TABLE IF EXISTS jobs")
 
     @contextmanager
     def _conn(self) -> Iterator[sqlite3.Connection]:
@@ -211,7 +220,7 @@ class RunnerStore:
             conn.execute(
                 """
                 INSERT INTO jobs
-                    (job_id, run_id, pipeline, params, state, progress,
+                    (job_id, capture_id, pipeline, params, state, progress,
                      logs_tail, result, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(job_id) DO UPDATE SET
@@ -223,7 +232,7 @@ class RunnerStore:
                 """,
                 (
                     job.job_id,
-                    job.run_id,
+                    job.capture_id,
                     job.pipeline,
                     json.dumps(job.params),
                     job.state.value,
@@ -250,7 +259,7 @@ class RunnerStore:
         logs = json.loads(row["logs_tail"]) if row["logs_tail"] else []
         return JobStatus(
             job_id=row["job_id"],
-            run_id=row["run_id"],
+            capture_id=row["capture_id"],
             pipeline=row["pipeline"],
             state=JobState(row["state"]),
             progress=float(row["progress"]),

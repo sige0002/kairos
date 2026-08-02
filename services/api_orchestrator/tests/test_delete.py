@@ -18,6 +18,8 @@ record of who removed it.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import httpx
 import pytest
 from api_orchestrator import layout as layout_mod
@@ -609,3 +611,121 @@ class TestReapBound:
         # The bound must not outlive the operator's fix.
         assert service.reap(capture_id) is True
         assert not layout.trash_dir(capture_id).exists()
+
+
+class TestReportGarbageCollection:
+    """Derived artifacts must not outlive the capture they describe."""
+
+    def _with_reports(
+        self, client: TestClient, layout: DataLayout
+    ) -> tuple[str, list[Path]]:
+        store = client.app.state.capture_store
+        capture_id = _seed_on_disk(store, layout)
+        made: list[Path] = []
+        for pipeline, name in (
+            ("fast_validation", "summary.json"),
+            ("video_check", "preview.mp4"),
+            ("loss_report", "summary.json"),
+        ):
+            report = layout.report_dir(pipeline, capture_id)
+            report.mkdir(parents=True, exist_ok=True)
+            (report / name).write_bytes(b"derived artifact")
+            made.append(report)
+        return capture_id, made
+
+    def test_a_discard_removes_the_reports(
+        self, client: TestClient, layout: DataLayout
+    ) -> None:
+        capture_id, reports = self._with_reports(client, layout)
+
+        client.post(
+            f"/api/v1/captures/{capture_id}/delete",
+            json={"kind": "discard", "reason": "bad take"},
+        )
+
+        # The UI calls a discard unrecoverable (§12). A surviving mp4 preview
+        # of the recording would make that untrue.
+        for report in reports:
+            assert not report.exists(), report
+
+    def test_a_delete_removes_them_too(
+        self, client: TestClient, layout: DataLayout
+    ) -> None:
+        capture_id, reports = self._with_reports(client, layout)
+        client.post(
+            f"/api/v1/captures/{capture_id}/delete",
+            json={"kind": "delete", "reason": "done"},
+        )
+        assert all(not report.exists() for report in reports)
+
+    def test_the_files_endpoint_stops_serving_them(
+        self, client: TestClient, layout: DataLayout
+    ) -> None:
+        capture_id, _ = self._with_reports(client, layout)
+        served = f"report/video_check/{capture_id}/preview.mp4"
+        assert client.get(f"/api/v1/files/{served}").status_code == 200
+
+        client.post(
+            f"/api/v1/captures/{capture_id}/delete",
+            json={"kind": "discard", "reason": "bad take"},
+        )
+
+        # The actual complaint: not merely that bytes lingered on disk, but that
+        # they stayed reachable over HTTP after the capture was destroyed.
+        assert client.get(f"/api/v1/files/{served}").status_code == 404
+
+    def test_another_captures_reports_are_untouched(
+        self, client: TestClient, layout: DataLayout
+    ) -> None:
+        capture_id, _ = self._with_reports(client, layout)
+        bystander, bystander_reports = self._with_reports(client, layout)
+
+        client.post(
+            f"/api/v1/captures/{capture_id}/delete",
+            json={"kind": "discard", "reason": "bad take"},
+        )
+        assert all(report.is_dir() for report in bystander_reports)
+        assert bystander != capture_id
+
+    def test_reports_from_a_pipeline_added_later_are_still_collected(
+        self, client: TestClient, layout: DataLayout
+    ) -> None:
+        store = client.app.state.capture_store
+        capture_id = _seed_on_disk(store, layout)
+        # A plugin pipeline nobody hardcoded anywhere.
+        novel = layout.report_dir("some_future_plugin", capture_id)
+        novel.mkdir(parents=True)
+        (novel / "summary.json").write_text("{}", encoding="utf-8")
+
+        client.post(
+            f"/api/v1/captures/{capture_id}/delete",
+            json={"kind": "delete", "reason": "done"},
+        )
+        # Enumerated by scanning report/, not from a list that goes stale the
+        # moment a pipeline is added.
+        assert not novel.exists()
+
+    def test_a_capture_with_no_reports_deletes_cleanly(
+        self, client: TestClient, layout: DataLayout
+    ) -> None:
+        store = client.app.state.capture_store
+        capture_id = _seed_on_disk(store, layout)
+        response = client.post(
+            f"/api/v1/captures/{capture_id}/delete",
+            json={"kind": "delete", "reason": "done"},
+        )
+        assert response.status_code == 200
+
+    def test_suspect_stops_report_removal_with_everything_else(
+        self, client: TestClient, layout: DataLayout
+    ) -> None:
+        capture_id, reports = self._with_reports(client, layout)
+        client.app.state.store_health.latch_suspect("storage looks wrong")
+
+        client.post(
+            f"/api/v1/captures/{capture_id}/delete",
+            json={"kind": "delete", "reason": "done"},
+        )
+        # §9-3: while the volume is in doubt, "delete these bytes" is the last
+        # instruction to obey — reports included.
+        assert all(report.is_dir() for report in reports)

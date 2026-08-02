@@ -15,6 +15,10 @@ from dora_runner.bagflow_pipeline import (
     topic_expectations,
 )
 from kairos_common import ApiError, RecordingConfig, ValidationTemplate
+from kairos_common.ids import new_capture_id
+
+# A capture_id is a UUIDv7 everywhere it is used as a key or path segment (§1).
+CAPTURE_ID = new_capture_id()
 
 # NOTE: `RequiredTopic` exists twice (recording_config's own + validation_config's
 # for templates), so these fixtures build each side from plain dicts rather than
@@ -127,7 +131,7 @@ def test_unavailable_bagflow_is_a_clear_error_for_both_gates(
     with pytest.raises(ApiError) as full_error:
         asyncio.run(
             run_full_validation(
-                run_id="run_1",
+                capture_id=CAPTURE_ID,
                 data_dir=tmp_path,
                 flow="default",
                 endpoint=module.DoraEndpoint(),
@@ -139,7 +143,7 @@ def test_unavailable_bagflow_is_a_clear_error_for_both_gates(
     with pytest.raises(ApiError) as fast_error:
         asyncio.run(
             run_fast_validation(
-                run_id="run_1",
+                capture_id=CAPTURE_ID,
                 data_dir=tmp_path,
                 endpoint=module.DoraEndpoint(),
                 job_name="job_2",

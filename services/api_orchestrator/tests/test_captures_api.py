@@ -101,6 +101,23 @@ class TestDetail:
         assert body["replica"]["state"] == "present_verified"
         assert body["digest_state"] == "complete"
 
+    def test_there_is_no_dead_dataset_stats_field(
+        self, client: TestClient, fake_recorder: FakeRecorder
+    ) -> None:
+        client.post("/api/v1/record/start", json={"topics": ["/joint_states"]})
+        capture_id = fake_recorder.capture_id
+        client.post("/api/v1/record/stop")
+
+        body = client.get(f"/api/v1/captures/{capture_id}").json()
+        # It pointed at the dataset_export pipeline, which §6 retired along with
+        # the physical dataset tree — so it could only ever be null. A field
+        # structurally incapable of holding a value invites a client to keep
+        # checking it.
+        assert "dataset_stats" not in body
+        # The report fields that DO point at live pipelines stay.
+        assert "validation" in body
+        assert "loss" in body
+
     def test_an_unknown_capture_is_a_404(self, client: TestClient) -> None:
         response = client.get(f"/api/v1/captures/{new_capture_id()}")
         assert response.status_code == 404

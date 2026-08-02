@@ -1,10 +1,9 @@
 """``signal_report`` pipeline: post-hoc numeric time-series for Review charts.
 
 Event-driven (button -> job), post-hoc, and read-only with respect to the
-canonical recording: it only READS the finished MCAP under ``recorded/<run_id>``
-— or, with the optional ``dataset_dir`` param, under an exported
-``<operator>/<task>/<NNN>`` dataset directory — so it can never disturb an
-in-flight recording (it only ever runs on finished runs).
+canonical recording: it only READS the finished MCAP under
+``objects/<capture_id>``, so it can never disturb an in-flight recording (it
+only ever runs on finished captures).
 
 It is **generic**, not JointState-specific: for every selected topic it decodes
 the messages once and walks the *numeric leaves* of each message with the shared
@@ -51,8 +50,8 @@ Timestamps use the same source-clock rule as ``loss_report`` / ``video_check``
 (:func:`mcap_utils.source_times`: sender-side ``publish_time`` when the bag
 recorded a trustworthy one, else the recorder's ``log_time``); which clock a
 topic used is stated in its ``time_source`` (honesty rule). One sidecar is
-written to ``data/report/signal_report/<run_id>/summary.json`` for the frontend
-to chart with uPlot, synced against the ``video_check`` mp4.
+written to ``data/report/signal_report/<capture_id>/summary.json`` for the
+frontend to chart with uPlot, synced against the ``video_check`` mp4.
 """
 
 from __future__ import annotations
@@ -77,7 +76,6 @@ from dora_runner.mcap_utils import (
     iter_decoded_ros2_messages,
     resolve_source_dir,
     source_times,
-    validate_run_id,
 )
 
 # Pipeline identity stamped into the summary (reproducibility contract, shared
@@ -395,33 +393,29 @@ def _select_topics(
 
 def run_signal_report(
     *,
-    run_id: str,
+    capture_id: str,
     data_dir: Path,
     topics: list[str] | None = None,
     max_points: int = DEFAULT_MAX_POINTS,
-    dataset_dir: str | None = None,
 ) -> dict[str, Any]:
-    """Extract per-topic numeric time-series from the run's MCAP into a sidecar.
+    """Extract per-topic numeric time-series from a capture's MCAP into a sidecar.
 
-    The MCAP comes from ``recorded/<run_id>`` by default, or — when *dataset_dir*
-    (``<operator>/<task>/<NNN>``) is given — from the exported dataset directory,
-    so the report stays computable after ``dataset_export`` MOVED the recording.
-    The summary is written under ``report/signal_report/<run_id>/`` either way.
+    The MCAP comes from ``objects/<capture_id>`` and the summary is written
+    under ``report/signal_report/<capture_id>/``.
 
     *topics* is an optional allow-list; ``None`` selects every non-image topic in
     the bag that has at least one numeric leaf. *max_points* caps each topic's
     downsampled point count (default :data:`DEFAULT_MAX_POINTS`).
 
     Returns the ``{summary, artifacts}`` JobResult shape. Raises
-    ``FileNotFoundError`` if the source dir or its MCAP is missing (mapped to a
-    failed job by the worker); ``ValueError`` for an unsafe run_id / dataset_dir
-    or a ``max_points < 1``. The MCAP is only read (decoded post-hoc), so the
-    canonical recording is never touched.
+    ``FileNotFoundError`` if the capture dir or its MCAP is missing (mapped to a
+    failed job by the worker); ``ValueError`` for a capture_id that is not a
+    UUIDv7, or a ``max_points < 1``. The MCAP is only read (decoded post-hoc),
+    so the canonical recording is never touched.
     """
-    validate_run_id(run_id)
     if max_points < 1:
         raise ValueError("max_points must be >= 1")
-    source_dir = resolve_source_dir(data_dir, run_id, dataset_dir)
+    source_dir = resolve_source_dir(data_dir, capture_id)
     mcap_path = find_mcap(source_dir)
 
     all_types = {t["name"]: t["type"] for t in enumerate_topics(mcap_path)}
@@ -475,14 +469,14 @@ def run_signal_report(
     summary: dict[str, Any] = {
         "pipeline": PIPELINE_ID,
         "version": PIPELINE_VERSION,
-        "run_id": run_id,
+        "capture_id": capture_id,
         "generated_at": utc_now_iso8601(),
         "params": {"topics": topics, "max_points": max_points},
         "span": {"duration_ns": global_end - global_zero},
         "topics": topics_out,
         "skipped_topics": dict(sorted(skipped.items())),
     }
-    report_dir = data_dir / "report" / "signal_report" / run_id
+    report_dir = data_dir / "report" / "signal_report" / capture_id
     report_dir.mkdir(parents=True, exist_ok=True)
     summary_path = report_dir / "summary.json"
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")

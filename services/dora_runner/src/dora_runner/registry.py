@@ -24,8 +24,6 @@ from kairos_common import ApiError, ValidationTemplate
 
 from dora_runner.bagflow_flow import DEFAULT_FLOW, list_flows
 from dora_runner.bagflow_runtime import DoraEndpoint, bagflow_available
-from dora_runner.dataset_archive import run_dataset_archive
-from dora_runner.dataset_export import run_dataset_export
 from dora_runner.fast_validation import run_fast_validation
 from dora_runner.full_validation import run_full_validation
 from dora_runner.loss_report import run_loss_report
@@ -54,7 +52,7 @@ class RegisteredPipeline:
     name: str
     description: str
     params_schema: dict
-    required_inputs: list[str] = field(default_factory=lambda: ["run_id"])
+    required_inputs: list[str] = field(default_factory=lambda: ["capture_id"])
     outputs: list[str] = field(default_factory=list)
     executor: str = "in_process"
     # None => interface-only placeholder (advertised but not runnable yet).
@@ -106,8 +104,8 @@ async def _resolve_template(
             message=f"Validation template not found: {raw}",
             details={"template": raw},
         )
-    # If the caller omitted a template, use the run itself as a draft baseline.
-    return generate_template(job.run_id, data_dir)
+    # If the caller omitted a template, use the capture itself as a draft baseline.
+    return generate_template(job.capture_id, data_dir)
 
 
 async def _run_fast_validation(
@@ -116,7 +114,7 @@ async def _run_fast_validation(
     template = await _resolve_template(job, store, data_dir)
     job.progress = 0.4
     return await run_fast_validation(
-        run_id=job.run_id,
+        capture_id=job.capture_id,
         data_dir=data_dir,
         endpoint=DoraEndpoint.from_env(),
         # Naming the dataflow after the job is what makes cleanup targeted:
@@ -184,7 +182,7 @@ async def _run_full_validation(
     template = await _resolve_optional_template(job, store)
     job.progress = 0.3
     return await run_full_validation(
-        run_id=job.run_id,
+        capture_id=job.capture_id,
         data_dir=data_dir,
         flow=_flow_param(job.params),
         endpoint=DoraEndpoint.from_env(),
@@ -193,64 +191,7 @@ async def _run_full_validation(
         job_name=job.job_id,
         template=template,
         min_coverage=_min_coverage_param(job.params),
-        dataset_dir=_dataset_dir_param(job.params),
     )
-
-
-async def _run_dataset_export(
-    job: JobRecord, store: RunnerStore, data_dir: Path
-) -> dict:
-    return await asyncio.to_thread(
-        run_dataset_export, run_id=job.run_id, data_dir=data_dir
-    )
-
-
-async def _run_dataset_archive(
-    job: JobRecord, store: RunnerStore, data_dir: Path
-) -> dict:
-    """``dataset_archive``: copy out, verify, then delete the source.
-
-    Runs on a thread because it is long, blocking I/O over (usually) a network
-    filesystem — the event loop must stay responsive so the job's own status
-    can be polled while multi-GB bags copy.
-    """
-    dataset_dir = _dataset_dir_param(job.params)
-    if not dataset_dir:
-        raise ApiError(
-            status_code=400,
-            code="dataset_dir_required",
-            message="dataset_archive needs a dataset_dir param.",
-            details={"pipeline": "dataset_archive"},
-        )
-    destination = job.params.get("destination")
-    if not isinstance(destination, str) or not destination.strip():
-        raise ApiError(
-            status_code=400,
-            code="destination_required",
-            message="dataset_archive needs a destination param.",
-            details={"pipeline": "dataset_archive"},
-        )
-    return await asyncio.to_thread(
-        run_dataset_archive,
-        data_dir=data_dir,
-        dataset_dir=dataset_dir,
-        destination=destination,
-        # No allow-list is passed from here, and there is no parameter left to
-        # pass it through: run_dataset_archive reads KAIROS_ARCHIVE_ROOTS from
-        # this service's own environment. The allow-list is deployment
-        # configuration, and a job parameter is caller-controlled — POST /jobs
-        # forwards params verbatim and neither service authenticates, so when
-        # this WAS a parameter any LAN caller could pass archive_roots="/" and
-        # have the runner copy a dataset anywhere writable, then delete the
-        # original. Verified, then removed rather than merely left unwired.
-        reason=job.params.get("reason"),
-    )
-
-
-def _dataset_dir_param(params: dict) -> str | None:
-    """Optional ``dataset_dir`` job param (post-export source), ``None`` if unset."""
-    raw = params.get("dataset_dir")
-    return str(raw) if isinstance(raw, str) and raw.strip() else None
 
 
 def _loss_report_params(params: dict, config: LossReportConfig) -> dict[str, object]:
@@ -273,9 +214,6 @@ def _loss_report_params(params: dict, config: LossReportConfig) -> dict[str, obj
             if multiplier is not None
             else config.gap_threshold_multiplier
         ),
-        # Post-export source: read the exported dataset dir instead of
-        # recorded/<run_id> (the recording was MOVED there by dataset_export).
-        "dataset_dir": _dataset_dir_param(params),
     }
 
 
@@ -287,7 +225,7 @@ def _make_loss_report_runner(config: LossReportConfig) -> Runner:
     ) -> dict:
         kwargs = _loss_report_params(job.params, config)
         return await asyncio.to_thread(
-            run_loss_report, run_id=job.run_id, data_dir=data_dir, **kwargs
+            run_loss_report, capture_id=job.capture_id, data_dir=data_dir, **kwargs
         )
 
     return _run_loss_report
@@ -321,14 +259,11 @@ async def _run_video_check(job: JobRecord, store: RunnerStore, data_dir: Path) -
         )
     return await asyncio.to_thread(
         run_video_check,
-        run_id=job.run_id,
+        capture_id=job.capture_id,
         data_dir=data_dir,
         topic=str(topic),
-        # Results are cached per (run_id, topic); force=true re-encodes anyway.
+        # Results are cached per (capture_id, topic); force=true re-encodes anyway.
         force=bool(job.params.get("force")),
-        # Post-export source: read the exported dataset dir instead of
-        # recorded/<run_id> (the recording was MOVED there by dataset_export).
-        dataset_dir=_dataset_dir_param(job.params),
         # Encode cap; 0 = full episode (the UI's "re-encode full" path).
         max_frames=_max_frames_param(job.params),
     )
@@ -381,13 +316,10 @@ async def _run_signal_report(
 ) -> dict:
     return await asyncio.to_thread(
         run_signal_report,
-        run_id=job.run_id,
+        capture_id=job.capture_id,
         data_dir=data_dir,
         topics=_topics_param(job.params),
         max_points=_max_points_param(job.params),
-        # Post-export source: read the exported dataset dir instead of
-        # recorded/<run_id> (the recording was MOVED there by dataset_export).
-        dataset_dir=_dataset_dir_param(job.params),
     )
 
 
@@ -407,11 +339,8 @@ _VIDEO_CHECK_SCHEMA = {
         # as a picker (seeding the first one) instead of a free-text box.
         # Plugins can use the same annotation ("camera_topics" | "topics").
         "topic": {"type": "string", "x-suggest": "camera_topics"},
-        # Results are cached per (run_id, topic); true re-encodes anyway.
+        # Results are cached per (capture_id, topic); true re-encodes anyway.
         "force": {"type": "boolean", "default": False},
-        # Post-export source: "<operator>/<task>/<NNN>" under data/ (the
-        # exported dataset dir); omitted = read recorded/<run_id>.
-        "dataset_dir": {"type": "string"},
         # Encode cap: default keeps previews short; 0 = the full episode
         # (pair with force to regenerate a truncated preview at full length).
         "max_frames": {"type": "integer", "minimum": 0, "default": MAX_FRAMES},
@@ -436,30 +365,7 @@ _SIGNAL_REPORT_SCHEMA = {
             "minimum": 1,
             "default": DEFAULT_MAX_POINTS,
         },
-        # Post-export source: "<operator>/<task>/<NNN>" under data/ (the
-        # exported dataset dir); omitted = read recorded/<run_id>.
-        "dataset_dir": {"type": "string"},
     },
-}
-_NO_PARAMS_SCHEMA = {"type": "object", "properties": {}}
-
-# dataset_archive takes the SOURCE (data-relative) and the DESTINATION. The
-# destination is allow-listed by KAIROS_ARCHIVE_ROOTS, which is why it is a
-# plain string here rather than an x-suggest enum: the legal values are a
-# deployment setting, served by the orchestrator's archive-config endpoint.
-_DATASET_ARCHIVE_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "dataset_dir": {
-            "type": "string",
-            "description": "Data-relative '<operator>/<task>/<NNN>' to archive.",
-        },
-        "destination": {
-            "type": "string",
-            "description": "Absolute destination path, inside an archive root.",
-        },
-    },
-    "required": ["dataset_dir", "destination"],
 }
 
 
@@ -494,14 +400,6 @@ def loss_report_schema(config: LossReportConfig) -> dict:
                 # forbid them too (no silent value substitution).
                 "exclusiveMinimum": 0,
                 "default": config.gap_threshold_multiplier,
-            },
-            "dataset_dir": {
-                "type": "string",
-                "title": "Dataset directory",
-                "description": (
-                    "Post-export source: <operator>/<task>/<NNN> under data/; "
-                    "omitted = read recorded/<run_id>."
-                ),
             },
         },
     }
@@ -550,9 +448,6 @@ def full_validation_schema(flows: list[str]) -> dict:
                 "maximum": 1,
                 "default": 0,
             },
-            # Post-export source: "<operator>/<task>/<NNN>" under data/; omitted =
-            # read recorded/<run_id>.
-            "dataset_dir": {"type": "string"},
         },
     }
 
@@ -588,7 +483,7 @@ def _fast_validation_pipeline() -> RegisteredPipeline:
         id="fast_validation",
         name="Fast validation",
         description=(
-            "Required-topic presence check for recorded MCAP runs "
+            "Required-topic presence check for a capture's MCAP "
             "(bagflow flow on dora; reads the bag's metadata only)."
             if available
             else (
@@ -597,7 +492,7 @@ def _fast_validation_pipeline() -> RegisteredPipeline:
             )
         ),
         params_schema=_FAST_VALIDATION_SCHEMA,
-        outputs=["report/fast_validation/<run_id>/summary.json"],
+        outputs=["report/fast_validation/<capture_id>/summary.json"],
         executor="dora",
         runner=_run_fast_validation if available else None,
     )
@@ -627,7 +522,7 @@ def _full_validation_pipeline() -> RegisteredPipeline:
             )
         ),
         params_schema=full_validation_schema(flows),
-        outputs=["report/full_validation/<run_id>/summary.json"],
+        outputs=["report/full_validation/<capture_id>/summary.json"],
         executor="dora",
         runner=_run_full_validation if available else None,
     )
@@ -656,39 +551,11 @@ def build_default_registry(
     registry.register(_full_validation_pipeline())
     registry.register(
         RegisteredPipeline(
-            id="dataset_export",
-            name="Dataset export",
-            description=(
-                "MOVE a recorded run into data/<operator>/<task>/<NNN> (from "
-                "session.json); the recording leaves recorded/ after export."
-            ),
-            params_schema=_NO_PARAMS_SCHEMA,
-            outputs=["data/<operator>/<task>/<NNN>/"],
-            runner=_run_dataset_export,
-        )
-    )
-    registry.register(
-        RegisteredPipeline(
-            id="dataset_archive",
-            name="Dataset archive",
-            description=(
-                "COPY an exported dataset to an allow-listed destination, verify "
-                "it byte-for-byte (sha256), then remove the source. The source is "
-                "only ever deleted after the destination verifies."
-            ),
-            params_schema=_DATASET_ARCHIVE_SCHEMA,
-            required_inputs=["dataset_dir", "destination"],
-            outputs=["<destination>/"],
-            runner=_run_dataset_archive,
-        )
-    )
-    registry.register(
-        RegisteredPipeline(
             id="loss_report",
             name="Loss report",
-            description="Per-topic gap-based loss estimate from a recorded MCAP.",
+            description="Per-topic gap-based loss estimate from a capture's MCAP.",
             params_schema=loss_report_schema(config),
-            outputs=["report/loss_report/<run_id>/summary.json"],
+            outputs=["report/loss_report/<capture_id>/summary.json"],
             runner=_make_loss_report_runner(config),
         )
     )
@@ -696,9 +563,11 @@ def build_default_registry(
         RegisteredPipeline(
             id="video_check",
             name="Video check",
-            description="On-demand mp4 preview of a camera topic from a recorded MCAP.",
+            description=(
+                "On-demand mp4 preview of a camera topic from a capture's MCAP."
+            ),
             params_schema=_VIDEO_CHECK_SCHEMA,
-            outputs=["report/video_check/<run_id>/<topic>.mp4"],
+            outputs=["report/video_check/<capture_id>/<topic>.mp4"],
             runner=_run_video_check,
         )
     )
@@ -708,10 +577,10 @@ def build_default_registry(
             name="Signal report",
             description=(
                 "Generic numeric time-series + per-topic continuity from a "
-                "recorded MCAP, for Review charts."
+                "capture's MCAP, for Review charts."
             ),
             params_schema=_SIGNAL_REPORT_SCHEMA,
-            outputs=["report/signal_report/<run_id>/summary.json"],
+            outputs=["report/signal_report/<capture_id>/summary.json"],
             runner=_run_signal_report,
         )
     )

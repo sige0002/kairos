@@ -10,6 +10,7 @@ without a live ROS graph or a large sample recording.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -35,6 +36,7 @@ from dora_runner.signal_report import (
 )
 from fastapi.testclient import TestClient
 from kairos_common import ApiError, Settings
+from kairos_common.ids import new_capture_id
 from mcap_ros2.writer import Writer
 
 _MS = 1_000_000  # nanoseconds per millisecond
@@ -308,13 +310,16 @@ def _write_mixed_mcap(path: Path) -> None:
 # ---- run_signal_report: extraction + sidecar shape --------------------------
 
 
-def test_signal_report_extracts_numeric_series(tmp_path: Path) -> None:
+def test_signal_report_extracts_numeric_series(
+    tmp_path: Path, make_capture: Callable[[Path], tuple[str, Path]]
+) -> None:
     data_dir = tmp_path / "data"
-    run_dir = data_dir / "recorded" / "run_x"
-    run_dir.mkdir(parents=True)
-    _write_joint_mcap(run_dir / "run_x_0.mcap", [[1.0 + i, 2.0 + i] for i in range(20)])
+    capture_id, capture_dir = make_capture(data_dir)
+    _write_joint_mcap(
+        capture_dir / "run_x_0.mcap", [[1.0 + i, 2.0 + i] for i in range(20)]
+    )
 
-    out = run_signal_report(run_id="run_x", data_dir=data_dir, max_points=5)
+    out = run_signal_report(capture_id=capture_id, data_dir=data_dir, max_points=5)
     summary = out["summary"]
     assert summary["pipeline"] == "signal_report"
     assert summary["params"] == {"topics": None, "max_points": 5}
@@ -343,27 +348,27 @@ def test_signal_report_extracts_numeric_series(tmp_path: Path) -> None:
     assert topic["fields"]["position[0]"] == [1.0, 5.0, 9.0, 13.0, 17.0]
     # Written to the report tree and re-parseable.
     assert Path(out["artifacts"][0]) == (
-        data_dir / "report" / "signal_report" / "run_x" / "summary.json"
+        data_dir / "report" / "signal_report" / capture_id / "summary.json"
     )
     assert Path(out["artifacts"][0]).exists()
 
 
-def test_signal_report_t_ns_is_relative_to_start(tmp_path: Path) -> None:
+def test_signal_report_t_ns_is_relative_to_start(
+    tmp_path: Path, make_capture: Callable[[Path], tuple[str, Path]]
+) -> None:
     data_dir = tmp_path / "data"
-    run_dir = data_dir / "recorded" / "run_e"
-    run_dir.mkdir(parents=True)
+    capture_id, capture_dir = make_capture(data_dir)
     # Epoch-like base (> JS Number.MAX_SAFE_INTEGER = 9.007e15): if t_ns were
     # absolute, a JSON consumer would quantize it. pub==log -> log_time series.
     base = 1_750_000_000_000_000_000
     _write_joint_mcap(
-        run_dir / "run_e_0.mcap",
+        capture_dir / "run_e_0.mcap",
         [[float(i)] for i in range(5)],
         pub_offset_ms=None,
         base_ns=base,
     )
-    topic = run_signal_report(run_id="run_e", data_dir=data_dir)["summary"]["topics"][
-        "/hsrb/joint_states"
-    ]
+    summary = run_signal_report(capture_id=capture_id, data_dir=data_dir)["summary"]
+    topic = summary["topics"]["/hsrb/joint_states"]
     # start_ns / end_ns keep the absolute chosen-clock values (metadata)...
     assert topic["start_ns"] == base
     assert topic["end_ns"] == base + 4 * 100 * _MS
@@ -373,45 +378,46 @@ def test_signal_report_t_ns_is_relative_to_start(tmp_path: Path) -> None:
     assert max(topic["t_ns"]) < 9_007_199_254_740_991  # under MAX_SAFE_INTEGER
 
 
-def test_signal_report_falls_back_to_log_time(tmp_path: Path) -> None:
+def test_signal_report_falls_back_to_log_time(
+    tmp_path: Path, make_capture: Callable[[Path], tuple[str, Path]]
+) -> None:
     data_dir = tmp_path / "data"
-    run_dir = data_dir / "recorded" / "run_l"
-    run_dir.mkdir(parents=True)
+    capture_id, capture_dir = make_capture(data_dir)
     # publish_time == log_time on every message -> log_time series, said out loud.
     _write_joint_mcap(
-        run_dir / "run_l_0.mcap", [[float(i)] for i in range(5)], pub_offset_ms=None
+        capture_dir / "run_l_0.mcap", [[float(i)] for i in range(5)], pub_offset_ms=None
     )
-    topic = run_signal_report(run_id="run_l", data_dir=data_dir)["summary"]["topics"][
-        "/hsrb/joint_states"
-    ]
+    summary = run_signal_report(capture_id=capture_id, data_dir=data_dir)["summary"]
+    topic = summary["topics"]["/hsrb/joint_states"]
     assert topic["time_source"] == "log_time"
 
 
-def test_signal_report_missing_leaf_is_null(tmp_path: Path) -> None:
+def test_signal_report_missing_leaf_is_null(
+    tmp_path: Path, make_capture: Callable[[Path], tuple[str, Path]]
+) -> None:
     data_dir = tmp_path / "data"
-    run_dir = data_dir / "recorded" / "run_j"
-    run_dir.mkdir(parents=True)
+    capture_id, capture_dir = make_capture(data_dir)
     # First message has 3 array elements (defines position[0..2]); a later
     # message has only 1 -> position[1]/position[2] extract to null there.
     _write_joint_mcap(
-        run_dir / "run_j_0.mcap",
+        capture_dir / "run_j_0.mcap",
         [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0]],
     )
-    topic = run_signal_report(run_id="run_j", data_dir=data_dir)["summary"]["topics"][
-        "/hsrb/joint_states"
-    ]
+    summary = run_signal_report(capture_id=capture_id, data_dir=data_dir)["summary"]
+    topic = summary["topics"]["/hsrb/joint_states"]
     assert "position[2]" in topic["fields"]
     assert topic["fields"]["position[2]"] == [3.0, 6.0, None]
     assert topic["fields"]["position[0]"] == [1.0, 4.0, 7.0]
 
 
-def test_signal_report_gap_lowers_continuity(tmp_path: Path) -> None:
+def test_signal_report_gap_lowers_continuity(
+    tmp_path: Path, make_capture: Callable[[Path], tuple[str, Path]]
+) -> None:
     data_dir = tmp_path / "data"
-    run_dir = data_dir / "recorded" / "run_g"
-    run_dir.mkdir(parents=True)
+    capture_id, capture_dir = make_capture(data_dir)
     # 10 messages at 100 ms, then one that arrives 500 ms late -> continuity < 1.
     times = list(range(10)) + [14]  # index 10 lands at 1400 ms (400 ms hole)
-    with (run_dir / "run_g_0.mcap").open("wb") as fh:
+    with (capture_dir / "run_g_0.mcap").open("wb") as fh:
         w = Writer(fh)
         schema = w.register_msgdef("sensor_msgs/msg/JointState", _JOINT_DEF)
         for i, slot in enumerate(times):
@@ -429,20 +435,20 @@ def test_signal_report_gap_lowers_continuity(tmp_path: Path) -> None:
                 publish_time=ts,
             )
         w.finish()
-    topic = run_signal_report(run_id="run_g", data_dir=data_dir)["summary"]["topics"][
-        "/hsrb/joint_states"
-    ]
+    summary = run_signal_report(capture_id=capture_id, data_dir=data_dir)["summary"]
+    topic = summary["topics"]["/hsrb/joint_states"]
     assert topic["continuity"] is not None
     assert 0.0 < topic["continuity"] < 1.0
 
 
-def test_signal_report_injected_gap_becomes_loss_event(tmp_path: Path) -> None:
+def test_signal_report_injected_gap_becomes_loss_event(
+    tmp_path: Path, make_capture: Callable[[Path], tuple[str, Path]]
+) -> None:
     data_dir = tmp_path / "data"
-    run_dir = data_dir / "recorded" / "run_gap"
-    run_dir.mkdir(parents=True)
+    capture_id, capture_dir = make_capture(data_dir)
     # 5 messages at 100 ms, then one 500 ms after the last (400 ms hole). pub==log
     # so the axis is log_time and the global zero is 0 -> loss start is 400 ms.
-    with (run_dir / "run_gap_0.mcap").open("wb") as fh:
+    with (capture_dir / "run_gap_0.mcap").open("wb") as fh:
         w = Writer(fh)
         schema = w.register_msgdef("sensor_msgs/msg/JointState", _JOINT_DEF)
         for i, slot in enumerate((0, 1, 2, 3, 4, 9)):
@@ -461,7 +467,7 @@ def test_signal_report_injected_gap_becomes_loss_event(tmp_path: Path) -> None:
             )
         w.finish()
 
-    summary = run_signal_report(run_id="run_gap", data_dir=data_dir)["summary"]
+    summary = run_signal_report(capture_id=capture_id, data_dir=data_dir)["summary"]
     assert summary["version"] == "1.1.0"
     assert summary["span"] == {"duration_ns": 900 * _MS}
     topic = summary["topics"]["/hsrb/joint_states"]
@@ -481,13 +487,14 @@ def test_signal_report_injected_gap_becomes_loss_event(tmp_path: Path) -> None:
     assert sum(topic["bins"]["densities"]) == topic["message_count"] == 6
 
 
-def test_signal_report_multi_topic_global_alignment(tmp_path: Path) -> None:
+def test_signal_report_multi_topic_global_alignment(
+    tmp_path: Path, make_capture: Callable[[Path], tuple[str, Path]]
+) -> None:
     data_dir = tmp_path / "data"
-    run_dir = data_dir / "recorded" / "run_two"
-    run_dir.mkdir(parents=True)
+    capture_id, capture_dir = make_capture(data_dir)
     # Topic A spans [0, 400] ms; topic B starts later at 200 ms and ends at 500 ms.
     # Global zero = 0 (A's start), global end = 500 ms (B's end). pub==log.
-    with (run_dir / "run_two_0.mcap").open("wb") as fh:
+    with (capture_dir / "run_two_0.mcap").open("wb") as fh:
         w = Writer(fh)
         schema = w.register_msgdef("sensor_msgs/msg/JointState", _JOINT_DEF)
 
@@ -511,7 +518,7 @@ def test_signal_report_multi_topic_global_alignment(tmp_path: Path) -> None:
         emit("/topic_b", [200, 300, 400, 500])
         w.finish()
 
-    summary = run_signal_report(run_id="run_two", data_dir=data_dir)["summary"]
+    summary = run_signal_report(capture_id=capture_id, data_dir=data_dir)["summary"]
     assert summary["span"] == {"duration_ns": 500 * _MS}
     a = summary["topics"]["/topic_a"]
     b = summary["topics"]["/topic_b"]
@@ -525,13 +532,14 @@ def test_signal_report_multi_topic_global_alignment(tmp_path: Path) -> None:
     assert a["t_ns"][0] == 0 and b["t_ns"][0] == 0
 
 
-def test_signal_report_excludes_images_and_no_numeric(tmp_path: Path) -> None:
+def test_signal_report_excludes_images_and_no_numeric(
+    tmp_path: Path, make_capture: Callable[[Path], tuple[str, Path]]
+) -> None:
     data_dir = tmp_path / "data"
-    run_dir = data_dir / "recorded" / "run_m"
-    run_dir.mkdir(parents=True)
-    _write_mixed_mcap(run_dir / "run_m_0.mcap")
+    capture_id, capture_dir = make_capture(data_dir)
+    _write_mixed_mcap(capture_dir / "run_m_0.mcap")
 
-    summary = run_signal_report(run_id="run_m", data_dir=data_dir)["summary"]
+    summary = run_signal_report(capture_id=capture_id, data_dir=data_dir)["summary"]
     assert set(summary["topics"]) == {"/hsrb/joint_states"}
     assert summary["skipped_topics"]["/cam/image/compressed"] == (
         "image topic (use video_check)"
@@ -540,14 +548,15 @@ def test_signal_report_excludes_images_and_no_numeric(tmp_path: Path) -> None:
     assert summary["skipped_topics"]["/notes"] == "no numeric fields"
 
 
-def test_signal_report_topics_allow_list(tmp_path: Path) -> None:
+def test_signal_report_topics_allow_list(
+    tmp_path: Path, make_capture: Callable[[Path], tuple[str, Path]]
+) -> None:
     data_dir = tmp_path / "data"
-    run_dir = data_dir / "recorded" / "run_a"
-    run_dir.mkdir(parents=True)
-    _write_mixed_mcap(run_dir / "run_a_0.mcap")
+    capture_id, capture_dir = make_capture(data_dir)
+    _write_mixed_mcap(capture_dir / "run_a_0.mcap")
 
     summary = run_signal_report(
-        run_id="run_a",
+        capture_id=capture_id,
         data_dir=data_dir,
         topics=["/hsrb/joint_states", "/missing"],
     )["summary"]
@@ -561,46 +570,28 @@ def test_signal_report_topics_allow_list(tmp_path: Path) -> None:
 # ---- guards ------------------------------------------------------------------
 
 
-def test_signal_report_rejects_traversal_run_id(tmp_path: Path) -> None:
+@pytest.mark.parametrize("bad", ["../../etc", "run_20260623_232808", "", "nope"])
+def test_signal_report_rejects_non_uuid7_capture_id(tmp_path: Path, bad: str) -> None:
     data_dir = tmp_path / "data"
-    (data_dir / "recorded").mkdir(parents=True)
-    with pytest.raises(ValueError, match="invalid run_id"):
-        run_signal_report(run_id="../../etc", data_dir=data_dir)
+    (data_dir / "objects").mkdir(parents=True)
+    with pytest.raises(ValueError, match="capture_id must be a UUIDv7"):
+        run_signal_report(capture_id=bad, data_dir=data_dir)
 
 
-def test_signal_report_missing_run_dir_raises(tmp_path: Path) -> None:
+def test_signal_report_missing_capture_dir_raises(tmp_path: Path) -> None:
     data_dir = tmp_path / "data"
-    (data_dir / "recorded").mkdir(parents=True)
-    with pytest.raises(FileNotFoundError):
-        run_signal_report(run_id="run_absent", data_dir=data_dir)
+    (data_dir / "objects").mkdir(parents=True)
+    with pytest.raises(FileNotFoundError, match="No capture found"):
+        run_signal_report(capture_id=new_capture_id(), data_dir=data_dir)
 
 
-def test_signal_report_rejects_bad_max_points(tmp_path: Path) -> None:
+def test_signal_report_rejects_bad_max_points(
+    tmp_path: Path, make_capture: Callable[[Path], tuple[str, Path]]
+) -> None:
     data_dir = tmp_path / "data"
-    (data_dir / "recorded").mkdir(parents=True)
+    capture_id, _ = make_capture(data_dir)
     with pytest.raises(ValueError, match="max_points"):
-        run_signal_report(run_id="run_x", data_dir=data_dir, max_points=0)
-
-
-def test_signal_report_rejects_unsafe_dataset_dir(tmp_path: Path) -> None:
-    data_dir = tmp_path / "data"
-    (data_dir / "recorded").mkdir(parents=True)
-    for bad in ("../x/y", "a/b", "a/b/c/d", "recorded/a/b"):
-        with pytest.raises(ValueError, match="invalid dataset_dir"):
-            run_signal_report(run_id="run_x", data_dir=data_dir, dataset_dir=bad)
-
-
-def test_signal_report_reads_exported_dataset_dir(tmp_path: Path) -> None:
-    data_dir = tmp_path / "data"
-    dataset = data_dir / "yuki" / "pick-place" / "001"
-    dataset.mkdir(parents=True)
-    _write_joint_mcap(dataset / "run_x_0.mcap", [[float(i)] for i in range(5)])
-
-    out = run_signal_report(
-        run_id="run_x", data_dir=data_dir, dataset_dir="yuki/pick-place/001"
-    )
-    assert set(out["summary"]["topics"]) == {"/hsrb/joint_states"}
-    assert (data_dir / "report" / "signal_report" / "run_x" / "summary.json").exists()
+        run_signal_report(capture_id=capture_id, data_dir=data_dir, max_points=0)
 
 
 # ---- registry wiring ---------------------------------------------------------

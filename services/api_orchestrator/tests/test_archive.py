@@ -12,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import httpx
+from api_orchestrator import fileops
 from api_orchestrator.app_factory import create_orchestrator_app
 from api_orchestrator.layout import DataLayout
 from api_orchestrator.models import Capture, CaptureState
@@ -40,9 +41,11 @@ def _archive_client(
     return TestClient(app)
 
 
-def _seed(client: TestClient, layout: DataLayout) -> str:
+def _seed(
+    client: TestClient, layout: DataLayout, *, capture_id: str | None = None
+) -> str:
     store = client.app.state.capture_store
-    capture_id = new_capture_id()
+    capture_id = capture_id or new_capture_id()
     capture_dir = layout.capture_dir(capture_id)
     capture_dir.mkdir(parents=True)
     (capture_dir / "metadata.yaml").write_text("x: 1\n", encoding="utf-8")
@@ -85,7 +88,7 @@ class TestArchive:
             )
             assert response.status_code == 200
             body = response.json()
-            assert body["files"] == 2
+            assert body["file_count"] == 2
             assert body["bytes"] > 0
 
             copied = destination / capture_id
@@ -194,3 +197,199 @@ class TestArchive:
             )
             assert response.status_code == 409
             assert response.json()["error"]["code"] == "capture_not_present"
+
+
+class TestDestinationOverlap:
+    """A destination that overlaps our own data is archive-that-deletes (A)."""
+
+    def _archive_to(
+        self, client: TestClient, capture_id: str, destination: Path
+    ) -> httpx.Response:
+        return client.post(
+            f"/api/v1/captures/{capture_id}/archive",
+            json={"destination": str(destination)},
+        )
+
+    def test_archiving_into_the_data_dir_is_refused(
+        self, data_dir: Path, fake_recorder: FakeRecorder
+    ) -> None:
+        # The allow-list authorises writing here, and an operator setting
+        # KAIROS_ARCHIVE_ROOTS=/data is doing something perfectly reasonable.
+        # It is still the one destination that must not be used: the source
+        # deletion afterwards would take the verified copy with it.
+        with _archive_client(data_dir, data_dir, fake_recorder) as client:
+            layout = client.app.state.data_layout
+            capture_id = _seed(client, layout)
+
+            response = self._archive_to(client, capture_id, data_dir / "archive")
+            assert response.status_code == 400
+            assert response.json()["error"]["code"] == "destination_inside_data_dir"
+            # Nothing was copied and nothing was deleted.
+            assert layout.capture_dir(capture_id).is_dir()
+            assert not (data_dir / "archive").exists()
+
+    def test_archiving_a_capture_onto_itself_is_refused(
+        self, data_dir: Path, fake_recorder: FakeRecorder
+    ) -> None:
+        with _archive_client(data_dir, data_dir, fake_recorder) as client:
+            layout = client.app.state.data_layout
+            capture_id = _seed(client, layout)
+            # destination/<capture_id> resolves to the capture's own directory.
+            response = self._archive_to(client, capture_id, layout.objects)
+            assert response.status_code == 400
+            assert response.json()["error"]["code"] == "destination_inside_data_dir"
+            assert (layout.capture_dir(capture_id) / "bag_0.mcap").is_file()
+
+    def test_a_target_containing_the_data_dir_is_refused(
+        self, tmp_path: Path, fake_recorder: FakeRecorder
+    ) -> None:
+        """The same disaster from the other end: the target ENCLOSES data_dir.
+
+        Contrived to construct — the data directory has to sit under a path
+        named like a capture — but it is the direction a one-sided check
+        misses, and the copy would land on top of the store itself.
+
+        Note what is deliberately NOT refused: a destination *root* that merely
+        contains data_dir. Archiving lands in ``<destination>/<capture_id>``, a
+        sibling of the data directory, so nothing overlaps and the operator's
+        layout is their business.
+        """
+        known = "01920000-0000-7000-8000-0000000000ff"
+        root = tmp_path / "root"
+        nested_data = root / known / "data"
+        nested_data.mkdir(parents=True)
+
+        with _archive_client(nested_data, root, fake_recorder) as client:
+            layout = client.app.state.data_layout
+            capture_id = _seed(client, layout, capture_id=known)
+            # target == root/<known>, which contains data_dir.
+            response = self._archive_to(client, capture_id, root)
+            assert response.status_code == 400
+            assert response.json()["error"]["code"] == "destination_inside_data_dir"
+            assert layout.capture_dir(capture_id).is_dir()
+
+    def test_a_symlink_cannot_disguise_the_overlap(
+        self, data_dir: Path, tmp_path: Path, fake_recorder: FakeRecorder
+    ) -> None:
+        # A path that LOOKS outside but resolves inside. Comparing the literal
+        # strings would pass this; realpath on both sides is what catches it.
+        disguise = tmp_path / "looks-external"
+        disguise.symlink_to(data_dir)
+        with _archive_client(data_dir, tmp_path, fake_recorder) as client:
+            layout = client.app.state.data_layout
+            capture_id = _seed(client, layout)
+            response = self._archive_to(client, capture_id, disguise / "archive")
+            assert response.status_code == 400
+            assert response.json()["error"]["code"] == "destination_inside_data_dir"
+            assert layout.capture_dir(capture_id).is_dir()
+
+    def test_a_genuinely_separate_destination_is_allowed(
+        self, data_dir: Path, tmp_path: Path, fake_recorder: FakeRecorder
+    ) -> None:
+        roots = tmp_path / "nas"
+        roots.mkdir()
+        with _archive_client(data_dir, roots, fake_recorder) as client:
+            layout = client.app.state.data_layout
+            capture_id = _seed(client, layout)
+            response = self._archive_to(client, capture_id, roots)
+            # The guard must not become a blanket refusal — the ordinary case
+            # still has to work.
+            assert response.status_code == 200, response.text
+            assert not layout.capture_dir(capture_id).exists()
+
+
+class TestDestinationNotEmpty:
+    def test_a_destination_holding_files_is_refused(
+        self, data_dir: Path, tmp_path: Path, fake_recorder: FakeRecorder
+    ) -> None:
+        roots = tmp_path / "nas"
+        roots.mkdir()
+        with _archive_client(data_dir, roots, fake_recorder) as client:
+            layout = client.app.state.data_layout
+            capture_id = _seed(client, layout)
+            # Debris from an earlier failed attempt.
+            leftover = roots / capture_id
+            leftover.mkdir(parents=True)
+            (leftover / "bag_0.mcap").write_bytes(b"truncated remains")
+
+            response = client.post(
+                f"/api/v1/captures/{capture_id}/archive",
+                json={"destination": str(roots)},
+            )
+            assert response.status_code == 409
+            assert response.json()["error"]["code"] == "destination_not_empty"
+            # Verification only ever inspects what THIS copy wrote, so debris
+            # would ride along unexamined inside a "successful" archive.
+            assert (leftover / "bag_0.mcap").read_bytes() == b"truncated remains"
+            assert layout.capture_dir(capture_id).is_dir()
+
+    def test_an_empty_destination_directory_is_fine(
+        self, data_dir: Path, tmp_path: Path, fake_recorder: FakeRecorder
+    ) -> None:
+        roots = tmp_path / "nas"
+        roots.mkdir()
+        with _archive_client(data_dir, roots, fake_recorder) as client:
+            layout = client.app.state.data_layout
+            capture_id = _seed(client, layout)
+            (roots / capture_id).mkdir(parents=True)  # pre-created, but empty
+
+            response = client.post(
+                f"/api/v1/captures/{capture_id}/archive",
+                json={"destination": str(roots)},
+            )
+            assert response.status_code == 200, response.text
+
+
+class TestArchiveDigests:
+    """The ledger alone must be able to audit the archive (C)."""
+
+    def test_per_file_hashes_reach_the_ledger_and_the_response(
+        self, data_dir: Path, tmp_path: Path, fake_recorder: FakeRecorder
+    ) -> None:
+        roots = tmp_path / "nas"
+        roots.mkdir()
+        with _archive_client(data_dir, roots, fake_recorder) as client:
+            layout = client.app.state.data_layout
+            capture_id = _seed(client, layout)
+            body = client.post(
+                f"/api/v1/captures/{capture_id}/archive",
+                json={"destination": str(roots)},
+            ).json()
+
+        assert body["file_count"] == 2
+        by_path = {entry["path"]: entry for entry in body["files"]}
+        assert set(by_path) == {"metadata.yaml", "bag_0.mcap"}
+
+        event = ledger_v2.archive_events(data_dir)[capture_id]
+        # Once the source is deleted the manifest goes with it. Without these
+        # the event could say only "N bytes went to /mnt/nas", which cannot
+        # answer "is the copy still intact?" years later.
+        assert event["files"] == body["files"]
+
+        # And the hashes are real: they match the bytes actually at the target.
+        archived = roots / capture_id / "bag_0.mcap"
+        expected, size = fileops.sha256_file(archived)
+        assert by_path["bag_0.mcap"]["sha256"] == expected
+        assert by_path["bag_0.mcap"]["size"] == size
+
+    def test_the_digests_survive_into_a_rebuilt_catalog(
+        self, data_dir: Path, tmp_path: Path, fake_recorder: FakeRecorder
+    ) -> None:
+        roots = tmp_path / "nas"
+        roots.mkdir()
+        with _archive_client(data_dir, roots, fake_recorder) as client:
+            layout = client.app.state.data_layout
+            capture_id = _seed(client, layout)
+            client.post(
+                f"/api/v1/captures/{capture_id}/archive",
+                json={"destination": str(roots)},
+            )
+        (data_dir / "kairos.db").unlink()
+
+        with _archive_client(data_dir, roots, fake_recorder) as restarted:
+            # The row comes back from the archive event alone (§8), and the
+            # audit record it carries is still readable from the ledger.
+            body = restarted.get(f"/api/v1/captures/{capture_id}").json()
+            assert body["archive_destination"] == str(roots / capture_id)
+        event = ledger_v2.archive_events(data_dir)[capture_id]
+        assert len(event["files"]) == 2

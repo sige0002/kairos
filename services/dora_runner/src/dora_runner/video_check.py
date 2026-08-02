@@ -2,10 +2,9 @@
 
 Event-driven (button -> job), post-hoc, and read-only with respect to the
 canonical recording: it only READS the finished MCAP under
-``recorded/<run_id>`` — or, with the optional ``dataset_dir`` param, under an
-exported ``<operator>/<task>/<NNN>`` dataset directory — to decode a single
-image topic's frames into an mp4, so it can never disturb an in-flight
-recording (it only ever runs on finished runs).
+``objects/<capture_id>`` to decode a single image topic's frames into an mp4,
+so it can never disturb an in-flight recording (it only ever runs on finished
+captures).
 It NEVER auto-converts — a user picks a camera topic and presses the button.
 
 The encode dependencies (``av`` = PyAV, which bundles ffmpeg, and ``Pillow``
@@ -15,11 +14,11 @@ import and boot when those packages are absent. The happy path is a
 ``sensor_msgs/CompressedImage`` JPEG topic; a raw ``sensor_msgs/Image`` topic is
 skipped with a clear note rather than crashing.
 
-The mp4 is written under ``data/report/video_check/<run_id>/<topic>.mp4`` and the
+The mp4 is written under ``data/report/video_check/<capture_id>/<topic>.mp4`` and the
 summary carries the path **relative to data_dir** (``file``) so the frontend can
 build the guarded ``/api/v1/files/<file>`` URL to play it.
 
-Results are CACHED per (run_id, topic): the summary is persisted as a
+Results are CACHED per (capture_id, topic): the summary is persisted as a
 ``<topic>.summary.json`` sidecar beside the mp4, and a later job for the same
 pair returns it instantly (``cached: true``) instead of re-decoding and
 re-encoding — a finished run's MCAP is immutable, so the artifact stays valid.
@@ -45,7 +44,6 @@ from dora_runner.mcap_utils import (
     resolve_source_dir,
     source_times,
     topic_message_count,
-    validate_run_id,
 )
 
 # Pipeline identity stamped into the summary (reproducibility contract, shared
@@ -116,16 +114,17 @@ def _load_cached_summary(
     out_path: Path,
     mcap_path: Path,
     *,
-    run_id: str,
+    capture_id: str,
     topic: str,
     max_frames: int,
 ) -> dict[str, Any] | None:
-    """Return the persisted summary for (run_id, topic) if it is still valid.
+    """Return the persisted summary for (capture_id, topic) if it is still valid.
 
     Valid means: the sidecar parses, was produced by this pipeline version for
-    this exact (run_id, topic), is newer than the MCAP (a re-recorded run id
-    invalidates), and — when it references an mp4 — that file still exists and
-    is also newer than the MCAP. A different *max_frames* is a miss UNLESS the
+    this exact (capture_id, topic), is newer than the MCAP (a capture whose
+    bytes were re-fetched invalidates), and — when it references an mp4 — that
+    file still exists and is also newer than the MCAP. A different *max_frames*
+    is a miss UNLESS the
     cached encode is complete (untruncated) and fits within the requested cap —
     then it is exactly what a fresh capped encode would produce. Anything else
     regenerates.
@@ -137,7 +136,7 @@ def _load_cached_summary(
             isinstance(summary, dict)
             and summary.get("pipeline") == PIPELINE_ID
             and summary.get("version") == PIPELINE_VERSION
-            and summary.get("run_id") == run_id
+            and summary.get("capture_id") == capture_id
             and summary.get("topic") == topic
             and sidecar.stat().st_mtime >= mcap_mtime
         ):
@@ -158,32 +157,27 @@ def _load_cached_summary(
 
 def run_video_check(
     *,
-    run_id: str,
+    capture_id: str,
     data_dir: Path,
     topic: str,
     force: bool = False,
-    dataset_dir: str | None = None,
     max_frames: int = MAX_FRAMES,
 ) -> dict[str, Any]:
-    """Encode a camera *topic*'s frames from the run's MCAP into mp4.
+    """Encode a camera *topic*'s frames from the capture's MCAP into mp4.
 
-    The MCAP comes from ``recorded/<run_id>`` by default, or — when
-    *dataset_dir* (``<operator>/<task>/<NNN>``) is given — from the exported
-    dataset directory, so a preview stays available after ``dataset_export``
-    MOVED the recording out of ``recorded/``. The output/cache stays keyed by
-    (run_id, topic) either way, so a preview generated before export is reused
-    after it (the move preserves mtimes).
+    The MCAP comes from ``objects/<capture_id>`` and the mp4 is written under
+    ``report/video_check/<capture_id>/``.
 
     Returns the ``{summary, artifacts}`` JobResult shape. Raises
-    ``FileNotFoundError`` if the source dir or its MCAP is missing and
-    ``ValueError`` for an unsafe run_id / dataset_dir (both mapped to a failed
-    job by the worker). The encode deps (``av`` + ``Pillow``) are lazy-imported
-    here; their absence raises a clear ``RuntimeError`` (-> failed job) rather
-    than breaking module import.
+    ``FileNotFoundError`` if the capture dir or its MCAP is missing and
+    ``ValueError`` for a capture_id that is not a UUIDv7 (both mapped to a
+    failed job by the worker). The encode deps (``av`` + ``Pillow``) are
+    lazy-imported here; their absence raises a clear ``RuntimeError`` (-> failed
+    job) rather than breaking module import.
 
-    A previously generated result for this (run_id, topic) is returned from the
-    sidecar cache (marked ``cached: true``) without touching the encode deps;
-    *force* skips the cache and re-encodes.
+    A previously generated result for this (capture_id, topic) is returned from
+    the sidecar cache (marked ``cached: true``) without touching the encode
+    deps; *force* skips the cache and re-encodes.
 
     *max_frames* caps the encode (default keeps previews short); ``0`` means
     the FULL episode — that is the "regenerate the whole video" path the UI
@@ -193,22 +187,21 @@ def run_video_check(
 
     The MCAP is only read, so the canonical recording is never touched.
     """
-    validate_run_id(run_id)
     if not topic or not topic.strip():
         raise ValueError("topic is required for video_check")
     if max_frames < 0:
         raise ValueError("max_frames must be >= 0 (0 = the full episode)")
-    source_dir = resolve_source_dir(data_dir, run_id, dataset_dir)
+    source_dir = resolve_source_dir(data_dir, capture_id)
     mcap_path = find_mcap(source_dir)
 
-    out_dir = data_dir / "report" / "video_check" / run_id
+    out_dir = data_dir / "report" / "video_check" / capture_id
     out_dir.mkdir(parents=True, exist_ok=True)
     sanitized = sanitize_topic(topic)
     out_path = out_dir / f"{sanitized}.mp4"
     rel_path = out_path.relative_to(data_dir).as_posix()
 
     # Cache: a finished run's MCAP is immutable, so an earlier encode of this
-    # exact (run_id, topic) is still the right answer — return it instantly
+    # exact (capture_id, topic) is still the right answer — return it instantly
     # instead of re-decoding/re-encoding (seconds per click in the Runs tab).
     # Checked BEFORE the encode deps below: a cache hit needs none of them.
     sidecar = out_dir / f"{sanitized}.summary.json"
@@ -217,7 +210,7 @@ def run_video_check(
             sidecar,
             out_path,
             mcap_path,
-            run_id=run_id,
+            capture_id=capture_id,
             topic=topic,
             max_frames=max_frames,
         )
@@ -316,7 +309,7 @@ def run_video_check(
     summary: dict[str, Any] = {
         "pipeline": PIPELINE_ID,
         "version": PIPELINE_VERSION,
-        "run_id": run_id,
+        "capture_id": capture_id,
         "topic": topic,
         "frames": frames_encoded,
         "total_messages": total_messages,
@@ -349,7 +342,7 @@ def run_video_check(
         summary["file"] = rel_path
         summary["mp4"] = rel_path
 
-    # Persist the summary beside the mp4 so the next job for this (run_id,
+    # Persist the summary beside the mp4 so the next job for this (capture_id,
     # topic) is a cache hit. Written for the no-frames case too — that verdict
     # is just as deterministic for an immutable bag, and re-scanning the whole
     # topic to re-learn "no frames" costs the same seconds as an encode.

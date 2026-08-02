@@ -12,12 +12,21 @@ from pathlib import Path
 from dora_runner.main import _execute_job
 from dora_runner.store import JobRecord, RunnerStore
 from kairos_common import JobState
+from kairos_common.ids import new_capture_id
+
+# A capture_id is a UUIDv7 everywhere it is used as a key or path segment (§1).
+CAPTURE_ID = new_capture_id()
 
 
 def test_execute_job_skips_a_precanceled_job() -> None:
     """A job cancelled before the worker starts is left canceled (not run)."""
     store = RunnerStore()
-    job = JobRecord(job_id="j1", run_id="run_x", pipeline="fast_validation", params={})
+    job = JobRecord(
+        job_id="j1",
+        capture_id=CAPTURE_ID,
+        pipeline="fast_validation",
+        params={},
+    )
     job.state = JobState.canceled  # cancelled between create and worker start
 
     asyncio.run(_execute_job(job, store, Path("/nonexistent")))

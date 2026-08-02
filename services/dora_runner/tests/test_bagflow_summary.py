@@ -5,6 +5,10 @@ from __future__ import annotations
 from typing import Any
 
 from dora_runner.bagflow_summary import summarize
+from kairos_common.ids import new_capture_id
+
+# A capture_id is a UUIDv7 everywhere it is used as a key or path segment (§1).
+CAPTURE_ID = new_capture_id()
 
 
 def _report(**overrides: Any) -> dict[str, Any]:
@@ -32,7 +36,7 @@ def _report(**overrides: Any) -> dict[str, Any]:
 
 
 def test_all_checks_ok_is_a_pass() -> None:
-    summary = summarize(_report(), flow="default", run_id="run_1", wall_s=0.56)
+    summary = summarize(_report(), flow="default", capture_id=CAPTURE_ID, wall_s=0.56)
 
     assert summary["result"] == "pass"
     assert summary["pipeline"] == "full_validation"
@@ -51,7 +55,7 @@ def test_a_failed_check_fails_the_run_and_is_named() -> None:
     report = _report()
     report["results"]["blur"] = [{"check": "blur", "ok": False, "blurry_ratio": 0.4}]
 
-    summary = summarize(report, flow="default", run_id="run_1")
+    summary = summarize(report, flow="default", capture_id=CAPTURE_ID)
 
     assert summary["result"] == "fail"
     assert summary["metrics"]["checks_failed"] == 1
@@ -65,13 +69,13 @@ def test_source_read_failure_fails_the_run() -> None:
         {"check": "source_read", "ok": False, "read_error": "Chunk ended mid-record"}
     ]
 
-    assert summarize(report, flow="default", run_id="run_1")["result"] == "fail"
+    assert summarize(report, flow="default", capture_id=CAPTURE_ID)["result"] == "fail"
 
 
 def test_incomplete_node_fails_even_with_no_failed_check() -> None:
     """A node that died ran none of its checks — 'no failures' would be a lie."""
     summary = summarize(
-        _report(incomplete=["result_freeze"]), flow="default", run_id="run_1"
+        _report(incomplete=["result_freeze"]), flow="default", capture_id=CAPTURE_ID
     )
 
     assert summary["result"] == "fail"
@@ -80,7 +84,7 @@ def test_incomplete_node_fails_even_with_no_failed_check() -> None:
 
 
 def test_no_results_at_all_fails() -> None:
-    summary = summarize(_report(results={}), flow="default", run_id="run_1")
+    summary = summarize(_report(results={}), flow="default", capture_id=CAPTURE_ID)
 
     assert summary["result"] == "fail"
     assert "no check produced a result" in summary["message"]
@@ -91,12 +95,12 @@ def test_coverage_is_reported_but_only_gates_when_asked() -> None:
         coverage={"freeze.frames": {"from": "decode/frames", "ratio_vs_upstream": 0.62}}
     )
 
-    ungated = summarize(report, flow="default", run_id="run_1")
+    ungated = summarize(report, flow="default", capture_id=CAPTURE_ID)
     assert ungated["result"] == "pass"
     assert ungated["metrics"]["coverage"] == 62.0
     assert ungated["metrics"]["min_coverage_required"] is None
 
-    gated = summarize(report, flow="default", run_id="run_1", min_coverage=0.9)
+    gated = summarize(report, flow="default", capture_id=CAPTURE_ID, min_coverage=0.9)
     assert gated["result"] == "fail"
     assert gated["metrics"]["min_coverage_required"] == 90.0
 
@@ -107,7 +111,7 @@ def test_missing_coverage_ratios_are_null_not_zero() -> None:
     summary = summarize(
         _report(coverage={"decode.images": {"topic": "/cam", "ratio_vs_bag": None}}),
         flow="default",
-        run_id="run_1",
+        capture_id=CAPTURE_ID,
         min_coverage=0.9,
     )
 

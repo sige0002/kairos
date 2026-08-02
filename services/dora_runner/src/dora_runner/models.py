@@ -33,13 +33,17 @@ class ValidationTemplateListResponse(BaseModel):
 class TemplateGenerateRequest(BaseModel):
     """Body for template generation."""
 
-    run_id: str
+    capture_id: str
 
 
 class JobCreateRequest(BaseModel):
-    """Body for ``POST /jobs``."""
+    """Body for ``POST /jobs``.
 
-    run_id: str
+    Keyed by ``capture_id`` (§10.5): the job reads ``objects/<capture_id>`` and
+    writes ``report/<pipeline>/<capture_id>/``.
+    """
+
+    capture_id: str
     pipeline: str
     params: dict[str, Any] = Field(default_factory=dict)
 
@@ -54,7 +58,7 @@ class JobStatus(BaseModel):
     """Job status response."""
 
     job_id: str
-    run_id: str
+    capture_id: str
     pipeline: str
     state: JobState
     progress: float = Field(ge=0.0, le=1.0)
@@ -84,7 +88,7 @@ class PipelineDefinition(BaseModel):
     description: str
     enabled: bool
     schema_: dict[str, Any] = Field(default_factory=dict, alias="schema")
-    required_inputs: list[str] = Field(default_factory=lambda: ["run_id"])
+    required_inputs: list[str] = Field(default_factory=lambda: ["capture_id"])
     outputs: list[str] = Field(default_factory=list)
     executor: str = "in_process"
     effective_executor: str = "in-process"

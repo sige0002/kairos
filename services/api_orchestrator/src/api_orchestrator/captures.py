@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import threading
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
@@ -58,6 +59,7 @@ from api_orchestrator import layout as layout_mod
 from api_orchestrator.health import StoreHealth
 from api_orchestrator.layout import DataLayout
 from api_orchestrator.models import (
+    ArchivedFile,
     Capture,
     CaptureArchiveResponse,
     CaptureDetail,
@@ -198,7 +200,6 @@ class CaptureService:
             manifest=manifest.manifest.to_json() if manifest.manifest else None,
             record=record.record.to_json() if record.record else None,
             validation=self._report("fast_validation", capture_id),
-            dataset_stats=self._report("dataset_export", capture_id),
             loss=self._report("loss_report", capture_id),
         )
 
@@ -438,6 +439,15 @@ class CaptureService:
         bytes survive the removal keeps its ``trashed`` replica and is retried
         up to :data:`MAX_REAP_ATTEMPTS`; past that the condition is logged as a
         warning rather than retried forever (§7 step 5).
+
+        The capture's ``report/<pipeline>/<capture_id>/`` directories go too.
+        They are derived data — no ledger event, nothing to recover — but they
+        are served by ``GET /api/v1/files``, so a surviving ``video_check`` mp4
+        would let an operator watch a recording the UI told them was
+        unrecoverable (§12). Their removal deliberately does NOT gate the return
+        value: the replica state describes the capture's own bytes, and a report
+        that will not delete is a different problem from a capture that will
+        not, so conflating them would make one signal answer two questions.
         """
         if self._health.suspect:
             # §9-3: SUSPECT stops the reaper. If the volume is not what we think
@@ -447,6 +457,12 @@ class CaptureService:
         # unbounded retry loop, and counting attempts only on failure means the
         # reconciler re-walks the same undeletable tree on every pass forever —
         # the bound has to stop the work, not just the logging.
+        # Report GC runs OUTSIDE the trash-attempt bound: the cap exists for
+        # the capture's own bytes, and a stuck trash purge must not silently
+        # stop report cleanup with it. purge_reports is idempotent and warns
+        # on its own residue, so re-walking it per pass is the cheap, honest
+        # behaviour — the operator's signal persists while the condition does.
+        layout_mod.purge_reports(self._layout, capture_id)
         if self._reap_attempts.get(capture_id, 0) >= MAX_REAP_ATTEMPTS:
             return False
 
@@ -627,10 +643,22 @@ class CaptureService:
                 )
 
             target = destination / capture_id
+            self._reject_overlapping_destination(target, source)
             try:
                 result = await asyncio.to_thread(
                     fileops.copy_tree_verified, source, target
                 )
+            except fileops.DestinationNotEmptyError as exc:
+                raise ApiError(
+                    status_code=409,
+                    code="destination_not_empty",
+                    message=(
+                        f"{target} already contains files — refusing to archive "
+                        "into it. Choose another path, or clear it if it is the "
+                        "debris of a failed archive."
+                    ),
+                    details={"capture_id": capture_id, "destination": str(target)},
+                ) from exc
             except (OSError, fileops.VerificationError) as exc:
                 raise ApiError(
                     status_code=500,
@@ -657,6 +685,13 @@ class CaptureService:
                     payload[key] = value
             if reason:
                 payload["reason"] = reason
+            # The per-file hashes we just computed while copying. Recording them
+            # is what lets the LEDGER ALONE audit the archive: the manifest is
+            # deleted with the source moments from now, so without this the
+            # event can say "4 GB went to /mnt/nas" and nothing that would let
+            # anyone check the copy years later.
+            if result.entries:
+                payload["files"] = result.entries
             try:
                 ledger_v2.append_with_slack_release(
                     self._layout.data_dir,
@@ -700,7 +735,8 @@ class CaptureService:
             capture_id=capture_id,
             destination=str(target),
             bytes=result.bytes,
-            files=result.files,
+            file_count=result.files,
+            files=[ArchivedFile.model_validate(entry) for entry in result.entries],
         )
 
     # ---- retention (§10) ---------------------------------------------------
@@ -774,6 +810,43 @@ class CaptureService:
             return False
         return True
 
+    def _reject_overlapping_destination(self, target: Path, source: Path) -> None:
+        """Refuse an archive destination that overlaps our own data (§6).
+
+        This is a *different* question from the ``KAIROS_ARCHIVE_ROOTS``
+        allow-list, and passing that list is not evidence about this one. The
+        allow-list says where writing is PERMITTED; this says the two paths must
+        not be the same bytes. Set ``KAIROS_ARCHIVE_ROOTS=/data`` — which is a
+        perfectly reasonable thing for an operator to do — and the allow-list
+        happily authorises archiving ``objects/<id>`` into the data directory,
+        after which the source deletion removes the verified copy along with the
+        original and the API reports success with nothing left.
+
+        Resolved through ``realpath`` on both sides so a symlink cannot disguise
+        the overlap, and containment is checked in BOTH directions: a
+        destination inside the data directory is the obvious case, and a data
+        directory inside the destination is the same disaster from the other
+        end.
+        """
+        real_target = _real_path(target)
+        real_source = _real_path(source)
+        real_data = _real_path(self._layout.data_dir)
+        for other, label in ((real_source, "the capture"), (real_data, "data_dir")):
+            if _overlaps(real_target, other):
+                raise ApiError(
+                    status_code=400,
+                    code="destination_inside_data_dir",
+                    message=(
+                        f"The archive destination overlaps {label} "
+                        f"({real_target} vs {other}). Archiving there would "
+                        "delete the copy along with the original."
+                    ),
+                    details={
+                        "destination": str(real_target),
+                        "data_dir": str(real_data),
+                    },
+                )
+
     def _require_delete_available(self) -> None:
         if self._health.delete_available:
             return
@@ -839,6 +912,29 @@ class CaptureService:
 
 class _CaptureGoneError(RuntimeError):
     """``objects/<capture_id>`` is absent and must not be recreated."""
+
+
+def _real_path(path: Path) -> Path:
+    """``realpath`` of *path*, resolving symlinks in its existing ancestors.
+
+    The archive destination normally does not exist yet, so the part that CAN
+    be spoofed is the part that already does — that is where a planted symlink
+    would live. Resolve the deepest existing ancestor and re-attach the tail.
+    """
+    existing = path
+    while not existing.exists() and existing != existing.parent:
+        existing = existing.parent
+    real_existing = Path(os.path.realpath(existing))
+    try:
+        tail = path.relative_to(existing)
+    except ValueError:  # pragma: no cover - path is its own ancestor
+        return real_existing
+    return real_existing if str(tail) == "." else real_existing / tail
+
+
+def _overlaps(a: Path, b: Path) -> bool:
+    """Whether either path contains the other, or they are the same."""
+    return a == b or a.is_relative_to(b) or b.is_relative_to(a)
 
 
 def _write_record_sidecar(

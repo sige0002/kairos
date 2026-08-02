@@ -295,6 +295,48 @@ def trash_remnants(layout: DataLayout, capture_id: str) -> list[Path]:
     return [path for path in remnants if path.exists()]
 
 
+def report_remnants(layout: DataLayout, capture_id: str) -> list[Path]:
+    """Every ``report/<pipeline>/<capture_id>/`` directory for this capture.
+
+    Enumerated by scanning ``report/`` rather than from a list of known
+    pipelines: the registry changes (``dataset_export`` was retired with §6,
+    plugins add their own), and a hardcoded list would silently stop cleaning
+    up the moment somebody added a pipeline.
+    """
+    validate_capture_id(capture_id)
+    try:
+        pipelines = sorted(layout.report.iterdir())
+    except OSError:
+        return []
+    return [
+        candidate
+        for pipeline in pipelines
+        if pipeline.is_dir() and not pipeline.is_symlink()
+        if (candidate := pipeline / capture_id).exists()
+    ]
+
+
+def purge_reports(layout: DataLayout, capture_id: str) -> bool:
+    """Delete this capture's pipeline reports. ``True`` = nothing is left.
+
+    These are derived artifacts — a validation summary, a ``video_check`` mp4 —
+    so there is no ledger event and nothing to recover. But they are **served**
+    by ``GET /api/v1/files``, which makes leaving them behind a correctness
+    problem rather than untidiness: a discard tells the operator the recording
+    is unrecoverable (§12), and a surviving mp4 preview of it makes that untrue.
+    """
+    for path in report_remnants(layout, capture_id):
+        shutil.rmtree(path, ignore_errors=True)
+    remaining = report_remnants(layout, capture_id)
+    if remaining:
+        logger.warning(
+            "reports for %s could not be removed: %s",
+            capture_id,
+            [str(path) for path in remaining],
+        )
+    return not remaining
+
+
 def purge_from_trash(layout: DataLayout, capture_id: str) -> bool:
     """Physically remove a trashed capture. ``True`` = nothing is left.
 

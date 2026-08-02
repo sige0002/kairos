@@ -13,15 +13,50 @@ from dora_runner.registry import (
 def test_default_registry_has_runnable_and_placeholders() -> None:
     reg = build_default_registry()
     ids = {p.id for p in reg.all()}
-    assert {"fast_validation", "dataset_export", "loss_report", "video_check"} <= ids
+    assert {"fast_validation", "loss_report", "video_check"} <= ids
     # The MCAP-reading pipelines are runnable wherever the service runs;
     # placeholders are not. (The two validation gates need the bagflow binaries
     # and are covered by their own availability test below.)
-    for pid in ("dataset_export", "loss_report", "video_check", "signal_report"):
+    for pid in ("loss_report", "video_check", "signal_report"):
         assert reg.runnable(pid), pid
     for pid in ("dataset_convert", "dataset_validation"):
         assert not reg.runnable(pid), pid
         assert reg.get(pid) is not None and reg.get(pid).enabled is False
+
+
+def test_dataset_pipelines_are_gone() -> None:
+    """§6: datasets are rows, so dora_runner no longer moves or archives them.
+
+    ``dataset_export`` MOVED a recording out of the store and ``dataset_archive``
+    copied one out and deleted the source. Both are the orchestrator's now
+    (``POST /api/v1/captures/{id}/archive`` and the views regeneration), and a
+    registry that still advertised them would let the UI submit a job that
+    reaches for a directory layout that no longer exists.
+    """
+    reg = build_default_registry()
+    ids = {p.id for p in reg.all()}
+    assert "dataset_export" not in ids
+    assert "dataset_archive" not in ids
+
+
+def test_no_pipeline_still_takes_a_dataset_dir_param() -> None:
+    """§6/§10.5: the source is objects/<capture_id> and nothing else.
+
+    A leftover ``dataset_dir`` property would be an unreachable form field, and
+    worse, an input that looks like it can still redirect a job's source.
+    """
+    for pipeline in build_default_registry().all():
+        properties = pipeline.params_schema.get("properties", {})
+        assert "dataset_dir" not in properties, pipeline.id
+        assert pipeline.required_inputs in (["capture_id"], []), pipeline.id
+
+
+def test_outputs_are_keyed_by_capture_id() -> None:
+    """§2: report/<pipeline>/<capture_id>/ — the advertised contract says so."""
+    for pipeline in build_default_registry().all():
+        for output in pipeline.outputs:
+            assert "<run_id>" not in output, pipeline.id
+            assert "<capture_id>" in output, pipeline.id
 
 
 def test_validation_gates_follow_bagflow_availability(monkeypatch) -> None:
@@ -61,7 +96,7 @@ def test_metadata_carries_schema_outputs_executor() -> None:
     assert fv.params_schema["required"] == ["template"]
     assert fv.executor == "dora"
     assert fv.outputs  # non-empty output contract
-    assert fv.required_inputs == ["run_id"]
+    assert fv.required_inputs == ["capture_id"]
 
 
 def test_register_is_idempotent_by_id() -> None:

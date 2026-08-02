@@ -1,24 +1,24 @@
 """Local CLI for iterating on validation without the HTTP server.
 
-The whole point is fast, debuggable iteration: point it at a recorded run and it
+The whole point is fast, debuggable iteration: point it at a capture and it
 runs the ``fast_validation`` flow on dora, prints the summary, and writes
-``report/fast_validation/<run_id>/summary.json`` — no uvicorn, no job queue, no
-orchestrator. Swap the template and re-run to try different rules.
+``report/fast_validation/<capture_id>/summary.json`` — no uvicorn, no job queue,
+no orchestrator. Swap the template and re-run to try different rules.
 
 It runs the same flow the service runs, so it needs the same bundled binaries
 (bagflow + dora): use it inside the dora_runner image, e.g.
 
-    docker compose exec dora_runner python -m dora_runner.cli <run_id>
+    docker compose exec dora_runner python -m dora_runner.cli <capture_id>
 
 Usage::
 
-    uv run python -m dora_runner.cli <run_id> [--data-dir DIR]
+    uv run python -m dora_runner.cli <capture_id> [--data-dir DIR]
                                     [--template FILE] [--flow NAME] [--json]
-    # or, once installed: dora-validate <run_id> ...
+    # or, once installed: dora-validate <capture_id> ...
 
 ``--template`` is a YAML or JSON file matching :class:`ValidationTemplate`
 (``name`` / ``version`` / ``required_topics: [{name, type?}]``); omit it to
-auto-generate a draft template from the run's own topics. Exit code is ``0`` on
+auto-generate a draft template from the capture's own topics. Exit code is ``0`` on
 pass, ``1`` on fail (handy in scripts/CI).
 """
 
@@ -47,19 +47,19 @@ def _load_template(path: Path) -> ValidationTemplate:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="dora-validate",
-        description="Run fast_validation against a recorded run, locally.",
+        description="Run fast_validation against one capture, locally.",
     )
-    parser.add_argument("run_id", help="run id under <data-dir>/recorded/")
+    parser.add_argument("capture_id", help="capture id under <data-dir>/objects/")
     parser.add_argument(
         "--data-dir",
         type=Path,
         default=Path("./data"),
-        help="data root containing recorded/<run_id>/ (default ./data)",
+        help="data root containing objects/<capture_id>/ (default ./data)",
     )
     parser.add_argument(
         "--template",
         type=Path,
-        help="template YAML/JSON; omit to auto-generate from the run's topics",
+        help="template YAML/JSON; omit to auto-generate from the capture's topics",
     )
     parser.add_argument(
         "--flow",
@@ -86,14 +86,14 @@ def main(argv: list[str] | None = None) -> int:
     template = (
         _load_template(args.template)
         if args.template
-        else generate_template(args.run_id, args.data_dir)
+        else generate_template(args.capture_id, args.data_dir)
     )
     result = asyncio.run(
         run_fast_validation(
-            run_id=args.run_id,
+            capture_id=args.capture_id,
             data_dir=args.data_dir,
             endpoint=DoraEndpoint.from_env(),
-            job_name=f"cli-{args.run_id}",
+            job_name=f"cli-{args.capture_id}",
             template=template,
             flow=args.flow,
         )
@@ -103,7 +103,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.json:
         print(json.dumps(summary, indent=2))
     else:
-        print(f"run:      {args.run_id}")
+        print(f"capture:  {args.capture_id}")
         print(
             f"template: {summary['template']['name']} v{summary['template']['version']}"
         )

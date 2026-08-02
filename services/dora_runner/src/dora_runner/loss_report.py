@@ -2,8 +2,9 @@
 
 Event-driven (button -> job), post-hoc, and read-only with respect to the
 canonical recording: it only READS the finished MCAP under
-``recorded/<run_id>`` (message time fields, never decoding payloads), so it can
-never disturb an in-flight recording (it only ever runs on finished runs).
+``objects/<capture_id>`` (message time fields, never decoding payloads), so it
+can never disturb an in-flight recording (it only ever runs on finished
+captures).
 
 The methodology is robot-independent. For each topic we take the message times
 (nanoseconds) — **publish_time (sender-side DDS source timestamp) when the bag
@@ -25,8 +26,8 @@ Two thresholds/filters are config-driven (OL-4.3, see
 - ``gap_threshold_multiplier``: a topic is flagged ``gap_exceeded`` when its
   worst gap exceeds ``median_interval_ms * multiplier``.
 
-The summary is written to ``data/report/loss_report/<run_id>/summary.json`` so
-the orchestrator can surface it on the run's detail view.
+The summary is written to ``data/report/loss_report/<capture_id>/summary.json``
+so the orchestrator can surface it on the capture's detail view.
 """
 
 from __future__ import annotations
@@ -41,12 +42,7 @@ from kairos_common import utc_now_iso8601
 from mcap.reader import make_reader
 
 from dora_runner.loss_report_config import DEFAULT_GAP_THRESHOLD_MULTIPLIER
-from dora_runner.mcap_utils import (
-    find_mcap,
-    resolve_source_dir,
-    source_times,
-    validate_run_id,
-)
+from dora_runner.mcap_utils import find_mcap, resolve_source_dir, source_times
 
 # Pipeline identity stamped into the summary (reproducibility contract, shared
 # with the other bundled pipelines and the hello_dora plugin example).
@@ -120,19 +116,15 @@ def gap_exceeded(estimate: dict[str, Any], multiplier: float) -> bool:
 
 def run_loss_report(
     *,
-    run_id: str,
+    capture_id: str,
     data_dir: Path,
     target_topics: list[str] | None = None,
     gap_threshold_multiplier: float = DEFAULT_GAP_THRESHOLD_MULTIPLIER,
-    dataset_dir: str | None = None,
 ) -> dict[str, Any]:
-    """Estimate per-topic loss for the run's MCAP.
+    """Estimate per-topic loss for the capture's MCAP.
 
-    The MCAP comes from ``recorded/<run_id>`` by default, or — when
-    *dataset_dir* (``<operator>/<task>/<NNN>``) is given — from the exported
-    dataset directory, so the report stays computable after ``dataset_export``
-    MOVED the recording. The summary is written under
-    ``report/loss_report/<run_id>/`` either way.
+    The MCAP comes from ``objects/<capture_id>`` and the summary is written
+    under ``report/loss_report/<capture_id>/``.
 
     *target_topics* is a list of glob patterns; only matching topics are
     reported (``None``/empty = every topic, the original behaviour).
@@ -141,14 +133,13 @@ def run_loss_report(
     config-free behaviour, so callers that omit them are unaffected.
 
     Returns the ``{summary, artifacts}`` JobResult shape. Raises
-    ``FileNotFoundError`` if the source dir or its MCAP is missing (mapped to a
-    failed job by the worker); ``ValueError`` for an unsafe run_id /
-    dataset_dir. The MCAP is only read (message time fields, no payload
-    decode), so the canonical recording is never touched.
+    ``FileNotFoundError`` if the capture dir or its MCAP is missing (mapped to a
+    failed job by the worker); ``ValueError`` for a capture_id that is not a
+    UUIDv7. The MCAP is only read (message time fields, no payload decode), so
+    the canonical recording is never touched.
     """
-    validate_run_id(run_id)
     patterns = list(target_topics or [])
-    source_dir = resolve_source_dir(data_dir, run_id, dataset_dir)
+    source_dir = resolve_source_dir(data_dir, capture_id)
     mcap_path = find_mcap(source_dir)
 
     # Per-topic collected (log_time, publish_time) pairs + the topic's message
@@ -184,7 +175,7 @@ def run_loss_report(
     summary: dict[str, Any] = {
         "pipeline": PIPELINE_ID,
         "version": PIPELINE_VERSION,
-        "run_id": run_id,
+        "capture_id": capture_id,
         "topics": topics,
         "params": {
             "target_topics": patterns,
@@ -193,7 +184,7 @@ def run_loss_report(
         "flagged": [t["name"] for t in topics if t.get("gap_exceeded")],
         "checked_at": utc_now_iso8601(),
     }
-    report_dir = data_dir / "report" / "loss_report" / run_id
+    report_dir = data_dir / "report" / "loss_report" / capture_id
     report_dir.mkdir(parents=True, exist_ok=True)
     summary_path = report_dir / "summary.json"
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
