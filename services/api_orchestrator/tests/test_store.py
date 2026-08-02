@@ -130,6 +130,23 @@ class TestCaptureRoundTrip:
         assert loaded.split is not None and loaded.split.max_size_mb == 512
         assert loaded.error is not None and loaded.error.code == "boom"
 
+    def test_a_null_topic_type_reads_back_instead_of_breaking_the_catalog(
+        self, store: CaptureStore
+    ) -> None:
+        # A failed start's sidecar records topics before type discovery, as an
+        # explicit null (§3.4). E2E §13-4 found one such rebuilt row turning
+        # EVERY catalog read into a 500 — permanently, since the row is in the
+        # DB. Write the raw shape the sidecar produces and read the whole list.
+        capture = _make_capture()
+        capture = capture.model_copy(
+            update={
+                "topics": [CaptureTopic.model_validate({"name": "/x", "type": None})]
+            }
+        )
+        store.create_capture(capture)
+        listed, _ = store.list_captures(limit=10)
+        assert [t.type for t in listed[0].topics] == [""]
+
     def test_an_unreviewed_capture_reads_back_at_revision_zero(
         self, store: CaptureStore
     ) -> None:

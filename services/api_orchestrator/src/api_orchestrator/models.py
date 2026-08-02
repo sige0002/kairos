@@ -24,7 +24,7 @@ from kairos_common.capture_sidecars import (
     DigestState,
 )
 from kairos_common.rebuild import ReplicaState
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 __all__ = [
     "TERMINAL_STATES",
@@ -105,8 +105,17 @@ class CaptureTopic(BaseModel):
     """A topic captured in a recording, with its resolved type and QoS."""
 
     name: str
+    # A failed start's sidecar (§3.4) records topics BEFORE type discovery
+    # finished, as an explicit null. That is data the rebuild must accept:
+    # one such row must never make the whole catalog unreadable (E2E §13-4
+    # found exactly that as a permanent GET /captures 500).
     type: str = ""
     qos: TopicQos | None = None
+
+    @field_validator("type", mode="before")
+    @classmethod
+    def _null_type_is_undiscovered(cls, v: object) -> object:
+        return "" if v is None else v
 
 
 class Split(BaseModel):
