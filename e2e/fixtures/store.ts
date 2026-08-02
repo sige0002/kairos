@@ -1,0 +1,144 @@
+// The store on disk: object_manifest.json, record.json, lifecycle.jsonl.
+//
+// These are the sidecar truths §13 asks each scenario to corroborate — the
+// files that must survive the database, because §8 rebuilds the catalog from
+// them. Reading them directly (rather than believing the API's summary of them)
+// is the point: a rebuild that works only because the DB happened to be intact
+// is not the property the contract is claiming.
+
+import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { stackEnv } from './stack';
+
+export interface ObjectManifest {
+  schema_version: number;
+  capture_id: string;
+  run_id: string;
+  state: string;
+  digest_state: 'pending' | 'complete';
+  files: { path: string; size: number; sha256: string }[] | null;
+  manifest_digest: string | null;
+  message_count: number | null;
+  bytes: number | null;
+  ended_at: string | null;
+}
+
+export interface RecordSidecar {
+  schema_version: number;
+  capture_id: string;
+  revision: number;
+  task_result: string | null;
+  failure_reason: string | null;
+  quality: string | null;
+  quality_source: string | null;
+  review_status: string;
+  updated_at: string;
+}
+
+export interface LedgerEvent {
+  schema_version: number;
+  event_id: string;
+  kind: string;
+  capture_id: string | null;
+  at: string;
+  [k: string]: unknown;
+}
+
+const dataDir = (): string => stackEnv().dataDir;
+
+export const store = {
+  objectsDir: (): string => join(dataDir(), 'objects'),
+  captureDir: (id: string): string => join(dataDir(), 'objects', id),
+  captureExists: (id: string): boolean => existsSync(store.captureDir(id)),
+  trashExists: (id: string): boolean => existsSync(join(dataDir(), '.trash', id)),
+  dbExists: (): boolean => existsSync(join(dataDir(), 'kairos.db')),
+
+  captureIds(): string[] {
+    const dir = store.objectsDir();
+    if (!existsSync(dir)) return [];
+    return readdirSync(dir, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name);
+  },
+
+  manifest(id: string): ObjectManifest {
+    const p = join(store.captureDir(id), 'object_manifest.json');
+    if (!existsSync(p)) throw new Error(`no object_manifest.json for ${id} (${p})`);
+    return JSON.parse(readFileSync(p, 'utf8')) as ObjectManifest;
+  },
+
+  /** `record.json` — absent until the first review save (§4: "未 review = ファイル無し"). */
+  record(id: string): RecordSidecar | null {
+    const p = join(store.captureDir(id), 'record.json');
+    if (!existsSync(p)) return null;
+    return JSON.parse(readFileSync(p, 'utf8')) as RecordSidecar;
+  },
+
+  recordPath: (id: string): string => join(store.captureDir(id), 'record.json'),
+
+  /** Every well-formed line of lifecycle.jsonl, oldest first. */
+  ledger(): LedgerEvent[] {
+    const p = join(dataDir(), 'lifecycle.jsonl');
+    if (!existsSync(p)) return [];
+    return readFileSync(p, 'utf8')
+      .split('\n')
+      .filter((l) => l.trim().length > 0)
+      .map((l) => JSON.parse(l) as LedgerEvent);
+  },
+
+  ledgerFor(id: string, kind?: string): LedgerEvent[] {
+    return store
+      .ledger()
+      .filter((e) => e.capture_id === id && (kind === undefined || e.kind === kind));
+  },
+
+  instanceId(): string {
+    const p = join(dataDir(), 'instance.json');
+    return (JSON.parse(readFileSync(p, 'utf8')) as { instance_id: string }).instance_id;
+  },
+
+  /**
+   * Plant a §3.4 failed-start sidecar (`objects/<id>.failed.json`).
+   *
+   * The shape is copied verbatim from one the recorder actually produced: when
+   * arming fails before topic-type discovery finishes, every `type` is an
+   * EXPLICIT null. Inventing a tidier sidecar here would test a case that does
+   * not occur — and the explicit null is precisely what the rebuild has to
+   * survive, because §8 requires it to make a `state='failed'` row from this
+   * file.
+   */
+  writeFailedStart(captureId: string): string {
+    const path = join(store.objectsDir(), `${captureId}.failed.json`);
+    writeFileSync(
+      path,
+      JSON.stringify({
+        schema_version: 2,
+        capture_id: captureId,
+        source_instance_id: store.instanceId(),
+        run_id: 'run_20260101_000000',
+        state: 'failed',
+        operator: 'e2e',
+        task: 'failed-start',
+        robot: 'airoa_hsr',
+        started_at: '2026-01-01T00:00:00.000Z',
+        ended_at: '2026-01-01T00:00:02.000Z',
+        topics: [{ name: '/hsrb/joint_states', type: null, qos: null }],
+        message_count: null,
+        bytes: null,
+        compression: 'none',
+        split: null,
+        dropped_messages: null,
+        integrity: 'failed',
+        error: 'arming: failed to shutdown: rcl_shutdown already called',
+        digest_state: 'pending',
+        files: null,
+        manifest_digest: null,
+      }),
+    );
+    return path;
+  },
+
+  removeIfPresent(path: string): void {
+    if (existsSync(path)) rmSync(path);
+  },
+};

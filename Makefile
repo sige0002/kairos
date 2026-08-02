@@ -432,6 +432,46 @@ test-py: ## run the Python unit-test loop (all services + libs)
 test-fe: ## frontend build + test + lint
 	cd services/frontend && npm run build && npm test && npm run lint
 
+# ---- UI acceptance (Playwright) ---------------------------------------------
+# The capture-store acceptance suite (contract §13). It drives a REAL browser
+# against the REAL frontend image, in front of a real orchestrator, recorder,
+# dora_runner and a replayed rosbag — so it is the one check that can fail for
+# reasons the unit suites cannot see (a service that will not boot, an nginx
+# proxy that 502s, a testid that moved).
+#
+# It runs on its own ports, its own ROS domain and its own data directory
+# (e2e/stack.env), so it does not disturb a `make up` stack you have running.
+# Every run starts from an empty data dir.
+#
+#   make test-e2e                          # the whole suite, stack up and down
+#   make test-e2e E2E_ARGS='--headed'      # watch it
+#   make test-e2e E2E_ARGS=tests/03-discard.spec.ts
+#   make test-e2e-up / test-e2e-down       # keep the stack between runs
+#
+# Images are NOT built here (same rule as `up`): a stale image is a lie an
+# acceptance gate must not tell, so run `make build` after changing services/.
+.PHONY: test-e2e test-e2e-deps test-e2e-up test-e2e-down
+test-e2e: test-e2e-deps ## UI acceptance suite (§13): real browser + real stack + replayed bag
+	@bash e2e/scripts/stack.sh up
+	@rc=0; (cd e2e && npx playwright test $(E2E_ARGS)) || rc=$$?; \
+	 bash e2e/scripts/stack.sh down; \
+	 if [ $$rc -ne 0 ]; then \
+	   echo "e2e: FAILED — report: e2e/playwright-report/index.html (npx playwright show-report)"; \
+	 fi; \
+	 exit $$rc
+
+# First run needs the network (npm + the chromium download). On an offline site
+# the browser rides in an image instead — see e2e/README.md.
+test-e2e-deps:
+	@cd e2e && [ -d node_modules ] || npm install
+	@cd e2e && npx playwright install chromium
+
+test-e2e-up: test-e2e-deps ## start the e2e stack and leave it up (iterate with `cd e2e && npx playwright test`)
+	@bash e2e/scripts/stack.sh up
+
+test-e2e-down: ## stop the e2e stack
+	@bash e2e/scripts/stack.sh down
+
 lint: ## ruff check (Python)
 	uvx ruff check libs services
 

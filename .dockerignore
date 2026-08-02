@@ -16,3 +16,11 @@
 data
 backups
 *.tar.gz
+
+# The acceptance suite's per-run scratch: its own data dir (recorded bags —
+# hundreds of MB after a few runs), plus Playwright's traces and videos. No
+# image copies any of it, and leaving it in the context makes every service
+# build pay for the last E2E run.
+e2e/.run
+e2e/test-results
+e2e/playwright-report
