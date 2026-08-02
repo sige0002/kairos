@@ -30,8 +30,14 @@ flowchart TB
   end
 
   FE["frontend<br/>Vite + React + TS"]
-  MCAP[("/data/recorded/&lt;run_id&gt;/*.mcap<br/>＝ 正本")]
-  OUT[("/data/report/, /data/&lt;operator&gt;/&lt;task&gt;/<br/>レポート・データセット")]
+
+  subgraph store["capture store（/data）"]
+    MCAP[("objects/&lt;capture_id&gt;/<br/>*.mcap + object_manifest.json<br/>+ record.json ＝ 正本")]
+    LEDGER[("lifecycle.jsonl<br/>破棄・削除・archive の台帳")]
+    DB[("kairos.db<br/>索引。サイドカーから再構築可")]
+    VIEWS[("views/ ・ .trash/<br/>dataset の symlink 木 / 削除の中間状態")]
+    OUT[("report/&lt;pipeline&gt;/&lt;capture_id&gt;/<br/>レポート")]
+  end
 
   TOPICS --> REC & MON & PROBE & WEB
   REC --> MCAP
@@ -39,6 +45,9 @@ flowchart TB
   FE <-->|"REST / SSE / WebRTC"| ORC
   ORC <--> REC & MON & PROBE & WEB
   ORC <-->|"POST /jobs"| DR
+  ORC -->|"索引・削除・views 再生成"| DB
+  ORC --> MCAP & LEDGER & VIEWS
+  MCAP -.->|"起動時 rebuild"| DB
   WEB -.->|"映像は直接"| FE
 ```
 
@@ -64,12 +73,12 @@ flowchart LR
 | [topic_probe](docs/specs/ja/topic_probe.md) | 選択トピックの**数値フィールド**をライブプロットする汎用プローブ。decode は本サービスに**隔離**し、収録・監視に波及させない。 |
 | [webrtc_streamer](docs/specs/ja/webrtc_streamer.md) | 低遅延のカメラ**プレビュー**（ROS 2 image → ブラウザ）。記録パスではない。 |
 | [api_orchestrator](docs/specs/ja/api_orchestrator.md) | 単一の API ハブ。ジョブのライフサイクル・状態・設定・結果集約を担う。 |
-| [dora_runner](docs/specs/ja/dora_runner.md) | 収録後の**検証・変換**パイプライン。検証は**実 dora 上の bagflow フロー**（同梱）。有効: `fast_validation` / `full_validation` / `dataset_export` / `loss_report` / `video_check` / `signal_report`。 |
+| [dora_runner](docs/specs/ja/dora_runner.md) | 収録後の**検証・変換**パイプライン。検証は**実 dora 上の bagflow フロー**（同梱）。有効: `fast_validation` / `full_validation` / `loss_report` / `video_check` / `signal_report`。 |
 | [frontend](docs/specs/ja/frontend.md) | backend-driven な Web UI（UI 表記は英語）。役割タブ構成（Console v2）: Collect / Review / Datasets / Validation / Monitor / Settings。 |
 
 ## 仕様ドキュメント
 
-各サービスの詳細仕様は [docs/specs/ja/](docs/specs/ja/README.md) を参照してください。`fig_const/` を基にした**設計の正本**です（未記載事項は推奨設計として確定。認証は不要）。
+各サービスの詳細仕様は [docs/specs/ja/](docs/specs/ja/README.md) を参照してください。収録データの配置・耐久性（`objects/<capture_id>`・サイドカー・削除・DB の再構築）はサービス横断の土台として [capture_store](docs/specs/ja/capture_store.md) にまとめてあります。`fig_const/` を基にした**設計の正本**です（未記載事項は推奨設計として確定。認証は不要）。
 
 ## 始め方
 
@@ -160,6 +169,7 @@ make recording-up
 | `make load` | 負荷概観: CPU（コア単位**と**マシン単位の両方）/ NIC 実測スループットとリンク利用率 / 実測 DDS 帯域 / データディスク空き |
 | `make smoke` / `make smoke-record` | 通し確認（PASS/FAIL）/ 記録 start/stop 込み |
 | `make test` / `make test-py` / `make test-fe` / `make lint` / `make fmt` | テスト・lint・整形 |
+| `make test-e2e` | UI からの受け入れテスト（実ブラウザ + 実スタック + bag 再生）。**イメージはビルドしない** — 先に `make build` |
 
 別ロボットを使う場合は `make up ROBOT=<robot>` のように `ROBOT` を切り替えます（`make` が
 `config/<robot>/`（committed）/ `config/local/<robot>/`（gitignored）を解決して各サービスへ渡す）。
@@ -296,25 +306,36 @@ backend 駆動で描画します（タブは Console v2 の役割 6 タブ = Col
    BAG=/data/airoa-moma-mcap/000730 docker compose -f deploy/test/compose.yaml run --rm rosbag_player
    ```
 2. **記録**: UI（Collect タブ）または `POST /api/v1/record/start {"topics":"all"}` で開始 → MCAP が
-   `/data/recorded/<run_id>/` に生成される（停止は `POST /api/v1/record/stop`）。ヘッダの
+   `/data/objects/<capture_id>/` に生成される（停止は `POST /api/v1/record/stop`）。`capture_id` は
+   recorder が発行する UUIDv7 で、パス・API・DB のすべてがこれをキーにする（`run_id` は表示名）。ヘッダの
    **OP チップ（データ取得者）** と Collect の **Task（タスク名）** を入れると、その内容＋トピック・件数・開始/終了が
-   MCAP と同じ `/data/recorded/<run_id>/session.json` に保存され、Review タブでも表示される。
-   収録は **Review タブから削除**できる（Exclude → Delete from disk の 2 段階。DB 行＋`/data/recorded/<run_id>` を削除）。recorder は出力を
-   `chmod 0777` するので、ホスト側（コンテナ外）からも sudo なしで削除できる。
+   MCAP と同じディレクトリの `object_manifest.json` に保存され、Review タブでも表示される。
+   収録は **Review タブから削除**できる（Exclude → Discard / Delete の 2 段階。削除は `.trash` 経由で行われ、
+   **カタログには墓標の行が残る**ので「どこへ行ったのか」は後から答えられる）。recorder は出力を
+   `chmod 0777` するので、ホスト側（コンテナ外）からも sudo なしで削除できる — ただし**それは削除としては扱われない**。
+   kairos の外で消えたコピーは `missing_unmanaged` として警告に出る（黙って消えない）。
 3. **監視 / プレビュー**: `GET /metrics` でライブ健全性（Hz / 欠落 / 帯域）、`/stream` でカメラの
    WebRTC プレビュー。UI では Collect タブがカメラプレビューと収録操作を、Monitor タブがトピック健全性
    （**グラフ上の全 topic を常時表示**し、監視対象は live Hz を重ねる）を担う。サンプル bag の Hz は既定の `ROBOT=airoa_hsr` で出る（どの
    topic を録る/監視するかは機体ごとに [`config/`](config/README.ja.md) で定義。Monitor タブの Rec
    チェックに事前選択として反映）。
-4. **収録後の検証・処理**（`POST /api/v1/jobs`、`dora_runner` 経由）:
-   - `fast_validation` — 必須トピックの過不足を検証 → `/data/report/fast_validation/<run_id>/summary.json` に `pass`/`fail`。
+4. **収録後の検証・処理**（`POST /api/v1/jobs {capture_id, pipeline}`、`dora_runner` 経由）:
+   - `fast_validation` — 必須トピックの過不足を検証 → `/data/report/fast_validation/<capture_id>/summary.json` に `pass`/`fail`。
    - `loss_report` — トピックごとのロス推定（Review タブの「Run loss report」）。
    - `video_check` — カメラトピックの mp4 プレビュー（Review タブ。`GET /api/v1/files/...` で再生）。
-   - `dataset_export` — 完了した収録を `data/<operator>/<task>/NNN` へ export（UI では Review タブの「Export ready」。一覧は Datasets タブ）。
+5. **データセット編成**（Datasets タブ）: 収録を dataset に**入れる／外す**（`POST /api/v1/datasets/{id}/members`）。
+   データセットは DB 上の集合で、**収録の実体は 1 バイトも動かない**ので、入れ直しも掛け持ちも自由です。
+   人間が辿れる symlink 木は `data/views/<operator>/<task>/<dataset>/<NNN>` に生成されます。
 
 ### テスト / 結合テスト
 
 - **単体テスト**: `make test`（= Python 各サービス `uv run --extra test pytest` + frontend `npm run build && npm test && npm run lint`）。
+- **受け入れテスト（UI から・実スタック）**: `make test-e2e`。専用ポート・専用 data dir の実スタックを立て、
+  ループ再生した実 bag を相手に、実ブラウザ（Playwright）で frontend を駆動します。5 シナリオ = 録画→digest 完了 /
+  Review 保存と競合拒否 / Discard と ledger の墓標 / `kairos.db` を消しての復元 / `rm -rf` → SUSPECT → Repair。
+  開発者の `make up` とは**併存**します（ポートも data dir も別）。
+  **`make test-e2e` はイメージをビルドしません**（`make up` と同じ規則）。コードを変えたら先に `make build` を
+  実行してください — 忘れると、コンテナの中の**古いコード**に対して green が出ます。
 - **スモークテスト（PASS/FAIL を表示）**: スタック起動後に `make smoke`（= `bash deploy/test/smoke.sh`）。
   health → `GET /api/v1/config` の `default_topics` → topic discovery → monitor の live metrics を順に検証して
   結果を出力します（`make smoke-record` で記録 start/stop も実行）。「テストしたのに何も出ない」を解消する入口です。

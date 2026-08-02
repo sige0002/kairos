@@ -84,27 +84,26 @@ Phase A hardening toward a supportable release
 - Batch targets are per-batch and editable (Collect's Batch menu "Change
   target…", `PATCH /batches/{id} target_episodes` 1–500): the strip, counters
   and completion all follow the batch's own plan size instead of a fixed 30.
-- COVERAGE side card on Collect: per-condition "recorded / exported" counts
-  for the current task (recorded sums the monotone `episodes_recorded`, so
-  exported takes still count) — "what to record next" as a data decision.
-- Datasets label filters (task result / condition; unlabeled exports only pass
-  "All") and "Manifest (n)": download the filtered rows as a manifest JSON —
-  a versionable training-set definition (2026-07-14 second split hearing:
-  no physical success/failure split).
+- COVERAGE side card on Collect: per-condition recorded counts for the current
+  task (summing the monotone `episodes_recorded`, which nothing ever lowers, so
+  the figure survives a later exclude or delete) — "what to record next" as a
+  data decision.
+- Datasets label filters (task result / condition / operator) and
+  "Manifest (n)": download the filtered rows as a manifest JSON — a versionable
+  training-set definition (2026-07-14 second split hearing: no physical
+  success/failure split).
 - Review batch filter + batch-level bulk decisions: clicking a row's batch
   chip filters to that batch; "Exclude batch (n)…" (reversible, kept on disk,
   per-row failure reporting) and "↺ Return batch (n)" act on the whole batch —
   the one-action consequence of a failed per-batch validation.
 - Per-batch bulk validation: the Validation target selector gains a "Batches"
-  group that runs the selected pipeline over every unexported run of a batch
-  (the blast-radius check for defects that cluster per batch).
+  group that runs the selected pipeline over every capture in a batch (the
+  blast-radius check for defects that cluster per batch).
 - Batch labels are now queryable at the consumption end (2026-07-14 decision):
-  `data/index.jsonl` catalog rows and `GET /api/v1/datasets` list rows carry
-  `batch_id` (globally unique; `batch_seq` resets daily) and `condition`
-  (flattened from episode.json's batch context), so a training-set assembler
-  can exclude whole batches or filter by condition from one file. Pre-existing
-  rows heal via `POST /api/v1/datasets/index/rebuild`. Dataset cards show the
-  condition; the detail's Sidecars section now includes the episode.json block.
+  a capture carries `batch_id` (globally unique; `batch_seq` resets daily) and
+  its batch's `condition`, so a training-set assembler can exclude whole batches
+  or filter by condition without opening each recording. The Datasets screen
+  shows the condition and the downloadable manifest carries both.
 - Shared plan catalog `GET/PUT /api/v1/plans` (single-row `plan_catalog`
   table): the project/task/condition vocabulary is persisted server-side and
   reconciled once per page load (seed a never-set server, push dirty local
@@ -130,6 +129,108 @@ Phase A hardening toward a supportable release
   and frontend images with the release version instead of a mutable `:latest`.
 
 ### Changed
+
+- **Capture store v2 — recordings are now addressed by `capture_id`, and
+  `kairos.db` is disposable.** A recording is a *capture*: a recorder-minted
+  UUIDv7 that names one directory, `objects/<capture_id>/`, and one row. The old
+  split between "the run" (what was recorded) and "the episode" (what the
+  operator decided about it) is gone — one capture carries both, so listing,
+  reviewing, deleting and archiving are all one key. `run_id` survives as a
+  **display name only**: it is never a path, a foreign key, or an API key again.
+  The full design is now a first-class spec, `docs/specs/ja/capture_store.md`.
+
+  The change that everything else follows from: **the sidecars on disk are
+  canonical and the database is an index of them.** `object_manifest.json`
+  (recorder facts, one file replacing `manifest.json` + `session.json`),
+  `record.json` (the operator's review, authoritative over the DB for review
+  fields), and `lifecycle.jsonl` (what was destroyed or declared) are enough to
+  rebuild the whole catalog. Deleting `kairos.db` and restarting is a supported
+  recovery, exercised by an acceptance scenario rather than asserted.
+
+  Deletion stopped being an `rm`. Discard and delete share one five-step
+  pathway — append to the ledger (fatal: no ledger line, no deletion), mark the
+  row `delete_pending` as a durable pre-rename marker, rename into `.trash/`,
+  commit the tombstone, then reap — and the row **survives as a tombstone**, so
+  "where did that recording go" stays answerable. A crash at any step is
+  finished on the next startup, which rescans the ledger every boot precisely
+  because a crash between step 1 and step 2 leaves no row to find. Files that
+  vanish *outside* kairos are not treated as deletions at all: the replica goes
+  `missing_unmanaged` and surfaces as a warning, and a reconciler pass that
+  finds too many missing at once (`max(5, 10%)`) refuses to apply itself and
+  latches SUSPECT until an operator confirms the volume with Repair — an
+  approval given while the volume marker is unreadable is refused, because
+  "yes, those really are gone" cannot be meant about a disk nobody can identify.
+
+  Datasets became logical. No physical move, no copy: a dataset is rows plus
+  ledger events, and the human-readable `views/<operator>/<task>/<name>/<NNN>`
+  symlink tree is regenerated from committed memberships through a generation
+  directory and one atomic flip, so `views` never stops resolving. Archive
+  survives as a capture-unit operation (`POST /api/v1/captures/{id}/archive`)
+  that copies, verifies, records per-file `{path,size,sha256}` in the ledger,
+  and only then removes the source — with destination guards that refuse an
+  overlap with the data directory in both directions.
+
+  dora_runner jobs take `capture_id`, resolve their source as
+  `objects/<capture_id>`, and write `report/<pipeline>/<capture_id>/`. They
+  never write inside `objects/`, which is why they can stay lease-ignorant: the
+  orchestrator holds the §7.1 capture lease on their behalf, renewing it
+  whenever it observes a live job. That guarantee is stated honestly in the code
+  and the spec — it covers a job someone is watching, **not** an unbounded queue
+  wait, where a delete may win and the job then fails cleanly on a directory
+  that moved to `.trash`.
+
+  Split deployments keep working: `import_runs.sh` discovers terminal
+  `object_manifest.json` files, stages into `.incoming/<capture_id>`, and moves
+  into `objects/` with one same-filesystem rename, so a partially arrived
+  transfer can never look complete. The importer's `/pull` now takes
+  `{"capture_id": …}` or an explicit `{"all": true}` and rejects anything else,
+  because the old lenient empty body would have turned one mis-keyed request
+  into a full sweep of the robot.
+
+  Acceptance moved to the UI. `make test-e2e` drives a real browser against a
+  real stack (own ports, own data dir, own compose project, looping bag replay)
+  through five scenarios: record and stop on Collect until the capture verifies;
+  save a review and have a stale save refused out loud; discard behind its
+  reason-required dialog and find the tombstone in the ledger; delete
+  `kairos.db`, restart, and get everything back; and `rm -rf` a capture's
+  directory, see SUSPECT, acknowledge it with Repair, and find the capture
+  marked missing rather than silently dropped. Note that it does **not** build
+  images, by the same rule as `make up` — run `make build` after changing code,
+  or the gate tests stale containers.
+
+  **Breaking changes.** This is an alpha reset: there is no migration and no
+  compatibility alias, and existing data is not read.
+  - Retired endpoints (see *Removed*): all of `/api/v1/runs`, all of
+    `/api/v1/episodes`, the physical dataset-tree routes, the index rebuild and
+    the export routes.
+  - Layout: `recorded/<run_id>/`, the `<operator>/<task>/<NNN>` dataset tree,
+    `data/index.jsonl`, `dataset.json`, `episode.json`, `manifest.json` and
+    `session.json` are gone. `objects/`, `views/`, `.trash`, `.incoming`,
+    `report/`, `catalog/`, `lifecycle.jsonl`, `instance.json` and `kairos.db`
+    are reserved names directly under the data directory, and `objects`,
+    `.trash` and `.incoming` must share one filesystem (checked at startup; the
+    delete and archive routes stay registered but answer `503
+    delete_unavailable` per request, rather than silently degrading to
+    copy+delete).
+  - `lifecycle.jsonl` starts fresh in the v2 shape; the v1 format is not read.
+  - No database migration exists, by design: the schema change is absorbed by
+    rebuilding from the sidecars, which is the first-choice mechanism for
+    schema changes from here on.
+  - The `dataset_export` and `dataset_archive` pipelines, the `dataset_dir` job
+    param and the `bag_local` boolean are removed. The plugin env var
+    `KAIROS_RUN_ID` is **renamed to `KAIROS_CAPTURE_ID`** (and carries a
+    capture_id, not a run_id); a flow still referencing `${KAIROS_RUN_ID}` now
+    hits an unknown token, which is an error rather than a silent
+    pass-through.
+  - `POST /api/v1/transfer/pull` is rekeyed from `{"run_id": …}` to
+    `{"capture_id": …}`, and omitting the key now means an explicit
+    `{"all": true}` sweep on the importer rather than an empty body — the
+    importer rejects an empty body with a `400` so that a lost key can never
+    quietly widen a targeted pull into a sweep of the robot.
+  - Retention's definition changed: "a row still exists, therefore it was never
+    exported" is meaningless now that rows outlive deletion, so a candidate is a
+    capture no dataset cites, left `pending` or `excluded`, older than
+    `RETENTION_DAYS`.
 
 - Agent instructions reorganized around `AGENTS.md`: the working rules shared by
   every coding agent and by humans (project status, layout, stack, code
@@ -163,6 +264,16 @@ Phase A hardening toward a supportable release
   down (documented inline in `compose.yaml`).
 
 ### Removed
+
+- **The v1 recording API surface, with no compatibility aliases** (see the
+  capture store v2 entry under *Changed* for what replaces each):
+  `GET/DELETE /api/v1/runs` and `/api/v1/runs/{id}`; `POST/PATCH
+  /api/v1/episodes` and `/api/v1/episodes/{id}`; `GET/DELETE
+  /api/v1/datasets/{operator}/{task}/{index}`; `POST
+  /api/v1/datasets/index/rebuild`; `POST /api/v1/datasets/export` and
+  `/export-all`. Also retired: the `lifecycle_ledger` v1 module (ledger_v2 is
+  the only writer), `Settings.recorded_dir`, the legacy v1 frontend tabs
+  (`RunsTab`, `DatasetTab`, `inspect`) and the in-browser `episodeBridge`.
 
 - The Review signals-defaults config aspect, retired with the waveform chart
   it configured: `GET/PUT /api/v1/config/signals`, the Settings > Data

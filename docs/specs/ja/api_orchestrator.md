@@ -1,37 +1,48 @@
 # api_orchestrator 仕様
 
-> ステータス: 設計確定（v1）。`fig_const/apiオーケストラ.png` を基に、未記載事項を推奨設計として確定。日本語が正本（これを正とする）。英語版 `docs/specs/en/api_orchestrator.md` は自動生成ミラー（直接編集しない）。**認証は不要。**
+> ステータス: 設計確定（**v2 = capture store**）。`fig_const/apiオーケストラ.png` を基に、未記載事項を推奨設計として確定。日本語が正本（これを正とする）。英語版 `docs/specs/en/api_orchestrator.md` は自動生成ミラー（直接編集しない）。**認証は不要。**
 
 **ジョブ管理 / 状態管理 / API ハブ**コンテナ。frontend が話す唯一の公開 API（**単一入口**。REST / SSE の制御・状態を集約する。例外として WebRTC の映像・signaling のみ frontend が `webrtc_streamer` へ直接接続）。`rosbag2_recorder` / `topic_monitor` / `webrtc_streamer` / `dora_runner` は内部サービスで、orchestrator が指示・集約する。
 
+**v2 の中心的な変更**: 旧 `runs` と `episodes` の 2 テーブル・2 API は **`captures` 1 本**に統合された。1 つの capture が「録画の事実」と「operator の判断」の両方を持つので、一覧・review・削除・archive がすべて `capture_id` で addressable になる。データの配置・耐久性の規約は [capture_store](capture_store.md) が正本で、本書はその上に載る **API と状態管理**を述べる。
+
 ## 役割
 
-- Run / ジョブのライフサイクル一元管理。
+- **capture / ジョブのライフサイクル一元管理**、および capture store の索引（`kairos.db`）の維持。
 - backend-driven config（設定・スキーマをバックエンドが提供。`tabs` フィールドは v1 legacy — Console v2 のタブは frontend 固定で、表示には使われない）。
 - 各サービスへの指示と結果集約・通知のハブ。
 
 ## 入力
 
-- Frontend からの操作（記録 Start/Stop、Run 登録、Pipeline 実行）
+- Frontend からの操作（記録 Start/Stop、Review 保存、削除、Pipeline 実行）
 - `topic_monitor` からの live metrics（SSE）
 - `dora_runner` からのジョブ結果・ログ（stage3）
+- ディスク上のサイドカー（`object_manifest.json` / `record.json` / `lifecycle.jsonl`）— **索引の正はこちら**
 
 ## 構成コンポーネント
 
-- **Run Manager** / **Manifest Manager** / **Pipeline Registry** / **Result Aggregator** / **WebSocket・SSE Hub**（**Settings Manager** は将来枠・未実装。現状の設定編集は `PUT /api/v1/config/recording` が担う）
-- feature ベースのルーター構成（`recording` / `topics` / `runs` / `events` / `pipelines` …）を推奨（疎結合）。
+- **Capture Store**（`captures` / `replicas` / `datasets` / `dataset_members` テーブルと rebuild）/ **Pipeline Registry** / **Result Aggregator** / **SSE Hub** / **Reconciler**（**Settings Manager** は将来枠・未実装。現状の設定編集は `PUT /api/v1/config/recording` が担う）
+- feature ベースのルーター構成（`record` / `captures` / `datasets` / `store` / `topics` / `events` / `jobs` …）。
 
 ## 公開 API（`/api/v1`、無認証）
 
-- 記録: `POST /api/v1/record/prepare`（two-phase start — recorder を先に arm。**DB 行は作らない**: prepare 状態はメモリ上の 1 エントリのみで、応答の `run_id` は recorder が返したもの〔一致 re-prepare の keep-alive では既存 armed セッションの id〕を採用する。後続の一致する `start` がその id で行を作って引き継ぎ、不一致・未消費なら recorder 側の auto-disarm に任せる）、`POST /api/v1/record/start`、`POST /api/v1/record/stop`（armed のみで run が無ければ disarm も兼ねる）、`GET /api/v1/record/status`（recorder へプロキシ。**遅延 reconciliation を兼務**: DB 上 live な run を recorder が終了済みと報告していれば（例: `MAX_RECORD_BYTES`/`MAX_RECORD_SECONDS` の recorder 内自動停止）通常の stop 経路で completed に確定し、recorder が知らない live run は即 interrupted 化する — 再起動を待たない）
-- Run: `GET /api/v1/runs`（カーソルページング）、`GET /api/v1/runs/{id}`（Console v2 Phase 2 で **各 run に `episode` サマリを additive に同梱**。下記「Batch / Episode」）
-- Batch / Episode（**Console v2 Phase 2**。Collect の進行と Review の判断を永続化）: `POST /api/v1/batches`、`PATCH /api/v1/batches/{id}`、`GET /api/v1/batches?status=&robot=&operator=`、`GET /api/v1/batches/{id}`、`POST /api/v1/episodes`、`PATCH /api/v1/episodes/{id}`（下記「Batch / Episode」）
+- 記録: `POST /api/v1/record/prepare`（two-phase start — recorder を先に arm。**DB 行は作らない**: prepare 状態はメモリ上の 1 エントリのみで、応答の `run_id` / `capture_id` は recorder が返したもの〔一致 re-prepare の keep-alive では既存 armed セッションのもの〕を採用する。後続の一致する `start` がその id で行を作って引き継ぎ、不一致・未消費なら recorder 側の auto-disarm に任せる）、`POST /api/v1/record/start`、`POST /api/v1/record/stop`（armed のみで capture が無ければ disarm も兼ねる）、`GET /api/v1/record/status`（recorder へプロキシ。**遅延 reconciliation を兼務**: DB 上 live な capture を recorder が終了済みと報告していれば（例: `MAX_RECORD_BYTES`/`MAX_RECORD_SECONDS` の recorder 内自動停止）通常の stop 経路で completed に確定し、recorder が知らない live capture は即 interrupted 化する — 再起動を待たない）。`prepare` / `start` / `stop` は v1 の request/response の形を維持したうえで **`capture_id` を追加**した。
+- **Capture（v2 の中心。runs + episodes の置換）**:
+  - `GET /api/v1/captures?state=&review_status=&task=&operator=&robot=&batch=&include_deleted=`（カーソルページング。**墓標は既定で除外**する — 行は削除後も残るが、既定の一覧は operator の作業対象であって「かつて存在した全て」の書庫ではない。`include_deleted=true` で含め、`state=discarded`（または `deleted`）を明示指定した場合は**そのとおりに返す**〔明らかに存在する state を指定したのに黙って空を返す方が混乱を招くため〕）
+  - `GET /api/v1/captures/{id}` — CaptureDetail（replica state・`digest_state`・サイドカー・レポートを同梱）
+  - `PATCH /api/v1/captures/{id}/review` — `base_revision` 必須の CAS 保存（下記「Review の保存」）
+  - `POST /api/v1/captures/{id}/delete` — body `{ kind: "discard"|"delete", reason? }`（下記「削除」）
+  - `GET /api/v1/captures/{id}/archive/config` — このデプロイが archive 先として許す root（未設定なら UI は archive の導線自体を出さない＝必ず失敗するボタンを置かない）
+  - `POST /api/v1/captures/{id}/archive` — capture 単位の archive（下記「archive」）
+- Batch（**Collect の進行を永続化**）: `POST /api/v1/batches`、`PATCH /api/v1/batches/{id}`、`GET /api/v1/batches?status=&robot=&operator=`、`GET /api/v1/batches/{id}`。**`POST/PATCH /api/v1/episodes` は廃止** — episode が持っていた項目は capture 行そのものに載り、書き込みは `PATCH /api/v1/captures/{id}/review` が担う（下記「Batch」）。
+- **ストア健全性**: `GET /api/v1/store/health`、`POST /api/v1/store/reconcile`、`POST /api/v1/store/repair`（下記「ストア健全性と SUSPECT」）
+- **views**: `POST /api/v1/views/refresh`（`views/` symlink 木をコミット済み membership から再生成。旧 `datasets/export` 系の置換）
 - プラン語彙カタログ: `GET /api/v1/plans` / `PUT /api/v1/plans` — Collect がバッチ/エピソードに刻む **project / task / condition の共有語彙**（Projects → Tasks → Conditions の1 JSON。`plan_catalog` 1行テーブルに保存し `updated_at` をサーバ側で刻印）。端末ごとのブラウザローカルコピーだと同じ物理条件が別文字列でラベルされ集計が割れるため、全端末を単一語彙に載せる（2026-07-14 バッチラベル裁定）。**Phase 2.5 の Plan モデルではない**（id/参照/目標本数は持たない。バッチは従来どおり文字列を保存）。未設定は `{ projects: null, updated_at: null }`（クライアントが手元のカタログで**シード**する）、明示的に空にした場合は `projects: []`+タイムスタンプ（シードで復活させない）。PUT は形を検証（`{ projects: [{ name, tasks: [{ name, conditions: [str] }] }] }`）し全置換・last-writer-wins
 - Topic: `GET /api/v1/topics`（一覧。**情報源は `topic_monitor` の `GET /topics` discovery をプロキシ**: `name` / `type` / `publisher_count` / `subscriber_count` / `qos` / `last_seen`）、`GET /api/v1/topics/status`（monitor 由来の live metrics）
 - イベント: `GET /api/v1/events`（**SSE 集約**。契約は下記）
 - Pipeline / Job（stage3。詳細は [dora_runner](dora_runner.md)）: `GET /api/v1/pipelines`、`POST /api/v1/jobs`、`GET /api/v1/jobs/{id}/status`、`GET /api/v1/jobs/{id}/result`、`POST /api/v1/jobs/{id}/cancel`
-- 検証テンプレート: `GET/POST /api/v1/validation/templates`、`POST /api/v1/validation/templates/generate`（run から雛形生成）
-- ワンクリック検証プリセット: `GET /api/v1/validation/presets`（config 定義のプリセット＋未検証 run 一覧）
+- 検証テンプレート: `GET/POST /api/v1/validation/templates`、`POST /api/v1/validation/templates/generate`（capture から雛形生成。body `{ capture_id }`）
+- ワンクリック検証プリセット: `GET /api/v1/validation/presets`（config 定義のプリセット＋未検証 capture 一覧）
 - 設定: `GET /api/v1/config`（frontend 実行時設定: endpoints / tabs / defaults（`ros_domain_id` を含む）/ stream / schemas）。〔`GET/POST /api/v1/settings` は**未実装**（将来）。現状は下の `PUT /api/v1/config/recording` が設定編集の入口〕
 - 収録設定（フル編集）: `GET /api/v1/config/recording` → `{ config: <RecordingConfig dump>|null, path }`、`PUT /api/v1/config/recording`（body `{ config }`。下記「収録設定のフル編集」参照）
 - アラート規則（単一ファイル・アスペクト編集）: `GET/PUT /api/v1/config/alerts`（topic_monitor のアラート規則。`config/<robot>/monitoring/alerts.yaml`。monitor 再起動時に反映）。`GET` は `{ config, raw, path, warnings }`、`PUT` は body `{ config }`（フォーム）または `{ raw }`（生 YAML）。下記「アラート規則の編集」参照（旧 `GET/PUT /api/v1/config/signals` は Review 波形チャートの撤去に伴い 2026-07-15 に削除）
@@ -43,39 +54,122 @@
   - `gpu_percent`: GPU 使用率 `[0, 100]`（`nvidia-smi --query-gpu=utilization.gpu`）。GPU 非搭載・`nvidia-smi` 取得不能時は `null`（値をでっち上げない）
   - `cpu_percent` / `disk` / `gpu_percent` は時間変化するため約 2 秒キャッシュ（SSE 相当のポーリングでも安価）。`nvidia-smi` プローブはワーカースレッドで実行しイベントループをブロックしない
 - ファイル配信: `GET /api/v1/files/{path}` — `data_dir` からの**相対パス**でファイルを配信（トラバーサルガード: `data_dir` 配下のみ。それ以外・不在は `404`）。`video_check` の mp4 プレビュー取得に使う
-- データセット: `GET /api/v1/datasets`（一覧。`data/index.jsonl` カタログがあればそこから返し、不在・破損時は `data/<operator>/<task>/<NNN>/dataset.json` のツリー走査へ**自動フォールバック**。応答形は同一。`data_dir` 配下のみ読む）、`GET /api/v1/datasets/{operator}/{task}/{index}`（**エクスポート済みデータセットの詳細**。下記「データセットエクスポート」参照）、`DELETE /api/v1/datasets/{operator}/{task}/{index}`（**エクスポート済みデータセットの削除**。同節参照）、`POST /api/v1/datasets/export`（body `{ run_id }`）、`POST /api/v1/datasets/export-all`（`recorded/` 内の完了 run を**一括** export）、`POST /api/v1/datasets/index/rebuild`（`data/index.jsonl` をサイドカーから丸ごと再生成。`{ count }` を返す。カタログは派生・再構築可能で、正本はツリー上のサイドカー — 詳細は [config.md](config.md) の「運用」）
-- 保持期間: `GET /api/v1/retention` — `RETENTION_DAYS` による**削除候補**（未エクスポート＝run 行が残る・終端状態・開始が N 日超）を返す（`{ days, candidates: [{ run_id, started_at, bytes, state, has_episode }], total_bytes }`。都度計算、best-effort サイズ）。**助言のみで自動削除しない**。削除は既存の確認付き `DELETE /api/v1/runs/{id}` のみ。`RETENTION_DAYS<=0` で候補は空（詳細は [config.md](config.md) の「運用」）
+- データセット（**論理**。物理 move は全廃）: `GET /api/v1/datasets`、`POST /api/v1/datasets`（body `{ name, operator?, task? }`）、`GET /api/v1/datasets/{dataset_id}`（members 込み）、`DELETE /api/v1/datasets/{dataset_id}`、`POST /api/v1/datasets/{dataset_id}/members`（body `{ capture_id }`）、`DELETE /api/v1/datasets/{dataset_id}/members/{membership_id}`（下記「データセット（論理）」）
+- 取り込み（外部 bag）: `POST /api/v1/imports`（body `{ source_path, move? }` → `202 { import_id }`。source は**サーバ上のパス**〔bag は数 GB でブラウザアップロードの対象ではない〕。検証は同期・コピーは非同期）、`GET /api/v1/imports`、`GET /api/v1/imports/{id}`
+- 転送（split 構成）: `GET /api/v1/transfer/status`、`POST /api/v1/transfer/pull`（下記「転送（split 構成）」）
+- 保持期間: `GET /api/v1/retention` — `RETENTION_DAYS` による**削除候補**を返す（`{ days, candidates: [{ capture_id, run_id, started_at, bytes, state, review_status }], total_bytes }`。都度計算、best-effort サイズ）。**助言のみで自動削除しない**。削除は確認付きの `POST /api/v1/captures/{id}/delete` のみ。`RETENTION_DAYS<=0` で候補は空。**v2 で候補の定義を変更**: 「行が存在する＝未エクスポート」という旧定義は、行が消えなくなった以上意味を成さないので全廃した。新しい候補は「**どの dataset からも参照されておらず、`review_status` が `pending` か `excluded` のまま N 日以上経過した capture**」（詳細は [config.md](config.md) の「運用」）
 - `GET /healthz` / `GET /readyz`（`components: { recorder, monitor, streamer }` の疎通も返す）
 - `GET /openapi.json`（OpenAPI を自動公開。クライアント自動生成に使える — 現状の frontend は手書きの型付きクライアント）
 
-## Run ライフサイクル（orchestrator が一元管理）
+### 廃止した API（互換エイリアス無し）
 
-1. `POST /api/v1/record/start` → orchestrator が **`run_id` を採番**し SQLite に run を作成（`state=created`）。
-2. recorder の `POST /record/start`（`run_id` を渡す）を呼ぶ。成功で `state=recording`、失敗なら **run 行は残したまま `state=failed` に更新**（理由を記録。DB 行は削除しない）。
-3. start 成功直後に recorder の `GET /record/metadata` を取得し、**確定した topics / type / QoS（`"all"` 展開結果を含む）を run 行へ同期**する。取得失敗時は `recording` のまま `error` に理由を記録して再試行する。
-4. `POST /api/v1/record/stop` → recorder stop → 最終 metadata（`message_count` / `bytes` / `ended_at` / topics）を再同期して `state=completed`。同期不能のまま完了した場合は `state=completed` とし `error` に同期失敗を残す（reconciliation 対象）。確定後、**停止時クイックチェックを stop 応答の外で走らせ**、完了時に `quick_check` を run 行へ書き込む（下記「停止時クイックチェック」）。
+alpha 版につき互換レイヤは置かない。**どれも何もしない**が、返るコードは一律ではない: 経路が完全に消えたものは `404`、**残っている別ルートとパスだけが衝突するものは `405`**（例 `POST /api/v1/datasets/export` は `GET|DELETE /api/v1/datasets/{dataset_id}` に `dataset_id="export"` として一致し、POST が登録されていないので Method Not Allowed になる）。**重要なのはコードの種類ではなく、旧ルートがもう何も行わないこと。**
 
-   **stop は必ず「止める」（2026-07-27 改訂）**: 冪等性は「recording を主張する DB 行が無ければ何もしない」ではない。行は欠けたり別状態になったりする（start の行が未コミット、クラッシュ、reconcile の競合）ので、`stop` は行が無いときに **recorder の実状態を問い合わせる**:
-   - recorder が非稼働 → 従来どおりの冪等 no-op（直近 run を返す／run が皆無なら 404）
-   - recorder が録画中で**その run の行がある** → その行を採用し、通常の停止・確定経路を通す
+| 廃止 | 置換 |
+|---|---|
+| `GET/DELETE /api/v1/runs`、`GET /api/v1/runs/{id}`、`DELETE /api/v1/runs/{id}` | `GET /api/v1/captures`、`GET /api/v1/captures/{id}`、`POST /api/v1/captures/{id}/delete` |
+| `POST/PATCH /api/v1/episodes`、`PATCH /api/v1/episodes/{id}` | `PATCH /api/v1/captures/{id}/review` |
+| `GET/DELETE /api/v1/datasets/{operator}/{task}/{index}` | `GET/DELETE /api/v1/datasets/{dataset_id}` |
+| `POST /api/v1/datasets/export`、`POST /api/v1/datasets/export-all`（**`405`**） | `POST /api/v1/datasets/{id}/members` ＋ `POST /api/v1/views/refresh` |
+| `POST /api/v1/datasets/index/rebuild` | 不要（`data/index.jsonl` ごと廃止。索引は起動時 rebuild が担う） |
+
+## Capture ライフサイクル（orchestrator が一元管理）
+
+1. `POST /api/v1/record/start` → orchestrator が **`run_id`（表示名）を採番**し、recorder の `POST /record/start` を呼ぶ。**`capture_id` は recorder が発行**して応答で返す。
+2. 応答の `capture_id` で `captures` 行を作る（`state=recording`）。recorder が拒否した場合、**recorder が capture を名指ししていればその id で `failed` の行を返す**。名指ししていなければエラーをそのまま伝播させ、recorder が書いた失敗 start サイドカー（`objects/<capture_id>.failed.json`）を次の rebuild が行にする。
+3. start 成功直後に recorder の `GET /record/metadata` を取得し、**確定した topics / type / QoS（`"all"` 展開結果を含む）を capture 行へ同期**する。取得失敗時は `recording` のまま `error` に理由を記録して再試行する。
+4. `POST /api/v1/record/stop` → recorder stop → 最終 metadata（`message_count` / `bytes` / `ended_at` / topics）を再同期して `state=completed`。確定後、**停止時クイックチェックを stop 応答の外で走らせ**（下記）、さらに **digest ジョブを投入**する（下記「digest ジョブ」）。
+
+   **stop は必ず「止める」**: 冪等性は「recording を主張する DB 行が無ければ何もしない」ではない。行は欠けたり別状態になったりする（start の行が未コミット、クラッシュ、reconcile の競合）ので、`stop` は行が無いときに **recorder の実状態を問い合わせる**:
+   - recorder が非稼働 → 従来どおりの冪等 no-op（直近 capture を返す／capture が皆無なら 404）
+   - recorder が録画中で**その capture の行がある** → その行を採用し、通常の停止・確定経路を通す
    - recorder が録画中で**行が無い**（orphan）→ 確定するものは無いが**停止はする**
 
    採用・orphan 停止のどちらも WARNING でログする（ここに到達した時点で DB と recorder が乖離している）。これを欠くと、止まっていないのに `200` を返し、コンソールは録画中のテイクのラベル付けへ進み、`MAX_RECORD_SECONDS` の自動停止だけが唯一の終端になる。
-5. **再起動時の reconciliation**: 起動時に `recording` / `stopping` の run を recorder の `GET /record/status` と突き合わせ、実体が無ければ `state=interrupted` に更新する。
+5. **再起動時の整合**: 起動時に `recording` / `stopping` の capture を recorder の `GET /record/status` と突き合わせ、実体が無ければ `state=interrupted` に更新する。
 
-- `run_id` は orchestrator が所有して recorder へ渡す。**SQLite が唯一の正**、recorder の `manifest.json` は監査用。
-- run 行の `topics` / type / QoS は recorder の metadata 由来（orchestrator が上記タイミングで同期する）。
-- run state の enum は共有 [config](config.md) に従う。
-- **start 時の operator / task**: 空のときは `unknown_operator` / `unknown_task` を既定値とする（データセットの保存先 `data/<operator>/<task>` が常に keyable になるよう、null コンポーネントを排除）。
+- **`capture_id` は recorder が所有**し、orchestrator は受け取って索引する（`run_id` は orchestrator が採番する表示名）。
+- **サイドカーが正、DB は索引。** `object_manifest.json` / `record.json` / `lifecycle.jsonl` から `kairos.db` を全再構築できる（[capture_store](capture_store.md) §8.2）。v1 の「SQLite が唯一の正、manifest は監査用」は**撤回**。
+- capture 行の `topics` / type / QoS は recorder の metadata 由来（orchestrator が上記タイミングで同期する）。
+- capture state の enum は [capture_store](capture_store.md) §8.1 と共有 [config](config.md) に従う。
+- **start 時の operator / task**: 空のときは `unknown_operator` / `unknown_task` を既定値とする。v2 ではパスの構成要素ではなくなったが、`views/` の木と一覧のグルーピングが常に keyable であるよう null を排除する。**予約名**（`objects` / `views` / `.trash` / `.incoming` / `report` / `catalog` / `lifecycle.jsonl` / `instance.json` / `kairos.db`）の検査は、それらがパス構成要素になる **dataset 作成時**に行う（`POST /api/v1/datasets` の `name` / `operator` / `task` → `400 reserved_name`）。
 - **`record_status` SSE**: record start / stop の状態遷移ごとに `record_status` イベントを発行する（下記 SSE 契約）。
-- **`GET /api/v1/runs/{id}` は RunDetail を返す**: run 行に加えて、ディスク上のサイドカーを best-effort で同梱する — `manifest`（recorder の `manifest.json`）/ `validation`（`fast_validation` レポート）/ `dataset_stats`（`dataset_export` レポート）/ `loss`（`loss_report` レポート）。各ファイルが無ければ `null`（孤児 run でもクリーンに返る）。
+- **`GET /api/v1/captures/{id}` は CaptureDetail を返す**: capture 行に加えて、ディスク上のサイドカーとレポートを best-effort で同梱する — `manifest`（`object_manifest.json`）/ `record`（`record.json`）/ `validation`（`fast_validation` レポート）/ `loss`（`loss_report` レポート）。各ファイルが無ければ `null`。
+
+## Review の保存（`PATCH /api/v1/captures/{id}/review`）
+
+旧 `POST/PATCH /api/v1/episodes` の置換。**サイドカー先行 + CAS**（規約は [capture_store](capture_store.md) §4.1）:
+
+1. `base_revision` が現在の `captures.review_revision` と一致しなければ **`409 review_conflict`**。クライアントはリロードして適用し直す — **マージはしない**。
+2. `record.json` を `revision = base_revision + 1` で atomic write。失敗 → **`500 review_sidecar_write_failed`、DB は無変更**（何も保存されていないので、同じ `base_revision` でそのまま再試行できる）。
+3. DB を CAS 更新。`rowcount=0` なら **`409`**。書いたサイドカーは巻き戻さない。
+
+- body: `{ base_revision, task_result?, failure_reason?, quality?, quality_source?, review_status?, batch_id?, index_in_batch? }`。
+- **旧 `POST /episodes` の副作用の移設先がここ**: `batches.episodes_recorded` の単調加算と auto-pull の起動は「**その capture への初回 review 保存**」で起きる。
+- 墓標・非在の capture への保存は `409`（`capture_deleting` / `capture_deleted` / `capture_not_present`）。
+
+## 削除（`POST /api/v1/captures/{id}/delete`）
+
+body `{ kind: "discard"|"delete", reason? }`。**`discard` は `reason` 必須**（`400 reason_required`）— 破棄は不可逆で、ledger の 1 行がその後に残る唯一の説明になるため。
+
+手順・墓標・reaper の規約は [capture_store](capture_store.md) §7。API から見た要点:
+
+- **応答は「`.trash` へ移り墓標が確定した時点」で返る。** 物理削除（reaper）はその後にバックグラウンドで走る。この分割が肝で、operator の操作は墓標で耐久化され、reaper が失敗しても「`unlink` でハングしたリクエスト」ではなく「`trashed` のまま見える replica」が残る。
+- `409 capture_busy` — ジョブが lease を持っている（応答は owner と失効時刻を名指しする）。
+- `409` — `recording` / `stopping` 中。
+- `400` — `dataset_members` から参照中（先に member を外す）。
+- `503 delete_unavailable` — `objects/` と `.trash/` が別ファイルシステム。**ルートは登録されたまま残り、要求ごとにこの応答を返す**（黙って消えるのではなく理由を述べて断る。同じ理由は `GET /api/v1/store/health` の `delete_unavailable_reason` にも出る）。archive も source 削除を伴うので同じ扱い。
+- 削除は `report/<pipeline>/<capture_id>/` も回収する。**行は消さない**（墓標）ので、「どこへ行ったのか」は後から常に答えられる。
+
+## archive（`POST /api/v1/captures/{id}/archive`）
+
+capture 単位で外部ストレージへ退避する。**copy → sha256 verify → ledger(`capture_archived`) → source 削除**（trash 経由）の順序を守る。
+
+- destination は `KAIROS_ARCHIVE_ROOTS` に対して検証してから 1 バイトもコピーしない — このエンドポイントは**最後に source を消す**ので、無制限な destination 文字列がシステム上もっとも危険な入力になる。
+- **重なりの拒否は許可リストとは別の検査**（前者を通ったことは後者の証拠にならない）。検査するのは**解決後の書き込み先**（`<destination>/<capture_id>`）で、許可ルートそのものではない — したがって **`data_dir` を含むルートを許可すること自体は禁止していない**（`KAIROS_ARCHIVE_ROOTS=/data` は operator がやりそうな設定であり、許可リストだけでは自分自身の上へコピーしてから source を消す経路が通ってしまう）。`realpath` で両側を解決し（symlink での偽装を防ぐ）、**両方向の包含**を見る。違反は `400 destination_inside_data_dir`。
+- **非空の destination は `409 destination_not_empty`**（コピーのプリミティブ側で拒否する）。
+- ledger の `capture_archived` イベントは **per-file の `{path, size, sha256}`** を持つ。source が消えた後は manifest も一緒に消えるので、これが無いと「N バイトが /mnt/nas へ行った」としか言えず、数年後に「そのコピーはまだ無事か」に答えられない。
+- **dataset member の capture は archive も拒否**（delete と同じ `400`）。`views/` の symlink が宙に浮くため、先に member から外す。
+
+## 転送（split 構成・`/api/v1/transfer/*`）
+
+ロボットと録画 PC が別ホストの構成で、完成した capture を録画 PC 側へ引き寄せる経路。実体の rsync は importer サイドカー（`deploy/sync/`、`compose.recording.yaml` にのみ存在し 127.0.0.1 に bind する）が行い、orchestrator がその唯一の呼び出し元になる。
+
+- `GET /api/v1/transfer/status` → `{ available, auto_pull_on_save }`。`available` は importer の `/healthz` 到達性で、これが**そのまま frontend にとっての split 判定信号**になる（単一ホスト構成では importer が存在しないので false）。
+- `POST /api/v1/transfer/pull` → `202`。body の **`capture_id` は任意**:
+  - **指定あり** → importer へ `{"capture_id": …}` を転送し、その capture だけを引く。
+  - **省略** → 「完成している capture を全部引く」の意味になり、importer へは**明示的な `{"all": true}` として転送する**。**空の body を送ってはならない** — importer 側は空 body を `400` で拒否する仕様で、これは意図的な設計である。キーを 1 つ落としただけの要求が、狙い撃ちの pull からロボット全体のスイープへ**降格することを構造的に禁じる**ためで、スイープは常に明示的に要求されたときだけ起きる。
+- **完了はこの API では通知されない**（ack は fire-and-forget）。frontend が見るのは capture の **replica state** で、reconciler が届いたディレクトリを採用した時点で `present_unverified` に変わる。v1 の `bag_local` 真偽値は廃止した — 「ここにある / 無い」しか言えず、**届かなかったコピーと意図的に消したコピーを区別できない**ため。
+- importer は `.incoming/<capture_id>` に staging し、完了後に `os.replace` で `objects/` へ入れる。したがって `objects/` に見えている capture が部分コピーであることはない（[capture_store](capture_store.md) §2）。
+- **auto-pull**: `transfer.auto_pull_on_save` が有効なとき、**その capture への初回 review 保存**の後に orchestrator が上記の pull を 1 件分投げる。既定は無効で、明示的な opt-in が無い限り何も転送しない。
+
+## ストア健全性と SUSPECT（`/api/v1/store/*`）
+
+capture 一覧には**決して現れない 2 つの最悪の状態**を可視化するためのエンドポイント群:
+
+- rebuild が読めなかった manifest — その capture には行が無い（[capture_store](capture_store.md) §8.2 規則 4 が「無い」ことにするのを禁じている）ので、一覧に出しようがない。
+- 一度に大量のコピーが消えたために適用を拒否した reconciler パス — このときカタログは**正常に見える**のに、ディスクはそうではない。
+
+- `GET /api/v1/store/health` → `{ instance_id, state: "ok"|"suspect", suspect_reason?, suspect_at?, delete_available, delete_unavailable_reason?, rebuilt_at?, rebuild_summary?, corrupt: [{capture_id?, path, reason}], corrupt_source: "rebuild"|"reconcile", corrupt_observed_at?, warnings: [], last_reconcile_at?, last_reconcile? }`。
+  - corrupt リストは 1 本で、**最新の「完走した」スキャンが勝つ**。観測できなかったパス（marker 不一致・ledger 不読）は、保持しているリストを**クリアせずそのまま保つ**（見えなかったことを「全部きれいだった」と報告しない）。閾値でブロックされたパスも、見た内容は報告する。
+- `POST /api/v1/store/reconcile` — 整合パスを今すぐ 1 回走らせて結果を返す（背景ループと同じパス。マウントを直した operator が間隔を待たずに済むように、またテストが sleep でなく決定的に駆動できるように公開している）。
+- `POST /api/v1/store/repair` — SUSPECT を解除する operator の承認。**volume marker が読めないときは `409 volume_unidentified` で拒否する** — ラッチは「ボリュームごと消えた」と「ファイルが消えた」を区別できないことを理由に存在するので、どのボリュームを承認しているのか名指しできない承認は承認ではない。解除後は `approved=True` で 1 パス走らせる（通常パスを走らせ直すと同じ閾値で再ラッチし、Repair が何もしないボタンになるため）。
+
+## digest ジョブ
+
+停止後に per-file sha256 を計算し、`object_manifest.json` を**単一の atomic write で 1 回だけ**封印する（`files` / `manifest_digest` / `digest_state=complete`）。完了で `replicas.state → present_verified`。
+
+- 起動条件は 2 つ**両方**の確認: (a) `captures.state` が terminal (b) recorder がその capture を保持していない（`live_capture_ids` に無い）。**検証前に `present_verified` へ昇格させない。**
+- 実行中は `digest_state=pending` として UI に出る（「検証済み」と「検証中」を混ぜない）。
+- クラッシュ後は reconciler が pending を再投入する（途中結果は捨てて最初からやり直す）。
+- `objects/<id>` に触れる前に lease を取り、最終書き込みの直前にロック下で `captures.state` を再確認する（`delete_pending`/`discarded`/`deleted` ならスキップ）。
 
 ## 停止時クイックチェック（`quick_check` settlement）
 
-録画停止時に orchestrator が **2 層のクイックチェックを一度だけ確定（settle）**し、run 行に `quick_check`（JSON）として永続化する。分担: topic_monitor = 常時のライブ検知、**orchestrator = 停止時の一度きりの確定**、dora_runner = 事後のディープ解析（quick_check には手を出さない）。**stop の HTTP 応答は現状以上に遅延させない**: run を終端状態（`completed` 等）に確定し `record_status` を発行したあと、確定処理を **stop 経路の外（バックグラウンドタスク）**で走らせ、完了時に run 行を `quick_check` で更新する。総予算は約 `4s`（各下流呼び出しに個別タイムアウト・no-retry）。タイムアウト時は**完了した分だけ**を `available` フラグを正直に落として永続化する（正直な degradation）。
+録画停止時に orchestrator が **2 層のクイックチェックを一度だけ確定（settle）**し、capture 行に `quick_check`（JSON）として永続化する。分担: topic_monitor = 常時のライブ検知、**orchestrator = 停止時の一度きりの確定**、dora_runner = 事後のディープ解析（quick_check には手を出さない）。**stop の HTTP 応答は現状以上に遅延させない**: capture を終端状態（`completed` 等）に確定し `record_status` を発行したあと、確定処理を **stop 経路の外（バックグラウンドタスク）**で走らせ、完了時に capture 行を `quick_check` で更新する。総予算は約 `4s`（各下流呼び出しに個別タイムアウト・no-retry）。タイムアウト時は**完了した分だけ**を `available` フラグを正直に落として永続化する（正直な degradation）。
 
 - **Layer 0（MCAP を読まない、~ms）** — 停止時に一度だけ引く:
-  - monitor `GET /metrics` スナップショット（per-topic `hz` / `expected_hz` / `rate_shortfall` / `gap_max_ms` / `dds_samples_lost`）。`expected_hz` は `RECORDING_CONFIG` の `expected_hz_patterns` を fnmatch 先勝ちで解決（monitor と同じ規則）。`dds_samples_lost` は **録画 START 時に取ったベースライン（monitor スナップショットを in-memory に保持、run_id キー）との差分**で全区間値にする（ベースライン取得は best-effort・短タイムアウト = start を遅延させない）。
+  - monitor `GET /metrics` スナップショット（per-topic `hz` / `expected_hz` / `rate_shortfall` / `gap_max_ms` / `dds_samples_lost`）。`expected_hz` は `RECORDING_CONFIG` の `expected_hz_patterns` を fnmatch 先勝ちで解決（monitor と同じ規則）。`dds_samples_lost` は **録画 START 時に取ったベースライン（monitor スナップショットを in-memory に保持、`capture_id` キー）との差分**で全区間値にする（ベースライン取得は best-effort・短タイムアウト = start を遅延させない）。
   - monitor `GET /incidents?since_ns=0`（**リング全体 ≤500 を取得**）を引き、**録画ウィンドウ `[start, stop]` に重なるものだけをクライアント側でフィルタ**する（`fired_at_ns <= stop` かつ `cleared_at_ns` が `start` 以降 or `null`）。`since_ns=<録画開始>` を渡さないこと: monitor の `since_ns` フィルタは片側（`fired_at_ns >= since_ns OR cleared_at_ns >= since_ns`）で、**録画開始前に発火して継続中（`cleared_at_ns=null`）の incident を取りこぼす**ため。契約: `{ incidents: [ { id, topic, metric, severity: "danger"|"warning", rule_origin: "config"|"derived"|"default", fired_at_ns, cleared_at_ns: int|null, message } ] }`。タイムスタンプは epoch ns（`time.time_ns`）。
   - recorder の `integrity`（`ok`|`dropped`|`failed`|`unknown`。recorder の manifest 由来 = monitor とは独立に埋まるので、monitor 不達でも残る）。
   - backstop: `MAX_RECORD_SECONDS`/`BYTES` による自動停止ノート（recorder が manifest に `auto-stopped:` 接頭辞で残す。あれば同梱。informational で verdict には効かない）。
@@ -88,7 +182,7 @@
   - 必須トピックの欠落 / 空
   - summary が取得不能
 
-**永続契約（FIXED — frontend が実装対象）**: `quick_check` を run 行に保存し（基底 `Run` フィールド = 一覧 / 詳細どちらにも載る）、run 詳細を返す全経路で公開する。settlement 完了までは `null`（機能導入前の古い run も `null`）。形:
+**永続契約（FIXED — frontend が実装対象）**: `quick_check` を capture 行に保存し（基底 `Capture` フィールド = 一覧 / 詳細どちらにも載る）、capture を返す全経路で公開する。settlement 完了までは `null`。形:
 
 ```json
 {
@@ -103,29 +197,33 @@
 }
 ```
 
-- **episode の既定品質は `quick_check.verdict.quality` から導出**する（既存の D-2「integrity→品質」シームを**拡張**）。`POST /api/v1/episodes` で `quality` を**省略**すると、run の `quick_check.verdict.quality`（`good` | `needs_review`）を既定値とし `quality_source="quick_check"` を付ける。明示的な `quality` はオペレータの上書きとしてそのまま保存（`quality_source` は既定 `operator`）。run に `quick_check` が無ければ保守的に `needs_review`（未確定は good と見なさない）。
-- **確定後の遅延再導出（save-before-settle レース対策）**: settlement 完了で run に `quick_check` を書き込んだ**直後**、その run に既に episode があり `quality_source == "quick_check"` のとき、その episode の `quality` を確定 verdict の値へ更新する（`updated_at` も更新）。これは settle 完了前に保存された episode が保守的な `needs_review` フォールバックのまま取り残されるのを補正するもの。`operator` / `validator` 由来の品質には**決して手を出さない**（人／ディープ解析の判断）。episode が無ければ no-op、既に一致していれば書き込まない。再導出の失敗は独立に握り潰し、確定済みの `quick_check` を settlement 失敗として誤報しない。episode 更新用の既存イベント／SSE 経路は無いため、新規のイベント配線は足さない（フロントは result パネルの `GET /runs/{id}` ポーリングで確定結果を取得する）。
+- **既定品質は `quick_check.verdict.quality` から導出**する（既存の D-2「integrity→品質」シームを**拡張**）。`PATCH /api/v1/captures/{id}/review` で `quality` を**省略**すると、capture の `quick_check.verdict.quality`（`good` | `needs_review`）を既定値とし `quality_source="quick_check"` を付ける。明示的な `quality` はオペレータの上書きとしてそのまま保存（`quality_source` は既定 `operator`）。`quick_check` が無ければ保守的に `needs_review`（未確定は good と見なさない）。
+- **確定後の遅延再導出（save-before-settle レース対策）**: settlement 完了で capture に `quick_check` を書き込んだ**直後**、その capture が既に review 済み（`review_revision > 0`）で `quality_source == "quick_check"` のとき、`quality` を確定 verdict の値へ更新する。settle 完了前に保存された review が保守的な `needs_review` フォールバックのまま取り残されるのを補正するもの。`operator` / `validator` 由来の品質には**決して手を出さない**（人／ディープ解析の判断）。
+  - **この訂正も §4.1 の通常経路を通り、`revision` を進める。** その結果クライアントが `409` を受けるのは正しい挙動で、「手元の review はもう最新ではない」という事実をそのまま伝えている。settle 中に operator が編集していれば `409` になり、**その人の判断が勝つ**（訂正は諦める）。
+  - 再導出の失敗は独立に握り潰し、確定済みの `quick_check` を settlement 失敗として誤報しない。専用の SSE 経路は足さない（フロントは result パネルの `GET /api/v1/captures/{id}` ポーリングで確定結果を取得する）。
 
-## Batch / Episode（Console v2 Phase 2）
+## Batch
 
-Collect の Batch/Episode 進行・タスク結果・品質判断を orchestrator に**永続化**し、Review が端末に依存せず実データを表示できるようにする（従来のブラウザ内ブリッジ `episodeBridge` を置換）。**既存の runs / jobs には手を入れない**。episode は run への参照を持つ別テーブルで、録画経路（record/start → stop → MCAP）は無変更 = 録画の安全性に影響しない。
+Collect の Batch 進行を orchestrator に**永続化**し、Review が端末に依存せず実データを表示できるようにする（ブラウザ内ブリッジ `episodeBridge` は削除済み）。
 
-- **データモデル**（orchestrator の既存 SQLite に 2 テーブル追加）:
-  - `batches`: `batch_id`（`batch_YYYYMMDD_HHMMSS`）/ `robot` / `project` / `task` / `condition` / `operator` / `target_episodes`（既定 30）/ `status`（`active` | `completed` | `ended_early`）/ `ended_reason?` / `created_at` / `ended_at?` / `episodes_recorded`（**録画した episode の単調カウンタ。既定 0**）/ `batch_seq`（**（ロボット, ローカル日付）ごとの人間可読なバッチ番号。nullable**）。`project` は Plan 由来の文字列（**Plan 自体のモデル化は Phase 2.5 に先送り**）。
-    - `episodes_recorded` は `POST /api/v1/episodes` ごとに +1 し、**run 削除の CASCADE でも減らさない**（`episode_count` はライブの件数で削除時に減るが、Collect の「N / 30」等の表示は撮った数を正とするためこの単調値を使う）。既存 DB へは additive migration で追加し、現在の episode 件数で backfill。
+**v2 で `episodes` テーブルは無くなった。** episode が持っていたフィールド（`task_result` / `failure_reason` / `quality` / `quality_source` / `review_status` / `batch_id` / `index_in_batch`）は **capture 行そのもの**に載り、書き込みは `PATCH /api/v1/captures/{id}/review` が担う。1 run = 1 episode という UNIQUE 制約も、1 capture が両方の役割を持つことで構造的に不要になった。
+
+- **データモデル**:
+  - `batches`: `batch_id`（`batch_YYYYMMDD_HHMMSS`）/ `robot` / `project` / `task` / `condition` / `operator` / `target_episodes`（既定 30）/ `status`（`active` | `completed` | `ended_early`）/ `ended_reason?` / `created_at` / `ended_at?` / `episodes_recorded`（**録画した本数の単調カウンタ。既定 0**）/ `batch_seq`（**（ロボット, ローカル日付）ごとの人間可読なバッチ番号。nullable**）。`project` は Plan 由来の文字列（**Plan 自体のモデル化は Phase 2.5 に先送り**）。
+    - `episodes_recorded` は**その capture への初回 review 保存**ごとに +1 し、**capture の削除でも減らさない**（`episode_count` はライブの件数で削除時に減るが、Collect の「N / 30」等の表示は撮った数を正とするためこの単調値を使う）。
+  - **バッチ行は rebuild の対象外**（[capture_store](capture_store.md) §8.2 規則 6）。`project` / `robot` / `condition` / `target_episodes` / `batch_seq` / `status` / `episodes_recorded` はどのサイドカーにも書かれていないので、`kairos.db` を捨てると**失われる**（既知の損失）。capture 側の `batch_id` / `index_in_batch` は `record.json` から復元されるため、「どの capture がどのバッチの何番だったか」は残る。
     - `batch_seq` は **バッチ作成時（＝初回録画時の遅延生成）に発番**する: `1 + MAX(batch_seq)`（同ロボット・同ローカル日付の既存バッチ。UTC の `created_at` を `date(created_at,'localtime')` でローカル日付に変換して突き合わせ）。**毎朝ローカル日付で 1 から／ロボットごとに独立**にリセットされ、Collect/Review/Datasets の唯一の人間可読番号になる（Collect=「Batch N」、Review/Datasets=「MM/DD · #N」。日付は `created_at` から導出＝新列不要）。空バッチは行を持たない=番号を消費しない。採番は store のロック下で read→insert が同一トランザクションのためレース安全。既存 DB へは additive migration で追加し、（ロボット, ローカル日付）グループごとに `created_at` 昇順で backfill。
-  - `episodes`: `episode_id`（`ep_<uuid>`）/ `batch_id` / `run_id`（**UNIQUE** = 1 episode = 1 run）/ `index_in_batch` / `task_result`（`success` | `failure`）/ `failure_reason?` / `quality`（`good` | `needs_review` | `not_usable`）/ `quality_source`（`operator` | `quick_check` | `validator`。既定 `operator`）/ `review_status`（`pending` | `adopted` | `excluded`。既定 `pending`）/ `created_at` / `updated_at`。
-  - FK はコード側で担保（SQLite の FK pragma に依存しない）。`DELETE /api/v1/runs/{id}` 時は該当 episode を**コードでカスケード削除**する。
+  - review 系フィールドは `captures` 行にある: `batch_id` / `index_in_batch` / `task_result`（`success` | `failure`）/ `failure_reason?` / `quality`（`good` | `needs_review` | `not_usable`）/ `quality_source`（`operator` | `quick_check` | `validator`）/ `review_status`（`pending` | `adopted` | `excluded`。既定 `pending`）/ `review_revision`（CAS 用。未 review = 0）。**正本は `record.json`**、DB はそのキャッシュ（[capture_store](capture_store.md) §4）。
+  - FK はコード側で担保（SQLite の FK pragma に依存しない）。capture の削除は**行を消さない**（墓標）ので、v1 の CASCADE 削除に相当する処理は無い。
   - `plan_catalog`（1 行テーブル。2026-07-14 追加）: `id`（`=1` CHECK）/ `payload`（Projects → Tasks → Conditions の JSON 全文）/ `updated_at`。`GET/PUT /api/v1/plans` の保存先（上記「公開 API」参照）。
 - **エンドポイント**:
   - `POST /api/v1/batches` — バッチ開始。body `{ project, task, condition?, operator?, robot?, target_episodes=30 }` → `201`（`robot` 省略時は **active robot** で補完）。`batch_id` は同秒衝突時にサフィックス再採番。
   - `PATCH /api/v1/batches/{id}` — 途中終了（`status` / `ended_reason`）・`condition` 変更・**`target_episodes` 変更（1–500、範囲外は 422。2026-07-14）**。**終端 status（`completed` / `ended_early`）到達時に `ended_at` を一度だけスタンプ**。不整合な遷移は緩く許容（ハード拒否しない）。不在は `404`。
-  - `GET /api/v1/batches?status=&robot=&operator=` — バッチ一覧（**新しい順**）。各要素に `batch_seq`・`episode_count`（ライブ件数）・`episodes_recorded`（単調カウンタ）と**コンパクトな episodes サマリ**（`index` / `run_id` / `batch_seq` / `task_result` / `quality` / `review_status`）を同梱（リロード時のアクティブバッチ復元に使う。Collect の件数表示は `episodes_recorded` を参照）。
-  - `GET /api/v1/batches/{id}` — バッチ全体 ＋ **episodes（フル）**。不在は `404`。
-  - `POST /api/v1/episodes` — Collect Save 時。body `{ batch_id, run_id, index_in_batch, task_result, failure_reason?, quality?, quality_source='operator' }` → `201`。batch / run が未知なら `404`、run に既に episode があれば **`409`**（`episode_exists`）。**`quality` は任意**: 省略時は run の `quick_check.verdict.quality` から既定を導出し `quality_source="quick_check"` を付ける（`quick_check` が無ければ保守的に `needs_review`）。明示指定はオペレータ上書きとしてそのまま保存（上記「停止時クイックチェック」参照）。**`index_in_batch` はクライアントのヒント**: `(batch_id, index_in_batch)` は UNIQUE 制約で保護され、衝突時（複数端末が同番号を採番）はサーバーがロック下で MAX+1 を再採番し**実際に保存した index を応答で返す**（クライアントは応答値を採用する）。
-  - `PATCH /api/v1/episodes/{id}` — Review の Adopt/Exclude（`review_status`）・品質/結果の上書き。不在は `404`。書き込みごとに `updated_at` を更新。
-- **runs への JOIN**: `GET /api/v1/runs` / `GET /api/v1/runs/{id}` は各 run に `episode` サマリ（`episode_id` / `batch_id` / `batch_seq` / `index_in_batch` / `task_result` / `failure_reason` / `quality` / `review_status`）を **additive に同梱**（無ければ `null`）。`batch_seq` は episode 行でなくバッチ側にあるため、join 時に `batch_id → batch_seq` を一括引きして付与する（Review/Datasets が 2 度目の往復なしで番号を表示できる）。既存フィールドは不変。一覧はバッチ一括取得で N+1 を回避。
-- **SSE**: 既存 `record_status` / `resync` で足りるため**新イベントは追加しない**（必要になれば Phase 2b）。
+  - `GET /api/v1/batches?status=&robot=&operator=` — バッチ一覧（**新しい順**）。各要素に `batch_seq`・`episode_count`（ライブ件数）・`episodes_recorded`（単調カウンタ）と**コンパクトなサマリ**（`index` / `capture_id` / `run_id` / `batch_seq` / `task_result` / `quality` / `review_status`）を同梱（リロード時のアクティブバッチ復元に使う。Collect の件数表示は `episodes_recorded` を参照）。
+  - `GET /api/v1/batches/{id}` — バッチ全体 ＋ **`captures`（フル capture 配列）**。不在は `404`。
+  - **保存は `PATCH /api/v1/captures/{id}/review`**（Collect の Save）。`batch_id` / `index_in_batch` / `task_result` / `failure_reason` / `quality` / `review_status` をそこに載せる。**`index_in_batch` はクライアントのヒント**で、衝突時（複数端末が同番号を採番）はサーバーがロック下で再採番し**実際に保存した値を応答で返す**（クライアントは応答値を採用する）。
+- **capture への同梱**: `batch_seq` は capture 行でなくバッチ側にあるため、一覧を返すときに `batch_id → batch_seq` を一括引きして付与する（Review/Datasets が 2 度目の往復なしで番号を表示できる）。一覧はバッチ一括取得で N+1 を回避。
+- **SSE**: 既存 `record_status` / `resync` で足りるため**新イベントは追加しない**。
 - **Phase 2.5 TBD**: UX 仕様の Session > Batch > Episode のうち **Session は今回作らない**（運用実績を見て判断）。Plan（Projects/Tasks/Conditions）の DB 化・Settings からの編集保存も Phase 2.5。
 
 ## 収録設定のフル編集（`GET/PUT /api/v1/config/recording`）
@@ -144,30 +242,35 @@ Settings > Data quality から、選択式カタログ（recording / stream / va
 
 ## ジョブ実行（`POST /api/v1/jobs`、`dora_runner` へプロキシ）
 
-- `GET /jobs/{id}/result` の **`artifacts` はデータルート相対に正規化**して返す（2026-07-15）: dora_runner はコンテナ絶対パス（例 `/data/report/<pipeline>/<run_id>/plot.png`）を報告するが、orchestrator が `data_dir` 配下のものを相対化するので、各 artifact はそのまま `GET /api/v1/files/{path}` で取得できる。これが**プラグインが UI 無改修で画像（プロット等）を表示させる可視化チャネル**（[dora_plugins.md §2.5](dora_plugins.md)）。`data_dir` 外の絶対パス・元から相対のパスは無変換。
-- `dataset_export`: 対象 run が未知なら **`404`**、まだ記録中 / 停止中（`created` / `recording` / `stopping`）なら **`409`**（書き込み途中の bag を export しない）。
+- **ジョブのキーは `capture_id`**（§10.5）。`POST /api/v1/jobs` の body は `{ capture_id, pipeline, params? }`。`dataset_dir` param は廃止した（ソース解決は `objects/<capture_id>` 一本）。
+- **capture lease をここで取る**（[capture_store](capture_store.md) §7.1）: dora_runner は意図的に lease 非認知（capture を読んで report を書くだけで、削除のことを何も知らない）なので、カタログと削除経路の両方を持つ orchestrator が代わりに取る。投入時に取得、**status / result のポーリング観測ごとに更新（renew-on-poll）**、終端を観測したら owner スコープで解放。lease が生きている間、discard / delete は `409 capture_busy` を返す。
+  - **TTL が保証するのは「誰かが観測している間」だけ。** 実行中のジョブは UI が status をポーリングするので守られるが、**キュー待ちは守らない** — 誰もポーリングしないまま待たされたジョブは lease を失い、delete が勝つ。そのジョブは後で `.trash` へ移ったディレクトリに対してきれいに失敗する（遅い正常終了であって破損ではない）。docstring も含め、この保証は正確に述べること。
+  - 墓標の capture への投入は `409`（`capture_deleting` / `capture_deleted`）。
+- 対象 capture が未知なら **`404`**、まだ記録中 / 停止中なら **`409`**（書き込み途中の bag を読ませない）。
+- `GET /jobs/{id}/result` の **`artifacts` はデータルート相対に正規化**して返す: dora_runner はコンテナ絶対パス（例 `/data/report/<pipeline>/<capture_id>/plot.png`）を報告するが、orchestrator が `data_dir` 配下のものを相対化するので、各 artifact はそのまま `GET /api/v1/files/{path}` で取得できる。これが**プラグインが UI 無改修で画像（プロット等）を表示させる可視化チャネル**（[dora_plugins.md §2.5](dora_plugins.md)）。`data_dir` 外の絶対パス・元から相対のパスは無変換。
 - `fast_validation`: `params.template` の **id（カタログのファイル stem。例 `airoa_hsr`）を Config カタログでフル template に解決**してから `dora_runner` へ転送する（dora_runner の template ストアは空起動のため、bare id は 404 になる）。id が空 / 不在なら現在の選択（active）にフォールバック。既に dict（フル template）ならそのまま通す。
 
-## データセットエクスポート（`POST /api/v1/datasets/export(-all)`）
+## データセット（論理）
 
-収録を**正本ステージング（`recorded/`）からデータセットツリー（`data/<operator>/<task>/<NNN>`）へ移動**する操作。`POST /jobs` の直接呼び出しではなく、orchestrator が `dataset_export` ジョブの完了を待ち、**run のライフサイクルまで含めて**面倒を見る。
+**物理 move と実体コピーは全廃した。** dataset は **DB 行 + ledger イベント**だけで、収録の実体は `objects/<capture_id>` から一歩も動かない。これで「移動の途中で電源が落ちた」という状態が構造的に消え、1 つの capture を複数の dataset に入れることも、dataset から外して録画一覧に戻すことも、バイトを触らずにできる。
 
-- `POST /api/v1/datasets/export`（body `{ run_id }`）: 対象が `completed` でなければ **`409`**、`recorded/<run_id>` が無ければ **`409`**（export 済み等）。`dataset_export`（移動）を完了まで実行し、**成功した場合のみ run 行を削除**（移動済みなので `recorded/` のディレクトリ・兄弟ファイルも掃除）。**run キーのレポートサイドカー（`data/report/*/<run_id>`: validation / loss / video_check の mp4 キャッシュ）は意図的に残す** — エクスポート後もデータセット詳細ビューがそれらを表示し続けられるようにするため（`DELETE /api/v1/runs/{id}` による明示削除では従来どおり掃除される）。失敗（`502`）・タイムアウト（`504`）時は run を `recorded/` と一覧に残す。
-- `POST /api/v1/datasets/export-all`: `recorded/` にファイルが残る完了 run を**全件** export。1 件の失敗でバッチは止めず、`{ exported: [...], failed: [{ run_id, error }], total }` を返す。
-- **ラベルはエクスポートを生き残る（`episode.json`）** — Console v2 Phase 2: run 行の削除は episode を CASCADE で消すため、export 時に **run 行を削除する前**に該当 episode（あれば）とそのバッチを読み、`dataset.json` の隣に `episode.json`（tmp+rename でアトミック書込）を書き出す。内容 = `episode_id` / `batch_id` / `batch_seq` / `index_in_batch` / `task_result` / `failure_reason?` / `quality` / `quality_source` / `review_status`＋バッチコンテキスト `batch: { batch_id, batch_seq, project, task, condition, operator, robot }`＋`exported_at`。**これがないと、失敗ラベル付きデータが未ラベルとして export されてしまう**。episode を持たない run は `episode.json` を書かない（空ファイルも作らない）。single / export-all の両経路が同じ処理を通る。
-- **ルートカタログ（`data/index.jsonl`）** — export 成功時に 1 行追記（`dataset_dir` は `data_dir` 相対＋`schema_version: 1`＋上記ラベルの軽量サブセット）、`DELETE` 時に該当行を除いて再書き込み（tmp+rename でアトミック）。派生・再構築可能な最適化であり、正本はツリー上のサイドカー（`GET /api/v1/datasets` はカタログ優先＋不在・破損時はツリー走査へフォールバック。`POST /api/v1/datasets/index/rebuild` で再生成）。書込は best-effort — export は既に MCAP を移動済みのため、カタログ書込失敗が export を失敗させることはない。
-- 結果として**エクスポート済みの収録は収録一覧（Review タブ）から消える**（来歴は `<NNN>/dataset.json` に保存）。`GET /api/v1/datasets` で operator › task › NNN を一覧できる。一覧の各行には `episode.json` の**軽量サブセット**（`task_result` / `failure_reason` / `quality` / `review_status` / `batch_seq` / `index_in_batch` / `batch_id` / `condition`。無ければ `null`）をカード表示用に同梱する（`dataset.json` と同じく行ごとに読む）。`batch_id`（グローバル一意。`batch_seq` は機体×ローカル日付で毎朝リセットされるため単独ではバッチを特定できない）と `condition`（`episode.json` のネストした `batch.condition` から平坦化）は、学習セット組成側が **index.jsonl / 一覧だけでバッチ丸ごと除外・condition 絞り込み**をできるようにするための追加（2026-07-14 バッチラベル裁定）。旧カタログ行は `null` のまま — `POST /api/v1/datasets/index/rebuild` でサイドカーから補完される。
-- **`GET /api/v1/datasets/{operator}/{task}/{index}` はエクスポート後の RunDetail 相当**（DatasetDetail）を返す: `dataset.json`（来歴・`files` / `bytes` / `message_count`）に加え、移動された `session.json`（state / started_at / ended_at）・`manifest.json`（topics の name / type / QoS。無ければ session / dataset.json の名前のみへフォールバック）・**`episode.json`（`episode` フィールドとして同梱。無ければ `null`）**と、エクスポートを生き残った run キーのレポート（`validation` / `loss`）を best-effort で同梱する。応答の `path`（`<operator>/<task>/<index>` 相対パス）は、エクスポート後に `video_check` / `loss_report` ジョブを実行する際の `params.dataset_dir` にそのまま使える。パスコンポーネントは単一ディレクトリ名のみ許可（トラバーサル・予約名 `recorded`/`report`/`datasets` は `400`）、ディレクトリまたは `dataset.json` 不在は `404`。
-- **`DELETE /api/v1/datasets/{operator}/{task}/{index}` はエクスポート後の `DELETE /runs/{id}` 相当**（`204`）: データセットディレクトリ（`episode.json` などのサイドカーごと）を削除し、空になった `<task>` / `<operator>` 親ディレクトリを掃除、さらにエクスポート時に意図的に残した run キーのレポートサイドカー（`data/report/*/<run_id>`）も**孤児になるためここで削除**する（同じ run_id の run 行がまだ存在する場合は残す）。パス規則は詳細と同じ（不正コンポーネント・予約名は `400`、ディレクトリまたは `dataset.json` 不在は `404` — `dataset.json` の無いディレクトリは削除対象にならない）。削除に失敗した場合は `500`（`dataset_delete_failed`）。
+- `POST /api/v1/datasets` — body `{ name, operator?, task? }` → `201`。`dataset_id` は UUIDv7。ledger に `dataset_created`。
+- `GET /api/v1/datasets` — 一覧（`member_count` 込み）。`GET /api/v1/datasets/{dataset_id}` — members（`membership_id` / `capture_id` / `display_index`）込み。
+- `POST /api/v1/datasets/{dataset_id}/members` — body `{ capture_id }` → `201`。`display_index` はサーバが採番し、**欠番を再利用しない**（high-water mark は ledger から復元できる）。ledger に `dataset_member_added`。
+- `DELETE /api/v1/datasets/{dataset_id}/members/{membership_id}` → `204`。ledger に `dataset_member_removed`。
+- `DELETE /api/v1/datasets/{dataset_id}` → `204`。ledger に `dataset_deleted`。**capture のバイトには触れない。**
+- **安定 ID は `dataset_id` / `membership_id`**（名前は編集可能、`display_index` は表示用）。UI の URL 状態もこの 2 つで持つ。
+- **member の capture は delete も archive も拒否する**（`400`）。`views/` の symlink が宙に浮くため、先に member から外す。
+- **`views/` の再生成**（`POST /api/v1/views/refresh`）: `views/<operator>/<task>/<dataset_name>/<NNN> -> objects/<capture_id>` の symlink 木を、**コミット済みの `dataset_members` 行のみ**から作り直す。世代ディレクトリ + `os.replace` による symlink 差し替えで原子的に行うので、**`views` が存在しない瞬間も、半分だけ出来た木を読む瞬間も無い**。所有者は orchestrator 1 つ（dora_runner は依頼するだけ）。木は全消し・再生成が可能な派生物で、正本は DB 行と ledger。
 
 ## SSE イベント契約（`GET /api/v1/events`）
 
 - 形式: `id:`（単調増加の整数）/ `event:`（種別）/ `data:`（JSON）。
 - 種別と payload:
-  - `record_status`: `{ run_id, state, message_count, bytes, started_at }`（`started_at` は additive — start 遷移を見逃したページも進行中録画の経過を描ける）。**受信側は同一 run 内の巻き戻しを破棄すること**（2026-07-27）: 1 つの run の状態は `created → armed → recording → stopping → 終端` としか進まないので、遅れて届いた低位イベントは新情報ではなく古い情報である。`recording` への巻き戻しはコンソールに「この画面が駆動していない録画が走っている」と誤認させ、停止済みのテイクの上に takeover カードを出す。run_id が異なる場合は巻き戻しではない（前の run の終端直後に新しい run が `recording` になるのは正常）。
+  - `record_status`: `{ capture_id, run_id, state, message_count, bytes, started_at }`（`started_at` は additive — start 遷移を見逃したページも進行中録画の経過を描ける）。**受信側は同一 capture 内の巻き戻しを破棄すること**: 1 つの capture の状態は `created → armed → recording → stopping → 終端` としか進まないので、遅れて届いた低位イベントは新情報ではなく古い情報である。`recording` への巻き戻しはコンソールに「この画面が駆動していない録画が走っている」と誤認させ、停止済みのテイクの上に takeover カードを出す。`capture_id` が異なる場合は巻き戻しではない（前の capture の終端直後に新しい capture が `recording` になるのは正常）。
   - `metrics`: `topic_monitor` の周期 snapshot（[topic_monitor](topic_monitor.md) の出力スキーマ）
   - `alert`: `{ topic, metric, level, value, threshold }`
-  - `job`: `{ job_id, run_id, pipeline, state, progress }`
+  - `job`: `{ job_id, capture_id, pipeline, state, progress }`
 - 再接続: クライアントは `Last-Event-ID` を送る。サーバは直近イベントをリングバッファ（既定 1000 件 / 5 分）に保持し未送分を再送。範囲外なら `event: resync` を送り、クライアントは全体を再取得する。
 
 ## 主要スキーマ（抜粋、OpenAPI 生成対象 / pydantic）
@@ -176,19 +279,24 @@ Settings > Data quality から、選択式カタログ（recording / stream / va
 - 検証テンプレート:
   - `GET /api/v1/validation/templates` → `{ items: [ { name, version, required_topics: [ { name, type?: string } ] } ], next_cursor }`
   - `POST /api/v1/validation/templates` body = `{ name, version, required_topics: [ { name, type? } ] }` → `201` 同形
-  - `POST /api/v1/validation/templates/generate` body = `{ run_id }` → `{ name, version, required_topics: [ ... ] }`（雛形）
+  - `POST /api/v1/validation/templates/generate` body = `{ capture_id }` → `{ name, version, required_topics: [ ... ] }`（雛形）
 - ワンクリック検証プリセット:
-  - `GET /api/v1/validation/presets` → `{ items: [ { id, name, description, pipeline, params, total, pending, pending_run_ids: [ run_id ] } ] }`。静的フィールド（`id` / `name` / `description` / `pipeline` / `params`）は機体の `validation_presets.yaml`（[config](config.md)）由来。動的フィールドはリクエスト毎に算出＝完了収録（`recorded/` に残る run）のうち **その pipeline の `report/<pipeline>/<run_id>/summary.json` がまだ無い**もの（`pending_run_ids`）。UI はこれを 1 クリックで一括実行する（`POST /api/v1/jobs` を run ごと）。読み取り専用（状態は変えない）。
-- run（`GET /api/v1/runs/{id}` = RunDetail）: `{ run_id, state, started_at, ended_at?: string|null, operator?, task?, topics: [ { name, type, qos } ], compression, split?: object|null, error?: { code, message }|null, episode?: object|null, quick_check?: object|null, manifest?: object|null, validation?: object|null, dataset_stats?: object|null, loss?: object|null }`（`episode` は Phase 2 の JOIN。`quick_check` は停止時クイックチェックの確定結果〔基底 `Run` フィールドなので一覧にも載る〕。末尾 4 つはディスク上サイドカー由来。いずれも不在で `null`）。
-- batch（`GET /api/v1/batches` の要素 = BatchSummary）: `{ batch_id, robot?, project, task, condition?, operator?, target_episodes, status, ended_reason?, created_at, ended_at?, episodes_recorded, batch_seq?, episode_count, episodes: [ { index, run_id, batch_seq?, task_result, quality, review_status } ] }`。`GET /api/v1/batches/{id}`（BatchDetail）は `episodes` がフル episode 配列。
-- episode（`POST/PATCH /api/v1/episodes`）: `{ episode_id, batch_id, run_id, index_in_batch, task_result, failure_reason?, quality, quality_source, review_status, created_at, updated_at }`（`POST` の `quality` は任意 = 省略時 `quick_check` から導出。応答の `quality` / `quality_source` は確定値）。
-- job（`GET /api/v1/jobs/{id}/status`）: `{ job_id, run_id, pipeline, state, progress, logs_tail }`（[dora_runner](dora_runner.md)）。
+  - `GET /api/v1/validation/presets` → `{ items: [ { id, name, description, pipeline, params, total, pending, pending_capture_ids: [ capture_id ] } ] }`。静的フィールド（`id` / `name` / `description` / `pipeline` / `params`）は機体の `validation_presets.yaml`（[config](config.md)）由来。動的フィールドはリクエスト毎に算出＝終端状態の capture のうち **その pipeline の `report/<pipeline>/<capture_id>/summary.json` がまだ無い**もの（`pending_capture_ids`）。UI はこれを 1 クリックで一括実行する（`POST /api/v1/jobs` を capture ごと）。読み取り専用（状態は変えない）。
+- capture（`GET /api/v1/captures/{id}` = CaptureDetail）: `{ capture_id, run_id?, source_instance_id?, state, started_at?, ended_at?, operator?, task?, robot?, topics: [ { name, type, qos } ], compression, split?, error?: { code, message }|null, message_count?, bytes?, quick_check?: object|null, task_result?, failure_reason?, quality?, quality_source?, review_status, review_revision, batch_id?, index_in_batch?, deleted_at?, delete_kind?, delete_reason?, archived_at?, archive_destination?, lease_owner?, lease_expires_at?, replica?: Replica|null, digest_state, memberships: [ { membership_id, dataset_id, dataset_name?, display_index } ], manifest?, record?, validation?, loss? }`。
+  - `replica`: `{ instance_id, state, path?, manifest_digest?, verified_at?, updated_at? }`。`state` の語彙は [capture_store](capture_store.md) §8.1。**`null` は「このマシンにまだコピーが無い」**（split 構成の正常な状態）であって、エラーではない。
+  - `digest_state`（`pending` | `complete`）は列ではなくローカル replica 行からの導出値（`present_verified` ⇔ `complete`）。
+  - 末尾 4 つはディスク上サイドカー / レポート由来で、不在なら `null`。
+- batch（`GET /api/v1/batches` の要素 = BatchSummary）: `{ batch_id, robot?, project, task, condition?, operator?, target_episodes, status, ended_reason?, created_at, ended_at?, episodes_recorded, batch_seq?, episode_count, episodes: [ { index, capture_id, run_id?, batch_seq?, task_result, quality, review_status } ] }`。`GET /api/v1/batches/{id}`（BatchDetail）は `captures` がフル capture 配列。
+- review 保存（`PATCH /api/v1/captures/{id}/review`）: body `{ base_revision, task_result?, failure_reason?, quality?, quality_source?, review_status?, batch_id?, index_in_batch? }` → 更新後の Capture。
+- store health（`GET /api/v1/store/health` = StoreHealth）: 上記「ストア健全性と SUSPECT」参照。
+- job（`GET /api/v1/jobs/{id}/status`）: `{ job_id, capture_id, pipeline, state, progress, logs_tail }`（[dora_runner](dora_runner.md)）。
 
 ## フレームワーク / 永続
 
 - **FastAPI + uvicorn**（推奨。OpenAPI を自動公開）。
 - 重い処理（検証・変換、stage3）は**非同期ジョブキュー**に載せ、request/response から切り離す。進捗は SSE 通知。
-- 永続: **runs / jobs は SQLite を正**、ファイル manifest は監査用。片方だけ更新される事故を避ける（settings ストアは未実装。収録設定は `PUT /api/v1/config/recording` で設定ファイルへアトミックに永続化する）。
+- 永続: **capture の正はディスク上のサイドカー**（`object_manifest.json` / `record.json` / `lifecycle.jsonl`）で、**SQLite はそこから全再構築できる索引**。起動時に DB が無い・スキーマ版が違う・`KAIROS_REBUILD` が立っていれば rebuild する（[capture_store](capture_store.md) §8.2）。`jobs` は揮発として rebuild 対象外、`validation_templates` / `plan_catalog` は `catalog/*.json` へサイドカー二重化して復元する。settings ストアは未実装（収録設定は `PUT /api/v1/config/recording` で設定ファイルへアトミックに永続化する）。
+- **起動シーケンス**: identity（`instance.json`。壊れていれば起動失敗 — 新しい id は全 replica を孤児にする）→ 不変条件（`objects`/`.trash`/`.incoming` の同一 FS 検査、`.ledger-slack` の確保）→ 必要なら rebuild（**ledger が読めなければ起動を中止**。ledger は manifest に優先するので、それ無しに rebuild すると operator が破棄した capture を全部復活させる）→ **delete-resume（rebuild の有無にかかわらず毎回）**。
 - 内部サービス呼び出しは timeout（既定 `3s`）+ retry 1 回。失敗は `status` / `events` に反映（`503`）。
 
 ## エラー / 規約 / ネットワーク

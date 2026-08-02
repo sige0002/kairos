@@ -1,4 +1,4 @@
-<!-- Mirror of docs/specs/ja/deployment_topology.md (the Japanese file is canonical). Keep this file in sync by hand — the sync-docs skill was retired. -->
+<!-- AUTO-GENERATED from docs/specs/ja/deployment_topology.md. Do not edit by hand — edit the Japanese source and run /sync-docs. -->
 # Deployment topology — recording from a separate PC without overloading the robot
 
 > Status: design finalized (v1). Japanese is the source of truth (treat it as canonical). The English version `docs/specs/en/deployment_topology.md` is an auto-generated mirror (do not edit it directly). **No authentication required.**
@@ -127,19 +127,35 @@ The recorder writes MCAP to **the robot's disk**. dora (CPU-heavy) reads a **PC-
 
 - **Do not mount robot:/data over NFS and let dora read it directly**. If dora scans large MCAP,
   the robot ends up supplying disk/network, which **overloads the robot if recording is in progress** (contrary to the intent of this design).
-- The default is `make import-runs` (`deploy/sync/import_runs.sh`): rsync from the robot **only runs that are finalised (have `metadata.yaml`)**
-  (`--partial --append-verify`, bandwidth-limitable with `BWLIMIT`). It is idempotent and can be run on a timer.
-  In-progress runs are not half-copied.
+- The default is `make import-runs` (`deploy/sync/import_runs.sh`): the unit of discovery is
+  **`objects/<capture_id>`**, and only those whose `object_manifest.json` carries a `state` of
+  **`completed` / `interrupted`** are rsynced from the robot (`--partial --append-verify`,
+  bandwidth-limitable with `BWLIMIT`). `digest_state` is deliberately not part of the condition — the
+  digest is the **receiving** side's job, so waiting on it would deadlock. It is idempotent and can be
+  run on a timer. Each capture is rsynced into `$DATA_DIR/.incoming/<capture_id>` and then, once
+  complete, moved into `objects/` with an `os.replace` on the same filesystem (rsync transfers in
+  sorted order, so `object_manifest.json` arrives ahead of the huge `*.mcap` — a transfer cut short
+  would otherwise leave behind a directory that looks complete while its bag is truncated). That
+  preserves the invariant that **the only incomplete directory ever visible under `objects/` is one
+  the local recorder is in the middle of writing** ([capture_store](capture_store.md) §2). What
+  arrives is picked up and turned into a row by the orchestrator's reconciler, so this script is
+  usable even when the orchestrator is not running.
 - Do not let the recorder POST files (to avoid coupling upload failures to the recording lifecycle).
-- Note: `dora_runner`'s `dataset_export` **moves** files from `recorded/`
-  (`dataset_export.py`). **It is safe against a PC-local copy**, but **destructive if it points at robot storage or a read-only NFS**. Always run it against an already-imported PC-local copy.
+- **v2 removed every step that moves files** (`dataset_export` is retired; a dataset is a DB row).
+  The only thing that still moves bytes is the per-capture archive, whose destination is validated
+  against `KAIROS_ARCHIVE_ROOTS` and rejected when it overlaps `data_dir` (checked in both directions
+  by realpath).
 - **Save-triggered auto-pull (optional, default OFF)**: the recording-PC stack bundles an **importer
   sidecar** (`deploy/sync/`, defined ONLY in `compose.recording.yaml` — it does not exist in the
   single-host `compose.yaml`, so `make up` is entirely unaffected). With
   `transfer.auto_pull_on_save: true` in the recording config (edited via Settings > Advanced JSON,
-  the same way as `recording.pre_arm`), the orchestrator POSTs `/pull {run_id}` to the importer right
-  after a Collect Save (`POST /api/v1/episodes`) and only that run is rsynced in (same
-  finalised-only gate, idempotency and resume guarantees as the manual path). **Default false =
+  the same way as `recording.pre_arm`), the orchestrator POSTs `/pull {"capture_id": …}` to the
+  importer right after a Collect Save (**the first review saved against that capture** =
+  `PATCH /api/v1/captures/{id}/review`) and only that capture is rsynced in (same terminal-state
+  gate, idempotency and resume guarantees as the manual path). The importer's `/pull` **validates its
+  body strictly**: either `{"capture_id": <uuid7>}` or `{"all": true}`, and a body it cannot interpret
+  is a `400`. The old behaviour of reading an empty body as "pull everything" was removed — across a
+  key rename, a single mix-up would have turned it into a sweep of the whole robot. **Default false =
   nothing is ever transferred without an explicit opt-in.** The robot-side copy is **kept** (a pull
   is a copy, never a move; robot-side retention is a separate **TBD**). Recovery for failed pulls:
   `IMPORT_SWEEP_S` (periodic sweep, default 0 = off) or the manual `make import-runs`.

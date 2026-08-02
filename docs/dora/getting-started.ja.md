@@ -143,7 +143,7 @@ kairos の `dora_runner` は「記録済み MCAP を入力に、検証 / 変換 
 from mcap_ros2.reader import read_ros2_messages
 
 for msg in read_ros2_messages(
-    "/data/recorded/<run>/<id>.mcap",
+    "/data/objects/<capture_id>/<capture_id>_0.mcap",
     topics=["/joint_states", "/camera/head/image_raw"],  # 必要 topic だけ
     # start_time / end_time で時間範囲も指定可
 ):

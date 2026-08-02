@@ -1,6 +1,6 @@
 # dora_runner 仕様
 
-> ステータス: 設計確定（v1）。`fig_const/dora.png` を基に、未記載事項を推奨設計として確定。日本語が正本（これを正とする）。英語版 `docs/specs/en/dora_runner.md` は自動生成ミラー（直接編集しない）。**認証は不要。**
+> ステータス: 設計確定（**v2 = capture store 対応**）。`fig_const/dora.png` を基に、未記載事項を推奨設計として確定。日本語が正本（これを正とする）。英語版 `docs/specs/en/dora_runner.md` は自動生成ミラー（直接編集しない）。**認証は不要。**
 
 記録後の **検証・変換・拡張処理パイプライン**コンテナ（**dora** ベース）。記録済み MCAP を入力に、検証・変換・**AI 処理**を非同期ジョブで実行する。重い処理はすべてここに集約し、`rosbag2_recorder` / `topic_monitor` は軽量に保つ。**dora の拡張性と AI 連携を最大限活かす**ことを設計の中心に置く。
 
@@ -14,7 +14,7 @@
 - 各処理（validator / converter / **AI node**）は **dora node（プラグイン）**として実装し、**dora dataflow（YAML）**で接続する。
 - **Plugin Registry** が node を登録し、**Pipeline Registry** が dataflow（= pipeline）を管理する。**pipeline 追加 = dataflow YAML + node 追加**で済み、コア改修は不要。
 - node の **I/O は契約（contract）**として固定する:
-  - 入力: `run`（パス / metadata / manifest）、MCAP メッセージ反復子（topic フィルタ・時間範囲指定可）、`params`。
+  - 入力: `capture`（`objects/<capture_id>` のパス / metadata / `object_manifest.json`）、MCAP メッセージ反復子（topic フィルタ・時間範囲指定可）、`params`。
   - 出力: `metrics`（dict）、`artifacts`（生成物パスのリスト）、`report` 断片。
   - これにより node を自由に差し替え・連結できる。
 - **AI 連携を一級市民にする**: 推論 / 自動アノテーション / 埋め込み・検索インデックス / 品質スコアリング / 学習用データセット変換（例: **LeRobot** 形式）を **AI dora node** として差し込める。
@@ -24,10 +24,17 @@
 
 ## 入力
 
-- `/data/recorded/<run>/*.mcap`（+ `metadata.yaml` / `manifest.json`）
+- `/data/objects/<capture_id>/*.mcap`（+ `metadata.yaml` / `object_manifest.json`）— **ソース解決はこの 1 本のみ**（[capture_store](capture_store.md) §2）
 - pipeline 定義（dataflow YAML）
 - config（[config](config.md)、検証テンプレート、`config/<robot>/flows/*.yml`＝`full_validation` の検証フロー）
 - job record（`api_orchestrator` 由来）
+
+### capture store との関係（v2）
+
+- **全ジョブの必須入力は `capture_id`**（旧 `run_id` から変更）。`dataset_dir` param は廃止した — エクスポートで bag が動かなくなったので、「録画中の場所」と「エクスポート後の場所」を切り替える必要がそもそも無い。
+- **成果物は `report/<pipeline>/<capture_id>/`**。旧 `run_id` 配下の report は捨てる。
+- **`objects/<capture_id>/` に書き込まない。** dora_runner は capture を読んで `report/` に書くだけで、`objects/` 配下には（tmp ファイルすら）作らない。これが守られているので、dora_runner は **capture lease を認知しなくてよい**（lease の取得・更新・解放は orchestrator が代行する。[capture_store](capture_store.md) §7.1）。
+- capture が削除されればディレクトリは `.trash` へ移り、走っていたジョブは**きれいに失敗する**（遅い正常終了であって破損ではない）。
 
 ## 構成コンポーネント
 
@@ -40,19 +47,19 @@
 ## 実行可能パイプライン（図）
 
 - `fast_validation` / `full_validation` / `dataset_convert` / `dataset_validation`
-- **実装済み（`enabled=true`）**: `fast_validation` / `full_validation` / `dataset_export` / `loss_report` / `video_check` / `signal_report`（下記）。`dataset_convert` / `dataset_validation` は I/F とプラグイン枠のみ（`enabled=false`）。
+- **実装済み（`enabled=true`）**: `fast_validation` / `full_validation` / `loss_report` / `video_check` / `signal_report`（下記）の 5 本。`dataset_convert` / `dataset_validation` は I/F とプラグイン枠のみ（`enabled=false`）。
+- **`dataset_export` / `dataset_archive` は廃止**（v2）。dataset は物理移動を伴わない DB 行になり（[capture_store](capture_store.md) §6）、archive は orchestrator の capture 単位エンドポイント（`POST /api/v1/captures/{id}/archive`）が担う。ファイルを動かす仕事は dora_runner から無くなった。
 - **検証 2 本（`fast_validation` / `full_validation`）は同梱バイナリ依存**（bagflow + dora CLI）。イメージ以外の環境（ソースチェックアウト / CI）では `enabled=false` の**プレースホルダに落ちる**（理由を description に出す）＝実行できないものを実行できると宣伝しない。
-- すべてのジョブは `POST /jobs`（`api_orchestrator` がプロキシ）経由で起動する。各パイプラインは `run_id`（`^[A-Za-z0-9_-]+$`）を検証してパストラバーサルを防ぐ。
+- すべてのジョブは `POST /jobs`（`api_orchestrator` がプロキシ）経由で起動する。各パイプラインは `capture_id` が正規の UUIDv7 であることを検証してパストラバーサルを防ぐ。
 
 ## 実装済みパイプライン
 
-- **`dataset_export`** — `recorded/<run_id>` を `data/<operator>/<task>/<NNN>` へ**移動**する（operator / task は run の `session.json` 由来。`NNN` は 001, 002… のゼロ詰め自動採番。パスコンポーネントはサニタイズ）。同一マウント上のファイル単位リネームなので大容量 bag でも高速。**移動後は `recorded/` から収録物が消える**（オーケストレータは完了した run のみ export し、`NNN` を確保してからファイルを移すため中断時もデータ消失しない）。`recorded/<run_id>` と兄弟ファイル（`.qos.yaml` / `.failed.json`）も削除し、`<NNN>/dataset.json` に来歴を保存。レポート: `data/report/dataset_export/<run_id>/summary.json`。バルク／個別の起動はオーケストレータの `POST /api/v1/datasets/export(-all)` 経由（成功後に run 行も削除）。
-- **`loss_report`** — ロボット非依存・config 不要の per-topic ロス推定。完了した MCAP のメッセージ時刻から、トピックごとの**中央値の間隔**を求め、`loss ≈ 1 − actual/expected` を算出する（読み取りのみ・ペイロードを decode しない）。時刻は**送信側の `publish_time`（DDS source timestamp）を優先**し、受信側のジッタ（DDS 伝送・recorder のスケジューリング/キャッシュ）をケイデンス推定から排除する。ただし publish_time を信頼するのは「全メッセージが source stamp を持つ（**非ゼロ**かつ **log_time と異なる**）かつ **両クロックの記録窓が一致（2倍以内）**」する場合のみで、そうでなければ（旧 rosbag2 の `pub==log`、log/source 混在、`0`、送信側クロックのオフセット等）単一の受信側 `log_time` へフォールバックする＝publish_time 化で従来より悪化することはない。なお publish_time でも「ソース欠落」と「録画前の伝送ロス」は区別できない（録画前に落ちたメッセージは MCAP に無く publish_time も消える）ため、これは**測定ではなく推定**である。**どちらのクロックで計算したかはトピックごとに `time_source`（`"publish_time"` / `"log_time"`）として summary に明記**する（honesty 原則）。レポート: `data/report/loss_report/<run_id>/summary.json`。
-- **`video_check`** — オンデマンド（params `{topic}`）の `CompressedImage`→mp4 プレビュー。PyAV（`av` + `Pillow`）で生成し、これらは**遅延 import**するためパッケージ不在でもサービスは起動できる（不在時は明確な失敗ジョブになる）。出力は `data/report/video_check/<run_id>/<topic>.mp4`、`GET /api/v1/files/...` で配信。エンコード上限は params `max_frames`（既定 900、**`0` = 全フレーム**）。上限で切れた summary は `truncated: true` と実メッセージ総数を持ち、UI は「head only」表示と **Re-encode full episode** ボタン（`{force: true, max_frames: 0}` を再発行）を出す。再生 fps はフレーム時刻のケイデンスから推定し、loss_report と同じ規則で **`publish_time` 優先・`log_time` フォールバック**（使ったクロックは summary の `fps_time_source` に明記）。mp4 は一時ファイルへエンコードしてアトミックに rename するため、再エンコードの途中失敗で配信中の mp4 は壊れない。(run_id, topic) キャッシュは cap 整合を判定する（truncated キャッシュは全長要求のミス、untruncated で要求 cap 内ならヒット）。
-- **`signal_report`** — ロボット非依存の**汎用**数値時系列抽出（JointState 専用ではなく、wrench / odom / cmd_vel など**数値リーフを持つ任意のメッセージ**が対象）。完了した MCAP を 1 回だけスキャンし（「全数値リーフ一括」）、topic_probe の Signals プロッタと**同じ `field_introspect` ロジック**（`libs/kairos_common` に共有）で各メッセージの数値リーフを走査する。パスは `pose.position.x` / `position[2]` のようなドット/添字表現で、**ライブ表示と同じ語彙**（UI で見えた値がサイドカー内で同じパスで引ける）。フィールド集合は各トピックの**先頭メッセージ**から決定し（bagel の episode-0 スキーマ方式。後続メッセージで欠けたリーフは `null`）、メッセージごとに全数値リーフ値を抽出、`max_points`（既定 2000）を超えないよう**均一ストライドでダウンサンプル**して 1 つのサイドカーに書く。**画像トピック（`sensor_msgs/msg/Image` / `CompressedImage`）は除外**（video_check の担当）、数値リーフが無いトピック・録画に存在しないトピックも除外し、いずれも理由付きで `skipped_topics` に記録する。トピックごとの**連続性スコア** `continuity` は**ダウンサンプル前の全解像度**の到着間隔から算出する: `1 - sum(gap - 1.5*median_interval for gaps > 1.5*median_interval)/duration`（`[0,1]` にクランプ。メッセージ 2 未満／継続時間 0 は `null`）。中央値をケイデンス基準に使うことで、少数の長いギャップに対して頑健になる（典型間隔の 1.5 倍を超えた**超過分だけ**が連続性を下げ、全体の継続時間で正規化する）。時刻は loss_report / video_check と同じ規則で **`publish_time` 優先・`log_time` フォールバック**（使ったクロックはトピックごとに `time_source` に明記）。出力: `data/report/signal_report/<run_id>/summary.json`。フロントエンド（Review「Data integrity」）は loss_events / bins / continuity を集約タイムライン＋イベント表＋サマリとして表示し video_check の mp4 と同期する（**数値 `fields` はサイドカーに残るが、v2 UI は生波形チャートを描かない** — 2026-07-15 撤去。ライブ波形は topic_probe の Signals ビュー）。サイドカー構造:
+- **`loss_report`** — ロボット非依存・config 不要の per-topic ロス推定。完了した MCAP のメッセージ時刻から、トピックごとの**中央値の間隔**を求め、`loss ≈ 1 − actual/expected` を算出する（読み取りのみ・ペイロードを decode しない）。時刻は**送信側の `publish_time`（DDS source timestamp）を優先**し、受信側のジッタ（DDS 伝送・recorder のスケジューリング/キャッシュ）をケイデンス推定から排除する。ただし publish_time を信頼するのは「全メッセージが source stamp を持つ（**非ゼロ**かつ **log_time と異なる**）かつ **両クロックの記録窓が一致（2倍以内）**」する場合のみで、そうでなければ（旧 rosbag2 の `pub==log`、log/source 混在、`0`、送信側クロックのオフセット等）単一の受信側 `log_time` へフォールバックする＝publish_time 化で従来より悪化することはない。なお publish_time でも「ソース欠落」と「録画前の伝送ロス」は区別できない（録画前に落ちたメッセージは MCAP に無く publish_time も消える）ため、これは**測定ではなく推定**である。**どちらのクロックで計算したかはトピックごとに `time_source`（`"publish_time"` / `"log_time"`）として summary に明記**する（honesty 原則）。レポート: `data/report/loss_report/<capture_id>/summary.json`。
+- **`video_check`** — オンデマンド（params `{topic}`）の `CompressedImage`→mp4 プレビュー。PyAV（`av` + `Pillow`）で生成し、これらは**遅延 import**するためパッケージ不在でもサービスは起動できる（不在時は明確な失敗ジョブになる）。出力は `data/report/video_check/<capture_id>/<topic>.mp4`、`GET /api/v1/files/...` で配信。エンコード上限は params `max_frames`（既定 900、**`0` = 全フレーム**）。上限で切れた summary は `truncated: true` と実メッセージ総数を持ち、UI は「head only」表示と **Re-encode full episode** ボタン（`{force: true, max_frames: 0}` を再発行）を出す。再生 fps はフレーム時刻のケイデンスから推定し、loss_report と同じ規則で **`publish_time` 優先・`log_time` フォールバック**（使ったクロックは summary の `fps_time_source` に明記）。mp4 は一時ファイルへエンコードしてアトミックに rename するため、再エンコードの途中失敗で配信中の mp4 は壊れない。(capture_id, topic) キャッシュは cap 整合を判定する（truncated キャッシュは全長要求のミス、untruncated で要求 cap 内ならヒット）。
+- **`signal_report`** — ロボット非依存の**汎用**数値時系列抽出（JointState 専用ではなく、wrench / odom / cmd_vel など**数値リーフを持つ任意のメッセージ**が対象）。完了した MCAP を 1 回だけスキャンし（「全数値リーフ一括」）、topic_probe の Signals プロッタと**同じ `field_introspect` ロジック**（`libs/kairos_common` に共有）で各メッセージの数値リーフを走査する。パスは `pose.position.x` / `position[2]` のようなドット/添字表現で、**ライブ表示と同じ語彙**（UI で見えた値がサイドカー内で同じパスで引ける）。フィールド集合は各トピックの**先頭メッセージ**から決定し（bagel の episode-0 スキーマ方式。後続メッセージで欠けたリーフは `null`）、メッセージごとに全数値リーフ値を抽出、`max_points`（既定 2000）を超えないよう**均一ストライドでダウンサンプル**して 1 つのサイドカーに書く。**画像トピック（`sensor_msgs/msg/Image` / `CompressedImage`）は除外**（video_check の担当）、数値リーフが無いトピック・録画に存在しないトピックも除外し、いずれも理由付きで `skipped_topics` に記録する。トピックごとの**連続性スコア** `continuity` は**ダウンサンプル前の全解像度**の到着間隔から算出する: `1 - sum(gap - 1.5*median_interval for gaps > 1.5*median_interval)/duration`（`[0,1]` にクランプ。メッセージ 2 未満／継続時間 0 は `null`）。中央値をケイデンス基準に使うことで、少数の長いギャップに対して頑健になる（典型間隔の 1.5 倍を超えた**超過分だけ**が連続性を下げ、全体の継続時間で正規化する）。時刻は loss_report / video_check と同じ規則で **`publish_time` 優先・`log_time` フォールバック**（使ったクロックはトピックごとに `time_source` に明記）。出力: `data/report/signal_report/<capture_id>/summary.json`。フロントエンド（Review「Data integrity」）は loss_events / bins / continuity を集約タイムライン＋イベント表＋サマリとして表示し video_check の mp4 と同期する（**数値 `fields` はサイドカーに残るが、v2 UI は生波形チャートを描かない** — 2026-07-15 撤去。ライブ波形は topic_probe の Signals ビュー）。サイドカー構造:
   ```json
   {
-    "pipeline": "signal_report", "version": "1.1.0", "run_id": "...",
+    "pipeline": "signal_report", "version": "1.1.0", "capture_id": "...",
     "generated_at": "<iso8601>", "params": {"topics": null, "max_points": 2000},
     "span": {"duration_ns": 20034502235},
     "topics": {
@@ -85,7 +92,7 @@
     - **`bins`** — グローバル span を固定 600 分割（`bin_ns = ceil(duration/600)`、最終ビンは短くなりうる）。`densities` は全解像度タイムスタンプから数えた各ビンのメッセージ数（合計 = `message_count`）。メッセージ 2 未満のトピックは `"bins": null`。
 
     既存の `t_ns` はトピック相対のまま（チャート契約は不変）。フロントエンドは `start_offset_ns` でチャート時刻 ↔ グローバル軸を換算する。
-- **エクスポート後の読み出し（`params.dataset_dir`）** — `loss_report` / `video_check` / `signal_report` は省略可能な `dataset_dir`（`<operator>/<task>/<NNN>`、`data/` 相対）を受け付け、`recorded/<run_id>` の代わりに**エクスポート済みデータセットディレクトリの MCAP を読む**（`dataset_export` は移動のため、エクスポート後は `recorded/` に bag が無い）。出力・キャッシュは従来どおり **run_id キー**（`data/report/<pipeline>/<run_id>/`）のままなので、エクスポート前に生成した video_check の mp4 キャッシュはエクスポート後もそのまま再利用される（移動は mtime を保存する）。`dataset_dir` はちょうど 3 コンポーネントの単純名のみ許可（トラバーサル・予約名 `recorded`/`report`/`datasets` は `ValueError` → 失敗ジョブ）。
+- **`params.dataset_dir` は廃止**（v2）— dataset が論理化されて収録の実体が動かなくなったので、「録画中の場所」と「エクスポート後の場所」を切り替える必要が消えた。`loss_report` / `video_check` / `signal_report` はすべて `objects/<capture_id>` を読み、出力・キャッシュは `data/report/<pipeline>/<capture_id>/` に固定される。dataset に入れても外しても、レポートも mp4 キャッシュもそのまま有効。
 
 ## `fast_validation`: 必須トピックゲート（**実 dora 実行**）
 
@@ -132,7 +139,7 @@
 ```mermaid
 flowchart TB
   A["config/&lt;robot&gt;/flows/&lt;flow&gt;.yml<br/>運用者が書く（＝bagflow の flow.yml そのもの）"]
-  B["data/report/full_validation/&lt;run_id&gt;/flow/flow.yml"]
+  B["data/report/full_validation/&lt;capture_id&gt;/flow/flow.yml"]
   C["report.json"]
   D["summary.json（pass / fail）"]
   A -->|"実体化: bag/report 注入・${KAIROS_*} 展開・path 解決"| B
@@ -143,7 +150,7 @@ flowchart TB
 ### フローと config の関係
 
 - フローは **kairos 方言ではない**。`config/<robot>/flows/*.yml` は bagflow の flow.yml をそのまま置く
-  （`bag:` / `report:` は kairos が run ごとに注入するので書かない）。ジョブは `params.flow`（既定 `default`）で
+  （`bag:` / `report:` は kairos が capture ごとに注入するので書かない）。ジョブは `params.flow`（既定 `default`）で
   選び、`GET /pipelines` の `params_schema` には**発見できたフロー名が enum で載る**ので、UI のフォームは
   自動でピッカーになる。ワンクリック実行は `validation_presets.yaml` に `{pipeline: full_validation,
   params: {flow: …}}` を足すだけ（UI 改修不要）。
@@ -156,7 +163,7 @@ flowchart TB
   | `${KAIROS_EXPECT_HZ}` | `{topic: hz}` の JSON。**必須トピックは `hz=0`**（＝存在必須・レート不問。`bagflow-topic-rate` は bag に無いトピックを失敗として報告し、0 を下回るレートは存在しない）。`RECORDING_CONFIG` の `expected_hz_patterns` に一致するトピックは実レートで上書き |
   | `${KAIROS_REQUIRED_TOPICS}` | 必須トピック**名**の JSON 配列（名前しか要らないノード向け） |
   | `${KAIROS_REQUIRED_TOPIC_SPECS}` | 必須トピックの `[{name, type}]` JSON 配列（宣言された**メッセージ型**まで見るノード向け＝`bagflow-topic-presence`）。`fast_validation` の同梱フローが使う |
-  | `${KAIROS_RUN_ID}` / `${KAIROS_BAG_DIR}` / `${KAIROS_REPORT_DIR}` / `${KAIROS_REPORT}` | run と出力先 |
+  | `${KAIROS_CAPTURE_ID}` / `${KAIROS_BAG_DIR}` / `${KAIROS_REPORT_DIR}` / `${KAIROS_REPORT}` | capture と出力先（**`${KAIROS_RUN_ID}` は廃止** — 未知の `${KAIROS_…}` はエラーなので、古いフローは黙って通らず失敗する） |
   - 必須トピックの出どころは **`params.template` →（無ければ）`RECORDING_CONFIG.validation.required_topics`**。
     orchestrator は `fast_validation` と同様に `full_validation` でもテンプレ id を実体へ解決して注入するので、
     **Settings → Validation でテンプレを選ぶと 2 つのパイプラインが同じ必須トピック定義を見る**。
@@ -178,7 +185,7 @@ bagflow は「事実」だけを報告する（ノードごとの `ok`・エッ�
 - `coverage`（各エッジが bag のどれだけを実際に見たか）が `params.min_coverage` 未満なら **fail**。
   既定 `0` は**ゲートせずに数字だけ出す**（キューあふれによる間引きは coverage に必ず出る＝黙って欠けない）。
 
-出力は `data/report/full_validation/<run_id>/` に `summary.json`（判定）・`report.json`（bagflow 原本）・
+出力は `data/report/full_validation/<capture_id>/` に `summary.json`（判定）・`report.json`（bagflow 原本）・
 `flow/`（実体化フローと各ノードのログ）。summary は汎用 `SummaryResult` がそのまま描ける形
 （`metrics.coverage` は 0-100 で、Validation 画面のカバレッジ列がそのまま読む）。**フロー開始前に前回の
 `summary.json` / `report.json` を消す**ので、失敗したのに前回の合格が残って「検証済み」に見えることはない。
@@ -220,8 +227,8 @@ bagflow は「事実」だけを報告する（ノードごとの `ok`・エッ�
 
 ## 出力
 
-- `/data/report/<pipeline>/<run>/`（`summary.json` / preview / logs）
-- `/data/converted/<run>/`（`dataset_convert` の出力。例: 学習用形式）
+- `/data/report/<pipeline>/<capture_id>/`（`summary.json` / preview / logs）
+- `/data/converted/<capture_id>/`（`dataset_convert` の出力。例: 学習用形式）
 - job record（ユーザー向けの正は **`api_orchestrator` の SQLite**。dora_runner 自身も内部状態を永続化する＝下記「永続化と再起動リコンサイル」）
 
 ## 永続化と再起動リコンサイル
@@ -233,12 +240,12 @@ bagflow は「事実」だけを報告する（ノードごとの `ok`・エッ�
 
 ## API（サービス内部 API。公開は `api_orchestrator` 経由）
 
-- `POST /jobs` — `{ run_id, pipeline, params? }` → `{ job_id }`
+- `POST /jobs` — `{ capture_id, pipeline, params? }` → `{ job_id }`
 - `GET /jobs/{id}/status` — `{ state: "queued"|"running"|"succeeded"|"failed"|"canceled", progress, logs_tail }`
 - `GET /jobs/{id}/result` — `{ summary, artifacts: [] }`
 - `POST /jobs/{id}/cancel`
 - `GET /pipelines` — 利用可能 pipeline（dataflow）一覧
-- 検証テンプレート: `GET/POST /validation/templates`、`POST /validation/templates/generate`（run から雛形生成）
+- 検証テンプレート: `GET/POST /validation/templates`、`POST /validation/templates/generate`（capture から雛形生成。body `{ capture_id }`）
 - `GET /healthz` / `GET /readyz`
 
 ## データフロー
@@ -269,8 +276,8 @@ flowchart LR
 
   FLOWB[/"同梱フロー<br/>/opt/kairos/flows/fast_validation.yml"/]
   FLOWC[/"ロボット config（読み取り専用）<br/>config&lt;robot&gt;/flows/*.yml"/]
-  BAG[("/data/recorded/&lt;run_id&gt;<br/>*.mcap + metadata.yaml")]
-  OUT[("/data/report/&lt;pipeline&gt;/&lt;run_id&gt;/<br/>summary.json · report.json · flow/")]
+  BAG[("/data/objects/&lt;capture_id&gt;<br/>*.mcap + metadata.yaml")]
+  OUT[("/data/report/&lt;pipeline&gt;/&lt;capture_id&gt;/<br/>summary.json · report.json · flow/")]
 
   J --> API --> REG --> PIPE
   FLOWC -. "同名なら優先" .-> PIPE
@@ -292,11 +299,11 @@ flowchart LR
 ## 実装状況と開発ガイド
 
 本書は**設計の正本（将来像を含む）**。**現状の有効 pipeline は `fast_validation` / `full_validation` /
-`dataset_export` / `loss_report` / `video_check` / `signal_report`** の 6 本（上記「実装済みパイプライン」参照）。
+`loss_report` / `video_check` / `signal_report`** の 5 本（上記「実装済みパイプライン」参照）。
 `dataset_convert` / `dataset_validation` は I/F だけ（`enabled=false`。`POST /jobs` は
 `pipeline_unavailable` で拒否）。
 
-**実装済み**: **Plugin/Pipeline Registry**（`registry.py` の `build_default_registry()` が同梱 6 本を登録し、
+**実装済み**: **Plugin/Pipeline Registry**（`registry.py` の `build_default_registry()` が同梱 5 本を登録し、
 `plugin_loader.discover_plugins()` が `KAIROS_PLUGINS_DIR`（既定 `services/dora_runner/plugins/`）配下の
 manifest をスキャンして自動登録する。例として `hello_dora` プラグインを同梱）、**dora dataflow の
 in-process インタプリタ**（プラグインの `executor: dora` は下記の理由で in-process 実行）、

@@ -128,20 +128,31 @@ recorder は MCAP を**ロボットのディスク**に書く。dora（CPU 重�
 
 - **NFS で robot:/data をマウントして dora に直接読ませない**。dora が大きな MCAP を走査すると、
   ロボットがディスク/network を供給することになり、**記録中ならロボットを圧迫する**（本設計の趣旨に反する）。
-- 既定は `make import-runs`（`deploy/sync/import_runs.sh`）: **finalise 済み（`metadata.yaml` がある）run のみ**を
-  ロボットから rsync（`--partial --append-verify`、`BWLIMIT` で帯域制限可）。idempotent でタイマー実行も可。
-  in-progress の run は半端にコピーされない。
+- 既定は `make import-runs`（`deploy/sync/import_runs.sh`）: 発見の単位は **`objects/<capture_id>`** で、
+  **`object_manifest.json` の `state` が `completed` / `interrupted` のものだけ**をロボットから rsync
+  （`--partial --append-verify`、`BWLIMIT` で帯域制限可）。`digest_state` は条件に入れない — digest は
+  **受け取る側**の仕事なので、それを待つとデッドロックする。idempotent でタイマー実行も可。
+  各 capture は `$DATA_DIR/.incoming/<capture_id>` へ rsync してから、完了後に同一 FS の
+  `os.replace` で `objects/` へ入れる（rsync はソート順に転送するので、`object_manifest.json` が
+  巨大な `*.mcap` より先に届く = 途中で切れると「完成しているように見えて bag が切れている」
+  ディレクトリが残ってしまう）。これで「`objects/` に不完全なディレクトリが現れるのは
+  ローカル recorder が書いている最中だけ」という不変条件が保たれる（[capture_store](capture_store.md) §2）。
+  到着したものは orchestrator の reconciler が拾って行にするので、このスクリプトは
+  orchestrator が動いていなくても使える。
 - recorder にファイル POST はさせない（アップロード失敗が記録ライフサイクルに結合するのを避ける）。
-- 注意: `dora_runner` の `dataset_export` は `recorded/` からファイルを **move** する
-  （`dataset_export.py`）。**PC ローカルの複製に対しては安全**だが、**ロボット storage や read-only NFS を
-  指すと破壊的**。必ず import 済みの PC ローカル複製に対して実行すること。
+- **v2 で「ファイルを move する処理」は無くなった**（`dataset_export` は廃止。dataset は DB 行）。
+  唯一バイトを動かすのは capture 単位の archive で、destination は `KAIROS_ARCHIVE_ROOTS` に対して
+  検証され、`data_dir` と重なるものは（realpath で両方向に）拒否される。
 - **Save 連動の自動 pull（オプション・既定 OFF）**: 録画 PC スタックに **importer サイドカー**
   （`deploy/sync/`、`compose.recording.yaml` のみ — 単一ホスト `compose.yaml` には存在しないので
   `make up` には一切影響しない）を同梱。recording config の
   `transfer.auto_pull_on_save: true`（Settings > Advanced JSON で編集、`recording.pre_arm` と同じ流儀）
-  にすると、Collect の Save（`POST /api/v1/episodes`）直後に orchestrator が importer へ
-  `POST /pull {run_id}` を投げ、その run だけを rsync で取り込む（finalise 済みゲート・idempotent・
-  resume は手動と同一保証）。**既定 false = 明示オプトインなしには何も転送しない**。
+  にすると、Collect の Save（**その capture への初回 review 保存** = `PATCH /api/v1/captures/{id}/review`）
+  直後に orchestrator が importer へ `POST /pull {"capture_id": …}` を投げ、その capture だけを rsync で
+  取り込む（終端状態ゲート・idempotent・resume は手動と同一保証）。importer の `/pull` は
+  **body を厳格に検証**する: `{"capture_id": <uuid7>}` か `{"all": true}` のどちらかで、解釈できない
+  body は `400`。空 body を「全部引く」と解釈していた旧挙動は、キー変更の際に取り違え 1 つで
+  ロボット全体のスイープになるため撤去した。**既定 false = 明示オプトインなしには何も転送しない**。
   ロボット側の複製は**残す**（pull は copy であって move ではない。ロボット側 retention は別課題 **TBD**）。
   失敗時の回収は `IMPORT_SWEEP_S`（既定 0=off の定期スイープ）または手動 `make import-runs`。
 - **パスワードレス認証（rsync/ssh 共通・env で設定）**: `.env.split` に `ROBOT_SSH_PASSWORD`

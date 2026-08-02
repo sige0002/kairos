@@ -1,7 +1,7 @@
 <!-- AUTO-GENERATED from docs/specs/ja/config.md. Do not edit by hand — edit the Japanese source and run /sync-docs. -->
 # Shared configuration (config) Specification
 
-> Status: design finalized (v1). Japanese is the source of truth (it is authoritative). The English version `docs/specs/en/config.md` is an auto-generated mirror (do not edit it directly). **No authentication.** The network **assumes a trusted local network (LAN)** and permits LAN exposure.
+> Status: design finalized (**v2 = capture store support**). Japanese is the source of truth (it is authoritative). The English version `docs/specs/en/config.md` is an auto-generated mirror (do not edit it directly). **No authentication.** The network **assumes a trusted local network (LAN)** and permits LAN exposure.
 
 The single source of configuration shared across services, and the rules for externalizing it. The requirement is to be "**easy to control**."
 
@@ -52,9 +52,12 @@ The single source of configuration shared across services, and the rules for ext
 | `WEBRTC_PACKET_MAX` | `1150` | RTP payload cap (bytes). The default `1150` shrinks aiortc's hardcoded 1300 B so media does not fragment over a reduced-MTU tunnel (Tailscale/WireGuard = 1280). Restore `1300` only on a same-LAN (MTU 1500) deployment to cut overhead |
 | `WEBRTC_KEEP_IPV6` | (unset) | Set to `1` to disable dropping IPv6 ICE candidates from the answer SDP. By default (unset) v6 candidates are dropped (fragmented IPv6 is black-holed over WireGuard/Tailscale, which would turn the preview black). Set `1` only on a genuinely IPv6-only network |
 | `LOG_LEVEL` | `INFO` | Log level |
-| `RETENTION_DAYS` | `0` | `0`=disabled. With `>0`, old runs become deletion candidates by retention period |
+| `RETENTION_DAYS` | `0` | `0`=disabled. With `>0`, old captures become deletion candidates by retention period (advisory only) |
+| `KAIROS_ARCHIVE_ROOTS` | (optional, default empty=disabled) | The roots permitted as an archive destination for a capture (`:`-separated). Empty = the archive feature is not offered at all (we do not put up a button that is guaranteed to fail). A destination is validated against this list, and anything overlapping `data_dir` is rejected ([capture_store](capture_store.md) §6) |
+| `KAIROS_REBUILD` | (unset) | Set it and the next startup rebuilds `kairos.db` from the sidecars. The operational form of "delete `kairos.db` and restart" (nobody has to delete a file out of a running container) |
 | `MAX_RECORD_BYTES` | `0` | `0`=unlimited. With `>0`, automatically stop recording on exceeding it |
 | `MAX_RECORD_SECONDS` | `600` | The wall-clock cap (seconds) of a single recording. `0`=disabled. A disk-protection backstop for orphan (zombie) recordings — closing the tab does not stop recording, so the visible Stop UI is the primary recovery and this is the safety net when unattended. The auto-stop on reaching the cap is settled as a normal completed via the orchestrator's lazy reconciliation |
+| **Reserved names** directly under `DATA_DIR` | — | `objects` / `views` / `.trash` / `.incoming` / `report` / `catalog` / `lifecycle.jsonl` / `instance.json` / `kairos.db` ([capture_store](capture_store.md) §2). A name colliding with one of these is rejected with `400 reserved_name`, but **only against the `name` / `operator` / `task` of `POST /api/v1/datasets`** (those three are the only ones that become path components under `views/`). **A recording's operator / task never becomes a path, so it is out of scope.** `objects` / `.trash` / `.incoming` must sit on the **same filesystem** (checked at startup; on a violation the deletion APIs answer `503` per request) |
 | `ALERT_CONFIG_PATH` | (optional, default empty=disabled) | `topic_monitor`'s alert definition file (**container-absolute**; convention is `/config/<robot>/monitoring/alerts.yaml`; a `config/local/<robot>/...` override takes precedence). Empty = alerts disabled. `make` derives it from `ROBOT` automatically; with plain `docker compose` set it by hand |
 | `CYCLONEDDS_URI` | (optional) | Cyclone DDS config file URI (e.g. `file:///config/cyclonedds.xml`). Use it to declare unicast peers, etc., when multicast discovery does not work across hosts. Passed to the container via `env_file` (the ROS services mount `/config` read-only) |
 | `NO_PROXY` | `localhost,127.0.0.1` | Proxy exemption for in-container HTTP (the same value is handed out as `no_proxy` too). On a host behind a corporate proxy, Docker injects `HTTP(S)_PROXY` into every container; without this, healthchecks and service-to-service LAN calls get sucked into the proxy and fail. On the cross-host split add the robot IP (see `.env.split.example`). The orchestrator's internal httpx client is `trust_env=False` to begin with |
@@ -125,8 +128,8 @@ presets:
     pipeline: loss_report
 ```
 
-- `GET /api/v1/validation/presets` ([api_orchestrator](api_orchestrator.md)) returns each preset annotated with the **completed recordings that pipeline has not validated yet** (`pending_run_ids`). Clicking a button runs over all of them (target = not-yet-validated data).
-- **"Not yet validated" is keyed per pipeline** (presence of `report/<pipeline>/<run_id>/summary.json`). Presets sharing a pipeline share that state (**one pipeline = one preset recommended**).
+- `GET /api/v1/validation/presets` ([api_orchestrator](api_orchestrator.md)) returns each preset annotated with the **captures that pipeline has not validated yet** (`pending_capture_ids`). Clicking a button runs over all of them (target = not-yet-validated data).
+- **"Not yet validated" is keyed per pipeline** (presence of `report/<pipeline>/<capture_id>/summary.json`). Presets sharing a pipeline share that state (**one pipeline = one preset recommended**).
 - A single broken entry is skipped with a warning (the rest keep working); a missing file means no presets. Add a plugin and just reference its id here to get a button (no UI change). The template is `config/template/validation_presets.yaml`.
 
 ## Runtime settings (`GET /api/v1/config`)
@@ -167,7 +170,7 @@ What `api_orchestrator` returns for the frontend (example):
 - Timestamps are **UTC ISO8601** (e.g. `2026-06-24T01:23:45.123Z`).
 - The error format is common to all APIs: `{ "error": { "code": "...", "message": "...", "details": {} } }`.
 - Each service has `GET /healthz` (liveness) / `GET /readyz` (readiness).
-- Logs are JSON lines (include `run_id` / `component` / `request_id`). A shared request-id middleware (`kairos_common`) adopts the incoming `X-Request-ID` (or generates a uuid4 when absent), tags every log line emitted while handling the request with that `request_id`, and echoes it back as the `X-Request-ID` response header (usable for caller-side correlation).
+- Logs are JSON lines (include `capture_id` / `component` / `request_id`). A shared request-id middleware (`kairos_common`) adopts the incoming `X-Request-ID` (or generates a uuid4 when absent), tags every log line emitted while handling the request with that `request_id`, and echoes it back as the `X-Request-ID` response header (usable for caller-side correlation).
 - The backend exposes OpenAPI (`/openapi.json`). The frontend currently uses a **hand-written typed client** (`src/api/client.ts` + `types.ts`); client generation from OpenAPI (Orval etc.) is **not adopted** (a future contract-gate candidate, [frontend](frontend.md)).
 
 ## Common API conventions (all HTTP services)
@@ -176,7 +179,10 @@ What `api_orchestrator` returns for the frontend (example):
 - Status codes: `200` / `201` normal, `400` invalid input, `404` not found, `409` conflict (concurrent start, etc.), `422` validation, `503` internal service unreachable, `507` insufficient capacity. The body follows the error format.
 - List APIs use cursor paging: `?limit` (default 50) + `?cursor`, response `{ items: [], next_cursor: string|null }`.
 - enums (vocabulary common to all services):
-  - run state: `created` | `recording` | `stopping` | `completed` | `failed` | `interrupted`
+  - capture state: `recording` | `stopping` | `completed` | `interrupted` | `failed` | `delete_pending` | `discarded` | `deleted` (the last three exist only on the deletion path and never appear in a manifest — [capture_store](capture_store.md) §8.1). The recorder's internal session state has `created` / `armed` on top of these
+  - replica state: `present_unverified` | `present_verified` | `trashed` | `absent_managed` | `missing_unmanaged` | `corrupt`
+  - digest state: `pending` | `complete`
+  - review status: `pending` | `adopted` | `excluded`
   - job state: `queued` | `running` | `succeeded` | `failed` | `canceled`
   - encoding: `vp8` | `h264`
   - alert metric: `hz` | `bandwidth` | `gap` | `late` | `loss`
@@ -187,24 +193,27 @@ What `api_orchestrator` returns for the frontend (example):
 
 ### Retention period (`RETENTION_DAYS`)
 
-- `RETENTION_DAYS` is **advisory only** — it never auto-deletes (2026-07-14 adjudication). `GET /api/v1/retention` returns the runs it marks as deletion candidates: **not exported** (a run row still exists — export deletes the row), **terminal state** (`completed` / `failed` / `interrupted`; an active recording is never a candidate), and **started more than N days ago** (`{ days, candidates: [{ run_id, started_at, bytes, state, has_episode }], total_bytes }`). Sizes are best-effort directory sums, computed per request. `RETENTION_DAYS<=0` disables it (candidates are always empty).
-- Actual deletion goes only through the existing **confirmed** `DELETE /api/v1/runs/{id}` path. When candidates exist the Review screen shows a dismissible banner whose button filters the table down to them (it does not delete). Exported datasets are artifacts and are untouchable.
+- `RETENTION_DAYS` is **advisory only** — it never auto-deletes. `GET /api/v1/retention` returns the "deletion candidates" (`{ days, candidates: [{ capture_id, run_id, started_at, bytes, state, review_status }], total_bytes }`). Sizes are best-effort directory sums, computed per request. `RETENTION_DAYS<=0` disables it (candidates are always empty).
+- **v2 changed what a candidate is.** The old definition — "a row exists = not exported" — stops meaning anything now that a row survives deletion as a tombstone ([capture_store](capture_store.md) §7). The new candidate is "**a capture no dataset references, whose `review_status` has stayed `pending` or `excluded` for more than N days**".
+- Actual deletion goes only through the **confirmed** `POST /api/v1/captures/{id}/delete`. When candidates exist the Review screen shows a dismissible banner whose button filters the table down to them (it does not delete). A dataset member is refused both deletion and archiving.
 
-### Dataset catalog (`data/index.jsonl`)
+### Where recordings live, and the catalog
 
-- A **derived, rebuildable** flat catalog of the exported datasets (one JSON line per dataset). The **sidecars on the tree** (`dataset.json` / `episode.json`) stay canonical; the catalog is only an optimization to avoid walking the tree.
-- Appended one line on a successful export, and rewritten without a row on dataset delete (atomic tmp+rename). `dataset_dir` is stored relative to `data_dir` (robust to a moved/restored tree).
-- `GET /api/v1/datasets` serves from the catalog when it exists and parses, with **automatic fallback to a tree scan when it is absent or corrupt** (identical response shape). `POST /api/v1/datasets/index/rebuild` regenerates the catalog wholly from the sidecars (returns `{ count }`). `schema_version: 1` (also stamped on `episode.json`; readers default to 1 when absent).
+The conventions for layout, sidecars, deletion and rebuild are consolidated in **[capture_store](capture_store.md)**. Only what matters to an operator is kept here:
+
+- A recording's bytes live at `data/objects/<capture_id>/`. **Operator / task / number are not part of the path**, so fixing a label never moves a file.
+- **`kairos.db` is disposable.** The canonical state is the on-disk sidecars (`object_manifest.json` / `record.json`) and `lifecycle.jsonl`; delete the DB, restart, and every row is rebuilt. Setting `KAIROS_REBUILD` does the same thing.
+- v1's `data/index.jsonl`, `data/recorded/`, the `data/<operator>/<task>/<NNN>/` tree, and `dataset.json` / `episode.json` are **all retired** (never read). A dataset became a DB row, and the symlink tree under `views/` provides its human-readable view (a derived thing that can be wiped and regenerated wholesale).
 
 ### Backup / restore
 
 - `make backup` writes a consistent snapshot to `backups/<timestamp>.tar.gz`:
   - `data/kairos.db` copied consistently via **`sqlite3 .backup`** (WAL included; if `sqlite3` is unavailable, best-effort copy of the db + `-wal` / `-shm`).
-  - `data/index.jsonl` / `data/recorded/` / `data/report/` and the exported datasets (`data/<operator>/<task>/<NNN>/`), plus `config/`.
-  - **Not included**: raw sample rosbag inputs (top-level sample dirs under `data/`, named by `BACKUP_SAMPLE_DIRS`, default `airoa-moma-mcap` — the committed sample only; add your own sample dirs (a local robot's bags among them) via the override), the mp4 preview cache (`data/report/video_check/`), and repo-external secrets such as `.env`. Recordings/reports can change under a live stack, so for a fully consistent snapshot run it while stopped (`make down`).
+  - `data/objects/` / `data/report/` / `data/catalog/` / `data/lifecycle.jsonl` / `data/instance.json`, plus `config/`.
+  - **Not included**: **`data/.trash` and `data/.incoming`** (the intermediate states of deletion and transfer — not frozen into a backup), `data/views/` (a derived symlink tree, regenerable), raw sample rosbag inputs (top-level sample dirs under `data/`, named by `BACKUP_SAMPLE_DIRS`, default `airoa-moma-mcap` — the committed sample only; add your own sample dirs (a local robot's bags among them) via the override), the mp4 preview cache (`data/report/video_check/`), and repo-external secrets such as `.env`. Recordings/reports can change under a live stack, so for a fully consistent snapshot run it while stopped (`make down`).
 - **Restore runbook**:
   1. Stop the stack: `make down`.
   2. Extract at the repo root (`<restore_root>`): `tar xzf backups/<timestamp>.tar.gz -C <restore_root>`.
-  3. Put the DB snapshot in place: move the extracted `kairos.db` to `data/kairos.db` (overwrite; delete any stale `data/kairos.db-wal` / `-shm`). `config/` and `data/{index.jsonl,recorded,report,<datasets>}` go straight to their paths.
-  4. `make up` to restart. Startup reconciliation settles any run left mid-recording to `interrupted`.
-  5. If the catalog is suspected to have drifted from the tree, regenerate it with `POST /api/v1/datasets/index/rebuild` (the sidecars are canonical).
+  3. `config/` and `data/{objects,report,catalog,lifecycle.jsonl,instance.json}` go straight to their paths. **`kairos.db` need not be put back** — start without it and it is rebuilt from the sidecars and the ledger (that is the correct recovery path). Put it back if you do have a consistent snapshot (overwrite the existing one; delete any stale `-wal` / `-shm`).
+  4. `make up` to restart. On startup a rebuild runs if it is needed, any capture left mid-recording is normalized to `interrupted`, and a deletion that stopped halfway is resumed.
+  5. `views/` can be rebuilt with `POST /api/v1/views/refresh` (it is not in the backup).
