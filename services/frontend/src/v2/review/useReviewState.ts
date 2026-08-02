@@ -634,15 +634,21 @@ export function useReviewState(): ReviewState {
     [selected, applyReview, showToast],
   );
 
-  // "Mark OK — include": resolve a NEEDS CHECK exception into READY. Same
-  // server effect as an adopt, but the operator vocabulary is "include", not
-  // "adopt" — good episodes are already READY without any click.
+  // Adopt this capture — the one thing Datasets requires before a capture can
+  // join a training set. It reads two ways depending on where the operator is:
+  // "Mark OK — include" resolves a NEEDS CHECK exception, while on a READY
+  // capture it is simply the adoption. One server effect either way.
   const markOk = useCallback(() => {
     if (!selected) return;
+    const exception = selected.reviewLane === 'needs_check';
     void applyReview(selected, { status: 'adopted' }, { review_status: 'adopted' }).then(
       ({ capture }) => {
         if (capture) {
-          showToast(`Episode ${episodeLabel(selected.ep)} marked OK — included`);
+          showToast(
+            exception
+              ? `Episode ${episodeLabel(selected.ep)} marked OK — included`
+              : `Episode ${episodeLabel(selected.ep)} adopted — datasets can use it`,
+          );
         }
       },
     );

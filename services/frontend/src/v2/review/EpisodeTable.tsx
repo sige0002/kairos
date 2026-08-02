@@ -318,9 +318,10 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
         className="border-b border-gray-100 px-[18px] py-1.5 text-[11px] text-gray-400"
       >
         <span className="font-semibold text-teal-700">READY</span> episodes need no
-        action — you only resolve the{' '}
+        review — you only resolve the{' '}
         <span className="font-semibold text-amber-700">NEEDS CHECK</span> exceptions.
-        Build a dataset from them in the Datasets tab.
+        Datasets take adopted episodes only: a take saved as a good success arrives
+        adopted, and one still pending offers Adopt in its detail.
       </p>
       <div
         className={cn(

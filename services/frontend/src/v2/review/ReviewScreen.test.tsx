@@ -49,6 +49,7 @@ interface ApiOptions {
 function mockApi(initial: Capture[], options: ApiOptions = {}) {
   let items = initial.map((c) => ({ ...c }));
   const deleteCalls: { captureId: string; body: Record<string, unknown> }[] = [];
+  const reviewCalls: { captureId: string; body: Record<string, unknown> }[] = [];
 
   vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     const url = String(input);
@@ -67,6 +68,7 @@ function mockApi(initial: Capture[], options: ApiOptions = {}) {
         );
       }
       const id = decodeURIComponent(url.match(/\/captures\/([^/?]+)\/review/)![1]!);
+      reviewCalls.push({ captureId: id, body });
       const idx = items.findIndex((c) => c.capture_id === id);
       const next = {
         ...items[idx]!,
@@ -118,7 +120,7 @@ function mockApi(initial: Capture[], options: ApiOptions = {}) {
       return Promise.resolve(jsonResponse({ items: [...items], next_cursor: null }));
     return Promise.resolve(jsonResponse({}));
   });
-  return { deleteCalls };
+  return { deleteCalls, reviewCalls };
 }
 
 beforeEach(() => {
@@ -365,4 +367,77 @@ test('the detail panel shows the revision, which is what a conflict is about', a
   renderWithClient(<ReviewScreen />);
   const revision = await screen.findByTestId('review-revision');
   expect(revision.textContent).toBe('revision 5');
+});
+
+// ACCEPT blocker (qa-ui's release verdict): the two screens pointed at each
+// other. Review's READY lane is the lane that needs no attention, so it offered
+// nothing but Exclude, while the Datasets rail refuses any capture that is not
+// adopted — a GOOD take could never enter a training set through the UI, and
+// only a mediocre one (which passes through NEEDS CHECK, where "Mark OK"
+// adopts) could. Every capture recorded before this is in exactly that state.
+test('a READY capture that was never adopted can be adopted from its detail', async () => {
+  const api = mockApi([
+    capture({
+      capture_id: 'c1',
+      run_id: 'run_1',
+      index_in_batch: 1,
+      quality: 'good',
+      task_result: 'success',
+      review_status: 'pending',
+      review_revision: 5,
+    }),
+  ]);
+  renderWithClient(<ReviewScreen />);
+
+  const adopt = await screen.findByTestId('review-mark-ok');
+  // READY vocabulary: this is not an exception being resolved, it is the
+  // adoption Datasets asks for.
+  expect(adopt).toHaveTextContent('Adopt — include in datasets');
+
+  fireEvent.click(adopt);
+
+  await waitFor(() => expect(api.reviewCalls).toHaveLength(1));
+  expect(api.reviewCalls[0]!.captureId).toBe('c1');
+  // The same compare-and-swap every other decision uses — an adopt made against
+  // a stale revision must be refused like any other.
+  expect(api.reviewCalls[0]!.body).toMatchObject({
+    review_status: 'adopted',
+    base_revision: 5,
+  });
+
+  // Once adopted there is nothing left to do here, so the control goes.
+  await waitFor(() => expect(screen.queryByTestId('review-mark-ok')).toBeNull());
+});
+
+test('an adopted capture offers no adopt control at all', async () => {
+  mockApi([
+    capture({
+      capture_id: 'c1',
+      run_id: 'run_1',
+      index_in_batch: 1,
+      quality: 'good',
+      review_status: 'adopted',
+      review_revision: 2,
+    }),
+  ]);
+  renderWithClient(<ReviewScreen />);
+  await waitFor(() => expect(screen.getByTestId('review-decision-bar')).toBeInTheDocument());
+  expect(screen.queryByTestId('review-mark-ok')).toBeNull();
+});
+
+test('a NEEDS CHECK exception keeps its own wording', async () => {
+  mockApi([
+    capture({
+      capture_id: 'c1',
+      run_id: 'run_1',
+      index_in_batch: 1,
+      quality: 'needs_review',
+      review_status: 'pending',
+      review_revision: 1,
+    }),
+  ]);
+  renderWithClient(<ReviewScreen />);
+  // Same control, same server effect; the exception lane still reads as
+  // resolving an exception rather than as a dataset step.
+  expect(await screen.findByTestId('review-mark-ok')).toHaveTextContent('Mark OK — include');
 });

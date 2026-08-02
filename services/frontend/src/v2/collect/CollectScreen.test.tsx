@@ -381,7 +381,12 @@ test('Save PATCHes the capture review with base_revision and the batch stamp', a
   // the server derives them from its own settled verdict.
   expect(body.base_revision).toBe(0);
   expect(body.task_result).toBe('success');
-  expect(body.review_status).toBe('pending');
+  // A successful take of good data is adopted BY this save: Datasets refuses
+  // anything not adopted, and Review's READY lane has no exception to resolve,
+  // so leaving it pending is what stranded every good recording outside the
+  // training sets. The quality is still the server's to derive — adoption is
+  // the operator's decision, not a claim about the data.
+  expect(body.review_status).toBe('adopted');
   expect(body.index_in_batch).toBe(1);
   expect('quality' in body).toBe(false);
   expect('quality_source' in body).toBe(false);

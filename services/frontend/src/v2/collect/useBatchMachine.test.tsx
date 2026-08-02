@@ -8,6 +8,7 @@ import { useUiStore } from '../../store/uiStore';
 import { isDestructiveFailure } from '../captures/errors';
 import {
   batchMachineReducer as reducer,
+  collectReviewStatus,
   createBatchMachineState as createState,
   useBatchMachine,
   __resetBatchStore,
@@ -3387,3 +3388,74 @@ test('a dismissal survives a reload, and a NEW take still surfaces', async () =>
     { timeout: 20000 },
   );
 }, 30000);
+
+// ACCEPT blocker (qa-ui z1/z3): the normal Collect happy path left every good
+// take `pending`, and Review's READY lane — correctly, the lane that needs no
+// attention — offered nothing to click. The Datasets rail refuses anything not
+// adopted, so a GOOD take could never enter a training set through the UI while
+// a mediocre one (routed through NEEDS CHECK, where Mark OK adopts) could.
+// "Save — success" on good data IS the judgment; a second ceremony elsewhere to
+// restate it is the discard-retyping mistake again.
+test('saving a good take as a success adopts it, so a dataset can take it', async () => {
+  const { calls } = phase2Fetch({ captureId: 'cap_ad', batchId: 'batch_ad' });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+
+  act(() => result.current.startRecording());
+  await waitFor(() => expect(result.current.phase).toBe('recording'));
+  act(() => result.current.stopRecording());
+  await waitFor(() => expect(result.current.phase).toBe('result'), { timeout: 4000 });
+  expect(result.current.autoQuality).toBe('good');
+  act(() => result.current.pickSuccess());
+  act(() => result.current.confirmEpisode());
+  await waitFor(() => expect(result.current.stats.nRecorded).toBe(1));
+
+  const patch = calls.find((c) => c.url.includes('/review') && c.method === 'PATCH')!;
+  expect(patch.body).toMatchObject({
+    task_result: 'success',
+    review_status: 'adopted',
+  });
+  // The operator overrode nothing, so quality is still the server's to derive
+  // and correct (§4.1). Adoption is a decision, not a quality claim.
+  expect(patch.body).not.toHaveProperty('quality');
+  expect(patch.body).not.toHaveProperty('quality_source');
+});
+
+test('a take the operator sent to needs-review is not adopted by saving it', async () => {
+  const { calls } = phase2Fetch({ captureId: 'cap_nr', batchId: 'batch_nr' });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+
+  act(() => result.current.startRecording());
+  await waitFor(() => expect(result.current.phase).toBe('recording'));
+  act(() => result.current.stopRecording());
+  await waitFor(() => expect(result.current.phase).toBe('result'), { timeout: 4000 });
+  act(() => result.current.setQuality('review'));
+  act(() => result.current.pickSuccess());
+  act(() => result.current.confirmEpisode());
+  await waitFor(() => expect(result.current.stats.nRecorded).toBe(1));
+
+  const patch = calls.find((c) => c.url.includes('/review') && c.method === 'PATCH')!;
+  // It goes to NEEDS CHECK, where including it is a separate, deliberate click.
+  expect(patch.body).toMatchObject({
+    task_result: 'success',
+    quality: 'needs_review',
+    review_status: 'pending',
+  });
+});
+
+// The whole mapping in one place: which saves are a judgment the store should
+// act on, and which are a label that leaves the decision open.
+test('only a successful, good take is adopted by the save itself', () => {
+  expect(collectReviewStatus('ok', 'good')).toBe('adopted');
+  // A failed task is not an unusable recording, but it is not something to
+  // train on either — the operator decides that in Review.
+  expect(collectReviewStatus('fail', 'good')).toBe('pending');
+  expect(collectReviewStatus('ok', 'review')).toBe('pending');
+  expect(collectReviewStatus('fail', 'review')).toBe('pending');
+  // "Not usable" is the same statement Review's exclude makes, either way round.
+  expect(collectReviewStatus('ok', 'notusable')).toBe('excluded');
+  expect(collectReviewStatus('fail', 'notusable')).toBe('excluded');
+});

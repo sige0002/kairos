@@ -349,16 +349,29 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
       </div>
 
       {/* Pinned decision bar — always visible, never behind a scroll. Exception-
-          review actions: READY (good or confirmed) needs no click; you only
-          resolve a NEEDS CHECK exception (Mark OK / Exclude). */}
+          review actions: a NEEDS CHECK exception is resolved (Mark OK /
+          Exclude); a READY capture needs no review, but it still needs to have
+          been ADOPTED before Datasets will take it. */}
       <div
         data-testid="review-decision-bar"
         className="flex flex-col gap-2 border-t border-gray-100 bg-gray-50/60 px-[18px] py-3"
       >
         <div className="flex flex-wrap gap-1.5">
-          {sel.reviewLane === 'needs_check' && (
+          {/* One control, two vocabularies. Adoption is what Datasets requires
+              (data.ts: a capture Review has not adopted is refused), and it was
+              reachable ONLY from the NEEDS CHECK lane — so a good take, which
+              never visits that lane, could not enter a training set while a
+              mediocre one could. It disappears once adopted: a READY, adopted
+              capture genuinely needs no action.
+
+              Captures saved from Collect as a good success now arrive adopted;
+              this stays for everything recorded before that, and for anything
+              written by something other than this screen. */}
+          {sel.reviewLane !== 'excluded' && sel.effectiveReviewStatus !== 'adopted' && (
             <DecisionButton tone="adopt" testId="review-mark-ok" onClick={rv.markOk}>
-              Mark OK — include
+              {sel.reviewLane === 'needs_check'
+                ? 'Mark OK — include'
+                : 'Adopt — include in datasets'}
             </DecisionButton>
           )}
           {sel.reviewLane !== 'excluded' && (

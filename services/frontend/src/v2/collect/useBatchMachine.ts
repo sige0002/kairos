@@ -148,16 +148,36 @@ export const QUALITY_LABEL: Record<QualityOverride, string> = {
 /**
  * The `review_status` a Collect save stamps on the capture (§4.1).
  *
- * Collect labels a take; whether it is adopted into a dataset is Review's
- * decision, so a labeled take stays `pending`. The one exception is an operator
- * who called the data not usable — that is the same statement Review's own
- * exclude makes, and leaving it `pending` would put it straight back into the
- * queue it was just taken out of.
+ * "Save — success" on good data IS the adoption. Treating it as a mere label
+ * and leaving the capture `pending` left the two screens pointing at each
+ * other: Review's READY lane offers nothing to click (it is, correctly, the
+ * lane that needs no attention) while the Datasets rail refuses anything not
+ * adopted — so the best takes could never enter a training set, and only the
+ * ones that went through NEEDS CHECK could. Asking for a second ceremony
+ * elsewhere to confirm a judgment already made in one click is the same mistake
+ * as making an operator retype a discard reason.
+ *
+ * Only that combination adopts. A failed task, or data the quick check (or the
+ * operator) called needs-review, stays `pending` and lands in NEEDS CHECK where
+ * "Mark OK — include" is the deliberate confirmation. Data the operator called
+ * not usable is `excluded` outright — the same statement Review's exclude
+ * makes, and leaving it pending would put it straight back into the queue it
+ * was just taken out of.
+ *
+ * `quality` here is the EFFECTIVE value the result panel was showing when the
+ * operator committed: their override if they made one, else the auto value. If
+ * the quick check settles afterwards and downgrades the quality, the server
+ * corrects the quality (§4.1) but not this decision — the adoption was the
+ * operator's, made against what the screen said, and it stays theirs to change
+ * in Review.
  */
 export function collectReviewStatus(
-  override: QualityOverride | null,
+  /** This screen's own vocabulary: 'ok' is what the wire calls `success`. */
+  taskResult: TaskResult,
+  quality: QualityOverride,
 ): ReviewStatus {
-  return override === 'notusable' ? 'excluded' : 'pending';
+  if (quality === 'notusable') return 'excluded';
+  return taskResult === 'ok' && quality === 'good' ? 'adopted' : 'pending';
 }
 
 // The plan catalog (Projects → Tasks → Conditions) now lives in the shared
@@ -2151,7 +2171,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
           base_revision: baseRevision,
           task_result: isFail ? 'failure' : 'success',
           failure_reason: isFail ? reason || null : null,
-          review_status: collectReviewStatus(override),
+          review_status: collectReviewStatus(isFail ? 'fail' : 'ok', effective),
           batch_id: batchId,
           // An index inside no batch means nothing, so it is only sent with one.
           index_in_batch: batchId ? nextIndex : null,
