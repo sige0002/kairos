@@ -9,7 +9,21 @@ See ``docs/specs/ja/config.md`` for the canonical three-layer config design.
 
 from __future__ import annotations
 
-from kairos_common import lifecycle_ledger
+# The capture-store v2 subsystem is exported as MODULES, never as loose names.
+# ``rebuild`` is both a module and its main function, and a top-level re-export
+# would make ``kairos_common.rebuild`` mean one thing here and the other in
+# ``from kairos_common.rebuild import rebuild``. One style for all six keeps the
+# call sites unambiguous: ``ids.uuid7()``, ``rebuild.rebuild(...)``, or an
+# explicit ``from kairos_common.capture_sidecars import ObjectManifestV2``.
+from kairos_common import (
+    atomic_io,
+    capture_sidecars,
+    ids,
+    instance,
+    ledger_v2,
+    lifecycle_ledger,
+    rebuild,
+)
 from kairos_common.app import REQUEST_ID_HEADER, create_app, error_response
 from kairos_common.archive_paths import (
     ARCHIVE_ROOTS_SEPARATOR,
@@ -90,18 +104,24 @@ __all__ = [
     "ValidationRequiredTopic",
     "ValidationTemplate",
     "archive_enabled",
+    "atomic_io",
+    "capture_sidecars",
     "create_app",
     "error_response",
     "extract_value",
     "get_request_id",
     "get_settings",
+    "ids",
+    "instance",
     "iter_numeric_fields",
+    "ledger_v2",
     "load_recording_config",
     "load_stream_config",
     "load_validation_template",
     "parse_archive_roots",
     "parse_path",
     "read_bag_metadata",
+    "rebuild",
     "reset_request_id",
     "resolve_archive_destination",
     "resolve_config_path",
