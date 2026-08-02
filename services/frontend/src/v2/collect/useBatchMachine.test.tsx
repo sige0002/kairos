@@ -11,6 +11,8 @@ import {
   createBatchMachineState as createState,
   useBatchMachine,
   __resetBatchStore,
+  __setStopFloorMs,
+  __resetStopFloorMs,
   __rehydrateBatchStore,
   EPISODES_PER_BATCH,
 } from './useBatchMachine';
@@ -292,6 +294,9 @@ function wrapper({ children }: { children: ReactNode }) {
 
 beforeEach(() => {
   setApiBase('/api/v1');
+  // These tests are not about the Stop floor; they stop immediately after
+  // starting, which the shipped 1s guard would (correctly) refuse.
+  __setStopFloorMs(0);
   // The batch machine now lives in a module-level store (so it survives a
   // tab-switch unmount); reset it — and its localStorage mirror — between hook
   // tests so state can't leak from one test into the next.
@@ -305,7 +310,12 @@ beforeEach(() => {
     recordCustomized: false,
   });
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  // No-op for the ~84 tests on the real clock; unpins the system time for the
+  // prediction tests that set it (restoreAllMocks does not restore timers).
+  vi.useRealTimers();
+});
 
 test('startRecording() calls /record/start and only then moves to recording', async () => {
   vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
@@ -325,6 +335,98 @@ test('startRecording() calls /record/start and only then moves to recording', as
   expect(result.current.phase).toBe('arming');
 
   await waitFor(() => expect(result.current.phase).toBe('recording'));
+});
+
+// M2: two clicks (or two presses of the R shortcut) landing in the SAME tick
+// both read `state.phase` from a closure that does not update until the next
+// render, so both passed the ready check and both called /record/start. The
+// second recording was whatever few milliseconds the recorder managed before
+// the first stop caught up — and it arrived in Review looking like a real take.
+test('two starts in one tick create exactly one recording', async () => {
+  const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/record/start')) {
+      return Promise.resolve(jsonResponse(captureBody('cap_44')));
+    }
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  expect(result.current.phase).toBe('ready');
+
+  // Both calls inside ONE act: no render happens between them, so the phase
+  // guard alone cannot tell them apart.
+  act(() => {
+    result.current.startRecording();
+    result.current.startRecording();
+  });
+
+  await waitFor(() => expect(result.current.phase).toBe('recording'));
+  const starts = fetchSpy.mock.calls.filter((c) =>
+    String(c[0]).includes('/record/start'),
+  );
+  expect(starts).toHaveLength(1);
+});
+
+// M2 (qa-ui p07): a real double-click's second press lands on the Stop button
+// that replaced Start at the same coordinates — start at T+0, its own stop at
+// T+86ms, an 87ms bag. The shipped floor is used here deliberately, not the
+// test seam: this test exists to prove the floor a real operator gets.
+test('a stop within the floor is refused, so a double-click cannot end its own take', async () => {
+  __resetStopFloorMs();
+  const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/record/start')) {
+      return Promise.resolve(jsonResponse(captureBody('cap_dbl')));
+    }
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  act(() => result.current.startRecording());
+  await waitFor(() => expect(result.current.phase).toBe('recording'));
+
+  // The instant the recording card appears, Stop is refused and says why.
+  expect(result.current.canStop).toBe(false);
+  expect(result.current.stopBlockedReason).toBe('floor');
+
+  // The second half of the double-click, arriving milliseconds later.
+  act(() => result.current.stopRecording());
+  expect(result.current.phase).toBe('recording');
+  expect(
+    fetchSpy.mock.calls.filter((c) => String(c[0]).includes('/record/stop')),
+  ).toHaveLength(0);
+
+  __setStopFloorMs(0);
+});
+
+// The floor must not become a trap: a deliberate stop still works.
+test('once the floor has passed the stop goes through normally', async () => {
+  __setStopFloorMs(0);
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/record/start')) {
+      return Promise.resolve(jsonResponse(captureBody('cap_ok')));
+    }
+    if (url.includes('/record/stop')) {
+      return Promise.resolve(jsonResponse(captureBody('cap_ok', { state: 'completed' })));
+    }
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  act(() => result.current.startRecording());
+  await waitFor(() => expect(result.current.phase).toBe('recording'));
+  expect(result.current.canStop).toBe(true);
+
+  act(() => result.current.stopRecording());
+  expect(result.current.phase).toBe('saving');
 });
 
 // The recorder can reject a start with HTTP 200 + state: "failed" (the row is
@@ -1047,6 +1149,42 @@ test('starting a recording creates a server batch with the plan context', async 
     operator: 'yuki',
     target_episodes: EPISODES_PER_BATCH,
   });
+});
+
+// M5: Coverage is read from the batch's `episodes_recorded`, which the server
+// only moves on the FIRST review save for a capture (§4.1). Without an
+// invalidation the figure sat on its own 30s refetch and silently disagreed
+// with the strip the operator had just watched update.
+test('a review save invalidates the batches the coverage figure is read from', async () => {
+  phase2Fetch({ captureId: 'cap_cov', batchId: 'batch_cov' });
+  const client = makeTestClient();
+  const invalidated: unknown[] = [];
+  const realInvalidate = client.invalidateQueries.bind(client);
+  vi.spyOn(client, 'invalidateQueries').mockImplementation((filters) => {
+    invalidated.push((filters as { queryKey?: unknown })?.queryKey);
+    return realInvalidate(filters);
+  });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper: ({ children }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    ),
+  });
+
+  act(() => result.current.startRecording());
+  await waitFor(() => expect(result.current.phase).toBe('recording'));
+  act(() => result.current.stopRecording());
+  await waitFor(() => expect(result.current.phase).toBe('result'), { timeout: 4000 });
+  act(() => result.current.confirmEpisode());
+  await waitFor(() => expect(result.current.stats.nRecorded).toBe(1));
+
+  // CoverageCard reads ['batches','coverage'], so invalidating ['batches']
+  // reaches it by prefix — the figure refreshes with the strip instead of
+  // waiting out its own 30-second interval.
+  await waitFor(() =>
+    expect(
+      invalidated.some((k) => Array.isArray(k) && k[0] === 'batches'),
+    ).toBe(true),
+  );
 });
 
 test('saving PATCHes the capture review with the batch stamp and a CAS token', async () => {
@@ -2340,11 +2478,19 @@ test('a batch the API could not create leaves the review saved but ungrouped', a
 // falling back to #1 when there are none or the API is unreachable.
 // ---------------------------------------------------------------------------
 
-const NOW_ISO = new Date().toISOString();
+// Pin the clock: NOW_ISO used to be captured at module load while isLocalToday
+// reads new Date() at assertion time, so a real clock straddling local midnight
+// between the two made "today" mean different days and the prediction fail.
+// The three prediction tests below call vi.setSystemTime(PREDICTION_CLOCK) as
+// their first act (NOT a file-level hook — that would pin the clock for all 87
+// tests in this file); the global afterEach's useRealTimers() unpins it.
+const PREDICTION_CLOCK = new Date('2026-08-02T12:00:00Z');
+const NOW_ISO = PREDICTION_CLOCK.toISOString();
 // ~2 days back — safely a prior LOCAL calendar day regardless of time-of-day.
-const OLD_ISO = new Date(Date.now() - 2 * 86_400_000).toISOString();
+const OLD_ISO = new Date(PREDICTION_CLOCK.getTime() - 2 * 86_400_000).toISOString();
 
 test("predictedSeq = 1 + max(batch_seq) among today's batches (older days excluded)", async () => {
+  vi.setSystemTime(PREDICTION_CLOCK);
   vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
     if (url.includes('/batches')) {
@@ -2386,6 +2532,7 @@ test("predictedSeq = 1 + max(batch_seq) among today's batches (older days exclud
 });
 
 test('predictedSeq falls back to 1 when no batch exists today', async () => {
+  vi.setSystemTime(PREDICTION_CLOCK);
   vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
     if (url.includes('/batches')) {
@@ -2412,6 +2559,7 @@ test('predictedSeq falls back to 1 when no batch exists today', async () => {
 });
 
 test('predictedSeq stays null on a GET /batches failure (the UI then renders "next #1")', async () => {
+  vi.setSystemTime(PREDICTION_CLOCK);
   vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
     if (url.includes('/batches')) return Promise.reject(new Error('api down'));
@@ -2990,4 +3138,51 @@ test('preArmed reflects the server-reported armed state, never a sent prepare', 
   });
   await waitFor(() => expect(result.current.preArmed).toBe(true));
   expect(result.current.recorderState).toBe('armed');
+});
+
+// M6 (qa-ui shots/08b): two unsaved takes can be pending at once — the recovery
+// banner describing an older one, the result panel a newer one, each with its
+// own Discard. "Later" dismissed only the take on screen, so the next one took
+// its place instantly and the button read as broken.
+test('"Later" hides every known unsaved take, not just the one on screen', async () => {
+  const unsaved = (id: string, startedAt: string) => ({
+    capture_id: id,
+    run_id: `run_${id}`,
+    state: 'completed',
+    review_status: 'pending',
+    review_revision: 0,
+    started_at: startedAt,
+    ended_at: startedAt,
+    bytes: 1000,
+  });
+  const now = Date.now();
+  const iso = (offsetMs: number) => new Date(now - offsetMs).toISOString();
+
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/captures'))
+      return Promise.resolve(
+        jsonResponse({
+          // Newest first, as the API returns them.
+          items: [unsaved('cap_new', iso(10_000)), unsaved('cap_old', iso(60_000))],
+          next_cursor: null,
+        }),
+      );
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+
+  await waitFor(() => expect(result.current.unsavedTakeCount).toBe(2));
+  // The banner describes the most recent one — the take most likely in mind.
+  expect(result.current.unsavedTake?.captureId).toBe('cap_new');
+
+  act(() => result.current.dismissUnsavedTake());
+
+  // Both are gone: dismissing one only to meet the next is what made "Later"
+  // look like it did nothing.
+  await waitFor(() => expect(result.current.unsavedTake).toBeNull());
+  expect(result.current.unsavedTakeCount).toBe(0);
 });

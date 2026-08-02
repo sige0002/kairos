@@ -3,13 +3,7 @@
 // source Collect uses. Kept separate from the component so the active/elapsed
 // derivation is unit-testable.
 
-import { liveCaptureIds, type RecordStatus } from '../../api/types';
-
-// Only recording/stopping is a capture that is actually being WRITTEN, matching
-// the recorder's own _ACTIVE_STATES. `armed` is deliberately excluded: a
-// prepared session holds subscriptions but has written nothing, and showing REC
-// for it would claim data that does not exist.
-const ACTIVE_STATES = new Set(['recording', 'stopping']);
+import type { RecordStatusView } from '../captures/useRecordStatus';
 
 export interface RecordContext {
   recording: boolean;
@@ -22,34 +16,33 @@ export interface RecordContext {
    *  no baseline reported. */
   elapsedMs: number | null;
   /**
-   * True when the status response carried `live_capture_ids` at all.
+   * True when we actually KNOW what is live — the recorder answered and named
+   * its live set.
    *
-   * §10 rev.2.4: a response WITHOUT that array is an unreachable or too-old
-   * recorder, not an empty live set. The two must not render the same, because
-   * "nothing is recording" is a claim, and we have not verified it.
+   * False covers both an answer without `live_capture_ids` (§10 rev.2.4) and a
+   * poll that failed outright. Neither may render as "nothing is recording":
+   * that is a claim, and we have not verified it.
    */
   liveKnown: boolean;
 }
 
 export function computeRecordContext(
-  status: RecordStatus | undefined,
+  view: RecordStatusView,
   nowMs: number,
 ): RecordContext {
-  const liveKnown = liveCaptureIds(status) !== null;
-  const recording = !!status && ACTIVE_STATES.has(status.state);
-  if (!recording) {
+  // A stale payload proves nothing, so an unreachable recorder yields the same
+  // "we cannot tell" shape as an answer with no live set — never a REC chip
+  // counting up from a start that ended long ago.
+  const liveKnown = view.reachable && view.live !== null;
+  if (!view.recording) {
     return { recording: false, captureId: null, runId: null, elapsedMs: null, liveKnown };
   }
-  const startedAt = status?.started_at ? Date.parse(status.started_at) : NaN;
+  const startedAt = view.status?.started_at ? Date.parse(view.status.started_at) : NaN;
   const elapsedMs = Number.isNaN(startedAt) ? null : Math.max(0, nowMs - startedAt);
-  // The singular capture_id is read only behind the live-state guard above: on
-  // its own it is NOT a liveness signal (§10 — it keeps naming the last capture
-  // after a stop), which is the same rule the orchestrator follows when it
-  // pairs `_capture_id_of` with `_recorder_is_active`.
   return {
     recording: true,
-    captureId: status?.capture_id ?? null,
-    runId: status?.run_id ?? null,
+    captureId: view.captureId,
+    runId: view.status?.run_id ?? null,
     elapsedMs,
     liveKnown,
   };

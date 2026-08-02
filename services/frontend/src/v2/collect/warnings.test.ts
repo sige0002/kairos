@@ -2,7 +2,12 @@
 
 import { expect, test } from 'vitest';
 import type { AlertEvent, MetricsSnapshot, RecordArming } from '../../api/types';
-import { armingWarning, firingAlertRows, topicRates } from './warnings';
+import {
+  armingWarning,
+  configMismatchHint,
+  firingAlertRows,
+  topicRates,
+} from './warnings';
 
 function alert(over: Partial<AlertEvent>): AlertEvent {
   return {
@@ -137,4 +142,29 @@ test('topicRates counts ok vs judged, excluding unknown', () => {
 test('topicRates is null with no snapshot or no judged topic', () => {
   expect(topicRates(undefined)).toBeNull();
   expect(topicRates(metrics([{ name: '/a', status: 'unknown' }]))).toBeNull();
+});
+
+// M-NEW: "the robot is down" and "the wrong robot config is selected" rendered
+// identically — same counters, same "not publishing" wording — while a hundred
+// foreign topics streamed at full rate. The distinguishing fact is that the
+// configured set is silent while the graph is busy.
+test('configMismatchHint fires when the graph dwarfs the silent configured set', () => {
+  expect(configMismatchHint(7, 131)).toEqual({ configuredSilent: 7, discovered: 131 });
+});
+
+test('configMismatchHint stays silent for a genuinely quiet graph', () => {
+  // Nothing publishing at all is the case the existing wording already gets
+  // right; adding a mismatch guess there would be noise.
+  expect(configMismatchHint(7, 0)).toBeNull();
+});
+
+test('configMismatchHint stays silent when nothing configured is missing', () => {
+  expect(configMismatchHint(0, 131)).toBeNull();
+});
+
+test('configMismatchHint ignores a robot publishing a few extras', () => {
+  // Ordinary: some diagnostics topics alongside the configured set. Only an
+  // order-of-magnitude gap is a question worth raising.
+  expect(configMismatchHint(7, 12)).toBeNull();
+  expect(configMismatchHint(7, 21)).not.toBeNull();
 });

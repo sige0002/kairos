@@ -14,12 +14,23 @@ function apiError(
   return new ApiError(status, body, 'fallback');
 }
 
-test('errorText prefixes the code so an operator can quote it', () => {
+test('errorText is the human sentence, with no code prefixed to it', () => {
+  // m9: leading with `capture_busy: …` puts an identifier nobody asked for in
+  // front of the only part the operator can read.
   expect(errorText(apiError(409, 'capture_busy', 'a job holds it'))).toBe(
-    'capture_busy: a job holds it',
+    'a job holds it',
   );
   expect(errorText(new Error('plain'))).toBe('plain');
   expect(errorText('not an error')).toBe('not an error');
+});
+
+test('the code still travels, on its own muted trailing line', () => {
+  render(<ErrorMessage error={apiError(409, 'capture_busy', 'a job holds it')} />);
+  const alert = screen.getByRole('alert');
+  // Readable first, quotable second — and the element carries the code for
+  // tests and for anyone reading the DOM.
+  expect(alert).toHaveAttribute('data-error-code', 'capture_busy');
+  expect(alert.textContent).toBe('a job holds it(capture_busy)');
 });
 
 test('a service-unreachable cause is shown beneath the message', () => {
@@ -32,10 +43,12 @@ test('a service-unreachable cause is shown beneath the message', () => {
       })}
     />,
   );
-  expect(screen.getByRole('alert')).toHaveTextContent(
-    'recorder_unreachable: The recorder is unreachable.',
-  );
+  expect(screen.getByRole('alert')).toHaveTextContent('The recorder is unreachable.');
   expect(screen.getByRole('alert')).toHaveTextContent('connection refused');
+  expect(screen.getByRole('alert')).toHaveAttribute(
+    'data-error-code',
+    'recorder_unreachable',
+  );
 });
 
 test('a cause already contained in the message is not echoed twice', () => {
@@ -46,10 +59,10 @@ test('a cause already contained in the message is not echoed twice', () => {
       })}
     />,
   );
-  // One line only — the cause is already in the message, so a second line would
-  // say the same thing twice.
+  // The cause is already in the message, so it is not repeated; the code still
+  // trails.
   expect(screen.getByRole('alert').textContent).toBe(
-    'x_unreachable: failed: connection refused',
+    'failed: connection refused(x_unreachable)',
   );
 });
 
@@ -66,11 +79,11 @@ test('per-code details are left to the guidance layer, not rendered raw here', (
     />,
   );
   const alert = screen.getByRole('alert');
-  expect(alert).toHaveTextContent('capture_busy: a job holds this capture');
+  expect(alert).toHaveTextContent('a job holds this capture');
   expect(alert).not.toHaveTextContent('digest-job-7');
 });
 
 test('a details payload with no cause renders the message alone', () => {
   render(<ErrorMessage error={apiError(404, 'capture_not_found', 'gone', {})} />);
-  expect(screen.getByRole('alert').textContent).toBe('capture_not_found: gone');
+  expect(screen.getByRole('alert').textContent).toBe('gone(capture_not_found)');
 });

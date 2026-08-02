@@ -7,7 +7,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Card, cn } from '../../components/ui';
 import type { RecordArming } from '../../api/types';
 import { readCaptureError } from '../captures/errors';
-import { formatBytes } from '../review/format';
+import { formatBytes, formatTimeOfDay } from '../review/format';
 import { CARD_PAD } from './compact';
 import {
   describeTaskOutcome,
@@ -426,6 +426,7 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
         <button
           ref={startRef}
           type="button"
+          data-testid="start-recording"
           onClick={machine.startRecording}
           disabled={machine.noSelection}
           className={cn(
@@ -487,6 +488,15 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
 
   if (phase === 'recording') {
     const elapsedText = formatElapsed(machine.elapsedMs);
+    // B1: the recorder has stopped answering. We do NOT know that the recording
+    // is still running, so the card stops asserting that it is — the pulsing
+    // dot, the red RECORDING word and the live timer are all claims about a
+    // thing we can no longer see. The last known values stay, labelled as such.
+    const unreachable = machine.recorderUnreachable;
+    const staleText =
+      machine.recorderStaleMs != null
+        ? `${Math.round(machine.recorderStaleMs / 1000)}s ago`
+        : 'unknown';
     // Real bytes written for this run (from /record/status), not elapsed×rate.
     const writtenText =
       machine.recordingBytes != null
@@ -501,32 +511,71 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
         )}
       >
         <div className="flex items-center gap-2">
-          <span className="h-[9px] w-[9px] animate-recpulse rounded-sm bg-red-600" />
+          <span
+            className={cn(
+              'h-[9px] w-[9px] rounded-sm',
+              unreachable ? 'bg-amber-500' : 'animate-recpulse bg-red-600',
+            )}
+          />
           <span
             data-testid="phase-title"
-            className="text-[17px] font-bold text-red-700"
+            className={cn(
+              'text-[17px] font-bold',
+              unreachable ? 'text-amber-700' : 'text-red-700',
+            )}
           >
-            RECORDING
+            {unreachable ? 'RECORDER UNREACHABLE' : 'RECORDING'}
           </span>
           <div className="flex-1" />
           <span className="font-mono text-xs text-gray-500">
             Ep {stats.epNext} / {machine.targetEpisodes}
           </span>
         </div>
+        {unreachable && (
+          <p
+            data-testid="recorder-unreachable-note"
+            className="rounded-control border border-amber-300 bg-amber-50 px-3 py-2 text-[12.5px] leading-relaxed text-amber-900"
+          >
+            The recorder is not answering. Last known:{' '}
+            <span className="font-semibold">recording</span>, {staleText}. Whether
+            it is still running cannot be confirmed from here — the figures below
+            are the last ones it reported, not current.
+          </p>
+        )}
         <div className="flex items-baseline gap-2.5">
           <span
             data-testid="elapsed"
-            className="font-mono text-[34px] font-semibold text-gray-900"
+            className={cn(
+              'font-mono text-[34px] font-semibold',
+              unreachable ? 'text-gray-400' : 'text-gray-900',
+            )}
+            title={unreachable ? `Frozen at the last confirmed reading (${staleText})` : undefined}
           >
             {elapsedText}
           </span>
           <span className="font-mono text-xs text-gray-400">{writtenText}</span>
         </div>
+        {/* Stop occupies the position Start just vacated, so the second half
+            of a double-click lands here. Refused for the first moment of a
+            take — see STOP_FLOOR_MS. */}
         <button
           ref={stopRef}
           type="button"
+          data-testid="stop-recording"
           onClick={machine.stopRecording}
-          className="flex h-[52px] items-center justify-center gap-2 rounded-control bg-red-600 text-[15px] font-bold text-white shadow-btn-red hover:bg-red-700 [@media(max-height:860px)]:h-[44px]"
+          disabled={!machine.canStop}
+          title={
+            machine.stopBlockedReason === 'floor'
+              ? 'Just started — Stop is available a moment from now, so a ' +
+                'double-click on Start cannot end the take it just began.'
+              : undefined
+          }
+          className={cn(
+            'flex h-[52px] items-center justify-center gap-2 rounded-control text-[15px] font-bold shadow-btn-red [@media(max-height:860px)]:h-[44px]',
+            machine.canStop
+              ? 'bg-red-600 text-white hover:bg-red-700'
+              : 'cursor-not-allowed bg-red-300 text-white/80',
+          )}
         >
           <span className="h-[11px] w-[11px] rounded-sm bg-white" />
           Stop recording
@@ -617,17 +666,23 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
           >
             Episode {stats.epNext} result
           </span>
-          {/* The recording's on-disk name (§1: display only — every call this
-              panel makes keys on the capture_id instead). */}
-          {machine.currentRunLabel && (
-            <span
-              data-testid="result-run-label"
-              className="truncate font-mono text-[11px] text-gray-400"
-              title={machine.currentRunLabel}
-            >
-              {machine.currentRunLabel}
-            </span>
-          )}
+          {/* WHICH take this panel is about. The recovery banner above can be
+              describing a DIFFERENT unsaved take at the same time, each with its
+              own Discard — so both have to name themselves or the two Discards
+              are indistinguishable. Start time is the thing an operator can
+              actually match against the banner; the run name follows for the
+              on-disk identity (§1: display only — every call keys on
+              capture_id). */}
+          <span
+            data-testid="result-take-identity"
+            className="truncate font-mono text-[11px] text-gray-400"
+            title={machine.currentRunLabel ?? undefined}
+          >
+            {machine.currentTakeStartedAt
+              ? `started ${formatTimeOfDay(machine.currentTakeStartedAt)}`
+              : 'start time unknown'}
+            {machine.currentRunLabel ? ` · ${machine.currentRunLabel}` : ''}
+          </span>
           <div className="flex-1" />
           <span
             className={cn(
@@ -855,7 +910,7 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
       >
         <div className="flex items-center gap-2">
           <span className="text-[15px] font-bold text-gray-900">
-            Set {machine.batchSeq ?? '—'} ended early
+            Batch {machine.batchSeq ?? '—'} ended early
           </span>
           <div className="flex-1" />
           <span className="rounded-chip bg-amber-100 px-2 py-0.5 text-[11px] font-bold text-amber-800">
@@ -888,7 +943,7 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
     >
       <div className="flex items-center gap-2">
         <span className="text-[15px] font-bold text-gray-900">
-          Set {machine.batchSeq ?? '—'} completed 🎉
+          Batch {machine.batchSeq ?? '—'} completed 🎉
         </span>
         <div className="flex-1" />
         <span className="rounded-chip bg-green-100 px-2 py-0.5 text-[11px] font-bold text-green-700">

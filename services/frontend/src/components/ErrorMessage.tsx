@@ -1,12 +1,24 @@
 import { ApiError } from '../api/client';
 
-/** Render an error (ApiError or anything) into a consistent, readable string. */
+/**
+ * The human sentence for an error — what happened, in words.
+ *
+ * The raw code is deliberately NOT prefixed here. Leading with
+ * `capture_deleted: …` puts an identifier the operator did not ask for in front
+ * of the one part they can read; the code still travels, on its own muted line
+ * (see `ErrorMessage`), so it remains quotable in a bug report without being
+ * the first thing anyone meets.
+ */
 export function errorText(err: unknown): string {
-  if (err instanceof ApiError) {
-    return err.code ? `${err.code}: ${err.message}` : err.message;
-  }
+  if (err instanceof ApiError) return err.message;
   if (err instanceof Error) return err.message;
   return String(err);
+}
+
+/** The machine-readable code, for the muted trailing line. Null when the error
+ *  carries none (a transport failure, a thrown string). */
+export function errorCode(err: unknown): string | null {
+  return err instanceof ApiError ? (err.code ?? null) : null;
 }
 
 /**
@@ -34,12 +46,21 @@ function detailText(err: unknown): string | null {
   return err.message.includes(cause) ? null : cause;
 }
 
+/** Plain sentence first, deeper cause next, raw code last and muted — the same
+ *  order the recorder's failed-start banner uses, so every error on screen
+ *  reads the same way round. */
 export function ErrorMessage({ error }: { error: unknown }) {
   const detail = detailText(error);
+  const code = errorCode(error);
   return (
-    <div role="alert" className="rounded bg-red-50 px-3 py-2 text-sm text-red-700">
+    <div
+      role="alert"
+      data-error-code={code ?? undefined}
+      className="rounded bg-red-50 px-3 py-2 text-sm text-red-700"
+    >
       <p>{errorText(error)}</p>
       {detail && <p className="mt-1 font-mono text-xs text-red-600">{detail}</p>}
+      {code && <p className="mt-0.5 font-mono text-xs text-red-600 opacity-70">({code})</p>}
     </div>
   );
 }

@@ -35,6 +35,7 @@ import {
   type CaptureDeletionState,
 } from '../captures/useCaptureDeletion';
 import { needsReload } from '../captures/errors';
+import { useRecordStatus } from '../captures/useRecordStatus';
 import { findProject, findTask, getPlans } from '../plans';
 import { RECORDING_CONFIG_KEY } from '../../features/config/ConfigTab';
 import {
@@ -88,6 +89,27 @@ export type QualityOverride = 'good' | 'review' | 'notusable';
 export interface MachineError {
   code: string | null;
   message: string;
+}
+
+/** Why Stop is refused right now (M2). `floor` = the take is younger than
+ *  STOP_FLOOR_MS. */
+export type StopBlockedReason = 'floor' | null;
+
+/** Minimum life of a take before Stop is accepted. A real double-click's second
+ *  press lands tens of milliseconds after the first (qa-ui measured 86ms), and
+ *  no deliberate recording is a second long. */
+export const STOP_FLOOR_MS = 1000;
+
+// The floor is a real wall-clock wait, which every test that merely needs to
+// reach the result phase would otherwise have to sit through. Unit tests opt
+// out explicitly through this seam (the same module-store + setter shape as
+// splitMode.ts); the guard's own tests use the shipped value.
+let stopFloorMs = STOP_FLOOR_MS;
+export function __setStopFloorMs(ms: number): void {
+  stopFloorMs = ms;
+}
+export function __resetStopFloorMs(): void {
+  stopFloorMs = STOP_FLOOR_MS;
 }
 
 export interface EpisodeRecord {
@@ -538,7 +560,7 @@ function reducer(state: MachineState, action: Action): MachineState {
     case 'SET_TASK':
       return { ...state, task: action.task, condition: action.condition };
     case 'ROLLOVER_SET': {
-      // A context change (project/task/condition) once this set already holds a
+      // A context change (project/task/condition) once this batch already holds a
       // recording: close the current set locally and open a fresh one with the
       // new context. Earlier episodes keep their original context (condition is
       // stored per-batch server-side, so relabeling in place would retroactively
@@ -1082,8 +1104,16 @@ export interface BatchMachine {
   labelUnsavedTake: () => void;
   /** Open the shared discard dialog for the unsaved take. */
   discardUnsavedTake: () => void;
-  /** Hide the unsaved-take banner until the next page load. */
+  /** Hide the unsaved-take banner until a take recorded AFTER this point
+   *  appears (or the next page load). */
   dismissUnsavedTake: () => void;
+  /** How many recoverable unsaved takes exist right now. More than one is
+   *  worth saying: the operator is looking at a banner for one of them. */
+  unsavedTakeCount: number;
+  /** When the take the result panel is about started — the field the operator
+   *  can match against the recovery banner, which names its own take the same
+   *  way. Null before a capture exists or when the recorder gave no time. */
+  currentTakeStartedAt: string | null;
   /** The shared discard flow driving that dialog (§7 + §12). */
   unsavedDiscard: CaptureDeletionState;
 
@@ -1155,6 +1185,15 @@ export interface BatchMachine {
   startRecording: () => void;
   cancelArming: () => void;
   stopRecording: () => void;
+  /** Whether Stop may be used yet, and if not, why (M2 — see STOP_FLOOR_MS). */
+  canStop: boolean;
+  stopBlockedReason: StopBlockedReason;
+  /** True once a /record/status poll has failed: the recorder is not answering
+   *  and nothing derived from its last response may be presented as current. */
+  recorderUnreachable: boolean;
+  /** Milliseconds since the last SUCCESSFUL poll, for "last known: …, Ns ago".
+   *  Null when there has never been one. */
+  recorderStaleMs: number | null;
   /** Re-attempt a stop that failed (stays in SAVING). */
   retryStop: () => void;
   pickSuccess: () => void;
@@ -1191,7 +1230,7 @@ export interface BatchMachine {
   pickCondition: (condition: string) => void;
   /** Set a free-text condition the operator typed in the condition modal. Not
    *  added to the plans catalog; behaves exactly like a catalog condition
-   *  afterwards (a string on the batch). Rolls the set over when the current set
+   *  afterwards (a string on the batch). Rolls it over when the current batch
    *  already has a recording, same as pickCondition. */
   pickCustomCondition: (condition: string) => void;
   /** Jump to the Monitor tab (Warnings card's "Open in Monitor →"). */
@@ -1262,12 +1301,14 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   // synthesized and never the mock quality flag (recWarning). The stop mutation
   // already invalidates this key, so the integrity surfaces once the recorder
   // finalises the bag.
-  const statusQuery = useQuery({
-    queryKey: queryKeys.recordStatus,
-    queryFn: ({ signal }) => apiGet<RecordStatus>('/record/status', { signal }),
-    refetchInterval: 5000,
-  });
-  const status = statusQuery.data;
+  const recordStatus = useRecordStatus();
+  // A failed poll leaves react-query serving the LAST successful response, so
+  // reading `.data` alone keeps a dead recorder's "recording" on screen for
+  // ever. Everything derived below therefore reads the payload only while the
+  // recorder is answering; when it is not, the machine falls back to knowing
+  // nothing rather than to knowing something false.
+  const recorderReachable = recordStatus.reachable;
+  const status = recorderReachable ? recordStatus.status : undefined;
   const arming: RecordArming | null = status?.arming ?? null;
   // Gate integrity to THIS episode's capture so a previous capture's
   // `dropped`/`failed` can't leak into the current result while the poll catches
@@ -1290,10 +1331,11 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   // The recorder's SERVER state — the one source the SYSTEM STATUS Recorder row
   // and the takeover card both read (D-1), so they can never disagree.
   const recorderState: RecordState | null = status?.state ?? null;
-  // Never `?? []`: a status without the array means the recorder is unreachable,
-  // and reading that as an empty live set is how a UI ends up telling an
-  // operator their running recording does not exist (§10 rev.2.4).
-  const liveCaptures = liveCaptureIds(status);
+  // Never `?? []`: null means "we do not know what is live" — the recorder
+  // answered without the array (§10 rev.2.4) or is not answering at all — and
+  // reading that as an empty live set is how a UI ends up telling an operator
+  // their running recording does not exist.
+  const liveCaptures = recordStatus.live;
 
   // ---- settled quick-check verdict (F1) ------------------------------------
   // After stop the orchestrator settles a quick_check verdict on the capture
@@ -1525,22 +1567,28 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   });
   // A bump to recompute the (module-set-backed) dismissed filter without state.
   const [dismissNonce, setDismissNonce] = useState(0);
-  const unsavedCapture = useMemo(() => {
-    void dismissNonce; // recompute when a take is dismissed
+  // EVERY recoverable take, not just the first. Two can be pending at once —
+  // the banner's and the one on the result panel — and the operator needs to
+  // know that a second exists rather than meeting it the moment they dismiss
+  // the first, which reads as the dismissal not working.
+  const unsavedCaptures = useMemo(() => {
+    void dismissNonce; // recompute when takes are dismissed
     const items = captureScanQuery.data?.items ?? [];
     const now = Date.now();
-    for (const capture of items) {
-      if (capture.state !== 'completed') continue;
-      if (capture.review_revision !== 0) continue;
-      if (!capture.started_at) continue;
+    return items.filter((capture) => {
+      if (capture.state !== 'completed') return false;
+      if (capture.review_revision !== 0) return false;
+      if (!capture.started_at) return false;
       const startedMs = Date.parse(capture.started_at);
-      if (Number.isNaN(startedMs) || now - startedMs > UNSAVED_MAX_AGE_MS) continue;
-      if (capture.capture_id === state.currentCaptureId) continue;
-      if (dismissedUnsavedCaptures.has(capture.capture_id)) continue;
-      return capture;
-    }
-    return null;
+      if (Number.isNaN(startedMs) || now - startedMs > UNSAVED_MAX_AGE_MS) return false;
+      if (capture.capture_id === state.currentCaptureId) return false;
+      if (dismissedUnsavedCaptures.has(capture.capture_id)) return false;
+      return true;
+    });
   }, [captureScanQuery.data, state.currentCaptureId, dismissNonce]);
+  // The list arrives newest-first, so the banner always describes the most
+  // recent one — the take the operator is most likely thinking of.
+  const unsavedCapture = unsavedCaptures[0] ?? null;
   const unsavedTake = useMemo(() => {
     if (!unsavedCapture) return null;
     const startedMs = Date.parse(unsavedCapture.started_at ?? '');
@@ -1684,6 +1732,13 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   // arming/recording, so a start that lands late — or a stop that fails — is
   // reconciled instead of leaving an orphaned recorder session running.
   const cancelledStartRef = useRef(false);
+  // Synchronous double-start guard. The phase check inside startRecording reads
+  // the CLOSURE's `state.phase`, which does not update until the next render —
+  // so two clicks (or two keypresses) landing in the same tick both saw
+  // `ready` and both fired /record/start, and the second capture was whatever
+  // few milliseconds the recorder managed before the first stop caught up. A
+  // ref changes on assignment, so it closes the window the phase cannot.
+  const startInFlightRef = useRef(false);
 
   const startMutation = useMutation({
     mutationFn: (body: RecordStartRequest) => apiPost<Capture>('/record/start', body),
@@ -1720,6 +1775,11 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
         return;
       }
       dispatch({ type: 'START_FAILED', error: toMachineError(err) });
+    },
+    // Released however the start ended. Leaving it set on a failure would make
+    // Start permanently dead for the rest of the session.
+    onSettled: () => {
+      startInFlightRef.current = false;
     },
   });
 
@@ -1775,6 +1835,8 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
 
   const startRecording = useCallback(() => {
     if (state.phase !== 'ready' || noSelection) return;
+    if (startInFlightRef.current) return;
+    startInFlightRef.current = true;
     cancelledStartRef.current = false;
     // Lazily create the server batch (never blocks the recording; the save
     // awaits the same promise).
@@ -1802,11 +1864,34 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     dispatch({ type: 'CANCEL_ARMING' });
   }, [state.phase]);
 
+  // M2: Start and Stop occupy the SAME position — START_SUCCEEDED swaps the
+  // ready card for the recording card — so the second half of a real
+  // double-click lands on Stop. qa-ui measured the result: a start at T+0 and
+  // its own stop at T+86ms, an 87ms bag that then had to be reviewed like a
+  // real take.
+  //
+  // A minimum age is the whole guard. 86ms is nowhere near a second and no
+  // deliberate take is that short, so the floor defeats the accident outright.
+  //
+  // Deliberately NOT also gated on the recorder acknowledging the capture: the
+  // stop path already refuses a stop the recorder has not honoured (it stays in
+  // SAVING while `live_capture_ids` still names the capture), so a second gate
+  // here would add nothing except a window — up to a poll interval — in which
+  // an operator cannot end a recording. That is a worse failure than the
+  // accident being prevented, and B1 is exactly the case where the recorder
+  // goes quiet mid-take.
+  const stopBlockedReason: StopBlockedReason =
+    state.phase === 'recording' && state.elapsedMs < stopFloorMs ? 'floor' : null;
+  const canStop = state.phase === 'recording' && stopBlockedReason === null;
+
   const stopRecording = useCallback(() => {
     if (state.phase !== 'recording') return;
+    // Guarded here as well as on the control, so the S / Space shortcuts cannot
+    // walk around the button's disabled state.
+    if (!canStop) return;
     dispatch({ type: 'STOP_REQUESTED' });
     stopMutation.mutate();
-  }, [state.phase, stopMutation]);
+  }, [state.phase, canStop, stopMutation]);
 
   const retryStop = useCallback(() => {
     if (getStoreSnapshot().phase !== 'saving') return;
@@ -1815,16 +1900,34 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   }, [stopMutation]);
 
   // ---- recording elapsed timer ---------------------------------------------
+  // A slow clock that runs ONLY while the recorder is silent, so the
+  // "last known … Ns ago" figure keeps climbing while the elapsed timer is
+  // frozen. One second is enough for a number read in seconds, and it stops
+  // entirely once the recorder answers again.
+  const [staleNowMs, setStaleNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (recorderReachable) return;
+    setStaleNowMs(Date.now());
+    const id = setInterval(() => setStaleNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [recorderReachable]);
+
   const recStartRef = useRef<number | null>(null);
   useEffect(() => {
     if (state.phase !== 'recording') return;
     recStartRef.current = Date.now();
     const id = setInterval(() => {
       if (recStartRef.current == null) return;
+      // B1: freeze the elapsed clock the moment the recorder stops answering.
+      // An animating timer is an active claim that a recording is progressing,
+      // and once the poll fails we have no evidence of that — qa-ui watched it
+      // climb 00:12 → 00:37 against a recorder that had been dead the whole
+      // time. The last value stays on screen, labelled as last-known.
+      if (!recorderReachable) return;
       dispatch({ type: 'TICK', elapsedMs: Date.now() - recStartRef.current });
     }, 250);
     return () => clearInterval(id);
-  }, [state.phase]);
+  }, [state.phase, recorderReachable]);
 
   // SAVING advances on the REAL stop event (stopMutation.onSuccess dispatches
   // SAVED). This secondary gate covers a tab-switch during saving: once the
@@ -1955,9 +2058,15 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
           void patchBatch(batchId, { status: 'completed' }).catch(() => {});
         // The capture now carries a review, so it is no longer an unsaved take.
         void queryClient.invalidateQueries({ queryKey: queryKeys.captures });
+        // The FIRST review save for a capture is what moves the batch's
+        // `episodes_recorded` server-side (§4.1), and Coverage is read from
+        // that counter. Without this the figure sat on its own 30s refetch and
+        // silently disagreed with the strip the operator had just watched
+        // update.
+        void queryClient.invalidateQueries({ queryKey: queryKeys.batches });
         flashSaved(nextIndex);
         const batchSeq = getStoreSnapshot().batchSeq;
-        const seqPart = batchSeq != null ? ` of Set ${batchSeq}` : '';
+        const seqPart = batchSeq != null ? ` of Batch ${batchSeq}` : '';
         showToast(
           batchId
             ? `Saved — Episode ${nextIndex}${seqPart}${op ? ` · ${op}` : ''}`
@@ -2111,12 +2220,17 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     episodeDiscard.cancel();
     unsavedDiscard.requestDiscard(unsavedCapture);
   }, [unsavedCapture, episodeDiscard, unsavedDiscard]);
+  // "Later" hides the banner, and hiding it must mean hiding it: dismissing
+  // only the take on screen let the next one take its place instantly, which is
+  // indistinguishable from the button doing nothing. Every take we currently
+  // know about is dismissed, so the banner returns only for one recorded since.
   const dismissUnsavedTake = useCallback(() => {
-    if (unsavedCapture) {
-      dismissedUnsavedCaptures.add(unsavedCapture.capture_id);
-      setDismissNonce((n) => n + 1);
+    if (unsavedCaptures.length === 0) return;
+    for (const capture of unsavedCaptures) {
+      dismissedUnsavedCaptures.add(capture.capture_id);
     }
-  }, [unsavedCapture]);
+    setDismissNonce((n) => n + 1);
+  }, [unsavedCaptures]);
 
   // ---- batch menu actions ---------------------------------------------------
   const pauseBatch = useCallback(() => {
@@ -2574,6 +2688,8 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     labelUnsavedTake,
     discardUnsavedTake,
     dismissUnsavedTake,
+    unsavedTakeCount: unsavedCaptures.length,
+    currentTakeStartedAt: resultCaptureQuery.data?.started_at ?? status?.started_at ?? null,
     unsavedDiscard,
 
     lastSavedIndex,
@@ -2623,6 +2739,13 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     startRecording,
     cancelArming,
     stopRecording,
+    canStop,
+    stopBlockedReason,
+    recorderUnreachable: !recorderReachable,
+    recorderStaleMs:
+      !recorderReachable && recordStatus.lastGoodAt != null
+        ? Math.max(0, staleNowMs - recordStatus.lastGoodAt)
+        : null,
     retryStop,
     pickSuccess,
     pickFailure,

@@ -14,7 +14,7 @@
 // the whole episode onto its first frames, which would lie.
 
 import { useState } from 'react';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiGet, apiPost } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
 import type {
@@ -23,7 +23,7 @@ import type {
   CaptureTopic,
   VideoCheckSummary,
 } from '../../api/types';
-import { ErrorMessage } from '../../components/ErrorMessage';
+import { JobErrorNote, isTombstoneError } from '../captures/JobErrorNote';
 import { TERMINAL, VideoPlayer, cameraTopics } from '../captures/inspect';
 import {
   episodeSpanNs,
@@ -38,6 +38,7 @@ import { LossEventList } from './LossEventList';
 // POST /jobs → poll status → fetch result lifecycle the VideoPlayer uses, so a
 // missing/failed pipeline surfaces as an honest error instead of a dead view.
 function useSignalReport(captureId: string) {
+  const queryClient = useQueryClient();
   const [jobId, setJobId] = useState<string | null>(null);
   const [report, setReport] = useState<SignalReportExt | null>(null);
   const [jobError, setJobError] = useState<string | null>(null);
@@ -53,6 +54,13 @@ function useSignalReport(captureId: string) {
       setReport(null);
       setJobError(null);
       setJobId(job.job_id);
+    },
+    onError: (error) => {
+      // Same reasoning as the loss/validation jobs: a tombstone 409 is how this
+      // panel finds out the capture was removed elsewhere.
+      if (isTombstoneError(error)) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.capture(captureId) });
+      }
     },
   });
 
@@ -180,7 +188,7 @@ export function SignalSection({
         </button>
       </div>
 
-      {sig.error && <ErrorMessage error={sig.error} />}
+      <JobErrorNote error={sig.error} testId="review-signal-submit-error" />
       {sig.jobError && (
         <p role="alert" className="text-[11.5px] text-red-600" data-testid="review-signal-error">
           {sig.jobError}

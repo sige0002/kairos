@@ -1,5 +1,10 @@
 import { expect, test } from 'vitest';
-import { availabilityFor, availabilityOf, isCapturePresent } from './availability';
+import {
+  availabilityFor,
+  availabilityOf,
+  isCaptureEmpty,
+  isCapturePresent,
+} from './availability';
 import type { Capture, ReplicaState } from '../../api/types';
 
 function capture(partial: Partial<Capture> = {}): Capture {
@@ -34,6 +39,84 @@ test('a present copy with a pending digest reads as "verifying", not verified', 
 test('present_verified is the only state that claims verification', () => {
   expect(availabilityFor('present_verified', 'complete').kind).toBe('verified');
   expect(availabilityFor('present_unverified', 'complete').kind).not.toBe('verified');
+});
+
+test('a verified copy holding nothing is amber, not an all-clear', () => {
+  // Verification compares hashes against the manifest (§8, §9-4): an empty
+  // recording passes it. A plain green "verified" there tells the operator the
+  // recording is fine when there is nothing in it at all.
+  const zeroBytes = availabilityOf(
+    capture({ replica: { instance_id: 'i', state: 'present_verified' }, bytes: 0 }),
+  );
+  expect(zeroBytes.kind).toBe('verified_empty');
+  expect(zeroBytes.tone).toBe('amber');
+  expect(zeroBytes.warn).toBe(true);
+  expect(zeroBytes.label).toBe('verified (empty)');
+  expect(zeroBytes.detail).toMatch(/hashes/);
+  expect(zeroBytes.detail).toMatch(/holds nothing/);
+
+  // Zero messages is the same verdict whatever the bag weighs.
+  const zeroMessages = availabilityOf(
+    capture({
+      replica: { instance_id: 'i', state: 'present_verified' },
+      bytes: 4_096,
+      message_count: 0,
+    }),
+  );
+  expect(zeroMessages.kind).toBe('verified_empty');
+  expect(zeroMessages.warn).toBe(true);
+});
+
+test('a verified copy with data in it is still the plain green verified', () => {
+  const a = availabilityOf(
+    capture({
+      replica: { instance_id: 'i', state: 'present_verified' },
+      bytes: 1_200_000,
+      message_count: 1057,
+    }),
+  );
+  expect(a.kind).toBe('verified');
+  expect(a.tone).toBe('green');
+  expect(a.warn).toBe(false);
+});
+
+test('an unreported size is unknown, never reported as empty', () => {
+  // The honesty rule cuts both ways: a capture that reports no count has not
+  // told us it is empty, and inventing that verdict is the same fabrication as
+  // inventing a number.
+  expect(isCaptureEmpty(capture({}))).toBe(false);
+  expect(isCaptureEmpty(capture({ bytes: null, message_count: null }))).toBe(false);
+  expect(
+    availabilityOf(capture({ replica: { instance_id: 'i', state: 'present_verified' } })).kind,
+  ).toBe('verified');
+});
+
+test('an empty capture that is not here reports where its bytes are, not its size', () => {
+  // Emptiness is the LAST thing wrong with a copy that never arrived, vanished
+  // or cannot be read — those states have not answered where the bytes are yet.
+  expect(availabilityOf(capture({ replica: null, bytes: 0 })).kind).toBe('awaiting_transfer');
+  expect(
+    availabilityOf(
+      capture({ replica: { instance_id: 'i', state: 'missing_unmanaged' }, bytes: 0 }),
+    ).kind,
+  ).toBe('missing');
+  expect(
+    availabilityOf(capture({ replica: { instance_id: 'i', state: 'corrupt' }, bytes: 0 })).kind,
+  ).toBe('corrupt');
+  // And a copy that is here but unhashed says so: it claims no verification to
+  // undercut in the first place.
+  expect(
+    availabilityOf(
+      capture({ replica: { instance_id: 'i', state: 'present_unverified' }, bytes: 0 }),
+    ).kind,
+  ).toBe('verifying');
+});
+
+test('availabilityFor stays usable without a capture, and is not empty by default', () => {
+  // Callers holding only a replica state (§8 keeps the counts on the capture)
+  // must still get a chip, and must not have emptiness guessed for them.
+  expect(availabilityFor('present_verified', 'complete').kind).toBe('verified');
+  expect(availabilityFor('present_verified', 'complete', true).kind).toBe('verified_empty');
 });
 
 test('missing_unmanaged and corrupt are warnings, not completed cleanups', () => {

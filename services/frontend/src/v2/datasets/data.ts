@@ -16,7 +16,11 @@
 
 import type { Capture, Dataset, DatasetMember } from '../../api/types';
 import type { Tone } from '../../components/ui';
-import { availabilityOf, type AvailabilityKind } from '../captures/availability';
+import {
+  availabilityOf,
+  isCapturePresent,
+  type AvailabilityKind,
+} from '../captures/availability';
 
 /** Operator-facet sentinel meaning "don't filter by operator". */
 export const ANY_OPERATOR = '__any__';
@@ -44,6 +48,19 @@ export function formatBytes(n?: number | null): string {
 export function formatCount(n?: number | null): string {
   if (n === undefined || n === null) return '—';
   return n.toLocaleString();
+}
+
+/** "member" / "members", agreeing with `n`. One place, because the screen says
+ *  it in six — a list row, a scope header, a pager, a stat tile and two
+ *  tooltips — and "1 members" in any one of them reads as a rendering bug and
+ *  costs the number beside it its credibility. */
+export function memberNoun(n: number): string {
+  return n === 1 ? 'member' : 'members';
+}
+
+/** The count and its noun together ("1 member", "1,204 members"). */
+export function memberCount(n: number): string {
+  return `${formatCount(n)} ${memberNoun(n)}`;
 }
 
 export function formatWhen(iso?: string | null): string {
@@ -81,6 +98,39 @@ export interface MemberRow {
    *  no row for it. Kept as a row rather than dropped: the membership is real
    *  even when our view of the catalog cannot describe it. */
   capture: Capture | null;
+}
+
+// A membership makes two claims about a capture, and the rail must not offer to
+// write one before both hold:
+//
+//   * the BYTES are on this host. §6 regenerates views/ as symlinks into
+//     objects/<capture_id>; a capture that never landed here has no target for
+//     that link, so the entry would name a path this machine cannot produce.
+//   * REVIEW ADOPTED it. A dataset is a training set, and `review_status` is
+//     the only record that a human judged the recording fit for one. Pending
+//     and excluded are both "not yet", for opposite reasons.
+//
+// The candidate stays LISTED when either fails — the operator has to be able to
+// see the recording to understand why it cannot join — and the control carries
+// the reason instead of the row quietly disappearing.
+
+const ADD_BLOCKED_NOT_HERE =
+  "This recording's bytes are not on this machine, so the dataset's views/ " +
+  'tree would have no file to link to. It can be added once the copy lands ' +
+  'here.';
+
+const ADD_BLOCKED_NOT_ADOPTED =
+  'This recording has not been adopted in Review, so nothing has judged it fit ' +
+  'for a training set. Adopt it in Review first.';
+
+/** Why this capture cannot join a dataset right now, or null when it can. Both
+ *  causes are named when both apply — fixing one and finding the button still
+ *  dead is worse than being told twice. */
+export function addBlockedReason(capture: Capture): string | null {
+  const reasons: string[] = [];
+  if (!isCapturePresent(capture)) reasons.push(ADD_BLOCKED_NOT_HERE);
+  if (capture.review_status !== 'adopted') reasons.push(ADD_BLOCKED_NOT_ADOPTED);
+  return reasons.length > 0 ? reasons.join(' ') : null;
 }
 
 /** Members ascending by `display_index` — the order the dataset is read in. */
@@ -541,9 +591,9 @@ export function bytesSegment(agg: DatasetAggregate): SummarySegment | null {
     text: formatBytes(agg.bytes.total),
     title:
       agg.bytes.unknown > 0
-        ? `Total over the ${agg.bytes.known} member(s) reporting a size; ` +
+        ? `Total over the ${memberCount(agg.bytes.known)} reporting a size; ` +
           `${agg.bytes.unknown} report none.`
-        : `Total over all ${agg.bytes.known} member(s).`,
+        : `Total over all ${memberCount(agg.bytes.known)}.`,
   };
 }
 
@@ -553,9 +603,7 @@ export function bytesSegment(agg: DatasetAggregate): SummarySegment | null {
 export function datasetSummarySegments(row: DatasetRow): SummarySegment[] {
   const agg = row.aggregate;
   const count = row.dataset.member_count;
-  const segs: SummarySegment[] = [
-    { text: `${count} ${count === 1 ? 'member' : 'members'}` },
-  ];
+  const segs: SummarySegment[] = [{ text: memberCount(count) }];
   if (agg.labeledCount > 0) {
     segs.push({
       text: `✓${agg.successCount} ✗${agg.failureCount}`,

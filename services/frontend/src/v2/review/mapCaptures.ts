@@ -15,6 +15,13 @@
 // Captures still being written (`recording`/`stopping`) and tombstones
 // (`delete_pending`/`discarded`/`deleted`) are excluded: there is nothing to
 // review until a recording has finished, and nothing to decide once it is gone.
+//
+// The episode number is the server's `index_in_batch` (§8) or NOTHING. It used
+// to fall back to the row's position, which produced a number the server had
+// never issued: it read as a fact, and it could collide head-on with a real
+// index_in_batch on a neighbouring row, so two different rows showed "#1" and
+// neither was wrong-looking. A capture the server gave no index has no episode
+// number, and the row renders "—" like every other unknown.
 
 import type { Capture } from '../../api/types';
 import { displayQuality, displayTaskResult, formatBatchLabel } from '../episodeChips';
@@ -46,9 +53,11 @@ export function mapCapturesToEpisodes(
   batchSeq: BatchSeqLookup = () => null,
 ): EpisodeRow[] {
   const reviewable = captures.filter((c) => REVIEWABLE.has(c.state));
-  // Oldest first so #1 is the earliest recording and the positional fallback
-  // only ever grows; capture_id (UUIDv7, time-ordered) is the tiebreak when a
-  // capture has no started_at.
+  // Oldest first: the table reads in recording order, which is the order an
+  // operator reviews a session in. `started_at` is the key — never `ep`, which
+  // a capture may not have at all — and capture_id (UUIDv7, so its lexical
+  // order IS its creation order) is the tiebreak when a capture has no
+  // started_at.
   const ordered = [...reviewable].sort((a, b) => {
     const ta = a.started_at ? Date.parse(a.started_at) : NaN;
     const tb = b.started_at ? Date.parse(b.started_at) : NaN;
@@ -56,7 +65,7 @@ export function mapCapturesToEpisodes(
     return a.capture_id.localeCompare(b.capture_id);
   });
 
-  return ordered.map((capture, i) => {
+  return ordered.map((capture) => {
     const endedBadly = capture.state === 'failed' || capture.state === 'interrupted';
     let quality: DisplayQuality | null;
     let task: DisplayTaskResult | null;
@@ -73,7 +82,7 @@ export function mapCapturesToEpisodes(
 
     const batch = batchSeq(capture.batch_id);
     return {
-      ep: capture.index_in_batch ?? i + 1,
+      ep: capture.index_in_batch ?? null,
       captureId: capture.capture_id,
       runId: capture.run_id ?? null,
       reviewRevision: capture.review_revision,

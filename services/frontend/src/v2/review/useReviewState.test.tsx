@@ -236,7 +236,10 @@ test('excluding saves review_status excluded and moves the row out of the defaul
   const { result } = await renderReview();
 
   act(() => result.current.requestExclude('c1'));
-  expect(result.current.pendingExcludeEp).not.toBeNull();
+  // The confirmation opens for a capture with NO index_in_batch too — gating it
+  // on the episode number left exactly those captures impossible to exclude.
+  expect(result.current.excludePending).toBe(true);
+  expect(result.current.pendingExcludeLabel).toBe('—');
   await act(async () => result.current.confirmExclude());
 
   await waitFor(() => expect(server.reviewCalls).toHaveLength(1));

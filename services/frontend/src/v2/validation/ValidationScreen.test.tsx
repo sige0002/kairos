@@ -192,6 +192,8 @@ const BATCHES = {
 };
 
 let requestedUrls: string[] = [];
+/** capture_id -> the error code POST /jobs answers it with. */
+let refuseJobFor: Record<string, string> = {};
 let postedBodies: Record<string, unknown>[] = [];
 let jobCounter = 0;
 let resultByJobId: Record<string, unknown> = {};
@@ -202,6 +204,7 @@ beforeEach(() => {
   postedBodies = [];
   jobCounter = 0;
   resultByJobId = {};
+  refuseJobFor = {};
   vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     const url = String(input);
     requestedUrls.push(url);
@@ -234,6 +237,12 @@ beforeEach(() => {
     if (url.endsWith('/jobs')) {
       const body = JSON.parse(String((init as RequestInit).body));
       postedBodies.push(body);
+      const refusal = refuseJobFor[String(body.capture_id)];
+      if (refusal) {
+        return Promise.resolve(
+          jsonResponse({ error: { code: refusal, message: `${body.capture_id} is gone` } }, 409),
+        );
+      }
       jobCounter += 1;
       const jobId = `j${jobCounter}`;
       // Key results by job id so each posted capture_id can carry its own summary.
@@ -561,4 +570,44 @@ test("video_check's topic param is a picker seeded from the target capture's cam
     capture_id: 'cap_002',
     params: { topic: '/hsrb/head_rgbd_sensor/rgb/image_rect_color/compressed' },
   });
+});
+
+// M4: a preset runs over the captures it has not validated yet. If one of them
+// was discarded since that list was computed, the server refuses its job — and
+// the loop used to `await` without a catch, so the whole mutation rejected: the
+// jobs already created kept running with nothing watching them, and the
+// operator got one error that never said which capture it was about.
+test('one refused capture does not abandon the rest of a preset run', async () => {
+  refuseJobFor['cap_001'] = 'capture_deleting';
+  renderWithClient(<ValidationScreen />);
+  fireEvent.click(await screen.findByTestId('preset-hsr_required_topics'));
+
+  // Both were attempted …
+  await waitFor(() => expect(postedBodies.length).toBe(2));
+  // … and the one that COULD run is still tracked, rather than being thrown
+  // away with the rejection.
+  await waitFor(() =>
+    expect(screen.getByTestId('submit-failures')).toBeInTheDocument(),
+  );
+  const failures = screen.getByTestId('submit-failures');
+  // Named, so the operator knows which recording did not get validated, and
+  // told what it means rather than shown a bare code.
+  expect(failures).toHaveTextContent('cap_001');
+  expect(failures.textContent).toMatch(/being deleted/i);
+});
+
+test('a preset whose captures were all discarded reports it instead of showing a run', async () => {
+  refuseJobFor['cap_001'] = 'capture_deleted';
+  refuseJobFor['cap_002'] = 'capture_deleted';
+  renderWithClient(<ValidationScreen />);
+  fireEvent.click(await screen.findByTestId('preset-hsr_required_topics'));
+
+  await waitFor(() =>
+    expect(screen.getByTestId('submit-failures')).toBeInTheDocument(),
+  );
+  expect(screen.getByTestId('submit-failures').textContent).toMatch(
+    /already been deleted/i,
+  );
+  // No fabricated progress for a run with no jobs in it.
+  expect(screen.queryByText('NaN%')).toBeNull();
 });

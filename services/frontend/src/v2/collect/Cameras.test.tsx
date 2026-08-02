@@ -93,9 +93,10 @@ test('shortCameraLabel derives a human name from real robot topics', () => {
 // StatsBadge: the v1-style top-right latency/fps chip.
 // ---------------------------------------------------------------------------
 
-const stats = (fps: number | null, latencyMs: number | null) => ({
+const stats = (fps: number | null, latencyMs: number | null, framesStaleMs: number | null = 0) => ({
   fps,
   latencyMs,
+  framesStaleMs,
   width: null,
   height: null,
 });
@@ -395,4 +396,31 @@ test('a failed camera shows the reason + a Retry that re-triggers the WebRTC con
   // Retrying re-triggers the WebRTC connect (a second /stream/start for HEAD).
   fireEvent.click(retryBtn);
   await waitFor(() => expect(headStarts).toBeGreaterThanOrEqual(2));
+});
+
+// B1b (qa-ui p20): the tile kept claiming "8ms · 15fps" for 106 seconds after
+// the source topic lost its publisher. The WebRTC track stays up and
+// framesPerSecond keeps reporting its last value, so a rate is not evidence
+// that pictures are arriving — only frames advancing is.
+test('a tile whose frames stopped reports that, not its last frame rate', () => {
+  render(<StatsBadge stats={stats(15, 8, 30_000)} />);
+  const chip = screen.getByTestId('camera-stats');
+  expect(chip).toHaveAttribute('data-stale', 'true');
+  expect(chip).toHaveTextContent('no frames for 30s');
+  // The stale rate is gone — it was the whole problem.
+  expect(chip).not.toHaveTextContent('15fps');
+  expect(chip).not.toHaveTextContent('8ms');
+});
+
+test('brief jitter below the deadline still shows the measured rate', () => {
+  render(<StatsBadge stats={stats(15, 8, 500)} />);
+  const chip = screen.getByTestId('camera-stats');
+  expect(chip).not.toHaveAttribute('data-stale');
+  expect(chip).toHaveTextContent('15fps');
+});
+
+test('an unmeasurable frame count is not reported as stale', () => {
+  // null means we cannot tell yet — which is not the same as "stopped".
+  render(<StatsBadge stats={stats(15, 8, null)} />);
+  expect(screen.getByTestId('camera-stats')).not.toHaveAttribute('data-stale');
 });

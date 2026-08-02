@@ -109,3 +109,38 @@ export function topicRates(metrics: MetricsSnapshot | undefined): TopicRates | n
     judged: judged.length,
   };
 }
+
+/**
+ * "Nothing is publishing" and "the WRONG THINGS are publishing" render
+ * identically today — same 0/N counters, same "not publishing" wording — even
+ * when a hundred foreign topics are streaming at full rate. The only evidence
+ * anywhere was an unlabelled "N measured · M discovered" on Monitor Overview,
+ * so a robot-config mismatch was effectively unreachable from Collect and read
+ * as a dead robot.
+ *
+ * The distinguishing fact is cheap: the configured topics are silent while the
+ * graph is busy. That is not proof of a mismatch — a robot can legitimately
+ * publish other things — so this returns a possibility to check, never a
+ * verdict, and stays silent for the genuinely quiet graph where the existing
+ * wording is already right.
+ */
+export interface ConfigMismatchHint {
+  configuredSilent: number;
+  discovered: number;
+}
+
+/** How many times more topics than configured must be on the graph before the
+ *  mismatch is worth raising. A robot publishing a few extras is ordinary; one
+ *  publishing an order of magnitude more than we asked for is a question. */
+const MISMATCH_RATIO = 3;
+
+export function configMismatchHint(
+  configuredSilent: number,
+  discovered: number,
+): ConfigMismatchHint | null {
+  // Nothing silent -> nothing to explain. Nothing discovered -> the graph really
+  // is quiet, which the existing "not publishing" wording already describes.
+  if (configuredSilent === 0 || discovered === 0) return null;
+  if (discovered < configuredSilent * MISMATCH_RATIO) return null;
+  return { configuredSilent, discovered };
+}

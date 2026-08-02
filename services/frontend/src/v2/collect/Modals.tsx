@@ -1,4 +1,4 @@
-// Collect-scoped modals (End set early / Report issue / Change condition)
+// Collect-scoped modals (End batch early / Report issue / Change condition)
 // plus the toast. Rendered at the screen level per the design mock's MODALS
 // section. ("Set" is the operator-facing name for a batch.)
 //
@@ -48,8 +48,8 @@ function EndBatchModal({ machine }: { machine: BatchMachine }) {
       onClose={machine.closeModals}
       title={
         machine.batchSeq != null
-          ? `End set ${machine.batchSeq} early?`
-          : 'End set early?'
+          ? `End batch ${machine.batchSeq} early?`
+          : 'End batch early?'
       }
       footer={
         <>
@@ -61,7 +61,7 @@ function EndBatchModal({ machine }: { machine: BatchMachine }) {
             onClick={machine.confirmEndBatch}
             disabled={!canConfirm}
           >
-            End set
+            End batch
           </Button>
         </>
       }
@@ -119,22 +119,22 @@ function ResetBatchModal({ machine }: { machine: BatchMachine }) {
     <Modal
       open={machine.resetModalOpen}
       onClose={machine.closeModals}
-      title={empty ? 'Reset set?' : `Reset set${seq}?`}
+      title={empty ? 'Reset batch?' : `Reset batch${seq}?`}
       footer={
         <>
           <Button variant="ghost" onClick={machine.closeModals}>
             Cancel
           </Button>
           <Button data-testid="reset-batch-confirm" onClick={machine.resetBatch}>
-            Reset set
+            Reset batch
           </Button>
         </>
       }
     >
       {empty ? (
         <p className="text-[12.5px] leading-relaxed text-gray-600">
-          Nothing has been recorded in this set yet, so this just clears local state —
-          no set is created or closed, and the set number is unchanged.
+          Nothing has been recorded in this batch yet, so this just clears local state —
+          no batch is created or closed, and the batch number is unchanged.
         </p>
       ) : (
         <>
@@ -183,7 +183,7 @@ function IssueModal({ machine }: { machine: BatchMachine }) {
       }
     >
       <p className="mb-2">
-        Attached to Set {machine.batchSeq ?? '—'}, Episode {machine.stats.epNext}{' '}
+        Attached to Batch {machine.batchSeq ?? '—'}, Episode {machine.stats.epNext}{' '}
         context automatically.
       </p>
       <textarea
@@ -201,7 +201,7 @@ function ConditionModal({ machine }: { machine: BatchMachine }) {
   const plans = usePlans();
   const task = findTask(plans, machine.project, machine.task);
   // Free-text condition input (mirrors the custom-task pattern: trim, ignore
-  // empty). A typed condition is just a string on the set — never added to the
+  // empty). A typed condition is just a string on the batch — never added to the
   // plan catalog.
   const [custom, setCustom] = useState('');
   const submitCustom = () => {
@@ -225,7 +225,7 @@ function ConditionModal({ machine }: { machine: BatchMachine }) {
       <p className="mb-3">
         {hasRecordings
           ? 'This set already has recordings — changing the condition closes it and starts a new set, so earlier episodes keep their condition.'
-          : 'Applies to this set. No episodes are recorded yet.'}
+          : 'Applies to this batch. No episodes are recorded yet.'}
       </p>
       <div className="flex flex-col gap-1.5">
         {task.conditions.map((c) => (
@@ -299,7 +299,7 @@ function TargetModal({ machine }: { machine: BatchMachine }) {
       }
     >
       <p className="mb-3 text-[12.5px] leading-relaxed text-gray-600">
-        Planned episodes for this set (currently{' '}
+        Planned episodes for this batch (currently{' '}
         <span className="font-mono text-gray-800">{machine.targetEpisodes}</span>,
         recorded{' '}
         <span className="font-mono text-gray-800">{machine.stats.nRecorded}</span>).
@@ -319,7 +319,7 @@ function TargetModal({ machine }: { machine: BatchMachine }) {
       {completesNow && (
         <p className="mt-2 text-[12px] leading-relaxed text-amber-700">
           {machine.stats.nRecorded} episode(s) are already recorded, so this target
-          marks the set complete immediately.
+          marks the batch complete immediately.
         </p>
       )}
     </Modal>

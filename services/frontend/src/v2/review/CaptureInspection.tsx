@@ -25,6 +25,8 @@ import {
   formatWhen,
   spanMs,
 } from '../captures/inspect';
+import { isTombstoned } from '../captures/availability';
+import { JobErrorNote, isTombstoneError } from '../captures/JobErrorNote';
 import { QuickCheckVerdict } from './QuickCheckVerdict';
 import { SignalSection } from './SignalSection';
 import { formatBytes } from './format';
@@ -50,6 +52,14 @@ function useCaptureJob(captureId: string, pipeline: string) {
     mutationFn: (params: Record<string, unknown>) =>
       apiPost<JobStatus>('/jobs', { pipeline, capture_id: captureId, params }),
     onSuccess: (job) => setJobId(job.job_id),
+    onError: (error) => {
+      // A 409 naming a tombstone is the news that this capture is gone —
+      // usually discarded in another tab. Re-read it so the panel can stop
+      // offering controls that can only be refused from here on.
+      if (isTombstoneError(error)) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.capture(captureId) });
+      }
+    },
   });
   useQuery({
     queryKey: queryKeys.job(jobId ?? ''),
@@ -94,7 +104,13 @@ export function CaptureInspection({ captureId }: { captureId: string }) {
     return <p className="text-[12.5px] text-gray-500">Loading capture…</p>;
   if (detailQuery.isError) return <ErrorMessage error={detailQuery.error} />;
   const capture = detailQuery.data;
-  const completed = capture.state === 'completed';
+  const tombstoned = isTombstoned(capture);
+  // A tombstoned capture keeps its row (§7) but its bytes are going or gone, so
+  // every job, preview and re-run below would be refused. Showing them live
+  // invites an operator to keep pressing controls that cannot work — which is
+  // exactly what happened when a discard in one tab left another tab's panel
+  // fully interactive.
+  const completed = capture.state === 'completed' && !tombstoned;
   const topics = capture.topics ?? [];
   const validationResult =
     capture.validation && typeof capture.validation.result === 'string'
@@ -103,6 +119,31 @@ export function CaptureInspection({ captureId }: { captureId: string }) {
 
   return (
     <div data-testid="review-inspection" className="flex flex-col gap-3">
+      {tombstoned && (
+        <div
+          data-testid="review-capture-tombstoned"
+          data-capture-state={capture.state}
+          className="flex flex-col gap-1 rounded-control border border-amber-300 bg-amber-50 px-3 py-2.5 text-[12.5px] text-amber-900"
+        >
+          <span className="font-semibold">
+            {capture.state === 'delete_pending'
+              ? 'This recording is being removed.'
+              : capture.delete_kind === 'discard'
+                ? 'This recording was discarded.'
+                : 'This recording was deleted.'}
+          </span>
+          <span>
+            {capture.delete_reason
+              ? `Reason given: ${capture.delete_reason}`
+              : 'No reason was recorded.'}
+            {capture.deleted_at ? ` · ${formatWhen(capture.deleted_at)}` : ''}
+          </span>
+          <span className="text-[11.5px] text-amber-800">
+            Its details are kept so the record stays answerable, but nothing can
+            be run against it any more.
+          </span>
+        </div>
+      )}
       {capture.error && (
         <p className="rounded-control bg-red-50 px-3 py-2 text-[12px] text-red-700">
           {capture.error.code}: {capture.error.message}
@@ -213,7 +254,7 @@ export function CaptureInspection({ captureId }: { captureId: string }) {
               {loss.running ? 'Analyzing…' : 'Run loss report'}
             </button>
           </div>
-          {loss.error && <ErrorMessage error={loss.error} />}
+          <JobErrorNote error={loss.error} testId="review-loss-error" />
           {capture.loss?.topics ? (
             <LossTable topics={capture.loss.topics} />
           ) : (
@@ -259,7 +300,7 @@ export function CaptureInspection({ captureId }: { captureId: string }) {
               </button>
             </div>
           </div>
-          {validation.error && <ErrorMessage error={validation.error} />}
+          <JobErrorNote error={validation.error} testId="review-validation-error" />
           {!template && !optionsQuery.isPending && (
             <p className="text-[11.5px] text-gray-500">
               No validation template is configured for the active robot.

@@ -36,6 +36,7 @@ import { mapCapturesToEpisodes, type BatchSeqLookup } from './mapCaptures';
 import { initialTransferSlot, transferReducer } from './transfer';
 import { setSplitMode, useSplitMode } from '../captures/splitMode';
 import { useReviewSave, type ReviewSaveState } from './useReviewSave';
+import { episodeLabel } from './types';
 import type {
   DecoratedEpisode,
   Decision,
@@ -120,7 +121,12 @@ export interface ReviewState {
   /** Exclude / restore one capture. Reversible — a review label, not a
    *  deletion; the recording stays exactly where it is. */
   requestExclude: (captureId: string) => void;
-  pendingExcludeEp: number | null;
+  /** True while the exclude confirmation is open. Deliberately not derived
+   *  from the episode number: a capture with no `index_in_batch` has none, and
+   *  gating the dialog on it left that capture unable to be excluded at all. */
+  excludePending: boolean;
+  /** The episode label for the confirmation's title ("#3" or "—"). */
+  pendingExcludeLabel: string | null;
   confirmExclude: () => void;
   cancelExclude: () => void;
 
@@ -354,7 +360,9 @@ export function useReviewState(): ReviewState {
         // Both identities are searchable: the operator reads run_id on screen,
         // but a capture_id pasted from a log or a URL must find its row too.
         return (
-          `#${r.ep}`.toLowerCase().includes(q) ||
+          // Only a real number is searchable; an unnumbered row must not be
+          // findable by typing "null".
+          (r.ep !== null && `#${r.ep}`.includes(q)) ||
           r.captureId.toLowerCase().includes(q) ||
           (r.runId?.toLowerCase().includes(q) ?? false)
         );
@@ -435,7 +443,8 @@ export function useReviewState(): ReviewState {
       if (row.isExcluded) {
         void applyReview(row, { status: 'pending' }, { review_status: 'pending' }).then(
           ({ capture }) => {
-            if (capture) showToast(`Episode #${row.ep} restored — no longer excluded`);
+            if (capture)
+              showToast(`Episode ${episodeLabel(row.ep)} restored — no longer excluded`);
           },
         );
         return;
@@ -460,14 +469,14 @@ export function useReviewState(): ReviewState {
     ).then(({ capture }) => {
       if (capture) {
         showToast(
-          `Episode #${row.ep} → Not usable · Excluded (recording kept, restorable)`,
+          `Episode ${episodeLabel(row.ep)} → Not usable · Excluded (recording kept, restorable)`,
         );
       }
     });
   }, [pendingExcludeId, decorated, applyReview, showToast]);
   const cancelExclude = useCallback(() => setPendingExcludeId(null), []);
-  const pendingExcludeEp = pendingExcludeId
-    ? (decorated.find((r) => r.captureId === pendingExcludeId)?.ep ?? null)
+  const pendingExcludeLabel = pendingExcludeId
+    ? episodeLabel(decorated.find((r) => r.captureId === pendingExcludeId)?.ep ?? null)
     : null;
 
   // ---- removal (§7) -------------------------------------------------------
@@ -619,7 +628,7 @@ export function useReviewState(): ReviewState {
         { status: toServerReview(d) },
         { review_status: toServerReview(d) },
       ).then(({ capture }) => {
-        if (capture) showToast(`Episode #${selected.ep} → ${d}`);
+        if (capture) showToast(`Episode ${episodeLabel(selected.ep)} → ${d}`);
       });
     },
     [selected, applyReview, showToast],
@@ -633,7 +642,7 @@ export function useReviewState(): ReviewState {
     void applyReview(selected, { status: 'adopted' }, { review_status: 'adopted' }).then(
       ({ capture }) => {
         if (capture) {
-          showToast(`Episode #${selected.ep} marked OK — included`);
+          showToast(`Episode ${episodeLabel(selected.ep)} marked OK — included`);
         }
       },
     );
@@ -651,7 +660,7 @@ export function useReviewState(): ReviewState {
       { quality: next },
       { quality: toServerQuality(next), quality_source: 'operator' },
     ).then(({ capture }) => {
-      if (capture) showToast(`#${selected.ep} quality → ${next}`);
+      if (capture) showToast(`${episodeLabel(selected.ep)} quality → ${next}`);
     });
   }, [selected, applyReview, showToast]);
 
@@ -662,7 +671,7 @@ export function useReviewState(): ReviewState {
       selected.effectiveTask === 'Success' ? 'Failure' : 'Success';
     void applyReview(selected, { task: next }, { task_result: toServerTask(next) }).then(
       ({ capture }) => {
-        if (capture) showToast(`#${selected.ep} task result → ${next}`);
+        if (capture) showToast(`${episodeLabel(selected.ep)} task result → ${next}`);
       },
     );
   }, [selected, applyReview, showToast]);
@@ -816,7 +825,8 @@ export function useReviewState(): ReviewState {
     selected,
 
     requestExclude,
-    pendingExcludeEp,
+    excludePending: pendingExcludeId !== null,
+    pendingExcludeLabel,
     confirmExclude,
     cancelExclude,
 

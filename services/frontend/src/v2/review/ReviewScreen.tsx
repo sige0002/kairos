@@ -15,6 +15,7 @@ import { EpisodeTable } from './EpisodeTable';
 import { FiltersRail } from './FiltersRail';
 import { Toast } from './Toast';
 import { useFiltersCollapsed, toggleFiltersCollapsed } from './filtersRail';
+import { episodeLabel } from './types';
 import { formatBytes } from './format';
 import { useReviewState } from './useReviewState';
 
@@ -182,9 +183,9 @@ export function ReviewScreen() {
       <Toast message={rv.toast} />
 
       <Modal
-        open={rv.pendingExcludeEp !== null}
+        open={rv.excludePending}
         onClose={rv.cancelExclude}
-        title={`Exclude episode #${rv.pendingExcludeEp}?`}
+        title={`Exclude episode ${rv.pendingExcludeLabel ?? ''}?`}
         footer={
           <>
             <Button variant="ghost" onClick={rv.cancelExclude}>
@@ -280,7 +281,7 @@ export function ReviewScreen() {
                 className="flex items-center justify-between gap-2 border-t border-gray-100 px-2 py-1 first:border-t-0"
               >
                 <span className="truncate font-mono text-gray-700">
-                  #{r.ep} · {r.runId ?? r.captureId}
+                  {episodeLabel(r.ep)} · {r.runId ?? r.captureId}
                 </span>
                 {failure ? (
                   <span className="shrink-0 text-red-600" title={failure.error}>

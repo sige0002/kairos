@@ -80,7 +80,24 @@ export interface StreamStats {
   latencyMs: number | null;
   width: number | null;
   height: number | null;
+  /**
+   * How long the decoded-frame count has been STATIC, in ms; null while frames
+   * are advancing or before we can tell.
+   *
+   * The WebRTC track staying up is not evidence that pictures are arriving: a
+   * publisher can go away while the peer connection, the <video> element and
+   * its clock all carry on, and `framesPerSecond` keeps reporting its last
+   * value. qa-ui watched a tile claim "15fps" for 106 seconds against a topic
+   * with no publisher. frontend.md promises a per-tile MEASUREMENT, so the only
+   * honest source is whether frames actually advanced.
+   */
+  framesStaleMs: number | null;
 }
+
+/** How long frames may stand still before a tile stops claiming a frame rate.
+ *  Two seconds is several frames at any rate worth previewing, so it does not
+ *  trip on ordinary jitter. */
+export const FRAME_STALE_MS = 2000;
 
 export interface UseWebRtcStreamResult {
   phase: StreamPhase;
@@ -91,7 +108,13 @@ export interface UseWebRtcStreamResult {
   retry: () => void;
 }
 
-const EMPTY_STATS: StreamStats = { fps: null, latencyMs: null, width: null, height: null };
+const EMPTY_STATS: StreamStats = {
+  fps: null,
+  latencyMs: null,
+  width: null,
+  height: null,
+  framesStaleMs: null,
+};
 
 // A connected stream that decodes no new frames for this long is "black"; we
 // auto-renegotiate (up to AUTO_RETRY_MAX) — the usual cause is joining an
@@ -253,6 +276,10 @@ export function useWebRtcStream({
     let active = true;
     let lastDecoded = -1;
     let stallSince: number | null = null;
+    // When the decoded count last CHANGED. The auto-retry logic below already
+    // watched this; it just never told the UI, so the tile kept rendering a
+    // frame rate nothing was producing.
+    let lastAdvanceAt: number | null = null;
 
     const id = setInterval(() => {
       const pc = pcRef.current;
@@ -289,15 +316,24 @@ export function useWebRtcStream({
             : rtt
               ? Math.round((rtt * 1000) / 2)
               : null;
+        const nowTs = Date.now();
+        if (framesDecoded != null && framesDecoded !== lastDecoded) {
+          lastAdvanceAt = nowTs;
+        } else if (framesDecoded != null && lastAdvanceAt == null) {
+          // First observation with a count we have not seen move yet: start the
+          // clock here rather than claiming staleness we have not measured.
+          lastAdvanceAt = nowTs;
+        }
         setStats({
           fps: fps != null ? Math.round(fps) : null,
           latencyMs,
           width,
           height,
+          framesStaleMs: lastAdvanceAt != null ? nowTs - lastAdvanceAt : null,
         });
 
         // Stall detection: no new decoded frames → black; auto-renegotiate.
-        const now = Date.now();
+        const now = nowTs;
         if (framesDecoded != null && framesDecoded === lastDecoded) {
           if (stallSince == null) stallSince = now;
           else if (now - stallSince >= STALL_MS && autoRetriesRef.current < AUTO_RETRY_MAX) {

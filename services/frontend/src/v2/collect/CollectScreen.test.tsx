@@ -4,7 +4,7 @@ import { setApiBase } from '../../api/client';
 import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
 import { useUiStore } from '../../store/uiStore';
 import { CollectScreen } from './CollectScreen';
-import { __resetBatchStore } from './useBatchMachine';
+import { __resetBatchStore, __setStopFloorMs, __resetStopFloorMs } from './useBatchMachine';
 import { __resetCameraStore } from './cameraStore';
 import { __resetPlansStore, clonePlans, getPlans, setPlans } from '../plans';
 
@@ -115,6 +115,9 @@ function phaseTitle() {
 
 beforeEach(() => {
   setApiBase('/api/v1');
+  // These tests are not about the Stop floor; they stop immediately after
+  // starting, which the shipped 1s guard would (correctly) refuse.
+  __setStopFloorMs(0);
   // The batch machine is a module-level store (survives tab-switch unmounts);
   // reset it (and its localStorage mirror) so a recorded episode in one test
   // can't leak into the next test's fresh CollectScreen.
@@ -134,7 +137,12 @@ beforeEach(() => {
     recordCustomized: false,
   });
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  // restoreAllMocks does not touch module state: the stop-floor override set
+  // in beforeEach must be reset explicitly or it survives the test.
+  __resetStopFloorMs();
+});
 
 test('READY phase: shows the Start recording control and context bar', async () => {
   mockFetch();
@@ -660,27 +668,27 @@ test('Collect degrades gracefully when its selected project is absent from the s
   expect(screen.getByRole('button', { name: 'Only Task' })).toBeInTheDocument();
 });
 
-test('Set menu → Reset set on an empty set is a no-op (honest wording)', async () => {
+test('Batch menu → Reset batch on an empty batch is a no-op (honest wording)', async () => {
   mockFetch();
   renderWithClient(<CollectScreen />);
   await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
   // No recording yet → no server set → the Set cell shows an honest, muted
   // prediction of the next number instead of a bare "—".
   expect(screen.getByText(/assigned on first recording/)).toBeInTheDocument();
-  expect(screen.queryByText('Set —')).toBeNull();
+  expect(screen.queryByText('Batch —')).toBeNull();
 
-  fireEvent.click(screen.getByText('Set menu'));
-  fireEvent.click(screen.getByText('Reset set…'));
+  fireEvent.click(screen.getByText('Batch menu'));
+  fireEvent.click(screen.getByText('Reset batch…'));
 
   // Empty set → no-number title + no-op wording (nothing created or closed).
-  expect(screen.getByText('Reset set?')).toBeInTheDocument();
+  expect(screen.getByText('Reset batch?')).toBeInTheDocument();
   expect(screen.getByText(/Nothing has been recorded/)).toBeInTheDocument();
 
   fireEvent.click(screen.getByTestId('reset-batch-confirm'));
-  await waitFor(() => expect(screen.queryByText('Reset set?')).toBeNull());
+  await waitFor(() => expect(screen.queryByText('Reset batch?')).toBeNull());
   // Still the prediction pre-state: an empty reset never allocates a number.
   expect(screen.getByText(/assigned on first recording/)).toBeInTheDocument();
-  expect(screen.queryByText('Set —')).toBeNull();
+  expect(screen.queryByText('Batch —')).toBeNull();
 });
 
 // ---------------------------------------------------------------------------
@@ -848,3 +856,122 @@ test('the ? shortcut opens the keyboard-shortcuts sheet', async () => {
   fireEvent.keyDown(document.body, { key: '?' });
   expect(await screen.findByText('Keyboard shortcuts')).toBeInTheDocument();
 });
+
+// ---- QA regressions -------------------------------------------------------
+
+// B1: the recorder dies mid-recording. react-query keeps serving the last
+// successful /record/status, so every surface reading `.data` alone kept
+// insisting a recording was in progress. A failed poll must retract the claim.
+test('a recorder that stops answering stops being reported as recording', async () => {
+  let recorderAlive = true;
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/record/status')) {
+      if (!recorderAlive) return Promise.reject(new Error('recorder unreachable'));
+      return Promise.resolve(
+        jsonResponse({
+          capture_id: CAP_1,
+          run_id: RUN_1,
+          state: 'recording',
+          live_capture_ids: [CAP_1],
+          started_at: '2026-08-01T00:00:00.000Z',
+        }),
+      );
+    }
+    if (url.includes('/config')) return Promise.resolve(jsonResponse(CONFIG));
+    if (url.includes('/batches')) return Promise.resolve(jsonResponse({ items: [] }));
+    if (url.includes('/captures'))
+      return Promise.resolve(jsonResponse({ items: [], next_cursor: null }));
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  renderWithClient(<CollectScreen />);
+  // A recording this screen did not start reads as a takeover while the
+  // recorder is answering for it.
+  await waitFor(() =>
+    expect(phaseTitle()).toHaveTextContent('RECORDING IN PROGRESS'),
+  );
+
+  recorderAlive = false;
+  // Once the poll fails the screen stops asserting a recording is running: it
+  // no longer has any evidence that one is.
+  await waitFor(
+    () => expect(phaseTitle()).not.toHaveTextContent('RECORDING IN PROGRESS'),
+    { timeout: 8000 },
+  );
+}, 15000);
+
+// B1 (qa-ui shots/14b): docker-stop the recorder mid-recording and Collect kept
+// showing "RECORDING" with the elapsed timer CLIMBING (00:12 → 00:37) and
+// SYSTEM STATUS "Recorder: recording/REC", while every /record/status returned
+// 503. An animating timer is an active claim that a recording is progressing;
+// once the poll fails we have no evidence of that.
+test('a recorder that dies mid-recording flips the card to unreachable and freezes the timer', async () => {
+  __setStopFloorMs(0);
+  let recorderAlive = true;
+  let started = false;
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/record/status')) {
+      if (!recorderAlive) {
+        return Promise.resolve(
+          jsonResponse(
+            { error: { code: 'recorder_unreachable', message: 'the recorder is unreachable' } },
+            503,
+          ),
+        );
+      }
+      // Idle until THIS screen starts, so its own start is never mistaken for
+      // a takeover.
+      return Promise.resolve(
+        jsonResponse(
+          started
+            ? {
+                capture_id: CAP_1,
+                run_id: RUN_1,
+                state: 'recording',
+                live_capture_ids: [CAP_1],
+                started_at: '2026-08-01T00:00:00.000Z',
+              }
+            : { capture_id: null, run_id: null, state: 'created', live_capture_ids: [] },
+        ),
+      );
+    }
+    if (url.includes('/record/start')) {
+      started = true;
+      return Promise.resolve(jsonResponse(capture({})));
+    }
+    if (url.includes('/config')) return Promise.resolve(jsonResponse(CONFIG));
+    if (url.includes('/batches')) return Promise.resolve(jsonResponse({ items: [] }));
+    if (url.includes('/captures'))
+      return Promise.resolve(jsonResponse({ items: [], next_cursor: null }));
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  renderWithClient(<CollectScreen />);
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
+  fireEvent.click(screen.getByRole('button', { name: /Start recording/ }));
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('RECORDING'));
+
+  recorderAlive = false;
+
+  // The card stops asserting a recording is in progress …
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('RECORDER UNREACHABLE'), {
+    timeout: 10000,
+  });
+  // … and says what it actually knows, and how old that is.
+  const note = screen.getByTestId('recorder-unreachable-note');
+  expect(note).toHaveTextContent('Last known:');
+  expect(note.textContent).toMatch(/\d+s ago/);
+  expect(note.textContent).toMatch(/not current/);
+
+  // The elapsed clock is frozen: whatever it reads now, it still reads later.
+  const frozen = screen.getByTestId('elapsed').textContent;
+  await new Promise((r) => setTimeout(r, 700));
+  expect(screen.getByTestId('elapsed').textContent).toBe(frozen);
+
+  // And SYSTEM STATUS stops reporting the recorder as fine.
+  await waitFor(() =>
+    expect(screen.getByTestId('sys-recorder')).toHaveTextContent('no answer'),
+  );
+}, 20000);

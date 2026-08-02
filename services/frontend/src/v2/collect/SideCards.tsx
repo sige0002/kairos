@@ -15,7 +15,8 @@ import type { SseStatus } from '../../store/uiStore';
 import { ADVICE_ITEMS, type BatchMachine } from './useBatchMachine';
 import { SIDE_PAD } from './compact';
 import { formatBytes } from '../review/format';
-import { armingWarning, firingAlertRows, topicRates } from './warnings';
+import { useMonitorRows } from '../../features/monitor/useMonitorRows';
+import { armingWarning, configMismatchHint, firingAlertRows, topicRates } from './warnings';
 
 type Tone = 'green' | 'amber' | 'red' | 'teal' | 'gray';
 
@@ -46,6 +47,9 @@ function Chip({ tone, children }: { tone: Tone; children: React.ReactNode }) {
 }
 
 interface SysRow {
+  /** Hover text saying WHEN the figure was measured, where two adjacent rows
+   *  describe different moments and would otherwise read as contradicting. */
+  title?: string;
   label: string;
   value: string;
   chip: string;
@@ -77,7 +81,12 @@ export function SystemStatusCard({
   // means the recorder is UNREACHABLE, not idle (§10 rev.2.4). Reporting either
   // as READY would tell the operator they may start while nothing can answer
   // for what is already running.
-  const recUnknown = recState == null || machine.liveCaptures == null;
+  // No state at all, no live_capture_ids array (§10 rev.2.4 — an unreachable or
+  // too-old recorder, NOT an idle one), or a poll that is currently failing.
+  // Reporting any of them as READY would tell the operator they may start while
+  // nothing can answer for what is already running.
+  const recUnknown =
+    machine.recorderUnreachable || recState == null || machine.liveCaptures == null;
 
   // Real disk free/total for the data-dir filesystem (GET /api/v1/system). Null
   // until measured (older backend / missing data dir) -> honest "—", never a
@@ -121,16 +130,29 @@ export function SystemStatusCard({
     ? {
         label: 'Topic rates',
         value: `${rates.ok} / ${rates.judged} at expected`,
+        title:
+          'Live, from the monitor\u2019s rolling window — it reflects the last few ' +
+          'seconds, not the moment recording started.',
         chip: rates.ok === rates.judged ? 'OK' : 'CHECK',
         tone: rates.ok === rates.judged ? 'green' : 'amber',
       }
     : { label: 'Topic rates', value: '—', chip: '—', tone: 'gray' };
 
   const rows: SysRow[] = [
+    // minor-b: this row and Topic rates below it describe DIFFERENT MOMENTS.
+    // The arming snapshot is taken once, when the recorder matched its targets,
+    // and is not re-checked during the take; the rates row is a live window
+    // that decays over ~20s. Read as two live figures they contradict each
+    // other — qa-ui watched "7 / 7 OK" sit above "0 / 7 CHECK". Saying WHEN
+    // each was measured costs a word and removes the contradiction, without
+    // pretending we re-measured something we did not.
     matched !== null && missing !== null
       ? {
           label: 'Required data',
-          value: `${matched} / ${matched + missing}`,
+          value: `${matched} / ${matched + missing} at start`,
+          title:
+            'Measured once, when the recorder matched its target topics. It is ' +
+            'not re-checked during the take — Topic rates below is the live view.',
           chip: missing === 0 ? 'OK' : 'CHECK',
           tone: missing === 0 ? 'green' : 'amber',
         }
@@ -141,13 +163,22 @@ export function SystemStatusCard({
       // their own streams but don't report here) — say that, don't invent
       // an N/M camera count.
       label: 'Cameras',
-      value: camerasOk ? 'main stream OK' : 'main stream failed',
+      value: camerasOk ? 'main stream OK' : 'main stream: no frames',
       chip: camerasOk ? 'OK' : 'CHECK',
       tone: camerasOk ? 'green' : 'amber',
     },
     {
-      label: 'Robot connection',
-      value: robotOffline ? 'robot offline' : robotLive ? 'connected' : sseStatus,
+      // NOT "is the robot fine" — this row only ever measured the event pipe:
+      // our SSE connection to the orchestrator, and the orchestrator's bridge
+      // to the monitor (which runs on the robot). Both can be up while nothing
+      // robot-shaped is publishing, and qa-ui found it reading OK in exactly
+      // that state. Named for what it measures.
+      label: 'Monitor link',
+      value: robotOffline
+        ? 'orchestrator up, monitor unreachable'
+        : robotLive
+          ? 'live'
+          : sseStatus,
       chip: robotLive ? 'OK' : 'CHECK',
       tone: robotLive ? 'green' : robotOffline ? 'amber' : 'gray',
     },
@@ -164,7 +195,7 @@ export function SystemStatusCard({
               ? 'pre-armed'
               : 'standby',
       chip: recUnknown
-        ? '—'
+        ? 'CHECK'
         : recording
           ? 'REC'
           : stopping
@@ -172,7 +203,7 @@ export function SystemStatusCard({
             : armed
               ? 'ARMED'
               : 'READY',
-      tone: recUnknown ? 'gray' : recording ? 'red' : stopping ? 'amber' : 'teal',
+      tone: recUnknown ? 'amber' : recording ? 'red' : stopping ? 'amber' : 'teal',
     },
   ];
 
@@ -189,6 +220,8 @@ export function SystemStatusCard({
       {rows.map((r) => (
         <div
           key={r.label}
+          data-testid={`sys-${r.label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`}
+          title={r.title}
           className="flex items-center gap-2.5 py-0.5 [@media(max-height:860px)]:py-0"
         >
           <span className="text-[13px] font-medium text-gray-700">{r.label}</span>
@@ -219,6 +252,11 @@ export function WarningsCard({
   //    recorded topics — the mid-recording degradation the snapshot can't see
   //    ("camera dropped to 12 Hz"), surfaced where the operator is looking.
   const uncaptured = armingWarning(machine.arming);
+  // The same monitor data Overview already reads. `rows` is every topic on the
+  // graph; the mismatch question is whether it dwarfs the configured set that
+  // is sitting silent.
+  const { rows } = useMonitorRows();
+  const mismatch = configMismatchHint(uncaptured?.topics.length ?? 0, rows.length);
   const shown = uncaptured?.topics.slice(0, 3) ?? [];
 
   // Read-only view of the SSE-populated alert buffer (useEventStream writes it).
@@ -270,6 +308,16 @@ export function WarningsCard({
             {shown.join(', ')}
             {uncaptured.topics.length > shown.length ? ' …' : ''}
           </span>
+          {mismatch && (
+            <span
+              data-testid="collect-config-mismatch"
+              className="pl-[15px] pt-1 text-xs font-medium text-amber-800"
+            >
+              設定済み {mismatch.configuredSilent} topic は無音ですが、
+              {mismatch.discovered} topic が配信中です — ロボット設定の選択違いの
+              可能性があります。
+            </span>
+          )}
         </div>
       )}
       {firing.length > 0 && (
@@ -384,7 +432,7 @@ export function BatchStatsCard({ machine }: { machine: BatchMachine }) {
   return (
     <Card className={cn('flex shrink-0 flex-col gap-1.5', SIDE_PAD)}>
       <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
-        Set stats
+        Batch stats
       </span>
       <div className="flex gap-3.5">
         <div className="flex flex-col">
@@ -432,7 +480,7 @@ export function BatchStatsCard({ machine }: { machine: BatchMachine }) {
           data-testid="stats-footnote"
           className="text-[11px] leading-snug text-gray-400"
         >
-          recorded counts every take this set; quality tallies reflect recordings
+          recorded counts every take this batch; quality tallies reflect recordings
           still on disk
         </p>
       )}

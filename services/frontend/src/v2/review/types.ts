@@ -44,10 +44,12 @@ export interface TransferSlot {
  * Everything here is derived from the capture; nothing is invented. A field the
  * capture does not carry stays null and renders "—". */
 export interface EpisodeRow {
-  /** Stable display number: the server's `index_in_batch` when the capture has
-   *  one — excluding or deleting a neighbour must not renumber what remains —
-   *  else a positional fallback. */
-  ep: number;
+  /** Stable display number: the server's `index_in_batch`, so excluding or
+   *  deleting a neighbour cannot renumber what remains. `null` when the server
+   *  issued none — there is then no episode number to show, and the row renders
+   *  "—" rather than a position dressed up as an index (a positional number
+   *  could also collide head-on with a real `index_in_batch` beside it). */
+  ep: number | null;
   /** The identity everything keys on (§1). */
   captureId: string;
   /** `run_YYYYMMDD_HHMMSS`, DISPLAY ONLY. Never used as an API key. */
@@ -92,4 +94,12 @@ export interface DecoratedEpisode extends EpisodeRow {
   effectiveReviewStatus: ReviewStatus;
   reviewLane: ReviewLane;
   transferSlot: TransferSlot;
+}
+
+/** How an episode number reads on screen. `index_in_batch` is the server's to
+ *  assign, and a capture reviewed into no batch genuinely has none — so it
+ *  renders as an honest dash rather than a positional guess that could collide
+ *  with a real number from another batch. */
+export function episodeLabel(ep: number | null): string {
+  return ep === null ? '—' : `#${ep}`;
 }

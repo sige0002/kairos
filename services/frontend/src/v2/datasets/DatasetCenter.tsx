@@ -20,7 +20,13 @@ import { AvailabilityChip } from '../captures/AvailabilityChip';
 import { CaptureLabelChips } from '../episodeChips';
 import { DatasetDetail } from './DatasetDetail';
 import { ScopeSummary } from './ScopeSummary';
-import { formatCount, memberTestId, shortCaptureId, type MemberRow } from './data';
+import {
+  formatCount,
+  memberCount,
+  memberTestId,
+  shortCaptureId,
+  type MemberRow,
+} from './data';
 import type { DatasetsState } from './useDatasetsState';
 
 // # · Capture · Availability · Labels(flex) · Msgs.
@@ -71,8 +77,8 @@ function ScopeHeaderBar({ state }: { state: DatasetsState }) {
       {scope.task && <Badge tone="teal">{scope.task}</Badge>}
       <span data-testid="dataset-scope-count" className="text-[11.5px] text-gray-400">
         {rendered === total
-          ? `${formatCount(total)} members`
-          : `showing ${formatCount(rendered)} of ${formatCount(total)} members`}
+          ? memberCount(total)
+          : `showing ${formatCount(rendered)} of ${memberCount(total)}`}
       </span>
       <div className="flex-1" />
       <input
@@ -201,7 +207,7 @@ function MemberPager({ state }: { state: DatasetsState }) {
       className="flex flex-wrap items-center gap-x-2 gap-y-1.5 border-t border-gray-100 bg-gray-50 px-[18px] py-2.5"
     >
       <span className="text-[11.5px] text-gray-500" data-testid="dataset-member-range">
-        {formatCount(first)}–{formatCount(last)} of {formatCount(memberMatchCount)} members
+        {formatCount(first)}–{formatCount(last)} of {memberCount(memberMatchCount)}
       </span>
       <span className="ml-auto flex items-center gap-1.5">
         <button
@@ -265,7 +271,7 @@ function DeleteDatasetDialog({ state }: { state: DatasetsState }) {
       <div data-testid="delete-dataset-dialog" className="flex flex-col gap-3">
         <p className="text-[13px] leading-relaxed text-gray-600">
           <span className="font-semibold text-gray-900">{name}</span> and its{' '}
-          {count} membership{count === 1 ? '' : 's'} are removed.
+          {count} membership{count === 1 ? ' is' : 's are'} removed.
         </p>
         <p
           data-testid="delete-dataset-scope"

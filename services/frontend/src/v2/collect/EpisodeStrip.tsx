@@ -1,7 +1,7 @@
 // Bottom-right episode strip: N / target counter + a horizontally scrollable
 // row of `targetEpisodes` chips (done / review / fail / current / future) +
-// running totals. The chip count follows the set's own target (editable via
-// the Set menu), not a fixed 30.
+// running totals. The chip count follows the batch's own target (editable via
+// the Batch menu), not a fixed 30.
 
 import { Card, cn } from '../../components/ui';
 import type { BatchMachine, EpisodeRecord } from './useBatchMachine';
@@ -47,9 +47,10 @@ export function EpisodeStrip({ machine }: { machine: BatchMachine }) {
   }
   // A take the recorder never named has no capture to write a review to, so it
   // exists on this screen and nowhere else — it will not survive a reload. The
-  // save toast says so once; this keeps the count honest for the rest of the
-  // session rather than letting it quietly outrun the server's.
-  const unsynced = episodes.filter((e) => !e.captureId).length;
+  // save toast says so once; the strip has to keep saying it, and has to say
+  // WHICH: a bare count leaves the operator unable to tell two such takes
+  // apart, and the whole point is knowing what will be missing afterwards.
+  const unsynced = episodes.filter((e) => !e.captureId).map((e) => e.index).sort((a, b) => a - b);
 
   const nodes = Array.from({ length: targetEpisodes }, (_, i) => {
     const n = i + 1;
@@ -68,14 +69,24 @@ export function EpisodeStrip({ machine }: { machine: BatchMachine }) {
       const bucket = bucketOf(recorded);
       // A just-saved episode flashes a teal ring (save receipt on the strip, D-3).
       const justSaved = machine.lastSavedIndex === recorded.index;
+      const notSaved = !recorded.captureId;
       return (
         <span
           key={n}
-          title={tooltipOf(recorded, n)}
+          data-testid={notSaved ? `episode-chip-unsaved-${n}` : undefined}
+          title={
+            notSaved
+              ? `${tooltipOf(recorded, n)} — labeled on screen only; the recorder ` +
+                'named no capture, so this take will not survive a reload'
+              : tooltipOf(recorded, n)
+          }
           className={cn(
             'flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full text-xs font-bold',
             styles[bucket],
             justSaved && 'ring-2 ring-teal-500 ring-offset-1',
+            // Dashed outline: this chip describes something the server has no
+            // record of, and it must be tellable apart at a glance.
+            notSaved && 'outline outline-2 outline-dashed outline-amber-500',
           )}
         >
           {glyphs[bucket]}
@@ -133,17 +144,17 @@ export function EpisodeStrip({ machine }: { machine: BatchMachine }) {
       <div className="min-w-0 flex-1 overflow-x-auto">
         <div className="flex w-max gap-1.5 p-0.5">{nodes}</div>
       </div>
-      {unsynced > 0 && (
+      {unsynced.length > 0 && (
         <span
           data-testid="episode-strip-unsynced"
           title={
-            'These takes were labeled on screen only — the recorder never named ' +
-            'a capture for them, so there is nothing on the server to review, ' +
-            'and they will not survive a reload.'
+            'Labeled on screen only — the recorder never named a capture for ' +
+            'these takes, so there is nothing on the server to review and they ' +
+            'will not survive a reload.'
           }
           className="shrink-0 rounded-chip bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-700"
         >
-          {unsynced} not saved
+          {unsynced.map((n) => `#${n}`).join(' ')} not saved
         </span>
       )}
       {unplaced.length > 0 && (

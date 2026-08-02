@@ -70,6 +70,8 @@ export function ParamsPanel({
   presetsLoading,
   onRunPreset,
   submitError,
+  submitFailures,
+  captureLabel,
 }: {
   schema: JSONSchema;
   params: Record<string, unknown>;
@@ -100,6 +102,11 @@ export function ParamsPanel({
   presetsLoading: boolean;
   onRunPreset: (preset: ValidationPreset) => void;
   submitError?: unknown;
+  /** Captures whose job could not be created. Listed rather than counted: a
+   *  preset runs over many captures and "which ones did not run" is the
+   *  question the operator actually has. */
+  submitFailures?: { captureId: string; reason: string }[];
+  captureLabel?: (captureId: string) => string;
 }) {
   const presentCount = captures.filter(isCapturePresent).length;
 
@@ -229,6 +236,22 @@ export function ParamsPanel({
       <div className="flex-1" />
 
       {submitError != null && <ErrorMessage error={submitError} />}
+
+      {(submitFailures?.length ?? 0) > 0 && (
+        <ul
+          data-testid="submit-failures"
+          className="flex flex-col gap-1 rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-[11.5px] text-amber-800"
+        >
+          {submitFailures!.map((f) => (
+            <li key={f.captureId}>
+              <span className="font-semibold">
+                {captureLabel ? captureLabel(f.captureId) : f.captureId}
+              </span>{' '}
+              — {f.reason}
+            </li>
+          ))}
+        </ul>
+      )}
 
       {running ? (
         <div className="flex flex-col gap-1.5">

@@ -23,6 +23,8 @@ import {
   formatBytes,
   formatCount,
   formatWhen,
+  memberCount,
+  memberNoun,
   operatorSegment,
   outcomeBreakdown,
 } from './data';
@@ -183,8 +185,8 @@ function AvailabilitySection({
           data-testid="dataset-availability-unresolved"
           className="text-[11.5px] font-semibold text-amber-700"
         >
-          {unresolved} member(s) have no capture row in the loaded catalog — nothing
-          above describes them.
+          {memberCount(unresolved)} {unresolved === 1 ? 'has' : 'have'} no capture row
+          in the loaded catalog — nothing above describes {unresolved === 1 ? 'it' : 'them'}.
         </span>
       )}
     </div>
@@ -261,7 +263,10 @@ export function ScopeSummary({ scope }: { scope: Scope }) {
               className="grid flex-1 grid-cols-2 gap-2 sm:grid-cols-3"
               data-testid="dataset-summary-stats"
             >
-              <StatTile value={formatCount(agg.memberCount)} label="members" />
+              <StatTile
+                value={formatCount(agg.memberCount)}
+                label={memberNoun(agg.memberCount)}
+              />
               <StatTile value={formatCount(agg.availability.usable)} label="readable here" />
               <StatTile
                 value={bytes ? bytes.text : '—'}
@@ -273,7 +278,7 @@ export function ScopeSummary({ scope }: { scope: Scope }) {
                 label="messages"
                 title={
                   agg.messages.known > 0
-                    ? `Total over the ${agg.messages.known} member(s) reporting a count.`
+                    ? `Total over the ${memberCount(agg.messages.known)} reporting a count.`
                     : 'No member reports a message count.'
                 }
               />

@@ -13,6 +13,7 @@ import { Badge, cn, type Tone } from '../../components/ui';
 import { AvailabilityChip } from '../captures/AvailabilityChip';
 import { availabilityOf } from '../captures/availability';
 import { CaptureInspection } from './CaptureInspection';
+import { episodeLabel } from './types';
 import type { DisplayQuality, ReviewLane } from './types';
 import type { ReviewState } from './useReviewState';
 
@@ -154,7 +155,7 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
         className="flex items-center gap-2.5 border-b border-gray-100 px-[18px] py-3"
       >
         <span className="font-mono text-sm font-semibold text-gray-900">
-          Episode #{sel.ep}
+          Episode {episodeLabel(sel.ep)}
         </span>
         <span className="text-xs text-gray-400">Batch {sel.batch}</span>
         <AvailabilityChip capture={sel.capture} testId="review-detail-availability" />

@@ -241,7 +241,7 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
       />
       <Divider />
       {/* Server batch number (operator-facing "Set N"), no fabricated "/5"
-          planned-count. Before the set is created (on the first recording) we
+          planned-count. Before the batch is created (on the first recording) we
           show an honest, muted prediction of the number it will most likely get
           rather than a bare "—". The real number is assigned server-side, hence
           "next". */}
@@ -296,7 +296,7 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
         onClick={machine.toggleBatchMenu}
         className="inline-flex items-center gap-1.5 rounded-control border border-gray-200 bg-white px-3.5 py-2 text-[13px] font-semibold text-gray-700 hover:bg-gray-50"
       >
-        Set menu <span className="text-[11px] text-gray-400">▾</span>
+        Batch menu <span className="text-[11px] text-gray-400">▾</span>
       </button>
 
       {machine.projPickerOpen && (
@@ -344,9 +344,9 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
             Pause set
           </MenuItem>
           <MenuItem onClick={machine.openEndModal} danger>
-            End set early…
+            End batch early…
           </MenuItem>
-          <MenuItem onClick={machine.openResetModal}>Reset set…</MenuItem>
+          <MenuItem onClick={machine.openResetModal}>Reset batch…</MenuItem>
           <MenuItem onClick={machine.openTargetModal}>Change target…</MenuItem>
           <MenuItem onClick={machine.openIssueModal}>Report issue…</MenuItem>
           <MenuItem onClick={machine.openCondModal} disabled={!machine.condAllowed}>

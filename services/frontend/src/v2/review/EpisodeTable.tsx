@@ -10,6 +10,7 @@
 import { Badge, cn, type Tone } from '../../components/ui';
 import { AvailabilityChip } from '../captures/AvailabilityChip';
 import { LaneChip, QualityChip, TaskResultChip } from '../episodeChips';
+import { episodeLabel } from './types';
 import { formatHms, formatTimeOfDay } from './format';
 import type { DecoratedEpisode } from './types';
 import type { ReviewState } from './useReviewState';
@@ -103,7 +104,7 @@ function Row({
       )}
     >
       <span className="font-mono text-[13px] font-semibold text-gray-900">
-        #{row.ep}
+        {episodeLabel(row.ep)}
       </span>
       {row.batchId ? (
         <button

@@ -18,14 +18,13 @@ import { useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiGet, apiPost } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
-import {
-  liveCaptureIds,
-  type AspectOption,
-  type ConfigAspect,
-  type ConfigOptions,
-  type RecordStatus,
-  type RobotConfig,
+import type {
+  AspectOption,
+  ConfigAspect,
+  ConfigOptions,
+  RobotConfig,
 } from '../../api/types';
+import { useRecordStatus } from '../captures/useRecordStatus';
 import type { RuntimeConfig } from '../../config';
 import { Badge, Button, Card, Modal, cn } from '../../components/ui';
 import { ErrorMessage } from '../../components/ErrorMessage';
@@ -68,22 +67,15 @@ export function RobotsSection({ config }: { config: RuntimeConfig | undefined })
     queryFn: ({ signal }) => apiGet<ConfigOptions>('/config/options', { signal }),
   });
 
-  // Single source of truth for "is a capture running" — the same query key
-  // Collect polls (react-query dedups it), so this section's recording guards
-  // can never disagree with Collect about whether recording is live.
-  const recordStatusQuery = useQuery({
-    queryKey: queryKeys.recordStatus,
-    queryFn: ({ signal }) => apiGet<RecordStatus>('/record/status', { signal }),
-  });
-  // `live_capture_ids` is the only liveness signal (§10 rev.2.3): it is the one
-  // that also covers `armed` — a prepared session this switch would silently
-  // throw away — and §10 rev.2.4 makes a response WITHOUT it an unreachable
-  // recorder rather than an idle one. Switching robots stops whatever is
-  // running, so both "something is live" and "we cannot tell" ask first; only
-  // an explicit empty list switches straight through.
-  const live = liveCaptureIds(recordStatusQuery.data);
-  const captureLive = live !== null && live.length > 0;
-  const liveUnknown = live === null;
+  // Switching robots stops whatever is running, so this guard errs towards
+  // asking. `anyLive` covers `armed` too — a prepared session the switch would
+  // silently throw away — and `live === null` is the "we cannot tell" case,
+  // which the hook reports for BOTH a recorder that answered without its live
+  // set and one that is not answering at all. Only an explicit empty list
+  // switches straight through.
+  const recordStatus = useRecordStatus();
+  const captureLive = recordStatus.anyLive;
+  const liveUnknown = recordStatus.live === null;
 
   const selectMutation = useMutation({
     mutationFn: (vars: { category: string; id: string }) =>

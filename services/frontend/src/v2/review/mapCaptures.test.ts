@@ -84,13 +84,45 @@ test('the episode number is the server index, so a neighbour leaving cannot renu
   expect(rows.map((r) => r.ep)).toEqual([7, 9]);
 });
 
-test('a capture with no server index falls back to its position, oldest first', () => {
+test('a capture with no server index has no episode number at all', () => {
+  // The position in the list is not an episode number: the server never issued
+  // it. A row without one carries null and renders "—", like every other
+  // unknown on this screen.
   const rows = mapCapturesToEpisodes([
     capture({ capture_id: 'b', started_at: '2026-08-01T11:00:00Z' }),
     capture({ capture_id: 'a', started_at: '2026-08-01T10:00:00Z' }),
   ]);
   expect(rows.map((r) => r.captureId)).toEqual(['a', 'b']);
-  expect(rows.map((r) => r.ep)).toEqual([1, 2]);
+  expect(rows.map((r) => r.ep)).toEqual([null, null]);
+});
+
+test('an invented number cannot collide with a real index_in_batch', () => {
+  // The positional fallback numbered the first row #1 — which is exactly the
+  // index the server had already handed to another capture in the same view.
+  // Two rows then showed "#1" and neither looked wrong.
+  const rows = mapCapturesToEpisodes([
+    capture({ capture_id: 'no-index', started_at: '2026-08-01T10:00:00Z' }),
+    capture({
+      capture_id: 'indexed',
+      started_at: '2026-08-01T11:00:00Z',
+      index_in_batch: 1,
+    }),
+  ]);
+  expect(rows.map((r) => r.ep)).toEqual([null, 1]);
+  const numbered = rows.map((r) => r.ep).filter((ep) => ep !== null);
+  expect(new Set(numbered).size).toBe(numbered.length);
+});
+
+test('rows still order by started_at, which never depended on the episode number', () => {
+  // Dropping the fallback must not touch the reading order: the sort key is the
+  // recording time, and a row with no number sorts by it like any other.
+  const rows = mapCapturesToEpisodes([
+    capture({ capture_id: 'mid', started_at: '2026-08-01T11:00:00Z', index_in_batch: 9 }),
+    capture({ capture_id: 'first', started_at: '2026-08-01T10:00:00Z' }),
+    capture({ capture_id: 'last', started_at: '2026-08-01T12:00:00Z', index_in_batch: 2 }),
+  ]);
+  expect(rows.map((r) => r.captureId)).toEqual(['first', 'mid', 'last']);
+  expect(rows.map((r) => r.ep)).toEqual([null, 9, 2]);
 });
 
 test('captures without a started_at order by capture_id, which is time-ordered', () => {

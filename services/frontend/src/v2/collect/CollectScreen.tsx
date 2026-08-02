@@ -39,10 +39,16 @@ function UnsavedTakeBanner({ machine }: { machine: BatchMachine }) {
       data-testid="unsaved-take-banner"
       className="flex shrink-0 flex-col gap-2 border-2 border-amber-200 bg-amber-50/70 px-4 py-3"
     >
-      <span className="text-[13px] text-amber-900">
-        Unsaved take from {formatTimeOfDay(take.startedAt ?? undefined)} —{' '}
-        {formatBytes(take.bytes)}, {formatHms(take.durationMs ?? undefined)}. Label it
+      <span className="text-[13px] text-amber-900" data-testid="unsaved-take-identity">
+        {machine.unsavedTakeCount > 1
+          ? `${machine.unsavedTakeCount} unsaved takes. Most recent: `
+          : 'Unsaved take from '}
+        <span className="font-semibold">
+          {formatTimeOfDay(take.startedAt ?? undefined)}
+        </span>{' '}
+        — {formatBytes(take.bytes)}, {formatHms(take.durationMs ?? undefined)}. Label it
         now, or discard it.
+        {machine.unsavedTakeCount > 1 && ' “Later” hides them all until a new one appears.'}
       </span>
       <div className="flex gap-2">
         <button

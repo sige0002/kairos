@@ -36,6 +36,7 @@ import type {
 import { TERMINAL_CAPTURE_STATES } from '../../api/types';
 import { availabilityOf, isCapturePresent } from '../captures/availability';
 import { cameraTopics } from '../captures/inspect';
+import { captureErrorText } from '../captures/errors';
 import type { Summary } from '../../features/validation/SummaryResult';
 import { Card } from '../../components/ui';
 import { PipelineRail } from './PipelineRail';
@@ -65,9 +66,20 @@ interface JobRef {
   job_id: string;
 }
 
+/** A capture the run could not start a job for, and why in the operator's
+ *  terms. Kept per capture rather than collapsed into one error: a preset runs
+ *  over many captures, and "which ones did not run" is the whole question. */
+interface SubmitFailure {
+  captureId: string;
+  reason: string;
+}
+
 interface ActiveRun {
   pipeline: string;
   jobs: JobRef[];
+  /** Captures skipped because their job could not be created — most often a
+   *  capture discarded or deleted since the preset's pending list was built. */
+  failures: SubmitFailure[];
   // fast_validation only: the template's required topics, so the checklist card
   // can show found (✓) rows, not just the summary's `missing` entries.
   requiredTopics?: RequiredTopic[];
@@ -361,22 +373,42 @@ export function ValidationScreen() {
       requiredTopics?: RequiredTopic[];
     }): Promise<ActiveRun> => {
       const jobs: JobRef[] = [];
+      const failures: SubmitFailure[] = [];
       for (const captureId of arg.captureIds) {
         const body: JobSubmitRequest = {
           pipeline: arg.pipeline,
           capture_id: captureId,
           params: arg.params,
         };
-        const job = await apiPost<JobStatus>('/jobs', body);
-        queryClient.setQueryData(queryKeys.job(job.job_id), job);
-        jobs.push({ capture_id: captureId, job_id: job.job_id });
+        try {
+          const job = await apiPost<JobStatus>('/jobs', body);
+          queryClient.setQueryData(queryKeys.job(job.job_id), job);
+          jobs.push({ capture_id: captureId, job_id: job.job_id });
+        } catch (e) {
+          // One refused capture must not abandon the whole run. Rejecting here
+          // threw away the jobs already created — they kept running on the
+          // server with nothing watching them — and left the operator with a
+          // single error that never said which capture it was about. The most
+          // common cause is a capture discarded since the preset's pending list
+          // was computed, which the server answers with capture_deleting /
+          // capture_deleted.
+          failures.push({ captureId, reason: captureErrorText(e, 'job') });
+        }
       }
-      return { pipeline: arg.pipeline, jobs, requiredTopics: arg.requiredTopics };
+      return { pipeline: arg.pipeline, jobs, failures, requiredTopics: arg.requiredTopics };
     },
     onSuccess: (run) => {
       setJobStates({});
       setActive(run);
       setSelectedCaptureId(run.jobs[0]?.capture_id ?? null);
+      if (run.failures.length > 0) {
+        const names = run.failures.map((f) => labelFor(f.captureId)).join(', ');
+        showToast(
+          run.jobs.length === 0
+            ? `Nothing ran — ${run.failures[0]!.reason}`
+            : `Started ${run.jobs.length}; skipped ${names}`,
+        );
+      }
     },
   });
 
@@ -416,13 +448,21 @@ export function ValidationScreen() {
     !!selectedPipeline && targetCaptureIds.length > 0 && !submitMutation.isPending;
   const running = (!!active && !allSettled) || submitMutation.isPending;
 
-  const progressPct = active
-    ? Math.round(
-        (active.jobs.reduce((sum, j) => sum + (jobStates[j.job_id]?.progress ?? 0), 0) /
-          active.jobs.length) *
-          100,
-      )
-    : 0;
+  // A run can legitimately have NO jobs: every capture it targeted was refused
+  // (all discarded, say), and `active` still exists to carry the per-capture
+  // reasons. Dividing by that zero yielded NaN, which nothing renders today
+  // only because an empty job list also counts as settled.
+  const progressPct =
+    active && active.jobs.length > 0
+      ? Math.round(
+          (active.jobs.reduce(
+            (sum, j) => sum + (jobStates[j.job_id]?.progress ?? 0),
+            0,
+          ) /
+            active.jobs.length) *
+            100,
+        )
+      : 0;
   const progressLabel = submitMutation.isPending
     ? 'Starting…'
     : active && active.jobs.length > 1
@@ -513,6 +553,8 @@ export function ValidationScreen() {
             presetsLoading={presetsQuery.isPending}
             onRunPreset={runPreset}
             submitError={submitMutation.isError ? submitMutation.error : undefined}
+            submitFailures={active?.failures ?? []}
+            captureLabel={labelFor}
           />
           <ResultsPanel
             active={activeOutcome}

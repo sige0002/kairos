@@ -5,10 +5,15 @@
 // copied and nothing is moved, so the panel says so rather than showing a
 // progress bar for work that does not happen.
 //
-// Only finished recordings are offered: a live one has no final bytes to cite,
-// and a tombstone has none left. A capture whose bytes are not on this host IS
-// offered — a dataset may legitimately cite one (§12) — with its availability
-// chip stating exactly that.
+// Only finished recordings are listed: a live one has no final bytes to cite,
+// and a tombstone has none left.
+//
+// Every remaining capture is LISTED whether or not it can join a dataset today
+// — a capture the operator cannot see is a capture whose refusal they cannot
+// understand, and the availability chip beside each row is half the answer
+// already. What is withheld is the "+ Add" CONTROL, which carries the specific
+// reason (data.ts addBlockedReason) so the two causes — bytes not on this host,
+// and not yet adopted in Review — never read as one vague "unavailable".
 //
 // Archive lives here rather than beside the member detail because here is where
 // it can succeed: the backend refuses to archive a capture that still belongs to
@@ -17,13 +22,15 @@
 import { AvailabilityChip } from '../captures/AvailabilityChip';
 import { CaptureLabelChips } from '../episodeChips';
 import { ArchiveDialog } from './ArchiveDialog';
-import { shortCaptureId } from './data';
+import { addBlockedReason, memberCount, shortCaptureId } from './data';
 import type { Capture } from '../../api/types';
 import type { DatasetsState } from './useDatasetsState';
 
 function CandidateRow({ capture, state }: { capture: Capture; state: DatasetsState }) {
   const adding = state.addingCaptureId === capture.capture_id;
   const memberships = capture.memberships ?? [];
+  const noTarget = state.selectedDatasetId === null;
+  const blocked = addBlockedReason(capture);
   return (
     <div
       data-testid={`dataset-candidate-${capture.capture_id}`}
@@ -53,11 +60,16 @@ function CandidateRow({ capture, state }: { capture: Capture; state: DatasetsSta
           type="button"
           data-testid={`dataset-add-${capture.capture_id}`}
           onClick={() => state.addMember(capture)}
-          disabled={state.selectedDatasetId === null || adding}
+          disabled={noTarget || blocked !== null || adding}
+          // The row's own reason outranks "pick a dataset": choosing one would
+          // not make this capture addable, and sending the operator to do it
+          // would be sending them nowhere.
+          data-blocked={blocked !== null ? 'true' : undefined}
           title={
-            state.selectedDatasetId === null
+            blocked ??
+            (noTarget
               ? 'Select a dataset first'
-              : 'Add this recording to the selected dataset. Nothing moves on disk.'
+              : 'Add this recording to the selected dataset. Nothing moves on disk.')
           }
           className="rounded-chip bg-teal-600 px-2.5 py-[3px] text-[11px] font-bold text-white hover:bg-teal-700 disabled:opacity-40"
         >
@@ -95,8 +107,7 @@ export function BuildRail({ state }: { state: DatasetsState }) {
         {target ? (
           <p data-testid="build-target" className="text-[12.5px] leading-relaxed text-gray-600">
             Adding to <span className="font-semibold text-gray-900">{target.dataset.name}</span> —{' '}
-            {target.dataset.member_count} member
-            {target.dataset.member_count === 1 ? '' : 's'}. Each recording gets the next
+            {memberCount(target.dataset.member_count)}. Each recording gets the next
             number, and a number retired by a removal is never handed out again.
           </p>
         ) : (

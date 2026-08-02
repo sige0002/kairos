@@ -212,7 +212,8 @@ test('a server 422 validation error is shown inline', async () => {
   fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
   expect(
-    await screen.findByText('invalid_config: Recording config failed validation.'),
+    // m9: the sentence leads; the code trails on its own muted line.
+    await screen.findByText('Recording config failed validation.'),
   ).toBeInTheDocument();
   expect(screen.getByText('robot_name: Field required')).toBeInTheDocument();
 });

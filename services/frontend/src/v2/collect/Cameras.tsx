@@ -24,7 +24,13 @@ import {
   useWebRtcStream,
   type StreamStats,
   type StreamPhase,
+  FRAME_STALE_MS,
 } from '../../features/stream/useWebRtcStream';
+
+/** True once the decoded-frame count has stood still past the deadline. */
+export function isFramesStale(stats: StreamStats): boolean {
+  return stats.framesStaleMs != null && stats.framesStaleMs >= FRAME_STALE_MS;
+}
 import type { RuntimeConfig } from '../../config';
 import type { BatchMachine } from './useBatchMachine';
 import {
@@ -78,6 +84,30 @@ function latColor(ms: number): string {
  *  the values the hook actually measured are rendered (honesty: never a
  *  synthesized fps/latency to fill a slot); nothing at all until one exists. */
 export function StatsBadge({ stats, className }: { stats: StreamStats; className?: string }) {
+  // Frames have stopped advancing. The connection is still up and getStats will
+  // happily keep reporting its last framesPerSecond, but no picture is arriving
+  // — so the chip reports what it can actually measure (how long since the last
+  // frame) instead of a rate nothing is producing.
+  const stale = isFramesStale(stats);
+  if (stale) {
+    return (
+      <span
+        data-testid="camera-stats"
+        data-stale="true"
+        title={
+          'No new frames have decoded since this counter started. The stream is ' +
+          'still connected, so this is usually the source topic losing its ' +
+          'publisher rather than a network problem.'
+        }
+        className={cn(
+          'inline-flex items-center gap-1.5 rounded-chip bg-amber-500/90 px-2.5 py-1 font-mono text-[11px] font-semibold text-white',
+          className,
+        )}
+      >
+        no frames for {Math.round((stats.framesStaleMs ?? 0) / 1000)}s
+      </span>
+    );
+  }
   if (stats.latencyMs == null && stats.fps == null) return null;
   return (
     <span
@@ -394,8 +424,12 @@ export function Cameras({
   });
 
   useEffect(() => {
-    onHealthChange?.(phase !== 'failed');
-  }, [phase, onHealthChange]);
+    // A connected stream with frames standing still is NOT ok. The connection
+    // being up says nothing about pictures arriving, and reporting it as ok is
+    // how the row read "main stream OK" for 106 seconds against a topic with no
+    // publisher.
+    onHealthChange?.(phase !== 'failed' && !isFramesStale(stats));
+  }, [phase, stats, onHealthChange]);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   useEffect(() => {

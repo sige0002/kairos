@@ -50,6 +50,9 @@ function replica(state: ReplicaState | null): Partial<Capture> {
   };
 }
 
+/** The one capture that may actually join a dataset: its bytes are here AND
+ *  Review adopted it. Both are preconditions for "+ Add", so a fixture that is
+ *  used to exercise adding has to satisfy both. */
 const CAP_A = capture({
   capture_id: 'cap-a',
   run_id: 'run_20260721_090000',
@@ -61,6 +64,7 @@ const CAP_A = capture({
   bytes: 1_200_000_000,
   task_result: 'success',
   quality: 'good',
+  review_status: 'adopted',
   ...replica('present_verified'),
 });
 const CAP_B = capture({
@@ -330,6 +334,8 @@ test('a dataset with no labels says so instead of showing a 0/0 split', async ()
   const row = await screen.findByTestId(datasetTestId('ds-kitchen'));
   expect(within(row).getByText('no labels')).toBeInTheDocument();
   expect(within(row).queryByText(/✓/)).not.toBeInTheDocument();
+  // Exact text: "1 members" would not match, and that is the point.
+  expect(within(row).getByText('1 member')).toBeInTheDocument();
 });
 
 // ---- creating ------------------------------------------------------------
@@ -385,6 +391,63 @@ test('adding a capture creates a membership and moves nothing on disk', async ()
   expect(screen.getByTestId('toast')).toHaveTextContent('the recording did not move');
   // Adding a member never asks the server to rebuild views/ (§6: server-owned).
   expect(backend.calls.some((c) => c.includes('/views'))).toBe(false);
+
+  // One member is "1 member". A count that disagrees with its noun reads as a
+  // rendering fault and takes the number's credibility with it.
+  await waitFor(() =>
+    expect(screen.getByTestId('dataset-scope-count').textContent).toBe('1 member'),
+  );
+  expect(screen.getByTestId('build-target').textContent).toMatch(/\b1 member\b/);
+});
+
+test('a capture that cannot legitimately join a dataset is listed with a dead "+ Add" and the reason', async () => {
+  // Two independent preconditions, and the control has to say WHICH one failed:
+  // "unavailable" sends the operator looking in the wrong place. Nothing is
+  // hidden from the rail — a candidate the operator cannot see is a refusal
+  // they cannot understand.
+  const CAP_ADOPTED_AWAY = capture({
+    capture_id: 'cap-adopted-away',
+    run_id: 'run_20260721_093000',
+    review_status: 'adopted',
+    ...replica(null),
+  });
+  const backend = mockApi({
+    datasets: [DS_KITCHEN],
+    captures: [CAP_A, CAP_B, CAP_ADOPTED_AWAY, CAP_AWAY],
+  });
+  renderWithClient(<DatasetsScreen />);
+  fireEvent.click(await screen.findByTestId(datasetTestId('ds-kitchen')));
+
+  for (const id of ['cap-a', 'cap-b', 'cap-adopted-away', 'cap-away']) {
+    expect(await screen.findByTestId(`dataset-candidate-${id}`)).toBeInTheDocument();
+  }
+
+  // Bytes here AND adopted: the only one that may join.
+  await waitFor(() => expect(screen.getByTestId('dataset-add-cap-a')).toBeEnabled());
+
+  // Readable here, but Review has not adopted it.
+  const notAdopted = screen.getByTestId('dataset-add-cap-b');
+  expect(notAdopted).toBeDisabled();
+  expect(notAdopted.title).toMatch(/adopted in Review/);
+  expect(notAdopted.title).not.toMatch(/not on this machine/);
+
+  // Adopted, but the bytes never landed on this host.
+  const notHere = screen.getByTestId('dataset-add-cap-adopted-away');
+  expect(notHere).toBeDisabled();
+  expect(notHere.title).toMatch(/not on this machine/);
+  expect(notHere.title).not.toMatch(/adopted in Review/);
+
+  // Neither: both reasons are named, so fixing one does not leave the operator
+  // clicking a still-dead button with no new explanation.
+  const neither = screen.getByTestId('dataset-add-cap-away');
+  expect(neither).toBeDisabled();
+  expect(neither.title).toMatch(/not on this machine/);
+  expect(neither.title).toMatch(/adopted in Review/);
+
+  fireEvent.click(notAdopted);
+  fireEvent.click(notHere);
+  expect(backend.calls.some((c) => c.startsWith('POST /datasets/'))).toBe(false);
+  expect(backend.members).toHaveLength(0);
 });
 
 test('removing a member leaves the capture alone and never reissues its number', async () => {

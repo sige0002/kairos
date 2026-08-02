@@ -12,15 +12,14 @@ import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError, apiGet, apiPost, getApiBase } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
-import {
-  liveCaptureIds,
-  type ApiErrorBody,
-  type AspectOption,
-  type ConfigAspect,
-  type ConfigOptions,
-  type RecordingConfigPayload,
-  type RecordStatus,
+import type {
+  ApiErrorBody,
+  AspectOption,
+  ConfigAspect,
+  ConfigOptions,
+  RecordingConfigPayload,
 } from '../../api/types';
+import { useRecordStatus } from '../../v2/captures/useRecordStatus';
 import type { RuntimeConfig } from '../../config';
 import { ErrorMessage } from '../../components/ErrorMessage';
 import { Badge, SectionLabel, cn } from '../../components/ui';
@@ -86,21 +85,16 @@ export function RecordingConfigEditor({ config }: { config: RuntimeConfig }) {
     queryFn: ({ signal }) => apiGet<RecordingConfigPayload>('/config/recording', { signal }),
   });
 
-  // Single source of truth for "is a capture running" — the same /record/status
-  // query key Collect polls (react-query dedups it), so this banner can never
-  // disagree with Collect about whether recording is live.
-  const recordStatusQuery = useQuery({
-    queryKey: queryKeys.recordStatus,
-    queryFn: ({ signal }) => apiGet<RecordStatus>('/record/status', { signal }),
-  });
-  // `live_capture_ids` is the definitive live set (§10 rev.2.3), not `state`:
-  // state alone misses `armed` and `stopping`, both of which are sessions the
-  // operator has in flight. A response WITHOUT the array is an unreachable
-  // recorder (§10 rev.2.4), not an idle one — so we say we cannot tell rather
-  // than implying nothing is running.
-  const live = liveCaptureIds(recordStatusQuery.data);
-  const recording = live !== null && live.length > 0;
-  const liveUnknown = live === null;
+  // Three different things, three different sentences. `recording` is bytes
+  // actually being written; `armed` is a prepared session holding
+  // subscriptions that has written NOTHING, so calling it "recording in
+  // progress" claims data that does not exist; and an unconfirmed live set
+  // (unreachable recorder, or an answer without the array) is not evidence
+  // that nothing is running.
+  const recordStatus = useRecordStatus();
+  const recording = recordStatus.recording;
+  const armed = recordStatus.armed;
+  const liveUnknown = recordStatus.live === null;
 
   const [text, setText] = useState('');
   // Inline JSON validity (debounced ~300ms below): null = valid, else the parse
@@ -202,15 +196,28 @@ export function RecordingConfigEditor({ config }: { config: RuntimeConfig }) {
 
       {recording && (
         <div className="mt-2 rounded-control border border-amber-200 bg-amber-50 p-2 text-sm text-amber-800">
-          A recording session is in progress — saving recording config won&apos;t change
-          the current one; it applies to the next.
+          A recording is in progress — saving recording config won&apos;t change the
+          current one; it applies to the next.
+        </div>
+      )}
+
+      {armed && (
+        <div
+          data-testid="config-armed-note"
+          className="mt-2 rounded-control border border-amber-200 bg-amber-50 p-2 text-sm text-amber-800"
+        >
+          A session is armed and waiting to start — nothing is being written yet.
+          It already holds the current topic selection, so a save applies to the
+          recording after it.
         </div>
       )}
 
       {liveUnknown && (
-        <div className="mt-2 rounded-control border border-gray-200 bg-gray-50 p-2 text-sm text-gray-600">
-          The recorder did not report what is live, so whether a session is in
-          progress is unknown. A save still only applies to the next recording.
+        <div
+          data-testid="config-live-unknown"
+          className="mt-2 rounded-control border border-gray-200 bg-gray-50 p-2 text-sm text-gray-600">
+          The recorder has not confirmed what is running, so whether a session is
+          in progress is unknown. A save still only applies to the next recording.
         </div>
       )}
 

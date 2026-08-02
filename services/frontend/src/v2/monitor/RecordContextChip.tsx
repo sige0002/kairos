@@ -4,29 +4,26 @@
 // record-status query cache with Collect / the header (react-query dedupes by
 // key); SSE record_status events keep it fresh between polls.
 
-import { useQuery } from '@tanstack/react-query';
-import { apiGet } from '../../api/client';
-import { queryKeys } from '../../api/queryKeys';
-import type { RecordStatus } from '../../api/types';
 import { Card } from '../../components/ui';
+import { useRecordStatus } from '../captures/useRecordStatus';
 import { useNowClock } from './useNowClock';
 import { computeRecordContext, formatElapsed } from './recordContext';
 
-/** Why an absent live-capture list may not be shown as "nothing is running". */
+/** Why an unconfirmed live set may not be shown as "nothing is running": the
+ *  recorder either answered without its live-capture list (§10 rev.2.4) or did
+ *  not answer at all, and neither is evidence that nothing is recording. */
 const UNREPORTED_TITLE =
-  'The recorder answered without its live-capture list, so it cannot be ' +
-  'confirmed that nothing is recording (contract §10). Check the recorder ' +
-  'version and that it is reachable.';
+  'The recorder has not confirmed what is running — it either answered ' +
+  'without its live-capture list (contract §10) or is not responding. Check ' +
+  'that it is reachable.';
 
 export function RecordContextChip() {
-  const { data, isPending } = useQuery({
-    queryKey: queryKeys.recordStatus,
-    queryFn: ({ signal }) => apiGet<RecordStatus>('/record/status', { signal }),
-    refetchInterval: 5000,
-  });
-  const active = !!data && (data.state === 'recording' || data.state === 'stopping');
-  const now = useNowClock(active);
-  const ctx = computeRecordContext(data, now);
+  const view = useRecordStatus();
+  const isPending = view.loading;
+  // The clock only runs while a recording is genuinely in progress — a stale
+  // payload from a dead recorder must not keep an elapsed timer ticking.
+  const now = useNowClock(view.recording);
+  const ctx = computeRecordContext(view, now);
 
   return (
     <Card className="flex items-center gap-2.5 px-3.5 py-2" data-testid="monitor-context">
