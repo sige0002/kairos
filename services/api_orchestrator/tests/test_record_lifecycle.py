@@ -367,7 +367,11 @@ class TestQuickCheckSettlement:
             },
         ).json()
         assert saved["quality_source"] == "quick_check"
-        assert saved["quality"] == "needs_review"
+        # A healthy 10s take settles GOOD, and the derivation carries that
+        # through. Asserting needs_review here used to pass for the wrong
+        # reason: the fake's bag was unreadable, so every verdict was
+        # needs_review and the derivation could not be told from the fallback.
+        assert saved["quality"] == "good"
 
     def test_a_late_verdict_corrects_a_quick_check_sourced_review(
         self, client: TestClient
@@ -387,16 +391,88 @@ class TestQuickCheckSettlement:
 
         # A review saved BEFORE the settlement landed took the conservative
         # fallback. Once the real verdict arrives it is corrected through the
-        # ordinary §4.1 path, revision bump and all.
+        # ordinary §4.1 path, revision bump and all. The correction is to a
+        # DIFFERENT value than the save produced — otherwise the test would
+        # pass whether or not the correction ran at all.
         asyncio.run(
-            client.app.state.record_service.reconcile_quality(capture_id, "good")
+            client.app.state.record_service.reconcile_quality(
+                capture_id, "needs_review"
+            )
         )
 
         capture = _store(client).get_capture(capture_id)
         assert capture is not None
-        assert capture.quality == "good"
+        assert capture.quality == "needs_review"
         assert capture.review_revision == 2
         assert capture.review_status == "adopted"
+
+    def test_an_accidental_double_click_is_not_offered_as_good(
+        self, client: TestClient, fake_recorder: FakeRecorder
+    ) -> None:
+        """The QA report, driven through the real stop path.
+
+        A 90ms take in which every topic happens to deliver a message passes
+        every other quick-check rule, so before the minimum-duration criterion
+        this settled GOOD and the UI offered "Save — success" as the Enter-able
+        default.
+        """
+        fake_recorder.bag_duration_s = 0.09
+        fake_recorder.bag_messages = 25
+        started = _start(client)
+        client.post("/api/v1/record/stop")
+        asyncio.run(client.app.state.record_service.drain_settlements())
+
+        capture = _store(client).get_capture(started["capture_id"])
+        quick = capture.quick_check
+        assert quick.layer1.summary_available is True
+        assert quick.verdict.quality == "needs_review"
+        reason = next(r for r in quick.verdict.reasons if "shorter than" in r)
+        assert "accidental" in reason
+
+        # And the review derivation carries it, so the operator is not offered
+        # a good-quality default for a capture the check just flagged.
+        saved = client.patch(
+            f"/api/v1/captures/{started['capture_id']}/review",
+            json={"base_revision": 0, "task_result": "success"},
+        ).json()
+        assert saved["quality"] == "needs_review"
+
+    def test_the_deployments_configured_floor_reaches_the_stop_path(
+        self, settings, fake_recorder: FakeRecorder, tmp_path: Path
+    ) -> None:
+        """The floor is read from RECORDING_CONFIG, not hardcoded in the service."""
+        import httpx
+        import yaml
+        from api_orchestrator.app_factory import create_orchestrator_app
+
+        config = tmp_path / "recording.yaml"
+        config.write_text(
+            yaml.safe_dump(
+                {
+                    "robot_name": "r",
+                    "default_topics": ["/joint_states"],
+                    "validation": {"min_duration_s": 30},
+                }
+            ),
+            encoding="utf-8",
+        )
+        strict = settings.model_copy(update={"recording_config": str(config)})
+        fake_recorder.bag_duration_s = 10.0  # fine by default, short for this deploy
+
+        app = create_orchestrator_app(
+            strict,
+            http_client=httpx.AsyncClient(
+                transport=httpx.MockTransport(fake_recorder.handler)
+            ),
+        )
+        with TestClient(app) as client:
+            started = _start(client)
+            client.post("/api/v1/record/stop")
+            asyncio.run(app.state.record_service.drain_settlements())
+            capture = app.state.capture_store.get_capture(started["capture_id"])
+
+        assert capture.quick_check.verdict.quality == "needs_review"
+        assert "30s minimum" in " ".join(capture.quick_check.verdict.reasons)
 
     def test_an_operator_quality_call_is_never_overwritten(
         self, client: TestClient

@@ -64,6 +64,11 @@ INTEGRITY_OK = "ok"
 # recorded but does not, on its own, force needs_review).
 DANGER_SEVERITY = "danger"
 
+# Fallback floor when no RECORDING_CONFIG is loaded. Mirrors
+# ``ValidationConfig.min_duration_s``; kept here so the pure verdict function
+# has a usable default without reaching for config it may not have been given.
+DEFAULT_MIN_DURATION_S = 2.0
+
 
 @dataclass
 class McapSummary:
@@ -84,6 +89,13 @@ class McapSummary:
         if self.start_ns is None or self.end_ns is None or self.end_ns <= self.start_ns:
             return None
         return (self.end_ns - self.start_ns) / 1e9
+
+
+def resolve_min_duration_s(config: RecordingConfig | None) -> float:
+    """The configured minimum-duration floor, or the default when unset."""
+    if config is None:
+        return DEFAULT_MIN_DURATION_S
+    return config.validation.min_duration_s
 
 
 def resolve_expected_hz(config: RecordingConfig | None, topic: str) -> float | None:
@@ -140,8 +152,13 @@ def read_mcap_summary(capture_dir: Path) -> McapSummary | None:
         counts[channel.topic] = counts.get(channel.topic, 0) + n
     return McapSummary(
         message_counts=counts,
-        start_ns=stats.message_start_time or None,
-        end_ns=stats.message_end_time or None,
+        # Explicit None checks, NOT ``or None``: zero is a legitimate log time,
+        # and the falsy shorthand silently reported a bag starting at epoch 0 as
+        # having no time bounds at all — which now reads as "duration unknown"
+        # and blocks a good verdict. A bag with no messages still resolves to
+        # start == end == 0, which ``McapSummary.duration_s`` already rejects.
+        start_ns=_as_int(stats.message_start_time),
+        end_ns=_as_int(stats.message_end_time),
     )
 
 
@@ -292,15 +309,19 @@ def build_layer1(
 
 
 def compute_verdict(
-    layer0: QuickCheckLayer0, layer1: QuickCheckLayer1
+    layer0: QuickCheckLayer0,
+    layer1: QuickCheckLayer1,
+    *,
+    min_duration_s: float = DEFAULT_MIN_DURATION_S,
 ) -> QuickCheckVerdict:
     """Derive the quality call from the two layers (explicit, simple rules).
 
     ``needs_review`` if ANY of: integrity != "ok"; a danger-severity incident
     fired during the window; a Layer 1 topic's avg_hz < 0.8 x expected_hz;
-    missing or empty required topics; or the MCAP summary was unavailable.
-    Otherwise ``good``. Every trigger appends a specific, human-readable reason;
-    an empty reason list means ``good``.
+    missing or empty required topics; the recording was shorter than
+    *min_duration_s*; or the MCAP summary was unavailable. Otherwise ``good``.
+    Every trigger appends a specific, human-readable reason; an empty reason
+    list means ``good``.
     """
     reasons: list[str] = []
 
@@ -333,6 +354,14 @@ def compute_verdict(
     for name in layer1.empty_topics:
         reasons.append(f"topic recorded 0 messages: {name}")
 
+    # Too short to be a real take. Message PRESENCE is not evidence of a usable
+    # recording: inside a fraction of a second every topic can happen to deliver
+    # one message, and every other rule above then passes — which is how an
+    # 87 ms double-click reported "no issues found" and was offered as the
+    # Enter-able default. Deliberately needs_review and not a failure: a short
+    # take can be intentional, and only the operator knows (§12).
+    reasons.extend(_duration_reasons(layer1, min_duration_s))
+
     # Missing MCAP summary (unclean stop) — strong needs_review signal.
     if not layer1.summary_available:
         reasons.append("MCAP summary unavailable (unclean stop?)")
@@ -341,20 +370,59 @@ def compute_verdict(
     return QuickCheckVerdict(quality=quality, reasons=reasons)
 
 
+def _duration_reasons(layer1: QuickCheckLayer1, min_duration_s: float) -> list[str]:
+    """The minimum-duration criterion, as zero or one reason.
+
+    Three cases, kept apart because they are genuinely different answers:
+
+    * the floor is disabled (``<= 0``) — say nothing;
+    * the duration is KNOWN and below the floor — name it, with both numbers,
+      so the operator can tell an accident from a deliberate short take;
+    * the bag has a summary but no usable time bounds — the duration is
+      unknown, which cannot be called good either. This is a real state: every
+      message sharing one timestamp leaves ``end_ns == start_ns``. It is
+      reported only when the summary IS available, because an absent summary
+      already has its own louder reason and saying both would double-report one
+      fault.
+    """
+    if min_duration_s <= 0:
+        return []
+    if layer1.duration_s is None:
+        if layer1.summary_available:
+            return [
+                "recorded duration could not be determined from the bag; "
+                "it cannot be confirmed as a complete take"
+            ]
+        return []
+    if layer1.duration_s < min_duration_s:
+        return [
+            f"recorded for only {layer1.duration_s:g}s — shorter than the "
+            f"{min_duration_s:g}s minimum; likely an accidental start/stop"
+        ]
+    return []
+
+
 def assemble_quick_check(
     *,
     layer0: QuickCheckLayer0,
     layer1: QuickCheckLayer1,
     elapsed_ms: int,
     computed_at: str | None = None,
+    config: RecordingConfig | None = None,
 ) -> QuickCheck:
-    """Combine the two layers + verdict into the persisted :class:`QuickCheck`."""
+    """Combine the two layers + verdict into the persisted :class:`QuickCheck`.
+
+    *config* supplies the deployment's thresholds; omitting it falls back to the
+    module defaults, which keeps the pure builders usable in isolation.
+    """
     return QuickCheck(
         computed_at=computed_at or utc_now_iso8601(),
         elapsed_ms=elapsed_ms,
         layer0=layer0,
         layer1=layer1,
-        verdict=compute_verdict(layer0, layer1),
+        verdict=compute_verdict(
+            layer0, layer1, min_duration_s=resolve_min_duration_s(config)
+        ),
     )
 
 

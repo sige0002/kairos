@@ -951,7 +951,10 @@ class RecordService:
 
             elapsed_ms = int((time.monotonic() - started) * 1000)
             quick = assemble_quick_check(
-                layer0=layer0, layer1=layer1, elapsed_ms=elapsed_ms
+                layer0=layer0,
+                layer1=layer1,
+                elapsed_ms=elapsed_ms,
+                config=self._config,
             )
             self._store.update_capture(capture_id, quick_check=quick)
             logger.info(

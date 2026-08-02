@@ -70,6 +70,11 @@ class FakeRecorder:
         self.writes_sidecars: bool = True
         self.message_count: int = 0
         self.bytes: int = 0
+        # Shape of the bag written at stop. The default is a comfortably normal
+        # take; a test that wants the accidental-double-click case sets
+        # ``bag_duration_s`` below the quick check's minimum.
+        self.bag_duration_s: float = 10.0
+        self.bag_messages: int = 300
         self.arming: dict[str, Any] | None = None
         self.last_start_payload: dict[str, Any] | None = None
         # ---- prepare knobs ----
@@ -350,7 +355,16 @@ class FakeRecorder:
         )
 
     def _write_bag(self) -> None:
-        """Enough of a bag that ``has_bag`` and the digest job see real files."""
+        """A real, readable MCAP — not a byte string that resembles one.
+
+        The stop-time quick check reads this bag's summary section to build
+        Layer 1: per-topic counts and, since the minimum-duration criterion, the
+        recorded duration. A fake that only *looks* like an MCAP leaves that
+        whole layer untested — every stop would report "summary unavailable",
+        and no test could tell a healthy recording from a 90ms double-click.
+        """
+        from mcap.writer import Writer
+
         assert self.capture_id is not None
         capture_dir = self.layout.capture_dir(self.capture_id)
         capture_dir.mkdir(parents=True, exist_ok=True)
@@ -360,7 +374,37 @@ class FakeRecorder:
         # rosbag2 derives the inner filename from the output directory, which
         # is objects/<capture_id> — so the bag is capture-named, not run-named.
         bag = capture_dir / f"{self.capture_id}_0.mcap"
-        bag.write_bytes(b"\x89MCAP0\r\n" + b"x" * 64)
+        topics = self.topic_names or ["/joint_states"]
+        per_topic = max(self.bag_messages // len(topics), 1)
+        span_ns = int(self.bag_duration_s * 1e9)
+        # Wall-clock nanoseconds, like a real rosbag2 bag. Starting at 0 would
+        # be unrepresentative in a way that has already hidden one bug (a
+        # falsy-zero check in the summary reader).
+        base_ns = 1_754_000_000_000_000_000
+        # Spread the messages across the span so the summary's time bounds are
+        # the duration the test asked for. Divide by per_topic-1, not per_topic:
+        # the LAST message must land at exactly base+span, or every realised
+        # duration is (per_topic-1)/per_topic of what the test requested.
+        step_ns = max(span_ns // max(per_topic - 1, 1), 1)
+        with bag.open("wb") as handle:
+            writer = Writer(handle)
+            writer.start()
+            for topic in topics:
+                schema = writer.register_schema(
+                    name=self.topic_type, encoding="ros2msg", data=b"x"
+                )
+                channel = writer.register_channel(
+                    topic=topic, message_encoding="cdr", schema_id=schema
+                )
+                for index in range(per_topic):
+                    stamp = base_ns + index * step_ns
+                    writer.add_message(
+                        channel_id=channel,
+                        log_time=stamp,
+                        publish_time=stamp,
+                        data=b"\x00",
+                    )
+            writer.finish()
 
     def _instance_id(self) -> str:
         instance = self.layout.data_dir / "instance.json"

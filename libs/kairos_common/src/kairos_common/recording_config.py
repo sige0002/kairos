@@ -187,9 +187,20 @@ class RequiredTopic(_StrictModel):
 
 
 class ValidationConfig(_StrictModel):
-    """Validation config (dora_runner fast_validation, stage 3)."""
+    """Validation config (dora_runner fast_validation + the stop-time quick check)."""
 
     required_topics: list[RequiredTopic] = Field(default_factory=list)
+    # Shortest recording the stop-time quick check will call "good". A capture
+    # below this is reported as needs_review with the duration in the reason —
+    # never a hard failure, because a deliberately short take is legitimate and
+    # only the operator knows which it was.
+    #
+    # The default exists because per-topic message PRESENCE is not evidence of a
+    # usable recording: in a fraction of a second every topic can happen to
+    # deliver one message, and the check then reports "no issues" for what was
+    # actually a double-clicked start/stop. Two seconds is comfortably below any
+    # real take and comfortably above an accident. ``0`` disables the criterion.
+    min_duration_s: float = Field(default=2.0, ge=0)
 
 
 class TransferConfig(_StrictModel):

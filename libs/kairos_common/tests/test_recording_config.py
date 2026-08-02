@@ -13,6 +13,7 @@ from kairos_common import (
     load_recording_config,
 )
 from kairos_common.recording_config import Durability
+from pydantic import ValidationError
 
 # The canonical template lives at repo root; resolve it relative to this file.
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -164,3 +165,37 @@ def test_transfer_auto_pull_default_and_override(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     assert load_recording_config(cfg_path).transfer.auto_pull_on_save is True
+
+
+def test_the_quick_check_duration_floor_has_a_default() -> None:
+    """A deployment that never wrote a validation section still gets a floor.
+
+    Without a default, the stop-time quick check would have no opinion about
+    duration on exactly the installs least likely to have tuned anything — and
+    an accidental double-click would read as a healthy take.
+    """
+    config = RecordingConfig.model_validate({"robot_name": "r"})
+    assert config.validation.min_duration_s == 2.0
+
+
+def test_the_duration_floor_is_configurable() -> None:
+    config = RecordingConfig.model_validate(
+        {"robot_name": "r", "validation": {"min_duration_s": 7.5}}
+    )
+    assert config.validation.min_duration_s == 7.5
+
+
+def test_zero_disables_the_duration_floor() -> None:
+    config = RecordingConfig.model_validate(
+        {"robot_name": "r", "validation": {"min_duration_s": 0}}
+    )
+    assert config.validation.min_duration_s == 0
+
+
+def test_a_negative_floor_is_rejected() -> None:
+    # A negative minimum is not a looser rule, it is a nonsensical one; failing
+    # at config load beats silently never firing.
+    with pytest.raises(ValidationError):
+        RecordingConfig.model_validate(
+            {"robot_name": "r", "validation": {"min_duration_s": -1}}
+        )
