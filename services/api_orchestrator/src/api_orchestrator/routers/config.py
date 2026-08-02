@@ -96,7 +96,7 @@ def _apply_recording(request: Request, catalog: ConfigCatalog) -> None:
         ) from exc
     request.app.state.recording_config = config
     request.app.state.recording_config_path = str(path)
-    request.app.state.run_service.set_recording_config(config)
+    request.app.state.record_service.set_recording_config(config)
     logger.info("recording config applied", extra={"path": str(path)})
 
 
@@ -221,7 +221,7 @@ async def put_recording_config(
     The full :class:`RecordingConfig` is editable. On success the validated
     config is written to ``settings.recording_config`` (the only path we ever
     write — never one from the request) and set on ``app.state.recording_config``
-    + the RunService, so ``GET /api/v1/config`` and the next start's
+    + the RecordService, so ``GET /api/v1/config`` and the next start's
     ``default_topics`` reflect it immediately. A schema error yields 422 with the
     field errors; the file is left untouched on any validation failure.
     """
@@ -255,7 +255,7 @@ async def put_recording_config(
     # Hot-swap the live copies so the next GET /api/v1/config and the next
     # start's topic resolution use the new config without a restart.
     request.app.state.recording_config = config
-    request.app.state.run_service.set_recording_config(config)
+    request.app.state.record_service.set_recording_config(config)
     logger.info("recording config updated", extra={"path": str(path)})
     return _recording_payload(config, settings.recording_config)
 

@@ -10,7 +10,6 @@ from pathlib import Path
 
 import httpx
 from api_orchestrator.app_factory import create_orchestrator_app
-from api_orchestrator.store import RunStore
 from fastapi.testclient import TestClient
 from kairos_common import Settings
 
@@ -45,9 +44,7 @@ def test_runtime_config_shape(client: TestClient) -> None:
     assert body["stream"] == {"columns": 2, "panes": []}
 
 
-def test_runtime_config_surfaces_stream_config(
-    tmp_path: Path, fake_recorder, store: RunStore
-) -> None:
+def test_runtime_config_surfaces_stream_config(tmp_path: Path, fake_recorder) -> None:
     """With a STREAM_CONFIG loaded, GET /config exposes its columns + panes so
     the Stream tab opens the configured previews."""
     cfg = tmp_path / "stream.yaml"
@@ -59,12 +56,14 @@ def test_runtime_config_surfaces_stream_config(
         encoding="utf-8",
     )
     settings = Settings(
-        recording_config="/nonexistent/recording.yaml", stream_config=str(cfg)
+        data_dir=str(tmp_path / "data"),
+        recording_config="/nonexistent/recording.yaml",
+        stream_config=str(cfg),
     )
     http_client = httpx.AsyncClient(
         transport=httpx.MockTransport(fake_recorder.handler)
     )
-    app = create_orchestrator_app(settings, store=store, http_client=http_client)
+    app = create_orchestrator_app(settings, http_client=http_client)
     with TestClient(app) as client:
         stream = client.get("/api/v1/config").json()["stream"]
 
@@ -76,7 +75,7 @@ def test_runtime_config_surfaces_stream_config(
 
 
 def test_runtime_config_surfaces_recording_config(
-    tmp_path: Path, fake_recorder, store: RunStore
+    tmp_path: Path, fake_recorder
 ) -> None:
     """With a RECORDING_CONFIG loaded, GET /config exposes its default_topics,
     expected_hz patterns (those with a fixed Hz), and robot_name so the UI can
@@ -96,11 +95,11 @@ def test_runtime_config_surfaces_recording_config(
         "\n",
         encoding="utf-8",
     )
-    settings = Settings(recording_config=str(cfg))
+    settings = Settings(data_dir=str(tmp_path / "data"), recording_config=str(cfg))
     http_client = httpx.AsyncClient(
         transport=httpx.MockTransport(fake_recorder.handler)
     )
-    app = create_orchestrator_app(settings, store=store, http_client=http_client)
+    app = create_orchestrator_app(settings, http_client=http_client)
     with TestClient(app) as client:
         defaults = client.get("/api/v1/config").json()["defaults"]
 

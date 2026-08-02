@@ -1,21 +1,29 @@
-"""Application factory for api_orchestrator (Stage 1: run lifecycle).
+"""Application factory for api_orchestrator — capture store v2.
 
-Builds the FastAPI app on the shared ``kairos_common.create_app`` plumbing and
-wires the run-lifecycle stack:
+Builds the FastAPI app on ``kairos_common.create_app`` and wires the v2 stack:
+the :class:`~api_orchestrator.store.CaptureStore`, the capture / record /
+dataset services, the digest job and the reconciler.
 
-- a :class:`~api_orchestrator.store.RunStore` (SQLite, source of truth),
-- a :class:`~api_orchestrator.recorder_client.RecorderClient` (httpx, 3s + retry),
-- a :class:`~api_orchestrator.runs.RunService` on ``app.state.run_service``,
-- the ``record`` and ``runs`` routers,
-- an extended ``/readyz`` that pings the recorder, and
-- startup reconciliation of interrupted runs.
+Two things happen in a deliberate order and are worth stating:
 
-The factory accepts injected ``store`` / ``http_client`` so tests can supply an
-in-memory DB and an ``httpx.MockTransport`` without a live recorder.
+**Identity is settled synchronously, before anything is constructed.**
+``prepare_store`` creates the directory layout, reads or mints ``instance.json``
+and checks the ``objects``/``.trash``/``.incoming`` filesystem invariant. Every
+service below is keyed by ``instance_id``, so it cannot be deferred to startup.
+A corrupt ``instance.json`` therefore fails app construction — which is correct:
+starting with a fresh id would orphan every replica row on the volume.
+
+**Rebuild and delete-resume happen in the lifespan, not the factory.** They are
+async (the recorder is asked which captures are live, §8 rule 1) and they must
+run once per process rather than once per app object.
+
+The factory accepts injected ``store`` / ``http_client`` so tests can supply a
+temporary data directory and an ``httpx.MockTransport`` without a live recorder.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -25,6 +33,7 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.routing import APIRoute
 from kairos_common import (
+    ApiError,
     Settings,
     create_app,
     get_settings,
@@ -36,15 +45,25 @@ from kairos_common.recording_config import RecordingConfig
 from kairos_common.stream_config import StreamConfig
 
 from api_orchestrator import bag_import
+from api_orchestrator import views as views_mod
+from api_orchestrator.bootstrap import bootstrap_store, prepare_store
+from api_orchestrator.captures import CaptureService
 from api_orchestrator.config_catalog import ConfigCatalog
+from api_orchestrator.dataset_service import DatasetService
+from api_orchestrator.digest import DigestJob
 from api_orchestrator.dora_runner_client import DoraRunnerClient
 from api_orchestrator.events import EventHub
+from api_orchestrator.health import StoreHealth
 from api_orchestrator.importer_client import ImporterClient
+from api_orchestrator.models import Capture
 from api_orchestrator.monitor_client import MonitorClient
+from api_orchestrator.reconciler import Reconciler
+from api_orchestrator.record_service import RecordService
 from api_orchestrator.recorder_client import RecorderClient
+from api_orchestrator.routers import batches as batches_router
+from api_orchestrator.routers import captures as captures_router
 from api_orchestrator.routers import config as config_router
 from api_orchestrator.routers import datasets as datasets_router
-from api_orchestrator.routers import episodes as episodes_router
 from api_orchestrator.routers import events as events_router
 from api_orchestrator.routers import files as files_router
 from api_orchestrator.routers import imports as imports_router
@@ -53,28 +72,21 @@ from api_orchestrator.routers import pipelines as pipelines_router
 from api_orchestrator.routers import plans as plans_router
 from api_orchestrator.routers import record as record_router
 from api_orchestrator.routers import retention as retention_router
-from api_orchestrator.routers import runs as runs_router
+from api_orchestrator.routers import store as store_router
 from api_orchestrator.routers import system as system_router
 from api_orchestrator.routers import topics as topics_router
 from api_orchestrator.routers import transfer as transfer_router
 from api_orchestrator.routers import validation as validation_router
-from api_orchestrator.runs import RunService
-from api_orchestrator.store import RunStore
+from api_orchestrator.store import CaptureStore
 from api_orchestrator.streamer_client import StreamerClient
 
 logger = logging.getLogger("kairos")
 
 SERVICE_NAME = "api_orchestrator"
-DEFAULT_DB_PATH = "/data/kairos.db"
 
 
 def _load_recording_config(settings: Settings) -> RecordingConfig | None:
-    """Load RECORDING_CONFIG if present; tolerate its absence in dev/tests.
-
-    ``default_topics`` is only needed when a start request omits ``topics``;
-    if the file is missing or invalid we log and continue with ``None`` so the
-    service still boots (an omitted-topics start then returns a clear 400).
-    """
+    """Load RECORDING_CONFIG if present; tolerate its absence in dev/tests."""
     path = Path(resolve_config_path(settings.recording_config))
     if not path.exists():
         logger.warning("RECORDING_CONFIG not found", extra={"path": str(path)})
@@ -87,12 +99,7 @@ def _load_recording_config(settings: Settings) -> RecordingConfig | None:
 
 
 def _load_stream_config(settings: Settings) -> StreamConfig | None:
-    """Load STREAM_CONFIG if present; tolerate its absence (UI hint only).
-
-    Surfaced via ``GET /api/v1/config`` ``stream`` so the Stream tab can open
-    its configured preview panes. Missing/invalid -> ``None`` (the UI then opens
-    a single empty pane); never blocks startup.
-    """
+    """Load STREAM_CONFIG if present; tolerate its absence (UI hint only)."""
     path = Path(resolve_config_path(settings.stream_config))
     if not path.exists():
         return None
@@ -104,7 +111,6 @@ def _load_stream_config(settings: Settings) -> StreamConfig | None:
 
 
 def _component_state(ok: bool) -> str:
-    """Render component readiness as the spec's string vocabulary."""
     return "ok" if ok else "unreachable"
 
 
@@ -114,13 +120,14 @@ def _override_readyz(
     monitor: MonitorClient,
     streamer: StreamerClient,
 ) -> None:
-    """Replace the skeleton ``/readyz`` with one that checks the recorder.
+    """Replace the skeleton ``/readyz`` with one that checks the downstreams.
 
-    ``create_app`` installs a stub ``/readyz``; we drop it and register the
-    orchestrator's version, which reports per-component reachability
-    (``components: {recorder, monitor, streamer}``) per
-    ``api_orchestrator.md``. The recorder gates readiness; monitor/streamer
-    outages are degraded dependencies.
+    The recorder gates readiness; monitor and streamer outages are degraded
+    dependencies. The store's own condition is deliberately NOT folded in here:
+    a SUSPECT catalog still records and still serves reviews (§9-3), so failing
+    readiness would take the service out of rotation for a condition it is
+    designed to keep working through. ``GET /api/v1/store/health`` is where that
+    lives instead.
     """
     app.router.routes = [
         r
@@ -148,29 +155,36 @@ def _override_readyz(
 def create_orchestrator_app(
     settings: Settings | None = None,
     *,
-    store: RunStore | None = None,
+    store: CaptureStore | None = None,
     http_client: httpx.AsyncClient | None = None,
 ) -> FastAPI:
     """Build the wired api_orchestrator FastAPI app.
 
     Args:
         settings: Shared settings (defaults to the cached instance).
-        store: Injected runs store (defaults to SQLite at ``/data/kairos.db``).
-        http_client: Injected httpx client for the recorder (defaults to a real
-            ``AsyncClient``; tests pass one backed by a ``MockTransport``).
+        store: Injected catalog. Defaults to ``<data_dir>/kairos.db``.
+        http_client: Injected httpx client for the downstream services (tests
+            pass one backed by a ``MockTransport``).
     """
     settings = settings or get_settings()
     recording_config = _load_recording_config(settings)
     stream_config = _load_stream_config(settings)
 
-    run_store = store or RunStore(DEFAULT_DB_PATH)
+    health = StoreHealth()
+    prepared = prepare_store(settings.data_dir, health)
+    layout = prepared.layout
+    instance_id = prepared.instance_id
+
+    capture_store = store or CaptureStore(
+        layout.db, data_dir=layout.data_dir, instance_id=instance_id
+    )
+    capture_store.set_instance_id(instance_id)
+
     owns_client = http_client is None
-    # trust_env=False: every downstream is LAN-internal (localhost or the
-    # robot's LAN IP), so a host-injected HTTP(S)_PROXY must never be used —
-    # behind a corporate proxy it would black-hole the robot-edge calls.
+    # trust_env=False: every downstream is LAN-internal, so a host-injected
+    # HTTP(S)_PROXY must never be used — behind a corporate proxy it would
+    # black-hole the robot-edge calls.
     client = http_client or httpx.AsyncClient(trust_env=False)
-    # Downstream hosts default to localhost (single-host deploy); for the
-    # robot-edge split they point at the robot host (see Settings.*_host).
     recorder = RecorderClient(
         f"http://{settings.recorder_host}:{settings.recorder_port}", client
     )
@@ -183,10 +197,6 @@ def create_orchestrator_app(
     dora_runner = DoraRunnerClient(
         f"http://{settings.dora_runner_host}:{settings.dora_runner_port}", client
     )
-    # Importer sidecar (split deploy only): pulls finalised runs from the robot
-    # after Collect Save when transfer.auto_pull_on_save is on. Single-host
-    # deploys have no importer container and keep the flag false, so this
-    # client is constructed but never called there.
     importer = ImporterClient(
         f"http://{settings.importer_host}:{settings.importer_port}", client
     )
@@ -194,72 +204,141 @@ def create_orchestrator_app(
     config_catalog = ConfigCatalog(
         settings.config_dir, settings.config_local_dir, settings.robot
     )
-    service = RunService(
-        run_store,
+
+    app = create_app(SERVICE_NAME, settings=settings)
+
+    async def on_first_review(capture: Capture) -> None:
+        """The side effects §4.1 moved off the retired ``POST /episodes``.
+
+        Both are best-effort *after* the review is durable: the review is saved
+        whether or not the batch counter can be bumped or the robot is
+        reachable, because losing a label is worse than losing a count.
+        """
+        if capture.batch_id:
+            capture_store.increment_episodes_recorded(capture.batch_id)
+        config = getattr(app.state, "recording_config", None)
+        if config is None or not config.transfer.auto_pull_on_save:
+            return
+        try:
+            await importer.pull(capture.capture_id)
+            logger.info(
+                "importer pull queued", extra={"capture_id": capture.capture_id}
+            )
+        except ApiError as exc:
+            # Single-host deploys have no importer; a robot may be offline. The
+            # manual pull and the next save both remain recovery paths.
+            logger.warning(
+                "importer pull failed",
+                extra={"capture_id": capture.capture_id, "error": exc.code},
+            )
+
+    capture_service = CaptureService(
+        capture_store,
+        layout,
+        health,
+        instance_id=instance_id,
+        on_first_review=on_first_review,
+    )
+    digest = DigestJob(
+        capture_store, layout, health, instance_id=instance_id, recorder=recorder
+    )
+    record_service = RecordService(
+        capture_store,
+        layout,
+        capture_service,
         recorder,
         recording_config,
         event_hub,
-        recorded_dir=settings.recorded_dir,
-        # Same data root dora_runner writes report/ under, so the run-detail
-        # view can read validation/dataset_export summaries.
-        data_dir=settings.data_dir,
-        # Layer 0 of the stop-time quick check (metrics snapshot + incidents) and
-        # the record-start baseline pull through the same monitor client.
+        instance_id=instance_id,
         monitor=monitor,
+        digest=digest,
+        # A callable, not a value: the Config tab can switch robots at runtime
+        # and the NEXT recording must carry the new one into its manifest.
+        active_robot=config_catalog.active_robot,
+    )
+    # Views regeneration runs off the request path: it walks every membership
+    # and rebuilds a symlink tree, which a dataset mutation should not wait on.
+    # A single-slot flag rather than a task per change — ten rapid edits need
+    # one regeneration, not ten, and the last one is the only correct answer.
+    views_refresh = _ViewsRefresher(capture_store, layout)
+    dataset_service = DatasetService(
+        capture_store,
+        layout,
+        instance_id=instance_id,
+        on_change=views_refresh.schedule,
+    )
+    reconciler = Reconciler(
+        capture_store,
+        layout,
+        health,
+        capture_service,
+        digest,
+        instance_id=instance_id,
+        recorder=recorder,
     )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        # Startup: reconcile any runs left mid-recording by a previous process.
         await event_hub.start()
+        # Rebuild (if the index is untrustworthy) and finish any interrupted
+        # deletion. A StoreStartupError from here is deliberately NOT caught:
+        # an unreadable ledger means a rebuild would resurrect destroyed
+        # captures, and starting anyway is the one outcome that cannot be undone.
+        report = await bootstrap_store(
+            capture_store, prepared, capture_service, recorder=recorder
+        )
+        if report is not None:
+            dataset_service.restore_from_ledger()
         try:
-            await service.reconcile_on_startup()
-        except Exception:  # noqa: BLE001 - never block startup on reconcile.
+            await record_service.reconcile_on_startup()
+        except Exception:  # noqa: BLE001 - never block startup on reconcile
             logger.exception("startup reconciliation failed")
+        await reconciler.start()
         yield
-        # Let any in-flight stop-time quick-check settlement finish (and persist)
-        # before we tear down the HTTP client it may still be using.
-        await service.drain_settlements()
+        await reconciler.stop()
+        await views_refresh.drain()
+        # Let in-flight work finish (and persist) before the HTTP client it may
+        # still be using is torn down.
+        await record_service.drain_settlements()
+        await digest.drain()
         await event_hub.stop()
-        # Shutdown: close the client only if we created it here.
         if owns_client:
             await client.aclose()
 
-    app = create_app(SERVICE_NAME, settings=settings)
     app.router.lifespan_context = lifespan
-    app.state.run_service = service
-    app.state.run_store = run_store
+
+    app.state.capture_store = capture_store
+    app.state.capture_service = capture_service
+    app.state.record_service = record_service
+    app.state.dataset_service = dataset_service
+    app.state.digest_job = digest
+    app.state.reconciler = reconciler
+    app.state.views_refresher = views_refresh
+    app.state.store_health = health
+    app.state.data_layout = layout
+    app.state.instance_id = instance_id
     app.state.recorder_client = recorder
     app.state.monitor_client = monitor
     app.state.streamer_client = streamer
     app.state.dora_runner_client = dora_runner
     app.state.importer_client = importer
-    # In-flight rosbag imports (POST /api/v1/imports). Progress only — the run
-    # row and the bag on disk are the durable outcome, and both appear only
-    # once an import has finalised, so this is safe to lose on restart.
+    # In-flight bag imports. Progress only — the capture row and the bytes on
+    # disk are the durable outcome, and both appear only once an import has
+    # finalised, so this is safe to lose on restart.
     app.state.import_registry = bag_import.ImportRegistry()
     app.state.event_hub = event_hub
     app.state.config_catalog = config_catalog
     # Live RECORDING_CONFIG: read at request time by GET /api/v1/config and
-    # mutated in place by PUT /api/v1/config/recording so an edit shows up
-    # without a restart (the RunService holds its own copy for next-start topic
-    # resolution; both are updated together on save).
+    # mutated in place by PUT /api/v1/config/recording, so an edit shows up
+    # without a restart.
     app.state.recording_config = recording_config
-    # The active recording-config file path (a robot/recording selection re-points
-    # it, possibly into a gitignored config/local/<robot>/...). GET/PUT
-    # /api/v1/config/recording read/write this path — store the resolved path so
-    # a PUT writes the same local-tree file the startup load read.
     app.state.recording_config_path = resolve_config_path(settings.recording_config)
-    # Live STREAM_CONFIG: read at request time by GET /api/v1/config and hot-swapped
-    # by a stream/robot selection, so the Stream tab's initial panes reflect a
-    # switch without a restart.
     app.state.stream_config = stream_config
 
     app.include_router(config_router.router)
     app.include_router(record_router.router)
-    app.include_router(runs_router.router)
-    app.include_router(episodes_router.batches_router)
-    app.include_router(episodes_router.episodes_router)
+    app.include_router(captures_router.router)
+    app.include_router(batches_router.router)
     app.include_router(topics_router.router)
     app.include_router(system_router.router)
     app.include_router(events_router.router)
@@ -270,6 +349,8 @@ def create_orchestrator_app(
     app.include_router(validation_router.presets_router)
     app.include_router(files_router.router)
     app.include_router(datasets_router.router)
+    app.include_router(store_router.router)
+    app.include_router(store_router.views_router)
     app.include_router(retention_router.router)
     app.include_router(transfer_router.router)
     app.include_router(imports_router.router)
@@ -279,21 +360,57 @@ def create_orchestrator_app(
     return app
 
 
+class _ViewsRefresher:
+    """Regenerates ``views/`` in the background, coalescing bursts.
+
+    A dataset edit should not block on a filesystem walk, and a burst of edits
+    should not queue a walk each. So a request only sets a flag; one worker
+    drains it and regenerates once for however many changes arrived while it
+    was busy. The tree is derived state — running it once at the end is not a
+    shortcut, it is the same answer for less work.
+    """
+
+    def __init__(self, store: CaptureStore, layout) -> None:  # noqa: ANN001
+        self._store = store
+        self._layout = layout
+        self._task: asyncio.Task[None] | None = None
+        self._pending = False
+
+    def schedule(self) -> None:
+        """Mark the tree stale; start a worker if one is not already running."""
+        self._pending = True
+        if self._task is not None and not self._task.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No loop (a synchronous caller, or a test driving the service
+            # directly). The reconciler and the manual refresh endpoint both
+            # still rebuild the tree, so this is a deferral, not a loss.
+            return
+        self._task = loop.create_task(self._run())
+
+    async def _run(self) -> None:
+        while self._pending:
+            self._pending = False
+            try:
+                await asyncio.to_thread(
+                    views_mod.regenerate, self._layout, self._store.list_view_entries()
+                )
+            except Exception:  # noqa: BLE001 - a stale tree must not crash the app
+                logger.exception("views regeneration failed")
+
+    async def drain(self) -> None:
+        """Await an in-flight regeneration (shutdown, and test determinism)."""
+        task = self._task
+        if task is not None and not task.done():
+            await asyncio.gather(task, return_exceptions=True)
+
+
 def _config_defaults(
     recording_config: RecordingConfig | None, settings: Settings
 ) -> dict[str, object]:
-    """Build the ``defaults`` block of ``GET /api/v1/config`` from the loaded
-    RECORDING_CONFIG, so the UI can pre-select recording topics and seed the
-    monitor view without hardcoding anything (see the Record / Monitor tabs).
-
-    - ``default_topics``: topics recorded / monitored by default (pre-checked in
-      the Record tab; flagged as "configured" in the Monitor tab).
-    - ``expected_hz``: pattern -> expected Hz, for the Monitor Late judgement.
-      Patterns whose ``hz`` is omitted (dynamically learned) are skipped.
-    - ``robot_name``: shown so operators can confirm which robot config is live.
-    - ``ros_domain_id``: the active ROS 2 domain (operator context; shown in the
-      header next to the connection badge). Independent of RECORDING_CONFIG.
-    """
+    """Build the ``defaults`` block of ``GET /api/v1/config``."""
     if recording_config is None:
         return {
             "expected_hz": {},
@@ -317,8 +434,7 @@ def _config_defaults(
 
 # Static fallback used when dora_runner is unreachable so GET /api/v1/config
 # never 500s. Mirrors fast_validation's params_schema (the only form the UI
-# strictly needs to keep working). Dynamic forms (incl. loss_report's
-# config-driven params) come from dora_runner /pipelines when reachable.
+# strictly needs). Dynamic forms come from dora_runner /pipelines when reachable.
 _FALLBACK_PIPELINE_FORMS: dict[str, object] = {
     "fast_validation": {
         "type": "object",
@@ -329,15 +445,7 @@ _FALLBACK_PIPELINE_FORMS: dict[str, object] = {
 
 
 async def _pipeline_forms(request: Request) -> dict[str, object]:
-    """Build ``schemas.pipeline_forms`` from dora_runner's ``/pipelines``.
-
-    Maps each pipeline ``id`` -> its JSON-Schema (``params_schema``, serialized
-    under the ``schema`` alias). The first successful result is cached on
-    ``app.state`` so we don't call dora_runner on every config read (the
-    registry is static). If dora_runner is unreachable and nothing is cached we
-    fall back to the static ``fast_validation`` shape, so ``GET /api/v1/config``
-    never 500s.
-    """
+    """Build ``schemas.pipeline_forms`` from dora_runner's ``/pipelines``."""
     cached = getattr(request.app.state, "pipeline_forms_cache", None)
     if cached:
         return cached
@@ -349,7 +457,7 @@ async def _pipeline_forms(request: Request) -> dict[str, object]:
             for item in items
             if isinstance(item, dict) and item.get("id")
         }
-    except Exception:  # noqa: BLE001 - config must never 500 on a dora outage.
+    except Exception:  # noqa: BLE001 - config must never 500 on a dora outage
         logger.warning("pipeline_forms: dora_runner unreachable; using fallback")
         forms = {}
     if not forms:
@@ -359,11 +467,7 @@ async def _pipeline_forms(request: Request) -> dict[str, object]:
 
 
 def _stream_payload(stream_config: StreamConfig | None) -> dict[str, object]:
-    """Build the ``stream`` block of ``GET /api/v1/config`` from STREAM_CONFIG.
-
-    Decides the Stream tab's initial preview panes. With no config, the UI opens
-    a single empty pane (``panes: []``), so the shape is always present.
-    """
+    """Build the ``stream`` block of ``GET /api/v1/config``."""
     if stream_config is None:
         return {"columns": 2, "panes": []}
     return {
@@ -373,12 +477,10 @@ def _stream_payload(stream_config: StreamConfig | None) -> dict[str, object]:
 
 
 def _register_root_and_config(app: FastAPI, settings: Settings) -> None:
-    """Register the Stage 0 root + ``GET /api/v1/config``.
+    """Register the root and ``GET /api/v1/config``.
 
-    The payload keeps its Stage 0 shape (the frontend render-gate depends on it)
-    but ``defaults`` and ``stream`` are sourced from the **live** app.state at
-    request time (``recording_config`` / ``stream_config``), so a Config-tab edit
-    (PUT /api/v1/config/recording) or a selection is reflected without a restart.
+    ``defaults`` and ``stream`` are sourced from the LIVE app.state at request
+    time, so a Config-tab edit is reflected without a restart.
     """
 
     @app.get("/")
@@ -387,8 +489,6 @@ def _register_root_and_config(app: FastAPI, settings: Settings) -> None:
 
     @app.get("/api/v1/config")
     async def runtime_config(request: Request) -> dict[str, object]:
-        # Read the live config off app.state so an in-place edit (PUT
-        # /api/v1/config/recording) shows up here without a restart.
         defaults = _config_defaults(request.app.state.recording_config, settings)
         stream = _stream_payload(getattr(request.app.state, "stream_config", None))
         return {
@@ -397,14 +497,10 @@ def _register_root_and_config(app: FastAPI, settings: Settings) -> None:
                 "events": "/api/v1/events",
                 "webrtc": settings.webrtc_public_url,
             },
-            # STUN/TURN for the WebRTC camera preview (WEBRTC_ICE_SERVERS). The
-            # browser passes these to RTCPeerConnection; the streamer uses the
-            # same set. Empty [] on same-LAN/direct (host candidates only).
             "ice_servers": settings.webrtc_ice_servers,
-            # v1's backend-driven tab registry is retired: Console v2 fixes its
-            # six role tabs in the frontend (src/v2/tabs.ts) and never reads
-            # this. The empty list stays as a tolerated legacy key so an old
-            # client deserializes cleanly; it advertises nothing.
+            # v1's backend-driven tab registry is retired; Console v2 fixes its
+            # tabs in the frontend. The empty list stays as a tolerated legacy
+            # key so an old client deserializes cleanly.
             "tabs": [],
             "defaults": defaults,
             "stream": stream,

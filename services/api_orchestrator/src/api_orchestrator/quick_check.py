@@ -1,13 +1,15 @@
 """Stop-time quick-check settlement (Layer 0 + Layer 1 + verdict).
 
 At recording stop the orchestrator settles a lightweight two-layer "quick check"
-and persists it on the run (``Run.quick_check``). This module holds the pure,
+and persists it on the capture (``Capture.quick_check``). This module holds the
+pure,
 deterministic pieces of that settlement — the MCAP summary reader, the
 expected-Hz resolver, the incident-window filter, the per-layer builders, and
 the verdict rules. The I/O orchestration (which downstream calls to make, with
 which timeouts, and when to schedule it off the stop path) lives in
-:class:`~api_orchestrator.runs.RunService`; keeping the logic here pure makes the
-verdict cases trivially unit-testable without a live monitor or recorder.
+:class:`~api_orchestrator.record_service.RecordService`; keeping the logic here
+pure makes the verdict cases trivially unit-testable without a live monitor or
+recorder.
 
 Division of labor (settled with the user): topic_monitor does always-on live
 detection, the orchestrator settles ONE quick check at stop, and dora_runner
@@ -100,7 +102,7 @@ def resolve_expected_hz(config: RecordingConfig | None, topic: str) -> float | N
     return None
 
 
-def read_mcap_summary(run_dir: Path) -> McapSummary | None:
+def read_mcap_summary(capture_dir: Path) -> McapSummary | None:
     """Read ONLY the summary/statistics section of the run's MCAP bag.
 
     Returns:
@@ -115,7 +117,7 @@ def read_mcap_summary(run_dir: Path) -> McapSummary | None:
     """
     from mcap.reader import make_reader
 
-    mcap_path = _find_mcap(run_dir)
+    mcap_path = _find_mcap(capture_dir)
     if mcap_path is None:
         return None
     try:
@@ -143,11 +145,11 @@ def read_mcap_summary(run_dir: Path) -> McapSummary | None:
     )
 
 
-def _find_mcap(run_dir: Path) -> Path | None:
+def _find_mcap(capture_dir: Path) -> Path | None:
     """Return the run's ``.mcap`` file (first match), or ``None`` if absent."""
-    if not run_dir.is_dir():
+    if not capture_dir.is_dir():
         return None
-    files = sorted(run_dir.glob("*.mcap"))
+    files = sorted(capture_dir.glob("*.mcap"))
     return files[0] if files else None
 
 

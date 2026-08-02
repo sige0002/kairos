@@ -19,7 +19,7 @@ from fastapi import APIRouter, Request
 from kairos_common import utc_now_iso8601
 from pydantic import BaseModel, Field
 
-from api_orchestrator.store import RunStore
+from api_orchestrator.store import CaptureStore
 
 router = APIRouter(prefix="/api/v1/plans", tags=["plans"])
 
@@ -44,8 +44,8 @@ class PlanCatalogPut(BaseModel):
     projects: list[PlanProject]
 
 
-def _store(request: Request) -> RunStore:
-    return request.app.state.run_store
+def _store(request: Request) -> CaptureStore:
+    return request.app.state.capture_store
 
 
 @router.get("")

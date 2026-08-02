@@ -14,7 +14,6 @@ from pathlib import Path
 import httpx
 import yaml
 from api_orchestrator.app_factory import create_orchestrator_app
-from api_orchestrator.store import RunStore
 from fastapi.testclient import TestClient
 from kairos_common import Settings
 
@@ -48,6 +47,7 @@ def _tree(tmp_path: Path, *, alerts: dict | None = None) -> Path:
 
 def _client(root: Path, fake_recorder) -> TestClient:
     settings = Settings(
+        data_dir=str(root.parent / "data"),
         robot=_ROBOT,
         config_dir=str(root),
         config_local_dir=str(root / "local"),
@@ -57,9 +57,7 @@ def _client(root: Path, fake_recorder) -> TestClient:
     http_client = httpx.AsyncClient(
         transport=httpx.MockTransport(fake_recorder.handler)
     )
-    app = create_orchestrator_app(
-        settings, store=RunStore(":memory:"), http_client=http_client
-    )
+    app = create_orchestrator_app(settings, http_client=http_client)
     return TestClient(app)
 
 

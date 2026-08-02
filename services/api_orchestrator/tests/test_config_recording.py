@@ -15,7 +15,6 @@ from pathlib import Path
 import httpx
 import yaml
 from api_orchestrator.app_factory import create_orchestrator_app
-from api_orchestrator.store import RunStore
 from fastapi.testclient import TestClient
 from kairos_common import Settings
 
@@ -45,15 +44,14 @@ def _client(tmp_path: Path, fake_recorder, *, seed: dict | None = None) -> TestC
     if seed is not None:
         cfg_path.write_text(yaml.safe_dump(seed), encoding="utf-8")
     settings = Settings(
+        data_dir=str(tmp_path / "data"),
         recording_config=str(cfg_path),
         stream_config="/nonexistent/stream.yaml",
     )
     http_client = httpx.AsyncClient(
         transport=httpx.MockTransport(fake_recorder.handler)
     )
-    app = create_orchestrator_app(
-        settings, store=RunStore(":memory:"), http_client=http_client
-    )
+    app = create_orchestrator_app(settings, http_client=http_client)
     return TestClient(app)
 
 

@@ -1,231 +1,520 @@
-"""Unit tests for the SQLite runs store (round-trip, paging, persistence)."""
+"""Capture store v2 — schema, CAS review saves, leases, replicas, datasets.
+
+The store is the queryable cache in front of the sidecars, so the tests that
+matter most are the ones about *disagreement*: a compare-and-swap that loses,
+a lease that expired, a display_index that must never be handed out twice.
+"""
 
 from __future__ import annotations
 
+import json
+import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
 
+import pytest
 from api_orchestrator.models import (
     Batch,
-    Run,
-    RunError,
-    RunState,
-    RunTopic,
+    Capture,
+    CaptureError,
+    CaptureState,
+    CaptureTopic,
     Split,
     TopicQos,
+    ValidationTemplate,
 )
-from api_orchestrator.store import RunStore
-from kairos_common import Compression, Durability, Reliability
+from api_orchestrator.store import (
+    SCHEMA_VERSION,
+    CaptureStore,
+    DatasetMemberExistsError,
+)
+from kairos_common.ids import new_capture_id, new_dataset_id
+from kairos_common.rebuild import CaptureRow, ReplicaRow, ReplicaState
+
+INSTANCE = "11111111-2222-3333-4444-555555555555"
 
 
-def _topic(name: str) -> RunTopic:
-    return RunTopic(
-        name=name,
-        type="std_msgs/msg/Header",
-        qos=TopicQos(
-            reliability=Reliability.best_effort,
-            durability=Durability.volatile,
-            depth=1,
-        ),
-    )
+def _make_capture(**kwargs: object) -> Capture:
+    """A minimal terminal capture; override any field per test."""
+    defaults: dict[str, object] = {
+        "capture_id": new_capture_id(),
+        "run_id": "run_20260801_120000",
+        "source_instance_id": INSTANCE,
+        "state": CaptureState.completed,
+        "operator": "alice",
+        "task": "pick_place",
+        "robot": "myrobot",
+        "started_at": "2026-08-01T12:00:00.000Z",
+        "ended_at": "2026-08-01T12:01:00.000Z",
+    }
+    defaults.update(kwargs)
+    return Capture(**defaults)  # type: ignore[arg-type]
 
 
-def test_create_and_get_round_trips_all_fields() -> None:
-    store = RunStore(":memory:")
-    run = Run(
-        run_id="run_20260101_000000",
-        state=RunState.recording,
-        started_at="2026-01-01T00:00:00.000Z",
-        topics=[_topic("/tf")],
-        compression=Compression.zstd,
-        split=Split(max_size_mb=512, max_duration_s=None),
-        error=RunError(code="x", message="y"),
-    )
-    store.create(run)
-
-    got = store.get("run_20260101_000000")
-    assert got is not None
-    assert got.model_dump() == run.model_dump()
-    store.close()
+@pytest.fixture
+def store(tmp_path: Path) -> Iterator[CaptureStore]:
+    s = CaptureStore(tmp_path / "kairos.db", data_dir=tmp_path)
+    yield s
+    s.close()
 
 
-def test_update_patches_only_named_fields() -> None:
-    store = RunStore(":memory:")
-    store.create(Run(run_id="run_a", state=RunState.created))
-
-    updated = store.update("run_a", state=RunState.completed, message_count=10)
-    assert updated.state is RunState.completed
-    assert updated.message_count == 10
-    # Clearing error to None is supported.
-    cleared = store.update("run_a", error=None)
-    assert cleared.error is None
-    store.close()
-
-
-def test_list_by_states_filters() -> None:
-    store = RunStore(":memory:")
-    store.create(Run(run_id="run_a", state=RunState.recording))
-    store.create(Run(run_id="run_b", state=RunState.completed))
-    store.create(Run(run_id="run_c", state=RunState.stopping))
-
-    live = store.list_by_states([RunState.recording, RunState.stopping])
-    assert {r.run_id for r in live} == {"run_a", "run_c"}
-    store.close()
-
-
-def test_pagination_cursor_is_stable(tmp_path: Path) -> None:
-    """Paging on a file-backed DB returns every row once, newest first."""
-    store = RunStore(tmp_path / "kairos.db")
-    for i in range(5):
-        store.create(Run(run_id=f"run_{i}", state=RunState.completed))
-
-    page1, cursor1 = store.list_runs(limit=2)
-    assert [r.run_id for r in page1] == ["run_4", "run_3"]
-    assert cursor1 is not None
-
-    page2, cursor2 = store.list_runs(limit=2, cursor=cursor1)
-    assert [r.run_id for r in page2] == ["run_2", "run_1"]
-
-    page3, cursor3 = store.list_runs(limit=2, cursor=cursor2)
-    assert [r.run_id for r in page3] == ["run_0"]
-    assert cursor3 is None
-
-
-def test_file_db_persists_across_instances(tmp_path: Path) -> None:
-    """A file-backed store survives reopening (real /data/kairos.db behavior)."""
-    db = tmp_path / "kairos.db"
-    RunStore(db).create(Run(run_id="run_persist", state=RunState.completed))
-
-    reopened = RunStore(db)
-    assert reopened.get("run_persist") is not None
-
-
-def test_file_db_sets_wal_and_user_version(tmp_path: Path) -> None:
-    """A file-backed store enables WAL and stamps the schema user_version."""
-    import sqlite3
-
-    db = tmp_path / "kairos.db"
-    RunStore(db)  # init applies the pragmas
-
-    conn = sqlite3.connect(db)
-    try:
-        assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
-        # Bumped to 2 when the runs.quick_check column was added (see _USER_VERSION).
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
-    finally:
+class TestSchema:
+    def test_fresh_db_is_stamped_with_the_v2_user_version(self, tmp_path: Path) -> None:
+        db = tmp_path / "kairos.db"
+        store = CaptureStore(db, data_dir=tmp_path)
+        store.close()
+        conn = sqlite3.connect(db)
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         conn.close()
 
+    def test_fresh_db_is_not_reported_as_discarded(self, tmp_path: Path) -> None:
+        store = CaptureStore(tmp_path / "kairos.db", data_dir=tmp_path)
+        # A database that never existed was not thrown away; only a version
+        # mismatch is, and the caller uses this flag to decide whether a full
+        # rebuild is mandatory (§8).
+        assert store.was_discarded is False
+        store.close()
 
-def test_memory_db_skips_wal(tmp_path: Path) -> None:
-    """An in-memory store never claims WAL (no file); it must still work."""
-    store = RunStore(":memory:")
-    with store._conn() as conn:  # noqa: SLF001 - assert the pragma outcome
-        assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() != "wal"
-    store.create(Run(run_id="mem", state=RunState.completed))
-    assert store.get("mem") is not None
-    store.close()
+    def test_a_wrong_version_db_is_discarded_and_recreated(
+        self, tmp_path: Path
+    ) -> None:
+        db = tmp_path / "kairos.db"
+        conn = sqlite3.connect(db)
+        conn.execute("PRAGMA user_version = 1")
+        conn.execute("CREATE TABLE runs (run_id TEXT)")
+        conn.execute("INSERT INTO runs VALUES ('run_old')")
+        conn.commit()
+        conn.close()
 
+        store = CaptureStore(db, data_dir=tmp_path)
+        assert store.was_discarded is True
+        # No migration: the v1 table is gone, not carried forward (alpha reset).
+        with pytest.raises(sqlite3.OperationalError):
+            store.execute_read("SELECT * FROM runs")
+        store.close()
 
-def test_migrate_adds_and_backfills_episodes_recorded(tmp_path: Path) -> None:
-    """A DB created before `episodes_recorded` existed gets the column added and
-    backfilled from its current episode count when the store reopens."""
-    import sqlite3
+    def test_reopening_a_v2_db_keeps_its_rows(self, tmp_path: Path) -> None:
+        db = tmp_path / "kairos.db"
+        first = CaptureStore(db, data_dir=tmp_path)
+        capture = first.create_capture(_make_capture())
+        first.close()
 
-    db = tmp_path / "kairos.db"
-    # Build a pre-migration `batches` table (no episodes_recorded) plus its
-    # episodes, exactly as an older schema would have left them.
-    conn = sqlite3.connect(db)
-    conn.executescript(
-        """
-        CREATE TABLE batches (
-            seq INTEGER PRIMARY KEY AUTOINCREMENT,
-            batch_id TEXT NOT NULL UNIQUE, robot TEXT,
-            project TEXT NOT NULL, task TEXT NOT NULL, condition TEXT,
-            operator TEXT, target_episodes INTEGER NOT NULL DEFAULT 30,
-            status TEXT NOT NULL DEFAULT 'active', ended_reason TEXT,
-            created_at TEXT, ended_at TEXT
-        );
-        CREATE TABLE episodes (
-            seq INTEGER PRIMARY KEY AUTOINCREMENT,
-            episode_id TEXT NOT NULL UNIQUE, batch_id TEXT NOT NULL,
-            run_id TEXT NOT NULL UNIQUE, index_in_batch INTEGER NOT NULL,
-            task_result TEXT, failure_reason TEXT, quality TEXT,
-            quality_source TEXT NOT NULL DEFAULT 'operator',
-            review_status TEXT NOT NULL DEFAULT 'pending',
-            created_at TEXT, updated_at TEXT
-        );
-        INSERT INTO batches (batch_id, project, task) VALUES ('batch_old', 'p', 't');
-        INSERT INTO episodes (episode_id, batch_id, run_id, index_in_batch)
-            VALUES ('ep1', 'batch_old', 'r1', 1), ('ep2', 'batch_old', 'r2', 2);
-        """
-    )
-    conn.commit()
-    conn.close()
-
-    # Reopening runs the additive migration: column added + backfilled to 2.
-    store = RunStore(db)
-    batch = store.get_batch("batch_old")
-    assert batch is not None
-    assert batch.episodes_recorded == 2
+        second = CaptureStore(db, data_dir=tmp_path)
+        assert second.was_discarded is False
+        assert second.get_capture(capture.capture_id) is not None
+        second.close()
 
 
-def test_batch_seq_allocates_per_robot_and_local_day() -> None:
-    """batch_seq is 1 + max over the same robot on the same local calendar day,
-    so it restarts at 1 per robot and each local morning."""
-    store = RunStore(":memory:")
-
-    def mk(bid: str, robot: str, created: str) -> int | None:
-        batch = store.create_batch(
-            Batch(batch_id=bid, robot=robot, project="p", task="t", created_at=created)
+class TestCaptureRoundTrip:
+    def test_json_columns_survive_a_write_and_read(self, store: CaptureStore) -> None:
+        capture = _make_capture(
+            topics=[
+                CaptureTopic(
+                    name="/joint_states",
+                    type="sensor_msgs/msg/JointState",
+                    qos=TopicQos(
+                        reliability="reliable", durability="volatile", depth=10
+                    ),
+                )
+            ],
+            split=Split(max_size_mb=512),
+            error=CaptureError(code="boom", message="it broke"),
         )
-        return batch.batch_seq
+        store.create_capture(capture)
 
-    # UTC times chosen mid-day so they map to the same local calendar day under
-    # any plausible server timezone; the day-2 stamp is >24h later, so it is a
-    # different local day everywhere.
-    assert mk("b1", "r1", "2026-07-13T05:00:00.000Z") == 1
-    assert mk("b2", "r1", "2026-07-13T06:00:00.000Z") == 2  # same robot + day
-    assert mk("b3", "r2", "2026-07-13T06:30:00.000Z") == 1  # other robot -> 1
-    assert mk("b4", "r1", "2026-07-15T05:00:00.000Z") == 1  # next day -> 1
-    store.close()
+        loaded = store.get_capture(capture.capture_id)
+        assert loaded is not None
+        assert loaded.topics[0].name == "/joint_states"
+        assert loaded.topics[0].qos is not None
+        assert loaded.topics[0].qos.depth == 10
+        assert loaded.split is not None and loaded.split.max_size_mb == 512
+        assert loaded.error is not None and loaded.error.code == "boom"
+
+    def test_an_unreviewed_capture_reads_back_at_revision_zero(
+        self, store: CaptureStore
+    ) -> None:
+        capture = store.create_capture(_make_capture())
+        loaded = store.get_capture(capture.capture_id)
+        assert loaded is not None
+        # Revision 0 is the spelling of "no record.json exists" (§4).
+        assert loaded.review_revision == 0
+        assert loaded.review_status == "pending"
+
+    def test_run_id_may_be_null_for_many_captures(self, store: CaptureStore) -> None:
+        # run_id is UNIQUE, and SQLite treats every NULL as distinct — which is
+        # what lets a ledger-only tombstone row (no run_id recoverable) coexist
+        # with another.
+        store.create_capture(_make_capture(run_id=None))
+        store.create_capture(_make_capture(run_id=None))
+        assert len(store.list_captures(limit=10)[0]) == 2
 
 
-def test_migrate_backfills_batch_seq_per_robot_and_day(tmp_path: Path) -> None:
-    """A DB created before `batch_seq` existed gets it added and backfilled per
-    (robot, local day) in created_at order (not insertion order)."""
-    import sqlite3
+class TestListFilters:
+    @pytest.fixture
+    def populated(self, store: CaptureStore) -> CaptureStore:
+        store.create_capture(
+            _make_capture(operator="alice", task="pick", robot="r1", run_id="run_a")
+        )
+        store.create_capture(
+            _make_capture(
+                operator="bob",
+                task="place",
+                robot="r2",
+                run_id="run_b",
+                review_status="adopted",
+                batch_id="batch_1",
+            )
+        )
+        store.create_capture(
+            _make_capture(
+                operator="alice",
+                task="pick",
+                robot="r1",
+                run_id="run_c",
+                state=CaptureState.failed,
+            )
+        )
+        return store
 
-    db = tmp_path / "kairos.db"
-    conn = sqlite3.connect(db)
-    conn.executescript(
-        """
-        CREATE TABLE batches (
-            seq INTEGER PRIMARY KEY AUTOINCREMENT,
-            batch_id TEXT NOT NULL UNIQUE, robot TEXT,
-            project TEXT NOT NULL, task TEXT NOT NULL, condition TEXT,
-            operator TEXT, target_episodes INTEGER NOT NULL DEFAULT 30,
-            status TEXT NOT NULL DEFAULT 'active', ended_reason TEXT,
-            created_at TEXT, ended_at TEXT,
-            episodes_recorded INTEGER NOT NULL DEFAULT 0
-        );
-        """
-    )
-    # Inserted out of created_at order to prove the backfill orders by
-    # created_at (b_early before b_late) rather than by row/seq.
-    conn.executemany(
-        "INSERT INTO batches (batch_id, robot, project, task, created_at) "
-        "VALUES (?, ?, 'p', 't', ?)",
+    @pytest.mark.parametrize(
+        ("filters", "expected"),
         [
-            ("b_late", "r1", "2026-07-13T09:00:00.000Z"),
-            ("b_early", "r1", "2026-07-13T05:00:00.000Z"),
-            ("b_r2", "r2", "2026-07-13T06:00:00.000Z"),
-            ("b_day2", "r1", "2026-07-15T05:00:00.000Z"),
+            ({"operator": "alice"}, 2),
+            ({"task": "place"}, 1),
+            ({"robot": "r1"}, 2),
+            ({"state": "failed"}, 1),
+            ({"review_status": "adopted"}, 1),
+            ({"batch_id": "batch_1"}, 1),
+            ({"operator": "alice", "state": "completed"}, 1),
+            ({"operator": "nobody"}, 0),
         ],
     )
-    conn.commit()
-    conn.close()
+    def test_filters_select_the_expected_rows(
+        self, populated: CaptureStore, filters: dict[str, str], expected: int
+    ) -> None:
+        items, _ = populated.list_captures(limit=50, **filters)
+        assert len(items) == expected
 
-    store = RunStore(db)
-    assert store.get_batch("b_early").batch_seq == 1  # earliest same robot+day
-    assert store.get_batch("b_late").batch_seq == 2  # later same robot+day
-    assert store.get_batch("b_r2").batch_seq == 1  # different robot
-    assert store.get_batch("b_day2").batch_seq == 1  # different day
+    def test_pagination_walks_every_row_exactly_once(
+        self, populated: CaptureStore
+    ) -> None:
+        seen: list[str] = []
+        cursor: int | None = None
+        for _ in range(5):
+            page, cursor = populated.list_captures(limit=2, cursor=cursor)
+            seen.extend(c.capture_id for c in page)
+            if cursor is None:
+                break
+        assert len(seen) == 3
+        assert len(set(seen)) == 3
+
+    def test_tombstoned_captures_are_excluded_by_default(
+        self, store: CaptureStore
+    ) -> None:
+        alive = store.create_capture(_make_capture(run_id="run_alive"))
+        buried = store.create_capture(
+            _make_capture(run_id="run_buried", state=CaptureState.discarded)
+        )
+        items, _ = store.list_captures(limit=50)
+        ids = {c.capture_id for c in items}
+        # The row survives a deletion (§7) so "where did it go" stays
+        # answerable, but a default list is the operator's working set.
+        assert alive.capture_id in ids
+        assert buried.capture_id not in ids
+
+        items, _ = store.list_captures(limit=50, include_deleted=True)
+        assert buried.capture_id in {c.capture_id for c in items}
+
+
+class TestReviewCas:
+    def test_a_matching_base_revision_applies_the_update(
+        self, store: CaptureStore
+    ) -> None:
+        capture = store.create_capture(_make_capture())
+        ok = store.save_review_cas(
+            capture.capture_id,
+            base_revision=0,
+            fields={"review_status": "adopted", "task_result": "success"},
+        )
+        assert ok is True
+        loaded = store.get_capture(capture.capture_id)
+        assert loaded is not None
+        assert loaded.review_revision == 1
+        assert loaded.review_status == "adopted"
+
+    def test_a_stale_base_revision_changes_nothing(self, store: CaptureStore) -> None:
+        capture = store.create_capture(_make_capture())
+        store.save_review_cas(
+            capture.capture_id, base_revision=0, fields={"review_status": "adopted"}
+        )
+        # A second terminal still holding revision 0 must lose, not merge.
+        ok = store.save_review_cas(
+            capture.capture_id, base_revision=0, fields={"review_status": "excluded"}
+        )
+        assert ok is False
+        loaded = store.get_capture(capture.capture_id)
+        assert loaded is not None
+        assert loaded.review_status == "adopted"
+        assert loaded.review_revision == 1
+
+    def test_cas_against_a_missing_capture_is_false_not_an_error(
+        self, store: CaptureStore
+    ) -> None:
+        assert (
+            store.save_review_cas(
+                new_capture_id(), base_revision=0, fields={"review_status": "adopted"}
+            )
+            is False
+        )
+
+
+class TestLease:
+    def test_a_lease_can_be_taken_and_read_back(self, store: CaptureStore) -> None:
+        capture = store.create_capture(_make_capture())
+        assert store.acquire_lease(capture.capture_id, "digest", ttl_s=60) is True
+        loaded = store.get_capture(capture.capture_id)
+        assert loaded is not None
+        assert loaded.lease_owner == "digest"
+
+    def test_a_second_owner_cannot_take_a_live_lease(self, store: CaptureStore) -> None:
+        capture = store.create_capture(_make_capture())
+        store.acquire_lease(capture.capture_id, "digest", ttl_s=60)
+        assert store.acquire_lease(capture.capture_id, "export", ttl_s=60) is False
+
+    def test_the_same_owner_may_renew(self, store: CaptureStore) -> None:
+        capture = store.create_capture(_make_capture())
+        store.acquire_lease(capture.capture_id, "digest", ttl_s=60)
+        assert store.acquire_lease(capture.capture_id, "digest", ttl_s=60) is True
+
+    def test_an_expired_lease_no_longer_blocks(self, store: CaptureStore) -> None:
+        capture = store.create_capture(_make_capture())
+        store.acquire_lease(capture.capture_id, "digest", ttl_s=-1)
+        # An expired lease is not a lease: a job that died holding one must not
+        # lock its capture out of deletion forever (§7.1).
+        assert store.has_live_lease(capture.capture_id) is False
+        assert store.acquire_lease(capture.capture_id, "export", ttl_s=60) is True
+
+    def test_release_only_succeeds_for_the_holder(self, store: CaptureStore) -> None:
+        capture = store.create_capture(_make_capture())
+        store.acquire_lease(capture.capture_id, "digest", ttl_s=60)
+        assert store.release_lease(capture.capture_id, "export") is False
+        assert store.release_lease(capture.capture_id, "digest") is True
+        assert store.has_live_lease(capture.capture_id) is False
+
+
+class TestReplicas:
+    def test_upsert_replaces_the_row_for_one_instance(
+        self, store: CaptureStore
+    ) -> None:
+        capture = store.create_capture(_make_capture())
+        store.upsert_replica(
+            capture.capture_id, INSTANCE, ReplicaState.present_unverified, path="/x"
+        )
+        store.upsert_replica(
+            capture.capture_id,
+            INSTANCE,
+            ReplicaState.present_verified,
+            path="/x",
+            manifest_digest="sha256:" + "a" * 64,
+        )
+        replica = store.get_replica(capture.capture_id, INSTANCE)
+        assert replica is not None
+        assert replica.state == ReplicaState.present_verified
+        assert replica.manifest_digest == "sha256:" + "a" * 64
+        assert replica.verified_at is not None
+
+    def test_digest_state_is_derived_from_the_replica(
+        self, store: CaptureStore
+    ) -> None:
+        capture = store.create_capture(_make_capture())
+        store.upsert_replica(
+            capture.capture_id, INSTANCE, ReplicaState.present_unverified
+        )
+        loaded = store.get_capture(capture.capture_id, instance_id=INSTANCE)
+        assert loaded is not None
+        assert loaded.digest_state == "pending"
+
+        store.upsert_replica(
+            capture.capture_id, INSTANCE, ReplicaState.present_verified
+        )
+        loaded = store.get_capture(capture.capture_id, instance_id=INSTANCE)
+        assert loaded is not None
+        # Only a verified replica may say "complete": that is §9-4's rule
+        # expressed as a derivation rather than a second column to keep in sync.
+        assert loaded.digest_state == "complete"
+
+    def test_present_replica_count_is_the_threshold_denominator(
+        self, store: CaptureStore
+    ) -> None:
+        for state in (
+            ReplicaState.present_unverified,
+            ReplicaState.present_verified,
+            ReplicaState.trashed,
+            ReplicaState.missing_unmanaged,
+            ReplicaState.absent_managed,
+        ):
+            capture = store.create_capture(_make_capture(run_id=f"run_{state}"))
+            store.upsert_replica(capture.capture_id, INSTANCE, state)
+        # §9-3: the denominator is present_* replicas of THIS instance, not the
+        # capture count — a store full of tombstones must not inflate it.
+        assert store.count_present_replicas(INSTANCE) == 2
+
+
+class TestDatasets:
+    def test_display_index_is_not_reused_after_a_removal(
+        self, store: CaptureStore
+    ) -> None:
+        dataset_id = new_dataset_id()
+        store.create_dataset(dataset_id, name="ds", operator="alice", task="pick")
+        first = store.add_dataset_member(
+            dataset_id, store.create_capture(_make_capture(run_id="run_1")).capture_id
+        )
+        assert first.display_index == 1
+        store.remove_dataset_member(dataset_id, first.membership_id)
+
+        second = store.add_dataset_member(
+            dataset_id, store.create_capture(_make_capture(run_id="run_2")).capture_id
+        )
+        # 1 is retired, not free: reusing it would make two different takes
+        # share an identity in every export and report that cites the number.
+        assert second.display_index == 2
+
+    def test_the_high_water_mark_can_be_seeded_from_history(
+        self, store: CaptureStore
+    ) -> None:
+        dataset_id = new_dataset_id()
+        store.create_dataset(dataset_id, name="ds")
+        # A rebuild replays the ledger and knows 7 numbers were once issued even
+        # though no member row survives.
+        store.set_display_index_high_water(dataset_id, 7)
+        member = store.add_dataset_member(
+            dataset_id, store.create_capture(_make_capture()).capture_id
+        )
+        assert member.display_index == 8
+
+    def test_the_same_capture_cannot_join_a_dataset_twice(
+        self, store: CaptureStore
+    ) -> None:
+        dataset_id = new_dataset_id()
+        store.create_dataset(dataset_id, name="ds")
+        capture = store.create_capture(_make_capture())
+        store.add_dataset_member(dataset_id, capture.capture_id)
+        with pytest.raises(DatasetMemberExistsError):
+            store.add_dataset_member(dataset_id, capture.capture_id)
+
+    def test_membership_lookup_answers_the_delete_guard(
+        self, store: CaptureStore
+    ) -> None:
+        dataset_id = new_dataset_id()
+        store.create_dataset(dataset_id, name="ds")
+        capture = store.create_capture(_make_capture())
+        assert store.dataset_memberships_for(capture.capture_id) == []
+        store.add_dataset_member(dataset_id, capture.capture_id)
+        # §7 refuses to delete a capture a dataset still cites; this is the read
+        # that decides it.
+        assert len(store.dataset_memberships_for(capture.capture_id)) == 1
+
+
+class TestCatalogSidecars:
+    def test_a_saved_template_is_mirrored_to_the_catalog_dir(
+        self, store: CaptureStore, tmp_path: Path
+    ) -> None:
+        store.create_template(ValidationTemplate(name="t", version=1))
+        sidecar = tmp_path / "catalog" / "validation_templates.json"
+        # kairos.db is rebuildable only from what is beside it on disk (§8), so
+        # anything the DB alone holds must be mirrored out or it is lost.
+        assert sidecar.is_file()
+        assert json.loads(sidecar.read_text())["items"][0]["name"] == "t"
+
+    def test_the_plan_catalog_is_mirrored_too(
+        self, store: CaptureStore, tmp_path: Path
+    ) -> None:
+        store.set_plan_catalog([{"name": "proj"}], "2026-08-01T00:00:00.000Z")
+        sidecar = tmp_path / "catalog" / "plan_catalog.json"
+        assert sidecar.is_file()
+        assert json.loads(sidecar.read_text())["projects"][0]["name"] == "proj"
+
+    def test_catalog_sidecars_restore_into_a_fresh_db(self, tmp_path: Path) -> None:
+        first = CaptureStore(tmp_path / "kairos.db", data_dir=tmp_path)
+        first.create_template(ValidationTemplate(name="t", version=3))
+        first.set_plan_catalog([{"name": "proj"}], "2026-08-01T00:00:00.000Z")
+        first.close()
+        (tmp_path / "kairos.db").unlink()
+
+        second = CaptureStore(tmp_path / "kairos.db", data_dir=tmp_path)
+        second.restore_catalog_from_sidecars()
+        templates, _ = second.list_templates(limit=10)
+        assert [(t.name, t.version) for t in templates] == [("t", 3)]
+        catalog = second.get_plan_catalog()
+        assert catalog is not None and catalog[0] == [{"name": "proj"}]
+        second.close()
+
+
+class TestBatches:
+    def test_recorded_counter_only_grows(self, store: CaptureStore) -> None:
+        store.create_batch(Batch(batch_id="batch_1", project="p", task="t"))
+        store.increment_episodes_recorded("batch_1")
+        store.increment_episodes_recorded("batch_1")
+        batch = store.get_batch("batch_1")
+        assert batch is not None and batch.episodes_recorded == 2
+
+
+class TestApplyRebuild:
+    def test_rebuilt_rows_land_as_captures_and_replicas(
+        self, store: CaptureStore
+    ) -> None:
+        capture_id = new_capture_id()
+        store.apply_rebuild(
+            captures=[
+                CaptureRow(
+                    capture_id=capture_id,
+                    state="completed",
+                    run_id="run_20260801_120000",
+                    operator="alice",
+                    review_status="adopted",
+                    review_revision=4,
+                    digest_state="complete",
+                )
+            ],
+            replicas=[
+                ReplicaRow(
+                    capture_id=capture_id,
+                    instance_id=INSTANCE,
+                    state=ReplicaState.present_verified,
+                    path="/data/objects/x",
+                )
+            ],
+        )
+        loaded = store.get_capture(capture_id, instance_id=INSTANCE)
+        assert loaded is not None
+        assert loaded.review_revision == 4
+        assert loaded.digest_state == "complete"
+
+    def test_a_row_with_review_from_sidecar_false_keeps_the_db_values(
+        self, store: CaptureStore
+    ) -> None:
+        capture = store.create_capture(_make_capture())
+        store.save_review_cas(
+            capture.capture_id,
+            base_revision=0,
+            fields={"review_status": "adopted", "quality": "good"},
+        )
+        store.apply_rebuild(
+            captures=[
+                CaptureRow(
+                    capture_id=capture.capture_id,
+                    state="completed",
+                    review_status="pending",
+                    review_revision=0,
+                    # §4.1-4: the scan found the DB ahead of record.json and
+                    # said so rather than "correcting" it. Overwriting here
+                    # would destroy the newer review to match an older file.
+                    review_from_sidecar=False,
+                )
+            ],
+            replicas=[],
+        )
+        loaded = store.get_capture(capture.capture_id)
+        assert loaded is not None
+        assert loaded.review_status == "adopted"
+        assert loaded.review_revision == 1

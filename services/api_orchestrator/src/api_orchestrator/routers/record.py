@@ -1,7 +1,9 @@
 """Recording control endpoints (``/api/v1/record/*``).
 
-``prepare``, ``start``, and ``stop`` drive the run lifecycle through the
-:class:`~api_orchestrator.runs.RunService`; ``status`` proxies the recorder.
+``prepare``, ``start``, and ``stop`` drive the capture lifecycle through the
+:class:`~api_orchestrator.record_service.RecordService`; ``status`` proxies the
+recorder. All four keep their v1 request/response shape and gain ``capture_id``
+(§10) — the recorder mints it, and it is what every other v2 endpoint keys on.
 ``prepare`` is the two-phase-start optimization (arm ahead of time so a later
 matching ``start`` is fast) — it is optional; ``start`` alone is unchanged for
 any caller that never calls ``prepare`` first.
@@ -13,9 +15,13 @@ from typing import Any
 
 from fastapi import APIRouter, Depends
 
-from api_orchestrator.deps import get_run_service
-from api_orchestrator.models import RecordPrepareResponse, RecordStartRequest, Run
-from api_orchestrator.runs import RunService
+from api_orchestrator.deps import get_record_service
+from api_orchestrator.models import (
+    Capture,
+    RecordPrepareResponse,
+    RecordStartRequest,
+)
+from api_orchestrator.record_service import RecordService
 
 router = APIRouter(prefix="/api/v1/record", tags=["record"])
 
@@ -23,7 +29,7 @@ router = APIRouter(prefix="/api/v1/record", tags=["record"])
 @router.post("/prepare", response_model=RecordPrepareResponse)
 async def record_prepare(
     body: RecordStartRequest,
-    service: RunService = Depends(get_run_service),
+    service: RecordService = Depends(get_record_service),
 ) -> RecordPrepareResponse:
     """Arm a recording ahead of time so a later matching ``start`` is fast.
 
@@ -36,37 +42,39 @@ async def record_prepare(
     return await service.prepare(body)
 
 
-@router.post("/start", response_model=Run)
+@router.post("/start", response_model=Capture)
 async def record_start(
     body: RecordStartRequest,
-    service: RunService = Depends(get_run_service),
-) -> Run:
-    """Allocate a run and start recording.
+    service: RecordService = Depends(get_record_service),
+) -> Capture:
+    """Start recording and file the capture the recorder minted.
 
-    On recorder failure the run row is kept and returned in ``failed`` state
-    (the request itself still succeeds — the failure is recorded on the run).
+    On a recorder rejection the capture is returned in ``failed`` state when
+    the recorder named one; if it did not, the error propagates and the
+    recorder's failed-start sidecar is what the next rebuild turns into a row
+    (§3.4).
     """
     return await service.start(body)
 
 
-@router.post("/stop", response_model=Run)
+@router.post("/stop", response_model=Capture)
 async def record_stop(
-    service: RunService = Depends(get_run_service),
-) -> Run:
+    service: RecordService = Depends(get_record_service),
+) -> Capture:
     """Stop the active recording and finalize the run as ``completed``.
 
-    Also cancels a still-armed ``prepare`` (no run yet started): the recorder
-    is told to disarm so it does not sit armed until its own auto-disarm
-    timeout. There is no run row for a cancelled prepare, so the response is
-    the same as any other no-op stop (the most recent run, or ``404`` if none
-    has ever been recorded).
+    Also cancels a still-armed ``prepare`` (nothing started): the recorder is
+    told to disarm rather than sitting armed — and holding its DDS
+    subscriptions — until its own timeout. A cancelled prepare has no capture
+    row, so the response is the same as any other no-op stop: the most recent
+    capture, or ``404`` when nothing has ever been recorded.
     """
     return await service.stop()
 
 
 @router.get("/status")
 async def record_status(
-    service: RunService = Depends(get_run_service),
+    service: RecordService = Depends(get_record_service),
 ) -> dict[str, Any]:
     """Proxy the recorder's ``GET /record/status``."""
     return await service.status()

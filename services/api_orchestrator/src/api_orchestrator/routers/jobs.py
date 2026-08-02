@@ -1,4 +1,9 @@
-"""Pipeline job endpoints."""
+"""Pipeline job endpoints (``/api/v1/jobs``).
+
+Keyed by ``capture_id`` (§10.5): a job resolves its source as
+``objects/<capture_id>`` — there is no ``dataset_dir`` parameter any more — and
+writes to ``report/<pipeline>/<capture_id>/``.
+"""
 
 from __future__ import annotations
 
@@ -9,18 +14,18 @@ from kairos_common import ApiError, JobState
 
 from api_orchestrator.events import EVENT_JOB
 from api_orchestrator.models import (
+    UNFINALIZED_STATES,
     JobCreateRequest,
     JobCreateResponse,
     JobResult,
     JobStatus,
-    RunState,
 )
 
 router = APIRouter(prefix="/api/v1/jobs", tags=["jobs"])
 
-# Run states for which a dataset_export must be refused (the bag is still being
-# written; exporting it would copy a partial/active recording).
-_UNFINISHED_STATES = {RunState.created, RunState.recording, RunState.stopping}
+# Capture states for which an export must be refused: the bag is still being
+# written, so exporting it would read a recording mid-flight.
+_UNFINISHED_STATES = UNFINALIZED_STATES
 
 # Pipelines whose `template` param is a Config-catalog template id: the id is
 # resolved to the full object before forwarding (dora_runner's template store is
@@ -35,7 +40,7 @@ async def _emit_job(request: Request, job: JobStatus | JobCreateResponse) -> Non
         EVENT_JOB,
         {
             "job_id": job.job_id,
-            "run_id": job.run_id,
+            "capture_id": job.capture_id,
             "pipeline": job.pipeline,
             "state": job.state.value,
             "progress": job.progress,
@@ -50,8 +55,8 @@ def _job_event_changed(
 
     ``GET /{job_id}/status`` is polled, so it must not re-broadcast an identical
     event on every poll. The emitted payload only carries ``state``/``progress``
-    (job_id/run_id/pipeline are fixed per job), so those are the only fields that
-    can change what a subscriber sees. A first sighting (``previous is None``)
+    (job_id/capture_id/pipeline are fixed per job), so those are the only fields
+    that can change what a subscriber sees. A first sighting (``previous is None``)
     always counts as a change.
     """
     if previous is None:
@@ -71,25 +76,23 @@ async def create_job(request: Request, body: JobCreateRequest) -> JobCreateRespo
     is already a full object (dict) is passed through untouched.
     """
     client = request.app.state.dora_runner_client
-    store = request.app.state.run_store
+    store = request.app.state.capture_store
     payload = body.model_dump()
-    if body.pipeline == "dataset_export":
-        # Only export a finished recording; never copy a bag mid-write.
-        run = store.get(body.run_id)
-        if run is None:
-            raise ApiError(
-                status_code=404,
-                code="run_not_found",
-                message=f"Run not found: {body.run_id}",
-                details={"run_id": body.run_id},
-            )
-        if run.state in _UNFINISHED_STATES:
-            raise ApiError(
-                status_code=409,
-                code="run_not_finished",
-                message="Cannot export a run that has not finished recording.",
-                details={"run_id": body.run_id, "state": run.state.value},
-            )
+    capture = store.get_capture(body.capture_id)
+    if capture is None:
+        raise ApiError(
+            status_code=404,
+            code="capture_not_found",
+            message=f"Capture not found: {body.capture_id}",
+            details={"capture_id": body.capture_id},
+        )
+    if str(capture.state) in _UNFINISHED_STATES:
+        raise ApiError(
+            status_code=409,
+            code="capture_not_finished",
+            message="Cannot run a job on a capture that is still recording.",
+            details={"capture_id": body.capture_id, "state": str(capture.state)},
+        )
     if body.pipeline in _TEMPLATE_PIPELINES:
         raw = body.params.get("template")
         if not isinstance(raw, dict):
@@ -119,7 +122,7 @@ async def job_status(request: Request, job_id: str) -> JobStatus:
     """
     body = await request.app.state.dora_runner_client.job_status(job_id)
     job = JobStatus.model_validate(body)
-    store = request.app.state.run_store
+    store = request.app.state.capture_store
     previous = store.get_job(job_id)
     store.upsert_job(job)
     if _job_event_changed(previous, job):
@@ -184,7 +187,7 @@ async def job_result(request: Request, job_id: str) -> JobResult:
                 "Job result is only available after the job reaches a terminal state."
             ),
         )
-    request.app.state.run_store.upsert_job(job, result=result)
+    request.app.state.capture_store.upsert_job(job, result=result)
     return result
 
 
@@ -193,6 +196,6 @@ async def cancel_job(request: Request, job_id: str) -> JobStatus:
     """Cancel a running or queued job."""
     body = await request.app.state.dora_runner_client.cancel_job(job_id)
     job = JobStatus.model_validate(body)
-    request.app.state.run_store.upsert_job(job)
+    request.app.state.capture_store.upsert_job(job)
     await _emit_job(request, job)
     return job

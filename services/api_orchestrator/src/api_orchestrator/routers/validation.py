@@ -24,17 +24,21 @@ presets_router = APIRouter(prefix="/api/v1/validation", tags=["validation"])
 async def list_presets(request: Request) -> ValidationPresetListResponse:
     """List one-click validation presets with their not-yet-validated targets.
 
-    Presets come from the active robot's ``validation_presets.yaml``; for each,
-    the completed-recording target set and the subset still missing that
-    pipeline's report are computed live (so the UI can show "N pending" and run
-    exactly those). Nothing here mutates state.
+    Presets come from the active robot's ``validation_presets.yaml``. For each
+    one, the target set (terminal captures whose bytes are on this host) and the
+    subset still missing that pipeline's report are computed live, so the UI can
+    show "N pending" and run exactly those. Nothing here mutates state.
     """
     catalog = request.app.state.config_catalog
-    service = request.app.state.run_service
-    total = len(service.list_completed_with_files())
+    service = request.app.state.capture_service
+    targets = service.list_present_terminal()
     items = []
     for preset in catalog.list_validation_presets():
-        pending_run_ids = service.pending_run_ids(preset.pipeline)
+        pending = [
+            capture.capture_id
+            for capture in targets
+            if not service.has_report(preset.pipeline, capture.capture_id)
+        ]
         items.append(
             ValidationPresetInfo(
                 id=preset.id,
@@ -42,9 +46,9 @@ async def list_presets(request: Request) -> ValidationPresetListResponse:
                 description=preset.description,
                 pipeline=preset.pipeline,
                 params=preset.params,
-                total=total,
-                pending=len(pending_run_ids),
-                pending_run_ids=pending_run_ids,
+                total=len(targets),
+                pending=len(pending),
+                pending_capture_ids=pending,
             )
         )
     return ValidationPresetListResponse(items=items)
@@ -65,7 +69,7 @@ async def list_templates(
             code="invalid_cursor",
             message="cursor must be an opaque token from a prior page.",
         ) from exc
-    items, next_cursor = request.app.state.run_store.list_templates(limit, parsed)
+    items, next_cursor = request.app.state.capture_store.list_templates(limit, parsed)
     return ValidationTemplateListResponse(
         items=items, next_cursor=str(next_cursor) if next_cursor is not None else None
     )
@@ -76,7 +80,7 @@ async def create_template(
     request: Request, body: ValidationTemplate
 ) -> ValidationTemplate:
     """Persist a validation template locally and forward it to dora_runner."""
-    request.app.state.run_store.create_template(body)
+    request.app.state.capture_store.create_template(body)
     await request.app.state.dora_runner_client.create_template(body.model_dump())
     return body
 
@@ -85,7 +89,7 @@ async def create_template(
 async def generate_template(
     request: Request, body: TemplateGenerateRequest
 ) -> ValidationTemplate:
-    """Generate a draft template from an existing run via dora_runner."""
+    """Generate a draft template from an existing capture via dora_runner."""
     generated = await request.app.state.dora_runner_client.generate_template(
         body.model_dump()
     )
