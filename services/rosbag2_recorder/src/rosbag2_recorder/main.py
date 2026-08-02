@@ -83,6 +83,10 @@ def create_recorder_app() -> FastAPI:
         status = session.start(request)
         return RecordStartResponse(
             run_id=status.run_id or request.run_id,
+            # Always set on a successful start (the session commits it before
+            # the status is built), so the empty string is unreachable rather
+            # than a fallback anyone should read.
+            capture_id=status.capture_id or "",
             state=status.state,
             started_at=status.started_at or "",
             # Settled arming snapshot (OL-①.4) so the orchestrator can forward it

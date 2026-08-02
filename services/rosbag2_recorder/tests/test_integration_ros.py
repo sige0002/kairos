@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 from kairos_common import Settings
+from kairos_common.capture_sidecars import capture_dir, read_object_manifest
 from rosbag2_recorder.models import RecordStartRequest, RunState
 from rosbag2_recorder.recorder import RecorderSession
 
@@ -25,16 +26,25 @@ pytestmark = pytest.mark.skipif(
 
 
 def test_real_ros2_bag_record_roundtrip(tmp_path: Path) -> None:
-    (tmp_path / "recorded").mkdir(parents=True)
     settings = Settings(data_dir=str(tmp_path))
     session = RecorderSession(settings, None)
 
-    session.start(RecordStartRequest(topics="all", run_id="it_run"))
+    started = session.start(RecordStartRequest(topics="all", run_id="it_run"))
     # Give rosbag2 a moment to come up and discover the graph.
     time.sleep(3.0)
     status = session.stop()
 
     assert status.state is RunState.completed
-    out = tmp_path / "recorded" / "it_run"
+    capture_id = started.capture_id
+    assert capture_id is not None
+    out = capture_dir(tmp_path, capture_id)
     assert (out / "metadata.yaml").exists()
-    assert any(out.glob("it_run_*.mcap"))
+    # rosbag2 names its files after the --output directory, which is the
+    # capture_id; the run_id survives as the manifest's display name.
+    assert any(out.glob(f"{capture_id}_*.mcap"))
+
+    read = read_object_manifest(out)
+    assert read.ok, read.error
+    assert read.manifest is not None
+    assert read.manifest.run_id == "it_run"
+    assert read.manifest.state == "completed"
