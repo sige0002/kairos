@@ -81,8 +81,8 @@ nobody tested. `fixtures/stack.ts` fails with the command that fixes it instead.
 ## How it runs
 
 `scripts/stack.sh` is the single definition of the stack under test. The
-Makefile target, Playwright's global setup, and the two scenarios that damage
-the store on purpose all call it, so running it by hand gives byte-identical
+Makefile target, Playwright's global setup, and the three scenarios that break
+something on purpose all call it, so running it by hand gives byte-identical
 conditions to `make test-e2e`.
 
 ```bash
@@ -92,6 +92,13 @@ npx playwright test --headed tests/03-discard.spec.ts
 npx playwright show-report
 bash e2e/scripts/stack.sh down
 ```
+
+**One acceptance run at a time.** `up` claims a lease on the stack for the whole
+run, so a second run is refused with *another acceptance run holds the stack —
+pid N, started …* rather than tearing down the first one's containers and wiping
+its data dir mid-test (which surfaces as a hung recording and a cascade of
+scenarios failing against nothing — it reads exactly like a product defect). If
+the run it names is genuinely gone, `bash e2e/scripts/stack.sh down` releases it.
 
 The stack is deliberately **beside**, not instead of, a developer's own
 `make up` (`e2e/stack.env`):

@@ -37,7 +37,7 @@ const DATASET_NAME = 'e2e-rebuild-set';
 
 test('§13-4 Rebuild: deleting kairos.db and restarting restores the captures and datasets in the UI', async ({
   page,
-}) => {
+}, testInfo) => {
   // ---- arrange: something worth losing ------------------------------------
   let completed = (await api.allCaptures()).filter((c) => c.state === 'completed');
   if (completed.length === 0) {
@@ -47,23 +47,43 @@ test('§13-4 Rebuild: deleting kairos.db and restarting restores the captures an
   const memberCapture = completed[0].capture_id;
 
   // m10: nothing unjudged enters a training set. The candidate rail refuses a
-  // capture Review has not adopted (`addBlockedReason`), so adoption is part of
-  // the operator's arc — record → adopt → build → rebuild — and the scenario
-  // performs it on screen rather than reaching around it through the API.
+  // capture Review has not adopted (`addBlockedReason`), so this scenario has to
+  // arrive at an ADOPTED capture before it can build anything.
+  //
+  // Being adopted is the requirement; clicking is only one way to get there. A
+  // good, successful take is adopted by its Collect save (`collectReviewStatus`),
+  // and the decision bar then correctly offers no adopt control — a capture that
+  // needs no action is shown none. Demanding the button would fail on a capture
+  // already in exactly the state this step wants.
+  //
+  // The postcondition still catches the regression the step was written for: a
+  // capture that is neither adopted nor offered any way to become adopted can
+  // never reach a dataset, and this times out saying precisely that.
   await selectReviewRow(page, memberCapture);
   const markOk = page.getByTestId('review-mark-ok');
-  await expect(
-    markOk,
-    'the Review decision bar offers no way to adopt this capture, so a dataset can never be built from it',
-  ).toBeVisible({ timeout: 30_000 });
-  await markOk.click();
-  await expect(page.getByTestId('review-toast')).toBeVisible({ timeout: 30_000 });
+  const adoptedBySave = (await markOk.count()) === 0;
+  if (!adoptedBySave) {
+    await markOk.click();
+    await expect(page.getByTestId('review-toast')).toBeVisible({ timeout: 30_000 });
+  }
   await until(
-    'the adopted review status to settle',
+    'the capture to read as adopted — the decision bar offered no way to adopt it and it ' +
+      'was not adopted already, so no dataset can ever be built from it',
     () => api.getCapture(memberCapture),
     (c) => c.review_status === 'adopted',
     30_000,
   );
+  // WHICH road got there is a race — whether the quick check had settled before
+  // Collect's Save decided the review status — so it is REPORTED rather than
+  // asserted. A CI log that does not say which one leaves the reader unable to
+  // tell a run that exercised the decision-bar control from one that never
+  // needed it.
+  const adoptionRoad = adoptedBySave
+    ? 'adopted by its own Collect save; the decision bar offered no control, which is correct'
+    : 'adopted from the Review decision bar (review-mark-ok)';
+  testInfo.annotations.push({ type: 'adoption', description: adoptionRoad });
+  // eslint-disable-next-line no-console
+  console.log(`  adoption: ${adoptionRoad}`);
 
   // A dataset, built through the UI, so the ledger has the events a rebuild has
   // to replay.

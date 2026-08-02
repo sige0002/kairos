@@ -21,6 +21,39 @@
 #
 # The stack runs on its own ports, its own ROS domain and its own data dir
 # (e2e/stack.env), so it can sit beside a developer's `make up` stack.
+#
+# ---- one acceptance run at a time -------------------------------------------
+# What it CANNOT sit beside is a second acceptance run. The stack is a
+# singleton: one compose project, one data dir, one set of ports, one ROS
+# domain. The problem is not that two runs would share — it is how the sharing
+# fails. `up` begins by tearing the stack down and WIPING the data dir, so a
+# second run does not queue behind the first, it destroys it mid-test. The
+# victim sees a recording hang and then every later scenario fail against a
+# stack that is no longer there, which reads exactly like a product defect.
+# (Observed: a run lost its stack at 08:27:30 and spent 3.1 minutes timing out
+# inside §13-1 before failing, with §13-2 and §13-3 collapsing behind it.)
+#
+# Two mechanisms, because one question is not the other:
+#
+#   flock — serialises the mutating subcommands against each other, so two
+#     processes cannot interleave inside compose. That interleaving is real:
+#     it surfaced once as `dependency failed to start: No such container: …`,
+#     a container removed out from under the `up` that was starting it.
+#
+#   lease — a RUN holds the stack for its whole duration, and that outlives
+#     every individual stack.sh invocation: `up` returns long before playwright
+#     starts, and by the time the damage was done there was no stack.sh process
+#     of the victim's left to hold anything. A flock alone would therefore have
+#     prevented none of it. The lease records the process that owns the run
+#     (this script's parent — `make`, or a developer's shell) and `down`
+#     releases it. A dead owner's lease is ignored, so a crashed or ^C'd run
+#     never wedges the next one.
+#
+# Only `up` refuses on a live foreign lease. It is the destructive one, and
+# refusing it there is sufficient: the Makefile runs `up` as its own recipe
+# line, so a refused run aborts before it can reach playwright or the trailing
+# `down`. Serialising whole runs costs nothing that matters — the suite is
+# `workers: 1` by design (see playwright.config.ts).
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -74,6 +107,101 @@ compose() {
 }
 say() { printf '\033[36me2e:\033[0m %s\n' "$*"; }
 die() { printf '\033[31me2e: %s\033[0m\n' "$*" >&2; exit 1; }
+
+# ---- one run at a time (see the header) -------------------------------------
+LOCK_FILE="$RUN_DIR/stack.lock"
+OWNER_FILE="$RUN_DIR/stack.owner"
+# The process that owns the whole RUN, not this invocation: `make test-e2e` for
+# the gate, the developer's shell for a hand-driven stack. Either outlives the
+# `up` that claims the lease, which is the entire point.
+OWNER_PID="${PPID:-$$}"
+
+# Field 22 of /proc/<pid>/stat is the process's start time in clock ticks.
+# Recording it turns "is that pid alive?" into "is it still the SAME process?",
+# so a recycled pid cannot make a dead run's lease look live.
+proc_start_ticks() {
+  [ -r "/proc/$1/stat" ] || return 0
+  awk '{print $22}' "/proc/$1/stat" 2>/dev/null || true
+}
+
+proc_cmdline() {
+  if [ -r "/proc/$1/cmdline" ]; then
+    tr '\0' ' ' < "/proc/$1/cmdline" | cut -c1-60
+  else
+    printf 'unknown'
+  fi
+}
+
+# Absent lease file = no owner, which is the NORMAL first run, not an error.
+# `sed` on a missing file exits non-zero, and under `set -e` that would abort
+# `up` before it ever started — so this always succeeds and answers with the
+# empty string.
+lease_field() {
+  [ -f "$OWNER_FILE" ] || return 0
+  sed -n "s/^$1=//p" "$OWNER_FILE" 2>/dev/null || true
+}
+
+lease_is_live() {
+  local pid="$1" ticks="$2" now
+  [ -n "$pid" ] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  now="$(proc_start_ticks "$pid")"
+  # Unknown either side (no /proc): fall back to liveness alone rather than
+  # calling a live run dead, which would let it be destroyed.
+  [ -z "$ticks" ] || [ -z "$now" ] || [ "$ticks" = "$now" ]
+}
+
+claim_lease() {
+  local pid ticks
+  pid="$(lease_field pid)"
+  ticks="$(lease_field ticks)"
+  if [ -n "$pid" ] && [ "$pid" != "$OWNER_PID" ] && lease_is_live "$pid" "$ticks"; then
+    printf '\033[31me2e: another acceptance run holds the stack — pid %s (%s), started %s\033[0m\n' \
+      "$pid" "$(lease_field cmd)" "$(lease_field started)" >&2
+    printf 'Starting now would tear down ITS containers and wipe the data dir under a\n' >&2
+    printf 'live test. Wait for it to finish. If that run is gone, release the stack:\n' >&2
+    printf '  bash %s down\n' "$HERE/e2e/scripts/stack.sh" >&2
+    exit 1
+  fi
+  {
+    echo "pid=$OWNER_PID"
+    echo "ticks=$(proc_start_ticks "$OWNER_PID")"
+    echo "started=$(date '+%Y-%m-%d %H:%M:%S')"
+    echo "cmd=$(proc_cmdline "$OWNER_PID")"
+  } > "$OWNER_FILE"
+}
+
+release_lease() {
+  [ -f "$OWNER_FILE" ] || return 0
+  local pid ticks
+  pid="$(lease_field pid)"
+  ticks="$(lease_field ticks)"
+  # Taking down a stack someone else is using is a legitimate thing to ask for
+  # (that is how a wedged lease gets cleared), but it must never be silent.
+  if [ -n "$pid" ] && [ "$pid" != "$OWNER_PID" ] && lease_is_live "$pid" "$ticks"; then
+    say "WARNING: releasing a lease still held by pid $pid ($(lease_field cmd)) — that run's stack is now gone"
+  fi
+  rm -f "$OWNER_FILE"
+}
+
+# Run a mutating subcommand under the file lock. Every mutator goes through
+# here: flock is advisory, so one that does not is a hole in the serialisation
+# rather than a minor omission. Read-only subcommands (wait/env/ps/logs) are
+# deliberately outside it — blocking a status query behind a 2-minute `start`
+# would make the lock the thing people work around.
+with_lock() {
+  mkdir -p "$RUN_DIR"
+  if ! command -v flock >/dev/null 2>&1; then
+    say "WARNING: flock not found — running WITHOUT the single-run lock; a second acceptance run can destroy this one"
+    "$@"
+    return
+  fi
+  exec {lock_fd}>>"$LOCK_FILE"
+  if ! flock -w "${STACK_LOCK_WAIT:-120}" "$lock_fd"; then
+    die "timed out after ${STACK_LOCK_WAIT:-120}s waiting for the stack lock ($LOCK_FILE) — another stack.sh is mid-operation"
+  fi
+  "$@"
+}
 
 # ---- image guard ------------------------------------------------------------
 # Follows the repo rule that `up` never builds (deploy/test and the Makefile do
@@ -171,6 +299,8 @@ cmd_reset() {
 }
 
 cmd_up() {
+  # Before anything is torn down or wiped: is this stack someone else's?
+  claim_lease
   require_images
   # Remove any previous containers BEFORE wiping the data dir. `up -d` reuses a
   # running container, and a service that keeps running while its data
@@ -191,6 +321,14 @@ cmd_down() {
   cmd_replay_stop
   say "removing stack ($PROJECT)"
   compose down --remove-orphans >/dev/null 2>&1 || true
+}
+
+# The `down` SUBCOMMAND ends the run and hands the stack back. cmd_up's internal
+# teardown deliberately does not: it is re-creating the stack it just claimed,
+# and releasing there would drop its own lease a moment after taking it.
+cmd_down_release() {
+  cmd_down
+  release_lease
 }
 
 # `stop`/`start` keep the containers (and therefore the exact same env) so the
@@ -280,20 +418,22 @@ E2E_STACK_SH=$HERE/e2e/scripts/stack.sh
 EOF
 }
 
+# Everything that PERTURBS the stack goes through with_lock; everything that
+# only reads it does not.
 case "${1:-}" in
-  up)           cmd_up ;;
-  down)         cmd_down ;;
-  reset)        cmd_reset ;;
+  up)           with_lock cmd_up ;;
+  down)         with_lock cmd_down_release ;;
+  reset)        with_lock cmd_reset ;;
   wait)         cmd_wait ;;
-  stop)          cmd_stop ;;
-  start)         cmd_start ;;
-  start-lenient) cmd_start_lenient ;;
-  stop-recorder)  cmd_stop_recorder ;;
-  start-recorder) cmd_start_recorder ;;
-  replay-start) cmd_replay_start ;;
-  replay-stop)  cmd_replay_stop ;;
-  rm-db)        cmd_rm_db ;;
-  rm-objects)   shift; cmd_rm_objects "$@" ;;
+  stop)          with_lock cmd_stop ;;
+  start)         with_lock cmd_start ;;
+  start-lenient) with_lock cmd_start_lenient ;;
+  stop-recorder)  with_lock cmd_stop_recorder ;;
+  start-recorder) with_lock cmd_start_recorder ;;
+  replay-start) with_lock cmd_replay_start ;;
+  replay-stop)  with_lock cmd_replay_stop ;;
+  rm-db)        with_lock cmd_rm_db ;;
+  rm-objects)   shift; with_lock cmd_rm_objects "$@" ;;
   env)          cmd_env ;;
   ps)           compose ps ;;
   logs)         shift; compose logs --tail="${TAIL:-100}" "$@" ;;
