@@ -393,3 +393,106 @@ class TestCorruptReplicas:
         # we can vouch for, and this is precisely one we cannot.
         store = client.app.state.capture_store
         assert store.count_present_replicas(client.app.state.instance_id) == 0
+
+
+class TestCorruptVisibility:
+    """§8 rule 4 requires corruption to be REPORTED — reachably, not just logged."""
+
+    def _corrupt_after_startup(self, layout: DataLayout) -> str:
+        capture_id = new_capture_id()
+        capture_dir = layout.capture_dir(capture_id)
+        capture_dir.mkdir(parents=True)
+        (capture_dir / "metadata.yaml").write_text("x: 1\n", encoding="utf-8")
+        (capture_dir / "object_manifest.json").write_bytes(b"")
+        return capture_id
+
+    def test_a_sidecar_that_goes_bad_after_startup_is_reachable_via_the_api(
+        self, client: TestClient, layout: DataLayout
+    ) -> None:
+        # Clean at boot, so the startup rebuild has nothing to report.
+        assert client.get("/api/v1/store/health").json()["corrupt"] == []
+        capture_id = self._corrupt_after_startup(layout)
+
+        reconcile(client)
+
+        body = client.get("/api/v1/store/health").json()
+        entry = next(c for c in body["corrupt"] if c["capture_id"] == capture_id)
+        # The path and the reason, not just a count: an operator cannot repair
+        # a file the API will not name.
+        assert entry["path"].endswith("object_manifest.json")
+        assert "empty file" in entry["reason"]
+        assert body["corrupt_source"] == "reconcile"
+        assert body["corrupt_observed_at"] is not None
+
+    def test_a_repaired_sidecar_drops_out_of_the_list(
+        self, client: TestClient, layout: DataLayout
+    ) -> None:
+        capture_id = self._corrupt_after_startup(layout)
+        reconcile(client)
+        assert client.get("/api/v1/store/health").json()["corrupt"] != []
+
+        write_object_manifest(
+            layout.capture_dir(capture_id),
+            ObjectManifestV2(
+                capture_id=capture_id,
+                source_instance_id=client.app.state.instance_id,
+                run_id=f"run_{capture_id[:13]}",
+                state="completed",
+                started_at="2026-08-01T00:00:00.000Z",
+            ),
+        )
+        reconcile(client)
+
+        # A complete scan replaces the previous one, so a fixed file stops being
+        # reported rather than lingering as a permanent false alarm.
+        assert client.get("/api/v1/store/health").json()["corrupt"] == []
+
+    def test_a_pass_that_never_scanned_does_not_clear_the_list(
+        self, client: TestClient, layout: DataLayout
+    ) -> None:
+        self._corrupt_after_startup(layout)
+        reconcile(client)
+        assert client.get("/api/v1/store/health").json()["corrupt"] != []
+
+        (layout.data_dir / VOLUME_MARKER_NAME).unlink()
+        reconcile(client)
+
+        # "We could not look" must never be recorded as "nothing is corrupt".
+        assert client.get("/api/v1/store/health").json()["corrupt"] != []
+
+    def test_a_threshold_blocked_pass_still_reports_what_it_saw(
+        self, client: TestClient, layout: DataLayout
+    ) -> None:
+        import shutil
+
+        capture_id = self._corrupt_after_startup(layout)
+        ids = _present(client, layout, 10)
+        for present in ids:
+            shutil.rmtree(layout.capture_dir(present))
+
+        result = reconcile(client)
+        assert result.applied is False  # SUSPECT latched
+
+        body = client.get("/api/v1/store/health").json()
+        # Corruption is something the scan SAW, not something it chose to
+        # apply — withholding it because the writes were blocked would hide a
+        # fault at exactly the moment the operator is investigating.
+        assert [c["capture_id"] for c in body["corrupt"]] == [capture_id]
+
+    def test_the_startup_rebuild_still_reports_before_any_pass_runs(
+        self, settings, fake_recorder, layout: DataLayout, instance_id: str
+    ) -> None:
+        import httpx
+        from api_orchestrator.app_factory import create_orchestrator_app
+
+        capture_id = self._corrupt_after_startup(layout)
+        app = create_orchestrator_app(
+            settings,
+            http_client=httpx.AsyncClient(
+                transport=httpx.MockTransport(fake_recorder.handler)
+            ),
+        )
+        with TestClient(app) as booted:
+            body = booted.get("/api/v1/store/health").json()
+        assert [c["capture_id"] for c in body["corrupt"]] == [capture_id]
+        assert body["corrupt_source"] == "rebuild"

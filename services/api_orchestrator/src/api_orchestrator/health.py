@@ -68,6 +68,11 @@ class StoreHealth:
         self._rebuild: RebuildReport | None = None
         self._last_reconcile: dict[str, Any] | None = None
         self._last_reconcile_at: str | None = None
+        # The most recent COMPLETE corrupt-sidecar observation from a reconciler
+        # pass. ``None`` until one has run, at which point it supersedes the
+        # startup rebuild's list — see :meth:`snapshot`.
+        self._reconcile_corrupt: tuple[dict[str, Any], ...] | None = None
+        self._corrupt_observed_at: str | None = None
         self.instance_id: str | None = None
 
     # ---- SUSPECT (§9-3) ----------------------------------------------------
@@ -126,16 +131,58 @@ class StoreHealth:
     def rebuild(self) -> RebuildReport | None:
         return self._rebuild
 
-    def record_reconcile(self, summary: dict[str, Any]) -> None:
+    def record_reconcile(
+        self,
+        summary: dict[str, Any],
+        *,
+        corrupt: tuple[dict[str, Any], ...] | None = None,
+    ) -> None:
+        """Record what a reconciler pass concluded.
+
+        *corrupt* is the pass's complete corrupt-sidecar observation, and
+        ``None`` means "this pass made no valid observation" — a marker
+        mismatch, or an unreadable ledger — which must NOT be mistaken for
+        "nothing is corrupt any more". Only a real scan replaces what we hold.
+        """
         with self._lock:
             self._last_reconcile = summary
             self._last_reconcile_at = utc_now_iso8601()
+            if corrupt is not None:
+                self._reconcile_corrupt = corrupt
+                self._corrupt_observed_at = self._last_reconcile_at
 
     def snapshot(self) -> dict[str, Any]:
-        """Everything ``GET /api/v1/store/health`` reports."""
+        """Everything ``GET /api/v1/store/health`` reports.
+
+        ``corrupt`` is deliberately ONE list rather than a rebuild list beside
+        a reconciler list. A client asking "what is broken?" wants one answer,
+        and both passes are complete scans of the same directory — so the newer
+        observation replaces the older rather than being merged with it. Merging
+        would double-report a sidecar both passes saw, and keeping only the
+        startup list would leave a manifest that went bad an hour ago invisible
+        (§8 rule 4 requires corruption to be *reported*, and a report nobody can
+        reach is not one).
+
+        ``corrupt_source`` and ``corrupt_observed_at`` say which pass produced
+        the list and when, so "no corruption" from a scan five seconds ago reads
+        differently from the same answer at boot three days back.
+        """
         with self._lock:
             rebuild = self._rebuild
+            reconciled = self._reconcile_corrupt
+            from_reconcile = reconciled is not None
+            corrupt = list(
+                reconciled if from_reconcile else (rebuild.corrupt if rebuild else ())
+            )
             return {
+                "corrupt_source": ("reconcile" if from_reconcile else "rebuild")
+                if (from_reconcile or rebuild)
+                else None,
+                "corrupt_observed_at": (
+                    self._corrupt_observed_at
+                    if from_reconcile
+                    else (rebuild.at if rebuild else None)
+                ),
                 "instance_id": self.instance_id or "",
                 "state": "suspect" if self._suspect else "ok",
                 "suspect_reason": self._suspect_reason,
@@ -144,7 +191,7 @@ class StoreHealth:
                 "delete_unavailable_reason": self._delete_reason,
                 "rebuilt_at": rebuild.at if rebuild else None,
                 "rebuild_summary": rebuild.summary() if rebuild else None,
-                "corrupt": list(rebuild.corrupt) if rebuild else [],
+                "corrupt": corrupt,
                 "warnings": list(rebuild.warnings) if rebuild else [],
                 "last_reconcile_at": self._last_reconcile_at,
                 "last_reconcile": self._last_reconcile,

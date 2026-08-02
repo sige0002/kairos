@@ -560,7 +560,16 @@ class StoreHealth(BaseModel):
     delete_unavailable_reason: str | None = None
     rebuilt_at: str | None = None
     rebuild_summary: dict[str, Any] | None = None
+    # Corrupt sidecars as of the most recent COMPLETE scan (§8 rule 4). One
+    # list, not one per pass: both the startup rebuild and the periodic
+    # reconciler scan the same directory, so the newer observation replaces the
+    # older rather than being merged with it.
     corrupt: list[CorruptEntry] = Field(default_factory=list)
+    # Which pass produced ``corrupt``, and when. Without these "no corruption"
+    # from a scan seconds ago is indistinguishable from the same answer taken
+    # at boot three days ago.
+    corrupt_source: Literal["rebuild", "reconcile"] | None = None
+    corrupt_observed_at: str | None = None
     warnings: list[str] = Field(default_factory=list)
     last_reconcile_at: str | None = None
     last_reconcile: dict[str, Any] | None = None

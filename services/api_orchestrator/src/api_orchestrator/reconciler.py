@@ -190,6 +190,8 @@ class Reconciler:
                     "missing on a volume that cannot identify itself"
                 ),
             )
+            # No corrupt observation: this pass never scanned, and "we did not
+            # look" must not be recorded as "nothing is corrupt".
             self._health.record_reconcile(result.to_dict())
             return result
 
@@ -217,12 +219,22 @@ class Reconciler:
                 ),
             )
             logger.warning("reconciler: %s", result.skipped_reason)
+            # The scan happened but was discarded — it described a volume we
+            # cannot confirm, so its corrupt list is not evidence either.
             self._health.record_reconcile(result.to_dict())
             return result
 
         result = await self._apply(scan, approved=approved)
         result.arrived = arrived
-        self._health.record_reconcile(result.to_dict())
+        # A completed scan is a COMPLETE observation of what is corrupt, so it
+        # supersedes the startup rebuild's list — including when the threshold
+        # guard blocked the pass's writes, since corruption is something the
+        # scan SAW rather than something it decided to apply. A scan that
+        # aborted on an unreadable ledger saw nothing and is excluded.
+        self._health.record_reconcile(
+            result.to_dict(),
+            corrupt=None if scan.ledger_unreadable is not None else result.corrupt,
+        )
         return result
 
     def _adopt_incoming(self) -> tuple[str, ...]:

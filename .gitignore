@@ -144,3 +144,4 @@ log/
 /dev_image/
 /*.png
 .dev/
+services/*/data/
