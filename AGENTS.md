@@ -148,7 +148,7 @@ kairos/
 - **UI 受け入れテスト**: `make test-e2e` — 実ブラウザ（Playwright）＋実スタック＋実 bag 再生で `e2e/tests/*.spec.ts`
   を回す。専用ポート・専用 `ROS_DOMAIN_ID`・専用 data dir なので `make up` のスタックを壊さない。
   **イメージは build しない**（`up` と同じ規則）— `services/` を変えたら先に `make build`。古いイメージのまま
-  緑になると受け入れゲートが嘘をつく。初回はネットワークが要る（npm + chromium）。詳細は [`e2e/README.md`](e2e/README.md)。
+  緑になると受け入れゲートが嘘をつく。初回はネットワークが要る（npm + chromium）。詳細は [`e2e/README.md`](e2e/README.md)。**UI/挙動を変えるラウンドは `test-fe` だけでなくこれも回す**（回さず進めて 3 スペックが静かに赤化した実績あり）。
 - **Lint / format**: `uvx ruff check libs services` / `uvx ruff format libs services`。
 - **CI**（`.github/workflows/ci.yml`、`develop` / `main` への push・PR）はローカルと同じ検証を回す —
   各 Python パッケージの pytest、frontend の build/test/lint、`ruff check` と **`ruff format --check`**、

@@ -281,6 +281,29 @@ Phase A hardening toward a supportable release
 
 ### Fixed
 
+- **Live claims now expire — the fresh-eyes QA cycle** (5 rounds, 2026-08-02
+  〜08-03). An independent exploratory QA pass over the real UI found the
+  product's slow paths scrupulously honest and its fast paths not; every
+  finding is fixed and re-verified against disk and manifest, not the screen.
+  Headlines: a dead recorder can no longer keep a RECORDING card counting
+  (nor, after returning, resurrect a recording that no longer exists — the
+  interrupted take is offered with its real bytes and the recorder's own
+  reason); the catalog can no longer contradict a terminal manifest
+  (`adopt_manifest_facts` behind all three settling paths — an interrupted
+  take's 10.7 MB was being described as "0 B / verified (empty)" with an
+  irreversible Discard as the invited next step); the quick check gained a
+  minimum-duration criterion (an accidental 87 ms double-click take can never
+  verdict GOOD); camera tiles cross-reference the SOURCE topic's liveness
+  ("topic silent — showing the last frame" / "not monitored — no rate
+  available") instead of trusting a transport that re-encodes a frozen frame
+  at a real 15 fps; per-capture video jobs are serialized (five previews no
+  longer burst into four 409s); discarding an obviously-bad take is one click
+  (preset reason chips, free text only behind Other, and an abandoned Other
+  text can never contaminate the ledger); and a schema change that shipped
+  without a version bump — breaking every `POST /jobs` on live databases —
+  forced the rule into the constant's own comment. The recorder-honesty arc
+  is pinned as E2E scenario 06.
+
 - **A Stop now actually stops** (user report 2026-07-27). `POST /record/stop`
   treated "no run row claims to be recording" as "nothing is recording" and
   returned the last run with `200` — but a row can be missing or in the wrong
