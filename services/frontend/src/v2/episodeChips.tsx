@@ -1,23 +1,39 @@
-// Shared episode chips + batch-label formatting used by BOTH Review and
-// Datasets, so an episode reads identically in every pipeline step (Console v2
-// pipeline UX). Honesty: a missing value renders "—", never a fabricated label.
+// Shared label chips used by BOTH Review and Datasets, so a recording reads
+// identically at every pipeline step (Console v2 pipeline UX).
+//
+// They now read a `Capture` directly: v2 merged the run and the episode, so the
+// review fields the chips render live on the capture itself and there is no
+// separate episode object to pass around. Honesty rule unchanged — a missing
+// value renders "—", never a fabricated label.
 
-import type { RunEpisode } from '../api/types';
+import type { Capture, Quality, TaskResult } from '../api/types';
 import { Badge, type Tone } from '../components/ui';
-import type { Quality, ReviewLane, ReviewStatus, TaskResult } from './review/types';
+import type {
+  DisplayQuality,
+  DisplayTaskResult,
+  ReviewLane,
+} from './review/types';
 
-// Server episode enums (api/types) → the Review display vocabulary the chips
-// speak. Kept here so every surface that renders an episode (Review, Datasets)
-// maps identically.
-const QUALITY_FROM_SERVER: Record<RunEpisode['quality'], Quality> = {
+// Server vocabulary -> the display vocabulary the chips speak. Kept here so
+// every surface that renders a capture's labels maps identically.
+const QUALITY_FROM_SERVER: Record<Quality, DisplayQuality> = {
   good: 'Good',
   needs_review: 'Needs review',
   not_usable: 'Not usable',
 };
-const TASK_FROM_SERVER: Record<RunEpisode['task_result'], TaskResult> = {
+const TASK_FROM_SERVER: Record<TaskResult, DisplayTaskResult> = {
   success: 'Success',
   failure: 'Failure',
 };
+
+export function displayQuality(q: Quality | null | undefined): DisplayQuality | null {
+  return q ? QUALITY_FROM_SERVER[q] : null;
+}
+export function displayTaskResult(
+  t: TaskResult | null | undefined,
+): DisplayTaskResult | null {
+  return t ? TASK_FROM_SERVER[t] : null;
+}
 
 const LANE_TONE: Record<ReviewLane, Tone> = {
   ready: 'green',
@@ -42,13 +58,13 @@ export function LaneChip({ lane, testId }: { lane: ReviewLane; testId?: string }
   );
 }
 
-function qualityTone(q: Quality): Tone {
+function qualityTone(q: DisplayQuality): Tone {
   if (q === 'Good') return 'green';
   if (q === 'Needs review') return 'amber';
   return 'red';
 }
 
-export function QualityChip({ quality }: { quality: Quality | null }) {
+export function QualityChip({ quality }: { quality: DisplayQuality | null }) {
   if (!quality) return <span className="font-mono text-xs text-gray-400">—</span>;
   return (
     <Badge tone={qualityTone(quality)} className="w-fit whitespace-nowrap">
@@ -61,10 +77,9 @@ export function TaskResultChip({
   task,
   reason,
 }: {
-  task: TaskResult | null;
-  /** The operator's failure reason (episodes.failure_reason) — surfaces as the
-   *  FAILURE chip's tooltip so the WHY is one hover away wherever the chip
-   *  appears (it was persisted but rendered nowhere — user report 2026-07-14). */
+  task: DisplayTaskResult | null;
+  /** The operator's failure reason (`failure_reason`) — surfaces as the FAILURE
+   *  chip's tooltip so the WHY is one hover away wherever the chip appears. */
   reason?: string | null;
 }) {
   if (!task) return <span className="font-mono text-xs text-gray-400">—</span>;
@@ -81,7 +96,7 @@ export function TaskResultChip({
   );
 }
 
-const REVIEW_STATUS_TONE: Record<ReviewStatus, Tone> = {
+const REVIEW_STATUS_TONE: Record<string, Tone> = {
   adopted: 'green',
   excluded: 'red',
   pending: 'gray',
@@ -91,20 +106,24 @@ export function ReviewStatusChip({
   status,
   testId,
 }: {
-  status: ReviewStatus;
+  status: string;
   testId?: string;
 }) {
   return (
     <span data-testid={testId} className="w-fit">
-      <Badge tone={REVIEW_STATUS_TONE[status]} className="w-fit whitespace-nowrap">
+      <Badge
+        tone={REVIEW_STATUS_TONE[status] ?? 'gray'}
+        className="w-fit whitespace-nowrap"
+      >
         {status.toUpperCase()}
       </Badge>
     </span>
   );
 }
 
-/** "MM/DD · #N" from a server batch_seq (Review/Datasets share this). A null seq
- *  yields the `fallback` (default "—") — the bridge's local number or nothing. */
+/** "MM/DD · #N" from a server batch_seq. A null seq yields `fallback`
+ *  (default "—"): the batch number is the server's to assign, and a capture
+ *  reviewed into no batch genuinely has none. */
 export function formatBatchLabel(
   batchSeq: number | null | undefined,
   isoDate?: string | null,
@@ -135,31 +154,33 @@ export function BatchChip({
   );
 }
 
-/** The label chips for one episode (batch · task-result · quality), read from a
- *  server `RunEpisode`. Used wherever an exported/recorded episode is listed
- *  (Datasets catalog card + detail). Render this ONLY when an episode is present
- *  — callers show nothing (no fabricated labels) when it is null/absent. */
-export function EpisodeLabelChips({
-  episode,
+/**
+ * The label chips for one capture (batch · task-result · quality).
+ *
+ * `batchSeq` is passed in rather than read off the capture: the capture carries
+ * the batch_id, but the human-readable per-day number lives on the batch, so
+ * only a caller that loaded the batch can supply it. Absent, the batch chip
+ * says "—" instead of inventing a number.
+ */
+export function CaptureLabelChips({
+  capture,
+  batchSeq,
   isoFallback,
   testId,
 }: {
-  episode: RunEpisode;
-  /** Date used for the batch chip when the episode carries no batch_created_at. */
+  capture: Capture;
+  batchSeq?: number | null;
   isoFallback?: string | null;
   testId?: string;
 }) {
   return (
     <div data-testid={testId} className="flex flex-wrap items-center gap-1.5">
-      <BatchChip
-        batchSeq={episode.batch_seq}
-        isoDate={episode.batch_created_at ?? isoFallback}
-      />
+      <BatchChip batchSeq={batchSeq} isoDate={isoFallback ?? capture.started_at} />
       <TaskResultChip
-        task={TASK_FROM_SERVER[episode.task_result]}
-        reason={episode.failure_reason}
+        task={displayTaskResult(capture.task_result)}
+        reason={capture.failure_reason}
       />
-      <QualityChip quality={QUALITY_FROM_SERVER[episode.quality]} />
+      <QualityChip quality={displayQuality(capture.quality)} />
     </div>
   );
 }

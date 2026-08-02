@@ -1,9 +1,9 @@
 // Bespoke fast_validation result card: a per-required-topic checklist (found ✓
 // / missing ✕ + expected msg type) with a PASS/FAIL badge and an "+N extra
-// topics" note. Ported from the legacy features/validation ValidationTab card so
-// fast_validation keeps its purpose-built view; every other pipeline lands in
-// the generic SummaryResult instead. The pass/found/missing computation lives in
-// resultsMapping.buildChecklist (unit-tested there).
+// topics" note. fast_validation keeps this purpose-built view because "are my
+// required topics there" is the one question it exists to answer; every other
+// pipeline lands in the generic SummaryResult instead. The pass/found/missing
+// computation lives in resultsMapping.buildChecklist (unit-tested there).
 import { Badge, Card, SectionLabel, StatusDot } from '../../components/ui';
 import type { Summary } from '../../features/validation/SummaryResult';
 import { buildChecklist, type RequiredTopic } from './resultsMapping';

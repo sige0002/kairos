@@ -1,16 +1,77 @@
 // Domain types for the api_orchestrator REST/SSE contract.
 // Source of truth: docs/specs/ja/api_orchestrator.md and config.md.
 
-export type RunState =
+/**
+ * Every state a capture row can hold (contract §3/§7, mirroring
+ * `kairos_common.capture_sidecars.CaptureState`). The first five are what an
+ * `object_manifest.json` may carry; the last three are reached only through the
+ * deletion path — a manifest never says "deleted", because the deletion IS the
+ * act of taking the manifest away. The row survives as a tombstone either way,
+ * so "where did it go" stays answerable.
+ */
+export type CaptureState =
+  | 'recording'
+  | 'stopping'
+  | 'completed'
+  | 'interrupted'
+  | 'failed'
+  | 'delete_pending'
+  | 'discarded'
+  | 'deleted';
+
+/** Capture states that reached an end (the bag, if any, is final). */
+export const TERMINAL_CAPTURE_STATES = new Set<CaptureState>([
+  'completed',
+  'interrupted',
+  'failed',
+]);
+
+/**
+ * Where THIS installation's copy of a capture stands (§8). The two that carry
+ * the most meaning are the ones the UI must never flatten into "gone":
+ * `missing_unmanaged` is what an external `rm -rf` produces (§9-2 — a warning,
+ * not a completed cleanup), and `corrupt` is a sidecar that exists but cannot
+ * be read (§8 rule 4 — never reported as absent).
+ */
+export type ReplicaState =
+  | 'present_unverified'
+  | 'present_verified'
+  | 'trashed'
+  | 'absent_managed'
+  | 'missing_unmanaged'
+  | 'corrupt';
+
+/** Whether per-file hashes have been sealed into the manifest (§11). */
+export type DigestState = 'pending' | 'complete';
+
+/**
+ * The state the RECORDER reports through `/record/status`.
+ *
+ * This is the recorder's OWN vocabulary (`rosbag2_recorder.models.RunState`),
+ * not the capture-row vocabulary, because `/api/v1/record/status` is a verbatim
+ * proxy of the recorder. Two consequences that have bitten before:
+ *
+ *   * A fresh recorder sits in `created`, never `idle` — there is no `idle`
+ *     state on the wire, so nothing may test for one.
+ *   * The tombstone states (`delete_pending`/`discarded`/`deleted`) live in the
+ *     database and never appear here; a recorder has no opinion about deletion.
+ *
+ * `armed` is the two-phase-start state: `POST /record/prepare` spawned the
+ * recorder paused and subscribed, and no matching start has resumed it yet.
+ */
+export type RecordState =
   | 'created'
   | 'recording'
   | 'stopping'
   | 'completed'
   | 'failed'
   | 'interrupted'
-  /** Two-phase start: a `/record/prepare`d session is spawned + subscribed but
-   *  paused, waiting for a matching start (never persisted — no run row). */
   | 'armed';
+
+/** Recorder states that mean a session is actually running — matching the
+ *  recorder's own `_ACTIVE_STATES`. `armed` is deliberately NOT one of them:
+ *  an armed session is subscribed but writing nothing. */
+export const ACTIVE_RECORD_STATES = new Set<RecordState>(['recording', 'stopping']);
 
 export type JobState = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled';
 
@@ -37,10 +98,6 @@ export interface RecordStartRequest {
   [key: string]: unknown;
 }
 
-export interface RecordStartResponse {
-  run_id: string;
-  state: RunState;
-}
 
 /**
  * Recorder "arming" state (OL-①.4): while start_paused is in effect the recorder
@@ -72,7 +129,10 @@ export interface RecordArming {
  *  a mismatching one replaces it, or `disarm_at` passes unclaimed. */
 export interface RecordPrepareResponse {
   run_id: string;
-  state: RunState;
+  /** The recorder mints the capture id at prepare time (§1), so a client can
+   *  correlate the eventual capture without waiting for the start response. */
+  capture_id?: string | null;
+  state: 'armed';
   arming?: RecordArming | null;
   disarm_at?: string | null;
 }
@@ -86,7 +146,19 @@ export type RecordIntegrity = 'ok' | 'dropped' | 'failed' | 'unknown';
 
 export interface RecordStatus {
   run_id: string | null;
-  state: RunState | 'idle';
+  /** The most recent capture — it keeps pointing at the last one after a stop
+   *  (never nulled), so it is NOT a liveness signal. Use `live_capture_ids`. */
+  capture_id?: string | null;
+  state: RecordState;
+  /**
+   * The definitive list of live captures (§10, rev.2.3: this name is final).
+   * Non-empty for armed/recording/stopping — including `armed`, which no single
+   * field can express — and `[]` otherwise.
+   *
+   * A response MISSING this array is an unreachable recorder, NOT an empty live
+   * set (rev.2.4). `liveCaptureIds()` below is the only correct way to read it.
+   */
+  live_capture_ids?: string[];
   /** Actual capture start (recorder-stamped, post arming/resume) — the elapsed
    *  timer's baseline, available on the same poll that flips the UI to red. */
   started_at?: string | null;
@@ -98,182 +170,356 @@ export interface RecordStatus {
   dropped_messages?: number | null;
 }
 
-// ---- Runs ---------------------------------------------------------------
+/**
+ * The live capture set from a status response, or `null` when the recorder did
+ * not answer with one.
+ *
+ * The distinction is the whole point (§10 rev.2.4): an absent array means the
+ * recorder is unreachable and we know NOTHING about what is live, while `[]`
+ * means it answered and nothing is. Collapsing the first into the second is how
+ * a UI ends up telling an operator their running recording does not exist.
+ */
+export function liveCaptureIds(status: RecordStatus | undefined): string[] | null {
+  if (!status || !Array.isArray(status.live_capture_ids)) return null;
+  return status.live_capture_ids;
+}
 
-export interface RunTopic {
+// ---- Captures ------------------------------------------------------------
+// One capture carries both the recording facts and the operator's review, so
+// what v1 split between a Run and an Episode is a single object here (§8).
+// `/api/v1/runs` and `/api/v1/episodes` are retired with no compatibility
+// alias — a capture_id is the only identity, and run_id is display text.
+
+export interface TopicQos {
+  reliability: string;
+  durability: string;
+  depth: number;
+}
+
+export interface CaptureTopic {
   name: string;
   type: string;
-  qos?: Record<string, unknown> | string;
+  qos?: TopicQos | null;
 }
 
-export interface RunSummary {
-  run_id: string;
-  state: RunState;
-  started_at?: string;
-  ended_at?: string | null;
-  duration_ms?: number;
+/** Structured reason attached to a capture (e.g. a failed start). */
+export interface CaptureError {
+  code: string;
+  message: string;
+}
+
+export interface CaptureSplit {
+  max_size_mb?: number | null;
+  max_duration_s?: number | null;
+}
+
+/**
+ * Where one installation's copy of a capture stands (§8).
+ *
+ * A capture can legitimately have review data with NO local replica: on a split
+ * deploy the operator reviews before the bytes are pulled across. The UI must
+ * render that as a normal state, never as an error.
+ */
+export interface Replica {
+  instance_id: string;
+  state: ReplicaState;
+  path?: string | null;
+  manifest_digest?: string | null;
+  verified_at?: string | null;
+  updated_at?: string | null;
+}
+
+/** A capture's membership in one dataset, as shown on the capture (§6). */
+export interface DatasetMembership {
+  membership_id: string;
+  dataset_id: string;
+  dataset_name?: string | null;
+  /** Display-only number within the dataset; never reused after a removal. */
+  display_index: number;
+}
+
+export type TaskResult = 'success' | 'failure';
+export type Quality = 'good' | 'needs_review' | 'not_usable';
+export type QualitySource = 'operator' | 'quick_check' | 'validator';
+export type ReviewStatus = 'pending' | 'adopted' | 'excluded';
+/** §7: one endpoint, two intents — they differ in the ledger kind and in what
+ *  the UI is REQUIRED to say about reversibility (§12). */
+export type DeleteKind = 'discard' | 'delete';
+
+/** One recording, merged with the operator's review of it (`GET /captures`). */
+export interface Capture {
+  capture_id: string;
+  /** `run_YYYYMMDD_HHMMSS` — DISPLAY ONLY (§1). Never an API key. */
+  run_id?: string | null;
+  source_instance_id?: string | null;
+  state: CaptureState;
   operator?: string | null;
   task?: string | null;
-  /** Console v2 Phase 2: the episode this run belongs to (null when none),
-   *  additively joined by the runs read path so Review shows real data on any
-   *  terminal. Never persisted on the run row. */
-  episode?: RunEpisode | null;
-  /** Whether a finalised local copy of the recording exists on the serving
-   *  host (`recorded/<run_id>/metadata.yaml` present in the FINAL path — the
-   *  importer stages in-flight pulls and atomic-renames on completion, so it
-   *  is the "fully imported" marker). False on a split recording PC until the
-   *  run is pulled; the Review transfer UI keys on it. */
-  bag_local?: boolean | null;
+  robot?: string | null;
+  started_at?: string | null;
+  ended_at?: string | null;
+  topics?: CaptureTopic[];
+  compression?: string;
+  split?: CaptureSplit | null;
+  error?: CaptureError | null;
+  message_count?: number | null;
+  bytes?: number | null;
+  quick_check?: QuickCheck | null;
+
+  // ---- review (record.json is authoritative; these mirror it, §4.1-4) ----
+  task_result?: TaskResult | null;
+  failure_reason?: string | null;
+  quality?: Quality | null;
+  quality_source?: QualitySource | null;
+  review_status: ReviewStatus;
+  /** 0 = never reviewed. Echoed back as `base_revision` to save an edit. */
+  review_revision: number;
+  batch_id?: string | null;
+  index_in_batch?: number | null;
+
+  // ---- tombstone (§7): the row survives the deletion ----
+  deleted_at?: string | null;
+  delete_kind?: DeleteKind | null;
+  delete_reason?: string | null;
+
+  // ---- archive (§6): the bytes left deliberately, to a recorded place ----
+  archived_at?: string | null;
+  archive_destination?: string | null;
+
+  // ---- lease (§7.1): a job is touching objects/<id> right now ----
+  lease_owner?: string | null;
+  lease_expires_at?: string | null;
+
+  created_at?: string | null;
+  updated_at?: string | null;
+
+  /** This installation's copy; null only for a capture we have never held. */
+  replica?: Replica | null;
+  /** `complete` once the digest job sealed per-file hashes into the manifest.
+   *  Derived from the replica state, so "verified" is one fact (§9-4). */
+  digest_state?: DigestState;
+  memberships?: DatasetMembership[];
 }
 
-/** One recording surfaced by `GET /api/v1/retention` as old-and-unexported.
- *  Advisory only — a candidate for the operator to review, never auto-deleted. */
+/** A capture plus its on-disk sidecars (`GET /api/v1/captures/{id}`). All the
+ *  sidecar fields are best-effort and null when absent, so a capture whose
+ *  files are gone still returns cleanly. */
+/** A capture plus its on-disk sidecars (`GET /api/v1/captures/{id}`).
+ *
+ *  All of these are read best-effort from disk and are null when absent, so a
+ *  capture whose files are gone still returns cleanly.
+ *
+ *  There is deliberately no `dataset_stats`: it pointed at the `dataset_export`
+ *  pipeline, which §6 retired along with the physical dataset tree, so the
+ *  field could only ever be null. A field structurally incapable of holding a
+ *  value is worse than a missing one — it invites clients to keep checking it.
+ *  The `signal_report` is likewise fetched through its job result, not here. */
+export interface CaptureDetail extends Capture {
+  manifest?: Record<string, unknown> | null;
+  record?: Record<string, unknown> | null;
+  validation?: Record<string, unknown> | null;
+  loss?: { capture_id?: string; topics?: LossTopic[]; checked_at?: string } | null;
+}
+
+/** Query parameters accepted by `GET /api/v1/captures`. */
+export interface CaptureListParams {
+  state?: CaptureState;
+  review_status?: ReviewStatus;
+  task?: string;
+  operator?: string;
+  robot?: string;
+  batch?: string;
+  limit?: number;
+  cursor?: string;
+  /** Widen the default working set to include tombstones (§7). */
+  include_deleted?: boolean;
+}
+
+/** Body of `PATCH /api/v1/captures/{id}/review` (§4.1).
+ *
+ *  `base_revision` is REQUIRED and is the whole point: the save is a
+ *  compare-and-swap against the capture's current `review_revision`, so two
+ *  terminals editing the same capture cannot silently overwrite each other.
+ *  A mismatch is a 409 telling the client to reload — never a merge. */
+export interface ReviewSaveRequest {
+  base_revision: number;
+  task_result?: TaskResult | null;
+  failure_reason?: string | null;
+  quality?: Quality | null;
+  quality_source?: QualitySource | null;
+  review_status?: ReviewStatus | null;
+  batch_id?: string | null;
+  index_in_batch?: number | null;
+}
+
+/** Body of `POST /api/v1/captures/{id}/delete` (§7). `reason` is REQUIRED for a
+ *  discard: it is irreversible, and the ledger line is the only surviving
+ *  explanation of why the data is gone. */
+export interface CaptureDeleteRequest {
+  kind: DeleteKind;
+  reason?: string | null;
+}
+
+/** Body of `POST /api/v1/captures/{id}/archive` (§6). */
+export interface CaptureArchiveRequest {
+  destination: string;
+  operator?: string | null;
+  reason?: string | null;
+}
+
+/** One file as written to the archive destination — the same
+ *  `{path, size, sha256}` shape as the manifest's file list (§3.2). */
+export interface ArchivedFile {
+  path: string;
+  size: number;
+  sha256: string;
+}
+
+/** Result of a completed capture archive.
+ *
+ *  `files` carries the per-file hashes rather than only a count because the
+ *  source is deleted moments after this is computed: these digests and the
+ *  matching ledger event are the only things left that can answer "is the
+ *  archived copy still intact?". */
+export interface CaptureArchiveResponse {
+  capture_id: string;
+  destination: string;
+  bytes: number;
+  file_count: number;
+  files: ArchivedFile[];
+  verified: boolean;
+}
+
+/**
+ * `GET /api/v1/captures/{id}/archive/config` — whether this deployment may
+ * archive at all, and to which roots. `enabled: false` (no KAIROS_ARCHIVE_ROOTS)
+ * means the control is not rendered: never offer what can only ever fail.
+ */
+export interface ArchiveConfig {
+  enabled: boolean;
+  roots: string[];
+}
+
+/** One capture surfaced by `GET /api/v1/retention` as reclaimable (§10).
+ *  Advisory ONLY: a candidate the operator may look at, never auto-deleted. */
 export interface RetentionCandidate {
-  run_id: string;
+  capture_id: string;
+  run_id?: string | null;
   started_at?: string | null;
   bytes?: number | null;
-  state: RunState;
-  has_episode: boolean;
+  state: CaptureState;
+  review_status: ReviewStatus;
 }
 
-/** `GET /api/v1/retention`: deletion candidates by retention period. `days` is
- *  the active `RETENTION_DAYS` (0 = feature off → always empty candidates). */
 export interface RetentionInfo {
   days: number;
   candidates: RetentionCandidate[];
   total_bytes: number;
 }
 
-/** `dataset_export` job summary (dora_runner): one exported dataset directory. */
-export interface DatasetExportSummary {
-  run_id?: string;
-  operator?: string;
-  task?: string;
-  /** Zero-padded index allocated under data/<operator>/<task>/ (e.g. "001"). */
-  index?: string;
-  dataset_dir?: string;
-  files?: string[];
-  bytes?: number;
-  message_count?: number | null;
-  exported_at?: string;
+// ---- datasets (§6: rows + ledger events; no directory tree) --------------
+// A dataset is a NAMED SET OF CAPTURES. Adding one moves nothing on disk, and
+// the browsable <operator>/<task>/<dataset>/NNN shape is generated as symlinks
+// under views/ by the server. There is no `dataset_dir` identity any more:
+// dataset_id / membership_id / capture_id are the only stable keys.
+
+export interface Dataset {
+  dataset_id: string;
+  name: string;
+  operator?: string | null;
+  task?: string | null;
+  status: string;
+  created_at?: string | null;
+  member_count: number;
 }
 
-/** One exported dataset directory under data/<operator>/<task>/<NNN> (GET /datasets). */
-export interface DatasetEntry {
-  operator: string;
-  task: string;
-  /** Zero-padded index allocated under data/<operator>/<task>/ (e.g. "001"). */
-  index: string;
-  dataset_dir: string;
-  run_id?: string;
-  bytes?: number;
-  message_count?: number | null;
-  exported_at?: string;
-  /** Stable hash of the topics the bag ACTUALLY contains (name + type of every
-   *  topic that recorded at least one message), derived at export from the
-   *  bag's rosbag2 `metadata.yaml`. Two episodes with the same hash share an
-   *  observation/action space; a differing hash inside one group means the
-   *  group can't convert into a single training set. Null when the export's
-   *  metadata was unreadable — an honest UNKNOWN that must be kept OUT of the
-   *  comparison, never treated as its own set. */
-  topics_hash?: string | null;
-  /** How many topics fed `topics_hash` (shown as "7 topics"). */
-  topic_count?: number | null;
-  /** Console v2 Phase 2: episode-label subset for catalog cards. The backend
-   *  serves these FLAT on each list row (mirroring its per-row dataset.json
-   *  read); null/absent on older backends or pre-label exports. The full
-   *  nested `episode` object exists only on DatasetDetail. */
-  task_result?: 'success' | 'failure' | null;
-  /** The operator's failure reason picked at save time; null for successes
-   *  and pre-label exports. */
-  failure_reason?: string | null;
-  quality?: 'good' | 'needs_review' | 'not_usable' | null;
-  review_status?: 'pending' | 'adopted' | 'excluded' | null;
-  batch_seq?: number | null;
-  index_in_batch?: number | null;
-  /** Globally-unique batch id (batch_seq resets per robot per day, so it
-   *  can't identify a batch alone); null until a catalog rebuild heals
-   *  pre-existing rows. */
-  batch_id?: string | null;
-  /** The batch's recording condition, flattened out of episode.json's batch
-   *  context; null on pre-label exports. */
-  condition?: string | null;
+/** One capture's membership in a dataset. `display_index` is the number shown
+ *  beside it INSIDE this dataset — display-only, and never reused after a
+ *  removal (§6), so a retired number cannot make two takes share an identity. */
+export interface DatasetMember {
+  membership_id: string;
+  dataset_id: string;
+  capture_id: string;
+  display_index: number;
+  created_at?: string | null;
 }
 
-/** GET /api/v1/datasets — the flat list of exported datasets (grouped in the UI). */
-export interface DatasetsResponse {
-  datasets: DatasetEntry[];
+export interface DatasetDetail extends Dataset {
+  members: DatasetMember[];
 }
 
-/**
- * GET /api/v1/datasets/archive/config — whether a dataset may be archived off
- * this machine, and to which roots. `enabled: false` (KAIROS_ARCHIVE_ROOTS
- * unset) means the feature is not offered: the UI renders no archive control
- * at all rather than one whose only possible outcome is a 400.
- */
-export interface ArchiveConfig {
-  enabled: boolean;
-  /** Absolute paths a destination must sit inside. Empty when disabled. */
-  roots: string[];
+export interface DatasetListResponse {
+  items: Dataset[];
 }
 
-/** 202 body of POST /api/v1/datasets/{op}/{task}/{index}/archive. The copy runs
- *  as a job (multi-GB over a NAS), so this carries the id to poll. */
-export interface DatasetArchiveResponse {
-  job_id: string;
-  pipeline: string;
-  destination: string;
+export interface DatasetCreateRequest {
+  name: string;
+  operator?: string | null;
+  task?: string | null;
 }
 
-/**
- * GET /api/v1/datasets/{operator}/{task}/{index} — one exported dataset plus
- * its on-disk sidecars: the post-export counterpart of RunDetail, so the
- * Datasets tab can show the same inspection view as Recordings. All sidecar
- * fields are best-effort (null when the file is absent/unreadable).
- */
-export interface DatasetDetail {
-  operator: string;
-  task: string;
-  index: string;
-  /** Relative "<operator>/<task>/<index>" under data/ — the `dataset_dir` job
-   *  param for post-export video_check / loss_report. */
+// ---- store health (§8 / §9-3) --------------------------------------------
+
+/** A sidecar that exists but cannot be read (§8 rule 4). Never "missing". */
+export interface CorruptEntry {
+  capture_id?: string | null;
   path: string;
-  dataset_dir: string;
-  run_id?: string | null;
-  state?: string | null;
-  started_at?: string | null;
-  ended_at?: string | null;
-  exported_at?: string | null;
-  bytes?: number | null;
-  message_count?: number | null;
-  files: string[];
-  /** From manifest.json when present (name+type+QoS); else name-only (type ""). */
-  topics: RunTopic[];
-  manifest?: Record<string, unknown> | null;
-  /** The dataset.json provenance summary itself. */
-  dataset?: Record<string, unknown> | null;
-  validation?: Record<string, unknown> | null;
-  /** `loss_report` summary that survived export (or was re-run post-export). */
-  loss?: { run_id?: string; topics?: LossTopic[]; checked_at?: string } | null;
-  /** Console v2 Phase 2: the episode this exported run belongs to (null/absent
-   *  on older backends). Drives the detail's label chips; nothing when absent. */
-  episode?: RunEpisode | null;
+  reason: string;
 }
 
-/** POST /api/v1/datasets/export-all — per-run successes + failures for the batch. */
-export interface ExportAllResponse {
-  exported: DatasetExportSummary[];
-  failed: { run_id: string; error: string }[];
-  total: number;
+/**
+ * `GET /api/v1/store/health` — what the catalog knows about ITSELF.
+ *
+ * Exists because the two worst failures are both invisible in an ordinary
+ * capture list: a rebuild that could not classify some captures (they have no
+ * row, so they cannot appear), and a reconciler pass that saw so many copies
+ * vanish at once that it refused to believe them (§9-3) — the catalog then
+ * looks normal while the disk is not.
+ */
+export interface StoreHealth {
+  instance_id: string;
+  state: 'ok' | 'suspect';
+  /** Set when the §9-3 threshold guard latched: the store stopped applying
+   *  missing-transitions, the reaper and digests until an operator looks. */
+  suspect_reason?: string | null;
+  suspect_at?: string | null;
+  /** False when objects/ .trash/ and .incoming/ are not on ONE filesystem (§2),
+   *  which would make the trash rename an EXDEV copy instead of an atomic move.
+   *  Deletion APIs are then withheld rather than silently degraded. */
+  delete_available: boolean;
+  delete_unavailable_reason?: string | null;
+  rebuilt_at?: string | null;
+  rebuild_summary?: Record<string, unknown> | null;
+  /** Corrupt sidecars as of the most recent COMPLETE scan (§8 rule 4). ONE
+   *  list, not one per pass: the startup rebuild and the periodic reconciler
+   *  scan the same directory, so the newer observation replaces the older
+   *  rather than being merged with it. */
+  corrupt: CorruptEntry[];
+  /** Which pass produced `corrupt`, and when. Without these, "no corruption"
+   *  from a scan seconds ago is indistinguishable from the same answer taken at
+   *  boot three days ago — which is why the UI must never claim an all-clear
+   *  without saying when it was observed. */
+  corrupt_source?: 'rebuild' | 'reconcile' | null;
+  corrupt_observed_at?: string | null;
+  warnings: string[];
+  last_reconcile_at?: string | null;
+  last_reconcile?: Record<string, unknown> | null;
 }
 
+/** `POST /api/v1/store/repair` — the operator's acknowledgement that clears
+ *  SUSPECT. Refused (409 `volume_unidentified`) while the volume marker is
+ *  unreadable: an approval that cannot name the volume is not an approval. */
+export interface StoreRepairResponse {
+  repaired: boolean;
+  reconcile?: Record<string, unknown> | null;
+}
 /**
  * `video_check` job summary (dora_runner): an on-demand mp4 preview of one
  * camera topic. `file` is the path relative to data_dir (fetch it via
  * `${apiBase}/files/${file}`); `frames === 0` means nothing decodable was found.
  */
 export interface VideoCheckSummary {
-  run_id?: string;
+  capture_id?: string;
   topic?: string;
   frames?: number;
   fps?: number | null;
@@ -289,7 +535,7 @@ export interface VideoCheckSummary {
   mp4?: string | null;
   note?: string;
   checked_at?: string;
-  /** True when served from the per-(run, topic) cache instead of re-encoding. */
+  /** True when served from the per-(capture, topic) cache instead of re-encoding. */
   cached?: boolean;
 }
 
@@ -348,7 +594,7 @@ export interface SignalReport {
   pipeline?: string;
   /** Sidecar schema version (additive; unknown top-level keys are ignored). */
   version?: string;
-  run_id?: string;
+  capture_id?: string;
   generated_at?: string;
   /** `topics` is null when the job ran with defaults (all numeric topics). */
   params?: { topics?: string[] | null; max_points?: number };
@@ -399,9 +645,9 @@ export interface QuickCheckVerdict {
 }
 
 /**
- * Fast pre-review quick-check attached to a run/episode: a cheap two-layer
- * health read (live monitor at stop + bag summary) with a plain-language
- * verdict. Absent on runs recorded before the feature — the UI then shows
+ * Fast pre-review quick-check settled at recording stop: a cheap two-layer
+ * health read (live monitor at stop + MCAP summary) with a plain-language
+ * verdict. Absent on captures recorded before the feature — the UI then shows
  * nothing (no fabricated state); a layer with `available:false` /
  * `summary_available:false` is stated as honestly unavailable.
  */
@@ -411,33 +657,6 @@ export interface QuickCheck {
   layer0?: QuickCheckLayer0 | null;
   layer1?: QuickCheckLayer1 | null;
   verdict?: QuickCheckVerdict | null;
-}
-
-export interface RunDetail {
-  run_id: string;
-  state: RunState;
-  started_at?: string;
-  ended_at?: string | null;
-  topics: RunTopic[];
-  compression?: string;
-  operator?: string | null;
-  task?: string | null;
-  split?: Record<string, unknown> | null;
-  error?: { code: string; message: string } | null;
-  /** Console v2 Phase 2: the episode this run belongs to (null when none). */
-  episode?: RunEpisode | null;
-  /** Optional audit manifest + stats surfaced by the orchestrator. */
-  manifest?: Record<string, unknown> | null;
-  validation?: Record<string, unknown> | null;
-  dataset_stats?: Record<string, unknown> | null;
-  /** `loss_report` per-topic gap-based loss summary (when computed). */
-  loss?: { run_id?: string; topics?: LossTopic[]; checked_at?: string } | null;
-  /** `signal_report` sidecar (per-topic decoded numeric fields over episode
-   *  time), when the orchestrator surfaces it on the run. The Signals section
-   *  fetches it via the job-result path too, so this is a convenience mirror. */
-  signal?: SignalReport | null;
-  /** Fast pre-review quick-check verdict, when present (absent on old runs). */
-  quick_check?: QuickCheck | null;
 }
 
 // ---- Topics / Monitor ---------------------------------------------------
@@ -639,22 +858,24 @@ export interface PipelineInfo {
   description?: string;
   /** Interface-only placeholders report `false`; only `true` pipelines run. */
   enabled?: boolean;
-  /** Declared output contract, e.g. `report/<id>/<run_id>/summary.json`. */
+  /** Declared output contract, e.g. `report/<id>/<capture_id>/summary.json`. */
   outputs?: string[];
 }
 
+/** Body of `POST /api/v1/jobs` (§10.5). Every job is keyed by `capture_id`: it
+ *  resolves its source as `objects/<capture_id>` and writes to
+ *  `report/<pipeline>/<capture_id>/`. The v1 `dataset_dir` param is gone. */
 export interface JobSubmitRequest {
   pipeline: string;
-  /** Required by the backend (JobCreateRequest.run_id); every job targets a run. */
-  run_id: string;
+  capture_id: string;
   params?: Record<string, unknown>;
 }
 
 /**
  * A one-click validation preset (`GET /api/v1/validation/presets`). Static
  * fields come from the robot's `validation_presets.yaml`; `total`/`pending`/
- * `pending_run_ids` are computed per request — `pending_run_ids` are the
- * completed recordings this preset's pipeline has not validated yet.
+ * `pending_capture_ids` are computed per request — the captures whose bytes are
+ * on this host that this preset's pipeline has not validated yet.
  */
 export interface ValidationPreset {
   id: string;
@@ -664,7 +885,7 @@ export interface ValidationPreset {
   params?: Record<string, unknown>;
   total: number;
   pending: number;
-  pending_run_ids: string[];
+  pending_capture_ids: string[];
 }
 
 /** Terminal job result (GET /api/v1/jobs/{id}/result). */
@@ -687,7 +908,7 @@ export interface ValidationSummary {
 
 export interface JobStatus {
   job_id: string;
-  run_id?: string;
+  capture_id: string;
   pipeline: string;
   state: JobState;
   progress?: number;
@@ -703,9 +924,14 @@ export interface Page<T> {
 
 // ---- SSE event payloads -------------------------------------------------
 
+/** The `record_status` SSE payload. The event NAME is unchanged; `capture_id`
+ *  is additive (§10), so a client that keys on captures no longer has to map a
+ *  display name back to an identity. */
 export interface RecordStatusEvent {
-  run_id: string;
-  state: RunState;
+  capture_id?: string | null;
+  run_id: string | null;
+  state: RecordState;
+  started_at?: string | null;
   message_count?: number;
   bytes?: number;
   /** Arming progress (OL-①.4); present while paused/waiting, omitted once resumed. */
@@ -733,34 +959,16 @@ export interface SessionLogEntry {
   summary: string;
 }
 
-// ---- Console v2 Phase 2: batches & episodes -----------------------------
-// Mirrors api_orchestrator.models (batches/episodes). Backend vocab differs
-// from the Review display enums (types in v2/review/types.ts): here quality is
-// 'good'|'needs_review'|'not_usable' and task result 'success'|'failure'.
+// ---- Batches (Collect) ---------------------------------------------------
+// A batch groups the captures recorded in one run of a task/condition. Under v2
+// there is NO episodes resource: a capture IS the episode, so a batch's members
+// are simply the captures carrying its `batch_id`, which the first review save
+// stamps on (§4.1). `POST /api/v1/episodes` is retired; its two side effects
+// (the monotone episodes_recorded counter and the split-deploy auto-pull) moved
+// onto that first review save, which is what makes "reviewed" and "counted" one
+// event instead of two that can disagree after a crash.
 
-export type EpisodeTaskResult = 'success' | 'failure';
-export type EpisodeQuality = 'good' | 'needs_review' | 'not_usable';
-export type EpisodeQualitySource = 'operator' | 'quick_check' | 'validator';
-export type EpisodeReviewStatus = 'pending' | 'adopted' | 'excluded';
 export type BatchStatus = 'active' | 'completed' | 'ended_early';
-
-/** Compact episode summary joined onto a run (`Run.episode`). */
-export interface RunEpisode {
-  episode_id: string;
-  batch_id: string;
-  index_in_batch: number;
-  task_result: EpisodeTaskResult;
-  failure_reason?: string | null;
-  quality: EpisodeQuality;
-  review_status: EpisodeReviewStatus;
-  /** Server-assigned per-(robot, local-date) batch number (Console v2 pipeline
-   *  UX). The single human-readable batch number shared by Collect/Review/
-   *  Datasets. Optional until the phase-2 backend serves it (fallback: "—"). */
-  batch_seq?: number | null;
-  /** The batch's created_at, so Review/Datasets can render "MM/DD · #N" without
-   *  a second round-trip. Optional (falls back to the run's own started_at). */
-  batch_created_at?: string | null;
-}
 
 export interface Batch {
   batch_id: string;
@@ -775,36 +983,24 @@ export interface Batch {
   created_at?: string | null;
   ended_at?: string | null;
   /** Server-assigned per-(robot, local-date) batch number — the human-readable
-   *  "Batch N" shown in Collect and (as "MM/DD · #N") in Review/Datasets.
-   *  Optional until the phase-2 backend serves it (fallback: honest pre-state). */
+   *  "Batch N" shown in Collect and (as "MM/DD · #N") in Review/Datasets. */
   batch_seq?: number | null;
-  /** Monotone count of episodes ever recorded into this batch — never lowered
-   *  by a run-delete cascade. Collect's counts use this (falls back to the
-   *  live episode count on older backends that omit it). */
+  /** Monotone count of captures ever reviewed into this batch. Incremented on
+   *  the FIRST review save for a capture and never decremented, so "N / 30"
+   *  stays truthful about what was captured even after a later exclude or
+   *  delete. */
   episodes_recorded?: number;
 }
 
-export interface Episode {
-  episode_id: string;
-  batch_id: string;
-  run_id: string;
-  index_in_batch: number;
-  task_result: EpisodeTaskResult;
-  failure_reason?: string | null;
-  quality: EpisodeQuality;
-  quality_source: EpisodeQualitySource;
-  review_status: EpisodeReviewStatus;
-  created_at?: string | null;
-  updated_at?: string | null;
-}
-
-/** Per-episode row inside a batch list item (`BatchSummary.episodes`). */
+/** Compact per-capture row inside a batch list item (`BatchSummary.episodes`). */
 export interface BatchEpisodeSummary {
   index: number;
-  run_id: string;
-  task_result: EpisodeTaskResult;
-  quality: EpisodeQuality;
-  review_status: EpisodeReviewStatus;
+  capture_id: string;
+  run_id?: string | null;
+  batch_seq?: number | null;
+  task_result?: TaskResult | null;
+  quality?: Quality | null;
+  review_status: ReviewStatus;
 }
 
 export interface BatchSummary extends Batch {
@@ -812,9 +1008,10 @@ export interface BatchSummary extends Batch {
   episodes: BatchEpisodeSummary[];
 }
 
+/** A batch plus its FULL captures (`GET /api/v1/batches/{id}`). */
 export interface BatchDetail extends Batch {
   episode_count: number;
-  episodes: Episode[];
+  captures: Capture[];
 }
 
 export interface BatchListResponse {
@@ -841,24 +1038,6 @@ export interface BatchPatchRequest {
   condition?: string | null;
   /** Mid-batch plan-size change (Collect's Change target…). */
   target_episodes?: number;
-}
-
-export interface EpisodeCreateRequest {
-  batch_id: string;
-  run_id: string;
-  index_in_batch: number;
-  task_result: EpisodeTaskResult;
-  failure_reason?: string | null;
-  quality: EpisodeQuality;
-  quality_source?: EpisodeQualitySource;
-}
-
-export interface EpisodePatchRequest {
-  task_result?: EpisodeTaskResult;
-  failure_reason?: string | null;
-  quality?: EpisodeQuality;
-  quality_source?: EpisodeQualitySource;
-  review_status?: EpisodeReviewStatus;
 }
 
 // ---- System info (GET /api/v1/system) -----------------------------------

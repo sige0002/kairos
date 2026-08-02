@@ -31,8 +31,8 @@ test('chips sit on their true episode number across a deletion gap', () => {
     <EpisodeStrip
       machine={machineWith(
         [
-          { index: 1, quality: 'good', taskResult: 'ok', runId: 'r1' },
-          { index: 3, quality: 'good', taskResult: 'ok', runId: 'r3' },
+          { index: 1, quality: 'good', taskResult: 'ok', captureId: 'cap-1' },
+          { index: 3, quality: 'good', taskResult: 'ok', captureId: 'cap-3' },
         ],
         3,
       )}
@@ -53,12 +53,13 @@ test('chips sit on their true episode number across a deletion gap', () => {
   expect(screen.getByTestId('episode-strip-count').textContent).toContain('3 / 30');
 });
 
-test('a server-reallocated index renders at the server slot', () => {
-  // The server moved this save to slot 4 (another terminal took 1-3).
+test('an episode restored at a higher index renders at that slot', () => {
+  // A server restore adopted index_in_batch 4 (episodes 1-3 were deleted in
+  // Review): the chip belongs at slot 4, not at the head of the strip.
   render(
     <EpisodeStrip
       machine={machineWith(
-        [{ index: 4, quality: 'review', taskResult: 'ok', runId: 'r9' }],
+        [{ index: 4, quality: 'review', taskResult: 'ok', captureId: 'cap-9' }],
         4,
       )}
     />,

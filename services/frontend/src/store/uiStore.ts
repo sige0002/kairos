@@ -6,16 +6,22 @@
 // live in the Live/Stream tab components. The tab panel renders only the active
 // tab (App.tsx unmounts the others on switch), so any component-local state is
 // lost on navigation. operator/task were the first casualties; the record-topic
-// selection, the Scope band (its panels + REC/STOP markers), and the stream
-// camera panes have the same lifetime requirement — losing them silently
-// reverts a customized recording set or collapses the Scope band on a tab
-// round-trip.
+// selection, the REC/STOP chart markers, and the stream camera panes have the
+// same lifetime requirement — losing them silently reverts a customized
+// recording set on a tab round-trip.
 
 import { create } from 'zustand';
-import type { RecMarker } from '../features/live/LiveTab';
 import type { ProbeSeries } from '../features/probe/types';
 
 export type SseStatus = 'connecting' | 'open' | 'reconnecting' | 'closed';
+
+/** A REC/STOP recording marker, drawn on the Monitor chart bands. Defined here
+ *  because this store is where the markers live and the only place they are
+ *  produced (`pushRecordMarker`). */
+export interface RecMarker {
+  t: number;
+  kind: 'REC' | 'STOP';
+}
 
 /** Monitor-bridge connectivity relayed by the orchestrator's `bridge` SSE
  *  event: whether the orchestrator can reach the monitor (which runs ON the
@@ -98,22 +104,6 @@ interface UiState {
   seedRecordTopics: (names: string[], key: string) => void;
   toggleRecordTopic: (name: string) => void;
 
-  // Live Scope band: expanded/collapsed, the band-wide time window, and the
-  // panel list (Health or Signal). Plus the REC/STOP markers accumulated from
-  // /record/status transitions, drawn on every panel. Persisted so the band
-  // keeps its panels (and marker history) across a tab round-trip.
-  scopeOpen: boolean;
-  scopeWindowId: ScopeWindowId;
-  scopePanels: ScopePanel[];
-  scopePanelSeq: number;
-  setScopeOpen: (open: boolean) => void;
-  setScopeWindow: (id: ScopeWindowId) => void;
-  /** Adds a 'hz' health panel. With a topic, dedupes against any existing 'hz'
-   *  panel that already contains it (just opens the band instead). */
-  addHealthPanel: (topic?: string) => void;
-  addSignalPanel: () => void;
-  removeScopePanel: (id: number) => void;
-  updateScopePanel: (id: number, patch: ScopePanelPatch) => void;
   recMarkers: RecMarker[];
   recMarkersPrevActive: boolean | null;
   pushRecordMarker: (state: string) => void;
@@ -193,49 +183,6 @@ export const useUiStore = create<UiState>((set) => ({
       return { recordSelected: next, recordCustomized: true };
     }),
 
-  scopeOpen: false,
-  scopeWindowId: '1m',
-  scopePanels: [],
-  scopePanelSeq: 0,
-  setScopeOpen: (scopeOpen) => set({ scopeOpen }),
-  setScopeWindow: (scopeWindowId) => set({ scopeWindowId }),
-  addHealthPanel: (topic) =>
-    set((s) => {
-      if (
-        topic &&
-        s.scopePanels.some(
-          (p) => p.kind === 'health' && p.metric === 'hz' && p.topics.includes(topic),
-        )
-      ) {
-        return { scopeOpen: true };
-      }
-      const panel: ScopeHealthPanel = {
-        id: s.scopePanelSeq,
-        kind: 'health',
-        metric: 'hz',
-        topics: topic ? [topic] : [],
-      };
-      return {
-        scopePanels: [...s.scopePanels, panel],
-        scopePanelSeq: s.scopePanelSeq + 1,
-        scopeOpen: true,
-      };
-    }),
-  addSignalPanel: () =>
-    set((s) => {
-      const panel: ScopeSignalPanel = { id: s.scopePanelSeq, kind: 'signal', series: [], hz: 10 };
-      return {
-        scopePanels: [...s.scopePanels, panel],
-        scopePanelSeq: s.scopePanelSeq + 1,
-        scopeOpen: true,
-      };
-    }),
-  removeScopePanel: (id) =>
-    set((s) => ({ scopePanels: s.scopePanels.filter((p) => p.id !== id) })),
-  updateScopePanel: (id, patch) =>
-    set((s) => ({
-      scopePanels: s.scopePanels.map((p) => (p.id === id ? ({ ...p, ...patch } as ScopePanel) : p)),
-    })),
   recMarkers: [],
   recMarkersPrevActive: null,
   pushRecordMarker: (state) =>

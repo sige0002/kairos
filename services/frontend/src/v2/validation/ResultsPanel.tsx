@@ -1,7 +1,7 @@
-// Results column: renders the OK/WARNING/FAIL tiles + ratio bar + per-run rows
-// when the active submission was a batch (multiple target runs — see
+// Results column: renders the OK/WARNING/FAIL tiles + ratio bar + per-capture
+// rows when the active submission was a batch (multiple target captures — see
 // resultsMapping.ts for why that's the gate), otherwise falls back to the
-// generic, pipeline-agnostic SummaryResult for a single-run submission. That
+// generic, pipeline-agnostic SummaryResult for a single-capture submission. That
 // fallback is the point: a new plugin's summary.json renders here with no UI
 // change required.
 import { Card } from '../../components/ui';
@@ -59,10 +59,12 @@ function DetailCard({
   return <SummaryResult pipeline={pipeline} summary={summary} artifacts={artifacts} />;
 }
 
-/** Real client-side CSV of the per-run rows (data already in the browser). */
+/** Real client-side CSV of the per-capture rows (data already in the browser).
+ *  Keyed by capture_id: that is what locates the report the row summarises
+ *  (`report/<pipeline>/<capture_id>/`, §10.5), which a display name cannot. */
 function exportRowsCsv(pipeline: string, rows: EpisodeRow[]) {
-  const header = 'run_id,result,coverage_pct';
-  const body = rows.map((r) => `${r.runId},${r.tone},${r.coverage ?? ''}`);
+  const header = 'capture_id,result,coverage_pct';
+  const body = rows.map((r) => `${r.captureId},${r.tone},${r.coverage ?? ''}`);
   const blob = new Blob([[header, ...body].join('\n')], { type: 'text/csv' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -92,12 +94,12 @@ const BAR_TONE_CLASS: Record<string, string> = {
 
 export function ResultsPanel({
   active,
-  selectedRunId,
-  onSelectRun,
+  selectedCaptureId,
+  onSelectCapture,
 }: {
   active: ActiveOutcome | null;
-  selectedRunId: string | null;
-  onSelectRun: (runId: string) => void;
+  selectedCaptureId: string | null;
+  onSelectCapture: (captureId: string) => void;
 }) {
   if (!active) {
     return (
@@ -136,7 +138,9 @@ export function ResultsPanel({
           <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
             Latest run
           </span>
-          <span className="font-mono text-xs text-gray-400">{outcome.runId}</span>
+          <span className="font-mono text-xs text-gray-400">
+            {outcome.label ?? outcome.captureId}
+          </span>
         </div>
         <DetailCard
           pipeline={active.pipeline}
@@ -151,8 +155,8 @@ export function ResultsPanel({
 
   const rows = mapEpisodeRows(active.outcomes);
   const counts = tileCounts(rows);
-  const selected = rows.find((r) => r.runId === selectedRunId) ?? null;
-  const selectedOutcome = active.outcomes.find((o) => o.runId === selectedRunId);
+  const selected = rows.find((r) => r.captureId === selectedCaptureId) ?? null;
+  const selectedOutcome = active.outcomes.find((o) => o.captureId === selectedCaptureId);
 
   return (
     <div className="flex min-h-0 flex-col gap-3 overflow-auto p-[18px]">
@@ -160,7 +164,9 @@ export function ResultsPanel({
         <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           Latest run
         </span>
-        <span className="font-mono text-xs text-gray-400">{counts.total} runs</span>
+        <span className="font-mono text-xs text-gray-400">
+          {counts.total} captures
+        </span>
         <div className="flex-1" />
         <button
           type="button"
@@ -184,7 +190,7 @@ export function ResultsPanel({
       </div>
 
       <div className="grid grid-cols-[minmax(0,1fr)_100px_90px_1fr_60px] gap-2 border-b border-gray-100 px-1 py-1.5 text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400">
-        <span>Run</span>
+        <span>Capture</span>
         <span>Result</span>
         <span>Coverage</span>
         <span>Timeline</span>
@@ -193,11 +199,14 @@ export function ResultsPanel({
       <div className="flex flex-col">
         {rows.map((row) => (
           <div
-            key={row.runId}
+            key={row.captureId}
             className="grid grid-cols-[minmax(0,1fr)_100px_90px_1fr_60px] items-center gap-2 border-b border-gray-50 px-1 py-2"
           >
-            <span className="truncate font-mono text-[13px] font-semibold text-gray-900">
-              {row.runId}
+            <span
+              className="truncate font-mono text-[13px] font-semibold text-gray-900"
+              title={row.captureId}
+            >
+              {row.label ?? row.captureId}
             </span>
             <span
               className={`inline-flex w-fit items-center rounded-chip px-2 py-0.5 text-xs font-semibold ${ROW_TONE_CLASS[row.tone]}`}
@@ -215,7 +224,7 @@ export function ResultsPanel({
             </div>
             <button
               type="button"
-              onClick={() => onSelectRun(row.runId)}
+              onClick={() => onSelectCapture(row.captureId)}
               className="text-[11.5px] font-semibold text-gray-700 hover:text-teal-700"
             >
               detail
@@ -261,7 +270,7 @@ function Tile({
 function FooterNote() {
   return (
     <div className="rounded-[10px] border border-gray-100 bg-gray-50 px-3 py-[9px] text-[11.5px] leading-relaxed text-gray-500">
-      Raw JSON, artifacts and false-positive notes live in each episode&apos;s detail view.
+      Raw JSON, artifacts and false-positive notes live in each capture&apos;s detail view.
     </div>
   );
 }

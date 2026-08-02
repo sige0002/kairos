@@ -35,8 +35,21 @@ export function EpisodeStrip({ machine }: { machine: BatchMachine }) {
   // position — after a Review export/delete removes an earlier episode, the
   // later chips must not slide left (that made the newest episode read as
   // "not recorded" one slot ahead of its actual chip).
+  // Slots are numbered from 1, so an episode carrying index 0 (or lower) has no
+  // slot to live in. It must NOT simply vanish: dropping it silently would let
+  // the dashed "recorded earlier; no longer listed" chip describe a capture
+  // that is right there in the batch. Hold those aside and count them instead.
   const byIndex = new Map<number, EpisodeRecord>();
-  for (const e of episodes) byIndex.set(e.index, e);
+  const unplaced: EpisodeRecord[] = [];
+  for (const e of episodes) {
+    if (e.index >= 1) byIndex.set(e.index, e);
+    else unplaced.push(e);
+  }
+  // A take the recorder never named has no capture to write a review to, so it
+  // exists on this screen and nowhere else — it will not survive a reload. The
+  // save toast says so once; this keeps the count honest for the rest of the
+  // session rather than letting it quietly outrun the server's.
+  const unsynced = episodes.filter((e) => !e.captureId).length;
 
   const nodes = Array.from({ length: targetEpisodes }, (_, i) => {
     const n = i + 1;
@@ -120,6 +133,31 @@ export function EpisodeStrip({ machine }: { machine: BatchMachine }) {
       <div className="min-w-0 flex-1 overflow-x-auto">
         <div className="flex w-max gap-1.5 p-0.5">{nodes}</div>
       </div>
+      {unsynced > 0 && (
+        <span
+          data-testid="episode-strip-unsynced"
+          title={
+            'These takes were labeled on screen only — the recorder never named ' +
+            'a capture for them, so there is nothing on the server to review, ' +
+            'and they will not survive a reload.'
+          }
+          className="shrink-0 rounded-chip bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-700"
+        >
+          {unsynced} not saved
+        </span>
+      )}
+      {unplaced.length > 0 && (
+        <span
+          data-testid="episode-strip-unplaced"
+          title={
+            'These captures carry no position within the batch, so they cannot ' +
+            'be shown on the strip. They exist and are listed in Review.'
+          }
+          className="shrink-0 rounded-chip bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-700"
+        >
+          +{unplaced.length} unplaced
+        </span>
+      )}
       <span className="shrink-0 text-[11px] text-gray-400">
         ✓ {stats.nGood} · ! {stats.nReview} · ✕ {stats.nTaskFailed}
       </span>

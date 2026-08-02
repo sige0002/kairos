@@ -1,0 +1,267 @@
+// Operator-facing readings of the capture-store error codes.
+//
+// The backend already writes good messages; what it cannot know is what the
+// operator should DO next, which differs sharply between codes that all arrive
+// as "409". This module turns a code into that instruction, and marks which
+// ones are severe enough that the UI must not let them pass as a quiet
+// inline note (§12: a failed review save is stated explicitly, never silently).
+//
+// Several codes are shared by more than one action: `capture_busy`,
+// `capture_deleting` and `capture_deleted` answer a review save, a removal AND
+// a job submission. The right next step is not the same for all three — being
+// told to wait before deleting is no help to someone who was trying to run a
+// job — so the reading takes the CONTEXT of the action that failed. Callers
+// that do not pass one get the neutral wording, never another action's.
+
+import { ApiError } from '../../api/client';
+
+export type ErrorSeverity = 'warning' | 'destructive';
+
+/** Which action the operator was performing when the call failed. */
+export type ErrorContext = 'review' | 'delete' | 'job';
+
+export interface CaptureErrorReading {
+  code: string;
+  /** The backend's own message — always the first line shown. */
+  message: string;
+  /** What to do about it, in the operator's terms. */
+  guidance: string;
+  severity: ErrorSeverity;
+  /** True when the client should refetch and let the operator re-apply. */
+  reload: boolean;
+  details: Record<string, unknown>;
+}
+
+function detailString(details: Record<string, unknown>, key: string): string | null {
+  const value = details[key];
+  return typeof value === 'string' && value ? value : null;
+}
+
+/** Per-context wording for the codes more than one action can raise. The
+ *  `default` arm is what a caller that named no context sees. */
+const CONTEXTUAL: Record<
+  string,
+  { severity: ErrorSeverity; reload?: boolean; byContext: Partial<Record<ErrorContext, string>> & { default: string } }
+> = {
+  capture_deleting: {
+    severity: 'warning',
+    reload: true,
+    byContext: {
+      review:
+        'This capture is being deleted, so its review can no longer be ' +
+        'changed. The delete wins; nothing you typed was saved.',
+      delete: 'This capture is already on its way out — the removal is running.',
+      job:
+        'This capture is being deleted, so no job can be run against it. Its ' +
+        'files are about to go.',
+      default: 'This capture is being deleted, so it can no longer be changed.',
+    },
+  },
+  capture_deleted: {
+    severity: 'warning',
+    reload: true,
+    byContext: {
+      review:
+        'This capture has already been deleted, so its review can no longer ' +
+        'be changed.',
+      delete: 'This capture has already been removed — there is nothing left to delete.',
+      job: 'This capture has already been deleted, so there are no files to run a job against.',
+      default: 'This capture has already been deleted.',
+    },
+  },
+};
+
+const GUIDANCE: Record<string, { guidance: string; severity: ErrorSeverity; reload?: boolean }> = {
+  review_conflict: {
+    guidance:
+      'Someone else saved a review for this capture first. Reload it and apply ' +
+      'your change again — the two edits are not merged.',
+    severity: 'warning',
+    reload: true,
+  },
+  review_sidecar_write_failed: {
+    guidance:
+      'NOTHING was saved — record.json could not be written. Free up disk ' +
+      'space or fix the permissions, then save again.',
+    severity: 'destructive',
+  },
+  capture_not_present: {
+    guidance:
+      'There is no local copy of this capture and none is on the way, so its ' +
+      'review cannot be written.',
+    severity: 'warning',
+    reload: true,
+  },
+  capture_recording: {
+    guidance: 'Stop the recording before deleting it.',
+    severity: 'warning',
+  },
+  capture_in_dataset: {
+    guidance:
+      'This capture belongs to a dataset. Remove it from the dataset first — ' +
+      'removing it underneath would leave the dataset citing something gone. ' +
+      'The same applies to archiving, which also takes the bytes away.',
+    severity: 'warning',
+  },
+  dataset_member_exists: {
+    guidance: 'This capture is already a member of that dataset.',
+    severity: 'warning',
+  },
+  dataset_member_not_found: {
+    guidance:
+      'That membership no longer exists — someone else may have removed it. ' +
+      'Reload the dataset.',
+    severity: 'warning',
+    reload: true,
+  },
+  dataset_not_found: {
+    guidance: 'That dataset no longer exists. Reload the list.',
+    severity: 'warning',
+    reload: true,
+  },
+  capture_not_found: {
+    guidance: 'That capture is not in the catalog. Reload and try again.',
+    severity: 'warning',
+    reload: true,
+  },
+  reserved_name: {
+    guidance:
+      'That name collides with a directory the store reserves for itself ' +
+      '(objects, views, report, catalog and friends). Choose another.',
+    severity: 'warning',
+  },
+  destination_not_empty: {
+    guidance:
+      'The archive destination already holds files. Archiving into it could ' +
+      'mix two captures together, so pick an empty path.',
+    severity: 'warning',
+  },
+  reason_required: {
+    guidance:
+      'A discard is irreversible and the ledger line is the only surviving ' +
+      'explanation of why the data is gone. Give a reason.',
+    severity: 'warning',
+  },
+  delete_unavailable: {
+    guidance:
+      'Deleting is switched off on this deployment because objects/, .trash/ ' +
+      'and .incoming/ are not on one filesystem — the move to trash would not ' +
+      'be atomic. Fix the mounts and restart the orchestrator.',
+    severity: 'warning',
+  },
+  ledger_unwritable: {
+    guidance:
+      'The lifecycle ledger could not be written, so nothing was deleted. The ' +
+      'ledger is written first on purpose: without its line there would be no ' +
+      'record that the data ever existed.',
+    severity: 'destructive',
+  },
+  volume_unidentified: {
+    guidance:
+      'The data volume has no readable marker, so it cannot be confirmed as ' +
+      'the one the catalog describes. Check that the storage is mounted, then ' +
+      'repair again.',
+    severity: 'warning',
+  },
+  capture_not_finished: {
+    guidance: 'The recording is still being written — wait for it to stop.',
+    severity: 'warning',
+  },
+  archive_copy_failed: {
+    guidance:
+      'The copy to the archive destination failed, so the original was NOT ' +
+      'removed. Nothing has been lost.',
+    severity: 'destructive',
+  },
+};
+
+/**
+ * Read an unknown thrown value as a capture-store error.
+ *
+ * `capture_busy` is built here rather than in a table because its guidance has
+ * to name the job holding the lease (§7.1): "try again later" is useless when
+ * the operator cannot see what to wait for, and the payload carries
+ * `lease_owner` precisely so the UI can say it.
+ */
+export function readCaptureError(
+  error: unknown,
+  context?: ErrorContext,
+): CaptureErrorReading {
+  if (!(error instanceof ApiError)) {
+    return {
+      code: 'unknown',
+      message: error instanceof Error ? error.message : String(error),
+      guidance: '',
+      severity: 'warning',
+      reload: false,
+      details: {},
+    };
+  }
+  const details = error.details ?? {};
+  const code = error.code ?? `http_${error.status}`;
+
+  if (code === 'capture_busy') {
+    const owner = detailString(details, 'lease_owner');
+    const until = detailString(details, 'lease_expires_at');
+    const who = owner
+      ? `${owner} is working on this capture${until ? ` until ${until}` : ''}.`
+      : 'A job is working on this capture right now.';
+    const then =
+      context === 'delete'
+        ? 'Removing it now would pull the files out from under that job — wait ' +
+          'for it to finish, then try again.'
+        : context === 'job'
+          ? 'Only one job may hold a capture at a time. Wait for that one to ' +
+            'finish, then run yours.'
+          : 'Wait for it to finish, then try again.';
+    return {
+      code,
+      message: error.message,
+      guidance: `${who} ${then}`,
+      severity: 'warning',
+      reload: false,
+      details,
+    };
+  }
+
+  const contextual = CONTEXTUAL[code];
+  if (contextual) {
+    return {
+      code,
+      message: error.message,
+      guidance:
+        (context && contextual.byContext[context]) || contextual.byContext.default,
+      severity: contextual.severity,
+      reload: contextual.reload ?? false,
+      details,
+    };
+  }
+
+  const known = GUIDANCE[code];
+  return {
+    code,
+    message: error.message,
+    guidance: known?.guidance ?? '',
+    severity: known?.severity ?? 'warning',
+    reload: known?.reload ?? false,
+    details,
+  };
+}
+
+/** The one-line form for a toast: the server's message plus what to do. */
+export function captureErrorText(error: unknown, context?: ErrorContext): string {
+  const reading = readCaptureError(error, context);
+  return reading.guidance ? `${reading.message} ${reading.guidance}` : reading.message;
+}
+
+/** True when this failure must be surfaced as a destructive-styled, explicitly
+ *  dismissed message rather than a passing note (§12). */
+export function isDestructiveFailure(error: unknown): boolean {
+  return readCaptureError(error).severity === 'destructive';
+}
+
+/** True when the client should refetch the capture and let the operator
+ *  re-apply the edit (the 409 conflict family). */
+export function needsReload(error: unknown): boolean {
+  return readCaptureError(error).reload;
+}

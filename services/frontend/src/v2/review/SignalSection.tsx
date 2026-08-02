@@ -20,11 +20,11 @@ import { queryKeys } from '../../api/queryKeys';
 import type {
   JobResult,
   JobStatus,
-  RunTopic,
+  CaptureTopic,
   VideoCheckSummary,
 } from '../../api/types';
 import { ErrorMessage } from '../../components/ErrorMessage';
-import { TERMINAL, VideoPlayer, cameraTopics } from '../../features/inspect/inspect';
+import { TERMINAL, VideoPlayer, cameraTopics } from '../captures/inspect';
 import {
   episodeSpanNs,
   formatContinuity,
@@ -37,7 +37,7 @@ import { LossEventList } from './LossEventList';
 // Run the signal_report pipeline (one shot) and return its parsed summary. Same
 // POST /jobs → poll status → fetch result lifecycle the VideoPlayer uses, so a
 // missing/failed pipeline surfaces as an honest error instead of a dead view.
-function useSignalReport(runId: string) {
+function useSignalReport(captureId: string) {
   const [jobId, setJobId] = useState<string | null>(null);
   const [report, setReport] = useState<SignalReportExt | null>(null);
   const [jobError, setJobError] = useState<string | null>(null);
@@ -46,7 +46,7 @@ function useSignalReport(runId: string) {
     mutationFn: () =>
       apiPost<JobStatus>('/jobs', {
         pipeline: 'signal_report',
-        run_id: runId,
+        capture_id: captureId,
         params: { topics: null, max_points: 2000 },
       }),
     onSuccess: (job) => {
@@ -110,8 +110,14 @@ function useSignalReport(runId: string) {
   };
 }
 
-export function SignalSection({ runId, topics }: { runId: string; topics: RunTopic[] }) {
-  const sig = useSignalReport(runId);
+export function SignalSection({
+  captureId,
+  topics,
+}: {
+  captureId: string;
+  topics: CaptureTopic[];
+}) {
+  const sig = useSignalReport(captureId);
   const report = sig.report;
 
   const [syncCamera, setSyncCamera] = useState<string | null>(null);
@@ -243,7 +249,7 @@ export function SignalSection({ runId, topics }: { runId: string; topics: RunTop
                   )}
                   <VideoPlayer
                     key={syncCamera}
-                    runId={runId}
+                    captureId={captureId}
                     topic={syncCamera}
                     onTimeUpdate={onVideoTime}
                     onSummary={onVideoSummary}

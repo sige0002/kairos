@@ -1,9 +1,16 @@
 // Collect-scoped modals (End set early / Report issue / Change condition)
 // plus the toast. Rendered at the screen level per the design mock's MODALS
 // section. ("Set" is the operator-facing name for a batch.)
+//
+// Both ways of throwing a recording away go through the SHARED DiscardDialog
+// (contract §12). Collect used to own two confirmations of its own; a screen
+// that words irreversibility, the required reason or the capture_busy code
+// even slightly differently from Review is a screen an operator can be misled
+// by, so there is now exactly one implementation of all three.
 
 import { useState } from 'react';
 import { Button, Modal, cn } from '../../components/ui';
+import { DiscardDialog } from '../captures/DeleteDialogs';
 import { END_REASONS, type BatchMachine } from './useBatchMachine';
 import { findTask, usePlans } from '../plans';
 
@@ -331,65 +338,6 @@ function formatBytes(bytes: number | null): string | null {
   return `${v.toFixed(i === 0 ? 0 : 2)} ${u[i]}`;
 }
 
-// Discard-episode confirmation: unlike v1's post-stop Keep/Discard prompt, this
-// lives on the result phase (the operator already reviewed the take). Confirm
-// runs a real DELETE /runs/{id}; a failure keeps the episode and shows the error.
-function DiscardModal({ machine }: { machine: BatchMachine }) {
-  const size = formatBytes(machine.discardRunBytes);
-  return (
-    <Modal
-      open={machine.discardModalOpen}
-      onClose={machine.closeModals}
-      title="Discard this episode?"
-      footer={
-        <>
-          <Button
-            variant="ghost"
-            onClick={machine.closeModals}
-            disabled={machine.isDiscarding}
-          >
-            Keep
-          </Button>
-          <Button
-            variant="danger"
-            onClick={machine.confirmDiscard}
-            disabled={machine.isDiscarding}
-          >
-            {machine.isDiscarding ? 'Discarding…' : 'Discard permanently'}
-          </Button>
-        </>
-      }
-    >
-      <p className="text-[12.5px] leading-relaxed text-gray-600">
-        This permanently deletes the recorded run
-        {machine.discardRunId ? (
-          <>
-            {' '}
-            <span className="font-mono text-gray-800">{machine.discardRunId}</span>
-          </>
-        ) : null}
-        {size ? ` (${size})` : ''} from disk, then re-arms for a fresh take of this
-        episode. This cannot be undone.
-      </p>
-      {!machine.discardRunId && (
-        <p className="mt-2 text-[12px] text-gray-400">
-          Nothing was persisted for this take yet — this just re-records the episode.
-        </p>
-      )}
-      {machine.discardError && (
-        <div
-          role="alert"
-          data-testid="discard-error"
-          className="mt-3 rounded-control border border-red-200 bg-red-50/70 px-3 py-2 text-[12px] text-red-800"
-        >
-          <span className="font-semibold">Discard failed</span> — {machine.discardError}
-          . The episode is kept.
-        </div>
-      )}
-    </Modal>
-  );
-}
-
 function formatElapsedClock(startedAt: string | null): string {
   if (!startedAt) return '—';
   const t = Date.parse(startedAt);
@@ -450,38 +398,28 @@ function TakeoverStopModal({ machine }: { machine: BatchMachine }) {
   );
 }
 
-// Confirm discarding an unsaved take from the recovery banner (D-3). A real
-// DELETE /runs/{id} runs on confirm.
-function UnsavedDiscardModal({ machine }: { machine: BatchMachine }) {
-  const size = formatBytes(machine.unsavedTake?.bytes ?? null) ?? 'It';
+/** The shared discard dialog, driven by one of Collect's two discard flows.
+ *  Only one is ever open at a time (the result panel and the recovery banner do
+ *  not coexist), so both can carry the shared testids without colliding. */
+function CaptureDiscardDialog({
+  flow,
+  splitDeploy,
+}: {
+  flow: BatchMachine['episodeDiscard'];
+  splitDeploy: boolean;
+}) {
   return (
-    <Modal
-      open={machine.unsavedDiscardModalOpen}
-      onClose={machine.closeModals}
-      title="Discard this take?"
-      footer={
-        <>
-          <Button
-            variant="ghost"
-            onClick={machine.closeModals}
-            disabled={machine.isDiscardingUnsaved}
-          >
-            Keep
-          </Button>
-          <Button
-            variant="danger"
-            onClick={machine.confirmDiscardUnsavedTake}
-            disabled={machine.isDiscardingUnsaved}
-          >
-            {machine.isDiscardingUnsaved ? 'Deleting…' : 'Delete'}
-          </Button>
-        </>
-      }
-    >
-      <p className="text-[12.5px] leading-relaxed text-gray-600">
-        {size} will be permanently deleted.
-      </p>
-    </Modal>
+    <DiscardDialog
+      open={flow.kind === 'discard'}
+      captures={flow.targets}
+      splitDeploy={splitDeploy}
+      busy={flow.busy}
+      error={flow.error}
+      done={flow.done}
+      failures={flow.failures}
+      onCancel={flow.cancel}
+      onConfirm={(reason) => void flow.confirm(reason)}
+    />
   );
 }
 
@@ -537,9 +475,15 @@ export function CollectModals({ machine }: { machine: BatchMachine }) {
       <IssueModal machine={machine} />
       <TargetModal machine={machine} />
       <ConditionModal machine={machine} />
-      <DiscardModal machine={machine} />
+      <CaptureDiscardDialog
+        flow={machine.episodeDiscard}
+        splitDeploy={machine.splitDeploy}
+      />
+      <CaptureDiscardDialog
+        flow={machine.unsavedDiscard}
+        splitDeploy={machine.splitDeploy}
+      />
       <TakeoverStopModal machine={machine} />
-      <UnsavedDiscardModal machine={machine} />
       <ShortcutsSheet machine={machine} />
       <Toast message={machine.toast} />
     </>

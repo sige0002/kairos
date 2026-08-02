@@ -1,0 +1,50 @@
+// Typed callers for `/api/v1/batches` — Collect's grouping of captures.
+//
+// A batch groups the captures recorded in one run of a task/condition. There is
+// no episodes resource under v2: a capture IS the episode, so a batch's members
+// are the captures carrying its `batch_id`, which the FIRST review save stamps
+// on (contract §4.1). `POST /api/v1/episodes` is retired along with the
+// localStorage bridge that used to stand in for it — a capture now carries its
+// own review, so there is nothing left for a browser-local mirror to remember.
+
+import { apiGet, apiPatch, apiPost } from './client';
+import type {
+  Batch,
+  BatchCreateRequest,
+  BatchDetail,
+  BatchListResponse,
+  BatchPatchRequest,
+} from './types';
+
+/** Start a batch (Collect). */
+export function createBatch(body: BatchCreateRequest): Promise<Batch> {
+  return apiPost<Batch>('/batches', body);
+}
+
+/** Early stop, completion, or a project/task/condition relabel. */
+export function patchBatch(batchId: string, body: BatchPatchRequest): Promise<Batch> {
+  return apiPatch<Batch>(`/batches/${encodeURIComponent(batchId)}`, body);
+}
+
+/**
+ * Batches newest-first, each with its capture summaries.
+ *
+ * The filters scope Collect's active-batch restore: without them one terminal
+ * can silently adopt — and append captures to — another robot's or operator's
+ * batch.
+ */
+export function listBatches(
+  filters: { status?: string; robot?: string; operator?: string } = {},
+  signal?: AbortSignal,
+): Promise<BatchListResponse> {
+  const query: Record<string, string> = {};
+  if (filters.status) query.status = filters.status;
+  if (filters.robot) query.robot = filters.robot;
+  if (filters.operator) query.operator = filters.operator;
+  return apiGet<BatchListResponse>('/batches', { signal, query });
+}
+
+/** A batch plus its full captures. */
+export function getBatch(batchId: string, signal?: AbortSignal): Promise<BatchDetail> {
+  return apiGet<BatchDetail>(`/batches/${encodeURIComponent(batchId)}`, { signal });
+}

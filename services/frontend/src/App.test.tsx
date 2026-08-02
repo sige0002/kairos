@@ -36,9 +36,11 @@ class FakeEventSource {
 function routedFetch(url: string): Response {
   if (url.includes('/config')) return jsonResponse(STUB_CONFIG);
   if (url.includes('/record/status'))
-    return jsonResponse({ run_id: null, state: 'idle' });
+    // A fresh recorder sits in `created` and reports an empty live set — there
+    // is no `idle` on the wire.
+    return jsonResponse({ run_id: null, state: 'created', live_capture_ids: [] });
   if (url.includes('/topics')) return jsonResponse([]);
-  if (url.includes('/runs')) return jsonResponse({ items: [], next_cursor: null });
+  if (url.includes('/captures')) return jsonResponse({ items: [], next_cursor: null });
   return jsonResponse({});
 }
 

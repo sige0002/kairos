@@ -10,16 +10,28 @@ export function errorText(err: unknown): string {
 }
 
 /**
- * Pull a short, human "why" from an ApiError's `details` — the deeper cause the
- * backend attaches (e.g. a failed dataset_export job's `reason`). Returned only
- * when it adds information beyond the message itself, so we never echo it twice.
+ * Pull the GENERIC deeper cause out of an ApiError's `details`.
+ *
+ * `cause` is the only key that means this and the only one any endpoint can
+ * attach: the orchestrator sets it when a downstream service could not be
+ * reached at all, where the message says which service and `cause` says what
+ * the transport actually did.
+ *
+ * PER-CODE details are deliberately NOT read here — `capture_busy`'s
+ * `lease_owner`, `review_conflict`'s revisions, and the rest are turned into
+ * operator guidance by v2/captures/errors.ts, which knows what each code means.
+ * Widening this function to guess at them would produce a second, dumber
+ * rendering of the same payload, and would make that special-casing look
+ * redundant enough to delete.
+ *
+ * Returned only when it adds information beyond the message itself, so the same
+ * sentence is never echoed twice.
  */
 function detailText(err: unknown): string | null {
   if (!(err instanceof ApiError) || !err.details) return null;
-  const d = err.details;
-  const reason = d.reason ?? d.detail;
-  if (typeof reason !== 'string' || !reason.trim()) return null;
-  return err.message.includes(reason) ? null : reason;
+  const cause = err.details.cause;
+  if (typeof cause !== 'string' || !cause.trim()) return null;
+  return err.message.includes(cause) ? null : cause;
 }
 
 export function ErrorMessage({ error }: { error: unknown }) {

@@ -5,6 +5,7 @@ import type { ReactNode } from 'react';
 import { setApiBase } from '../../api/client';
 import { makeTestClient, jsonResponse } from '../../test/renderWithClient';
 import { useUiStore } from '../../store/uiStore';
+import { isDestructiveFailure } from '../captures/errors';
 import {
   batchMachineReducer as reducer,
   createBatchMachineState as createState,
@@ -13,13 +14,24 @@ import {
   __rehydrateBatchStore,
   EPISODES_PER_BATCH,
 } from './useBatchMachine';
-import {
-  __clearEpisodeOutcomes,
-  getEpisodeOutcome,
-  saveEpisodeOutcome,
-} from '../episodeBridge';
 
 const BATCH_STORAGE_KEY = 'kairos.collect.batch';
+
+/**
+ * A `Capture` body, as /record/start, /record/stop and GET /captures/{id} all
+ * return one. `run_id` rides along because it is the name the operator reads on
+ * disk (§1) — every key in these tests is the capture_id.
+ */
+function captureBody(captureId: string, extra: Record<string, unknown> = {}) {
+  return {
+    capture_id: captureId,
+    run_id: `run_${captureId}`,
+    state: 'recording',
+    review_status: 'pending',
+    review_revision: 0,
+    ...extra,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Pure reducer transitions — no React needed.
@@ -30,9 +42,15 @@ test('ready -> arming -> recording on a successful start', () => {
   expect(s.phase).toBe('ready');
   s = reducer(s, { type: 'START_REQUESTED' });
   expect(s.phase).toBe('arming');
-  s = reducer(s, { type: 'START_SUCCEEDED', runId: 'run_1' });
+  s = reducer(s, { type: 'START_SUCCEEDED', captureId: 'cap_1', runLabel: 'run_1' });
   expect(s.phase).toBe('recording');
-  expect(s.currentRunId).toBe('run_1');
+  // The capture is what every later call keys on; the run_id is display text
+  // that rides along beside it (§1).
+  expect(s.currentCaptureId).toBe('cap_1');
+  expect(s.currentRunLabel).toBe('run_1');
+  // A capture the recorder just minted has never been reviewed, so the first
+  // save's compare-and-swap token is 0 (§4.1).
+  expect(s.currentReviewRevision).toBe(0);
 });
 
 test('a failed start returns to ready with an error, never reaching recording', () => {
@@ -46,7 +64,7 @@ test('a failed start returns to ready with an error, never reaching recording', 
 test('recording -> saving -> quickcheck -> result (Success pre-selected)', () => {
   let s = createState();
   s = reducer(s, { type: 'START_REQUESTED' });
-  s = reducer(s, { type: 'START_SUCCEEDED', runId: null });
+  s = reducer(s, { type: 'START_SUCCEEDED', captureId: null, runLabel: null });
   s = reducer(s, { type: 'STOP_REQUESTED' });
   expect(s.phase).toBe('saving');
   s = reducer(s, { type: 'SAVED' });
@@ -62,7 +80,7 @@ test('recording -> saving -> quickcheck -> result (Success pre-selected)', () =>
 test('STOP_FAILED stays in saving with an error; RETRY_STOP clears it', () => {
   let s = createState();
   s = reducer(s, { type: 'START_REQUESTED' });
-  s = reducer(s, { type: 'START_SUCCEEDED', runId: 'run_1' });
+  s = reducer(s, { type: 'START_SUCCEEDED', captureId: 'cap_1', runLabel: 'run_1' });
   s = reducer(s, { type: 'STOP_REQUESTED' });
   expect(s.phase).toBe('saving');
   s = reducer(s, { type: 'STOP_FAILED', error: { code: 'io', message: 'disk busy' } });
@@ -93,7 +111,7 @@ test('CONFIRM_EPISODE requires a fail reason when the result is Failure', () => 
       index: 1,
       quality: 'good',
       taskResult: 'fail',
-      runId: undefined,
+      captureId: undefined,
       failReason: 'Grasp missed',
     },
   ]);
@@ -113,7 +131,7 @@ test('quality and task result are independent axes, not one merged bucket', () =
     index: 1,
     quality: 'good',
     taskResult: 'fail',
-    runId: undefined,
+    captureId: undefined,
     failReason: 'Object dropped',
   });
 
@@ -143,23 +161,37 @@ test('SET_QUALITY sets the override in the result phase and is a no-op elsewhere
   expect(s.qualityOverride).toBeNull();
 });
 
-// The server may re-allocate index_in_batch on a save collision; adopting the
-// returned value moves the chip to its true slot and lifts the monotone count.
-test('ADOPT_EPISODE_INDEX moves the saved episode to the server-assigned slot', () => {
+// A confirmed episode remembers WHICH capture it labels — the strip, the
+// phantom-batch reconcile and the server restore all match on that id.
+test('CONFIRM_EPISODE records the capture the episode labels', () => {
   let s = createState();
-  s = { ...s, phase: 'result', pendingTask: 'ok', currentRunId: 'run_9' };
+  s = { ...s, phase: 'result', pendingTask: 'ok', currentCaptureId: 'cap_9' };
   s = reducer(s, { type: 'CONFIRM_EPISODE', quality: 'good' });
-  expect(s.episodes[0]).toMatchObject({ index: 1, runId: 'run_9' });
+  expect(s.episodes[0]).toMatchObject({ index: 1, captureId: 'cap_9' });
+  // The take is done: the next one starts from a clean compare-and-swap base.
+  expect(s.currentCaptureId).toBeNull();
+  expect(s.currentReviewRevision).toBe(0);
+});
 
-  s = reducer(s, { type: 'ADOPT_EPISODE_INDEX', runId: 'run_9', index: 4 });
-  expect(s.episodes[0]?.index).toBe(4);
-  expect(s.recordedCount).toBe(4);
-
-  // No-op for an unknown run or an unchanged index (same state reference).
-  expect(
-    reducer(s, { type: 'ADOPT_EPISODE_INDEX', runId: 'run_unknown', index: 9 }),
-  ).toBe(s);
-  expect(reducer(s, { type: 'ADOPT_EPISODE_INDEX', runId: 'run_9', index: 4 })).toBe(s);
+// After a refused save the operator's typed values stay put; only the
+// compare-and-swap token is refreshed, so a re-apply is checked against what is
+// actually stored (§4.1 — never a merge).
+test('SET_REVIEW_BASE adopts a refetched revision without touching the edit', () => {
+  const s0 = {
+    ...createState(),
+    phase: 'result' as const,
+    pendingTask: 'fail' as const,
+    failReason: 'Grasp missed',
+    currentCaptureId: 'cap_9',
+    currentReviewRevision: 0,
+  };
+  const s = reducer(s0, { type: 'SET_REVIEW_BASE', revision: 3 });
+  expect(s.currentReviewRevision).toBe(3);
+  expect(s.pendingTask).toBe('fail');
+  expect(s.failReason).toBe('Grasp missed');
+  expect(s.phase).toBe('result');
+  // An unchanged revision is a no-op (same state reference).
+  expect(reducer(s, { type: 'SET_REVIEW_BASE', revision: 3 })).toBe(s);
 });
 
 test('SET_TARGET re-derives completion at rest and is clamped', () => {
@@ -244,10 +276,7 @@ test('PAUSE_BATCH / RESUME_BATCH only apply from ready / paused respectively', (
   const paused = reducer(ready, { type: 'PAUSE_BATCH' });
   expect(paused.phase).toBe('paused');
   // Can't pause again from a non-ready phase.
-  const recording = reducer(reducer(ready, { type: 'START_REQUESTED' }), {
-    type: 'START_SUCCEEDED',
-    runId: null,
-  });
+  const recording = reducer(reducer(ready, { type: 'START_REQUESTED' }), { type: 'START_SUCCEEDED', captureId: null, runLabel: null });
   expect(reducer(recording, { type: 'PAUSE_BATCH' }).phase).toBe('recording');
   expect(reducer(paused, { type: 'RESUME_BATCH' }).phase).toBe('ready');
 });
@@ -267,9 +296,6 @@ beforeEach(() => {
   // tab-switch unmount); reset it — and its localStorage mirror — between hook
   // tests so state can't leak from one test into the next.
   __resetBatchStore();
-  // The Collect->Review outcome bridge accumulates across sessions; clear it so
-  // a saved episode in one test can't leak into the next.
-  __clearEpisodeOutcomes();
   // Reset the shared record-picker store so selection-resolution tests don't
   // leak customized state into each other.
   useUiStore.setState({
@@ -285,7 +311,7 @@ test('startRecording() calls /record/start and only then moves to recording', as
   vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
     if (url.includes('/record/start')) {
-      return Promise.resolve(jsonResponse({ run_id: 'run_42', state: 'recording' }));
+      return Promise.resolve(jsonResponse(captureBody('cap_42')));
     }
     return Promise.resolve(jsonResponse({}));
   });
@@ -309,11 +335,12 @@ test('a rejected start (200 + state=failed) reverts to ready with a banner, not 
     const url = String(input);
     if (url.includes('/record/start')) {
       return Promise.resolve(
-        jsonResponse({
-          run_id: 'run_43',
-          state: 'failed',
-          error: { code: 'NO_TOPICS', message: 'no matching topics' },
-        }),
+        jsonResponse(
+          captureBody('cap_43', {
+            state: 'failed',
+            error: { code: 'NO_TOPICS', message: 'no matching topics' },
+          }),
+        ),
       );
     }
     return Promise.resolve(jsonResponse({}));
@@ -351,10 +378,10 @@ test('stopRecording() optimistically moves to saving and calls /record/stop', as
   const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
     if (url.includes('/record/start')) {
-      return Promise.resolve(jsonResponse({ run_id: 'run_1', state: 'recording' }));
+      return Promise.resolve(jsonResponse(captureBody('cap_1')));
     }
     if (url.includes('/record/stop')) {
-      return Promise.resolve(jsonResponse({ run_id: 'run_1', state: 'completed' }));
+      return Promise.resolve(jsonResponse(captureBody('cap_1', { state: 'completed' })));
     }
     return Promise.resolve(jsonResponse({}));
   });
@@ -382,15 +409,22 @@ test('a stop the recorder did not honour keeps the screen on saving', async () =
   vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
     if (url.includes('/record/start')) {
-      return Promise.resolve(jsonResponse({ run_id: 'run_1', state: 'recording' }));
+      return Promise.resolve(jsonResponse(captureBody('cap_1')));
     }
     if (url.includes('/record/stop')) {
-      // 200 with the last run — the idempotent no-op answer.
-      return Promise.resolve(jsonResponse({ run_id: 'run_1', state: 'completed' }));
+      // 200 with the last capture — the idempotent no-op answer.
+      return Promise.resolve(jsonResponse(captureBody('cap_1', { state: 'completed' })));
     }
     if (url.includes('/record/status')) {
-      // ...but the recorder is still going.
-      return Promise.resolve(jsonResponse({ run_id: 'run_1', state: 'recording' }));
+      // ...but the recorder is still going, and still names our capture live.
+      return Promise.resolve(
+        jsonResponse({
+          capture_id: 'cap_1',
+          run_id: 'run_cap_1',
+          state: 'recording',
+          live_capture_ids: ['cap_1'],
+        }),
+      );
     }
     return Promise.resolve(jsonResponse({}));
   });
@@ -407,6 +441,40 @@ test('a stop the recorder did not honour keeps the screen on saving', async () =
   expect(result.current.stopError?.code).toBe('stop_not_confirmed');
 });
 
+// The definitive liveness signal is `live_capture_ids` (§10). A recorder that
+// reports a benign state but still names our capture live has NOT stopped, and
+// walking on to labelling a bag that is still being written is exactly the
+// failure this confirmation exists to prevent.
+test('a stop is refused while live_capture_ids still names our capture', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/record/start'))
+      return Promise.resolve(jsonResponse(captureBody('cap_1')));
+    if (url.includes('/record/stop'))
+      return Promise.resolve(jsonResponse(captureBody('cap_1', { state: 'completed' })));
+    if (url.includes('/record/status'))
+      return Promise.resolve(
+        jsonResponse({
+          capture_id: 'cap_1',
+          run_id: 'run_cap_1',
+          state: 'completed',
+          live_capture_ids: ['cap_1'],
+        }),
+      );
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  act(() => result.current.startRecording());
+  await waitFor(() => expect(result.current.phase).toBe('recording'));
+
+  act(() => result.current.stopRecording());
+  await waitFor(() => expect(result.current.stopError?.code).toBe('stop_not_confirmed'));
+  expect(result.current.phase).toBe('saving');
+});
+
 // ---------------------------------------------------------------------------
 // Real recorder status: arming (matched/missing) + integrity (drop/fail).
 // ---------------------------------------------------------------------------
@@ -417,8 +485,10 @@ test('/record/status arming (matched/missing) surfaces on machine.arming', async
     if (url.includes('/record/status')) {
       return Promise.resolve(
         jsonResponse({
+          capture_id: 'cap_7',
           run_id: 'run_7',
           state: 'recording',
+          live_capture_ids: ['cap_7'],
           arming: {
             active: false,
             matched_topics: ['/a', '/b', '/c'],
@@ -438,17 +508,19 @@ test('/record/status arming (matched/missing) surfaces on machine.arming', async
   expect(result.current.arming?.missing_topics).toEqual(['/x', '/y']);
 });
 
-test('a dropped-integrity run surfaces on machine.integrity + droppedMessages', async () => {
+test('a dropped-integrity capture surfaces on machine.integrity + droppedMessages', async () => {
   vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
     if (url.includes('/record/start')) {
-      return Promise.resolve(jsonResponse({ run_id: 'run_1', state: 'recording' }));
+      return Promise.resolve(jsonResponse(captureBody('cap_1')));
     }
     if (url.includes('/record/status')) {
       return Promise.resolve(
         jsonResponse({
-          run_id: 'run_1',
+          capture_id: 'cap_1',
+          run_id: 'run_cap_1',
           state: 'completed',
+          live_capture_ids: [],
           integrity: 'dropped',
           dropped_messages: 1234,
         }),
@@ -466,21 +538,23 @@ test('a dropped-integrity run surfaces on machine.integrity + droppedMessages', 
   expect(result.current.droppedMessages).toBe(1234);
 });
 
-// Gating: an integrity report for a *different* run must never leak into the
-// current episode's result. Before any start (currentRunId null) the status is
-// ungated, so it reads through; once a start binds currentRunId to run_1, a
-// run_OTHER report is dropped.
-test('integrity is gated to the current run — a mismatched run_id is dropped after start', async () => {
+// Gating: an integrity report for a *different* capture must never leak into
+// the current episode's result. Before any start (currentCaptureId null) the
+// status is ungated, so it reads through; once a start binds cap_1, a report
+// naming another capture is dropped.
+test('integrity is gated to the current capture — a mismatched capture_id is dropped after start', async () => {
   vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
     if (url.includes('/record/start')) {
-      return Promise.resolve(jsonResponse({ run_id: 'run_1', state: 'recording' }));
+      return Promise.resolve(jsonResponse(captureBody('cap_1')));
     }
     if (url.includes('/record/status')) {
       return Promise.resolve(
         jsonResponse({
-          run_id: 'run_OTHER',
+          capture_id: 'cap_OTHER',
+          run_id: 'run_other',
           state: 'completed',
+          live_capture_ids: [],
           integrity: 'dropped',
           dropped_messages: 9,
         }),
@@ -506,7 +580,7 @@ function startFetch() {
   return vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
     if (url.includes('/record/start')) {
-      return Promise.resolve(jsonResponse({ run_id: 'run_1', state: 'recording' }));
+      return Promise.resolve(jsonResponse(captureBody('cap_1')));
     }
     return Promise.resolve(jsonResponse({}));
   });
@@ -604,28 +678,51 @@ test('startRecording is a no-op when the customized selection is empty', async (
   );
 });
 
-test('Discard: confirm deletes the run then re-records; a failed DELETE keeps the episode', async () => {
-  let failDelete = false;
+// Discard (§7): a busy capture is refused by name — the lease holder is what
+// the operator has to wait for, and "try again later" without it is not
+// actionable (§7.1). A refused discard keeps the take on the result panel.
+test('Discard: a capture_busy refusal names the lease holder and keeps the take', async () => {
+  let busy = true;
   const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     const url = String(input);
+    const method = (init?.method ?? 'GET').toUpperCase();
     if (url.includes('/record/status')) {
       return Promise.resolve(
-        jsonResponse({ run_id: 'run_9', state: 'completed', integrity: 'ok' }),
+        jsonResponse({
+          capture_id: 'cap_9',
+          run_id: 'run_cap_9',
+          state: 'completed',
+          live_capture_ids: [],
+          integrity: 'ok',
+        }),
       );
     }
-    if (url.includes('/record/start')) {
-      return Promise.resolve(jsonResponse({ run_id: 'run_9', state: 'recording' }));
-    }
-    if (url.includes('/record/stop')) {
-      return Promise.resolve(jsonResponse({ run_id: 'run_9', state: 'completed' }));
-    }
-    if (url.includes('/runs/run_9') && init?.method === 'DELETE') {
-      return failDelete
+    if (url.includes('/record/start'))
+      return Promise.resolve(jsonResponse(captureBody('cap_9')));
+    if (url.includes('/record/stop'))
+      return Promise.resolve(jsonResponse(captureBody('cap_9', { state: 'completed' })));
+    if (url.includes('/captures/cap_9/delete') && method === 'POST') {
+      return busy
         ? Promise.resolve(
-            jsonResponse({ error: { code: 'BUSY', message: 'run locked' } }, 500),
+            jsonResponse(
+              {
+                error: {
+                  code: 'capture_busy',
+                  message: 'A job holds this capture.',
+                  details: { lease_owner: 'digest' },
+                },
+              },
+              409,
+            ),
           )
-        : Promise.resolve(new Response(null, { status: 204 }));
+        : Promise.resolve(jsonResponse(captureBody('cap_9', { state: 'discarded' })));
     }
+    if (url.includes('/captures/cap_9'))
+      return Promise.resolve(
+        jsonResponse(captureBody('cap_9', { state: 'completed', bytes: 2048 })),
+      );
+    if (url.includes('/captures'))
+      return Promise.resolve(jsonResponse({ items: [], next_cursor: null }));
     return Promise.resolve(jsonResponse({}));
   });
 
@@ -637,48 +734,74 @@ test('Discard: confirm deletes the run then re-records; a failed DELETE keeps th
   act(() => result.current.stopRecording());
   await waitFor(() => expect(result.current.phase).toBe('result'), { timeout: 4000 });
 
-  // A failing DELETE keeps the episode in the result phase and surfaces the error.
-  failDelete = true;
-  act(() => result.current.openDiscardModal());
-  expect(result.current.discardModalOpen).toBe(true);
-  expect(result.current.discardRunId).toBe('run_9');
-  act(() => result.current.confirmDiscard());
-  await waitFor(() => expect(result.current.discardError).toBeTruthy());
-  expect(result.current.phase).toBe('result');
+  // The dialog is opened with the real capture, so it can state its size.
+  await act(async () => {
+    result.current.openDiscardModal();
+  });
+  await waitFor(() => expect(result.current.episodeDiscard.kind).toBe('discard'));
+  expect(result.current.episodeDiscard.targets[0]?.capture_id).toBe('cap_9');
 
-  // A succeeding DELETE hits DELETE /runs/run_9 and returns to ready (re-record).
-  failDelete = false;
-  act(() => result.current.confirmDiscard());
+  await act(async () => {
+    await result.current.episodeDiscard.confirm('unusable take');
+  });
+  // Refused: the take survives on the result panel and the failure names the job.
+  expect(result.current.phase).toBe('result');
+  expect(result.current.episodeDiscard.failures[0]?.error).toContain('digest');
+
+  // A succeeding discard POSTs {kind:'discard', reason} and re-arms for a retake.
+  busy = false;
+  await act(async () => {
+    await result.current.episodeDiscard.confirm('unusable take');
+  });
   await waitFor(() => expect(result.current.phase).toBe('ready'));
   expect(result.current.episodes).toHaveLength(0);
-  expect(
-    fetchMock.mock.calls.some(
-      ([u, i]) => String(u).includes('/runs/run_9') && i?.method === 'DELETE',
-    ),
-  ).toBe(true);
+  const del = fetchMock.mock.calls.find(
+    ([u, i]) =>
+      String(u).includes('/captures/cap_9/delete') && i?.method === 'POST',
+  );
+  expect(JSON.parse(String((del![1] as RequestInit).body))).toEqual({
+    kind: 'discard',
+    reason: 'unusable take',
+  });
 });
 
 // ---------------------------------------------------------------------------
 // State survives a tab-switch unmount (module store) and a reload (localStorage).
 // ---------------------------------------------------------------------------
 
-/** Mock /record/start + /record/stop + /record/status for a given run id (drives
- *  one episode). The status carries integrity 'ok' so QUICK CHECK advances on the
- *  real signal instead of the fallback timer. */
-function recordFlowFetch(runId: string) {
-  return vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+/** Mock /record/start + /record/stop + /record/status for a given capture id
+ *  (drives one episode). The status carries integrity 'ok' so QUICK CHECK
+ *  advances on the real signal instead of the fallback timer. */
+function recordFlowFetch(captureId: string) {
+  return vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     const url = String(input);
+    const method = (init?.method ?? 'GET').toUpperCase();
     if (url.includes('/record/start')) {
-      return Promise.resolve(jsonResponse({ run_id: runId, state: 'recording' }));
+      return Promise.resolve(jsonResponse(captureBody(captureId)));
     }
     if (url.includes('/record/stop')) {
-      return Promise.resolve(jsonResponse({ run_id: runId, state: 'completed' }));
+      return Promise.resolve(
+        jsonResponse(captureBody(captureId, { state: 'completed' })),
+      );
     }
     if (url.includes('/record/status')) {
       return Promise.resolve(
-        jsonResponse({ run_id: runId, state: 'completed', integrity: 'ok' }),
+        jsonResponse({
+          capture_id: captureId,
+          run_id: `run_${captureId}`,
+          state: 'completed',
+          live_capture_ids: [],
+          integrity: 'ok',
+        }),
       );
     }
+    if (url.includes('/review') && method === 'PATCH') {
+      return Promise.resolve(
+        jsonResponse(captureBody(captureId, { state: 'completed', review_revision: 1 })),
+      );
+    }
+    if (url.includes('/captures'))
+      return Promise.resolve(jsonResponse({ items: [], next_cursor: null }));
     return Promise.resolve(jsonResponse({}));
   });
 }
@@ -686,7 +809,7 @@ function recordFlowFetch(runId: string) {
 // (a) A confirmed episode must survive the hook unmounting and remounting — the
 // exact tab-switch the bug wiped (episode count back to 0/30).
 test('confirmed episodes survive an unmount/remount (tab switch)', async () => {
-  recordFlowFetch('run_1');
+  recordFlowFetch('cap_1');
   const { result, unmount } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
     wrapper,
   });
@@ -709,11 +832,11 @@ test('confirmed episodes survive an unmount/remount (tab switch)', async () => {
   expect(remounted.result.current.phase).toBe('ready');
 });
 
-// (d) The result phase and its run_id are durable context — a mid-result-phase
+// (d) The result phase and its capture are durable context — a mid-result-phase
 // tab round-trip must keep both (so Discard / integrity gating still target the
-// right run on return).
-test('the result phase and its run_id survive an unmount/remount', async () => {
-  recordFlowFetch('run_9');
+// right capture on return).
+test('the result phase and its capture survive an unmount/remount', async () => {
+  recordFlowFetch('cap_9');
   const { result, unmount } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
     wrapper,
   });
@@ -722,14 +845,15 @@ test('the result phase and its run_id survive an unmount/remount', async () => {
   await waitFor(() => expect(result.current.phase).toBe('recording'));
   act(() => result.current.stopRecording());
   await waitFor(() => expect(result.current.phase).toBe('result'), { timeout: 4000 });
-  expect(result.current.discardRunId).toBe('run_9');
+  // The run label is display text; the capture is what survives as the key.
+  expect(result.current.currentRunLabel).toBe('run_cap_9');
 
   unmount();
   const remounted = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
     wrapper,
   });
   expect(remounted.result.current.phase).toBe('result');
-  expect(remounted.result.current.discardRunId).toBe('run_9');
+  expect(remounted.result.current.currentRunLabel).toBe('run_cap_9');
 });
 
 // (b) A reload restores the durable session context from localStorage.
@@ -774,9 +898,9 @@ test('a volatile phase is NOT restored on reload — recording resolves to ready
       project: defaults.project,
       task: defaults.task,
       condition: defaults.condition,
-      // A stale volatile phase/run must be ignored on restore.
+      // A stale volatile phase/capture must be ignored on restore.
       phase: 'recording',
-      currentRunId: 'run_stale',
+      currentCaptureId: 'cap_stale',
       elapsedMs: 4200,
     }),
   );
@@ -787,32 +911,34 @@ test('a volatile phase is NOT restored on reload — recording resolves to ready
   });
   expect(result.current.phase).toBe('ready');
   expect(result.current.elapsedMs).toBe(0);
-  expect(result.current.discardRunId).toBeNull();
+  expect(result.current.currentRunLabel).toBeNull();
   expect(result.current.stats.nRecorded).toBe(1);
 });
 
 // ---------------------------------------------------------------------------
-// Phase 2 orchestrator API: batch create / episode POST / lifecycle PATCH /
-// server restore, plus the API-down fallback to the local bridge.
+// Orchestrator API: batch create / review save / lifecycle PATCH / server
+// restore. The review save is a compare-and-swap on the capture (§4.1) — there
+// is no episodes resource and no browser-local mirror of it any more.
 // ---------------------------------------------------------------------------
 
 interface Phase2Opts {
-  runId?: string;
+  captureId?: string;
   batchId?: string;
   activeBatches?: unknown[];
-  episodePostFails?: boolean;
-  /** run_ids the server's `GET /runs` list reports as still existing — used by
-   *  the phantom-batch reconcile (a seeded local batch is real only when its
-   *  runs are here). Defaults to none. */
-  runs?: string[];
-  /** Extra fields merged into the `GET /runs/{id}` detail body (the result-panel
+  /** Status + body for `PATCH /captures/{id}/review` when it must be refused. */
+  reviewFails?: { status: number; body: Record<string, unknown> };
+  /** capture_ids the server's `GET /captures` list reports as still existing —
+   *  used by the phantom-batch reconcile (a seeded local batch is real only
+   *  when its captures are here). Defaults to none. */
+  captures?: string[];
+  /** Extra fields merged into the `GET /captures/{id}` body (the result-panel
    *  quick_check poll, F1) — e.g. `{ quick_check: { verdict: {...} } }`. */
-  runDetail?: Record<string, unknown>;
+  captureDetail?: Record<string, unknown>;
 }
 
-/** Mocks the record + batches + episodes endpoints, capturing every request. */
+/** Mocks the record + batches + captures endpoints, capturing every request. */
 function phase2Fetch(opts: Phase2Opts = {}) {
-  const runId = opts.runId ?? 'run_1';
+  const captureId = opts.captureId ?? 'cap_1';
   const batchId = opts.batchId ?? 'batch_x';
   const calls: {
     url: string;
@@ -844,40 +970,56 @@ function phase2Fetch(opts: Phase2Opts = {}) {
     if (url.includes('/batches') && method === 'GET') {
       return Promise.resolve(jsonResponse({ items: opts.activeBatches ?? [] }));
     }
-    if (url.includes('/episodes') && method === 'POST') {
-      if (opts.episodePostFails) {
+    if (url.includes('/review') && method === 'PATCH') {
+      if (opts.reviewFails) {
         return Promise.resolve(
-          jsonResponse({ error: { code: 'io', message: 'down' } }, 500),
+          jsonResponse(opts.reviewFails.body, opts.reviewFails.status),
         );
       }
-      return Promise.resolve(jsonResponse({ episode_id: 'ep_1', ...body }, 201));
-    }
-    // GET /runs (the list, not a /runs/{id} detail or DELETE) — the phantom
-    // reconcile checks whether a seeded local batch's runs still exist here.
-    if (method === 'GET' && /\/runs(\?|$)/.test(url)) {
-      const items = (opts.runs ?? []).map((rid) => ({
-        run_id: rid,
-        state: 'completed',
-      }));
-      return Promise.resolve(jsonResponse({ items, total: items.length }));
-    }
-    // GET /runs/{id} detail — the result-panel quick_check poll (F1). Any extra
-    // `runDetail` fields (e.g. a settled quick_check verdict) ride along.
-    if (method === 'GET' && /\/runs\/[^/?]+/.test(url)) {
+      // The server echoes the saved review with the revision advanced by one.
       return Promise.resolve(
-        jsonResponse({ run_id: runId, state: 'completed', ...(opts.runDetail ?? {}) }),
+        jsonResponse(
+          captureBody(captureId, { state: 'completed', review_revision: 1, ...body }),
+        ),
+      );
+    }
+    // GET /captures (the list) — the phantom reconcile and the unsaved-take scan.
+    if (method === 'GET' && /\/captures(\?|$)/.test(url)) {
+      const items = (opts.captures ?? []).map((cid) =>
+        captureBody(cid, { state: 'completed', review_revision: 1 }),
+      );
+      return Promise.resolve(jsonResponse({ items, next_cursor: null }));
+    }
+    // GET /captures/{id} — the result-panel quick_check poll (F1) and the
+    // capture the discard dialog states the size of.
+    if (method === 'GET' && /\/captures\/[^/?]+/.test(url)) {
+      return Promise.resolve(
+        jsonResponse(
+          captureBody(captureId, {
+            state: 'completed',
+            ...(opts.captureDetail ?? {}),
+          }),
+        ),
       );
     }
     if (url.includes('/record/status')) {
       return Promise.resolve(
-        jsonResponse({ run_id: runId, state: 'completed', integrity: 'ok' }),
+        jsonResponse({
+          capture_id: captureId,
+          run_id: `run_${captureId}`,
+          state: 'completed',
+          live_capture_ids: [],
+          integrity: 'ok',
+        }),
       );
     }
     if (url.includes('/record/start')) {
-      return Promise.resolve(jsonResponse({ run_id: runId, state: 'recording' }));
+      return Promise.resolve(jsonResponse(captureBody(captureId)));
     }
     if (url.includes('/record/stop')) {
-      return Promise.resolve(jsonResponse({ run_id: runId, state: 'completed' }));
+      return Promise.resolve(
+        jsonResponse(captureBody(captureId, { state: 'completed' })),
+      );
     }
     return Promise.resolve(jsonResponse({}));
   });
@@ -886,7 +1028,7 @@ function phase2Fetch(opts: Phase2Opts = {}) {
 
 test('starting a recording creates a server batch with the plan context', async () => {
   useUiStore.setState({ recordOperator: 'yuki' });
-  const { calls } = phase2Fetch({ runId: 'run_1' });
+  const { calls } = phase2Fetch();
   const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
     wrapper,
   });
@@ -907,8 +1049,8 @@ test('starting a recording creates a server batch with the plan context', async 
   });
 });
 
-test('saving an episode POSTs it with enum-mapped fields; success does not touch the bridge', async () => {
-  const { calls } = phase2Fetch({ runId: 'run_ep', batchId: 'batch_ep' });
+test('saving PATCHes the capture review with the batch stamp and a CAS token', async () => {
+  const { calls } = phase2Fetch({ captureId: 'cap_ep', batchId: 'batch_ep' });
   const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
     wrapper,
   });
@@ -922,26 +1064,99 @@ test('saving an episode POSTs it with enum-mapped fields; success does not touch
   act(() => result.current.confirmEpisode());
   await waitFor(() => expect(result.current.stats.nRecorded).toBe(1));
 
-  await waitFor(() =>
-    expect(calls.some((c) => c.url.includes('/episodes') && c.method === 'POST')).toBe(
-      true,
-    ),
-  );
-  const post = calls.find((c) => c.url.includes('/episodes') && c.method === 'POST')!;
-  // F1: the operator did NOT override quality, so the payload OMITS quality and
-  // quality_source — the server derives them from the run's settled quick_check
-  // verdict (the single source of the auto quality). The task fields still ride.
-  expect(post.body).toMatchObject({
+  const patch = calls.find(
+    (c) => c.url.includes('/captures/cap_ep/review') && c.method === 'PATCH',
+  )!;
+  expect(patch).toBeTruthy();
+  // The operator did NOT override quality, so the payload OMITS quality and
+  // quality_source: the server derives them from the capture's settled
+  // quick_check verdict, and claiming 'operator' provenance for a value nobody
+  // chose would also freeze it against the later correction (§4.1).
+  expect(patch.body).toMatchObject({
+    base_revision: 0,
     batch_id: 'batch_ep',
-    run_id: 'run_ep',
     index_in_batch: 1,
     task_result: 'failure',
     failure_reason: 'Object dropped',
+    review_status: 'pending',
   });
-  expect(post.body).not.toHaveProperty('quality');
-  expect(post.body).not.toHaveProperty('quality_source');
-  // Server accepted it → the browser bridge is not written.
-  expect(getEpisodeOutcome('run_ep')).toBeNull();
+  expect(patch.body).not.toHaveProperty('quality');
+  expect(patch.body).not.toHaveProperty('quality_source');
+});
+
+// §12: a refused save is stated, and nothing on screen claims it happened.
+test('a 409 review_conflict is surfaced, the episode is not counted, and the CAS token is refreshed', async () => {
+  phase2Fetch({
+    captureId: 'cap_c',
+    batchId: 'batch_c',
+    captureDetail: { review_revision: 4 },
+    reviewFails: {
+      status: 409,
+      body: {
+        error: {
+          code: 'review_conflict',
+          message: 'This review was edited elsewhere (revision 4, you sent 0).',
+          details: { current_revision: 4 },
+        },
+      },
+    },
+  });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+
+  act(() => result.current.startRecording());
+  await waitFor(() => expect(result.current.phase).toBe('recording'));
+  act(() => result.current.stopRecording());
+  await waitFor(() => expect(result.current.phase).toBe('result'), { timeout: 4000 });
+  act(() => result.current.confirmEpisode());
+
+  await waitFor(() => expect(result.current.saveError).not.toBeNull());
+  // The take stays on the result panel with the operator's values intact; the
+  // count and the strip claim nothing (§12).
+  expect(result.current.phase).toBe('result');
+  expect(result.current.stats.nRecorded).toBe(0);
+  expect(result.current.episodes).toHaveLength(0);
+  expect(result.current.pendingTask).toBe('ok');
+
+  // The refetched capture's revision becomes the new compare-and-swap token, so
+  // a deliberate re-apply is checked against what is actually stored — the two
+  // edits are never merged.
+  await waitFor(() => expect(result.current.saveError).not.toBeNull());
+  act(() => result.current.dismissSaveError());
+  expect(result.current.saveError).toBeNull();
+});
+
+test('a 500 review_sidecar_write_failed leaves nothing saved and nothing claimed', async () => {
+  phase2Fetch({
+    captureId: 'cap_w',
+    batchId: 'batch_w',
+    reviewFails: {
+      status: 500,
+      body: {
+        error: {
+          code: 'review_sidecar_write_failed',
+          message: 'Could not write record.json: No space left on device.',
+          details: {},
+        },
+      },
+    },
+  });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+
+  act(() => result.current.startRecording());
+  await waitFor(() => expect(result.current.phase).toBe('recording'));
+  act(() => result.current.stopRecording());
+  await waitFor(() => expect(result.current.phase).toBe('result'), { timeout: 4000 });
+  act(() => result.current.confirmEpisode());
+
+  await waitFor(() => expect(result.current.saveError).not.toBeNull());
+  expect(isDestructiveFailure(result.current.saveError)).toBe(true);
+  expect(result.current.stats.nRecorded).toBe(0);
+  expect(result.current.episodes).toHaveLength(0);
+  expect(result.current.phase).toBe('result');
 });
 
 // F1: the QUICK auto quality prefers the run's SETTLED quick_check verdict over
@@ -949,9 +1164,9 @@ test('saving an episode POSTs it with enum-mapped fields; success does not touch
 // (e.g. an Hz shortfall the recorder can't see) reads NEEDS REVIEW.
 test('auto quality prefers the settled quick_check verdict over integrity', async () => {
   phase2Fetch({
-    runId: 'run_v',
+    captureId: 'cap_v',
     batchId: 'batch_v',
-    runDetail: {
+    captureDetail: {
       quick_check: {
         verdict: {
           quality: 'needs_review',
@@ -982,7 +1197,7 @@ test('auto quality prefers the settled quick_check verdict over integrity', asyn
 // D-2: an operator override changes the quality AND records the honest
 // 'operator' provenance; 'Not usable' maps to the server 'not_usable'.
 test('an operator quality override sets quality + quality_source=operator', async () => {
-  const { calls } = phase2Fetch({ runId: 'run_ov', batchId: 'batch_ov' });
+  const { calls } = phase2Fetch({ captureId: 'cap_ov', batchId: 'batch_ov' });
   const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
     wrapper,
   });
@@ -997,48 +1212,21 @@ test('an operator quality override sets quality + quality_source=operator', asyn
   act(() => result.current.confirmEpisode());
   await waitFor(() => expect(result.current.stats.nRecorded).toBe(1));
 
-  await waitFor(() =>
-    expect(calls.some((c) => c.url.includes('/episodes') && c.method === 'POST')).toBe(
-      true,
-    ),
-  );
-  const post = calls.find((c) => c.url.includes('/episodes') && c.method === 'POST')!;
-  expect(post.body).toMatchObject({
+  const patch = calls.find((c) => c.url.includes('/review') && c.method === 'PATCH')!;
+  expect(patch.body).toMatchObject({
     task_result: 'success',
     quality: 'not_usable',
     quality_source: 'operator',
+    // "Not usable" is the same statement Review's own exclude makes, so the
+    // take is not left sitting in the queue it was just taken out of.
+    review_status: 'excluded',
   });
   // 'not usable' has no local axis, so the strip/tallies record it as 'review'.
   expect(result.current.stats.nReview).toBe(1);
 });
 
-test('an episode POST failure falls back to the local bridge', async () => {
-  phase2Fetch({ runId: 'run_fb', batchId: 'batch_fb', episodePostFails: true });
-  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
-    wrapper,
-  });
-
-  act(() => result.current.startRecording());
-  await waitFor(() => expect(result.current.phase).toBe('recording'));
-  act(() => result.current.stopRecording());
-  await waitFor(() => expect(result.current.phase).toBe('result'), { timeout: 4000 });
-  act(() => result.current.pickSuccess());
-  act(() => result.current.confirmEpisode());
-  await waitFor(() => expect(result.current.stats.nRecorded).toBe(1));
-
-  // Server rejected → the outcome is preserved in the browser bridge so Review
-  // can still show it via the fallback path.
-  await waitFor(() => expect(getEpisodeOutcome('run_fb')).not.toBeNull());
-  expect(getEpisodeOutcome('run_fb')).toMatchObject({
-    quality: 'good',
-    taskResult: 'ok',
-    batchNum: 1,
-    episodeIndex: 1,
-  });
-});
-
 test('ending a batch early PATCHes the server batch to ended_early', async () => {
-  const { calls } = phase2Fetch({ runId: 'run_e', batchId: 'batch_e' });
+  const { calls } = phase2Fetch({ captureId: 'cap_e', batchId: 'batch_e' });
   const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
     wrapper,
   });
@@ -1065,7 +1253,7 @@ test('completing the 30th episode PATCHes the batch to completed', async () => {
     index: i + 1,
     quality: 'good' as const,
     taskResult: 'ok' as const,
-    runId: `r${i + 1}`,
+    captureId: `cap_${i + 1}`,
   }));
   window.localStorage.setItem(
     BATCH_STORAGE_KEY,
@@ -1079,12 +1267,12 @@ test('completing the 30th episode PATCHes the batch to completed', async () => {
     }),
   );
   __rehydrateBatchStore();
-  // The seeded batch's runs still exist server-side, so the phantom reconcile
-  // leaves it intact (it's a real in-progress batch, not a stale ghost).
+  // The seeded batch's captures still exist server-side, so the phantom
+  // reconcile leaves it intact (a real in-progress batch, not a stale ghost).
   const { calls } = phase2Fetch({
-    runId: 'run_30',
+    captureId: 'cap_30',
     batchId: 'batch_full',
-    runs: seed.map((e) => e.runId),
+    captures: seed.map((e) => e.captureId),
   });
   const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
     wrapper,
@@ -1126,14 +1314,16 @@ test('reload restores the active batch from the server (GET /batches?status=acti
         episodes: [
           {
             index: 1,
-            run_id: 'r1',
+            capture_id: 'cap_r1',
+            run_id: 'run_r1',
             task_result: 'success',
             quality: 'good',
             review_status: 'pending',
           },
           {
             index: 2,
-            run_id: 'r2',
+            capture_id: 'cap_r2',
+            run_id: 'run_r2',
             task_result: 'failure',
             quality: 'needs_review',
             review_status: 'pending',
@@ -1163,7 +1353,7 @@ test('reload restores the active batch from the server (GET /batches?status=acti
 // A stale batch persisted locally (batch 6, 3 recorded) whose runs no longer
 // exist, and a server that reports no active batch and no runs, is discarded —
 // the counters reset to the honest empty state.
-test('a stale local batch is discarded when the server has no active batch and its runs are gone', async () => {
+test('a stale local batch is discarded when the server has no active batch and its captures are gone', async () => {
   window.localStorage.setItem(
     BATCH_STORAGE_KEY,
     JSON.stringify({
@@ -1171,9 +1361,9 @@ test('a stale local batch is discarded when the server has no active batch and i
       recordedCount: 3,
       batchId: 'batch_ghost',
       episodes: [
-        { index: 1, quality: 'good', taskResult: 'ok', runId: 'ghost_1' },
-        { index: 2, quality: 'good', taskResult: 'ok', runId: 'ghost_2' },
-        { index: 3, quality: 'review', taskResult: 'fail', runId: 'ghost_3' },
+        { index: 1, quality: 'good', taskResult: 'ok', captureId: 'ghost_1' },
+        { index: 2, quality: 'good', taskResult: 'ok', captureId: 'ghost_2' },
+        { index: 3, quality: 'review', taskResult: 'fail', captureId: 'ghost_3' },
       ],
       project: 'Bin Picking',
       task: 'Bin to Tray',
@@ -1181,8 +1371,8 @@ test('a stale local batch is discarded when the server has no active batch and i
     }),
   );
   __rehydrateBatchStore();
-  // Server: no active batch (default empty activeBatches) and no runs at all.
-  phase2Fetch({ runs: [] });
+  // Server: no active batch (default empty activeBatches) and no captures.
+  phase2Fetch({ captures: [] });
   const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
     wrapper,
   });
@@ -1199,9 +1389,9 @@ test('a stale local batch is discarded when the server has no active batch and i
   expect(window.localStorage.getItem(BATCH_STORAGE_KEY)).toBeNull();
 });
 
-// Offline resilience: if the /runs check itself fails, the local batch is kept
-// (we never discard a batch we couldn't prove is stale).
-test('a local batch is kept when the runs check fails (API error → keep)', async () => {
+// Offline resilience: if the /captures check itself fails, the local batch is
+// kept (we never discard a batch we couldn't prove is stale).
+test('a local batch is kept when the captures check fails (API error → keep)', async () => {
   window.localStorage.setItem(
     BATCH_STORAGE_KEY,
     JSON.stringify({
@@ -1209,9 +1399,9 @@ test('a local batch is kept when the runs check fails (API error → keep)', asy
       recordedCount: 3,
       batchId: 'batch_maybe',
       episodes: [
-        { index: 1, quality: 'good', taskResult: 'ok', runId: 'x1' },
-        { index: 2, quality: 'good', taskResult: 'ok', runId: 'x2' },
-        { index: 3, quality: 'good', taskResult: 'ok', runId: 'x3' },
+        { index: 1, quality: 'good', taskResult: 'ok', captureId: 'x1' },
+        { index: 2, quality: 'good', taskResult: 'ok', captureId: 'x2' },
+        { index: 3, quality: 'good', taskResult: 'ok', captureId: 'x3' },
       ],
       project: 'P',
       task: 'T',
@@ -1227,8 +1417,8 @@ test('a local batch is kept when the runs check fails (API error → keep)', asy
     if (url.includes('/batches') && method === 'GET') {
       return Promise.resolve(jsonResponse({ items: [] }));
     }
-    if (method === 'GET' && /\/runs(\?|$)/.test(url)) {
-      // The runs check errors — we must NOT clear the local batch.
+    if (method === 'GET' && /\/captures(\?|$)/.test(url)) {
+      // The captures check errors — we must NOT clear the local batch.
       return Promise.resolve(
         jsonResponse({ error: { code: 'io', message: 'down' } }, 500),
       );
@@ -1239,9 +1429,9 @@ test('a local batch is kept when the runs check fails (API error → keep)', asy
     wrapper,
   });
 
-  // Wait until the reconcile has attempted (and failed) the runs check …
+  // Wait until the reconcile has attempted (and failed) the captures check …
   await waitFor(() =>
-    expect(calls.some((c) => /GET .*\/runs(\?|$)/.test(c))).toBe(true),
+    expect(calls.some((c) => /GET .*\/captures(\?|$)/.test(c))).toBe(true),
   );
   // … and confirm the local batch survived (offline resilience preserved).
   expect(result.current.stats.nRecorded).toBe(3);
@@ -1258,7 +1448,7 @@ test('an active server batch overrides a stale local batch (server wins, not dis
       batchSeq: 6,
       recordedCount: 3,
       batchId: 'batch_old',
-      episodes: [{ index: 1, quality: 'good', taskResult: 'ok', runId: 'old_1' }],
+      episodes: [{ index: 1, quality: 'good', taskResult: 'ok', captureId: 'old_1' }],
       project: 'Old',
       task: 'Old task',
       condition: 'Old',
@@ -1280,7 +1470,8 @@ test('an active server batch overrides a stale local batch (server wins, not dis
         episodes: [
           {
             index: 5,
-            run_id: 'r5',
+            capture_id: 'cap_r5',
+            run_id: 'run_r5',
             task_result: 'success',
             quality: 'good',
             review_status: 'pending',
@@ -1319,14 +1510,16 @@ test('restore keeps the recorded count monotone after a Review delete (episodes_
           // … but one was deleted in Review, so only 2 survive (index 2 gone).
           {
             index: 1,
-            run_id: 'r1',
+            capture_id: 'cap_r1',
+            run_id: 'run_r1',
             task_result: 'success',
             quality: 'good',
             review_status: 'adopted',
           },
           {
             index: 3,
-            run_id: 'r3',
+            capture_id: 'cap_r3',
+            run_id: 'run_r3',
             task_result: 'success',
             quality: 'good',
             review_status: 'pending',
@@ -1360,14 +1553,16 @@ test('an excluded episode still counts toward the recorded total', async () => {
         episodes: [
           {
             index: 1,
-            run_id: 'r1',
+            capture_id: 'cap_r1',
+            run_id: 'run_r1',
             task_result: 'success',
             quality: 'good',
             review_status: 'pending',
           },
           {
             index: 2,
-            run_id: 'r2',
+            capture_id: 'cap_r2',
+            run_id: 'run_r2',
             task_result: 'success',
             quality: 'not_usable',
             review_status: 'excluded',
@@ -1391,7 +1586,7 @@ test('a server restore never LOWERS a higher local recorded count', async () => 
     index: i + 1,
     quality: 'good' as const,
     taskResult: 'ok' as const,
-    runId: `r${i + 1}`,
+    captureId: `cap_r${i + 1}`,
   }));
   window.localStorage.setItem(
     BATCH_STORAGE_KEY,
@@ -1421,14 +1616,16 @@ test('a server restore never LOWERS a higher local recorded count', async () => 
         episodes: [
           {
             index: 1,
-            run_id: 'r1',
+            capture_id: 'cap_r1',
+            run_id: 'run_r1',
             task_result: 'success',
             quality: 'good',
             review_status: 'pending',
           },
           {
             index: 2,
-            run_id: 'r2',
+            capture_id: 'cap_r2',
+            run_id: 'run_r2',
             task_result: 'success',
             quality: 'good',
             review_status: 'pending',
@@ -1456,7 +1653,7 @@ test('a same-batch server restore keeps an episode the server does not know abou
     index: i + 1,
     quality: 'good' as const,
     taskResult: 'ok' as const,
-    runId: `r${i + 1}`,
+    captureId: `cap_r${i + 1}`,
   }));
   window.localStorage.setItem(
     BATCH_STORAGE_KEY,
@@ -1487,14 +1684,16 @@ test('a same-batch server restore keeps an episode the server does not know abou
         episodes: [
           {
             index: 1,
-            run_id: 'r1',
+            capture_id: 'cap_r1',
+            run_id: 'run_r1',
             task_result: 'success',
             quality: 'good',
             review_status: 'pending',
           },
           {
             index: 2,
-            run_id: 'r2',
+            capture_id: 'cap_r2',
+            run_id: 'run_r2',
             task_result: 'success',
             quality: 'good',
             review_status: 'pending',
@@ -1514,23 +1713,40 @@ test('a same-batch server restore keeps an episode the server does not know abou
   expect(result.current.stats.epNext).toBe(4);
 });
 
-test('discarding a run removes its bridge entry (no stale outcome lingers)', async () => {
+// A discard invalidates the capture cache, so the take stops being offered as
+// an unsaved one — the review it never got is not something a browser-local
+// mirror has to be told about any more; the capture itself is gone.
+test('discarding the take refreshes the capture cache and re-arms for a retake', async () => {
   const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     const url = String(input);
+    const method = (init?.method ?? 'GET').toUpperCase();
     if (url.includes('/record/status')) {
       return Promise.resolve(
-        jsonResponse({ run_id: 'run_disc', state: 'completed', integrity: 'ok' }),
+        jsonResponse({
+          capture_id: 'cap_disc',
+          run_id: 'run_cap_disc',
+          state: 'completed',
+          live_capture_ids: [],
+          integrity: 'ok',
+        }),
       );
     }
-    if (url.includes('/record/start')) {
-      return Promise.resolve(jsonResponse({ run_id: 'run_disc', state: 'recording' }));
-    }
-    if (url.includes('/record/stop')) {
-      return Promise.resolve(jsonResponse({ run_id: 'run_disc', state: 'completed' }));
-    }
-    if (url.includes('/runs/run_disc') && init?.method === 'DELETE') {
-      return Promise.resolve(new Response(null, { status: 204 }));
-    }
+    if (url.includes('/record/start'))
+      return Promise.resolve(jsonResponse(captureBody('cap_disc')));
+    if (url.includes('/record/stop'))
+      return Promise.resolve(
+        jsonResponse(captureBody('cap_disc', { state: 'completed' })),
+      );
+    if (url.includes('/captures/cap_disc/delete') && method === 'POST')
+      return Promise.resolve(
+        jsonResponse(captureBody('cap_disc', { state: 'discarded' })),
+      );
+    if (url.includes('/captures/cap_disc'))
+      return Promise.resolve(
+        jsonResponse(captureBody('cap_disc', { state: 'completed', bytes: 4096 })),
+      );
+    if (url.includes('/captures'))
+      return Promise.resolve(jsonResponse({ items: [], next_cursor: null }));
     return Promise.resolve(jsonResponse({}));
   });
 
@@ -1542,23 +1758,18 @@ test('discarding a run removes its bridge entry (no stale outcome lingers)', asy
   act(() => result.current.stopRecording());
   await waitFor(() => expect(result.current.phase).toBe('result'), { timeout: 4000 });
 
-  // Seed a bridge entry for this run (defensive: prove Discard actually removes it).
-  saveEpisodeOutcome('run_disc', {
-    quality: 'good',
-    taskResult: 'ok',
-    batchNum: 1,
-    episodeIndex: 1,
-    savedAt: Date.now(),
+  await act(async () => {
+    result.current.openDiscardModal();
   });
-  expect(getEpisodeOutcome('run_disc')).not.toBeNull();
-
-  act(() => result.current.openDiscardModal());
-  act(() => result.current.confirmDiscard());
+  await waitFor(() => expect(result.current.episodeDiscard.kind).toBe('discard'));
+  await act(async () => {
+    await result.current.episodeDiscard.confirm('bad take');
+  });
   await waitFor(() => expect(result.current.phase).toBe('ready'));
-  expect(getEpisodeOutcome('run_disc')).toBeNull();
   expect(
     fetchMock.mock.calls.some(
-      ([u, i]) => String(u).includes('/runs/run_disc') && i?.method === 'DELETE',
+      ([u, i]) =>
+        String(u).includes('/captures/cap_disc/delete') && i?.method === 'POST',
     ),
   ).toBe(true);
 });
@@ -1568,7 +1779,7 @@ test('discarding a run removes its bridge entry (no stale outcome lingers)', asy
 // ---------------------------------------------------------------------------
 
 test('resetBatch clears the counts, PATCHes the batch ended_early=reset, and deletes nothing', async () => {
-  const { calls } = phase2Fetch({ runId: 'run_r', batchId: 'batch_r' });
+  const { calls } = phase2Fetch({ captureId: 'cap_r', batchId: 'batch_r' });
   const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
     wrapper,
   });
@@ -1608,7 +1819,7 @@ test('resetBatch clears the counts, PATCHes the batch ended_early=reset, and del
 });
 
 test('after a reset, the next recording start lazily creates a fresh server batch', async () => {
-  const { calls } = phase2Fetch({ runId: 'run_r', batchId: 'batch_r' });
+  const { calls } = phase2Fetch({ captureId: 'cap_r', batchId: 'batch_r' });
   const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
     wrapper,
   });
@@ -1651,12 +1862,17 @@ test('ROLLOVER_SET resets counts/handles, keeps the target, applies the new cont
     recordedCount: 3,
     targetEpisodes: 20,
     episodes: [
-      { index: 1, quality: 'good' as const, taskResult: 'ok' as const, runId: 'r1' },
+      {
+        index: 1,
+        quality: 'good' as const,
+        taskResult: 'ok' as const,
+        captureId: 'cap_1',
+      },
     ],
     phase: 'ready' as const,
     pendingTask: 'ok' as const,
     failReason: 'x',
-    currentRunId: 'r_live',
+    currentCaptureId: 'cap_live',
     predictedSeq: 1,
   };
   const s = reducer(s0, {
@@ -1677,7 +1893,7 @@ test('ROLLOVER_SET resets counts/handles, keeps the target, applies the new cont
   // In-flight / result fields are cleared like a fresh set.
   expect(s.pendingTask).toBeNull();
   expect(s.failReason).toBe('');
-  expect(s.currentRunId).toBeNull();
+  expect(s.currentCaptureId).toBeNull();
   // The next set most likely gets old seq + 1.
   expect(s.predictedSeq).toBe(6);
 });
@@ -1715,7 +1931,8 @@ test('changing the condition once the set has a recording rolls the set over (ol
         episodes: [
           {
             index: 1,
-            run_id: 'r1',
+            capture_id: 'cap_r1',
+            run_id: 'run_r1',
             task_result: 'success',
             quality: 'good',
             review_status: 'pending',
@@ -1967,7 +2184,7 @@ test('a custom task before any recording PATCHes only {task} (no condition sent 
 });
 
 test('changing the task once the set has a recording rolls over with a Task change reason', async () => {
-  const { calls } = phase2Fetch({ runId: 'run_t', batchId: 'batch_t' });
+  const { calls } = phase2Fetch({ captureId: 'cap_t', batchId: 'batch_t' });
   const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
     wrapper,
   });
@@ -2020,7 +2237,8 @@ test('changing the project once the set has a recording rolls over with a Plan c
         episodes: [
           {
             index: 1,
-            run_id: 'r1',
+            capture_id: 'cap_r1',
+            run_id: 'run_r1',
             task_result: 'success',
             quality: 'good',
             review_status: 'pending',
@@ -2058,23 +2276,37 @@ test('changing the project once the set has a recording rolls over with a Plan c
   );
 });
 
-test('reset works with the API down (local-only reset, recordings untouched)', async () => {
-  // /batches and /episodes reject; /record works so we can record locally.
-  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+// With /batches down the capture still carries its own review (§8), so the save
+// succeeds and only the grouping is lost. The review is never dropped on the
+// floor and never mirrored into the browser — there is nowhere left to mirror it.
+test('a batch the API could not create leaves the review saved but ungrouped', async () => {
+  const calls: { url: string; method: string; body: unknown }[] = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     const url = String(input);
+    const method = (init?.method ?? 'GET').toUpperCase();
+    calls.push({ url, method, body: init?.body ? JSON.parse(String(init.body)) : undefined });
     if (url.includes('/batches')) return Promise.reject(new Error('api down'));
-    if (url.includes('/episodes')) return Promise.reject(new Error('api down'));
     if (url.includes('/record/status')) {
       return Promise.resolve(
-        jsonResponse({ run_id: 'run_x', state: 'completed', integrity: 'ok' }),
+        jsonResponse({
+          capture_id: 'cap_x',
+          run_id: 'run_cap_x',
+          state: 'completed',
+          live_capture_ids: [],
+          integrity: 'ok',
+        }),
       );
     }
-    if (url.includes('/record/start')) {
-      return Promise.resolve(jsonResponse({ run_id: 'run_x', state: 'recording' }));
-    }
-    if (url.includes('/record/stop')) {
-      return Promise.resolve(jsonResponse({ run_id: 'run_x', state: 'completed' }));
-    }
+    if (url.includes('/record/start'))
+      return Promise.resolve(jsonResponse(captureBody('cap_x')));
+    if (url.includes('/record/stop'))
+      return Promise.resolve(jsonResponse(captureBody('cap_x', { state: 'completed' })));
+    if (url.includes('/review') && method === 'PATCH')
+      return Promise.resolve(
+        jsonResponse(captureBody('cap_x', { state: 'completed', review_revision: 1 })),
+      );
+    if (url.includes('/captures'))
+      return Promise.resolve(jsonResponse({ items: [], next_cursor: null }));
     return Promise.resolve(jsonResponse({}));
   });
   const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
@@ -2089,7 +2321,13 @@ test('reset works with the API down (local-only reset, recordings untouched)', a
   act(() => result.current.confirmEpisode());
   await waitFor(() => expect(result.current.stats.nRecorded).toBe(1));
 
-  // Reset still works locally even though every batch/episode call failed.
+  const patch = calls.find((c) => c.url.includes('/review') && c.method === 'PATCH')!;
+  // No batch to belong to, so no batch_id and no index inside one — an index
+  // within no batch would mean nothing.
+  expect(patch.body).toMatchObject({ batch_id: null, index_in_batch: null });
+  expect(result.current.saveError).toBeNull();
+
+  // Reset still works locally even though every batch call failed.
   act(() => result.current.resetBatch());
   expect(result.current.stats.nRecorded).toBe(0);
   expect(result.current.phase).toBe('ready');
@@ -2192,27 +2430,31 @@ test('predictedSeq stays null on a GET /batches failure (the UI then renders "ne
 // D-1 takeover: a server recording this screen isn't driving.
 // ---------------------------------------------------------------------------
 
-test('a server recording not started here surfaces as a takeover (operator + topics from run detail)', async () => {
+test('a server recording not started here surfaces as a takeover (operator + topics from the capture)', async () => {
   vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
-    if (url.includes('/runs/run_ext')) {
+    if (url.includes('/captures/cap_ext')) {
       return Promise.resolve(
-        jsonResponse({
-          run_id: 'run_ext',
-          state: 'recording',
-          topics: [
-            { name: '/a', type: 'x' },
-            { name: '/b', type: 'y' },
-          ],
-          operator: 'someone',
-        }),
+        jsonResponse(
+          captureBody('cap_ext', {
+            topics: [
+              { name: '/a', type: 'x' },
+              { name: '/b', type: 'y' },
+            ],
+            operator: 'someone',
+          }),
+        ),
       );
     }
+    if (url.includes('/captures'))
+      return Promise.resolve(jsonResponse({ items: [], next_cursor: null }));
     if (url.includes('/record/status')) {
       return Promise.resolve(
         jsonResponse({
-          run_id: 'run_ext',
+          capture_id: 'cap_ext',
+          run_id: 'run_cap_ext',
           state: 'recording',
+          live_capture_ids: ['cap_ext'],
           started_at: new Date().toISOString(),
           bytes: 2048,
         }),
@@ -2223,21 +2465,73 @@ test('a server recording not started here surfaces as a takeover (operator + top
   const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
     wrapper,
   });
-  await waitFor(() => expect(result.current.takeover?.runId).toBe('run_ext'));
-  // Not our run (no persisted lastRunId) → not resumed-own.
+  await waitFor(() => expect(result.current.takeover?.captureId).toBe('cap_ext'));
+  // Not our capture (no persisted lastCaptureId) -> not resumed-own.
   expect(result.current.takeoverResumedOwn).toBe(false);
   expect(result.current.takeover?.bytes).toBe(2048);
-  // Operator + topic count come from the run detail (RecordStatus carries neither).
+  // Operator, topic count and the display run_id come from the capture
+  // (RecordStatus carries none of them).
   await waitFor(() => expect(result.current.takeover?.operator).toBe('someone'));
   expect(result.current.takeover?.topicsCount).toBe(2);
+  expect(result.current.takeover?.runLabel).toBe('run_cap_ext');
   expect(result.current.recorderState).toBe('recording');
 });
 
-test('a reload of our own recording is a resumed-own takeover (lastRunId match)', async () => {
+// The singular `capture_id` keeps naming the last capture after a stop (§10),
+// so a finished recorder must NOT read as a takeover. Only the live set can say
+// what is live, and here it says nothing is.
+test('a stopped recorder still naming its last capture_id is not a takeover', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/captures'))
+      return Promise.resolve(jsonResponse({ items: [], next_cursor: null }));
+    if (url.includes('/record/status'))
+      return Promise.resolve(
+        jsonResponse({
+          capture_id: 'cap_last',
+          run_id: 'run_cap_last',
+          state: 'completed',
+          live_capture_ids: [],
+        }),
+      );
+    return Promise.resolve(jsonResponse({}));
+  });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  await waitFor(() => expect(result.current.recorderState).toBe('completed'));
+  expect(result.current.takeover).toBeNull();
+  expect(result.current.liveCaptures).toEqual([]);
+});
+
+// §10 rev.2.4: an absent `live_capture_ids` means the recorder is UNREACHABLE.
+// Neither claim is allowed from that: not a takeover (we would be inventing
+// one), and not "nothing is live" (we would be denying one).
+test('a status with no live_capture_ids yields no takeover and a null live set', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/captures'))
+      return Promise.resolve(jsonResponse({ items: [], next_cursor: null }));
+    if (url.includes('/record/status'))
+      return Promise.resolve(
+        jsonResponse({ capture_id: 'cap_ext', run_id: 'run_x', state: 'recording' }),
+      );
+    return Promise.resolve(jsonResponse({}));
+  });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  await waitFor(() => expect(result.current.recorderState).toBe('recording'));
+  expect(result.current.takeover).toBeNull();
+  // Null, never [] — the two mean opposite things.
+  expect(result.current.liveCaptures).toBeNull();
+});
+
+test('a reload of our own recording is a resumed-own takeover (lastCaptureId match)', async () => {
   window.localStorage.setItem(
     BATCH_STORAGE_KEY,
     JSON.stringify({
-      lastRunId: 'run_own',
+      lastCaptureId: 'cap_own',
       episodes: [],
       project: 'P',
       task: 'T',
@@ -2247,21 +2541,20 @@ test('a reload of our own recording is a resumed-own takeover (lastRunId match)'
   __rehydrateBatchStore();
   vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
-    if (url.includes('/runs/run_own')) {
+    if (url.includes('/captures/cap_own')) {
       return Promise.resolve(
-        jsonResponse({
-          run_id: 'run_own',
-          state: 'recording',
-          topics: [],
-          operator: null,
-        }),
+        jsonResponse(captureBody('cap_own', { topics: [], operator: null })),
       );
     }
+    if (url.includes('/captures'))
+      return Promise.resolve(jsonResponse({ items: [], next_cursor: null }));
     if (url.includes('/record/status')) {
       return Promise.resolve(
         jsonResponse({
-          run_id: 'run_own',
+          capture_id: 'cap_own',
+          run_id: 'run_cap_own',
           state: 'recording',
+          live_capture_ids: ['cap_own'],
           started_at: new Date().toISOString(),
         }),
       );
@@ -2271,7 +2564,7 @@ test('a reload of our own recording is a resumed-own takeover (lastRunId match)'
   const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
     wrapper,
   });
-  await waitFor(() => expect(result.current.takeover?.runId).toBe('run_own'));
+  await waitFor(() => expect(result.current.takeover?.captureId).toBe('cap_own'));
   expect(result.current.takeoverResumedOwn).toBe(true);
 });
 
@@ -2282,23 +2575,24 @@ test('confirming a takeover stop POSTs /record/stop and closes the modal', async
       url.includes('/record/stop') &&
       (init?.method ?? 'POST').toUpperCase() === 'POST'
     ) {
-      return Promise.resolve(jsonResponse({ run_id: 'run_ext', state: 'completed' }));
-    }
-    if (url.includes('/runs/run_ext')) {
       return Promise.resolve(
-        jsonResponse({
-          run_id: 'run_ext',
-          state: 'recording',
-          topics: [],
-          operator: null,
-        }),
+        jsonResponse(captureBody('cap_ext', { state: 'completed' })),
       );
     }
+    if (url.includes('/captures/cap_ext')) {
+      return Promise.resolve(
+        jsonResponse(captureBody('cap_ext', { topics: [], operator: null })),
+      );
+    }
+    if (url.includes('/captures'))
+      return Promise.resolve(jsonResponse({ items: [], next_cursor: null }));
     if (url.includes('/record/status')) {
       return Promise.resolve(
         jsonResponse({
-          run_id: 'run_ext',
+          capture_id: 'cap_ext',
+          run_id: 'run_cap_ext',
           state: 'recording',
+          live_capture_ids: ['cap_ext'],
           started_at: new Date().toISOString(),
         }),
       );
@@ -2308,7 +2602,7 @@ test('confirming a takeover stop POSTs /record/stop and closes the modal', async
   const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
     wrapper,
   });
-  await waitFor(() => expect(result.current.takeover?.runId).toBe('run_ext'));
+  await waitFor(() => expect(result.current.takeover?.captureId).toBe('cap_ext'));
 
   act(() => result.current.openTakeoverStopModal());
   expect(result.current.takeoverStopModalOpen).toBe(true);
@@ -2324,22 +2618,27 @@ test('confirming a takeover stop POSTs /record/stop and closes the modal', async
 // D-3 unsaved-take recovery + stop-failure retry.
 // ---------------------------------------------------------------------------
 
-function unsavedRunsFetch(present: () => boolean) {
+function unsavedCapturesFetch(present: () => boolean) {
   return vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     const url = String(input);
     const method = (init?.method ?? 'GET').toUpperCase();
-    if (url.includes('/runs/run_unsaved') && method === 'DELETE') {
-      return Promise.resolve(new Response(null, { status: 204 }));
+    if (url.includes('/captures/cap_unsaved/delete') && method === 'POST') {
+      return Promise.resolve(
+        jsonResponse(captureBody('cap_unsaved', { state: 'discarded' })),
+      );
     }
-    if (url.includes('/runs')) {
+    if (url.includes('/captures')) {
+      // `review_revision: 0` is the server's own "never reviewed" (§4.1): the
+      // recording stopped but nobody labeled it.
       const items = present()
         ? [
-            {
-              run_id: 'run_unsaved',
+            captureBody('cap_unsaved', {
               state: 'completed',
+              review_revision: 0,
+              bytes: 8192,
               started_at: new Date(Date.now() - 60_000).toISOString(),
               ended_at: new Date().toISOString(),
-            },
+            }),
           ]
         : [];
       return Promise.resolve(jsonResponse({ items, next_cursor: null }));
@@ -2352,33 +2651,50 @@ function unsavedRunsFetch(present: () => boolean) {
   });
 }
 
-test('detects a completed-but-unlabeled recent run as an unsaved take, then labels it', async () => {
-  unsavedRunsFetch(() => true);
+test('detects a completed-but-unreviewed recent capture as an unsaved take, then labels it', async () => {
+  unsavedCapturesFetch(() => true);
   const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
     wrapper,
   });
-  await waitFor(() => expect(result.current.unsavedTake?.runId).toBe('run_unsaved'));
+  await waitFor(() =>
+    expect(result.current.unsavedTake?.captureId).toBe('cap_unsaved'),
+  );
+  // The run_id is offered as the recording's readable name, not as its key.
+  expect(result.current.unsavedTake?.runLabel).toBe('run_cap_unsaved');
+  expect(result.current.unsavedTake?.bytes).toBe(8192);
 
   // Await act so the lazy ensureBatch() POST settles inside act (no stray update).
   await act(async () => {
     result.current.labelUnsavedTake();
   });
-  // Drops into the result phase for that run so the operator can label it.
+  // Drops into the result phase for that capture so the operator can label it.
   expect(result.current.phase).toBe('result');
-  expect(result.current.discardRunId).toBe('run_unsaved');
-  // The run being labeled is no longer offered as an unsaved take.
+  expect(result.current.currentRunLabel).toBe('run_cap_unsaved');
+  // The capture being labeled is no longer offered as an unsaved take.
   expect(result.current.unsavedTake).toBeNull();
 });
 
-test('a run with a bridge outcome is NOT offered as an unsaved take', async () => {
-  saveEpisodeOutcome('run_unsaved', {
-    quality: 'good',
-    taskResult: 'ok',
-    batchNum: 1,
-    episodeIndex: 1,
-    savedAt: Date.now(),
+test('an already-reviewed capture is NOT offered as an unsaved take', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/captures'))
+      // Reviewed once already (revision 1) — it is accounted for and must not
+      // come back as a recovery offer.
+      return Promise.resolve(
+        jsonResponse({
+          items: [
+            captureBody('cap_done', {
+              state: 'completed',
+              review_revision: 1,
+              started_at: new Date(Date.now() - 60_000).toISOString(),
+            }),
+          ],
+          next_cursor: null,
+        }),
+      );
+    if (url.includes('/batches')) return Promise.resolve(jsonResponse({ items: [] }));
+    return Promise.resolve(jsonResponse({}));
   });
-  unsavedRunsFetch(() => true);
   const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
     wrapper,
   });
@@ -2388,31 +2704,105 @@ test('a run with a bridge outcome is NOT offered as an unsaved take', async () =
   expect(result.current.unsavedTake).toBeNull();
 });
 
-test('discarding an unsaved take DELETEs the run', async () => {
-  const fetchMock = unsavedRunsFetch(() => true);
+test('discarding an unsaved take runs the shared discard on its capture', async () => {
+  const fetchMock = unsavedCapturesFetch(() => true);
   const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
     wrapper,
   });
-  await waitFor(() => expect(result.current.unsavedTake?.runId).toBe('run_unsaved'));
+  await waitFor(() =>
+    expect(result.current.unsavedTake?.captureId).toBe('cap_unsaved'),
+  );
 
   act(() => result.current.discardUnsavedTake());
-  expect(result.current.unsavedDiscardModalOpen).toBe(true);
-  act(() => result.current.confirmDiscardUnsavedTake());
-  await waitFor(() =>
-    expect(
-      fetchMock.mock.calls.some(
-        ([u, i]) => String(u).includes('/runs/run_unsaved') && i?.method === 'DELETE',
-      ),
-    ).toBe(true),
+  expect(result.current.unsavedDiscard.kind).toBe('discard');
+  // The dialog states the size, so it needs the capture itself, not just an id.
+  expect(result.current.unsavedDiscard.targets[0]?.capture_id).toBe('cap_unsaved');
+
+  await act(async () => {
+    await result.current.unsavedDiscard.confirm('never labeled');
+  });
+  const del = fetchMock.mock.calls.find(
+    ([u, i]) =>
+      String(u).includes('/captures/cap_unsaved/delete') && i?.method === 'POST',
   );
+  expect(JSON.parse(String((del![1] as RequestInit).body))).toEqual({
+    kind: 'discard',
+    reason: 'never labeled',
+  });
+});
+
+// Two irreversible dialogs stacked on each other is two actions the operator
+// cannot tell apart, and the recovery banner IS on screen during the result
+// phase — so opening either discard always closes the other.
+test('opening one discard dialog closes the other', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/record/start'))
+      return Promise.resolve(jsonResponse(captureBody('cap_now')));
+    if (url.includes('/record/stop'))
+      return Promise.resolve(
+        jsonResponse(captureBody('cap_now', { state: 'completed' })),
+      );
+    if (url.includes('/record/status'))
+      return Promise.resolve(
+        jsonResponse({
+          capture_id: 'cap_now',
+          run_id: 'run_cap_now',
+          state: 'completed',
+          live_capture_ids: [],
+          integrity: 'ok',
+        }),
+      );
+    if (url.includes('/captures/cap_now'))
+      return Promise.resolve(
+        jsonResponse(captureBody('cap_now', { state: 'completed', bytes: 512 })),
+      );
+    if (url.includes('/captures'))
+      return Promise.resolve(
+        jsonResponse({
+          items: [
+            captureBody('cap_unsaved', {
+              state: 'completed',
+              review_revision: 0,
+              started_at: new Date(Date.now() - 60_000).toISOString(),
+            }),
+          ],
+          next_cursor: null,
+        }),
+      );
+    if (url.includes('/batches')) return Promise.resolve(jsonResponse({ items: [] }));
+    return Promise.resolve(jsonResponse({}));
+  });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  act(() => result.current.startRecording());
+  await waitFor(() => expect(result.current.phase).toBe('recording'));
+  act(() => result.current.stopRecording());
+  await waitFor(() => expect(result.current.phase).toBe('result'), { timeout: 4000 });
+  // A different, older take is still on offer in the recovery banner.
+  await waitFor(() =>
+    expect(result.current.unsavedTake?.captureId).toBe('cap_unsaved'),
+  );
+
+  act(() => result.current.discardUnsavedTake());
+  expect(result.current.unsavedDiscard.kind).toBe('discard');
+
+  await act(async () => {
+    result.current.openDiscardModal();
+  });
+  await waitFor(() => expect(result.current.episodeDiscard.kind).toBe('discard'));
+  expect(result.current.unsavedDiscard.kind).toBeNull();
 });
 
 test('dismissing an unsaved take hides it (Later)', async () => {
-  unsavedRunsFetch(() => true);
+  unsavedCapturesFetch(() => true);
   const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
     wrapper,
   });
-  await waitFor(() => expect(result.current.unsavedTake?.runId).toBe('run_unsaved'));
+  await waitFor(() =>
+    expect(result.current.unsavedTake?.captureId).toBe('cap_unsaved'),
+  );
   act(() => result.current.dismissUnsavedTake());
   expect(result.current.unsavedTake).toBeNull();
 });
@@ -2422,22 +2812,34 @@ test('a failed stop stays in SAVING with a working Retry stop', async () => {
   const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
     if (url.includes('/record/start')) {
-      return Promise.resolve(jsonResponse({ run_id: 'run_s', state: 'recording' }));
+      return Promise.resolve(jsonResponse(captureBody('cap_s')));
     }
     if (url.includes('/record/stop')) {
       return failStop
         ? Promise.resolve(
             jsonResponse({ error: { code: 'io', message: 'disk busy' } }, 500),
           )
-        : Promise.resolve(jsonResponse({ run_id: 'run_s', state: 'completed' }));
+        : Promise.resolve(jsonResponse(captureBody('cap_s', { state: 'completed' })));
     }
     if (url.includes('/record/status')) {
-      // While the stop is failing the recorder is still recording; once it
-      // succeeds the run finalises with a clean integrity.
+      // While the stop is failing the recorder is still recording (and still
+      // names the capture live); once it succeeds the capture finalises with a
+      // clean integrity and an empty live set.
       return Promise.resolve(
         failStop
-          ? jsonResponse({ run_id: 'run_s', state: 'recording' })
-          : jsonResponse({ run_id: 'run_s', state: 'completed', integrity: 'ok' }),
+          ? jsonResponse({
+              capture_id: 'cap_s',
+              run_id: 'run_cap_s',
+              state: 'recording',
+              live_capture_ids: ['cap_s'],
+            })
+          : jsonResponse({
+              capture_id: 'cap_s',
+              run_id: 'run_cap_s',
+              state: 'completed',
+              live_capture_ids: [],
+              integrity: 'ok',
+            }),
       );
     }
     return Promise.resolve(jsonResponse({}));
@@ -2472,8 +2874,9 @@ test('a failed stop stays in SAVING with a working Retry stop', async () => {
 // ---------------------------------------------------------------------------
 
 function preArmFetch({
+  // A fresh recorder sits in `created`; there is no `idle` on the wire (§10).
   preArm = true,
-  recorderState = 'idle',
+  recorderState = 'created',
   statusExtra = {} as Record<string, unknown>,
 } = {}) {
   return vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
@@ -2485,12 +2888,23 @@ function preArmFetch({
     }
     if (url.includes('/record/prepare')) {
       return Promise.resolve(
-        jsonResponse({ run_id: 'run_armed', state: 'armed', disarm_at: null }),
+        jsonResponse({
+          run_id: 'run_armed',
+          capture_id: 'cap_armed',
+          state: 'armed',
+          disarm_at: null,
+        }),
       );
     }
     if (url.includes('/record/status')) {
       return Promise.resolve(
-        jsonResponse({ run_id: null, state: recorderState, ...statusExtra }),
+        jsonResponse({
+          run_id: null,
+          capture_id: null,
+          state: recorderState,
+          live_capture_ids: [],
+          ...statusExtra,
+        }),
       );
     }
     return Promise.resolve(jsonResponse({}));
@@ -2539,7 +2953,11 @@ test('does NOT pre-arm when recording.pre_arm is off', async () => {
 test('does NOT pre-arm while the server reports an active recording', async () => {
   const fetchMock = preArmFetch({
     recorderState: 'recording',
-    statusExtra: { run_id: 'run_other' },
+    statusExtra: {
+      capture_id: 'cap_other',
+      run_id: 'run_other',
+      live_capture_ids: ['cap_other'],
+    },
   });
   renderHook(() => useBatchMachine({ defaultTopics: ['/tf'] }), { wrapper });
   await waitFor(() =>
@@ -2557,6 +2975,8 @@ test('preArmed reflects the server-reported armed state, never a sent prepare', 
   preArmFetch({
     recorderState: 'armed',
     statusExtra: {
+      capture_id: 'cap_armed',
+      live_capture_ids: ['cap_armed'],
       arming: {
         active: true,
         matched_topics: ['/tf'],

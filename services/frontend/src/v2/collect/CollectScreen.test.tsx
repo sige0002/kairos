@@ -6,7 +6,6 @@ import { useUiStore } from '../../store/uiStore';
 import { CollectScreen } from './CollectScreen';
 import { __resetBatchStore } from './useBatchMachine';
 import { __resetCameraStore } from './cameraStore';
-import { __clearEpisodeOutcomes } from '../episodeBridge';
 import { __resetPlansStore, clonePlans, getPlans, setPlans } from '../plans';
 
 const CONFIG = {
@@ -16,45 +15,88 @@ const CONFIG = {
   schemas: {},
 };
 
-function mockFetch(recordStartBody: Record<string, unknown>) {
+// The capture the screen records in these tests. `run_id` rides along because it
+// is what the operator reads on disk (§1) — every call keys on CAP_1.
+const CAP_1 = '0192f0aa-1111-7000-8000-000000000001';
+const RUN_1 = 'run_20260802_101500';
+
+/** A `Capture` as /record/start, /record/stop and /captures/{id} return it. */
+function capture(extra: Record<string, unknown> = {}) {
+  return {
+    capture_id: CAP_1,
+    run_id: RUN_1,
+    state: 'recording',
+    review_status: 'pending',
+    review_revision: 0,
+    ...extra,
+  };
+}
+
+function mockFetch(startExtra: Record<string, unknown> = {}) {
   return vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
     if (url.includes('/config')) return Promise.resolve(jsonResponse(CONFIG));
-    if (url.includes('/record/start')) return Promise.resolve(jsonResponse(recordStartBody));
-    if (url.includes('/record/stop')) return Promise.resolve(jsonResponse({ run_id: 'run_1', state: 'completed' }));
+    if (url.includes('/record/start')) return Promise.resolve(jsonResponse(capture(startExtra)));
+    if (url.includes('/record/stop'))
+      return Promise.resolve(jsonResponse(capture({ state: 'completed' })));
     return Promise.resolve(jsonResponse({}));
   });
 }
 
 // Like mockFetch but with a controllable GET /record/status body — the real
-// source of the arming note + integrity banner. The status reports idle UNTIL
-// the operator starts here, so the test's own start flow isn't mistaken for a
-// takeover (a server recording we didn't start); afterwards it returns `status`.
+// source of the arming note + integrity banner. Before the operator starts here
+// the recorder answers `created` with an EMPTY live set (a fresh recorder has no
+// `idle` state, §10), so the test's own start flow is never mistaken for a
+// takeover; afterwards it returns `status`.
 function mockFetchWithStatus(opts: {
   start?: Record<string, unknown>;
   status?: Record<string, unknown>;
-  /** Body for the result-panel `GET /runs/{id}` quick_check poll (F1). */
+  /** Body for the result-panel `GET /captures/{id}` quick_check poll (F1). */
   detail?: Record<string, unknown>;
+  /** Status/body for `PATCH /captures/{id}/review`. */
+  review?: { status: number; body: Record<string, unknown> };
 }) {
-  const start = opts.start ?? { run_id: 'run_1', state: 'recording' };
   let started = false;
-  return vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+  return vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     const url = String(input);
+    const method = (init?.method ?? 'GET').toUpperCase();
     if (url.includes('/record/status'))
       return Promise.resolve(
-        jsonResponse(started ? (opts.status ?? {}) : { run_id: null, state: 'idle' }),
+        jsonResponse(
+          started
+            ? { capture_id: CAP_1, run_id: RUN_1, live_capture_ids: [], ...(opts.status ?? {}) }
+            : { capture_id: null, run_id: null, state: 'created', live_capture_ids: [] },
+        ),
       );
     if (url.includes('/record/start')) {
       started = true;
-      return Promise.resolve(jsonResponse(start));
+      return Promise.resolve(jsonResponse(capture(opts.start ?? {})));
     }
-    if (url.includes('/record/stop')) return Promise.resolve(jsonResponse({ run_id: 'run_1', state: 'completed' }));
+    if (url.includes('/record/stop'))
+      return Promise.resolve(jsonResponse(capture({ state: 'completed' })));
     if (url.includes('/config')) return Promise.resolve(jsonResponse(CONFIG));
-    // GET /runs/{id} detail — the result-panel quick_check poll (F1).
-    if (/\/runs\/[^/?]+/.test(url))
+    if (url.includes('/batches') && method === 'POST')
       return Promise.resolve(
-        jsonResponse({ run_id: 'run_1', state: 'completed', ...(opts.detail ?? {}) }),
+        jsonResponse({ ...(init?.body ? JSON.parse(String(init.body)) : {}), batch_id: 'batch_1', batch_seq: 1, status: 'active' }, 201),
       );
+    if (url.includes('/batches')) return Promise.resolve(jsonResponse({ items: [] }));
+    if (url.includes('/review') && method === 'PATCH') {
+      const r = opts.review;
+      if (r) return Promise.resolve(jsonResponse(r.body, r.status));
+      return Promise.resolve(
+        jsonResponse(capture({ state: 'completed', review_revision: 1 })),
+      );
+    }
+    if (url.includes('/delete') && method === 'POST')
+      return Promise.resolve(jsonResponse(capture({ state: 'discarded' })));
+    // GET /captures/{id} — the result-panel quick_check poll (F1) and the
+    // capture the discard dialog states the size of.
+    if (/\/captures\/[^/?]+$/.test(url) && method === 'GET')
+      return Promise.resolve(
+        jsonResponse(capture({ state: 'completed', ...(opts.detail ?? {}) })),
+      );
+    if (url.includes('/captures'))
+      return Promise.resolve(jsonResponse({ items: [], next_cursor: null }));
     return Promise.resolve(jsonResponse({}));
   });
 }
@@ -83,9 +125,6 @@ beforeEach(() => {
   // The camera panes live in a module store too — reset so a prior test's panes
   // can't leak into the next CollectScreen render.
   __resetCameraStore();
-  // A confirmed episode now mirrors into the Collect->Review bridge; clear it
-  // between tests so nothing accumulates across cases.
-  __clearEpisodeOutcomes();
   useUiStore.setState({
     activeTab: '',
     sseStatus: 'closed',
@@ -98,7 +137,7 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 test('READY phase: shows the Start recording control and context bar', async () => {
-  mockFetch({ run_id: 'run_1', state: 'recording' });
+  mockFetch();
   renderWithClient(<CollectScreen />);
 
   await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
@@ -111,7 +150,7 @@ test('READY phase: shows the Start recording control and context bar', async () 
 });
 
 test('Start recording arms, then flips to RECORDING once /record/start succeeds', async () => {
-  mockFetch({ run_id: 'run_1', state: 'recording' });
+  mockFetch();
   renderWithClient(<CollectScreen />);
 
   await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
@@ -138,20 +177,30 @@ test('a rejected start shows the failed banner and stays on READY', async () => 
 });
 
 test('Stop recording moves to SAVING and shows the honest finalizing copy', async () => {
-  // The stop hangs and the recorder keeps reporting the run as still recording,
+  // The stop hangs and the recorder keeps reporting the capture as still live,
   // so SAVING persists — proving it waits on the real stop event (D-3), not a
-  // fixed timer. Status is idle until we start (avoids the takeover path).
+  // fixed timer. Before the start the recorder is `created` with an empty live
+  // set (no `idle` on the wire, §10), which keeps this off the takeover path.
   let started = false;
   vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
     if (url.includes('/config')) return Promise.resolve(jsonResponse(CONFIG));
     if (url.includes('/record/start')) {
       started = true;
-      return Promise.resolve(jsonResponse({ run_id: 'run_1', state: 'recording' }));
+      return Promise.resolve(jsonResponse(capture()));
     }
     if (url.includes('/record/status'))
       return Promise.resolve(
-        jsonResponse(started ? { run_id: 'run_1', state: 'recording' } : { run_id: null, state: 'idle' }),
+        jsonResponse(
+          started
+            ? {
+                capture_id: CAP_1,
+                run_id: RUN_1,
+                state: 'recording',
+                live_capture_ids: [CAP_1],
+              }
+            : { capture_id: null, run_id: null, state: 'created', live_capture_ids: [] },
+        ),
       );
     if (url.includes('/record/stop')) return new Promise(() => {}); // never resolves
     return Promise.resolve(jsonResponse({}));
@@ -173,7 +222,7 @@ test('Stop recording moves to SAVING and shows the honest finalizing copy', asyn
 // is now the real quick-check (integrity 'ok' → Good), not a fabricated warning.
 test('a failed task on a clean recording stays good quality; the single Save action reflects the outcome', async () => {
   mockFetchWithStatus({
-    status: { run_id: 'run_1', state: 'completed', integrity: 'ok' },
+    status: { state: 'completed', integrity: 'ok' },
   });
   renderWithClient(<CollectScreen />);
   await driveToResult();
@@ -202,7 +251,7 @@ test('a failed task on a clean recording stays good quality; the single Save act
 // "camera rate dropped". A clean run defaults to Good · auto; the operator can
 // override to Not usable (which becomes the honest 'operator' provenance).
 test('result panel shows honest auto quality and an operator override', async () => {
-  mockFetchWithStatus({ status: { run_id: 'run_1', state: 'completed', integrity: 'ok' } });
+  mockFetchWithStatus({ status: { state: 'completed', integrity: 'ok' } });
   renderWithClient(<CollectScreen />);
   await driveToResult();
 
@@ -224,7 +273,7 @@ test('result panel shows honest auto quality and an operator override', async ()
 // REVIEW — the chip and the banner agree because they share one honest source.
 test('result phase shows the real drop banner and a matching NEEDS REVIEW chip', async () => {
   mockFetchWithStatus({
-    status: { run_id: 'run_1', state: 'completed', integrity: 'dropped', dropped_messages: 1234 },
+    status: { state: 'completed', integrity: 'dropped', dropped_messages: 1234 },
   });
   renderWithClient(<CollectScreen />);
   await driveToResult();
@@ -237,7 +286,7 @@ test('result phase shows the real drop banner and a matching NEEDS REVIEW chip',
 
 test('result phase shows the real "Recording failed" banner when integrity is failed', async () => {
   mockFetchWithStatus({
-    status: { run_id: 'run_1', state: 'failed', integrity: 'failed' },
+    status: { state: 'failed', integrity: 'failed' },
   });
   renderWithClient(<CollectScreen />);
   await driveToResult();
@@ -250,7 +299,7 @@ test('result phase shows the real "Recording failed" banner when integrity is fa
 // run reaches the result with QUICK: GOOD and no banner.
 test('no integrity banner when the run integrity is ok', async () => {
   mockFetchWithStatus({
-    status: { run_id: 'run_1', state: 'completed', integrity: 'ok' },
+    status: { state: 'completed', integrity: 'ok' },
   });
   renderWithClient(<CollectScreen />);
   await driveToResult();
@@ -264,7 +313,7 @@ test('no integrity banner when the run integrity is ok', async () => {
 // though the recorder integrity is 'ok' (the verdict is the authority).
 test('result panel shows the settled quick-check reasons and a NEEDS REVIEW chip', async () => {
   mockFetchWithStatus({
-    status: { run_id: 'run_1', state: 'completed', integrity: 'ok' },
+    status: { state: 'completed', integrity: 'ok' },
     detail: {
       quick_check: {
         verdict: {
@@ -289,8 +338,8 @@ test('result panel shows the settled quick-check reasons and a NEEDS REVIEW chip
 // and never blocks Save.
 test('result panel shows a running note while the quick-check verdict is unsettled', async () => {
   mockFetchWithStatus({
-    status: { run_id: 'run_1', state: 'completed', integrity: 'ok' },
-    // detail omitted -> GET /runs/{id} returns no quick_check (unsettled).
+    status: { state: 'completed', integrity: 'ok' },
+    // detail omitted -> GET /captures/{id} returns no quick_check (unsettled).
   });
   renderWithClient(<CollectScreen />);
   await driveToResult();
@@ -302,11 +351,119 @@ test('result panel shows a running note while the quick-check verdict is unsettl
   expect(screen.getByRole('button', { name: /Save — success/ })).toBeEnabled();
 });
 
+// ---------------------------------------------------------------------------
+// Review save (§4.1) and its two refusals (§12).
+// ---------------------------------------------------------------------------
+
+test('Save PATCHes the capture review with base_revision and the batch stamp', async () => {
+  const fetchSpy = mockFetchWithStatus({ status: { state: 'completed', integrity: 'ok' } });
+  renderWithClient(<CollectScreen />);
+  await driveToResult();
+
+  fireEvent.click(screen.getByTestId('save-episode'));
+  await waitFor(() => expect(screen.getByTestId('stat-recorded')).toHaveTextContent('1'));
+
+  const patch = fetchSpy.mock.calls.find(
+    ([u, i]) => String(u).includes(`/captures/${CAP_1}/review`) && i?.method === 'PATCH',
+  );
+  expect(patch).toBeTruthy();
+  const body = JSON.parse(String((patch![1] as RequestInit).body));
+  // A freshly recorded capture has never been reviewed, so the compare-and-swap
+  // token is 0. No override was made, so quality/quality_source are OMITTED and
+  // the server derives them from its own settled verdict.
+  expect(body.base_revision).toBe(0);
+  expect(body.task_result).toBe('success');
+  expect(body.review_status).toBe('pending');
+  expect(body.index_in_batch).toBe(1);
+  expect('quality' in body).toBe(false);
+  expect('quality_source' in body).toBe(false);
+});
+
+test('an operator quality override rides along with operator provenance', async () => {
+  const fetchSpy = mockFetchWithStatus({ status: { state: 'completed', integrity: 'ok' } });
+  renderWithClient(<CollectScreen />);
+  await driveToResult();
+
+  fireEvent.click(screen.getByRole('button', { name: 'change' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Not usable' }));
+  fireEvent.click(screen.getByTestId('save-episode'));
+  await waitFor(() => expect(screen.getByTestId('stat-recorded')).toHaveTextContent('1'));
+
+  const patch = fetchSpy.mock.calls.find(
+    ([u, i]) => String(u).includes('/review') && i?.method === 'PATCH',
+  );
+  const body = JSON.parse(String((patch![1] as RequestInit).body));
+  expect(body.quality).toBe('not_usable');
+  expect(body.quality_source).toBe('operator');
+  // "Not usable" is the same statement Review's own exclude makes, so the take
+  // is not left sitting in the queue it was just taken out of.
+  expect(body.review_status).toBe('excluded');
+});
+
+test('a 409 review_conflict is surfaced and the episode is NOT counted', async () => {
+  mockFetchWithStatus({
+    status: { state: 'completed', integrity: 'ok' },
+    review: {
+      status: 409,
+      body: {
+        error: {
+          code: 'review_conflict',
+          message: 'This review was edited elsewhere (revision 2, you sent 0).',
+          details: { current_revision: 2 },
+        },
+      },
+    },
+  });
+  renderWithClient(<CollectScreen />);
+  await driveToResult();
+
+  fireEvent.click(screen.getByTestId('save-episode'));
+
+  const banner = await screen.findByTestId('save-error');
+  expect(banner).toHaveAttribute('data-error-code', 'review_conflict');
+  expect(banner).toHaveTextContent(/edited elsewhere/);
+  expect(banner).toHaveTextContent(/apply your change again/);
+  // The screen stays on the result panel and claims nothing: no chip, no count.
+  expect(phaseTitle()).toHaveTextContent('Episode 1 result');
+  expect(screen.getByTestId('stat-recorded')).toHaveTextContent('0');
+});
+
+test('a 500 review_sidecar_write_failed says NOTHING was saved, loudly', async () => {
+  mockFetchWithStatus({
+    status: { state: 'completed', integrity: 'ok' },
+    review: {
+      status: 500,
+      body: {
+        error: {
+          code: 'review_sidecar_write_failed',
+          message: 'Could not write record.json: No space left on device.',
+          details: {},
+        },
+      },
+    },
+  });
+  renderWithClient(<CollectScreen />);
+  await driveToResult();
+
+  fireEvent.click(screen.getByTestId('save-episode'));
+
+  const banner = await screen.findByTestId('save-error');
+  expect(banner).toHaveAttribute('data-error-code', 'review_sidecar_write_failed');
+  // The destructive framing is the point (§12): a quiet note here reads as a
+  // successful save to an operator who is already reaching for the next take.
+  expect(banner).toHaveTextContent('Not saved');
+  expect(banner).toHaveTextContent(/NOTHING was saved/);
+  expect(screen.getByTestId('stat-recorded')).toHaveTextContent('0');
+  // It stays until the operator dismisses it — never on a timer.
+  fireEvent.click(screen.getByTestId('save-error-dismiss'));
+  await waitFor(() => expect(screen.queryByTestId('save-error')).toBeNull());
+});
+
 test('recording phase shows the real arming matched/missing note from /record/status', async () => {
   mockFetchWithStatus({
     status: {
-      run_id: 'run_1',
       state: 'recording',
+      live_capture_ids: [CAP_1],
       arming: {
         active: false,
         matched_topics: ['/a', '/b', '/c'],
@@ -329,7 +486,7 @@ test('recording phase shows the real arming matched/missing note from /record/st
 // Monitor (where the picker lives). CONFIG has no default_topics and the store
 // is not customized → "all topics".
 test('ContextBar shows the REC topics chip and navigates to Monitor on click', async () => {
-  mockFetch({ run_id: 'run_1', state: 'recording' });
+  mockFetch();
   renderWithClient(<CollectScreen />);
   await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
 
@@ -339,28 +496,75 @@ test('ContextBar shows the REC topics chip and navigates to Monitor on click', a
   await waitFor(() => expect(useUiStore.getState().activeTab).toBe('monitor'));
 });
 
-// Real Discard: the result-phase "Discard & re-record" opens a confirmation
-// modal, then DELETE /api/v1/runs/{run_id} actually removes the run before the
-// local re-record reset (v1 LiveTab Keep/Discard parity).
-test('Discard & re-record confirms, then deletes the run via DELETE /runs/{id}', async () => {
+// Discard (§7 + §12): the result-phase "Discard & re-record" opens the SHARED
+// discard dialog — irreversibility stated, reason REQUIRED — and confirming
+// POSTs /captures/{capture_id}/delete with kind 'discard' before the local
+// re-record reset.
+test('Discard & re-record runs the shared discard, keyed on capture_id', async () => {
   const fetchSpy = mockFetchWithStatus({
-    status: { run_id: 'run_1', state: 'completed', integrity: 'ok', bytes: 1048576 },
+    status: { state: 'completed', integrity: 'ok' },
+    detail: { bytes: 1048576 },
   });
   renderWithClient(<CollectScreen />);
   await driveToResult();
 
   fireEvent.click(screen.getByRole('button', { name: /Discard & re-record this episode/ }));
-  const confirm = await screen.findByRole('button', { name: /Discard permanently/ });
+  const dialog = await screen.findByTestId('discard-dialog');
+  // The shared dialog states what cannot be undone and how much is going.
+  expect(within(dialog).getByTestId('discard-irreversible')).toBeInTheDocument();
+  expect(within(dialog).getByTestId('discard-scope')).toHaveTextContent('1.0 MB');
+
+  // Single-host deploy (/transfer/status has no `available`) → no robot-copy note.
+  expect(within(dialog).queryByTestId('discard-split-note')).toBeNull();
+
+  // No reason typed → the confirm is refused up front rather than by a 400.
+  const confirm = screen.getByTestId('discard-confirm');
+  expect(confirm).toBeDisabled();
+  fireEvent.change(screen.getByTestId('discard-reason'), {
+    target: { value: 'gripper never closed' },
+  });
   fireEvent.click(confirm);
 
   await waitFor(() => {
     const del = fetchSpy.mock.calls.find(
-      ([u, i]) => String(u).includes('/runs/run_1') && i?.method === 'DELETE',
+      ([u, i]) =>
+        String(u).includes(`/captures/${CAP_1}/delete`) && i?.method === 'POST',
     );
     expect(del).toBeTruthy();
+    expect(JSON.parse(String((del![1] as RequestInit).body))).toEqual({
+      kind: 'discard',
+      reason: 'gripper never closed',
+    });
   });
-  // After a successful delete the batch re-arms for a fresh take of this episode.
+  // After a successful discard the batch re-arms for a fresh take.
   await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
+});
+
+// §12: on a split deployment the discard removes only the copy on this machine,
+// and the dialog says so unprompted. Letting an operator believe the robot's
+// copy went too is exactly the failure that line exists to prevent.
+test('on a split deployment the discard dialog says a robot copy may remain', async () => {
+  const base = mockFetchWithStatus({
+    status: { state: 'completed', integrity: 'ok' },
+  });
+  // /transfer/status answers `available` only where the pull channel exists —
+  // which is the split-mode signal.
+  const inner = base.getMockImplementation()!;
+  base.mockImplementation((input, init) => {
+    if (String(input).includes('/transfer/status'))
+      return Promise.resolve(jsonResponse({ available: true, auto_pull_on_save: true }));
+    return inner(input, init);
+  });
+  renderWithClient(<CollectScreen />);
+  await driveToResult();
+
+  fireEvent.click(screen.getByRole('button', { name: /Discard & re-record this episode/ }));
+  const dialog = await screen.findByTestId('discard-dialog');
+  await waitFor(() =>
+    expect(within(dialog).getByTestId('discard-split-note')).toHaveTextContent(
+      /a copy may still exist on the robot/i,
+    ),
+  );
 });
 
 test('Robot cell lists real robots and switches via POST /config/select', async () => {
@@ -406,7 +610,7 @@ test('Robot cell lists real robots and switches via POST /config/select', async 
 // ---------------------------------------------------------------------------
 
 test('a project added to the shared store appears in the Collect project picker', async () => {
-  mockFetch({ run_id: 'run_1', state: 'recording' });
+  mockFetch();
   // Simulate a Settings edit: add a project to the shared catalog.
   setPlans([...clonePlans(getPlans()), { name: 'Warehouse Sort', tasks: [{ name: 'Sort', conditions: ['Bin: A'] }] }]);
   renderWithClient(<CollectScreen />);
@@ -421,7 +625,7 @@ test('a project added to the shared store appears in the Collect project picker'
 // string and flows it into the real /record/start body — without adding it to
 // the shared plans catalog.
 test('a custom task typed via the Task picker flows into the /record/start body', async () => {
-  const fetchSpy = mockFetch({ run_id: 'run_1', state: 'recording' });
+  const fetchSpy = mockFetch();
   vi.spyOn(window, 'prompt').mockReturnValue('Fold the towel');
   renderWithClient(<CollectScreen />);
   await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
@@ -442,7 +646,7 @@ test('a custom task typed via the Task picker flows into the /record/start body'
 });
 
 test('Collect degrades gracefully when its selected project is absent from the store', async () => {
-  mockFetch({ run_id: 'run_1', state: 'recording' });
+  mockFetch();
   // The machine seeded its project from the default catalog; now replace the
   // catalog so that selection no longer exists (as if it were removed/renamed).
   setPlans([{ name: 'Only Project', tasks: [{ name: 'Only Task', conditions: ['Only Cond'] }] }]);
@@ -457,7 +661,7 @@ test('Collect degrades gracefully when its selected project is absent from the s
 });
 
 test('Set menu → Reset set on an empty set is a no-op (honest wording)', async () => {
-  mockFetch({ run_id: 'run_1', state: 'recording' });
+  mockFetch();
   renderWithClient(<CollectScreen />);
   await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
   // No recording yet → no server set → the Set cell shows an honest, muted
@@ -483,17 +687,38 @@ test('Set menu → Reset set on an empty set is a no-op (honest wording)', async
 // D-1 takeover: a server recording this screen isn't driving replaces READY.
 // ---------------------------------------------------------------------------
 
+const CAP_EXT = '0192f0aa-2222-7000-8000-00000000ffff';
+
 test('a server recording surfaces the takeover card instead of READY, and Stop confirms first', async () => {
   vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
     if (url.includes('/config')) return Promise.resolve(jsonResponse(CONFIG));
-    if (url.includes('/runs/run_ext'))
+    if (url.includes(`/captures/${CAP_EXT}`))
       return Promise.resolve(
-        jsonResponse({ run_id: 'run_ext', state: 'recording', topics: [{ name: '/a', type: 'x' }], operator: 'other' }),
+        jsonResponse({
+          capture_id: CAP_EXT,
+          run_id: 'run_20260802_090000',
+          state: 'recording',
+          review_status: 'pending',
+          review_revision: 0,
+          topics: [{ name: '/a', type: 'x' }],
+          operator: 'other',
+        }),
       );
+    if (url.includes('/captures'))
+      return Promise.resolve(jsonResponse({ items: [], next_cursor: null }));
     if (url.includes('/record/status'))
+      // `live_capture_ids` names WHICH capture is live; the singular capture_id
+      // would still point here long after a stop (§10), so it is not the key.
       return Promise.resolve(
-        jsonResponse({ run_id: 'run_ext', state: 'recording', started_at: new Date().toISOString(), bytes: 4096 }),
+        jsonResponse({
+          capture_id: CAP_EXT,
+          run_id: 'run_20260802_090000',
+          state: 'recording',
+          live_capture_ids: [CAP_EXT],
+          started_at: new Date().toISOString(),
+          bytes: 4096,
+        }),
       );
     return Promise.resolve(jsonResponse({}));
   });
@@ -501,9 +726,37 @@ test('a server recording surfaces the takeover card instead of READY, and Stop c
 
   await waitFor(() => expect(phaseTitle()).toHaveTextContent('RECORDING IN PROGRESS'));
   expect(screen.getByText(/wasn't started from this screen/)).toBeInTheDocument();
+  // The run_id is shown as the recording's human-readable name (§1).
+  await waitFor(() =>
+    expect(screen.getByText('run_20260802_090000')).toBeInTheDocument(),
+  );
   // The primary action opens a confirmation (use-error guard), not an instant stop.
   fireEvent.click(screen.getByRole('button', { name: /Stop recording/ }));
   expect(await screen.findByText('Stop this recording?')).toBeInTheDocument();
+});
+
+// §10 rev.2.4: a status with NO `live_capture_ids` means the recorder could not
+// be reached. Treating that as "nothing is live" would hand the operator a READY
+// button while a recording may well be running; treating it as a takeover would
+// invent one. Neither: the screen claims no takeover and the Recorder row says
+// it has no answer.
+test('a status missing live_capture_ids claims no takeover and reports no answer', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/config')) return Promise.resolve(jsonResponse(CONFIG));
+    if (url.includes('/captures'))
+      return Promise.resolve(jsonResponse({ items: [], next_cursor: null }));
+    if (url.includes('/record/status'))
+      return Promise.resolve(
+        jsonResponse({ capture_id: CAP_EXT, run_id: 'run_x', state: 'recording' }),
+      );
+    return Promise.resolve(jsonResponse({}));
+  });
+  renderWithClient(<CollectScreen />);
+
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
+  expect(screen.queryByText('RECORDING IN PROGRESS')).toBeNull();
+  await waitFor(() => expect(screen.getByText('no answer')).toBeInTheDocument());
 });
 
 // ---------------------------------------------------------------------------
@@ -514,13 +767,18 @@ test('an unsaved completed take shows the recovery banner with Label / Discard /
   vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
     if (url.includes('/config')) return Promise.resolve(jsonResponse(CONFIG));
-    if (url.includes('/runs'))
+    if (url.includes('/captures'))
+      // `review_revision: 0` is the server's own "never reviewed" (§4.1) — the
+      // browser-local mirror that used to answer this question is gone.
       return Promise.resolve(
         jsonResponse({
           items: [
             {
-              run_id: 'run_u',
+              capture_id: '0192f0aa-3333-7000-8000-0000000000aa',
+              run_id: 'run_20260802_080000',
               state: 'completed',
+              review_status: 'pending',
+              review_revision: 0,
               started_at: new Date(Date.now() - 60_000).toISOString(),
               ended_at: new Date().toISOString(),
             },
@@ -549,7 +807,7 @@ test('an unsaved completed take shows the recovery banner with Label / Discard /
 // ---------------------------------------------------------------------------
 
 test('focus follows the phase — Start on ready, Save on result (no focus falls to body)', async () => {
-  mockFetchWithStatus({ status: { run_id: 'run_1', state: 'completed', integrity: 'ok' } });
+  mockFetchWithStatus({ status: { state: 'completed', integrity: 'ok' } });
   renderWithClient(<CollectScreen />);
   await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
   await waitFor(() =>
@@ -563,7 +821,7 @@ test('focus follows the phase — Start on ready, Save on result (no focus falls
 });
 
 test('keyboard shortcuts: R starts and S stops, but typing in an input is ignored', async () => {
-  mockFetch({ run_id: 'run_1', state: 'recording' });
+  mockFetch();
   renderWithClient(<CollectScreen />);
   await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
 
@@ -584,7 +842,7 @@ test('keyboard shortcuts: R starts and S stops, but typing in an input is ignore
 });
 
 test('the ? shortcut opens the keyboard-shortcuts sheet', async () => {
-  mockFetch({ run_id: 'run_1', state: 'recording' });
+  mockFetch();
   renderWithClient(<CollectScreen />);
   await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
   fireEvent.keyDown(document.body, { key: '?' });

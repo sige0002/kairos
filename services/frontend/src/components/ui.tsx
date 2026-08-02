@@ -125,13 +125,14 @@ export function Badge({
   dot = false,
   children,
   className,
+  ...rest
 }: {
   tone?: Tone;
   mono?: boolean;
   dot?: boolean;
   children: ReactNode;
   className?: string;
-}) {
+} & React.HTMLAttributes<HTMLSpanElement>) {
   return (
     <span
       className={cn(
@@ -140,6 +141,7 @@ export function Badge({
         BADGE_TONE[tone],
         className,
       )}
+      {...rest}
     >
       {dot && <StatusDot tone={tone} />}
       {children}

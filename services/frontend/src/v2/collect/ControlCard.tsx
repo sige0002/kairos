@@ -6,6 +6,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Card, cn } from '../../components/ui';
 import type { RecordArming } from '../../api/types';
+import { readCaptureError } from '../captures/errors';
 import { formatBytes } from '../review/format';
 import { CARD_PAD } from './compact';
 import {
@@ -184,6 +185,49 @@ function QuickCheckReasons({ reasons }: { reasons: string[] }) {
   );
 }
 
+// A refused review save (contract §12). It is never a passing note: a 500 means
+// NOTHING was saved, and an operator who read "Saved" and walked away would lose
+// the take's labels entirely. The destructive codes get the loud treatment and
+// both stay until dismissed. The block carries the backend's own message plus
+// what to do next, because "409" alone is not actionable.
+function SaveErrorBanner({
+  error,
+  onDismiss,
+}: {
+  error: unknown;
+  onDismiss: () => void;
+}) {
+  const reading = readCaptureError(error, 'review');
+  const destructive = reading.severity === 'destructive';
+  return (
+    <div
+      role="alert"
+      data-testid="save-error"
+      data-error-code={reading.code}
+      className={cn(
+        'flex flex-col gap-1 rounded-control px-3 py-2.5 text-[12px]',
+        destructive
+          ? 'border-2 border-red-400 bg-red-50 text-red-900'
+          : 'border border-amber-300 bg-amber-50 text-amber-900',
+      )}
+    >
+      <span className="text-[10.5px] font-semibold uppercase tracking-[0.09em]">
+        {destructive ? 'Not saved' : 'Save refused'}
+      </span>
+      <span className="font-semibold">{reading.message}</span>
+      {reading.guidance && <span>{reading.guidance}</span>}
+      <button
+        type="button"
+        onClick={onDismiss}
+        data-testid="save-error-dismiss"
+        className="self-start text-[11.5px] font-semibold underline"
+      >
+        Dismiss
+      </button>
+    </div>
+  );
+}
+
 // One "Label : value" row in the takeover card (D-1). Values are real recorder
 // data; missing ones render "—" (never fabricated).
 function FieldRow({
@@ -288,7 +332,9 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
             : "A recording is running on this robot — it wasn't started from this screen."}
         </span>
         <div className="flex flex-col gap-1.5 rounded-control border border-gray-200 bg-gray-50 px-3 py-2.5">
-          <FieldRow label="Run" value={takeover.runId} mono />
+          {/* The run_id is the name the operator recognises on disk; it is shown
+              and never used as a key (§1). "—" until the capture loads. */}
+          <FieldRow label="Run" value={takeover.runLabel ?? '—'} mono />
           <div className="flex items-baseline gap-2.5">
             <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
               Elapsed
@@ -541,13 +587,17 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
   if (phase === 'result') {
     const quickGood = machine.autoQuality === 'good';
     const isFail = machine.pendingTask === 'fail';
-    const canConfirm = machine.pendingTask === 'ok' || (isFail && !!machine.failReason);
+    const saving = machine.isSavingReview;
+    const canConfirm =
+      !saving && (machine.pendingTask === 'ok' || (isFail && !!machine.failReason));
     const willComplete = stats.nRecorded + 1 >= machine.targetEpisodes;
-    const saveLabel = isFail
-      ? 'Save — failure'
-      : willComplete
-        ? 'Save — success · finishes set'
-        : 'Save — success';
+    const saveLabel = saving
+      ? 'Saving…'
+      : isFail
+        ? 'Save — failure'
+        : willComplete
+          ? 'Save — success · finishes set'
+          : 'Save — success';
     const effectiveQuality: QualityOverride =
       machine.qualityOverride ?? machine.autoQuality;
     const qualityAuto = machine.qualityOverride == null;
@@ -567,6 +617,17 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
           >
             Episode {stats.epNext} result
           </span>
+          {/* The recording's on-disk name (§1: display only — every call this
+              panel makes keys on the capture_id instead). */}
+          {machine.currentRunLabel && (
+            <span
+              data-testid="result-run-label"
+              className="truncate font-mono text-[11px] text-gray-400"
+              title={machine.currentRunLabel}
+            >
+              {machine.currentRunLabel}
+            </span>
+          )}
           <div className="flex-1" />
           <span
             className={cn(
@@ -711,15 +772,22 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
               {describeTaskOutcome(machine.pendingTask, machine.failReason)}
             </span>
             <span className="text-gray-500">
-              Saved safely — visible in Review either way.
+              Saved onto the recording itself — visible in Review either way.
             </span>
           </div>
+        )}
+        {machine.saveError != null && (
+          <SaveErrorBanner
+            error={machine.saveError}
+            onDismiss={machine.dismissSaveError}
+          />
         )}
         <button
           ref={saveRef}
           type="button"
           onClick={machine.confirmEpisode}
           disabled={!canConfirm}
+          data-testid="save-episode"
           className={cn(
             'h-[46px] rounded-control text-sm font-bold [@media(max-height:860px)]:h-[40px]',
             canConfirm
@@ -732,7 +800,9 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
         <button
           type="button"
           onClick={machine.openDiscardModal}
-          className="h-9 rounded-control border border-gray-200 bg-white text-[12.5px] font-semibold text-gray-500 hover:bg-gray-50 [@media(max-height:860px)]:h-8"
+          disabled={saving}
+          data-testid="discard-episode"
+          className="h-9 rounded-control border border-gray-200 bg-white text-[12.5px] font-semibold text-gray-500 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 [@media(max-height:860px)]:h-8"
         >
           Discard &amp; re-record this episode
         </button>

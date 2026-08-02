@@ -1,67 +1,75 @@
-// Review screen state: fetches real runs, maps them to episodes (mapRuns.ts),
-// and layers the locally-decided state on top — decisions, quality/task
-// overrides, archival, transfer, selection, and the toast. None of this posts
-// back to the orchestrator (there's no Session/Batch/Episode-review backend
-// model yet — Phase 2, mirroring the Collect screen's useBatchMachine.ts note
-// on the same gap). The REAL per-run inspection (detail rows, video, loss,
-// validation, JSON sidecars) lives in RunInspection.tsx, which fetches
-// GET /runs/{id} and drives the real dora_runner job flows.
+// Review screen state: fetches captures, maps them to rows (mapCaptures.ts),
+// and drives the operator's decisions back to the server.
+//
+// Under v2 every decision is a real save. A capture carries its own review, so
+// adopt/exclude and the quality/task overrides all go through the same
+// compare-and-swap endpoint (useReviewSave.ts) rather than living in a session
+// overlay that the next reload forgets. The local state left here is only what
+// IS local: the filters, the selection, and the in-flight optimistic value that
+// is reverted the moment a save is refused.
+//
+// Two v1 concepts are gone with their endpoints. "Export ready" moved
+// recordings into a dataset directory; §6 abolished the directory, so dataset
+// membership is now the Datasets screen's job. And "archive" here was an
+// internal name for Exclude — a review label, never a deletion — while
+// `POST /captures/{id}/archive` is a real archive that copies bytes out and
+// removes the source. Keeping the old name next to the new endpoint would be
+// the most dangerous kind of familiar.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiDelete, apiGet, apiPost } from '../../api/client';
+import { apiGet, apiPost } from '../../api/client';
+import { listAllCaptures } from '../../api/captures';
+import { listBatches } from '../../api/batches';
 import { queryKeys } from '../../api/queryKeys';
 import type {
-  DatasetExportSummary,
-  EpisodePatchRequest,
-  EpisodeQuality,
-  EpisodeReviewStatus,
-  EpisodeTaskResult,
-  Page,
-  RetentionInfo,
-  RunSummary,
-} from '../../api/types';
-import { useUiStore } from '../../store/uiStore';
-import { patchEpisode, removeEpisodeOutcome } from '../episodeBridge';
-import { mapRunsToEpisodes } from './mapRuns';
-import { initialTransferSlot, transferReducer } from './transfer';
-import { setSplitMode, useSplitMode } from './splitMode';
-import type {
-  Decision,
-  DecoratedEpisode,
-  EpisodeRow,
+  BatchListResponse,
+  Capture,
   Quality,
-  ReviewLane,
+  RetentionInfo,
   ReviewStatus,
   TaskResult,
+} from '../../api/types';
+import { useUiStore } from '../../store/uiStore';
+import { useCaptureDeletion } from '../captures/useCaptureDeletion';
+import { mapCapturesToEpisodes, type BatchSeqLookup } from './mapCaptures';
+import { initialTransferSlot, transferReducer } from './transfer';
+import { setSplitMode, useSplitMode } from '../captures/splitMode';
+import { useReviewSave, type ReviewSaveState } from './useReviewSave';
+import type {
+  DecoratedEpisode,
+  Decision,
+  DisplayQuality,
+  DisplayTaskResult,
+  EpisodeRow,
+  ReviewLane,
   TransferSlot,
 } from './types';
 
-// Own query key (not queryKeys.runs(cursor)): this screen wants one big page
-// of everything reviewable, a different shape than the Recordings list's
-// cursor-paginated fetch, so it doesn't share that cache entry.
-const REVIEW_RUNS_KEY = ['runs', 'review-list'] as const;
-const REVIEW_PAGE_LIMIT = 200;
+/** Review's own fetch scope: one sweep of everything reviewable, a different
+ *  shape from any per-page list, so it gets its own cache entry. */
+const REVIEW_SCOPE = 'review';
 
-const QUALITY_ORDER: Quality[] = ['Good', 'Needs review', 'Not usable'];
+const QUALITY_ORDER: DisplayQuality[] = ['Good', 'Needs review', 'Not usable'];
 
-// Default work-queue order: NEEDS CHECK first (exceptions), then READY, EXCLUDED.
+// Default work-queue order: NEEDS CHECK first (the exceptions), then READY,
+// then EXCLUDED.
 const LANE_ORDER: Record<ReviewLane, number> = {
   needs_check: 0,
   ready: 1,
   excluded: 2,
 };
 
-// ---- Review display value → Phase 2 server enum (for PATCH /episodes) ------
-function toServerQuality(q: Quality): EpisodeQuality {
+// ---- display vocabulary -> the server enums the API takes ------------------
+function toServerQuality(q: DisplayQuality): Quality {
   if (q === 'Needs review') return 'needs_review';
   if (q === 'Not usable') return 'not_usable';
   return 'good';
 }
-function toServerTask(t: TaskResult): EpisodeTaskResult {
+function toServerTask(t: DisplayTaskResult): TaskResult {
   return t === 'Failure' ? 'failure' : 'success';
 }
-function toServerReview(d: Decision): EpisodeReviewStatus {
+function toServerReview(d: Decision): ReviewStatus {
   if (d === 'adopted') return 'adopted';
   if (d === 'excluded') return 'excluded';
   return 'pending';
@@ -75,13 +83,13 @@ export interface ReviewState {
   isError: boolean;
   errorMessage: string | null;
 
-  rows: DecoratedEpisode[]; // visible (NEEDS CHECK → READY → EXCLUDED, newest-first)
+  rows: DecoratedEpisode[];
   /** Count of NEEDS CHECK exceptions — the operator's work queue. */
   nNeedsCheck: number;
-  hasArchived: boolean;
-  nArchived: number;
-  showArchived: boolean;
-  toggleArchived: () => void;
+  hasExcluded: boolean;
+  nExcluded: number;
+  showExcluded: boolean;
+  toggleExcluded: () => void;
 
   search: string;
   setSearch: (v: string) => void;
@@ -90,155 +98,111 @@ export interface ReviewState {
   operatorOptions: string[];
   clearFilters: () => void;
 
-  // ---- batch filter + batch-level bulk decisions (blast-radius follow-up) --
-  /** Active batch filter (server batch_id), or null. Toggled by clicking a
-   *  row's batch chip; rows without a server batch can't be filtered to. */
+  // ---- batch filter + batch-level bulk decisions --------------------------
   batchFilter: string | null;
-  /** Display label ("MM/DD · #N") of the filtered batch (null when inactive). */
   batchFilterLabel: string | null;
-  /** Toggle the filter: same batch again (or null) clears it. */
   toggleBatchFilter: (batchId: string | null) => void;
-  /** Rows of the filtered batch not yet excluded — what "Exclude batch" hits. */
   batchExcludable: DecoratedEpisode[];
-  /** Excluded rows of the filtered batch — what "Return batch" restores. */
   batchExcluded: DecoratedEpisode[];
   requestExcludeBatch: () => void;
   excludeBatchOpen: boolean;
   excludeBatchRunning: boolean;
   excludeBatchDone: number;
-  excludeBatchFailures: { runId: string; error: string }[];
+  excludeBatchFailures: { captureId: string; error: string }[];
   confirmExcludeBatch: () => void;
   cancelExcludeBatch: () => void;
-  /** Reversible counterpart: every excluded row of the batch → pending. */
   returnBatchToReview: () => void;
 
-  selectedRunId: string | null;
-  select: (runId: string) => void;
+  selectedCaptureId: string | null;
+  select: (captureId: string) => void;
   selected: DecoratedEpisode | undefined;
-  /** Count of the operator's own quality/task overrides on the selected run
-   *  this session — the real "override history" the detail panel surfaces. */
-  selectedOverrideCount: number;
 
-  requestArchive: (runId: string) => void;
-  pendingArchiveEp: number | null;
-  confirmArchive: () => void;
-  cancelArchive: () => void;
+  /** Exclude / restore one capture. Reversible — a review label, not a
+   *  deletion; the recording stays exactly where it is. */
+  requestExclude: (captureId: string) => void;
+  pendingExcludeEp: number | null;
+  confirmExclude: () => void;
+  cancelExclude: () => void;
 
-  // ---- physical delete (two-step: only on Excluded episodes) --------------
-  /** The excluded episodes eligible for permanent deletion (kept on disk). */
+  // ---- removal (§7): two separate intents, never one control -------------
+  /** Excluded captures — the set the bulk controls act on. */
   excludedRows: DecoratedEpisode[];
-  /** Single delete: open the confirm for one excluded run. */
-  requestDelete: (runId: string) => void;
-  pendingDeleteRow: DecoratedEpisode | null;
-  deleting: boolean;
-  deleteError: string | null;
-  confirmDelete: () => void;
-  cancelDelete: () => void;
-  /** Bulk delete of every excluded episode. */
-  requestBulkDelete: () => void;
-  bulkDeleteOpen: boolean;
-  bulkRunning: boolean;
-  bulkDone: number;
-  bulkFailures: { runId: string; error: string }[];
-  confirmBulkDelete: () => void;
-  cancelBulkDelete: () => void;
+  /** "Discard (not uploaded)": irreversible, reason required. */
+  requestDiscard: (captureIds: string[]) => void;
+  /** "Delete": the ordinary removal. */
+  requestDelete: (captureIds: string[]) => void;
+  deletion: ReturnType<typeof useCaptureDeletion>;
 
-  // ---- export READY → Datasets (exception-review, one click) --------------
-  /** READY AND 'completed' — the runs "Export ready (n)" will actually move
-   *  (respects the include-failed toggle). */
-  readyExportable: DecoratedEpisode[];
-  /** READY but not 'completed' — listed as skipped (with the reason). */
-  readySkipped: DecoratedEpisode[];
-  /** Include labeled task-failures in the export set (default true). */
-  includeFailed: boolean;
-  setIncludeFailed: (v: boolean) => void;
-  requestExportReady: () => void;
-  exportReadyOpen: boolean;
-  exportRunning: boolean;
-  exportDone: number;
-  exportFailures: { runId: string; error: string }[];
-  confirmExportReady: () => void;
-  cancelExportReady: () => void;
-
-  /** Resolve a NEEDS CHECK exception into READY (server: review_status adopted). */
+  /** Resolve a NEEDS CHECK exception into READY (server: adopted). */
   markOk: () => void;
   decide: (d: Decision) => void;
   cycleFinalQuality: () => void;
   cycleTaskResult: () => void;
+  /** Save state: the conflict banner and the explicit failure notice. */
+  reviewSave: ReviewSaveState;
 
   goMonitor: () => void;
   goValidation: () => void;
 
-  // ---- retention (advisory: surface old, un-exported recordings) ----------
-  // A read-only nudge for the operator to reclaim disk. It NEVER deletes: the
-  // banner applies a filter over the existing rows; deletion still goes through
-  // the confirmed Exclude -> Delete flow above.
-  /** Active RETENTION_DAYS window (0 = feature off, banner never shows). */
+  // ---- retention (advisory only; it never deletes) -----------------------
   retentionDays: number;
-  /** How many loaded runs are old-and-unexported candidates. */
   retentionCandidateCount: number;
-  /** Combined best-effort size of those candidates (bytes). */
   retentionTotalBytes: number;
-  /** Whether the table is currently filtered to the retention candidates. */
   retentionFilterActive: boolean;
-  /** Whether to render the advisory banner (candidates exist + not dismissed,
-   *  or the filter is active so there's always a way back to "show all"). */
   showRetentionBanner: boolean;
-  /** Filter the table down to the retention candidates (banner CTA). */
   applyRetentionFilter: () => void;
-  /** Leave the retention-only view (show every row again). */
   clearRetentionFilter: () => void;
-  /** Dismiss the advisory banner for this session (no state changed). */
   dismissRetentionBanner: () => void;
 
   splitMode: boolean;
-  nUntransferred: number;
-  transferOne: (runId: string) => void;
-  transferAllUntransferred: () => void;
+  nAwaiting: number;
+  transferOne: (captureId: string) => void;
+  transferAllAwaiting: () => void;
 
   toast: string;
 }
 
 export function useReviewState(): ReviewState {
   const queryClient = useQueryClient();
-  const runsQuery = useQuery({
-    queryKey: REVIEW_RUNS_KEY,
-    // Follow the cursor to exhaustion: Review's counts, lanes, and the
-    // "Export ready (n)" set must cover EVERY reviewable run — a single
-    // 200-row page silently dropped the tail once the system grew past it
-    // (persona review R2 / codex). Pages stay at 200 per request; the guard
-    // caps runaway pagination at 50 pages (10k runs) and reports honestly.
-    queryFn: async ({ signal }) => {
-      const items: RunSummary[] = [];
-      let cursor: string | undefined;
-      for (let page = 0; page < 50; page++) {
-        const res = await apiGet<Page<RunSummary>>('/runs', {
-          signal,
-          query: { limit: REVIEW_PAGE_LIMIT, ...(cursor ? { cursor } : {}) },
-        });
-        items.push(...res.items);
-        if (!res.next_cursor) return { items, next_cursor: null };
-        cursor = res.next_cursor;
-      }
-      return { items, next_cursor: cursor ?? null };
-    },
+  const capturesQuery = useQuery({
+    queryKey: queryKeys.captureList(REVIEW_SCOPE),
+    // Follow the cursor to exhaustion: the lane counts and the bulk sets must
+    // cover EVERY reviewable capture, and a single page silently drops the tail
+    // once the catalog outgrows it.
+    queryFn: ({ signal }) => listAllCaptures({}, signal),
   });
-  // Advisory retention candidates (old, un-exported recordings). A separate,
-  // best-effort read: a failure just hides the banner (never blocks Review).
+
+  // Batch numbers for the row labels. A separate, best-effort read: the batch
+  // is display metadata, so a failure costs a "—" in one column rather than
+  // the screen.
+  const batchesQuery = useQuery({
+    queryKey: queryKeys.batches,
+    queryFn: ({ signal }) => listBatches({}, signal),
+  });
+  const batchSeq: BatchSeqLookup = useMemo(() => {
+    const byId = new Map<string, { seq: number | null; createdAt: string | null }>();
+    for (const b of (batchesQuery.data as BatchListResponse | undefined)?.items ?? []) {
+      byId.set(b.batch_id, { seq: b.batch_seq ?? null, createdAt: b.created_at ?? null });
+    }
+    return (batchId) => (batchId ? (byId.get(batchId) ?? null) : null);
+  }, [batchesQuery.data]);
+
+  // Advisory retention candidates. Best-effort: a failure hides the banner and
+  // never blocks Review.
   const retentionQuery = useQuery({
     queryKey: queryKeys.retention,
     queryFn: ({ signal }) => apiGet<RetentionInfo>('/retention', { signal }),
   });
   const retention = retentionQuery.data;
 
-  // ---- split mode: derived from the server's transfer channel ---------------
-  // The importer sidecar (the robot→PC pull channel) exists only on a split
-  // recording-PC deploy, so `available` IS "this is a split deployment". Read
-  // once per session (staleTime ∞) so the test/e2e setSplitMode override isn't
-  // clobbered by a later refetch; on error we keep the default (off) honestly.
+  // ---- split mode: derived from the server's transfer channel -------------
+  // The importer sidecar (the robot->PC pull channel) answers its healthz only
+  // on a split recording-PC deploy, so `available` IS "this is a split
+  // deployment". Read once per session so a test/e2e override is not clobbered
+  // by a later refetch; on error the default (off) stands honestly.
   const splitMode = useSplitMode();
   const transferStatusQuery = useQuery({
-    queryKey: ['transfer', 'status'],
+    queryKey: queryKeys.transferStatus,
     queryFn: ({ signal }) =>
       apiGet<{ available?: boolean }>('/transfer/status', { signal }),
     staleTime: Infinity,
@@ -250,17 +214,20 @@ export function useReviewState(): ReviewState {
     if (typeof transferAvailable === 'boolean') setSplitMode(transferAvailable);
   }, [transferAvailable]);
 
-  const isError = runsQuery.isError;
+  const isError = capturesQuery.isError;
   const errorMessage =
-    runsQuery.error instanceof Error ? runsQuery.error.message : null;
+    capturesQuery.error instanceof Error ? capturesQuery.error.message : null;
   const baseEpisodes: EpisodeRow[] = useMemo(
-    // On error we show an honest empty/error state (EpisodeTable), never a
-    // fabricated demo dataset.
-    () => (runsQuery.data ? mapRunsToEpisodes(runsQuery.data.items) : []),
-    [runsQuery.data],
+    // On error the table shows an honest empty/error state, never a fabricated
+    // dataset.
+    () =>
+      capturesQuery.data
+        ? mapCapturesToEpisodes(capturesQuery.data.items, batchSeq)
+        : [],
+    [capturesQuery.data, batchSeq],
   );
 
-  // ---- toast ----------------------------------------------------------------
+  // ---- toast --------------------------------------------------------------
   const [toast, setToast] = useState('');
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const showToast = useCallback((msg: string) => {
@@ -275,56 +242,26 @@ export function useReviewState(): ReviewState {
     [],
   );
 
-  // ---- Phase 2 server sync (PATCH /episodes) --------------------------------
-  // Adopt/exclude and quality/result overrides are applied optimistically to the
-  // local overlays below, then PATCHed to the server episode when the run has
-  // one. A run WITHOUT a server episode (bridge-only / pre-Phase-2) stays
-  // local-only — nothing to sync. On a failed PATCH we revert the optimistic
-  // change and say so, so the UI never claims a server-save that didn't happen.
-  const syncEpisode = useCallback(
-    (episodeId: string | null, body: EpisodePatchRequest, revert: () => void) => {
-      if (!episodeId) return;
-      patchEpisode(episodeId, body)
-        .then(() => {
-          void queryClient.invalidateQueries({ queryKey: REVIEW_RUNS_KEY });
-        })
-        .catch(() => {
-          revert();
-          showToast('Couldn’t save to the server — change reverted');
-        });
-    },
-    [queryClient, showToast],
-  );
+  const reviewSave = useReviewSave(REVIEW_SCOPE);
 
-  // ---- local overlays: decisions / overrides / archive / transfer ----------
-  const [decisions, setDecisions] = useState<Record<string, Decision>>({});
-  const [overrides, setOverrides] = useState<
-    Record<string, { quality?: Quality; task?: TaskResult }>
+  // ---- optimistic overlay -------------------------------------------------
+  // The ONLY local state over the server's values: what the operator just
+  // clicked, held until the save lands. A refused save deletes the entry, so
+  // the row snaps back to what is actually stored — the screen never keeps
+  // showing a value the server rejected.
+  const [pending, setPending] = useState<
+    Record<
+      string,
+      { quality?: DisplayQuality; task?: DisplayTaskResult; status?: ReviewStatus }
+    >
   >({});
-  // Per-run count of the operator's own override actions this session — real
-  // local history behind the detail panel's "override history" caption.
-  const [overrideCounts, setOverrideCounts] = useState<Record<string, number>>({});
-  const [archivedRunIds, setArchivedRunIds] = useState<Record<string, true>>({});
   const [transfers, setTransfers] = useState<Record<string, TransferSlot>>({});
 
-  // Restore a map entry to a captured prior value (delete when it had none) —
-  // used by the optimistic PATCH reverts below.
-  const restoreOverride = useCallback(
-    (runId: string, prev: { quality?: Quality; task?: TaskResult } | undefined) => {
-      setOverrides((cur) => {
-        const next = { ...cur };
-        if (prev === undefined) delete next[runId];
-        else next[runId] = prev;
-        return next;
-      });
-    },
-    [],
-  );
-  const restoreDecision = useCallback((runId: string, prev: Decision | undefined) => {
-    setDecisions((cur) => {
+  const clearPending = useCallback((captureId: string) => {
+    setPending((cur) => {
+      if (!(captureId in cur)) return cur;
       const next = { ...cur };
-      if (prev === undefined) delete next[runId];
-      else next[runId] = prev;
+      delete next[captureId];
       return next;
     });
   }, []);
@@ -332,46 +269,35 @@ export function useReviewState(): ReviewState {
   const decorated: DecoratedEpisode[] = useMemo(
     () =>
       baseEpisodes.map((e) => {
-        const ov = overrides[e.runId];
-        const isArchived = !!archivedRunIds[e.runId];
-        const decision = decisions[e.runId] ?? null;
-        // The status chip: a session decision wins, then the server episode's
-        // review_status, then 'pending'. ('review' = keep-in-review = pending.)
-        const effectiveReviewStatus: ReviewStatus =
-          isArchived || decision === 'excluded'
-            ? 'excluded'
-            : decision === 'adopted'
-              ? 'adopted'
-              : decision === 'review'
-                ? 'pending'
-                : (e.reviewStatus ?? 'pending');
-        const effectiveQuality = ov?.quality ?? e.quality;
+        const p = pending[e.captureId];
+        const effectiveReviewStatus = p?.status ?? e.reviewStatus;
+        const effectiveQuality = p?.quality ?? e.quality;
+        const isExcluded = effectiveReviewStatus === 'excluded';
         // Exception-review lane: READY by default when the recording is good or
         // the operator confirmed it; NEEDS CHECK is the exception queue (not
         // good AND still pending); EXCLUDED is set aside.
-        const reviewLane: ReviewLane =
-          effectiveReviewStatus === 'excluded'
-            ? 'excluded'
-            : effectiveQuality === 'Good' || effectiveReviewStatus === 'adopted'
-              ? 'ready'
-              : 'needs_check';
+        const reviewLane: ReviewLane = isExcluded
+          ? 'excluded'
+          : effectiveQuality === 'Good' || effectiveReviewStatus === 'adopted'
+            ? 'ready'
+            : 'needs_check';
         return {
           ...e,
           effectiveQuality,
-          effectiveTask: ov?.task ?? e.task,
-          isArchived,
-          decision,
+          effectiveTask: p?.task ?? e.task,
+          isExcluded,
+          decision: null,
           effectiveReviewStatus,
           reviewLane,
-          transferSlot: transfers[e.runId] ?? initialTransferSlot(e.transfer),
+          transferSlot: transfers[e.captureId] ?? initialTransferSlot(e.transfer),
         };
       }),
-    [baseEpisodes, overrides, archivedRunIds, decisions, transfers],
+    [baseEpisodes, pending, transfers],
   );
 
-  // ---- filters / search -----------------------------------------------------
-  const [showArchived, setShowArchived] = useState(false);
-  const toggleArchived = useCallback(() => setShowArchived((v) => !v), []);
+  // ---- filters / search ---------------------------------------------------
+  const [showExcluded, setShowExcluded] = useState(false);
+  const toggleExcluded = useCallback(() => setShowExcluded((v) => !v), []);
   const [search, setSearch] = useState('');
   const [operatorFilter, setOperatorFilter] = useState<string>(ALL_OPERATORS);
   const [batchFilter, setBatchFilter] = useState<string | null>(null);
@@ -379,12 +305,12 @@ export function useReviewState(): ReviewState {
     setBatchFilter((cur) => (batchId === null || cur === batchId ? null : batchId));
   }, []);
 
-  // ---- retention (advisory) -----------------------------------------------
+  // ---- retention (advisory) ----------------------------------------------
   const [retentionFilterActive, setRetentionFilterActive] = useState(false);
   const [retentionBannerDismissed, setRetentionBannerDismissed] = useState(false);
-  const retentionCandidateRunIds = useMemo(() => {
+  const retentionCandidateIds = useMemo(() => {
     const ids = new Set<string>();
-    for (const c of retention?.candidates ?? []) ids.add(c.run_id);
+    for (const c of retention?.candidates ?? []) ids.add(c.capture_id);
     return ids;
   }, [retention]);
   const retentionDays = retention?.days ?? 0;
@@ -410,8 +336,6 @@ export function useReviewState(): ReviewState {
     setRetentionFilterActive(false);
   }, []);
 
-  // Distinct real operators across the loaded runs — the one filter with a real
-  // backing (RunSummary.operator); others in FiltersRail stay display-only.
   const operatorOptions = useMemo(() => {
     const set = new Set<string>();
     for (const e of baseEpisodes) if (e.operator) set.add(e.operator);
@@ -421,31 +345,45 @@ export function useReviewState(): ReviewState {
   const rows = useMemo(() => {
     const q = search.trim().toLowerCase();
     return decorated
-      .filter((r) => showArchived || !r.isArchived)
+      .filter((r) => showExcluded || !r.isExcluded)
       .filter((r) => operatorFilter === ALL_OPERATORS || r.operator === operatorFilter)
       .filter((r) => !batchFilter || r.batchId === batchFilter)
-      .filter((r) => !retentionFilterActive || retentionCandidateRunIds.has(r.runId))
+      .filter((r) => !retentionFilterActive || retentionCandidateIds.has(r.captureId))
       .filter((r) => {
         if (!q) return true;
+        // Both identities are searchable: the operator reads run_id on screen,
+        // but a capture_id pasted from a log or a URL must find its row too.
         return (
-          `#${r.ep}`.toLowerCase().includes(q) || r.runId.toLowerCase().includes(q)
+          `#${r.ep}`.toLowerCase().includes(q) ||
+          r.captureId.toLowerCase().includes(q) ||
+          (r.runId?.toLowerCase().includes(q) ?? false)
         );
       })
-      .sort(
-        (a, b) => LANE_ORDER[a.reviewLane] - LANE_ORDER[b.reviewLane] || b.ep - a.ep,
-      );
+      // Lane first (the work queue), then newest recording first WITHIN a lane.
+      // Deliberately NOT by `ep`: that is index_in_batch, which restarts at 1
+      // in every batch, so ordering by it interleaves two batches into a
+      // meaningless 3,2,2,1,1. started_at is a global ordering; capture_id is
+      // the tiebreak because UUIDv7 is time-ordered, so it agrees with it.
+      .sort((a, b) => {
+        const lane = LANE_ORDER[a.reviewLane] - LANE_ORDER[b.reviewLane];
+        if (lane !== 0) return lane;
+        const ta = a.startedAt ? Date.parse(a.startedAt) : NaN;
+        const tb = b.startedAt ? Date.parse(b.startedAt) : NaN;
+        if (!Number.isNaN(ta) && !Number.isNaN(tb) && ta !== tb) return tb - ta;
+        return b.captureId.localeCompare(a.captureId);
+      });
   }, [
     decorated,
     search,
     operatorFilter,
     batchFilter,
-    showArchived,
+    showExcluded,
     retentionFilterActive,
-    retentionCandidateRunIds,
+    retentionCandidateIds,
   ]);
 
-  const nArchived = useMemo(
-    () => decorated.filter((r) => r.isArchived).length,
+  const nExcluded = useMemo(
+    () => decorated.filter((r) => r.isExcluded).length,
     [decorated],
   );
   const nNeedsCheck = useMemo(
@@ -453,219 +391,123 @@ export function useReviewState(): ReviewState {
     [decorated],
   );
 
-  // ---- selection --------------------------------------------------------
-  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
-  const select = useCallback((runId: string) => setSelectedRunId(runId), []);
+  // ---- selection ----------------------------------------------------------
+  const [selectedCaptureId, setSelectedCaptureId] = useState<string | null>(null);
+  const select = useCallback((captureId: string) => setSelectedCaptureId(captureId), []);
   useEffect(() => {
-    if (selectedRunId || decorated.length === 0) return;
-    const sorted = [...decorated].sort((a, b) => b.ep - a.ep);
-    const first = sorted.find((r) => !r.isArchived) ?? sorted[0];
-    if (first) setSelectedRunId(first.runId);
-  }, [decorated, selectedRunId]);
-  const selected = decorated.find((r) => r.runId === selectedRunId);
-  const selectedOverrideCount = selectedRunId
-    ? (overrideCounts[selectedRunId] ?? 0)
-    : 0;
+    if (selectedCaptureId || decorated.length === 0) return;
+    // Same global newest-first order as the table sort above — `ep` is
+    // batch-scoped and would auto-select an older batch's row mid-table.
+    const sorted = [...decorated].sort((a, b) => {
+      const ta = a.startedAt ? Date.parse(a.startedAt) : NaN;
+      const tb = b.startedAt ? Date.parse(b.startedAt) : NaN;
+      if (!Number.isNaN(ta) && !Number.isNaN(tb) && ta !== tb) return tb - ta;
+      return b.captureId.localeCompare(a.captureId);
+    });
+    const first = sorted.find((r) => !r.isExcluded) ?? sorted[0];
+    if (first) setSelectedCaptureId(first.captureId);
+  }, [decorated, selectedCaptureId]);
+  const selected = decorated.find((r) => r.captureId === selectedCaptureId);
 
-  // ---- archive (with confirm) ------------------------------------------
-  // "Archive" is this file's internal name for what the UI presents as
-  // "Exclude" — non-destructive (persona test P3: the mock's own "delete
-  // candidate" wording read as actual deletion and scared operators away from
-  // the control). Nothing here ever removes a recording; it only reclassifies
-  // quality/decision and hides the row from the default view. Every surface
-  // (tooltip, modal, toast) says so explicitly.
-  const [pendingArchiveRunId, setPendingArchiveRunId] = useState<string | null>(null);
-  const requestArchive = useCallback(
-    (runId: string) => {
-      const row = decorated.find((r) => r.runId === runId);
+  /** Apply one review change optimistically, then save. A refusal drops the
+   *  overlay entry so the row returns to the stored value. */
+  const applyReview = useCallback(
+    async (
+      row: DecoratedEpisode,
+      overlay: { quality?: DisplayQuality; task?: DisplayTaskResult; status?: ReviewStatus },
+      changes: Parameters<ReviewSaveState['save']>[1],
+      options?: Parameters<ReviewSaveState['save']>[2],
+    ) => {
+      setPending((cur) => ({ ...cur, [row.captureId]: { ...cur[row.captureId], ...overlay } }));
+      const result = await reviewSave.save(row.capture, changes, options);
+      clearPending(row.captureId);
+      return result;
+    },
+    [reviewSave, clearPending],
+  );
+
+  // ---- exclude / restore (a review label; the recording is untouched) -----
+  const [pendingExcludeId, setPendingExcludeId] = useState<string | null>(null);
+  const requestExclude = useCallback(
+    (captureId: string) => {
+      const row = decorated.find((r) => r.captureId === captureId);
       if (!row) return;
-      if (row.isArchived) {
-        setArchivedRunIds((prev) => {
-          const next = { ...prev };
-          delete next[runId];
-          return next;
-        });
-        showToast(`Episode #${row.ep} restored — no longer excluded`);
-        // Un-exclude on the server → review_status pending; re-hide on failure.
-        syncEpisode(row.episodeId, { review_status: 'pending' }, () => {
-          setArchivedRunIds((prev) => ({ ...prev, [runId]: true }));
-        });
+      if (row.isExcluded) {
+        void applyReview(row, { status: 'pending' }, { review_status: 'pending' }).then(
+          ({ capture }) => {
+            if (capture) showToast(`Episode #${row.ep} restored — no longer excluded`);
+          },
+        );
         return;
       }
-      setPendingArchiveRunId(runId);
+      setPendingExcludeId(captureId);
     },
-    [decorated, showToast, syncEpisode],
+    [decorated, applyReview, showToast],
   );
-  const confirmArchive = useCallback(() => {
-    if (!pendingArchiveRunId) return;
-    const runId = pendingArchiveRunId;
-    const row = decorated.find((r) => r.runId === runId);
-    const prevOverride = overrides[runId];
-    const prevDecision = decisions[runId];
-    setArchivedRunIds((prev) => ({ ...prev, [runId]: true }));
-    setOverrides((prev) => ({
-      ...prev,
-      [runId]: { ...prev[runId], quality: 'Not usable' },
-    }));
-    setDecisions((prev) => ({ ...prev, [runId]: 'excluded' }));
-    showToast(
-      `Episode #${row?.ep ?? '?'} → Not usable · Excluded (recording kept, restorable)`,
-    );
-    setPendingArchiveRunId(null);
-    // Exclude on the server; revert the whole optimistic change if it fails.
-    syncEpisode(
-      row?.episodeId ?? null,
-      { review_status: 'excluded', quality: 'not_usable', quality_source: 'operator' },
-      () => {
-        setArchivedRunIds((prev) => {
-          const next = { ...prev };
-          delete next[runId];
-          return next;
-        });
-        restoreOverride(runId, prevOverride);
-        restoreDecision(runId, prevDecision);
+  const confirmExclude = useCallback(() => {
+    if (!pendingExcludeId) return;
+    const row = decorated.find((r) => r.captureId === pendingExcludeId);
+    setPendingExcludeId(null);
+    if (!row) return;
+    void applyReview(
+      row,
+      { status: 'excluded', quality: 'Not usable' },
+      {
+        review_status: 'excluded',
+        quality: 'not_usable',
+        quality_source: 'operator',
       },
-    );
-  }, [
-    pendingArchiveRunId,
-    decorated,
-    overrides,
-    decisions,
-    showToast,
-    syncEpisode,
-    restoreOverride,
-    restoreDecision,
-  ]);
-  const cancelArchive = useCallback(() => setPendingArchiveRunId(null), []);
-  const pendingArchiveEp = pendingArchiveRunId
-    ? (decorated.find((r) => r.runId === pendingArchiveRunId)?.ep ?? null)
+    ).then(({ capture }) => {
+      if (capture) {
+        showToast(
+          `Episode #${row.ep} → Not usable · Excluded (recording kept, restorable)`,
+        );
+      }
+    });
+  }, [pendingExcludeId, decorated, applyReview, showToast]);
+  const cancelExclude = useCallback(() => setPendingExcludeId(null), []);
+  const pendingExcludeEp = pendingExcludeId
+    ? (decorated.find((r) => r.captureId === pendingExcludeId)?.ep ?? null)
     : null;
 
-  // ---- physical delete (storage reclamation) ------------------------------
-  // Two-step, and only reachable on an already-Excluded episode: Exclude is a
-  // reversible review label (the recording stays on disk); Delete is the
-  // permanent DELETE /api/v1/runs/{id}. Purge all local overlay state for a
-  // gone run so nothing stale lingers, and drop the selection if it was the
-  // deleted one (the auto-select effect then picks the next episode).
+  // ---- removal (§7) -------------------------------------------------------
+  // Both intents run through the one shared flow, so the wording, the required
+  // reason and the error handling cannot drift apart between screens.
   const excludedRows = useMemo(
-    () => decorated.filter((r) => r.isArchived),
+    () => decorated.filter((r) => r.isExcluded),
     [decorated],
   );
-  const purgeLocal = useCallback((runId: string) => {
-    const drop = <T>(prev: Record<string, T>) => {
-      if (!(runId in prev)) return prev;
-      const next = { ...prev };
-      delete next[runId];
-      return next;
-    };
-    setArchivedRunIds(drop);
-    setDecisions(drop);
-    setOverrides(drop);
-    setTransfers(drop);
-    setOverrideCounts(drop);
-    setSelectedRunId((cur) => (cur === runId ? null : cur));
-    // A deleted run is gone for good — drop its Collect->Review bridge entry too.
-    removeEpisodeOutcome(runId);
-  }, []);
-
-  const [pendingDeleteRunId, setPendingDeleteRunId] = useState<string | null>(null);
-  const [deleting, setDeleting] = useState(false);
-  const [deleteError, setDeleteError] = useState<string | null>(null);
-  const requestDelete = useCallback((runId: string) => {
-    setDeleteError(null);
-    setPendingDeleteRunId(runId);
-  }, []);
-  const cancelDelete = useCallback(() => {
-    if (deleting) return;
-    setPendingDeleteRunId(null);
-    setDeleteError(null);
-  }, [deleting]);
-  const confirmDelete = useCallback(async () => {
-    if (!pendingDeleteRunId) return;
-    const runId = pendingDeleteRunId;
-    const row = decorated.find((r) => r.runId === runId);
-    setDeleting(true);
-    setDeleteError(null);
-    try {
-      await apiDelete(`/runs/${encodeURIComponent(runId)}`);
-      purgeLocal(runId);
-      await queryClient.invalidateQueries({ queryKey: REVIEW_RUNS_KEY });
-      showToast(`Episode #${row?.ep ?? '?'} deleted from disk`);
-      setPendingDeleteRunId(null);
-    } catch (e) {
-      setDeleteError(e instanceof Error ? e.message : 'Delete failed');
-    } finally {
-      setDeleting(false);
-    }
-  }, [pendingDeleteRunId, decorated, purgeLocal, queryClient, showToast]);
-  const pendingDeleteRow = pendingDeleteRunId
-    ? (decorated.find((r) => r.runId === pendingDeleteRunId) ?? null)
-    : null;
-
-  // Bulk delete every excluded episode: sequential DELETEs with live progress,
-  // honestly reporting per-run failures (a failed run stays excluded, not
-  // silently dropped).
-  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
-  const [bulkRunning, setBulkRunning] = useState(false);
-  const [bulkDone, setBulkDone] = useState(0);
-  const [bulkFailures, setBulkFailures] = useState<{ runId: string; error: string }[]>(
-    [],
+  const deletion = useCaptureDeletion({
+    invalidate: [queryKeys.captureList(REVIEW_SCOPE), queryKeys.retention],
+    onDeleted: (ids) => {
+      for (const id of ids) clearPending(id);
+      setSelectedCaptureId((cur) => (cur && ids.includes(cur) ? null : cur));
+    },
+    onToast: showToast,
+  });
+  const capturesById = useMemo(() => {
+    const byId = new Map<string, Capture>();
+    for (const row of decorated) byId.set(row.captureId, row.capture);
+    return byId;
+  }, [decorated]);
+  const resolveTargets = useCallback(
+    (ids: string[]) =>
+      ids.map((id) => capturesById.get(id)).filter((c): c is Capture => !!c),
+    [capturesById],
   );
-  const requestBulkDelete = useCallback(() => {
-    setBulkFailures([]);
-    setBulkDone(0);
-    setBulkDeleteOpen(true);
-  }, []);
-  const cancelBulkDelete = useCallback(() => {
-    if (bulkRunning) return;
-    setBulkDeleteOpen(false);
-    setBulkFailures([]);
-    setBulkDone(0);
-  }, [bulkRunning]);
-  const confirmBulkDelete = useCallback(async () => {
-    const targets = decorated.filter((r) => r.isArchived);
-    if (!targets.length) {
-      setBulkDeleteOpen(false);
-      return;
-    }
-    setBulkRunning(true);
-    setBulkDone(0);
-    setBulkFailures([]);
-    const failures: { runId: string; error: string }[] = [];
-    const succeeded: string[] = [];
-    for (const t of targets) {
-      try {
-        await apiDelete(`/runs/${encodeURIComponent(t.runId)}`);
-        succeeded.push(t.runId);
-      } catch (e) {
-        failures.push({
-          runId: t.runId,
-          error: e instanceof Error ? e.message : 'failed',
-        });
-      }
-      setBulkDone((d) => d + 1);
-      setBulkFailures([...failures]);
-    }
-    succeeded.forEach(purgeLocal);
-    await queryClient.invalidateQueries({ queryKey: REVIEW_RUNS_KEY });
-    setBulkRunning(false);
-    if (failures.length === 0) {
-      showToast(
-        `Deleted ${succeeded.length} excluded episode${succeeded.length === 1 ? '' : 's'} from disk`,
-      );
-      setBulkDeleteOpen(false);
-    } else {
-      // Keep the modal open so the per-run failures stay visible.
-      showToast(`Deleted ${succeeded.length}, ${failures.length} failed`);
-    }
-  }, [decorated, purgeLocal, queryClient, showToast]);
+  const requestDiscard = useCallback(
+    (ids: string[]) => deletion.requestDiscard(resolveTargets(ids)),
+    [deletion, resolveTargets],
+  );
+  const requestDelete = useCallback(
+    (ids: string[]) => deletion.requestDelete(resolveTargets(ids)),
+    [deletion, resolveTargets],
+  );
 
-  // ---- batch-level bulk decisions (blast-radius follow-up, 2026-07-14) -----
+  // ---- batch-level bulk decisions ----------------------------------------
   // The enforcement arm of per-batch validation: a batch that failed its check
-  // must be one action away from staying out of "Export ready (n)". Exclude is
-  // the same semantics as the single-row Exclude (quality→Not usable,
-  // review_status→excluded, recording KEPT on disk, reversible); Return is the
-  // bulk counterpart of the single ↺ restore.
+  // must be one action away from staying out of the ready set. Same semantics
+  // as the single-row Exclude — the recordings are KEPT and it is reversible.
   const batchRows = useMemo(
     () => (batchFilter ? decorated.filter((r) => r.batchId === batchFilter) : []),
     [decorated, batchFilter],
@@ -684,7 +526,7 @@ export function useReviewState(): ReviewState {
   const [excludeBatchRunning, setExcludeBatchRunning] = useState(false);
   const [excludeBatchDone, setExcludeBatchDone] = useState(0);
   const [excludeBatchFailures, setExcludeBatchFailures] = useState<
-    { runId: string; error: string }[]
+    { captureId: string; error: string }[]
   >([]);
   const requestExcludeBatch = useCallback(() => {
     setExcludeBatchFailures([]);
@@ -697,7 +539,7 @@ export function useReviewState(): ReviewState {
     setExcludeBatchFailures([]);
     setExcludeBatchDone(0);
   }, [excludeBatchRunning]);
-  const confirmExcludeBatch = useCallback(async () => {
+  const confirmExcludeBatch = useCallback(() => {
     const targets = batchExcludable;
     if (!targets.length) {
       setExcludeBatchOpen(false);
@@ -706,295 +548,168 @@ export function useReviewState(): ReviewState {
     setExcludeBatchRunning(true);
     setExcludeBatchDone(0);
     setExcludeBatchFailures([]);
-    const failures: { runId: string; error: string }[] = [];
-    let succeeded = 0;
-    for (const t of targets) {
-      // Optimistic local exclude (same shape as the single-row confirmArchive).
-      const prevOverride = overrides[t.runId];
-      const prevDecision = decisions[t.runId];
-      setArchivedRunIds((prev) => ({ ...prev, [t.runId]: true }));
-      setOverrides((prev) => ({
-        ...prev,
-        [t.runId]: { ...prev[t.runId], quality: 'Not usable' },
-      }));
-      setDecisions((prev) => ({ ...prev, [t.runId]: 'excluded' }));
-      if (t.episodeId) {
-        try {
-          await patchEpisode(t.episodeId, {
+    void (async () => {
+      const failures: { captureId: string; error: string }[] = [];
+      let succeeded = 0;
+      for (const t of targets) {
+        const { capture, error } = await applyReview(
+          t,
+          { status: 'excluded', quality: 'Not usable' },
+          {
             review_status: 'excluded',
             quality: 'not_usable',
             quality_source: 'operator',
-          });
-          succeeded += 1;
-        } catch (e) {
-          // Revert this row and report — never claim a server save that failed.
-          setArchivedRunIds((prev) => {
-            const next = { ...prev };
-            delete next[t.runId];
-            return next;
-          });
-          restoreOverride(t.runId, prevOverride);
-          restoreDecision(t.runId, prevDecision);
+          },
+          // One sweep at the end, not one per capture.
+          { skipInvalidate: true },
+        );
+        if (capture) succeeded += 1;
+        else {
+          // Reported by id and NOT dropped: a capture that stayed in the ready
+          // set because its save failed is exactly what the operator needs to
+          // know before trusting the batch. The message comes from THIS save's
+          // result — reading it off the hook's banner state would report
+          // whichever failure happened to land there last.
           failures.push({
-            runId: t.runId,
-            error: e instanceof Error ? e.message : 'failed',
+            captureId: t.captureId,
+            error: error ? `${error.message} ${error.guidance}`.trim() : 'save failed',
           });
         }
-      } else {
-        succeeded += 1; // local-only row: the local exclude IS the change
+        setExcludeBatchDone((d) => d + 1);
+        setExcludeBatchFailures([...failures]);
       }
-      setExcludeBatchDone((d) => d + 1);
-      setExcludeBatchFailures([...failures]);
-    }
-    await queryClient.invalidateQueries({ queryKey: REVIEW_RUNS_KEY });
-    setExcludeBatchRunning(false);
-    if (failures.length === 0) {
-      showToast(
-        `Excluded ${succeeded} episode${succeeded === 1 ? '' : 's'} — recordings kept, reversible`,
-      );
-      setExcludeBatchOpen(false);
-    } else {
-      showToast(`Excluded ${succeeded}, ${failures.length} failed`);
-    }
-  }, [
-    batchExcludable,
-    overrides,
-    decisions,
-    queryClient,
-    showToast,
-    restoreOverride,
-    restoreDecision,
-  ]);
+      await reviewSave.invalidateList();
+      setExcludeBatchRunning(false);
+      if (failures.length === 0) {
+        showToast(
+          `Excluded ${succeeded} episode${succeeded === 1 ? '' : 's'} — recordings kept, reversible`,
+        );
+        setExcludeBatchOpen(false);
+      } else {
+        showToast(`Excluded ${succeeded}, ${failures.length} failed`);
+      }
+    })();
+  }, [batchExcludable, applyReview, reviewSave, showToast]);
 
   const returnBatchToReview = useCallback(() => {
     const targets = batchExcluded;
     if (!targets.length) return;
-    for (const t of targets) {
-      setArchivedRunIds((prev) => {
-        const next = { ...prev };
-        delete next[t.runId];
-        return next;
-      });
-      const prevDecision = decisions[t.runId];
-      setDecisions((prev) => ({ ...prev, [t.runId]: 'review' }));
-      syncEpisode(t.episodeId, { review_status: 'pending' }, () => {
-        setArchivedRunIds((prev) => ({ ...prev, [t.runId]: true }));
-        restoreDecision(t.runId, prevDecision);
-      });
-    }
-    showToast(
-      `Returned ${targets.length} episode${targets.length === 1 ? '' : 's'} to review`,
-    );
-  }, [batchExcluded, decisions, syncEpisode, showToast, restoreDecision]);
-
-  // ---- export READY → Datasets (exception-review: no per-item adopt) --------
-  // READY episodes export with zero clicks (good quality, or the operator
-  // confirmed an exception). "Include task-failed (labeled)" defaults ON — a
-  // labeled failure is still useful data; OFF drops task_result==='failure' from
-  // the set. Only 'completed' runs move; a READY run not yet completed is
-  // skipped. Sequential POST /datasets/export, live progress + honest failures,
-  // then the same MOVE invalidation (review list + runs + datasets).
-  const [includeFailed, setIncludeFailed] = useState(true);
-  const readyRows = useMemo(
-    () => decorated.filter((r) => r.reviewLane === 'ready'),
-    [decorated],
-  );
-  const readyExportable = useMemo(
-    () =>
-      readyRows.filter(
-        (r) =>
-          r.state === 'completed' &&
-          (includeFailed || r.effectiveTask !== 'Failure') &&
-          // Split deploy: export reads the local MCAP, so a run still only on
-          // the robot physically can't export — transfer it first.
-          (!splitMode || r.transferSlot.phase === 'transferred'),
-      ),
-    [readyRows, includeFailed, splitMode],
-  );
-  const readySkipped = useMemo(
-    () => readyRows.filter((r) => r.state !== 'completed'),
-    [readyRows],
-  );
-  const [exportReadyOpen, setExportReadyOpen] = useState(false);
-  const [exportRunning, setExportRunning] = useState(false);
-  const [exportDone, setExportDone] = useState(0);
-  const [exportFailures, setExportFailures] = useState<
-    { runId: string; error: string }[]
-  >([]);
-  const requestExportReady = useCallback(() => {
-    setExportFailures([]);
-    setExportDone(0);
-    setExportReadyOpen(true);
-  }, []);
-  const cancelExportReady = useCallback(() => {
-    if (exportRunning) return;
-    setExportReadyOpen(false);
-    setExportFailures([]);
-    setExportDone(0);
-  }, [exportRunning]);
-  const confirmExportReady = useCallback(async () => {
-    const targets = readyExportable;
-    if (!targets.length) {
-      setExportReadyOpen(false);
-      return;
-    }
-    setExportRunning(true);
-    setExportDone(0);
-    setExportFailures([]);
-    const failures: { runId: string; error: string }[] = [];
-    const succeeded: string[] = [];
-    for (const t of targets) {
-      try {
-        await apiPost<DatasetExportSummary>('/datasets/export', { run_id: t.runId });
-        succeeded.push(t.runId);
-      } catch (e) {
-        failures.push({
-          runId: t.runId,
-          error: e instanceof Error ? e.message : 'failed',
-        });
+    void (async () => {
+      let restored = 0;
+      for (const t of targets) {
+        const { capture } = await applyReview(
+          t,
+          { status: 'pending' },
+          { review_status: 'pending' },
+          { skipInvalidate: true },
+        );
+        if (capture) restored += 1;
       }
-      setExportDone((d) => d + 1);
-      setExportFailures([...failures]);
-    }
-    succeeded.forEach(purgeLocal);
-    // MOVE: exported runs leave Review + Recordings and appear under Datasets.
-    await queryClient.invalidateQueries({ queryKey: REVIEW_RUNS_KEY });
-    await queryClient.invalidateQueries({ queryKey: queryKeys.runs(undefined) });
-    await queryClient.invalidateQueries({ queryKey: queryKeys.datasets });
-    setExportRunning(false);
-    if (failures.length === 0) {
-      showToast(
-        `Exported ${succeeded.length} ready episode${succeeded.length === 1 ? '' : 's'} to Datasets`,
-      );
-      setExportReadyOpen(false);
-    } else {
-      showToast(`Exported ${succeeded.length}, ${failures.length} failed`);
-    }
-  }, [readyExportable, purgeLocal, queryClient, showToast]);
+      await reviewSave.invalidateList();
+      showToast(`Returned ${restored} episode${restored === 1 ? '' : 's'} to review`);
+    })();
+  }, [batchExcluded, applyReview, reviewSave, showToast]);
 
   // ---- decisions / overrides ---------------------------------------------
   const decide = useCallback(
     (d: Decision) => {
       if (!selected) return;
-      const runId = selected.runId;
-      const prev = decisions[runId];
-      setDecisions((prevD) => ({ ...prevD, [runId]: d }));
-      showToast(`Episode #${selected.ep} → ${d}`);
-      syncEpisode(selected.episodeId, { review_status: toServerReview(d) }, () =>
-        restoreDecision(runId, prev),
-      );
+      void applyReview(
+        selected,
+        { status: toServerReview(d) },
+        { review_status: toServerReview(d) },
+      ).then(({ capture }) => {
+        if (capture) showToast(`Episode #${selected.ep} → ${d}`);
+      });
     },
-    [selected, decisions, showToast, syncEpisode, restoreDecision],
+    [selected, applyReview, showToast],
   );
 
-  // "Mark OK — include": resolve a NEEDS CHECK exception into READY. Same server
-  // effect as an adopt (review_status:'adopted'), but the operator vocabulary is
-  // "include", not "adopt" — good episodes are already READY without any click.
+  // "Mark OK — include": resolve a NEEDS CHECK exception into READY. Same
+  // server effect as an adopt, but the operator vocabulary is "include", not
+  // "adopt" — good episodes are already READY without any click.
   const markOk = useCallback(() => {
     if (!selected) return;
-    const runId = selected.runId;
-    const prev = decisions[runId];
-    setDecisions((prevD) => ({ ...prevD, [runId]: 'adopted' }));
-    showToast(`Episode #${selected.ep} marked OK — included in the export`);
-    syncEpisode(selected.episodeId, { review_status: 'adopted' }, () =>
-      restoreDecision(runId, prev),
+    void applyReview(selected, { status: 'adopted' }, { review_status: 'adopted' }).then(
+      ({ capture }) => {
+        if (capture) {
+          showToast(`Episode #${selected.ep} marked OK — included`);
+        }
+      },
     );
-  }, [selected, decisions, showToast, syncEpisode, restoreDecision]);
-
-  const bumpOverrideCount = useCallback((runId: string) => {
-    setOverrideCounts((prev) => ({ ...prev, [runId]: (prev[runId] ?? 0) + 1 }));
-  }, []);
+  }, [selected, applyReview, showToast]);
 
   const cycleFinalQuality = useCallback(() => {
     if (!selected) return;
-    const runId = selected.runId;
-    const episodeId = selected.episodeId;
-    // From an unset ("—") base, indexOf === -1 → first click lands on "Good".
+    // From an unset ("—") base, indexOf === -1 → the first click lands on Good.
     const idx = selected.effectiveQuality
       ? QUALITY_ORDER.indexOf(selected.effectiveQuality)
       : -1;
     const next = QUALITY_ORDER[(idx + 1) % QUALITY_ORDER.length]!;
-    const prevOverride = overrides[runId];
-    setOverrides((prev) => ({ ...prev, [runId]: { ...prev[runId], quality: next } }));
-    bumpOverrideCount(runId);
-    showToast(`#${selected.ep} quality → ${next} (your override, kept this session)`);
-    syncEpisode(
-      episodeId,
+    void applyReview(
+      selected,
+      { quality: next },
       { quality: toServerQuality(next), quality_source: 'operator' },
-      () => {
-        restoreOverride(runId, prevOverride);
-        setOverrideCounts((prev) => ({
-          ...prev,
-          [runId]: Math.max(0, (prev[runId] ?? 1) - 1),
-        }));
-      },
-    );
-  }, [selected, overrides, showToast, bumpOverrideCount, syncEpisode, restoreOverride]);
+    ).then(({ capture }) => {
+      if (capture) showToast(`#${selected.ep} quality → ${next}`);
+    });
+  }, [selected, applyReview, showToast]);
 
   const cycleTaskResult = useCallback(() => {
     if (!selected) return;
-    const runId = selected.runId;
-    const episodeId = selected.episodeId;
-    // Unset base → first click sets Success; thereafter toggles.
-    const next: TaskResult =
+    // Unset base → the first click sets Success; thereafter it toggles.
+    const next: DisplayTaskResult =
       selected.effectiveTask === 'Success' ? 'Failure' : 'Success';
-    const prevOverride = overrides[runId];
-    setOverrides((prev) => ({ ...prev, [runId]: { ...prev[runId], task: next } }));
-    bumpOverrideCount(runId);
-    showToast(
-      `#${selected.ep} task result → ${next} (your override, kept this session)`,
+    void applyReview(selected, { task: next }, { task_result: toServerTask(next) }).then(
+      ({ capture }) => {
+        if (capture) showToast(`#${selected.ep} task result → ${next}`);
+      },
     );
-    syncEpisode(episodeId, { task_result: toServerTask(next) }, () => {
-      restoreOverride(runId, prevOverride);
-      setOverrideCounts((prev) => ({
-        ...prev,
-        [runId]: Math.max(0, (prev[runId] ?? 1) - 1),
-      }));
-    });
-  }, [selected, overrides, showToast, bumpOverrideCount, syncEpisode, restoreOverride]);
+  }, [selected, applyReview, showToast]);
 
   // ---- deep links ---------------------------------------------------------
   const setActiveTab = useUiStore((s) => s.setActiveTab);
   const setPendingRun = useUiStore((s) => s.setPendingRun);
   const goMonitor = useCallback(() => {
-    if (selected) setPendingRun(selected.runId);
+    if (selected) setPendingRun(selected.captureId);
     setActiveTab('monitor');
   }, [selected, setActiveTab, setPendingRun]);
   const goValidation = useCallback(() => {
-    if (selected) setPendingRun(selected.runId);
+    if (selected) setPendingRun(selected.captureId);
     setActiveTab('validation');
   }, [selected, setActiveTab, setPendingRun]);
 
   // ---- transfer (split mode) ---------------------------------------------
   // Real channel: POST /transfer/pull queues an rsync pull on the importer
   // sidecar (202 ack, fire-and-forget). Completion is observed through the
-  // runs list — the server's bag_local (mapped to row.transfer) flips true
-  // once metadata.yaml lands locally — so there is no fabricated progress.
-
-  // Roll a slot back when its pull request itself failed to queue.
-  const failTransfer = useCallback((runIds: string[], message: string) => {
-    setTransfers((prev) => {
-      const next = { ...prev };
-      for (const id of runIds) {
-        const cur = next[id];
-        if (cur) next[id] = transferReducer(cur, { type: 'FAIL' });
-      }
-      return next;
-    });
-    showToast(message);
-  }, [showToast]);
+  // capture's replica appearing — there is no progress to report, so none is
+  // invented.
+  const failTransfer = useCallback(
+    (captureIds: string[], message: string) => {
+      setTransfers((prev) => {
+        const next = { ...prev };
+        for (const id of captureIds) {
+          const cur = next[id];
+          if (cur) next[id] = transferReducer(cur, { type: 'FAIL' });
+        }
+        return next;
+      });
+      showToast(message);
+    },
+    [showToast],
+  );
 
   const transferOne = useCallback(
-    (runId: string) => {
-      const seedRow = baseEpisodes.find((e) => e.runId === runId);
+    (captureId: string) => {
+      const seedRow = baseEpisodes.find((e) => e.captureId === captureId);
       setTransfers((prev) => {
-        const cur = prev[runId] ?? initialTransferSlot(seedRow?.transfer ?? 'on_robot');
-        if (cur.phase !== 'on_robot') return prev;
-        return { ...prev, [runId]: transferReducer(cur, { type: 'START' }) };
+        const cur = prev[captureId] ?? initialTransferSlot(seedRow?.transfer ?? 'awaiting');
+        if (cur.phase !== 'awaiting') return prev;
+        return { ...prev, [captureId]: transferReducer(cur, { type: 'START' }) };
       });
-      apiPost('/transfer/pull', { run_id: runId }).catch((err: unknown) => {
+      apiPost('/transfer/pull', { capture_id: captureId }).catch((err: unknown) => {
         failTransfer(
-          [runId],
+          [captureId],
           err instanceof Error
             ? `Transfer couldn't start — ${err.message}`
             : "Transfer couldn't start",
@@ -1004,15 +719,15 @@ export function useReviewState(): ReviewState {
     [baseEpisodes, failTransfer],
   );
 
-  // Completion + reconcile: whenever the server says a run is now local but the
+  // Completion + reconcile: whenever the server reports a local copy but the
   // session slot still says transferring, finalize it. This also covers pulls
-  // we didn't start here (auto_pull_on_save, manual make import-runs).
+  // we did not start here (auto_pull_on_save, a manual import run).
   useEffect(() => {
     const doneIds = baseEpisodes
       .filter(
-        (e) => e.transfer === 'transferred' && transfers[e.runId]?.phase === 'transferring',
+        (e) => e.transfer === 'here' && transfers[e.captureId]?.phase === 'transferring',
       )
-      .map((e) => e.runId);
+      .map((e) => e.captureId);
     if (!doneIds.length) return;
     setTransfers((prev) => {
       const next = { ...prev };
@@ -1026,9 +741,9 @@ export function useReviewState(): ReviewState {
     );
   }, [baseEpisodes, transfers, showToast]);
 
-  // While any transfer is in flight, poll the runs list so bag_local flips are
-  // seen within a few seconds (rsync of a long episode can take minutes — the
-  // slot honestly stays "transferring" until the server confirms).
+  // While any transfer is in flight, poll so an arriving replica is seen within
+  // a few seconds. An rsync of a long episode takes minutes, and the slot
+  // honestly stays "transferring" until the server confirms.
   const anyTransferring = useMemo(
     () => Object.values(transfers).some((s) => s.phase === 'transferring'),
     [transfers],
@@ -1036,41 +751,44 @@ export function useReviewState(): ReviewState {
   useEffect(() => {
     if (!anyTransferring) return;
     const timer = setInterval(() => {
-      void queryClient.invalidateQueries({ queryKey: REVIEW_RUNS_KEY });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.captureList(REVIEW_SCOPE),
+      });
     }, 4000);
     return () => clearInterval(timer);
   }, [anyTransferring, queryClient]);
-  const nUntransferred = useMemo(
+
+  const nAwaiting = useMemo(
     () =>
-      decorated.filter((r) => !r.isArchived && r.transferSlot.phase === 'on_robot')
+      decorated.filter((r) => !r.isExcluded && r.transferSlot.phase === 'awaiting')
         .length,
     [decorated],
   );
-  const transferAllUntransferred = useCallback(() => {
+  const transferAllAwaiting = useCallback(() => {
     const targets = decorated.filter(
-      (r) => !r.isArchived && r.transferSlot.phase === 'on_robot',
+      (r) => !r.isExcluded && r.transferSlot.phase === 'awaiting',
     );
     if (!targets.length) {
       showToast('Nothing to transfer');
       return;
     }
-    targets.forEach((r) => transferOne(r.runId));
+    targets.forEach((r) => transferOne(r.captureId));
     showToast(
       `Transferring ${targets.length} episode${targets.length === 1 ? '' : 's'}…`,
     );
   }, [decorated, transferOne, showToast]);
 
   return {
-    isLoading: runsQuery.isPending,
+    isLoading: capturesQuery.isPending,
     isError,
     errorMessage,
 
     rows,
     nNeedsCheck,
-    hasArchived: nArchived > 0,
-    nArchived,
-    showArchived,
-    toggleArchived,
+    hasExcluded: nExcluded > 0,
+    nExcluded,
+    showExcluded,
+    toggleExcluded,
 
     search,
     setSearch,
@@ -1093,47 +811,25 @@ export function useReviewState(): ReviewState {
     cancelExcludeBatch,
     returnBatchToReview,
 
-    selectedRunId,
+    selectedCaptureId,
     select,
     selected,
-    selectedOverrideCount,
 
-    requestArchive,
-    pendingArchiveEp,
-    confirmArchive,
-    cancelArchive,
+    requestExclude,
+    pendingExcludeEp,
+    confirmExclude,
+    cancelExclude,
 
     excludedRows,
+    requestDiscard,
     requestDelete,
-    pendingDeleteRow,
-    deleting,
-    deleteError,
-    confirmDelete,
-    cancelDelete,
-    requestBulkDelete,
-    bulkDeleteOpen,
-    bulkRunning,
-    bulkDone,
-    bulkFailures,
-    confirmBulkDelete,
-    cancelBulkDelete,
-
-    readyExportable,
-    readySkipped,
-    includeFailed,
-    setIncludeFailed,
-    requestExportReady,
-    exportReadyOpen,
-    exportRunning,
-    exportDone,
-    exportFailures,
-    confirmExportReady,
-    cancelExportReady,
+    deletion,
 
     markOk,
     decide,
     cycleFinalQuality,
     cycleTaskResult,
+    reviewSave,
 
     goMonitor,
     goValidation,
@@ -1148,9 +844,9 @@ export function useReviewState(): ReviewState {
     dismissRetentionBanner,
 
     splitMode,
-    nUntransferred,
+    nAwaiting,
     transferOne,
-    transferAllUntransferred,
+    transferAllAwaiting,
 
     toast,
   };

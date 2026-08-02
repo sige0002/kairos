@@ -1,17 +1,22 @@
-// Detail column: selected episode header, the REAL run inspection (detail rows,
-// video_check, loss_report, fast_validation, JSON sidecars — RunInspection.tsx),
-// the operator's local quality/task overrides (Phase 1, start from "—"), the
-// adopt/keep/exclude decision (Phase 2 local), and cross-tab deep links. In a
-// split deployment an un-transferred episode shows the transfer placeholder
-// instead — its MCAP is still on the robot PC, so there's nothing to inspect.
+// Detail column: selected capture header, the REAL inspection (detail rows,
+// video_check, loss_report, fast_validation, JSON sidecars —
+// CaptureInspection.tsx), the quality/task edits, the adopt/keep/exclude
+// decision, and cross-tab deep links.
+//
+// A capture whose bytes have not arrived shows the transfer placeholder instead
+// of the inspection. That is a normal state on a split deployment, not an error:
+// §12 requires a capture with review data and no local copy to render, because
+// reviewing before the pull is the intended order there.
 
 import type { ReactNode } from 'react';
 import { Badge, cn, type Tone } from '../../components/ui';
-import { RunInspection } from './RunInspection';
-import type { Quality, ReviewLane } from './types';
+import { AvailabilityChip } from '../captures/AvailabilityChip';
+import { availabilityOf } from '../captures/availability';
+import { CaptureInspection } from './CaptureInspection';
+import type { DisplayQuality, ReviewLane } from './types';
 import type { ReviewState } from './useReviewState';
 
-function qualityTone(q: Quality): Tone {
+function qualityTone(q: DisplayQuality): Tone {
   if (q === 'Good') return 'green';
   if (q === 'Needs review') return 'amber';
   return 'red';
@@ -25,10 +30,10 @@ function headerBadge(lane: ReviewLane): { label: string; tone: Tone } {
   return { label: 'NEEDS CHECK', tone: 'amber' };
 }
 
-// The Collect → Review → Datasets pipeline for this episode, so the operator can
+// The Collect → Review → Datasets pipeline for this capture, so the operator can
 // see where it is and what the next step is (the "adopt did nothing visible"
-// complaint). Export / In dataset aren't observable from Review, so they stay
-// upcoming; the current step is highlighted.
+// complaint). Dataset membership is not observable from Review, so that step
+// stays upcoming; the current step is highlighted.
 type StepState = 'done' | 'current' | 'todo' | 'off';
 function PipelineStrip({ lane }: { lane: ReviewLane }) {
   const ready = lane === 'ready';
@@ -38,8 +43,7 @@ function PipelineStrip({ lane }: { lane: ReviewLane }) {
     // NEEDS CHECK is the current review step; READY/EXCLUDED are past it.
     { label: 'Reviewed', state: lane === 'needs_check' ? 'current' : 'done' },
     { label: 'Ready', state: ready ? 'done' : excluded ? 'off' : 'todo' },
-    { label: 'Export', state: ready ? 'current' : 'todo' },
-    { label: 'In dataset', state: 'todo' },
+    { label: 'In dataset', state: ready ? 'current' : 'todo' },
   ];
   const glyph: Record<StepState, string> = {
     done: '✓',
@@ -109,8 +113,8 @@ function DecisionButton({
   );
 }
 
-/** A quality badge, or a muted "—" when unset (no automated quality model). */
-function QualityValue({ quality }: { quality: Quality | null }) {
+/** A quality badge, or a muted "—" when unset. */
+function QualityValue({ quality }: { quality: DisplayQuality | null }) {
   if (!quality) return <span className="text-[12.5px] text-gray-400">—</span>;
   return (
     <Badge tone={qualityTone(quality)} className="w-fit">
@@ -133,7 +137,10 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
   }
 
   const badge = headerBadge(sel.reviewLane);
-  const showInspection = !rv.splitMode || sel.transferSlot.phase === 'transferred';
+  const availability = availabilityOf(sel.capture);
+  // The inspection reads the local bag, so it needs the bytes to be here —
+  // which is a fact about the replica, not about the deployment topology.
+  const showInspection = availability.usable;
 
   return (
     // overflow-hidden + an inner scroll region: the header and the decision
@@ -150,6 +157,7 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
           Episode #{sel.ep}
         </span>
         <span className="text-xs text-gray-400">Batch {sel.batch}</span>
+        <AvailabilityChip capture={sel.capture} testId="review-detail-availability" />
         <div className="flex-1" />
         <span data-testid="review-detail-status">
           <Badge tone={badge.tone}>{badge.label}</Badge>
@@ -158,14 +166,18 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
 
       <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-[18px] py-3.5">
         {showInspection ? (
-          <RunInspection runId={sel.runId} />
+          <CaptureInspection captureId={sel.captureId} />
         ) : (
-          <div className="flex flex-col items-center justify-center gap-2.5 rounded-[10px] border border-dashed border-gray-300 bg-gray-50 px-4 py-8 text-center">
+          <div
+            data-testid="review-no-local-copy"
+            data-availability={availability.kind}
+            className="flex flex-col items-center justify-center gap-2.5 rounded-[10px] border border-dashed border-gray-300 bg-gray-50 px-4 py-8 text-center"
+          >
             <span className="text-sm font-medium text-gray-600">
-              Data is on the robot PC
+              Nothing to inspect here
             </span>
-            <span className="text-xs text-gray-400">
-              This episode hasn&apos;t been transferred to the recording PC yet.
+            <span className="max-w-[320px] text-xs text-gray-400">
+              {availability.detail}
             </span>
             {sel.transferSlot.phase === 'transferring' ? (
               // Indeterminate: rsync progress isn't observable through the pull
@@ -179,14 +191,19 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
                 </span>
               </div>
             ) : (
-              <button
-                type="button"
-                data-testid="review-transfer-button"
-                onClick={() => rv.transferOne(sel.runId)}
-                className="rounded-control bg-teal-600 px-3.5 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-teal-700"
-              >
-                Transfer to recording PC
-              </button>
+              // Only offered for a capture that is simply absent. Every other
+              // replica state (trashed, removed, missing, corrupt) has a story
+              // the chip already tells, and pulling would not be the answer.
+              sel.transferSlot.phase === 'awaiting' && (
+                <button
+                  type="button"
+                  data-testid="review-transfer-button"
+                  onClick={() => rv.transferOne(sel.captureId)}
+                  className="rounded-control bg-teal-600 px-3.5 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-teal-700"
+                >
+                  Transfer to recording PC
+                </button>
+              )
             )}
           </div>
         )}
@@ -253,25 +270,35 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
 
         <PipelineStrip lane={sel.reviewLane} />
 
-        {sel.isArchived && (
+        {sel.isExcluded && (
           <div className="flex flex-col gap-1.5 rounded-[10px] border border-gray-200 bg-gray-50 px-3 py-2.5">
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <span className="text-[12px] font-semibold text-gray-600">
-                Excluded — kept on disk
+                Excluded — still on disk
               </span>
               <div className="flex-1" />
               <button
                 type="button"
-                data-testid="review-delete-one"
-                onClick={() => rv.requestDelete(sel.runId)}
-                className="rounded-control border border-red-200 px-2.5 py-1 text-[11.5px] font-semibold text-red-700 transition-colors hover:bg-red-50"
+                data-testid="review-discard-one"
+                onClick={() => rv.requestDiscard([sel.captureId])}
+                title="Never uploaded and not worth keeping. Irreversible; a reason is required."
+                className="rounded-control border border-red-200 px-2.5 py-1 text-[11.5px] font-bold text-red-700 transition-colors hover:bg-red-50"
               >
-                Delete from disk…
+                Discard (not uploaded)…
+              </button>
+              <button
+                type="button"
+                data-testid="review-delete-one"
+                onClick={() => rv.requestDelete([sel.captureId])}
+                title="Remove this recording from this machine. The catalog keeps a record of it."
+                className="rounded-control border border-gray-300 px-2.5 py-1 text-[11.5px] font-semibold text-gray-700 transition-colors hover:bg-gray-100"
+              >
+                Delete…
               </button>
             </div>
             <span className="text-[11px] text-gray-400">
-              Excluded from dataset use, but the recording still occupies disk. Deleting
-              reclaims that storage and is permanent.
+              Excluding is only a label — the recording still occupies disk. Both
+              removals free that space and neither can be undone.
             </span>
           </div>
         )}
@@ -289,9 +316,7 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
             type="button"
             onClick={rv.goValidation}
             disabled={!showInspection}
-            title={
-              showInspection ? undefined : 'Transfer the recording to this PC first'
-            }
+            title={showInspection ? undefined : availability.detail}
             className={cn(
               'text-[12.5px] font-semibold',
               showInspection
@@ -302,15 +327,12 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
             Open in Validation →
           </button>
           <div className="flex-1" />
-          {/* Real local history: how many quality/task overrides the operator
-              has applied to this episode this session. */}
-          <span
-            data-testid="review-override-history"
-            className="text-[11.5px] text-gray-400"
-          >
-            {rv.selectedOverrideCount > 0
-              ? `${rv.selectedOverrideCount} override${rv.selectedOverrideCount === 1 ? '' : 's'} this session`
-              : 'no overrides yet'}
+          {/* The CAS token. Shown because it is the thing a conflict is about:
+              when another terminal saves first, this is the number that moved. */}
+          <span data-testid="review-revision" className="text-[11.5px] text-gray-400">
+            {sel.reviewRevision === 0
+              ? 'not reviewed yet'
+              : `revision ${sel.reviewRevision}`}
           </span>
         </div>
       </div>
@@ -355,21 +377,6 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
           )}
         </div>
 
-        {/* READY → the next pipeline step (export), right where the operator is.
-            Hidden when nothing is exportable (e.g. split mode with every READY
-            run still on the robot — transfer first). */}
-        {sel.reviewLane === 'ready' &&
-          sel.state === 'completed' &&
-          rv.readyExportable.length > 0 && (
-          <button
-            type="button"
-            data-testid="review-export-cta"
-            onClick={rv.requestExportReady}
-            className="flex items-center justify-center gap-1.5 rounded-control bg-teal-600 px-3 py-2 text-[12.5px] font-bold text-white transition-colors hover:bg-teal-700"
-          >
-            Ready — Export now ({rv.readyExportable.length}) →
-          </button>
-        )}
       </div>
     </div>
   );

@@ -18,12 +18,13 @@ import { useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiGet, apiPost } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
-import type {
-  AspectOption,
-  ConfigAspect,
-  ConfigOptions,
-  RecordStatus,
-  RobotConfig,
+import {
+  liveCaptureIds,
+  type AspectOption,
+  type ConfigAspect,
+  type ConfigOptions,
+  type RecordStatus,
+  type RobotConfig,
 } from '../../api/types';
 import type { RuntimeConfig } from '../../config';
 import { Badge, Button, Card, Modal, cn } from '../../components/ui';
@@ -74,7 +75,15 @@ export function RobotsSection({ config }: { config: RuntimeConfig | undefined })
     queryKey: queryKeys.recordStatus,
     queryFn: ({ signal }) => apiGet<RecordStatus>('/record/status', { signal }),
   });
-  const recording = recordStatusQuery.data?.state === 'recording';
+  // `live_capture_ids` is the only liveness signal (§10 rev.2.3): it is the one
+  // that also covers `armed` — a prepared session this switch would silently
+  // throw away — and §10 rev.2.4 makes a response WITHOUT it an unreachable
+  // recorder rather than an idle one. Switching robots stops whatever is
+  // running, so both "something is live" and "we cannot tell" ask first; only
+  // an explicit empty list switches straight through.
+  const live = liveCaptureIds(recordStatusQuery.data);
+  const captureLive = live !== null && live.length > 0;
+  const liveUnknown = live === null;
 
   const selectMutation = useMutation({
     mutationFn: (vars: { category: string; id: string }) =>
@@ -109,7 +118,7 @@ export function RobotsSection({ config }: { config: RuntimeConfig | undefined })
 
   const activate = () => {
     if (!selectedRobotId || isActive) return;
-    if (recording) {
+    if (captureLive || liveUnknown) {
       setConfirmActivate(true);
       return;
     }
@@ -274,7 +283,9 @@ export function RobotsSection({ config }: { config: RuntimeConfig | undefined })
           </>
         }
       >
-        A recording is in progress. Switching robots will stop it. Stop and switch?
+        {captureLive
+          ? 'A capture is live — recording, or armed and waiting for a start. Switching robots will stop it. Stop and switch?'
+          : 'The recorder did not report its live captures, so it cannot be confirmed that nothing is running. Switching robots stops whatever is. Stop and switch?'}
         {stopMutation.isError && (
           <div className="mt-2">
             <ErrorMessage error={stopMutation.error} />

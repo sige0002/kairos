@@ -6,15 +6,10 @@
 
 import { useQuery } from '@tanstack/react-query';
 import { apiGet } from '../../api/client';
+import { listBatches } from '../../api/batches';
 import { queryKeys } from '../../api/queryKeys';
 import { Card, cn } from '../../components/ui';
-import type {
-  AlertEvent,
-  DatasetsResponse,
-  MetricsSnapshot,
-  SystemInfo,
-} from '../../api/types';
-import { listBatches } from '../episodeBridge';
+import type { AlertEvent, MetricsSnapshot, SystemInfo } from '../../api/types';
 import { findTask, usePlans } from '../plans';
 import type { SseStatus } from '../../store/uiStore';
 import { ADVICE_ITEMS, type BatchMachine } from './useBatchMachine';
@@ -78,6 +73,11 @@ export function SystemStatusCard({
   const stopping = recState === 'stopping';
   // Pre-armed (two-phase start): spawned + subscribed, paused until Start.
   const armed = recState === 'armed';
+  // No state yet, or a status body carrying no `live_capture_ids` array — which
+  // means the recorder is UNREACHABLE, not idle (§10 rev.2.4). Reporting either
+  // as READY would tell the operator they may start while nothing can answer
+  // for what is already running.
+  const recUnknown = recState == null || machine.liveCaptures == null;
 
   // Real disk free/total for the data-dir filesystem (GET /api/v1/system). Null
   // until measured (older backend / missing data dir) -> honest "—", never a
@@ -154,15 +154,25 @@ export function SystemStatusCard({
     storageRow,
     {
       label: 'Recorder',
-      value: recording
-        ? 'recording'
-        : stopping
-          ? 'stopping'
-          : armed
-            ? 'pre-armed'
-            : 'standby',
-      chip: recording ? 'REC' : stopping ? 'STOPPING' : armed ? 'ARMED' : 'READY',
-      tone: recording ? 'red' : stopping ? 'amber' : 'teal',
+      value: recUnknown
+        ? 'no answer'
+        : recording
+          ? 'recording'
+          : stopping
+            ? 'stopping'
+            : armed
+              ? 'pre-armed'
+              : 'standby',
+      chip: recUnknown
+        ? '—'
+        : recording
+          ? 'REC'
+          : stopping
+            ? 'STOPPING'
+            : armed
+              ? 'ARMED'
+              : 'READY',
+      tone: recUnknown ? 'gray' : recording ? 'red' : stopping ? 'amber' : 'teal',
     },
   ];
 
@@ -430,53 +440,36 @@ export function BatchStatsCard({ machine }: { machine: BatchMachine }) {
   );
 }
 
-// Mirrors the exporter's path slug (dora_runner dataset_export._sanitize_component)
-// closely enough to match a dataset row's path `task` against a plan task name:
-// letters/digits/underscore survive, other runs collapse to "_".
-function taskSlug(task: string): string {
-  return task
-    .trim()
-    .replace(/[^\p{L}\p{N}_.-]+/gu, '_')
-    .replace(/^[._]+|[._]+$/gu, '');
-}
-
 /** Per-condition coverage for the CURRENT task — "what to record next" as a
  *  data decision (2026-07-14 batch-label decision, coverage in Collect).
- *  `recorded` sums the batches' monotone `episodes_recorded` (survives export
- *  and Review deletes); `exported` counts dataset-catalog rows whose condition
- *  and (slugged) task match. Conditions listed = the plan's ∪ those actually
- *  seen in batches, so ad-hoc conditions still show up. */
+ *  `recorded` sums the batches' monotone `episodes_recorded`, which the FIRST
+ *  review save of each capture advances (§4.1) and nothing ever lowers, so the
+ *  figure survives a later exclude or delete. Conditions listed = the plan's ∪
+ *  those actually seen in batches, so ad-hoc conditions still show up.
+ *
+ *  There is deliberately no "exported" column any more. Under §6 a dataset is a
+ *  named set of captures with no condition of its own, so the old count had no
+ *  source left — and a coverage number nobody can derive is worse than no
+ *  number at all. */
 export function CoverageCard({ machine }: { machine: BatchMachine }) {
   const plans = usePlans();
   const batchesQuery = useQuery({
-    queryKey: ['batches', 'coverage'],
-    queryFn: () => listBatches(),
+    queryKey: [...queryKeys.batches, 'coverage'],
+    queryFn: ({ signal }) => listBatches({}, signal),
     staleTime: 15_000,
     refetchInterval: 30_000,
-  });
-  const datasetsQuery = useQuery({
-    queryKey: queryKeys.datasets,
-    queryFn: ({ signal }) => apiGet<DatasetsResponse>('/datasets', { signal }),
-    staleTime: 15_000,
   });
 
   const task = machine.task;
   const planConditions = findTask(plans, machine.project, task).conditions;
   const batches = (batchesQuery.data?.items ?? []).filter((b) => b.task === task);
-  const rowsByCondition = new Map<string, { recorded: number; exported: number }>();
-  const bump = (cond: string, key: 'recorded' | 'exported', n: number) => {
+  const rowsByCondition = new Map<string, number>();
+  const bump = (cond: string, n: number) => {
     if (!cond || cond === '—') return;
-    const row = rowsByCondition.get(cond) ?? { recorded: 0, exported: 0 };
-    row[key] += n;
-    rowsByCondition.set(cond, row);
+    rowsByCondition.set(cond, (rowsByCondition.get(cond) ?? 0) + n);
   };
-  for (const c of planConditions) bump(c, 'recorded', 0);
-  for (const b of batches)
-    bump(b.condition ?? '', 'recorded', b.episodes_recorded ?? 0);
-  const slug = taskSlug(task);
-  for (const d of datasetsQuery.data?.datasets ?? []) {
-    if (d.condition && d.task === slug) bump(d.condition, 'exported', 1);
-  }
+  for (const c of planConditions) bump(c, 0);
+  for (const b of batches) bump(b.condition ?? '', b.episodes_recorded ?? 0);
   const rows = [...rowsByCondition.entries()];
   if (rows.length === 0) return null; // free-text task with no plan conditions
 
@@ -489,7 +482,7 @@ export function CoverageCard({ machine }: { machine: BatchMachine }) {
         Coverage — {task}
       </span>
       <div className="flex flex-col gap-1">
-        {rows.map(([cond, n]) => (
+        {rows.map(([cond, recorded]) => (
           <div
             key={cond}
             data-testid={`coverage-row-${cond}`}
@@ -510,19 +503,15 @@ export function CoverageCard({ machine }: { machine: BatchMachine }) {
               {cond}
             </span>
             <span className="shrink-0 font-mono text-[11.5px] text-gray-800">
-              {n.recorded}
+              {recorded}
             </span>
             <span className="shrink-0 text-[10.5px] text-gray-400">rec</span>
-            <span className="shrink-0 font-mono text-[11.5px] text-gray-800">
-              {n.exported}
-            </span>
-            <span className="shrink-0 text-[10.5px] text-gray-400">exp</span>
           </div>
         ))}
       </div>
       <p className="text-[10.5px] leading-snug text-gray-400">
-        rec counts every take in this task&apos;s sets (survives export); exp =
-        exported datasets with the condition label
+        rec counts every take reviewed into this task&apos;s sets — it never drops
+        when a recording is later excluded or deleted
       </p>
     </Card>
   );

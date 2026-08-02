@@ -1,44 +1,32 @@
-// Pure grouping / aggregation / search / sort helpers for the Datasets tab's
-// real API data (GET /api/v1/datasets, GET /api/v1/datasets/{op}/{task}/{index}).
+// Pure aggregation / search / sort helpers for the Datasets tab.
 //
-// 2026-07-21 IA overhaul (user report: "Datasetsの視認性がすごく悪い。データが
-// 増えたらアクセスしたいデータセットにたどり着きにくい"): the flat GET /datasets
-// list (one row per exported episode) was rendered one-card-per-episode, so
-// hundreds of episodes made the left column unnavigable. This module folds the
-// flat rows CLIENT-SIDE into a task -> condition tree (the (task, condition)
-// pair is the selectable unit; operator is demoted from a hierarchy level to a
-// facet). No API change — everything here operates over the rows the list
-// endpoint already returns.
+// A dataset is a NAME and a SET OF MEMBERSHIPS (§6). It carries no directory,
+// no export time and no condition, so the only things that can be said about
+// one are said about its MEMBERS: how many there are, how much they weigh, what
+// the operator labelled them, and whether their bytes are on this machine at
+// all. Everything below aggregates over the member captures.
 //
-// 2026-07-13 honesty directive still holds: every number rendered comes from a
-// real row field. A group whose rows carry no episode labels shows "no labels",
-// never a fabricated success/failure split.
+// The 2026-07-13 honesty directive is what makes so much of this nullable:
+// every number rendered comes from a real field. A total is only shown when
+// something actually reported it, a scope with no labels says "no labels"
+// rather than a fabricated success/failure split, and a member whose capture is
+// not in the loaded catalog is COUNTED as unresolved rather than dropped — a
+// quiet drop would shrink the denominator and make every rate look better than
+// it is.
 
-import type { DatasetEntry, RunEpisode } from '../../api/types';
-
-// Sentinels the backend writes when an export predates the episode model, so it
-// couldn't attribute an operator/task. Shown as plain-language "not recorded"
-// copy rather than the raw token, only when the value matches exactly.
-export const UNKNOWN_OPERATOR = 'unknown_operator';
-export const UNKNOWN_TASK = 'unknown_task';
+import type { Capture, Dataset, DatasetMember } from '../../api/types';
+import type { Tone } from '../../components/ui';
+import { availabilityOf, type AvailabilityKind } from '../captures/availability';
 
 /** Operator-facet sentinel meaning "don't filter by operator". */
 export const ANY_OPERATOR = '__any__';
 
-/** Rendered where a (task, condition) group has a null condition. */
-export const NO_CONDITION_LABEL = '(no condition)';
-
-/** How many episode rows the center table builds at once (2026-07-26).
+/** How many member rows the center table builds at once.
  *
- *  The table used to render EVERY row of the current scope, and the default
- *  scope is the whole filtered catalog — so the tab's FIRST paint was its worst
- *  case (every exported episode, each with a label-chip subtree, into a ~370px
- *  window). Rendering is capped at this many rows and extended on demand.
- *
- *  Deliberately a cap + "show more", never a hard truncation: the catalog must
- *  stay fully reachable however large it grows (docs/specs/ja/frontend.md,
- *  Datasets section) — the rows just aren't all built up front. */
-export const EPISODE_PAGE_SIZE = 200;
+ *  Deliberately a page + pager, never a hard truncation: a dataset must stay
+ *  fully reachable however large it grows — the rows just aren't all built up
+ *  front, and the boundary is stated rather than silent. */
+export const MEMBER_PAGE_SIZE = 200;
 
 export type SortMode = 'recent' | 'alpha';
 export type TaskResultFilter = 'all' | 'success' | 'failure';
@@ -64,7 +52,7 @@ export function formatWhen(iso?: string | null): string {
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
 }
 
-/** Compact "MM/DD" for the group aggregate rows ("last 07/21"). */
+/** Compact "MM/DD" for the list rows ("last 07/21"). */
 export function formatShortDate(iso?: string | null): string {
   if (!iso) return '—';
   const d = new Date(iso);
@@ -72,125 +60,144 @@ export function formatShortDate(iso?: string | null): string {
   return `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`;
 }
 
-// ---- aggregation ---------------------------------------------------------
-
-/** One distinct topic set (schema) present in a scope.
- *
- *  `label` is assigned by frequency WITHIN the scope being described ('A' is
- *  the most common), so it is a reading aid, not an identity — the identity is
- *  `hash`. Two different scopes may label the same hash differently, which is
- *  why the label is never shown without its counts beside it. */
-export interface SchemaVariant {
-  hash: string;
-  label: string;
-  episodeCount: number;
-  /** Topics behind the hash; null when no row in the variant reported one. */
-  topicCount: number | null;
+/** The short form of a capture id used in tables and titles. The full id is
+ *  always available as the element's `title`; this is a reading aid only. */
+export function shortCaptureId(captureId: string): string {
+  return captureId.slice(0, 8);
 }
 
-export interface GroupAggregate {
-  /** Number of exported episodes (rows) in the group. */
-  episodeCount: number;
-  /** Distinct recording "sets" (batches). batch_seq resets daily per robot, so
-   *  batch_id is preferred as the identity; batch_seq is the fallback. */
-  setCount: number;
-  /** Rows carrying a real task_result (only these feed success/failure). */
+// ---- members -------------------------------------------------------------
+
+/** One membership, joined to the capture it cites. */
+export interface MemberRow {
+  membershipId: string;
+  datasetId: string;
+  captureId: string;
+  /** The number shown beside this capture INSIDE this dataset. Display-only,
+   *  and never reused after a removal (§6) — so it is a label, never an index
+   *  into an array and never a key. */
+  displayIndex: number;
+  /** The capture this membership cites, or null when the loaded catalog holds
+   *  no row for it. Kept as a row rather than dropped: the membership is real
+   *  even when our view of the catalog cannot describe it. */
+  capture: Capture | null;
+}
+
+/** Members ascending by `display_index` — the order the dataset is read in. */
+function byDisplayIndex(a: MemberRow, b: MemberRow): number {
+  return a.displayIndex - b.displayIndex;
+}
+
+/** Join a dataset's authoritative member list to the loaded captures. */
+export function joinMembers(
+  members: DatasetMember[],
+  capturesById: Map<string, Capture>,
+): MemberRow[] {
+  return members
+    .map((m) => ({
+      membershipId: m.membership_id,
+      datasetId: m.dataset_id,
+      captureId: m.capture_id,
+      displayIndex: m.display_index,
+      capture: capturesById.get(m.capture_id) ?? null,
+    }))
+    .sort(byDisplayIndex);
+}
+
+/**
+ * Every dataset's members, read off the captures themselves.
+ *
+ * `GET /api/v1/captures` returns each capture's `memberships`, which is what
+ * lets the left column summarise EVERY dataset from the two list calls it
+ * already makes. Fetching each dataset's detail to count its members would be
+ * one request per row.
+ */
+export function membersByDataset(captures: Capture[]): Map<string, MemberRow[]> {
+  const byDataset = new Map<string, MemberRow[]>();
+  for (const capture of captures) {
+    for (const m of capture.memberships ?? []) {
+      const rows = byDataset.get(m.dataset_id) ?? [];
+      rows.push({
+        membershipId: m.membership_id,
+        datasetId: m.dataset_id,
+        captureId: capture.capture_id,
+        displayIndex: m.display_index,
+        capture,
+      });
+      byDataset.set(m.dataset_id, rows);
+    }
+  }
+  for (const rows of byDataset.values()) rows.sort(byDisplayIndex);
+  return byDataset;
+}
+
+/** Captures indexed for the join above. */
+export function indexCaptures(captures: Capture[]): Map<string, Capture> {
+  return new Map(captures.map((c) => [c.capture_id, c]));
+}
+
+// ---- aggregation ---------------------------------------------------------
+
+/**
+ * A total, kept beside the number of members that did NOT report the field.
+ *
+ * A bare sum cannot be read honestly: adding up five members of which two carry
+ * no size and printing it as "the size" states a total that describes three
+ * recordings while looking like it describes five. `known === 0` means there is
+ * no total to show at all.
+ */
+export interface Sum {
+  total: number;
+  known: number;
+  unknown: number;
+}
+
+/** One availability state present among a scope's members. */
+export interface AvailabilitySlice {
+  kind: AvailabilityKind;
+  label: string;
+  tone: Tone;
+  detail: string;
+  count: number;
+  warn: boolean;
+}
+
+export interface AvailabilityBreakdown {
+  /** Non-empty states only, most members first. */
+  slices: AvailabilitySlice[];
+  /** Members whose bytes are readable on this host right now. */
+  usable: number;
+  /** Members whose bytes have not reached this host. A dataset may legitimately
+   *  cite these: on a split deploy the review happens before the pull (§12), so
+   *  they are counted apart from `warn` and never presented as broken. */
+  awaiting: number;
+  /** Members in a state the operator should look at (missing / corrupt). */
+  warn: number;
+  /** Members with no capture row in the loaded catalog — nothing at all can be
+   *  said about where their bytes are. */
+  unresolved: number;
+}
+
+export interface DatasetAggregate {
+  /** Member rows this aggregate was computed from. */
+  memberCount: number;
+  /** Members carrying a real task_result (only these feed success/failure). */
   labeledCount: number;
   successCount: number;
   failureCount: number;
-  totalBytes: number;
-  /** Sum of message_count across the rows (0 when none report it). */
-  totalMessages: number;
-  /** Quality-label tallies (over rows that carry a quality value). */
   qualityGood: number;
   qualityNeedsReview: number;
   qualityNotUsable: number;
-  /** Rows carrying any quality value (qualityGood+needsReview+notUsable). */
   qualityLabeledCount: number;
-  /** Newest exported_at across the rows (ISO), or null. */
-  lastExportedAt: string | null;
-  /** Distinct REAL operators (excludes the unknown_operator sentinel), sorted. */
+  bytes: Sum;
+  messages: Sum;
+  /** Distinct operators across the member captures, sorted. */
   operators: string[];
-  /** True when at least one row is unattributed (unknown_operator). */
-  hasUnknownOperator: boolean;
-  /** Distinct topic sets across the rows, most episodes first. More than one
-   *  means the scope mixes observation/action spaces (see SchemaVariant). */
-  schemas: SchemaVariant[];
-  /** Rows carrying no topic signature — excluded from `schemas` entirely, so an
-   *  unknown never masquerades as agreement OR as a disagreement. */
-  schemaUnknown: number;
-}
-
-/** Scope-local display label for the nth most common topic set: A, B, C … then
- *  a numeric fallback past Z (26 distinct schemas in one scope would already be
- *  a much louder problem than the labelling). */
-function schemaLabel(rank: number): string {
-  return rank < 26 ? String.fromCharCode(65 + rank) : `#${rank + 1}`;
-}
-
-/** Fold the rows' topic signatures into ranked variants (most common first,
- *  hash as the deterministic tiebreak so the labels never flicker). */
-function collectSchemas(entries: DatasetEntry[]): {
-  schemas: SchemaVariant[];
-  schemaUnknown: number;
-} {
-  const byHash = new Map<string, { episodeCount: number; topicCount: number | null }>();
-  let schemaUnknown = 0;
-  for (const e of entries) {
-    const hash = e.topics_hash;
-    if (typeof hash !== 'string' || hash === '') {
-      schemaUnknown++;
-      continue;
-    }
-    const cur = byHash.get(hash);
-    if (cur) {
-      cur.episodeCount++;
-      if (cur.topicCount === null && typeof e.topic_count === 'number') {
-        cur.topicCount = e.topic_count;
-      }
-    } else {
-      byHash.set(hash, {
-        episodeCount: 1,
-        topicCount: typeof e.topic_count === 'number' ? e.topic_count : null,
-      });
-    }
-  }
-  const schemas = [...byHash.entries()]
-    .sort((a, b) => b[1].episodeCount - a[1].episodeCount || a[0].localeCompare(b[0]))
-    .map(([hash, v], i) => ({
-      hash,
-      label: schemaLabel(i),
-      episodeCount: v.episodeCount,
-      topicCount: v.topicCount,
-    }));
-  return { schemas, schemaUnknown };
-}
-
-/** True when a scope holds more than one topic set — the episodes do NOT share
- *  one observation/action space, so they can't convert into a single dataset. */
-export function isMixedSchema(agg: GroupAggregate): boolean {
-  return agg.schemas.length > 1;
-}
-
-/** The scope's dominant topic set (null when nothing is known). */
-export function majoritySchema(agg: GroupAggregate): SchemaVariant | null {
-  return agg.schemas[0] ?? null;
-}
-
-/** The variant an episode belongs to within `agg`, or null when its signature
- *  is unknown (the honest "can't say", NOT an outlier verdict). */
-export function schemaOf(entry: DatasetEntry, agg: GroupAggregate): SchemaVariant | null {
-  if (typeof entry.topics_hash !== 'string' || entry.topics_hash === '') return null;
-  return agg.schemas.find((s) => s.hash === entry.topics_hash) ?? null;
-}
-
-/** True when the episode has a known signature that ISN'T the scope majority —
- *  the row the UI marks, because it is the one that will break a build. Only
- *  ever true in a scope that actually mixes schemas. */
-export function isSchemaOutlier(entry: DatasetEntry, agg: GroupAggregate): boolean {
-  if (!isMixedSchema(agg)) return false;
-  const variant = schemaOf(entry, agg);
-  return variant !== null && variant.hash !== agg.schemas[0]!.hash;
+  /** Members whose capture records no operator at all. */
+  operatorUnknown: number;
+  availability: AvailabilityBreakdown;
+  /** Newest `started_at` across the member captures (ISO), or null. */
+  lastRecordedAt: string | null;
 }
 
 /** True when `a` is strictly later than `b` (both ISO8601); NaN-safe. */
@@ -201,241 +208,229 @@ function isoLater(a: string, b: string): boolean {
   return ta > tb;
 }
 
-export function aggregate(entries: DatasetEntry[]): GroupAggregate {
+function emptySum(): Sum {
+  return { total: 0, known: 0, unknown: 0 };
+}
+
+function addTo(sum: Sum, value: number | null | undefined): void {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    sum.total += value;
+    sum.known++;
+  } else {
+    sum.unknown++;
+  }
+}
+
+/** Fold the members' availability into ranked slices (most members first, kind
+ *  as the deterministic tiebreak so the order never flickers). */
+function collectAvailability(rows: MemberRow[]): AvailabilityBreakdown {
+  const byKind = new Map<AvailabilityKind, AvailabilitySlice>();
+  let usable = 0;
+  let awaiting = 0;
+  let warn = 0;
+  let unresolved = 0;
+  for (const row of rows) {
+    if (!row.capture) {
+      unresolved++;
+      continue;
+    }
+    const availability = availabilityOf(row.capture);
+    const slice = byKind.get(availability.kind);
+    if (slice) slice.count++;
+    else
+      byKind.set(availability.kind, {
+        kind: availability.kind,
+        label: availability.label,
+        tone: availability.tone,
+        detail: availability.detail,
+        count: 1,
+        warn: availability.warn,
+      });
+    if (availability.usable) usable++;
+    if (availability.kind === 'awaiting_transfer') awaiting++;
+    if (availability.warn) warn++;
+  }
+  const slices = [...byKind.values()].sort(
+    (a, b) => b.count - a.count || a.kind.localeCompare(b.kind),
+  );
+  return { slices, usable, awaiting, warn, unresolved };
+}
+
+export function aggregate(rows: MemberRow[]): DatasetAggregate {
   let labeledCount = 0;
   let successCount = 0;
   let failureCount = 0;
-  let totalBytes = 0;
-  let totalMessages = 0;
   let qualityGood = 0;
   let qualityNeedsReview = 0;
   let qualityNotUsable = 0;
-  let lastExportedAt: string | null = null;
-  const sets = new Set<string>();
+  let operatorUnknown = 0;
+  let lastRecordedAt: string | null = null;
+  const bytes = emptySum();
+  const messages = emptySum();
   const operators = new Set<string>();
-  let hasUnknownOperator = false;
 
-  for (const e of entries) {
-    if (e.task_result === 'success') {
+  for (const row of rows) {
+    const capture = row.capture;
+    if (!capture) continue;
+    if (capture.task_result === 'success') {
       successCount++;
       labeledCount++;
-    } else if (e.task_result === 'failure') {
+    } else if (capture.task_result === 'failure') {
       failureCount++;
       labeledCount++;
     }
-    if (e.quality === 'good') qualityGood++;
-    else if (e.quality === 'needs_review') qualityNeedsReview++;
-    else if (e.quality === 'not_usable') qualityNotUsable++;
-    totalBytes += e.bytes ?? 0;
-    totalMessages += e.message_count ?? 0;
-    if (e.exported_at && (lastExportedAt === null || isoLater(e.exported_at, lastExportedAt))) {
-      lastExportedAt = e.exported_at;
+    if (capture.quality === 'good') qualityGood++;
+    else if (capture.quality === 'needs_review') qualityNeedsReview++;
+    else if (capture.quality === 'not_usable') qualityNotUsable++;
+    addTo(bytes, capture.bytes);
+    addTo(messages, capture.message_count);
+    if (capture.operator) operators.add(capture.operator);
+    else operatorUnknown++;
+    if (
+      capture.started_at &&
+      (lastRecordedAt === null || isoLater(capture.started_at, lastRecordedAt))
+    ) {
+      lastRecordedAt = capture.started_at;
     }
-    const setId = e.batch_id ?? (e.batch_seq != null ? `seq:${e.batch_seq}` : null);
-    if (setId) sets.add(setId);
-    if (e.operator === UNKNOWN_OPERATOR) hasUnknownOperator = true;
-    else operators.add(e.operator);
   }
 
   return {
-    episodeCount: entries.length,
-    setCount: sets.size,
+    memberCount: rows.length,
     labeledCount,
     successCount,
     failureCount,
-    totalBytes,
-    totalMessages,
     qualityGood,
     qualityNeedsReview,
     qualityNotUsable,
     qualityLabeledCount: qualityGood + qualityNeedsReview + qualityNotUsable,
-    lastExportedAt,
+    bytes,
+    messages,
     operators: [...operators].sort(),
-    hasUnknownOperator,
-    ...collectSchemas(entries),
+    operatorUnknown,
+    availability: collectAvailability(rows),
+    lastRecordedAt,
   };
 }
 
-/** Success/failure breakdown for a scope summary: the rate is over LABELED rows
- *  only (task_result present), and unlabeled rows are surfaced separately —
- *  never folded into the denominator or counted as successes. `successRate` is
- *  null when the scope has no labeled rows (the UI shows an honest note, not a
- *  fabricated 0%). */
+/** Success/failure breakdown for a scope summary: the rate is over LABELED
+ *  members only, and unlabeled ones are surfaced separately — never folded into
+ *  the denominator or counted as successes. `successRate` is null when nothing
+ *  is labeled, so the UI shows an honest note instead of a fabricated 0%. */
 export interface OutcomeBreakdown {
   labeled: number;
   success: number;
   failure: number;
   /** success / labeled in 0..1, or null when labeled === 0. */
   successRate: number | null;
-  /** Episodes with no task_result (excluded from the rate). */
+  /** Members with no task_result (excluded from the rate). */
   unlabeled: number;
 }
 
-export function outcomeBreakdown(agg: GroupAggregate): OutcomeBreakdown {
+export function outcomeBreakdown(agg: DatasetAggregate): OutcomeBreakdown {
   const labeled = agg.labeledCount;
   return {
     labeled,
     success: agg.successCount,
     failure: agg.failureCount,
     successRate: labeled > 0 ? agg.successCount / labeled : null,
-    unlabeled: agg.episodeCount - labeled,
+    unlabeled: agg.memberCount - labeled,
   };
 }
 
-// ---- the task -> condition tree ------------------------------------------
+// ---- the dataset list ----------------------------------------------------
 
-export interface DatasetGroup {
-  /** Stable identity of the (task, condition) pair (selection key). */
-  key: string;
-  task: string;
-  condition: string | null;
-  /** The unattributed-task bucket (unknown_task): rendered muted, at the bottom. */
-  isLegacy: boolean;
-  /** Episodes in this group, already sorted for the center table (exported DESC). */
-  entries: DatasetEntry[];
-  aggregate: GroupAggregate;
+/** One row of the left column: a dataset plus everything derivable about it. */
+export interface DatasetRow {
+  dataset: Dataset;
+  /** Members this view could resolve, ascending by display_index. */
+  members: MemberRow[];
+  /** Members the server counts but this view cannot describe: `member_count`
+   *  minus what was joined, plus any joined row with no capture. Surfaced as
+   *  its own figure, because folding it into the totals would present a
+   *  partial dataset as a complete one. */
+  unresolved: number;
+  aggregate: DatasetAggregate;
 }
 
-export interface TaskNode {
-  task: string;
-  isLegacy: boolean;
-  /** The (task, condition) groups under this task. */
-  conditions: DatasetGroup[];
-  /** Aggregate across every condition (shown on the collapsed task header). */
-  aggregate: GroupAggregate;
+export function buildDatasetRow(dataset: Dataset, members: MemberRow[]): DatasetRow {
+  const agg = aggregate(members);
+  // Negative would mean the capture list is ahead of the dataset list; the two
+  // reconcile on the next refetch, so clamp rather than render a negative gap.
+  const unjoined = Math.max(0, dataset.member_count - members.length);
+  return {
+    dataset,
+    members,
+    unresolved: unjoined + agg.availability.unresolved,
+    aggregate: agg,
+  };
 }
 
-const KEY_SEP = '\0';
-
-export function groupKey(task: string, condition: string | null): string {
-  return `${task}${KEY_SEP}${condition ?? ''}`;
-}
-
-/** True when a task node is a "leaf": it holds exactly one condition group, so
- *  it needs no expand/collapse — the task row itself selects that group (a task
- *  with a single null condition "collapses naturally"). */
-export function isLeafTask(node: TaskNode): boolean {
-  return node.conditions.length === 1;
-}
-
-/** Episodes newest export first (the center table default), index ascending as
- *  a stable tiebreak. Used both within a group and for the whole-catalog scope. */
-export function sortEpisodes(entries: DatasetEntry[]): DatasetEntry[] {
-  return [...entries].sort((a, b) => {
-    const ta = a.exported_at ? Date.parse(a.exported_at) : NaN;
-    const tb = b.exported_at ? Date.parse(b.exported_at) : NaN;
-    const va = Number.isNaN(ta) ? -Infinity : ta;
-    const vb = Number.isNaN(tb) ? -Infinity : tb;
-    if (va !== vb) return vb - va;
-    return a.index.localeCompare(b.index);
-  });
-}
-
-function compareRecent(a: GroupAggregate, b: GroupAggregate): number {
-  const va = a.lastExportedAt ? Date.parse(a.lastExportedAt) : -Infinity;
-  const vb = b.lastExportedAt ? Date.parse(b.lastExportedAt) : -Infinity;
+function compareRecent(a: Dataset, b: Dataset): number {
+  const va = a.created_at ? Date.parse(a.created_at) : NaN;
+  const vb = b.created_at ? Date.parse(b.created_at) : NaN;
   const na = Number.isNaN(va) ? -Infinity : va;
   const nb = Number.isNaN(vb) ? -Infinity : vb;
   return nb - na; // newest first
 }
 
-function sortConditions(groups: DatasetGroup[], sort: SortMode): DatasetGroup[] {
-  const label = (g: DatasetGroup) => (g.condition ?? NO_CONDITION_LABEL).toLowerCase();
-  return [...groups].sort((a, b) => {
-    if (sort === 'alpha') return label(a).localeCompare(label(b));
-    return compareRecent(a.aggregate, b.aggregate) || label(a).localeCompare(label(b));
-  });
-}
-
-function sortTasks(nodes: TaskNode[], sort: SortMode): TaskNode[] {
-  return [...nodes].sort((a, b) => {
-    // The unattributed-task bucket always sinks to the bottom, either sort.
-    if (a.isLegacy !== b.isLegacy) return a.isLegacy ? 1 : -1;
-    if (sort === 'alpha') return a.task.localeCompare(b.task);
-    return compareRecent(a.aggregate, b.aggregate) || a.task.localeCompare(b.task);
-  });
-}
-
-/** Fold the flat rows into a task -> condition tree, sorted per `sort`. */
-export function buildTaskTree(entries: DatasetEntry[], sort: SortMode): TaskNode[] {
-  const byTask = new Map<string, DatasetEntry[]>();
-  for (const e of entries) {
-    const list = byTask.get(e.task) ?? [];
-    list.push(e);
-    byTask.set(e.task, list);
-  }
-
-  const nodes: TaskNode[] = [];
-  for (const [task, taskEntries] of byTask) {
-    const byCondition = new Map<string, DatasetEntry[]>();
-    for (const e of taskEntries) {
-      const ck = e.condition ?? '';
-      const list = byCondition.get(ck) ?? [];
-      list.push(e);
-      byCondition.set(ck, list);
-    }
-    const conditions: DatasetGroup[] = [...byCondition.entries()].map(([ck, es]) => {
-      const condition = ck === '' ? null : ck;
-      return {
-        key: groupKey(task, condition),
-        task,
-        condition,
-        isLegacy: task === UNKNOWN_TASK,
-        entries: sortEpisodes(es),
-        aggregate: aggregate(es),
-      };
+export function buildDatasetRows(
+  datasets: Dataset[],
+  membersByDatasetId: Map<string, MemberRow[]>,
+  sort: SortMode,
+): DatasetRow[] {
+  return datasets
+    .map((dataset) =>
+      buildDatasetRow(dataset, membersByDatasetId.get(dataset.dataset_id) ?? []),
+    )
+    .sort((a, b) => {
+      if (sort === 'alpha') {
+        return (
+          a.dataset.name.localeCompare(b.dataset.name) ||
+          a.dataset.dataset_id.localeCompare(b.dataset.dataset_id)
+        );
+      }
+      return (
+        compareRecent(a.dataset, b.dataset) ||
+        a.dataset.name.localeCompare(b.dataset.name)
+      );
     });
-    nodes.push({
-      task,
-      isLegacy: task === UNKNOWN_TASK,
-      conditions: sortConditions(conditions, sort),
-      aggregate: aggregate(taskEntries),
-    });
-  }
-  return sortTasks(nodes, sort);
 }
 
-/** Locate a group by its selection key across the tree (null when not present,
- *  e.g. the current search/filters hid it). */
-export function findGroup(nodes: TaskNode[], key: string | null): DatasetGroup | null {
-  if (!key) return null;
-  for (const node of nodes) {
-    for (const group of node.conditions) {
-      if (group.key === key) return group;
-    }
-  }
-  return null;
+/** Locate a row by dataset_id (null when the search/filters hid it). */
+export function findDataset(rows: DatasetRow[], datasetId: string | null): DatasetRow | null {
+  if (!datasetId) return null;
+  return rows.find((r) => r.dataset.dataset_id === datasetId) ?? null;
 }
 
 // ---- search + facets -----------------------------------------------------
 
-/** Case-insensitive substring search over task / condition / operator / episode
- *  index / batch seq. A leading '#' on the query is optional, so both "6" and
- *  "#6" find batch seq 6. */
 /**
- * Per-entry lowercase haystacks, built ONCE per catalog rather than per
- * keystroke. Rebuilding them inside the predicate meant every character typed
- * re-allocated an array, joined it and lowercased it for every row: measured at
- * 10,000 episodes the UI fell 149 ms behind a typist over a seven-character
- * word, against 40 ms at twelve. The strings are keyed by identity, so a
- * refetched catalog simply builds fresh ones.
+ * Per-row lowercase haystacks, built ONCE per data change rather than per
+ * keystroke. Rebuilding them inside the predicate re-allocated, joined and
+ * lowercased a string for every row on every character typed; at catalog scale
+ * that put the UI more than a tenth of a second behind a typist. The strings are
+ * keyed by identity, so refetched data simply builds fresh ones.
  */
-const _catalogHay = new WeakMap<DatasetEntry, string>();
-const _episodeHay = new WeakMap<DatasetEntry, string>();
+const _datasetHay = new WeakMap<Dataset, string>();
+const _memberHay = new WeakMap<MemberRow, string>();
 
-function haystack(
-  cache: WeakMap<DatasetEntry, string>,
-  entry: DatasetEntry,
-  parts: () => string[],
+function haystack<K extends object>(
+  cache: WeakMap<K, string>,
+  key: K,
+  parts: () => (string | null | undefined)[],
 ): string {
-  const cached = cache.get(entry);
+  const cached = cache.get(key);
   if (cached !== undefined) return cached;
-  const built = parts().join(' ').toLowerCase();
-  cache.set(entry, built);
+  const built = parts()
+    .filter((p): p is string => typeof p === 'string' && p !== '')
+    .join(' ')
+    .toLowerCase();
+  cache.set(key, built);
   return built;
 }
 
-/** `#6` and `6` must both match a set number, so queries are tried both ways. */
+/** `#6` and `6` must both match a display number, so queries are tried both
+ *  ways. */
 function matches(hay: string, query: string): boolean {
   const q = query.trim().toLowerCase();
   if (!q) return true;
@@ -443,69 +438,69 @@ function matches(hay: string, query: string): boolean {
   return hay.includes(q) || hay.includes(qStripped);
 }
 
-export function entryMatchesSearch(entry: DatasetEntry, query: string): boolean {
+/** Case-insensitive substring search over a dataset's name / operator / task. */
+export function datasetMatchesSearch(row: DatasetRow, query: string): boolean {
   if (!query.trim()) return true;
-  const hay = haystack(_catalogHay, entry, () => {
-    const parts: string[] = [entry.task, entry.condition ?? '', entry.operator, entry.index];
-    if (entry.batch_seq != null) {
-      parts.push(`#${entry.batch_seq}`, String(entry.batch_seq));
-    }
-    return parts;
-  });
+  const hay = haystack(_datasetHay, row.dataset, () => [
+    row.dataset.name,
+    row.dataset.operator,
+    row.dataset.task,
+  ]);
   return matches(hay, query);
 }
 
-/** Episode-row search inside the center's top pane (distinct from the left tree
- *  search): case-insensitive substring over episode index ("NNN"/"#NNN"), set
- *  seq ("6"/"#6"), operator, and failure reason — the fields you reach for to
- *  jump to one episode in a large group. */
-export function episodeMatchesSearch(entry: DatasetEntry, query: string): boolean {
+/** Member-row search inside the center pane (distinct from the list search):
+ *  the display number, the capture id, the run id, the operator, the task and
+ *  the failure reason — the fields you reach for to find one take. */
+export function memberMatchesSearch(row: MemberRow, query: string): boolean {
   if (!query.trim()) return true;
-  const hay = haystack(_episodeHay, entry, () => {
-    const parts: string[] = [entry.index, entry.operator, entry.failure_reason ?? ''];
-    if (entry.batch_seq != null) {
-      parts.push(`#${entry.batch_seq}`, String(entry.batch_seq));
-    }
-    return parts;
-  });
+  const hay = haystack(_memberHay, row, () => [
+    `#${row.displayIndex}`,
+    String(row.displayIndex),
+    row.captureId,
+    row.capture?.run_id,
+    row.capture?.operator,
+    row.capture?.task,
+    row.capture?.failure_reason,
+  ]);
   return matches(hay, query);
 }
 
-export function entryMatchesFacets(
-  entry: DatasetEntry,
+export function memberMatchesFacets(
+  row: MemberRow,
   taskResultFilter: TaskResultFilter,
   operatorFilter: string,
 ): boolean {
-  // An unlabeled row can't answer a success/failure predicate — it only passes
-  // 'all' (never counted as an implicit success).
-  const okResult = taskResultFilter === 'all' || entry.task_result === taskResultFilter;
-  const okOperator = operatorFilter === ANY_OPERATOR || entry.operator === operatorFilter;
+  // A member with no capture, or with no label, cannot answer a predicate about
+  // one — it passes only the unfiltered choice, and is never counted as an
+  // implicit success or as belonging to whoever is selected.
+  const okResult =
+    taskResultFilter === 'all' || row.capture?.task_result === taskResultFilter;
+  const okOperator =
+    operatorFilter === ANY_OPERATOR || row.capture?.operator === operatorFilter;
   return okResult && okOperator;
 }
 
-export interface EntryFilter {
+export interface MemberFilter {
   search: string;
   taskResultFilter: TaskResultFilter;
   operatorFilter: string;
 }
 
-export function filterEntries(entries: DatasetEntry[], f: EntryFilter): DatasetEntry[] {
-  return entries.filter(
-    (e) =>
-      entryMatchesSearch(e, f.search) &&
-      entryMatchesFacets(e, f.taskResultFilter, f.operatorFilter),
+export function filterMembers(rows: MemberRow[], f: MemberFilter): MemberRow[] {
+  return rows.filter(
+    (row) =>
+      memberMatchesSearch(row, f.search) &&
+      memberMatchesFacets(row, f.taskResultFilter, f.operatorFilter),
   );
 }
 
-/** Distinct operators present in the catalog (facet dropdown choices), sorted;
- *  the unknown_operator sentinel sinks to the end (rendered as prose in the UI). */
-export function distinctOperators(entries: DatasetEntry[]): string[] {
-  const ops = [...new Set(entries.map((e) => e.operator))];
-  return ops.sort((a, b) => {
-    if (a === UNKNOWN_OPERATOR) return 1;
-    if (b === UNKNOWN_OPERATOR) return -1;
-    return a.localeCompare(b);
-  });
+/** Distinct operators across the loaded captures (facet dropdown choices).
+ *  Captures with no operator contribute nothing: there is no name to offer. */
+export function distinctOperators(captures: Capture[]): string[] {
+  const ops = new Set<string>();
+  for (const c of captures) if (c.operator) ops.add(c.operator);
+  return [...ops].sort();
 }
 
 // ---- aggregate summary line (honest, testable) ---------------------------
@@ -518,88 +513,103 @@ export interface SummarySegment {
   warn?: boolean;
 }
 
-/** The one-line aggregate shown under a group/task row. Every segment is real:
- *  when no row is labeled, the success/failure segment is replaced by an honest
- *  "no labels" rather than a fabricated ✓0 ✗0. */
-export function groupSummarySegments(agg: GroupAggregate): SummarySegment[] {
-  const segs: SummarySegment[] = [];
-  segs.push({ text: `${agg.episodeCount} ${agg.episodeCount === 1 ? 'ep' : 'eps'}` });
-  if (agg.setCount > 0) {
-    segs.push({ text: `${agg.setCount} ${agg.setCount === 1 ? 'set' : 'sets'}` });
+/** Operator stays visible on every dataset row: the single operator's name, or
+ *  "N operators". */
+export function operatorSegment(agg: DatasetAggregate): SummarySegment {
+  const n = agg.operators.length;
+  if (n === 0) {
+    return agg.operatorUnknown > 0
+      ? { text: 'operator not recorded' }
+      : { text: 'no operator' };
   }
+  if (n === 1 && agg.operatorUnknown === 0) return { text: agg.operators[0]! };
+  const suffix = agg.operatorUnknown > 0 ? '+' : '';
+  return {
+    text: `${n}${suffix} operators`,
+    title:
+      agg.operators.join(', ') +
+      (agg.operatorUnknown > 0 ? ' (+ some with no operator recorded)' : ''),
+  };
+}
+
+/** The size segment, or null when nothing reported a size. `known < memberCount`
+ *  is stated in the tooltip rather than hidden — the total describes only the
+ *  members that answered. */
+export function bytesSegment(agg: DatasetAggregate): SummarySegment | null {
+  if (agg.bytes.known === 0) return null;
+  return {
+    text: formatBytes(agg.bytes.total),
+    title:
+      agg.bytes.unknown > 0
+        ? `Total over the ${agg.bytes.known} member(s) reporting a size; ` +
+          `${agg.bytes.unknown} report none.`
+        : `Total over all ${agg.bytes.known} member(s).`,
+  };
+}
+
+/** The one-line aggregate under a dataset row. The member count is the SERVER's
+ *  own `member_count`, not the number of rows we managed to join — the dataset
+ *  is as big as the server says it is, and any shortfall is named separately. */
+export function datasetSummarySegments(row: DatasetRow): SummarySegment[] {
+  const agg = row.aggregate;
+  const count = row.dataset.member_count;
+  const segs: SummarySegment[] = [
+    { text: `${count} ${count === 1 ? 'member' : 'members'}` },
+  ];
   if (agg.labeledCount > 0) {
     segs.push({
       text: `✓${agg.successCount} ✗${agg.failureCount}`,
       title: `${agg.successCount} success, ${agg.failureCount} failure`,
     });
   } else {
-    segs.push({ text: 'no labels', title: 'No episode labels on these exports' });
+    segs.push({ text: 'no labels', title: 'No task-result labels on these members' });
   }
-  if (agg.totalBytes > 0) segs.push({ text: formatBytes(agg.totalBytes) });
-  if (agg.lastExportedAt) segs.push({ text: `last ${formatShortDate(agg.lastExportedAt)}` });
-  segs.push(operatorSegment(agg));
-  // A mixed group is called out HERE, on the list row, because the cost of
-  // finding out later is a wasted conversion — you must be able to see it
-  // before you select the group, not only after.
-  if (isMixedSchema(agg)) {
+  const bytes = bytesSegment(agg);
+  if (bytes) segs.push(bytes);
+  const { usable, awaiting, warn } = agg.availability;
+  if (usable > 0) segs.push({ text: `${usable} here` });
+  // Stated plainly, never as a warning: on a split deploy the bytes arrive
+  // after the review, so a dataset citing a capture that has not landed yet is
+  // the expected order of events (§12).
+  if (awaiting > 0) {
     segs.push({
-      text: `${agg.schemas.length} topic sets`,
+      text: `${awaiting} not here yet`,
       title:
-        'These episodes do not share one topic set (observation/action space) — ' +
-        'select the group to see the split.',
+        'These members have no local copy yet. On a split deployment the ' +
+        'bytes are pulled after the review — expected, not a failure.',
+    });
+  }
+  if (warn > 0) {
+    segs.push({
+      text: `${warn} need a look`,
+      title: 'A member is missing or its manifest cannot be read.',
       warn: true,
     });
+  }
+  if (row.unresolved > 0) {
+    segs.push({
+      text: `${row.unresolved} not in the catalog`,
+      title:
+        'These members are counted by the server but no capture row was ' +
+        'loaded for them, so nothing above describes them.',
+      warn: true,
+    });
+  }
+  segs.push(operatorSegment(agg));
+  if (row.dataset.created_at) {
+    segs.push({ text: `created ${formatShortDate(row.dataset.created_at)}` });
   }
   return segs;
 }
 
-/** Operator stays visible on every group even though it's no longer a hierarchy
- *  level (user decision): the single operator's name, or "N operators". */
-export function operatorSegment(agg: GroupAggregate): SummarySegment {
-  const n = agg.operators.length;
-  if (n === 0 && agg.hasUnknownOperator) return { text: 'operator not recorded' };
-  if (n === 1 && !agg.hasUnknownOperator) return { text: agg.operators[0]! };
-  const suffix = agg.hasUnknownOperator ? '+' : '';
-  return {
-    text: `${n}${suffix} operators`,
-    title: agg.operators.join(', ') + (agg.hasUnknownOperator ? ' (+ unattributed)' : ''),
-  };
+// ---- testids -------------------------------------------------------------
+// Keyed by the stable identities of §6 — dataset_id and membership_id — so a
+// selector never depends on a name, a position, or a display number.
+
+export function datasetTestId(datasetId: string): string {
+  return `dataset-row-${datasetId}`;
 }
 
-// ---- misc ----------------------------------------------------------------
-
-export function sameDataset(a: DatasetEntry | null, b: DatasetEntry): boolean {
-  return a !== null && a.dataset_dir === b.dataset_dir;
-}
-
-/** The list serves the episode-label subset as FLAT row fields (episode.json is
- *  nested only on the detail payload). Adapt a row into the RunEpisode shape the
- *  shared chips consume; null when no label survived export (pre-label rows), so
- *  the caller shows nothing fabricated. */
-export function rowEpisode(entry: DatasetEntry): RunEpisode | null {
-  if (entry.task_result == null || entry.quality == null) return null;
-  return {
-    episode_id: '',
-    batch_id: entry.batch_id ?? '',
-    index_in_batch: entry.index_in_batch ?? 0,
-    task_result: entry.task_result,
-    failure_reason: entry.failure_reason ?? null,
-    quality: entry.quality,
-    review_status: entry.review_status ?? 'pending',
-    batch_seq: entry.batch_seq ?? null,
-  };
-}
-
-/** Selector-safe id fragment for data-testid hooks (task/condition can contain
- *  spaces and punctuation). */
-export function slugForTestId(s: string): string {
-  return s.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'none';
-}
-
-export function taskTestId(task: string): string {
-  return `dataset-task-${slugForTestId(task)}`;
-}
-
-export function groupTestId(group: DatasetGroup): string {
-  return `dataset-group-${slugForTestId(group.task)}-${slugForTestId(group.condition ?? 'none')}`;
+export function memberTestId(membershipId: string): string {
+  return `dataset-member-${membershipId}`;
 }

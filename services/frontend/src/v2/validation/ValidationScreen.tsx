@@ -1,12 +1,16 @@
-// Validation screen (v2 IA): a re-layout of the existing ValidationTab, not a
-// rewrite. The pipeline list, schema-driven params form, job submission/poll,
-// the generic result renderer, the bespoke fast_validation checklist and the
-// one-click presets are all real, reusing features/validation/PipelineForm +
-// SummaryResult and the same GET /pipelines · GET /runs · GET /config/options ·
-// GET /validation/presets · POST /jobs · GET /jobs/{id}/status|result wiring as
-// ValidationTab (see docs/specs/ja/dora_plugins.md §"UI 非依存の契約"). Only the
-// pipeline lifecycle chip is a client-side placeholder — the orchestrator
-// doesn't report a lifecycle yet (see lifecycle.ts).
+// Validation screen (v2 IA). The pipeline list, the schema-driven params form,
+// job submission/poll, the generic result renderer, the bespoke fast_validation
+// checklist and the one-click presets are all real, reusing
+// features/validation/PipelineForm + SummaryResult over GET /pipelines ·
+// GET /captures · GET /config/options · GET /validation/presets · POST /jobs ·
+// GET /jobs/{id}/status|result (see docs/specs/ja/dora_plugins.md §"UI 非依存の契約").
+// Only the pipeline lifecycle chip is a client-side placeholder — the
+// orchestrator doesn't report a lifecycle yet (see lifecycle.ts).
+//
+// Every target here is a capture (contract §10.5): a job resolves its source as
+// `objects/<capture_id>` and writes to `report/<pipeline>/<capture_id>/`. A
+// dataset has no directory to aim a job at (§6), so there is no second kind of
+// target — a dataset's captures are validated as the captures they are.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   useMutation,
@@ -15,35 +19,34 @@ import {
   keepPreviousData,
 } from '@tanstack/react-query';
 import { apiGet, apiPost } from '../../api/client';
+import { getCapture, listAllCaptures } from '../../api/captures';
 import { queryKeys } from '../../api/queryKeys';
 import { fetchRuntimeConfig } from '../../config';
 import type { JSONSchema } from '../../schema/jsonSchema';
 import { initialValueFor } from '../../schema/jsonSchema';
 import type {
   ConfigOptions,
-  DatasetEntry,
-  DatasetsResponse,
   JobState,
   JobStatus,
-  Page,
+  JobSubmitRequest,
   PipelineInfo,
-  RunDetail,
-  RunSummary,
   ValidationOption,
   ValidationPreset,
 } from '../../api/types';
-import { cameraTopics } from '../../features/inspect/inspect';
+import { TERMINAL_CAPTURE_STATES } from '../../api/types';
+import { availabilityOf, isCapturePresent } from '../captures/availability';
+import { cameraTopics } from '../captures/inspect';
 import type { Summary } from '../../features/validation/SummaryResult';
 import { Card } from '../../components/ui';
 import { PipelineRail } from './PipelineRail';
 import { DetailHeader } from './DetailHeader';
 import {
   ParamsPanel,
-  ALL_RUNS,
-  DATASET_VALUE_PREFIX,
+  ALL_CAPTURES,
   BATCH_VALUE_PREFIX,
+  captureLabel,
 } from './ParamsPanel';
-import { listBatches } from '../episodeBridge';
+import { listBatches } from '../../api/batches';
 import { ResultsPanel, type ActiveOutcome } from './ResultsPanel';
 import type { RequiredTopic } from './resultsMapping';
 import { Toast } from './Toast';
@@ -56,18 +59,9 @@ const FALLBACK_SCHEMA: JSONSchema = {
   properties: { template: { type: 'string' } },
 };
 const FAST_VALIDATION = 'fast_validation';
-// Pipelines that can read an exported dataset dir (params.dataset_dir), even if
-// the served form schema doesn't spell out the field. Any pipeline whose schema
-// DOES declare `dataset_dir` is treated as dataset-capable too (see below).
-const DATASET_PIPELINES = new Set(['loss_report', 'video_check']);
-
-/** True if a pipeline can validate an exported dataset (by id or schema). */
-function isDatasetCapable(id: string, schema: JSONSchema | undefined): boolean {
-  return DATASET_PIPELINES.has(id) || schema?.properties?.dataset_dir !== undefined;
-}
 
 interface JobRef {
-  run_id: string;
+  capture_id: string;
   job_id: string;
 }
 
@@ -81,7 +75,7 @@ interface ActiveRun {
 
 interface JobProbeUpdate {
   jobId: string;
-  runId: string;
+  captureId: string;
   state: JobState;
   progress: number;
   terminal: boolean;
@@ -103,7 +97,7 @@ function JobProbe({
     if (!statusQuery.data) return;
     onUpdate({
       jobId: job.job_id,
-      runId: job.run_id,
+      captureId: job.capture_id,
       state: statusQuery.data.state,
       progress: statusQuery.data.progress ?? 0,
       terminal,
@@ -117,7 +111,7 @@ function JobProbe({
     resultQuery.data,
     resultQuery.isError,
     job.job_id,
-    job.run_id,
+    job.capture_id,
   ]);
   return null;
 }
@@ -126,10 +120,10 @@ export function ValidationScreen() {
   const queryClient = useQueryClient();
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [overrides, setOverrides] = useState<Record<string, unknown>>({});
-  const [targetRunId, setTargetRunId] = useState('');
+  const [targetId, setTargetId] = useState('');
   const [active, setActive] = useState<ActiveRun | null>(null);
   const [jobStates, setJobStates] = useState<Record<string, JobProbeUpdate>>({});
-  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [selectedCaptureId, setSelectedCaptureId] = useState<string | null>(null);
   const [toast, setToast] = useState('');
   const toastTimer = useRef<number | undefined>(undefined);
 
@@ -151,39 +145,37 @@ export function ValidationScreen() {
   );
   const selectedPipeline = pipelines[selectedIndex] ?? pipelines[0];
 
-  const runsQuery = useQuery({
-    queryKey: queryKeys.runs(undefined),
-    queryFn: ({ signal }) =>
-      apiGet<Page<RunSummary>>('/runs', { signal, query: { limit: 50 } }),
+  // The whole catalog, cursor followed to exhaustion. A single page would both
+  // hide older recordings from the picker and make "all captures on this host"
+  // count something narrower than the presets' own server-side total — two
+  // numbers on one screen disagreeing about the same set.
+  const capturesQuery = useQuery({
+    queryKey: queryKeys.captureList('validation'),
+    queryFn: ({ signal }) => listAllCaptures({}, signal),
     placeholderData: keepPreviousData,
   });
-  const runs = useMemo(
-    () => (runsQuery.data?.items ?? []).filter((r) => r.state === 'completed'),
-    [runsQuery.data],
+  // A pipeline reads a finished bag, so only a capture that reached an end is a
+  // target; an unfinalized one is still being written (§3).
+  const captures = useMemo(
+    () =>
+      (capturesQuery.data?.items ?? []).filter((c) =>
+        TERMINAL_CAPTURE_STATES.has(c.state),
+      ),
+    [capturesQuery.data],
   );
-  // Default target = the latest completed run (GET /runs is newest-first).
+  const presentCaptures = useMemo(() => captures.filter(isCapturePresent), [captures]);
+  // Default target = the newest capture whose bytes are readable HERE (the list
+  // is newest-first). Defaulting to one that is merely catalogued would put a
+  // job that can only fail one click away.
   useEffect(() => {
-    if (!targetRunId && runs.length > 0) setTargetRunId(runs[0]!.run_id);
-  }, [runs, targetRunId]);
+    if (!targetId && presentCaptures.length > 0) {
+      setTargetId(presentCaptures[0]!.capture_id);
+    }
+  }, [presentCaptures, targetId]);
 
-  // Exported datasets are also validation targets (D-6): re-validate a built
-  // dataset (loss/video checks) without going through Review.
-  const datasetsQuery = useQuery({
-    queryKey: queryKeys.datasets,
-    queryFn: ({ signal }) => apiGet<DatasetsResponse>('/datasets', { signal }),
-  });
-  const datasets = datasetsQuery.data?.datasets ?? [];
-  const datasetByValue = useMemo(() => {
-    const m = new Map<string, DatasetEntry>();
-    for (const d of datasets) m.set(`${DATASET_VALUE_PREFIX}${d.dataset_dir}`, d);
-    return m;
-  }, [datasets]);
-  const selectedDataset = datasetByValue.get(targetRunId) ?? null;
-
-  // Batches as bulk targets (blast-radius check, 2026-07-14): validate every
-  // still-present run of one batch in one click. Only a run that hasn't been
-  // exported can be validated (export MOVES the recording), so each batch's
-  // candidate set is its episode run_ids ∩ the completed runs list.
+  // Batches as bulk targets (blast-radius check): validate every capture of one
+  // batch in one click. A batch's members are simply the captures carrying its
+  // batch_id, and only the ones whose bytes are on this host can be validated.
   const batchesQuery = useQuery({
     queryKey: ['batches', 'validation'],
     queryFn: () => listBatches(),
@@ -193,26 +185,50 @@ export function ValidationScreen() {
     () => (batchesQuery.data?.items ?? []).filter((b) => (b.episodes ?? []).length > 0),
     [batchesQuery.data],
   );
-  const completedRunIds = useMemo(() => new Set(runs.map((r) => r.run_id)), [runs]);
-  const batchRunIds = useCallback(
-    (b: (typeof batches)[number]) =>
-      (b.episodes ?? []).map((e) => e.run_id).filter((id) => completedRunIds.has(id)),
-    [completedRunIds],
+  const presentCaptureIds = useMemo(
+    () => new Set(presentCaptures.map((c) => c.capture_id)),
+    [presentCaptures],
   );
-  const selectedBatch = targetRunId.startsWith(BATCH_VALUE_PREFIX)
-    ? (batches.find((b) => `${BATCH_VALUE_PREFIX}${b.batch_id}` === targetRunId) ??
-      null)
+  const batchCaptureIds = useCallback(
+    (b: (typeof batches)[number]) =>
+      (b.episodes ?? [])
+        .map((e) => e.capture_id)
+        .filter((id) => presentCaptureIds.has(id)),
+    [presentCaptureIds],
+  );
+  const selectedBatch = targetId.startsWith(BATCH_VALUE_PREFIX)
+    ? (batches.find((b) => `${BATCH_VALUE_PREFIX}${b.batch_id}` === targetId) ?? null)
     : null;
-  const targetKind: 'none' | 'all' | 'run' | 'dataset' | 'batch' =
-    targetRunId === ''
+  const selectedCapture = useMemo(
+    () => captures.find((c) => c.capture_id === targetId) ?? null,
+    [captures, targetId],
+  );
+  const targetKind: 'none' | 'all' | 'capture' | 'batch' =
+    targetId === ''
       ? 'none'
-      : targetRunId === ALL_RUNS
+      : targetId === ALL_CAPTURES
         ? 'all'
         : selectedBatch
           ? 'batch'
-          : selectedDataset
-            ? 'dataset'
-            : 'run';
+          : 'capture';
+
+  const targetCaptureIds = useMemo(() => {
+    if (targetKind === 'all') return presentCaptures.map((c) => c.capture_id);
+    if (targetKind === 'batch') return selectedBatch ? batchCaptureIds(selectedBatch) : [];
+    if (targetKind === 'capture' && selectedCapture && isCapturePresent(selectedCapture)) {
+      return [selectedCapture.capture_id];
+    }
+    return [];
+  }, [targetKind, presentCaptures, selectedBatch, batchCaptureIds, selectedCapture]);
+
+  // A job resolves its source as objects/<capture_id> on THIS host (§10.5), so
+  // with the bytes absent it can only fail server-side. Refuse it here instead,
+  // and say which of the §8 states is in the way rather than "cannot run".
+  const targetAvailability = selectedCapture ? availabilityOf(selectedCapture) : null;
+  const targetNote =
+    targetAvailability && !targetAvailability.usable
+      ? `${targetAvailability.detail} A pipeline reads the recording's files, so it cannot run until they are on this machine.`
+      : undefined;
 
   const optionsQuery = useQuery({
     queryKey: queryKeys.configOptions,
@@ -237,44 +253,24 @@ export function ValidationScreen() {
     (selectedPipeline && pipelineForms?.[selectedPipeline.id]) ??
     (isFastValidation ? FALLBACK_SCHEMA : EMPTY_SCHEMA);
 
-  // Per-pipeline applicability to the chosen target (D-6): a dataset target only
-  // accepts dataset-capable pipelines; the rest are disabled with a note. Run
-  // targets accept every pipeline (nothing here is dataset-only).
-  const applicability = useMemo(
-    () =>
-      pipelines.map((p) =>
-        targetKind === 'dataset' && !isDatasetCapable(p.id, pipelineForms?.[p.id])
-          ? { ok: false, note: 'applies to runs' }
-          : { ok: true, note: null as string | null },
-      ),
-    [pipelines, targetKind, pipelineForms],
-  );
-  const selectedApplicable =
-    targetKind !== 'dataset' ||
-    (!!selectedPipeline && isDatasetCapable(selectedPipeline.id, schema));
-  const applicabilityNote = selectedApplicable
-    ? undefined
-    : 'This pipeline applies to runs, not datasets — pick a run above.';
-
   const seeded = useMemo(
     () => (initialValueFor(schema) as Record<string, unknown>) ?? {},
     [schema],
   );
 
-  // The selected target run's topics feed `x-suggest` string params (e.g.
-  // video_check's `topic` becomes a picker of the run's camera topics instead
-  // of a hand-typed path). Only a single-run target has one topic list; batch
-  // and dataset targets keep the honest free-text fallback.
-  const targetRunQuery = useQuery({
-    queryKey: queryKeys.run(targetRunId),
-    queryFn: ({ signal }) =>
-      apiGet<RunDetail>(`/runs/${encodeURIComponent(targetRunId)}`, { signal }),
-    enabled: targetKind === 'run' && !!targetRunId,
+  // The selected capture's topics feed `x-suggest` string params (e.g.
+  // video_check's `topic` becomes a picker of that recording's camera topics
+  // instead of a hand-typed path). Only a single-capture target has one topic
+  // list; a batch target keeps the honest free-text fallback.
+  const targetCaptureQuery = useQuery({
+    queryKey: queryKeys.capture(targetId),
+    queryFn: ({ signal }) => getCapture(targetId, signal),
+    enabled: targetKind === 'capture' && !!targetId,
     staleTime: 30_000,
   });
   const targetTopics = useMemo(
-    () => (targetKind === 'run' ? (targetRunQuery.data?.topics ?? []) : []),
-    [targetKind, targetRunQuery.data],
+    () => (targetKind === 'capture' ? (targetCaptureQuery.data?.topics ?? []) : []),
+    [targetKind, targetCaptureQuery.data],
   );
   const suggestions = useMemo(
     () => ({
@@ -290,7 +286,7 @@ export function ValidationScreen() {
       optionsQuery.data?.aspects?.validation?.active || templates[0]?.id || '';
   }
   // Seed each empty x-suggest param with the first suggestion (same pattern as
-  // `template` above): pick a run with a camera and video_check is one click.
+  // `template` above): pick a capture with a camera and video_check is one click.
   for (const [key, child] of Object.entries(schema.properties ?? {})) {
     const kind = child['x-suggest'];
     if (!kind || params[key]) continue;
@@ -314,18 +310,18 @@ export function ValidationScreen() {
   }, []);
 
   const allSettled = !active || active.jobs.every((j) => jobStates[j.job_id]?.terminal);
-  // On batch settle, refresh both the runs list and the presets' pending counts
+  // On batch settle, refresh the capture catalog and the presets' pending counts
   // (a preset run just validated some of its pending recordings).
   useEffect(() => {
     if (active && allSettled) {
-      queryClient.invalidateQueries({ queryKey: queryKeys.runs(undefined) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.captures });
       queryClient.invalidateQueries({ queryKey: queryKeys.validationPresets });
     }
   }, [active, allSettled, queryClient]);
 
   // Real one-click presets (GET /validation/presets): config-defined bundles,
-  // each with the recordings its pipeline hasn't validated yet. Poll their
-  // pending counts while a batch is in flight, then stop.
+  // each with the captures its pipeline hasn't validated yet. Poll their pending
+  // counts while a batch is in flight, then stop.
   const presetsQuery = useQuery({
     queryKey: queryKeys.validationPresets,
     queryFn: ({ signal }) =>
@@ -343,29 +339,44 @@ export function ValidationScreen() {
     [templates],
   );
 
+  const captureById = useMemo(
+    () => new Map(captures.map((c) => [c.capture_id, c])),
+    [captures],
+  );
+  // A preset can name a capture that is not in the loaded page; showing its
+  // capture_id is honest, inventing a run-style name would not be.
+  const labelFor = useCallback(
+    (captureId: string) => {
+      const capture = captureById.get(captureId);
+      return capture ? captureLabel(capture) : captureId;
+    },
+    [captureById],
+  );
+
   const submitMutation = useMutation({
     mutationFn: async (arg: {
       pipeline: string;
       params: Record<string, unknown>;
-      runIds: string[];
+      captureIds: string[];
       requiredTopics?: RequiredTopic[];
     }): Promise<ActiveRun> => {
       const jobs: JobRef[] = [];
-      for (const rid of arg.runIds) {
-        const job = await apiPost<JobStatus>('/jobs', {
+      for (const captureId of arg.captureIds) {
+        const body: JobSubmitRequest = {
           pipeline: arg.pipeline,
-          run_id: rid,
+          capture_id: captureId,
           params: arg.params,
-        });
+        };
+        const job = await apiPost<JobStatus>('/jobs', body);
         queryClient.setQueryData(queryKeys.job(job.job_id), job);
-        jobs.push({ run_id: rid, job_id: job.job_id });
+        jobs.push({ capture_id: captureId, job_id: job.job_id });
       }
       return { pipeline: arg.pipeline, jobs, requiredTopics: arg.requiredTopics };
     },
     onSuccess: (run) => {
       setJobStates({});
       setActive(run);
-      setSelectedRunId(run.jobs[0]?.run_id ?? null);
+      setSelectedCaptureId(run.jobs[0]?.capture_id ?? null);
     },
   });
 
@@ -375,44 +386,25 @@ export function ValidationScreen() {
   };
 
   const runOnSelection = () => {
-    if (!selectedPipeline || !selectedApplicable) return;
-    if (targetKind === 'dataset') {
-      const d = selectedDataset;
-      if (!d?.run_id) return;
-      submitMutation.mutate({
-        pipeline: selectedPipeline.id,
-        // The exported dataset dir (relative <operator>/<task>/<index>) — the
-        // recording was MOVED there by dataset_export, so the run dir is gone.
-        params: { ...params, dataset_dir: `${d.operator}/${d.task}/${d.index}` },
-        runIds: [d.run_id],
-      });
-      return;
-    }
-    const runIds =
-      targetRunId === ALL_RUNS
-        ? runs.map((r) => r.run_id)
-        : selectedBatch
-          ? batchRunIds(selectedBatch)
-          : [targetRunId];
-    if (runIds.length === 0) return;
+    if (!selectedPipeline || targetCaptureIds.length === 0) return;
     submitMutation.mutate({
       pipeline: selectedPipeline.id,
       params,
-      runIds,
+      captureIds: targetCaptureIds,
       requiredTopics: isFastValidation
         ? requiredTopicsFor(String(params.template ?? ''))
         : undefined,
     });
   };
 
-  // One-click preset: run its pipeline over exactly the recordings it hasn't
+  // One-click preset: run its pipeline over exactly the captures it hasn't
   // validated yet. A preset with nothing pending is disabled in the UI.
   const runPreset = (preset: ValidationPreset) => {
-    if (preset.pending_run_ids.length === 0) return;
+    if (preset.pending_capture_ids.length === 0) return;
     submitMutation.mutate({
       pipeline: preset.pipeline,
       params: preset.params ?? {},
-      runIds: preset.pending_run_ids,
+      captureIds: preset.pending_capture_ids,
       requiredTopics:
         preset.pipeline === FAST_VALIDATION
           ? requiredTopicsFor(String(preset.params?.template ?? ''))
@@ -420,25 +412,8 @@ export function ValidationScreen() {
     });
   };
 
-  const targetCount =
-    targetKind === 'all'
-      ? runs.length
-      : targetKind === 'batch'
-        ? selectedBatch
-          ? batchRunIds(selectedBatch).length
-          : 0
-        : targetKind === 'dataset'
-          ? selectedDataset?.run_id
-            ? 1
-            : 0
-          : targetRunId
-            ? 1
-            : 0;
   const canRun =
-    !!selectedPipeline &&
-    targetCount > 0 &&
-    selectedApplicable &&
-    !submitMutation.isPending;
+    !!selectedPipeline && targetCaptureIds.length > 0 && !submitMutation.isPending;
   const running = (!!active && !allSettled) || submitMutation.isPending;
 
   const progressPct = active
@@ -451,15 +426,16 @@ export function ValidationScreen() {
   const progressLabel = submitMutation.isPending
     ? 'Starting…'
     : active && active.jobs.length > 1
-      ? `Running on ${active.jobs.length} runs…`
-      : `Running on ${active?.jobs[0]?.run_id ?? ''}…`;
+      ? `Running on ${active.jobs.length} captures…`
+      : `Running on ${active?.jobs[0] ? labelFor(active.jobs[0].capture_id) : ''}…`;
 
   const activeOutcome: ActiveOutcome | null = active
     ? {
         pipeline: active.pipeline,
         allSettled,
         outcomes: active.jobs.map((j) => ({
-          runId: j.run_id,
+          captureId: j.capture_id,
+          label: labelFor(j.capture_id),
           orchestrationFailed:
             jobStates[j.job_id]?.state === 'failed' ||
             jobStates[j.job_id]?.resultErrored,
@@ -480,7 +456,6 @@ export function ValidationScreen() {
           pipelines={pipelines}
           selectedIndex={0}
           onSelect={selectPipeline}
-          applicability={applicability}
           onNewRun={() => showToast('New run — pick pipeline, targets, parameters')}
         />
         <Card className="flex items-center justify-center p-8 text-sm text-gray-500">
@@ -500,7 +475,6 @@ export function ValidationScreen() {
         pipelines={pipelines}
         selectedIndex={selectedIndex}
         onSelect={selectPipeline}
-        applicability={applicability}
         onNewRun={() => showToast('New run — pick pipeline, targets, parameters')}
       />
 
@@ -510,7 +484,7 @@ export function ValidationScreen() {
           index={selectedIndex}
           onPromote={() =>
             showToast(
-              `${selectedPipeline.id} promoted to Standard — applies to new episodes`,
+              `${selectedPipeline.id} promoted to Standard — applies to new captures`,
             )
           }
         />
@@ -521,21 +495,20 @@ export function ValidationScreen() {
             onParamsChange={setOverrides}
             templateOptions={templates}
             suggestions={suggestions}
-            runs={runs}
-            runsLoading={runsQuery.isPending}
-            datasets={datasets}
-            datasetsLoading={datasetsQuery.isPending}
+            captures={captures}
+            capturesLoading={capturesQuery.isPending}
             batches={batches}
-            batchRunCount={(b) => batchRunIds(b).length}
-            targetRunId={targetRunId}
-            onTargetRunChange={setTargetRunId}
-            applicabilityNote={applicabilityNote}
+            batchCaptureCount={(b) => batchCaptureIds(b).length}
+            targetId={targetId}
+            onTargetChange={setTargetId}
+            selectedCapture={selectedCapture}
+            targetNote={targetNote}
             onRun={runOnSelection}
             canRun={canRun}
             running={running}
             progressPct={progressPct}
             progressLabel={progressLabel}
-            onCompareRuns={() => showToast('Run comparison isn’t available yet')}
+            onCompareCaptures={() => showToast('Capture comparison isn’t available yet')}
             presets={presets}
             presetsLoading={presetsQuery.isPending}
             onRunPreset={runPreset}
@@ -543,8 +516,8 @@ export function ValidationScreen() {
           />
           <ResultsPanel
             active={activeOutcome}
-            selectedRunId={selectedRunId}
-            onSelectRun={setSelectedRunId}
+            selectedCaptureId={selectedCaptureId}
+            onSelectCapture={setSelectedCaptureId}
           />
         </div>
       </Card>

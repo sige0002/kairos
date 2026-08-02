@@ -83,7 +83,11 @@ const ROBOT_CONFIG_TEMPLATE = {
 
 // The recorder state served by GET /record/status; tests flip it to exercise the
 // recording-aware guards.
-let recordState: 'idle' | 'recording' = 'idle';
+let recordState: 'created' | 'recording' = 'created';
+// Whether that response carries `live_capture_ids` at all. §10 rev.2.4: a
+// response without it is an unreachable recorder, not an idle one — a distinct
+// case the guards have to handle, so it is switchable here.
+let liveReported = true;
 
 /** Build the /config/select echo: active follows the posted selection. */
 function echoSelect(body: { category: string; id: string }) {
@@ -121,12 +125,18 @@ function mockFetch() {
       return Promise.resolve(jsonResponse(ROBOT_CONFIG_TEMPLATE));
     }
     if (url.includes('/record/stop')) {
-      recordState = 'idle';
+      recordState = 'created';
       return Promise.resolve(jsonResponse({ run_id: 'run_x', state: 'completed' }));
     }
     if (url.includes('/record/status')) {
+      const live = recordState === 'recording' ? ['cap_x'] : [];
       return Promise.resolve(
-        jsonResponse({ run_id: recordState === 'recording' ? 'run_x' : null, state: recordState }),
+        jsonResponse({
+          run_id: recordState === 'recording' ? 'run_x' : null,
+          capture_id: recordState === 'recording' ? 'cap_x' : null,
+          state: recordState,
+          ...(liveReported ? { live_capture_ids: live } : {}),
+        }),
       );
     }
     if (url.includes('/config')) {
@@ -152,7 +162,8 @@ function selectPosts() {
 
 beforeEach(() => {
   setApiBase('/api/v1');
-  recordState = 'idle';
+  recordState = 'created';
+  liveReported = true;
   // Plans live in the shared v2/plans store now; reset it so a project added in
   // one test can't leak into the next.
   __resetPlansStore();
@@ -240,7 +251,8 @@ test('activating a robot while recording confirms first, then stops and switches
   // The activate action opens a confirm modal, not an immediate switch.
   fireEvent.click(screen.getByTestId('activate-robot'));
   const dialog = await screen.findByRole('dialog');
-  expect(dialog).toHaveTextContent('A recording is in progress. Switching robots will stop it.');
+  expect(dialog).toHaveTextContent('A capture is live');
+  expect(dialog).toHaveTextContent('Switching robots will stop it');
   expect(selectPosts()).toHaveLength(0);
   expect(postsTo('/record/stop')).toHaveLength(0);
 
@@ -250,6 +262,21 @@ test('activating a robot while recording confirms first, then stops and switches
   await waitFor(() =>
     expect(selectPosts()).toContainEqual({ category: 'robot', id: 'template' }),
   );
+});
+
+// §10 rev.2.4: a status response with no live_capture_ids means the recorder
+// could not be asked. Switching robots stops whatever is running, so "we cannot
+// tell" must confirm first — treating the absent array as "nothing is live"
+// would kill a recording without asking.
+test('a status response without live_capture_ids confirms before switching', async () => {
+  liveReported = false;
+  renderWithClient(<SettingsScreen />);
+  fireEvent.click(await screen.findByTestId('robot-row-1'));
+
+  fireEvent.click(screen.getByTestId('activate-robot'));
+  const dialog = await screen.findByRole('dialog');
+  expect(dialog).toHaveTextContent('did not report its live captures');
+  expect(selectPosts()).toHaveLength(0);
 });
 
 test('cancelling the switch-while-recording confirm leaves the recording alone', async () => {
@@ -273,7 +300,7 @@ test('the recording-config editor warns that a save applies to the next recordin
   await screen.findByLabelText('recording config json');
   expect(
     await screen.findByText(
-      /saving recording config won.t change the current recording; it applies to the next one/i,
+      /saving recording config won.t change the current one; it applies to the next/i,
     ),
   ).toBeInTheDocument();
 });

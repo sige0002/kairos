@@ -12,13 +12,14 @@ import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError, apiGet, apiPost, getApiBase } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
-import type {
-  ApiErrorBody,
-  AspectOption,
-  ConfigAspect,
-  ConfigOptions,
-  RecordingConfigPayload,
-  RecordStatus,
+import {
+  liveCaptureIds,
+  type ApiErrorBody,
+  type AspectOption,
+  type ConfigAspect,
+  type ConfigOptions,
+  type RecordingConfigPayload,
+  type RecordStatus,
 } from '../../api/types';
 import type { RuntimeConfig } from '../../config';
 import { ErrorMessage } from '../../components/ErrorMessage';
@@ -92,7 +93,14 @@ export function RecordingConfigEditor({ config }: { config: RuntimeConfig }) {
     queryKey: queryKeys.recordStatus,
     queryFn: ({ signal }) => apiGet<RecordStatus>('/record/status', { signal }),
   });
-  const recording = recordStatusQuery.data?.state === 'recording';
+  // `live_capture_ids` is the definitive live set (§10 rev.2.3), not `state`:
+  // state alone misses `armed` and `stopping`, both of which are sessions the
+  // operator has in flight. A response WITHOUT the array is an unreachable
+  // recorder (§10 rev.2.4), not an idle one — so we say we cannot tell rather
+  // than implying nothing is running.
+  const live = liveCaptureIds(recordStatusQuery.data);
+  const recording = live !== null && live.length > 0;
+  const liveUnknown = live === null;
 
   const [text, setText] = useState('');
   // Inline JSON validity (debounced ~300ms below): null = valid, else the parse
@@ -194,8 +202,15 @@ export function RecordingConfigEditor({ config }: { config: RuntimeConfig }) {
 
       {recording && (
         <div className="mt-2 rounded-control border border-amber-200 bg-amber-50 p-2 text-sm text-amber-800">
-          A recording is in progress — saving recording config won&apos;t change the current
-          recording; it applies to the next one.
+          A recording session is in progress — saving recording config won&apos;t change
+          the current one; it applies to the next.
+        </div>
+      )}
+
+      {liveUnknown && (
+        <div className="mt-2 rounded-control border border-gray-200 bg-gray-50 p-2 text-sm text-gray-600">
+          The recorder did not report what is live, so whether a session is in
+          progress is unknown. A save still only applies to the next recording.
         </div>
       )}
 

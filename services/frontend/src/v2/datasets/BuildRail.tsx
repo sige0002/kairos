@@ -1,109 +1,157 @@
-// Right column, three blocks:
-//   1. Review pointer — recordings are reviewed AND exported in the Review tab
-//      (the exception-review model bulk-exports the READY set in one click).
-//      Datasets is a catalog only, so this rail just points there; there is no
-//      per-run export path here anymore (it lived in the removed ExportRecordings
-//      panel — Review is the single export surface).
-//   2. Selected dataset — its real export provenance (run/state/exported-at,
-//      from the same GET /api/v1/datasets/{operator}/{task}/{index} the center
-//      column reads).
-//   3. Build (Phase 2 mock) — there is no backend endpoint yet for building a
-//      LeRobot v3 artifact from a recipe, so "Build dataset" only explains that
-//      (quiet, de-emphasized styling — it is not a working control yet).
+// Right column: building the selected dataset by adding captures to it.
+//
+// This is the whole of "assembling a training set" under §6 — a membership row
+// per capture, allocated the next never-before-issued display_index. Nothing is
+// copied and nothing is moved, so the panel says so rather than showing a
+// progress bar for work that does not happen.
+//
+// Only finished recordings are offered: a live one has no final bytes to cite,
+// and a tombstone has none left. A capture whose bytes are not on this host IS
+// offered — a dataset may legitimately cite one (§12) — with its availability
+// chip stating exactly that.
+//
+// Archive lives here rather than beside the member detail because here is where
+// it can succeed: the backend refuses to archive a capture that still belongs to
+// any dataset, exactly as it refuses to delete one.
 
-import { useUiStore } from '../../store/uiStore';
-import { formatWhen } from './data';
+import { AvailabilityChip } from '../captures/AvailabilityChip';
+import { CaptureLabelChips } from '../episodeChips';
+import { ArchiveDialog } from './ArchiveDialog';
+import { shortCaptureId } from './data';
+import type { Capture } from '../../api/types';
 import type { DatasetsState } from './useDatasetsState';
 
-export function BuildRail({ state }: { state: DatasetsState }) {
-  const { selected, detail, detailLoading, detailError } = state;
-  const setActiveTab = useUiStore((s) => s.setActiveTab);
-
+function CandidateRow({ capture, state }: { capture: Capture; state: DatasetsState }) {
+  const adding = state.addingCaptureId === capture.capture_id;
+  const memberships = capture.memberships ?? [];
   return (
-    <div className="flex flex-col overflow-auto rounded-card border border-gray-200 bg-white shadow-card">
-      <div className="border-b border-gray-100 px-[18px] py-[13px]">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
-          Export &amp; build
-        </span>
-      </div>
-
-      {/* Review is the single export surface — point there, don't duplicate it. */}
-      <div className="border-b border-gray-100 px-[18px] py-[14px]">
-        <div
-          data-testid="review-pointer"
-          className="flex flex-col gap-2 rounded-[11px] border border-teal-100 bg-teal-50/60 px-[14px] py-[13px]"
+    <div
+      data-testid={`dataset-candidate-${capture.capture_id}`}
+      data-capture-id={capture.capture_id}
+      className="flex flex-col gap-1.5 rounded-[10px] border border-gray-100 px-[11px] py-[9px]"
+    >
+      <div className="flex items-center gap-2">
+        <span
+          title={capture.capture_id}
+          className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-gray-700"
         >
-          <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-teal-700">
-            Export recordings
-          </span>
-          <p className="text-[12.5px] leading-relaxed text-gray-600">
-            Recordings are reviewed and exported in{' '}
-            <span className="font-semibold text-teal-700">Review</span>: resolve the exceptions, then
-            export the whole READY set in one click. Datasets is the catalog of what came out.
-          </p>
-          <button
-            type="button"
-            data-testid="go-to-review"
-            onClick={() => setActiveTab('review')}
-            className="h-9 self-start rounded-[10px] bg-teal-600 px-4 text-[13px] font-bold text-white shadow-btn hover:bg-teal-700"
-          >
-            Go to Review →
-          </button>
-        </div>
-      </div>
-
-      <div className="flex flex-col gap-[11px] px-[18px] py-[14px]">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
-          Selected dataset
+          {capture.run_id ?? shortCaptureId(capture.capture_id)}
         </span>
-        {!selected ? (
-          <span className="text-[12.5px] text-gray-400">
-            Select a dataset to see its export details.
-          </span>
-        ) : detailLoading ? (
-          <span className="text-[12.5px] text-gray-400">Loading…</span>
-        ) : detailError ? (
-          <span className="text-[12.5px] text-amber-600">Couldn&apos;t load export details.</span>
-        ) : detail ? (
-          <div data-testid="export-details" className="flex flex-col gap-[11px]">
-            <Row label="Run" value={detail.run_id ?? '—'} />
-            <Row label="State" value={detail.state ?? '—'} />
-            <Row label="Exported" value={formatWhen(detail.exported_at)} />
-          </div>
-        ) : null}
-
-        {/* Phase 2 mock — quiet, clearly not a working control yet. */}
-        <div className="mt-1 flex items-center gap-2 border-t border-gray-100 pt-3">
-          <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-400">
-            Build
-          </span>
-          <span className="rounded-chip bg-gray-100 px-2 py-[2px] text-[10px] font-semibold text-gray-500">
-            Phase 2 · pending
-          </span>
-        </div>
+        <AvailabilityChip
+          capture={capture}
+          testId={`dataset-candidate-availability-${capture.capture_id}`}
+        />
+      </div>
+      <CaptureLabelChips capture={capture} />
+      {memberships.length > 0 && (
+        <span className="text-[10.5px] text-gray-400">
+          already in {memberships.map((m) => m.dataset_name ?? m.dataset_id).join(', ')}
+        </span>
+      )}
+      <div className="flex items-center gap-1.5">
         <button
           type="button"
-          data-testid="build-dataset-btn"
-          onClick={state.toastBuild}
-          className="h-10 rounded-[10px] border border-dashed border-gray-300 bg-gray-50 text-[13px] font-semibold text-gray-500 hover:bg-gray-100"
+          data-testid={`dataset-add-${capture.capture_id}`}
+          onClick={() => state.addMember(capture)}
+          disabled={state.selectedDatasetId === null || adding}
+          title={
+            state.selectedDatasetId === null
+              ? 'Select a dataset first'
+              : 'Add this recording to the selected dataset. Nothing moves on disk.'
+          }
+          className="rounded-chip bg-teal-600 px-2.5 py-[3px] text-[11px] font-bold text-white hover:bg-teal-700 disabled:opacity-40"
         >
-          Build dataset (LeRobot v3)
+          {adding ? 'Adding…' : '+ Add'}
         </button>
-        <span className="text-center text-[11px] leading-relaxed text-gray-400">
-          Recipe-based builds convert matching episodes into a versioned LeRobot v3 artifact — this
-          arrives with the Phase 2 recipe/episode model. Not wired to a backend yet.
-        </span>
+        {state.canArchive(capture) && (
+          <button
+            type="button"
+            data-testid={`dataset-archive-${capture.capture_id}`}
+            onClick={() => state.openArchive(capture)}
+            title="Copy this recording to an archive root, verify it, then remove it from this machine"
+            className="rounded-chip border border-gray-200 px-2.5 py-[3px] text-[11px] font-semibold text-gray-600 hover:bg-gray-50"
+          >
+            Archive
+          </button>
+        )}
       </div>
     </div>
   );
 }
 
-function Row({ label, value }: { label: string; value: string }) {
+export function BuildRail({ state }: { state: DatasetsState }) {
+  const target = state.selectedDataset;
+  const hidden = state.candidateMatchCount - state.candidates.length;
+
   return (
-    <div className="flex items-center gap-2">
-      <span className="text-[12.5px] text-gray-500">{label}</span>
-      <div className="flex-1 border-b border-dotted border-gray-200" />
-      <span className="font-mono text-[12.5px] font-medium text-gray-900">{value}</span>
+    <div className="flex min-h-0 flex-col overflow-hidden rounded-card border border-gray-200 bg-white shadow-card">
+      <div className="shrink-0 border-b border-gray-100 px-[18px] py-[13px]">
+        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+          Build dataset
+        </span>
+      </div>
+
+      <div className="shrink-0 border-b border-gray-100 px-[18px] py-[13px]">
+        {target ? (
+          <p data-testid="build-target" className="text-[12.5px] leading-relaxed text-gray-600">
+            Adding to <span className="font-semibold text-gray-900">{target.dataset.name}</span> —{' '}
+            {target.dataset.member_count} member
+            {target.dataset.member_count === 1 ? '' : 's'}. Each recording gets the next
+            number, and a number retired by a removal is never handed out again.
+          </p>
+        ) : (
+          <p data-testid="build-no-target" className="text-[12.5px] leading-relaxed text-gray-500">
+            Select a dataset on the left (or create one) to add recordings to it.
+          </p>
+        )}
+      </div>
+
+      <div className="flex shrink-0 flex-col gap-2 border-b border-gray-100 px-[18px] py-[11px]">
+        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+          Recordings
+        </span>
+        <input
+          type="search"
+          data-testid="dataset-candidate-search"
+          value={state.candidateSearch}
+          onChange={(e) => state.setCandidateSearch(e.target.value)}
+          placeholder="Find run, capture, operator, task…"
+          className="w-full rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] text-gray-700 placeholder:text-gray-400"
+        />
+      </div>
+
+      <div data-testid="dataset-candidates" className="min-h-0 flex-1 overflow-y-auto px-[14px] py-2.5">
+        {state.candidates.length === 0 ? (
+          <p data-testid="dataset-candidates-empty" className="px-1 py-3 text-[12.5px] text-gray-400">
+            {state.candidateSearch.trim() !== ''
+              ? 'No recording matches that search.'
+              : target
+                ? 'Every finished recording is already in this dataset.'
+                : 'Every finished recording already belongs to a dataset.'}
+          </p>
+        ) : (
+          <div className="flex flex-col gap-1.5">
+            {state.candidates.map((capture) => (
+              <CandidateRow key={capture.capture_id} capture={capture} state={state} />
+            ))}
+            {hidden > 0 && (
+              <span data-testid="dataset-candidates-more" className="px-1 py-1 text-[11px] text-gray-400">
+                {hidden} more match — narrow the search to reach them.
+              </span>
+            )}
+          </div>
+        )}
+      </div>
+
+      <p
+        data-testid="views-note"
+        className="shrink-0 border-t border-gray-100 px-[18px] py-[11px] text-[11px] leading-relaxed text-gray-400"
+      >
+        The browsable views/ tree is regenerated by the server after every change
+        here. There is nothing to refresh from this screen.
+      </p>
+
+      <ArchiveDialog state={state} />
     </div>
   );
 }

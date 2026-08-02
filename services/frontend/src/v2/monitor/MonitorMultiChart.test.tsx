@@ -33,7 +33,10 @@ function mockFetch() {
     const url = String(input);
     if (url.includes('/config')) return Promise.resolve(jsonResponse(CONFIG));
     if (url.includes('/record/status')) {
-      return Promise.resolve(jsonResponse({ state: 'created', run_id: null }));
+      // An idle recorder answers with an empty live list, never without one (§10).
+      return Promise.resolve(
+        jsonResponse({ state: 'created', run_id: null, live_capture_ids: [] }),
+      );
     }
     if (url.includes('/topics')) return Promise.resolve(jsonResponse(DISCOVERED));
     if (url.includes('/system')) {

@@ -1,7 +1,11 @@
-// MCAP transfer is OUR addition to the Review screen (agreed with the user;
-// not in the design mock) for split robot/recording-PC deployments. All of
-// that UI is gated behind this single flag, off by default, so the common
-// single-PC deployment never sees it.
+// Whether this is a SPLIT deployment: the recorder writes on the robot and the
+// recording PC pulls finished captures across.
+//
+// It lives here, beside the deletion dialogs, because it is a property of the
+// deployment rather than of any one screen — Review gates its transfer UI on
+// it, and the discard dialog is REQUIRED to use it (§12: on a split deploy the
+// dialog must say, unprompted, that a copy may still exist on the robot).
+// Off by default, so the common single-PC deployment never sees either.
 //
 // The flag is DERIVED FROM THE SERVER: useReviewState fetches
 // `GET /api/v1/transfer/status` once and calls `setSplitMode(available)` —

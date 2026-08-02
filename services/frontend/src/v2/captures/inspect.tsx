@@ -1,19 +1,22 @@
-// Shared post-hoc inspection pieces for a recording's content, used by BOTH
-// the Recordings tab (pre-export, recorded/<run_id>) and the Datasets tab
-// (post-export, data/<operator>/<task>/<NNN>): JSON sidecar blocks, the
-// loss_report table, and the on-demand video_check mp4 players. The job flows
-// stay keyed by run_id; a `datasetDir` prop switches the MCAP source to the
-// exported dataset dir (the `dataset_dir` job param).
+// Shared post-hoc inspection pieces for a capture's content: JSON sidecar
+// blocks, the loss_report table, and the on-demand video_check mp4 players.
+//
+// Relocated out of the retired features/inspect tab (§12): the v2 screens are
+// the only UI, and these are the reusable parts they need. Every job here is
+// keyed by `capture_id` (§10.5) — there is no `dataset_dir` param any more,
+// because a dataset no longer has a directory. A job resolves its source as
+// `objects/<capture_id>` and writes to `report/<pipeline>/<capture_id>/`,
+// which is the same path whether or not the capture belongs to a dataset.
 
 import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { apiGet, apiPost, getApiBase } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
 import type {
+  CaptureTopic,
   JobResult,
   JobStatus,
   LossTopic,
-  RunTopic,
   VideoCheckSummary,
 } from '../../api/types';
 import { ErrorMessage } from '../../components/ErrorMessage';
@@ -109,26 +112,22 @@ export function LossTable({ topics }: { topics: LossTopic[] }) {
 
 // Camera-ish topics: an image message type, or an /image/ topic name. These are
 // the only topics video_check can render (it decodes CompressedImage JPEG).
-export function cameraTopics(topics: RunTopic[]): RunTopic[] {
+export function cameraTopics(topics: CaptureTopic[]): CaptureTopic[] {
   return topics.filter((t) => /image/i.test(t.type) || /image/i.test(t.name));
 }
 
 // One self-contained camera preview: on mount it creates a video_check job for
 // its topic, polls to terminal, fetches the result, and plays the served mp4.
 // Event-driven only — it runs because the operator asked for this topic.
-// `datasetDir` points the job at an exported dataset dir instead of
-// recorded/<run_id> (post-export preview).
 export function VideoPlayer({
-  runId,
+  captureId,
   topic,
-  datasetDir,
   onTimeUpdate,
   seekTo,
   onSummary,
 }: {
-  runId: string;
+  captureId: string;
   topic: string;
-  datasetDir?: string;
   /** Synced playback (Review Signals): report the video clock on every frame. */
   onTimeUpdate?: (currentTime: number, duration: number) => void;
   /** Seek request from the chart — a NEW object per seek (memoized by the
@@ -155,12 +154,8 @@ export function VideoPlayer({
     mutationFn: (extra: { force?: boolean; max_frames?: number } | void) =>
       apiPost<JobStatus>('/jobs', {
         pipeline: 'video_check',
-        run_id: runId,
-        params: {
-          topic,
-          ...(datasetDir ? { dataset_dir: datasetDir } : {}),
-          ...(extra ?? {}),
-        },
+        capture_id: captureId,
+        params: { topic, ...(extra ?? {}) },
       }),
     onSuccess: (job) => setJobId(job.job_id),
   });
@@ -299,12 +294,10 @@ export function VideoPlayer({
 // camera, or ALL cameras at once (one player each).
 export function VideoCheckSection({
   topics,
-  runId,
-  datasetDir,
+  captureId,
 }: {
-  topics: RunTopic[];
-  runId: string;
-  datasetDir?: string;
+  topics: CaptureTopic[];
+  captureId: string;
 }) {
   const cameras = cameraTopics(topics);
   const [topic, setTopic] = useState<string>(cameras[0]?.name ?? '');
@@ -361,7 +354,7 @@ export function VideoCheckSection({
       ) : (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           {players.map((t) => (
-            <VideoPlayer key={t} runId={runId} topic={t} datasetDir={datasetDir} />
+            <VideoPlayer key={t} captureId={captureId} topic={t} />
           ))}
         </div>
       )}

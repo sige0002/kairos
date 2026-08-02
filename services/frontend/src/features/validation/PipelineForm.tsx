@@ -6,7 +6,8 @@
 //
 // Special case: a field literally named `template` (fast_validation) is a catalog
 // id the orchestrator resolves, so it renders as a SELECT of the known validation
-// options rather than a free-text box (see ValidationTab + routers/jobs.py).
+// options rather than a free-text box (see routers/jobs.py, which resolves the
+// id against the Config catalog before forwarding the job).
 
 import type { JSONSchema } from '../../schema/jsonSchema';
 import { schemaHasType } from '../../schema/jsonSchema';
@@ -22,7 +23,7 @@ interface PipelineFormProps {
   /** Options for a field literally named `template` (catalog-resolved select). */
   templateOptions?: ValidationOption[];
   /** Context suggestions keyed by a property's `x-suggest` kind (e.g.
-   *  `camera_topics` from the selected target run). A string field whose
+   *  `camera_topics` from the selected target capture). A string field whose
    *  schema carries `x-suggest` renders as a select of these instead of a
    *  free-text box; with no suggestions it falls back to text (honest). */
   suggestions?: Record<string, string[]>;
