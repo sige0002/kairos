@@ -202,10 +202,9 @@ test('Discard and Delete are different dialogs with different obligations', asyn
   );
   expect(screen.getByTestId('discard-scope').textContent).toMatch(/1 recording/);
   expect(screen.getByTestId('discard-scope').textContent).toMatch(/2\.0 MB/);
+  // Nothing chosen yet, so there is no reason to record and Discard is refused.
   expect(screen.getByTestId('discard-confirm')).toBeDisabled();
-  fireEvent.change(screen.getByTestId('discard-reason'), {
-    target: { value: 'gripper never closed' },
-  });
+  fireEvent.click(screen.getByTestId('discard-reason-false_start'));
   expect(screen.getByTestId('discard-confirm')).toBeEnabled();
   expect(discard).toBeInTheDocument();
 
@@ -259,6 +258,7 @@ test('confirming a discard sends kind discard with the typed reason', async () =
   );
 
   fireEvent.click(screen.getByTestId('review-discard-excluded'));
+  fireEvent.click(screen.getByTestId('discard-reason-other'));
   fireEvent.change(screen.getByTestId('discard-reason'), {
     target: { value: 'bad calibration' },
   });

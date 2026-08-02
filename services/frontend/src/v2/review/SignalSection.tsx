@@ -121,9 +121,12 @@ function useSignalReport(captureId: string) {
 export function SignalSection({
   captureId,
   topics,
+  blockedReason,
 }: {
   captureId: string;
   topics: CaptureTopic[];
+  /** Why the report cannot be run right now (a held lease, §7.1). */
+  blockedReason?: string | null;
 }) {
   const sig = useSignalReport(captureId);
   const report = sig.report;
@@ -177,7 +180,8 @@ export function SignalSection({
           type="button"
           data-testid="review-run-signal"
           onClick={sig.run}
-          disabled={sig.running}
+          disabled={sig.running || !!blockedReason}
+          title={blockedReason ?? undefined}
           className="rounded-control border border-teal-200 px-2.5 py-1 text-[11.5px] font-semibold text-teal-700 transition-colors hover:bg-teal-50 disabled:opacity-50"
         >
           {sig.running

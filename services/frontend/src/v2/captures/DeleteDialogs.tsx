@@ -16,7 +16,7 @@
 // because "try again later" is not actionable without knowing what to wait for.
 
 import { useEffect, useState } from 'react';
-import { Button, Modal } from '../../components/ui';
+import { Button, Modal, cn } from '../../components/ui';
 import { readCaptureError } from './errors';
 import type { Capture } from '../../api/types';
 
@@ -37,6 +37,79 @@ export function totalBytes(captures: Capture[]): number | null {
 
 function countLabel(n: number): string {
   return `${n} recording${n === 1 ? '' : 's'}`;
+}
+
+// ---- discard reasons -------------------------------------------------------
+//
+// The reason stays REQUIRED on the wire: once the files are gone the ledger
+// line is the only surviving explanation, and that value is untouched here.
+// What changed is the typing. During a collection session an operator discards
+// obviously-bad takes constantly, and a free-text box every time taxes the
+// honest path hardest — the operator who discards carefully pays the most.
+// Presets make the common answers one click; "Other" keeps the open field for
+// anything they do not cover.
+
+export const DISCARD_REASONS = [
+  { id: 'failed_take', label: 'Failed take' },
+  { id: 'false_start', label: 'False start' },
+  { id: 'sensor', label: 'Sensor or data issue' },
+  { id: 'other', label: 'Other' },
+] as const;
+
+export type DiscardReasonId = (typeof DISCARD_REASONS)[number]['id'];
+
+function reasonLabel(id: DiscardReasonId): string {
+  return DISCARD_REASONS.find((r) => r.id === id)!.label;
+}
+
+/**
+ * What the captures themselves already say about why they are being discarded.
+ *
+ * A take the operator has ALREADY marked as failed does not need them to say so
+ * a second time — the review carries `task_result: 'failure'` and often a
+ * specific `failure_reason`. Pre-selecting from that is not a guess: it is the
+ * operator's own earlier answer, and it still has to be confirmed by pressing
+ * Discard.
+ *
+ * `detail` is only offered when every target agrees on it. Two captures with
+ * different failure reasons have no single detail to append, and picking one of
+ * them would attach the wrong explanation to the other.
+ */
+export function prefillDiscardReason(captures: Capture[]): {
+  chip: DiscardReasonId | null;
+  detail: string | null;
+} {
+  if (captures.length === 0) return { chip: null, detail: null };
+  const allFailed = captures.every(
+    (c) => c.task_result === 'failure' || !!c.failure_reason,
+  );
+  if (!allFailed) return { chip: null, detail: null };
+  const reasons = new Set(
+    captures.map((c) => (c.failure_reason ?? '').trim()).filter((r) => r.length > 0),
+  );
+  const detail = reasons.size === 1 ? [...reasons][0]! : null;
+  return { chip: 'failed_take', detail };
+}
+
+/**
+ * The string that goes on the wire, and into the ledger.
+ *
+ * A preset carries its label plus whatever specific detail was already known,
+ * so "Failed take — gripper never closed" reads as well months later as the
+ * free text it replaces. "Other" is the operator's own words and nothing else.
+ * Whitespace-only input composes to an empty string, which is what keeps the
+ * confirm button disabled rather than sending a blank the server would reject.
+ */
+export function composeDiscardReason(
+  chip: DiscardReasonId | null,
+  detail: string | null,
+  otherText: string,
+): string {
+  if (chip === null) return '';
+  if (chip === 'other') return otherText.trim();
+  const label = reasonLabel(chip);
+  const extra = (detail ?? '').trim();
+  return extra ? `${label} — ${extra}` : label;
 }
 
 /** The error block both dialogs render. Kept identical on purpose: the codes
@@ -89,15 +162,33 @@ export function DiscardDialog({
   onCancel,
   onConfirm,
 }: DeleteDialogProps) {
-  const [reason, setReason] = useState('');
-  // A fresh dialog starts with an empty reason — carrying the previous one over
-  // would let a stale explanation be attached to a different discard.
+  const [chip, setChip] = useState<DiscardReasonId | null>(null);
+  // The detail belongs to the chip it was prefilled FOR. "object dropped"
+  // explains a failed take; appending it to "Sensor or data issue" because the
+  // operator changed their mind would record a reason nobody gave.
+  const [detail, setDetail] = useState<{ chip: DiscardReasonId; text: string } | null>(
+    null,
+  );
+  const [otherText, setOtherText] = useState('');
+  // A fresh dialog re-seeds from THESE captures — carrying the previous
+  // selection over would let one take's explanation be attached to another's
+  // discard, which is the whole failure the required reason exists to prevent.
   useEffect(() => {
-    if (open) setReason('');
+    if (!open) return;
+    const seed = prefillDiscardReason(captures);
+    setChip(seed.chip);
+    setDetail(
+      seed.chip && seed.detail ? { chip: seed.chip, text: seed.detail } : null,
+    );
+    setOtherText('');
+    // `captures` is intentionally not a dependency: re-seeding mid-dialog would
+    // overwrite a choice the operator had already made if the list refetched.
   }, [open]);
 
   const bytes = totalBytes(captures);
-  const canConfirm = reason.trim().length > 0 && captures.length > 0 && !busy;
+  const activeDetail = detail && detail.chip === chip ? detail.text : null;
+  const reason = composeDiscardReason(chip, activeDetail, otherText);
+  const canConfirm = reason.length > 0 && captures.length > 0 && !busy;
 
   return (
     <Modal
@@ -111,7 +202,7 @@ export function DiscardDialog({
           </Button>
           <Button
             variant="danger"
-            onClick={() => onConfirm(reason.trim())}
+            onClick={() => onConfirm(reason)}
             disabled={!canConfirm}
             data-testid="discard-confirm"
           >
@@ -139,23 +230,54 @@ export function DiscardDialog({
             kairos does not delete it.
           </p>
         )}
-        <label
-          htmlFor="discard-reason"
-          className="mt-3 block text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400"
-        >
+        <span className="mt-3 block text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400">
           Reason (required)
-        </label>
-        <input
-          id="discard-reason"
-          value={reason}
-          onChange={(e) => setReason(e.target.value)}
-          disabled={busy}
-          autoFocus
-          maxLength={500}
-          placeholder="e.g. gripper never closed — unusable takes"
-          data-testid="discard-reason"
-          className="mt-1 w-full rounded-control border border-gray-200 px-2 py-1.5 text-sm focus:border-teal-500 focus:outline-none"
-        />
+        </span>
+        <div className="mt-1.5 flex flex-wrap gap-1.5" data-testid="discard-reason-chips">
+          {DISCARD_REASONS.map((r) => {
+            const on = chip === r.id;
+            return (
+              <button
+                key={r.id}
+                type="button"
+                disabled={busy}
+                aria-pressed={on}
+                data-testid={`discard-reason-${r.id}`}
+                onClick={() => setChip(r.id)}
+                className={cn(
+                  'rounded-chip border px-2.5 py-1 text-[12.5px] font-semibold transition-colors disabled:opacity-50',
+                  on
+                    ? 'border-red-300 bg-red-50 text-red-700'
+                    : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50',
+                )}
+              >
+                {r.label}
+              </button>
+            );
+          })}
+        </div>
+        {/* The specific reason the operator already gave in Review, carried
+            through rather than asked for again. Shown so they can see exactly
+            what will be recorded. */}
+        {chip !== null && chip !== 'other' && activeDetail && (
+          <p className="mt-1.5 text-[11.5px] text-gray-500" data-testid="discard-reason-detail">
+            Recorded as: <span className="font-mono text-gray-700">{reason}</span>
+          </p>
+        )}
+        {chip === 'other' && (
+          <input
+            id="discard-reason"
+            value={otherText}
+            onChange={(e) => setOtherText(e.target.value)}
+            disabled={busy}
+            autoFocus
+            maxLength={500}
+            placeholder="e.g. gripper never closed — unusable takes"
+            data-testid="discard-reason"
+            aria-label="Reason"
+            className="mt-1.5 w-full rounded-control border border-gray-200 px-2 py-1.5 text-sm focus:border-teal-500 focus:outline-none"
+          />
+        )}
         <p className="mt-1 text-[11.5px] text-gray-500">
           Kept in the lifecycle ledger. Once the files are gone this line is the
           only record of why.

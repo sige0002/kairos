@@ -14,7 +14,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiGet, apiPost } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
 import type { CaptureDetail, JobStatus, LossTopic } from '../../api/types';
-import { ErrorMessage } from '../../components/ErrorMessage';
+import { JobErrorNote } from '../captures/JobErrorNote';
 import { JsonBlock, LossTable, TERMINAL, VideoCheckSection } from '../captures/inspect';
 import { isCapturePresent } from '../captures/availability';
 
@@ -87,7 +87,7 @@ export function DatasetInspection({ detail }: { detail: CaptureDetail }) {
             {lossJobId ? 'Analyzing…' : lossMutation.isPending ? 'Starting…' : 'Run loss report'}
           </button>
         </div>
-        {lossMutation.isError && <ErrorMessage error={lossMutation.error} />}
+        <JobErrorNote error={lossMutation.isError ? lossMutation.error : null} testId="dataset-loss-error" />
         {topics ? (
           <LossTable topics={topics} />
         ) : (

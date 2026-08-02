@@ -566,6 +566,7 @@ test('discarding a member is refused, and the dialog says to remove it first', a
   );
 
   fireEvent.click(screen.getByTestId('discard-member-btn'));
+  fireEvent.click(screen.getByTestId('discard-reason-other'));
   fireEvent.change(screen.getByTestId('discard-reason'), {
     target: { value: 'unusable take' },
   });

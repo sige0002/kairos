@@ -52,7 +52,14 @@ function mockApi(opts: {
   capture: CaptureDetail;
   /** After a refused job, what a re-read of the capture returns. */
   captureAfterRefusal?: CaptureDetail;
-  jobError?: { status: number; code: string; message: string };
+  jobError?: {
+    status: number;
+    code: string;
+    message: string;
+    /** The per-code payload the server attaches — capture_busy carries
+     *  lease_owner, which is the whole point of its 409. */
+    details?: Record<string, unknown>;
+  };
 }) {
   let current = opts.capture;
   const posted: Record<string, unknown>[] = [];
@@ -65,7 +72,13 @@ function mockApi(opts: {
         if (opts.captureAfterRefusal) current = opts.captureAfterRefusal;
         return Promise.resolve(
           jsonResponse(
-            { error: { code: opts.jobError.code, message: opts.jobError.message } },
+            {
+              error: {
+                code: opts.jobError.code,
+                message: opts.jobError.message,
+                details: opts.jobError.details,
+              },
+            },
             opts.jobError.status,
           ),
         );
@@ -168,4 +181,69 @@ test('a healthy capture still offers its controls and shows no tombstone', async
 
   expect(await screen.findByTestId('review-run-loss')).toBeInTheDocument();
   expect(screen.queryByTestId('review-capture-tombstoned')).toBeNull();
+});
+
+// The operator hit this live: capture_busy on video generation showed the raw
+// server envelope — no holder named, no guidance. §7.1 puts lease_owner on both
+// the row and the 409 precisely so the UI can say who to wait for.
+test('a held lease disables the job controls and names the holder', async () => {
+  mockApi({
+    capture: detail({
+      lease_owner: 'digest-job-7',
+      lease_expires_at: new Date(Date.now() + 30_000).toISOString(),
+    }),
+  });
+  renderWithClient(<CaptureInspection captureId={CAP} />);
+
+  const note = await screen.findByTestId('review-capture-busy');
+  expect(note).toHaveTextContent('digest-job-7 is working on this capture');
+  expect(note.textContent).toMatch(/until \d/);
+
+  // Learned BEFORE the click, on every job control — not from a 409 each time.
+  expect(screen.getByTestId('review-run-loss')).toBeDisabled();
+  expect(screen.getByTestId('review-run-signal')).toBeDisabled();
+  expect(screen.getByTestId('review-run-validation')).toBeDisabled();
+  expect(screen.getByTestId('review-run-loss')).toHaveAttribute(
+    'title',
+    expect.stringContaining('digest-job-7'),
+  );
+});
+
+test('an expired lease leaves the controls live', async () => {
+  // The store compares the expiry when acquiring, so a stale row must not
+  // disable a control the server would happily accept.
+  mockApi({
+    capture: detail({
+      lease_owner: 'digest-job-7',
+      lease_expires_at: new Date(Date.now() - 1000).toISOString(),
+    }),
+  });
+  renderWithClient(<CaptureInspection captureId={CAP} />);
+
+  expect(await screen.findByTestId('review-run-loss')).toBeEnabled();
+  expect(screen.queryByTestId('review-capture-busy')).toBeNull();
+});
+
+// The lease can be taken between render and click, so the 409 stays the race
+// fallback — and it must speak in the job voice, not the raw envelope.
+test('a capture_busy 409 names the holder and says what to wait for', async () => {
+  mockApi({
+    capture: detail(),
+    jobError: {
+      status: 409,
+      code: 'capture_busy',
+      message: 'Another job is working on cap-1; try again in a moment',
+      details: { lease_owner: 'digest-job-7', lease_expires_at: '2026-08-03T10:00:30Z' },
+    },
+  });
+  renderWithClient(<CaptureInspection captureId={CAP} />);
+
+  fireEvent.click(await screen.findByTestId('review-run-loss'));
+
+  const err = await screen.findByTestId('review-loss-error');
+  expect(err).toHaveAttribute('data-error-code', 'capture_busy');
+  expect(err).toHaveTextContent('digest-job-7');
+  // The 'job' voice: wait for that one to finish, then run yours — not the
+  // delete flow's wording about pulling files from under it.
+  expect(err.textContent).toMatch(/Only one job may hold a capture at a time/i);
 });

@@ -19,7 +19,7 @@ import type {
   LossTopic,
   VideoCheckSummary,
 } from '../../api/types';
-import { ErrorMessage } from '../../components/ErrorMessage';
+import { JobErrorNote } from './JobErrorNote';
 
 // Terminal job states; while a job is non-terminal we keep polling.
 export const TERMINAL = new Set(['succeeded', 'failed', 'canceled']);
@@ -236,7 +236,7 @@ export function VideoPlayer({
         {topic}
       </div>
       {mutation.isError ? (
-        <ErrorMessage error={mutation.error} />
+        <JobErrorNote error={mutation.error} testId="video-submit-error" />
       ) : jobError ? (
         <p role="alert" className="text-xs text-red-600">
           {jobError}
@@ -295,9 +295,13 @@ export function VideoPlayer({
 export function VideoCheckSection({
   topics,
   captureId,
+  blockedReason,
 }: {
   topics: CaptureTopic[];
   captureId: string;
+  /** Why generation is unavailable right now (a held lease, §7.1). The
+   *  operator learns it from the control rather than from a 409. */
+  blockedReason?: string | null;
 }) {
   const cameras = cameraTopics(topics);
   const [topic, setTopic] = useState<string>(cameras[0]?.name ?? '');
@@ -332,7 +336,8 @@ export function VideoCheckSection({
           <button
             type="button"
             onClick={() => topic && setPlayers([topic])}
-            disabled={!topic}
+            disabled={!topic || !!blockedReason}
+            title={blockedReason ?? undefined}
             className="rounded-control border border-teal-200 px-2.5 py-1 text-xs font-semibold text-teal-700 hover:bg-teal-50 disabled:opacity-50"
           >
             Generate mp4
@@ -340,13 +345,19 @@ export function VideoCheckSection({
           <button
             type="button"
             onClick={() => setPlayers(cameras.map((c) => c.name))}
-            disabled={cameras.length === 0}
+            disabled={cameras.length === 0 || !!blockedReason}
+            title={blockedReason ?? undefined}
             className="rounded-control border border-gray-200 px-2.5 py-1 text-xs font-semibold text-gray-600 hover:bg-gray-50 disabled:opacity-50"
           >
             All cameras
           </button>
         </div>
       </div>
+      {blockedReason && (
+        <p className="text-[11.5px] text-amber-700" data-testid="video-blocked">
+          {blockedReason}
+        </p>
+      )}
       {players.length === 0 ? (
         <p className="text-xs text-gray-500">
           Preview the leading frames of a camera topic as an mp4 — one camera, or all at once.

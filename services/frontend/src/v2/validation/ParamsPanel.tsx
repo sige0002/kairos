@@ -18,7 +18,7 @@ import { availabilityOf, isCapturePresent } from '../captures/availability';
 import { AvailabilityChip } from '../captures/AvailabilityChip';
 import { formatBatchLabel } from '../episodeChips';
 import { PipelineForm } from '../../features/validation/PipelineForm';
-import { ErrorMessage } from '../../components/ErrorMessage';
+import { JobErrorNote } from '../captures/JobErrorNote';
 import { Badge } from '../../components/ui';
 
 export const ALL_CAPTURES = '__all__';
@@ -235,7 +235,7 @@ export function ParamsPanel({
 
       <div className="flex-1" />
 
-      {submitError != null && <ErrorMessage error={submitError} />}
+      <JobErrorNote error={submitError} testId="validation-submit-error" />
 
       {(submitFailures?.length ?? 0) > 0 && (
         <ul

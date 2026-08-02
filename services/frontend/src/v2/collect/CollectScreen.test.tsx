@@ -528,6 +528,7 @@ test('Discard & re-record runs the shared discard, keyed on capture_id', async (
   // No reason typed → the confirm is refused up front rather than by a 400.
   const confirm = screen.getByTestId('discard-confirm');
   expect(confirm).toBeDisabled();
+  fireEvent.click(screen.getByTestId('discard-reason-other'));
   fireEvent.change(screen.getByTestId('discard-reason'), {
     target: { value: 'gripper never closed' },
   });

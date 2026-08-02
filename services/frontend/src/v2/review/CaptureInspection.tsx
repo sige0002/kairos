@@ -26,6 +26,7 @@ import {
   spanMs,
 } from '../captures/inspect';
 import { isTombstoned } from '../captures/availability';
+import { leaseBlockReason, liveLease } from '../captures/lease';
 import { JobErrorNote, isTombstoneError } from '../captures/JobErrorNote';
 import { QuickCheckVerdict } from './QuickCheckVerdict';
 import { SignalSection } from './SignalSection';
@@ -105,6 +106,13 @@ export function CaptureInspection({ captureId }: { captureId: string }) {
   if (detailQuery.isError) return <ErrorMessage error={detailQuery.error} />;
   const capture = detailQuery.data;
   const tombstoned = isTombstoned(capture);
+  // §7.1: while a job holds the lease, every other job on this capture is
+  // refused with 409 capture_busy. The row already says who holds it and until
+  // when, so the operator learns it from the control instead of from a
+  // rejection. The 409 handling stays as the race fallback — a lease can be
+  // taken between this render and the click.
+  const lease = liveLease(capture);
+  const leaseReason = lease ? leaseBlockReason(lease) : null;
   // A tombstoned capture keeps its row (§7) but its bytes are going or gone, so
   // every job, preview and re-run below would be refused. Showing them live
   // invites an operator to keep pressing controls that cannot work — which is
@@ -204,17 +212,36 @@ export function CaptureInspection({ captureId }: { captureId: string }) {
         </section>
       )}
 
+      {leaseReason && (
+        <p
+          data-testid="review-capture-busy"
+          className="rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-[12.5px] text-amber-800"
+        >
+          {leaseReason}. Reports and previews can be run once it finishes.
+        </p>
+      )}
+
       <QuickCheckVerdict quickCheck={capture.quick_check} />
 
       {completed ? (
-        <VideoCheckSection topics={topics} captureId={captureId} />
+        <VideoCheckSection
+          topics={topics}
+          captureId={captureId}
+          blockedReason={leaseReason}
+        />
       ) : (
         <p className="text-[12px] text-gray-500">
           Video preview is available once a recording completes.
         </p>
       )}
 
-      {completed && <SignalSection captureId={captureId} topics={topics} />}
+      {completed && (
+        <SignalSection
+          captureId={captureId}
+          topics={topics}
+          blockedReason={leaseReason}
+        />
+      )}
 
       <section>
         <h4 className="mb-1.5 text-[12.5px] font-medium text-gray-700">
@@ -248,7 +275,8 @@ export function CaptureInspection({ captureId }: { captureId: string }) {
               type="button"
               data-testid="review-run-loss"
               onClick={() => loss.run({})}
-              disabled={loss.running}
+              disabled={loss.running || !!leaseReason}
+              title={leaseReason ?? undefined}
               className="rounded-control border border-teal-200 px-2.5 py-1 text-[11.5px] font-semibold text-teal-700 transition-colors hover:bg-teal-50 disabled:opacity-50"
             >
               {loss.running ? 'Analyzing…' : 'Run loss report'}
@@ -290,9 +318,12 @@ export function CaptureInspection({ captureId }: { captureId: string }) {
                 type="button"
                 data-testid="review-run-validation"
                 onClick={() => template && validation.run({ template })}
-                disabled={validation.running || !template}
+                disabled={validation.running || !template || !!leaseReason}
                 title={
-                  template ? `template: ${template}` : 'No validation template configured'
+                  leaseReason ??
+                  (template
+                    ? `template: ${template}`
+                    : 'No validation template configured')
                 }
                 className="rounded-control border border-teal-200 px-2.5 py-1 text-[11.5px] font-semibold text-teal-700 transition-colors hover:bg-teal-50 disabled:opacity-50"
               >
