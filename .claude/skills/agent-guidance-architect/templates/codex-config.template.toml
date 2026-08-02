@@ -1,0 +1,14 @@
+# agent-guidance-architect: .codex/config.toml テンプレート（Codex 固有設定の置き場）。
+# プロジェクトの .codex/config.toml は trusted プロジェクトでチーム共有できる
+# （コミットして配布する前提の設計。ただし model_provider / openai_base_url /
+# notify 等の機微キーはプロジェクトスコープでは無視され警告が出る）。
+#
+# 注意: project_doc_fallback_filenames は「その階層に AGENTS.md が無い場合」の
+# フォールバックでしかなく、AGENTS.md とのマージはされない。チーム標準は
+# AGENTS.md を正本にする構成で担保し、この設定へ依存しない。
+# （このコメントブロックは必要に応じて削除する）
+
+# 例: Codex 固有の既定値のみを書く
+# model = "{{model-id}}"                  # ユーザー設定に任せるなら書かない
+# approval_policy = "on-request"          # untrusted / on-request / never / auto_review
+# sandbox_mode = "workspace-write"        # read-only / workspace-write / danger-full-access

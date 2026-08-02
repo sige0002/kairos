@@ -7,8 +7,8 @@ A system that **records, monitors, validates, and converts** ROS 2 robot data. T
 recording format is **MCAP**, and live video, live metrics, and post-hoc validation are all
 organized around this "source of truth."
 
-> **Status:** All 7 services + frontend implemented (Stage 1–4). The architecture below is based on
-> the `fig_const/` diagrams.
+> **Status:** All 7 services (frontend included) plus the UI-driven acceptance suite
+> (`make test-e2e`) are implemented. The architecture below is based on the `fig_const/` diagrams.
 
 ## Architecture
 
