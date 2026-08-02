@@ -73,7 +73,14 @@ logger = logging.getLogger("kairos")
 
 # The schema generation this code speaks. A database stamped with anything else
 # is discarded and rebuilt from sidecars — see the module docstring.
-SCHEMA_VERSION = 2
+#
+# BUMP THIS WHENEVER _SCHEMA CHANGES. The jobs run_id→capture_id rename shipped
+# without a bump, so live version-2 databases existed with EITHER shape and
+# every POST /jobs against an old one died on "no column named capture_id" —
+# found in the field, not by tests, because tests only ever see fresh schemas.
+# The rebuild is the designed absorption path; refusing to bump is how it is
+# bypassed by accident.
+SCHEMA_VERSION = 3
 
 CATALOG_DIRNAME = "catalog"
 TEMPLATES_SIDECAR = "validation_templates.json"
