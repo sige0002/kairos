@@ -713,6 +713,16 @@ class RecordService:
         for capture in live:
             if capture.capture_id == active_id:
                 continue
+            # Prefer the recorder's OWN account of how the capture ended. A
+            # recorder that was killed and restarted has already written a
+            # recovery manifest with re-measured counters and a specific
+            # reason; this path only knows "the session is not running", so
+            # overwriting that with a generic error and leaving bytes at the
+            # live session's value is how 10 MB of data came to be shown as
+            # "0 B / empty" (§3: the manifest is authoritative).
+            if self._captures.adopt_manifest_facts(capture.capture_id):
+                interrupted += 1
+                continue
             self._store.update_capture(
                 capture.capture_id,
                 state=CaptureState.interrupted,

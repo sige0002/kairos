@@ -240,7 +240,12 @@ def create_orchestrator_app(
         on_first_review=on_first_review,
     )
     digest = DigestJob(
-        capture_store, layout, health, instance_id=instance_id, recorder=recorder
+        capture_store,
+        layout,
+        health,
+        instance_id=instance_id,
+        recorder=recorder,
+        captures=capture_service,
     )
     record_service = RecordService(
         capture_store,

@@ -88,6 +88,7 @@ class DigestJob:
         recorder: Client used to confirm the recorder is not holding a capture.
             ``None`` means "no recorder in this deployment", which is treated as
             confirmation — a split recording PC has no local recorder to ask.
+        captures: Capture service, for adopting a sealed manifest's facts.
     """
 
     def __init__(
@@ -98,12 +99,17 @@ class DigestJob:
         *,
         instance_id: str,
         recorder: Any | None = None,
+        captures: Any | None = None,
     ) -> None:
         self._store = store
         self._layout = layout
         self._health = health
         self._instance_id = instance_id
         self._recorder = recorder
+        # Used only to adopt a terminal manifest's facts after sealing. Injected
+        # rather than imported: the capture service already depends on nothing
+        # here, and a cycle would be the price of the convenience.
+        self._captures = captures
         # Strong refs to in-flight background digests: asyncio keeps only weak
         # ones, and a garbage-collected job would leave its lease held until it
         # expired.
@@ -221,6 +227,13 @@ class DigestJob:
             # is also what lets this uid-1000 process update a root-owned file.
             await asyncio.to_thread(write_object_manifest, capture_dir, sealed)
             self._promote(capture_id, capture_dir, digest)
+            # The digest is often the FIRST thing to touch a capture that
+            # reached a terminal state without the stop path (a recorder
+            # restart writes its own recovery manifest). Sealing bytes whose
+            # counters the catalog never learned would verify data the UI still
+            # calls empty, so the facts are adopted at the same moment (§3).
+            if self._captures is not None:
+                self._captures.adopt_manifest_facts(capture_id)
             logger.info(
                 "digest complete",
                 extra={

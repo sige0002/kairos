@@ -309,6 +309,37 @@ class TestOtherPinnedShapes:
         # unreachability.
         assert body["error"]["code"] == "manifest_corrupt"
 
+    def test_a_readable_terminal_manifest_clears_a_stale_corrupt_complaint(
+        self, client: TestClient, fake_recorder: FakeRecorder
+    ) -> None:
+        # Deliberate ruling (round 4, n3): manifest adoption CAN only run when
+        # the file on disk read back as a valid terminal manifest — a corrupt
+        # one adopts nothing — so at that point the on-disk file is the truth
+        # and the HTTP-side manifest_corrupt complaint was transient. Keeping
+        # the stale complaint once the file verifiably reads clean would be
+        # the lie, not the honesty.
+        from conftest import reconcile
+
+        started = client.post(
+            "/api/v1/record/start", json={"topics": ["/joint_states"]}
+        ).json()
+        fake_recorder.manifest_corrupt = True
+        client.post("/api/v1/record/stop")
+        capture_id = started["capture_id"]
+        assert (
+            client.get(f"/api/v1/captures/{capture_id}").json()["error"]["code"]
+            == "manifest_corrupt"
+        )
+
+        # The recorder recovers; its metadata endpoint answers again. The valid
+        # terminal manifest has been on disk the whole time (the fake writes
+        # sidecars); a reconciler pass adopts the file's facts.
+        fake_recorder.manifest_corrupt = False
+        reconcile(client)
+        body = client.get(f"/api/v1/captures/{capture_id}").json()
+        assert body["error"] is None
+        assert body["state"] == "completed"
+
     def test_the_bag_is_named_after_the_capture_not_the_run(
         self, client: TestClient, layout: DataLayout, fake_recorder: FakeRecorder
     ) -> None:

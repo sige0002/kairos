@@ -40,12 +40,14 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from kairos_common import ApiError, ledger_v2
+from kairos_common import ApiError, Compression, ledger_v2
 from kairos_common.capture_sidecars import (
     TERMINAL_STATES,
     UNFINALIZED_STATES,
     CaptureState,
+    ObjectManifestV2,
     RecordV2,
+    SidecarStatus,
     read_object_manifest,
     read_record,
     write_record,
@@ -63,9 +65,12 @@ from api_orchestrator.models import (
     Capture,
     CaptureArchiveResponse,
     CaptureDetail,
+    CaptureTopic,
     DeleteKind,
     RetentionCandidate,
     ReviewSaveRequest,
+    Split,
+    coerce_error,
 )
 from api_orchestrator.store import CaptureStore
 
@@ -236,6 +241,48 @@ class CaptureService:
             and c.replica.state
             in (ReplicaState.present_unverified, ReplicaState.present_verified)
         ]
+
+    # ---- manifest reconciliation (§3, §8) ----------------------------------
+
+    def adopt_manifest_facts(self, capture_id: str) -> bool:
+        """Copy a terminal manifest's recording facts onto the row. ``True`` = changed.
+
+        ``object_manifest.json`` is authoritative for what was recorded (§3);
+        the row is a queryable cache of it. The stop path normally keeps the two
+        in step, but it is not the only way a capture reaches a terminal state —
+        a recorder killed mid-recording writes its own recovery manifest with
+        RE-MEASURED counters, and nothing in the orchestrator was reading them.
+        The row then kept the live session's ``bytes: 0`` while 10 MB of robot
+        data sat on disk, and every UI surface called it empty. An operator who
+        believes that discards it.
+
+        Only a TERMINAL manifest is adopted: until finalise the recorder is
+        still sole writer (§3.3), and its in-progress counters are less accurate
+        than the ones the live session is reporting to us.
+
+        Deliberately writes only the fields that differ, so a pass over an
+        agreeing catalog costs nothing and the return value means "the catalog
+        was wrong and is now right" rather than "I ran".
+        """
+        read = read_object_manifest(self._layout.capture_dir(capture_id))
+        if read.status is not SidecarStatus.ok or read.manifest is None:
+            return False
+        manifest = read.manifest
+        if manifest.state not in TERMINAL_STATES:
+            return False
+        capture = self._store.get_capture(capture_id)
+        if capture is None:
+            return False
+
+        changes = _manifest_divergence(capture, manifest)
+        if not changes:
+            return False
+        self._store.update_capture(capture_id, **changes)
+        logger.info(
+            "adopted the manifest's recording facts onto the catalog row",
+            extra={"capture_id": capture_id, "fields": sorted(changes)},
+        )
+        return True
 
     # ---- review (§4.1) -----------------------------------------------------
 
@@ -935,6 +982,58 @@ def _real_path(path: Path) -> Path:
 def _overlaps(a: Path, b: Path) -> bool:
     """Whether either path contains the other, or they are the same."""
     return a == b or a.is_relative_to(b) or b.is_relative_to(a)
+
+
+def _manifest_divergence(
+    capture: Capture, manifest: ObjectManifestV2
+) -> dict[str, Any]:
+    """The recording facts where the row disagrees with a terminal manifest.
+
+    A ``None`` on the manifest is treated as "not measured", never as "zero":
+    an older recorder that did not record a message count must not blank a
+    count the live session did observe. The exception is ``error``, where the
+    manifest saying nothing IS the statement that the recording ended cleanly —
+    so a stale sync error on the row is cleared.
+    """
+    changes: dict[str, Any] = {}
+    if str(capture.state) != manifest.state:
+        changes["state"] = CaptureState(manifest.state)
+    for field, value in (
+        ("ended_at", manifest.ended_at),
+        ("bytes", manifest.bytes),
+        ("message_count", manifest.message_count),
+        ("started_at", manifest.started_at),
+        ("operator", manifest.operator),
+        ("task", manifest.task),
+        ("robot", manifest.robot),
+    ):
+        if value is not None and getattr(capture, field) != value:
+            changes[field] = value
+
+    manifest_error = coerce_error(manifest.error)
+    if capture.error != manifest_error:
+        # Whatever the recorder wrote wins, including nothing at all. The
+        # generic "No active recorder session found." the status-poll path
+        # leaves behind is exactly the message that should lose to the
+        # recorder's own "recorder restarted while the capture was recording".
+        #
+        # This deliberately also clears a row-side ``manifest_corrupt``: we can
+        # only be here because the file on disk read back as a valid TERMINAL
+        # manifest (a corrupt one adopts nothing), so the on-disk file is the
+        # truth and the HTTP-side complaint was transient. Keeping the stale
+        # complaint once the file verifiably reads clean would be the lie.
+        changes["error"] = manifest_error
+
+    manifest_topics = [CaptureTopic.model_validate(t) for t in manifest.topics]
+    if manifest_topics and capture.topics != manifest_topics:
+        changes["topics"] = manifest_topics
+    if manifest.compression and str(capture.compression) != manifest.compression:
+        changes["compression"] = Compression(manifest.compression)
+    if manifest.split and (
+        capture.split is None or capture.split.model_dump() != manifest.split
+    ):
+        changes["split"] = Split.model_validate(manifest.split)
+    return changes
 
 
 def _write_record_sidecar(

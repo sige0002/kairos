@@ -78,6 +78,8 @@ class ReconcileResult:
     applied: bool = True
     skipped_reason: str | None = None
     adopted: int = 0
+    # Existing rows brought back into agreement with their terminal manifest.
+    settled: int = 0
     # Captures published out of .incoming/ into objects/ this pass (§10.6).
     arrived: tuple[str, ...] = ()
     missing: int = 0
@@ -95,6 +97,7 @@ class ReconcileResult:
             "applied": self.applied,
             "skipped_reason": self.skipped_reason,
             "adopted": self.adopted,
+            "settled": self.settled,
             "arrived": list(self.arrived),
             "missing": self.missing,
             "resumed_deletes": self.resumed_deletes,
@@ -105,6 +108,33 @@ class ReconcileResult:
             "threshold": self.threshold,
             "denominator": self.denominator,
         }
+
+
+def _facts_diverge(existing: Any, row: Any) -> bool:
+    """Whether a terminal manifest's facts disagree with the catalog row.
+
+    Only TERMINAL manifests are compared: until finalise the recorder is still
+    writing, and its in-progress counters are less accurate than what the live
+    session reports to us (§3.3).
+
+    A ``None`` on the manifest side is "not measured", never "zero", so an older
+    recorder that recorded no message count cannot blank one the row already
+    holds. The cheap columns are compared here so a pass over an agreeing
+    catalog does no file I/O at all; the authoritative re-read and the actual
+    write happen once, in ``adopt_manifest_facts``.
+    """
+    if str(row.state) not in TERMINAL_STATES:
+        return False
+    if existing["state"] != str(row.state):
+        return True
+    return any(
+        value is not None and existing[column] != value
+        for column, value in (
+            ("bytes", row.bytes),
+            ("message_count", row.message_count),
+            ("ended_at", row.ended_at),
+        )
+    )
 
 
 class Reconciler:
@@ -296,6 +326,8 @@ class Reconciler:
 
         adoptable: list[Any] = field(default_factory=list)
         adoptable_replicas: list[Any] = field(default_factory=list)
+        # Existing rows whose terminal manifest disagrees with the catalog.
+        settleable: list[str] = field(default_factory=list)
         missing: list[str] = field(default_factory=list)
         trashed: list[str] = field(default_factory=list)
         corrupt: list[dict[str, Any]] = field(default_factory=list)
@@ -325,16 +357,27 @@ class Reconciler:
             scan.ledger_unreadable = str(exc)
             return scan
 
+        # One query for every row's recording facts, not one per capture: this
+        # is also the divergence check below, so the whole comparison costs a
+        # single SELECT rather than a read per terminal capture per pass.
         known = {
-            row["capture_id"]
-            for row in self._store.execute_read("SELECT capture_id FROM captures")
+            row["capture_id"]: row
+            for row in self._store.execute_read(
+                "SELECT capture_id, state, bytes, message_count, ended_at FROM captures"
+            )
         }
         adoptable_ids: set[str] = set()
         for row in result.captures:
-            if row.capture_id in known:
-                continue
-            scan.adoptable.append(row)
-            adoptable_ids.add(row.capture_id)
+            existing = known.get(row.capture_id)
+            if existing is None:
+                scan.adoptable.append(row)
+                adoptable_ids.add(row.capture_id)
+            elif _facts_diverge(existing, row):
+                # §8: a terminal manifest beats whatever the row says. The row
+                # is only a cache of it, and the paths that can settle a capture
+                # WITHOUT the stop path (a recorder restart writing its own
+                # recovery manifest) leave the cache stale by construction.
+                scan.settleable.append(row.capture_id)
         # Corrupt replicas are kept regardless of the adoptable filter. By
         # design they have NO capture row (§8 rule 4 forbids inventing one from
         # an unreadable manifest), so filtering replicas down to adoptable
@@ -421,6 +464,10 @@ class Reconciler:
         result.adopted = self._store.apply_rebuild(
             captures=scan.adoptable, replicas=scan.adoptable_replicas
         )
+
+        for capture_id in scan.settleable:
+            if self._captures.adopt_manifest_facts(capture_id):
+                result.settled += 1
 
         for capture_id in scan.missing:
             # §9-2: bytes removed behind kairos's back are NOT a deletion. The
