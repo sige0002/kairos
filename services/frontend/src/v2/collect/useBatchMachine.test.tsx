@@ -3186,3 +3186,132 @@ test('"Later" hides every known unsaved take, not just the one on screen', async
   await waitFor(() => expect(result.current.unsavedTake).toBeNull());
   expect(result.current.unsavedTakeCount).toBe(0);
 });
+
+// B1-RECOVERY (blocker): the outage ends and the recorder answers again with
+// state:created / capture_id:null. The tab that lived through it flipped back
+// to "RECORDING" with a FRESH 00:00:00 timer for a recording that no longer
+// exists, and never self-corrected — a newly opened tab was correct, so the
+// stale phase was purely client-local.
+test('a recording does not resume when the recorder returns without it', async () => {
+  let recorderAlive = true;
+  let started = false;
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/record/status')) {
+      if (!recorderAlive) return Promise.reject(new Error('recorder unreachable'));
+      return Promise.resolve(
+        jsonResponse(
+          started
+            ? // Back up, and holding NOTHING: the take died during the outage.
+              { capture_id: null, run_id: null, state: 'created', live_capture_ids: [] }
+            : { capture_id: null, run_id: null, state: 'created', live_capture_ids: [] },
+        ),
+      );
+    }
+    if (url.includes('/record/start')) {
+      started = true;
+      return Promise.resolve(jsonResponse(captureBody('cap_lost')));
+    }
+    if (url.includes('/captures'))
+      return Promise.resolve(jsonResponse({ items: [], next_cursor: null }));
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  act(() => result.current.startRecording());
+  await waitFor(() => expect(result.current.phase).toBe('recording'));
+
+  // The recorder dies, then comes back holding no capture.
+  recorderAlive = false;
+  await waitFor(() => expect(result.current.recorderUnreachable).toBe(true), {
+    timeout: 10000,
+  });
+  recorderAlive = true;
+
+  // It must NOT resume recording on stale client state alone.
+  await waitFor(() => expect(result.current.phase).toBe('ready'), { timeout: 10000 });
+  expect(result.current.recorderUnreachable).toBe(false);
+}, 25000);
+
+// The interrupted take is not lost — it exists server-side with whatever bytes
+// it managed, and the operator is the only one who can say if they are worth
+// keeping. It never appeared in the recovery banner at all before.
+test('an interrupted take is offered for recovery', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/captures'))
+      return Promise.resolve(
+        jsonResponse({
+          items: [
+            {
+              capture_id: 'cap_interrupted',
+              run_id: 'run_x',
+              state: 'interrupted',
+              review_status: 'pending',
+              review_revision: 0,
+              started_at: new Date(Date.now() - 20_000).toISOString(),
+              ended_at: new Date(Date.now() - 10_000).toISOString(),
+              bytes: 4_000_000,
+            },
+          ],
+          next_cursor: null,
+        }),
+      );
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+
+  await waitFor(() =>
+    expect(result.current.unsavedTake?.captureId).toBe('cap_interrupted'),
+  );
+  expect(result.current.unsavedTake?.bytes).toBe(4_000_000);
+});
+
+// M6-PERSIST: the banner PROMISES "Later hides them all until a new one
+// appears". An in-memory dismissal that a reload undoes breaks that promise in
+// exactly the situation the operator hits it — they dismissed because they did
+// not want to deal with those takes yet.
+test('a dismissal survives a reload, and a NEW take still surfaces', async () => {
+  const unsaved = (id: string) => ({
+    capture_id: id,
+    run_id: `run_${id}`,
+    state: 'completed',
+    review_status: 'pending',
+    review_revision: 0,
+    started_at: new Date(Date.now() - 5_000).toISOString(),
+    ended_at: new Date(Date.now() - 4_000).toISOString(),
+    bytes: 1000,
+  });
+  let items = [unsaved('cap_old')];
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/captures'))
+      return Promise.resolve(jsonResponse({ items, next_cursor: null }));
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  const first = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  await waitFor(() => expect(first.result.current.unsavedTake).not.toBeNull());
+  act(() => first.result.current.dismissUnsavedTake());
+  await waitFor(() => expect(first.result.current.unsavedTake).toBeNull());
+  first.unmount();
+
+  // A reload: fresh hook, fresh query cache. The dismissal is read back from
+  // storage rather than resurrecting the take.
+  const second = renderHook(() => useBatchMachine({ defaultTopics: [] }), { wrapper });
+  await waitFor(() => expect(second.result.current.unsavedTakeCount).toBe(0));
+  expect(second.result.current.unsavedTake).toBeNull();
+
+  // A take recorded AFTER the dismissal has an id nobody dismissed, so it
+  // surfaces on its own — no expiry rule needed.
+  items = [unsaved('cap_new'), unsaved('cap_old')];
+  await waitFor(
+    () => expect(second.result.current.unsavedTake?.captureId).toBe('cap_new'),
+    { timeout: 20000 },
+  );
+}, 30000);

@@ -32,6 +32,11 @@ import { QuickCheckVerdict } from './QuickCheckVerdict';
 import { SignalSection } from './SignalSection';
 import { formatBytes } from './format';
 
+/** How often an open capture detail re-reads itself. Slow enough to be
+ *  invisible on a healthy screen, fast enough that a capture discarded
+ *  elsewhere turns terminal on its own rather than on the operator's click. */
+const DETAIL_REFRESH_MS = 10_000;
+
 function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
     <>
@@ -88,6 +93,13 @@ export function CaptureInspection({ captureId }: { captureId: string }) {
   const detailQuery = useQuery({
     queryKey: queryKeys.capture(captureId),
     queryFn: ({ signal }) => getCapture(captureId, signal),
+    // A capture can be discarded from another tab while this panel sits open.
+    // Without a re-read the panel stayed live-looking — enabled buttons, a
+    // reassuring QUICK CHECK — until the operator pressed something and got a
+    // 409, which is finding out by being refused. The lease also changes
+    // underneath (§7.1), so the controls' disabled state has the same need.
+    refetchInterval: DETAIL_REFRESH_MS,
+    refetchOnWindowFocus: true,
   });
   // The active validation template (config/options aspects.validation.active) —
   // fast_validation's required `template` param, resolved exactly as the

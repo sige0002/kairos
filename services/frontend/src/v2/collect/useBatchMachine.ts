@@ -306,6 +306,7 @@ type Action =
   | { type: 'START_SUCCEEDED'; captureId: string | null; runLabel: string | null }
   | { type: 'CANCEL_ARMING' }
   | { type: 'TICK'; elapsedMs: number }
+  | { type: 'RECORDING_INTERRUPTED' }
   | { type: 'STOP_REQUESTED' }
   | { type: 'STOP_FAILED'; error: MachineError }
   | { type: 'RETRY_STOP' }
@@ -480,6 +481,24 @@ function reducer(state: MachineState, action: Action): MachineState {
         elapsedMs: 0,
         startError: null,
         stopError: null,
+      };
+    case 'RECORDING_INTERRUPTED':
+      // The recorder came back and is not holding this capture. Whatever
+      // happened while it was silent, the recording is over — so the screen
+      // stops claiming it is running. The capture is released rather than
+      // forgotten: it exists server-side as `interrupted` with whatever bytes
+      // it managed, and the unsaved-take banner offers it for recovery.
+      if (state.phase !== 'recording') return state;
+      return {
+        ...state,
+        phase: 'ready',
+        elapsedMs: 0,
+        qualityOverride: null,
+        pendingTask: null,
+        failReason: '',
+        currentCaptureId: null,
+        currentRunLabel: null,
+        currentReviewRevision: 0,
       };
     case 'RETRY_EPISODE':
       if (state.phase !== 'result') return state;
@@ -739,10 +758,43 @@ let currentState: MachineState = readInitialState();
 const storeListeners = new Set<() => void>();
 
 // Captures the operator has dismissed ("Later") from the unsaved-take banner.
-// Module scope so a tab-switch remount keeps them hidden; cleared on a full page
-// load (a fresh module) so the banner re-offers them next session — matching the
-// "hide until next page load" contract in the design.
-const dismissedUnsavedCaptures = new Set<string>();
+// Persisted, because the banner PROMISES it: "Later hides them all until a new
+// one appears". A dismissal that a reload undoes breaks that promise in the one
+// situation the operator is most likely to hit it — they dismissed precisely
+// because they did not want to deal with those takes yet.
+//
+// Ids, not a flag: a take recorded AFTER the dismissal has an id nobody
+// dismissed, so it surfaces on its own without any expiry rule.
+const DISMISSED_STORAGE_KEY = 'kairos.collect.dismissedUnsaved';
+
+function readDismissed(): Set<string> {
+  try {
+    const raw = window.localStorage.getItem(DISMISSED_STORAGE_KEY);
+    if (!raw) return new Set();
+    const parsed: unknown = JSON.parse(raw);
+    return new Set(
+      Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : [],
+    );
+  } catch {
+    // Unreadable or unavailable storage: the banner simply re-offers them,
+    // which is the safe direction — an unsaved take shown twice costs a click,
+    // one hidden wrongly costs the take.
+    return new Set();
+  }
+}
+
+const dismissedUnsavedCaptures = readDismissed();
+
+function persistDismissed(): void {
+  try {
+    window.localStorage.setItem(
+      DISMISSED_STORAGE_KEY,
+      JSON.stringify([...dismissedUnsavedCaptures]),
+    );
+  } catch {
+    // Best-effort: the in-memory set still holds for this session.
+  }
+}
 
 function notifyStore(): void {
   for (const listener of storeListeners) listener();
@@ -962,6 +1014,7 @@ export function __resetBatchStore(): void {
   serverHydrated = false;
   dismissedUnsavedCaptures.clear();
   try {
+    window.localStorage.removeItem(DISMISSED_STORAGE_KEY);
     window.localStorage.removeItem(BATCH_STORAGE_KEY);
   } catch {
     /* ignore */
@@ -1576,7 +1629,11 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     const items = captureScanQuery.data?.items ?? [];
     const now = Date.now();
     return items.filter((capture) => {
-      if (capture.state !== 'completed') return false;
+      // `interrupted` counts as recoverable: a recording the recorder lost
+      // mid-take still wrote whatever bytes it managed, and the operator is the
+      // only one who can say whether they are worth keeping. Leaving it out is
+      // why an interrupted take never appeared here at all.
+      if (capture.state !== 'completed' && capture.state !== 'interrupted') return false;
       if (capture.review_revision !== 0) return false;
       if (!capture.started_at) return false;
       const startedMs = Date.parse(capture.started_at);
@@ -1913,21 +1970,60 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   }, [recorderReachable]);
 
   const recStartRef = useRef<number | null>(null);
+  // The baseline belongs to the RECORDING, not to our connection: it is set
+  // when the take begins and cleared when it ends. Re-deriving it whenever the
+  // recorder's reachability changed restarted the clock at 00:00:00 the moment
+  // an outage ended, presenting a brand-new elapsed time for a take that had
+  // been running — or had already died — throughout.
+  useEffect(() => {
+    if (state.phase !== 'recording') {
+      recStartRef.current = null;
+      return;
+    }
+    if (recStartRef.current == null) recStartRef.current = Date.now();
+  }, [state.phase]);
+
   useEffect(() => {
     if (state.phase !== 'recording') return;
-    recStartRef.current = Date.now();
+    // B1: freeze the elapsed clock while the recorder is silent. An animating
+    // timer is an active claim that a recording is progressing, and once the
+    // poll fails we have no evidence of that — qa-ui watched it climb
+    // 00:12 → 00:37 against a recorder that had been dead the whole time. The
+    // last value stays on screen, labelled as last-known.
+    if (!recorderReachable) return;
     const id = setInterval(() => {
       if (recStartRef.current == null) return;
-      // B1: freeze the elapsed clock the moment the recorder stops answering.
-      // An animating timer is an active claim that a recording is progressing,
-      // and once the poll fails we have no evidence of that — qa-ui watched it
-      // climb 00:12 → 00:37 against a recorder that had been dead the whole
-      // time. The last value stays on screen, labelled as last-known.
-      if (!recorderReachable) return;
       dispatch({ type: 'TICK', elapsedMs: Date.now() - recStartRef.current });
     }, 250);
     return () => clearInterval(id);
   }, [state.phase, recorderReachable]);
+
+  // B1-recovery: the recorder is answering again, so everything the machine
+  // believed through the outage is checkable — and a local `recording` phase is
+  // a claim nothing on the server supports. If our capture is not in the live
+  // set, the take ended while we could not see it. Resuming RECORDING on stale
+  // client state alone is how a tab shows a fresh 00:00:00 timer for a
+  // recording that no longer exists.
+  const wasUnreachableRef = useRef(false);
+  useEffect(() => {
+    if (!recorderReachable) {
+      wasUnreachableRef.current = true;
+      return;
+    }
+    if (!wasUnreachableRef.current) return;
+    const live = recordStatus.live;
+    // Still cannot tell what is live — stay as we are rather than guessing.
+    if (live === null) return;
+    wasUnreachableRef.current = false;
+    if (state.phase !== 'recording') return;
+    const captureId = state.currentCaptureId;
+    if (captureId && live.includes(captureId)) return; // genuinely still running
+    dispatch({ type: 'RECORDING_INTERRUPTED' });
+    showToast(
+      'The recording ended while the recorder was unreachable — the take is ' +
+        'listed below for labelling or discarding.',
+    );
+  }, [recorderReachable, recordStatus.live, state.phase, state.currentCaptureId, showToast]);
 
   // SAVING advances on the REAL stop event (stopMutation.onSuccess dispatches
   // SAVED). This secondary gate covers a tab-switch during saving: once the
@@ -2229,6 +2325,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     for (const capture of unsavedCaptures) {
       dismissedUnsavedCaptures.add(capture.capture_id);
     }
+    persistDismissed();
     setDismissNonce((n) => n + 1);
   }, [unsavedCaptures]);
 

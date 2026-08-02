@@ -139,6 +139,9 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
 
   const badge = headerBadge(sel.reviewLane);
   const availability = availabilityOf(sel.capture);
+  // Whether this machine actually holds the bytes. `usable` is the same fact
+  // the inspection gates on: present and readable.
+  const bytesHere = availability.usable;
   // The inspection reads the local bag, so it needs the bytes to be here —
   // which is a fact about the replica, not about the deployment topology.
   const showInspection = availability.usable;
@@ -275,7 +278,7 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
           <div className="flex flex-col gap-1.5 rounded-[10px] border border-gray-200 bg-gray-50 px-3 py-2.5">
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-[12px] font-semibold text-gray-600">
-                Excluded — still on disk
+                {bytesHere ? 'Excluded — still on disk' : 'Excluded'}
               </span>
               <div className="flex-1" />
               <button
@@ -297,9 +300,16 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
                 Delete…
               </button>
             </div>
+            {/* Only claim there is space to reclaim when the bytes are actually
+                here. Printing it directly under "The files vanished from this
+                machine" told the operator to free space that is already gone. */}
             <span className="text-[11px] text-gray-400">
-              Excluding is only a label — the recording still occupies disk. Both
-              removals free that space and neither can be undone.
+              {bytesHere
+                ? 'Excluding is only a label — the recording still occupies disk. ' +
+                  'Both removals free that space and neither can be undone.'
+                : 'Excluding is only a label. This machine no longer holds the ' +
+                  'files, so there is no space to reclaim — a removal records ' +
+                  'the decision, and cannot be undone.'}
             </span>
           </div>
         )}

@@ -2,10 +2,12 @@
 
 import { expect, test } from 'vitest';
 import type { AlertEvent, MetricsSnapshot, RecordArming } from '../../api/types';
+import type { MonitorRow } from '../../features/monitor/useMonitorRows';
 import {
   armingWarning,
   configMismatchHint,
   firingAlertRows,
+  topicLiveness,
   topicRates,
 } from './warnings';
 
@@ -167,4 +169,35 @@ test('configMismatchHint ignores a robot publishing a few extras', () => {
   // order-of-magnitude gap is a question worth raising.
   expect(configMismatchHint(7, 12)).toBeNull();
   expect(configMismatchHint(7, 21)).not.toBeNull();
+});
+
+// A1-REPOINT: frame deltas cannot answer this. qa-ui hooked RTCPeerConnection
+// and found the streamer keeps delivering a real 15fps after the source dies —
+// it re-encodes the frozen last frame — so the only honest signal is the
+// monitor's own view of the topic.
+const row = (over: Partial<MonitorRow> & { name: string }): MonitorRow => ({
+  configured: true,
+  live: true,
+  measured: true,
+  ...over,
+});
+
+test('topicLiveness reports a measured, inactive topic as silent', () => {
+  expect(topicLiveness([row({ name: '/cam/head', status: 'inactive' })], '/cam/head')).toBe(
+    'silent',
+  );
+});
+
+test('topicLiveness reports a topic discovery no longer lists as silent', () => {
+  // The add-camera picker already surfaces this as "No image topics found".
+  expect(topicLiveness([row({ name: '/cam/other' })], '/cam/head')).toBe('silent');
+});
+
+test('topicLiveness reports a publishing topic as live', () => {
+  expect(topicLiveness([row({ name: '/cam/head', status: 'ok' })], '/cam/head')).toBe('live');
+});
+
+test('topicLiveness says unknown when there is no monitor data at all', () => {
+  // Nothing has been established, and that must not render as either answer.
+  expect(topicLiveness([], '/cam/head')).toBe('unknown');
 });

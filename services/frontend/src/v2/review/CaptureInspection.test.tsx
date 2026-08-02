@@ -247,3 +247,38 @@ test('a capture_busy 409 names the holder and says what to wait for', async () =
   // delete flow's wording about pulling files from under it.
   expect(err.textContent).toMatch(/Only one job may hold a capture at a time/i);
 });
+
+// M4-STALENESS: the panel stayed live-looking for 30s+ after a discard
+// elsewhere — enabled buttons, a reassuring QUICK CHECK — until the operator
+// pressed something and got a 409. Finding out by being refused is not
+// self-correction.
+test('an open detail turns terminal on its own, without a click', async () => {
+  let discardedYet = false;
+  const live = detail();
+  const gone = detail({
+    state: 'discarded',
+    delete_kind: 'discard',
+    delete_reason: 'bad take',
+    deleted_at: '2026-08-03T10:05:00Z',
+  });
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/config/options')) return Promise.resolve(jsonResponse(CONFIG_OPTIONS));
+    if (url.includes(`/captures/${CAP}`)) {
+      const body = discardedYet ? gone : live;
+      discardedYet = true; // the next poll sees what the other tab did
+      return Promise.resolve(jsonResponse(body));
+    }
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  renderWithClient(<CaptureInspection captureId={CAP} />);
+  expect(await screen.findByTestId('review-run-loss')).toBeInTheDocument();
+
+  // No interaction at all — the panel re-reads itself.
+  await waitFor(
+    () => expect(screen.getByTestId('review-capture-tombstoned')).toBeInTheDocument(),
+    { timeout: 15000 },
+  );
+  expect(screen.queryByTestId('review-run-loss')).toBeNull();
+}, 25000);

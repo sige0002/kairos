@@ -12,6 +12,7 @@
 // Kept DOM-free so the filtering/counting is unit-testable without React.
 
 import type { AlertEvent, MetricsSnapshot, RecordArming } from '../../api/types';
+import type { MonitorRow } from '../../features/monitor/useMonitorRows';
 import { matchesTopic } from '../../features/record/topics';
 import { toAlertRows, type AlertRow } from '../monitor/alerts';
 
@@ -143,4 +144,34 @@ export function configMismatchHint(
   if (configuredSilent === 0 || discovered === 0) return null;
   if (discovered < configuredSilent * MISMATCH_RATIO) return null;
   return { configuredSilent, discovered };
+}
+
+// ---- per-topic liveness ----------------------------------------------------
+
+/** Whether a topic is publishing, silent, or beyond what we can tell. */
+export type TopicLiveness = 'live' | 'silent' | 'unknown';
+
+/**
+ * Whether a camera tile's SOURCE topic is still publishing.
+ *
+ * Frame deltas cannot answer this. qa-ui hooked RTCPeerConnection and found the
+ * streamer keeps delivering a real 15fps after the source dies — it re-encodes
+ * the frozen last frame — so `framesStaleMs` correctly never fires and the tile
+ * happily reports a live rate for a picture that stopped changing. The monitor
+ * already knows the topic went silent (it shows SILENT, and the add-camera
+ * picker drops to "No image topics found"), so the honest signal is there; it
+ * just was not being read.
+ *
+ * `unknown` is its own answer and never rendered as either of the others: with
+ * no monitor data at all we have not established anything.
+ */
+export function topicLiveness(rows: MonitorRow[], topic: string): TopicLiveness {
+  if (rows.length === 0) return 'unknown';
+  const row = rows.find((r) => r.name === topic);
+  // Discovery no longer lists it: its publisher is gone. This is the case the
+  // add-camera picker already surfaces as "No image topics found".
+  if (!row) return 'silent';
+  if (row.status === 'inactive') return 'silent';
+  if (row.measured || row.live) return 'live';
+  return 'unknown';
 }

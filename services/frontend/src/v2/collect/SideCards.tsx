@@ -313,9 +313,10 @@ export function WarningsCard({
               data-testid="collect-config-mismatch"
               className="pl-[15px] pt-1 text-xs font-medium text-amber-800"
             >
-              設定済み {mismatch.configuredSilent} topic は無音ですが、
-              {mismatch.discovered} topic が配信中です — ロボット設定の選択違いの
-              可能性があります。
+              {mismatch.configuredSilent} configured topic
+              {mismatch.configuredSilent === 1 ? ' is' : 's are'} silent, but{' '}
+              {mismatch.discovered} topic{mismatch.discovered === 1 ? ' is' : 's are'}{' '}
+              publishing — the wrong robot config may be selected.
             </span>
           )}
         </div>

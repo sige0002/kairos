@@ -147,7 +147,7 @@ export const FiltersRail = forwardRef<
         </div>
 
         <div className="flex flex-col gap-1.5">
-          <span className="text-[11.5px] font-semibold text-gray-400">Set</span>
+          <span className="text-[11.5px] font-semibold text-gray-400">Batch</span>
           {batchFilterLabel ? (
             <div
               data-testid="review-batch-filter-rail"

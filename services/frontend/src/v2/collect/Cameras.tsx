@@ -32,6 +32,8 @@ export function isFramesStale(stats: StreamStats): boolean {
   return stats.framesStaleMs != null && stats.framesStaleMs >= FRAME_STALE_MS;
 }
 import type { RuntimeConfig } from '../../config';
+import { useMonitorRows } from '../../features/monitor/useMonitorRows';
+import { topicLiveness } from './warnings';
 import type { BatchMachine } from './useBatchMachine';
 import {
   MAIN_RES_PRESETS,
@@ -83,7 +85,41 @@ function latColor(ms: number): string {
  *  tile's top-right (user preference over the mock's bottom stats line). Only
  *  the values the hook actually measured are rendered (honesty: never a
  *  synthesized fps/latency to fill a slot); nothing at all until one exists. */
-export function StatsBadge({ stats, className }: { stats: StreamStats; className?: string }) {
+export function StatsBadge({
+  stats,
+  className,
+  topicSilent = false,
+}: {
+  stats: StreamStats;
+  className?: string;
+  /** The SOURCE topic has stopped publishing per the monitor. The stream keeps
+   *  delivering a real frame rate — it re-encodes the frozen last frame — so
+   *  this is the only signal that says the picture is no longer current. */
+  topicSilent?: boolean;
+}) {
+  if (topicSilent) {
+    return (
+      <span
+        data-testid="camera-stats"
+        data-topic-silent="true"
+        title={
+          'The monitor reports this topic has stopped publishing. The stream is ' +
+          'still delivering frames, but they are re-encodings of the last one ' +
+          'that arrived — the picture is not current.'
+        }
+        className={cn(
+          'inline-flex items-center gap-1.5 rounded-chip bg-amber-500/90 px-2.5 py-1 font-mono text-[11px] font-semibold text-white',
+          className,
+        )}
+      >
+        topic silent — showing the last frame
+      </span>
+    );
+  }
+  return <StreamStatsBadge stats={stats} className={className} />;
+}
+
+function StreamStatsBadge({ stats, className }: { stats: StreamStats; className?: string }) {
   // Frames have stopped advancing. The connection is still up and getStats will
   // happily keep reporting its last framesPerSecond, but no picture is arriving
   // — so the chip reports what it can actually measure (how long since the last
@@ -423,13 +459,23 @@ export function Cameras({
     maxHeight: mainH,
   });
 
+  // Two independent ways a tile can be showing a picture that is not current,
+  // and neither implies the other: the transport can stall (frames stop
+  // arriving), or the SOURCE can die while the streamer keeps re-encoding the
+  // last frame at a real rate. Only the monitor can see the second one.
+  const { rows: monitorRows } = useMonitorRows();
+  const mainTopicSilent =
+    !!mainTopic && topicLiveness(monitorRows, mainTopic) === 'silent';
+
   useEffect(() => {
-    // A connected stream with frames standing still is NOT ok. The connection
-    // being up says nothing about pictures arriving, and reporting it as ok is
-    // how the row read "main stream OK" for 106 seconds against a topic with no
-    // publisher.
-    onHealthChange?.(phase !== 'failed' && !isFramesStale(stats));
-  }, [phase, stats, onHealthChange]);
+    // A connected stream with frames standing still is NOT ok, and neither is
+    // one whose source topic has gone quiet. The connection being up says
+    // nothing about pictures arriving, which is how the row read "main stream
+    // OK" for 106 seconds against a topic with no publisher.
+    onHealthChange?.(
+      phase !== 'failed' && !isFramesStale(stats) && !mainTopicSilent,
+    );
+  }, [phase, stats, mainTopicSilent, onHealthChange]);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   useEffect(() => {
@@ -525,7 +571,7 @@ export function Cameras({
             />
             {recording ? `REC ${elapsedText}` : 'STANDBY'}
           </span>
-          {connected && <StatsBadge stats={stats} />}
+          {connected && <StatsBadge stats={stats} topicSilent={mainTopicSilent} />}
         </div>
         {/* Bottom row as ONE flex strip (topic left, RES right) so the two
             chips share the width and can never overlap, whatever the topic
