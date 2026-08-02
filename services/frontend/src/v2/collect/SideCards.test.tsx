@@ -34,7 +34,23 @@ function renderCard(m: BatchMachine = machine) {
       machine={m}
       sseStatus="closed"
       monitorBridge={null}
-      camerasOk={true}
+      cameraHealth={{ streamFailed: false, framesStale: false, silentTopics: 0, totalCameras: 1 }}
+    />,
+  );
+}
+
+function renderCardWithCameras(cameraHealth: {
+  streamFailed: boolean;
+  framesStale: boolean;
+  silentTopics: number;
+  totalCameras: number;
+}) {
+  return renderWithClient(
+    <SystemStatusCard
+      machine={machine}
+      sseStatus="closed"
+      monitorBridge={null}
+      cameraHealth={cameraHealth}
     />,
   );
 }
@@ -230,4 +246,42 @@ test('CoverageCard sums episodes_recorded per condition for the current task', a
   expect(sparse.textContent).toContain('4');
   // The other task's batches never leak into this card.
   expect(screen.queryByText('9')).toBeNull();
+});
+
+// A1: the Cameras row was scoped to "main stream", so a silent SUB camera had
+// nothing on the screen accounting for it.
+test('the Cameras row counts every pane, not just the main stream', async () => {
+  mockSystem({ cpu: { model: null, cores: null }, gpu: null });
+  renderCardWithCameras({
+    streamFailed: false,
+    framesStale: false,
+    silentTopics: 2,
+    totalCameras: 4,
+  });
+  expect(await screen.findByTestId('sys-cameras')).toHaveTextContent(
+    '2 of 4 cameras: topic silent',
+  );
+  expect(screen.getByTestId('sys-cameras')).toHaveTextContent('CHECK');
+});
+
+test('all cameras healthy reports the count, not a bare OK', async () => {
+  mockSystem({ cpu: { model: null, cores: null }, gpu: null });
+  renderCardWithCameras({
+    streamFailed: false,
+    framesStale: false,
+    silentTopics: 0,
+    totalCameras: 3,
+  });
+  expect(await screen.findByTestId('sys-cameras')).toHaveTextContent('3 cameras OK');
+});
+
+test('no cameras open is stated honestly, not as OK', async () => {
+  mockSystem({ cpu: { model: null, cores: null }, gpu: null });
+  renderCardWithCameras({
+    streamFailed: false,
+    framesStale: false,
+    silentTopics: 0,
+    totalCameras: 0,
+  });
+  expect(await screen.findByTestId('sys-cameras')).toHaveTextContent('none open');
 });

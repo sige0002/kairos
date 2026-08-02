@@ -16,6 +16,7 @@ import { ADVICE_ITEMS, type BatchMachine } from './useBatchMachine';
 import { SIDE_PAD } from './compact';
 import { formatBytes } from '../review/format';
 import { useMonitorRows } from '../../features/monitor/useMonitorRows';
+import type { CameraHealth } from './Cameras';
 import { armingWarning, configMismatchHint, firingAlertRows, topicRates } from './warnings';
 
 type Tone = 'green' | 'amber' | 'red' | 'teal' | 'gray';
@@ -60,12 +61,12 @@ export function SystemStatusCard({
   machine,
   sseStatus,
   monitorBridge,
-  camerasOk,
+  cameraHealth,
 }: {
   machine: BatchMachine;
   sseStatus: SseStatus;
   monitorBridge: 'up' | 'down' | null;
-  camerasOk: boolean;
+  cameraHealth: CameraHealth;
 }) {
   const robotOffline = sseStatus === 'open' && monitorBridge === 'down';
   const robotLive = sseStatus === 'open' && !robotOffline;
@@ -138,6 +139,38 @@ export function SystemStatusCard({
       }
     : { label: 'Topic rates', value: '—', chip: '—', tone: 'gray' };
 
+  // Every pane, not just the main stream. A silent sub camera used to have
+  // nothing on the screen accounting for it: the row spoke for the main tile
+  // alone while the others advertised a live frame rate beside it.
+  const { streamFailed, framesStale, silentTopics, totalCameras } = cameraHealth;
+  const cameraRow: SysRow = ((): SysRow => {
+    if (totalCameras === 0) {
+      return { label: 'Cameras', value: 'none open', chip: '—', tone: 'gray' };
+    }
+    if (silentTopics > 0) {
+      return {
+        label: 'Cameras',
+        value: `${silentTopics} of ${totalCameras} cameras: topic silent`,
+        chip: 'CHECK',
+        tone: 'amber',
+      };
+    }
+    if (streamFailed || framesStale) {
+      return {
+        label: 'Cameras',
+        value: framesStale ? 'main stream: no frames' : 'main stream failed',
+        chip: 'CHECK',
+        tone: 'amber',
+      };
+    }
+    return {
+      label: 'Cameras',
+      value: `${totalCameras} camera${totalCameras === 1 ? '' : 's'} OK`,
+      chip: 'OK',
+      tone: 'green',
+    };
+  })();
+
   const rows: SysRow[] = [
     // minor-b: this row and Topic rates below it describe DIFFERENT MOMENTS.
     // The arming snapshot is taken once, when the recorder matched its targets,
@@ -158,15 +191,7 @@ export function SystemStatusCard({
         }
       : { label: 'Required data', value: '—', chip: '—', tone: 'gray' },
     ratesRow,
-    {
-      // Health is measured on the main preview stream only (sub tiles run
-      // their own streams but don't report here) — say that, don't invent
-      // an N/M camera count.
-      label: 'Cameras',
-      value: camerasOk ? 'main stream OK' : 'main stream: no frames',
-      chip: camerasOk ? 'OK' : 'CHECK',
-      tone: camerasOk ? 'green' : 'amber',
-    },
+    cameraRow,
     {
       // NOT "is the robot fine" — this row only ever measured the event pipe:
       // our SSE connection to the orchestrator, and the orchestrator's bridge

@@ -1152,6 +1152,11 @@ export interface BatchMachine {
     startedAt: string | null;
     bytes: number | null;
     durationMs: number | null;
+    /** True when the take ended on its own rather than being stopped. */
+    interrupted: boolean;
+    /** Why it ended, from the capture's own error. Null when none was
+     *  recorded — the banner then says only that it ended by itself. */
+    reason: string | null;
   } | null;
   /** Open the result panel for the unsaved take to label it. */
   labelUnsavedTake: () => void;
@@ -1659,6 +1664,13 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
         Number.isNaN(endedMs) || Number.isNaN(startedMs)
           ? null
           : Math.max(0, endedMs - startedMs),
+      // A take that ENDED ON ITS OWN needs to say why, and the banner is the
+      // only durable place to say it: a toast is gone in seconds, and the
+      // operator meets this take minutes later. The recorder's own account is
+      // preferred where it wrote one (a restart records a specific reason);
+      // otherwise the orchestrator's generic note stands.
+      interrupted: unsavedCapture.state === 'interrupted',
+      reason: unsavedCapture.error?.message ?? null,
     };
   }, [unsavedCapture]);
 

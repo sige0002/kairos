@@ -19,7 +19,7 @@ import {
   BatchStatsCard,
   CoverageCard,
 } from './SideCards';
-import { Cameras } from './Cameras';
+import { Cameras, sameCameraHealth, type CameraHealth } from './Cameras';
 import { EpisodeStrip } from './EpisodeStrip';
 import { CollectModals } from './Modals';
 import { COL_GAP } from './compact';
@@ -42,7 +42,9 @@ function UnsavedTakeBanner({ machine }: { machine: BatchMachine }) {
       <span className="text-[13px] text-amber-900" data-testid="unsaved-take-identity">
         {machine.unsavedTakeCount > 1
           ? `${machine.unsavedTakeCount} unsaved takes. Most recent: `
-          : 'Unsaved take from '}
+          : take.interrupted
+            ? 'Interrupted take from '
+            : 'Unsaved take from '}
         <span className="font-semibold">
           {formatTimeOfDay(take.startedAt ?? undefined)}
         </span>{' '}
@@ -50,6 +52,16 @@ function UnsavedTakeBanner({ machine }: { machine: BatchMachine }) {
         now, or discard it.
         {machine.unsavedTakeCount > 1 && ' “Later” hides them all until a new one appears.'}
       </span>
+      {/* WHY it ended, not just that it exists. A take the operator did not
+          stop themselves is the case where the reason is the whole question,
+          and a toast has long since gone by the time they look. */}
+      {take.interrupted && (
+        <span className="text-[12px] text-amber-800" data-testid="unsaved-take-reason">
+          It ended on its own:{' '}
+          {take.reason ?? 'the recorder stopped before the take was finished'}.
+          Whatever it managed to write is still here.
+        </span>
+      )}
       <div className="flex gap-2">
         <button
           type="button"
@@ -94,8 +106,18 @@ export function CollectScreen() {
   const defaultTopics = config?.defaults.default_topics ?? [];
   const machine = useBatchMachine({ defaultTopics });
 
-  const [camerasOk, setCamerasOk] = useState(true);
-  const onHealthChange = useCallback((ok: boolean) => setCamerasOk(ok), []);
+  const [cameraHealth, setCameraHealth] = useState<CameraHealth>({
+    streamFailed: false,
+    framesStale: false,
+    silentTopics: 0,
+    totalCameras: 0,
+  });
+  // Only re-render when a FACT changed, not merely the object carrying it. The
+  // producer already memoizes, and this keeps a future caller that forgets from
+  // driving a render loop through here.
+  const onHealthChange = useCallback((next: CameraHealth) => {
+    setCameraHealth((prev) => (sameCameraHealth(prev, next) ? prev : next));
+  }, []);
 
   if (!config) {
     return <div className="p-4 text-sm text-gray-400">Loading…</div>;
@@ -166,7 +188,7 @@ export function CollectScreen() {
               machine={machine}
               sseStatus={sseStatus}
               monitorBridge={monitorBridge}
-              camerasOk={camerasOk}
+              cameraHealth={cameraHealth}
             />
             <WarningsCard machine={machine} defaultTopics={defaultTopics} />
             <AdviceCard machine={machine} />

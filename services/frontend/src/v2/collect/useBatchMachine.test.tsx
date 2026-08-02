@@ -3272,6 +3272,78 @@ test('an interrupted take is offered for recovery', async () => {
   expect(result.current.unsavedTake?.bytes).toBe(4_000_000);
 });
 
+// The reason a take ended on its own is the whole question, and a toast is gone
+// seconds later — the operator meets the take minutes afterwards. The banner
+// carries it, preferring the recorder's OWN account where it wrote one.
+test('an interrupted take carries WHY it ended, from the capture itself', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/captures'))
+      return Promise.resolve(
+        jsonResponse({
+          items: [
+            {
+              capture_id: 'cap_i',
+              run_id: 'run_i',
+              state: 'interrupted',
+              review_status: 'pending',
+              review_revision: 0,
+              started_at: new Date(Date.now() - 20_000).toISOString(),
+              ended_at: new Date(Date.now() - 10_000).toISOString(),
+              bytes: 10_000_000,
+              error: {
+                code: 'interrupted',
+                message: 'recorder restarted while the capture was recording',
+              },
+            },
+          ],
+          next_cursor: null,
+        }),
+      );
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+
+  await waitFor(() => expect(result.current.unsavedTake?.interrupted).toBe(true));
+  expect(result.current.unsavedTake?.reason).toBe(
+    'recorder restarted while the capture was recording',
+  );
+});
+
+test('a merely-unsaved take is not labelled interrupted', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/captures'))
+      return Promise.resolve(
+        jsonResponse({
+          items: [
+            {
+              capture_id: 'cap_c',
+              state: 'completed',
+              review_status: 'pending',
+              review_revision: 0,
+              started_at: new Date(Date.now() - 5_000).toISOString(),
+              ended_at: new Date(Date.now() - 4_000).toISOString(),
+              bytes: 1000,
+            },
+          ],
+          next_cursor: null,
+        }),
+      );
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  await waitFor(() => expect(result.current.unsavedTake?.captureId).toBe('cap_c'));
+  expect(result.current.unsavedTake?.interrupted).toBe(false);
+  expect(result.current.unsavedTake?.reason).toBeNull();
+});
+
 // M6-PERSIST: the banner PROMISES "Later hides them all until a new one
 // appears". An in-memory dismissal that a reload undoes breaks that promise in
 // exactly the situation the operator hits it — they dismissed because they did

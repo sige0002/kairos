@@ -1,10 +1,16 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
 import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
 import type { RuntimeConfig } from '../../config';
 import type { BatchMachine } from './useBatchMachine';
-import { Cameras, StatsBadge, shortCameraLabel } from './Cameras';
+import {
+  Cameras,
+  StatsBadge,
+  sameCameraHealth,
+  shortCameraLabel,
+  type CameraHealth,
+} from './Cameras';
 import {
   MAX_CAMERA_PANES,
   __resetCameraStore,
@@ -423,4 +429,119 @@ test('an unmeasurable frame count is not reported as stale', () => {
   // null means we cannot tell yet — which is not the same as "stopped".
   render(<StatsBadge stats={stats(15, 8, null)} />);
   expect(screen.getByTestId('camera-stats')).not.toHaveAttribute('data-stale');
+});
+
+// A1 SUB-CAMERAS: the silent overlay was scoped to the MAIN tile, so with every
+// topic dead qa-ui saw one tile owning up beside others still advertising
+// "8ms · 15fps" — one screen giving two answers about the same dead graph.
+test('any tile whose source topic is silent says so, not a frame rate', () => {
+  render(<StatsBadge stats={stats(15, 8)} topicSilent />);
+  const chip = screen.getByTestId('camera-stats');
+  expect(chip).toHaveAttribute('data-topic-silent', 'true');
+  expect(chip).toHaveTextContent('topic silent — showing the last frame');
+  // The rate is gone: it was true about the transport and false about the
+  // picture, which is exactly what made it misleading.
+  expect(chip).not.toHaveTextContent('15fps');
+});
+
+test('a tile with a live topic still shows its measured rate', () => {
+  render(<StatsBadge stats={stats(15, 8)} topicSilent={false} />);
+  const chip = screen.getByTestId('camera-stats');
+  expect(chip).not.toHaveAttribute('data-topic-silent');
+  expect(chip).toHaveTextContent('15fps');
+});
+
+// ---------------------------------------------------------------------------
+// Render-loop pin.
+//
+// Health leaves this component through a callback, so the price of a report is
+// the parent's setState: it may only be paid when a FACT changed. Widening
+// health from a boolean to an object broke that once — `stats` is a fresh
+// object on every poll, so an un-memoized health object handed the parent
+// something new on every render and its setState never settled. The failure
+// does not show up as a red test: the Collect suites HUNG (exit 143). Hence a
+// test that counts reports, since the bug's own signature is a test that never
+// finishes.
+// ---------------------------------------------------------------------------
+
+test('camera health is reported once per fact, not once per render', async () => {
+  // Real time keeps advancing the fake clock, so waitFor still works while we
+  // can also jump the WebRTC stats poll forward on demand.
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    // Seeded with the component's own seed key so its seeding effect is a
+    // no-op: the panes exist on the FIRST render, which makes any second report
+    // a genuine re-notify rather than the cameras arriving.
+    seedCameraPanes([HEAD, HAND], JSON.stringify([HEAD, HAND]));
+
+    // Counting the polls keeps the test honest: with no churn it would pass
+    // while proving nothing.
+    class CountingPeer extends FakePeerConnection {
+      static statsCalls = 0;
+      getStats() {
+        CountingPeer.statsCalls++;
+        return Promise.resolve(new Map());
+      }
+    }
+    vi.stubGlobal('RTCPeerConnection', CountingPeer);
+
+    const onHealthChange = vi.fn();
+    const { rerender } = renderWithClient(
+      <Cameras config={CONFIG} machine={MACHINE} onHealthChange={onHealthChange} />,
+    );
+    await waitFor(() => expect(screen.getByTestId('main-camera-video')).toBeInTheDocument());
+    expect(onHealthChange).toHaveBeenCalledTimes(1);
+    expect(onHealthChange.mock.lastCall?.[0]).toEqual({
+      streamFailed: false,
+      framesStale: false,
+      silentTopics: 0,
+      totalCameras: 2,
+    });
+
+    // Five seconds of stats polls: every tick resolves a fresh reports object
+    // and the hook setStates a fresh StreamStats carrying the same facts — one
+    // render each, plus a topics refetch at 5s. This is the exact churn that
+    // used to re-report.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    expect(CountingPeer.statsCalls).toBeGreaterThanOrEqual(3);
+
+    // …and re-renders driven from above (the elapsed clock ticks once a second
+    // while recording), which say nothing about the cameras either.
+    for (const elapsedMs of [1000, 2000, 3000]) {
+      rerender(
+        <Cameras
+          config={CONFIG}
+          machine={{ phase: 'ready', elapsedMs } as unknown as BatchMachine}
+          onHealthChange={onHealthChange}
+        />,
+      );
+    }
+
+    expect(onHealthChange).toHaveBeenCalledTimes(1);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test('a health comparison covers every field of the report', () => {
+  const base: CameraHealth = {
+    streamFailed: false,
+    framesStale: false,
+    silentTopics: 0,
+    totalCameras: 2,
+  };
+  expect(sameCameraHealth(base, { ...base })).toBe(true);
+  // Each fact must be able to force a report on its own: a comparison that
+  // skips one leaves that fact frozen on screen forever.
+  const differing: CameraHealth[] = [
+    { ...base, streamFailed: true },
+    { ...base, framesStale: true },
+    { ...base, silentTopics: 1 },
+    { ...base, totalCameras: 3 },
+  ];
+  for (const next of differing) expect(sameCameraHealth(base, next)).toBe(false);
+  // A fifth fact added to CameraHealth without a case here fails right there.
+  expect(differing).toHaveLength(Object.keys(base).length);
 });

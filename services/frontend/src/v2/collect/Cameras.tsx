@@ -85,6 +85,31 @@ function latColor(ms: number): string {
  *  tile's top-right (user preference over the mock's bottom stats line). Only
  *  the values the hook actually measured are rendered (honesty: never a
  *  synthesized fps/latency to fill a slot); nothing at all until one exists. */
+/** What the SYSTEM STATUS Cameras row needs to describe every pane, not just
+ *  the main one. Counts rather than a boolean, so the row can say WHICH of the
+ *  cameras is in trouble instead of collapsing four tiles into one word. */
+export interface CameraHealth {
+  streamFailed: boolean;
+  framesStale: boolean;
+  /** Panes whose source topic the monitor reports as silent. */
+  silentTopics: number;
+  /** Panes that have a topic at all. */
+  totalCameras: number;
+}
+
+/**
+ * Do two health reports say the same thing? Every field is a primitive fact, so
+ * a consumer can hold its state across a report that carries no news.
+ *
+ * Compared by KEY rather than field-by-field on purpose: a fifth fact added to
+ * the interface joins the comparison automatically. A hand-written list would
+ * silently ignore the new field, which is a stuck value on screen — and if the
+ * report ever stopped being memoized, a render loop.
+ */
+export function sameCameraHealth(a: CameraHealth, b: CameraHealth): boolean {
+  return (Object.keys(a) as (keyof CameraHealth)[]).every((k) => a[k] === b[k]);
+}
+
 export function StatsBadge({
   stats,
   className,
@@ -282,6 +307,7 @@ function SubCameraTile({
   onSelect,
   onRemove,
   style,
+  topicSilent = false,
 }: {
   pane: CameraPane;
   config: RuntimeConfig;
@@ -289,6 +315,8 @@ function SubCameraTile({
   /** Provided only for operator-added panes (config cameras aren't removable). */
   onRemove?: () => void;
   style: React.CSSProperties;
+  /** This pane's SOURCE topic has stopped publishing (§ monitor data). */
+  topicSilent?: boolean;
 }) {
   const { w, h } = resBounds(pane.subResLabel);
   const { phase, stream, stats, error, retry } = useWebRtcStream({
@@ -342,7 +370,13 @@ function SubCameraTile({
         onClick={(e) => e.stopPropagation()}
       >
         <SubResToggle value={pane.subResLabel} onPick={(l) => setSubCameraRes(pane.id, l)} />
-        {connected && <StatsBadge stats={stats} className="px-1.5 py-0.5 text-[10px]" />}
+        {connected && (
+          <StatsBadge
+            stats={stats}
+            topicSilent={topicSilent}
+            className="px-1.5 py-0.5 text-[10px]"
+          />
+        )}
       </div>
       {onRemove && (
         <button
@@ -414,7 +448,7 @@ export function Cameras({
   config: RuntimeConfig;
   machine: BatchMachine;
   /** Reports whether the main camera stream is healthy (System status card). */
-  onHealthChange?: (ok: boolean) => void;
+  onHealthChange?: (health: CameraHealth) => void;
 }) {
   // Seed / re-seed the camera store from the robot's configured cameras. Keyed
   // by the configured topic list so a robot switch re-seeds (new cameras),
@@ -463,19 +497,45 @@ export function Cameras({
   // and neither implies the other: the transport can stall (frames stop
   // arriving), or the SOURCE can die while the streamer keeps re-encoding the
   // last frame at a real rate. Only the monitor can see the second one.
+  //
+  // Computed for EVERY pane, not just the main one. Scoping it to the main tile
+  // left the sub tiles advertising a live rate beside a main tile that had
+  // already owned up — one screen giving two answers about the same dead graph.
   const { rows: monitorRows } = useMonitorRows();
-  const mainTopicSilent =
-    !!mainTopic && topicLiveness(monitorRows, mainTopic) === 'silent';
+  const silentTopics = useMemo(() => {
+    const silent = new Set<string>();
+    for (const pane of panes) {
+      if (pane.topic && topicLiveness(monitorRows, pane.topic) === 'silent') {
+        silent.add(pane.topic);
+      }
+    }
+    return silent;
+  }, [panes, monitorRows]);
+  const mainTopicSilent = !!mainTopic && silentTopics.has(mainTopic);
 
+  // A connected stream with frames standing still is NOT ok, and neither is one
+  // whose source topic has gone quiet. The connection being up says nothing
+  // about pictures arriving, which is how the row read "main stream OK" for 106
+  // seconds against a topic with no publisher.
+  //
+  // Reported across ALL panes: the row used to speak only for the main stream,
+  // so nothing on the screen accounted for a silent sub camera.
+  //
+  // Built from PRIMITIVES in a memo, deliberately. `stats` is a fresh object on
+  // every poll, so an effect depending on it produced a new health object every
+  // render — and the parent's setState, seeing a new reference each time, never
+  // settled. The values here change only when one of the four facts does.
+  const framesStale = isFramesStale(stats);
+  const silentCount = silentTopics.size;
+  const cameraCount = panes.filter((p) => !!p.topic).length;
+  const streamFailed = phase === 'failed';
+  const health = useMemo<CameraHealth>(
+    () => ({ streamFailed, framesStale, silentTopics: silentCount, totalCameras: cameraCount }),
+    [streamFailed, framesStale, silentCount, cameraCount],
+  );
   useEffect(() => {
-    // A connected stream with frames standing still is NOT ok, and neither is
-    // one whose source topic has gone quiet. The connection being up says
-    // nothing about pictures arriving, which is how the row read "main stream
-    // OK" for 106 seconds against a topic with no publisher.
-    onHealthChange?.(
-      phase !== 'failed' && !isFramesStale(stats) && !mainTopicSilent,
-    );
-  }, [phase, stats, mainTopicSilent, onHealthChange]);
+    onHealthChange?.(health);
+  }, [health, onHealthChange]);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   useEffect(() => {
@@ -612,6 +672,7 @@ export function Cameras({
           onSelect={() => setMainCameraPane(pane.id)}
           onRemove={pane.source === 'operator' ? () => removeCameraPane(pane.id) : undefined}
           style={{ gridColumn: 2, gridRow: i + 1 }}
+          topicSilent={!!pane.topic && silentTopics.has(pane.topic)}
         />
       ))}
       {addVisible && (
