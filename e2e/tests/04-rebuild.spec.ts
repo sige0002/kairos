@@ -16,7 +16,7 @@
 // it.
 
 import { expect, test } from '@playwright/test';
-import { api } from '../fixtures/api';
+import { api, until } from '../fixtures/api';
 import { store } from '../fixtures/store';
 import { stack } from '../fixtures/stack';
 import {
@@ -45,6 +45,25 @@ test('§13-4 Rebuild: deleting kairos.db and restarting restores the captures an
     completed = (await api.allCaptures()).filter((c) => c.state === 'completed');
   }
   const memberCapture = completed[0].capture_id;
+
+  // m10: nothing unjudged enters a training set. The candidate rail refuses a
+  // capture Review has not adopted (`addBlockedReason`), so adoption is part of
+  // the operator's arc — record → adopt → build → rebuild — and the scenario
+  // performs it on screen rather than reaching around it through the API.
+  await selectReviewRow(page, memberCapture);
+  const markOk = page.getByTestId('review-mark-ok');
+  await expect(
+    markOk,
+    'the Review decision bar offers no way to adopt this capture, so a dataset can never be built from it',
+  ).toBeVisible({ timeout: 30_000 });
+  await markOk.click();
+  await expect(page.getByTestId('review-toast')).toBeVisible({ timeout: 30_000 });
+  await until(
+    'the adopted review status to settle',
+    () => api.getCapture(memberCapture),
+    (c) => c.review_status === 'adopted',
+    30_000,
+  );
 
   // A dataset, built through the UI, so the ledger has the events a rebuild has
   // to replay.

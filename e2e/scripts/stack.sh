@@ -2,16 +2,19 @@
 # Lifecycle of the stack the Playwright acceptance suite drives.
 #
 # This is the ONLY place the E2E stack is started, stopped or perturbed — the
-# Makefile target, Playwright's global setup, and the two tests that have to
-# damage the store on purpose (§13-4 delete kairos.db, §13-5 rm -rf objects/<id>)
-# all call these subcommands. One implementation means a developer who runs
-# `stack.sh up` by hand gets byte-identical conditions to `make test-e2e`.
+# Makefile target, Playwright's global setup, and the three tests that have to
+# break something on purpose (§13-4 delete kairos.db, §13-5 rm -rf objects/<id>,
+# recorder-honesty stop the recorder mid-take) all call these subcommands. One
+# implementation means a developer who runs `stack.sh up` by hand gets
+# byte-identical conditions to `make test-e2e`.
 #
 #   ./e2e/scripts/stack.sh up             # fresh data dir + stack + replay, waits ready
 #   ./e2e/scripts/stack.sh down           # stop replay, remove the stack
 #   ./e2e/scripts/stack.sh wait           # readiness only (no side effects)
 #   ./e2e/scripts/stack.sh stop|start     # keep the containers, cycle them
 #   ./e2e/scripts/stack.sh start-lenient  # boot without requiring a readable catalog
+#   ./e2e/scripts/stack.sh stop-recorder  # recorder-honesty: kill ONLY the recorder
+#   ./e2e/scripts/stack.sh start-recorder # ...and bring it back
 #   ./e2e/scripts/stack.sh rm-db          # §13-4: delete the index
 #   ./e2e/scripts/stack.sh rm-objects ID  # §13-5: out-of-band rm -rf
 #   ./e2e/scripts/stack.sh ps|logs|env
@@ -202,6 +205,29 @@ cmd_start_lenient() {
   WAIT_CATALOG=0 cmd_wait
 }
 
+# The recorder alone, so the rest of the stack stays up and the browser keeps
+# talking to a healthy orchestrator — which is the whole point of the scenario:
+# the UI has to say it cannot see the recorder, not go blank.
+#
+# `stop`, not `kill`: an operator restarting the recorder service is the case
+# under test, and it is ALSO the harsher one for the UI. The recorder installs
+# no shutdown hook that finalises a take (main.py wires no lifespan), so the
+# capture is left exactly as a crash leaves it — `state=recording` in the
+# manifest, a partial bag on disk — and the recovery has to come from the
+# recorder's own startup reconciliation rather than from a tidy goodbye.
+cmd_stop_recorder() {
+  say "stopping the recorder container (the rest of the stack keeps running)"
+  compose stop recorder >/dev/null
+}
+cmd_start_recorder() {
+  say "starting the recorder container"
+  compose start recorder >/dev/null
+  # Only the recorder's own readiness: cmd_wait would also re-probe dora_runner
+  # and the monitor, which were never stopped, and would turn an unrelated slow
+  # service into this scenario's failure.
+  wait_for recorder "$REC/healthz" 90 recorder || die "recorder not ready"
+}
+
 cmd_replay_start() {
   cmd_replay_stop
   local bag="${BAG:-airoa-moma-mcap/235210}"
@@ -262,6 +288,8 @@ case "${1:-}" in
   stop)          cmd_stop ;;
   start)         cmd_start ;;
   start-lenient) cmd_start_lenient ;;
+  stop-recorder)  cmd_stop_recorder ;;
+  start-recorder) cmd_start_recorder ;;
   replay-start) cmd_replay_start ;;
   replay-stop)  cmd_replay_stop ;;
   rm-db)        cmd_rm_db ;;

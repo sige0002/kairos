@@ -35,6 +35,11 @@ export interface Capture {
   replica: { state: ReplicaState; manifest_digest: string | null } | null;
   delete_kind?: string | null;
   delete_reason?: string | null;
+  /** How a capture that did not end cleanly ended. A bare string in the
+   *  manifest (§3), widened by the orchestrator into `{code, message}`. Which
+   *  message survives is itself a claim under test: the recorder's own account
+   *  must win over the status-poll path's generic one. */
+  error?: { code: string; message: string } | null;
 }
 
 export interface StoreHealth {
