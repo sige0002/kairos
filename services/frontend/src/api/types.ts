@@ -423,6 +423,10 @@ export interface RetentionInfo {
 // under views/ by the server. There is no `dataset_dir` identity any more:
 // dataset_id / membership_id / capture_id are the only stable keys.
 
+/** `status` walks active → archiving → archived and never back (§6.x). The
+ *  three archive fields are the durable face of the archive run — replayed
+ *  from the ledger, so they survive a rebuild, unlike the in-flight progress
+ *  served by `GET /datasets/{id}/archive`. */
 export interface Dataset {
   dataset_id: string;
   name: string;
@@ -431,6 +435,9 @@ export interface Dataset {
   status: string;
   created_at?: string | null;
   member_count: number;
+  archive_destination?: string | null;
+  archive_started_at?: string | null;
+  archived_at?: string | null;
 }
 
 /** One capture's membership in a dataset. `display_index` is the number shown
@@ -456,6 +463,42 @@ export interface DatasetCreateRequest {
   name: string;
   operator?: string | null;
   task?: string | null;
+}
+
+/** `POST /datasets/{id}/archive` (§6.x). `destination` is `<root>/<subpath>`
+ *  from the archive allow-list; the server appends `<operator>/<task>/<name>`
+ *  itself — the views shape has one owner. Omitted on resume: the run
+ *  continues to the destination its ledger event froze. */
+export interface DatasetArchiveRequest {
+  destination?: string | null;
+  reason?: string | null;
+}
+
+/** One blocked member in a 409 `dataset_not_archivable` (its own reason), or
+ *  one shared member in a 409 `dataset_member_shared`. */
+export interface DatasetArchiveBlocker {
+  capture_id: string;
+  code?: string;
+  message?: string;
+  dataset_ids?: string[];
+}
+
+/** `GET /datasets/{id}/archive` — polled while a run executes. The durable
+ *  fields survive a restart; `running`/`current_*`/`error` are the server
+ *  process's memory and honestly reset. status `archiving` with
+ *  `running: false` is the resumable state the UI renders as Resume. */
+export interface DatasetArchiveProgress {
+  dataset_id: string;
+  status: string;
+  destination?: string | null;
+  member_total: number;
+  members_done: number;
+  running: boolean;
+  current_capture_id?: string | null;
+  current_bytes?: number | null;
+  error?: { capture_id?: string; code?: string; message?: string } | null;
+  archive_started_at?: string | null;
+  archived_at?: string | null;
 }
 
 // ---- store health (§8 / §9-3) --------------------------------------------

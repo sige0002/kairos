@@ -35,7 +35,10 @@ import type { DatasetsState } from './useDatasetsState';
 function CandidateRow({ capture, state }: { capture: Capture; state: DatasetsState }) {
   const adding = state.addingCaptureId === capture.capture_id;
   const memberships = capture.memberships ?? [];
-  const noTarget = state.selectedDatasetId === null;
+  // A frozen dataset (§6.x) cannot take members any more than no dataset can —
+  // the server refuses, so the Add control treats it as "no valid target".
+  const noTarget =
+    state.selectedDatasetId === null || state.isDatasetFrozen(state.selectedDatasetId);
   const blocked = addBlockedReason(capture);
   const facts = captureFacts(capture);
   return (
@@ -126,7 +129,13 @@ export function BuildRail({ state }: { state: DatasetsState }) {
       </div>
 
       <div className="shrink-0 border-b border-gray-100 px-[18px] py-[13px]">
-        {target ? (
+        {target && state.isDatasetFrozen(target.dataset.dataset_id) ? (
+          <p data-testid="build-target-frozen" className="text-[12.5px] leading-relaxed text-gray-500">
+            <span className="font-semibold text-gray-800">{target.dataset.name}</span> is{' '}
+            {target.dataset.status} — its member set is frozen and takes no more
+            recordings. Select an active dataset to keep building.
+          </p>
+        ) : target ? (
           <p data-testid="build-target" className="text-[12.5px] leading-relaxed text-gray-600">
             Adding to <span className="font-semibold text-gray-900">{target.dataset.name}</span> —{' '}
             {memberCount(target.dataset.member_count)}. Each recording gets the next

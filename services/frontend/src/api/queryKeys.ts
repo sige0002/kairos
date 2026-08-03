@@ -30,6 +30,10 @@ export const queryKeys = {
   // Logical datasets (§6): identity is dataset_id, never a directory string.
   datasets: ['datasets'] as const,
   dataset: (datasetId: string) => ['datasets', 'detail', datasetId] as const,
+  // The archive run's progress (§6.x). Its own key, not dataset(id): it is
+  // polled every second while a run executes, and invalidating the detail
+  // subtree at that rate would rerender the whole screen once a second.
+  datasetArchive: (datasetId: string) => ['datasets', 'archive', datasetId] as const,
   // Whether this deployment offers archiving at all, and to which roots
   // (KAIROS_ARCHIVE_ROOTS). Read before any archive control is rendered.
   // Scalar, not per-capture: the endpoint is addressed by a capture id but

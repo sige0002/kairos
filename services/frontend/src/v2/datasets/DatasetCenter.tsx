@@ -18,12 +18,14 @@ import { Badge, Button, Modal, TrashIcon, cn } from '../../components/ui';
 import { ErrorMessage } from '../../components/ErrorMessage';
 import { AvailabilityChip } from '../captures/AvailabilityChip';
 import { CaptureLabelChips } from '../episodeChips';
+import { DatasetArchiveDialog } from './DatasetArchiveDialog';
 import { DatasetDetail } from './DatasetDetail';
 import { ScopeSummary } from './ScopeSummary';
 import {
   captureFacts,
   captureWhen,
   formatCount,
+  formatWhen,
   memberCount,
   memberTestId,
   shortCaptureId,
@@ -66,6 +68,7 @@ function SummaryGlyph({ active }: { active: boolean }) {
 
 function ScopeHeaderBar({ state }: { state: DatasetsState }) {
   const { scope, scopeMembers, memberRows } = state;
+  const status = state.selectedDataset?.dataset.status ?? 'active';
   // The header leads with what is actually on screen and keeps the scope total
   // as the denominator, so it can never claim more than it shows.
   const total = scopeMembers.length;
@@ -77,6 +80,11 @@ function ScopeHeaderBar({ state }: { state: DatasetsState }) {
       </span>
       {scope.operator && <Badge tone="gray">{scope.operator}</Badge>}
       {scope.task && <Badge tone="teal">{scope.task}</Badge>}
+      {scope.kind === 'dataset' && status !== 'active' && (
+        <span data-testid="dataset-scope-status">
+          <Badge tone={status === 'archived' ? 'gray' : 'amber'}>{status}</Badge>
+        </span>
+      )}
       <span data-testid="dataset-scope-count" className="text-[11.5px] text-gray-400">
         {rendered === total
           ? memberCount(total)
@@ -91,19 +99,63 @@ function ScopeHeaderBar({ state }: { state: DatasetsState }) {
         placeholder="Find #N, capture, run, operator…"
         className="w-[190px] rounded-control border border-gray-200 bg-white px-2.5 py-1 text-[12px] text-gray-700 placeholder:text-gray-400"
       />
+      {scope.kind === 'dataset' && (state.canArchiveDataset || status === 'archiving') && (
+        <button
+          type="button"
+          data-testid="archive-dataset-btn"
+          onClick={state.openDatasetArchive}
+          title={
+            status === 'archiving'
+              ? 'This dataset is being archived — open the run for progress or to resume it.'
+              : 'Copy this whole dataset to an archive root, verify it, then remove its recordings from this machine. Terminal.'
+          }
+          className="inline-flex shrink-0 items-center gap-1 rounded-control border border-teal-200 px-2.5 py-1 text-xs font-semibold text-teal-700 hover:bg-teal-50"
+        >
+          {status === 'archiving' ? 'Archive run…' : 'Archive dataset'}
+        </button>
+      )}
       {scope.kind === 'dataset' && (
         <button
           type="button"
           data-testid="delete-dataset-btn"
           onClick={state.requestDatasetDelete}
-          title="Delete this dataset. The recordings it lists are not touched."
-          className="inline-flex shrink-0 items-center gap-1 rounded-control border border-red-200 px-2.5 py-1 text-xs font-semibold text-red-700 hover:bg-red-50"
+          disabled={status !== 'active'}
+          title={
+            status === 'archived'
+              ? 'Kept: this record is what remembers where the dataset went.'
+              : status === 'archiving'
+                ? 'Not while the archive run is out copying.'
+                : 'Delete this dataset. The recordings it lists are not touched.'
+          }
+          className="inline-flex shrink-0 items-center gap-1 rounded-control border border-red-200 px-2.5 py-1 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:cursor-default disabled:border-gray-200 disabled:text-gray-400"
         >
           <TrashIcon />
           Delete dataset
         </button>
       )}
     </div>
+  );
+}
+
+/** The sealed state, said in the header's own voice: where it went and when.
+ *  Rendered only for an archived dataset — the run's progress lives in the
+ *  archive dialog, not here. */
+function ArchivedBanner({ state }: { state: DatasetsState }) {
+  const dataset = state.selectedDataset?.dataset;
+  if (!dataset || dataset.status !== 'archived') return null;
+  return (
+    <p
+      data-testid="dataset-archived-banner"
+      className="border-b border-gray-100 bg-gray-50 px-[18px] py-2 text-[12px] leading-relaxed text-gray-600"
+    >
+      Archived to{' '}
+      <span className="break-all font-mono text-gray-800">
+        {dataset.archive_destination}
+      </span>
+      {dataset.archived_at && <> on {formatWhen(dataset.archived_at)}</>} — every
+      recording it lists was verified there and removed from this machine. The
+      dataset is read-only; this record is what remembers where it went.
+    </p>
   );
 }
 
@@ -311,6 +363,7 @@ export function DatasetCenter({ state }: { state: DatasetsState }) {
       {/* TOP PANE — members, capped ~10 rows then internal scroll. */}
       <div data-testid="dataset-top-pane" className="flex shrink-0 flex-col">
         <ScopeHeaderBar state={state} />
+        <ArchivedBanner state={state} />
         <SummaryRow state={state} />
         <div
           className={cn(
@@ -358,6 +411,7 @@ export function DatasetCenter({ state }: { state: DatasetsState }) {
       </div>
 
       <DeleteDatasetDialog state={state} />
+      <DatasetArchiveDialog state={state} />
     </div>
   );
 }

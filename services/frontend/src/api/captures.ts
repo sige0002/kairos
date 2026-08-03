@@ -22,6 +22,8 @@ import type {
   CaptureDetail,
   CaptureListParams,
   Dataset,
+  DatasetArchiveProgress,
+  DatasetArchiveRequest,
   DatasetCreateRequest,
   DatasetDetail,
   DatasetListResponse,
@@ -182,6 +184,30 @@ export function removeDatasetMember(
 ): Promise<void> {
   return apiDelete(
     `/datasets/${encodeURIComponent(datasetId)}/members/${encodeURIComponent(membershipId)}`,
+  );
+}
+
+/** Freeze a dataset and start (or resume) copying it out (§6.x). 202: the
+ *  copy runs server-side; poll `getDatasetArchive` for the rest. */
+export function archiveDataset(
+  datasetId: string,
+  body: DatasetArchiveRequest,
+): Promise<DatasetArchiveProgress> {
+  return apiPost<DatasetArchiveProgress>(
+    `/datasets/${encodeURIComponent(datasetId)}/archive`,
+    body,
+  );
+}
+
+/** The archive run's progress. Separate from `getDataset` because it is
+ *  polled every second and must not churn the detail cache. */
+export function getDatasetArchive(
+  datasetId: string,
+  signal?: AbortSignal,
+): Promise<DatasetArchiveProgress> {
+  return apiGet<DatasetArchiveProgress>(
+    `/datasets/${encodeURIComponent(datasetId)}/archive`,
+    { signal },
   );
 }
 

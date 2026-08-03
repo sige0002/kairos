@@ -1,7 +1,13 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
-import type { Capture, Dataset, DatasetMember, ReplicaState } from '../../api/types';
+import type {
+  Capture,
+  Dataset,
+  DatasetArchiveProgress,
+  DatasetMember,
+  ReplicaState,
+} from '../../api/types';
 import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
 import { DatasetsScreen } from './DatasetsScreen';
 import { datasetTestId, memberTestId } from './data';
@@ -30,6 +36,13 @@ interface Backend {
   /** Whether the copy verifies. `false` is the honesty case §6 cares about. */
   archiveVerifies: boolean;
   archived: { captureId: string; destination: string; reason: string | null }[];
+  // ---- the dataset archive run (§6.x) ------------------------------------
+  /** The run `GET /datasets/{id}/archive` serves; null = derived from rows. */
+  archiveRun: DatasetArchiveProgress | null;
+  /** When true, the NEXT progress poll seals the run — dataset archived,
+   *  members' bytes gone — modelling a run that finished between polls. */
+  sealOnPoll: boolean;
+  datasetArchiveCalls: { datasetId: string; destination: string | null }[];
   calls: string[];
 }
 
@@ -122,6 +135,9 @@ function mockApi(seed: Partial<Backend> = {}): Backend {
     archiveRoots: seed.archiveRoots ?? [],
     archiveVerifies: seed.archiveVerifies ?? true,
     archived: [],
+    archiveRun: seed.archiveRun ?? null,
+    sealOnPoll: seed.sealOnPoll ?? false,
+    datasetArchiveCalls: [],
     calls: [],
   };
   let nextId = 1;
@@ -158,6 +174,77 @@ function mockApi(seed: Partial<Backend> = {}): Backend {
       const membershipId = decodeURIComponent(memberMatch[2]!);
       backend.members = backend.members.filter((m) => m.membership_id !== membershipId);
       return new Response(null, { status: 204 });
+    }
+
+    // ---- the dataset archive run (§6.x) ----------------------------------
+    const datasetArchiveMatch = path.match(/^\/datasets\/([^/]+)\/archive$/);
+    if (datasetArchiveMatch) {
+      const datasetId = decodeURIComponent(datasetArchiveMatch[1]!);
+      const dataset = backend.datasets.find((d) => d.dataset_id === datasetId);
+      if (!dataset) {
+        return jsonResponse(
+          { error: { code: 'dataset_not_found', message: 'gone' } },
+          404,
+        );
+      }
+      const memberIds = backend.members
+        .filter((m) => m.dataset_id === datasetId)
+        .map((m) => m.capture_id);
+      const seal = () => {
+        dataset.status = 'archived';
+        dataset.archived_at = '2026-07-22T09:00:00Z';
+        backend.captures = backend.captures.filter(
+          (c) => !memberIds.includes(c.capture_id),
+        );
+        backend.archiveRun = {
+          dataset_id: datasetId,
+          status: 'archived',
+          destination: dataset.archive_destination ?? null,
+          member_total: memberIds.length,
+          members_done: memberIds.length,
+          running: false,
+          error: null,
+          archived_at: dataset.archived_at,
+        };
+      };
+      if (method === 'POST') {
+        backend.datasetArchiveCalls.push({
+          datasetId,
+          destination: (body.destination as string | null | undefined) ?? null,
+        });
+        if (dataset.status === 'archiving') {
+          // A resume: the fake finishes the run on the spot — the claim under
+          // test is that the UI re-POSTS with no destination and follows the
+          // run to its seal, not how long the copy takes.
+          seal();
+          return jsonResponse({ ...backend.archiveRun, status: 'archiving' }, 202);
+        }
+        // The server owns the shape: <destination>/<operator>/<task>/<name>.
+        dataset.status = 'archiving';
+        dataset.archive_destination = `${body.destination}/${dataset.operator ?? 'unknown_operator'}/${dataset.task ?? 'unknown_task'}/${dataset.name}`;
+        backend.archiveRun = {
+          dataset_id: datasetId,
+          status: 'archiving',
+          destination: dataset.archive_destination,
+          member_total: memberIds.length,
+          members_done: 0,
+          running: true,
+          error: null,
+        };
+        return jsonResponse(backend.archiveRun, 202);
+      }
+      if (backend.sealOnPoll && dataset.status === 'archiving') seal();
+      return jsonResponse(
+        backend.archiveRun ?? {
+          dataset_id: datasetId,
+          status: dataset.status,
+          destination: dataset.archive_destination ?? null,
+          member_total: memberIds.length,
+          members_done: 0,
+          running: false,
+          error: null,
+        },
+      );
     }
 
     const datasetMatch = path.match(/^\/datasets\/([^/]+)$/);
@@ -781,4 +868,146 @@ test('a copy that did not verify is reported as such, never as archived', async 
   const toast = await screen.findByTestId('toast');
   expect(toast).toHaveTextContent(/did NOT verify/);
   expect(toast).not.toHaveTextContent(/^Archived to/);
+});
+
+// ---- dataset archive (§6.x): the terminal transition ----------------------
+
+/** A kitchen dataset that already left: sealed, destination on record. */
+const DS_SEALED: Dataset = {
+  ...DS_KITCHEN,
+  dataset_id: 'ds-sealed',
+  name: 'sealed picks',
+  status: 'archived',
+  archive_destination: '/mnt/archive/exports/op_a/pick_place/sealed picks',
+  archive_started_at: '2026-07-22T08:30:00Z',
+  archived_at: '2026-07-22T09:00:00Z',
+};
+
+test('archiving a dataset: confirm echoes the final path, the run seals, the row says archived', async () => {
+  const backend = mockApi({
+    datasets: [DS_KITCHEN],
+    captures: [CAP_A, CAP_B],
+    members: [
+      { membership_id: 'm-1', dataset_id: 'ds-kitchen', capture_id: 'cap-a', display_index: 1 },
+      { membership_id: 'm-2', dataset_id: 'ds-kitchen', capture_id: 'cap-b', display_index: 2 },
+    ],
+    archiveRoots: ['/mnt/archive'],
+    sealOnPoll: true,
+  });
+  renderWithClient(<DatasetsScreen />);
+
+  fireEvent.click(await screen.findByTestId(datasetTestId('ds-kitchen')));
+  fireEvent.click(await screen.findByTestId('archive-dataset-btn'));
+
+  // Both paths are echoed: what is sent, and where the dataset actually lands
+  // — the server appends <operator>/<task>/<name> itself.
+  expect(await screen.findByTestId('dataset-archive-destination')).toHaveTextContent(
+    '/mnt/archive',
+  );
+  expect(screen.getByTestId('dataset-archive-final-path')).toHaveTextContent(
+    '/mnt/archive/op_a/pick_place/kitchen picks',
+  );
+
+  fireEvent.click(screen.getByTestId('dataset-archive-confirm'));
+
+  // The 202 started a server-side run; the poll follows it to the seal.
+  const toast = await screen.findByTestId('toast', undefined, { timeout: 5000 });
+  expect(toast).toHaveTextContent(/2 recordings verified, then removed/);
+  expect(backend.datasetArchiveCalls[0]).toEqual({
+    datasetId: 'ds-kitchen',
+    destination: '/mnt/archive',
+  });
+  await waitFor(() => {
+    expect(screen.getByTestId('dataset-status-ds-kitchen')).toHaveTextContent('archived');
+  });
+  expect(await screen.findByTestId('dataset-archived-banner')).toHaveTextContent(
+    /read-only/,
+  );
+});
+
+test('an archived dataset is read-only: no build, no removal, delete refused with the reason', async () => {
+  mockApi({
+    datasets: [DS_SEALED],
+    captures: [],
+    members: [
+      { membership_id: 'm-1', dataset_id: 'ds-sealed', capture_id: 'cap-gone', display_index: 1 },
+    ],
+    archiveRoots: ['/mnt/archive'],
+  });
+  renderWithClient(<DatasetsScreen />);
+
+  fireEvent.click(await screen.findByTestId(datasetTestId('ds-sealed')));
+
+  // The state is part of the row's identity and the header's.
+  expect(screen.getByTestId('dataset-status-ds-sealed')).toHaveTextContent('archived');
+  expect(await screen.findByTestId('dataset-scope-status')).toHaveTextContent('archived');
+  const banner = await screen.findByTestId('dataset-archived-banner');
+  expect(banner).toHaveTextContent('/mnt/archive/exports/op_a/pick_place/sealed picks');
+
+  // No new members, no new run, and the record itself is kept.
+  expect(await screen.findByTestId('build-target-frozen')).toBeInTheDocument();
+  expect(screen.queryByTestId('archive-dataset-btn')).not.toBeInTheDocument();
+  expect(screen.getByTestId('delete-dataset-btn')).toBeDisabled();
+
+  // A member of the sealed set gets no departure controls — the membership is
+  // the record of what number the recording was.
+  fireEvent.click(memberRowFor('cap-gone'));
+  expect(await screen.findByTestId('dataset-member-frozen-note')).toBeInTheDocument();
+  expect(screen.queryByTestId('remove-member-btn')).not.toBeInTheDocument();
+});
+
+test('a halted run reports why, stays archiving, and Resume continues it without a destination', async () => {
+  const backend = mockApi({
+    datasets: [
+      {
+        ...DS_KITCHEN,
+        status: 'archiving',
+        archive_destination: '/mnt/archive/op_a/pick_place/kitchen picks',
+        archive_started_at: '2026-07-22T08:30:00Z',
+      },
+    ],
+    captures: [CAP_A, CAP_B],
+    members: [
+      { membership_id: 'm-1', dataset_id: 'ds-kitchen', capture_id: 'cap-a', display_index: 1 },
+      { membership_id: 'm-2', dataset_id: 'ds-kitchen', capture_id: 'cap-b', display_index: 2 },
+    ],
+    archiveRoots: ['/mnt/archive'],
+    archiveRun: {
+      dataset_id: 'ds-kitchen',
+      status: 'archiving',
+      destination: '/mnt/archive/op_a/pick_place/kitchen picks',
+      member_total: 2,
+      members_done: 1,
+      running: false,
+      error: { capture_id: 'cap-b', code: 'capture_busy', message: 'A job holds this capture.' },
+    },
+  });
+  renderWithClient(<DatasetsScreen />);
+
+  fireEvent.click(await screen.findByTestId(datasetTestId('ds-kitchen')));
+  expect(screen.getByTestId('dataset-status-ds-kitchen')).toHaveTextContent('archiving');
+
+  // The header offers the run, not a second archive.
+  const button = await screen.findByTestId('archive-dataset-btn');
+  expect(button).toHaveTextContent('Archive run…');
+  fireEvent.click(button);
+
+  // The halt says what stopped it and that nothing rolled back.
+  const halt = await screen.findByTestId('dataset-archive-halt', undefined, {
+    timeout: 5000,
+  });
+  expect(halt).toHaveTextContent('A job holds this capture.');
+  expect(screen.getByTestId('dataset-archive-progress-count')).toHaveTextContent('1 / 2');
+
+  fireEvent.click(screen.getByTestId('dataset-archive-resume'));
+
+  // Resume re-POSTs with NO destination: the run continues to the destination
+  // its ledger event froze, and a different one is a different archive.
+  await waitFor(() => expect(backend.datasetArchiveCalls).toHaveLength(1));
+  expect(backend.datasetArchiveCalls[0]).toEqual({
+    datasetId: 'ds-kitchen',
+    destination: null,
+  });
+  const toast = await screen.findByTestId('toast', undefined, { timeout: 5000 });
+  expect(toast).toHaveTextContent(/verified, then removed/);
 });

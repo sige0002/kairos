@@ -12,7 +12,7 @@
 // dataset" mean "move recordings into a directory", and the two must not be
 // confused while both are still in living memory.
 
-import { cn } from '../../components/ui';
+import { Badge, cn } from '../../components/ui';
 import { ErrorMessage } from '../../components/ErrorMessage';
 import {
   ANY_OPERATOR,
@@ -67,8 +67,18 @@ function DatasetListRow({ row, state }: { row: DatasetRow; state: DatasetsState 
         selected ? 'border-teal-200 bg-teal-50' : 'border-gray-100 hover:bg-gray-50',
       )}
     >
-      <span className="truncate text-[12.5px] font-semibold text-gray-900">
-        {dataset.name}
+      <span className="flex items-center gap-1.5 truncate text-[12.5px] font-semibold text-gray-900">
+        <span className="truncate">{dataset.name}</span>
+        {/* The terminal states are part of the row's identity: an archived
+            dataset's bytes are elsewhere, and hiding that behind a click is
+            how someone plans training around data that is not here. */}
+        {dataset.status !== 'active' && (
+          <span data-testid={`dataset-status-${dataset.dataset_id}`}>
+            <Badge tone={dataset.status === 'archived' ? 'gray' : 'amber'}>
+              {dataset.status}
+            </Badge>
+          </span>
+        )}
       </span>
       {subtitle && (
         <span className="truncate text-[10.5px] text-gray-400">{subtitle}</span>

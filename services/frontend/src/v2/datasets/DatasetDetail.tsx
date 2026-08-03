@@ -40,6 +40,10 @@ export function DatasetDetail({
   const { detail, detailLoading, detailError } = state;
   const capture = member.capture;
   const removing = state.removingMembershipId === member.membershipId;
+  // A member of a frozen dataset (§6.x) gets no departure controls at all:
+  // the member set is sealed and the server refuses every one of them, so
+  // offering the buttons would be offering guaranteed failures.
+  const frozen = state.isDatasetFrozen(member.datasetId);
 
   return (
     <div className="flex min-w-0 flex-col gap-4 px-[18px] py-4">
@@ -58,41 +62,56 @@ export function DatasetDetail({
         </span>
         {capture && <AvailabilityChip capture={capture} testId="dataset-detail-availability" />}
         <div className="flex-1" />
-        <button
-          type="button"
-          data-testid="remove-member-btn"
-          onClick={() => state.removeMember(member)}
-          disabled={removing}
-          title="Take this capture out of the dataset. The recording itself is untouched and its number is not reused."
-          className="inline-flex shrink-0 items-center rounded-control border border-teal-200 px-2.5 py-1 text-xs font-semibold text-teal-700 hover:bg-teal-50 disabled:opacity-50"
-        >
-          {removing ? 'Removing…' : 'Remove from dataset'}
-        </button>
-        {capture && (
+        {!frozen && (
           <>
             <button
               type="button"
-              data-testid="discard-member-btn"
-              onClick={() => state.deletion.requestDiscard(capture)}
-              title="Destroy this recording. Irreversible, and refused while it is still a dataset member."
-              className="inline-flex shrink-0 items-center rounded-control border border-red-200 px-2.5 py-1 text-xs font-semibold text-red-700 hover:bg-red-50"
+              data-testid="remove-member-btn"
+              onClick={() => state.removeMember(member)}
+              disabled={removing}
+              title="Take this capture out of the dataset. The recording itself is untouched and its number is not reused."
+              className="inline-flex shrink-0 items-center rounded-control border border-teal-200 px-2.5 py-1 text-xs font-semibold text-teal-700 hover:bg-teal-50 disabled:opacity-50"
             >
-              Discard (not uploaded)
+              {removing ? 'Removing…' : 'Remove from dataset'}
             </button>
-            <button
-              type="button"
-              data-testid="delete-member-btn"
-              onClick={() => state.deletion.requestDelete(capture)}
-              title="Remove this recording's files from this machine. Refused while it is still a dataset member."
-              className="inline-flex shrink-0 items-center rounded-control border border-gray-200 px-2.5 py-1 text-xs font-semibold text-gray-600 hover:bg-gray-50"
-            >
-              Delete
-            </button>
+            {capture && (
+              <>
+                <button
+                  type="button"
+                  data-testid="discard-member-btn"
+                  onClick={() => state.deletion.requestDiscard(capture)}
+                  title="Destroy this recording. Irreversible, and refused while it is still a dataset member."
+                  className="inline-flex shrink-0 items-center rounded-control border border-red-200 px-2.5 py-1 text-xs font-semibold text-red-700 hover:bg-red-50"
+                >
+                  Discard (not uploaded)
+                </button>
+                <button
+                  type="button"
+                  data-testid="delete-member-btn"
+                  onClick={() => state.deletion.requestDelete(capture)}
+                  title="Remove this recording's files from this machine. Refused while it is still a dataset member."
+                  className="inline-flex shrink-0 items-center rounded-control border border-gray-200 px-2.5 py-1 text-xs font-semibold text-gray-600 hover:bg-gray-50"
+                >
+                  Delete
+                </button>
+              </>
+            )}
           </>
         )}
       </div>
 
-      {capture && (
+      {frozen && (
+        <p
+          data-testid="dataset-member-frozen-note"
+          className="rounded-control border border-gray-200 bg-gray-50 px-3 py-2 text-[12px] leading-relaxed text-gray-600"
+        >
+          This dataset&apos;s member set is frozen: its archive run moved (or is
+          moving) the recordings out. The membership stays as the record of what
+          number this recording was.
+        </p>
+      )}
+
+      {capture && !frozen && (
         <>
           <p
             data-testid="dataset-member-order-note"

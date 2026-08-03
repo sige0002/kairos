@@ -29,17 +29,23 @@ import { apiGet } from '../../api/client';
 import {
   addDatasetMember,
   archiveCapture,
+  archiveDataset,
   createDataset,
   deleteDataset,
   getArchiveConfig,
   getCapture,
   getDataset,
+  getDatasetArchive,
   listAllCaptures,
   listDatasets,
   removeDatasetMember,
 } from '../../api/captures';
 import { queryKeys } from '../../api/queryKeys';
-import type { Capture, CaptureDetail } from '../../api/types';
+import type {
+  Capture,
+  CaptureDetail,
+  DatasetArchiveProgress,
+} from '../../api/types';
 import { availabilityOf } from '../captures/availability';
 import { captureErrorText } from '../captures/errors';
 import { useCaptureDeletion, type CaptureDeletionState } from '../captures/useCaptureDeletion';
@@ -222,6 +228,37 @@ export interface DatasetsState {
   archiving: boolean;
   archiveError: unknown;
 
+  // ---- dataset archive (§6.x: the terminal transition) --------------------
+  // Copy the WHOLE dataset out — views shape plus a manifest — verify every
+  // file, then remove the members from this machine. Terminal: the dataset's
+  // member set freezes at the start and its status never returns to active.
+  /** status ≠ 'active' — the dataset's member set is frozen (§6.x). */
+  isDatasetFrozen: (datasetId: string) => boolean;
+  /** The selected dataset may start an archive run right now. */
+  canArchiveDataset: boolean;
+  datasetArchiveOpen: boolean;
+  openDatasetArchive: () => void;
+  cancelDatasetArchive: () => void;
+  datasetArchiveRoot: string;
+  setDatasetArchiveRoot: (root: string) => void;
+  datasetArchiveSubpath: string;
+  setDatasetArchiveSubpath: (path: string) => void;
+  /** The destination sent to the server — the PARENT of what lands on disk. */
+  datasetArchiveDestination: string;
+  /** Where the dataset actually lands: `<destination>/<operator>/<task>/<name>`
+   *  (the server appends the three components itself; this echo mirrors its
+   *  sanitisation so the two cannot silently disagree). */
+  datasetArchiveFinalDir: string;
+  datasetArchiveReason: string;
+  setDatasetArchiveReason: (s: string) => void;
+  confirmDatasetArchive: () => void;
+  /** Re-POST with no destination: continue a halted run where it stood. */
+  resumeDatasetArchive: () => void;
+  datasetArchiveStarting: boolean;
+  datasetArchiveStartError: unknown;
+  /** Live progress while the selected dataset is archiving (1 s poll). */
+  datasetArchiveProgress: DatasetArchiveProgress | null;
+
   isLoading: boolean;
   isError: boolean;
 
@@ -285,6 +322,10 @@ export function useDatasetsState(): DatasetsState {
   const [archiveRoot, setArchiveRoot] = useState('');
   const [archiveSubpath, setArchiveSubpath] = useState('');
   const [archiveReason, setArchiveReason] = useState('');
+  const [datasetArchiveOpen, setDatasetArchiveOpen] = useState(false);
+  const [datasetArchiveRoot, setDatasetArchiveRoot] = useState('');
+  const [datasetArchiveSubpath, setDatasetArchiveSubpath] = useState('');
+  const [datasetArchiveReason, setDatasetArchiveReason] = useState('');
   const [toast, setToast] = useState('');
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -664,6 +705,111 @@ export function useDatasetsState(): DatasetsState {
   }, []);
   const cancelArchive = useCallback(() => setArchiveTarget(null), []);
 
+  // ---- dataset archive (§6.x) --------------------------------------------
+
+  // Status questions are answered from the UNFILTERED dataset list: a search
+  // that hides the selected dataset must not make a frozen one look editable.
+  const datasetById = useMemo(() => {
+    const map = new Map<string, (typeof datasets)[number]>();
+    for (const dataset of datasets) map.set(dataset.dataset_id, dataset);
+    return map;
+  }, [datasets]);
+  const isDatasetFrozen = useCallback(
+    (datasetId: string) => {
+      const dataset = datasetById.get(datasetId);
+      return dataset !== undefined && dataset.status !== 'active';
+    },
+    [datasetById],
+  );
+  const selectedDatasetRecord = selectedDatasetId
+    ? (datasetById.get(selectedDatasetId) ?? null)
+    : null;
+
+  const canArchiveDataset =
+    archiveEnabled &&
+    selectedDatasetRecord !== null &&
+    selectedDatasetRecord.status === 'active' &&
+    selectedDatasetRecord.member_count > 0;
+
+  const datasetArchiveEffectiveRoot = datasetArchiveRoot || archiveRoots[0] || '';
+  const datasetArchiveDestination = datasetArchiveEffectiveRoot
+    ? `${datasetArchiveEffectiveRoot.replace(/\/+$/, '')}${
+        datasetArchiveSubpath ? `/${datasetArchiveSubpath.replace(/^\/+/, '')}` : ''
+      }`
+    : '';
+  // The server appends <operator>/<task>/<name> itself (the views shape has
+  // one owner); this echo mirrors its sanitisation (views.py) so the dialog
+  // cannot promise a path the server would spell differently.
+  const sanitizeComponent = (value: string | null | undefined, fallback: string) => {
+    const text = (value ?? '').trim().replace(/[/\\\0]/g, '_');
+    return text === '' || text === '.' || text === '..' ? fallback : text;
+  };
+  const datasetArchiveFinalDir =
+    datasetArchiveDestination && selectedDatasetRecord
+      ? [
+          datasetArchiveDestination,
+          sanitizeComponent(selectedDatasetRecord.operator, 'unknown_operator'),
+          sanitizeComponent(selectedDatasetRecord.task, 'unknown_task'),
+          sanitizeComponent(selectedDatasetRecord.name, 'unnamed'),
+        ].join('/')
+      : '';
+
+  // Poll while the selected dataset is archiving — the run is server-owned
+  // and this is its only window. 1 s: the same cadence Validation polls jobs.
+  const datasetArchiveQuery = useQuery({
+    queryKey: queryKeys.datasetArchive(selectedDatasetId ?? ''),
+    queryFn: ({ signal }) => getDatasetArchive(selectedDatasetId ?? '', signal),
+    enabled: selectedDatasetId !== null && selectedDatasetRecord?.status === 'archiving',
+    refetchInterval: 1000,
+  });
+  const datasetArchiveProgress = datasetArchiveQuery.data ?? null;
+
+  const datasetArchiveMutation = useMutation({
+    mutationFn: (vars: { resume: boolean }) =>
+      archiveDataset(
+        selectedDatasetId ?? '',
+        vars.resume
+          ? {}
+          : {
+              destination: datasetArchiveDestination,
+              reason: datasetArchiveReason.trim() || null,
+            },
+      ),
+    onSuccess: async (progress) => {
+      // Seed the poll cache with the 202 body so the dialog flips to its
+      // progress view immediately rather than after the first poll.
+      queryClient.setQueryData(queryKeys.datasetArchive(progress.dataset_id), progress);
+      await invalidateDatasets(progress.dataset_id);
+    },
+  });
+
+  // Completion is observed, not returned: the 202 started the run, and the
+  // poll is what eventually reports `archived`. The toast fires on that edge —
+  // whether or not the dialog is still open, because the run kept going either
+  // way and the row's badge must follow it.
+  const sealedToastRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (datasetArchiveProgress?.status !== 'archived') return;
+    if (sealedToastRef.current === datasetArchiveProgress.dataset_id) return;
+    sealedToastRef.current = datasetArchiveProgress.dataset_id;
+    setDatasetArchiveOpen(false);
+    void invalidateDatasets(datasetArchiveProgress.dataset_id);
+    showToast(
+      `Archived to ${datasetArchiveProgress.destination} — ` +
+        `${datasetArchiveProgress.member_total} recording${
+          datasetArchiveProgress.member_total === 1 ? '' : 's'
+        } verified, then removed from this machine`,
+    );
+  }, [datasetArchiveProgress, invalidateDatasets, showToast]);
+
+  const openDatasetArchive = () => {
+    setDatasetArchiveOpen(true);
+    setDatasetArchiveSubpath('');
+    setDatasetArchiveReason('');
+    datasetArchiveMutation.reset();
+  };
+  const cancelDatasetArchive = useCallback(() => setDatasetArchiveOpen(false), []);
+
   // ---- candidates --------------------------------------------------------
 
   const memberCaptureIds = useMemo(
@@ -778,6 +924,33 @@ export function useDatasetsState(): DatasetsState {
     },
     archiving: archiveMutation.isPending,
     archiveError: archiveMutation.isError ? archiveMutation.error : null,
+
+    isDatasetFrozen,
+    canArchiveDataset,
+    datasetArchiveOpen,
+    openDatasetArchive,
+    cancelDatasetArchive,
+    datasetArchiveRoot: datasetArchiveEffectiveRoot,
+    setDatasetArchiveRoot,
+    datasetArchiveSubpath,
+    setDatasetArchiveSubpath,
+    datasetArchiveDestination,
+    datasetArchiveFinalDir,
+    datasetArchiveReason,
+    setDatasetArchiveReason,
+    confirmDatasetArchive: () => {
+      if (selectedDatasetId && datasetArchiveDestination) {
+        datasetArchiveMutation.mutate({ resume: false });
+      }
+    },
+    resumeDatasetArchive: () => {
+      if (selectedDatasetId) datasetArchiveMutation.mutate({ resume: true });
+    },
+    datasetArchiveStarting: datasetArchiveMutation.isPending,
+    datasetArchiveStartError: datasetArchiveMutation.isError
+      ? datasetArchiveMutation.error
+      : null,
+    datasetArchiveProgress,
 
     isLoading: listQuery.isPending || capturesQuery.isPending,
     isError: listQuery.isError || capturesQuery.isError,
