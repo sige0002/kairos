@@ -226,3 +226,43 @@ test('topicLiveness keeps an unmeasured topic apart from a blind monitor', () =>
   ];
   expect(topicLiveness(discoveryOnly, '/cam/depth')).toBe('unknown');
 });
+
+// DEAD SOURCE, DEFINITELY: discovery counts publishers, and zero publishers
+// means no one can be producing frames — the topic is on the graph only
+// because something subscribes to it (our own preview subscription is enough).
+// That is a fact about the topic, not about monitoring coverage, so it must
+// read as silent even for a camera outside the monitored set.
+test('topicLiveness calls a publisher-less unmeasured topic silent, not unmonitored', () => {
+  const rows = [
+    row({ name: '/cam/head', status: 'ok' }),
+    row({ name: '/cam/depth', measured: false, publisher_count: 0 }),
+  ];
+  expect(topicLiveness(rows, '/cam/depth')).toBe('silent');
+});
+
+test('topicLiveness trusts a zero publisher count even when the monitor is blind', () => {
+  // The count comes from the /topics discovery poll, not the metrics snapshot,
+  // so it stands on its own — no measured row anywhere is required.
+  const discoveryOnly = [row({ name: '/cam/depth', measured: false, publisher_count: 0 })];
+  expect(topicLiveness(discoveryOnly, '/cam/depth')).toBe('silent');
+});
+
+test('topicLiveness keeps unmonitored for an unmeasured topic that HAS a publisher', () => {
+  // A live publisher outside the monitored set is exactly the coverage gap the
+  // unmonitored answer exists for — zero-publisher certainty must not leak
+  // onto it.
+  const rows = [
+    row({ name: '/cam/head', status: 'ok' }),
+    row({ name: '/cam/depth', measured: false, publisher_count: 1 }),
+  ];
+  expect(topicLiveness(rows, '/cam/depth')).toBe('unmonitored');
+});
+
+test('topicLiveness lets measured traffic outrank a momentary zero publisher count', () => {
+  // The count is one discovery sample; observed frames are evidence. A restart
+  // flap must not flip a measured-live tile — real silence reaches us as
+  // status: inactive within the monitor's own window.
+  expect(
+    topicLiveness([row({ name: '/cam/head', status: 'ok', publisher_count: 0 })], '/cam/head'),
+  ).toBe('live');
+});

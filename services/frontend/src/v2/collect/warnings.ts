@@ -181,7 +181,17 @@ export function topicLiveness(rows: MonitorRow[], topic: string): TopicLiveness 
   if (!row) return 'silent';
   if (row.status === 'inactive') return 'silent';
   // Measured and not flagged inactive: the monitor is seeing traffic on it.
+  // Measurement outranks the publisher count below — the count is a momentary
+  // discovery sample, and a restart flap must not override observed frames;
+  // real silence flips `status` to inactive within the monitor's own window.
   if (row.measured) return 'live';
+  // Unmeasured, but discovery itself counted the publishers and found none:
+  // the topic is on the graph only because something subscribes to it (our own
+  // preview subscription is enough). No publisher means no frames, regardless
+  // of monitoring coverage — a definite silent, not a coverage gap, and it
+  // holds even when the monitor is blind (the count comes from the /topics
+  // poll, not the metrics snapshot).
+  if (row.publisher_count === 0) return 'silent';
   // On the graph, but nobody is measuring it — which is NOT the same as
   // publishing, and used to be read that way. A topic stays in discovery for as
   // long as anything is attached to it, and the streamer's own preview
