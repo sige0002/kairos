@@ -432,6 +432,112 @@ class TestDatasets:
         assert len(store.dataset_memberships_for(capture.capture_id)) == 1
 
 
+class TestDatasetArchive:
+    def _dataset(self, store: CaptureStore, name: str = "ds") -> str:
+        dataset_id = new_dataset_id()
+        store.create_dataset(dataset_id, name=name, operator="alice", task="pick")
+        return dataset_id
+
+    def test_only_one_start_wins_the_cas(self, store: CaptureStore) -> None:
+        dataset_id = self._dataset(store)
+
+        assert store.begin_dataset_archive(dataset_id, destination="/mnt/nas/ds")
+        # The WHERE clause is the concurrency story: the second start finds no
+        # active row to flip and learns it lost without any lock being held.
+        assert not store.begin_dataset_archive(dataset_id, destination="/mnt/nas/ds")
+
+        row = store.get_dataset(dataset_id)
+        assert row is not None
+        assert row["status"] == "archiving"
+        assert row["archive_destination"] == "/mnt/nas/ds"
+        assert row["archive_started_at"] is not None
+
+    def test_abort_rolls_an_unledgered_start_back(self, store: CaptureStore) -> None:
+        dataset_id = self._dataset(store)
+        store.begin_dataset_archive(dataset_id, destination="/mnt/nas/ds")
+
+        store.abort_dataset_archive(dataset_id)
+
+        row = store.get_dataset(dataset_id)
+        assert row is not None
+        assert row["status"] == "active"
+        assert row["archive_destination"] is None
+        assert row["archive_started_at"] is None
+
+    def test_finish_seals_only_an_archiving_dataset(self, store: CaptureStore) -> None:
+        dataset_id = self._dataset(store)
+        assert not store.finish_dataset_archive(dataset_id)  # never started
+
+        store.begin_dataset_archive(dataset_id, destination="/mnt/nas/ds")
+        assert store.finish_dataset_archive(dataset_id)
+        assert not store.finish_dataset_archive(dataset_id)  # already sealed
+
+        row = store.get_dataset(dataset_id)
+        assert row is not None
+        assert row["status"] == "archived"
+        assert row["archived_at"] is not None
+        # Terminal means terminal: a new start finds no active row.
+        assert not store.begin_dataset_archive(dataset_id, destination="/elsewhere")
+
+    def test_replay_marks_are_idempotent_and_never_unseal(
+        self, store: CaptureStore
+    ) -> None:
+        dataset_id = self._dataset(store)
+        store.mark_dataset_archiving(
+            dataset_id, destination="/mnt/nas/ds", at="2026-08-01T00:00:00.000Z"
+        )
+        store.mark_dataset_archiving(
+            dataset_id, destination="/mnt/nas/ds", at="2026-08-01T00:00:00.000Z"
+        )
+        store.mark_dataset_archived(dataset_id, at="2026-08-01T01:00:00.000Z")
+        # A replay reads oldest-first, but a stray started line after the seal
+        # must not reopen a sealed dataset.
+        store.mark_dataset_archiving(
+            dataset_id, destination="/mnt/nas/ds", at="2026-08-01T02:00:00.000Z"
+        )
+
+        row = store.get_dataset(dataset_id)
+        assert row is not None
+        assert row["status"] == "archived"
+        assert row["archived_at"] == "2026-08-01T01:00:00.000Z"
+
+    def test_progress_is_derived_from_member_rows(self, store: CaptureStore) -> None:
+        dataset_id = self._dataset(store)
+        done = store.create_capture(_make_capture(run_id="run_1"))
+        pending = store.create_capture(_make_capture(run_id="run_2"))
+        store.add_dataset_member(dataset_id, done.capture_id)
+        store.add_dataset_member(dataset_id, pending.capture_id)
+
+        assert store.count_archived_members(dataset_id) == (0, 2)
+        store.update_capture(
+            done.capture_id,
+            archived_at="2026-08-01T00:00:00.000Z",
+            archive_destination="/mnt/nas/ds/001",
+        )
+        assert store.count_archived_members(dataset_id) == (1, 2)
+
+    def test_view_entries_come_from_active_datasets_only(
+        self, store: CaptureStore
+    ) -> None:
+        active_id = self._dataset(store, name="ds_active")
+        leaving_id = self._dataset(store, name="ds_leaving")
+        store.add_dataset_member(
+            active_id, store.create_capture(_make_capture(run_id="run_1")).capture_id
+        )
+        store.add_dataset_member(
+            leaving_id, store.create_capture(_make_capture(run_id="run_2")).capture_id
+        )
+
+        assert {e["dataset_name"] for e in store.list_view_entries()} == {
+            "ds_active",
+            "ds_leaving",
+        }
+        # The filter, not the regenerator's missing-source skip, is what removes
+        # an archiving dataset from views/ — a decision, not a surprise.
+        store.begin_dataset_archive(leaving_id, destination="/mnt/nas/ds")
+        assert {e["dataset_name"] for e in store.list_view_entries()} == {"ds_active"}
+
+
 class TestCatalogSidecars:
     def test_a_saved_template_is_mirrored_to_the_catalog_dir(
         self, store: CaptureStore, tmp_path: Path

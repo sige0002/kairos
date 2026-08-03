@@ -80,7 +80,7 @@ logger = logging.getLogger("kairos")
 # found in the field, not by tests, because tests only ever see fresh schemas.
 # The rebuild is the designed absorption path; refusing to bump is how it is
 # bypassed by accident.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 CATALOG_DIRNAME = "catalog"
 TEMPLATES_SIDECAR = "validation_templates.json"
@@ -216,7 +216,14 @@ CREATE TABLE IF NOT EXISTS datasets (
     -- whose member has since been removed. Numbers are never reused (§6), so
     -- the next one is always this + 1 — MAX() over live members would hand a
     -- retired number to a different recording.
-    index_high_water INTEGER NOT NULL DEFAULT 0
+    index_high_water INTEGER NOT NULL DEFAULT 0,
+    -- The terminal transition (§6.x). These cache what the ledger's
+    -- dataset_archive_started / dataset_archived events hold durably: the
+    -- resolved directory the bytes went to, and when. status walks
+    -- active → archiving → archived and never back.
+    archive_destination TEXT,
+    archive_started_at  TEXT,
+    archived_at         TEXT
 );
 
 CREATE TABLE IF NOT EXISTS dataset_members (
@@ -1019,7 +1026,13 @@ class CaptureStore:
         return [self._member_from_row(row) for row in rows]
 
     def list_view_entries(self) -> list[dict[str, Any]]:
-        """Everything the views tree needs, from committed member rows only (§6)."""
+        """Everything the views tree needs, from committed member rows only (§6).
+
+        Active datasets only: an archiving/archived dataset's bytes are leaving
+        or gone, and its disappearance from ``views/`` should be this filter —
+        a decision — rather than the regenerator's missing-source skip, which
+        logs each member as a surprise.
+        """
         with self._conn() as conn:
             rows = conn.execute(
                 """
@@ -1029,10 +1042,101 @@ class CaptureStore:
                 FROM dataset_members m
                 JOIN datasets d ON d.dataset_id = m.dataset_id
                 LEFT JOIN captures c ON c.capture_id = m.capture_id
+                WHERE d.status = 'active'
                 ORDER BY d.name, m.display_index
                 """
             ).fetchall()
         return [dict(row) for row in rows]
+
+    # ---- dataset archive (§6.x) --------------------------------------------
+
+    def begin_dataset_archive(
+        self, dataset_id: str, *, destination: str, at: str | None = None
+    ) -> bool:
+        """active → archiving, exactly once. ``False`` = it was not active.
+
+        The WHERE clause is the whole concurrency story: two racing starts both
+        reach this UPDATE, one flips the row, the other sees rowcount 0 and
+        reports the conflict. No lock outlives the statement.
+        """
+        with self._conn() as conn:
+            cur = conn.execute(
+                "UPDATE datasets SET status = 'archiving', "
+                "archive_destination = ?, archive_started_at = ? "
+                "WHERE dataset_id = ? AND status = 'active'",
+                (destination, at or utc_now_iso8601(), dataset_id),
+            )
+        return cur.rowcount > 0
+
+    def abort_dataset_archive(self, dataset_id: str) -> None:
+        """Roll archiving back to active — only for a start whose ledger append
+        failed, i.e. before any byte moved. Once a member has been copied the
+        run must go forward (resume), never back."""
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE datasets SET status = 'active', "
+                "archive_destination = NULL, archive_started_at = NULL "
+                "WHERE dataset_id = ? AND status = 'archiving'",
+                (dataset_id,),
+            )
+
+    def finish_dataset_archive(self, dataset_id: str, *, at: str | None = None) -> bool:
+        """archiving → archived (terminal). ``False`` = it was not archiving."""
+        with self._conn() as conn:
+            cur = conn.execute(
+                "UPDATE datasets SET status = 'archived', archived_at = ? "
+                "WHERE dataset_id = ? AND status = 'archiving'",
+                (at or utc_now_iso8601(), dataset_id),
+            )
+        return cur.rowcount > 0
+
+    def mark_dataset_archiving(
+        self, dataset_id: str, *, destination: str, at: str | None
+    ) -> None:
+        """Replay form of :meth:`begin_dataset_archive` — no CAS, idempotent.
+
+        The ledger already serialized the run; a rebuild just copies its
+        verdict onto the row, including a run that crashed mid-archive and must
+        come back as ``archiving`` so the operator can resume it.
+        """
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE datasets SET status = 'archiving', "
+                "archive_destination = ?, archive_started_at = ? "
+                "WHERE dataset_id = ? AND status != 'archived'",
+                (destination, at, dataset_id),
+            )
+
+    def mark_dataset_archived(self, dataset_id: str, *, at: str | None) -> None:
+        """Replay form of :meth:`finish_dataset_archive` — no CAS, idempotent."""
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE datasets SET status = 'archived', archived_at = ? "
+                "WHERE dataset_id = ?",
+                (at, dataset_id),
+            )
+
+    def count_archived_members(self, dataset_id: str) -> tuple[int, int]:
+        """(done, total) members of one dataset, "done" = capture archived.
+
+        Progress derived from durable rows rather than kept as its own state:
+        a member capture's ``archived_at`` can only have come from this
+        dataset's run (§6.x refuses shared members), so the join needs no
+        run identity.
+        """
+        with self._conn() as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS total,
+                       SUM(CASE WHEN c.archived_at IS NOT NULL THEN 1 ELSE 0 END)
+                           AS done
+                FROM dataset_members m
+                LEFT JOIN captures c ON c.capture_id = m.capture_id
+                WHERE m.dataset_id = ?
+                """,
+                (dataset_id,),
+            ).fetchone()
+        return (int(row["done"] or 0), int(row["total"]))
 
     # ---- batches -----------------------------------------------------------
 
