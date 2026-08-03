@@ -805,3 +805,78 @@ class TestCopyMode:
             # not say whether the recordings were kept or removed.
             assert detail["status"] == "archived"
             assert detail["archive_mode"] == "copy"
+
+
+class TestOperatorChosenPath:
+    """§6.1: the folder is the operator's to name; escape cannot leave the roots."""
+
+    def test_a_custom_path_lands_exactly_there(
+        self, data_dir: Path, tmp_path: Path, fake_recorder: FakeRecorder
+    ) -> None:
+        roots = tmp_path / "nas"
+        roots.mkdir()
+        with _archive_client(data_dir, roots, fake_recorder) as client:
+            layout = client.app.state.data_layout
+            dataset = _dataset(client, layout, members=1)
+            dataset_id = dataset["dataset_id"]
+
+            accepted = client.post(
+                f"/api/v1/datasets/{dataset_id}/archive",
+                json={
+                    "destination": str(roots),
+                    "path": "handoff/2026-08/final_set",
+                    "mode": "copy",
+                },
+            )
+            assert accepted.status_code == 202, accepted.text
+            _settle(client, dataset_id)
+
+            target = roots / "handoff" / "2026-08" / "final_set"
+            assert (target / "001" / "bag_0.mcap").is_file()
+            assert json.loads((target / MANIFEST_NAME).read_bytes())["status"] == (
+                "complete"
+            )
+            detail = client.get(f"/api/v1/datasets/{dataset_id}").json()
+            assert detail["archive_destination"] == str(target)
+
+    def test_escape_and_junk_paths_are_refused(
+        self, data_dir: Path, tmp_path: Path, fake_recorder: FakeRecorder
+    ) -> None:
+        roots = tmp_path / "nas"
+        roots.mkdir()
+        with _archive_client(data_dir, roots, fake_recorder) as client:
+            layout = client.app.state.data_layout
+            dataset = _dataset(client, layout, members=1)
+
+            escape = client.post(
+                f"/api/v1/datasets/{dataset['dataset_id']}/archive",
+                json={"destination": str(roots), "path": "../outside"},
+            )
+            # realpath containment, not string hygiene, is what closes this.
+            assert escape.status_code == 400
+            assert escape.json()["error"]["code"] == "destination_not_allowed"
+
+            for bad in ("", "   ", "/absolute/path"):
+                response = client.post(
+                    f"/api/v1/datasets/{dataset['dataset_id']}/archive",
+                    json={"destination": str(roots), "path": bad},
+                )
+                assert response.status_code == 400, bad
+                assert response.json()["error"]["code"] == "invalid_destination"
+
+    def test_a_taken_path_is_the_ordinary_duplicate_refusal(
+        self, data_dir: Path, tmp_path: Path, fake_recorder: FakeRecorder
+    ) -> None:
+        roots = tmp_path / "nas"
+        roots.mkdir()
+        (roots / "handoff" / "final_set").mkdir(parents=True)
+        (roots / "handoff" / "final_set" / "occupied.txt").write_text("here first")
+        with _archive_client(data_dir, roots, fake_recorder) as client:
+            layout = client.app.state.data_layout
+            dataset = _dataset(client, layout, members=1)
+            response = client.post(
+                f"/api/v1/datasets/{dataset['dataset_id']}/archive",
+                json={"destination": str(roots), "path": "handoff/final_set"},
+            )
+            assert response.status_code == 409
+            assert response.json()["error"]["code"] == "destination_not_empty"

@@ -113,6 +113,7 @@ class DatasetArchiver:
         dataset_id: str,
         *,
         destination: str | None,
+        path: str | None,
         mode: str | None,
         reason: str | None,
         roots: list[Path],
@@ -148,7 +149,7 @@ class DatasetArchiver:
                 details={"dataset_id": dataset_id},
             )
         if dataset["status"] == "archiving":
-            self._resume(dataset_id, dataset, destination, mode, roots)
+            self._resume(dataset_id, dataset, destination, path, mode, roots)
             return self.progress_for(dataset_id)
 
         run_mode = mode or "move"
@@ -167,7 +168,7 @@ class DatasetArchiver:
                 ),
                 details={"dataset_id": dataset_id},
             )
-        dataset_dir = self._dataset_dir(dataset, destination, roots)
+        dataset_dir = self._dataset_dir(dataset, destination, path, roots)
         # The allow-list said writing there is permitted; this says the target
         # is not our own bytes. Two different questions (§6).
         reject_overlapping_destination(
@@ -254,6 +255,7 @@ class DatasetArchiver:
         dataset_id: str,
         dataset: dict[str, Any],
         destination: str | None,
+        path: str | None,
         mode: str | None,
         roots: list[Path],
     ) -> None:
@@ -286,7 +288,7 @@ class DatasetArchiver:
             self._require_delete_available()
         recorded = dataset.get("archive_destination")
         if destination:
-            requested = str(self._dataset_dir(dataset, destination, roots))
+            requested = str(self._dataset_dir(dataset, destination, path, roots))
             if requested != recorded:
                 # A resume may only continue the run the ledger froze. A new
                 # destination is a different archive, and this dataset already
@@ -307,13 +309,38 @@ class DatasetArchiver:
         self._launch(dataset_id)
 
     def _dataset_dir(
-        self, dataset: dict[str, Any], destination: str | None, roots: list[Path]
+        self,
+        dataset: dict[str, Any],
+        destination: str | None,
+        path: str | None,
+        roots: list[Path],
     ) -> Path:
-        """Resolve ``<destination>/<operator>/<task>/<name>`` — the server owns
-        the shape. The three components are sanitized exactly as ``views.py``
-        sanitizes them, so the folder that leaves the store is byte-for-byte
-        the folder ``views/`` was showing."""
+        """Resolve where the dataset lands under the allow-listed destination.
+
+        The folder is the operator's to name: ``path`` is a free relative
+        path, prefilled by the UI with the views shape
+        (``<operator>/<task>/<name>``) and applied verbatim here. Omitted =
+        that same default, sanitized exactly as ``views.py`` sanitizes it. A
+        ``..`` (or any other escape) cannot leave the allow-list — the final
+        directory is re-validated against the same roots as the destination,
+        realpath and all.
+        """
         base = resolve_archive_destination(destination or "", roots)
+        if path is not None:
+            # Absoluteness is judged BEFORE any stripping: stripping a leading
+            # slash first would quietly relabel "/absolute" as relative.
+            raw = path.strip()
+            rel = raw.rstrip("/")
+            if not rel or raw.startswith("/") or Path(rel).is_absolute():
+                raise ApiError(
+                    status_code=400,
+                    code="invalid_destination",
+                    message="The archive path must be a non-empty relative path.",
+                    details={"path": path},
+                )
+            final = Path(os.path.normpath(str(base / rel)))
+            resolve_archive_destination(str(final), roots)
+            return final
         return (
             base
             / sanitize_component(dataset.get("operator"), "unknown_operator")

@@ -480,6 +480,13 @@ class DatasetArchiveRequest(BaseModel):
     """
 
     destination: str | None = None
+    # Where under *destination* the dataset lands, as a RELATIVE path whose
+    # last component is the dataset's folder. Omitted = the server's default
+    # views shape, <operator>/<task>/<name>. Operator-chosen names are free
+    # text; escape and overlap are caught by the same realpath checks as the
+    # destination itself, and a collision with an existing export is the
+    # ordinary 409 destination_not_empty.
+    path: str | None = Field(default=None, max_length=500)
     # 'move' (default): copy → verify → remove the sources — needs exclusive
     # members. 'copy': copy → verify → seal, sources untouched — legal for a
     # dataset that shares recordings with others (a combined set). Omitted on

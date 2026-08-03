@@ -28,6 +28,7 @@ import os
 import re
 import secrets
 import shutil
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -73,6 +74,48 @@ class ViewsResult:
             "datasets": self.datasets,
             "skipped": list(self.skipped),
         }
+
+
+# How long a superseded generation may linger before the reconciler removes it.
+# The count-based prune above (KEEP_GENERATIONS) only runs on regeneration, so
+# the LAST generation before a quiet period — e.g. the tree as it was before a
+# dataset archived — would otherwise sit beside ``views`` indefinitely, full of
+# dangling symlinks that read as "an empty folder that will not go away".
+# Ten minutes is far beyond any reader's hand-off and far below "operator
+# notices debris".
+STALE_GENERATION_GRACE_S = 600.0
+
+
+def prune_stale(
+    layout: DataLayout, *, grace_s: float = STALE_GENERATION_GRACE_S
+) -> int:
+    """Remove superseded generation dirs older than *grace_s*. Returns count.
+
+    Called from the reconciler's periodic pass. Never touches the generation
+    the ``views`` symlink currently points to, however old — the current tree
+    is not debris.
+    """
+    views = layout.views
+    try:
+        current = os.readlink(views) if views.is_symlink() else None
+    except OSError:
+        current = None
+    removed = 0
+    now = time.time()
+    for entry in layout.data_dir.iterdir():
+        if not _GENERATION_RE.match(entry.name) or entry.name == current:
+            continue
+        try:
+            age = now - entry.stat().st_mtime
+        except OSError:
+            continue
+        if age <= grace_s:
+            continue
+        shutil.rmtree(entry, ignore_errors=True)
+        removed += 1
+    if removed:
+        logger.info("pruned %d stale views generation(s)", removed)
+    return removed
 
 
 def sanitize_component(value: str | None, fallback: str) -> str:

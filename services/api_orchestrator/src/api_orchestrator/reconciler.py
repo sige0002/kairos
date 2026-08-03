@@ -45,6 +45,7 @@ from kairos_common.ids import is_uuid7
 from kairos_common.rebuild import ReplicaState
 
 from api_orchestrator import layout as layout_mod
+from api_orchestrator import views as views_mod
 from api_orchestrator import transfer
 from api_orchestrator.captures import CaptureService
 from api_orchestrator.digest import DigestJob
@@ -498,6 +499,12 @@ class Reconciler:
         result.digests_queued = len(
             self._store.captures_needing_digest(self._instance_id)
         )
+        # Sweep superseded views generations past their grace (§6). The
+        # count-based prune only runs on regeneration, so the last tree before
+        # a quiet period — say, the one from before a dataset archived — would
+        # otherwise sit beside ``views`` indefinitely as dangling-symlink
+        # debris. Derived state only; nothing the catalog answers from.
+        await asyncio.to_thread(views_mod.prune_stale, self._layout)
         return result
 
     async def run_digests(self) -> int:

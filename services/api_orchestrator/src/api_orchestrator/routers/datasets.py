@@ -141,6 +141,7 @@ async def archive_dataset(
     return await archiver.start(
         dataset_id,
         destination=body.destination,
+        path=body.path,
         mode=body.mode,
         reason=body.reason,
         roots=parse_archive_roots(

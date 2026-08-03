@@ -290,7 +290,11 @@ class DatasetService:
                     },
                 )
         try:
-            member = self._store.add_dataset_member(dataset_id, capture_id)
+            member = self._store.add_dataset_member(
+                dataset_id,
+                capture_id,
+                display_index=self._reclaimable_index(dataset_id, capture_id),
+            )
         except DatasetMemberExistsError as exc:
             raise ApiError(
                 status_code=409,
@@ -525,6 +529,28 @@ class DatasetService:
                     "only from this file, so it is not safe to proceed without it."
                 ),
             ) from exc
+
+    def _reclaimable_index(self, dataset_id: str, capture_id: str) -> int | None:
+        """The number this capture last held in this dataset, if any (§6).
+
+        Never-reuse forbids handing a retired number to a DIFFERENT recording —
+        the same recording returning is the one case that cannot break the
+        number↔recording binding, and re-adding after an accidental remove
+        should not read as a brand-new take. The member row is gone, so the
+        ledger is the only place the old number survives; latest add wins.
+        None = never was a member, allocate the next number as usual.
+        """
+        last: int | None = None
+        for event in ledger_v2.dataset_events(self._layout.data_dir):
+            if (
+                event.get("dataset_id") == dataset_id
+                and event.get("kind") == "dataset_member_added"
+                and event.get("capture_id") == capture_id
+            ):
+                index = event.get("display_index")
+                if isinstance(index, int) and not isinstance(index, bool):
+                    last = index
+        return last
 
     @staticmethod
     def _require_active(dataset: dict[str, Any]) -> None:

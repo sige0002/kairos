@@ -606,3 +606,89 @@ class TestViewsStayConsistent:
         generations = list(layout.data_dir.glob("views.*"))
         assert 1 <= len(generations) <= 2  # KEEP_GENERATIONS bounds the rest
         assert len(list((layout.views / "alice" / "pick" / "pick_v1").iterdir())) == 5
+
+
+class TestDisplayIndexReclaim:
+    """§6: a retired number never goes to a DIFFERENT recording — but the same
+    recording returning takes its own number back."""
+
+    def test_readding_the_same_capture_reclaims_its_number(
+        self, client: TestClient, layout: DataLayout
+    ) -> None:
+        dataset = client.post("/api/v1/datasets", json={"name": "ds"}).json()
+        dataset_id = dataset["dataset_id"]
+        capture_id = _capture(client, layout)
+        first = client.post(
+            f"/api/v1/datasets/{dataset_id}/members", json={"capture_id": capture_id}
+        ).json()
+        assert first["display_index"] == 1
+        client.delete(f"/api/v1/datasets/{dataset_id}/members/{first['membership_id']}")
+
+        again = client.post(
+            f"/api/v1/datasets/{dataset_id}/members", json={"capture_id": capture_id}
+        ).json()
+        # An accidental remove-and-readd must not read as a brand-new take:
+        # the number belongs to this recording and comes back with it.
+        assert again["display_index"] == 1
+
+        # A DIFFERENT recording still gets a never-issued number — the retired
+        # pool stays closed to strangers.
+        other = client.post(
+            f"/api/v1/datasets/{dataset_id}/members",
+            json={"capture_id": _capture(client, layout)},
+        ).json()
+        assert other["display_index"] == 2
+
+    def test_reclaim_is_per_dataset(self, client: TestClient, layout: DataLayout) -> None:
+        a = client.post("/api/v1/datasets", json={"name": "a"}).json()["dataset_id"]
+        b = client.post("/api/v1/datasets", json={"name": "b"}).json()["dataset_id"]
+        capture_id = _capture(client, layout)
+        filler = _capture(client, layout)
+        client.post(f"/api/v1/datasets/{b}/members", json={"capture_id": filler})
+        member = client.post(
+            f"/api/v1/datasets/{a}/members", json={"capture_id": capture_id}
+        ).json()
+        client.delete(f"/api/v1/datasets/{a}/members/{member['membership_id']}")
+
+        # Its number in dataset A says nothing about dataset B.
+        in_b = client.post(
+            f"/api/v1/datasets/{b}/members", json={"capture_id": capture_id}
+        ).json()
+        assert in_b["display_index"] == 2
+
+
+class TestViewsGenerationSweep:
+    def test_stale_generations_are_pruned_but_the_current_one_never(
+        self, client: TestClient, layout: DataLayout
+    ) -> None:
+        import os
+        import time as time_mod
+
+        from api_orchestrator import views as views_mod
+
+        # Build a real tree so `views` is a symlink to a live generation.
+        dataset = client.post("/api/v1/datasets", json={"name": "ds"}).json()
+        client.post(
+            f"/api/v1/datasets/{dataset['dataset_id']}/members",
+            json={"capture_id": _capture(client, layout)},
+        )
+        client.post("/api/v1/views/refresh")
+        settle_views(client)
+        current = os.readlink(layout.views)
+
+        # A superseded generation past its grace, and a fresh one within it.
+        old = layout.data_dir / "views.00000000deadbeef"
+        (old / "alice" / "pick" / "gone-set").mkdir(parents=True)
+        stale = time_mod.time() - 3600
+        os.utime(old, (stale, stale))
+        young = layout.data_dir / "views.11111111deadbeef"
+        young.mkdir()
+
+        removed = views_mod.prune_stale(layout, grace_s=600)
+
+        # The debris an archived dataset leaves behind goes; a reader mid
+        # hand-off (the young generation) and the live tree never do.
+        assert removed == 1
+        assert not old.exists()
+        assert young.exists()
+        assert (layout.data_dir / current).exists()
