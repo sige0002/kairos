@@ -85,10 +85,17 @@ test('§6.1 Dataset archive: freeze → copy+verify out → seal, and the record
   await page.getByTestId('dataset-archive-confirm').click();
 
   // ---- PRIMARY: the UI reaches the terminal state -------------------------
-  // The 202 started a server-side run; the badge is the operator's verdict.
-  await expect(page.getByTestId(`dataset-status-${datasetId}`)).toHaveText('archived', {
+  // The 202 started a server-side run; sealing moves the dataset off the
+  // working shelf entirely — its absence from Active IS the verdict, and the
+  // Archived view is where the record lives from now on.
+  await expect(page.getByTestId(`dataset-row-${datasetId}`)).not.toBeVisible({
     timeout: 120_000,
   });
+  await page.getByTestId('dataset-view-archived').click();
+  await expect(page.getByTestId(`dataset-status-${datasetId}`)).toHaveText('archived', {
+    timeout: 30_000,
+  });
+  await page.getByTestId(`dataset-row-${datasetId}`).click();
   await expect(page.getByTestId('dataset-archived-banner')).toContainText(EXPECTED_DEST);
   // The frozen dataset takes no more members, and says so where Add lived.
   await expect(page.getByTestId('build-target-frozen')).toBeVisible();
@@ -155,6 +162,7 @@ test('§6.1 Dataset archive: freeze → copy+verify out → seal, and the record
   // The archived dataset is back — status, destination and members replayed
   // from the ledger alone (§6.1: a dataset has no sidecar of its own).
   await openTab(page, 'datasets');
+  await page.getByTestId('dataset-view-archived').click();
   const row = page.getByTestId(`dataset-row-${datasetId}`);
   await expect(row, 'the archived dataset did not come back after the rebuild').toBeVisible({
     timeout: 60_000,
@@ -212,9 +220,14 @@ test('§6.1 Copy out: the set is sealed at the destination and every recording s
   );
   await page.getByTestId('dataset-archive-confirm').click();
 
-  await expect(page.getByTestId(`dataset-status-${datasetId}`)).toHaveText('archived', {
+  await expect(page.getByTestId(`dataset-row-${datasetId}`)).not.toBeVisible({
     timeout: 120_000,
   });
+  await page.getByTestId('dataset-view-archived').click();
+  await expect(page.getByTestId(`dataset-status-${datasetId}`)).toHaveText('archived', {
+    timeout: 30_000,
+  });
+  await page.getByTestId(`dataset-row-${datasetId}`).click();
   // The banner says which kind of archived this is.
   await expect(page.getByTestId('dataset-archived-banner')).toContainText('Copied to');
 

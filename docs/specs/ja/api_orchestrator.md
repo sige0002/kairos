@@ -135,7 +135,7 @@ capture 単位で外部ストレージへ退避する。**copy → sha256 verify
 
 dataset の終端遷移。capture archive を dataset に持ち上げたもので、行き先の検証（許可リスト＋解決後 dataset_dir への双方向重なり検査）と搬出順序（copy → verify → ledger → source 削除）は per-capture と同一。
 
-- `POST /api/v1/datasets/{dataset_id}/archive` — body `{ destination?, mode?, reason? }` → **`202`**（開始/再開兼用）。`mode` は `move`（既定・源を削除・専有 member 必須）か `copy`（封印のみ・源不変・共有 member 合法 — 合成した集合の標準）。サーバが `<destination>/<operator>/<task>/<name>` を合成する（成分は views と同じ sanitize）。copy は `delete_unavailable` の環境でも実行できる（何も消さないため）。
+- `POST /api/v1/datasets/{dataset_id}/archive` — body `{ destination?, path?, mode?, reason? }` → **`202`**（開始/再開兼用）。`mode` は `move`（既定・源を削除・専有 member 必須）か `copy`（封印のみ・源不変・共有 member 合法 — 合成した集合の標準）。`path` は root 配下の**operator が選ぶ相対パス**（最終要素が dataset のフォルダ。UI は views 形状で先埋め）。絶対パス・空は `400 invalid_destination`、`..` 等のエスケープは最終ディレクトリの realpath 再検証で `400 destination_not_allowed`、既存エクスポートとの衝突は `409 destination_not_empty`。省略時はサーバが `<destination>/<operator>/<task>/<name>` を合成する（成分は views と同じ sanitize）。copy は `delete_unavailable` の環境でも実行できる（何も消さないため）。
   - 開始前の拒否: `404 dataset_not_found` / `409 dataset_archived`（終端） / `409 dataset_empty` / `409 dataset_member_shared`（他 dataset にも属す member を **details.conflicts に全件列挙**） / `409 dataset_not_archivable`（busy / 不在の member を **details.blockers に各自の理由付きで全件列挙** — N 件の操作を 1 件ずつ突き返して N 往復させない、という意図的な集約） / `409 destination_not_empty` / `400` 系は capture archive と同じ（`archive_not_configured` / `invalid_destination` / `destination_not_allowed` / `destination_inside_data_dir`） / `503 delete_unavailable`・`ledger_unwritable`。
   - 再開: status が `archiving` で run が走っていなければ再 POST が冪等に続きから再開する。destination / mode は**省略するか、記録と一致**（違えば `409 archive_destination_mismatch` / `409 archive_mode_mismatch`）。走行中は `409 archive_in_progress`。
 - `GET /api/v1/datasets/{dataset_id}/archive` — 進捗。耐久フィールド（status / destination / archive_started_at / archived_at）は行由来で再起動を生き延び、`running` / `current_capture_id` / `current_bytes` / `error` はプロセスメモリで正直にリセットされる。**`archiving` かつ `running: false` が「再開可能」**で、UI はこれを Resume として描く。`GET /datasets/{id}` の拡張ではなく別 endpoint なのは、1 秒間隔のポーリングが detail キャッシュを暴れさせないため。
@@ -267,7 +267,7 @@ Settings > Data quality から、選択式カタログ（recording / stream / va
 - `POST /api/v1/datasets` — body `{ name, operator?, task? }` → `201`。`dataset_id` は UUIDv7。ledger に `dataset_created`。
 - `PATCH /api/v1/datasets/{dataset_id}` — body `{ name?, operator?, task? }` → `200`。**ラベル編集**（review 保存と同じ patch 意味論: 省略 = 維持、明示 null = クリア。name はクリア不可 `400 invalid_name`）。ledger に `dataset_updated`（変更後の完全なラベル集合）、views/ は追随して再生成。非 active は `409 dataset_not_active`。無変更の PATCH は ledger に何も書かない。
 - `GET /api/v1/datasets` — 一覧（`member_count` 込み）。`GET /api/v1/datasets/{dataset_id}` — members（`membership_id` / `capture_id` / `display_index`）込み。
-- `POST /api/v1/datasets/{dataset_id}/members` — body `{ capture_id }` → `201`。`display_index` はサーバが採番し、**欠番を再利用しない**（high-water mark は ledger から復元できる）。ledger に `dataset_member_added`。
+- `POST /api/v1/datasets/{dataset_id}/members` — body `{ capture_id }` → `201`。`display_index` はサーバが採番し、**欠番を別の recording に再利用しない**（high-water mark は ledger から復元できる）。ただし**同じ capture の再追加は、ledger からかつての自分の番号を取り戻す**（誤 remove の登録し直しが新テイクに見えないため）。ledger に `dataset_member_added`。
 - `DELETE /api/v1/datasets/{dataset_id}/members/{membership_id}` → `204`。ledger に `dataset_member_removed`。
 - `DELETE /api/v1/datasets/{dataset_id}` → `204`。ledger に `dataset_deleted`。**capture のバイトには触れない。**
 - **安定 ID は `dataset_id` / `membership_id`**（名前は編集可能、`display_index` は表示用）。UI の URL 状態もこの 2 つで持つ。

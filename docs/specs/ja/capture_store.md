@@ -164,12 +164,12 @@ rebuild はこのファイルも読み、`state='failed'` の行を作る。削�
 ## 6. dataset の論理化
 
 - 物理 move・実体コピーは全廃。**dataset は DB 行 + ledger イベントだけ**。
-- `display_index` は dataset 内の表示番号で、**欠番の再利用を禁止**（high-water mark は ledger から復元できる）。
+- `display_index` は dataset 内の表示番号で、**欠番の再利用を禁止**（high-water mark は ledger から復元できる）。禁止の実体は「引退した番号を**別の** recording に渡さない」こと — **同じ capture が同じ dataset に戻るときは、かつての自分の番号を取り戻す**（ledger の最後の member_added から復元。番号↔recording の対応はむしろ強まる）。誤 remove からの登録し直しが「新しいテイク」に見えてしまわないため。
 - **ラベル（name / operator / task）は active な間は編集可能**（`PATCH /api/v1/datasets/{id}`、ledger に `dataset_updated`）。同一性は `dataset_id` であり、リネームは「何と呼ぶか」を変えるだけで member と番号は不変。operator は「dataset のラベル」であって「誰が録画したか」ではない — 各 member の capture が自分の operator を持ち続けるので、複数人で録画した dataset はラベルを空にしてよい（views/ はその場合 member ごとの operator で枝を作る）。非 active では 409（ラベルは archive run が書いたフォルダに焼き込まれている）。
 - **明示的に廃止**: `dataset.json` サイドカー、`data/index.jsonl`、`POST /api/v1/datasets/index/rebuild`、`episode.json`、ジョブの `dataset_dir` param、`mcap_utils.validate_dataset_dir`、`<op>/<task>/<NNN>` の 3 階層検証。役割はすべて `datasets` / `dataset_members` テーブルと §8 の rebuild が引き継ぐ。
 - **views/**: `views/<operator>/<task>/<dataset_name>/<NNN> -> ../../../../objects/<capture_id>`。
   - 再生成は**世代ディレクトリ + symlink 差し替え**で原子的に行う: `views` 自体を `views.<generation>/` への symlink とし、`os.replace` で張り替える（views が存在しない瞬間を作らない）。in-place の書き換えは禁止。
-  - 再生成の入力は**コミット済みの `dataset_members` 行のみ**で、DB トランザクションの後に走る。所有者は orchestrator ただ 1 つ（dora_runner は依頼するだけ）。旧世代は猶予の後に削除する。
+  - 再生成の入力は**コミット済みの `dataset_members` 行のみ**で、DB トランザクションの後に走る。所有者は orchestrator ただ 1 つ（dora_runner は依頼するだけ）。旧世代は 2 つの経路で消える: 再生成時の世代数プルーン（KEEP_GENERATIONS）と、**reconciler の定期パスによる猶予付き掃除**（現行 10 分。静かな期間の直前に作られた最後の旧世代 — 例えば archive 前の木 — が、ダングリング symlink の残骸として `views` の隣に居座り続けないため。`views` symlink が現在指す世代には決して触れない）。
   - 入口は `POST /api/v1/views/refresh`。
 - **archive は capture 単位**として存続する: `POST /api/v1/captures/{id}/archive`。copy → sha256 verify → ledger(`capture_archived`) → source 削除、という順序（安全な向き）を維持する。
   - **`KAIROS_ARCHIVE_ROOTS` の許可リストと、重なりの検査は別の問い**であり、前者を通ったことは後者の証拠にならない。許可リストは「どこへ書いてよいか」を言い、重なり検査は「その 2 つが同じバイトであってはならない」を言う。
@@ -185,7 +185,7 @@ dataset の終端。capture archive の語彙（copy → verify → remove）を
   - **`move`（既定）**: 検証済みの member から順に**源を削除**する。ディスクが空く。member は専有必須（他の active dataset と共有していれば 409）。
   - **`copy`**: 同じフォルダ・同じ manifest・同じ封印を作るが、**capture の行にもバイトにも一切触れない**。共有 member でも合法 — 合成で作った集合の標準の書き出し方。member ごとの `capture_archived` イベントは**書かない**（何も起きていない capture に「出て行った」と記録するのは嘘になる）— 完了 member の耐久記録は destination の manifest 自身で、resume はそれを読んで再開する。`delete_unavailable` の環境でも実行可能。
 - **copy で封印された dataset（archived × copy）の membership は、capture のローカルバイトへの主張ではない**: per-capture の delete / archive を**ブロックせず**、新しい dataset への追加も妨げない。これが無いと「copy 封印された dataset にしか属さない capture が、凍結された member 集合のせいで永久に消せない」罠になる。move の場合は従来どおり（§7 の guard は active な dataset と、bytes を主張する非 active = move 系のみを数える）。
-- **開始（`POST /api/v1/datasets/{id}/archive` → 202）**: 行き先は capture archive と同じ `KAIROS_ARCHIVE_ROOTS` 許可リスト＋重なり検査（§6 の 2 つの独立した問い。検査対象は解決後の dataset_dir）。サーバが `<destination>/<operator>/<task>/<name>` を合成する — views 形状の所有者は 1 つ。member 0 件・共有 member（他 dataset にも属す capture、409 で全件列挙）・busy な member（各自の理由付きで全件列挙）・非空の行き先は開始前に拒否する。CAS 成功 → `dataset_archive_started` を append（**凍結された member 集合を運ぶ**。失敗したら CAS を戻す — バイトが動く前だけに許される唯一の rollback）。
+- **開始（`POST /api/v1/datasets/{id}/archive` → 202）**: 行き先は capture archive と同じ `KAIROS_ARCHIVE_ROOTS` 許可リスト＋重なり検査（§6 の 2 つの独立した問い。検査対象は解決後の dataset_dir）。**フォルダ名は operator のもの**: `path`（root 配下の相対パス。最終要素が dataset のフォルダ）を UI が views 形状 `<operator>/<task>/<name>` で先埋めし、自由に書き換えられる。省略時はサーバが同じ既定を sanitize して合成。エスケープ（`..` 等）は文字検査ではなく最終ディレクトリの realpath 再検証（許可リスト包含）で閉じ、**既存エクスポートとの衝突は通常の `409 destination_not_empty`**（重複チェックの実体）。member 0 件・共有 member（他 dataset にも属す capture、409 で全件列挙）・busy な member（各自の理由付きで全件列挙）・非空の行き先は開始前に拒否する。CAS 成功 → `dataset_archive_started` を append（**凍結された member 集合を運ぶ**。失敗したら CAS を戻す — バイトが動く前だけに許される唯一の rollback）。
 - **run（orchestrator 内の in-process ランナー。dora_runner ではない — ファイルを動かす仕事はそこに無い）**: member を `display_index` 順に、per-capture archive と同一の §9-1 順序（copy → sha256 verify → `capture_archived`（dataset 注釈付き）→ 行更新 → trash 経由の source 削除・replica を同一クリティカルセクションで `trashed` へ）で搬出する。書き込み先は `<dataset_dir>/<NNN>/`。
 - **member guard の唯一の緩和**: §7 の「dataset member は archive 拒否」は、**当該 run 自身の dataset の membership に限って**免除される（他の dataset の membership は引き続き拒否）。HTTP 経路の per-capture archive の挙動は不変。
 - **`dataset_manifest.json`**: 最初の書き込みから dataset_dir に置き、member 完了ごとに atomic に書き直す — 途中で死んだフォルダが「dataset X の書き出し途中、001–002 は封印済み」と**自己申告する**ため。全 member 完了で `status: complete` に確定し、その bytes の sha256 を `dataset_archived`（封印イベント）が記録する。依存は manifest → ledger の一方向で、封印後に manifest を書き換えれば ledger 単独で検出できる。
