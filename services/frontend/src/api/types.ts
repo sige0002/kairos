@@ -465,6 +465,15 @@ export interface DatasetCreateRequest {
   task?: string | null;
 }
 
+/** `PATCH /datasets/{id}` — edit the three labels. Identity is dataset_id.
+ *  Patch semantics: omitted keeps, explicit null clears (name never clears).
+ *  Refused (409 dataset_not_active) once the dataset is no longer active. */
+export interface DatasetUpdateRequest {
+  name?: string;
+  operator?: string | null;
+  task?: string | null;
+}
+
 /** `POST /datasets/{id}/archive` (§6.x). `destination` is `<root>/<subpath>`
  *  from the archive allow-list; the server appends `<operator>/<task>/<name>`
  *  itself — the views shape has one owner. Omitted on resume: the run

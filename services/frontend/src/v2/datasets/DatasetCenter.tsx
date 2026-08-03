@@ -20,6 +20,7 @@ import { AvailabilityChip } from '../captures/AvailabilityChip';
 import { CaptureLabelChips } from '../episodeChips';
 import { DatasetArchiveDialog } from './DatasetArchiveDialog';
 import { DatasetDetail } from './DatasetDetail';
+import { EditDatasetDialog } from './EditDatasetDialog';
 import { ScopeSummary } from './ScopeSummary';
 import {
   captureFacts,
@@ -99,6 +100,17 @@ function ScopeHeaderBar({ state }: { state: DatasetsState }) {
         placeholder="Find #N, capture, run, operator…"
         className="w-[190px] rounded-control border border-gray-200 bg-white px-2.5 py-1 text-[12px] text-gray-700 placeholder:text-gray-400"
       />
+      {scope.kind === 'dataset' && state.canEditDataset && (
+        <button
+          type="button"
+          data-testid="edit-dataset-btn"
+          onClick={state.openEdit}
+          title="Edit the name / operator / task labels. Members and their numbers do not change."
+          className="inline-flex shrink-0 items-center gap-1 rounded-control border border-gray-200 px-2.5 py-1 text-xs font-semibold text-gray-600 hover:bg-gray-50"
+        >
+          Edit
+        </button>
+      )}
       {scope.kind === 'dataset' && (state.canArchiveDataset || status === 'archiving') && (
         <button
           type="button"
@@ -412,6 +424,7 @@ export function DatasetCenter({ state }: { state: DatasetsState }) {
 
       <DeleteDatasetDialog state={state} />
       <DatasetArchiveDialog state={state} />
+      <EditDatasetDialog state={state} />
     </div>
   );
 }

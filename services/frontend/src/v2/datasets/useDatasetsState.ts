@@ -39,6 +39,7 @@ import {
   listAllCaptures,
   listDatasets,
   removeDatasetMember,
+  updateDataset,
 } from '../../api/captures';
 import { queryKeys } from '../../api/queryKeys';
 import type {
@@ -138,6 +139,45 @@ export interface DatasetsState {
   submitCreate: () => void;
   creating: boolean;
   createError: unknown;
+
+  // ---- editing the labels (identity is dataset_id; names move) -----------
+  /** The selected dataset's labels may be edited right now (active only). */
+  canEditDataset: boolean;
+  editOpen: boolean;
+  openEdit: () => void;
+  cancelEdit: () => void;
+  editName: string;
+  setEditName: (s: string) => void;
+  editOperator: string;
+  setEditOperator: (s: string) => void;
+  editTask: string;
+  setEditTask: (s: string) => void;
+  submitEdit: () => void;
+  editing: boolean;
+  editError: unknown;
+
+  // ---- combining datasets (a new set from existing ones; sources stay) ----
+  combineOpen: boolean;
+  openCombine: () => void;
+  cancelCombine: () => void;
+  /** Active datasets offered as sources (with their member counts). */
+  combineChoices: { datasetId: string; name: string; memberCount: number }[];
+  /** Selected sources, in selection order — the order members are numbered. */
+  combineSources: string[];
+  toggleCombineSource: (datasetId: string) => void;
+  combineName: string;
+  setCombineName: (s: string) => void;
+  combineOperator: string;
+  setCombineOperator: (s: string) => void;
+  combineTask: string;
+  setCombineTask: (s: string) => void;
+  submitCombine: () => void;
+  combineBusy: boolean;
+  combineDone: number;
+  combineTotal: number;
+  /** Per-capture failures, reported honestly; the dialog stays open on any. */
+  combineFailures: { captureId: string; message: string }[];
+  combineError: unknown;
 
   // ---- deleting a dataset (rows only; no capture is touched) -------------
   confirmingDatasetDelete: boolean;
@@ -317,6 +357,22 @@ export function useDatasetsState(): DatasetsState {
   const [newOperator, setNewOperator] = useState('');
   const [newTask, setNewTask] = useState('');
   const [confirmingDatasetDelete, setConfirmingDatasetDelete] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [editName, setEditName] = useState('');
+  const [editOperator, setEditOperator] = useState('');
+  const [editTask, setEditTask] = useState('');
+  const [combineOpen, setCombineOpen] = useState(false);
+  const [combineName, setCombineName] = useState('');
+  const [combineOperator, setCombineOperator] = useState('');
+  const [combineTask, setCombineTask] = useState('');
+  const [combineSources, setCombineSources] = useState<string[]>([]);
+  const [combineBusy, setCombineBusy] = useState(false);
+  const [combineDone, setCombineDone] = useState(0);
+  const [combineTotal, setCombineTotal] = useState(0);
+  const [combineFailures, setCombineFailures] = useState<
+    { captureId: string; message: string }[]
+  >([]);
+  const [combineError, setCombineError] = useState<unknown>(null);
   const [candidateSearch, setCandidateSearch] = useState('');
   const [archiveTarget, setArchiveTarget] = useState<Capture | null>(null);
   const [archiveRoot, setArchiveRoot] = useState('');
@@ -705,6 +761,100 @@ export function useDatasetsState(): DatasetsState {
   }, []);
   const cancelArchive = useCallback(() => setArchiveTarget(null), []);
 
+  // ---- label edits (identity is dataset_id; names move) -------------------
+
+  const editMutation = useMutation({
+    mutationFn: () =>
+      updateDataset(selectedDatasetId ?? '', {
+        name: editName.trim(),
+        // Empty in the form means "no label", said as an explicit null —
+        // omitting the key would mean "keep", which is a different statement.
+        operator: editOperator.trim() || null,
+        task: editTask.trim() || null,
+      }),
+    onSuccess: async (dataset) => {
+      await invalidateDatasets(dataset.dataset_id);
+      setEditOpen(false);
+      showToast(
+        `Renamed to “${dataset.name}” — same dataset, same members, same numbers`,
+      );
+    },
+  });
+
+  // ---- combining datasets -------------------------------------------------
+
+  // A combine is ordinary building done in bulk: create a new dataset, then
+  // add every member of every source through the same POST the rail uses —
+  // sequentially, with progress, failures reported per capture (the standing
+  // bulk rule). The sources are never written to; a dataset is a list, and
+  // reading a list does not change it.
+  const submitCombine = async () => {
+    if (combineBusy || !combineName.trim() || combineSources.length === 0) return;
+    setCombineBusy(true);
+    setCombineError(null);
+    setCombineFailures([]);
+    setCombineDone(0);
+    setCombineTotal(0);
+    try {
+      // Read every source first: the total is known before the first add, so
+      // the progress can say n of m instead of counting into the unknown.
+      const sourceDetails = [];
+      for (const id of combineSources) {
+        sourceDetails.push(await getDataset(id));
+      }
+      const seen = new Set<string>();
+      const captureIds: string[] = [];
+      for (const detail of sourceDetails) {
+        for (const member of [...detail.members].sort(
+          (a, b) => a.display_index - b.display_index,
+        )) {
+          // A capture in two sources joins once — the new set numbers it at
+          // its first appearance.
+          if (seen.has(member.capture_id)) continue;
+          seen.add(member.capture_id);
+          captureIds.push(member.capture_id);
+        }
+      }
+      setCombineTotal(captureIds.length);
+
+      const created = await createDataset({
+        name: combineName.trim(),
+        operator: combineOperator.trim() || null,
+        task: combineTask.trim() || null,
+      });
+      const failures: { captureId: string; message: string }[] = [];
+      for (const captureId of captureIds) {
+        try {
+          await addDatasetMember(created.dataset_id, captureId);
+        } catch (error) {
+          failures.push({ captureId, message: captureErrorText(error) });
+          setCombineFailures([...failures]);
+        }
+        setCombineDone((done) => done + 1);
+      }
+      await invalidateDatasets(created.dataset_id);
+      setSelectedDatasetId(created.dataset_id);
+      setSelectedMembershipId(null);
+      if (failures.length === 0) {
+        setCombineOpen(false);
+        setCombineSources([]);
+        setCombineName('');
+        setCombineOperator('');
+        setCombineTask('');
+        showToast(
+          `Combined ${captureIds.length} recording${captureIds.length === 1 ? '' : 's'} ` +
+            `into “${created.name}” — the source datasets are untouched`,
+        );
+      }
+      // With failures the dialog stays open: the list of what did not join is
+      // the result, and a toast would swallow it.
+    } catch (error) {
+      setCombineError(error);
+    } finally {
+      setCombineBusy(false);
+    }
+  };
+
   // ---- dataset archive (§6.x) --------------------------------------------
 
   // Status questions are answered from the UNFILTERED dataset list: a search
@@ -861,6 +1011,72 @@ export function useDatasetsState(): DatasetsState {
     },
     creating: createMutation.isPending,
     createError: createMutation.isError ? createMutation.error : null,
+
+    canEditDataset:
+      selectedDatasetRecord !== null && selectedDatasetRecord.status === 'active',
+    editOpen,
+    openEdit: () => {
+      if (!selectedDatasetRecord) return;
+      setEditName(selectedDatasetRecord.name);
+      setEditOperator(selectedDatasetRecord.operator ?? '');
+      setEditTask(selectedDatasetRecord.task ?? '');
+      editMutation.reset();
+      setEditOpen(true);
+    },
+    cancelEdit: () => setEditOpen(false),
+    editName,
+    setEditName,
+    editOperator,
+    setEditOperator,
+    editTask,
+    setEditTask,
+    submitEdit: () => {
+      if (editName.trim()) editMutation.mutate();
+    },
+    editing: editMutation.isPending,
+    editError: editMutation.isError ? editMutation.error : null,
+
+    combineOpen,
+    openCombine: () => {
+      setCombineSources(selectedDatasetId ? [selectedDatasetId] : []);
+      setCombineName('');
+      setCombineOperator('');
+      setCombineTask('');
+      setCombineFailures([]);
+      setCombineError(null);
+      setCombineDone(0);
+      setCombineTotal(0);
+      setCombineOpen(true);
+    },
+    cancelCombine: () => {
+      if (!combineBusy) setCombineOpen(false);
+    },
+    combineChoices: datasets
+      .filter((d) => d.status === 'active')
+      .map((d) => ({
+        datasetId: d.dataset_id,
+        name: d.name,
+        memberCount: d.member_count,
+      })),
+    combineSources,
+    toggleCombineSource: (datasetId) =>
+      setCombineSources((cur) =>
+        cur.includes(datasetId)
+          ? cur.filter((id) => id !== datasetId)
+          : [...cur, datasetId],
+      ),
+    combineName,
+    setCombineName,
+    combineOperator,
+    setCombineOperator,
+    combineTask,
+    setCombineTask,
+    submitCombine: () => void submitCombine(),
+    combineBusy,
+    combineDone,
+    combineTotal,
+    combineFailures,
+    combineError,
 
     confirmingDatasetDelete,
     requestDatasetDelete: () => setConfirmingDatasetDelete(selectedRow !== null),

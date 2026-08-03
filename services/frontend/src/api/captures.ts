@@ -26,6 +26,7 @@ import type {
   DatasetArchiveRequest,
   DatasetCreateRequest,
   DatasetDetail,
+  DatasetUpdateRequest,
   DatasetListResponse,
   DatasetMember,
   Page,
@@ -160,6 +161,15 @@ export function getDataset(
 
 export function createDataset(body: DatasetCreateRequest): Promise<Dataset> {
   return apiPost<Dataset>('/datasets', body);
+}
+
+/** Edit a dataset's labels (name / operator / task). The views/ tree follows
+ *  server-side — the labels are its path. */
+export function updateDataset(
+  datasetId: string,
+  body: DatasetUpdateRequest,
+): Promise<Dataset> {
+  return apiPatch<Dataset>(`/datasets/${encodeURIComponent(datasetId)}`, body);
 }
 
 export function deleteDataset(datasetId: string): Promise<void> {

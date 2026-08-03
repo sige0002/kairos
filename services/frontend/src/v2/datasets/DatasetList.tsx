@@ -14,6 +14,7 @@
 
 import { Badge, cn } from '../../components/ui';
 import { ErrorMessage } from '../../components/ErrorMessage';
+import { CombineDatasetsDialog } from './CombineDatasetsDialog';
 import {
   ANY_OPERATOR,
   datasetSummarySegments,
@@ -167,6 +168,15 @@ export function DatasetList({ state }: { state: DatasetsState }) {
         <div className="flex-1" />
         <button
           type="button"
+          data-testid="combine-datasets-btn"
+          onClick={state.openCombine}
+          title="Build a new dataset from existing ones. The sources are not touched."
+          className="rounded-chip border border-gray-200 px-[11px] py-[5px] text-xs font-semibold text-gray-600 hover:bg-gray-50"
+        >
+          ⧉ Combine
+        </button>
+        <button
+          type="button"
           data-testid="new-dataset-btn"
           onClick={state.openCreate}
           className="rounded-chip bg-teal-600 px-[11px] py-[5px] text-xs font-bold text-white hover:bg-teal-700"
@@ -302,6 +312,7 @@ export function DatasetList({ state }: { state: DatasetsState }) {
           )}
         </div>
       )}
+      <CombineDatasetsDialog state={state} />
     </div>
   );
 }

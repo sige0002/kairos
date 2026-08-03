@@ -127,8 +127,11 @@ function withMemberships(backend: Backend, c: Capture): Capture {
 
 function mockApi(seed: Partial<Backend> = {}): Backend {
   const backend: Backend = {
-    datasets: seed.datasets ?? [],
-    members: seed.members ?? [],
+    // Copied, never adopted: the handlers mutate rows in place (a PATCH
+    // renames, an archive seal flips status), and a shared module-level
+    // fixture would leak one test's mutations into the next.
+    datasets: (seed.datasets ?? []).map((d) => ({ ...d })),
+    members: (seed.members ?? []).map((m) => ({ ...m })),
     captures: seed.captures ?? [],
     highWater: seed.highWater ?? {},
     transferAvailable: seed.transferAvailable ?? false,
@@ -250,6 +253,26 @@ function mockApi(seed: Partial<Backend> = {}): Backend {
     const datasetMatch = path.match(/^\/datasets\/([^/]+)$/);
     if (datasetMatch) {
       const datasetId = decodeURIComponent(datasetMatch[1]!);
+      if (method === 'PATCH') {
+        const found = backend.datasets.find((d) => d.dataset_id === datasetId);
+        if (!found) {
+          return jsonResponse(
+            { error: { code: 'dataset_not_found', message: 'gone' } },
+            404,
+          );
+        }
+        // The real service freezes labels with the member set (§6.1).
+        if (found.status !== 'active') {
+          return jsonResponse(
+            { error: { code: 'dataset_not_active', message: 'frozen' } },
+            409,
+          );
+        }
+        if (typeof body.name === 'string' && body.name) found.name = body.name;
+        if ('operator' in body) found.operator = body.operator as string | null;
+        if ('task' in body) found.task = body.task as string | null;
+        return jsonResponse(datasetOut(found));
+      }
       if (method === 'DELETE') {
         backend.datasets = backend.datasets.filter((d) => d.dataset_id !== datasetId);
         backend.members = backend.members.filter((m) => m.dataset_id !== datasetId);
@@ -1010,4 +1033,94 @@ test('a halted run reports why, stays archiving, and Resume continues it without
   });
   const toast = await screen.findByTestId('toast', undefined, { timeout: 5000 });
   expect(toast).toHaveTextContent(/verified, then removed/);
+});
+
+// ---- label edits (identity is dataset_id; names move) ----------------------
+
+test('editing the labels renames the dataset without touching its members', async () => {
+  mockApi({
+    datasets: [DS_KITCHEN],
+    captures: [CAP_A],
+    members: [
+      { membership_id: 'm-1', dataset_id: 'ds-kitchen', capture_id: 'cap-a', display_index: 1 },
+    ],
+  });
+  renderWithClient(<DatasetsScreen />);
+
+  fireEvent.click(await screen.findByTestId(datasetTestId('ds-kitchen')));
+  fireEvent.click(await screen.findByTestId('edit-dataset-btn'));
+
+  const name = await screen.findByTestId('edit-dataset-name');
+  fireEvent.change(name, { target: { value: 'kitchen picks v2' } });
+  // Clearing operator is a statement, not an omission — several people may
+  // have recorded the members, and each recording keeps its own operator.
+  fireEvent.change(screen.getByTestId('edit-dataset-operator'), {
+    target: { value: '' },
+  });
+  fireEvent.click(screen.getByTestId('edit-dataset-submit'));
+
+  const toast = await screen.findByTestId('toast');
+  expect(toast).toHaveTextContent(/same dataset, same members, same numbers/);
+  const row = await screen.findByTestId(datasetTestId('ds-kitchen'));
+  await waitFor(() => expect(within(row).getByText('kitchen picks v2')).toBeInTheDocument());
+  // Same identity, same membership — only the labels moved.
+  expect(within(row).getByText('1 member')).toBeInTheDocument();
+});
+
+test('an archived dataset offers no label editing', async () => {
+  mockApi({ datasets: [DS_SEALED], captures: [] });
+  renderWithClient(<DatasetsScreen />);
+
+  fireEvent.click(await screen.findByTestId(datasetTestId('ds-sealed')));
+  await screen.findByTestId('dataset-archived-banner');
+  expect(screen.queryByTestId('edit-dataset-btn')).not.toBeInTheDocument();
+});
+
+// ---- combining datasets ----------------------------------------------------
+
+test('combining datasets builds a third; the sources and shared members are handled honestly', async () => {
+  const DS_B: Dataset = {
+    ...DS_KITCHEN,
+    dataset_id: 'ds-b',
+    name: 'shelf picks',
+    member_count: 0,
+  };
+  const backend = mockApi({
+    datasets: [DS_KITCHEN, DS_B],
+    captures: [CAP_A, CAP_B, CAP_AWAY],
+    members: [
+      { membership_id: 'm-1', dataset_id: 'ds-kitchen', capture_id: 'cap-a', display_index: 1 },
+      { membership_id: 'm-2', dataset_id: 'ds-kitchen', capture_id: 'cap-b', display_index: 2 },
+      // cap-b is in BOTH sources: it must join the new set exactly once.
+      { membership_id: 'm-3', dataset_id: 'ds-b', capture_id: 'cap-b', display_index: 1 },
+      { membership_id: 'm-4', dataset_id: 'ds-b', capture_id: 'cap-away', display_index: 2 },
+    ],
+    highWater: { 'ds-kitchen': 3, 'ds-b': 3 },
+  });
+  renderWithClient(<DatasetsScreen />);
+
+  fireEvent.click(await screen.findByTestId('combine-datasets-btn'));
+  const dialog = await screen.findByTestId('combine-datasets-dialog');
+  fireEvent.change(screen.getByTestId('combine-datasets-name'), {
+    target: { value: 'all picks' },
+  });
+  // findBy: the dialog opens on first paint, possibly before the dataset
+  // list has resolved into choices.
+  fireEvent.click(await within(dialog).findByTestId('combine-source-ds-kitchen'));
+  fireEvent.click(within(dialog).getByTestId('combine-source-ds-b'));
+  fireEvent.click(screen.getByTestId('combine-datasets-submit'));
+
+  const toast = await screen.findByTestId('toast');
+  expect(toast).toHaveTextContent(/Combined 3 recordings/);
+  expect(toast).toHaveTextContent(/source datasets are untouched/);
+
+  // The new dataset lists the union (shared member once), and the sources
+  // kept every membership they had.
+  const combined = backend.datasets.find((d) => d.name === 'all picks')!;
+  const newMembers = backend.members.filter((m) => m.dataset_id === combined.dataset_id);
+  expect(newMembers.map((m) => m.capture_id)).toEqual(['cap-a', 'cap-b', 'cap-away']);
+  expect(
+    backend.members.filter((m) => m.dataset_id === 'ds-kitchen'),
+  ).toHaveLength(2);
+  expect(backend.members.filter((m) => m.dataset_id === 'ds-b')).toHaveLength(2);
 });
