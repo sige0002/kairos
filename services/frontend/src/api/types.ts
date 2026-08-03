@@ -436,6 +436,8 @@ export interface Dataset {
   created_at?: string | null;
   member_count: number;
   archive_destination?: string | null;
+  /** 'copy' sealed the set and kept the recordings here; 'move' removed them. */
+  archive_mode?: string | null;
   archive_started_at?: string | null;
   archived_at?: string | null;
 }
@@ -480,6 +482,10 @@ export interface DatasetUpdateRequest {
  *  continues to the destination its ledger event froze. */
 export interface DatasetArchiveRequest {
   destination?: string | null;
+  /** 'move' (default): remove the sources after verifying — exclusive members
+   *  only. 'copy': seal the set, sources untouched — legal for a combined
+   *  dataset that shares recordings. Omit on resume. */
+  mode?: 'copy' | 'move' | null;
   reason?: string | null;
 }
 
@@ -500,6 +506,7 @@ export interface DatasetArchiveProgress {
   dataset_id: string;
   status: string;
   destination?: string | null;
+  mode?: string | null;
   member_total: number;
   members_done: number;
   running: boolean;

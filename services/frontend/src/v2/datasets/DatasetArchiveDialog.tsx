@@ -26,11 +26,63 @@ import { ErrorMessage } from '../../components/ErrorMessage';
 import { formatBytes, memberCount, shortCaptureId } from './data';
 import type { DatasetsState } from './useDatasetsState';
 
+function ModeRadio({ state }: { state: DatasetsState }) {
+  const shared = state.datasetArchiveSharedCount;
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        What happens to the recordings here
+      </span>
+      <label className="flex cursor-pointer items-start gap-2 rounded-[10px] border border-gray-100 px-3 py-2">
+        <input
+          type="radio"
+          name="dataset-archive-mode"
+          data-testid="dataset-archive-mode-copy"
+          checked={state.datasetArchiveMode === 'copy'}
+          onChange={() => state.setDatasetArchiveMode('copy')}
+        />
+        <span className="text-[12.5px] leading-snug text-gray-700">
+          <span className="font-semibold text-gray-900">Copy out — keep them.</span>{' '}
+          The dataset is sealed as a record of the export; every recording stays
+          here and other datasets keep working. The pick for a combined set.
+        </span>
+      </label>
+      <label className="flex cursor-pointer items-start gap-2 rounded-[10px] border border-gray-100 px-3 py-2">
+        <input
+          type="radio"
+          name="dataset-archive-mode"
+          data-testid="dataset-archive-mode-move"
+          checked={state.datasetArchiveMode === 'move'}
+          onChange={() => state.setDatasetArchiveMode('move')}
+        />
+        <span className="text-[12.5px] leading-snug text-gray-700">
+          <span className="font-semibold text-gray-900">
+            Move out — remove them.
+          </span>{' '}
+          Each verified recording is deleted from this machine; the disk space
+          comes back. Needs members no other dataset cites.
+        </span>
+      </label>
+      {shared > 0 && (
+        <span
+          data-testid="dataset-archive-shared-note"
+          className="text-[11px] leading-relaxed text-amber-700"
+        >
+          {shared} member{shared === 1 ? '' : 's'} also belong to another active
+          dataset, so a Move would be refused with the list — Copy is the one
+          that can succeed as-is.
+        </span>
+      )}
+    </div>
+  );
+}
+
 function ConfirmBody({ state }: { state: DatasetsState }) {
   const row = state.selectedDataset;
   const name = row?.dataset.name ?? '';
   const count = row?.dataset.member_count ?? 0;
   const bytes = row ? row.aggregate.bytes : null;
+  const copying = state.datasetArchiveMode === 'copy';
 
   return (
     <div className="flex flex-col gap-3">
@@ -41,11 +93,14 @@ function ConfirmBody({ state }: { state: DatasetsState }) {
         to the destination as numbered folders plus a manifest, and every file is
         verified (SHA-256).{' '}
         <span className="font-semibold text-gray-800">
-          Each recording that verifies is then removed from this machine, and the
-          dataset becomes read-only for good.
+          {copying
+            ? 'The recordings stay on this machine; the dataset becomes a sealed, read-only record of the export.'
+            : 'Each recording that verifies is then removed from this machine, and the dataset becomes read-only for good.'}
         </span>{' '}
         The catalog keeps the dataset and records where it went.
       </p>
+
+      <ModeRadio state={state} />
 
       <label className="flex flex-col gap-1">
         <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
@@ -168,7 +223,10 @@ function ProgressBody({ state }: { state: DatasetsState }) {
           {progress.current_bytes != null && (
             <> — {formatBytes(progress.current_bytes)} so far</>
           )}
-          . Each file is verified before the source is removed.
+          .{' '}
+          {progress.mode === 'copy'
+            ? 'Every file is verified as it lands; nothing here changes.'
+            : 'Each file is verified before the source is removed.'}
         </p>
       )}
 
@@ -264,7 +322,9 @@ export function DatasetArchiveDialog({ state }: { state: DatasetsState }) {
             >
               {state.datasetArchiveStarting
                 ? 'Starting…'
-                : 'Copy, verify, then remove'}
+                : state.datasetArchiveMode === 'copy'
+                  ? 'Copy, verify, then seal'
+                  : 'Copy, verify, then remove'}
             </Button>
           </>
         )

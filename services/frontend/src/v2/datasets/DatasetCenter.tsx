@@ -155,18 +155,24 @@ function ScopeHeaderBar({ state }: { state: DatasetsState }) {
 function ArchivedBanner({ state }: { state: DatasetsState }) {
   const dataset = state.selectedDataset?.dataset;
   if (!dataset || dataset.status !== 'archived') return null;
+  const copied = dataset.archive_mode === 'copy';
   return (
     <p
       data-testid="dataset-archived-banner"
       className="border-b border-gray-100 bg-gray-50 px-[18px] py-2 text-[12px] leading-relaxed text-gray-600"
     >
-      Archived to{' '}
+      {copied ? 'Copied to' : 'Archived to'}{' '}
       <span className="break-all font-mono text-gray-800">
         {dataset.archive_destination}
       </span>
-      {dataset.archived_at && <> on {formatWhen(dataset.archived_at)}</>} — every
-      recording it lists was verified there and removed from this machine. The
-      dataset is read-only; this record is what remembers where it went.
+      {dataset.archived_at && <> on {formatWhen(dataset.archived_at)}</>} —{' '}
+      {copied
+        ? 'every recording it lists was verified there and stays on this ' +
+          'machine, free to keep working in other datasets. The dataset is ' +
+          'read-only; this record is what remembers the export.'
+        : 'every recording it lists was verified there and removed from this ' +
+          'machine. The dataset is read-only; this record is what remembers ' +
+          'where it went.'}
     </p>
   );
 }

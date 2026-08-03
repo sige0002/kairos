@@ -42,7 +42,11 @@ interface Backend {
   /** When true, the NEXT progress poll seals the run — dataset archived,
    *  members' bytes gone — modelling a run that finished between polls. */
   sealOnPoll: boolean;
-  datasetArchiveCalls: { datasetId: string; destination: string | null }[];
+  datasetArchiveCalls: {
+    datasetId: string;
+    destination: string | null;
+    mode: string | null;
+  }[];
   calls: string[];
 }
 
@@ -196,13 +200,17 @@ function mockApi(seed: Partial<Backend> = {}): Backend {
       const seal = () => {
         dataset.status = 'archived';
         dataset.archived_at = '2026-07-22T09:00:00Z';
-        backend.captures = backend.captures.filter(
-          (c) => !memberIds.includes(c.capture_id),
-        );
+        // A copy seals the record and takes nothing; only a move removes.
+        if (dataset.archive_mode !== 'copy') {
+          backend.captures = backend.captures.filter(
+            (c) => !memberIds.includes(c.capture_id),
+          );
+        }
         backend.archiveRun = {
           dataset_id: datasetId,
           status: 'archived',
           destination: dataset.archive_destination ?? null,
+          mode: dataset.archive_mode ?? 'move',
           member_total: memberIds.length,
           members_done: memberIds.length,
           running: false,
@@ -214,6 +222,7 @@ function mockApi(seed: Partial<Backend> = {}): Backend {
         backend.datasetArchiveCalls.push({
           datasetId,
           destination: (body.destination as string | null | undefined) ?? null,
+          mode: (body.mode as string | null | undefined) ?? null,
         });
         if (dataset.status === 'archiving') {
           // A resume: the fake finishes the run on the spot — the claim under
@@ -224,11 +233,13 @@ function mockApi(seed: Partial<Backend> = {}): Backend {
         }
         // The server owns the shape: <destination>/<operator>/<task>/<name>.
         dataset.status = 'archiving';
+        dataset.archive_mode = (body.mode as string | undefined) ?? 'move';
         dataset.archive_destination = `${body.destination}/${dataset.operator ?? 'unknown_operator'}/${dataset.task ?? 'unknown_task'}/${dataset.name}`;
         backend.archiveRun = {
           dataset_id: datasetId,
           status: 'archiving',
           destination: dataset.archive_destination,
+          mode: dataset.archive_mode,
           member_total: memberIds.length,
           members_done: 0,
           running: true,
@@ -939,6 +950,7 @@ test('archiving a dataset: confirm echoes the final path, the run seals, the row
   expect(backend.datasetArchiveCalls[0]).toEqual({
     datasetId: 'ds-kitchen',
     destination: '/mnt/archive',
+    mode: 'move',
   });
   await waitFor(() => {
     expect(screen.getByTestId('dataset-status-ds-kitchen')).toHaveTextContent('archived');
@@ -1030,6 +1042,9 @@ test('a halted run reports why, stays archiving, and Resume continues it without
   expect(backend.datasetArchiveCalls[0]).toEqual({
     datasetId: 'ds-kitchen',
     destination: null,
+    // Resume names neither destination nor mode: the run the ledger froze is
+    // the run that continues.
+    mode: null,
   });
   const toast = await screen.findByTestId('toast', undefined, { timeout: 5000 });
   expect(toast).toHaveTextContent(/verified, then removed/);
@@ -1123,4 +1138,55 @@ test('combining datasets builds a third; the sources and shared members are hand
     backend.members.filter((m) => m.dataset_id === 'ds-kitchen'),
   ).toHaveLength(2);
   expect(backend.members.filter((m) => m.dataset_id === 'ds-b')).toHaveLength(2);
+});
+
+test('a combined set defaults to Copy out, and the seal takes nothing with it', async () => {
+  const DS_SOURCE: Dataset = {
+    ...DS_KITCHEN,
+    dataset_id: 'ds-source',
+    name: 'source picks',
+    member_count: 0,
+  };
+  const backend = mockApi({
+    datasets: [DS_KITCHEN, DS_SOURCE],
+    captures: [CAP_A, CAP_B],
+    members: [
+      { membership_id: 'm-1', dataset_id: 'ds-kitchen', capture_id: 'cap-a', display_index: 1 },
+      { membership_id: 'm-2', dataset_id: 'ds-kitchen', capture_id: 'cap-b', display_index: 2 },
+      // cap-a is shared with an ACTIVE dataset — a Move would refuse it.
+      { membership_id: 'm-3', dataset_id: 'ds-source', capture_id: 'cap-a', display_index: 1 },
+    ],
+    archiveRoots: ['/mnt/archive'],
+    sealOnPoll: true,
+  });
+  renderWithClient(<DatasetsScreen />);
+
+  fireEvent.click(await screen.findByTestId(datasetTestId('ds-kitchen')));
+  fireEvent.click(await screen.findByTestId('archive-dataset-btn'));
+
+  // Shared members make Copy the default, and the dialog says why.
+  const copyRadio = await screen.findByTestId('dataset-archive-mode-copy');
+  expect(copyRadio).toBeChecked();
+  expect(screen.getByTestId('dataset-archive-shared-note')).toHaveTextContent(
+    /1 member also belong/,
+  );
+  expect(screen.getByTestId('dataset-archive-confirm')).toHaveTextContent(
+    'Copy, verify, then seal',
+  );
+
+  fireEvent.click(screen.getByTestId('dataset-archive-confirm'));
+
+  const toast = await screen.findByTestId('toast', undefined, { timeout: 5000 });
+  expect(toast).toHaveTextContent(/verified and sealed/);
+  expect(backend.datasetArchiveCalls[0]!.mode).toBe('copy');
+  // The seal took nothing: both recordings still in the catalog, the sharing
+  // dataset intact, and the banner says the recordings stayed.
+  expect(backend.captures.map((c) => c.capture_id)).toEqual(['cap-a', 'cap-b']);
+  expect(backend.members.filter((m) => m.dataset_id === 'ds-source')).toHaveLength(1);
+  await waitFor(() => {
+    expect(screen.getByTestId('dataset-archived-banner')).toHaveTextContent(/Copied to/);
+  });
+  expect(screen.getByTestId('dataset-archived-banner')).toHaveTextContent(
+    /stays on this machine/,
+  );
 });

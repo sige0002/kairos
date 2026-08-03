@@ -105,9 +105,9 @@ export function DatasetDetail({
           data-testid="dataset-member-frozen-note"
           className="rounded-control border border-gray-200 bg-gray-50 px-3 py-2 text-[12px] leading-relaxed text-gray-600"
         >
-          This dataset&apos;s member set is frozen: its archive run moved (or is
-          moving) the recordings out. The membership stays as the record of what
-          number this recording was.
+          This dataset&apos;s member set is frozen by its archive run — a move
+          took the recordings with it, a copy left them here. The membership
+          stays as the record of what number this recording was.
         </p>
       )}
 

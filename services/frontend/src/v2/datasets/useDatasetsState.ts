@@ -291,6 +291,13 @@ export interface DatasetsState {
   datasetArchiveFinalDir: string;
   datasetArchiveReason: string;
   setDatasetArchiveReason: (s: string) => void;
+  /** 'copy' seals and keeps the recordings; 'move' removes them (exclusive
+   *  members only — the server refuses shared ones). */
+  datasetArchiveMode: 'copy' | 'move';
+  setDatasetArchiveMode: (m: 'copy' | 'move') => void;
+  /** Members that also belong to another active dataset — what makes Move
+   *  refuse and Copy the natural pick (a combined set). */
+  datasetArchiveSharedCount: number;
   confirmDatasetArchive: () => void;
   /** Re-POST with no destination: continue a halted run where it stood. */
   resumeDatasetArchive: () => void;
@@ -382,6 +389,7 @@ export function useDatasetsState(): DatasetsState {
   const [datasetArchiveRoot, setDatasetArchiveRoot] = useState('');
   const [datasetArchiveSubpath, setDatasetArchiveSubpath] = useState('');
   const [datasetArchiveReason, setDatasetArchiveReason] = useState('');
+  const [datasetArchiveMode, setDatasetArchiveMode] = useState<'copy' | 'move'>('move');
   const [toast, setToast] = useState('');
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -922,6 +930,7 @@ export function useDatasetsState(): DatasetsState {
           ? {}
           : {
               destination: datasetArchiveDestination,
+              mode: datasetArchiveMode,
               reason: datasetArchiveReason.trim() || null,
             },
       ),
@@ -945,17 +954,37 @@ export function useDatasetsState(): DatasetsState {
     setDatasetArchiveOpen(false);
     void invalidateDatasets(datasetArchiveProgress.dataset_id);
     showToast(
-      `Archived to ${datasetArchiveProgress.destination} — ` +
-        `${datasetArchiveProgress.member_total} recording${
-          datasetArchiveProgress.member_total === 1 ? '' : 's'
-        } verified, then removed from this machine`,
+      datasetArchiveProgress.mode === 'copy'
+        ? `Copied to ${datasetArchiveProgress.destination} — ` +
+            `${datasetArchiveProgress.member_total} recording${
+              datasetArchiveProgress.member_total === 1 ? '' : 's'
+            } verified and sealed; everything stays on this machine`
+        : `Archived to ${datasetArchiveProgress.destination} — ` +
+            `${datasetArchiveProgress.member_total} recording${
+              datasetArchiveProgress.member_total === 1 ? '' : 's'
+            } verified, then removed from this machine`,
     );
   }, [datasetArchiveProgress, invalidateDatasets, showToast]);
+
+  // A member shared with another active dataset makes Move refuse, so the
+  // dialog opens on Copy when any exist — the combined-set flow — and says
+  // why. (The server is the authority; this only picks the default.)
+  const datasetArchiveSharedCount = useMemo(() => {
+    if (!selectedRow) return 0;
+    return selectedRow.members.filter((m) =>
+      (m.capture?.memberships ?? []).some(
+        (other) =>
+          other.dataset_id !== selectedRow.dataset.dataset_id &&
+          datasetById.get(other.dataset_id)?.status === 'active',
+      ),
+    ).length;
+  }, [selectedRow, datasetById]);
 
   const openDatasetArchive = () => {
     setDatasetArchiveOpen(true);
     setDatasetArchiveSubpath('');
     setDatasetArchiveReason('');
+    setDatasetArchiveMode(datasetArchiveSharedCount > 0 ? 'copy' : 'move');
     datasetArchiveMutation.reset();
   };
   const cancelDatasetArchive = useCallback(() => setDatasetArchiveOpen(false), []);
@@ -1154,6 +1183,9 @@ export function useDatasetsState(): DatasetsState {
     datasetArchiveFinalDir,
     datasetArchiveReason,
     setDatasetArchiveReason,
+    datasetArchiveMode,
+    setDatasetArchiveMode,
+    datasetArchiveSharedCount,
     confirmDatasetArchive: () => {
       if (selectedDatasetId && datasetArchiveDestination) {
         datasetArchiveMutation.mutate({ resume: false });
