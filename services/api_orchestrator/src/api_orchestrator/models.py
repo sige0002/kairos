@@ -512,6 +512,19 @@ class DatasetCreateRequest(BaseModel):
     task: str | None = None
 
 
+class DatasetUpdateRequest(BaseModel):
+    """Body for ``PATCH /api/v1/datasets/{id}`` — edit the three labels.
+
+    Same patch semantics as a review save: an omitted field keeps its value, a
+    field explicitly set to ``null`` clears it. ``name`` cannot be cleared —
+    a dataset without a name has no views path and no way to be spoken about.
+    """
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    operator: str | None = None
+    task: str | None = None
+
+
 class DatasetMemberCreateRequest(BaseModel):
     """Body for ``POST /api/v1/datasets/{id}/members``."""
 

@@ -88,6 +88,7 @@ TOMBSTONE_KINDS: frozenset[str] = frozenset({"capture_discarded", "capture_delet
 DATASET_KINDS: frozenset[str] = frozenset(
     {
         "dataset_created",
+        "dataset_updated",
         "dataset_member_added",
         "dataset_member_removed",
         "dataset_deleted",
@@ -178,6 +179,8 @@ def build_event(
         raise ValueError(f"payload may not set envelope fields: {sorted(collisions)}")
     if kind == "capture_archived":
         _validate_archive_payload(payload)
+    elif kind == "dataset_updated":
+        _validate_dataset_updated_payload(payload)
     elif kind == "dataset_archive_started":
         _validate_dataset_archive_started_payload(payload)
     elif kind == "dataset_archived":
@@ -252,6 +255,23 @@ def _validate_archive_files(files: Any) -> None:
                 f"capture_archived files[].sha256 must be 64 lowercase hex "
                 f"characters: {entry!r}"
             )
+
+
+def _validate_dataset_updated_payload(payload: dict[str, Any]) -> None:
+    """Check a ``dataset_updated`` payload (§6): a label change.
+
+    Carries the COMPLETE new label set, not a diff: a replay applies events in
+    order and the latest one must be able to state the labels on its own,
+    without reconstructing them from every rename that came before.
+    """
+    for key in ("dataset_id", "name"):
+        value = payload.get(key)
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"dataset_updated requires a non-empty {key}: {value!r}")
+    for key in ("operator", "task"):
+        value = payload.get(key)
+        if value is not None and not isinstance(value, str):
+            raise ValueError(f"dataset_updated {key} must be str or absent: {value!r}")
 
 
 def _validate_dataset_archive_started_payload(payload: dict[str, Any]) -> None:

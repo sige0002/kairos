@@ -31,7 +31,12 @@ from kairos_common.ids import new_dataset_id
 from kairos_common.time import utc_now_iso8601
 
 from api_orchestrator.layout import DataLayout, is_reserved_name
-from api_orchestrator.models import Dataset, DatasetDetail, DatasetMember
+from api_orchestrator.models import (
+    Dataset,
+    DatasetDetail,
+    DatasetMember,
+    DatasetUpdateRequest,
+)
 from api_orchestrator.store import CaptureStore, DatasetMemberExistsError
 
 logger = logging.getLogger("kairos")
@@ -125,6 +130,67 @@ class DatasetService:
             task=task,
             created_at=created_at,
         )
+
+    def update(self, dataset_id: str, request: DatasetUpdateRequest) -> Dataset:
+        """Edit the three labels (§6). The identity is dataset_id; names move.
+
+        Active datasets only: an archived dataset's labels are baked into the
+        folder its archive run wrote, and editing the record out from under
+        the folder would make the two disagree about what left.
+        """
+        dataset = self._store.get_dataset(dataset_id)
+        if dataset is None:
+            raise _not_found(dataset_id)
+        self._require_active(dataset)
+        supplied = request.model_fields_set
+        name = request.name if "name" in supplied else dataset["name"]
+        if not name or not str(name).strip():
+            raise ApiError(
+                status_code=400,
+                code="invalid_name",
+                message="A dataset cannot lose its name; give it a new one.",
+                details={"dataset_id": dataset_id},
+            )
+        operator = request.operator if "operator" in supplied else dataset["operator"]
+        task = request.task if "task" in supplied else dataset["task"]
+        self._reject_reserved(operator, task, name)
+
+        changed = (name, operator, task) != (
+            dataset["name"],
+            dataset["operator"],
+            dataset["task"],
+        )
+        if changed:
+            # Row first, rollback on append failure — the add-side ordering:
+            # nothing is destroyed by a rename, and the ledger line is what
+            # makes it survive a rebuild.
+            self._store.update_dataset_labels(
+                dataset_id, name=name, operator=operator, task=task
+            )
+            try:
+                self._append(
+                    "dataset_updated",
+                    {
+                        "dataset_id": dataset_id,
+                        "name": name,
+                        "operator": operator,
+                        "task": task,
+                    },
+                )
+            except ApiError:
+                self._store.update_dataset_labels(
+                    dataset_id,
+                    name=dataset["name"],
+                    operator=dataset["operator"],
+                    task=dataset["task"],
+                )
+                raise
+            # The labels are the views path: <operator>/<task>/<name>/NNN.
+            self._views_changed()
+        row = self._store.get_dataset(dataset_id)
+        assert row is not None
+        members = self._store.list_dataset_members(dataset_id)
+        return _dataset(row, member_count=len(members))
 
     def delete(self, dataset_id: str) -> None:
         """Delete a dataset and its memberships. No capture is touched."""
@@ -305,6 +371,27 @@ class DatasetService:
                         created_at=_opt_str(event.get("at")),
                     )
                     counts["datasets"] += 1
+            elif kind == "dataset_updated":
+                name = event.get("name")
+                if isinstance(name, str) and name:
+                    if self._store.get_dataset(dataset_id) is None:
+                        # A rename whose dataset_created line sits in a lost
+                        # ledger head — the full label set it carries is enough
+                        # to re-create the row (same rescue as memberships).
+                        self._store.create_dataset(
+                            dataset_id,
+                            name=name,
+                            operator=_opt_str(event.get("operator")),
+                            task=_opt_str(event.get("task")),
+                            created_at=_opt_str(event.get("at")),
+                        )
+                    else:
+                        self._store.update_dataset_labels(
+                            dataset_id,
+                            name=name,
+                            operator=_opt_str(event.get("operator")),
+                            task=_opt_str(event.get("task")),
+                        )
             elif kind == "dataset_member_added":
                 counts["members"] += self._replay_member_added(dataset_id, event)
             elif kind == "dataset_member_removed":

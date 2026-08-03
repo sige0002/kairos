@@ -37,6 +37,7 @@ from api_orchestrator.models import (
     DatasetListResponse,
     DatasetMember,
     DatasetMemberCreateRequest,
+    DatasetUpdateRequest,
 )
 
 router = APIRouter(prefix="/api/v1/datasets", tags=["datasets"])
@@ -66,6 +67,22 @@ async def get_dataset(
 ) -> DatasetDetail:
     """One dataset and its members, ordered by display_index."""
     return service.get(dataset_id)
+
+
+@router.patch("/{dataset_id}", response_model=Dataset)
+async def update_dataset(
+    dataset_id: str,
+    body: DatasetUpdateRequest,
+    service: DatasetService = Depends(get_dataset_service),
+) -> Dataset:
+    """Edit the three labels (name / operator / task). Identity is dataset_id.
+
+    Patch semantics: omitted keeps, explicit null clears (name cannot be
+    cleared). The views/ tree follows, since the labels are its path. Refused
+    once the dataset is no longer active — an archived dataset's labels are
+    baked into the folder its run wrote.
+    """
+    return service.update(dataset_id, body)
 
 
 @router.delete("/{dataset_id}", status_code=204)

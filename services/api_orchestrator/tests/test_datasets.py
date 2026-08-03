@@ -156,6 +156,108 @@ class TestDisplayIndex:
         assert new_member["display_index"] == 4
 
 
+class TestLabelEdits:
+    """§6: labels are editable while active; identity is dataset_id."""
+
+    def test_a_rename_sticks_updates_views_input_and_survives_a_rebuild(
+        self, client: TestClient, layout: DataLayout, settings, fake_recorder
+    ) -> None:
+        dataset = client.post(
+            "/api/v1/datasets", json={"name": "draft", "operator": "alice"}
+        ).json()
+        dataset_id = dataset["dataset_id"]
+        client.post(
+            f"/api/v1/datasets/{dataset_id}/members",
+            json={"capture_id": _capture(client, layout)},
+        )
+
+        updated = client.patch(
+            f"/api/v1/datasets/{dataset_id}",
+            json={"name": "final", "task": "pick"},
+        ).json()
+        assert (updated["name"], updated["operator"], updated["task"]) == (
+            "final",
+            "alice",  # omitted = unchanged
+            "pick",
+        )
+        # The labels are the views path, so the regeneration input follows.
+        entries = client.app.state.capture_store.list_view_entries()
+        assert entries[0]["dataset_name"] == "final"
+        assert entries[0]["task"] == "pick"
+
+        # An explicit null clears; the member count answer is unchanged.
+        cleared = client.patch(
+            f"/api/v1/datasets/{dataset_id}", json={"operator": None}
+        ).json()
+        assert cleared["operator"] is None
+        assert cleared["member_count"] == 1
+
+        # The rename is a ledger fact, so it outlives the database.
+        client.__exit__(None, None, None)
+        layout.db.unlink()
+        app = create_orchestrator_app(
+            settings,
+            http_client=httpx.AsyncClient(
+                transport=httpx.MockTransport(fake_recorder.handler)
+            ),
+        )
+        with TestClient(app) as restarted:
+            detail = restarted.get(f"/api/v1/datasets/{dataset_id}").json()
+            assert detail["name"] == "final"
+            assert detail["operator"] is None
+            assert detail["task"] == "pick"
+
+    def test_the_name_cannot_be_cleared_and_reserved_names_refuse(
+        self, client: TestClient
+    ) -> None:
+        dataset = client.post("/api/v1/datasets", json={"name": "ds"}).json()
+        dataset_id = dataset["dataset_id"]
+
+        cleared = client.patch(f"/api/v1/datasets/{dataset_id}", json={"name": None})
+        assert cleared.status_code == 400
+        assert cleared.json()["error"]["code"] == "invalid_name"
+
+        reserved = client.patch(
+            f"/api/v1/datasets/{dataset_id}", json={"name": "objects"}
+        )
+        assert reserved.status_code == 400
+        assert reserved.json()["error"]["code"] == "reserved_name"
+
+    def test_a_noop_patch_writes_no_ledger_line(
+        self, client: TestClient, layout: DataLayout
+    ) -> None:
+        dataset = client.post(
+            "/api/v1/datasets", json={"name": "ds", "operator": "alice"}
+        ).json()
+        before = len(ledger_v2.dataset_events(layout.data_dir))
+
+        response = client.patch(
+            f"/api/v1/datasets/{dataset['dataset_id']}", json={"name": "ds"}
+        )
+        assert response.status_code == 200
+        # Nothing changed, so there is nothing for a rebuild to replay.
+        assert len(ledger_v2.dataset_events(layout.data_dir)) == before
+
+    def test_a_frozen_dataset_keeps_its_labels(
+        self, client: TestClient, layout: DataLayout
+    ) -> None:
+        dataset = client.post("/api/v1/datasets", json={"name": "ds"}).json()
+        dataset_id = dataset["dataset_id"]
+        client.post(
+            f"/api/v1/datasets/{dataset_id}/members",
+            json={"capture_id": _capture(client, layout)},
+        )
+        client.app.state.capture_store.begin_dataset_archive(
+            dataset_id, destination="/mnt/nas/ds"
+        )
+
+        response = client.patch(f"/api/v1/datasets/{dataset_id}", json={"name": "new"})
+        # The labels are baked into the folder the archive run writes; editing
+        # the record out from under it would make the two disagree.
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "dataset_not_active"
+
+
 class TestArchiveStatusGuards:
     """§6.x: a dataset that is not active has a frozen member set."""
 

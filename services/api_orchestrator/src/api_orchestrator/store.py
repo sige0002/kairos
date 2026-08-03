@@ -895,6 +895,27 @@ class CaptureStore:
                 (dataset_id, name, operator, task, created_at or utc_now_iso8601()),
             )
 
+    def update_dataset_labels(
+        self,
+        dataset_id: str,
+        *,
+        name: str,
+        operator: str | None,
+        task: str | None,
+    ) -> bool:
+        """Rewrite a dataset's three labels. ``False`` = no such dataset.
+
+        Labels only — status, timestamps and the high-water mark are owned by
+        their own transitions and must not ride along on a rename.
+        """
+        with self._conn() as conn:
+            cur = conn.execute(
+                "UPDATE datasets SET name = ?, operator = ?, task = ? "
+                "WHERE dataset_id = ?",
+                (name, operator, task, dataset_id),
+            )
+        return cur.rowcount > 0
+
     def get_dataset(self, dataset_id: str) -> dict[str, Any] | None:
         with self._conn() as conn:
             row = conn.execute(
