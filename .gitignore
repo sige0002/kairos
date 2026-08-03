@@ -134,6 +134,9 @@ log/
 # 参考フォルダ
 /ref
 
+# 変更履歴はローカル管理（2026-08-03 ユーザー指示。追跡から外したが履歴には旧版が残る）
+/CHANGELOG.md
+
 # Image archives written by `make images-save` (multi-GB; carried by hand to an
 # offline machine, never committed).
 /kairos-images*.tar.gz

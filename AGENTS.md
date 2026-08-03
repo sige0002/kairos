@@ -196,4 +196,4 @@ kairos/
 - `docs/dora/` — dora まわりの利用ガイド。
 - `dev_docs/` — 作業ドキュメント（調査・レビュー・設計討議）。索引は [`dev_docs/README.md`](dev_docs/README.md)。
 - `issue/` — 作業中に遭遇した問題と解決策の蓄積（1 問題 = 1 エントリ）。
-- `CHANGELOG.md` — 変更履歴（Keep a Changelog）。ユーザーに見える変更は `## [Unreleased]` に追記する。
+- `CHANGELOG.md` — 変更履歴（Keep a Changelog）。ユーザーに見える変更は `## [Unreleased]` に追記する。**gitignore 済み・ローカル管理**（コミットしない）。
