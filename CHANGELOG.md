@@ -130,6 +130,19 @@ Phase A hardening toward a supportable release
 
 ### Changed
 
+- **Collect's Discard is one click** (user decision 2026-08-03). The reason
+  prompt had already been softened to preset chips; the same feedback said the
+  clicks themselves were the burden, so on Collect the press is now the
+  consent — no dialog, no typed reason, immediate discard of the take on the
+  result panel and of an unsaved take from the recovery banner. The ledger
+  still gets a true answer: an automatic reason recording that the discard
+  came from Collect and no reason was asked, which keeps a Collect tombstone
+  distinguishable from a Review discard. Review's dialog (and §12's wording
+  obligations) are unchanged; on a split deployment the "this machine's copy
+  only" disclosure moves into the success toast, and a refusal (the job-voiced
+  `capture_busy` text included) lands on the toast with the take kept — retry
+  is the same press.
+
 - **Capture store v2 — recordings are now addressed by `capture_id`, and
   `kairos.db` is disposable.** A recording is a *capture*: a recorder-minted
   UUIDv7 that names one directory, `objects/<capture_id>/`, and one row. The old
@@ -280,6 +293,38 @@ Phase A hardening toward a supportable release
   quality SignalsCard, `signalDefaults.ts`, and `config/<robot>/signals/`.
 
 ### Fixed
+
+- **A rejected pre-arm no longer surfaces only after the next rebuild**
+  (found live by the acceptance suite, 2026-08-03: §13-4 went red because a
+  capture appeared out of nowhere after `rm kairos.db`). When Collect's
+  keep-alive `/record/prepare` fails to arm, the recorder writes
+  `objects/<id>.failed.json` before rejecting — but the orchestrator filed no
+  row for it, by documented design, so the store contained a failure only a
+  rebuild would admit to and the operator saw different catalogs before and
+  after the index was rebuilt. The failed row is now filed the moment the
+  rejection arrives, on the start and prepare paths alike; a rejection that
+  names no capture_id still files nothing (no id was minted, so there is no
+  sidecar either). The §13-4 spec's expected set now comes from the store's
+  own account at the last moment before the index dies, so a background
+  failure landing after the list painted cannot read as "the rebuild invented
+  a capture".
+
+- **A dead camera source reads "topic silent" even outside the monitored set**
+  (follow-up to the QA cycle's camera-tile honesty work). Discovery's
+  `publisher_count` rides into the monitor rows, and zero publishers means
+  nothing can be producing frames — the topic stays on the graph only because
+  something subscribes to it, the streamer's own preview subscription
+  included. Such a tile used to give the weaker "not monitored — no rate
+  available" answer. Measured traffic still outranks the count, so a restart
+  flap cannot flip a measured-live tile; real silence arrives as the monitor's
+  own `inactive`.
+
+- **`make test-e2e`'s own teardown no longer warns about itself.** The run
+  lease names make as the owner, but make executes the teardown through an
+  intermediate `sh -c`, so a plain pid comparison called every green run's
+  own `down` a foreign release. Self is now the whole ancestor chain; a
+  genuinely foreign release still warns, and a live foreign `up` is still
+  refused.
 
 - **Live claims now expire — the fresh-eyes QA cycle** (5 rounds, 2026-08-02
   〜08-03). An independent exploratory QA pass over the real UI found the
