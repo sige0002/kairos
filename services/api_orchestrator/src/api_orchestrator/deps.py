@@ -9,6 +9,7 @@ from __future__ import annotations
 from fastapi import Request
 
 from api_orchestrator.captures import CaptureService
+from api_orchestrator.dataset_archive import DatasetArchiver
 from api_orchestrator.dataset_service import DatasetService
 from api_orchestrator.record_service import RecordService
 from api_orchestrator.store import CaptureStore
@@ -27,6 +28,11 @@ def get_capture_service(request: Request) -> CaptureService:
 def get_dataset_service(request: Request) -> DatasetService:
     """The logical-dataset service."""
     return request.app.state.dataset_service
+
+
+def get_dataset_archiver(request: Request) -> DatasetArchiver:
+    """The dataset archive runner (§6.x): start, resume, progress."""
+    return request.app.state.dataset_archiver
 
 
 def get_store(request: Request) -> CaptureStore:

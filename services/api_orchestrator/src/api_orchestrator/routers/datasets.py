@@ -10,16 +10,28 @@ Everything the v1 router did is gone and is listed in §10's retirement set:
 ``POST /export`` / ``export-all``. There is no compatibility alias — an export
 that MOVED recordings is precisely the design v2 replaces, and answering the old
 route with a new meaning would be worse than a 404.
+
+``POST /{dataset_id}/archive`` (§6.x) is not that export coming back. The v1
+export was a *move inside the store* that the catalog then forgot; the archive
+is the capture archive's vocabulary — copy, verify, then remove — lifted to a
+dataset, terminal by design, and recorded as ledger events that outlive the
+database. What leaves is gone from here and the record of WHERE it went is
+the point.
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Response, status
+from fastapi import APIRouter, Depends, Request, Response, status
 
+from kairos_common.archive_paths import parse_archive_roots
+
+from api_orchestrator.dataset_archive import DatasetArchiver
 from api_orchestrator.dataset_service import DatasetService
-from api_orchestrator.deps import get_dataset_service
+from api_orchestrator.deps import get_dataset_archiver, get_dataset_service
 from api_orchestrator.models import (
     Dataset,
+    DatasetArchiveProgress,
+    DatasetArchiveRequest,
     DatasetCreateRequest,
     DatasetDetail,
     DatasetListResponse,
@@ -89,3 +101,45 @@ async def remove_member(
     """Remove one member. Its display_index stays retired forever (§6)."""
     service.remove_member(dataset_id, membership_id)
     return Response(status_code=204)
+
+
+@router.post(
+    "/{dataset_id}/archive",
+    response_model=DatasetArchiveProgress,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def archive_dataset(
+    dataset_id: str,
+    body: DatasetArchiveRequest,
+    request: Request,
+    archiver: DatasetArchiver = Depends(get_dataset_archiver),
+) -> DatasetArchiveProgress:
+    """Freeze the dataset and start (or resume) copying it out (§6.x).
+
+    202, not 200: a dataset is N captures and the copy runs in the
+    background. By the time this returns, the member set is frozen in the
+    ledger and the status is ``archiving``; poll the GET below for the rest.
+    Destinations pass the same allow-list as a capture archive.
+    """
+    return await archiver.start(
+        dataset_id,
+        destination=body.destination,
+        reason=body.reason,
+        roots=parse_archive_roots(
+            getattr(request.app.state.settings, "archive_roots", "")
+        ),
+    )
+
+
+@router.get("/{dataset_id}/archive", response_model=DatasetArchiveProgress)
+async def dataset_archive_progress(
+    dataset_id: str,
+    archiver: DatasetArchiver = Depends(get_dataset_archiver),
+) -> DatasetArchiveProgress:
+    """The run's progress — polled, so separate from ``GET /{dataset_id}``.
+
+    The durable fields survive a restart; ``running``/``current_*``/``error``
+    are this process's memory and honestly reset. ``archiving`` with
+    ``running: false`` means "resumable" — the UI's Resume button.
+    """
+    return archiver.progress_for(dataset_id)

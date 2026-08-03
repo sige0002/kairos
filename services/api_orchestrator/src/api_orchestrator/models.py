@@ -467,6 +467,43 @@ class DatasetDetail(Dataset):
     members: list[DatasetMember] = Field(default_factory=list)
 
 
+class DatasetArchiveRequest(BaseModel):
+    """``POST /api/v1/datasets/{id}/archive`` — start or resume the run (§6.x).
+
+    ``destination`` is ``<root>/<subpath>`` from the archive allow-list; the
+    server appends ``<operator>/<task>/<name>`` itself, because the views
+    shape has one owner. Omitted on resume — the run continues to the
+    destination its ``started`` event froze, and sending a different one is a
+    409, not a second archive.
+    """
+
+    destination: str | None = None
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class DatasetArchiveProgress(BaseModel):
+    """``GET /api/v1/datasets/{id}/archive`` — one run's progress.
+
+    Split personality on purpose: ``status`` / ``destination`` / the two
+    timestamps are durable (rows, replayed from the ledger), while ``running``
+    / ``current_*`` / ``error`` are this process's memory and honestly reset
+    on restart. ``running: false`` with status ``archiving`` is the resumable
+    state the UI renders as a Resume button.
+    """
+
+    dataset_id: str
+    status: str
+    destination: str | None = None
+    member_total: int = 0
+    members_done: int = 0
+    running: bool = False
+    current_capture_id: str | None = None
+    current_bytes: int | None = None
+    error: dict[str, Any] | None = None
+    archive_started_at: str | None = None
+    archived_at: str | None = None
+
+
 class DatasetCreateRequest(BaseModel):
     """Body for ``POST /api/v1/datasets``."""
 

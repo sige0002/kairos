@@ -1044,7 +1044,12 @@ def reject_overlapping_destination(target: Path, source: Path, data_dir: Path) -
     real_target = _real_path(target)
     real_source = _real_path(source)
     real_data = _real_path(data_dir)
-    for other, label in ((real_source, "the capture"), (real_data, "data_dir")):
+    pairs = [(real_data, "data_dir")]
+    if real_source != real_data:
+        # The dataset preflight has no single capture to name and passes the
+        # data_dir as both; naming it twice would produce the wrong label.
+        pairs.insert(0, (real_source, "the capture"))
+    for other, label in pairs:
         if _overlaps(real_target, other):
             raise ApiError(
                 status_code=400,

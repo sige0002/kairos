@@ -49,6 +49,7 @@ from api_orchestrator import views as views_mod
 from api_orchestrator.bootstrap import bootstrap_store, prepare_store
 from api_orchestrator.captures import CaptureService
 from api_orchestrator.config_catalog import ConfigCatalog
+from api_orchestrator.dataset_archive import DatasetArchiver
 from api_orchestrator.dataset_service import DatasetService
 from api_orchestrator.digest import DigestJob
 from api_orchestrator.dora_runner_client import DoraRunnerClient
@@ -272,6 +273,14 @@ def create_orchestrator_app(
         instance_id=instance_id,
         on_change=views_refresh.schedule,
     )
+    dataset_archiver = DatasetArchiver(
+        capture_store,
+        layout,
+        health,
+        capture_service,
+        instance_id=instance_id,
+        on_views_change=views_refresh.schedule,
+    )
     reconciler = Reconciler(
         capture_store,
         layout,
@@ -301,6 +310,9 @@ def create_orchestrator_app(
         await reconciler.start()
         yield
         await reconciler.stop()
+        # Before the views drain: a finishing archive run schedules one last
+        # views refresh, which must still find a refresher to schedule on.
+        await dataset_archiver.drain()
         await views_refresh.drain()
         # Let in-flight work finish (and persist) before the HTTP client it may
         # still be using is torn down.
@@ -316,6 +328,7 @@ def create_orchestrator_app(
     app.state.capture_service = capture_service
     app.state.record_service = record_service
     app.state.dataset_service = dataset_service
+    app.state.dataset_archiver = dataset_archiver
     app.state.digest_job = digest
     app.state.reconciler = reconciler
     app.state.views_refresher = views_refresh
