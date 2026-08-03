@@ -54,3 +54,25 @@ def test_ice_servers_valid_json_parses(monkeypatch: pytest.MonkeyPatch) -> None:
         {"urls": ["stun:stun.l.google.com:19302"]},
         {"urls": ["turn:host:3478"], "username": "u", "credential": "p"},
     ]
+
+
+def test_archive_roots_answers_to_its_documented_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """config.md and every archive_paths docstring say KAIROS_ARCHIVE_ROOTS.
+
+    The field once answered only to ARCHIVE_ROOTS, so an operator who followed
+    the documentation saw no archive control at all — found by E2E scenario 6.
+    Both spellings must work; the documented one is the contract.
+    """
+    monkeypatch.setenv("KAIROS_ARCHIVE_ROOTS", "/mnt/nas:/mnt/backup")
+    assert Settings().archive_roots == "/mnt/nas:/mnt/backup"
+
+    monkeypatch.delenv("KAIROS_ARCHIVE_ROOTS")
+    monkeypatch.setenv("ARCHIVE_ROOTS", "/mnt/other")
+    assert Settings().archive_roots == "/mnt/other"
+
+    # Direct construction (how every test builds Settings) keeps working too.
+    monkeypatch.delenv("ARCHIVE_ROOTS")
+    assert Settings(archive_roots="/direct").archive_roots == "/direct"
+    assert Settings().archive_roots == ""

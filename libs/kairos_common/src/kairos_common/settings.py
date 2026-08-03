@@ -18,7 +18,7 @@ import json
 from functools import lru_cache
 from typing import Annotated
 
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -62,7 +62,18 @@ class Settings(BaseSettings):
     # rather than free-form; see kairos_common.archive_paths. Empty (the
     # default) means the feature is not offered at all, and the API advertises
     # it as disabled instead of exposing a control that can only ever fail.
-    archive_roots: str = ""
+    #
+    # The documented name is KAIROS_ARCHIVE_ROOTS (config.md and every
+    # archive_paths docstring say so), so that is the alias that must work: an
+    # operator who followed the docs and still saw no archive control was this
+    # field silently answering only to ARCHIVE_ROOTS — found by E2E scenario 6,
+    # not by any unit test, because unit tests construct Settings directly.
+    archive_roots: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "KAIROS_ARCHIVE_ROOTS", "ARCHIVE_ROOTS", "archive_roots"
+        ),
+    )
 
     # ---- HTTP bind + ports -------------------------------------------------
     # BIND_HOST defaults to 0.0.0.0: LAN exposure is allowed on a trusted LAN
