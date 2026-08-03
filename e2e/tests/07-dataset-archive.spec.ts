@@ -170,3 +170,69 @@ test('§6.1 Dataset archive: freeze → copy+verify out → seal, and the record
     true,
   );
 });
+
+test('§6.1 Copy out: the set is sealed at the destination and every recording stays', async ({
+  page,
+}) => {
+  // One recording is enough: the claim is what copy DOES NOT do.
+  const captureId = await recordCaptureViaApi({ operator: OPERATOR, task: 'copyset', seconds: 3 });
+  await until(
+    `capture ${captureId} to settle`,
+    () => api.getCapture(captureId),
+    (c) => c.state === 'completed' && c.digest_state === 'complete',
+    120_000,
+  );
+  await api.saveReview(captureId, {
+    base_revision: (await api.getCapture(captureId)).review_revision,
+    task_result: 'success',
+    quality: 'good',
+    review_status: 'adopted',
+  });
+
+  await openTab(page, 'datasets');
+  await page.getByTestId('new-dataset-btn').click();
+  await page.getByTestId('new-dataset-name').fill('e2e-copy-set');
+  await page.getByTestId('new-dataset-operator').fill(OPERATOR);
+  await page.getByTestId('new-dataset-task').fill('copyset');
+  await page.getByTestId('new-dataset-submit').click();
+  await expect(page.getByTestId('build-target')).toContainText('e2e-copy-set', {
+    timeout: 30_000,
+  });
+  await page.getByTestId(`dataset-add-${captureId}`).click();
+  await expect(page.getByTestId('build-target')).toContainText('1 member', {
+    timeout: 30_000,
+  });
+  const datasetId = (await api.listDatasets()).items.find((d) => d.name === 'e2e-copy-set')!
+    .dataset_id;
+
+  await page.getByTestId('archive-dataset-btn').click();
+  await page.getByTestId('dataset-archive-mode-copy').check();
+  await expect(page.getByTestId('dataset-archive-confirm')).toHaveText(
+    'Copy, verify, then seal',
+  );
+  await page.getByTestId('dataset-archive-confirm').click();
+
+  await expect(page.getByTestId(`dataset-status-${datasetId}`)).toHaveText('archived', {
+    timeout: 120_000,
+  });
+  // The banner says which kind of archived this is.
+  await expect(page.getByTestId('dataset-archived-banner')).toContainText('Copied to');
+
+  const dest = `/archive/${OPERATOR}/copyset/e2e-copy-set`;
+  const manifest = store.datasetManifest(dest);
+  expect(manifest.status).toBe('complete');
+  expect((manifest as { mode?: string }).mode).toBe('copy');
+  expect(manifest.members[0]!.files).not.toBeNull();
+
+  // What copy does NOT do: the recording is still here, unarchived, and the
+  // ledger holds the seal but no per-member capture_archived.
+  expect(store.captureExists(captureId)).toBe(true);
+  const row = await api.getCapture(captureId);
+  expect(row.state).toBe('completed');
+  expect(store.ledgerFor(captureId, 'capture_archived')).toHaveLength(0);
+  const seals = store
+    .ledger()
+    .filter((e) => e.kind === 'dataset_archived' && e.dataset_id === datasetId);
+  expect(seals).toHaveLength(1);
+  expect(seals[0]!.mode).toBe('copy');
+});

@@ -150,8 +150,8 @@ rebuild はこのファイルも読み、`state='failed'` の行を作る。削�
 | `dataset_member_added` | `dataset_id` / `membership_id` / `capture_id` / `display_index` / `operator` / `task` / `dataset_name` |
 | `dataset_member_removed` | `dataset_id` / `membership_id` |
 | `dataset_deleted` | `dataset_id` |
-| `dataset_archive_started` | `dataset_id` / `destination` / `dataset_name` / `operator?` / `task?` / `members: [{membership_id, capture_id, display_index}]` / `reason?`。**凍結された member 集合そのもの**（§6.1） |
-| `dataset_archived` | `dataset_id` / `destination` / `dataset_name` / `member_total` / `bytes_total` / `manifest_sha256?`。run の封印（§6.1） |
+| `dataset_archive_started` | `dataset_id` / `destination` / `dataset_name` / `mode?`（`copy`\|`move`、欠落 = `move`） / `operator?` / `task?` / `members: [{membership_id, capture_id, display_index}]` / `reason?`。**凍結された member 集合そのもの**（§6.1） |
+| `dataset_archived` | `dataset_id` / `destination` / `dataset_name` / `mode?` / `member_total` / `bytes_total` / `manifest_sha256?`。run の封印（§6.1） |
 
 - `capture_id` はイベントの **envelope** で運ぶ。`event_id` / `at` / `source_instance_id` も envelope 側が所有し、payload からは設定できない（呼び出し側が冪等キーや時刻を偽造できないようにするため）。
 - append は flush → fsync → 親 dir fsync。**全 kind で fatal** — 書けなければその操作を中止する。
@@ -181,6 +181,10 @@ rebuild はこのファイルも読み、`state='failed'` の行を作る。削�
 dataset の終端。capture archive の語彙（copy → verify → remove）を dataset に持ち上げたもので、**v1 の「export = store 内の move」の復活ではない**: 出て行ったものはこの store から消え、**どこへ行ったかの記録が残ること**が目的そのもの。
 
 - **状態機械**: `datasets.status` は `active → archiving → archived` を一方向に歩く。`active → archiving` は DB の CAS（`UPDATE … WHERE status='active'`）で直列化し、二重開始を構造的に排除する。`archived` は終端。
+- **2 つの mode**（`archive_mode` として行と ledger の両方に凍結される。resume で変更不可 — 409 `archive_mode_mismatch`）:
+  - **`move`（既定）**: 検証済みの member から順に**源を削除**する。ディスクが空く。member は専有必須（他の active dataset と共有していれば 409）。
+  - **`copy`**: 同じフォルダ・同じ manifest・同じ封印を作るが、**capture の行にもバイトにも一切触れない**。共有 member でも合法 — 合成で作った集合の標準の書き出し方。member ごとの `capture_archived` イベントは**書かない**（何も起きていない capture に「出て行った」と記録するのは嘘になる）— 完了 member の耐久記録は destination の manifest 自身で、resume はそれを読んで再開する。`delete_unavailable` の環境でも実行可能。
+- **copy で封印された dataset（archived × copy）の membership は、capture のローカルバイトへの主張ではない**: per-capture の delete / archive を**ブロックせず**、新しい dataset への追加も妨げない。これが無いと「copy 封印された dataset にしか属さない capture が、凍結された member 集合のせいで永久に消せない」罠になる。move の場合は従来どおり（§7 の guard は active な dataset と、bytes を主張する非 active = move 系のみを数える）。
 - **開始（`POST /api/v1/datasets/{id}/archive` → 202）**: 行き先は capture archive と同じ `KAIROS_ARCHIVE_ROOTS` 許可リスト＋重なり検査（§6 の 2 つの独立した問い。検査対象は解決後の dataset_dir）。サーバが `<destination>/<operator>/<task>/<name>` を合成する — views 形状の所有者は 1 つ。member 0 件・共有 member（他 dataset にも属す capture、409 で全件列挙）・busy な member（各自の理由付きで全件列挙）・非空の行き先は開始前に拒否する。CAS 成功 → `dataset_archive_started` を append（**凍結された member 集合を運ぶ**。失敗したら CAS を戻す — バイトが動く前だけに許される唯一の rollback）。
 - **run（orchestrator 内の in-process ランナー。dora_runner ではない — ファイルを動かす仕事はそこに無い）**: member を `display_index` 順に、per-capture archive と同一の §9-1 順序（copy → sha256 verify → `capture_archived`（dataset 注釈付き）→ 行更新 → trash 経由の source 削除・replica を同一クリティカルセクションで `trashed` へ）で搬出する。書き込み先は `<dataset_dir>/<NNN>/`。
 - **member guard の唯一の緩和**: §7 の「dataset member は archive 拒否」は、**当該 run 自身の dataset の membership に限って**免除される（他の dataset の membership は引き続き拒否）。HTTP 経路の per-capture archive の挙動は不変。

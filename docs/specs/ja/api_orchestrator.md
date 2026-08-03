@@ -135,9 +135,9 @@ capture 単位で外部ストレージへ退避する。**copy → sha256 verify
 
 dataset の終端遷移。capture archive を dataset に持ち上げたもので、行き先の検証（許可リスト＋解決後 dataset_dir への双方向重なり検査）と搬出順序（copy → verify → ledger → source 削除）は per-capture と同一。
 
-- `POST /api/v1/datasets/{dataset_id}/archive` — body `{ destination?, reason? }` → **`202`**（開始/再開兼用）。サーバが `<destination>/<operator>/<task>/<name>` を合成する（成分は views と同じ sanitize）。
+- `POST /api/v1/datasets/{dataset_id}/archive` — body `{ destination?, mode?, reason? }` → **`202`**（開始/再開兼用）。`mode` は `move`（既定・源を削除・専有 member 必須）か `copy`（封印のみ・源不変・共有 member 合法 — 合成した集合の標準）。サーバが `<destination>/<operator>/<task>/<name>` を合成する（成分は views と同じ sanitize）。copy は `delete_unavailable` の環境でも実行できる（何も消さないため）。
   - 開始前の拒否: `404 dataset_not_found` / `409 dataset_archived`（終端） / `409 dataset_empty` / `409 dataset_member_shared`（他 dataset にも属す member を **details.conflicts に全件列挙**） / `409 dataset_not_archivable`（busy / 不在の member を **details.blockers に各自の理由付きで全件列挙** — N 件の操作を 1 件ずつ突き返して N 往復させない、という意図的な集約） / `409 destination_not_empty` / `400` 系は capture archive と同じ（`archive_not_configured` / `invalid_destination` / `destination_not_allowed` / `destination_inside_data_dir`） / `503 delete_unavailable`・`ledger_unwritable`。
-  - 再開: status が `archiving` で run が走っていなければ再 POST が冪等に続きから再開する。destination は**省略するか、記録と一致**（違えば `409 archive_destination_mismatch`）。走行中は `409 archive_in_progress`。
+  - 再開: status が `archiving` で run が走っていなければ再 POST が冪等に続きから再開する。destination / mode は**省略するか、記録と一致**（違えば `409 archive_destination_mismatch` / `409 archive_mode_mismatch`）。走行中は `409 archive_in_progress`。
 - `GET /api/v1/datasets/{dataset_id}/archive` — 進捗。耐久フィールド（status / destination / archive_started_at / archived_at）は行由来で再起動を生き延び、`running` / `current_capture_id` / `current_bytes` / `error` はプロセスメモリで正直にリセットされる。**`archiving` かつ `running: false` が「再開可能」**で、UI はこれを Resume として描く。`GET /datasets/{id}` の拡張ではなく別 endpoint なのは、1 秒間隔のポーリングが detail キャッシュを暴れさせないため。
 - status ≠ `active` の dataset への member 追加・削除は `409 dataset_not_active`、`DELETE /datasets/{id}` は `409 dataset_archiving` / `409 dataset_archived` — **archived の行は移行ログの照会キャッシュであり消させない**。逆向きに、archive 済み capture は `409 capture_archived`、非 active dataset の member は `409 capture_archiving` で新たな dataset に入れない。
 
