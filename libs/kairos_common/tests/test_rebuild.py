@@ -278,6 +278,32 @@ def test_an_archived_capture_is_rebuilt_from_its_ledger_event(
     assert _replica(result, capture_id).state == ReplicaState.absent_managed
 
 
+def test_a_dataset_annotated_archive_rebuilds_like_any_other(tmp_path: Path) -> None:
+    """A dataset archive (§6.x) reuses ``capture_archived`` per member, adding
+    dataset_id/membership_id/display_index to the payload. The per-capture
+    rebuild must keep working unchanged — the extra fields describe the
+    dataset, and the dataset side replays them from its own events."""
+    capture_id = new_capture_id()
+    _archive(
+        tmp_path,
+        capture_id,
+        operator="op_a",
+        task="pick",
+        bytes=2048,
+        dataset_id="d1",
+        membership_id="m1",
+        display_index=3,
+    )
+
+    result = _run(tmp_path)
+    row = _row(result, capture_id)
+
+    assert row.state == "completed"
+    assert row.archive_destination == "/mnt/nas/2026-08"
+    assert (row.operator, row.task, row.bytes) == ("op_a", "pick", 2048)
+    assert _replica(result, capture_id).state == ReplicaState.absent_managed
+
+
 def test_a_rebuilt_archive_row_admits_what_it_cannot_know(tmp_path: Path) -> None:
     """The sidecars went with the bytes, so the row is only as good as the event
     and must say so rather than look like a complete record."""

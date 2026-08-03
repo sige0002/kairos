@@ -91,6 +91,12 @@ DATASET_KINDS: frozenset[str] = frozenset(
         "dataset_member_added",
         "dataset_member_removed",
         "dataset_deleted",
+        # The terminal transition (§6.x): a dataset leaving this installation.
+        # ``started`` freezes the member set and says where the bytes are going;
+        # ``dataset_archived`` seals the run. Neither is a tombstone — like
+        # ``capture_archived``, the data still exists, just not here.
+        "dataset_archive_started",
+        "dataset_archived",
     }
 )
 
@@ -115,6 +121,12 @@ _ARCHIVE_OPTIONAL_FIELDS: dict[str, type | tuple[type, ...]] = {
     "task": str,
     "bytes": int,
     "message_count": int,
+    # Present when the archive was one member of a dataset archive (§6.x): the
+    # event then also answers "which sealed dataset is this recording NNN of?".
+    # Optional because a per-capture archive has no dataset to name.
+    "dataset_id": str,
+    "membership_id": str,
+    "display_index": int,
 }
 
 # ``files`` is validated separately from the scalars above because its shape,
@@ -166,6 +178,10 @@ def build_event(
         raise ValueError(f"payload may not set envelope fields: {sorted(collisions)}")
     if kind == "capture_archived":
         _validate_archive_payload(payload)
+    elif kind == "dataset_archive_started":
+        _validate_dataset_archive_started_payload(payload)
+    elif kind == "dataset_archived":
+        _validate_dataset_archived_payload(payload)
 
     event: dict[str, Any] = {
         "schema_version": LEDGER_SCHEMA_VERSION,
@@ -236,6 +252,93 @@ def _validate_archive_files(files: Any) -> None:
                 f"capture_archived files[].sha256 must be 64 lowercase hex "
                 f"characters: {entry!r}"
             )
+
+
+def _validate_dataset_archive_started_payload(payload: dict[str, Any]) -> None:
+    """Check a ``dataset_archive_started`` payload (§6.x).
+
+    Self-contained on purpose, like ``dataset_member_added``: this one event
+    must be able to re-create the dataset row *and* every member row, because
+    after the archive completes the members' bytes are gone and a truncated
+    ledger head may have lost the ``dataset_created`` line. ``members`` is
+    therefore required and fully shape-checked — it is the frozen set the
+    resume path replays, and a malformed entry would surface as a hole in a
+    dataset that can no longer be rebuilt any other way.
+    """
+    for key in ("dataset_id", "destination", "dataset_name"):
+        value = payload.get(key)
+        if not isinstance(value, str) or not value:
+            raise ValueError(
+                f"dataset_archive_started requires a non-empty {key}: {value!r}"
+            )
+    for key in ("operator", "task", "reason"):
+        value = payload.get(key)
+        if value is not None and not isinstance(value, str):
+            raise ValueError(
+                f"dataset_archive_started {key} must be str or absent: {value!r}"
+            )
+    members = payload.get("members")
+    if not isinstance(members, list) or not members:
+        raise ValueError(
+            f"dataset_archive_started requires a non-empty members list: {members!r}"
+        )
+    for entry in members:
+        if not isinstance(entry, dict):
+            raise ValueError(
+                f"dataset_archive_started members[] must be objects: {entry!r}"
+            )
+        for key in ("membership_id", "capture_id"):
+            value = entry.get(key)
+            if not isinstance(value, str) or not value:
+                raise ValueError(
+                    f"dataset_archive_started members[].{key} must be a "
+                    f"non-empty str: {entry!r}"
+                )
+        index = entry.get("display_index")
+        if isinstance(index, bool) or not isinstance(index, int) or index < 1:
+            raise ValueError(
+                f"dataset_archive_started members[].display_index must be a "
+                f"positive int: {entry!r}"
+            )
+
+
+def _validate_dataset_archived_payload(payload: dict[str, Any]) -> None:
+    """Check a ``dataset_archived`` payload (§6.x).
+
+    The terminal seal. ``manifest_sha256`` is the hash of the
+    ``dataset_manifest.json`` the run left at the destination — recorded here
+    so the ledger alone can later prove the manifest was not altered after the
+    seal. Optional like the archive digests: the seal must not be blocked by a
+    hash that could not be computed.
+    """
+    for key in ("dataset_id", "destination"):
+        value = payload.get(key)
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"dataset_archived requires a non-empty {key}: {value!r}")
+    if payload.get("dataset_name") is not None and not isinstance(
+        payload["dataset_name"], str
+    ):
+        raise ValueError(
+            f"dataset_archived dataset_name must be str or absent: "
+            f"{payload['dataset_name']!r}"
+        )
+    for key in ("member_total", "bytes_total"):
+        value = payload.get(key)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(
+                f"dataset_archived {key} must be a non-negative int or absent: "
+                f"{value!r}"
+            )
+    manifest_sha256 = payload.get("manifest_sha256")
+    if manifest_sha256 is not None and (
+        not isinstance(manifest_sha256, str) or not _SHA256_HEX.match(manifest_sha256)
+    ):
+        raise ValueError(
+            f"dataset_archived manifest_sha256 must be 64 lowercase hex "
+            f"characters or absent: {manifest_sha256!r}"
+        )
 
 
 def append(

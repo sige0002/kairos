@@ -246,6 +246,139 @@ def test_dataset_events_come_back_in_order(tmp_path: Path) -> None:
     ]
 
 
+# -- the dataset archive pair (§6.x) ------------------------------------------
+
+
+def _started_payload(**overrides):
+    payload = {
+        "dataset_id": "d1",
+        "destination": "/mnt/nas/exports/yuki/pick/ds1",
+        "dataset_name": "ds1",
+        "members": [{"membership_id": "m1", "capture_id": new_capture_id(), "display_index": 1}],
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_a_dataset_archive_run_reads_back_start_to_seal(tmp_path: Path) -> None:
+    """The run's whole history — freeze, per-member archives, seal — must come
+    back through the existing readers without special cases."""
+    capture_id = new_capture_id()
+    _append(
+        tmp_path,
+        "dataset_archive_started",
+        payload=_started_payload(
+            members=[
+                {"membership_id": "m1", "capture_id": capture_id, "display_index": 1}
+            ]
+        ),
+    )
+    _append(
+        tmp_path,
+        "capture_archived",
+        capture_id=capture_id,
+        payload={
+            "destination": "/mnt/nas/exports/yuki/pick/ds1/001",
+            "dataset_id": "d1",
+            "membership_id": "m1",
+            "display_index": 1,
+        },
+    )
+    _append(
+        tmp_path,
+        "dataset_archived",
+        payload={
+            "dataset_id": "d1",
+            "destination": "/mnt/nas/exports/yuki/pick/ds1",
+            "dataset_name": "ds1",
+            "member_total": 1,
+            "bytes_total": 0,
+            "manifest_sha256": "a" * 64,
+        },
+    )
+
+    dataset_kinds = [event["kind"] for event in ledger.dataset_events(tmp_path)]
+    assert dataset_kinds == ["dataset_archive_started", "dataset_archived"]
+
+    member_event = ledger.archive_events(tmp_path)[capture_id]
+    assert member_event["dataset_id"] == "d1"
+    assert member_event["membership_id"] == "m1"
+    assert member_event["display_index"] == 1
+
+    # Not tombstones: the recordings still exist, just not here.
+    assert ledger.tombstones(tmp_path) == {}
+
+
+def test_a_dataset_archive_start_must_freeze_its_members(tmp_path: Path) -> None:
+    """The started event is the set the resume path replays; an empty or
+    malformed freeze would be a hole in a dataset that can no longer be rebuilt
+    any other way."""
+    for members in (
+        None,
+        [],
+        [{"membership_id": "m1", "display_index": 1}],  # no capture_id
+        [{"membership_id": "m1", "capture_id": new_capture_id(), "display_index": 0}],
+        [{"membership_id": "m1", "capture_id": new_capture_id(), "display_index": True}],
+        [["m1"]],
+    ):
+        with pytest.raises(ValueError, match="members"):
+            _append(
+                tmp_path, "dataset_archive_started", payload=_started_payload(members=members)
+            )
+
+    assert not ledger.ledger_path(tmp_path).exists()
+
+
+def test_a_dataset_archive_start_names_dataset_and_destination(tmp_path: Path) -> None:
+    for key in ("dataset_id", "destination", "dataset_name"):
+        with pytest.raises(ValueError, match=key):
+            _append(
+                tmp_path, "dataset_archive_started", payload=_started_payload(**{key: ""})
+            )
+    with pytest.raises(ValueError, match="reason"):
+        _append(
+            tmp_path, "dataset_archive_started", payload=_started_payload(reason=42)
+        )
+
+
+def test_the_dataset_seal_validates_its_hash_and_totals(tmp_path: Path) -> None:
+    base = {"dataset_id": "d1", "destination": "/mnt/nas/exports/ds1"}
+
+    _append(tmp_path, "dataset_archived", payload=dict(base))  # minimal form is legal
+
+    with pytest.raises(ValueError, match="manifest_sha256"):
+        _append(
+            tmp_path, "dataset_archived", payload=dict(base, manifest_sha256="A" * 64)
+        )
+    with pytest.raises(ValueError, match="member_total"):
+        _append(tmp_path, "dataset_archived", payload=dict(base, member_total=-1))
+    with pytest.raises(ValueError, match="bytes_total"):
+        _append(tmp_path, "dataset_archived", payload=dict(base, bytes_total=True))
+    with pytest.raises(ValueError, match="destination"):
+        _append(tmp_path, "dataset_archived", payload={"dataset_id": "d1"})
+
+
+def test_an_archive_may_name_its_dataset_membership_but_typed(tmp_path: Path) -> None:
+    """The dataset annotations ride the same optional-but-typed rule as the
+    other descriptive fields: absent is fine, the wrong type is not."""
+    capture_id = new_capture_id()
+
+    _append(
+        tmp_path,
+        "capture_archived",
+        capture_id=capture_id,
+        payload={"destination": "/mnt/nas/solo"},  # per-capture archive, no dataset
+    )
+
+    with pytest.raises(ValueError, match="display_index"):
+        _append(
+            tmp_path,
+            "capture_archived",
+            capture_id=capture_id,
+            payload={"destination": "/mnt/nas/solo", "display_index": "001"},
+        )
+
+
 # -- the ENOSPC slack ---------------------------------------------------------
 
 
