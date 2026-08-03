@@ -9,16 +9,18 @@ there is nothing else left that describes the capture.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import httpx
+import pytest
 from api_orchestrator import fileops
 from api_orchestrator.app_factory import create_orchestrator_app
 from api_orchestrator.layout import DataLayout
 from api_orchestrator.models import Capture, CaptureState
 from conftest import FakeRecorder
 from fastapi.testclient import TestClient
-from kairos_common import Settings, ledger_v2
+from kairos_common import ApiError, Settings, ledger_v2
 from kairos_common.ids import new_capture_id
 from kairos_common.rebuild import ReplicaState
 
@@ -197,6 +199,92 @@ class TestArchive:
             )
             assert response.status_code == 409
             assert response.json()["error"]["code"] == "capture_not_present"
+
+
+class TestDatasetMemberArchive:
+    """``archive_member`` (§6.x): the runner's dataset-scoped internal archive.
+
+    No route reaches it. The one guard it relaxes is its own dataset's
+    membership; everything else — including the §7 guard for every OTHER
+    dataset — must behave exactly like the public archive.
+    """
+
+    def test_its_own_dataset_is_exempt_but_any_other_refuses(
+        self, data_dir: Path, tmp_path: Path, fake_recorder: FakeRecorder
+    ) -> None:
+        roots = tmp_path / "nas"
+        roots.mkdir()
+        with _archive_client(data_dir, roots, fake_recorder) as client:
+            layout = client.app.state.data_layout
+            service = client.app.state.capture_service
+            capture_id = _seed(client, layout)
+            own = client.post("/api/v1/datasets", json={"name": "own"}).json()
+            other = client.post("/api/v1/datasets", json={"name": "other"}).json()
+            member = client.post(
+                f"/api/v1/datasets/{own['dataset_id']}/members",
+                json={"capture_id": capture_id},
+            ).json()
+            client.post(
+                f"/api/v1/datasets/{other['dataset_id']}/members",
+                json={"capture_id": capture_id},
+            )
+
+            with pytest.raises(ApiError) as excinfo:
+                asyncio.run(
+                    service.archive_member(
+                        capture_id,
+                        dataset_id=own["dataset_id"],
+                        membership_id=member["membership_id"],
+                        display_index=member["display_index"],
+                        target=roots / "ds" / "001",
+                    )
+                )
+            # The other dataset still cites these bytes; retiring "own" is no
+            # licence to pull them out from under it.
+            assert excinfo.value.code == "capture_in_dataset"
+            assert layout.capture_dir(capture_id).is_dir()
+
+    def test_a_member_archive_carries_its_dataset_identity(
+        self, data_dir: Path, tmp_path: Path, fake_recorder: FakeRecorder
+    ) -> None:
+        roots = tmp_path / "nas"
+        roots.mkdir()
+        with _archive_client(data_dir, roots, fake_recorder) as client:
+            layout = client.app.state.data_layout
+            service = client.app.state.capture_service
+            store = client.app.state.capture_store
+            capture_id = _seed(client, layout)
+            dataset = client.post("/api/v1/datasets", json={"name": "ds"}).json()
+            member = client.post(
+                f"/api/v1/datasets/{dataset['dataset_id']}/members",
+                json={"capture_id": capture_id},
+            ).json()
+            target = roots / "ds" / "001"
+
+            response = asyncio.run(
+                service.archive_member(
+                    capture_id,
+                    dataset_id=dataset["dataset_id"],
+                    membership_id=member["membership_id"],
+                    display_index=member["display_index"],
+                    target=target,
+                )
+            )
+
+            # Same §9-1 order and effects as the public archive…
+            assert (target / "bag_0.mcap").is_file()
+            assert not layout.capture_dir(capture_id).exists()
+            row = store.get_capture(capture_id)
+            assert row.archived_at is not None
+            assert row.archive_destination == str(target)
+            assert response.verified
+            # …plus the annotations that say which sealed dataset this
+            # recording is NNN of, in the only record that survives the source.
+            event = ledger_v2.archive_events(layout.data_dir)[capture_id]
+            assert event["destination"] == str(target)
+            assert event["dataset_id"] == dataset["dataset_id"]
+            assert event["membership_id"] == member["membership_id"]
+            assert event["display_index"] == member["display_index"]
 
 
 class TestDestinationOverlap:
