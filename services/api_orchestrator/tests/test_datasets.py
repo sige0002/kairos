@@ -156,6 +156,193 @@ class TestDisplayIndex:
         assert new_member["display_index"] == 4
 
 
+class TestArchiveStatusGuards:
+    """§6.x: a dataset that is not active has a frozen member set."""
+
+    def _dataset_with_member(
+        self, client: TestClient, layout: DataLayout
+    ) -> tuple[str, str]:
+        dataset = client.post("/api/v1/datasets", json={"name": "ds"}).json()
+        member = client.post(
+            f"/api/v1/datasets/{dataset['dataset_id']}/members",
+            json={"capture_id": _capture(client, layout)},
+        ).json()
+        return dataset["dataset_id"], member["membership_id"]
+
+    def test_an_archiving_dataset_refuses_membership_changes(
+        self, client: TestClient, layout: DataLayout
+    ) -> None:
+        dataset_id, membership_id = self._dataset_with_member(client, layout)
+        client.app.state.capture_store.begin_dataset_archive(
+            dataset_id, destination="/mnt/nas/ds"
+        )
+
+        added = client.post(
+            f"/api/v1/datasets/{dataset_id}/members",
+            json={"capture_id": _capture(client, layout)},
+        )
+        removed = client.delete(
+            f"/api/v1/datasets/{dataset_id}/members/{membership_id}"
+        )
+        # The resume path replays the member set frozen in the started event;
+        # a mutation now would silently diverge from that freeze.
+        assert added.status_code == 409
+        assert added.json()["error"]["code"] == "dataset_not_active"
+        assert removed.status_code == 409
+        assert removed.json()["error"]["code"] == "dataset_not_active"
+
+    def test_an_archiving_dataset_cannot_be_deleted(
+        self, client: TestClient, layout: DataLayout
+    ) -> None:
+        dataset_id, _ = self._dataset_with_member(client, layout)
+        client.app.state.capture_store.begin_dataset_archive(
+            dataset_id, destination="/mnt/nas/ds"
+        )
+        response = client.delete(f"/api/v1/datasets/{dataset_id}")
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "dataset_archiving"
+
+    def test_an_archived_dataset_is_kept_as_the_answer_to_where(
+        self, client: TestClient, layout: DataLayout
+    ) -> None:
+        dataset_id, _ = self._dataset_with_member(client, layout)
+        store = client.app.state.capture_store
+        store.begin_dataset_archive(dataset_id, destination="/mnt/nas/ds")
+        store.finish_dataset_archive(dataset_id)
+
+        response = client.delete(f"/api/v1/datasets/{dataset_id}")
+        # The row is the queryable cache of the ledger's migration log — the
+        # same "rows are never deleted" principle capture tombstones follow.
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "dataset_archived"
+        assert (
+            response.json()["error"]["details"]["archive_destination"]
+            == "/mnt/nas/ds"
+        )
+
+    def test_an_archived_capture_cannot_join_a_dataset(
+        self, client: TestClient, layout: DataLayout
+    ) -> None:
+        dataset = client.post("/api/v1/datasets", json={"name": "ds"}).json()
+        capture_id = _capture(client, layout)
+        client.app.state.capture_store.update_capture(
+            capture_id,
+            archived_at="2026-08-01T00:00:00.000Z",
+            archive_destination="/mnt/nas/solo",
+        )
+
+        response = client.post(
+            f"/api/v1/datasets/{dataset['dataset_id']}/members",
+            json={"capture_id": capture_id},
+        )
+        # No local bytes: the membership would be a permanent hole in views/.
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "capture_archived"
+
+    def test_a_member_of_a_leaving_dataset_cannot_join_another(
+        self, client: TestClient, layout: DataLayout
+    ) -> None:
+        leaving_id, _ = self._dataset_with_member(client, layout)
+        member = client.get(f"/api/v1/datasets/{leaving_id}").json()["members"][0]
+        client.app.state.capture_store.begin_dataset_archive(
+            leaving_id, destination="/mnt/nas/ds"
+        )
+        other = client.post("/api/v1/datasets", json={"name": "other"}).json()
+
+        response = client.post(
+            f"/api/v1/datasets/{other['dataset_id']}/members",
+            json={"capture_id": member["capture_id"]},
+        )
+        # Its bytes are leaving with the other dataset's run; a new membership
+        # would cite bytes that are going away.
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "capture_archiving"
+
+
+class TestArchiveReplay:
+    """§6.x: the archive run is rebuilt from the ledger alone."""
+
+    def _rebuild(self, client: TestClient, layout, settings, fake_recorder):
+        client.__exit__(None, None, None)
+        layout.db.unlink()
+        app = create_orchestrator_app(
+            settings,
+            http_client=httpx.AsyncClient(
+                transport=httpx.MockTransport(fake_recorder.handler)
+            ),
+        )
+        return TestClient(app)
+
+    def test_a_sealed_archive_comes_back_sealed(
+        self, client: TestClient, layout: DataLayout, settings, fake_recorder
+    ) -> None:
+        instance_id = client.app.state.instance_id
+        capture_id = new_capture_id()
+        ledger_v2.append(
+            layout.data_dir,
+            "dataset_archive_started",
+            instance_id=instance_id,
+            payload={
+                "dataset_id": "d1",
+                "destination": "/mnt/nas/alice/pick/ds",
+                "dataset_name": "ds",
+                "operator": "alice",
+                "task": "pick",
+                "members": [
+                    {
+                        "membership_id": "m1",
+                        "capture_id": capture_id,
+                        "display_index": 1,
+                    }
+                ],
+            },
+        )
+        ledger_v2.append(
+            layout.data_dir,
+            "dataset_archived",
+            instance_id=instance_id,
+            payload={"dataset_id": "d1", "destination": "/mnt/nas/alice/pick/ds"},
+        )
+
+        with self._rebuild(client, layout, settings, fake_recorder) as restarted:
+            detail = restarted.get("/api/v1/datasets/d1").json()
+            assert detail["status"] == "archived"
+            assert detail["archive_destination"] == "/mnt/nas/alice/pick/ds"
+            assert detail["archived_at"] is not None
+            # The frozen member set is part of the record, not debris.
+            assert [m["capture_id"] for m in detail["members"]] == [capture_id]
+
+    def test_a_crashed_run_comes_back_resumable(
+        self, client: TestClient, layout: DataLayout, settings, fake_recorder
+    ) -> None:
+        instance_id = client.app.state.instance_id
+        ledger_v2.append(
+            layout.data_dir,
+            "dataset_archive_started",
+            instance_id=instance_id,
+            payload={
+                "dataset_id": "d1",
+                "destination": "/mnt/nas/alice/pick/ds",
+                "dataset_name": "ds",
+                "members": [
+                    {
+                        "membership_id": "m1",
+                        "capture_id": new_capture_id(),
+                        "display_index": 1,
+                    }
+                ],
+            },
+        )
+
+        with self._rebuild(client, layout, settings, fake_recorder) as restarted:
+            detail = restarted.get("/api/v1/datasets/d1").json()
+            # started with no seal = the run crashed mid-copy. It must come
+            # back as archiving (destination intact) so the operator can
+            # resume it — never silently reset to active.
+            assert detail["status"] == "archiving"
+            assert detail["archive_destination"] == "/mnt/nas/alice/pick/ds"
+
+
 class TestViews:
     def test_refresh_builds_a_browsable_tree_of_symlinks(
         self, client: TestClient, layout: DataLayout

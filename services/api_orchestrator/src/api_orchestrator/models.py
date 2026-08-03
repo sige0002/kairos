@@ -424,7 +424,14 @@ class CaptureArchiveResponse(BaseModel):
 
 
 class Dataset(BaseModel):
-    """A logical dataset: a named set of captures, with no physical tree."""
+    """A logical dataset: a named set of captures, with no physical tree.
+
+    ``status`` walks ``active → archiving → archived`` and never back (§6.x).
+    The three ``archive*`` fields are the durable face of the archive run —
+    they come from database columns replayed out of the ledger, so they
+    survive a rebuild, unlike the in-flight progress served by
+    ``GET /datasets/{id}/archive``.
+    """
 
     dataset_id: str
     name: str
@@ -433,6 +440,9 @@ class Dataset(BaseModel):
     status: str = "active"
     created_at: str | None = None
     member_count: int = 0
+    archive_destination: str | None = None
+    archive_started_at: str | None = None
+    archived_at: str | None = None
 
 
 class DatasetMember(BaseModel):

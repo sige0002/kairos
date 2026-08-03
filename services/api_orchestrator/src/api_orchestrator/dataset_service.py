@@ -128,8 +128,38 @@ class DatasetService:
 
     def delete(self, dataset_id: str) -> None:
         """Delete a dataset and its memberships. No capture is touched."""
-        if self._store.get_dataset(dataset_id) is None:
+        dataset = self._store.get_dataset(dataset_id)
+        if dataset is None:
             raise _not_found(dataset_id)
+        if dataset["status"] == "archiving":
+            raise ApiError(
+                status_code=409,
+                code="dataset_archiving",
+                message=(
+                    "This dataset is being archived; let the run finish or "
+                    "resume it. Deleting the record mid-run would orphan the "
+                    "copy in progress."
+                ),
+                details={"dataset_id": dataset_id},
+            )
+        if dataset["status"] == "archived":
+            # The row is the queryable cache of the ledger's migration log —
+            # the same "rows are never deleted" principle capture tombstones
+            # follow. Delete it and "where did this dataset go" has no answer
+            # short of replaying the ledger by hand.
+            raise ApiError(
+                status_code=409,
+                code="dataset_archived",
+                message=(
+                    "This dataset was archived to "
+                    f"{dataset.get('archive_destination') or 'an external folder'}; "
+                    "its record is what remembers that and is kept."
+                ),
+                details={
+                    "dataset_id": dataset_id,
+                    "archive_destination": dataset.get("archive_destination"),
+                },
+            )
         # Ledger first: after the row is gone there is nothing left to describe
         # the deletion from.
         self._append("dataset_deleted", {"dataset_id": dataset_id})
@@ -141,6 +171,7 @@ class DatasetService:
         dataset = self._store.get_dataset(dataset_id)
         if dataset is None:
             raise _not_found(dataset_id)
+        self._require_active(dataset)
         capture = self._store.get_capture(capture_id)
         if capture is None:
             raise ApiError(
@@ -149,6 +180,43 @@ class DatasetService:
                 message=f"Capture not found: {capture_id}",
                 details={"capture_id": capture_id},
             )
+        if capture.archived_at is not None:
+            # Its bytes left this machine. A membership would put a permanent
+            # hole in views/ via the regenerator's missing-source skip.
+            raise ApiError(
+                status_code=409,
+                code="capture_archived",
+                message=(
+                    f"{capture_id} was archived to "
+                    f"{capture.archive_destination or 'an external folder'} "
+                    "and has no local bytes to include."
+                ),
+                details={
+                    "capture_id": capture_id,
+                    "archive_destination": capture.archive_destination,
+                },
+            )
+        for membership in self._store.dataset_memberships_for(capture_id):
+            other = self._store.get_dataset(membership.dataset_id)
+            if other is not None and other["status"] != "active":
+                # The other dataset's archive run is going to move (or already
+                # moved) this capture's bytes away; a new membership would cite
+                # bytes that are leaving — the very dangling reference the §7
+                # member guard exists to prevent.
+                raise ApiError(
+                    status_code=409,
+                    code="capture_archiving",
+                    message=(
+                        f"{capture_id} belongs to dataset "
+                        f"{other.get('name') or membership.dataset_id}, which is "
+                        f"{other['status']}; its bytes are leaving this machine."
+                    ),
+                    details={
+                        "capture_id": capture_id,
+                        "dataset_id": membership.dataset_id,
+                        "status": other["status"],
+                    },
+                )
         try:
             member = self._store.add_dataset_member(dataset_id, capture_id)
         except DatasetMemberExistsError as exc:
@@ -185,6 +253,10 @@ class DatasetService:
 
     def remove_member(self, dataset_id: str, membership_id: str) -> None:
         """Remove one member. Its display_index stays retired forever."""
+        dataset = self._store.get_dataset(dataset_id)
+        if dataset is None:
+            raise _not_found(dataset_id)
+        self._require_active(dataset)
         member = self._store.get_dataset_member(membership_id)
         if member is None or member.dataset_id != dataset_id:
             raise ApiError(
@@ -210,7 +282,14 @@ class DatasetService:
         *retired* rather than free, and a set-based reconstruction would lose
         exactly that distinction.
         """
-        counts = {"datasets": 0, "members": 0, "removed": 0, "deleted": 0}
+        counts = {
+            "datasets": 0,
+            "members": 0,
+            "removed": 0,
+            "deleted": 0,
+            "archiving": 0,
+            "archived": 0,
+        }
         for event in ledger_v2.dataset_events(self._layout.data_dir):
             kind = event.get("kind")
             dataset_id = event.get("dataset_id")
@@ -236,7 +315,61 @@ class DatasetService:
             elif kind == "dataset_deleted":
                 if self._store.delete_dataset(dataset_id):
                     counts["deleted"] += 1
+            elif kind == "dataset_archive_started":
+                counts["archiving"] += self._replay_archive_started(dataset_id, event)
+            elif kind == "dataset_archived":
+                self._ensure_dataset_row(dataset_id, event)
+                self._store.mark_dataset_archived(
+                    dataset_id, at=_opt_str(event.get("at"))
+                )
+                counts["archived"] += 1
         return counts
+
+    def _replay_archive_started(self, dataset_id: str, event: dict[str, Any]) -> int:
+        """Replay one frozen archive start (§6.x).
+
+        A run that never reached its seal comes back as ``archiving`` — the
+        operator resumes it, nobody restarts it from scratch. The event is
+        self-contained enough to rebuild the row and every member, because
+        after the archive the members' bytes are gone and their
+        ``dataset_member_added`` lines may sit in a lost ledger head.
+        """
+        destination = event.get("destination")
+        if not isinstance(destination, str) or not destination:
+            return 0
+        self._ensure_dataset_row(dataset_id, event)
+        members = event.get("members")
+        for entry in members if isinstance(members, list) else []:
+            if not isinstance(entry, dict):
+                continue
+            self._replay_member_added(
+                dataset_id,
+                {
+                    "membership_id": entry.get("membership_id"),
+                    "capture_id": entry.get("capture_id"),
+                    "display_index": entry.get("display_index"),
+                    "dataset_name": event.get("dataset_name"),
+                    "operator": event.get("operator"),
+                    "task": event.get("task"),
+                    "at": event.get("at"),
+                },
+            )
+        self._store.mark_dataset_archiving(
+            dataset_id, destination=destination, at=_opt_str(event.get("at"))
+        )
+        return 1
+
+    def _ensure_dataset_row(self, dataset_id: str, event: dict[str, Any]) -> None:
+        """Create the row an archive event implies, if nothing else did."""
+        if self._store.get_dataset(dataset_id) is not None:
+            return
+        self._store.create_dataset(
+            dataset_id,
+            name=str(event.get("dataset_name") or dataset_id),
+            operator=_opt_str(event.get("operator")),
+            task=_opt_str(event.get("task")),
+            created_at=_opt_str(event.get("at")),
+        )
 
     def _replay_member_added(self, dataset_id: str, event: dict[str, Any]) -> int:
         membership_id = event.get("membership_id")
@@ -297,6 +430,29 @@ class DatasetService:
             ) from exc
 
     @staticmethod
+    def _require_active(dataset: dict[str, Any]) -> None:
+        """Refuse membership changes on a dataset that is not active (§6.x).
+
+        The archive run's resume path replays the member set frozen in the
+        ``dataset_archive_started`` event; a membership added or removed while
+        the run is out copying would silently diverge from that freeze.
+        """
+        if dataset["status"] == "active":
+            return
+        raise ApiError(
+            status_code=409,
+            code="dataset_not_active",
+            message=(
+                f"Dataset {dataset.get('name') or dataset['dataset_id']} is "
+                f"{dataset['status']}; its member set is frozen."
+            ),
+            details={
+                "dataset_id": dataset["dataset_id"],
+                "status": dataset["status"],
+            },
+        )
+
+    @staticmethod
     def _reject_reserved(*names: str | None) -> None:
         """Refuse names that collide with the store's own layout (§2)."""
         for name in names:
@@ -323,6 +479,9 @@ def _dataset(row: dict[str, Any], *, member_count: int | None = None) -> Dataset
         member_count=(
             member_count if member_count is not None else row.get("member_count", 0)
         ),
+        archive_destination=row.get("archive_destination"),
+        archive_started_at=row.get("archive_started_at"),
+        archived_at=row.get("archived_at"),
     )
 
 
