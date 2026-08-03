@@ -1,0 +1,26 @@
+# Archive destination mount — OPT-IN override for the archive feature (§6.1:
+# per-capture archive and dataset archive, copy or move).
+#
+# The feature itself stays off until KAIROS_ARCHIVE_ROOTS is set, but the env
+# var alone is a trap without this file: the orchestrator resolves and
+# validates destinations as it sees them INSIDE the container, so an
+# unmounted root would land every export in the container's own filesystem
+# layer — bytes that verify perfectly and then vanish with the container,
+# after a move-mode run has already deleted the sources. The mount is what
+# makes the destination real. (The acceptance stack wires its own copy of
+# this in e2e/compose.archive.yaml.)
+#
+# Enable in .env — all three lines together:
+#
+#   COMPOSE_FILE=compose.yaml:compose.archive.yaml
+#   ARCHIVE_DIR=/mnt/nas/kairos-archive        # host side: where exports land
+#   KAIROS_ARCHIVE_ROOTS=/archive              # container side: this mount
+#
+# `make up` and bare `docker compose` both honor COMPOSE_FILE from .env. For
+# the split deploy, `make up-recording` passes -f compose.recording.yaml
+# explicitly (which overrides COMPOSE_FILE), so add the same volumes entry to
+# your recording-side override instead — see docs/specs/ja/config.md.
+services:
+  orchestrator:
+    volumes:
+      - ${ARCHIVE_DIR:-./archive}:/archive
