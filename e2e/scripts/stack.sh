@@ -171,6 +171,28 @@ claim_lease() {
   } > "$OWNER_FILE"
 }
 
+# Whether the lease's recorded owner sits anywhere on THIS process's ancestor
+# chain. The run owner can be a grandparent, not the PPID: make executes the
+# gate's compound recipe line through an intermediate `sh -c`, so the run's own
+# `down` sees the owning make two levels up — and a plain pid comparison called
+# every green run's teardown a foreign release. A warning that fires on the
+# normal path trains people to ignore the one that matters. A live ancestor is
+# definitionally the same process the lease named if the pid matches, so no
+# start-ticks check is needed here; a recycled-pid coincidence means the
+# original owner is dead, and releasing a dead owner's lease is silent by
+# design anyway.
+lease_owned_by_ancestor() {
+  local pid="$1" cur="$$" ppid
+  [ -n "$pid" ] || return 1
+  while [ -n "$cur" ] && [ "$cur" -gt 1 ] 2>/dev/null; do
+    [ "$cur" = "$pid" ] && return 0
+    ppid="$(awk '{print $4}' "/proc/$cur/stat" 2>/dev/null)" || return 1
+    [ -n "$ppid" ] && [ "$ppid" != "$cur" ] || return 1
+    cur="$ppid"
+  done
+  return 1
+}
+
 release_lease() {
   [ -f "$OWNER_FILE" ] || return 0
   local pid ticks
@@ -178,7 +200,8 @@ release_lease() {
   ticks="$(lease_field ticks)"
   # Taking down a stack someone else is using is a legitimate thing to ask for
   # (that is how a wedged lease gets cleared), but it must never be silent.
-  if [ -n "$pid" ] && [ "$pid" != "$OWNER_PID" ] && lease_is_live "$pid" "$ticks"; then
+  if [ -n "$pid" ] && [ "$pid" != "$OWNER_PID" ] && ! lease_owned_by_ancestor "$pid" \
+      && lease_is_live "$pid" "$ticks"; then
     say "WARNING: releasing a lease still held by pid $pid ($(lease_field cmd)) — that run's stack is now gone"
   fi
   rm -f "$OWNER_FILE"
