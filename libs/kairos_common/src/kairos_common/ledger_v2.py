@@ -297,6 +297,7 @@ def _validate_dataset_archive_started_payload(payload: dict[str, Any]) -> None:
             raise ValueError(
                 f"dataset_archive_started {key} must be str or absent: {value!r}"
             )
+    _validate_archive_mode(payload, "dataset_archive_started")
     members = payload.get("members")
     if not isinstance(members, list) or not members:
         raise ValueError(
@@ -359,6 +360,18 @@ def _validate_dataset_archived_payload(payload: dict[str, Any]) -> None:
             f"dataset_archived manifest_sha256 must be 64 lowercase hex "
             f"characters or absent: {manifest_sha256!r}"
         )
+    _validate_archive_mode(payload, "dataset_archived")
+
+
+def _validate_archive_mode(payload: dict[str, Any], kind: str) -> None:
+    """``mode`` is ``copy`` (sources kept) or ``move`` (sources removed).
+
+    Optional for compatibility with events written before copy mode existed —
+    an absent mode reads as ``move``, which is what those runs did.
+    """
+    mode = payload.get("mode")
+    if mode is not None and mode not in ("copy", "move"):
+        raise ValueError(f"{kind} mode must be 'copy', 'move' or absent: {mode!r}")
 
 
 def append(

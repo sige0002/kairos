@@ -566,3 +566,242 @@ class TestResumeRefusals:
         response = client.get("/api/v1/datasets/nope/archive")
         assert response.status_code == 404
         assert response.json()["error"]["code"] == "dataset_not_found"
+
+
+class TestCopyMode:
+    """§6.1 mode=copy: seal the set, keep the recordings — sources untouched."""
+
+    def test_a_copy_seals_shares_and_all_and_touches_nothing(
+        self, data_dir: Path, tmp_path: Path, fake_recorder: FakeRecorder
+    ) -> None:
+        roots = tmp_path / "nas"
+        roots.mkdir()
+        with _archive_client(data_dir, roots, fake_recorder) as client:
+            layout = client.app.state.data_layout
+            store = client.app.state.capture_store
+            dataset = _dataset(client, layout, members=2)
+            dataset_id = dataset["dataset_id"]
+            members = client.get(f"/api/v1/datasets/{dataset_id}").json()["members"]
+            # One member is SHARED with another active dataset — the very case
+            # a combined set produces, and the reason copy mode exists.
+            other = client.post("/api/v1/datasets", json={"name": "source"}).json()
+            client.post(
+                f"/api/v1/datasets/{other['dataset_id']}/members",
+                json={"capture_id": members[0]["capture_id"]},
+            )
+
+            accepted = client.post(
+                f"/api/v1/datasets/{dataset_id}/archive",
+                json={"destination": str(roots / "exports"), "mode": "copy"},
+            )
+            assert accepted.status_code == 202, accepted.text
+            _settle(client, dataset_id)
+
+            detail = client.get(f"/api/v1/datasets/{dataset_id}").json()
+            target = _dataset_dir(roots)
+            assert detail["status"] == "archived"
+            assert detail["archive_mode"] == "copy"
+
+            # The export is complete and self-describing…
+            assert (target / "001" / "bag_0.mcap").is_file()
+            assert (target / "002" / "bag_0.mcap").is_file()
+            manifest = json.loads((target / MANIFEST_NAME).read_bytes())
+            assert manifest["mode"] == "copy"
+            assert manifest["status"] == "complete"
+            assert all(m["files"] for m in manifest["members"])
+            assert all(
+                m["capture_archived_event_id"] is None for m in manifest["members"]
+            )
+            seals = _events(layout, "dataset_archived")
+            assert len(seals) == 1 and seals[0]["mode"] == "copy"
+
+            # …and NOTHING here changed: no per-member events, no row updates,
+            # every recording still on disk, the sharing dataset intact.
+            assert _events(layout, "capture_archived") == []
+            for member in members:
+                row = store.get_capture(member["capture_id"])
+                assert row.archived_at is None
+                assert layout.capture_dir(member["capture_id"]).is_dir()
+            assert (
+                client.get(f"/api/v1/datasets/{other['dataset_id']}").json()[
+                    "member_count"
+                ]
+                == 1
+            )
+
+    def test_copy_sealed_membership_pins_nothing(
+        self, data_dir: Path, tmp_path: Path, fake_recorder: FakeRecorder
+    ) -> None:
+        roots = tmp_path / "nas"
+        roots.mkdir()
+        with _archive_client(data_dir, roots, fake_recorder) as client:
+            layout = client.app.state.data_layout
+            dataset = _dataset(client, layout, members=1)
+            dataset_id = dataset["dataset_id"]
+            capture_id = client.get(f"/api/v1/datasets/{dataset_id}").json()[
+                "members"
+            ][0]["capture_id"]
+            client.post(
+                f"/api/v1/datasets/{dataset_id}/archive",
+                json={"destination": str(roots / "exports"), "mode": "copy"},
+            )
+            _settle(client, dataset_id)
+
+            # A copy-sealed dataset is a record, not a claim on the bytes: its
+            # member may join a NEW dataset (the keep-working flow)…
+            fresh = client.post("/api/v1/datasets", json={"name": "next"}).json()
+            added = client.post(
+                f"/api/v1/datasets/{fresh['dataset_id']}/members",
+                json={"capture_id": capture_id},
+            )
+            assert added.status_code == 201, added.text
+            client.delete(
+                f"/api/v1/datasets/{fresh['dataset_id']}/members/"
+                f"{added.json()['membership_id']}"
+            )
+
+            # …and may be deleted when the operator wants the disk back —
+            # without the frozen member set becoming a permanent lock.
+            deleted = client.post(
+                f"/api/v1/captures/{capture_id}/delete",
+                json={"kind": "delete"},
+            )
+            assert deleted.status_code == 200, deleted.text
+
+    def test_a_copy_resume_believes_the_manifest_and_rebuilds_debris(
+        self, data_dir: Path, tmp_path: Path, fake_recorder: FakeRecorder
+    ) -> None:
+        roots = tmp_path / "nas"
+        roots.mkdir()
+        with _archive_client(data_dir, roots, fake_recorder) as client:
+            layout = client.app.state.data_layout
+            store = client.app.state.capture_store
+            dataset = _dataset(client, layout, members=2)
+            dataset_id = dataset["dataset_id"]
+            members = client.get(f"/api/v1/datasets/{dataset_id}").json()["members"]
+            target = _dataset_dir(roots)
+            assert store.begin_dataset_archive(
+                dataset_id, destination=str(target), mode="copy"
+            )
+            ledger_v2.append(
+                layout.data_dir,
+                "dataset_archive_started",
+                instance_id=client.app.state.instance_id,
+                payload={
+                    "dataset_id": dataset_id,
+                    "destination": str(target),
+                    "dataset_name": "ds",
+                    "mode": "copy",
+                    "members": [
+                        {
+                            "membership_id": m["membership_id"],
+                            "capture_id": m["capture_id"],
+                            "display_index": m["display_index"],
+                        }
+                        for m in members
+                    ],
+                },
+            )
+            # Member 1 finished in a previous run: its manifest entry and its
+            # directory exist. The fake hash proves a resume does not re-copy
+            # (a re-copy would overwrite it with the real one).
+            (target / "001").mkdir(parents=True)
+            (target / "001" / "bag_0.mcap").write_bytes(b"already copied")
+            fake_files = [{"path": "bag_0.mcap", "size": 14, "sha256": "f" * 64}]
+            (target / MANIFEST_NAME).write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "mode": "copy",
+                        "status": "archiving",
+                        "members": [
+                            {
+                                "dir": "001",
+                                "capture_id": members[0]["capture_id"],
+                                "files": fake_files,
+                                "bytes": 14,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            # Member 2 is debris: bytes at the target, no manifest entry. In
+            # copy mode the source is by definition still here, so debris is
+            # always rebuilt — there is no bytes-lost state to halt on.
+            (target / "002").mkdir(parents=True)
+            (target / "002" / "bag_0.mcap").write_bytes(b"half a copy")
+
+            response = client.post(
+                f"/api/v1/datasets/{dataset_id}/archive", json={}
+            )
+            assert response.status_code == 202, response.text
+            _settle(client, dataset_id)
+
+            progress = client.get(f"/api/v1/datasets/{dataset_id}/archive").json()
+            assert progress["status"] == "archived"
+            assert progress["mode"] == "copy"
+            manifest = json.loads((target / MANIFEST_NAME).read_bytes())
+            entries = {m["dir"]: m for m in manifest["members"]}
+            assert entries["001"]["files"] == fake_files  # believed, not redone
+            assert (target / "001" / "bag_0.mcap").read_bytes() == b"already copied"
+            assert entries["002"]["files"]  # rebuilt from the living source
+            copied = (target / "002" / "bag_0.mcap").read_bytes()
+            assert copied.startswith(b"\x89MCAP0")
+
+    def test_a_resume_cannot_switch_modes(
+        self, data_dir: Path, tmp_path: Path, fake_recorder: FakeRecorder
+    ) -> None:
+        roots = tmp_path / "nas"
+        roots.mkdir()
+        with _archive_client(data_dir, roots, fake_recorder) as client:
+            layout = client.app.state.data_layout
+            store = client.app.state.capture_store
+            dataset = _dataset(client, layout, members=1)
+            store.begin_dataset_archive(
+                dataset["dataset_id"],
+                destination=str(_dataset_dir(roots)),
+                mode="copy",
+            )
+
+            response = client.post(
+                f"/api/v1/datasets/{dataset['dataset_id']}/archive",
+                json={"mode": "move"},
+            )
+            assert response.status_code == 409
+            assert response.json()["error"]["code"] == "archive_mode_mismatch"
+
+    def test_a_copy_seal_survives_a_rebuild_with_its_mode(
+        self, data_dir: Path, tmp_path: Path, fake_recorder: FakeRecorder
+    ) -> None:
+        roots = tmp_path / "nas"
+        roots.mkdir()
+        with _archive_client(data_dir, roots, fake_recorder) as client:
+            layout = client.app.state.data_layout
+            dataset = _dataset(client, layout, members=1)
+            dataset_id = dataset["dataset_id"]
+            client.post(
+                f"/api/v1/datasets/{dataset_id}/archive",
+                json={"destination": str(roots / "exports"), "mode": "copy"},
+            )
+            _settle(client, dataset_id)
+        # The client context closed the app; reopen on a fresh database.
+        settings = Settings(
+            data_dir=str(data_dir),
+            archive_roots=str(roots),
+            recording_config="/nonexistent/recording.yaml",
+            stream_config="/nonexistent/stream.yaml",
+        )
+        (data_dir / "kairos.db").unlink()
+        app = create_orchestrator_app(
+            settings,
+            http_client=httpx.AsyncClient(
+                transport=httpx.MockTransport(fake_recorder.handler)
+            ),
+        )
+        with TestClient(app) as restarted:
+            detail = restarted.get(f"/api/v1/datasets/{dataset_id}").json()
+            # Mode is part of the record: without it, a rebuilt catalog could
+            # not say whether the recordings were kept or removed.
+            assert detail["status"] == "archived"
+            assert detail["archive_mode"] == "copy"

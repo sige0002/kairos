@@ -742,6 +742,26 @@ class CaptureService:
         )
         return response
 
+    async def copy_out(
+        self,
+        capture_id: str,
+        *,
+        target: Path,
+        progress: Callable[[int], None] | None = None,
+    ) -> fileops.CopyResult:
+        """Copy a capture's bytes to *target*, verified — and change NOTHING.
+
+        The §6.1 copy-mode member step. No ledger event, no row update, no
+        trash: the capture has not gone anywhere, so there is nothing to
+        record about it — the dataset manifest and the run's seal carry the
+        export's own audit trail. Under the mutex so a concurrent review save
+        cannot be read half-written into the copy.
+        """
+        async with self._mutex(capture_id):
+            capture = self.get(capture_id)
+            self._reject_active(capture)
+            return await self._copy_to_target(capture, target, progress=progress)
+
     async def _archive_into(
         self,
         capture: Capture,
@@ -759,44 +779,7 @@ class CaptureService:
         failure after the copy leaves the source untouched.
         """
         capture_id = capture.capture_id
-        source = self._layout.capture_dir(capture_id)
-        if not source.is_dir():
-            raise ApiError(
-                status_code=409,
-                code="capture_not_present",
-                message=(
-                    f"{capture_id} has no local copy to archive "
-                    f"({source} does not exist)."
-                ),
-                details={"capture_id": capture_id},
-            )
-
-        self._reject_overlapping_destination(target, source)
-        try:
-            result = await asyncio.to_thread(
-                fileops.copy_tree_verified, source, target, progress=progress
-            )
-        except fileops.DestinationNotEmptyError as exc:
-            raise ApiError(
-                status_code=409,
-                code="destination_not_empty",
-                message=(
-                    f"{target} already contains files — refusing to archive "
-                    "into it. Choose another path, or clear it if it is the "
-                    "debris of a failed archive."
-                ),
-                details={"capture_id": capture_id, "destination": str(target)},
-            ) from exc
-        except (OSError, fileops.VerificationError) as exc:
-            raise ApiError(
-                status_code=500,
-                code="archive_copy_failed",
-                message=(
-                    f"Archiving {capture_id} to {target} failed: {exc}. "
-                    "The recording is untouched."
-                ),
-                details={"capture_id": capture_id, "destination": str(target)},
-            ) from exc
+        result = await self._copy_to_target(capture, target, progress=progress)
 
         # rev.2.1: carry enough for a rebuild to reconstruct the row after
         # the sidecars are gone. Without these the capture would come back
@@ -853,6 +836,55 @@ class CaptureService:
             file_count=result.files,
             files=[ArchivedFile.model_validate(entry) for entry in result.entries],
         )
+
+    async def _copy_to_target(
+        self,
+        capture: Capture,
+        target: Path,
+        *,
+        progress: Callable[[int], None] | None = None,
+    ) -> fileops.CopyResult:
+        """The verified copy both archive modes share: presence check, overlap
+        check, copy with the error vocabulary the routes promise."""
+        capture_id = capture.capture_id
+        source = self._layout.capture_dir(capture_id)
+        if not source.is_dir():
+            raise ApiError(
+                status_code=409,
+                code="capture_not_present",
+                message=(
+                    f"{capture_id} has no local copy to archive "
+                    f"({source} does not exist)."
+                ),
+                details={"capture_id": capture_id},
+            )
+
+        self._reject_overlapping_destination(target, source)
+        try:
+            return await asyncio.to_thread(
+                fileops.copy_tree_verified, source, target, progress=progress
+            )
+        except fileops.DestinationNotEmptyError as exc:
+            raise ApiError(
+                status_code=409,
+                code="destination_not_empty",
+                message=(
+                    f"{target} already contains files — refusing to archive "
+                    "into it. Choose another path, or clear it if it is the "
+                    "debris of a failed archive."
+                ),
+                details={"capture_id": capture_id, "destination": str(target)},
+            ) from exc
+        except (OSError, fileops.VerificationError) as exc:
+            raise ApiError(
+                status_code=500,
+                code="archive_copy_failed",
+                message=(
+                    f"Archiving {capture_id} to {target} failed: {exc}. "
+                    "The recording is untouched."
+                ),
+                details={"capture_id": capture_id, "destination": str(target)},
+            ) from exc
 
     def finish_archived_member(self, capture_id: str, *, destination: str) -> None:
         """Mark the row archived — split out so a resume that finds the ledger
@@ -935,6 +967,15 @@ class CaptureService:
             return False
         return True
 
+    def _membership_blocks(self, dataset_id: str) -> bool:
+        """Whether this membership pins the capture's local bytes (§6.1)."""
+        dataset = self._store.get_dataset(dataset_id)
+        if dataset is None:
+            return True  # an unknown dataset is not a licence to delete
+        return not (
+            dataset["status"] == "archived" and dataset.get("archive_mode") == "copy"
+        )
+
     def _reject_overlapping_destination(self, target: Path, source: Path) -> None:
         reject_overlapping_destination(target, source, self._layout.data_dir)
 
@@ -993,11 +1034,19 @@ class CaptureService:
         ``views/`` as a whole — but membership of any other dataset still
         refuses. Every HTTP route passes ``None``; only the runner's
         :meth:`archive_member` names its dataset.
+
+        A membership in a COPY-SEALED dataset (archived, mode ``copy``) does
+        not block: that dataset is a historical record whose export is already
+        complete and verified elsewhere, and letting it pin the local bytes
+        forever would make "seal a combined set, keep working" a trap — the
+        member set is frozen, so the membership could never be removed to
+        unblock the delete.
         """
         memberships = [
             m
             for m in self._store.dataset_memberships_for(capture.capture_id)
             if m.dataset_id != except_dataset
+            and self._membership_blocks(m.dataset_id)
         ]
         if not memberships:
             return

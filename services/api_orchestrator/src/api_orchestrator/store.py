@@ -80,7 +80,7 @@ logger = logging.getLogger("kairos")
 # found in the field, not by tests, because tests only ever see fresh schemas.
 # The rebuild is the designed absorption path; refusing to bump is how it is
 # bypassed by accident.
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 CATALOG_DIRNAME = "catalog"
 TEMPLATES_SIDECAR = "validation_templates.json"
@@ -217,11 +217,13 @@ CREATE TABLE IF NOT EXISTS datasets (
     -- the next one is always this + 1 — MAX() over live members would hand a
     -- retired number to a different recording.
     index_high_water INTEGER NOT NULL DEFAULT 0,
-    -- The terminal transition (§6.x). These cache what the ledger's
+    -- The terminal transition (§6.1). These cache what the ledger's
     -- dataset_archive_started / dataset_archived events hold durably: the
-    -- resolved directory the bytes went to, and when. status walks
-    -- active → archiving → archived and never back.
+    -- resolved directory the bytes went to, when, and HOW — mode 'copy'
+    -- sealed the set and kept the recordings here, 'move' removed them.
+    -- status walks active → archiving → archived and never back.
     archive_destination TEXT,
+    archive_mode        TEXT,
     archive_started_at  TEXT,
     archived_at         TEXT
 );
@@ -1072,7 +1074,12 @@ class CaptureStore:
     # ---- dataset archive (§6.x) --------------------------------------------
 
     def begin_dataset_archive(
-        self, dataset_id: str, *, destination: str, at: str | None = None
+        self,
+        dataset_id: str,
+        *,
+        destination: str,
+        mode: str = "move",
+        at: str | None = None,
     ) -> bool:
         """active → archiving, exactly once. ``False`` = it was not active.
 
@@ -1083,9 +1090,10 @@ class CaptureStore:
         with self._conn() as conn:
             cur = conn.execute(
                 "UPDATE datasets SET status = 'archiving', "
-                "archive_destination = ?, archive_started_at = ? "
+                "archive_destination = ?, archive_mode = ?, "
+                "archive_started_at = ? "
                 "WHERE dataset_id = ? AND status = 'active'",
-                (destination, at or utc_now_iso8601(), dataset_id),
+                (destination, mode, at or utc_now_iso8601(), dataset_id),
             )
         return cur.rowcount > 0
 
@@ -1096,7 +1104,8 @@ class CaptureStore:
         with self._conn() as conn:
             conn.execute(
                 "UPDATE datasets SET status = 'active', "
-                "archive_destination = NULL, archive_started_at = NULL "
+                "archive_destination = NULL, archive_mode = NULL, "
+                "archive_started_at = NULL "
                 "WHERE dataset_id = ? AND status = 'archiving'",
                 (dataset_id,),
             )
@@ -1112,7 +1121,7 @@ class CaptureStore:
         return cur.rowcount > 0
 
     def mark_dataset_archiving(
-        self, dataset_id: str, *, destination: str, at: str | None
+        self, dataset_id: str, *, destination: str, mode: str = "move", at: str | None
     ) -> None:
         """Replay form of :meth:`begin_dataset_archive` — no CAS, idempotent.
 
@@ -1123,9 +1132,10 @@ class CaptureStore:
         with self._conn() as conn:
             conn.execute(
                 "UPDATE datasets SET status = 'archiving', "
-                "archive_destination = ?, archive_started_at = ? "
+                "archive_destination = ?, archive_mode = ?, "
+                "archive_started_at = ? "
                 "WHERE dataset_id = ? AND status != 'archived'",
-                (destination, at, dataset_id),
+                (destination, mode, at, dataset_id),
             )
 
     def mark_dataset_archived(self, dataset_id: str, *, at: str | None) -> None:

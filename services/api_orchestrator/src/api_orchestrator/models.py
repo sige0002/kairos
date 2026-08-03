@@ -441,6 +441,8 @@ class Dataset(BaseModel):
     created_at: str | None = None
     member_count: int = 0
     archive_destination: str | None = None
+    # 'copy' sealed the set and kept the recordings here; 'move' removed them.
+    archive_mode: str | None = None
     archive_started_at: str | None = None
     archived_at: str | None = None
 
@@ -478,6 +480,11 @@ class DatasetArchiveRequest(BaseModel):
     """
 
     destination: str | None = None
+    # 'move' (default): copy → verify → remove the sources — needs exclusive
+    # members. 'copy': copy → verify → seal, sources untouched — legal for a
+    # dataset that shares recordings with others (a combined set). Omitted on
+    # resume; naming a different mode than the run's is a 409.
+    mode: Literal["copy", "move"] | None = None
     reason: str | None = Field(default=None, max_length=500)
 
 
@@ -494,6 +501,7 @@ class DatasetArchiveProgress(BaseModel):
     dataset_id: str
     status: str
     destination: str | None = None
+    mode: str | None = None
     member_total: int = 0
     members_done: int = 0
     running: bool = False

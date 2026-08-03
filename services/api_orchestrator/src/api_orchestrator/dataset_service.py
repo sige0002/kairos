@@ -264,11 +264,17 @@ class DatasetService:
             )
         for membership in self._store.dataset_memberships_for(capture_id):
             other = self._store.get_dataset(membership.dataset_id)
-            if other is not None and other["status"] != "active":
-                # The other dataset's archive run is going to move (or already
-                # moved) this capture's bytes away; a new membership would cite
+            if (
+                other is not None
+                and other["status"] != "active"
+                and other.get("archive_mode") != "copy"
+            ):
+                # The other dataset's MOVE run is going to take (or already
+                # took) this capture's bytes away; a new membership would cite
                 # bytes that are leaving — the very dangling reference the §7
-                # member guard exists to prevent.
+                # member guard exists to prevent. A copy run is no such thing:
+                # it seals a record and the bytes stay, so its members remain
+                # free to join new datasets.
                 raise ApiError(
                     status_code=409,
                     code="capture_archiving",
@@ -441,8 +447,12 @@ class DatasetService:
                     "at": event.get("at"),
                 },
             )
+        mode = event.get("mode")
         self._store.mark_dataset_archiving(
-            dataset_id, destination=destination, at=_opt_str(event.get("at"))
+            dataset_id,
+            destination=destination,
+            mode=mode if mode in ("copy", "move") else "move",
+            at=_opt_str(event.get("at")),
         )
         return 1
 
@@ -567,6 +577,7 @@ def _dataset(row: dict[str, Any], *, member_count: int | None = None) -> Dataset
             member_count if member_count is not None else row.get("member_count", 0)
         ),
         archive_destination=row.get("archive_destination"),
+        archive_mode=row.get("archive_mode"),
         archive_started_at=row.get("archive_started_at"),
         archived_at=row.get("archived_at"),
     )

@@ -113,17 +113,22 @@ class DatasetArchiver:
         dataset_id: str,
         *,
         destination: str | None,
+        mode: str | None,
         reason: str | None,
         roots: list[Path],
     ) -> DatasetArchiveProgress:
         """Start a new run, or resume a halted one. Returns initial progress.
 
-        Everything here happens before the 202: by the time the response
-        leaves, the member set is frozen in the ledger and the runner owns the
-        rest. A failure to append the ``started`` event rolls the CAS back —
-        the only rollback in the archive, legal because no byte has moved yet.
+        ``mode`` picks what the run does to the sources: ``move`` (the
+        default) removes each verified member from this machine and demands
+        exclusive members; ``copy`` seals the set and touches nothing — the
+        legal mode for a combined dataset that shares recordings with its
+        sources. Everything here happens before the 202: by the time the
+        response leaves, the member set (and the mode) is frozen in the
+        ledger and the runner owns the rest. A failure to append the
+        ``started`` event rolls the CAS back — the only rollback in the
+        archive, legal because no byte has moved yet.
         """
-        self._require_delete_available()
         dataset = self._store.get_dataset(dataset_id)
         if dataset is None:
             raise ApiError(
@@ -143,9 +148,14 @@ class DatasetArchiver:
                 details={"dataset_id": dataset_id},
             )
         if dataset["status"] == "archiving":
-            self._resume(dataset_id, dataset, destination, roots)
+            self._resume(dataset_id, dataset, destination, mode, roots)
             return self.progress_for(dataset_id)
 
+        run_mode = mode or "move"
+        if run_mode == "move":
+            # Only the move run deletes sources; a copy run must stay possible
+            # even where deleting is withdrawn (§7's cross-device 503).
+            self._require_delete_available()
         members = self._store.list_dataset_members(dataset_id)
         if not members:
             raise ApiError(
@@ -163,7 +173,7 @@ class DatasetArchiver:
         reject_overlapping_destination(
             dataset_dir, self._layout.data_dir, self._layout.data_dir
         )
-        self._preflight_members(dataset_id, members)
+        self._preflight_members(dataset_id, members, mode=run_mode)
         if dataset_dir.exists() and any(dataset_dir.iterdir()):
             raise ApiError(
                 status_code=409,
@@ -177,7 +187,7 @@ class DatasetArchiver:
             )
 
         if not self._store.begin_dataset_archive(
-            dataset_id, destination=str(dataset_dir)
+            dataset_id, destination=str(dataset_dir), mode=run_mode
         ):
             # Lost the CAS: someone else moved the status between our read and
             # this write. Whatever they did, this request's premise is stale.
@@ -188,7 +198,9 @@ class DatasetArchiver:
                 details={"dataset_id": dataset_id},
             )
         try:
-            self._append_started(dataset_id, dataset, members, dataset_dir, reason)
+            self._append_started(
+                dataset_id, dataset, members, dataset_dir, run_mode, reason
+            )
         except ApiError:
             self._store.abort_dataset_archive(dataset_id)
             raise
@@ -208,12 +220,13 @@ class DatasetArchiver:
                 message=f"Dataset not found: {dataset_id}",
                 details={"dataset_id": dataset_id},
             )
-        done, total = self._store.count_archived_members(dataset_id)
+        done, total = self._member_progress(dataset_id, dataset)
         run = self._runs.get(dataset_id)
         return DatasetArchiveProgress(
             dataset_id=dataset_id,
             status=dataset["status"],
             destination=dataset.get("archive_destination"),
+            mode=dataset.get("archive_mode"),
             member_total=total,
             members_done=done,
             running=self.is_running(dataset_id),
@@ -241,6 +254,7 @@ class DatasetArchiver:
         dataset_id: str,
         dataset: dict[str, Any],
         destination: str | None,
+        mode: str | None,
         roots: list[Path],
     ) -> None:
         if self.is_running(dataset_id):
@@ -250,6 +264,26 @@ class DatasetArchiver:
                 message="This dataset's archive run is already executing.",
                 details={"dataset_id": dataset_id},
             )
+        recorded_mode = dataset.get("archive_mode") or "move"
+        if mode is not None and mode != recorded_mode:
+            # A resume continues the run the ledger froze; switching what it
+            # DOES to the sources mid-run would make the seal describe a run
+            # that never happened.
+            raise ApiError(
+                status_code=409,
+                code="archive_mode_mismatch",
+                message=(
+                    f"This run was started as '{recorded_mode}'; resume sends "
+                    "no mode (or the same one)."
+                ),
+                details={
+                    "dataset_id": dataset_id,
+                    "recorded": recorded_mode,
+                    "requested": mode,
+                },
+            )
+        if recorded_mode == "move":
+            self._require_delete_available()
         recorded = dataset.get("archive_destination")
         if destination:
             requested = str(self._dataset_dir(dataset, destination, roots))
@@ -288,7 +322,7 @@ class DatasetArchiver:
         )
 
     def _preflight_members(
-        self, dataset_id: str, members: list[DatasetMember]
+        self, dataset_id: str, members: list[DatasetMember], *, mode: str
     ) -> None:
         """Walk every member once and report every problem at once.
 
@@ -302,11 +336,20 @@ class DatasetArchiver:
         conflicts: list[dict[str, Any]] = []
         blockers: list[dict[str, Any]] = []
         for member in members:
-            others = [
-                m.dataset_id
-                for m in self._store.dataset_memberships_for(member.capture_id)
-                if m.dataset_id != dataset_id
-            ]
+            # Shared members block a MOVE only — a copy takes nothing away, so
+            # sharing is exactly the situation it exists for (a combined set).
+            # Memberships in copy-sealed datasets never count: those are
+            # historical records, not claims on the local bytes.
+            others = (
+                [
+                    m.dataset_id
+                    for m in self._store.dataset_memberships_for(member.capture_id)
+                    if m.dataset_id != dataset_id
+                    and self._membership_pins_bytes(m.dataset_id)
+                ]
+                if mode == "move"
+                else []
+            )
             if others:
                 conflicts.append(
                     {"capture_id": member.capture_id, "dataset_ids": others}
@@ -373,18 +416,34 @@ class DatasetArchiver:
                 details={"dataset_id": dataset_id, "blockers": blockers},
             )
 
+    def _membership_pins_bytes(self, dataset_id: str) -> bool:
+        """Whether a membership claims the capture's LOCAL bytes (§6.1).
+
+        Mirrors ``CaptureService._membership_blocks``: a copy-sealed dataset
+        (archived, mode copy) is a record of an export, not a claim on the
+        recordings still here.
+        """
+        dataset = self._store.get_dataset(dataset_id)
+        if dataset is None:
+            return True
+        return not (
+            dataset["status"] == "archived" and dataset.get("archive_mode") == "copy"
+        )
+
     def _append_started(
         self,
         dataset_id: str,
         dataset: dict[str, Any],
         members: list[DatasetMember],
         dataset_dir: Path,
+        mode: str,
         reason: str | None,
     ) -> None:
         payload: dict[str, Any] = {
             "dataset_id": dataset_id,
             "destination": str(dataset_dir),
             "dataset_name": dataset.get("name") or dataset_id,
+            "mode": mode,
             "members": [
                 {
                     "membership_id": m.membership_id,
@@ -468,32 +527,59 @@ class DatasetArchiver:
             }
             return
         dataset_dir = Path(destination)
+        mode = dataset.get("archive_mode") or "move"
         members = self._store.list_dataset_members(dataset_id)
 
         sealed = self._seal_event(dataset_id)
         if sealed is None:
+            # Copy mode's durable record of which members are done is the
+            # manifest itself (no capture row changes, no per-member events),
+            # so a resume seeds from what the last run wrote.
+            results = (
+                self._seed_copy_results(dataset_dir, members) if mode == "copy" else {}
+            )
             # From the very first write the folder describes itself: a run
             # that dies mid-copy leaves "dataset X, these members pending",
             # not an anonymous pile of numbered directories.
-            self._write_manifest(dataset, members, dataset_dir, complete=False)
+            self._write_manifest(
+                dataset, members, dataset_dir, mode=mode, results=results, complete=False
+            )
             for member in sorted(members, key=lambda m: m.display_index):
                 run.current_capture_id = member.capture_id
                 run.current_bytes = None
                 target = dataset_dir / f"{member.display_index:03d}"
-                if not await self._member_out(dataset_id, member, target, run):
+                done = (
+                    await self._copy_member_out(member, target, run, results)
+                    if mode == "copy"
+                    else await self._member_out(dataset_id, member, target, run)
+                )
+                if not done:
                     return  # halted; the error is in run.error
-                self._write_manifest(dataset, members, dataset_dir, complete=False)
+                self._write_manifest(
+                    dataset,
+                    members,
+                    dataset_dir,
+                    mode=mode,
+                    results=results,
+                    complete=False,
+                )
             manifest_bytes = self._write_manifest(
-                dataset, members, dataset_dir, complete=True
+                dataset, members, dataset_dir, mode=mode, results=results, complete=True
             )
-            if not self._append_seal(dataset_id, dataset, members, manifest_bytes, run):
+            if not self._append_seal(
+                dataset_id, dataset, members, manifest_bytes, mode, results, run
+            ):
                 return
         # Sealed (now, or by a run that crashed before the flip): finish.
         self._store.finish_dataset_archive(dataset_id)
         self._views_changed()
         logger.info(
             "dataset archived",
-            extra={"dataset_id": dataset_id, "destination": str(dataset_dir)},
+            extra={
+                "dataset_id": dataset_id,
+                "destination": str(dataset_dir),
+                "mode": mode,
+            },
         )
 
     async def _member_out(
@@ -576,6 +662,98 @@ class DatasetArchiver:
         await asyncio.to_thread(self._captures.reap, member.capture_id)
         return True
 
+    async def _copy_member_out(
+        self,
+        member: DatasetMember,
+        target: Path,
+        run: _RunState,
+        results: dict[str, dict[str, Any]],
+    ) -> bool:
+        """Bring one member to "copied to *target*" — sources untouched.
+
+        Far simpler resume than the move: the manifest is the only durable
+        record, so "done" is "the manifest lists its files and the directory
+        exists". Debris is always rebuilt — in copy mode the source is by
+        definition still here, so there is no bytes-lost state to halt on.
+        """
+        if member.capture_id in results and target.is_dir():
+            return True
+        results.pop(member.capture_id, None)
+        if target.exists():
+            await asyncio.to_thread(shutil.rmtree, target)
+        try:
+            result = await self._captures.copy_out(
+                member.capture_id,
+                target=target,
+                progress=lambda done: setattr(run, "current_bytes", done),
+            )
+        except ApiError as exc:
+            run.error = {
+                "capture_id": member.capture_id,
+                "code": exc.code,
+                "message": exc.message,
+            }
+            return False
+        capture = self._store.get_capture(member.capture_id)
+        results[member.capture_id] = {
+            "files": result.entries,
+            "bytes": result.bytes,
+            "run_id": capture.run_id if capture else None,
+        }
+        return True
+
+    def _seed_copy_results(
+        self, dataset_dir: Path, members: list[DatasetMember]
+    ) -> dict[str, dict[str, Any]]:
+        """What a previous copy run already finished, read from its manifest."""
+        manifest = self._read_manifest(dataset_dir)
+        if manifest is None:
+            return {}
+        results: dict[str, dict[str, Any]] = {}
+        wanted = {m.capture_id for m in members}
+        for entry in manifest.get("members", []):
+            if not isinstance(entry, dict):
+                continue
+            capture_id = entry.get("capture_id")
+            files = entry.get("files")
+            if (
+                isinstance(capture_id, str)
+                and capture_id in wanted
+                and isinstance(files, list)
+                and files
+                and (dataset_dir / str(entry.get("dir"))).is_dir()
+            ):
+                results[capture_id] = {
+                    "files": files,
+                    "bytes": entry.get("bytes"),
+                    "run_id": entry.get("run_id"),
+                }
+        return results
+
+    def _read_manifest(self, dataset_dir: Path) -> dict[str, Any] | None:
+        try:
+            return json.loads((dataset_dir / MANIFEST_NAME).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+
+    def _member_progress(
+        self, dataset_id: str, dataset: dict[str, Any]
+    ) -> tuple[int, int]:
+        """(done, total): rows answer for a move; the manifest for a copy."""
+        done, total = self._store.count_archived_members(dataset_id)
+        if dataset.get("archive_mode") != "copy":
+            return done, total
+        destination = dataset.get("archive_destination")
+        manifest = self._read_manifest(Path(destination)) if destination else None
+        if manifest is None:
+            return (total if dataset["status"] == "archived" else 0), total
+        copied = sum(
+            1
+            for entry in manifest.get("members", [])
+            if isinstance(entry, dict) and entry.get("files")
+        )
+        return copied, total
+
     async def _tidy_source(self, capture_id: str, source_present: bool) -> None:
         """Re-assert the end state of a member that already archived."""
         if source_present:
@@ -593,18 +771,24 @@ class DatasetArchiver:
         members: list[DatasetMember],
         dataset_dir: Path,
         *,
+        mode: str,
+        results: dict[str, dict[str, Any]] | None = None,
         complete: bool,
     ) -> bytes:
         """Rewrite ``dataset_manifest.json`` atomically; return its bytes.
 
         Every member appears from the first write — the pending ones with
-        ``files: null`` — so a half-finished folder describes itself. Entries
-        for finished members are copied from their ``capture_archived`` events
-        rather than kept in memory: the ledger is the record, and a resumed
-        run that never held the earlier responses must produce the same
-        manifest.
+        ``files: null`` — so a half-finished folder describes itself. Where a
+        finished member's entry comes from depends on the mode: a move's from
+        its ``capture_archived`` event (the ledger is the record), a copy's
+        from the run's own verified results (there is no event — nothing
+        happened to the capture), which the next run re-reads from this very
+        file.
         """
-        events = ledger_v2.archive_events(self._layout.data_dir)
+        events = (
+            ledger_v2.archive_events(self._layout.data_dir) if mode == "move" else {}
+        )
+        results = results or {}
         started = self._started_event(dataset["dataset_id"])
         entries: list[dict[str, Any]] = []
         bytes_total = 0
@@ -618,17 +802,27 @@ class DatasetArchiver:
                 "bytes": None,
                 "capture_archived_event_id": None,
             }
-            event = events.get(member.capture_id)
-            if event is not None and event.get("destination") == str(
-                dataset_dir / entry["dir"]
-            ):
-                entry["files"] = event.get("files")
-                entry["bytes"] = event.get("bytes")
-                entry["capture_archived_event_id"] = event.get("event_id")
-                if isinstance(event.get("run_id"), str):
-                    entry["run_id"] = event["run_id"]
-                if isinstance(entry["bytes"], int):
-                    bytes_total += entry["bytes"]
+            if mode == "copy":
+                result = results.get(member.capture_id)
+                if result is not None:
+                    entry["files"] = result.get("files")
+                    entry["bytes"] = result.get("bytes")
+                    if isinstance(result.get("run_id"), str):
+                        entry["run_id"] = result["run_id"]
+                    if isinstance(entry["bytes"], int):
+                        bytes_total += entry["bytes"]
+            else:
+                event = events.get(member.capture_id)
+                if event is not None and event.get("destination") == str(
+                    dataset_dir / entry["dir"]
+                ):
+                    entry["files"] = event.get("files")
+                    entry["bytes"] = event.get("bytes")
+                    entry["capture_archived_event_id"] = event.get("event_id")
+                    if isinstance(event.get("run_id"), str):
+                        entry["run_id"] = event["run_id"]
+                    if isinstance(entry["bytes"], int):
+                        bytes_total += entry["bytes"]
             entries.append(entry)
 
         manifest = {
@@ -638,6 +832,7 @@ class DatasetArchiver:
             "name": dataset.get("name"),
             "operator": dataset.get("operator"),
             "task": dataset.get("task"),
+            "mode": mode,
             "status": "complete" if complete else "archiving",
             "source_instance_id": self._instance_id,
             "started_event_id": started.get("event_id") if started else None,
@@ -664,14 +859,23 @@ class DatasetArchiver:
         dataset: dict[str, Any],
         members: list[DatasetMember],
         manifest_bytes: bytes,
+        mode: str,
+        results: dict[str, dict[str, Any]],
         run: _RunState,
     ) -> bool:
-        events = ledger_v2.archive_events(self._layout.data_dir)
-        bytes_total = sum(
-            e.get("bytes", 0)
-            for e in (events.get(m.capture_id) for m in members)
-            if e is not None and isinstance(e.get("bytes"), int)
-        )
+        if mode == "copy":
+            bytes_total = sum(
+                r["bytes"]
+                for r in results.values()
+                if isinstance(r.get("bytes"), int)
+            )
+        else:
+            events = ledger_v2.archive_events(self._layout.data_dir)
+            bytes_total = sum(
+                e.get("bytes", 0)
+                for e in (events.get(m.capture_id) for m in members)
+                if e is not None and isinstance(e.get("bytes"), int)
+            )
         try:
             ledger_v2.append_with_slack_release(
                 self._layout.data_dir,
@@ -681,6 +885,7 @@ class DatasetArchiver:
                     "dataset_id": dataset_id,
                     "destination": dataset.get("archive_destination"),
                     "dataset_name": dataset.get("name") or dataset_id,
+                    "mode": mode,
                     "member_total": len(members),
                     "bytes_total": bytes_total,
                     "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
