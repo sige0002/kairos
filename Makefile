@@ -290,8 +290,16 @@ images-load: ## load images from kairos-images.tar.gz (IMAGES_FILE=...) on the o
 # exported so compose.yaml's per-service `env_file: ${KAIROS_ENV_FILE:-.env}`
 # injects the SAME file into the containers; --env-file feeds ${VAR} interpolation.
 SPLIT_ENV := $(if $(wildcard .env.split),.env.split,$(if $(wildcard .env),.env,))
+# Archive destination (opt-in, capture_store §6.1). Single-host wires the
+# compose.archive.yaml override via COMPOSE_FILE in .env — but an explicit -f
+# overrides COMPOSE_FILE, so the recording side must include it itself. It does
+# so whenever the split env sets ARCHIVE_DIR (the host half of the pair;
+# KAIROS_ARCHIVE_ROOTS is the container half): setting one without the other
+# is the exports-vanish-with-the-container trap config.md warns about.
+# Robot-edge never mounts it — no orchestrator runs there.
+ARCHIVE_OVERRIDE  := $(if $(SPLIT_ENV),$(shell grep -qE '^[[:space:]]*ARCHIVE_DIR=' $(SPLIT_ENV) 2>/dev/null && echo -f compose.archive.yaml),)
 COMPOSE_ROBOT     := $(if $(SPLIT_ENV),KAIROS_ENV_FILE=$(SPLIT_ENV),) docker compose $(if $(SPLIT_ENV),--env-file $(SPLIT_ENV),) -f compose.robot.yaml
-COMPOSE_RECORDING := $(if $(SPLIT_ENV),KAIROS_ENV_FILE=$(SPLIT_ENV),) docker compose $(if $(SPLIT_ENV),--env-file $(SPLIT_ENV),) -f compose.recording.yaml
+COMPOSE_RECORDING := $(if $(SPLIT_ENV),KAIROS_ENV_FILE=$(SPLIT_ENV),) docker compose $(if $(SPLIT_ENV),--env-file $(SPLIT_ENV),) -f compose.recording.yaml $(ARCHIVE_OVERRIDE)
 
 .PHONY: robot-up robot-down robot-build robot-rebuild robot-restart robot-logs robot-ps robot-config-reload \
         robot-images-save recording-up recording-down recording-build recording-rebuild recording-restart \

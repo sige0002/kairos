@@ -16,10 +16,12 @@
 #   ARCHIVE_DIR=/mnt/nas/kairos-archive        # host side: where exports land
 #   KAIROS_ARCHIVE_ROOTS=/archive              # container side: this mount
 #
-# `make up` and bare `docker compose` both honor COMPOSE_FILE from .env. For
-# the split deploy, `make up-recording` passes -f compose.recording.yaml
-# explicitly (which overrides COMPOSE_FILE), so add the same volumes entry to
-# your recording-side override instead — see docs/specs/ja/config.md.
+# `make up` and bare `docker compose` both honor COMPOSE_FILE from .env. The
+# split deploy needs no COMPOSE_FILE line: `make recording-up` appends this
+# file by itself whenever the split env sets ARCHIVE_DIR (an explicit -f
+# overrides COMPOSE_FILE, so the Makefile owns the wiring there). Plain
+# `docker compose -f compose.recording.yaml` users add `-f compose.archive.yaml`
+# to the command line. See docs/specs/ja/config.md.
 services:
   orchestrator:
     volumes:
