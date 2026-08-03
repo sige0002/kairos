@@ -146,15 +146,17 @@ rebuild reads this file too and creates a `state='failed'` row. The deletion pat
 | kind | payload |
 |---|---|
 | `capture_discarded` / `capture_deleted` | Tombstone. Reason and so on |
-| `capture_archived` | `destination` / `run_id` / `operator` / `task` / `bytes` / `message_count` / `files: [{path,size,sha256}]` |
+| `capture_archived` | `destination` / `run_id` / `operator` / `task` / `bytes` / `message_count` / `files: [{path,size,sha256}]`. When written as a member of a dataset archive, also `dataset_id` / `membership_id` / `display_index` (§6.1) |
 | `dataset_created` | `dataset_id` / `name` / `operator` / `task` |
 | `dataset_member_added` | `dataset_id` / `membership_id` / `capture_id` / `display_index` / `operator` / `task` / `dataset_name` |
 | `dataset_member_removed` | `dataset_id` / `membership_id` |
 | `dataset_deleted` | `dataset_id` |
+| `dataset_archive_started` | `dataset_id` / `destination` / `dataset_name` / `operator?` / `task?` / `members: [{membership_id, capture_id, display_index}]` / `reason?`. **The frozen member set itself** (§6.1) |
+| `dataset_archived` | `dataset_id` / `destination` / `dataset_name` / `member_total` / `bytes_total` / `manifest_sha256?`. The seal on the run (§6.1) |
 
 - `capture_id` travels in the event's **envelope**. `event_id` / `at` / `source_instance_id` are owned by the envelope as well and cannot be set from the payload (so a caller cannot forge an idempotency key or a timestamp).
 - append is flush → fsync → fsync of the parent dir. **Fatal for every kind** — if it cannot be written, the operation is aborted.
-- The crucial point is that `capture_archived` is **not counted as a tombstone**. The bytes merely moved to a location the operator chose and the capture really exists, so it must never be normalized into "it never existed".
+- The crucial point is that `capture_archived` is **not counted as a tombstone**. The bytes merely moved to a location the operator chose and the capture really exists, so it must never be normalized into "it never existed". The same holds for `dataset_archive_started` / `dataset_archived` — neither is a tombstone.
 - **No recording-related event kinds are added** (the invariant behind safety principle 5: recording start/stop must not depend on whether the ledger is writable).
 - **ENOSPC countermeasure**: reserve `.ledger-slack` (1MB) at startup. When an append hits `ENOSPC`, the discard / delete path releases the slack and retries the append (preventing the only escape route from a full disk from being blocked because it, too, demands disk).
 - Review edits are not written to the ledger (`record.json` is authoritative).
@@ -173,6 +175,21 @@ rebuild reads this file too and creates a `state='failed'` row. The deletion pat
   - **The `KAIROS_ARCHIVE_ROOTS` allow-list and the overlap check are different questions**, and passing the former is no evidence about the latter. The allow-list says "where you are allowed to write"; the overlap check says "those two must not be the same bytes".
   - What is checked is the **resolved write target (target = `<destination>/<capture_id>`)**, not the permitted root itself. Permitting a root that contains `data_dir` is therefore **not forbidden in itself** — `KAIROS_ARCHIVE_ROOTS=/data` is in fact the kind of setting an operator would plausibly choose, and on the allow-list alone it would let `objects/<id>` be archived to a location under data_dir, after which deleting the source **erases the verified copy along with the original** and reports "success, nothing left". Stopping that is what this independent check is for.
   - Resolve both sides with `realpath` (a symlink cannot fake away an overlap) and check **containment in both directions** (the write target being inside data_dir, and data_dir being inside the write target, are two faces of the same disaster).
+
+### 6.1 Archiving a dataset (finalize and write out — the terminal transition)
+
+The dataset's terminal state. It lifts the capture archive's vocabulary (copy → verify → remove) to a dataset, and it is **not a revival of v1's "export = a move inside the store"**: what left is gone from this store, and **that a record of where it went remains** is the purpose itself.
+
+- **State machine**: `datasets.status` walks `active → archiving → archived` in one direction. `active → archiving` is serialized by a DB CAS (`UPDATE … WHERE status='active'`), structurally ruling out a double start. `archived` is terminal.
+- **Start (`POST /api/v1/datasets/{id}/archive` → 202)**: the destination goes through the same `KAIROS_ARCHIVE_ROOTS` allow-list plus overlap check as the capture archive (the two independent questions of §6; what is checked is the resolved dataset_dir). The server composes `<destination>/<operator>/<task>/<name>` — the views shape has exactly one owner. Zero members, shared members (captures that also belong to another dataset; a 409 enumerating every one), busy members (every one, each with its own reason), and a non-empty destination are refused before anything starts. CAS succeeds → append `dataset_archive_started` (**carrying the frozen member set**. If the append fails, the CAS is put back — the only rollback ever permitted, allowed precisely because no byte has moved yet).
+- **The run (an in-process runner inside the orchestrator. Not dora_runner — moving files is not its job)**: members are carried out in `display_index` order through the same §9-1 sequence as the per-capture archive (copy → sha256 verify → `capture_archived` (with the dataset annotation) → row update → source deletion via trash, the replica going to `trashed` in the same critical section). The write target is `<dataset_dir>/<NNN>/`.
+- **The one relaxation of the member guard**: §7's "a dataset member is refused for archive" is waived **only for memberships in the run's own dataset** (memberships in any other dataset are refused as before). The behavior of the per-capture archive over HTTP is unchanged.
+- **`dataset_manifest.json`**: placed in the dataset_dir from the first write and atomically rewritten as each member completes — so that a folder that died halfway **declares itself**: "dataset X, write-out in progress, 001–002 sealed". When every member is done it settles to `status: complete`, and the sha256 of those bytes is recorded by `dataset_archived` (the seal event). The dependency is one-way, manifest → ledger, so a manifest rewritten after the seal is detectable from the ledger alone.
+- **Halt and resume**: on a member it cannot advance past (a lease appears, an append fails, unrecorded bytes at the destination, etc.) the run **stops on the spot and stays `archiving`**, reporting why. Nothing is rolled back. A re-POST (destination omitted; if given it must match the record — otherwise a 409) resumes idempotently **from durable state alone**: members the rows say are complete are skipped, members only the ledger vouches for are finished from the row update onward, unrecorded debris is rebuilt **only while the source is intact**, and when even the source is gone it calls a human (the one state it must not touch). **No automatic resume at startup** — a write to external storage the operator chose is not continued as a side effect of a restart. The UI presents `archiving` + `running: false` as Resume.
+- **Freezing**: a dataset with `status != 'active'` refuses adding members, removing members, and deletion, all with a 409 (resume replays the frozen set from the started event, so a mid-flight change would be a silent divergence). **The archived row is never deletable** — the row is the queryable cache of the ledger's migration log, the very answer to "where did this dataset go" (the same "the row is not removed" principle as a capture's tombstone). The reverse guards: an archived capture (its bytes are gone) and a member of a non-active dataset (its bytes are on their way out) cannot be added to a new dataset.
+- **views/**: `list_view_entries` restricts itself to `status='active'`. Starting an archive removes the dataset from views/ **as a declaration** — never by dropping into regeneration's "the source is gone, skip it" path.
+- **rebuild**: `dataset_archive_started` reconstructs the dataset row and the member rows on its own (a self-contained payload, against a truncated ledger), and with no seal present it restores the dataset **still `archiving`** — resumability survives the total loss of the DB. The members' capture rows are carried, unchanged, by the existing `capture_archived` reconstruction.
+- **Progress**: volatile (`GET /api/v1/datasets/{id}/archive`). The count of completed members is derived from the rows; the bytes being copied and the halt reason are process memory — honestly reset by a restart. It is not put in the jobs table (the volatile, out-of-rebuild contract).
 
 ## 7. Unified deletion (via trash, with tombstones)
 
@@ -228,7 +245,8 @@ captures(capture_id PK, run_id UNIQUE, source_instance_id, state,
 batches(unchanged. Only its references now point at captures)
 replicas(capture_id, instance_id, state, path, manifest_digest, verified_at,
          updated_at, PRIMARY KEY(capture_id, instance_id))
-datasets(dataset_id PK, name, operator, task, status, created_at)
+datasets(dataset_id PK, name, operator, task, status, created_at,
+         archive_destination, archive_started_at, archived_at)
 dataset_members(membership_id PK, dataset_id, capture_id, display_index,
                 UNIQUE(dataset_id, display_index), UNIQUE(dataset_id, capture_id))
 jobs / validation_templates / plan_catalog(unchanged)
@@ -264,7 +282,7 @@ Only these five — `recording` / `stopping` / `completed` / `interrupted` / `fa
 
 ### 8.2 rebuild (full reconstruction from the sidecars)
 
-**Inputs**: `objects/*/object_manifest.json`, `objects/*.failed.json`, `record.json`, `lifecycle.jsonl`. `jobs` is treated as volatile and is out of scope for rebuild. `validation_templates` and `plan_catalog` are duplicated into sidecars under `catalog/*.json` when saved, and restored by rebuild.
+**Inputs**: `objects/*/object_manifest.json`, `objects/*.failed.json`, `record.json`, `lifecycle.jsonl`. `jobs` is treated as volatile and is out of scope for rebuild. `validation_templates` and `plan_catalog` are duplicated into sidecars under `catalog/*.json` when saved, and restored by rebuild. A dataset's archive state (§6.1: `archiving` / `archived`, destination included) is restored by replaying the ledger.
 
 **Conditions for rebuilding at startup**: the DB is absent / the schema version differs / an explicit request via `KAIROS_REBUILD`. It is not something that runs on every startup.
 
@@ -325,7 +343,8 @@ See [api_orchestrator](api_orchestrator.md) for the exact shapes. This document 
 - Every API that refers to a capture is keyed by `capture_id`. `run_id` is included in responses but is not used as a key.
 - **Removed (with no compatibility aliases)**: all of `/api/v1/runs`, all of `/api/v1/episodes`, `GET|DELETE /api/v1/datasets/{op}/{task}/{index}`, `POST /api/v1/datasets/index/rebuild`, `POST /api/v1/datasets/export|export-all`.
 - A job's only required input is `capture_id`. The source resolves to `objects/<capture_id>` (the `dataset_dir` param is removed). Artifacts go to `report/<pipeline>/<capture_id>/`.
-- Retention redefined: candidates = "**captures that belong to no `dataset_members` and have remained at `review_status` `excluded` or `pending` past a set period**". The old definition "a row exists = not yet exported" is abolished entirely (because rows stopped disappearing, per §6).
+- Retention redefined: candidates = "**captures that belong to no `dataset_members` and have remained at `review_status` `excluded` or `pending` past a set period**". The old definition "a row exists = not yet exported" is abolished entirely (because rows stopped disappearing, per §6). The dataset archive of §6.1 does not change this definition — an archived member keeps its member row and is therefore structurally excluded from the candidates, and with no bytes left it would be meaningless to reclaim anyway.
+- **New (§6.1)**: `POST /api/v1/datasets/{id}/archive` (202; doubles as start and resume) and `GET /api/v1/datasets/{id}/archive` (progress). Not a revival of the old `POST /datasets/export` — this is a terminal carry-out with a ledger behind it, and neither the response nor the path is the same thing.
 
 ## 12. Acceptance (E2E)
 
@@ -336,7 +355,7 @@ make build       # required after a code change (see the caveat below)
 make test-e2e    # bring the stack up → Playwright → bring the stack down
 ```
 
-Playwright drives the real frontend in a real browser against a real stack brought up on a dedicated port, a dedicated data dir, and a dedicated compose project (able to coexist with a developer's `make up`). The topic source is a real rosbag played back in a loop. 5 scenarios:
+Playwright drives the real frontend in a real browser against a real stack brought up on a dedicated port, a dedicated data dir, and a dedicated compose project (able to coexist with a developer's `make up`). The topic source is a real rosbag played back in a loop. 6 scenarios:
 
 | # | Scenario |
 |---|---|
@@ -345,6 +364,7 @@ Playwright drives the real frontend in a real browser against a real stack broug
 | 3 | Discard → modal requiring a reason → disappears from the list → a tombstone in the ledger |
 | 4 | Delete `kairos.db` → restart → restored in the UI (including that a failed-start row does not take down the catalog) |
 | 5 | `rm -rf` an `objects/<id>` → SUSPECT → Repair → `missing_unmanaged` displayed (nothing disappears silently) |
+| 6 | Build a dataset → Archive (§6.1) → the archived badge → the views shape plus the manifest at the destination (sha256 measured and matching) → gone from `objects/` → after deleting `kairos.db` and restarting, still archived and still able to name the destination |
 
 - **The UI result is the first-class assertion**; the sidecars (`object_manifest.json` / `record.json` / `lifecycle.jsonl`) and the API are examined as its corroboration.
 - **Do not skip silently.** A scenario whose environment is not ready fails rather than skips (an acceptance test that quietly evaporates reports a branch nobody tested as green).

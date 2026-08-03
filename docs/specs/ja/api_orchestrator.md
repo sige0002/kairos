@@ -129,7 +129,17 @@ capture 単位で外部ストレージへ退避する。**copy → sha256 verify
 - **重なりの拒否は許可リストとは別の検査**（前者を通ったことは後者の証拠にならない）。検査するのは**解決後の書き込み先**（`<destination>/<capture_id>`）で、許可ルートそのものではない — したがって **`data_dir` を含むルートを許可すること自体は禁止していない**（`KAIROS_ARCHIVE_ROOTS=/data` は operator がやりそうな設定であり、許可リストだけでは自分自身の上へコピーしてから source を消す経路が通ってしまう）。`realpath` で両側を解決し（symlink での偽装を防ぐ）、**両方向の包含**を見る。違反は `400 destination_inside_data_dir`。
 - **非空の destination は `409 destination_not_empty`**（コピーのプリミティブ側で拒否する）。
 - ledger の `capture_archived` イベントは **per-file の `{path, size, sha256}`** を持つ。source が消えた後は manifest も一緒に消えるので、これが無いと「N バイトが /mnt/nas へ行った」としか言えず、数年後に「そのコピーはまだ無事か」に答えられない。
-- **dataset member の capture は archive も拒否**（delete と同じ `400`）。`views/` の symlink が宙に浮くため、先に member から外す。
+- **dataset member の capture は archive も拒否**（delete と同じ `400`）。`views/` の symlink が宙に浮くため、先に member から外す。唯一の免除は §6.1 の dataset archive ランナー自身（下記）で、**当該 run の dataset の membership に限る**。
+
+## dataset archive（`POST /api/v1/datasets/{id}/archive`・§6.1）
+
+dataset の終端遷移。capture archive を dataset に持ち上げたもので、行き先の検証（許可リスト＋解決後 dataset_dir への双方向重なり検査）と搬出順序（copy → verify → ledger → source 削除）は per-capture と同一。
+
+- `POST /api/v1/datasets/{dataset_id}/archive` — body `{ destination?, reason? }` → **`202`**（開始/再開兼用）。サーバが `<destination>/<operator>/<task>/<name>` を合成する（成分は views と同じ sanitize）。
+  - 開始前の拒否: `404 dataset_not_found` / `409 dataset_archived`（終端） / `409 dataset_empty` / `409 dataset_member_shared`（他 dataset にも属す member を **details.conflicts に全件列挙**） / `409 dataset_not_archivable`（busy / 不在の member を **details.blockers に各自の理由付きで全件列挙** — N 件の操作を 1 件ずつ突き返して N 往復させない、という意図的な集約） / `409 destination_not_empty` / `400` 系は capture archive と同じ（`archive_not_configured` / `invalid_destination` / `destination_not_allowed` / `destination_inside_data_dir`） / `503 delete_unavailable`・`ledger_unwritable`。
+  - 再開: status が `archiving` で run が走っていなければ再 POST が冪等に続きから再開する。destination は**省略するか、記録と一致**（違えば `409 archive_destination_mismatch`）。走行中は `409 archive_in_progress`。
+- `GET /api/v1/datasets/{dataset_id}/archive` — 進捗。耐久フィールド（status / destination / archive_started_at / archived_at）は行由来で再起動を生き延び、`running` / `current_capture_id` / `current_bytes` / `error` はプロセスメモリで正直にリセットされる。**`archiving` かつ `running: false` が「再開可能」**で、UI はこれを Resume として描く。`GET /datasets/{id}` の拡張ではなく別 endpoint なのは、1 秒間隔のポーリングが detail キャッシュを暴れさせないため。
+- status ≠ `active` の dataset への member 追加・削除は `409 dataset_not_active`、`DELETE /datasets/{id}` は `409 dataset_archiving` / `409 dataset_archived` — **archived の行は移行ログの照会キャッシュであり消させない**。逆向きに、archive 済み capture は `409 capture_archived`、非 active dataset の member は `409 capture_archiving` で新たな dataset に入れない。
 
 ## 転送（split 構成・`/api/v1/transfer/*`）
 
@@ -261,7 +271,8 @@ Settings > Data quality から、選択式カタログ（recording / stream / va
 - `DELETE /api/v1/datasets/{dataset_id}` → `204`。ledger に `dataset_deleted`。**capture のバイトには触れない。**
 - **安定 ID は `dataset_id` / `membership_id`**（名前は編集可能、`display_index` は表示用）。UI の URL 状態もこの 2 つで持つ。
 - **member の capture は delete も archive も拒否する**（`400`）。`views/` の symlink が宙に浮くため、先に member から外す。
-- **`views/` の再生成**（`POST /api/v1/views/refresh`）: `views/<operator>/<task>/<dataset_name>/<NNN> -> objects/<capture_id>` の symlink 木を、**コミット済みの `dataset_members` 行のみ**から作り直す。世代ディレクトリ + `os.replace` による symlink 差し替えで原子的に行うので、**`views` が存在しない瞬間も、半分だけ出来た木を読む瞬間も無い**。所有者は orchestrator 1 つ（dora_runner は依頼するだけ）。木は全消し・再生成が可能な派生物で、正本は DB 行と ledger。
+- **終端遷移**は上記「dataset archive」（§6.1）: `datasets.status` が `active → archiving → archived` を一方向に歩き、非 active の dataset は member 集合が凍結される。
+- **`views/` の再生成**（`POST /api/v1/views/refresh`）: `views/<operator>/<task>/<dataset_name>/<NNN> -> objects/<capture_id>` の symlink 木を、**コミット済みかつ `status='active'` な dataset の `dataset_members` 行のみ**から作り直す（archiving/archived は宣言として木から消える — §6.1）。世代ディレクトリ + `os.replace` による symlink 差し替えで原子的に行うので、**`views` が存在しない瞬間も、半分だけ出来た木を読む瞬間も無い**。所有者は orchestrator 1 つ（dora_runner は依頼するだけ）。木は全消し・再生成が可能な派生物で、正本は DB 行と ledger。
 
 ## SSE イベント契約（`GET /api/v1/events`）
 
