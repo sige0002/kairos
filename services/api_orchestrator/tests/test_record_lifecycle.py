@@ -198,6 +198,43 @@ class TestPrepare:
         client.post("/api/v1/record/prepare", json={"topics": ["/joint_states"]})
         assert _store(client).list_captures(limit=10)[0] == []
 
+    def test_a_rejected_prepare_with_a_capture_id_is_filed_as_failed(
+        self, client: TestClient, fake_recorder: FakeRecorder
+    ) -> None:
+        # The recorder wrote objects/<id>.failed.json before rejecting, so the
+        # store already contains this failure. Without a row the operator only
+        # meets it after the next rebuild — a §13-4 catalog divergence the
+        # acceptance suite caught live (a pre-arm keep-alive failed to arm and
+        # the capture appeared out of nowhere after rm kairos.db).
+        known = "01920000-0000-7000-8000-0000000000ab"
+        fake_recorder.prepare_status = 507
+        fake_recorder.prepare_error = {
+            "code": "record_arm_failed",
+            "message": "Recording failed to arm (subscribe + resume).",
+            "details": {"capture_id": known},
+        }
+        response = client.post(
+            "/api/v1/record/prepare", json={"topics": ["/joint_states"]}
+        )
+        # The caller armed nothing and must know — the rejection propagates.
+        assert response.status_code >= 500
+        capture = _store(client).get_capture(known)
+        assert capture is not None
+        assert capture.state == CaptureState.failed
+        assert capture.error is not None
+        assert capture.error.code == "record_arm_failed"
+
+    def test_a_rejected_prepare_with_no_capture_id_creates_no_row(
+        self, client: TestClient, fake_recorder: FakeRecorder
+    ) -> None:
+        fake_recorder.prepare_status = 507
+        fake_recorder.prepare_error = {"code": "record_arm_failed", "message": "boom"}
+        response = client.post(
+            "/api/v1/record/prepare", json={"topics": ["/joint_states"]}
+        )
+        assert response.status_code >= 500
+        assert _store(client).list_captures(limit=10)[0] == []
+
     def test_a_non_matching_start_does_not_reuse_the_armed_session(
         self, client: TestClient, fake_recorder: FakeRecorder
     ) -> None:

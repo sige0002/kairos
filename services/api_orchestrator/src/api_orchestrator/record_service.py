@@ -206,9 +206,12 @@ class RecordService:
     async def prepare(self, req: RecordStartRequest) -> RecordPrepareResponse:
         """Arm a recording ahead of time so a later matching ``start`` is fast.
 
-        No capture row is created: the recorder holds the armed session, and an
-        abandoned prepare auto-disarms on its own timeout. A recorder rejection
-        propagates as-is — there is no row to record the failure on.
+        A successful prepare creates no capture row: the recorder holds the
+        armed session, and an abandoned prepare auto-disarms on its own
+        timeout. A recorder rejection is filed as a ``failed`` row first (the
+        recorder wrote ``objects/<id>.failed.json`` before rejecting, so the
+        store already contains the failure) and then propagates — the caller
+        armed nothing and must know.
         """
         req.operator = _default_meta(req.operator, _UNKNOWN_OPERATOR)
         req.task = _default_meta(req.task, _UNKNOWN_TASK)
@@ -216,7 +219,13 @@ class RecordService:
         async with self._lifecycle_lock:
             run_id = self._allocate_run_id()
             payload = self._build_recorder_payload(run_id, topics, req)
-            body = await self._recorder.prepare(payload)
+            try:
+                body = await self._recorder.prepare(payload)
+            except ApiError as exc:
+                self._file_failed_start_row(
+                    run_id, req, exc, _capture_id_of(exc.details or {})
+                )
+                raise
             # A matching re-prepare extends the already-armed session and
             # returns THAT session's ids — adopt them, or a later start would
             # claim ids the recorder never armed.
@@ -385,14 +394,37 @@ class RecordService:
         capture_id = _capture_id_of(exc.details or {}) or (
             prepared.capture_id if prepared is not None else None
         )
+        row = self._file_failed_start_row(run_id, req, exc, capture_id)
+        if row is None:
+            # Nothing to file it under, and inventing an id here would disagree
+            # with whatever the recorder did or did not write.
+            raise exc
+        return row
+
+    def _file_failed_start_row(
+        self,
+        run_id: str,
+        req: RecordStartRequest,
+        exc: ApiError,
+        capture_id: str | None,
+    ) -> Capture | None:
+        """File the ``failed`` row for a recorder rejection, if we know the capture.
+
+        The recorder writes ``objects/<capture_id>.failed.json`` before it
+        rejects an arm (§3.4), so from that moment the store CONTAINS a failed
+        capture. A catalog that only admits it after the next rebuild shows the
+        operator different lists before and after the index is rebuilt — the
+        exact divergence §13-4 forbids — so the row is filed the moment the
+        rejection arrives, on the start and prepare paths alike. Returns None
+        when the rejection named no capture_id (the recorder never got far
+        enough to mint one, so there is no sidecar either).
+        """
         logger.warning(
-            "recorder start failed",
+            "recorder rejected the arm",
             extra={"run_id": run_id, "code": exc.code, "capture_id": capture_id},
         )
         if capture_id is None:
-            # Nothing to file it under. The recorder's failed-start sidecar is
-            # the durable record, and the next rebuild will turn it into a row.
-            raise exc
+            return None
         capture = Capture(
             capture_id=capture_id,
             run_id=_unique_run_id(self._store, run_id),

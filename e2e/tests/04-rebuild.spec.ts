@@ -114,11 +114,24 @@ test('§13-4 Rebuild: deleting kairos.db and restarting restores the captures an
   await selectReviewRow(page, memberCapture);
   const revisionBefore = await shownRevision(page);
 
+  // The EXPECTED set is the store's own account, read at the last moment
+  // before the index dies — not the painted list above. The screen snapshot
+  // proves the operator can see the store; as an expected set it is racy: a
+  // failed pre-arm files a capture with no operator action at all (Collect's
+  // keep-alive arms in the background, and its failure is a §3.4 sidecar plus
+  // a failed row), so one landing after the list painted would read here as
+  // "the rebuild invented a capture". That exact run happened once.
+  const preRebuild = await api.allCaptures();
+
   // The sidecars are what the rebuild must read; note they are all there before
   // the index goes, so a failure afterwards is a rebuild failure and not a
-  // missing-input failure.
-  for (const id of before) {
-    expect(store.manifest(id).capture_id, `objects/${id} has no usable manifest`).toBe(id);
+  // missing-input failure. A failed row's only sidecar is `.failed.json` — no
+  // manifest — so the manifest check covers the settled recordings.
+  for (const c of preRebuild.filter((c) => c.state === 'completed')) {
+    expect(
+      store.manifest(c.capture_id).capture_id,
+      `objects/${c.capture_id} has no usable manifest`,
+    ).toBe(c.capture_id);
   }
   expect(store.ledger().length, 'the ledger is empty — a dataset rebuild cannot work').toBeGreaterThan(0);
 
@@ -140,7 +153,10 @@ test('§13-4 Rebuild: deleting kairos.db and restarting restores the captures an
 
   // ---- assert: the UI shows the same store -------------------------------
   await openTab(page, 'review');
-  const expected = [...before].sort().join('\n');
+  const expected = preRebuild
+    .map((c) => c.capture_id)
+    .sort()
+    .join('\n');
   await expect
     .poll(async () => (await listedCaptureIds(page)).sort().join('\n'), {
       message: 'the rebuilt catalog does not list the same captures',
