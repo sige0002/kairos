@@ -32,6 +32,7 @@ never imports. The acceptance layer is a separate project with its own
 | `04-rebuild.spec.ts` | §13-4 | The database is disposable: delete it, restart, and my recordings and datasets are all still there. |
 | `05-missing-repair.spec.ts` | §13-5 | If files disappear behind kairos's back, nothing silently vanishes from the catalog: the store says SUSPECT, I acknowledge it with Repair, and the affected recordings are marked *missing*. |
 | `06-recorder-honesty.spec.ts` | regression | If the recorder dies while I am recording, the screen says so instead of running a timer for a recording nobody can see — and when it comes back it offers me the interrupted take with its real size and why it ended, not a fresh recording. |
+| `07-dataset-archive.spec.ts` | §6.1 | When I archive a finished dataset, the dialog shows me the exact folder it will land in, every recording is copied and hash-verified before its copy here is removed, the folder describes itself with a manifest the ledger can vouch for — and even after the database is destroyed, kairos still says the dataset is archived and where it went. |
 
 `04-rebuild.spec.ts` carries a second test beyond the §13 minimum — *a failed
 start does not take the whole capture list down*. It is there because the

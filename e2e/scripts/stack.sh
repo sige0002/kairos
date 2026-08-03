@@ -102,8 +102,10 @@ FE="http://127.0.0.1:${FRONTEND_PORT}"
 MON="http://127.0.0.1:${TOPIC_MONITOR_PORT}"
 
 compose() {
+  # compose.archive.yaml mounts the acceptance archive root (§6.1 scenario 6)
+  # into the orchestrator; it exists only for this stack, never in a deploy.
   docker compose --env-file "$ENV_FILE" --env-file "$HOST_ENV" \
-    -f compose.yaml -p "$PROJECT" "$@"
+    -f compose.yaml -f e2e/compose.archive.yaml -p "$PROJECT" "$@"
 }
 say() { printf '\033[36me2e:\033[0m %s\n' "$*"; }
 die() { printf '\033[31me2e: %s\033[0m\n' "$*" >&2; exit 1; }
@@ -318,6 +320,12 @@ cmd_reset() {
   fi
   rm -rf "$DATA_ABS"
   mkdir -p "$DATA_ABS"
+  # The archive destination (§6.1 scenario 6) starts empty too: the run
+  # correctly refuses a non-empty destination, so a leftover export would fail
+  # the scenario for the wrong reason. Orchestrator-written = host-uid-owned,
+  # so no container is needed to remove it.
+  rm -rf "$HERE/e2e/.run/archive"
+  mkdir -p "$HERE/e2e/.run/archive"
   write_service_env
 }
 

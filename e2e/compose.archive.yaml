@@ -1,0 +1,15 @@
+# The acceptance stack's archive destination (contract §6.1, E2E scenario 6).
+#
+# An override rather than a line in the shipped compose.yaml: a production
+# deploy gets NO archive root unless the operator configures one
+# (KAIROS_ARCHIVE_ROOTS unset = the feature is not offered), so the mount
+# exists only for the acceptance run. stack.sh adds this file to every compose
+# invocation and its `reset` wipes the host side (e2e/.run/archive) with the
+# data dir, so a run never inherits another run's exports.
+#
+# Only the orchestrator gets the mount — it is the one service that writes
+# archives. The path matches KAIROS_ARCHIVE_ROOTS in e2e/stack.env.
+services:
+  orchestrator:
+    volumes:
+      - ./e2e/.run/archive:/archive

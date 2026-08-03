@@ -141,4 +141,50 @@ export const store = {
   removeIfPresent(path: string): void {
     if (existsSync(path)) rmSync(path);
   },
+
+  // ---- the archive side (§6.1, scenario 6) ---------------------------------
+  // The acceptance archive root: the container sees /archive, the host sees
+  // e2e/.run/archive (mounted by e2e/compose.archive.yaml, wiped by reset).
+
+  archiveDir: (): string => join(dataDir(), '..', 'archive'),
+
+  /** A container-side destination (`/archive/…` — what the ledger and the UI
+   *  say) translated to where those bytes are on the host. */
+  hostArchivePath(containerPath: string): string {
+    if (!containerPath.startsWith('/archive')) {
+      throw new Error(`not under the acceptance archive root: ${containerPath}`);
+    }
+    return join(store.archiveDir(), containerPath.slice('/archive'.length));
+  },
+
+  /** The dataset_manifest.json an archive run left at *containerDest*. */
+  datasetManifest(containerDest: string): DatasetArchiveManifest {
+    const p = join(store.hostArchivePath(containerDest), 'dataset_manifest.json');
+    if (!existsSync(p)) throw new Error(`no dataset_manifest.json at ${p}`);
+    return JSON.parse(readFileSync(p, 'utf8')) as DatasetArchiveManifest;
+  },
+
+  datasetManifestBytes(containerDest: string): Buffer {
+    return readFileSync(join(store.hostArchivePath(containerDest), 'dataset_manifest.json'));
+  },
 };
+
+export interface DatasetArchiveManifest {
+  schema_version: number;
+  kind: string;
+  dataset_id: string;
+  name: string | null;
+  status: 'archiving' | 'complete';
+  started_event_id: string | null;
+  completed_at: string | null;
+  members: {
+    dir: string;
+    display_index: number;
+    membership_id: string;
+    capture_id: string;
+    files: { path: string; size: number; sha256: string }[] | null;
+    bytes: number | null;
+    capture_archived_event_id: string | null;
+  }[];
+  totals: { members: number; bytes: number };
+}

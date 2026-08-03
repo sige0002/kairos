@@ -134,8 +134,14 @@ export const api = {
    *  It runs the SAME code path — only the schedule is bypassed. */
   reconcile: (): Promise<Record<string, unknown>> => call('POST', '/store/reconcile', undefined),
 
-  listDatasets: (): Promise<{ items: { dataset_id: string; name: string }[] }> =>
-    call('GET', '/datasets'),
+  listDatasets: (): Promise<{
+    items: {
+      dataset_id: string;
+      name: string;
+      status: string;
+      archive_destination: string | null;
+    }[];
+  }> => call('GET', '/datasets'),
 };
 
 /**
