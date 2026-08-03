@@ -8,12 +8,12 @@
 // Only finished recordings are listed: a live one has no final bytes to cite,
 // and a tombstone has none left.
 //
-// Every remaining capture is LISTED whether or not it can join a dataset today
-// — a capture the operator cannot see is a capture whose refusal they cannot
-// understand, and the availability chip beside each row is half the answer
-// already. What is withheld is the "+ Add" CONTROL, which carries the specific
-// reason (data.ts addBlockedReason) so the two causes — bytes not on this host,
-// and not yet adopted in Review — never read as one vague "unavailable".
+// The rail leads with what can actually join; recordings that cannot (not yet
+// adopted in Review, or bytes not on this host) are folded behind a stated
+// "Show blocked (n)" toggle — hidden by default because they clutter the
+// building flow, but never silently: the count is always on screen, and an
+// expanded row still carries its specific reason (data.ts addBlockedReason),
+// so the two causes never read as one vague "unavailable".
 //
 // Archive lives here rather than beside the member detail because here is where
 // it can succeed: the backend refuses to archive a capture that still belongs to
@@ -182,6 +182,19 @@ export function BuildRail({ state }: { state: DatasetsState }) {
               </span>
             )}
           </div>
+        )}
+        {state.blockedCandidateCount > 0 && (
+          <button
+            type="button"
+            data-testid="dataset-candidates-blocked-toggle"
+            onClick={state.toggleBlockedCandidates}
+            title="Recordings that cannot join a dataset today — not adopted in Review, or their bytes are not on this machine. Each row states its own reason."
+            className="mt-1.5 w-full rounded-chip border border-gray-200 px-2 py-1 text-[11px] font-semibold text-gray-500 hover:bg-gray-50"
+          >
+            {state.showBlockedCandidates
+              ? `Hide blocked (${state.blockedCandidateCount})`
+              : `Show blocked (${state.blockedCandidateCount})`}
+          </button>
         )}
       </div>
 

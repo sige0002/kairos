@@ -31,6 +31,7 @@ test('a full state round-trips', () => {
     sort: 'alpha' as const,
     taskResultFilter: 'failure' as const,
     operatorFilter: 'op_a',
+    view: 'archived' as const,
     datasetId: 'ds-1',
     membershipId: 'm-7',
   };

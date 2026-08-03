@@ -131,17 +131,20 @@ function ConfirmBody({ state }: { state: DatasetsState }) {
 
       <label className="flex flex-col gap-1">
         <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
-          Path under the root{' '}
-          <span className="font-normal normal-case text-gray-400">(optional)</span>
+          Path under the root
         </span>
         <input
-          data-testid="dataset-archive-subpath"
-          value={state.datasetArchiveSubpath}
-          onChange={(e) => state.setDatasetArchiveSubpath(e.target.value)}
+          data-testid="dataset-archive-path"
+          value={state.datasetArchivePath}
+          onChange={(e) => state.setDatasetArchivePath(e.target.value)}
           spellCheck={false}
-          placeholder="e.g. exports/2026-08"
           className="rounded-control border border-gray-200 bg-white px-2 py-1.5 font-mono text-[12px] text-gray-700"
         />
+        <span className="text-[11px] text-gray-400">
+          Yours to rename — the last folder is the dataset's. Prefilled with the
+          views shape; a path that already holds files is refused, so two
+          exports cannot land on each other.
+        </span>
       </label>
 
       <div className="flex flex-col gap-1 rounded-[10px] border border-gray-100 bg-gray-50 px-3 py-2">
@@ -161,8 +164,8 @@ function ConfirmBody({ state }: { state: DatasetsState }) {
             className="break-all font-mono text-gray-700"
           >
             {state.datasetArchiveFinalDir || '—'}
-          </span>{' '}
-          — operator / task / name are appended by the server.
+          </span>
+          .
         </span>
       </div>
 
@@ -316,7 +319,9 @@ export function DatasetArchiveDialog({ state }: { state: DatasetsState }) {
               variant="primary"
               onClick={state.confirmDatasetArchive}
               disabled={
-                state.datasetArchiveStarting || state.datasetArchiveDestination === ''
+                state.datasetArchiveStarting ||
+                state.datasetArchiveDestination === '' ||
+                state.datasetArchivePath.trim() === ''
               }
               data-testid="dataset-archive-confirm"
             >

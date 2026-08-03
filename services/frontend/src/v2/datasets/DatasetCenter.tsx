@@ -373,6 +373,27 @@ function DeleteDatasetDialog({ state }: { state: DatasetsState }) {
 export function DatasetCenter({ state }: { state: DatasetsState }) {
   const { memberRows, scopeMembers, selected } = state;
 
+  // No selection, no table: numbering is per dataset, so a blended
+  // every-dataset listing would show #N columns that identify nothing.
+  if (!state.selectedDataset) {
+    return (
+      <div
+        data-testid="dataset-center"
+        className="flex min-h-0 min-w-0 flex-col items-center justify-center rounded-card border border-gray-200 bg-white p-8 shadow-card"
+      >
+        <p
+          data-testid="dataset-none-selected"
+          className="max-w-[420px] text-center text-[13px] leading-relaxed text-gray-500"
+        >
+          Select a dataset on the left — or create one with{' '}
+          <span className="font-semibold text-gray-700">+ New</span> — to see its
+          members. Exported sets live under the{' '}
+          <span className="font-semibold text-gray-700">Archived</span> view.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div
       data-testid="dataset-center"

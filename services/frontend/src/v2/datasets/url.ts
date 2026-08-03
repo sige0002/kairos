@@ -32,6 +32,7 @@ export const PARAM_RESULT = 'dsresult';
 export const PARAM_OPERATOR = 'dsop';
 export const PARAM_DATASET = 'dsid';
 export const PARAM_MEMBER = 'dsmem';
+export const PARAM_VIEW = 'dsview';
 
 /** The addressable slice of the Datasets tab's state. */
 export interface DatasetsUrlState {
@@ -40,8 +41,10 @@ export interface DatasetsUrlState {
   sort: SortMode;
   taskResultFilter: TaskResultFilter;
   operatorFilter: string;
-  /** Selected dataset's `dataset_id`; null = no dataset selected (the
-   *  whole-catalog scope). */
+  /** Which shelf the list shows: the working sets, or the archived record.
+   *  Default 'active' — sealed history is opt-in viewing. */
+  view: 'active' | 'archived';
+  /** Selected dataset's `dataset_id`; null = nothing selected. */
   datasetId: string | null;
   /** Selected member's `membership_id`. Only meaningful when `datasetId` is
    *  non-null: a membership belongs to exactly one dataset. */
@@ -54,6 +57,7 @@ export const DEFAULT_URL_STATE: DatasetsUrlState = {
   sort: 'recent',
   taskResultFilter: 'all',
   operatorFilter: ANY_OPERATOR,
+  view: 'active',
   datasetId: null,
   membershipId: null,
 };
@@ -74,6 +78,7 @@ export function readDatasetsUrl(search: string): DatasetsUrlState {
     sort: sort === 'alpha' ? 'alpha' : 'recent',
     taskResultFilter: result === 'success' || result === 'failure' ? result : 'all',
     operatorFilter: operator || ANY_OPERATOR,
+    view: p.get(PARAM_VIEW) === 'archived' ? 'archived' : 'active',
     datasetId,
     // A membership with no dataset can't identify anything the screen can open
     // — drop it rather than half-restoring a selection that resolves to
@@ -96,6 +101,7 @@ export function writeDatasetsUrl(search: string, state: DatasetsUrlState): strin
   set(PARAM_SORT, state.sort === 'alpha' ? 'alpha' : null);
   set(PARAM_RESULT, state.taskResultFilter === 'all' ? null : state.taskResultFilter);
   set(PARAM_OPERATOR, state.operatorFilter === ANY_OPERATOR ? null : state.operatorFilter);
+  set(PARAM_VIEW, state.view === 'archived' ? 'archived' : null);
   set(PARAM_DATASET, state.datasetId);
   // Never emit a dangling membership — readDatasetsUrl would ignore it anyway.
   set(PARAM_MEMBER, state.datasetId ? state.membershipId : null);

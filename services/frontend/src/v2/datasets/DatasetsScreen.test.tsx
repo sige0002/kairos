@@ -538,6 +538,9 @@ test('a capture that cannot legitimately join a dataset is listed with a dead "+
   });
   renderWithClient(<DatasetsScreen />);
   fireEvent.click(await screen.findByTestId(datasetTestId('ds-kitchen')));
+  // Blocked rows are folded by default now; the claim under test is the
+  // per-row reason, so reveal them first — the toggle states the count.
+  fireEvent.click(await screen.findByTestId('dataset-candidates-blocked-toggle'));
 
   for (const id of ['cap-a', 'cap-b', 'cap-adopted-away', 'cap-away']) {
     expect(await screen.findByTestId(`dataset-candidate-${id}`)).toBeInTheDocument();
@@ -771,8 +774,10 @@ test('deleting a dataset removes the rows and says no recording is touched', asy
 
   await waitFor(() => expect(backend.datasets).toHaveLength(0));
   expect(backend.captures.map((c) => c.capture_id)).toEqual(['cap-a']);
+  // No whole-catalog scope any more: with nothing selected the center asks
+  // for a selection instead of blending every dataset's numbering.
   await waitFor(() =>
-    expect(screen.getByTestId('dataset-scope-title')).toHaveTextContent('All datasets'),
+    expect(screen.getByTestId('dataset-none-selected')).toBeInTheDocument(),
   );
 });
 
@@ -952,9 +957,15 @@ test('archiving a dataset: confirm echoes the final path, the run seals, the row
     destination: '/mnt/archive',
     mode: 'move',
   });
+  // Sealed, the dataset moves off the working shelf into the Archived view.
+  await waitFor(() => {
+    expect(screen.queryByTestId(datasetTestId('ds-kitchen'))).not.toBeInTheDocument();
+  });
+  fireEvent.click(screen.getByTestId('dataset-view-archived'));
   await waitFor(() => {
     expect(screen.getByTestId('dataset-status-ds-kitchen')).toHaveTextContent('archived');
   });
+  fireEvent.click(screen.getByTestId(datasetTestId('ds-kitchen')));
   expect(await screen.findByTestId('dataset-archived-banner')).toHaveTextContent(
     /read-only/,
   );
@@ -971,6 +982,9 @@ test('an archived dataset is read-only: no build, no removal, delete refused wit
   });
   renderWithClient(<DatasetsScreen />);
 
+  // Sealed sets live under their own view; the working list no longer mixes
+  // history into building.
+  fireEvent.click(await screen.findByTestId('dataset-view-archived'));
   fireEvent.click(await screen.findByTestId(datasetTestId('ds-sealed')));
 
   // The state is part of the row's identity and the header's.
@@ -1086,6 +1100,7 @@ test('an archived dataset offers no label editing', async () => {
   mockApi({ datasets: [DS_SEALED], captures: [] });
   renderWithClient(<DatasetsScreen />);
 
+  fireEvent.click(await screen.findByTestId('dataset-view-archived'));
   fireEvent.click(await screen.findByTestId(datasetTestId('ds-sealed')));
   await screen.findByTestId('dataset-archived-banner');
   expect(screen.queryByTestId('edit-dataset-btn')).not.toBeInTheDocument();
@@ -1183,6 +1198,8 @@ test('a combined set defaults to Copy out, and the seal takes nothing with it', 
   // dataset intact, and the banner says the recordings stayed.
   expect(backend.captures.map((c) => c.capture_id)).toEqual(['cap-a', 'cap-b']);
   expect(backend.members.filter((m) => m.dataset_id === 'ds-source')).toHaveLength(1);
+  fireEvent.click(screen.getByTestId('dataset-view-archived'));
+  fireEvent.click(await screen.findByTestId(datasetTestId('ds-kitchen')));
   await waitFor(() => {
     expect(screen.getByTestId('dataset-archived-banner')).toHaveTextContent(/Copied to/);
   });

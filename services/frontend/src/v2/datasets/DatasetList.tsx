@@ -4,8 +4,10 @@
 // dataset has no condition and no directory, so the list is flat and the search
 // runs over the three fields a dataset actually carries.
 //
-// The pinned "All datasets" row clears the selection and returns the center to
-// the whole-catalog scope, mirroring the pinned Summary row on the other side.
+// There is no whole-catalog scope: one dataset's numbering means nothing mixed
+// into another's, so the center asks for a selection instead of blending them.
+// Archived sets live under their own view (the Active/Archived switch) — the
+// working list is for sets still being built.
 //
 // "+ New" creates a real dataset. Nothing is written under objects/ and no
 // recording moves, which the form says out loud — the previous model made "new
@@ -254,30 +256,43 @@ export function DatasetList({ state }: { state: DatasetsState }) {
         <span data-testid="dataset-count" className="text-[11px] text-gray-400">
           showing {state.shown} of {state.total}
         </span>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            data-testid="dataset-view-active"
+            aria-pressed={state.datasetView === 'active'}
+            onClick={() => state.setDatasetView('active')}
+            className={cn(
+              'rounded-chip px-2 py-0.5 text-[11px] font-bold',
+              state.datasetView === 'active'
+                ? 'bg-teal-600 text-white'
+                : 'border border-gray-200 text-gray-600 hover:bg-gray-50',
+            )}
+          >
+            Active ({state.activeDatasetCount})
+          </button>
+          <button
+            type="button"
+            data-testid="dataset-view-archived"
+            aria-pressed={state.datasetView === 'archived'}
+            onClick={() => state.setDatasetView('archived')}
+            title="Sealed datasets — the record of what was exported and where"
+            className={cn(
+              'rounded-chip px-2 py-0.5 text-[11px] font-bold',
+              state.datasetView === 'archived'
+                ? 'bg-gray-600 text-white'
+                : 'border border-gray-200 text-gray-600 hover:bg-gray-50',
+            )}
+          >
+            Archived ({state.archivedDatasetCount})
+          </button>
+        </div>
       </div>
 
       {state.isLoading ? (
         <div className="px-4 py-6 text-sm text-gray-400">Loading datasets…</div>
       ) : (
         <div data-testid="dataset-list-scroll" className="min-h-0 flex-1 overflow-y-auto p-2.5">
-          <button
-            type="button"
-            data-testid="dataset-all-row"
-            aria-pressed={state.selectedDatasetId === null}
-            onClick={state.clearDataset}
-            className={cn(
-              'mb-1.5 w-full rounded-[10px] border px-[11px] py-[9px] text-left text-[12.5px] font-semibold',
-              state.selectedDatasetId === null
-                ? 'border-teal-200 bg-teal-50 text-teal-800'
-                : 'border-gray-100 text-gray-700 hover:bg-gray-50',
-            )}
-          >
-            All datasets
-            <span className="ml-1.5 text-[10.5px] font-normal text-gray-400">
-              every member, across the list
-            </span>
-          </button>
-
           {!hasAny ? (
             <div data-testid="dataset-list-empty" className="flex flex-col gap-1 px-1.5 py-4">
               {searchActive && state.total > 0 ? (

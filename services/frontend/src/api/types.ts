@@ -482,6 +482,10 @@ export interface DatasetUpdateRequest {
  *  continues to the destination its ledger event froze. */
 export interface DatasetArchiveRequest {
   destination?: string | null;
+  /** The dataset's folder path under the destination root — operator-chosen,
+   *  prefilled by the UI with the views shape `<operator>/<task>/<name>`.
+   *  Omitted = the server derives that same default. */
+  path?: string | null;
   /** 'move' (default): remove the sources after verifying — exclusive members
    *  only. 'copy': seal the set, sources untouched — legal for a combined
    *  dataset that shares recordings. Omit on resume. */

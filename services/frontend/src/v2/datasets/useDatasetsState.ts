@@ -53,6 +53,7 @@ import { useCaptureDeletion, type CaptureDeletionState } from '../captures/useCa
 import {
   ANY_OPERATOR,
   MEMBER_PAGE_SIZE,
+  addBlockedReason,
   aggregate,
   buildDatasetRows,
   datasetMatchesSearch,
@@ -111,6 +112,13 @@ export interface DatasetsState {
   setSearch: (s: string) => void;
   sort: SortMode;
   toggleSort: () => void;
+
+  /** 'active' (default) = the working sets; 'archived' = the sealed record.
+   *  Archived datasets appear ONLY under their own view. */
+  datasetView: 'active' | 'archived';
+  setDatasetView: (v: 'active' | 'archived') => void;
+  activeDatasetCount: number;
+  archivedDatasetCount: number;
 
   taskResultFilter: TaskResultFilter;
   setTaskResultFilter: (f: TaskResultFilter) => void;
@@ -234,6 +242,11 @@ export interface DatasetsState {
   setCandidateSearch: (s: string) => void;
   addMember: (capture: Capture) => void;
   addingCaptureId: string | null;
+  /** Candidates that cannot join today (not adopted / bytes elsewhere) are
+   *  hidden by default; the count is always stated and this reveals them. */
+  showBlockedCandidates: boolean;
+  toggleBlockedCandidates: () => void;
+  blockedCandidateCount: number;
 
   // ---- removing the bytes (§7, via the shared dialogs) -------------------
   deletion: CaptureDeletionState;
@@ -281,13 +294,13 @@ export interface DatasetsState {
   cancelDatasetArchive: () => void;
   datasetArchiveRoot: string;
   setDatasetArchiveRoot: (root: string) => void;
-  datasetArchiveSubpath: string;
-  setDatasetArchiveSubpath: (path: string) => void;
-  /** The destination sent to the server — the PARENT of what lands on disk. */
+  /** The dataset's folder path under the root — the operator's to edit,
+   *  prefilled with the views shape `<operator>/<task>/<name>`. */
+  datasetArchivePath: string;
+  setDatasetArchivePath: (path: string) => void;
+  /** The allow-listed root sent as `destination`. */
   datasetArchiveDestination: string;
-  /** Where the dataset actually lands: `<destination>/<operator>/<task>/<name>`
-   *  (the server appends the three components itself; this echo mirrors its
-   *  sanitisation so the two cannot silently disagree). */
+  /** Where the dataset actually lands: `<root>/<path>`. */
   datasetArchiveFinalDir: string;
   datasetArchiveReason: string;
   setDatasetArchiveReason: (s: string) => void;
@@ -356,6 +369,7 @@ export function useDatasetsState(): DatasetsState {
   const [taskResultFilter, setTaskResultFilter] = useState<TaskResultFilter>(
     seed.taskResultFilter,
   );
+  const [datasetView, setDatasetView] = useState<'active' | 'archived'>(seed.view);
   const [operatorFilter, setOperatorFilter] = useState<string>(seed.operatorFilter);
   const [page, setPage] = useState(1);
 
@@ -381,13 +395,14 @@ export function useDatasetsState(): DatasetsState {
   >([]);
   const [combineError, setCombineError] = useState<unknown>(null);
   const [candidateSearch, setCandidateSearch] = useState('');
+  const [showBlockedCandidates, setShowBlockedCandidates] = useState(false);
   const [archiveTarget, setArchiveTarget] = useState<Capture | null>(null);
   const [archiveRoot, setArchiveRoot] = useState('');
   const [archiveSubpath, setArchiveSubpath] = useState('');
   const [archiveReason, setArchiveReason] = useState('');
   const [datasetArchiveOpen, setDatasetArchiveOpen] = useState(false);
   const [datasetArchiveRoot, setDatasetArchiveRoot] = useState('');
-  const [datasetArchiveSubpath, setDatasetArchiveSubpath] = useState('');
+  const [datasetArchivePath, setDatasetArchivePath] = useState('');
   const [datasetArchiveReason, setDatasetArchiveReason] = useState('');
   const [datasetArchiveMode, setDatasetArchiveMode] = useState<'copy' | 'move'>('move');
   const [toast, setToast] = useState('');
@@ -436,9 +451,19 @@ export function useDatasetsState(): DatasetsState {
   const debouncedCandidateSearch = useDebounced(candidateSearch, SEARCH_DEBOUNCE_MS);
 
   const membersByDatasetId = useMemo(() => membersByDataset(captures), [captures]);
+  // The list shows one shelf at a time: the working sets by default, the
+  // sealed record only when asked for. An archiving run still belongs to the
+  // working shelf — it is a set in motion, not history yet.
+  const viewDatasets = useMemo(
+    () =>
+      datasets.filter((d) =>
+        datasetView === 'archived' ? d.status === 'archived' : d.status !== 'archived',
+      ),
+    [datasets, datasetView],
+  );
   const allRows = useMemo(
-    () => buildDatasetRows(datasets, membersByDatasetId, sort),
-    [datasets, membersByDatasetId, sort],
+    () => buildDatasetRows(viewDatasets, membersByDatasetId, sort),
+    [viewDatasets, membersByDatasetId, sort],
   );
   const rows = useMemo(
     () => allRows.filter((row) => datasetMatchesSearch(row, debouncedSearch)),
@@ -463,8 +488,10 @@ export function useDatasetsState(): DatasetsState {
       // Until the detail lands, the capture-side join is what we honestly have.
       return members ? joinMembers(members, capturesById) : selectedRow.members;
     }
-    return rows.flatMap((row) => row.members);
-  }, [selectedRow, detailQuery.data, capturesById, rows]);
+    // Nothing selected = nothing listed. The old whole-catalog scope mixed
+    // every dataset's numbering into one table, where #N meant nothing.
+    return [];
+  }, [selectedRow, detailQuery.data, capturesById]);
 
   const scopeMembers = useMemo(
     () =>
@@ -580,6 +607,7 @@ export function useDatasetsState(): DatasetsState {
       sort,
       taskResultFilter,
       operatorFilter,
+      view: datasetView,
       datasetId: selectedDatasetId,
       membershipId: selectedMembershipId,
     });
@@ -595,6 +623,7 @@ export function useDatasetsState(): DatasetsState {
     sort,
     taskResultFilter,
     operatorFilter,
+    datasetView,
     selectedDatasetId,
     selectedMembershipId,
   ]);
@@ -890,11 +919,7 @@ export function useDatasetsState(): DatasetsState {
     selectedDatasetRecord.member_count > 0;
 
   const datasetArchiveEffectiveRoot = datasetArchiveRoot || archiveRoots[0] || '';
-  const datasetArchiveDestination = datasetArchiveEffectiveRoot
-    ? `${datasetArchiveEffectiveRoot.replace(/\/+$/, '')}${
-        datasetArchiveSubpath ? `/${datasetArchiveSubpath.replace(/^\/+/, '')}` : ''
-      }`
-    : '';
+  const datasetArchiveDestination = datasetArchiveEffectiveRoot.replace(/\/+$/, '');
   // The server appends <operator>/<task>/<name> itself (the views shape has
   // one owner); this echo mirrors its sanitisation (views.py) so the dialog
   // cannot promise a path the server would spell differently.
@@ -903,13 +928,8 @@ export function useDatasetsState(): DatasetsState {
     return text === '' || text === '.' || text === '..' ? fallback : text;
   };
   const datasetArchiveFinalDir =
-    datasetArchiveDestination && selectedDatasetRecord
-      ? [
-          datasetArchiveDestination,
-          sanitizeComponent(selectedDatasetRecord.operator, 'unknown_operator'),
-          sanitizeComponent(selectedDatasetRecord.task, 'unknown_task'),
-          sanitizeComponent(selectedDatasetRecord.name, 'unnamed'),
-        ].join('/')
+    datasetArchiveDestination && datasetArchivePath.trim()
+      ? `${datasetArchiveDestination}/${datasetArchivePath.trim().replace(/^\/+/, '')}`
       : '';
 
   // Poll while the selected dataset is archiving — the run is server-owned
@@ -930,6 +950,7 @@ export function useDatasetsState(): DatasetsState {
           ? {}
           : {
               destination: datasetArchiveDestination,
+              path: datasetArchivePath.trim(),
               mode: datasetArchiveMode,
               reason: datasetArchiveReason.trim() || null,
             },
@@ -982,7 +1003,16 @@ export function useDatasetsState(): DatasetsState {
 
   const openDatasetArchive = () => {
     setDatasetArchiveOpen(true);
-    setDatasetArchiveSubpath('');
+    // Prefilled with the views shape; the operator renames freely from there.
+    setDatasetArchivePath(
+      selectedDatasetRecord
+        ? [
+            sanitizeComponent(selectedDatasetRecord.operator, 'unknown_operator'),
+            sanitizeComponent(selectedDatasetRecord.task, 'unknown_task'),
+            sanitizeComponent(selectedDatasetRecord.name, 'unnamed'),
+          ].join('/')
+        : '',
+    );
     setDatasetArchiveReason('');
     setDatasetArchiveMode(datasetArchiveSharedCount > 0 ? 'copy' : 'move');
     datasetArchiveMutation.reset();
@@ -1005,6 +1035,14 @@ export function useDatasetsState(): DatasetsState {
       ),
     [captures, memberCaptureIds, debouncedCandidateSearch],
   );
+  // Blocked candidates (not adopted, bytes elsewhere) clutter the building
+  // flow, so the rail leads with what can actually join — but the blocked
+  // count is always stated and one click reveals the rows with their reasons.
+  const addableCandidates = useMemo(
+    () => matchedCandidates.filter((c) => addBlockedReason(c) === null),
+    [matchedCandidates],
+  );
+  const visibleCandidates = showBlockedCandidates ? matchedCandidates : addableCandidates;
 
   return {
     rows,
@@ -1014,6 +1052,13 @@ export function useDatasetsState(): DatasetsState {
     setSearch,
     sort,
     toggleSort,
+    datasetView,
+    setDatasetView: (v: 'active' | 'archived') => {
+      setDatasetView(v);
+      setSelectedMembershipId(null);
+    },
+    activeDatasetCount: datasets.filter((d) => d.status !== 'archived').length,
+    archivedDatasetCount: datasets.filter((d) => d.status === 'archived').length,
     taskResultFilter,
     setTaskResultFilter,
     operatorFilter,
@@ -1140,12 +1185,15 @@ export function useDatasetsState(): DatasetsState {
     removeMember: (row) => removeMutation.mutate(row),
     removingMembershipId: removeMutation.isPending ? removeMutation.variables.membershipId : null,
 
-    candidates: matchedCandidates.slice(0, CANDIDATE_LIMIT),
-    candidateMatchCount: matchedCandidates.length,
+    candidates: visibleCandidates.slice(0, CANDIDATE_LIMIT),
+    candidateMatchCount: visibleCandidates.length,
     candidateSearch,
     setCandidateSearch,
     addMember: (capture) => addMutation.mutate(capture),
     addingCaptureId: addMutation.isPending ? addMutation.variables.capture_id : null,
+    showBlockedCandidates,
+    toggleBlockedCandidates: () => setShowBlockedCandidates((v) => !v),
+    blockedCandidateCount: matchedCandidates.length - addableCandidates.length,
 
     deletion,
     splitDeploy: transferStatusQuery.data?.available === true,
@@ -1177,8 +1225,8 @@ export function useDatasetsState(): DatasetsState {
     cancelDatasetArchive,
     datasetArchiveRoot: datasetArchiveEffectiveRoot,
     setDatasetArchiveRoot,
-    datasetArchiveSubpath,
-    setDatasetArchiveSubpath,
+    datasetArchivePath,
+    setDatasetArchivePath,
     datasetArchiveDestination,
     datasetArchiveFinalDir,
     datasetArchiveReason,
@@ -1187,7 +1235,7 @@ export function useDatasetsState(): DatasetsState {
     setDatasetArchiveMode,
     datasetArchiveSharedCount,
     confirmDatasetArchive: () => {
-      if (selectedDatasetId && datasetArchiveDestination) {
+      if (selectedDatasetId && datasetArchiveDestination && datasetArchivePath.trim()) {
         datasetArchiveMutation.mutate({ resume: false });
       }
     },
