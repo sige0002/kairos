@@ -39,6 +39,18 @@ export interface CaptureDeletionState {
   requestDelete: (targets: Capture | Capture[]) => void;
   cancel: () => void;
   confirm: (reason: string) => Promise<void>;
+
+  /** One-click discard with no dialog (Collect's Discard buttons): the same
+   *  per-capture loop, error voice and invalidations as `confirm`, but nothing
+   *  opens and the caller supplies the ledger reason itself. A failure lands on
+   *  the toast — the capture is still there, and so is the button the operator
+   *  just pressed, so the retry path is the same press. Only ids are needed:
+   *  there is no dialog left that would have to state sizes. */
+  discardNow: (
+    targets: Pick<Capture, 'capture_id'> | Pick<Capture, 'capture_id'>[],
+    reason: string,
+    successToast?: string,
+  ) => Promise<void>;
 }
 
 export interface UseCaptureDeletionOptions {
@@ -133,6 +145,56 @@ export function useCaptureDeletion(
     [kind, targets, queryClient, invalidate, onDeleted, onToast],
   );
 
+  const discardNow = useCallback(
+    async (
+      list: Pick<Capture, 'capture_id'> | Pick<Capture, 'capture_id'>[],
+      reason: string,
+      successToast?: string,
+    ) => {
+      if (busy) return;
+      const captures = Array.isArray(list) ? list : [list];
+      if (captures.length === 0) return;
+      setKind(null);
+      setBusy(true);
+      setDone(0);
+      setFailures([]);
+      setError(null);
+      const failed: DeletionFailure[] = [];
+      const removed: string[] = [];
+      for (const capture of captures) {
+        try {
+          await deleteCapture(capture.capture_id, { kind: 'discard', reason });
+          removed.push(capture.capture_id);
+        } catch (e) {
+          failed.push({
+            captureId: capture.capture_id,
+            error: captureErrorText(e, 'delete'),
+          });
+          if (captures.length === 1) setError(e);
+        }
+        setDone((d) => d + 1);
+        setFailures([...failed]);
+      }
+      if (removed.length > 0) onDeleted?.(removed, 'discard');
+      await queryClient.invalidateQueries({ queryKey: queryKeys.captures });
+      for (const key of invalidate ?? []) {
+        await queryClient.invalidateQueries({ queryKey: key });
+      }
+      setBusy(false);
+      if (failed.length === 0) {
+        onToast?.(
+          successToast ??
+            `Discarded ${removed.length} recording${removed.length === 1 ? '' : 's'}`,
+        );
+      } else {
+        // No dialog to keep the failure readable in, so the toast carries the
+        // failure itself — the job-voiced capture_busy text included.
+        onToast?.(failed[0]?.error ?? 'Discard failed');
+      }
+    },
+    [busy, queryClient, invalidate, onDeleted, onToast],
+  );
+
   return {
     kind,
     targets,
@@ -144,5 +206,6 @@ export function useCaptureDeletion(
     requestDelete,
     cancel,
     confirm,
+    discardNow,
   };
 }

@@ -73,7 +73,8 @@ function UnsavedTakeBanner({ machine }: { machine: BatchMachine }) {
         <button
           type="button"
           onClick={machine.discardUnsavedTake}
-          className="h-9 rounded-control border border-gray-200 bg-white px-3.5 text-[12.5px] font-semibold text-gray-600 hover:bg-gray-50"
+          disabled={machine.unsavedDiscard.busy}
+          className="h-9 rounded-control border border-gray-200 bg-white px-3.5 text-[12.5px] font-semibold text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
         >
           Discard
         </button>

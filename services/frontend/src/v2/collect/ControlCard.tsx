@@ -854,8 +854,8 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
         </button>
         <button
           type="button"
-          onClick={machine.openDiscardModal}
-          disabled={saving}
+          onClick={machine.discardEpisode}
+          disabled={saving || machine.episodeDiscard.busy}
           data-testid="discard-episode"
           className="h-9 rounded-control border border-gray-200 bg-white text-[12.5px] font-semibold text-gray-500 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 [@media(max-height:860px)]:h-8"
         >

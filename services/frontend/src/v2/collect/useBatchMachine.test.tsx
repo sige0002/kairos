@@ -837,34 +837,36 @@ test('Discard: a capture_busy refusal names the lease holder and keeps the take'
   act(() => result.current.stopRecording());
   await waitFor(() => expect(result.current.phase).toBe('result'), { timeout: 4000 });
 
-  // The dialog is opened with the real capture, so it can state its size.
+  // One click, no dialog: the press itself runs the discard.
   await act(async () => {
-    result.current.openDiscardModal();
+    result.current.discardEpisode();
   });
-  await waitFor(() => expect(result.current.episodeDiscard.kind).toBe('discard'));
-  expect(result.current.episodeDiscard.targets[0]?.capture_id).toBe('cap_9');
-
-  await act(async () => {
-    await result.current.episodeDiscard.confirm('unusable take');
-  });
-  // Refused: the take survives on the result panel and the failure names the job.
+  await waitFor(() =>
+    expect(result.current.episodeDiscard.failures).toHaveLength(1),
+  );
+  // Refused: the take survives on the result panel, nothing opened, and the
+  // failure names the job the operator is waiting on.
+  expect(result.current.episodeDiscard.kind).toBeNull();
   expect(result.current.phase).toBe('result');
   expect(result.current.episodeDiscard.failures[0]?.error).toContain('digest');
 
-  // A succeeding discard POSTs {kind:'discard', reason} and re-arms for a retake.
+  // Retry is the same press. A succeeding discard POSTs {kind:'discard'} with
+  // the ledger-honest automatic reason and re-arms for a retake.
   busy = false;
   await act(async () => {
-    await result.current.episodeDiscard.confirm('unusable take');
+    result.current.discardEpisode();
   });
   await waitFor(() => expect(result.current.phase).toBe('ready'));
   expect(result.current.episodes).toHaveLength(0);
-  const del = fetchMock.mock.calls.find(
-    ([u, i]) =>
-      String(u).includes('/captures/cap_9/delete') && i?.method === 'POST',
-  );
+  const del = fetchMock.mock.calls
+    .filter(
+      ([u, i]) =>
+        String(u).includes('/captures/cap_9/delete') && i?.method === 'POST',
+    )
+    .at(-1);
   expect(JSON.parse(String((del![1] as RequestInit).body))).toEqual({
     kind: 'discard',
-    reason: 'unusable take',
+    reason: 'Collect one-click discard (no reason asked)',
   });
 });
 
@@ -1897,20 +1899,20 @@ test('discarding the take refreshes the capture cache and re-arms for a retake',
   act(() => result.current.stopRecording());
   await waitFor(() => expect(result.current.phase).toBe('result'), { timeout: 4000 });
 
+  // One press does it all — no dialog opens, the ledger reason is automatic.
   await act(async () => {
-    result.current.openDiscardModal();
-  });
-  await waitFor(() => expect(result.current.episodeDiscard.kind).toBe('discard'));
-  await act(async () => {
-    await result.current.episodeDiscard.confirm('bad take');
+    result.current.discardEpisode();
   });
   await waitFor(() => expect(result.current.phase).toBe('ready'));
-  expect(
-    fetchMock.mock.calls.some(
-      ([u, i]) =>
-        String(u).includes('/captures/cap_disc/delete') && i?.method === 'POST',
-    ),
-  ).toBe(true);
+  expect(result.current.episodeDiscard.kind).toBeNull();
+  const del = fetchMock.mock.calls.find(
+    ([u, i]) =>
+      String(u).includes('/captures/cap_disc/delete') && i?.method === 'POST',
+  );
+  expect(JSON.parse(String((del![1] as RequestInit).body))).toEqual({
+    kind: 'discard',
+    reason: 'Collect one-click discard (no reason asked)',
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -2853,7 +2855,7 @@ test('an already-reviewed capture is NOT offered as an unsaved take', async () =
   expect(result.current.unsavedTake).toBeNull();
 });
 
-test('discarding an unsaved take runs the shared discard on its capture', async () => {
+test('discarding an unsaved take is one click with an automatic ledger reason', async () => {
   const fetchMock = unsavedCapturesFetch(() => true);
   const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
     wrapper,
@@ -2862,87 +2864,27 @@ test('discarding an unsaved take runs the shared discard on its capture', async 
     expect(result.current.unsavedTake?.captureId).toBe('cap_unsaved'),
   );
 
-  act(() => result.current.discardUnsavedTake());
-  expect(result.current.unsavedDiscard.kind).toBe('discard');
-  // The dialog states the size, so it needs the capture itself, not just an id.
-  expect(result.current.unsavedDiscard.targets[0]?.capture_id).toBe('cap_unsaved');
-
   await act(async () => {
-    await result.current.unsavedDiscard.confirm('never labeled');
+    result.current.discardUnsavedTake();
   });
-  const del = fetchMock.mock.calls.find(
-    ([u, i]) =>
-      String(u).includes('/captures/cap_unsaved/delete') && i?.method === 'POST',
-  );
-  expect(JSON.parse(String((del![1] as RequestInit).body))).toEqual({
-    kind: 'discard',
-    reason: 'never labeled',
+  await waitFor(() => {
+    const del = fetchMock.mock.calls.find(
+      ([u, i]) =>
+        String(u).includes('/captures/cap_unsaved/delete') && i?.method === 'POST',
+    );
+    expect(del).toBeTruthy();
+    expect(JSON.parse(String((del![1] as RequestInit).body))).toEqual({
+      kind: 'discard',
+      reason: 'Collect recovery-banner discard of an unsaved take (no reason asked)',
+    });
   });
-});
-
-// Two irreversible dialogs stacked on each other is two actions the operator
-// cannot tell apart, and the recovery banner IS on screen during the result
-// phase — so opening either discard always closes the other.
-test('opening one discard dialog closes the other', async () => {
-  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
-    const url = String(input);
-    if (url.includes('/record/start'))
-      return Promise.resolve(jsonResponse(captureBody('cap_now')));
-    if (url.includes('/record/stop'))
-      return Promise.resolve(
-        jsonResponse(captureBody('cap_now', { state: 'completed' })),
-      );
-    if (url.includes('/record/status'))
-      return Promise.resolve(
-        jsonResponse({
-          capture_id: 'cap_now',
-          run_id: 'run_cap_now',
-          state: 'completed',
-          live_capture_ids: [],
-          integrity: 'ok',
-        }),
-      );
-    if (url.includes('/captures/cap_now'))
-      return Promise.resolve(
-        jsonResponse(captureBody('cap_now', { state: 'completed', bytes: 512 })),
-      );
-    if (url.includes('/captures'))
-      return Promise.resolve(
-        jsonResponse({
-          items: [
-            captureBody('cap_unsaved', {
-              state: 'completed',
-              review_revision: 0,
-              started_at: new Date(Date.now() - 60_000).toISOString(),
-            }),
-          ],
-          next_cursor: null,
-        }),
-      );
-    if (url.includes('/batches')) return Promise.resolve(jsonResponse({ items: [] }));
-    return Promise.resolve(jsonResponse({}));
-  });
-  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
-    wrapper,
-  });
-  act(() => result.current.startRecording());
-  await waitFor(() => expect(result.current.phase).toBe('recording'));
-  act(() => result.current.stopRecording());
-  await waitFor(() => expect(result.current.phase).toBe('result'), { timeout: 4000 });
-  // A different, older take is still on offer in the recovery banner.
-  await waitFor(() =>
-    expect(result.current.unsavedTake?.captureId).toBe('cap_unsaved'),
-  );
-
-  act(() => result.current.discardUnsavedTake());
-  expect(result.current.unsavedDiscard.kind).toBe('discard');
-
-  await act(async () => {
-    result.current.openDiscardModal();
-  });
-  await waitFor(() => expect(result.current.episodeDiscard.kind).toBe('discard'));
+  // Nothing opened along the way.
   expect(result.current.unsavedDiscard.kind).toBeNull();
 });
+
+// (The old "opening one discard dialog closes the other" test is gone with the
+// dialogs themselves: both Collect discards are now one-click actions on
+// different captures, so there is nothing to stack.)
 
 test('dismissing an unsaved take hides it (Later)', async () => {
   unsavedCapturesFetch(() => true);

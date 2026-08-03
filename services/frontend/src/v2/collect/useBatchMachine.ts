@@ -235,6 +235,14 @@ const PREARM_KEEPALIVE_LEAD_MS = 20_000;
 // Retry cadence after a failed prepare (or when disarm_at is unknown).
 const PREARM_RETRY_MS = 30_000;
 
+// The ledger reasons for Collect's one-click discards. Nobody typed these —
+// recording that no reason was asked is the honest entry, and it keeps the
+// tombstone distinguishable from a Review discard where an operator DID stand
+// by an answer.
+const COLLECT_DISCARD_REASON = 'Collect one-click discard (no reason asked)';
+const COLLECT_UNSAVED_DISCARD_REASON =
+  'Collect recovery-banner discard of an unsaved take (no reason asked)';
+
 interface MachineState {
   phase: Phase;
   episodes: EpisodeRecord[];
@@ -1192,7 +1200,8 @@ export interface BatchMachine {
    *  can match against the recovery banner, which names its own take the same
    *  way. Null before a capture exists or when the recorder gave no time. */
   currentTakeStartedAt: string | null;
-  /** The shared discard flow driving that dialog (§7 + §12). */
+  /** The shared discard flow behind the banner's one-click Discard (§7). Its
+   *  `busy` disables the button; no dialog ever opens from Collect. */
   unsavedDiscard: CaptureDeletionState;
 
   /** Index of the just-saved episode (flashes its strip chip), cleared shortly after. */
@@ -1242,11 +1251,12 @@ export interface BatchMachine {
   closeModals: () => void;
 
   // Discard this take (§7): a DISCARD, not a delete — the data was never worth
-  // keeping — so it runs through the shared dialog, which states the
-  // irreversibility and requires a reason.
+  // keeping. One click, no dialog (user decision 2026-08-03): the press is the
+  // consent, and the ledger records that no reason was asked. The flow's
+  // `busy`/`failures` still drive the button state and the job-voiced errors.
   episodeDiscard: CaptureDeletionState;
   /** True on a split deployment: the robot keeps its own copy, so a discard only
-   *  removes what is on this machine and the dialog must say so (§12). */
+   *  removes what is on this machine — the success toast must say so (§12). */
   splitDeploy: boolean;
   /** `run_YYYYMMDD_HHMMSS` of the take being labeled. DISPLAY ONLY (§1). */
   currentRunLabel: string | null;
@@ -1289,8 +1299,8 @@ export interface BatchMachine {
   /** Dismiss that message once the operator has read it (§12: it is never
    *  cleared on a timer). */
   dismissSaveError: () => void;
-  /** Open the shared discard dialog for the take being labeled. */
-  openDiscardModal: () => void;
+  /** One-click discard of the take being labeled — immediate, no dialog. */
+  discardEpisode: () => void;
   pauseBatch: () => void;
   resumeBatch: () => void;
   pickEndReason: (reason: string) => void;
@@ -2276,34 +2286,33 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   // either has to close the other.
   const unsavedDiscard = useCaptureDeletion({ onToast: showToast });
 
-  const openDiscardModal = useCallback(() => {
+  // ONE CLICK, no dialog (user decision 2026-08-03). The operator is standing
+  // at the take they just made — the press IS the consent. The reason prompt
+  // was first softened to chips and then, on the same feedback, removed
+  // outright for Collect; the ledger still gets a true answer: that the
+  // discard came from Collect and no reason was asked. Review keeps its dialog
+  // — there the capture is history, not the take in hand, and §12's wording
+  // obligations still apply.
+  const discardEpisode = useCallback(() => {
     const snapshot = getStoreSnapshot();
     if (snapshot.phase !== 'result') return;
     const captureId = snapshot.currentCaptureId;
     if (!captureId) {
       // Nothing was persisted for this take, so there is nothing to discard.
-      // Re-record straight away rather than opening a dialog offering to delete
-      // something that does not exist.
       dispatch({ type: 'RETRY_EPISODE' });
       showToast('Nothing was recorded for this take — re-record when ready');
       return;
     }
-    // The recovery banner can be on screen at the same time; two discard dialogs
-    // stacked on each other is two irreversible actions the operator cannot tell
-    // apart, so opening one always closes the other.
-    unsavedDiscard.cancel();
-    // The dialog is obliged to state how many recordings and how many bytes are
-    // going (§12), which only the capture itself can answer.
-    void queryClient
-      .fetchQuery({
-        queryKey: queryKeys.capture(captureId),
-        queryFn: ({ signal }: { signal: AbortSignal }) => getCapture(captureId, signal),
-      })
-      .then((capture) => episodeDiscard.requestDiscard(capture))
-      .catch(() =>
-        showToast("Couldn't load this recording — discard is unavailable right now"),
-      );
-  }, [queryClient, episodeDiscard, unsavedDiscard, showToast]);
+    // §12's split-mode disclosure (a discard removes only THIS machine's copy)
+    // moves from the dialog into the success toast.
+    void episodeDiscard.discardNow(
+      { capture_id: captureId },
+      COLLECT_DISCARD_REASON,
+      splitDeploy
+        ? "Take discarded from this machine — the robot's own copy is untouched"
+        : 'Take discarded — ready to re-record',
+    );
+  }, [episodeDiscard, splitDeploy, showToast]);
 
   // ---- takeover stop (D-1) -------------------------------------------------
   // Stop a recording this screen isn't driving (another session, or a resumed
@@ -2344,10 +2353,16 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
 
   const discardUnsavedTake = useCallback(() => {
     if (!unsavedCapture) return;
-    // Never two discard dialogs at once (see openDiscardModal).
-    episodeDiscard.cancel();
-    unsavedDiscard.requestDiscard(unsavedCapture);
-  }, [unsavedCapture, episodeDiscard, unsavedDiscard]);
+    // Same one-click contract as discardEpisode; the two flows can even run at
+    // once now — they target different captures and neither opens anything.
+    void unsavedDiscard.discardNow(
+      unsavedCapture,
+      COLLECT_UNSAVED_DISCARD_REASON,
+      splitDeploy
+        ? "Interrupted take discarded from this machine — the robot's own copy is untouched"
+        : 'Interrupted take discarded',
+    );
+  }, [unsavedCapture, unsavedDiscard, splitDeploy]);
   // "Later" hides the banner, and hiding it must mean hiding it: dismissing
   // only the take on screen let the next one take its place instantly, which is
   // indistinguishable from the button doing nothing. Every take we currently
@@ -2519,11 +2534,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     setTargetModalOpen(false);
     setTakeoverStopModalOpen(false);
     setShortcutsOpen(false);
-    // The two discard dialogs refuse to close mid-run on purpose: half the
-    // targets may already be gone and hiding the dialog would hide which.
-    episodeDiscard.cancel();
-    unsavedDiscard.cancel();
-  }, [episodeDiscard, unsavedDiscard]);
+  }, []);
   const submitIssue = useCallback(() => {
     setIssueModalOpen(false);
     showToast('Issue logged with episode context');
@@ -2708,8 +2719,6 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     condModalOpen ||
     resetModalOpen ||
     targetModalOpen ||
-    episodeDiscard.kind != null ||
-    unsavedDiscard.kind != null ||
     takeoverStopModalOpen ||
     shortcutsOpen ||
     projPickerOpen ||
@@ -2883,7 +2892,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     isSavingReview,
     saveError,
     dismissSaveError,
-    openDiscardModal,
+    discardEpisode,
     pauseBatch,
     resumeBatch,
     pickEndReason,

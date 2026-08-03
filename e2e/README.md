@@ -28,7 +28,7 @@ never imports. The acceptance layer is a separate project with its own
 |---|---|---|
 | `01-collect.spec.ts` | §13-1 | I start and stop a recording on the Collect screen, and the recording shows up in Review and finishes verifying. |
 | `02-review.spec.ts` | §13-2 | The labels I save stick, the revision number on screen is the one on disk, and a save that lost a race is refused out loud instead of silently applied. |
-| `03-discard.spec.ts` | §13-3 | Discard will not arm until I say why — a preset reason in one click, or my own words under *Other* — then the recording leaves every list, and the ledger knows exactly which answer I stood by. |
+| `03-discard.spec.ts` | §13-3 | Discard from Review will not arm until I say why — a preset reason in one click, or my own words under *Other* — then the recording leaves every list, and the ledger knows exactly which answer I stood by. (Collect's Discard is one click by design: the ledger records that no reason was asked.) |
 | `04-rebuild.spec.ts` | §13-4 | The database is disposable: delete it, restart, and my recordings and datasets are all still there. |
 | `05-missing-repair.spec.ts` | §13-5 | If files disappear behind kairos's back, nothing silently vanishes from the catalog: the store says SUSPECT, I acknowledge it with Repair, and the affected recordings are marked *missing*. |
 | `06-recorder-honesty.spec.ts` | regression | If the recorder dies while I am recording, the screen says so instead of running a timer for a recording nobody can see — and when it comes back it offers me the interrupted take with its real size and why it ended, not a fresh recording. |

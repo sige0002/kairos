@@ -509,11 +509,11 @@ test('ContextBar shows the REC topics chip and navigates to Monitor on click', a
   await waitFor(() => expect(useUiStore.getState().activeTab).toBe('monitor'));
 });
 
-// Discard (§7 + §12): the result-phase "Discard & re-record" opens the SHARED
-// discard dialog — irreversibility stated, reason REQUIRED — and confirming
-// POSTs /captures/{capture_id}/delete with kind 'discard' before the local
-// re-record reset.
-test('Discard & re-record runs the shared discard, keyed on capture_id', async () => {
+// Discard (§7): the result-phase "Discard & re-record" is ONE CLICK (user
+// decision 2026-08-03) — no dialog, no typed reason. The press POSTs
+// /captures/{capture_id}/delete with kind 'discard' and the ledger-honest
+// automatic reason, then the batch re-arms for a fresh take.
+test('Discard & re-record discards in one click, keyed on capture_id', async () => {
   const fetchSpy = mockFetchWithStatus({
     status: { state: 'completed', integrity: 'ok' },
     detail: { bytes: 1048576 },
@@ -522,22 +522,8 @@ test('Discard & re-record runs the shared discard, keyed on capture_id', async (
   await driveToResult();
 
   fireEvent.click(screen.getByRole('button', { name: /Discard & re-record this episode/ }));
-  const dialog = await screen.findByTestId('discard-dialog');
-  // The shared dialog states what cannot be undone and how much is going.
-  expect(within(dialog).getByTestId('discard-irreversible')).toBeInTheDocument();
-  expect(within(dialog).getByTestId('discard-scope')).toHaveTextContent('1.0 MB');
-
-  // Single-host deploy (/transfer/status has no `available`) → no robot-copy note.
-  expect(within(dialog).queryByTestId('discard-split-note')).toBeNull();
-
-  // No reason typed → the confirm is refused up front rather than by a 400.
-  const confirm = screen.getByTestId('discard-confirm');
-  expect(confirm).toBeDisabled();
-  fireEvent.click(screen.getByTestId('discard-reason-other'));
-  fireEvent.change(screen.getByTestId('discard-reason'), {
-    target: { value: 'gripper never closed' },
-  });
-  fireEvent.click(confirm);
+  // Nothing opens — the press is the consent.
+  expect(screen.queryByTestId('discard-dialog')).toBeNull();
 
   await waitFor(() => {
     const del = fetchSpy.mock.calls.find(
@@ -547,17 +533,18 @@ test('Discard & re-record runs the shared discard, keyed on capture_id', async (
     expect(del).toBeTruthy();
     expect(JSON.parse(String((del![1] as RequestInit).body))).toEqual({
       kind: 'discard',
-      reason: 'gripper never closed',
+      reason: 'Collect one-click discard (no reason asked)',
     });
   });
   // After a successful discard the batch re-arms for a fresh take.
   await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
 });
 
-// §12: on a split deployment the discard removes only the copy on this machine,
-// and the dialog says so unprompted. Letting an operator believe the robot's
-// copy went too is exactly the failure that line exists to prevent.
-test('on a split deployment the discard dialog says a robot copy may remain', async () => {
+// §12: on a split deployment the discard removes only the copy on this machine.
+// With no dialog left to carry that disclosure, the success toast says so
+// unprompted — letting an operator believe the robot's copy went too is
+// exactly the failure this line exists to prevent.
+test('on a split deployment the discard toast says the robot copy is untouched', async () => {
   const base = mockFetchWithStatus({
     status: { state: 'completed', integrity: 'ok' },
   });
@@ -573,11 +560,10 @@ test('on a split deployment the discard dialog says a robot copy may remain', as
   await driveToResult();
 
   fireEvent.click(screen.getByRole('button', { name: /Discard & re-record this episode/ }));
-  const dialog = await screen.findByTestId('discard-dialog');
   await waitFor(() =>
-    expect(within(dialog).getByTestId('discard-split-note')).toHaveTextContent(
-      /a copy may still exist on the robot/i,
-    ),
+    expect(
+      screen.getByText(/the robot's own copy is untouched/i),
+    ).toBeInTheDocument(),
   );
 });
 

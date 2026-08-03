@@ -2,15 +2,13 @@
 // plus the toast. Rendered at the screen level per the design mock's MODALS
 // section. ("Set" is the operator-facing name for a batch.)
 //
-// Both ways of throwing a recording away go through the SHARED DiscardDialog
-// (contract §12). Collect used to own two confirmations of its own; a screen
-// that words irreversibility, the required reason or the capture_busy code
-// even slightly differently from Review is a screen an operator can be misled
-// by, so there is now exactly one implementation of all three.
+// Discard is deliberately NOT here. On Collect it is one click with no dialog
+// (user decision 2026-08-03: the press is the consent; the ledger records that
+// no reason was asked) — only Review still opens the shared DiscardDialog,
+// where §12's wording obligations live.
 
 import { useState } from 'react';
 import { Button, Modal, cn } from '../../components/ui';
-import { DiscardDialog } from '../captures/DeleteDialogs';
 import { END_REASONS, type BatchMachine } from './useBatchMachine';
 import { findTask, usePlans } from '../plans';
 
@@ -398,31 +396,6 @@ function TakeoverStopModal({ machine }: { machine: BatchMachine }) {
   );
 }
 
-/** The shared discard dialog, driven by one of Collect's two discard flows.
- *  Only one is ever open at a time (the result panel and the recovery banner do
- *  not coexist), so both can carry the shared testids without colliding. */
-function CaptureDiscardDialog({
-  flow,
-  splitDeploy,
-}: {
-  flow: BatchMachine['episodeDiscard'];
-  splitDeploy: boolean;
-}) {
-  return (
-    <DiscardDialog
-      open={flow.kind === 'discard'}
-      captures={flow.targets}
-      splitDeploy={splitDeploy}
-      busy={flow.busy}
-      error={flow.error}
-      done={flow.done}
-      failures={flow.failures}
-      onCancel={flow.cancel}
-      onConfirm={(reason) => void flow.confirm(reason)}
-    />
-  );
-}
-
 // Keyboard-shortcuts help sheet (opened with `?`). Collect-local — the shared
 // header is out of scope for this screen (deviation noted in the change report).
 function ShortcutsSheet({ machine }: { machine: BatchMachine }) {
@@ -475,14 +448,6 @@ export function CollectModals({ machine }: { machine: BatchMachine }) {
       <IssueModal machine={machine} />
       <TargetModal machine={machine} />
       <ConditionModal machine={machine} />
-      <CaptureDiscardDialog
-        flow={machine.episodeDiscard}
-        splitDeploy={machine.splitDeploy}
-      />
-      <CaptureDiscardDialog
-        flow={machine.unsavedDiscard}
-        splitDeploy={machine.splitDeploy}
-      />
       <TakeoverStopModal machine={machine} />
       <ShortcutsSheet machine={machine} />
       <Toast message={machine.toast} />

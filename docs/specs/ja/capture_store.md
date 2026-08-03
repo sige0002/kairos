@@ -340,7 +340,7 @@ Playwright が、専用ポート・専用 data dir・専用 compose プロジェ
 |---|---|
 | 1 | Collect で録画 → 停止 → captures に出現 → digest pending → complete |
 | 2 | Review 保存 → `record.json` の存在と `revision` を検証。競合した保存は**声を上げて拒否**される |
-| 3 | Discard → reason 必須モーダル → 一覧から消える → ledger に墓標 |
+| 3 | Discard（Review）→ reason 必須モーダル → 一覧から消える → ledger に墓標。**Collect の Discard は 1 クリック即時**（2026-08-03 の運用判断）: 目の前の take への押下自体が同意であり、ledger には「Collect からの即時 discard・理由は尋ねていない」旨の自動 reason が入る |
 | 4 | `kairos.db` を削除 → 再起動 → UI に復元（失敗 start の行が catalog を落とさないことを含む） |
 | 5 | `objects/<id>` を `rm -rf` → SUSPECT → Repair → `missing_unmanaged` 表示（黙って消えない） |
 
