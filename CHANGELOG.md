@@ -294,6 +294,16 @@ Phase A hardening toward a supportable release
 
 ### Fixed
 
+- **Dataset rows now identify the recording, not just its directory** (user
+  report 2026-08-03: "run ID だけではどのデータかわからない"). The build
+  rail's candidate rows and the member table led with `run_id`, and same-day
+  runs differ only in their final digits, so the operator could not tell which
+  data they were adding. Every row now leads with when the recording was taken
+  (date included — the rails mix days, unlike Review's one-batch view) and
+  what it was (task · operator · duration · size), with the run name kept as
+  the secondary, on-disk line (§1: display only). The member detail already
+  carried these facts; only the lists were bare.
+
 - **A rejected pre-arm no longer surfaces only after the next rebuild**
   (found live by the acceptance suite, 2026-08-03: §13-4 went red because a
   capture appeared out of nowhere after `rm kairos.db`). When Collect's

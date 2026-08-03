@@ -22,7 +22,13 @@
 import { AvailabilityChip } from '../captures/AvailabilityChip';
 import { CaptureLabelChips } from '../episodeChips';
 import { ArchiveDialog } from './ArchiveDialog';
-import { addBlockedReason, memberCount, shortCaptureId } from './data';
+import {
+  addBlockedReason,
+  captureFacts,
+  captureWhen,
+  memberCount,
+  shortCaptureId,
+} from './data';
 import type { Capture } from '../../api/types';
 import type { DatasetsState } from './useDatasetsState';
 
@@ -31,24 +37,40 @@ function CandidateRow({ capture, state }: { capture: Capture; state: DatasetsSta
   const memberships = capture.memberships ?? [];
   const noTarget = state.selectedDatasetId === null;
   const blocked = addBlockedReason(capture);
+  const facts = captureFacts(capture);
   return (
     <div
       data-testid={`dataset-candidate-${capture.capture_id}`}
       data-capture-id={capture.capture_id}
       className="flex flex-col gap-1.5 rounded-[10px] border border-gray-100 px-[11px] py-[9px]"
     >
+      {/* Identity first: when · what · how long. A run_id alone cannot answer
+          "which data is this?" (2026-08-03 feedback) — same-day runs differ
+          only in their final digits — so the run name is the secondary, on-disk
+          line and the human facts lead. */}
       <div className="flex items-center gap-2">
-        <span
-          title={capture.capture_id}
-          className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-gray-700"
-        >
-          {capture.run_id ?? shortCaptureId(capture.capture_id)}
+        <span className="min-w-0 flex-1 truncate text-[12px] font-semibold text-gray-800">
+          {captureWhen(capture)}
         </span>
         <AvailabilityChip
           capture={capture}
           testId={`dataset-candidate-availability-${capture.capture_id}`}
         />
       </div>
+      {facts !== '' && (
+        <span
+          data-testid={`dataset-candidate-facts-${capture.capture_id}`}
+          className="truncate text-[11px] text-gray-500"
+        >
+          {facts}
+        </span>
+      )}
+      <span
+        title={capture.capture_id}
+        className="truncate font-mono text-[10.5px] text-gray-400"
+      >
+        {capture.run_id ?? shortCaptureId(capture.capture_id)}
+      </span>
       <CaptureLabelChips capture={capture} />
       {memberships.length > 0 && (
         <span className="text-[10.5px] text-gray-400">

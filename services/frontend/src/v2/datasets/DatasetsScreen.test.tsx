@@ -422,6 +422,12 @@ test('a capture that cannot legitimately join a dataset is listed with a dead "+
     expect(await screen.findByTestId(`dataset-candidate-${id}`)).toBeInTheDocument();
   }
 
+  // The row identifies the DATA, not just the directory: a run_id alone
+  // cannot answer "which recording is this?" (2026-08-03 feedback).
+  expect(screen.getByTestId('dataset-candidate-facts-cap-a')).toHaveTextContent(
+    'pick_place · op_a · 00:01:00 · 1.2 GB',
+  );
+
   // Bytes here AND adopted: the only one that may join.
   await waitFor(() => expect(screen.getByTestId('dataset-add-cap-a')).toBeEnabled());
 

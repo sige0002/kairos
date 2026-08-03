@@ -21,6 +21,8 @@ import {
   isCapturePresent,
   type AvailabilityKind,
 } from '../captures/availability';
+import { formatHms } from '../review/format';
+import { spanMs } from '../review/mapCaptures';
 
 /** Operator-facet sentinel meaning "don't filter by operator". */
 export const ANY_OPERATOR = '__any__';
@@ -43,6 +45,37 @@ export function formatBytes(n?: number | null): string {
   if (n >= 1e6) return `${(n / 1e6).toFixed(1)} MB`;
   if (n >= 1e3) return `${(n / 1e3).toFixed(1)} kB`;
   return `${n} B`;
+}
+
+/** "21 Jul 09:00:00" — when the recording was taken, date included: unlike the
+ *  Review table (which is usually read inside one batch's day), the dataset
+ *  rails mix captures from any date, so time-of-day alone is ambiguous. Not
+ *  `formatWhen` (below): that is the full locale timestamp for detail prose;
+ *  this is the compact row-identity form. */
+export function captureWhen(capture: Capture): string {
+  const iso = capture.started_at;
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  const date = d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+  const time = d.toLocaleTimeString('en-GB', { hour12: false });
+  return `${date} ${time}`;
+}
+
+/** The facts that tell one recording from another — task · operator ·
+ *  duration · size — with unknowns dropped rather than rendered as "—" noise.
+ *  Empty string when nothing is known. A run_id alone cannot answer "which
+ *  data is this?" (2026-08-03 feedback): same-day runs differ only in their
+ *  final digits, so every dataset surface leads with these and keeps the run
+ *  name as the secondary, on-disk identity (§1: display only). */
+export function captureFacts(capture: Capture): string {
+  const parts: string[] = [];
+  if (capture.task) parts.push(capture.task);
+  if (capture.operator) parts.push(capture.operator);
+  const ms = spanMs(capture.started_at, capture.ended_at);
+  if (ms !== undefined) parts.push(formatHms(ms));
+  if (capture.bytes != null) parts.push(formatBytes(capture.bytes));
+  return parts.join(' · ');
 }
 
 export function formatCount(n?: number | null): string {

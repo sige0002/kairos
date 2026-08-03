@@ -21,6 +21,8 @@ import { CaptureLabelChips } from '../episodeChips';
 import { DatasetDetail } from './DatasetDetail';
 import { ScopeSummary } from './ScopeSummary';
 import {
+  captureFacts,
+  captureWhen,
   formatCount,
   memberCount,
   memberTestId,
@@ -29,8 +31,8 @@ import {
 } from './data';
 import type { DatasetsState } from './useDatasetsState';
 
-// # · Capture · Availability · Labels(flex) · Msgs.
-const GRID_COLS = 'grid-cols-[52px_128px_104px_minmax(0,1fr)_76px]';
+// # · Capture (when · facts / run name) · Availability · Labels(flex) · Msgs.
+const GRID_COLS = 'grid-cols-[52px_200px_104px_minmax(0,1fr)_76px]';
 // Roughly ten rows tall, then the top pane scrolls internally.
 const TABLE_SCROLL = 'max-h-[370px]';
 
@@ -160,9 +162,19 @@ function MemberTableRow({ row, state }: { row: MemberRow; state: DatasetsState }
       <span className="font-mono text-[13px] font-semibold text-gray-900">
         #{row.displayIndex}
       </span>
-      <span className="truncate font-mono text-[11.5px] text-gray-600">
-        {capture?.run_id ?? shortCaptureId(row.captureId)}
-      </span>
+      {/* Identity first (2026-08-03 feedback): when it was taken and what it
+          was, with the on-disk run name demoted to the second line. */}
+      <div className="flex min-w-0 flex-col">
+        <span className="truncate text-[12px] text-gray-700">
+          {capture ? captureWhen(capture) : shortCaptureId(row.captureId)}
+          {capture && captureFacts(capture) !== '' && (
+            <span className="text-gray-500"> · {captureFacts(capture)}</span>
+          )}
+        </span>
+        <span className="truncate font-mono text-[10.5px] text-gray-400">
+          {capture?.run_id ?? shortCaptureId(row.captureId)}
+        </span>
+      </div>
       {capture ? (
         <AvailabilityChip
           capture={capture}

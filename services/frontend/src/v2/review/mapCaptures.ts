@@ -31,8 +31,9 @@ import type { DisplayQuality, DisplayTaskResult, EpisodeRow } from './types';
 /** Capture states that can be reviewed: finished, one way or another. */
 const REVIEWABLE = new Set(['completed', 'failed', 'interrupted']);
 
-/** Milliseconds between two ISO instants (undefined when indeterminate). */
-function spanMs(started?: string | null, ended?: string | null): number | undefined {
+/** Milliseconds between two ISO instants (undefined when indeterminate).
+ *  Exported for the Datasets rows, which cite the same duration. */
+export function spanMs(started?: string | null, ended?: string | null): number | undefined {
   if (!started || !ended) return undefined;
   const s = Date.parse(started);
   const e = Date.parse(ended);

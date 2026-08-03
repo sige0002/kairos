@@ -5,6 +5,8 @@ import {
   aggregate,
   buildDatasetRow,
   buildDatasetRows,
+  captureFacts,
+  captureWhen,
   datasetMatchesSearch,
   datasetSummarySegments,
   distinctOperators,
@@ -424,5 +426,41 @@ describe('operatorSegment', () => {
 
   test('none recorded is said in words, not as an empty name', () => {
     expect(operatorSegment(aggregate([row(1, capture())])).text).toBe('operator not recorded');
+  });
+});
+
+// A run_id alone cannot answer "which data is this?" (2026-08-03 feedback):
+// same-day runs differ only in their final digits. These two are what the
+// dataset rows lead with instead.
+describe('capture identity for the dataset rows', () => {
+  test('captureWhen includes the DATE, not just the time of day', () => {
+    const when = captureWhen(capture({ started_at: '2026-07-21T09:00:00Z' }));
+    // Locale-format agnostic: the day and month must both be present.
+    expect(when).toMatch(/21/);
+    expect(when).toMatch(/Jul/);
+    expect(when).not.toBe('—');
+  });
+
+  test('captureWhen says "—" rather than inventing a time', () => {
+    expect(captureWhen(capture())).toBe('—');
+    expect(captureWhen(capture({ started_at: 'not-a-date' }))).toBe('—');
+  });
+
+  test('captureFacts cites task, operator, duration and size', () => {
+    const facts = captureFacts(
+      capture({
+        task: 'pick_place',
+        operator: 'op_a',
+        started_at: '2026-07-21T09:00:00Z',
+        ended_at: '2026-07-21T09:01:00Z',
+        bytes: 1_200_000_000,
+      }),
+    );
+    expect(facts).toBe('pick_place · op_a · 00:01:00 · 1.2 GB');
+  });
+
+  test('captureFacts drops unknowns instead of rendering dash noise', () => {
+    expect(captureFacts(capture({ task: 'pick_place' }))).toBe('pick_place');
+    expect(captureFacts(capture())).toBe('');
   });
 });
