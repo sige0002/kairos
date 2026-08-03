@@ -126,6 +126,8 @@ backend-driven な軽量 Web UI（Vite + React + TypeScript）。タブは技術
 **v2 で dataset は論理的な集合になった**（[capture_store](capture_store.md) §6）。収録の実体は `objects/<capture_id>` から動かず、dataset は DB 行 + ledger イベントだけ。したがってこのタブは「エクスポート済みのカタログ」ではなく「**集合を編む場所**」になる。
 
 - **編成**: 候補レール（Review で READY になった capture）から `POST /api/v1/datasets/{id}/members` で dataset に追加、`DELETE …/members/{membership_id}` で外す。**バイトは 1 バイトも動かない**ので、外して戻すのも、1 つの capture を複数の dataset に入れるのも自由。`display_index` は欠番を再利用しない。
+- **ラベル編集**: ヘッダの「Edit」（active のみ描画）→ name / operator / task の 3 フィールドのモーダル（`PATCH /datasets/{id}`）。member と番号は不変であることをダイアログが明言する。複数人で録画した dataset は operator を空にしてよい（各収録は自分の operator を保持し続ける）。
+- **合成（Combine）**: 左カラムの「⧉ Combine」→ 新しい dataset の name＋合成元（active な dataset のチェックリスト、選択順が採番順）→ 実行。**合成元は一切書き換えない**（dataset はリストであり、リストを読んでも変わらない）。実装は通常の作成＋member 追加を一括で行うだけで、一括規律（逐次・`{done}/{n}` 進捗・capture ごとの失敗を正直に列挙・実行中 Cancel 不可）に従う。両方の合成元にいる capture は最初の出現で 1 回だけ入る。合成後の新 dataset を archive する場合は、共有 member の 409 により先に合成元の整理（削除 or member 除去）が要る — dataset の削除は録画に触れない。
 - **URL 状態は `dataset_id` / `membership_id`** で持つ（`url.ts` が所有するのは `ds*` キーのみで、`tab` / `solo` には触らない）。**名前は編集可能・`display_index` は表示用**なので、安定 ID はこの 2 つしかない。`dsmem` だけが指定されて `dsid` が無い URL は落とす。
 - **ラベルフィルタ+マニフェスト**: task result（All / Success / Failure）チップ + operator セレクト + 検索ボックスで絞り込み。「Manifest (n)」でフィルタ結果を JSON マニフェスト（`data_dir` 相対パス+全ラベル）としてダウンロード — **学習セット定義をバージョン管理可能な 1 ファイルに実体化**する。全件非表示時は「フィルタで n 件隠れている」と明示。
 - 各 member / 候補行に **Availability チップ**を出す（上記）。**使えない capture（missing / trashed / not here yet）はジョブ・プレビュー・archive の対象にしない。**

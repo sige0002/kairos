@@ -146,6 +146,7 @@ rebuild はこのファイルも読み、`state='failed'` の行を作る。削�
 | `capture_discarded` / `capture_deleted` | 墓標。理由等 |
 | `capture_archived` | `destination` / `run_id` / `operator` / `task` / `bytes` / `message_count` / `files: [{path,size,sha256}]`。dataset archive の member として書かれた場合は `dataset_id` / `membership_id` / `display_index` も（§6.1） |
 | `dataset_created` | `dataset_id` / `name` / `operator` / `task` |
+| `dataset_updated` | `dataset_id` / `name` / `operator` / `task`。**差分ではなく変更後の完全なラベル集合**（replay が直前のリネーム履歴を再構成せずに適用できるように） |
 | `dataset_member_added` | `dataset_id` / `membership_id` / `capture_id` / `display_index` / `operator` / `task` / `dataset_name` |
 | `dataset_member_removed` | `dataset_id` / `membership_id` |
 | `dataset_deleted` | `dataset_id` |
@@ -164,6 +165,7 @@ rebuild はこのファイルも読み、`state='failed'` の行を作る。削�
 
 - 物理 move・実体コピーは全廃。**dataset は DB 行 + ledger イベントだけ**。
 - `display_index` は dataset 内の表示番号で、**欠番の再利用を禁止**（high-water mark は ledger から復元できる）。
+- **ラベル（name / operator / task）は active な間は編集可能**（`PATCH /api/v1/datasets/{id}`、ledger に `dataset_updated`）。同一性は `dataset_id` であり、リネームは「何と呼ぶか」を変えるだけで member と番号は不変。operator は「dataset のラベル」であって「誰が録画したか」ではない — 各 member の capture が自分の operator を持ち続けるので、複数人で録画した dataset はラベルを空にしてよい（views/ はその場合 member ごとの operator で枝を作る）。非 active では 409（ラベルは archive run が書いたフォルダに焼き込まれている）。
 - **明示的に廃止**: `dataset.json` サイドカー、`data/index.jsonl`、`POST /api/v1/datasets/index/rebuild`、`episode.json`、ジョブの `dataset_dir` param、`mcap_utils.validate_dataset_dir`、`<op>/<task>/<NNN>` の 3 階層検証。役割はすべて `datasets` / `dataset_members` テーブルと §8 の rebuild が引き継ぐ。
 - **views/**: `views/<operator>/<task>/<dataset_name>/<NNN> -> ../../../../objects/<capture_id>`。
   - 再生成は**世代ディレクトリ + symlink 差し替え**で原子的に行う: `views` 自体を `views.<generation>/` への symlink とし、`os.replace` で張り替える（views が存在しない瞬間を作らない）。in-place の書き換えは禁止。

@@ -266,6 +266,7 @@ From Settings > Data quality, edit and persist a **single-file config of the act
 **Physical moves and copies of the bytes are gone entirely.** A dataset is nothing but **DB rows + ledger events**; the recorded bytes never budge from `objects/<capture_id>`. That structurally eliminates the state "the power died mid-move", and putting one capture into several datasets, or taking it out of a dataset and back into the recordings list, are both done without touching a byte.
 
 - `POST /api/v1/datasets` — body `{ name, operator?, task? }` → `201`. `dataset_id` is a UUIDv7. `dataset_created` in the ledger.
+- `PATCH /api/v1/datasets/{dataset_id}` — body `{ name?, operator?, task? }` → `200`. **Label editing** (the same patch semantics as the review save: omitted = kept, explicit null = cleared. `name` cannot be cleared, `400 invalid_name`). `dataset_updated` in the ledger (**the complete post-change label set**), and `views/` follows with a regeneration. Non-active is `409 dataset_not_active`. A no-op PATCH writes nothing to the ledger.
 - `GET /api/v1/datasets` — the list (with `member_count`). `GET /api/v1/datasets/{dataset_id}` — with members (`membership_id` / `capture_id` / `display_index`).
 - `POST /api/v1/datasets/{dataset_id}/members` — body `{ capture_id }` → `201`. The server assigns `display_index` and **never reuses a gap** (the high-water mark can be recovered from the ledger). `dataset_member_added` in the ledger.
 - `DELETE /api/v1/datasets/{dataset_id}/members/{membership_id}` → `204`. `dataset_member_removed` in the ledger.

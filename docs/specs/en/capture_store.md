@@ -148,6 +148,7 @@ rebuild reads this file too and creates a `state='failed'` row. The deletion pat
 | `capture_discarded` / `capture_deleted` | Tombstone. Reason and so on |
 | `capture_archived` | `destination` / `run_id` / `operator` / `task` / `bytes` / `message_count` / `files: [{path,size,sha256}]`. When written as a member of a dataset archive, also `dataset_id` / `membership_id` / `display_index` (§6.1) |
 | `dataset_created` | `dataset_id` / `name` / `operator` / `task` |
+| `dataset_updated` | `dataset_id` / `name` / `operator` / `task`. **The complete post-change label set, not a diff** (so a replay applies events in order without reconstructing the preceding rename history) |
 | `dataset_member_added` | `dataset_id` / `membership_id` / `capture_id` / `display_index` / `operator` / `task` / `dataset_name` |
 | `dataset_member_removed` | `dataset_id` / `membership_id` |
 | `dataset_deleted` | `dataset_id` |
@@ -166,6 +167,7 @@ rebuild reads this file too and creates a `state='failed'` row. The deletion pat
 
 - Physical moves and real copies are abolished entirely. **A dataset is nothing but DB rows + ledger events.**
 - `display_index` is the display number within a dataset, and **reusing a gap is forbidden** (the high-water mark can be recovered from the ledger).
+- **The labels (name / operator / task) are editable while the dataset is active** (`PATCH /api/v1/datasets/{id}`, `dataset_updated` in the ledger). Identity is `dataset_id`: a rename changes what the dataset is called, never what it is — same members, same numbers. operator is **the dataset's label, not "who recorded"** — every member capture keeps its own operator, so a dataset recorded by several people may leave the label empty (`views/` then branches per member operator). Non-active is `409` (the labels are baked into the folder the archive run wrote).
 - **Explicitly removed**: the `dataset.json` sidecar, `data/index.jsonl`, `POST /api/v1/datasets/index/rebuild`, `episode.json`, the jobs' `dataset_dir` param, `mcap_utils.validate_dataset_dir`, and the 3-level `<op>/<task>/<NNN>` validation. Their roles are taken over in full by the `datasets` / `dataset_members` tables and the rebuild in §8.
 - **views/**: `views/<operator>/<task>/<dataset_name>/<NNN> -> ../../../../objects/<capture_id>`.
   - Regeneration is atomic via a **generation directory + symlink swap**: `views` itself is a symlink to `views.<generation>/`, swapped with `os.replace` (never creating a moment in which views does not exist). Rewriting in place is forbidden.

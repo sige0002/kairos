@@ -265,6 +265,7 @@ Settings > Data quality から、選択式カタログ（recording / stream / va
 **物理 move と実体コピーは全廃した。** dataset は **DB 行 + ledger イベント**だけで、収録の実体は `objects/<capture_id>` から一歩も動かない。これで「移動の途中で電源が落ちた」という状態が構造的に消え、1 つの capture を複数の dataset に入れることも、dataset から外して録画一覧に戻すことも、バイトを触らずにできる。
 
 - `POST /api/v1/datasets` — body `{ name, operator?, task? }` → `201`。`dataset_id` は UUIDv7。ledger に `dataset_created`。
+- `PATCH /api/v1/datasets/{dataset_id}` — body `{ name?, operator?, task? }` → `200`。**ラベル編集**（review 保存と同じ patch 意味論: 省略 = 維持、明示 null = クリア。name はクリア不可 `400 invalid_name`）。ledger に `dataset_updated`（変更後の完全なラベル集合）、views/ は追随して再生成。非 active は `409 dataset_not_active`。無変更の PATCH は ledger に何も書かない。
 - `GET /api/v1/datasets` — 一覧（`member_count` 込み）。`GET /api/v1/datasets/{dataset_id}` — members（`membership_id` / `capture_id` / `display_index`）込み。
 - `POST /api/v1/datasets/{dataset_id}/members` — body `{ capture_id }` → `201`。`display_index` はサーバが採番し、**欠番を再利用しない**（high-water mark は ledger から復元できる）。ledger に `dataset_member_added`。
 - `DELETE /api/v1/datasets/{dataset_id}/members/{membership_id}` → `204`。ledger に `dataset_member_removed`。
