@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from kairos_common import ApiError, Compression, Durability, Reliability
 from pydantic import BaseModel, Field
@@ -100,6 +100,10 @@ class RecordStartRequest(BaseModel):
     # Which robot produced this capture. Omitted -> the recorder falls back to
     # its RECORDING_CONFIG ``robot_name``, so a standalone call still names one.
     robot: str | None = None
+    # Console-side identity (orchestrator git sha etc.), stamped verbatim into
+    # the capture manifest's `stamp.console` — half of the two-host provenance.
+    # Absent on direct recorder calls: the stamp then honestly has no console.
+    console_stamp: dict[str, Any] | None = None
 
 
 class TopicEntry(BaseModel):
@@ -229,6 +233,10 @@ class RecordStatusResponse(BaseModel):
     # Present once a ``--start-paused`` arming gate has run for this session
     # (``null`` otherwise). The final snapshot persists while ``recording``.
     arming: RecordArming | None = None
+    # The build this recorder is running (KAIROS_GIT_SHA baked at image build;
+    # ``null`` when built without it). The console compares it with its own to
+    # flag version skew between the robot and the recording PC.
+    git_sha: str | None = None
     # Free space on the filesystem the RECORDER writes (its own data dir) —
     # in the split deploy that is the ROBOT's disk, which no console-side
     # /system probe can see. The UI derives "hours of recording left" from it;

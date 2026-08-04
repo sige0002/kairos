@@ -172,6 +172,11 @@ export interface RecordStatus {
    *  the split deploy, which the console-side /system probe cannot see.
    *  Absent/null when the recorder cannot stat it (older recorder included). */
   disk_free_bytes?: number | null;
+  /** The build the RECORDER runs (baked at image build; null/absent = not
+   *  baked). Compared against console_git_sha for the skew banner. */
+  git_sha?: string | null;
+  /** The console (orchestrator) build, added by the status proxy. */
+  console_git_sha?: string | null;
 }
 
 /**

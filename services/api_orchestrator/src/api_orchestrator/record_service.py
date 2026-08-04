@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -511,6 +512,13 @@ class RecordService:
             payload["qos_overrides"] = {
                 name: qos.model_dump() for name, qos in req.qos_overrides.items()
             }
+        # The console half of the two-host provenance stamp: the recorder
+        # writes it, together with its own build/config identity, into the
+        # capture manifest — so a bad capture is traceable to the exact pair
+        # of builds that produced it. Omitted when the sha wasn't baked in.
+        console_sha = os.environ.get("KAIROS_GIT_SHA")
+        if console_sha:
+            payload["console_stamp"] = {"git_sha": console_sha}
         return payload
 
     def _robot_name(self) -> str | None:
@@ -702,6 +710,13 @@ class RecordService:
             await self._reconcile_from_status(status)
         except Exception:  # noqa: BLE001 - status must stay readable
             logger.warning("lazy reconciliation failed", exc_info=True)
+        # The console's own build next to the recorder's `git_sha`: the ONE
+        # poll every UI already makes now answers "are the two hosts running
+        # the same build?" — a stale robot image is the split deploy's normal
+        # failure mode. Absent when the sha wasn't baked in (never invented).
+        console_sha = os.environ.get("KAIROS_GIT_SHA")
+        if console_sha:
+            status["console_git_sha"] = console_sha
         return status
 
     async def _reconcile_from_status(self, status: dict[str, Any]) -> None:

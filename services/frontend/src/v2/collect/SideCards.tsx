@@ -122,6 +122,25 @@ export function SystemStatusCard({
     }
   }
   const storageOk = freeBytes != null && freeBytes >= LOW_STORAGE_FREE_BYTES;
+  // Version-skew row: the recorder reports ITS build sha, the status proxy
+  // adds the console's — unequal means the two hosts run different builds
+  // (the split deploy's classic silent failure: a robot still on last week's
+  // image). Unknown on either side shows nothing rather than a guess.
+  const recSha = recStatus.reachable ? (recStatus.status?.git_sha ?? null) : null;
+  const conSha = recStatus.status?.console_git_sha ?? null;
+  const shasKnown = recSha != null && conSha != null;
+  const shaMatch = shasKnown && recSha === conSha;
+  const stackRow: SysRow = shasKnown
+    ? shaMatch
+      ? { label: 'Build', value: recSha, chip: 'OK', tone: 'green' }
+      : {
+          label: 'Build',
+          value: `robot ${recSha} ≠ console ${conSha}`,
+          chip: 'CHECK',
+          tone: 'amber',
+        }
+    : { label: 'Build', value: '—', chip: '—', tone: 'gray' };
+
   const storageRow: SysRow = freeBytes != null
     ? {
         label: 'Storage',
@@ -252,6 +271,7 @@ export function SystemStatusCard({
       tone: robotLive ? 'green' : robotOffline ? 'amber' : 'gray',
     },
     storageRow,
+    stackRow,
     {
       label: 'Recorder',
       value: recUnknown

@@ -1497,9 +1497,7 @@ class CaptureStore:
                 "payload = excluded.payload, updated_at = excluded.updated_at",
                 (payload, updated_at),
             )
-        self._mirror_plan_catalog(
-            projects, failure_reasons, operators, updated_at
-        )
+        self._mirror_plan_catalog(projects, failure_reasons, operators, updated_at)
 
     def _catalog_dir(self) -> Path | None:
         return None if self._data_dir is None else self._data_dir / CATALOG_DIRNAME
@@ -1586,6 +1584,7 @@ class CaptureStore:
 
         plan = _read_json(catalog / PLAN_CATALOG_SIDECAR)
         if plan is not None and isinstance(plan.get("projects"), list):
+
             def _side_list(key: str) -> list[str] | None:
                 value = plan.get(key)  # absent in pre-field sidecars
                 if isinstance(value, list) and all(isinstance(v, str) for v in value):

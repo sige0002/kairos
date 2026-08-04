@@ -57,3 +57,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 EXPOSE 8002
 
 CMD ["python", "-m", "webrtc_streamer.main"]
+
+# Build identity (compose passes it through the shared build-args anchor; make
+# derives it, '-dirty' on an uncommitted tree). Declared LAST on purpose: a new
+# commit then rebuilds only this metadata layer, not the stage above it.
+ARG KAIROS_GIT_SHA=unknown
+ENV KAIROS_GIT_SHA=$KAIROS_GIT_SHA

@@ -82,3 +82,9 @@ COPY services/rosbag2_recorder/docker-entrypoint.sh /usr/local/bin/docker-entryp
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["python", "-m", "rosbag2_recorder.main"]
+
+# Build identity (compose passes it through the shared build-args anchor; make
+# derives it, '-dirty' on an uncommitted tree). Declared LAST on purpose: a new
+# commit then rebuilds only this metadata layer, not the stage above it.
+ARG KAIROS_GIT_SHA=unknown
+ENV KAIROS_GIT_SHA=$KAIROS_GIT_SHA

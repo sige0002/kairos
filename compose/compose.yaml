@@ -73,6 +73,12 @@ x-build-proxy-args: &build-proxy-args
   HTTP_PROXY: ${HTTP_PROXY:-}
   HTTPS_PROXY: ${HTTPS_PROXY:-}
   NO_PROXY: ${NO_PROXY:-}
+  # Build identity, baked into every image (make derives it; '-dirty' when the
+  # worktree has uncommitted changes). The recorder stamps it into capture
+  # sidecars and the console compares both hosts' values — a robot still
+  # running last week's image is the normal split-deploy failure mode, and
+  # nothing in the UI hinted at it (audit P1).
+  KAIROS_GIT_SHA: ${KAIROS_GIT_SHA:-unknown}
 
 # Shared healthcheck cadence (conservative — the services are lightweight, but the
 # ROS ones need a moment to import rclpy). Each service overrides `test` with its

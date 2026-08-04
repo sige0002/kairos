@@ -11,6 +11,7 @@ installed. The integration path (real ``ros2 bag record``) runs in Docker.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
@@ -288,6 +289,8 @@ class RecorderSession:
         self._process: subprocess.Popen[bytes] | None = None
         # Optional session metadata (written to the capture's manifest).
         self._operator: str | None = None
+        # Two-host provenance for the live session (rides manifest `extra`).
+        self._stamp: dict[str, Any] | None = None
         self._task: str | None = None
         self._robot: str | None = None
 
@@ -985,6 +988,7 @@ class RecorderSession:
         # operator/task/robot come from the START request (armed.request is
         # stale prepare-time metadata; see _armed_matches).
         self._operator = _default_meta(request.operator, _UNKNOWN_OPERATOR)
+        self._stamp = self._build_stamp(request.console_stamp)
         self._task = _default_meta(request.task, _UNKNOWN_TASK)
         self._robot = self._resolve_robot(request)
         self._topics = armed.staged_topics
@@ -1217,6 +1221,7 @@ class RecorderSession:
             # Default operator/task so a standalone recorder call (no orchestrator
             # to normalize them) still names one (see _UNKNOWN_OPERATOR).
             self._operator = _default_meta(request.operator, _UNKNOWN_OPERATOR)
+            self._stamp = self._build_stamp(request.console_stamp)
             self._task = _default_meta(request.task, _UNKNOWN_TASK)
             self._robot = self._resolve_robot(request)
             self._topics = staged_topics
@@ -2150,6 +2155,26 @@ class RecorderSession:
         with self._lock:
             return self._status_locked()
 
+    def _build_stamp(self, console_stamp: dict[str, Any] | None) -> dict[str, Any]:
+        """Identity recorded WITH the capture: which build recorded it, which
+        config file (by content hash) it read, and — when the orchestrator sent
+        its half — which console asked. Rides the manifest's ``extra``
+        passthrough, so the sidecar schema is untouched and older readers
+        simply carry it along."""
+        recorder: dict[str, Any] = {"git_sha": os.environ.get("KAIROS_GIT_SHA") or None}
+        cfg = os.environ.get("RECORDING_CONFIG")
+        if cfg:
+            try:
+                recorder["config_sha256"] = hashlib.sha256(
+                    Path(cfg).read_bytes()
+                ).hexdigest()
+            except OSError:
+                pass  # unreadable config: no hash beats a made-up one
+        stamp: dict[str, Any] = {"recorder": recorder}
+        if console_stamp:
+            stamp["console"] = console_stamp
+        return stamp
+
     def _disk_free_bytes(self) -> int | None:
         """Free bytes on THIS recorder's data-dir filesystem (the robot's disk
         in the split deploy). ``None`` when it cannot be statted — never a
@@ -2190,6 +2215,7 @@ class RecorderSession:
                 arming=self._arming.model_copy(deep=True) if self._arming else None,
                 dropped_messages=None,
                 integrity="unknown",
+                git_sha=os.environ.get("KAIROS_GIT_SHA") or None,
                 disk_free_bytes=self._disk_free_bytes(),
             )
         message_count, size = 0, 0
@@ -2215,6 +2241,7 @@ class RecorderSession:
             arming=self._arming.model_copy(deep=True) if self._arming else None,
             dropped_messages=self._dropped_messages,
             integrity=self._integrity,
+            git_sha=os.environ.get("KAIROS_GIT_SHA") or None,
             disk_free_bytes=self._disk_free_bytes(),
         )
 
@@ -2261,6 +2288,7 @@ class RecorderSession:
             return
         meta = self._read_rosbag2_metadata(capture_id)
         manifest = ObjectManifestV2(
+            extra={"stamp": self._stamp} if self._stamp else {},
             capture_id=capture_id,
             source_instance_id=self._instance_id,
             run_id=run_id,

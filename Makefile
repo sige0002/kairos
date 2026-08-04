@@ -117,6 +117,13 @@ export WEBRTC_PUBLIC_URL
 KAIROS_VERSION ?= $(if $(wildcard VERSION),$(strip $(shell cat VERSION)),dev)
 export KAIROS_VERSION
 
+# Build identity: the commit every image is built from ('-dirty' when the
+# worktree differs). Baked in via the shared build-args anchor and stamped
+# into capture sidecars by the recorder; sha-only (no timestamp) so the layer
+# cache is only busted by an actual new commit.
+KAIROS_GIT_SHA ?= $(strip $(shell git describe --always --dirty --abbrev=12 2>/dev/null || echo unknown))
+export KAIROS_GIT_SHA
+
 # All deploy compose files live under compose/ (single-host entry =
 # compose/compose.yaml). --project-directory pins relative paths (./config,
 # ./data, MSGS_OVERLAY_DIR…) to the repo root, not compose/.

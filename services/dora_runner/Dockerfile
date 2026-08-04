@@ -128,3 +128,9 @@ USER appuser
 EXPOSE 8020
 
 CMD ["python", "-m", "dora_runner.main"]
+
+# Build identity (compose passes it through the shared build-args anchor; make
+# derives it, '-dirty' on an uncommitted tree). Declared LAST on purpose: a new
+# commit then rebuilds only this metadata layer, not the stage above it.
+ARG KAIROS_GIT_SHA=unknown
+ENV KAIROS_GIT_SHA=$KAIROS_GIT_SHA
