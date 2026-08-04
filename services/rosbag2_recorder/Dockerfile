@@ -25,9 +25,14 @@ COPY --from=ghcr.io/astral-sh/uv:0.10.0@sha256:78a7ff97cd27b7124a5f3c2aefe146170
 # later) remains importable alongside the pip-installed app deps. The venv lives
 # at UV_PROJECT_ENVIRONMENT so `uv sync` installs into it (not a project-local
 # .venv).
+# UV_HTTP_TIMEOUT: uv's default is a 30 s READ timeout — a >30 s no-byte stall
+# (congested field Wi-Fi / cellular) kills the download, and the build with it.
+# 600 s rides out stalls; a healthy link never notices (read, not total, time).
 ENV VENV=/opt/venv \
     UV_PYTHON_PREFERENCE=only-system \
-    UV_PROJECT_ENVIRONMENT=/opt/venv
+    UV_PROJECT_ENVIRONMENT=/opt/venv \
+    UV_HTTP_TIMEOUT=600 \
+    UV_HTTP_RETRIES=5
 RUN uv venv --python python3 --system-site-packages $VENV
 ENV PATH="$VENV/bin:$PATH"
 
