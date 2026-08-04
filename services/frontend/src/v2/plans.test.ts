@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { jsonResponse } from '../test/renderWithClient';
 import {
+  DEFAULT_FAIL_REASONS,
   DEFAULT_PLANS,
   ensurePlansSynced,
   __rehydratePlansStore,
@@ -8,7 +9,9 @@ import {
   clonePlans,
   findProject,
   findTask,
+  getFailReasons,
   getPlans,
+  setFailReasons,
   setPlans,
 } from './plans';
 
@@ -127,10 +130,15 @@ test('a never-set server catalog is seeded from this browser', async () => {
 
 test('the server catalog is adopted when no local edits are unsynced', async () => {
   const server = [{ name: 'Server Project', tasks: [{ name: 'T', conditions: ['C'] }] }];
-  const puts = mockPlansFetch({ projects: server, updated_at: 't0' });
+  const puts = mockPlansFetch({
+    projects: server,
+    failure_reasons: ['Server reason'],
+    updated_at: 't0',
+  });
   ensurePlansSynced();
   await vi.waitFor(() => expect(getPlans()[0]?.name).toBe('Server Project'));
-  // Adopted, persisted, and NOT pushed back.
+  // Adopted (both halves), persisted, and NOT pushed back.
+  expect(getFailReasons()).toEqual(['Server reason']);
   expect(JSON.parse(window.localStorage.getItem(KEY)!)).toEqual(server);
   expect(puts).toHaveLength(0);
 });
@@ -166,4 +174,53 @@ test('a failed push keeps the dirty flag so the edit retries later', async () =>
   await vi.waitFor(() => expect(puts).toHaveLength(1));
   expect(window.localStorage.getItem('kairos.v2.plans.dirty.v1')).toBe('1');
   expect(getPlans()[0]!.name).toBe('Offline Edit'); // the edit itself is kept
+});
+
+// ---------------------------------------------------------------------------
+// Failure-reason vocabulary (the Collect "What failed?" chips).
+// ---------------------------------------------------------------------------
+
+test('a fresh store holds the default fail-reason vocabulary', () => {
+  expect(getFailReasons()).toEqual(DEFAULT_FAIL_REASONS);
+});
+
+test('setFailReasons updates the snapshot and persists to localStorage', () => {
+  setFailReasons(['Grasp missed', 'Cable snagged']);
+  expect(getFailReasons()).toEqual(['Grasp missed', 'Cable snagged']);
+  const persisted = JSON.parse(
+    window.localStorage.getItem('kairos.v2.failreasons.v1')!,
+  ) as string[];
+  expect(persisted).toEqual(['Grasp missed', 'Cable snagged']);
+});
+
+test('an empty fail-reason replacement is refused (Failure needs a reason)', () => {
+  setFailReasons([]);
+  expect(getFailReasons()).toEqual(DEFAULT_FAIL_REASONS);
+});
+
+test('a never-set server vocabulary is seeded from this browser', async () => {
+  const puts = mockPlansFetch({
+    projects: [{ name: 'P', tasks: [] }],
+    failure_reasons: null,
+    updated_at: 't0',
+  });
+  ensurePlansSynced();
+  await vi.waitFor(() => expect(puts).toHaveLength(1));
+  expect(
+    (puts[0] as unknown as { failure_reasons: string[] }).failure_reasons,
+  ).toEqual(DEFAULT_FAIL_REASONS);
+  // The projects half was still adopted, not clobbered by the seed push.
+  expect(getPlans()).toEqual([{ name: 'P', tasks: [] }]);
+});
+
+test('an EMPTY server vocabulary is neither adopted nor re-pushed', async () => {
+  const puts = mockPlansFetch({
+    projects: [{ name: 'P', tasks: [] }],
+    failure_reasons: [],
+    updated_at: 't0',
+  });
+  ensurePlansSynced();
+  await vi.waitFor(() => expect(getPlans()).toEqual([{ name: 'P', tasks: [] }]));
+  expect(getFailReasons()).toEqual(DEFAULT_FAIL_REASONS); // local copy stands
+  expect(puts).toHaveLength(0);
 });

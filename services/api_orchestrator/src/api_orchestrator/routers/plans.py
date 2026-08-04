@@ -1,11 +1,12 @@
 """Shared plan catalog (Projects -> Tasks -> Conditions) — ``/api/v1/plans``.
 
 The catalog is the label VOCABULARY Collect stamps onto batches and episodes
-(``project`` / ``task`` / ``condition``). Serving it from the orchestrator puts
-every terminal on ONE vocabulary — with the previous browser-local copies, two
-laptops could label the same physical condition with different strings,
-quietly fragmenting the exported labels (fixed vocabulary is what makes labels
-aggregable — the same reasoning as the ``failure_reason`` vocabulary TBD).
+(``project`` / ``task`` / ``condition``), plus the ``failure_reasons`` list
+Collect offers when an episode is marked Failure. Serving it from the
+orchestrator puts every terminal on ONE vocabulary — with the previous
+browser-local copies, two laptops could label the same physical condition with
+different strings, quietly fragmenting the exported labels (fixed vocabulary
+is what makes labels aggregable).
 
 This is deliberately NOT the Phase 2.5 Plan model: no plan ids, no batch
 references, no per-plan targets. Batches keep storing plain strings; this is
@@ -39,9 +40,15 @@ class PlanProject(BaseModel):
 
 
 class PlanCatalogPut(BaseModel):
-    """PUT body: the full replacement catalog."""
+    """PUT body: the full replacement catalog.
+
+    ``failure_reasons=None`` (field absent) leaves the stored vocabulary
+    untouched, so a client that predates the field cannot wipe it. An explicit
+    list — including ``[]`` — replaces it.
+    """
 
     projects: list[PlanProject]
+    failure_reasons: list[str] | None = None
 
 
 def _store(request: Request) -> CaptureStore:
@@ -58,15 +65,26 @@ async def get_plans(request: Request) -> dict:
     """
     stored = _store(request).get_plan_catalog()
     if stored is None:
-        return {"projects": None, "updated_at": None}
-    projects, updated_at = stored
-    return {"projects": projects, "updated_at": updated_at}
+        return {"projects": None, "failure_reasons": None, "updated_at": None}
+    projects, failure_reasons, updated_at = stored
+    return {
+        "projects": projects,
+        "failure_reasons": failure_reasons,
+        "updated_at": updated_at,
+    }
 
 
 @router.put("")
 async def put_plans(request: Request, body: PlanCatalogPut) -> dict:
     """Replace the shared catalog (validated shape, stamped server-side)."""
+    store = _store(request)
     now = utc_now_iso8601()
     projects = [p.model_dump() for p in body.projects]
-    _store(request).set_plan_catalog(projects, now)
-    return {"projects": projects, "updated_at": now}
+    store.set_plan_catalog(projects, now, body.failure_reasons)
+    stored = store.get_plan_catalog()
+    effective_reasons = stored[1] if stored is not None else body.failure_reasons
+    return {
+        "projects": projects,
+        "failure_reasons": effective_reasons,
+        "updated_at": now,
+    }

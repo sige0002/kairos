@@ -180,18 +180,10 @@ export function collectReviewStatus(
   return taskResult === 'ok' && quality === 'good' ? 'adopted' : 'pending';
 }
 
-// The plan catalog (Projects → Tasks → Conditions) now lives in the shared
-// v2/plans store so a Settings edit reflects here immediately. This screen reads
-// the live catalog (getPlans / usePlans) rather than a private copy.
-
-export const FAIL_REASONS = [
-  'Grasp missed',
-  'Object dropped',
-  'Wrong placement',
-  'Object misplaced at start',
-  'Robot fault',
-  'Other',
-];
+// The plan catalog (Projects → Tasks → Conditions) AND the fail-reason
+// vocabulary now live in the shared v2/plans store so a Settings edit reflects
+// here immediately. This screen reads the live catalog (getPlans / usePlans,
+// useFailReasons) rather than a private copy.
 
 export const END_REASONS = [
   'Work time over',

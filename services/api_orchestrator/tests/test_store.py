@@ -552,15 +552,21 @@ class TestCatalogSidecars:
     def test_the_plan_catalog_is_mirrored_too(
         self, store: CaptureStore, tmp_path: Path
     ) -> None:
-        store.set_plan_catalog([{"name": "proj"}], "2026-08-01T00:00:00.000Z")
+        store.set_plan_catalog(
+            [{"name": "proj"}], "2026-08-01T00:00:00.000Z", ["Robot fault"]
+        )
         sidecar = tmp_path / "catalog" / "plan_catalog.json"
         assert sidecar.is_file()
-        assert json.loads(sidecar.read_text())["projects"][0]["name"] == "proj"
+        mirrored = json.loads(sidecar.read_text())
+        assert mirrored["projects"][0]["name"] == "proj"
+        assert mirrored["failure_reasons"] == ["Robot fault"]
 
     def test_catalog_sidecars_restore_into_a_fresh_db(self, tmp_path: Path) -> None:
         first = CaptureStore(tmp_path / "kairos.db", data_dir=tmp_path)
         first.create_template(ValidationTemplate(name="t", version=3))
-        first.set_plan_catalog([{"name": "proj"}], "2026-08-01T00:00:00.000Z")
+        first.set_plan_catalog(
+            [{"name": "proj"}], "2026-08-01T00:00:00.000Z", ["Robot fault"]
+        )
         first.close()
         (tmp_path / "kairos.db").unlink()
 
@@ -570,6 +576,7 @@ class TestCatalogSidecars:
         assert [(t.name, t.version) for t in templates] == [("t", 3)]
         catalog = second.get_plan_catalog()
         assert catalog is not None and catalog[0] == [{"name": "proj"}]
+        assert catalog[1] == ["Robot fault"]
         second.close()
 
 

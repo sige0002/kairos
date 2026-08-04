@@ -8,7 +8,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { clonePlans, type PlanProjectData } from './data';
-import { setPlans, usePlans } from '../plans';
+import { setFailReasons, setPlans, useFailReasons, usePlans } from '../plans';
 
 const TOAST_MS = 2400;
 
@@ -31,6 +31,11 @@ export interface SettingsState {
   renameCondition: (i: number) => void;
   removeCondition: (i: number) => void;
 
+  failReasons: string[];
+  addFailReason: () => void;
+  renameFailReason: (i: number) => void;
+  removeFailReason: (i: number) => void;
+
   toast: string;
   showToast: (message: string) => void;
 }
@@ -40,6 +45,7 @@ export function useSettingsState(): SettingsState {
   // The catalog lives in the shared store; mutations below call setPlans (which
   // persists + notifies Collect). Only the editor's cursor is local.
   const plans = usePlans();
+  const failReasons = useFailReasons();
   const [planProjIdx, setPlanProjIdx] = useState(0);
   const [planTaskIdx, setPlanTaskIdx] = useState(0);
   const [toast, setToast] = useState('');
@@ -173,6 +179,34 @@ export function useSettingsState(): SettingsState {
     showToast('Condition removed');
   }, [plans, ppIdx, planTaskIdx, showToast]);
 
+  // Fail-reason vocabulary (Collect's "What failed?" chips) — same shared-store
+  // funnel as the plans handlers above.
+  const addFailReason = useCallback(() => {
+    const v = window.prompt('New failure reason (e.g. "Grasp missed")', '');
+    if (!v) return;
+    setFailReasons([...failReasons, v]);
+    showToast('Failure reason added');
+  }, [failReasons, showToast]);
+
+  const renameFailReason = useCallback((i: number) => {
+    const label = failReasons[i];
+    if (label === undefined) return;
+    const v = window.prompt('Failure reason', label);
+    if (!v) return;
+    const next = failReasons.slice();
+    next[i] = v;
+    setFailReasons(next);
+    showToast('Failure reason updated');
+  }, [failReasons, showToast]);
+
+  const removeFailReason = useCallback((i: number) => {
+    // The last reason can't go: marking a Failure REQUIRES picking one (the
+    // section's ✕ is disabled at one entry; the store refuses [] as well).
+    if (failReasons.length <= 1) return;
+    setFailReasons(failReasons.filter((_, idx) => idx !== i));
+    showToast('Failure reason removed');
+  }, [failReasons, showToast]);
+
   return {
     menuIdx,
     selectMenu,
@@ -190,6 +224,10 @@ export function useSettingsState(): SettingsState {
     addCondition,
     renameCondition,
     removeCondition,
+    failReasons,
+    addFailReason,
+    renameFailReason,
+    removeFailReason,
     toast,
     showToast,
   };

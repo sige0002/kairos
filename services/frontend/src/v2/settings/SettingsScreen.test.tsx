@@ -3,7 +3,7 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
 import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
 import { SettingsScreen } from './SettingsScreen';
-import { __resetPlansStore, getPlans, setPlans } from '../plans';
+import { __resetPlansStore, getFailReasons, getPlans, setPlans } from '../plans';
 
 // Runtime config (GET /api/v1/config): the ACTIVE robot's read-only values that
 // the Robots form surfaces (ROS_DOMAIN_ID + recorded topics).
@@ -372,7 +372,7 @@ test('menu switches Robots → Plans → Recording (real, not a placeholder) →
   expect(screen.getByTestId('plan-project-name')).toHaveTextContent('Tabletop Manipulation');
 
   // Recording is now a real form-first section, not a §12 placeholder.
-  fireEvent.click(screen.getByTestId('settings-menu-item-2'));
+  fireEvent.click(screen.getByTestId('settings-menu-item-3'));
   expect(screen.getByTestId('settings-recording')).toBeInTheDocument();
   expect(screen.queryByTestId('settings-other-placeholder')).not.toBeInTheDocument();
 
@@ -384,11 +384,11 @@ test('only Dataset profiles + Users & permissions stay honest placeholders', asy
   renderWithClient(<SettingsScreen />);
   await waitFor(() => expect(screen.getByTestId('robot-form')).toBeInTheDocument());
 
-  fireEvent.click(screen.getByTestId('settings-menu-item-5'));
+  fireEvent.click(screen.getByTestId('settings-menu-item-6'));
   expect(screen.getByTestId('settings-other-placeholder')).toHaveTextContent('Dataset profiles');
   expect(screen.getByTestId('settings-other-placeholder')).toHaveTextContent(/Phase 3 recipe/);
 
-  fireEvent.click(screen.getByTestId('settings-menu-item-6'));
+  fireEvent.click(screen.getByTestId('settings-menu-item-7'));
   expect(screen.getByTestId('settings-other-placeholder')).toHaveTextContent('Users & permissions');
   expect(screen.getByTestId('settings-other-placeholder')).toHaveTextContent(/single-team/);
 });
@@ -467,6 +467,55 @@ test('Plans: cancelling the remove confirmation keeps the project', async () => 
 
   expect(within(screen.getByTestId('plan-project-1')).getByText('Bin Picking')).toBeInTheDocument();
   expect(getPlans().some((p) => p.name === 'Bin Picking')).toBe(true);
+});
+
+test('Failure reasons: adding and removing writes the SHARED store (so Collect sees it)', async () => {
+  vi.spyOn(window, 'prompt').mockReturnValue('Cable snagged');
+  renderWithClient(<SettingsScreen />);
+  await waitFor(() => expect(screen.getByTestId('robot-form')).toBeInTheDocument());
+  fireEvent.click(screen.getByTestId('settings-menu-item-2'));
+
+  // Seed vocabulary renders (6 defaults), then the added reason appears and
+  // lands in the shared store Collect's "What failed?" chips read.
+  expect(screen.getByTestId('settings-fail-reasons')).toBeInTheDocument();
+  expect(screen.getByTestId('fail-reason-0')).toHaveTextContent('Grasp missed');
+  fireEvent.click(screen.getByTestId('fail-reason-add'));
+  expect(screen.getByTestId('fail-reason-6')).toHaveTextContent('Cable snagged');
+  expect(getFailReasons()).toContain('Cable snagged');
+
+  fireEvent.click(within(screen.getByTestId('fail-reason-6')).getByTitle('Remove reason'));
+  expect(screen.queryByText('Cable snagged')).not.toBeInTheDocument();
+  expect(getFailReasons()).not.toContain('Cable snagged');
+});
+
+test('Failure reasons: renaming replaces the entry in place', async () => {
+  vi.spyOn(window, 'prompt').mockReturnValue('Grasp slipped');
+  renderWithClient(<SettingsScreen />);
+  await waitFor(() => expect(screen.getByTestId('robot-form')).toBeInTheDocument());
+  fireEvent.click(screen.getByTestId('settings-menu-item-2'));
+
+  fireEvent.click(within(screen.getByTestId('fail-reason-0')).getByTitle('Rename'));
+  expect(screen.getByTestId('fail-reason-0')).toHaveTextContent('Grasp slipped');
+  expect(getFailReasons()[0]).toBe('Grasp slipped');
+  expect(getFailReasons()).not.toContain('Grasp missed');
+});
+
+test('Failure reasons: the last remaining reason cannot be removed', async () => {
+  renderWithClient(<SettingsScreen />);
+  await waitFor(() => expect(screen.getByTestId('robot-form')).toBeInTheDocument());
+  fireEvent.click(screen.getByTestId('settings-menu-item-2'));
+
+  // Remove all but one — the final ✕ is disabled (a Failure REQUIRES a reason).
+  for (let i = 0; i < 5; i += 1) {
+    fireEvent.click(within(screen.getByTestId('fail-reason-0')).getByTitle('Remove reason'));
+  }
+  expect(getFailReasons()).toHaveLength(1);
+  const last = within(screen.getByTestId('fail-reason-0')).getByTitle(
+    /last reason cannot be removed/,
+  );
+  expect(last).toBeDisabled();
+  fireEvent.click(last);
+  expect(getFailReasons()).toHaveLength(1);
 });
 
 test('Plans: the last project cannot be removed (honest note, no confirm dialog)', async () => {

@@ -5,6 +5,7 @@
 // All spec §12 sections are built on real data:
 //   Robots            — robot select + per-aspect options + recording editor
 //   Projects & tasks  — the shared plans catalog editor (also drives Collect)
+//   Failure reasons   — the "What failed?" vocabulary editor (also drives Collect)
 //   Recording         — form-first active-robot recording config (JSON = Advanced)
 //   Data quality      — read-only expected rates + thresholds + required topics
 //   Validation        — aspect selection + one-click presets (run in the Val tab)
@@ -19,6 +20,7 @@ import { SETTINGS_MENU } from './data';
 import { MenuRail } from './MenuRail';
 import { RobotsSection } from './RobotsSection';
 import { PlansSection } from './PlansSection';
+import { FailureReasonsSection } from './FailureReasonsSection';
 import { RecordingSection } from './RecordingSection';
 import { DataQualitySection } from './DataQualitySection';
 import { ValidationSection } from './ValidationSection';
@@ -54,6 +56,8 @@ export function SettingsScreen() {
         <RobotsSection config={config} />
       ) : label === 'Projects & tasks' ? (
         <PlansSection settings={settings} />
+      ) : label === 'Failure reasons' ? (
+        <FailureReasonsSection settings={settings} />
       ) : label === 'Recording' ? (
         <RecordingSection config={config} />
       ) : label === 'Data quality' ? (

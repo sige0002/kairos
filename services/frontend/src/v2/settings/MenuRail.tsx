@@ -1,4 +1,4 @@
-// Left menu rail: the 8 settings sections + a footer stamp of the ACTIVE robot.
+// Left menu rail: the settings sections + a footer stamp of the ACTIVE robot.
 
 import { useQuery } from '@tanstack/react-query';
 import { apiGet } from '../../api/client';

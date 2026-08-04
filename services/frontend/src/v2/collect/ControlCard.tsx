@@ -11,12 +11,12 @@ import { formatBytes, formatTimeOfDay } from '../review/format';
 import { CARD_PAD } from './compact';
 import {
   describeTaskOutcome,
-  FAIL_REASONS,
   QUALITY_LABEL,
   type BatchMachine,
   type MachineError,
   type QualityOverride,
 } from './useBatchMachine';
+import { useFailReasons } from '../plans';
 
 // Card gap that tightens on short viewports (see compact.ts).
 const CARD_GAP_COMPACT = '[@media(max-height:860px)]:gap-1.5';
@@ -255,6 +255,8 @@ function FieldRow({
 export function ControlCard({ machine }: { machine: BatchMachine }) {
   const { phase, stats } = machine;
   const takeover = machine.takeover;
+  // Live fail-reason vocabulary (Settings > Failure reasons; shared store).
+  const failReasons = useFailReasons();
 
   // Focus targets for each phase (D-4): re-target on every phase change so the
   // flow stays keyboard-operable and focus never falls to <body>.
@@ -798,7 +800,7 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
               What failed? (required)
             </span>
             <div className="flex flex-wrap gap-1.5">
-              {FAIL_REASONS.map((reason, i) => (
+              {failReasons.map((reason, i) => (
                 <button
                   key={reason}
                   ref={i === 0 ? failReasonRef : undefined}

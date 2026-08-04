@@ -7,6 +7,11 @@
 // store) makes edits reactive across screens and survive a tab-switch unmount;
 // it also persists to localStorage (versioned key) so edits survive a reload.
 //
+// The same store also carries the FAILURE-REASON vocabulary (the chips Collect
+// offers when an episode is marked Failure, edited in Settings) — one more
+// label axis with exactly the same shared-vocabulary reasoning, synced through
+// the same /api/v1/plans catalog.
+//
 // SERVER SYNC (2026-07-14, batch-label decision): the catalog is the label
 // VOCABULARY Collect stamps onto batches/episodes, so every terminal must
 // share ONE copy — GET/PUT /api/v1/plans persists it in the orchestrator.
@@ -52,6 +57,20 @@ export const DEFAULT_PLANS: PlanProject[] = [
     name: 'Kitchen Mobile',
     tasks: [{ name: 'Drawer Open', conditions: ['Drawer: top', 'Drawer: bottom'] }],
   },
+];
+
+// The fail-reason vocabulary Collect offers when an episode is marked Failure
+// (edited in Settings > Failure reasons). Kept non-empty everywhere: labeling
+// a Failure REQUIRES a reason, so an empty vocabulary would soft-lock that
+// flow — the editor blocks removing the last entry and this store refuses an
+// empty replacement.
+export const DEFAULT_FAIL_REASONS = [
+  'Grasp missed',
+  'Object dropped',
+  'Wrong placement',
+  'Object misplaced at start',
+  'Robot fault',
+  'Other',
 ];
 
 /** Deep copy so the store's arrays are never mutated in place by a caller. */
@@ -106,7 +125,25 @@ function readInitial(): PlanProject[] {
   }
 }
 
+const FAIL_REASONS_KEY = 'kairos.v2.failreasons.v1';
+
+function isReasonList(v: unknown): v is string[] {
+  return Array.isArray(v) && v.length > 0 && v.every((r) => typeof r === 'string');
+}
+
+function readInitialFailReasons(): string[] {
+  try {
+    const raw = window.localStorage.getItem(FAIL_REASONS_KEY);
+    if (!raw) return DEFAULT_FAIL_REASONS.slice();
+    const parsed = JSON.parse(raw) as unknown;
+    return isReasonList(parsed) ? parsed : DEFAULT_FAIL_REASONS.slice();
+  } catch {
+    return DEFAULT_FAIL_REASONS.slice();
+  }
+}
+
 let currentPlans: PlanProject[] = readInitial();
+let currentFailReasons: string[] = readInitialFailReasons();
 const listeners = new Set<() => void>();
 
 function notify(): void {
@@ -131,14 +168,37 @@ export function setPlans(next: PlanProject[]): void {
     // localStorage unavailable — the in-memory catalog still works this session.
   }
   notify();
-  pushPlansToServer(next);
+  pushCatalogToServer();
+}
+
+/** Current fail-reason vocabulary snapshot (stable until the next set). */
+export function getFailReasons(): string[] {
+  return currentFailReasons;
+}
+
+/** Replace the fail-reason vocabulary — same persist/push/notify path as
+ *  setPlans. An empty replacement is refused (see DEFAULT_FAIL_REASONS: the
+ *  Failure flow requires a reason, so the vocabulary must never empty out). */
+export function setFailReasons(next: string[]): void {
+  if (next.length === 0) return;
+  currentFailReasons = next;
+  writeDirty(true);
+  try {
+    window.localStorage.setItem(FAIL_REASONS_KEY, JSON.stringify(next));
+  } catch {
+    // localStorage unavailable — the in-memory copy still works this session.
+  }
+  notify();
+  pushCatalogToServer();
 }
 
 // ---- server sync -----------------------------------------------------------
 
-/** GET/PUT /api/v1/plans response shape (see routers/plans.py). */
+/** GET/PUT /api/v1/plans response shape (see routers/plans.py). A backend
+ *  from before the failure_reasons field simply omits it (undefined). */
 interface PlansServerResponse {
   projects: PlanProject[] | null;
+  failure_reasons?: string[] | null;
   updated_at: string | null;
 }
 
@@ -163,8 +223,11 @@ function writeDirty(dirty: boolean): void {
   }
 }
 
-function pushPlansToServer(projects: PlanProject[]): void {
-  apiPut<PlansServerResponse>('/plans', { projects })
+function pushCatalogToServer(): void {
+  apiPut<PlansServerResponse>('/plans', {
+    projects: getPlans(),
+    failure_reasons: getFailReasons(),
+  })
     .then(() => writeDirty(false))
     .catch(() => {
       // Offline / older backend: the dirty flag stays set and the local copy
@@ -185,26 +248,47 @@ function adoptServerPlans(projects: PlanProject[]): void {
   notify();
 }
 
+/** Adopt the server fail-reason vocabulary (no dirty mark, no re-push).
+ *  Unlike projects, an empty list is NOT adopted — the Failure flow requires
+ *  a reason, so an unusable vocabulary keeps the local copy instead. */
+function adoptServerFailReasons(reasons: string[]): void {
+  if (!isReasonList(reasons)) return;
+  currentFailReasons = reasons.slice();
+  try {
+    window.localStorage.setItem(FAIL_REASONS_KEY, JSON.stringify(currentFailReasons));
+  } catch {
+    /* ignore */
+  }
+  notify();
+}
+
 // Once per page load (module flag) — later mounts are no-ops.
 let plansSyncStarted = false;
 
 /** Reconcile the browser-local catalog with the server, once per page load:
- *  never-set server → seed it from this browser; unsynced local edits → push
- *  them; otherwise adopt the server copy. Any failure keeps the local copy. */
+ *  never-set server halves (projects and/or failure_reasons) → seed them from
+ *  this browser; unsynced local edits → push them; otherwise adopt the server
+ *  copy. Any failure keeps the local copy. */
 export function ensurePlansSynced(): void {
   if (plansSyncStarted) return;
   plansSyncStarted = true;
   apiGet<PlansServerResponse>('/plans')
     .then((resp) => {
-      if (!resp || !Array.isArray(resp.projects)) {
-        if (resp && resp.projects === null) pushPlansToServer(getPlans());
-        return;
-      }
+      if (!resp) return;
       if (readDirty()) {
-        pushPlansToServer(getPlans());
+        pushCatalogToServer();
         return;
       }
-      adoptServerPlans(resp.projects);
+      if (Array.isArray(resp.projects)) adoptServerPlans(resp.projects);
+      if (isReasonList(resp.failure_reasons)) {
+        adoptServerFailReasons(resp.failure_reasons);
+      }
+      // Seed whichever half the server has never stored (null, or absent on a
+      // pre-field backend). A server-side EMPTY reasons list is neither
+      // adopted (unusable, see above) nor re-pushed — the local copy stands.
+      if (resp.projects === null || resp.failure_reasons == null) {
+        pushCatalogToServer();
+      }
     })
     .catch(() => {
       // API unreachable — the browser-local catalog stands.
@@ -230,21 +314,42 @@ export function usePlans(): PlanProject[] {
   );
 }
 
+/** React binding for the fail-reason vocabulary — same semantics as usePlans
+ *  (re-render on change, first mount kicks the server reconcile). */
+export function useFailReasons(): string[] {
+  useEffect(() => {
+    ensurePlansSynced();
+  }, []);
+  return useSyncExternalStore(
+    (l) => {
+      listeners.add(l);
+      return () => {
+        listeners.delete(l);
+      };
+    },
+    getFailReasons,
+    getFailReasons,
+  );
+}
+
 /** Test-only: reset the catalog + clear its persistence between cases. */
 export function __resetPlansStore(): void {
   try {
     window.localStorage.removeItem(STORAGE_KEY);
     window.localStorage.removeItem(DIRTY_KEY);
+    window.localStorage.removeItem(FAIL_REASONS_KEY);
   } catch {
     /* ignore */
   }
   plansSyncStarted = false;
   currentPlans = clonePlans(DEFAULT_PLANS);
+  currentFailReasons = DEFAULT_FAIL_REASONS.slice();
   notify();
 }
 
 /** Test-only: re-run the storage-restore path after seeding localStorage. */
 export function __rehydratePlansStore(): void {
   currentPlans = readInitial();
+  currentFailReasons = readInitialFailReasons();
   notify();
 }
