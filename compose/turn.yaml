@@ -10,7 +10,7 @@
 #   1) Run it on a host BOTH peers can reach (usually the robot/streamer host):
 #        TURN_EXTERNAL_IP=<that host's reachable IP> \
 #        TURN_USERNAME=kairos TURN_PASSWORD=<pick-one> \
-#        docker compose -f compose.turn.yaml up -d
+#        docker compose -f compose/turn.yaml up -d
 #   2) Point kairos at it via WEBRTC_ICE_SERVERS in .env (see .env.example),
 #      e.g. add {"urls":["turn:<TURN_EXTERNAL_IP>:3478"],
 #                "username":"kairos","credential":"<pick-one>"}

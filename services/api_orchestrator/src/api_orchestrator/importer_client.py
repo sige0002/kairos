@@ -1,6 +1,6 @@
 """Internal HTTP client for the importer sidecar (cross-host split).
 
-The importer (``deploy/sync/``, defined ONLY in ``compose.recording.yaml``)
+The importer (``deploy/sync/``, defined ONLY in ``compose/recording.yaml``)
 pulls finished captures from the robot over rsync/ssh. The orchestrator asks it
 to pull one right after the first review save when the recording config opts in
 (``transfer.auto_pull_on_save``); a single-host deploy runs no importer and

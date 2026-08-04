@@ -62,8 +62,8 @@ kairos/
 ├─ deploy/                # 補助（msgs overlay / 結合テスト harness / ロボット→PC 取り込み sync）
 ├─ e2e/                   # UI 受け入れテスト（Playwright。frontend とは別プロジェクト）
 ├─ Makefile               # docker compose + テストハーネスのショートカット
-├─ compose.yaml           # 単一ホストの起動エントリ。分割構成は compose.robot.yaml /
-│                         #   compose.recording.yaml（その代替が compose.zenoh.yaml）。TURN は compose.turn.yaml
+├─ compose/               # 起動定義（単一ホスト = compose.yaml。分割構成は robot.yaml /
+│                         #   recording.yaml〔代替 zenoh.yaml〕。TURN = turn.yaml、archive = archive.yaml）
 ├─ .github/workflows/     # CI（ci.yml = ローカルの make と同じ検証、ros-integration.yml）
 ├─ docs/                  # 仕様・設計ドキュメント
 └─ data/                  # ランタイムデータ（gitignored）→ 次節
@@ -153,7 +153,7 @@ kairos/
 - **CI**（`.github/workflows/ci.yml`、`develop` / `main` への push・PR）はローカルと同じ検証を回す —
   各 Python パッケージの pytest、frontend の build/test/lint、`ruff check` と **`ruff format --check`**、
   全 compose ファイルの `config -q`。ROS ツールチェーンを要する bag 収録の往復は `ros-integration.yml`。
-- **ビルド**: 各サービスは自身の `Dockerfile` で 1 イメージ。全体は `docker compose build`、起動は `docker compose up`。
+- **ビルド**: 各サービスは自身の `Dockerfile` で 1 イメージ。全体は `make build`、起動は `make up`。compose ファイルは `compose/` 配下のため、素の docker compose を使うなら `docker compose --project-directory . -f compose/compose.yaml …` と明示する（相対パスをリポジトリルートに固定するため）。
 - **結合テスト（実データ再生）**: テスト用に **rosbag2 を再生 + 可視化するコンテナ**を用意済み。
   - 定義は `deploy/test/`。`data/` を read-only で `/data` に共有し、収録済み MCAP を ROS 2 グラフへ流す。
   - **`ROS_DOMAIN_ID`** はスタックと同じ `.env` の値に追従（既定 0）、`network_mode: host` / `ipc: host`（ホストの DDS グラフ・SHM を共有）。

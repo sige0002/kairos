@@ -104,8 +104,8 @@ MON="http://127.0.0.1:${TOPIC_MONITOR_PORT}"
 compose() {
   # compose.archive.yaml mounts the acceptance archive root (§6.1 scenario 6)
   # into the orchestrator; it exists only for this stack, never in a deploy.
-  docker compose --env-file "$ENV_FILE" --env-file "$HOST_ENV" \
-    -f compose.yaml -f e2e/compose.archive.yaml -p "$PROJECT" "$@"
+  docker compose --project-directory . --env-file "$ENV_FILE" --env-file "$HOST_ENV" \
+    -f compose/compose.yaml -f e2e/compose.archive.yaml -p "$PROJECT" "$@"
 }
 say() { printf '\033[36me2e:\033[0m %s\n' "$*"; }
 die() { printf '\033[31me2e: %s\033[0m\n' "$*" >&2; exit 1; }
@@ -285,7 +285,7 @@ wait_for() {
 
 cmd_wait() {
   wait_for orchestrator "$ORCH/healthz" 90 orchestrator || die "orchestrator not ready"
-  # /healthz is liveness by design (see compose.yaml) — it answers before the
+  # /healthz is liveness by design (see compose/compose.yaml) — it answers before the
   # store is usable. The catalog answering is what the tests actually need, and
   # waiting on it here turns a startup race into a readiness wait instead of a
   # 500 in the middle of the first scenario.

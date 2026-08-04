@@ -2,7 +2,7 @@
 
 In the cross-host split the recorder writes MCAP on the ROBOT's disk and the
 recording PC copies finished captures over through the importer sidecar
-(``deploy/sync/``, defined only in ``compose.recording.yaml``; it binds
+(``deploy/sync/``, defined only in ``compose/recording.yaml``; it binds
 127.0.0.1, so the orchestrator is its only caller — the UI goes through here).
 
 §10.6 rekeys this to ``capture_id``. Two consequences worth stating:

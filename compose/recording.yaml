@@ -5,18 +5,18 @@
 # dora_runner (reads MCAP via the mcap lib, CPU-heavy validation/conversion), and
 # frontend (nginx). Because NONE of these join the robot's DDS graph, running them
 # on a separate PC cannot load the robot's onboard system. They reach the
-# robot-edge services (compose.robot.yaml) over HTTP at the robot's LAN IP, set
+# robot-edge services (compose/robot.yaml) over HTTP at the robot's LAN IP, set
 # via *_HOST in .env (copy .env.split.example -> .env and fill in ROBOT_IP).
 #
 # This is a STANDALONE file (not an overlay): it contains ONLY the recording-host
 # services, so you physically cannot start a DDS reader here by accident. Service
-# definitions are pulled from compose.yaml via `extends` (no drift).
+# definitions are pulled from compose/compose.yaml via `extends` (no drift).
 #
 #   # on the RECORDING PC:
 #   cp .env.split.example .env   # set RECORDER_HOST/TOPIC_MONITOR_HOST/WEBRTC_HOST/
 #                                #     TOPIC_PROBE_HOST/WEBRTC_HOST/PROBE_HOST = robot IP
-#   docker compose -f compose.recording.yaml build   # first time / after a code change
-#   docker compose -f compose.recording.yaml up -d
+#   docker compose --project-directory . -f compose/recording.yaml build   # first time / after a code change
+#   docker compose --project-directory . -f compose/recording.yaml up -d
 #   # (or:  make recording-up)
 #
 # MCAP boundary: the recorder writes bags on the ROBOT's disk. Pull COMPLETED runs
@@ -29,15 +29,15 @@ name: kairos-recording
 services:
   orchestrator:
     extends:
-      file: compose.yaml
+      file: compose/compose.yaml
       service: orchestrator
   dora_runner:
     extends:
-      file: compose.yaml
+      file: compose/compose.yaml
       service: dora_runner
   frontend:
     extends:
-      file: compose.yaml
+      file: compose/compose.yaml
       service: frontend
     # The inherited `depends_on: orchestrator (service_healthy)` is valid here —
     # the orchestrator is co-located on this recording PC, so the frontend waits
@@ -45,7 +45,7 @@ services:
     # to the orchestrator). The robot-edge streamer/probe it also proxies to are
     # reached lazily at request time, so they need no ordering.
 
-  # Pull sidecar (recording-host ONLY — deliberately NOT in compose.yaml, so the
+  # Pull sidecar (recording-host ONLY — deliberately NOT in compose/compose.yaml, so the
   # single-host `make up` never runs it): rsyncs FINALISED captures from the
   # robot into this PC's ./data/objects behind a tiny localhost HTTP trigger.
   # The orchestrator POSTs /pull right after a Collect Save when the recording

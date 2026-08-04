@@ -262,7 +262,7 @@ services:
       # http://<host>:8002 only for the legacy direct-connect mode.
       WEBRTC_PUBLIC_URL: ${WEBRTC_PUBLIC_URL:-/webrtc}
       # Downstream service hosts. Default localhost = single-host deploy. For the
-      # robot-edge split (compose.recording.yaml) point the DDS-reading services
+      # robot-edge split (compose/recording.yaml) point the DDS-reading services
       # at the robot's LAN IP; DORA_RUNNER_HOST stays local (CPU-heavy, runs
       # beside the orchestrator). See docs/specs/ja/deployment_topology.md.
       RECORDER_HOST: ${RECORDER_HOST:-localhost}
@@ -372,7 +372,7 @@ services:
       WEBRTC_PORT: ${WEBRTC_PORT:-8002}
       TOPIC_PROBE_PORT: ${TOPIC_PROBE_PORT:-8003}
       # Upstream HOSTS for the nginx proxy. Default 127.0.0.1 = single-host
-      # (co-located) deploy. For the robot-edge split (compose.recording.yaml),
+      # (co-located) deploy. For the robot-edge split (compose/recording.yaml),
       # point WEBRTC_HOST / PROBE_HOST at the ROBOT's LAN IP (streamer + probe
       # run on the robot); API_HOST stays the orchestrator host (co-located with
       # the frontend on the recording PC). These MUST be present so envsubst does

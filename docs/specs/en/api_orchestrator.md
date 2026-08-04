@@ -144,7 +144,7 @@ The dataset's terminal transition. The capture archive lifted to a dataset: the 
 
 ## Transfer (split deployments, `/api/v1/transfer/*`)
 
-In a deployment where the robot and the recording PC are separate hosts, this is the path that draws a completed capture over to the recording PC side. The rsync itself is done by the importer sidecar (`deploy/sync/`, present only in `compose.recording.yaml` and bound to 127.0.0.1), and the orchestrator is its only caller.
+In a deployment where the robot and the recording PC are separate hosts, this is the path that draws a completed capture over to the recording PC side. The rsync itself is done by the importer sidecar (`deploy/sync/`, present only in `compose/recording.yaml` and bound to 127.0.0.1), and the orchestrator is its only caller.
 
 - `GET /api/v1/transfer/status` → `{ available, auto_pull_on_save }`. `available` is the reachability of the importer's `/healthz`, and that **is the frontend's split-deployment signal as it stands** (in a single-host deployment there is no importer, so it is false).
 - `POST /api/v1/transfer/pull` → `202`. The **`capture_id` in the body is optional**:

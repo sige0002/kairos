@@ -14,19 +14,19 @@
 #
 # This is a STANDALONE file (not an overlay): it contains ONLY the robot-edge
 # services, so you physically cannot start the orchestrator/dora/frontend here.
-# Service definitions are pulled from compose.yaml via `extends`, so they never
+# Service definitions are pulled from compose/compose.yaml via `extends`, so they never
 # drift from the single-host default.
 #
 #   # on the ROBOT:
 #   # first time (or after a code change): build, then start
-#   ROBOT=airoa_hsr ROS_DOMAIN_ID=<robot's domain> docker compose -f compose.robot.yaml build
-#   ROBOT=airoa_hsr ROS_DOMAIN_ID=<robot's domain> docker compose -f compose.robot.yaml up -d
+#   ROBOT=airoa_hsr ROS_DOMAIN_ID=<robot's domain> docker compose --project-directory . -f compose/robot.yaml build
+#   ROBOT=airoa_hsr ROS_DOMAIN_ID=<robot's domain> docker compose --project-directory . -f compose/robot.yaml up -d
 #   # no network here? carry the images in instead of building:
 #   #   (where there IS network)  make robot-images-save
 #   #   (here)                    make images-load IMAGES_FILE=kairos-images.tar.gz
 #   # (or:  make robot-up)
 #
-# The recording PC runs compose.recording.yaml and points its service HOSTs at
+# The recording PC runs compose/recording.yaml and points its service HOSTs at
 # this robot's LAN IP. See docs/specs/ja/deployment_topology.md.
 # =============================================================================
 name: kairos-robot
@@ -34,17 +34,17 @@ name: kairos-robot
 services:
   recorder:
     extends:
-      file: compose.yaml
+      file: compose/compose.yaml
       service: recorder
   monitor:
     extends:
-      file: compose.yaml
+      file: compose/compose.yaml
       service: monitor
   streamer:
     extends:
-      file: compose.yaml
+      file: compose/compose.yaml
       service: streamer
   probe:
     extends:
-      file: compose.yaml
+      file: compose/compose.yaml
       service: probe

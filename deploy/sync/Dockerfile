@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # importer — recording-PC sidecar that pulls finalised runs from the robot
 # (deploy/sync/import_runs.sh behind a tiny HTTP trigger, importer_httpd.py).
-# Defined ONLY in compose.recording.yaml: the single-host stack (compose.yaml)
+# Defined ONLY in compose/recording.yaml: the single-host stack (compose/compose.yaml)
 # has the data locally and never runs this image.
 #
 # Reuses the repo's pinned slim Python base (already cached for

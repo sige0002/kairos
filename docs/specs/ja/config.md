@@ -50,7 +50,7 @@
 | `WEBRTC_KEEP_IPV6` | （未設定） | `1` で answer SDP の IPv6 ICE 候補除外を無効化。既定（未設定）では v6 候補を落とす（断片化 IPv6 が WireGuard/Tailscale でブラックホール化しプレビューが黒くなるのを防ぐ）。v6 でしか到達できない網でだけ `1` にする |
 | `LOG_LEVEL` | `INFO` | ログレベル |
 | `RETENTION_DAYS` | `0` | `0`=無効。`>0` で古い capture を保持期間で削除候補に（助言のみ） |
-| `KAIROS_ARCHIVE_ROOTS` | (任意・既定は空=無効) | capture / dataset の archive 先として許可するルート（`:` 区切り、**コンテナから見た絶対パス**）。空なら archive 機能自体を提供しない（必ず失敗するボタンを置かない）。destination はここに対して検証され、`data_dir` と重なるものは拒否される（[capture_store](capture_store.md) §6/§6.1）。**必ず volume マウントと対で設定する** — 単一ホストは `.env` に `COMPOSE_FILE=compose.yaml:compose.archive.yaml`＋`ARCHIVE_DIR=<host パス>` を足す（root の `compose.archive.yaml` が `${ARCHIVE_DIR}` を `/archive` にマウントする）。マウント無しの root を許可すると、エクスポートは**コンテナ層に書かれて再作成で消える**（move ならその時点で源も削除済み）。split 構成は `COMPOSE_FILE` 行が不要 — **`make recording-up` が、split env に `ARCHIVE_DIR` があれば `-f compose.archive.yaml` を自動で付ける**（`-f` 明示は `COMPOSE_FILE` に勝つため Makefile 側で配線）。素の `docker compose -f compose.recording.yaml` を使う場合はコマンドラインに `-f compose.archive.yaml` を足す |
+| `KAIROS_ARCHIVE_ROOTS` | (任意・既定は空=無効) | capture / dataset の archive 先として許可するルート（`:` 区切り、**コンテナから見た絶対パス**）。空なら archive 機能自体を提供しない（必ず失敗するボタンを置かない）。destination はここに対して検証され、`data_dir` と重なるものは拒否される（[capture_store](capture_store.md) §6/§6.1）。**必ず volume マウントと対で設定する** — `.env`（split は `.env.split`）に `ARCHIVE_DIR=<host パス>` を足せば、**`make up` / `make recording-up` が `-f compose/archive.yaml` を自動で付ける**（`compose/archive.yaml` が `${ARCHIVE_DIR}` を `/archive` にマウントする。旧 `COMPOSE_FILE` 配線は廃止 — 明示の `-f` に常に負けるため）。マウント無しの root を許可すると、エクスポートは**コンテナ層に書かれて再作成で消える**（move ならその時点で源も削除済み）。素の `docker compose` を使う場合はコマンドラインに `-f compose/archive.yaml` を足す |
 | `KAIROS_REBUILD` | (未設定) | 立てると次回起動時に `kairos.db` をサイドカーから rebuild する。「`kairos.db` を消して再起動」の運用版（動いているコンテナからファイルを消させない） |
 | `MAX_RECORD_BYTES` | `0` | `0`=無制限。`>0` で超過時に記録を自動 stop |
 | `MAX_RECORD_SECONDS` | `600` | 1 録画の wall-clock 上限（秒）。`0`=無効。孤児（zombie）録画のディスク保護バックストップ — タブを閉じても録画は止まらないため、可視の Stop UI が主たる回収で、これは無人時の保険。上限到達の自動停止は orchestrator の遅延 reconciliation により通常の completed として確定する |
@@ -75,7 +75,7 @@
 | `BAG` | `airoa-moma-mcap/235210` | 再生する bag。`data/` からの相対パス（例 `airoa-moma-mcap/000730`）。絶対パス（`/data/...`）も可。コマンドライン優先指定は `make rosbag BAG=...` |
 | `LOOP` | (空=1 回のみ) | `--loop` を指定するとループ再生（`make rosbag-loop` と同じ効果） |
 
-- サービス間は信頼 LAN 内で通信する（既定は host networking で `localhost:<port>`。内部ポートも上表のとおり）。マルチテナント host ではブリッジ網 + DDS unicast に切替（`compose.yaml` のネットワーク注記参照）。
+- サービス間は信頼 LAN 内で通信する（既定は host networking で `localhost:<port>`。内部ポートも上表のとおり）。マルチテナント host ではブリッジ網 + DDS unicast に切替（`compose/compose.yaml` のネットワーク注記参照）。
 - 共通の設定スキーマは `libs/kairos_common`（pydantic-settings）に置き、各サービスが env を型付きで読む。
 - compose は全 7 サービスに `GET /healthz`（frontend は nginx root）ベースの healthcheck を持ち、frontend は `depends_on: orchestrator (service_healthy)` で orchestrator の healthy を待って起動する。
 

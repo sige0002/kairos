@@ -10,18 +10,16 @@
 # makes the destination real. (The acceptance stack wires its own copy of
 # this in e2e/compose.archive.yaml.)
 #
-# Enable in .env — all three lines together:
+# Enable in .env (split: .env.split) — both lines together:
 #
-#   COMPOSE_FILE=compose.yaml:compose.archive.yaml
 #   ARCHIVE_DIR=/mnt/nas/kairos-archive        # host side: where exports land
 #   KAIROS_ARCHIVE_ROOTS=/archive              # container side: this mount
 #
-# `make up` and bare `docker compose` both honor COMPOSE_FILE from .env. The
-# split deploy needs no COMPOSE_FILE line: `make recording-up` appends this
-# file by itself whenever the split env sets ARCHIVE_DIR (an explicit -f
-# overrides COMPOSE_FILE, so the Makefile owns the wiring there). Plain
-# `docker compose -f compose.recording.yaml` users add `-f compose.archive.yaml`
-# to the command line. See docs/specs/ja/config.md.
+# `make up` / `make recording-up` append this file by themselves whenever the
+# active env sets ARCHIVE_DIR. (The old COMPOSE_FILE-in-.env wiring is retired
+# — an explicit -f always overrode it, a silent-breakage trap.) Plain
+# `docker compose` users add `-f compose/archive.yaml` to the command line.
+# See docs/specs/ja/config.md.
 services:
   orchestrator:
     volumes:

@@ -96,10 +96,11 @@ For the detailed spec of each service, see [docs/specs/en/](docs/specs/en/README
 ```bash
 make build                    # build the images (first time and after code changes; needs network)
 make up                       # start (detached). Robot selected via ROBOT (default airoa_hsr)
-# or with plain docker compose:
+# or with plain docker compose (compose files live under compose/;
+# --project-directory pins relative paths to the repo root):
 cp .env.example .env          # edit as needed
-docker compose build
-docker compose up
+docker compose --project-directory . -f compose/compose.yaml build
+docker compose --project-directory . -f compose/compose.yaml up
 ```
 
 > **`make up` does not build** (it only starts). Building needs the network even when nothing changed,

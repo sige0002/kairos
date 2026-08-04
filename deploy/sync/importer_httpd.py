@@ -1,7 +1,7 @@
 """importer sidecar — tiny HTTP trigger around import_runs.sh (stdlib only).
 
-Runs on the RECORDING PC beside the orchestrator (compose.recording.yaml; it is
-deliberately absent from the single-host compose.yaml, where the data is already
+Runs on the RECORDING PC beside the orchestrator (compose/recording.yaml; it is
+deliberately absent from the single-host compose/compose.yaml, where the data is already
 local). The orchestrator POSTs /pull {"run_id": ...} right after a Collect Save
 when the recording config opts in (transfer.auto_pull_on_save, default false),
 and this daemon rsyncs that capture's files from the robot into the PC-local

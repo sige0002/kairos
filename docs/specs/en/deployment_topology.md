@@ -5,7 +5,7 @@
 
 > A placement design for recording a rosbag (MCAP) that includes heavy topics such as images
 > from a separate PC (the recording PC), while **not overloading the robot's onboard system at all**. The premise is **wired, same LAN**.
-> The existing single-host configuration (`compose.yaml`) works as-is with no changes (this configuration is an additional "split deployment").
+> The existing single-host configuration (`compose/compose.yaml`) works as-is with no changes (this configuration is an additional "split deployment").
 
 ## 1. The problem: remote DDS subscription overloads the robot
 
@@ -82,8 +82,8 @@ The claim above — "local subscription via ipc:host shared memory = zero additi
 ## 3. Option A (default): edge recording (place the recorder on the robot)
 
 ### 3.1 Configuration files
-- `compose.robot.yaml` … the 4 robot-side services only (reuses definitions from `compose.yaml` via `extends`).
-- `compose.recording.yaml` … the 3 recording-PC-side services only.
+- `compose/robot.yaml` … the 4 robot-side services only (reuses definitions from `compose/compose.yaml` via `extends`).
+- `compose/recording.yaml` … the 3 recording-PC-side services only.
 - **Split into 2 files rather than profiles**: with 1 file + profiles it is easy to "accidentally start a DDS reader on the recording PC".
   **The recording PC's file does not contain any DDS service in the first place**, so the accident cannot happen.
 
@@ -92,14 +92,14 @@ Robot:
 ```bash
 # Place this repository on the robot; match the robot's ROS 2 graph via .env
 cp .env.split.example .env   # edit ROS_DOMAIN_ID / RMW_IMPLEMENTATION / ROS_DISTRO
-make robot-up                # or: docker compose --env-file .env -f compose.robot.yaml up -d --build
+make robot-up                # or: docker compose --project-directory . --env-file .env -f compose/robot.yaml up -d --build
 ```
 - `.env.split.example` has a **"ROS 2 graph (robot side)" section** where you set `ROS_DOMAIN_ID` /
   `RMW_IMPLEMENTATION` / `ROS_DISTRO` (and optionally `CYCLONEDDS_URI` / `FASTRTPS_DEFAULT_PROFILES_FILE` /
   `MSGS_OVERLAY_DIR` / `BIND_HOST`). For `ROS_DISTRO`, **the .env value beats the Makefile default
   (jazzy)** (the image tag/base switches too).
 - Networking: all four robot-side services run with `network_mode: host` + `ipc: host` (inherited via
-  `extends` from `compose.yaml`). The HTTP APIs bind `BIND_HOST` (default `0.0.0.0`) and must be
+  `extends` from `compose/compose.yaml`). The HTTP APIs bind `BIND_HOST` (default `0.0.0.0`) and must be
   reachable from the recording PC across the LAN (trusted-LAN premise; narrow it to the robot's LAN
   interface IP if you must).
 - A robot using the gitignored `config/local/<robot>/` resolves even under plain `docker compose`
@@ -111,7 +111,7 @@ Recording PC:
 ```bash
 cp .env.split.example .env
 # Set ROBOT_IP in .env to the robot's LAN IP. *_HOST references it.
-docker compose -f compose.recording.yaml up -d --build    # or: make recording-up
+docker compose --project-directory . -f compose/recording.yaml up -d --build    # or: make recording-up
 ```
 
 ### 3.3 Seams in the code (default localhost, backward compatible)
@@ -146,8 +146,8 @@ The recorder writes MCAP to **the robot's disk**. dora (CPU-heavy) reads a **PC-
   against `KAIROS_ARCHIVE_ROOTS` and rejected when it overlaps `data_dir` (checked in both directions
   by realpath).
 - **Save-triggered auto-pull (optional, default OFF)**: the recording-PC stack bundles an **importer
-  sidecar** (`deploy/sync/`, defined ONLY in `compose.recording.yaml` — it does not exist in the
-  single-host `compose.yaml`, so `make up` is entirely unaffected). With
+  sidecar** (`deploy/sync/`, defined ONLY in `compose/recording.yaml` — it does not exist in the
+  single-host `compose/compose.yaml`, so `make up` is entirely unaffected). With
   `transfer.auto_pull_on_save: true` in the recording config (edited via Settings > Advanced JSON,
   the same way as `recording.pre_arm`), the orchestrator POSTs `/pull {"capture_id": …}` to the
   importer right after a Collect Save (**the first review saved against that capture** =
@@ -361,7 +361,7 @@ a convergence onto "fix A as the system of record + limit a gated bridge to live
 The only structural solution to "not overloading the robot" is **to not let heavy data leave the robot's DDS onto the network**.
 The default **Option A (edge recording + placement split)** guarantees this by not placing any DDS reader on the recording-PC side.
 Use **Option B (robot-side Zenoh gateway + DDS pinned to localhost)** only when you need live full data from a separate PC.
-The single-host configuration (`compose.yaml`) works as before with nothing changed.
+The single-host configuration (`compose/compose.yaml`) works as before with nothing changed.
 **Option C (a single boundary bridge) has been reviewed in a 3-agent adversarial debate (§5)**: rejected as a permanent
 architecture. It is settled that "recording is always on the robot (A), and the bridge is used only through gates when a
 hard requirement of live PC consumption arises". Because the recording frequency does not drop under any configuration at

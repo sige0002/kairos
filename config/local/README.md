@@ -15,7 +15,7 @@ config/local/<robot>/
 ```
 
 The whole `config/` directory is mounted read-only into the containers
-(`./config:/config:ro` in `compose.yaml`), so a robot here is reachable inside as
+(`./config:/config:ro` in `compose/compose.yaml`), so a robot here is reachable inside as
 `/config/local/<robot>/...` — no extra mount needed.
 
 ## Use a local robot

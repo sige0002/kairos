@@ -109,7 +109,7 @@ validation:
 # ---- post-save transfer (cross-host split; api_orchestrator) -----------------
 transfer:
   # Auto-pull the run from the robot right after Collect Save (the importer
-  # sidecar in compose.recording.yaml rsyncs the finalised run to this PC, so
+  # sidecar in compose/recording.yaml rsyncs the finalised run to this PC, so
   # it is reviewable seconds later with no manual `make import-runs`).
   # DEFAULT OFF: nothing is ever transferred without this explicit opt-in.
   # Inert on a single-host deploy (the data is already local). The robot-side

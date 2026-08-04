@@ -209,7 +209,7 @@ class TransferConfig(_StrictModel):
     In the robot-edge split the recorder writes MCAP on the ROBOT's disk and
     the recording PC pulls finalised runs over rsync/ssh (``deploy/sync/``).
     With ``auto_pull_on_save`` the orchestrator asks its importer sidecar
-    (``compose.recording.yaml``) to pull the run right after Collect Save
+    (``compose/recording.yaml``) to pull the run right after Collect Save
     (``POST /api/v1/episodes``), so the run is reviewable seconds later with
     no manual ``make import-runs``. Default OFF — nothing is ever transferred
     without an explicit opt-in; the flag is inert on a single-host deploy

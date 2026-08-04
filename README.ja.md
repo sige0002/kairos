@@ -93,10 +93,11 @@ flowchart LR
 ```bash
 make build                    # イメージを作る（初回とコード変更時だけ。ネットが要る）
 make up                       # 起動（detached）。機体は ROBOT で選択（既定 airoa_hsr）
-# あるいは素の docker compose で:
+# あるいは素の docker compose で（compose ファイルは compose/ 配下。
+# --project-directory で相対パスをリポジトリルートに固定する）:
 cp .env.example .env          # 必要に応じて編集
-docker compose build
-docker compose up
+docker compose --project-directory . -f compose/compose.yaml build
+docker compose --project-directory . -f compose/compose.yaml up
 ```
 
 > **`make up` はビルドしません**（起動するだけ）。ビルドは変更が無くてもネットワークを必要とする

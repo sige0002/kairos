@@ -143,7 +143,7 @@ dataset の終端遷移。capture archive を dataset に持ち上げたもの�
 
 ## 転送（split 構成・`/api/v1/transfer/*`）
 
-ロボットと録画 PC が別ホストの構成で、完成した capture を録画 PC 側へ引き寄せる経路。実体の rsync は importer サイドカー（`deploy/sync/`、`compose.recording.yaml` にのみ存在し 127.0.0.1 に bind する）が行い、orchestrator がその唯一の呼び出し元になる。
+ロボットと録画 PC が別ホストの構成で、完成した capture を録画 PC 側へ引き寄せる経路。実体の rsync は importer サイドカー（`deploy/sync/`、`compose/recording.yaml` にのみ存在し 127.0.0.1 に bind する）が行い、orchestrator がその唯一の呼び出し元になる。
 
 - `GET /api/v1/transfer/status` → `{ available, auto_pull_on_save }`。`available` は importer の `/healthz` 到達性で、これが**そのまま frontend にとっての split 判定信号**になる（単一ホスト構成では importer が存在しないので false）。
 - `POST /api/v1/transfer/pull` → `202`。body の **`capture_id` は任意**:

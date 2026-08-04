@@ -127,7 +127,7 @@ export function RecordingSection({ config }: { config: RuntimeConfig | undefined
               </span>
             </SummaryField>
             {/* Cross-host split: pull the run's files from the robot right
-                after Collect Save (importer sidecar; compose.recording.yaml).
+                after Collect Save (importer sidecar; compose/recording.yaml).
                 Default OFF — nothing transfers without an explicit opt-in.
                 Edited like pre_arm, via Advanced JSON
                 (transfer.auto_pull_on_save). Inert on a single-host deploy. */}

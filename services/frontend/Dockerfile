@@ -22,7 +22,7 @@ FROM nginx:1.27.5-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54
 # nginx envsubst template: the image entrypoint expands the ports
 # (${FRONTEND_PORT} / ${API_ORCH_PORT} / ${WEBRTC_PORT} / ${TOPIC_PROBE_PORT})
 # and the upstream hosts (${API_HOST} / ${WEBRTC_HOST} / ${PROBE_HOST}), all
-# passed by compose.yaml, into /etc/nginx/conf.d/default.conf at startup — so
+# passed by compose/compose.yaml, into /etc/nginx/conf.d/default.conf at startup — so
 # ports/hosts stay driven by .env / settings.py instead of being hardcoded in
 # the served config. Keep this list in sync with default.conf.template.
 COPY services/frontend/default.conf.template /etc/nginx/templates/default.conf.template

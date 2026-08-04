@@ -112,7 +112,7 @@ class Settings(BaseSettings):
     webrtc_host: str = "localhost"
     topic_probe_host: str = "localhost"
     dora_runner_host: str = "localhost"
-    # Importer sidecar (compose.recording.yaml only): pulls finalised runs from
+    # Importer sidecar (compose/recording.yaml only): pulls finalised runs from
     # the robot on request. Co-located with the orchestrator on the recording
     # PC, so it stays localhost even in the split (like dora_runner).
     importer_host: str = "localhost"
