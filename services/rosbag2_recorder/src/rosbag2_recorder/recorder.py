@@ -2150,6 +2150,15 @@ class RecorderSession:
         with self._lock:
             return self._status_locked()
 
+    def _disk_free_bytes(self) -> int | None:
+        """Free bytes on THIS recorder's data-dir filesystem (the robot's disk
+        in the split deploy). ``None`` when it cannot be statted — never a
+        made-up number."""
+        try:
+            return shutil.disk_usage(self._data_dir).free
+        except OSError:
+            return None
+
     def _status_locked(
         self, *, disarmed_capture_id: str | None = None
     ) -> RecordStatusResponse:
@@ -2181,6 +2190,7 @@ class RecorderSession:
                 arming=self._arming.model_copy(deep=True) if self._arming else None,
                 dropped_messages=None,
                 integrity="unknown",
+                disk_free_bytes=self._disk_free_bytes(),
             )
         message_count, size = 0, 0
         if self._capture_id is not None:
@@ -2205,6 +2215,7 @@ class RecorderSession:
             arming=self._arming.model_copy(deep=True) if self._arming else None,
             dropped_messages=self._dropped_messages,
             integrity=self._integrity,
+            disk_free_bytes=self._disk_free_bytes(),
         )
 
     def _live_capture_ids_locked(self) -> list[str]:

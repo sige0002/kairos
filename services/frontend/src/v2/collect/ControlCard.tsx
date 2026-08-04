@@ -872,15 +872,27 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
         >
           {saveLabel}
         </button>
-        <button
-          type="button"
-          onClick={machine.discardEpisode}
-          disabled={saving || machine.episodeDiscard.busy}
-          data-testid="discard-episode"
-          className="h-9 rounded-control border border-gray-200 bg-white text-[12.5px] font-semibold text-gray-500 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 [@media(max-height:860px)]:h-8"
-        >
-          Discard &amp; re-record this episode
-        </button>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={machine.retakeEpisode}
+            disabled={saving || machine.episodeDiscard.busy}
+            data-testid="retake-episode"
+            title="Discards this take (ledger reason: superseded by retake) and immediately starts recording again under the same labels."
+            className="h-9 flex-1 rounded-control border border-teal-200 bg-teal-50 text-[12.5px] font-semibold text-teal-700 hover:bg-teal-100 disabled:cursor-not-allowed disabled:opacity-50 [@media(max-height:860px)]:h-8"
+          >
+            ⟲ Retake — discard &amp; record again
+          </button>
+          <button
+            type="button"
+            onClick={machine.discardEpisode}
+            disabled={saving || machine.episodeDiscard.busy}
+            data-testid="discard-episode"
+            className="h-9 flex-1 rounded-control border border-gray-200 bg-white text-[12.5px] font-semibold text-gray-500 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 [@media(max-height:860px)]:h-8"
+          >
+            Discard only
+          </button>
+        </div>
       </Card>
     );
   }

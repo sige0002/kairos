@@ -15,6 +15,7 @@ import type { SseStatus } from '../../store/uiStore';
 import { ADVICE_ITEMS, type BatchMachine } from './useBatchMachine';
 import { SIDE_PAD } from './compact';
 import { formatBytes } from '../review/format';
+import { useRecordStatus } from '../captures/useRecordStatus';
 import { useMonitorRows } from '../../features/monitor/useMonitorRows';
 import type { CameraHealth } from './Cameras';
 import { armingWarning, configMismatchHint, firingAlertRows, topicRates } from './warnings';
@@ -99,11 +100,32 @@ export function SystemStatusCard({
     refetchInterval: 5000,
   });
   const disk = system?.disk ?? null;
-  const storageOk = disk != null && disk.free_bytes >= LOW_STORAGE_FREE_BYTES;
-  const storageRow: SysRow = disk
+  // Prefer the disk the RECORDER writes (its status reports its own data-dir
+  // free space — the robot's disk in the split deploy, which /system cannot
+  // see). Falls back to the console host's disk on an older recorder.
+  const recStatus = useRecordStatus();
+  const recFree = recStatus.reachable
+    ? (recStatus.status?.disk_free_bytes ?? null)
+    : null;
+  const freeBytes = recFree ?? disk?.free_bytes ?? null;
+  // Headroom in HOURS, from the live write rate of the same status poll —
+  // shown only while actually recording, past the settle window (the first
+  // seconds legitimately read 0 B), and never invented while idle.
+  let headroom: string | null = null;
+  if (recStatus.recording && recStatus.status?.started_at && freeBytes != null) {
+    const elapsedS = (Date.now() - Date.parse(recStatus.status.started_at)) / 1000;
+    const bytes = recStatus.status.bytes ?? 0;
+    if (elapsedS > 10 && bytes > 0) {
+      const hours = freeBytes / (bytes / elapsedS) / 3600;
+      headroom =
+        hours > 99 ? '>99 h left' : `≈${hours.toFixed(hours < 10 ? 1 : 0)} h left`;
+    }
+  }
+  const storageOk = freeBytes != null && freeBytes >= LOW_STORAGE_FREE_BYTES;
+  const storageRow: SysRow = freeBytes != null
     ? {
         label: 'Storage',
-        value: `${formatBytes(disk.free_bytes)} free`,
+        value: `${formatBytes(freeBytes)} free${headroom ? ` · ${headroom}` : ''}`,
         chip: storageOk ? 'OK' : 'CHECK',
         tone: storageOk ? 'green' : 'amber',
       }

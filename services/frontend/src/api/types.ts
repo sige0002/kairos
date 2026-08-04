@@ -168,6 +168,10 @@ export interface RecordStatus {
   arming?: RecordArming | null;
   integrity?: RecordIntegrity;
   dropped_messages?: number | null;
+  /** Free space on the RECORDER's data-dir filesystem — the robot's disk in
+   *  the split deploy, which the console-side /system probe cannot see.
+   *  Absent/null when the recorder cannot stat it (older recorder included). */
+  disk_free_bytes?: number | null;
 }
 
 /**

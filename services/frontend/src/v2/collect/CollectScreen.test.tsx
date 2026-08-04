@@ -521,7 +521,7 @@ test('Discard & re-record discards in one click, keyed on capture_id', async () 
   renderWithClient(<CollectScreen />);
   await driveToResult();
 
-  fireEvent.click(screen.getByRole('button', { name: /Discard & re-record this episode/ }));
+  fireEvent.click(screen.getByTestId('discard-episode'));
   // Nothing opens — the press is the consent.
   expect(screen.queryByTestId('discard-dialog')).toBeNull();
 
@@ -559,7 +559,7 @@ test('on a split deployment the discard toast says the robot copy is untouched',
   renderWithClient(<CollectScreen />);
   await driveToResult();
 
-  fireEvent.click(screen.getByRole('button', { name: /Discard & re-record this episode/ }));
+  fireEvent.click(screen.getByTestId('discard-episode'));
   await waitFor(() =>
     expect(
       screen.getByText(/the robot's own copy is untouched/i),

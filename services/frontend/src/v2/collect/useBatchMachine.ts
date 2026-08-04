@@ -232,6 +232,9 @@ const PREARM_RETRY_MS = 30_000;
 // tombstone distinguishable from a Review discard where an operator DID stand
 // by an answer.
 const COLLECT_DISCARD_REASON = 'Collect one-click discard (no reason asked)';
+// The retake path writes its own ledger reason, so the discarded attempt is
+// traceable as "we tried this same thing again" instead of a mystery gap.
+const RETAKE_DISCARD_REASON = 'Superseded by retake (Collect)';
 const COLLECT_UNSAVED_DISCARD_REASON =
   'Collect recovery-banner discard of an unsaved take (no reason asked)';
 
@@ -1315,6 +1318,10 @@ export interface BatchMachine {
   dismissSaveError: () => void;
   /** One-click discard of the take being labeled — immediate, no dialog. */
   discardEpisode: () => void;
+  /** Discard THIS take (ledger reason: superseded by retake) and go straight
+   *  back to recording under the same labels — the operator's most-repeated
+   *  recovery, previously discard → re-arm → start by hand. */
+  retakeEpisode: () => void;
   pauseBatch: () => void;
   resumeBatch: () => void;
   pickEndReason: (reason: string) => void;
@@ -2356,6 +2363,44 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     );
   }, [episodeDiscard, splitDeploy, showToast]);
 
+  // Retake = the discard above + an immediate restart once the machine is back
+  // at READY. The restart is queued through state (not called inline) because
+  // startRecording guards on its CLOSURE's phase, which is stale inside the
+  // discard promise's .then.
+  const [retakeQueued, setRetakeQueued] = useState(false);
+  const retakeEpisode = useCallback(() => {
+    const snapshot = getStoreSnapshot();
+    if (snapshot.phase !== 'result') return;
+    const captureId = snapshot.currentCaptureId;
+    if (!captureId) {
+      dispatch({ type: 'RETRY_EPISODE' });
+      setRetakeQueued(true);
+      return;
+    }
+    void episodeDiscard
+      .discardNow(
+        { capture_id: captureId },
+        RETAKE_DISCARD_REASON,
+        'Take discarded — recording the retake',
+      )
+      .then(() => setRetakeQueued(true))
+      .catch(() => {
+        // Discard failed (toast already shown) — do NOT auto-start on top of
+        // a take that still exists.
+      });
+  }, [episodeDiscard]);
+  useEffect(() => {
+    if (!retakeQueued) return;
+    if (state.phase === 'ready') {
+      setRetakeQueued(false);
+      startRecording();
+    } else if (state.phase !== 'result') {
+      // The machine went somewhere else (ended, takeover…) — drop the queue
+      // rather than fire a surprise recording later.
+      setRetakeQueued(false);
+    }
+  }, [retakeQueued, state.phase, startRecording]);
+
   // ---- takeover stop (D-1) -------------------------------------------------
   // Stop a recording this screen isn't driving (another session, or a resumed
   // own). A confirmation modal guards against knocking over someone else's take;
@@ -2942,6 +2987,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     saveError,
     dismissSaveError,
     discardEpisode,
+    retakeEpisode,
     pauseBatch,
     resumeBatch,
     pickEndReason,

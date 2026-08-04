@@ -229,6 +229,11 @@ class RecordStatusResponse(BaseModel):
     # Present once a ``--start-paused`` arming gate has run for this session
     # (``null`` otherwise). The final snapshot persists while ``recording``.
     arming: RecordArming | None = None
+    # Free space on the filesystem the RECORDER writes (its own data dir) —
+    # in the split deploy that is the ROBOT's disk, which no console-side
+    # /system probe can see. The UI derives "hours of recording left" from it;
+    # ``null`` when the data dir cannot be statted.
+    disk_free_bytes: int | None = None
     # Recording integrity from rosbag2's in-recorder cache (post-finalise). The
     # cache drops on overflow and reports "Total lost: N"; we surface that count
     # (``null`` = not yet known / unavailable) and a coarse classification:
