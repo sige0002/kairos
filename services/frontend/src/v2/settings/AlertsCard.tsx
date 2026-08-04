@@ -7,8 +7,19 @@
 // `metric: loss` rule is accepted but flagged inline (loss_rate is null in the
 // monitor, so it can never fire). The optional derived_rules block is shown
 // read-only and preserved on save.
+//
+// TWO EDITORS, ONE FILE: the table and the raw-YAML textarea both write the
+// same alerts.yaml, and each Save sends ONLY its own view. Left unguarded that
+// silently destroyed work (observed 2026-08-04): raw-YAML edits + the main
+// Save wrote the stale table state, showed "Saved", and kept the never-sent
+// YAML on screen. So each side tracks its own unsaved-ness — the form Save is
+// blocked while the YAML has unsaved edits (with the reason inline), Save YAML
+// states that it discards unsaved table edits, and every successful save
+// re-seeds BOTH views from the server response (never relying on the query
+// cache noticing a change — a byte-identical response keeps its object
+// identity and would skip the effect).
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiGet } from '../../api/client';
 import { Badge, Button, cn } from '../../components/ui';
@@ -81,22 +92,49 @@ export function AlertsCard() {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [rawText, setRawText] = useState('');
   const [saved, setSaved] = useState(false);
+  // What each editor was last seeded from — the reference "unsaved edits" is
+  // measured against (see the header).
+  const [seededRulesJson, setSeededRulesJson] = useState('[]');
+  const [seededRaw, setSeededRaw] = useState('');
 
   const derived = query.data?.config?.derived_rules ?? null;
 
+  const seedFrom = useCallback((data: AlertsPayload) => {
+    const forms = toRuleForms(data.config);
+    setRules(forms);
+    setSeededRulesJson(JSON.stringify(forms));
+    setRawText(data.raw ?? '');
+    setSeededRaw(data.raw ?? '');
+  }, []);
+
+  // True while the next query-data change is our own save's response landing in
+  // the cache — onSuccess has already seeded from it, and re-running the seed
+  // here would also clear the Saved banner the moment it appeared.
+  const justSavedRef = useRef(false);
+
   useEffect(() => {
-    if (query.data) {
-      setRules(toRuleForms(query.data.config));
-      setRawText(query.data.raw ?? '');
-      setSaved(false);
+    if (!query.data) return;
+    if (justSavedRef.current) {
+      justSavedRef.current = false;
+      return;
     }
-  }, [query.data]);
+    seedFrom(query.data);
+    setSaved(false);
+  }, [query.data, seedFrom]);
+
+  const formDirty = JSON.stringify(rules) !== seededRulesJson;
+  const rawDirty = rawText !== seededRaw;
 
   const mutation = useMutation({
     mutationFn: (body: AspectPutBody) => putAlertsConfig(body),
     onSuccess: (data) => {
       setSaved(true);
+      justSavedRef.current = true;
       queryClient.setQueryData(ALERTS_CONFIG_KEY, data);
+      // Re-seed BOTH views from what the server actually wrote — the effect
+      // above cannot be relied on for this (a response deep-equal to the cache
+      // keeps its identity and never fires it).
+      seedFrom(data);
     },
   });
 
@@ -325,12 +363,23 @@ export function AlertsCard() {
               type="button"
               data-testid="alerts-save"
               onClick={saveForm}
-              disabled={mutation.isPending}
+              disabled={mutation.isPending || rawDirty}
               className="px-4 py-1.5 text-sm disabled:opacity-50"
             >
               {mutation.isPending ? 'Saving…' : 'Save'}
             </Button>
-            <span className="text-[11px] text-gray-400">The server validates on save.</span>
+            {rawDirty ? (
+              <span
+                data-testid="alerts-form-save-blocked"
+                className="text-[11px] text-amber-700"
+              >
+                The Advanced YAML below has unsaved edits — this Save would
+                silently drop them. Use “Save YAML”, or reopen Data quality to
+                discard them.
+              </span>
+            ) : (
+              <span className="text-[11px] text-gray-400">The server validates on save.</span>
+            )}
           </div>
 
           {/* Advanced: raw YAML (edits derived_rules and anything the table omits). */}
@@ -346,6 +395,14 @@ export function AlertsCard() {
                 ▸
               </span>
               Advanced — edit raw YAML
+              {rawDirty && (
+                <span
+                  data-testid="alerts-raw-dirty"
+                  className="rounded-chip bg-amber-100 px-1.5 text-[10px] font-semibold text-amber-700"
+                >
+                  unsaved
+                </span>
+              )}
               {path && <span className="font-mono text-[11px] font-normal text-gray-400">{path}</span>}
             </button>
             {advancedOpen && (
@@ -358,15 +415,26 @@ export function AlertsCard() {
                   placeholder="rules: []"
                   onChange={(e) => setRawText(e.target.value)}
                 />
-                <Button
-                  type="button"
-                  data-testid="alerts-save-raw"
-                  onClick={saveRaw}
-                  disabled={mutation.isPending}
-                  className="self-start px-4 py-1.5 text-sm disabled:opacity-50"
-                >
-                  {mutation.isPending ? 'Saving…' : 'Save YAML'}
-                </Button>
+                <div className="flex items-center gap-3">
+                  <Button
+                    type="button"
+                    data-testid="alerts-save-raw"
+                    onClick={saveRaw}
+                    disabled={mutation.isPending}
+                    className="px-4 py-1.5 text-sm disabled:opacity-50"
+                  >
+                    {mutation.isPending ? 'Saving…' : 'Save YAML'}
+                  </Button>
+                  {formDirty && (
+                    <span
+                      data-testid="alerts-raw-discard-warn"
+                      className="text-[11px] text-amber-700"
+                    >
+                      The rules table above has unsaved edits — Save YAML writes
+                      the file from this text and discards them.
+                    </span>
+                  )}
+                </div>
               </div>
             )}
           </div>

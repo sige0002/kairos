@@ -119,3 +119,88 @@ test('Add rule appends an editable row', async () => {
   fireEvent.click(screen.getByTestId('alerts-add-rule'));
   await waitFor(() => expect(screen.getByLabelText('rule topic 1')).toBeInTheDocument());
 });
+
+// ---------------------------------------------------------------------------
+// Two editors, one file (2026-08-04 regression): raw-YAML edits + the main
+// Save used to silently write the stale table state while the screen kept
+// showing the never-sent YAML as if it were saved.
+// ---------------------------------------------------------------------------
+
+test('unsaved raw-YAML edits block the form Save and say why', async () => {
+  const fetchSpy = mockFetch();
+  renderWithClient(<AlertsCard />);
+  await screen.findByLabelText('rule topic 0');
+
+  fireEvent.click(screen.getByTestId('alerts-advanced-toggle'));
+  fireEvent.change(screen.getByLabelText('alerts config yaml'), {
+    target: { value: ALERTS.raw + '  - topic: /edited\n    metric: gap\n    op: gt\n    threshold: 2\n' },
+  });
+
+  // The main Save is disabled with the reason inline; the dirty chip shows.
+  expect(screen.getByTestId('alerts-save')).toBeDisabled();
+  expect(screen.getByTestId('alerts-form-save-blocked')).toHaveTextContent('Save YAML');
+  expect(screen.getByTestId('alerts-raw-dirty')).toHaveTextContent('unsaved');
+  // Nothing was PUT — the stale table state cannot overwrite the file.
+  expect(fetchSpy.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(0);
+});
+
+test('Save YAML sends the raw text and re-seeds both editors from the response', async () => {
+  const serverPayload = {
+    ...ALERTS,
+    raw: 'rules:\n- topic: /edited\n  metric: gap\n  op: gt\n  threshold: 2.0\n',
+    config: { rules: [{ topic: '/edited', metric: 'gap', op: 'gt', threshold: 2 }], derived_rules: null },
+  };
+  const puts: unknown[] = [];
+  mockFetch((body) => {
+    puts.push(body);
+    return jsonResponse(serverPayload);
+  });
+  renderWithClient(<AlertsCard />);
+  await screen.findByLabelText('rule topic 0');
+
+  fireEvent.click(screen.getByTestId('alerts-advanced-toggle'));
+  fireEvent.change(screen.getByLabelText('alerts config yaml'), {
+    target: { value: 'rules:\n- topic: /edited\n  metric: gap\n  op: gt\n  threshold: 2\n' },
+  });
+  fireEvent.click(screen.getByTestId('alerts-save-raw'));
+
+  await screen.findByTestId('alerts-saved');
+  expect(puts).toEqual([{ raw: 'rules:\n- topic: /edited\n  metric: gap\n  op: gt\n  threshold: 2\n' }]);
+  // BOTH views now show what the server wrote (canonical raw + parsed table)…
+  expect((screen.getByLabelText('alerts config yaml') as HTMLTextAreaElement).value).toBe(serverPayload.raw);
+  expect((screen.getByLabelText('rule topic 0') as HTMLInputElement).value).toBe('/edited');
+  // …and nothing is dirty anymore: the form Save is usable again.
+  expect(screen.getByTestId('alerts-save')).toBeEnabled();
+  expect(screen.queryByTestId('alerts-raw-dirty')).not.toBeInTheDocument();
+});
+
+test('the textarea shows what the server wrote even when the response deep-equals the cache', async () => {
+  // Structural sharing keeps a byte-identical response's object identity, so
+  // the [query.data] effect never fires — the explicit onSuccess re-seed must
+  // put the file's truth back on screen instead of the never-sent edit.
+  mockFetch(() => jsonResponse({ ...ALERTS }));
+  renderWithClient(<AlertsCard />);
+  await screen.findByLabelText('rule topic 0');
+
+  fireEvent.click(screen.getByTestId('alerts-advanced-toggle'));
+  fireEvent.change(screen.getByLabelText('alerts config yaml'), {
+    target: { value: ALERTS.raw + '# never sent\n' },
+  });
+  fireEvent.click(screen.getByTestId('alerts-save-raw'));
+
+  await screen.findByTestId('alerts-saved');
+  const ta = screen.getByLabelText('alerts config yaml') as HTMLTextAreaElement;
+  expect(ta.value).toBe(ALERTS.raw); // the file's truth, not the illusion
+});
+
+test('Save YAML warns when the table has unsaved edits it would discard', async () => {
+  mockFetch();
+  renderWithClient(<AlertsCard />);
+  const topic = await screen.findByLabelText('rule topic 0');
+
+  fireEvent.change(topic, { target: { value: '/table/edited' } });
+  fireEvent.click(screen.getByTestId('alerts-advanced-toggle'));
+
+  expect(screen.getByTestId('alerts-raw-discard-warn')).toHaveTextContent('discards');
+  expect(screen.getByTestId('alerts-save-raw')).toBeEnabled(); // consent, not a dead end
+});
