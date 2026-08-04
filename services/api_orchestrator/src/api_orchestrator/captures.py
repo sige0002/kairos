@@ -1045,8 +1045,7 @@ class CaptureService:
         memberships = [
             m
             for m in self._store.dataset_memberships_for(capture.capture_id)
-            if m.dataset_id != except_dataset
-            and self._membership_blocks(m.dataset_id)
+            if m.dataset_id != except_dataset and self._membership_blocks(m.dataset_id)
         ]
         if not memberships:
             return

@@ -318,8 +318,7 @@ class TestArchiveStatusGuards:
         assert response.status_code == 409
         assert response.json()["error"]["code"] == "dataset_archived"
         assert (
-            response.json()["error"]["details"]["archive_destination"]
-            == "/mnt/nas/ds"
+            response.json()["error"]["details"]["archive_destination"] == "/mnt/nas/ds"
         )
 
     def test_an_archived_capture_cannot_join_a_dataset(
@@ -639,7 +638,9 @@ class TestDisplayIndexReclaim:
         ).json()
         assert other["display_index"] == 2
 
-    def test_reclaim_is_per_dataset(self, client: TestClient, layout: DataLayout) -> None:
+    def test_reclaim_is_per_dataset(
+        self, client: TestClient, layout: DataLayout
+    ) -> None:
         a = client.post("/api/v1/datasets", json={"name": "a"}).json()["dataset_id"]
         b = client.post("/api/v1/datasets", json={"name": "b"}).json()["dataset_id"]
         capture_id = _capture(client, layout)

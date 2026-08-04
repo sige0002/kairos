@@ -569,7 +569,12 @@ class DatasetArchiver:
             # that dies mid-copy leaves "dataset X, these members pending",
             # not an anonymous pile of numbered directories.
             self._write_manifest(
-                dataset, members, dataset_dir, mode=mode, results=results, complete=False
+                dataset,
+                members,
+                dataset_dir,
+                mode=mode,
+                results=results,
+                complete=False,
             )
             for member in sorted(members, key=lambda m: m.display_index):
                 run.current_capture_id = member.capture_id
@@ -892,9 +897,7 @@ class DatasetArchiver:
     ) -> bool:
         if mode == "copy":
             bytes_total = sum(
-                r["bytes"]
-                for r in results.values()
-                if isinstance(r.get("bytes"), int)
+                r["bytes"] for r in results.values() if isinstance(r.get("bytes"), int)
             )
         else:
             events = ledger_v2.archive_events(self._layout.data_dir)

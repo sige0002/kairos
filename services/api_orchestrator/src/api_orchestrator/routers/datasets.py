@@ -22,7 +22,6 @@ the point.
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request, Response, status
-
 from kairos_common.archive_paths import parse_archive_roots
 
 from api_orchestrator.dataset_archive import DatasetArchiver

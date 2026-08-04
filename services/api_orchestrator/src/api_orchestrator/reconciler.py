@@ -45,8 +45,8 @@ from kairos_common.ids import is_uuid7
 from kairos_common.rebuild import ReplicaState
 
 from api_orchestrator import layout as layout_mod
-from api_orchestrator import views as views_mod
 from api_orchestrator import transfer
+from api_orchestrator import views as views_mod
 from api_orchestrator.captures import CaptureService
 from api_orchestrator.digest import DigestJob
 from api_orchestrator.health import StoreHealth, missing_threshold

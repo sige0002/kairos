@@ -254,7 +254,9 @@ def _started_payload(**overrides):
         "dataset_id": "d1",
         "destination": "/mnt/nas/exports/yuki/pick/ds1",
         "dataset_name": "ds1",
-        "members": [{"membership_id": "m1", "capture_id": new_capture_id(), "display_index": 1}],
+        "members": [
+            {"membership_id": "m1", "capture_id": new_capture_id(), "display_index": 1}
+        ],
     }
     payload.update(overrides)
     return payload
@@ -318,12 +320,20 @@ def test_a_dataset_archive_start_must_freeze_its_members(tmp_path: Path) -> None
         [],
         [{"membership_id": "m1", "display_index": 1}],  # no capture_id
         [{"membership_id": "m1", "capture_id": new_capture_id(), "display_index": 0}],
-        [{"membership_id": "m1", "capture_id": new_capture_id(), "display_index": True}],
+        [
+            {
+                "membership_id": "m1",
+                "capture_id": new_capture_id(),
+                "display_index": True,
+            }
+        ],
         [["m1"]],
     ):
         with pytest.raises(ValueError, match="members"):
             _append(
-                tmp_path, "dataset_archive_started", payload=_started_payload(members=members)
+                tmp_path,
+                "dataset_archive_started",
+                payload=_started_payload(members=members),
             )
 
     assert not ledger.ledger_path(tmp_path).exists()
@@ -333,7 +343,9 @@ def test_a_dataset_archive_start_names_dataset_and_destination(tmp_path: Path) -
     for key in ("dataset_id", "destination", "dataset_name"):
         with pytest.raises(ValueError, match=key):
             _append(
-                tmp_path, "dataset_archive_started", payload=_started_payload(**{key: ""})
+                tmp_path,
+                "dataset_archive_started",
+                payload=_started_payload(**{key: ""}),
             )
     with pytest.raises(ValueError, match="reason"):
         _append(

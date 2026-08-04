@@ -129,8 +129,8 @@ class TestPreflight:
             assert response.status_code == 409
             error = response.json()["error"]
             assert error["code"] == "dataset_member_shared"
-            assert error["details"]["conflicts"][0]["capture_id"] == (
-                member["capture_id"]
+            assert (
+                error["details"]["conflicts"][0]["capture_id"] == (member["capture_id"])
             )
             assert error["details"]["conflicts"][0]["dataset_ids"] == [
                 other["dataset_id"]
@@ -528,9 +528,7 @@ class TestResume:
             # store directly, because the API-level guard refuses it. The
             # runner's own re-check must still catch it.
             other = client.post("/api/v1/datasets", json={"name": "other"}).json()
-            store.add_dataset_member(
-                other["dataset_id"], members[0]["capture_id"]
-            )
+            store.add_dataset_member(other["dataset_id"], members[0]["capture_id"])
 
             progress = self._resume(client, dataset_id)
 
@@ -558,9 +556,7 @@ class TestResumeRefusals:
                 json={"destination": str(roots / "elsewhere")},
             )
             assert response.status_code == 409
-            assert (
-                response.json()["error"]["code"] == "archive_destination_mismatch"
-            )
+            assert response.json()["error"]["code"] == "archive_destination_mismatch"
 
     def test_progress_for_an_unknown_dataset_is_404(self, client: TestClient) -> None:
         response = client.get("/api/v1/datasets/nope/archive")
@@ -638,9 +634,9 @@ class TestCopyMode:
             layout = client.app.state.data_layout
             dataset = _dataset(client, layout, members=1)
             dataset_id = dataset["dataset_id"]
-            capture_id = client.get(f"/api/v1/datasets/{dataset_id}").json()[
-                "members"
-            ][0]["capture_id"]
+            capture_id = client.get(f"/api/v1/datasets/{dataset_id}").json()["members"][
+                0
+            ]["capture_id"]
             client.post(
                 f"/api/v1/datasets/{dataset_id}/archive",
                 json={"destination": str(roots / "exports"), "mode": "copy"},
@@ -732,9 +728,7 @@ class TestCopyMode:
             (target / "002").mkdir(parents=True)
             (target / "002" / "bag_0.mcap").write_bytes(b"half a copy")
 
-            response = client.post(
-                f"/api/v1/datasets/{dataset_id}/archive", json={}
-            )
+            response = client.post(f"/api/v1/datasets/{dataset_id}/archive", json={})
             assert response.status_code == 202, response.text
             _settle(client, dataset_id)
 
