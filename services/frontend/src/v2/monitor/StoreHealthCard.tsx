@@ -31,7 +31,7 @@ const REFETCH_MS = 30_000;
 function formatInstant(iso?: string | null): string {
   if (!iso) return '—';
   const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('en-GB', { hour12: false });
 }
 
 /** Render one value of a server-supplied summary dict without assuming its

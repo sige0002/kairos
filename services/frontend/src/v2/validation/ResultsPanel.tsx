@@ -5,7 +5,9 @@
 // fallback is the point: a new plugin's summary.json renders here with no UI
 // change required.
 import { Card } from '../../components/ui';
+import type { LossTopic } from '../../api/types';
 import { SummaryResult, type Summary } from '../../features/validation/SummaryResult';
+import { LossTable } from '../captures/inspect';
 import { ChecklistCard } from './ChecklistCard';
 import {
   hasEpisodeBreakdown,
@@ -37,6 +39,33 @@ export interface ActiveOutcome {
  * inspectable outcome: exactly backwards, because a pass is what you most often
  * want to talk yourself into trusting.
  */
+/** loss_report leads with the same TOPIC/HZ/LOSS/MAX-GAP table Review renders
+ *  (audit P1: the tab that RUNS the pipeline showed 300 lines of raw JSON while
+ *  the good renderer sat ten lines away). Worst offenders first, flagged count
+ *  as the headline; the generic card follows as the evidence trail. */
+function LossReportCard({ summary }: { summary: Summary }) {
+  const raw = (summary as Record<string, unknown>).topics;
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  const topics = [...(raw as LossTopic[])].sort(
+    (a, b) => (b.loss_rate ?? 0) - (a.loss_rate ?? 0),
+  );
+  const flagged = (summary as Record<string, unknown>).flagged;
+  const flaggedCount = Array.isArray(flagged) ? flagged.length : null;
+  const worst = topics[0];
+  return (
+    <div className="flex flex-col gap-2" data-testid="loss-report-table">
+      {flaggedCount !== null && flaggedCount > 0 && worst && (
+        <p className="rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-[12.5px] font-semibold text-amber-800">
+          ⚠ {flaggedCount} of {topics.length} topics exceeded the gap threshold —
+          worst: <span className="font-mono">{worst.name}</span>{' '}
+          {worst.loss_rate != null ? `${(worst.loss_rate * 100).toFixed(1)}%` : ''}
+        </p>
+      )}
+      <LossTable topics={topics} />
+    </div>
+  );
+}
+
 function DetailCard({
   pipeline,
   summary,
@@ -52,6 +81,14 @@ function DetailCard({
     return (
       <div className="flex flex-col gap-3">
         <ChecklistCard summary={summary} required={requiredTopics ?? []} />
+        <SummaryResult pipeline={pipeline} summary={summary} artifacts={artifacts} />
+      </div>
+    );
+  }
+  if (pipeline === 'loss_report') {
+    return (
+      <div className="flex flex-col gap-3">
+        <LossReportCard summary={summary} />
         <SummaryResult pipeline={pipeline} summary={summary} artifacts={artifacts} />
       </div>
     );

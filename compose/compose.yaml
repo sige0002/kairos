@@ -46,6 +46,11 @@ x-ros-env: &ros-env
   RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
   # Active robot — config/<robot>/ (committed) or config/local/<robot>/ (gitignored).
   ROBOT: ${ROBOT:-airoa_hsr}
+  # Host timezone passthrough (make derives it; overridable in .env). Without
+  # it the containers run UTC and the recorder mints run_YYYYMMDD_HHMMSS names
+  # 9 h (JST) away from the wall clock the operator reads — matching a take to
+  # its folder becomes guesswork (audit P2). Empty = UTC, the old behavior.
+  TZ: ${TZ:-}
 
 # Every kairos HTTP call is LAN-internal (localhost or the robot's LAN IP) and
 # must never go through a corporate proxy: a host whose Docker client/daemon

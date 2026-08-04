@@ -9,6 +9,9 @@
 // reviewing before the pull is the intended order there.
 
 import type { ReactNode } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { getCapture } from '../../api/captures';
+import { queryKeys } from '../../api/queryKeys';
 import { Badge, cn, type Tone } from '../../components/ui';
 import { AvailabilityChip } from '../captures/AvailabilityChip';
 import { availabilityOf } from '../captures/availability';
@@ -33,10 +36,12 @@ function headerBadge(lane: ReviewLane): { label: string; tone: Tone } {
 
 // The Collect → Review → Datasets pipeline for this capture, so the operator can
 // see where it is and what the next step is (the "adopt did nothing visible"
-// complaint). Dataset membership is not observable from Review, so that step
-// stays upcoming; the current step is highlighted.
+// complaint). The "In dataset" step reads REAL membership from the capture
+// detail (the same query CaptureInspection uses, deduped by React Query) — it
+// used to light up "●" for any READY capture, contradicting a Datasets tab
+// with zero datasets (audit P1). Unknown (detail still loading) stays "○".
 type StepState = 'done' | 'current' | 'todo' | 'off';
-function PipelineStrip({ lane }: { lane: ReviewLane }) {
+function PipelineStrip({ lane, inDataset }: { lane: ReviewLane; inDataset: boolean | null }) {
   const ready = lane === 'ready';
   const excluded = lane === 'excluded';
   const steps: { label: string; state: StepState }[] = [
@@ -44,7 +49,7 @@ function PipelineStrip({ lane }: { lane: ReviewLane }) {
     // NEEDS CHECK is the current review step; READY/EXCLUDED are past it.
     { label: 'Reviewed', state: lane === 'needs_check' ? 'current' : 'done' },
     { label: 'Ready', state: ready ? 'done' : excluded ? 'off' : 'todo' },
-    { label: 'In dataset', state: ready ? 'current' : 'todo' },
+    { label: 'In dataset', state: inDataset === true ? 'done' : 'todo' },
   ];
   const glyph: Record<StepState, string> = {
     done: '✓',
@@ -126,6 +131,17 @@ function QualityValue({ quality }: { quality: DisplayQuality | null }) {
 
 export function DetailPanel({ rv }: { rv: ReviewState }) {
   const sel = rv.selected;
+  // Same key CaptureInspection uses — React Query dedupes the request; this
+  // just lets the pipeline strip read REAL dataset membership (see
+  // PipelineStrip). null = detail not loaded yet.
+  const detailQuery = useQuery({
+    queryKey: queryKeys.capture(sel?.captureId ?? ''),
+    queryFn: ({ signal }) => getCapture(sel!.captureId, signal),
+    enabled: !!sel,
+  });
+  const inDataset = detailQuery.data
+    ? (detailQuery.data.memberships?.length ?? 0) > 0
+    : null;
 
   if (!sel) {
     return (
@@ -272,7 +288,7 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
           </div>
         </div>
 
-        <PipelineStrip lane={sel.reviewLane} />
+        <PipelineStrip lane={sel.reviewLane} inDataset={inDataset} />
 
         {sel.isExcluded && (
           <div className="flex flex-col gap-1.5 rounded-[10px] border border-gray-200 bg-gray-50 px-3 py-2.5">
@@ -400,6 +416,22 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
             </DecisionButton>
           )}
         </div>
+
+        {/* A discoverable bin for a fumbled take (audit P1: delete only
+            appeared AFTER excluding, so "get the disk space back" had no
+            findable path). Muted on purpose — exclude stays the primary flow;
+            the same reason-required, irreversible dialog does the guarding. */}
+        {!sel.isExcluded && (
+          <button
+            type="button"
+            data-testid="review-delete-direct"
+            onClick={() => rv.requestDelete([sel.captureId])}
+            title="Remove this recording from this machine. The catalog keeps a record. A dialog confirms first."
+            className="self-start rounded-control px-2 py-1 text-[11.5px] font-medium text-gray-400 transition-colors hover:bg-red-50 hover:text-red-700"
+          >
+            🗑 Delete this recording…
+          </button>
+        )}
 
       </div>
     </div>

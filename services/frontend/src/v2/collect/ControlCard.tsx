@@ -258,6 +258,24 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
   // Live fail-reason vocabulary (Settings > Failure reasons; shared store).
   const failReasons = useFailReasons();
 
+  // Two-step confirm for "Start next set": one click used to silently clear
+  // the finished set's panel (episodes stay in Review, but the operator can't
+  // know that) — the first press now asks, the second acts. Auto-reverts.
+  const [confirmNextSet, setConfirmNextSet] = useState(false);
+  useEffect(() => {
+    if (!confirmNextSet) return;
+    const t = setTimeout(() => setConfirmNextSet(false), 5000);
+    return () => clearTimeout(t);
+  }, [confirmNextSet]);
+  const onStartNextSet = () => {
+    if (!confirmNextSet) {
+      setConfirmNextSet(true);
+      return;
+    }
+    setConfirmNextSet(false);
+    machine.startNextBatch();
+  };
+
   // Focus targets for each phase (D-4): re-target on every phase change so the
   // flow stays keyboard-operable and focus never falls to <body>.
   const startRef = useRef<HTMLButtonElement>(null);
@@ -925,11 +943,23 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
         <span className="text-xs text-gray-400">Reason: {machine.endReason}</span>
         <button
           type="button"
-          onClick={machine.startNextBatch}
-          className="h-[46px] rounded-control bg-teal-600 text-sm font-bold text-white hover:bg-teal-700"
+          data-testid="start-next-set"
+          onClick={onStartNextSet}
+          className={cn(
+            'h-[46px] rounded-control text-sm font-bold text-white',
+            confirmNextSet
+              ? 'bg-amber-600 hover:bg-amber-700'
+              : 'bg-teal-600 hover:bg-teal-700',
+          )}
         >
-          Start next set
+          {confirmNextSet ? 'Press again to start the next set' : 'Start next set'}
         </button>
+        {confirmNextSet && (
+          <span data-testid="next-set-note" className="text-[11.5px] text-gray-500">
+            This panel starts a fresh set — the recorded episodes stay saved in
+            Review.
+          </span>
+        )}
       </Card>
     );
   }
@@ -957,11 +987,23 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
       </span>
       <button
         type="button"
-        onClick={machine.startNextBatch}
-        className="h-[46px] rounded-control bg-teal-600 text-sm font-bold text-white hover:bg-teal-700"
+        data-testid="start-next-set"
+        onClick={onStartNextSet}
+        className={cn(
+          'h-[46px] rounded-control text-sm font-bold text-white',
+          confirmNextSet
+            ? 'bg-amber-600 hover:bg-amber-700'
+            : 'bg-teal-600 hover:bg-teal-700',
+        )}
       >
-        Start next set
+        {confirmNextSet ? 'Press again to start the next set' : 'Start next set'}
       </button>
+      {confirmNextSet && (
+        <span data-testid="next-set-note" className="text-[11.5px] text-gray-500">
+          This panel starts a fresh set — the recorded episodes stay saved in
+          Review.
+        </span>
+      )}
     </Card>
   );
 }

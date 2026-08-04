@@ -20,19 +20,28 @@ import { Button, Modal, cn } from '../../components/ui';
 import { readCaptureError } from './errors';
 import type { Capture } from '../../api/types';
 
-/** "1.2 GB" / "—" — the size figure the confirmation is obliged to show. */
-export function formatBytes(n?: number | null): string {
-  if (n === undefined || n === null) return '—';
-  if (n >= 1e9) return `${(n / 1e9).toFixed(1)} GB`;
-  if (n >= 1e6) return `${(n / 1e6).toFixed(1)} MB`;
-  if (n >= 1e3) return `${(n / 1e3).toFixed(1)} kB`;
-  return `${n} B`;
-}
+// The size figure the confirmation is obliged to show — the shared decimal
+// formatter (one convention everywhere; see review/format.ts).
+export { formatBytes } from '../review/format';
+import { formatBytes, formatWhen } from '../review/format';
 
 export function totalBytes(captures: Capture[]): number | null {
   const known = captures.filter((c) => typeof c.bytes === 'number');
   if (known.length === 0) return null;
   return known.reduce((sum, c) => sum + (c.bytes ?? 0), 0);
+}
+
+/** Name what is being removed (audit P2: "1 recording · 249.2 MB" for an
+ *  irreversible action identified nothing). Single capture → its run_id (or
+ *  capture_id) + episode number + start time; small sets list run_ids. */
+function identityLines(captures: Capture[]): string[] {
+  if (captures.length === 0 || captures.length > 5) return [];
+  return captures.map((c) => {
+    const name = c.run_id ?? c.capture_id;
+    const ep = c.index_in_batch != null ? ` · episode #${c.index_in_batch}` : '';
+    const when = c.started_at ? ` · ${formatWhen(c.started_at)}` : '';
+    return `${name}${ep}${when}`;
+  });
 }
 
 function countLabel(n: number): string {
@@ -220,6 +229,11 @@ export function DiscardDialog({
           {countLabel(captures.length)} · {formatBytes(bytes)}
           {bytes === null && ' (size unknown)'}
         </p>
+        {identityLines(captures).map((line) => (
+          <p key={line} className="mt-1 font-mono text-[12px] text-gray-600" data-testid="discard-identity">
+            {line}
+          </p>
+        ))}
         {splitDeploy && (
           <p
             className="mt-2 rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-[12.5px] text-amber-800"
@@ -334,6 +348,11 @@ export function DeleteDialog({
           {countLabel(captures.length)} · {formatBytes(bytes)}
           {bytes === null && ' (size unknown)'}
         </p>
+        {identityLines(captures).map((line) => (
+          <p key={line} className="mt-1 font-mono text-[12px] text-gray-600" data-testid="delete-identity">
+            {line}
+          </p>
+        ))}
         <p className="mt-2 text-gray-600">
           The files are removed from this machine. The catalog keeps a record of
           the capture, so it stays answerable where the recording went.

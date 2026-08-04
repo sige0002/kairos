@@ -26,6 +26,7 @@
 | キー | 既定 | 説明 |
 |---|---|---|
 | `ROS_DOMAIN_ID` | `0` | 全サービス共通の ROS 2 ドメイン |
+| `TZ` | (make がホストから導出。空=UTC) | コンテナのタイムゾーン。recorder が刻む `run_YYYYMMDD_HHMMSS` の表示名がこの時計で決まる — 未設定だとコンテナは UTC で走り、壁時計と 9 時間（JST）ズレた run 名になる（2026-08-05 是正）。`make` 経由なら自動、素の compose では `.env` に `TZ=Asia/Tokyo` 等を書く |
 | `ROS_DISTRO` | `jazzy` | ベースイメージの ROS 2 ディストロ。`.env` の値が Makefile 組み込み既定に勝つ（`make` が `.env` を読んで export する） |
 | `RMW_IMPLEMENTATION` | `rmw_fastrtps_cpp` | DDS 実装。Fast DDS と Cyclone DDS の両 RMW をイメージに同梱しており、本キーで切替可能。Cyclone DDS のロボットには `rmw_cyclonedds_cpp` を指定する（後述） |
 | `DATA_DIR` | `./data` | ホスト側データ root（→ コンテナ `/data`） |

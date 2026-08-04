@@ -48,7 +48,7 @@ export function liveLease(
 function clockTime(iso: string): string {
   const ms = Date.parse(iso);
   if (Number.isNaN(ms)) return '';
-  return new Date(ms).toLocaleTimeString();
+  return new Date(ms).toLocaleTimeString('en-GB', { hour12: false });
 }
 
 /**

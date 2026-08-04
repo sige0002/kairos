@@ -469,7 +469,11 @@ export function ValidationScreen() {
       ? `Running on ${active.jobs.length} captures…`
       : `Running on ${active?.jobs[0] ? labelFor(active.jobs[0].capture_id) : ''}…`;
 
-  const activeOutcome: ActiveOutcome | null = active
+  // Only surface the last run when it belongs to the pipeline being viewed —
+  // rendering fast_validation's PASS under loss_report's heading read as a
+  // verdict for the wrong pipeline (audit P1). Switching back re-shows it.
+  const activeOutcome: ActiveOutcome | null = active &&
+    active.pipeline === selectedPipeline?.id
     ? {
         pipeline: active.pipeline,
         allSettled,
@@ -548,7 +552,6 @@ export function ValidationScreen() {
             running={running}
             progressPct={progressPct}
             progressLabel={progressLabel}
-            onCompareCaptures={() => showToast('Capture comparison isn’t available yet')}
             presets={presets}
             presetsLoading={presetsQuery.isPending}
             onRunPreset={runPreset}

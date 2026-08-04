@@ -7,7 +7,7 @@ import type { CameraHealth } from './Cameras';
 import { BatchStatsCard, CoverageCard, SystemStatusCard } from './SideCards';
 import type { BatchMachine, BatchStats } from './useBatchMachine';
 
-const GB = 1024 ** 3;
+const GB = 1e9; // decimal — matches the shared formatBytes convention
 
 // SystemStatusCard reads machine.arming, machine.recorderState and
 // machine.liveCaptures; the rest of the (large) BatchMachine is irrelevant here.

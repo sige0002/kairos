@@ -357,14 +357,18 @@ export function useReviewState(): ReviewState {
       .filter((r) => !retentionFilterActive || retentionCandidateIds.has(r.captureId))
       .filter((r) => {
         if (!q) return true;
-        // Both identities are searchable: the operator reads run_id on screen,
-        // but a capture_id pasted from a log or a URL must find its row too.
+        // Every on-screen identity is searchable: the operator reads run_id,
+        // a capture_id pasted from a log or a URL must find its row, and the
+        // operator NAME the row displays must match too (typing "ux-audit"
+        // returned "0 shown" while the Operator column said exactly that —
+        // audit P2).
         return (
           // Only a real number is searchable; an unnumbered row must not be
           // findable by typing "null".
           (r.ep !== null && `#${r.ep}`.includes(q)) ||
           r.captureId.toLowerCase().includes(q) ||
-          (r.runId?.toLowerCase().includes(q) ?? false)
+          (r.runId?.toLowerCase().includes(q) ?? false) ||
+          (r.operator?.toLowerCase().includes(q) ?? false)
         );
       })
       // Lane first (the work queue), then newest recording first WITHIN a lane.

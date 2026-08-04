@@ -78,6 +78,13 @@ UID ?= $(shell id -u)
 GID ?= $(shell id -g)
 export UID GID
 
+# Host timezone → containers (compose maps TZ through x-ros-env). The recorder
+# mints the human-facing run_YYYYMMDD_HHMMSS from ITS clock; without TZ the
+# containers sit on UTC and every run name is hours away from the wall clock.
+# .env/command line win over the derived value (same precedence as ROBOT).
+TZ := $(call _prefer_env,TZ,$(strip $(shell timedatectl show -p Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null)))
+export TZ
+
 # Sample bag for the replay harness. Bags live UNDER data/ (the rule), so BAG is
 # a path RELATIVE to data/ — e.g. airoa-moma-mcap/000730 -> data/airoa-moma-mcap/000730
 # (an absolute /data/... path also works). Set it persistently in .env (BAG=...),

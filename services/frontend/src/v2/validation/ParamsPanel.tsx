@@ -65,7 +65,6 @@ export function ParamsPanel({
   running,
   progressPct,
   progressLabel,
-  onCompareCaptures,
   presets,
   presetsLoading,
   onRunPreset,
@@ -97,7 +96,6 @@ export function ParamsPanel({
   running: boolean;
   progressPct: number;
   progressLabel: string;
-  onCompareCaptures: () => void;
   presets: ValidationPreset[];
   presetsLoading: boolean;
   onRunPreset: (preset: ValidationPreset) => void;
@@ -277,14 +275,6 @@ export function ParamsPanel({
           Run on selection
         </button>
       )}
-
-      <button
-        type="button"
-        onClick={onCompareCaptures}
-        className="h-9 rounded-[10px] border border-gray-200 bg-white text-[12.5px] font-semibold text-gray-500 hover:bg-gray-50"
-      >
-        Compare captures…
-      </button>
     </div>
   );
 }

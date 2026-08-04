@@ -1295,11 +1295,21 @@ class CaptureStore:
         return [self._batch_from_row(r) for r in rows]
 
     def list_captures_by_batch(self, batch_id: str) -> list[Capture]:
+        """LIVE captures of a batch — tombstones excluded.
+
+        The batch summary's episode list feeds Collect's strip chips, quality
+        tallies and coverage, whose own caption promises they "only cover
+        recordings still on disk" — a capture deleted in Review must therefore
+        drop out here. (The batch's monotone ``episodes_recorded`` counter is
+        the deliberate opposite and is untouched by this filter.)
+        """
+        placeholders = ", ".join("?" for _ in TOMBSTONE_STATES)
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT * FROM captures WHERE batch_id = ? "
+                f"AND state NOT IN ({placeholders}) "
                 "ORDER BY index_in_batch, seq",
-                (batch_id,),
+                (batch_id, *sorted(TOMBSTONE_STATES)),
             ).fetchall()
         return [self._capture_from_row(r) for r in rows]
 

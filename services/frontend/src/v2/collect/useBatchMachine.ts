@@ -940,6 +940,28 @@ function applyServerRestore(batch: BatchSummary | null): void {
   notifyStore();
 }
 
+// Capture states that mean "this recording no longer exists for tallies"
+// (mirrors the server's TOMBSTONE_STATES; the batch summary already excludes
+// them, this set is for verifying local-only records against /captures/{id}).
+const TOMBSTONE_STATES = new Set(['delete_pending', 'discarded', 'deleted']);
+
+/** Remove episode records whose capture the server has since tombstoned.
+ *  The restore merge in applyServerRestore deliberately keeps local-only
+ *  records (a review save whose PATCH hadn't landed has no batch_id
+ *  server-side yet) — but that same keep would resurrect DELETED episodes
+ *  into the strip and the quality tallies forever. The hydrate verifies each
+ *  suspect against the server and calls this with the proven-dead. */
+function pruneDeadEpisodes(deadCaptureIds: Set<string>): void {
+  if (deadCaptureIds.size === 0) return;
+  const episodes = currentState.episodes.filter(
+    (e) => !e.captureId || !deadCaptureIds.has(e.captureId),
+  );
+  if (episodes.length === currentState.episodes.length) return;
+  currentState = { ...currentState, episodes };
+  persistBatch(currentState);
+  notifyStore();
+}
+
 /** True when the persisted local batch holds real content worth reconciling
  *  against the server (a recorded count, episodes, or a server batch handle) —
  *  vs a pristine empty machine that has nothing to discard. */
@@ -1788,6 +1810,34 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
         const active = items.find((b) => b.status === 'active') ?? null;
         if (active) {
           applyServerRestore(active);
+          // The merge may have kept local-only records for captures the server
+          // has since deleted — indistinguishable, from the batch list alone,
+          // from a review save that hasn't landed (no batch_id yet). Ask about
+          // each suspect and prune the proven-dead; a fetch failure keeps the
+          // record (offline resilience beats a false removal).
+          const serverIds = new Set(
+            (active.episodes ?? [])
+              .map((e) => e.capture_id)
+              .filter((id): id is string => typeof id === 'string'),
+          );
+          const suspects = getStoreSnapshot()
+            .episodes.map((e) => e.captureId)
+            .filter((id): id is string => !!id && !serverIds.has(id));
+          if (suspects.length > 0) {
+            const dead = new Set<string>();
+            await Promise.all(
+              suspects.map(async (id) => {
+                try {
+                  const capture = await getCapture(id);
+                  if (TOMBSTONE_STATES.has(capture.state)) dead.add(id);
+                } catch (e) {
+                  if (e instanceof ApiError && e.status === 404) dead.add(id);
+                  // Other failures: keep the record.
+                }
+              }),
+            );
+            pruneDeadEpisodes(dead);
+          }
           return;
         }
         // Server reports NO active batch. A local batch context here may be a
@@ -2410,6 +2460,13 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
 
   const startNextBatch = useCallback(() => {
     if (state.phase !== 'ended' && state.phase !== 'completed') return;
+    // A completed batch that never received its terminal PATCH (completion can
+    // also be reached by lowering the target) must not stay 'active'
+    // server-side — the next hydrate would restore the OLD batch over the new
+    // one. Terminal-status PATCH is idempotent (ended_at stamps once).
+    if (state.phase === 'completed' && state.batchId) {
+      void patchBatch(state.batchId, { status: 'completed' }).catch(() => {});
+    }
     dispatch({ type: 'START_NEXT_BATCH' });
     // START_NEXT_BATCH cleared batchId/batchSeq; create the new server batch now
     // (its batch_seq is assigned server-side).

@@ -588,6 +588,27 @@ class TestBatches:
         batch = store.get_batch("batch_1")
         assert batch is not None and batch.episodes_recorded == 2
 
+    def test_batch_capture_list_excludes_tombstones(self, store: CaptureStore) -> None:
+        # The batch summary feeds Collect's strip chips and quality tallies,
+        # whose caption promises "recordings still on disk" — a deleted capture
+        # must drop out (audit P1: deleted work stayed counted as good work).
+        # The monotone episodes_recorded counter above is the deliberate
+        # opposite and is NOT affected by this filter.
+        store.create_batch(Batch(batch_id="batch_t", project="p", task="t"))
+        kept = store.create_capture(
+            _make_capture(
+                batch_id="batch_t", index_in_batch=1, run_id="run_20260801_120001"
+            )
+        )
+        gone = store.create_capture(
+            _make_capture(
+                batch_id="batch_t", index_in_batch=2, run_id="run_20260801_120002"
+            )
+        )
+        store.update_capture(gone.capture_id, state=CaptureState.deleted)
+        listed = store.list_captures_by_batch("batch_t")
+        assert [c.capture_id for c in listed] == [kept.capture_id]
+
 
 class TestApplyRebuild:
     def test_rebuilt_rows_land_as_captures_and_replicas(

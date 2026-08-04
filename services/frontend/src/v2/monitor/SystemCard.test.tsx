@@ -5,7 +5,7 @@ import type { SystemInfo } from '../../api/types';
 import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
 import { SystemCard } from './SystemCard';
 
-const GB = 1024 ** 3;
+const GB = 1e9; // decimal — matches the shared formatBytes convention
 
 function mockSystem(body: SystemInfo) {
   return vi

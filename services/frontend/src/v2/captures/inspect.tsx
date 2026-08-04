@@ -28,7 +28,7 @@ export const TERMINAL = new Set(['succeeded', 'failed', 'canceled']);
 export function formatWhen(iso?: string | null): string {
   if (!iso) return '—';
   const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('en-GB', { hour12: false });
 }
 
 export function formatDuration(ms?: number): string {

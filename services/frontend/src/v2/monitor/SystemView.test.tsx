@@ -7,7 +7,7 @@ import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
 import { useUiStore } from '../../store/uiStore';
 import { SystemView } from './SystemView';
 
-const GB = 1024 ** 3;
+const GB = 1e9; // decimal — matches the shared formatBytes convention
 
 const CONFIG = {
   endpoints: { api: '/api/v1', events: '/api/v1/events', webrtc: 'http://localhost:8002' },

@@ -29,6 +29,7 @@ The single source of configuration shared across services, and the rules for ext
 | Key | Default | Description |
 |---|---|---|
 | `ROS_DOMAIN_ID` | `0` | The ROS 2 domain shared by all services |
+| `TZ` | (derived from the host by make; empty=UTC) | Container timezone. The recorder mints the human-facing `run_YYYYMMDD_HHMMSS` from this clock — unset, the containers run UTC and every run name sits 9 h (JST) away from the wall clock (fixed 2026-08-05). Automatic via `make`; plain compose users set `TZ=Asia/Tokyo` etc. in `.env` |
 | `ROS_DISTRO` | `jazzy` | The ROS 2 distro of the base image. The `.env` value beats the Makefile's built-in default (`make` reads `.env` and exports it) |
 | `RMW_IMPLEMENTATION` | `rmw_fastrtps_cpp` | DDS implementation. Both RMWs (Fast DDS and Cyclone DDS) are bundled in the images, so this key switches between them. For a Cyclone DDS robot, set `rmw_cyclonedds_cpp` (see below) |
 | `DATA_DIR` | `./data` | Host-side data root (→ container `/data`) |

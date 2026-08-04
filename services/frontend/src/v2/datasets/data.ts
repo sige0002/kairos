@@ -39,13 +39,8 @@ export type TaskResultFilter = 'all' | 'success' | 'failure';
 
 // ---- formatting ----------------------------------------------------------
 
-export function formatBytes(n?: number | null): string {
-  if (n === undefined || n === null) return '—';
-  if (n >= 1e9) return `${(n / 1e9).toFixed(1)} GB`;
-  if (n >= 1e6) return `${(n / 1e6).toFixed(1)} MB`;
-  if (n >= 1e3) return `${(n / 1e3).toFixed(1)} kB`;
-  return `${n} B`;
-}
+export { formatBytes, formatWhen } from '../review/format';
+import { formatBytes } from '../review/format';
 
 /** "21 Jul 09:00:00" — when the recording was taken, date included: unlike the
  *  Review table (which is usually read inside one batch's day), the dataset
@@ -96,11 +91,7 @@ export function memberCount(n: number): string {
   return `${formatCount(n)} ${memberNoun(n)}`;
 }
 
-export function formatWhen(iso?: string | null): string {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
-}
+
 
 /** Compact "MM/DD" for the list rows ("last 07/21"). */
 export function formatShortDate(iso?: string | null): string {
