@@ -7,8 +7,8 @@
 #
 # このファイルは **bagflow の flow.yml そのもの**（services/dora_runner/bagflow/
 # README.md）。kairos 側は実行のたびに以下だけを足す（docs/specs/ja/dora_runner.md）:
-#   * bag  = data/recorded/<run_id>（または dataset_dir）
-#   * report = data/report/full_validation/<run_id>/report.json
+#   * bag  = data/objects/<capture_id>
+#   * report = data/report/full_validation/<capture_id>/report.json
 #   * ${KAIROS_*} の展開
 #   * path のバイナリ名解決（bagflow-* は同梱バイナリ）
 # したがって bag: / report: はここに書かない（書いても上書きされる）。

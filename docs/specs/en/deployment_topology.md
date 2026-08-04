@@ -164,12 +164,13 @@ The recorder writes MCAP to **the robot's disk**. dora (CPU-heavy) reads a **PC-
   `ROBOT_SSH_KEY` (absolute path to an identity file, preferred) in `.env.split` (see
   `.env.split.example`). `make import-runs` / `make push-config` / the importer sidecar all read
   the same settings.
-- **Transfer × recording overlap is measured and harmless**: protocol and measured numbers in
-  `deploy/test/overlap_eval/`. Even at 30–60× any real link's intensity (loopback 715 MB/s with
+- **Transfer × recording overlap is measured and harmless** (measured 2026-07-16; the measurement
+  harness dated from the v1-layout era and has been removed — the scripts are in git history at
+  `deploy/test/overlap_eval/`): even at 30–60× any real link's intensity (loopback 715 MB/s with
   doubled ssh crypto), 0 drops and a worst-topic rate change of −0.1 % (well inside §5's <1 %
   primary criterion). `BWLIMIT` is therefore a lever to protect the **WebRTC preview's share of a
-  thin link** (WiFi/Tailscale), not the recording. Rerun the same scripts on the real robot before
-  relying on it there (the measurement box had NVMe + ample CPU).
+  thin link** (WiFi/Tailscale), not the recording. Re-measure before relying on it on the real HSR
+  (the measurement box had NVMe + ample CPU).
 
 ## 4. Option B (alternative): robot-side Zenoh gateway (live full-data recording from a separate PC)
 

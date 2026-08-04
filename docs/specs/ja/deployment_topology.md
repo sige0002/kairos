@@ -159,11 +159,12 @@ recorder は MCAP を**ロボットのディスク**に書く。dora（CPU 重�
   （sshpass 経由 — 書くだけで動く。平文パスワードである点は信頼 LAN 前提）または
   `ROBOT_SSH_KEY`（identity ファイルの絶対パス・推奨）を設定（`.env.split.example` 参照）。
   `make import-runs` / `make push-config` / importer サイドカーの全経路が同じ設定を読む。
-- **転送×録画の重なりは実測済みで無害**: プロトコルと実測値は `deploy/test/overlap_eval/`。
+- **転送×録画の重なりは実測済みで無害**（2026-07-16 実測。計測ハーネスは v1 レイアウト期の
+  ものだったため撤去済み — スクリプトは git 履歴の `deploy/test/overlap_eval/` にある）:
   実リンクの 30〜60 倍の悲観条件（loopback 715MB/s・ssh 暗号二重）でも drop 0・最悪トピック −0.1%
   （§5 の一次基準 <1% を余裕でクリア）。`BWLIMIT` は録画保護ではなく、細いリンク
-  （WiFi/Tailscale）上の **WebRTC プレビュー帯域保護**用のレバー。HSR 実機投入前に同スクリプトの
-  再走を推奨（この実測は NVMe + 余裕ある CPU の箱での値）。
+  （WiFi/Tailscale）上の **WebRTC プレビュー帯域保護**用のレバー。HSR 実機投入前の再測を推奨
+  （この実測は NVMe + 余裕ある CPU の箱での値）。
 
 ## 4. Option B（代替）: ロボット側 Zenoh ゲートウェイ（別 PC からライブ全データ記録）
 

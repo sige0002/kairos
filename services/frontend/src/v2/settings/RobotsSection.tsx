@@ -1,9 +1,9 @@
-// Settings > Robots — real robot selection + per-robot config, at parity with
-// the legacy Config tab (src/features/config/ConfigTab.tsx). The middle column
-// lists the real robots from GET /api/v1/config/options (the active one is
-// marked); selecting a row previews it, and an explicit "Use this robot" action
-// POSTs /api/v1/config/select {category:'robot'} to switch the live system —
-// the same mutation + cache invalidation as ConfigTab's robot buttons.
+// Settings > Robots — real robot selection + per-robot config (superseded the
+// retired v1 Config tab; the recording-config editor it embeds still lives in
+// src/features/config/ConfigTab.tsx). The middle column lists the real robots
+// from GET /api/v1/config/options (the active one is marked); selecting a row
+// previews it, and an explicit "Use this robot" action POSTs
+// /api/v1/config/select {category:'robot'} to switch the live system.
 //
 // The ACTIVE robot shows its editable recording config + per-aspect option
 // pickers. A NON-active robot is shown read-only from GET /api/v1/config/robots/
@@ -44,7 +44,7 @@ const ASPECT_LABEL: Record<ConfigAspect, string> = {
   validation: 'Validation',
   validators: 'Validators',
 };
-// Aspects whose selection applies without a service restart (mirrors ConfigTab).
+// Aspects whose selection applies without a service restart.
 const IMMEDIATE: Record<ConfigAspect, boolean> = {
   recording: false,
   stream: true,
@@ -81,9 +81,8 @@ export function RobotsSection({ config }: { config: RuntimeConfig | undefined })
     mutationFn: (vars: { category: string; id: string }) =>
       apiPost<ConfigOptions>('/config/select', vars),
     onSuccess: (data) => {
-      // Same cache surgery as ConfigTab.selectMutation: adopt the fresh options
-      // and refresh the runtime config + the editable recording config that a
-      // robot / aspect switch re-points.
+      // Adopt the fresh options and refresh the runtime config + the editable
+      // recording config that a robot / aspect switch re-points.
       queryClient.setQueryData(queryKeys.configOptions, data);
       queryClient.invalidateQueries({ queryKey: queryKeys.runtimeConfig });
       queryClient.invalidateQueries({ queryKey: RECORDING_CONFIG_KEY });

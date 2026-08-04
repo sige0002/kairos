@@ -158,7 +158,7 @@ function RobotCell({ disabled }: { disabled: boolean }) {
       apiPost<ConfigOptions>('/config/select', { category: 'robot', id }),
     onSuccess: (data) => {
       queryClient.setQueryData(queryKeys.configOptions, data);
-      // Same refresh set as v1 ConfigTab's selectMutation: a robot switch
+      // Same refresh set as Settings > Robots' selectMutation: a robot switch
       // changes the runtime config (defaults + stream panes → the camera
       // tiles) and re-points the editable recording file.
       queryClient.invalidateQueries({ queryKey: queryKeys.runtimeConfig });

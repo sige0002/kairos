@@ -46,6 +46,12 @@ jobs:
       - name: Unit tests
         working-directory: ${{ matrix.dir }}
         run: uv run --extra test pytest -q
+      # deploy/sync has no package of its own; `make test-py` runs its tests
+      # from the orchestrator venv — mirror that here so CI covers them too.
+      - name: deploy/sync tests
+        if: matrix.dir == 'services/api_orchestrator'
+        working-directory: services/api_orchestrator
+        run: uv run --extra test pytest -q ../../deploy/sync/tests
 
   # ---- Frontend: build + unit tests + lint (mirrors `make test-fe`) ---------
   frontend:

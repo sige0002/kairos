@@ -1,47 +1,28 @@
-// Config tab — robot-first: pick the active ROBOT, then per ASPECT
-// (recording / stream / validation / validators) pick which committed (or local)
-// *.yaml option is active. Nothing is hardcoded; robots + options come from
-// GET /api/v1/config/options. Selecting a robot re-points recording + stream;
-// selecting an aspect option switches that aspect. Recording is editable as JSON
-// (PUT /api/v1/config/recording) and writes back to the ACTIVE recording file
-// (which may be a gitignored config/local/<robot>/... path). default_topics /
-// robot_name apply immediately; recorder QoS + monitor expected_hz load at
-// startup, so those apply on restart (the UI says so honestly).
+// Recording-config editing pieces shared by v2 Settings (the v1 Config tab
+// that used to live here was removed once Settings reached parity). Exports:
+// RecordingConfigEditor — editable JSON for the ACTIVE robot's RECORDING_CONFIG
+// (PUT /api/v1/config/recording; default_topics / robot_name apply immediately,
+// recorder QoS + monitor expected_hz load at startup so they apply on restart —
+// the UI says so honestly); optionLabel — human label for an aspect option;
+// RECORDING_CONFIG_KEY — the recording-config query key.
 
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ApiError, apiGet, apiPost, getApiBase } from '../../api/client';
+import { ApiError, apiGet, getApiBase } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
 import type {
   ApiErrorBody,
   AspectOption,
   ConfigAspect,
-  ConfigOptions,
   RecordingConfigPayload,
 } from '../../api/types';
 import { useRecordStatus } from '../../v2/captures/useRecordStatus';
 import type { RuntimeConfig } from '../../config';
 import { ErrorMessage } from '../../components/ErrorMessage';
-import { Badge, SectionLabel, cn } from '../../components/ui';
 
 // Local key (queryKeys is shared and owned elsewhere); the recording-config
 // query is Config-tab-local, so a plain stable tuple is enough.
 export const RECORDING_CONFIG_KEY = ['config', 'recording'] as const;
-
-const ASPECTS: ConfigAspect[] = ['recording', 'stream', 'validation', 'validators'];
-const ASPECT_LABEL: Record<ConfigAspect, string> = {
-  recording: 'Recording',
-  stream: 'Stream',
-  validation: 'Validation',
-  validators: 'Validators',
-};
-// Aspects whose selection applies without a service restart.
-const IMMEDIATE: Record<ConfigAspect, boolean> = {
-  recording: false,
-  stream: true,
-  validation: true,
-  validators: false,
-};
 
 /** PUT the edited config. Inline (no apiPut helper) so client.ts is untouched. */
 async function putRecordingConfig(
@@ -271,202 +252,4 @@ export function optionLabel(aspect: ConfigAspect, o: AspectOption): string {
   if (aspect === 'validation')
     return `${m.name ?? o.id} (v${m.version ?? 1}) · ${m.required_topics?.length ?? 0} topics`;
   return o.id;
-}
-
-/** Read-only summary of the active option for the non-editable aspects. */
-function AspectSummary({ aspect, option }: { aspect: ConfigAspect; option: AspectOption }) {
-  if (aspect === 'stream') {
-    return (
-      <p className="text-sm text-gray-600">
-        {option.meta.columns ?? '?'} columns · {option.meta.panes ?? 0} preview panes
-      </p>
-    );
-  }
-  if (aspect === 'validation') {
-    const topics = option.meta.required_topics ?? [];
-    return (
-      <div>
-        <h3 className="mb-1.5 text-sm font-medium text-gray-700">
-          Required topics ({topics.length})
-        </h3>
-        <ul className="max-h-72 overflow-auto rounded-control border border-gray-200 text-xs">
-          {topics.map((t) => (
-            <li
-              key={t.name}
-              className="flex justify-between gap-2 border-t border-gray-100 px-2 py-1.5 first:border-t-0"
-            >
-              <span className="font-mono text-gray-700">{t.name}</span>
-              <span className="font-mono text-gray-400">{t.type ?? 'any type'}</span>
-            </li>
-          ))}
-        </ul>
-      </div>
-    );
-  }
-  return <p className="font-mono text-xs text-gray-500">{option.path}</p>;
-}
-
-/** One aspect panel: an option selector + the aspect's editor / summary. */
-function AspectSection({
-  aspect,
-  state,
-  onSelect,
-  selecting,
-  config,
-}: {
-  aspect: ConfigAspect;
-  state: { active: string; options: AspectOption[] };
-  onSelect: (id: string) => void;
-  selecting: boolean;
-  config: RuntimeConfig;
-}) {
-  const active = state.options.find((o) => o.id === state.active);
-  return (
-    <section
-      aria-label={`${aspect} config`}
-      className="rounded-card border border-gray-200 bg-white p-[18px] shadow-card"
-    >
-      <div className="mb-3 flex flex-wrap items-center gap-3">
-        <h2 className="text-[13px] font-semibold uppercase tracking-[0.04em] text-gray-500">
-          {ASPECT_LABEL[aspect]}
-        </h2>
-        <Badge tone={IMMEDIATE[aspect] ? 'green' : 'gray'} dot>
-          {IMMEDIATE[aspect] ? 'applies immediately' : 'applies on restart'}
-        </Badge>
-        <div className="flex-1" />
-        {state.options.length === 0 ? (
-          <span className="text-sm text-gray-400">No options for this robot.</span>
-        ) : (
-          <label className="flex items-center gap-2 text-sm">
-            <span className="font-medium">Option</span>
-            <select
-              aria-label={`${aspect} option`}
-              className="rounded-control border border-gray-200 px-2 py-1 font-mono focus:border-teal-500 focus:outline-none"
-              value={state.active}
-              disabled={selecting}
-              onChange={(e) => onSelect(e.target.value)}
-            >
-              {state.options.map((o) => (
-                <option key={o.id} value={o.id}>
-                  {optionLabel(aspect, o)}
-                  {o.local ? ' · local' : ''}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
-      </div>
-
-      {aspect === 'recording' ? (
-        <RecordingConfigEditor config={config} />
-      ) : active ? (
-        <AspectSummary aspect={aspect} option={active} />
-      ) : (
-        <p className="text-sm text-gray-500">Nothing to show.</p>
-      )}
-    </section>
-  );
-}
-
-export function ConfigTab({ config }: { config: RuntimeConfig }) {
-  const queryClient = useQueryClient();
-  const [aspect, setAspect] = useState<ConfigAspect>('recording');
-
-  const optionsQuery = useQuery({
-    queryKey: queryKeys.configOptions,
-    queryFn: ({ signal }) => apiGet<ConfigOptions>('/config/options', { signal }),
-  });
-
-  const selectMutation = useMutation({
-    mutationFn: (vars: { category: string; id: string }) =>
-      apiPost<ConfigOptions>('/config/select', vars),
-    onSuccess: (data) => {
-      queryClient.setQueryData(queryKeys.configOptions, data);
-      // A robot / recording / stream switch changes the live config (defaults +
-      // stream panes) and re-points the editable recording file — refresh both.
-      queryClient.invalidateQueries({ queryKey: queryKeys.runtimeConfig });
-      queryClient.invalidateQueries({ queryKey: RECORDING_CONFIG_KEY });
-    },
-  });
-
-  const data = optionsQuery.data;
-
-  return (
-    <div className="flex flex-col gap-4">
-      <section
-        aria-label="robot selector"
-        className="rounded-card border border-gray-200 bg-white p-[18px] shadow-card"
-      >
-        <div className="flex flex-wrap items-center gap-2.5">
-          <SectionLabel>Robot</SectionLabel>
-          {optionsQuery.isError ? (
-            <ErrorMessage error={optionsQuery.error} />
-          ) : !data ? (
-            <span className="text-sm text-gray-500">Loading…</span>
-          ) : (
-            data.robots.map((r) => {
-              const on = r.id === data.active_robot;
-              return (
-                <button
-                  key={r.id}
-                  type="button"
-                  aria-label={`robot ${r.id}`}
-                  aria-pressed={on}
-                  disabled={selectMutation.isPending}
-                  onClick={() => selectMutation.mutate({ category: 'robot', id: r.id })}
-                  className={cn(
-                    'inline-flex items-center gap-1.5 rounded-control border px-3 py-1.5 text-sm transition-colors disabled:opacity-50',
-                    on
-                      ? 'border-teal-300 bg-teal-50 font-semibold text-teal-700'
-                      : 'border-gray-200 text-gray-600 hover:bg-gray-50',
-                  )}
-                >
-                  {r.id}
-                  {r.local && (
-                    <span className="rounded-chip bg-amber-100 px-1.5 text-[10px] font-semibold text-amber-700">
-                      local
-                    </span>
-                  )}
-                </button>
-              );
-            })
-          )}
-        </div>
-      </section>
-
-      <nav role="tablist" aria-label="config aspects" className="flex flex-wrap gap-[3px]">
-        {ASPECTS.map((a) => {
-          const on = a === aspect;
-          return (
-            <button
-              key={a}
-              role="tab"
-              aria-selected={on}
-              onClick={() => setAspect(a)}
-              className={cn(
-                'rounded-control px-4 py-2 text-[13.5px] transition-colors',
-                on
-                  ? 'bg-teal-600 font-semibold text-white shadow-sm'
-                  : 'font-medium text-gray-500 hover:text-gray-700',
-              )}
-            >
-              {ASPECT_LABEL[a]}
-            </button>
-          );
-        })}
-      </nav>
-
-      {selectMutation.isError && <ErrorMessage error={selectMutation.error} />}
-
-      {data && (
-        <AspectSection
-          aspect={aspect}
-          state={data.aspects[aspect]}
-          onSelect={(id) => selectMutation.mutate({ category: aspect, id })}
-          selecting={selectMutation.isPending}
-          config={config}
-        />
-      )}
-    </div>
-  );
 }

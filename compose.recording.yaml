@@ -46,14 +46,15 @@ services:
     # reached lazily at request time, so they need no ordering.
 
   # Pull sidecar (recording-host ONLY — deliberately NOT in compose.yaml, so the
-  # single-host `make up` never runs it): rsyncs FINALISED runs from the robot
-  # into this PC's ./data/recorded behind a tiny localhost HTTP trigger. The
-  # orchestrator POSTs /pull {run_id} right after a Collect Save when the
-  # recording config opts in (transfer.auto_pull_on_save — DEFAULT OFF: nothing
-  # is transferred unless you enable it). The robot-side copy is left in place.
+  # single-host `make up` never runs it): rsyncs FINALISED captures from the
+  # robot into this PC's ./data/objects behind a tiny localhost HTTP trigger.
+  # The orchestrator POSTs /pull right after a Collect Save when the recording
+  # config opts in (transfer.auto_pull_on_save — DEFAULT OFF: nothing is
+  # transferred unless you enable it). The robot-side copy is left in place.
   # Manual `make import-runs` keeps working independently of this sidecar.
-  # Measured (deploy/test/overlap_eval): a pull overlapping an active recording
-  # does not degrade recorded topic rates; BWLIMIT exists to protect the WebRTC
+  # Measured 2026-07-16 (harness since removed; see git history of
+  # deploy/test/overlap_eval/): a pull overlapping an active recording does not
+  # degrade recorded topic rates; BWLIMIT exists to protect the WebRTC
   # preview's share of a thin link (WiFi/Tailscale), not the recording.
   importer:
     build:

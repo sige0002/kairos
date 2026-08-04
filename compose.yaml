@@ -184,7 +184,7 @@ services:
     volumes:
       - ${DATA_DIR:-./data}:/data
       # Read-only config mount (parity with recorder/monitor) so an optional
-      # CYCLONEDDS_URI=file:///config/cyclonedds.xml resolves here too.
+      # CYCLONEDDS_URI=file:///config/cyclonedds-localhost.xml resolves here too.
       - ./config:/config:ro
     healthcheck:
       <<: *healthcheck

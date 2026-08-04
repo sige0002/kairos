@@ -12,7 +12,6 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const STACK_SH = resolve(HERE, '../scripts/stack.sh');
-export const REPO_ROOT = resolve(HERE, '../..');
 
 export interface StackEnv {
   /** The frontend the tests drive — the real nginx image, not a dev server. */
