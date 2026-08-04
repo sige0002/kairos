@@ -5,6 +5,7 @@ import { fetchRuntimeConfig, type RuntimeConfig } from './config';
 import { queryKeys } from './api/queryKeys';
 import { useEventStream } from './sse/useEventStream';
 import { useUiStore } from './store/uiStore';
+import { useOperators } from './v2/plans';
 import { CollectScreen } from './v2/collect/CollectScreen';
 import { ReviewScreen } from './v2/review/ReviewScreen';
 import { DatasetsScreen } from './v2/datasets/DatasetsScreen';
@@ -244,6 +245,10 @@ const OPERATOR_STORAGE_KEY = 'kairos.operator';
 function OperatorChip() {
   const operator = useUiStore((s) => s.recordOperator);
   const setOperator = useUiStore((s) => s.setRecordOperator);
+  // Attribution roster (Settings > Operators). Non-empty → the popover is a
+  // PICKER (no free text: that is how "yuki"/"Yuki"/"yuki_2" get into labels);
+  // empty → the pre-roster free-text input stands and nothing is gated.
+  const roster = useOperators();
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState('');
 
@@ -305,6 +310,36 @@ function OperatorChip() {
           >
             Operator — saved into each recording
           </label>
+          {roster.length > 0 ? (
+            <div className="flex flex-col gap-1" data-testid="operator-roster">
+              {operator.trim() && !roster.includes(operator.trim()) && (
+                <p className="mb-1 rounded-control border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-800">
+                  “{operator.trim()}” is not on the roster — pick a name below
+                  (Settings &gt; Operators edits the list).
+                </p>
+              )}
+              {roster.map((name) => (
+                <button
+                  key={name}
+                  type="button"
+                  data-testid={`operator-pick-${name}`}
+                  onClick={() => {
+                    setOperator(name);
+                    window.localStorage.setItem(OPERATOR_STORAGE_KEY, name);
+                    setOpen(false);
+                  }}
+                  className={cn(
+                    'rounded-control border px-2.5 py-1.5 text-left text-sm',
+                    name === operator.trim()
+                      ? 'border-teal-300 bg-teal-50 font-semibold text-teal-700'
+                      : 'border-gray-200 text-gray-700 hover:bg-gray-50',
+                  )}
+                >
+                  {name}
+                </button>
+              ))}
+            </div>
+          ) : (
           <div className="flex gap-2">
             <input
               id="operator-name"
@@ -327,6 +362,7 @@ function OperatorChip() {
               Save
             </button>
           </div>
+          )}
         </div>
       )}
     </div>

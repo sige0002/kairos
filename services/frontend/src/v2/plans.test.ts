@@ -133,6 +133,7 @@ test('the server catalog is adopted when no local edits are unsynced', async () 
   const puts = mockPlansFetch({
     projects: server,
     failure_reasons: ['Server reason'],
+    operators: [],
     updated_at: 't0',
   });
   ensurePlansSynced();
@@ -217,6 +218,7 @@ test('an EMPTY server vocabulary is neither adopted nor re-pushed', async () => 
   const puts = mockPlansFetch({
     projects: [{ name: 'P', tasks: [] }],
     failure_reasons: [],
+    operators: [],
     updated_at: 't0',
   });
   ensurePlansSynced();

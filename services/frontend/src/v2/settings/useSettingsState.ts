@@ -8,7 +8,14 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { clonePlans, type PlanProjectData } from './data';
-import { setFailReasons, setPlans, useFailReasons, usePlans } from '../plans';
+import {
+  setFailReasons,
+  setOperators,
+  setPlans,
+  useFailReasons,
+  useOperators,
+  usePlans,
+} from '../plans';
 
 const TOAST_MS = 2400;
 
@@ -36,6 +43,11 @@ export interface SettingsState {
   renameFailReason: (i: number) => void;
   removeFailReason: (i: number) => void;
 
+  operators: string[];
+  addOperator: () => void;
+  renameOperator: (i: number) => void;
+  removeOperator: (i: number) => void;
+
   toast: string;
   showToast: (message: string) => void;
 }
@@ -46,6 +58,7 @@ export function useSettingsState(): SettingsState {
   // persists + notifies Collect). Only the editor's cursor is local.
   const plans = usePlans();
   const failReasons = useFailReasons();
+  const operators = useOperators();
   const [planProjIdx, setPlanProjIdx] = useState(0);
   const [planTaskIdx, setPlanTaskIdx] = useState(0);
   const [toast, setToast] = useState('');
@@ -199,6 +212,37 @@ export function useSettingsState(): SettingsState {
     showToast('Failure reason updated');
   }, [failReasons, showToast]);
 
+  // Operator roster (attribution, not auth) — empty is allowed: it turns the
+  // OP picker back into free text (see OperatorsSection's caption).
+  const addOperator = useCallback(() => {
+    const v = window.prompt('New operator name (e.g. "sadasue")', '');
+    if (!v || !v.trim()) return;
+    setOperators([...operators, v.trim()]);
+    showToast('Operator added');
+  }, [operators, showToast]);
+
+  const renameOperator = useCallback(
+    (i: number) => {
+      const label = operators[i];
+      if (label === undefined) return;
+      const v = window.prompt('Operator name', label);
+      if (!v || !v.trim()) return;
+      const next = operators.slice();
+      next[i] = v.trim();
+      setOperators(next);
+      showToast('Operator renamed');
+    },
+    [operators, showToast],
+  );
+
+  const removeOperator = useCallback(
+    (i: number) => {
+      setOperators(operators.filter((_, idx) => idx !== i));
+      showToast('Operator removed');
+    },
+    [operators, showToast],
+  );
+
   const removeFailReason = useCallback((i: number) => {
     // The last reason can't go: marking a Failure REQUIRES picking one (the
     // section's ✕ is disabled at one entry; the store refuses [] as well).
@@ -228,6 +272,10 @@ export function useSettingsState(): SettingsState {
     addFailReason,
     renameFailReason,
     removeFailReason,
+    operators,
+    addOperator,
+    renameOperator,
+    removeOperator,
     toast,
     showToast,
   };

@@ -11,6 +11,7 @@ export const SETTINGS_MENU = [
   'Robots',
   'Projects & tasks',
   'Failure reasons',
+  'Operators',
   'Recording',
   'Data quality',
   'Validation',

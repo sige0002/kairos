@@ -6,6 +6,7 @@
 //   Robots            — robot select + per-aspect options + recording editor
 //   Projects & tasks  — the shared plans catalog editor (also drives Collect)
 //   Failure reasons   — the "What failed?" vocabulary editor (also drives Collect)
+//   Operators         — the attribution roster (fills the OP picker; not auth)
 //   Recording         — form-first active-robot recording config (JSON = Advanced)
 //   Data quality      — read-only expected rates + thresholds + required topics
 //   Validation        — aspect selection + one-click presets (run in the Val tab)
@@ -21,6 +22,7 @@ import { MenuRail } from './MenuRail';
 import { RobotsSection } from './RobotsSection';
 import { PlansSection } from './PlansSection';
 import { FailureReasonsSection } from './FailureReasonsSection';
+import { OperatorsSection } from './OperatorsSection';
 import { RecordingSection } from './RecordingSection';
 import { DataQualitySection } from './DataQualitySection';
 import { ValidationSection } from './ValidationSection';
@@ -58,6 +60,8 @@ export function SettingsScreen() {
         <PlansSection settings={settings} />
       ) : label === 'Failure reasons' ? (
         <FailureReasonsSection settings={settings} />
+      ) : label === 'Operators' ? (
+        <OperatorsSection settings={settings} />
       ) : label === 'Recording' ? (
         <RecordingSection config={config} />
       ) : label === 'Data quality' ? (

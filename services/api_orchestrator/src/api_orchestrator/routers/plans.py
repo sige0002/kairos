@@ -49,6 +49,9 @@ class PlanCatalogPut(BaseModel):
 
     projects: list[PlanProject]
     failure_reasons: list[str] | None = None
+    # Operator roster (attribution, NOT auth): the names Collect's OP picker
+    # offers. Same omitted-means-keep semantics as failure_reasons.
+    operators: list[str] | None = None
 
 
 def _store(request: Request) -> CaptureStore:
@@ -65,11 +68,17 @@ async def get_plans(request: Request) -> dict:
     """
     stored = _store(request).get_plan_catalog()
     if stored is None:
-        return {"projects": None, "failure_reasons": None, "updated_at": None}
-    projects, failure_reasons, updated_at = stored
+        return {
+            "projects": None,
+            "failure_reasons": None,
+            "operators": None,
+            "updated_at": None,
+        }
+    projects, failure_reasons, operators, updated_at = stored
     return {
         "projects": projects,
         "failure_reasons": failure_reasons,
+        "operators": operators,
         "updated_at": updated_at,
     }
 
@@ -80,11 +89,13 @@ async def put_plans(request: Request, body: PlanCatalogPut) -> dict:
     store = _store(request)
     now = utc_now_iso8601()
     projects = [p.model_dump() for p in body.projects]
-    store.set_plan_catalog(projects, now, body.failure_reasons)
+    store.set_plan_catalog(projects, now, body.failure_reasons, body.operators)
     stored = store.get_plan_catalog()
     effective_reasons = stored[1] if stored is not None else body.failure_reasons
+    effective_operators = stored[2] if stored is not None else body.operators
     return {
         "projects": projects,
         "failure_reasons": effective_reasons,
+        "operators": effective_operators,
         "updated_at": now,
     }

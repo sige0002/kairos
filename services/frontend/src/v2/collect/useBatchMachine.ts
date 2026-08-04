@@ -30,6 +30,7 @@ import { createBatch, listBatches, patchBatch } from '../../api/batches';
 import { getCapture, listCaptures, saveReview } from '../../api/captures';
 import { queryKeys } from '../../api/queryKeys';
 import { useUiStore } from '../../store/uiStore';
+import { useOperators } from '../plans';
 import {
   useCaptureDeletion,
   type CaptureDeletionState,
@@ -1231,6 +1232,9 @@ export interface BatchMachine {
   /** True only when the operator explicitly cleared every topic — disables
    *  Start (v1 LiveTab parity). */
   noSelection: boolean;
+  /** Roster exists but no name picked — Start is refused until the OP chip
+   *  names someone (attribution gate; empty roster gates nothing). */
+  operatorMissing: boolean;
 
   // context
   project: string;
@@ -1381,6 +1385,11 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   // Resolves exactly like v1 LiveTab.tsx:940-948. The picker checkboxes live in
   // the Monitor screen (another agent) — Collect only READS the store values.
   const operator = useUiStore((s) => s.recordOperator);
+  // Attribution gate: once Settings holds a roster, a recording may not start
+  // without a picked name (that is the roster's entire point — no more
+  // unknown_operator shifts). An empty roster gates nothing.
+  const roster = useOperators();
+  const operatorMissing = roster.length > 0 && !operator.trim();
   const recordSelected = useUiStore((s) => s.recordSelected);
   const recordCustomized = useUiStore((s) => s.recordCustomized);
   const selection: RecordSelection = useMemo(() => {
@@ -1983,6 +1992,10 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
 
   const startRecording = useCallback(() => {
     if (state.phase !== 'ready' || noSelection) return;
+    if (operatorMissing) {
+      showToast('Pick your name first — OP chip, top right');
+      return;
+    }
     if (startInFlightRef.current) return;
     startInFlightRef.current = true;
     cancelledStartRef.current = false;
@@ -2000,6 +2013,8 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     state.phase,
     state.task,
     noSelection,
+    operatorMissing,
+    showToast,
     selection.topics,
     operator,
     startMutation,
@@ -2988,6 +3003,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     dismissSaveError,
     discardEpisode,
     retakeEpisode,
+    operatorMissing,
     pauseBatch,
     resumeBatch,
     pickEndReason,

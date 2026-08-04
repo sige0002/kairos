@@ -33,6 +33,7 @@ def test_get_never_set_is_null(client: TestClient) -> None:
     assert resp.json() == {
         "projects": None,
         "failure_reasons": None,
+        "operators": None,
         "updated_at": None,
     }
 
@@ -104,3 +105,14 @@ def test_failure_reasons_before_first_push_is_null(client: TestClient) -> None:
 def test_failure_reasons_rejects_non_strings(client: TestClient) -> None:
     bad = {**CATALOG, "failure_reasons": [1, "ok"]}
     assert client.put("/api/v1/plans", json=bad).status_code == 422
+
+
+def test_operator_roster_rides_the_catalog(client: TestClient) -> None:
+    # Attribution roster (NOT auth): same never-set / omitted-keeps semantics
+    # as failure_reasons.
+    put = client.put("/api/v1/plans", json={**CATALOG, "operators": ["alice", "bob"]})
+    assert put.status_code == 200, put.text
+    assert put.json()["operators"] == ["alice", "bob"]
+    # A projects-only PUT (older client) must not wipe the roster.
+    client.put("/api/v1/plans", json=CATALOG)
+    assert client.get("/api/v1/plans").json()["operators"] == ["alice", "bob"]

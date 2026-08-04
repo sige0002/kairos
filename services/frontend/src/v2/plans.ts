@@ -142,8 +142,30 @@ function readInitialFailReasons(): string[] {
   }
 }
 
+// Operator roster (attribution, NOT auth — the project-lead ruling): the
+// names the header OP picker offers. An EMPTY roster means "feature not
+// adopted": the chip stays free-text and nothing is gated — so unlike the
+// fail reasons, [] is a legitimate stored/adopted/pushed value.
+const OPERATORS_KEY = 'kairos.v2.operators.v1';
+
+function isStringList(v: unknown): v is string[] {
+  return Array.isArray(v) && v.every((x) => typeof x === 'string');
+}
+
+function readInitialOperators(): string[] {
+  try {
+    const raw = window.localStorage.getItem(OPERATORS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    return isStringList(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
 let currentPlans: PlanProject[] = readInitial();
 let currentFailReasons: string[] = readInitialFailReasons();
+let currentOperators: string[] = readInitialOperators();
 const listeners = new Set<() => void>();
 
 function notify(): void {
@@ -176,6 +198,25 @@ export function getFailReasons(): string[] {
   return currentFailReasons;
 }
 
+/** Current operator roster snapshot (stable until the next set). */
+export function getOperators(): string[] {
+  return currentOperators;
+}
+
+/** Replace the operator roster — same persist/push/notify path as setPlans.
+ *  An empty roster is allowed: it turns the OP picker back into free text. */
+export function setOperators(next: string[]): void {
+  currentOperators = next;
+  writeDirty(true);
+  try {
+    window.localStorage.setItem(OPERATORS_KEY, JSON.stringify(next));
+  } catch {
+    // localStorage unavailable — the in-memory copy still works this session.
+  }
+  notify();
+  pushCatalogToServer();
+}
+
 /** Replace the fail-reason vocabulary — same persist/push/notify path as
  *  setPlans. An empty replacement is refused (see DEFAULT_FAIL_REASONS: the
  *  Failure flow requires a reason, so the vocabulary must never empty out). */
@@ -199,6 +240,7 @@ export function setFailReasons(next: string[]): void {
 interface PlansServerResponse {
   projects: PlanProject[] | null;
   failure_reasons?: string[] | null;
+  operators?: string[] | null;
   updated_at: string | null;
 }
 
@@ -227,6 +269,7 @@ function pushCatalogToServer(): void {
   apiPut<PlansServerResponse>('/plans', {
     projects: getPlans(),
     failure_reasons: getFailReasons(),
+    operators: getOperators(),
   })
     .then(() => writeDirty(false))
     .catch(() => {
@@ -262,6 +305,18 @@ function adoptServerFailReasons(reasons: string[]): void {
   notify();
 }
 
+/** Adopt the server roster (no dirty mark, no re-push). Empty IS adopted —
+ *  an explicitly cleared roster must not resurrect local names. */
+function adoptServerOperators(operators: string[]): void {
+  currentOperators = operators.slice();
+  try {
+    window.localStorage.setItem(OPERATORS_KEY, JSON.stringify(currentOperators));
+  } catch {
+    /* ignore */
+  }
+  notify();
+}
+
 // Once per page load (module flag) — later mounts are no-ops.
 let plansSyncStarted = false;
 
@@ -283,10 +338,15 @@ export function ensurePlansSynced(): void {
       if (isReasonList(resp.failure_reasons)) {
         adoptServerFailReasons(resp.failure_reasons);
       }
+      if (isStringList(resp.operators)) adoptServerOperators(resp.operators);
       // Seed whichever half the server has never stored (null, or absent on a
       // pre-field backend). A server-side EMPTY reasons list is neither
       // adopted (unusable, see above) nor re-pushed — the local copy stands.
-      if (resp.projects === null || resp.failure_reasons == null) {
+      if (
+        resp.projects === null ||
+        resp.failure_reasons == null ||
+        resp.operators == null
+      ) {
         pushCatalogToServer();
       }
     })
@@ -332,18 +392,37 @@ export function useFailReasons(): string[] {
   );
 }
 
+/** React binding for the operator roster — same semantics as usePlans. */
+export function useOperators(): string[] {
+  useEffect(() => {
+    ensurePlansSynced();
+  }, []);
+  return useSyncExternalStore(
+    (l) => {
+      listeners.add(l);
+      return () => {
+        listeners.delete(l);
+      };
+    },
+    getOperators,
+    getOperators,
+  );
+}
+
 /** Test-only: reset the catalog + clear its persistence between cases. */
 export function __resetPlansStore(): void {
   try {
     window.localStorage.removeItem(STORAGE_KEY);
     window.localStorage.removeItem(DIRTY_KEY);
     window.localStorage.removeItem(FAIL_REASONS_KEY);
+    window.localStorage.removeItem(OPERATORS_KEY);
   } catch {
     /* ignore */
   }
   plansSyncStarted = false;
   currentPlans = clonePlans(DEFAULT_PLANS);
   currentFailReasons = DEFAULT_FAIL_REASONS.slice();
+  currentOperators = [];
   notify();
 }
 
@@ -351,5 +430,6 @@ export function __resetPlansStore(): void {
 export function __rehydratePlansStore(): void {
   currentPlans = readInitial();
   currentFailReasons = readInitialFailReasons();
+  currentOperators = readInitialOperators();
   notify();
 }

@@ -1419,8 +1419,10 @@ class CaptureStore:
         next_cursor = int(page[-1]["seq"]) if has_more and page else None
         return templates, next_cursor
 
-    def get_plan_catalog(self) -> tuple[list[Any], list[str] | None, str] | None:
-        """``(projects, failure_reasons, updated_at)``, or ``None`` if NEVER set.
+    def get_plan_catalog(
+        self,
+    ) -> tuple[list[Any], list[str] | None, list[str] | None, str] | None:
+        """``(projects, failure_reasons, operators, updated_at)`` or ``None``.
 
         ``None`` is distinct from an explicitly emptied catalog (``([], ts)``):
         the client seeds the server from its local copy only in the never-set
@@ -1441,34 +1443,51 @@ class CaptureStore:
         except ValueError:
             return None
         if isinstance(payload, list):  # pre-failure_reasons payload shape
-            return payload, None, row["updated_at"]
+            return payload, None, None, row["updated_at"]
         if not isinstance(payload, dict):
             return None
         if not isinstance(payload.get("projects"), list):
             return None
-        reasons = payload.get("failure_reasons")
-        if not (isinstance(reasons, list) and all(isinstance(r, str) for r in reasons)):
-            reasons = None
-        return payload["projects"], reasons, row["updated_at"]
+
+        def _str_list(key: str) -> list[str] | None:
+            value = payload.get(key)
+            if isinstance(value, list) and all(isinstance(v, str) for v in value):
+                return value
+            return None
+
+        return (
+            payload["projects"],
+            _str_list("failure_reasons"),
+            _str_list("operators"),
+            row["updated_at"],
+        )
 
     def set_plan_catalog(
         self,
         projects: list[Any],
         updated_at: str,
         failure_reasons: list[str] | None = None,
+        operators: list[str] | None = None,
     ) -> None:
         """Replace the shared plan catalog and mirror it to disk.
 
-        ``failure_reasons=None`` means "leave the stored vocabulary as it is"
-        (a client that predates the field must not wipe it), so the effective
-        value is re-read before writing.
+        A ``None`` vocabulary (failure_reasons / operators) means "leave the
+        stored one as it is" (a client that predates the field must not wipe
+        it), so the effective values are re-read before writing.
         """
-        if failure_reasons is None:
+        if failure_reasons is None or operators is None:
             stored = self.get_plan_catalog()
             if stored is not None:
-                failure_reasons = stored[1]
+                if failure_reasons is None:
+                    failure_reasons = stored[1]
+                if operators is None:
+                    operators = stored[2]
         payload = json.dumps(
-            {"projects": projects, "failure_reasons": failure_reasons},
+            {
+                "projects": projects,
+                "failure_reasons": failure_reasons,
+                "operators": operators,
+            },
             ensure_ascii=False,
         )
         with self._conn() as conn:
@@ -1478,7 +1497,9 @@ class CaptureStore:
                 "payload = excluded.payload, updated_at = excluded.updated_at",
                 (payload, updated_at),
             )
-        self._mirror_plan_catalog(projects, failure_reasons, updated_at)
+        self._mirror_plan_catalog(
+            projects, failure_reasons, operators, updated_at
+        )
 
     def _catalog_dir(self) -> Path | None:
         return None if self._data_dir is None else self._data_dir / CATALOG_DIRNAME
@@ -1511,6 +1532,7 @@ class CaptureStore:
         self,
         projects: list[Any],
         failure_reasons: list[str] | None,
+        operators: list[str] | None,
         updated_at: str,
     ) -> None:
         catalog = self._catalog_dir()
@@ -1523,6 +1545,7 @@ class CaptureStore:
                     "schema_version": SCHEMA_VERSION,
                     "projects": projects,
                     "failure_reasons": failure_reasons,
+                    "operators": operators,
                     "updated_at": updated_at,
                 },
             )
@@ -1563,11 +1586,14 @@ class CaptureStore:
 
         plan = _read_json(catalog / PLAN_CATALOG_SIDECAR)
         if plan is not None and isinstance(plan.get("projects"), list):
-            reasons = plan.get("failure_reasons")  # absent in pre-field sidecars
-            if not (
-                isinstance(reasons, list) and all(isinstance(r, str) for r in reasons)
-            ):
-                reasons = None
+            def _side_list(key: str) -> list[str] | None:
+                value = plan.get(key)  # absent in pre-field sidecars
+                if isinstance(value, list) and all(isinstance(v, str) for v in value):
+                    return value
+                return None
+
+            reasons = _side_list("failure_reasons")
+            side_operators = _side_list("operators")
             with self._conn() as conn:
                 conn.execute(
                     "INSERT INTO plan_catalog (id, payload, updated_at) "
@@ -1578,6 +1604,7 @@ class CaptureStore:
                             {
                                 "projects": plan["projects"],
                                 "failure_reasons": reasons,
+                                "operators": side_operators,
                             },
                             ensure_ascii=False,
                         ),

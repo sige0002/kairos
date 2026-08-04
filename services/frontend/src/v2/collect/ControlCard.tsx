@@ -448,10 +448,10 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
           type="button"
           data-testid="start-recording"
           onClick={machine.startRecording}
-          disabled={machine.noSelection}
+          disabled={machine.noSelection || machine.operatorMissing}
           className={cn(
             'flex h-[52px] items-center justify-center gap-2 rounded-control text-[15px] font-bold shadow-btn [@media(max-height:860px)]:h-[44px]',
-            machine.noSelection
+            machine.noSelection || machine.operatorMissing
               ? 'cursor-not-allowed bg-gray-200 text-gray-400'
               : 'bg-teal-600 text-white hover:bg-teal-700',
           )}
@@ -463,6 +463,12 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
         {machine.noSelection && (
           <span className="text-[11px] font-medium text-amber-600">
             Every topic is cleared — select at least one in Monitor to record.
+          </span>
+        )}
+        {machine.operatorMissing && (
+          <span data-testid="operator-gate-note" className="text-[11px] font-medium text-amber-600">
+            Pick your name first (OP chip, top right) — recordings must say who
+            made them.
           </span>
         )}
         {machine.startError && (
