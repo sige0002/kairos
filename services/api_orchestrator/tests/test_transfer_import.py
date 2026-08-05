@@ -694,3 +694,47 @@ class TestImportMessyFolders:
         assert row["importable"] is False
         assert row["reason_code"] == "already_imported"
         assert row["capture_id"]
+
+
+class TestImportRacesFoundByReview:
+    """Defects a second reviewer (codex) found in the import path."""
+
+    def test_the_same_folder_cannot_be_imported_twice_at_once(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        # The scan's already_imported reads FINISHED manifests, so it cannot
+        # see work in flight: a double click or a second browser would copy the
+        # same bag twice under two capture ids, indistinguishable afterwards.
+        source = tmp_path / "twice"
+        _make_bag(source)
+        first = client.post("/api/v1/imports", json={"source_path": str(source)})
+        assert first.status_code == 202
+
+        second = client.post("/api/v1/imports", json={"source_path": str(source)})
+        assert second.status_code == 409
+        assert second.json()["error"]["code"] == "import_already_running"
+
+    def test_a_failure_after_finalize_does_not_claim_nothing_arrived(
+        self, client: TestClient, layout: DataLayout, tmp_path: Path, monkeypatch
+    ) -> None:
+        # Past the rename the bag EXISTS. Reporting a bare "failed" while the
+        # recording later shows up in Review (the reconciler adopts the
+        # sidecar) is the lie; and the old cleanup deleted a staging path that
+        # no longer existed, so it protected nothing.
+        source = tmp_path / "post_finalize"
+        _make_bag(source)
+
+        def _boom(*args: object, **kwargs: object) -> None:
+            raise RuntimeError("catalog write failed")
+
+        monkeypatch.setattr(
+            "api_orchestrator.routers.imports._create_capture_row", _boom
+        )
+        started = client.post("/api/v1/imports", json={"source_path": str(source)})
+        status = _await_import(client, started.json()["import_id"])
+
+        assert status["state"] == "failed"
+        assert status["error"]["code"] == "import_catalog_pending"
+        assert "in place" in status["error"]["message"]
+        # The bytes were NOT thrown away to make the failure look tidy.
+        assert (layout.objects / status["capture_id"]).is_dir()

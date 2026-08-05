@@ -74,6 +74,10 @@ export function ImportBagsDialog({
   const [path, setPath] = useState('');
   const [scan, setScan] = useState<ScanResult | null>(null);
   const [scanError, setScanError] = useState<string | null>(null);
+  /** The path the shown results describe — NOT the input box, which the
+   *  operator may have edited since. Importing what a stale list says while
+   *  the box shows another folder is the confusion this separates. */
+  const [scannedPath, setScannedPath] = useState('');
   const [scanning, setScanning] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [move, setMove] = useState(false);
@@ -88,6 +92,11 @@ export function ImportBagsDialog({
   //    write into a component nobody is looking at.
   const runInFlight = useRef(false);
   const alive = useRef(true);
+  // Scans are fired by hand and can overlap (type a path, Scan, retype,
+  // Scan). Without a generation the SLOWER response wins whenever it lands
+  // last, so the list and the selection can end up describing a folder the
+  // operator already moved on from — and the import would then copy it.
+  const scanGeneration = useRef(0);
   useEffect(() => {
     alive.current = true;
     return () => {
@@ -99,23 +108,27 @@ export function ImportBagsDialog({
     const wanted = (target ?? path).trim();
     if (!wanted) return;
     if (target) setPath(target);
+    const generation = ++scanGeneration.current;
     setScanning(true);
     setScanError(null);
     setScan(null);
     setRows({});
+    setScannedPath(wanted);
     try {
       const result = await apiGet<ScanResult>(
         `/imports/scan?path=${encodeURIComponent(wanted)}`,
       );
+      if (generation !== scanGeneration.current) return; // a newer scan won
       setScan(result);
       // Pre-select everything that can actually come in: the common case is
       // "import this folder", and the un-importable rows stay visible with
       // their reason rather than being hidden from the count.
       setSelected(new Set(result.bags.filter((b) => b.importable).map((b) => b.path)));
     } catch (err) {
+      if (generation !== scanGeneration.current) return;
       setScanError(readCaptureError(err).message || 'Could not scan that folder.');
     } finally {
-      setScanning(false);
+      if (generation === scanGeneration.current) setScanning(false);
     }
   };
 
@@ -176,7 +189,7 @@ export function ImportBagsDialog({
           <Button
             data-testid="import-run"
             onClick={() => void runImport()}
-            disabled={running || selected.size === 0}
+            disabled={running || selected.size === 0 || path.trim() !== scannedPath}
           >
             {running
               ? `Importing… (${imported + failures}/${selected.size})`
@@ -205,7 +218,11 @@ export function ImportBagsDialog({
             value={path}
             onChange={(e) => setPath(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && path.trim()) void runScan();
+              // Same guard as the Scan button: a rescan mid-run would clear
+              // the list and the per-row progress of imports still in flight.
+              if (e.key === 'Enter' && path.trim() && !running && !scanning) {
+                void runScan();
+              }
             }}
             placeholder="/data/incoming-bags"
             className="w-full rounded-control border border-gray-200 px-2 py-1.5 font-mono text-sm focus:border-teal-500 focus:outline-none"
@@ -222,6 +239,17 @@ export function ImportBagsDialog({
         {scanError && (
           <p data-testid="import-scan-error" role="alert" className="text-sm text-red-700">
             {scanError}
+          </p>
+        )}
+
+        {scan && path.trim() !== scannedPath && (
+          <p
+            data-testid="import-stale-scan"
+            role="alert"
+            className="rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800"
+          >
+            The list below is for <code>{scannedPath}</code>, not the folder in
+            the box. Scan again before importing.
           </p>
         )}
 

@@ -93,6 +93,26 @@ async def start_import(request: Request, body: ImportRequest) -> dict[str, Any]:
     # now and a mystery failure after a 20-minute copy.
     bag = await asyncio.to_thread(bag_import.inspect_source, source, layout=layout)
 
+    # An import already in flight for this exact folder cannot be seen by the
+    # scan (its `already_imported` reads finished manifests), so a double
+    # click, a second browser, or a re-run of the same bulk selection would
+    # copy the same bag twice under two capture ids — indistinguishable
+    # afterwards, and paid for twice in disk.
+    for existing in _registry(request).list():
+        if existing.source_path == str(source) and existing.state == "running":
+            raise ApiError(
+                status_code=409,
+                code="import_already_running",
+                message=(
+                    f"{source} is already being imported (started "
+                    f"{existing.started_at})."
+                ),
+                details={
+                    "source_path": str(source),
+                    "capture_id": existing.capture_id,
+                },
+            )
+
     capture_id = bag_import.claim_capture_id(layout)
     run_id = bag_import.allocate_import_run_id()
     record = _registry(request).create(
@@ -125,6 +145,10 @@ async def _run_import(
     staging = layout.incoming_dir(record.capture_id)
     store = request.app.state.capture_store
     instance_id = request.app.state.instance_id
+    # Whether the staged copy has been renamed into objects/. Past that instant
+    # the capture EXISTS on disk, so a later failure is a catalog problem, not
+    # a lost import — and must not be reported as if nothing arrived.
+    finalized = False
     try:
         # 1. Copy into staging. Nothing is visible under objects/ yet, so a
         #    crash here leaves no capture that looks complete. The slot bounds
@@ -147,6 +171,7 @@ async def _run_import(
 
         # 3. The atomic instant: the capture becomes real here and not before.
         await asyncio.to_thread(bag_import.finalize, layout, record.capture_id)
+        finalized = True
 
         # 4. Row last. A row without its bytes would be a capture every other
         #    path (reconciler, retention, digest) has to special-case.
@@ -167,9 +192,10 @@ async def _run_import(
             extra={"capture_id": record.capture_id, "source": record.source_path},
         )
     except Exception as exc:  # noqa: BLE001 - any failure must land in the record
-        # Clean up BEFORE publishing the terminal state: a caller polling until
-        # "failed" is entitled to find nothing half-imported at that moment.
-        await asyncio.to_thread(shutil.rmtree, staging, True)
+        if not finalized:
+            # Clean up BEFORE publishing the terminal state: a caller polling
+            # until "failed" is entitled to find nothing half-imported.
+            await asyncio.to_thread(shutil.rmtree, staging, True)
         record.state = "failed"
         record.finished_at = utc_now_iso8601()
         if isinstance(exc, ApiError):
@@ -177,6 +203,19 @@ async def _run_import(
         else:
             record.error_code = "import_failed"
             record.error_message = str(exc) or exc.__class__.__name__
+        if finalized:
+            # The rename already happened: objects/<capture_id> holds a whole
+            # bag with a valid manifest. Deleting it to make the failure tidy
+            # would throw away the operator's data; the sidecar is the truth
+            # (§8) and the next store reconcile adopts it. Say exactly that,
+            # instead of a bare "failed" that reads as "nothing was imported"
+            # while the recording quietly shows up in Review later.
+            record.error_code = "import_catalog_pending"
+            record.error_message = (
+                f"The bag was copied in ({record.capture_id}) but the catalog "
+                f"entry failed: {record.error_message}. The files are in place; "
+                "a store reconcile will list the recording."
+            )
         logger.warning(
             "bag import failed",
             extra={

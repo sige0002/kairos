@@ -220,3 +220,49 @@ test('closing the dialog mid-run stops queueing further imports', async () => {
   // never queued behind a screen nobody is watching.
   expect(posts.map((p) => p.source_path)).toEqual(['/data/incoming/a']);
 });
+
+
+test('a second scan cannot be started while one is in flight', async () => {
+  // The reachable half of the out-of-order-scan concern: overlapping scans
+  // would let the slower answer describe a folder the operator moved on from.
+  // The control itself refuses (a generation counter in runScan covers the
+  // other entry points, e.g. the nested-folder hint buttons).
+  let release: null | (() => void) = null;
+  const fire = () => release?.();
+  const scans: string[] = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    scans.push(String(input));
+    return new Promise<Response>((resolve) => {
+      release = () => resolve(jsonResponse(SCAN) as Response);
+    });
+  });
+
+  renderWithClient(<ImportBagsDialog open onClose={() => {}} onImported={() => {}} />);
+  const input = screen.getByTestId('import-path');
+  fireEvent.change(input, { target: { value: '/folderA' } });
+  fireEvent.click(screen.getByTestId('import-scan'));
+  await waitFor(() => expect(screen.getByTestId('import-scan')).toBeDisabled());
+
+  fireEvent.change(input, { target: { value: '/folderB' } });
+  fireEvent.click(screen.getByTestId('import-scan'));
+  expect(scans).toHaveLength(1);
+
+  fire();
+  await screen.findByTestId('import-list');
+});
+
+test('editing the path after a scan blocks the import until it is rescanned', async () => {
+  mockFetch();
+  renderWithClient(<ImportBagsDialog open onClose={() => {}} onImported={() => {}} />);
+  fireEvent.change(screen.getByTestId('import-path'), { target: { value: '/data/incoming' } });
+  fireEvent.click(screen.getByTestId('import-scan'));
+  await screen.findByTestId('import-list');
+  expect(screen.getByTestId('import-run')).toBeEnabled();
+
+  fireEvent.change(screen.getByTestId('import-path'), { target: { value: '/data/other' } });
+
+  // The list still describes the OLD folder; importing it while the box says
+  // another one is the confusion, so the button waits for a rescan.
+  expect(screen.getByTestId('import-stale-scan')).toHaveTextContent('/data/incoming');
+  expect(screen.getByTestId('import-run')).toBeDisabled();
+});
