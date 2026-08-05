@@ -66,6 +66,11 @@ class ViewsResult:
     links: int
     datasets: int
     skipped: tuple[str, ...] = ()
+    # Datasets whose folder had to be suffixed because another dataset already
+    # holds <operator>/<task>/<name>. Reported rather than merely logged: the
+    # tree is what an operator's file manager and a training script's glob
+    # read, so a folder that is not the name they typed has to be visible.
+    renamed: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -73,6 +78,7 @@ class ViewsResult:
             "links": self.links,
             "datasets": self.datasets,
             "skipped": list(self.skipped),
+            "renamed": list(self.renamed),
         }
 
 
@@ -131,10 +137,19 @@ def regenerate(layout: DataLayout, entries: list[dict[str, Any]]) -> ViewsResult
     """Build a fresh views tree from *entries* and flip ``views`` onto it.
 
     *entries* are committed ``dataset_members`` rows joined to their dataset —
-    ``capture_id``, ``display_index``, ``dataset_name``, ``operator``, ``task``.
-    A member whose capture has no local directory is skipped and named in the
-    result: a dangling symlink looks to every downstream tool like a corrupt
-    dataset, whereas an absent one plus a report is a fact somebody can act on.
+    ``capture_id``, ``display_index``, ``dataset_name``, ``operator``, ``task``
+    and ``dataset_id``. A member whose capture has no local directory is skipped
+    and named in the result: a dangling symlink looks to every downstream tool
+    like a corrupt dataset, whereas an absent one plus a report is a fact
+    somebody can act on.
+
+    **A regeneration always finishes.** Nothing about one member may abandon the
+    walk: the flip happens at the end, so an exception partway through leaves
+    ``views`` pointing at the generation from *before* the change and every
+    later edit hitting the same fault — a tree that silently stops tracking the
+    catalog, which is worse than one that reports a problem. So a member that
+    cannot be linked is skipped and named, and a dataset that wants a folder
+    another dataset already holds is given a suffixed one.
     """
     generation = secrets.token_hex(8)
     staging = layout.data_dir / f"{GENERATION_PREFIX}{generation}"
@@ -144,6 +159,7 @@ def regenerate(layout: DataLayout, entries: list[dict[str, Any]]) -> ViewsResult
     links = 0
     datasets: set[str] = set()
     skipped: list[str] = []
+    folders = _FolderNames()
     for entry in entries:
         capture_id = entry.get("capture_id")
         if not isinstance(capture_id, str):
@@ -159,7 +175,7 @@ def regenerate(layout: DataLayout, entries: list[dict[str, Any]]) -> ViewsResult
 
         operator = sanitize_component(entry.get("operator"), "unknown_operator")
         task = sanitize_component(entry.get("task"), "unknown_task")
-        dataset_name = sanitize_component(entry.get("dataset_name"), "unnamed")
+        dataset_name = folders.folder_for(entry, operator, task)
         index = int(entry.get("display_index") or 0)
 
         parent = staging / operator / task / dataset_name
@@ -168,7 +184,17 @@ def regenerate(layout: DataLayout, entries: list[dict[str, Any]]) -> ViewsResult
         # Relative, and counted from the link's own depth: the tree must stay
         # valid when the whole data directory is moved or bind-mounted at a
         # different path, which an absolute target would not survive.
-        link.symlink_to(Path("../../../..") / OBJECTS_DIRNAME / capture_id)
+        try:
+            link.symlink_to(Path("../../../..") / OBJECTS_DIRNAME / capture_id)
+        except OSError as exc:
+            # Two members cannot share a path once folders are disambiguated
+            # (display_index is unique within a dataset), so reaching this is a
+            # surprise — and still not a reason to throw the tree away.
+            skipped.append(
+                f"{capture_id}: could not link at {operator}/{task}/"
+                f"{dataset_name}/{index:03d}: {exc}"
+            )
+            continue
         links += 1
         datasets.add(f"{operator}/{task}/{dataset_name}")
 
@@ -179,6 +205,7 @@ def regenerate(layout: DataLayout, entries: list[dict[str, Any]]) -> ViewsResult
         links=links,
         datasets=len(datasets),
         skipped=tuple(skipped),
+        renamed=tuple(folders.renamed),
     )
     if skipped:
         logger.warning(
@@ -186,8 +213,73 @@ def regenerate(layout: DataLayout, entries: list[dict[str, Any]]) -> ViewsResult
             len(skipped),
             "; ".join(skipped[:5]),
         )
+    if folders.renamed:
+        logger.warning(
+            "views: %d dataset folder(s) renamed to break a collision: %s",
+            len(folders.renamed),
+            "; ".join(folders.renamed[:5]),
+        )
     logger.info("views regenerated", extra={"generation": generation, "links": links})
     return result
+
+
+class _FolderNames:
+    """Picks the dataset folder for each member, one dataset at a time.
+
+    Nothing has ever guaranteed that ``(name, operator, task)`` is unique — the
+    labels are free text, ``operator``/``task`` fall back to the *capture's* own
+    values when the dataset leaves them unset, and dataset rows come back from a
+    ledger that may predate any rule the service enforces now. Two datasets can
+    therefore ask for one folder, and the tree cannot hold both: the second
+    symlink is the exact path of the first.
+
+    The later dataset gets ``<name>__<dataset_id tail>`` rather than an
+    exception. Which one is "later" is decided by the order of *entries*, which
+    the store sorts by creation time — so the dataset an operator has been
+    globbing keeps its folder, and the suffix does not move between
+    regenerations.
+    """
+
+    def __init__(self) -> None:
+        # (dataset key, operator, task) -> folder. Keyed on the path too,
+        # because one dataset with no operator of its own spreads its members
+        # across the operators of the captures in it.
+        self._assigned: dict[tuple[str, str, str], str] = {}
+        # (operator, task, folder) -> the dataset key holding it.
+        self._holders: dict[tuple[str, str, str], str] = {}
+        self.renamed: list[str] = []
+
+    def folder_for(self, entry: dict[str, Any], operator: str, task: str) -> str:
+        name = sanitize_component(entry.get("dataset_name"), "unnamed")
+        key = entry.get("dataset_id")
+        if not isinstance(key, str) or not key:
+            # No identity to tell datasets apart by; treat the name as one.
+            key = f"name:{name}"
+        assigned = self._assigned.get((key, operator, task))
+        if assigned is not None:
+            return assigned
+
+        folder = name
+        holder = self._holders.get((operator, task, folder))
+        if holder is not None and holder != key:
+            folder = self._disambiguate(name, key, operator, task)
+            self.renamed.append(f"{operator}/{task}/{name} -> {folder} ({key})")
+        self._assigned[(key, operator, task)] = folder
+        self._holders[(operator, task, folder)] = key
+        return folder
+
+    @staticmethod
+    def _suffix(key: str) -> str:
+        """A short, stable tail of the dataset id, safe as a path component."""
+        return sanitize_component(key, "x").replace(".", "_")[-8:] or "x"
+
+    def _disambiguate(self, name: str, key: str, operator: str, task: str) -> str:
+        candidate = f"{name}__{self._suffix(key)}"
+        attempt = 2
+        while (operator, task, candidate) in self._holders:
+            candidate = f"{name}__{self._suffix(key)}-{attempt}"
+            attempt += 1
+        return candidate
 
 
 def _flip(layout: DataLayout, staging: Path) -> None:

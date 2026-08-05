@@ -3348,6 +3348,9 @@ test('saving a good take as a success adopts it, so a dataset can take it', asyn
   await waitFor(() => expect(result.current.phase).toBe('recording'));
   act(() => result.current.stopRecording());
   await waitFor(() => expect(result.current.phase).toBe('result'), { timeout: 4000 });
+  // E-2 precondition: no verdict has settled, so this 'good' is the fallback —
+  // the adoption below is proposed against data nobody has measured yet.
+  expect(result.current.quickCheck.pending).toBe(true);
   expect(result.current.autoQuality).toBe('good');
   act(() => result.current.pickSuccess());
   act(() => result.current.confirmEpisode());
@@ -3358,8 +3361,10 @@ test('saving a good take as a success adopts it, so a dataset can take it', asyn
     task_result: 'success',
     review_status: 'adopted',
   });
-  // The operator overrode nothing, so quality is still the server's to derive
-  // and correct (§4.1). Adoption is a decision, not a quality claim.
+  // The operator overrode nothing, so quality is still the server's to derive —
+  // and to correct, status included, once its verdict lands (§4.1). Claiming
+  // 'operator' provenance here would freeze the guess as a human decision and
+  // disable that correction. Adoption is a decision, not a quality claim.
   expect(patch.body).not.toHaveProperty('quality');
   expect(patch.body).not.toHaveProperty('quality_source');
 });

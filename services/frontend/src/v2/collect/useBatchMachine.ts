@@ -166,11 +166,15 @@ export const QUALITY_LABEL: Record<QualityOverride, string> = {
  * was just taken out of.
  *
  * `quality` here is the EFFECTIVE value the result panel was showing when the
- * operator committed: their override if they made one, else the auto value. If
- * the quick check settles afterwards and downgrades the quality, the server
- * corrects the quality (§4.1) but not this decision — the adoption was the
- * operator's, made against what the screen said, and it stays theirs to change
- * in Review.
+ * operator committed: their override if they made one, else the auto value.
+ * With no settled verdict yet that auto value is the fallback 'good', so this
+ * function can propose an adoption for data nobody has measured. That is why
+ * the request carries no `quality` unless the operator overrode it: the server
+ * derives the quality, and when its verdict lands and is NOT good it moves the
+ * capture back to `pending` — NEEDS CHECK — rather than leaving it adopted in
+ * READY (§4.1, RecordService.reconcile_quality). An override is stamped
+ * `quality_source: 'operator'` and is never re-derived; claiming that
+ * provenance for a value nobody chose would disable the correction for good.
  */
 export function collectReviewStatus(
   /** This screen's own vocabulary: 'ok' is what the wire calls `success`. */
@@ -2027,6 +2031,23 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     dispatch({ type: 'CANCEL_ARMING' });
   }, [state.phase]);
 
+  // When THIS take began, by our own clock. Shared by the Stop floor below and
+  // the elapsed timer further down.
+  //
+  // The baseline belongs to the RECORDING, not to our connection: it is set
+  // when the take begins and cleared when it ends. Re-deriving it whenever the
+  // recorder's reachability changed restarted the clock at 00:00:00 the moment
+  // an outage ended, presenting a brand-new elapsed time for a take that had
+  // been running — or had already died — throughout.
+  const recStartRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (state.phase !== 'recording') {
+      recStartRef.current = null;
+      return;
+    }
+    if (recStartRef.current == null) recStartRef.current = Date.now();
+  }, [state.phase]);
+
   // M2: Start and Stop occupy the SAME position — START_SUCCEEDED swaps the
   // ready card for the recording card — so the second half of a real
   // double-click lands on Stop. qa-ui measured the result: a start at T+0 and
@@ -2043,8 +2064,35 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   // an operator cannot end a recording. That is a worse failure than the
   // accident being prevented, and B1 is exactly the case where the recorder
   // goes quiet mid-take.
+  //
+  // For the same reason the floor is measured on the WALL CLOCK rather than on
+  // `elapsedMs`. That figure deliberately FREEZES when the recorder stops
+  // answering (B1 below), so a recorder that died inside the first second left
+  // it parked under the floor and Stop disabled for the rest of the take —
+  // keyboard path included, since S / Space go through `canStop` too. The floor
+  // asks how old the take is, which is a fact we still hold when the recorder
+  // is gone; a stop we cannot deliver then fails loudly, which is honest, while
+  // refusing to attempt it is a trap.
+  const [stopFloorPassed, setStopFloorPassed] = useState(false);
+  useEffect(() => {
+    if (state.phase !== 'recording') {
+      setStopFloorPassed(false);
+      return;
+    }
+    // Runs after the baseline effect above (declaration order), so the take's
+    // start is already set for the render that made this a recording.
+    const remaining = stopFloorMs - (Date.now() - (recStartRef.current ?? Date.now()));
+    if (remaining <= 0) {
+      setStopFloorPassed(true);
+      return;
+    }
+    setStopFloorPassed(false);
+    const id = setTimeout(() => setStopFloorPassed(true), remaining);
+    return () => clearTimeout(id);
+  }, [state.phase]);
+
   const stopBlockedReason: StopBlockedReason =
-    state.phase === 'recording' && state.elapsedMs < stopFloorMs ? 'floor' : null;
+    state.phase === 'recording' && !stopFloorPassed ? 'floor' : null;
   const canStop = state.phase === 'recording' && stopBlockedReason === null;
 
   const stopRecording = useCallback(() => {
@@ -2074,20 +2122,6 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     const id = setInterval(() => setStaleNowMs(Date.now()), 1000);
     return () => clearInterval(id);
   }, [recorderReachable]);
-
-  const recStartRef = useRef<number | null>(null);
-  // The baseline belongs to the RECORDING, not to our connection: it is set
-  // when the take begins and cleared when it ends. Re-deriving it whenever the
-  // recorder's reachability changed restarted the clock at 00:00:00 the moment
-  // an outage ended, presenting a brand-new elapsed time for a take that had
-  // been running — or had already died — throughout.
-  useEffect(() => {
-    if (state.phase !== 'recording') {
-      recStartRef.current = null;
-      return;
-    }
-    if (recStartRef.current == null) recStartRef.current = Date.now();
-  }, [state.phase]);
 
   useEffect(() => {
     if (state.phase !== 'recording') return;

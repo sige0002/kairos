@@ -672,8 +672,10 @@ class CaptureStore:
         last-writer-wins, and no lock held across the HTTP round-trip.
 
         The sidecar has already been written at ``base_revision + 1`` by the
-        time this runs, and is deliberately NOT rolled back on a loss — a
-        sidecar ahead of the database is the direction rebuild can resolve.
+        time this runs, so a loss here means ``record.json`` holds a decision
+        this row rejected. The caller restamps it from the winning row rather
+        than leaving it: §8 rebuilds the catalog from the sidecars, so a file
+        left disagreeing with the database would outlive the 409.
         """
         unknown = set(fields) - _REVIEW_COLUMNS
         if unknown:
@@ -931,6 +933,38 @@ class CaptureStore:
             ).fetchone()
         return dict(row) if row is not None else None
 
+    def find_active_dataset_by_labels(
+        self,
+        *,
+        name: str,
+        operator: str | None,
+        task: str | None,
+        exclude: str | None = None,
+    ) -> dict[str, Any] | None:
+        """The active dataset already using these three labels, if any.
+
+        The labels are not decoration: they are the generated path
+        ``views/<operator>/<task>/<name>`` (§6), so two active datasets holding
+        all three would ask that tree for one folder twice.
+
+        Archived datasets are excluded deliberately. Their bytes have left and
+        their folder was written by the archive run, so the name is free again —
+        refusing it would make every archived set permanently poison a name an
+        operator wants to keep using. ``IS`` rather than ``=`` because operator
+        and task are nullable and ``NULL = NULL`` is not true in SQL.
+        """
+        sql = (
+            "SELECT * FROM datasets WHERE status = 'active' "
+            "AND name = ? AND operator IS ? AND task IS ?"
+        )
+        params: list[Any] = [name, operator, task]
+        if exclude is not None:
+            sql += " AND dataset_id != ?"
+            params.append(exclude)
+        with self._conn() as conn:
+            row = conn.execute(sql, params).fetchone()
+        return dict(row) if row is not None else None
+
     def list_datasets(self) -> list[dict[str, Any]]:
         with self._conn() as conn:
             rows = conn.execute(
@@ -1061,18 +1095,26 @@ class CaptureStore:
         or gone, and its disappearance from ``views/`` should be this filter —
         a decision — rather than the regenerator's missing-source skip, which
         logs each member as a surprise.
+
+        ``dataset_id`` is carried so the regenerator can tell two datasets with
+        the same three labels apart, and the ordering breaks that tie by
+        creation time. Both matter for stability rather than correctness of the
+        query: whichever dataset comes first keeps the plain folder name, so a
+        tie left to SQLite's row order could hand the folder to the other one on
+        the next regeneration and move a path somebody is globbing.
         """
         with self._conn() as conn:
             rows = conn.execute(
                 """
-                SELECT m.capture_id, m.display_index, d.name AS dataset_name,
+                SELECT m.capture_id, m.display_index, m.dataset_id,
+                       d.name AS dataset_name,
                        COALESCE(d.operator, c.operator) AS operator,
                        COALESCE(d.task, c.task) AS task
                 FROM dataset_members m
                 JOIN datasets d ON d.dataset_id = m.dataset_id
                 LEFT JOIN captures c ON c.capture_id = m.capture_id
                 WHERE d.status = 'active'
-                ORDER BY d.name, m.display_index
+                ORDER BY d.name, d.created_at, d.dataset_id, m.display_index
                 """
             ).fetchall()
         return [dict(row) for row in rows]

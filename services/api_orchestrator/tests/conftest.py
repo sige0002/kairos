@@ -25,6 +25,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from kairos_common import Settings
 from kairos_common.capture_sidecars import (
+    OBJECT_MANIFEST_FILENAME,
     ObjectManifestV2,
     write_object_manifest,
 )
@@ -64,7 +65,22 @@ class FakeRecorder:
         # UNREACHABLE, never as "nothing is live".
         self.omit_live_capture_ids: bool = False
         # Serve GET /record/metadata as the recorder's 500 manifest_corrupt.
+        # Deliberately independent of ``sidecar_corrupt`` below: the two model
+        # different faults, and which one a test picks decides whether the
+        # complaint is permanent or transient (see that knob).
         self.manifest_corrupt: bool = False
+        # Write objects/<capture_id>/object_manifest.json as bytes that do not
+        # parse, which is the fault ``manifest_corrupt`` REPORTS: the recorder's
+        # 500 says it could not read that file, and it is the same file the
+        # orchestrator's digest and reconciler read.
+        #
+        # Setting only ``manifest_corrupt`` therefore models the narrower case —
+        # the recorder read the file mid-write and the copy on disk is fine —
+        # where the complaint is stale the moment anything re-reads it cleanly
+        # (captures.py ``_manifest_divergence``). Setting both models a file
+        # that really is unreadable, where adoption refuses and the complaint
+        # stands. Both are real; a test must say which one it means.
+        self.sidecar_corrupt: bool = False
         # Whether the fake writes objects/<capture_id>/ on start. Off lets a
         # test drive the API without any bytes on disk.
         self.writes_sidecars: bool = True
@@ -331,6 +347,16 @@ class FakeRecorder:
     def _write_manifest(self, state: str) -> None:
         """Write the manifest the orchestrator actually reads (§3)."""
         assert self.capture_id is not None
+        if self.sidecar_corrupt:
+            capture_dir = self.layout.capture_dir(self.capture_id)
+            capture_dir.mkdir(parents=True, exist_ok=True)
+            # Truncated mid-write, which is how this happens for real: a power
+            # cut between open() and the rename. Not empty and not absent —
+            # §3.3 treats "unparseable" and "missing" as different answers.
+            (capture_dir / OBJECT_MANIFEST_FILENAME).write_text(
+                '{"schema_version": 2, "capture_id": "'
+            )
+            return
         write_object_manifest(
             self.layout.capture_dir(self.capture_id),
             ObjectManifestV2(
@@ -555,6 +581,29 @@ def client(app: FastAPI) -> Iterator[TestClient]:
     """A TestClient (entering lifespan runs bootstrap + startup reconcile)."""
     with TestClient(app) as test_client:
         yield test_client
+
+
+@pytest.fixture
+def digests_stay_queued(app: FastAPI) -> list[str]:
+    """Record what ``stop`` handed to the digest instead of running it.
+
+    ``RecordService.stop`` ends by calling ``DigestJob.schedule``, which creates
+    a task on the app's own loop and returns. Under ``TestClient`` that loop
+    keeps turning in a portal thread, so the digest runs CONCURRENTLY with
+    whatever the test does next — and a digest is not a read: sealing the
+    manifest ends in ``adopt_manifest_facts``, which rewrites the row from the
+    file on disk, ``error`` included. A test whose subject IS that error field
+    was therefore racing a background writer for it.
+
+    Opting in here keeps the trigger and drops the work: the queued capture ids
+    are returned for inspection, and the digest runs only where the test asks
+    for it, through ``run_digests``. Deliberately not autouse — several tests
+    depend on the real background digest, and which of the two behaviours a
+    test pins should be visible in its signature.
+    """
+    queued: list[str] = []
+    app.state.digest_job.schedule = queued.append
+    return queued
 
 
 def run_digests(client: TestClient, *, attempts: int = 100) -> int:

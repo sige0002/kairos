@@ -967,3 +967,116 @@ test('a recorder that dies mid-recording flips the card to unreachable and freez
     expect(screen.getByTestId('sys-recorder')).toHaveTextContent('no answer'),
   );
 }, 20000);
+
+// E-1: the two B1 behaviours above compose into a trap. The elapsed figure is
+// frozen (correctly — it is a claim we can no longer support), and the Stop
+// floor was measured against that same frozen figure. A recorder that dies
+// inside the first second therefore left `elapsedMs` below the floor for good:
+// Stop disabled for the rest of the take, and the S / Space path guarded by the
+// same flag, so the operator had NO way to end it.
+//
+// The floor exists to defeat a double-click, which is a fact about how long the
+// take has existed — not about whether we can still see the recorder. An
+// operator must always be able to end a take; a stop against a recorder that is
+// not there fails loudly, which is honest, whereas forbidding it pre-emptively
+// is not.
+// A recorder that dies the instant its take begins. The start's own status
+// invalidation is the poll that fails, so the freeze lands INSIDE the stop floor
+// with the elapsed figure still at zero — the state the trap needs.
+function mockRecorderDyingAtStart(): { stopAttempts: () => number } {
+  let recorderAlive = true;
+  let started = false;
+  let attempts = 0;
+  const unreachableBody = {
+    error: { code: 'recorder_unreachable', message: 'the recorder is unreachable' },
+  };
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/record/status')) {
+      if (!recorderAlive) return Promise.resolve(jsonResponse(unreachableBody, 503));
+      return Promise.resolve(
+        jsonResponse(
+          started
+            ? {
+                capture_id: CAP_1,
+                run_id: RUN_1,
+                state: 'recording',
+                live_capture_ids: [CAP_1],
+                started_at: '2026-08-01T00:00:00.000Z',
+              }
+            : { capture_id: null, run_id: null, state: 'created', live_capture_ids: [] },
+        ),
+      );
+    }
+    if (url.includes('/record/start')) {
+      started = true;
+      recorderAlive = false;
+      return Promise.resolve(jsonResponse(capture({})));
+    }
+    if (url.includes('/record/stop')) {
+      attempts += 1;
+      return Promise.resolve(jsonResponse(unreachableBody, 503));
+    }
+    if (url.includes('/config')) return Promise.resolve(jsonResponse(CONFIG));
+    if (url.includes('/batches')) return Promise.resolve(jsonResponse({ items: [] }));
+    if (url.includes('/captures'))
+      return Promise.resolve(jsonResponse({ items: [], next_cursor: null }));
+    return Promise.resolve(jsonResponse({}));
+  });
+  return { stopAttempts: () => attempts };
+}
+
+/** Start a take, lose the recorder inside the floor, and return the Stop button
+ *  once the wall clock has cleared the floor. Asserts the trap's preconditions
+ *  on the way through. */
+async function reachUnreachableRecordingPastFloor(): Promise<HTMLElement> {
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
+  fireEvent.click(screen.getByRole('button', { name: /Start recording/ }));
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('RECORDER UNREACHABLE'), {
+    timeout: 10000,
+  });
+  // The card says it cannot see the recorder, and the elapsed figure is frozen
+  // at zero — under the floor, where it now stays.
+  expect(screen.getByTestId('recorder-unreachable-note')).toBeInTheDocument();
+  expect(screen.getByTestId('elapsed')).toHaveTextContent('00:00:00');
+
+  const stop = screen.getByTestId('stop-recording');
+  await waitFor(() => expect(stop).toBeEnabled(), { timeout: 4000 });
+  // The note is still up: nothing here claims the recorder came back.
+  expect(screen.getByTestId('recorder-unreachable-note')).toBeInTheDocument();
+  return stop;
+}
+
+test('a recorder that dies inside the stop floor still lets the operator end the take', async () => {
+  // The floor a real operator gets — this test is about the guard as shipped.
+  __resetStopFloorMs();
+  const recorder = mockRecorderDyingAtStart();
+
+  renderWithClient(<CollectScreen />);
+  const stop = await reachUnreachableRecordingPastFloor();
+
+  // Pressing it really ends the take: the stop is attempted and its failure is
+  // shown, rather than being pre-empted by a control that refuses to be used.
+  fireEvent.click(stop);
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('SAVING'));
+  expect(recorder.stopAttempts()).toBeGreaterThan(0);
+  await waitFor(() =>
+    expect(screen.getByText(/Can't reach the recorder/)).toBeInTheDocument(),
+  );
+}, 20000);
+
+// The keyboard paths are guarded by the same `canStop` the button reads, so
+// they came back with it — but "so it does" is exactly the claim a refactor
+// that splits them would falsify quietly. Space is the one an operator hits
+// without looking, and it is the last way out of a take nobody can end.
+test('Space ends the take too when the recorder died inside the stop floor', async () => {
+  __resetStopFloorMs();
+  const recorder = mockRecorderDyingAtStart();
+
+  renderWithClient(<CollectScreen />);
+  await reachUnreachableRecordingPastFloor();
+
+  fireEvent.keyDown(document.body, { key: ' ' });
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('SAVING'));
+  expect(recorder.stopAttempts()).toBeGreaterThan(0);
+}, 20000);

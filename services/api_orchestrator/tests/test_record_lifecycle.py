@@ -10,6 +10,8 @@ recorder acknowledged the start is what stops phantom captures accumulating.
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -23,6 +25,85 @@ from kairos_common.rebuild import ReplicaState
 
 def _store(client: TestClient) -> CaptureStore:
     return client.app.state.capture_store
+
+
+def _hold_settlement(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> threading.Event:
+    """Park the stop-time quick-check settlement until the event is set.
+
+    The settlement runs on the app's own loop (the TestClient portal keeps it
+    turning), so a test that needs a review saved BEFORE the verdict lands must
+    hold it there — otherwise the ordering, which IS the scenario, is decided by
+    a race with the test thread.
+
+    The gate sits on the settlement's first await, and it yields to the loop
+    rather than blocking it, so the request under test is still served. It is
+    deliberately not inside the MCAP read: that one is wrapped in a 1.5s
+    ``wait_for`` which would cancel the gate and let the settlement carry on.
+    """
+    service = client.app.state.record_service
+    release = threading.Event()
+    original = service._monitor_metric_topics
+
+    async def gated() -> object:
+        while not release.is_set():
+            await asyncio.sleep(0.01)
+        return await original()
+
+    monkeypatch.setattr(service, "_monitor_metric_topics", gated)
+    return release
+
+
+def _hold_reconcile(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> threading.Event:
+    """Park the settlement's re-derivation, letting its verdict land first.
+
+    This opens the window the correction is dangerous in: the verdict is on the
+    capture and visible to any client, but the re-derivation that follows has
+    not read the review yet. A review written in that window is a judgement
+    about a verdict the operator could actually see.
+    """
+    service = client.app.state.record_service
+    release = threading.Event()
+    original = service.reconcile_quality
+
+    async def gated(*args: object, **kwargs: object) -> None:
+        while not release.is_set():
+            await asyncio.sleep(0.01)
+        await original(*args, **kwargs)
+
+    monkeypatch.setattr(service, "reconcile_quality", gated)
+    return release
+
+
+def _await_verdict(client: TestClient, capture_id: str, *, timeout_s: float = 10.0):
+    """Wait for the settled quick_check to appear on the capture."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        capture = _store(client).get_capture(capture_id)
+        if capture is not None and capture.quick_check is not None:
+            return capture
+        time.sleep(0.02)
+    raise AssertionError("the quick check never settled")
+
+
+def _await_settlement(client: TestClient, *, timeout_s: float = 10.0) -> None:
+    """Block until every in-flight quick-check settlement has finished.
+
+    ``drain_settlements()`` cannot be used from here for a settlement that is
+    still running: the task belongs to the app's loop and this is another
+    thread. The task removes itself from the set when it completes (after
+    ``reconcile_quality``), so an empty set is the honest "it is done" — and a
+    settlement that never finishes fails the test rather than being waited on
+    forever.
+    """
+    service = client.app.state.record_service
+    deadline = time.monotonic() + timeout_s
+    while service._settlement_tasks and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert not service._settlement_tasks, "the quick-check settlement never finished"
 
 
 def _start(client: TestClient, **body: object) -> dict:
@@ -377,7 +458,7 @@ class TestQuickCheckSettlement:
     ) -> None:
         started = _start(client)
         client.post("/api/v1/record/stop")
-        asyncio.run(client.app.state.record_service.drain_settlements())
+        _await_settlement(client)
 
         capture = _store(client).get_capture(started["capture_id"])
         assert capture is not None
@@ -390,7 +471,7 @@ class TestQuickCheckSettlement:
         started = _start(client)
         capture_id = started["capture_id"]
         client.post("/api/v1/record/stop")
-        asyncio.run(client.app.state.record_service.drain_settlements())
+        _await_settlement(client)
 
         # The operator's Save sends no quality unless they overrode it, so the
         # server derives it from its own verdict — one derivation, not one per
@@ -416,7 +497,7 @@ class TestQuickCheckSettlement:
         started = _start(client)
         capture_id = started["capture_id"]
         client.post("/api/v1/record/stop")
-        asyncio.run(client.app.state.record_service.drain_settlements())
+        _await_settlement(client)
         client.patch(
             f"/api/v1/captures/{capture_id}/review",
             json={
@@ -441,6 +522,11 @@ class TestQuickCheckSettlement:
         assert capture is not None
         assert capture.quality == "needs_review"
         assert capture.review_revision == 2
+        # The adoption stands. This review was written AFTER a settled verdict,
+        # so it is a judgement about something the operator could see, not a
+        # guess — and the caller here passes no evidence to the contrary. Only a
+        # settlement that can show the review predates its verdict demotes one
+        # (see the two tests below).
         assert capture.review_status == "adopted"
 
     def test_an_accidental_double_click_is_not_offered_as_good(
@@ -457,7 +543,7 @@ class TestQuickCheckSettlement:
         fake_recorder.bag_messages = 25
         started = _start(client)
         client.post("/api/v1/record/stop")
-        asyncio.run(client.app.state.record_service.drain_settlements())
+        _await_settlement(client)
 
         capture = _store(client).get_capture(started["capture_id"])
         quick = capture.quick_check
@@ -505,11 +591,188 @@ class TestQuickCheckSettlement:
         with TestClient(app) as client:
             started = _start(client)
             client.post("/api/v1/record/stop")
-            asyncio.run(app.state.record_service.drain_settlements())
+            _await_settlement(client)
             capture = app.state.capture_store.get_capture(started["capture_id"])
 
         assert capture.quick_check.verdict.quality == "needs_review"
         assert "30s minimum" in " ".join(capture.quick_check.verdict.reasons)
+
+    def test_a_save_that_beats_the_verdict_does_not_stay_adopted(
+        self,
+        client: TestClient,
+        fake_recorder: FakeRecorder,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A fast Save must not adopt data this server is about to flag.
+
+        Collect's result panel has no verdict to show while the quick check is
+        still settling, so its auto quality falls back to good and the save
+        carries ``review_status: adopted``. For the SAME capture the server
+        derives ``needs_review`` — and used to correct only the quality, so the
+        capture kept the ``adopted`` it was handed and sat in Review's READY
+        lane (the lane that needs no attention), dataset-eligible, while the
+        verdict said the opposite.
+        """
+        fake_recorder.bag_duration_s = 0.09  # settles needs_review
+        fake_recorder.bag_messages = 25
+        release = _hold_settlement(client, monkeypatch)
+
+        started = _start(client)
+        capture_id = started["capture_id"]
+        client.post("/api/v1/record/stop")
+
+        saved = client.patch(
+            f"/api/v1/captures/{capture_id}/review",
+            json={
+                "base_revision": 0,
+                "task_result": "success",
+                "review_status": "adopted",
+            },
+        ).json()
+        # What the two sides said about the same capture at save time.
+        assert saved["review_status"] == "adopted"
+        assert saved["quality"] == "needs_review"
+        assert saved["quality_source"] == "quick_check"
+
+        release.set()
+        _await_settlement(client)
+
+        capture = _store(client).get_capture(capture_id)
+        assert capture is not None
+        # The verdict is real and it is not good …
+        assert capture.quick_check is not None
+        assert capture.quick_check.verdict.quality == "needs_review"
+        # … so the capture must not still be sitting in READY as adopted. It
+        # belongs in NEEDS CHECK, where "Mark OK — include" is the deliberate
+        # human confirmation.
+        assert capture.review_status == "pending"
+        assert capture.quality == "needs_review"
+
+    def test_mark_ok_inside_the_settlement_window_is_not_undone(
+        self,
+        client: TestClient,
+        fake_recorder: FakeRecorder,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Review's deliberate "Mark OK — include" must survive the correction.
+
+        It sends ``{review_status: adopted}`` and nothing else (see
+        ``markOk`` in v2/review/useReviewState.ts), so it reaches the server
+        with exactly the shape of Collect's fast save: same fields, same
+        ``quick_check`` quality source, on a capture whose verdict says
+        needs_review. The one thing that differs is that this one was written
+        against a verdict the operator could see. Demoting it would silently
+        undo a human decision — a worse failure than the divergence the
+        correction exists to fix, and one the operator has no way to notice.
+        """
+        fake_recorder.bag_duration_s = 0.09  # settles needs_review
+        fake_recorder.bag_messages = 25
+        release = _hold_reconcile(client, monkeypatch)
+
+        started = _start(client)
+        capture_id = started["capture_id"]
+        client.post("/api/v1/record/stop")
+
+        # The verdict has landed; only the re-derivation behind it is held.
+        capture = _await_verdict(client, capture_id)
+        assert capture.quick_check.verdict.quality == "needs_review"
+
+        saved = client.patch(
+            f"/api/v1/captures/{capture_id}/review",
+            json={"base_revision": 0, "review_status": "adopted"},
+        ).json()
+        assert saved["review_status"] == "adopted"
+        # Nobody claimed the quality was a human call — the source stays
+        # quick_check, which is precisely why the naive rule ate this row.
+        assert saved["quality_source"] == "quick_check"
+        assert saved["quality"] == "needs_review"
+
+        release.set()
+        _await_settlement(client)
+
+        capture = _store(client).get_capture(capture_id)
+        assert capture is not None
+        assert capture.review_status == "adopted"
+        assert capture.quality == "needs_review"
+
+    def test_an_adoption_that_beat_the_verdict_entirely_is_still_a_guess(
+        self,
+        client: TestClient,
+        fake_recorder: FakeRecorder,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Where the line falls, stated outright.
+
+        This is the bare "Mark OK" payload again, but written before the verdict
+        existed rather than after it. Nothing on the wire separates it from
+        Collect's fast save at this point — both adopted a capture nothing had
+        measured — so it gets the same answer, and this test exists so that is a
+        decision rather than an oversight. The cost is bounded and visible: the
+        capture is in NEEDS CHECK with the real verdict now on it, one click
+        from being adopted again by an operator who can finally see what they
+        are adopting.
+        """
+        fake_recorder.bag_duration_s = 0.09  # settles needs_review
+        fake_recorder.bag_messages = 25
+        release = _hold_settlement(client, monkeypatch)
+
+        started = _start(client)
+        capture_id = started["capture_id"]
+        client.post("/api/v1/record/stop")
+        client.patch(
+            f"/api/v1/captures/{capture_id}/review",
+            json={"base_revision": 0, "review_status": "adopted"},
+        )
+
+        release.set()
+        _await_settlement(client)
+
+        capture = _store(client).get_capture(capture_id)
+        assert capture is not None
+        assert capture.review_status == "pending"
+        # The "one click away" half of that argument, asserted rather than
+        # assumed. NEEDS CHECK is only a fair place to send this capture if the
+        # verdict is ON it for the operator to read; demoting while the verdict
+        # went missing would leave them a row they cannot act on, and the status
+        # assertion alone would not notice.
+        assert capture.quick_check is not None
+        assert capture.quick_check.verdict.quality == "needs_review"
+
+    def test_a_good_verdict_leaves_the_operators_adoption_alone(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The correction above must not undo an adoption the verdict agrees with.
+
+        The same fast Save on a healthy take: it banked the conservative
+        ``needs_review`` fallback, and when the real verdict says good the
+        adoption was right and stands. A correction that demoted every save
+        that outran the settlement would send good data to NEEDS CHECK for no
+        reason — and be indistinguishable, on screen, from the real thing.
+        """
+        release = _hold_settlement(client, monkeypatch)  # default bag: a good take
+
+        started = _start(client)
+        capture_id = started["capture_id"]
+        client.post("/api/v1/record/stop")
+        saved = client.patch(
+            f"/api/v1/captures/{capture_id}/review",
+            json={
+                "base_revision": 0,
+                "task_result": "success",
+                "review_status": "adopted",
+            },
+        ).json()
+        assert saved["quality"] == "needs_review"  # the fallback, not a verdict
+
+        release.set()
+        _await_settlement(client)
+
+        capture = _store(client).get_capture(capture_id)
+        assert capture is not None
+        assert capture.quick_check is not None
+        assert capture.quick_check.verdict.quality == "good"
+        assert capture.quality == "good"
+        assert capture.review_status == "adopted"
 
     def test_an_operator_quality_call_is_never_overwritten(
         self, client: TestClient

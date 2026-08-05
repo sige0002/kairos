@@ -300,17 +300,41 @@ class TestOtherPinnedShapes:
         started = client.post(
             "/api/v1/record/start", json={"topics": ["/joint_states"]}
         ).json()
+        # Corrupt on the wire AND on disk, because they are the same file: the
+        # recorder's 500 says it could not parse the manifest the orchestrator
+        # then goes on to read. A fake that answered 500 over a clean sidecar
+        # would be modelling the sibling test's case, not this one.
         fake_recorder.manifest_corrupt = True
+        fake_recorder.sidecar_corrupt = True
         client.post("/api/v1/record/stop")
+        capture_id = started["capture_id"]
 
-        body = client.get(f"/api/v1/captures/{started['capture_id']}").json()
+        body = client.get(f"/api/v1/captures/{capture_id}").json()
         # §10 sends this as a 500 with its own code precisely so it is not read
         # as "no manifest". A repairable fault must not be filed as transient
         # unreachability.
         assert body["error"]["code"] == "manifest_corrupt"
 
+        # And it STAYS filed. Adoption is the one thing that clears this code
+        # (the sibling test below), and it refuses an unparseable file — so the
+        # digest runs here rather than being held back, and the complaint has
+        # to survive it. That is the difference between a fault worth showing
+        # an operator and one the next background pass erases.
+        run_digests(client)
+        after = client.get(f"/api/v1/captures/{capture_id}").json()
+        assert after["error"]["code"] == "manifest_corrupt"
+
     def test_a_readable_terminal_manifest_clears_a_stale_corrupt_complaint(
-        self, client: TestClient, fake_recorder: FakeRecorder
+        self,
+        client: TestClient,
+        fake_recorder: FakeRecorder,
+        # The sidecar stays VALID here — that is the scenario, and it is why
+        # this knob cannot simply corrupt the file too. Both adopters (the
+        # digest stop queues, and the reconciler below) would therefore clear
+        # the complaint, so the digest is held back to leave the pass named in
+        # the assertion as the one that did it. The sibling test above covers
+        # the opposite half of the rule with the digest running.
+        digests_stay_queued: list[str],
     ) -> None:
         # Deliberate ruling (round 4, n3): manifest adoption CAN only run when
         # the file on disk read back as a valid terminal manifest — a corrupt

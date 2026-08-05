@@ -11,6 +11,15 @@ leaves the sidecar *ahead* — the direction rebuild resolves by adopting it. Th
 reverse order would leave the database claiming a review that no file records,
 which rebuild can only report as a warning and never repair.
 
+Writing first is only safe if the write cannot overwrite a decision somebody
+else already committed, so the sidecar write is **itself a compare-and-swap**:
+it refuses unless ``record.json`` still holds the revision the caller built on,
+and a save that loses the database CAS anyway restamps the file from the winning
+row. Without both, two orchestrators can leave the REFUSED decision as the last
+file on disk while the database holds the accepted one — and since §8 rebuilds
+the index from the sidecars, dropping ``kairos.db`` would then reinstate the
+decision the API answered 409 to.
+
 **Deletion writes the ledger first** (§7 step 1, §9-1). The ledger line is
 appended before any byte moves, so the recoverable failure is "the ledger claims
 a deletion that has not finished" — which the resume path completes. The other
@@ -338,6 +347,7 @@ class CaptureService:
         async with self._mutex(capture_id):
             capture = self.get(capture_id)
             self._reject_review_on_delete(capture)
+            capture = self._adopt_sidecar_if_ahead(capture)
             if capture.review_revision != request.base_revision:
                 raise _review_conflict(capture, request.base_revision)
 
@@ -371,7 +381,27 @@ class CaptureService:
                     capture_dir,
                     record,
                     allow_create=awaiting_transfer,
+                    base_revision=request.base_revision,
                 )
+            except _SidecarRaceError as exc:
+                # Another orchestrator committed its review between our read and
+                # our write. Refusing here is the whole point of the guard: the
+                # loser's values are dropped rather than written over a decision
+                # that has already been acknowledged to somebody. Same 409 the
+                # database CAS would have produced, one step earlier and without
+                # a clobber in between.
+                logger.info(
+                    "review sidecar write refused: record.json moved on",
+                    extra={
+                        "capture_id": capture_id,
+                        "on_disk_revision": exc.on_disk_revision,
+                        "base_revision": request.base_revision,
+                    },
+                )
+                raise _review_conflict(
+                    self._adopt_sidecar_if_ahead(self.get(capture_id)),
+                    request.base_revision,
+                ) from exc
             except _CaptureGoneError as exc:
                 raise ApiError(
                     status_code=409,
@@ -405,11 +435,21 @@ class CaptureService:
                 fields={name: merged[name] for name in _REVIEW_FIELDS},
             )
             if not applied:
-                # Someone else won between our read and our write. The sidecar
-                # we already wrote is deliberately NOT rolled back (§4.1-3):
-                # rewriting it would race the winner's own sidecar, and a
-                # sidecar ahead of the DB is the direction rebuild resolves.
-                raise _review_conflict(self.get(capture_id), request.base_revision)
+                # Someone else won between our sidecar write and this CAS — the
+                # guard above narrows that window but cannot close it, since
+                # read-then-write across two processes is not atomic. The
+                # database is the arbiter, so the file it disagrees with is
+                # ours: restamp it from the winning row. Leaving our values
+                # there would make §8's rebuild reinstate the decision this
+                # request is about to be told was refused.
+                winner = self.get(capture_id)
+                await asyncio.to_thread(
+                    _restore_record_from_row,
+                    capture_dir,
+                    winner,
+                    wrote_revision=revision,
+                )
+                raise _review_conflict(winner, request.base_revision)
 
             saved = self.get(capture_id)
 
@@ -424,6 +464,43 @@ class CaptureService:
                 extra={"capture_id": capture_id, "revision": saved.review_revision},
             )
         return saved
+
+    def _adopt_sidecar_if_ahead(self, capture: Capture) -> Capture:
+        """Catch the row up to ``record.json`` when the file is ahead (§4.1-4).
+
+        The row can legitimately lag the file: a crash between the sidecar write
+        and the CAS leaves exactly that, and so does another orchestrator's save
+        that this process has not read yet. §8 already resolves it in the
+        sidecar's favour at rebuild time — doing the same here, per capture,
+        keeps the guarded write from wedging. Without it a lagging row would
+        make every subsequent save send a ``base_revision`` the file has already
+        passed, and the guard would refuse all of them forever.
+
+        The client still gets a 409 on this attempt, but now with the revision
+        that actually exists, so a reload-and-retry succeeds.
+        """
+        on_disk = read_record(self._layout.capture_dir(capture.capture_id)).record
+        if on_disk is None or on_disk.revision <= capture.review_revision:
+            return capture
+        logger.info(
+            "adopting a record.json that is ahead of the catalog row",
+            extra={
+                "capture_id": capture.capture_id,
+                "row_revision": capture.review_revision,
+                "sidecar_revision": on_disk.revision,
+            },
+        )
+        return self._store.update_capture(
+            capture.capture_id,
+            review_revision=on_disk.revision,
+            review_status=on_disk.review_status,
+            task_result=on_disk.task_result,
+            failure_reason=on_disk.failure_reason,
+            quality=on_disk.quality,
+            quality_source=on_disk.quality_source,
+            batch_id=on_disk.batch_id,
+            index_in_batch=on_disk.index_in_batch,
+        )
 
     @staticmethod
     def _reject_review_on_delete(capture: Capture) -> None:
@@ -1100,6 +1177,14 @@ class _CaptureGoneError(RuntimeError):
     """``objects/<capture_id>`` is absent and must not be recreated."""
 
 
+class _SidecarRaceError(RuntimeError):
+    """``record.json`` no longer holds the revision this save was built on."""
+
+    def __init__(self, on_disk_revision: int) -> None:
+        super().__init__(f"record.json is at revision {on_disk_revision}")
+        self.on_disk_revision = on_disk_revision
+
+
 def reject_overlapping_destination(target: Path, source: Path, data_dir: Path) -> None:
     """Refuse an archive destination that overlaps our own data (§6).
 
@@ -1223,9 +1308,9 @@ def _manifest_divergence(
 
 
 def _write_record_sidecar(
-    capture_dir: Path, record: RecordV2, *, allow_create: bool
+    capture_dir: Path, record: RecordV2, *, allow_create: bool, base_revision: int
 ) -> None:
-    """Write ``record.json``, creating the capture directory only if allowed.
+    """Write ``record.json`` if it still holds *base_revision*, else refuse.
 
     A split deployment reviews a capture on the recording PC *before* the bytes
     arrive from the robot — the auto-pull is triggered BY the first review save
@@ -1237,12 +1322,67 @@ def _write_record_sidecar(
     already walked past, and the next rebuild would then report a capture with
     no manifest. The caller decides under the per-capture mutex; this function
     only refuses to be the thing that silently recreates it.
+
+    The revision check is the same compare-and-swap the database does, applied
+    to the authoritative copy. The mutex upstream only covers one process, and
+    ``record.json`` is the file §8 rebuilds the whole catalog from — so a second
+    orchestrator's accepted review must not be overwritten by a save that was
+    composed before it landed. A file that is missing or unreadable holds no
+    decision to protect and is written over as before.
     """
     if not capture_dir.is_dir():
         if not allow_create:
             raise _CaptureGoneError(f"{capture_dir} does not exist")
         capture_dir.mkdir(parents=True, exist_ok=True)
+    on_disk = read_record(capture_dir).record
+    if on_disk is not None and on_disk.revision != base_revision:
+        raise _SidecarRaceError(on_disk.revision)
     write_record(capture_dir, record)
+
+
+def _restore_record_from_row(
+    capture_dir: Path, capture: Capture, *, wrote_revision: int
+) -> None:
+    """Put the winning row's review back into ``record.json`` after a lost CAS.
+
+    Only touches the file if it is still the one this request wrote
+    (*wrote_revision*): a third save that has since landed is newer than the row
+    we are holding, and restamping over it would undo a decision for the second
+    time in one code path.
+
+    A row at revision 0 means the winner is not a review at all — the capture
+    was removed underneath us — and there is nothing to restore, so the file is
+    left for the reaper and the rebuild rather than invented.
+    """
+    if capture.review_revision < 1:
+        return
+    on_disk = read_record(capture_dir).record
+    if on_disk is None or on_disk.revision != wrote_revision:
+        return
+    try:
+        write_record(
+            capture_dir,
+            RecordV2(
+                capture_id=capture.capture_id,
+                revision=capture.review_revision,
+                review_status=str(capture.review_status or "pending"),
+                task_result=capture.task_result,
+                failure_reason=capture.failure_reason,
+                quality=capture.quality,
+                quality_source=capture.quality_source,
+                batch_id=capture.batch_id,
+                index_in_batch=capture.index_in_batch,
+                updated_at=utc_now_iso8601(),
+            ),
+        )
+    except OSError as exc:
+        # The caller is already raising 409; a failed repair must not turn that
+        # into a 500. The disagreement is logged so it is visible, and the next
+        # successful save on this capture overwrites the file anyway.
+        logger.error(
+            "could not restore record.json from the winning row",
+            extra={"capture_id": capture.capture_id, "error": str(exc)},
+        )
 
 
 def _merge_review(capture: Capture, request: ReviewSaveRequest) -> dict[str, Any]:

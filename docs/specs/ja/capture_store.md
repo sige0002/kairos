@@ -124,12 +124,13 @@ rebuild はこのファイルも読み、`state='failed'` の行を作る。削�
 
 ### 4.1 保存手順（capture 単位の mutex を 1〜3 全体で保持）
 
-1. `captures.review_revision` を読み、リクエストの `base_revision` と不一致なら **`409`**。
-2. `record.json` を `revision = base_revision + 1` で atomic write。失敗 → **`500`、DB は無変更**（部分的な効果はサイドカー先行のみ＝安全な向き）。
-3. `UPDATE captures SET …, review_revision=? WHERE capture_id=? AND review_revision=?`（CAS）。`rowcount=0` → **`409`**。**書いたサイドカーは巻き戻さない**。
+1. `captures.review_revision` を読み、リクエストの `base_revision` と不一致なら **`409`**。読む前に、`record.json` が行より進んでいれば**サイドカーを行へ取り込む**（§4.1-4 と同じ規則を capture 単位で適用）。取り込まないと、次の 2 のガードが「行が追いつけないまま永久に拒否する」状態を作る。
+2. `record.json` を `revision = base_revision + 1` で atomic write。ただし**ディスク側も compare-and-swap**: 現に置かれている `record.json` の `revision` が `base_revision` でなければ書かずに **`409`**（読めない・存在しないファイルは守るべき決定を持たないので従来どおり上書きする）。失敗 → **`500`、DB は無変更**（部分的な効果はサイドカー先行のみ＝安全な向き）。
+3. `UPDATE captures SET …, review_revision=? WHERE capture_id=? AND review_revision=?`（CAS）。`rowcount=0` → **`409`**。このとき**書いたサイドカーを勝者の行から書き直す**（同じ `revision` のまま値だけ勝者のものへ）。2 のガードは read-then-write の隙間を塞ぎきれないため、DB を裁定者として最後に必ずディスクを一致させる。
 4. 乖離規則: rebuild / reconciler は `record.json.revision >= DB` ならサイドカーを採用。逆向き（DB > サイドカー）は黙って直さず**警告として表面化**する。
 
-- 「DB をロールバックする」とは言わない（sqlite3 + ファイルの組では約束できない）。約束するのは「**サイドカーが常に DB 以上に進んでいる**」という一方向の関係だけ。
+- 2 と 3 が対で必要な理由: サイドカー先行だけを守ると、**別プロセスの orchestrator に負けた保存が勝者の `record.json` を上書きしたまま残る**。§8 は `kairos.db` をサイドカーから作り直すので、索引を捨てた瞬間に **`409` で拒否したはずの判断が採用**される。CAS は API の中でだけ成立していて、復旧手順がそれを取り消す。
+- 「DB をロールバックする」とは言わない（sqlite3 + ファイルの組では約束できない）。約束するのは「**ディスクと DB は、どちらが先に進んでいても、同じ 1 つの判断に収束する**」こと。
 - グローバルなロックはこの用途に使わない（fsync をまたいで全リクエストを直列化してしまうため）。
 - **システム由来の書き換え**（quick_check 確定後の quality 再導出）も同じ経路を通り `revision` を進める（`quality_source=quick_check`）。その結果クライアントが `409` を受けるのは**正しい挙動**。
 - 旧 `POST /episodes` が持っていた副作用（`batches.episodes_recorded` の単調加算・auto-pull の起動）は、「**その capture への初回 review 保存**」へ移設した。
@@ -170,6 +171,9 @@ rebuild はこのファイルも読み、`state='failed'` の行を作る。削�
 - **views/**: `views/<operator>/<task>/<dataset_name>/<NNN> -> ../../../../objects/<capture_id>`。
   - 再生成は**世代ディレクトリ + symlink 差し替え**で原子的に行う: `views` 自体を `views.<generation>/` への symlink とし、`os.replace` で張り替える（views が存在しない瞬間を作らない）。in-place の書き換えは禁止。
   - 再生成の入力は**コミット済みの `dataset_members` 行のみ**で、DB トランザクションの後に走る。所有者は orchestrator ただ 1 つ（dora_runner は依頼するだけ）。旧世代は 2 つの経路で消える: 再生成時の世代数プルーン（KEEP_GENERATIONS）と、**reconciler の定期パスによる猶予付き掃除**（現行 10 分。静かな期間の直前に作られた最後の旧世代 — 例えば archive 前の木 — が、ダングリング symlink の残骸として `views` の隣に居座り続けないため。`views` symlink が現在指す世代には決して触れない）。
+  - **パスは一意でなければならない**。`display_index` は dataset ごとに 1 から振り直すので、`(name, operator, task)` が同じ active な dataset が 2 つあると両者の 001 が同一パスを要求する。
+    - 入口で閉じる: 作成・ラベル編集は active な dataset の 3 ラベル重複を **`409 dataset_labels_taken`** で拒否する（非 active は対象外 — バイトは出て行っており、名前は再利用してよい）。
+    - それでも再生成は**決して例外で中断しない**: 木の差し替えは最後の 1 回なので、途中で投げると `views` は変更前の世代を指したまま固定され、以後の編集も同じ所で落ちる = **黙って現実を追わなくなる**（`POST /views/refresh` だけが raw 500 でそれを露出する）。ledger 由来の復元など入口を通らない行があるため、衝突した側のフォルダを `<name>__<dataset_id 末尾>` へ退避し、`renamed` として結果に報告する。順序は `datasets.created_at` で決めるので、先にあった dataset のパスは動かない。
   - 入口は `POST /api/v1/views/refresh`。
 - **archive は capture 単位**として存続する: `POST /api/v1/captures/{id}/archive`。copy → sha256 verify → ledger(`capture_archived`) → source 削除、という順序（安全な向き）を維持する。
   - **`KAIROS_ARCHIVE_ROOTS` の許可リストと、重なりの検査は別の問い**であり、前者を通ったことは後者の証拠にならない。許可リストは「どこへ書いてよいか」を言い、重なり検査は「その 2 つが同じバイトであってはならない」を言う。

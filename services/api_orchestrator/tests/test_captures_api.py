@@ -2,8 +2,10 @@
 
 The review save is where two terminals can collide, so most of this file is
 about what happens when they do. The rule is compare-and-swap, never merge: the
-loser gets a 409 telling it to reload, and the sidecar it may already have
-written is deliberately left ahead of the database.
+loser gets a 409 telling it to reload, and neither the database nor
+``record.json`` is left holding the decision that was refused. The cross-process
+form of that race, and what a rebuild makes of it, is in
+``test_review_race_rebuild.py``.
 """
 
 from __future__ import annotations
@@ -173,7 +175,7 @@ class TestReviewSave:
         # The client needs the current revision to reload and re-apply.
         assert error["details"]["current_revision"] == 1
 
-    def test_a_lost_cas_race_leaves_the_sidecar_ahead_and_does_not_roll_back(
+    def test_a_lost_cas_race_restamps_the_sidecar_from_the_winner(
         self, client: TestClient
     ) -> None:
         store = client.app.state.capture_store
@@ -196,13 +198,13 @@ class TestReviewSave:
         )
         assert conflict.status_code == 409
 
-        # The sidecar we wrote is NOT rewound (§4.1-3): rewriting it would race
-        # the winner's own sidecar, and a sidecar ahead of the database is the
-        # direction a rebuild can resolve.
+        # The value we wrote is undone, because record.json is what §8 rebuilds
+        # the catalog from: leaving the refused decision there would let a
+        # dropped index reinstate it over the one the database accepted.
         record = read_record(layout.capture_dir(capture_id))
         assert record.record is not None
-        assert record.record.review_status == "adopted"
-        # The database holds the winner's value.
+        assert record.record.review_status == "excluded"
+        # ...which is exactly what the database holds. One decision, one winner.
         winner = store.get_capture(capture_id)
         assert winner.review_status == "excluded"
 

@@ -124,6 +124,7 @@ class DatasetService:
     def create(self, *, name: str, operator: str | None, task: str | None) -> Dataset:
         """Create a dataset. The ledger event is written after the row."""
         self._reject_reserved(operator, task, name)
+        self._reject_duplicate_labels(name=name, operator=operator, task=task)
         dataset_id = new_dataset_id()
         created_at = utc_now_iso8601()
         self._store.create_dataset(
@@ -178,6 +179,9 @@ class DatasetService:
         operator = request.operator if "operator" in supplied else dataset["operator"]
         task = request.task if "task" in supplied else dataset["task"]
         self._reject_reserved(operator, task, name)
+        self._reject_duplicate_labels(
+            name=name, operator=operator, task=task, exclude=dataset_id
+        )
 
         changed = (name, operator, task) != (
             dataset["name"],
@@ -611,6 +615,45 @@ class DatasetService:
             details={
                 "dataset_id": dataset["dataset_id"],
                 "status": dataset["status"],
+            },
+        )
+
+    def _reject_duplicate_labels(
+        self,
+        *,
+        name: str,
+        operator: str | None,
+        task: str | None,
+        exclude: str | None = None,
+    ) -> None:
+        """Refuse a second active dataset with the same three labels (§6).
+
+        Name, operator and task are the folder ``views/`` generates, and two
+        datasets holding all three would want one folder for both. The
+        regenerator survives that by suffixing the later one, but a suffixed
+        folder is not what anybody asked for — so the collision is caught at the
+        door, where the operator is still looking at the form and can say what
+        they actually meant.
+        """
+        existing = self._store.find_active_dataset_by_labels(
+            name=name, operator=operator, task=task, exclude=exclude
+        )
+        if existing is None:
+            return
+        where = "/".join(part for part in (operator, task, name) if part)
+        raise ApiError(
+            status_code=409,
+            code="dataset_labels_taken",
+            message=(
+                f"A dataset named {name!r} with this operator and task already "
+                f"exists, and both would generate views/{where}. Rename one, or "
+                f"add to the existing dataset."
+            ),
+            details={
+                "name": name,
+                "operator": operator,
+                "task": task,
+                "existing_dataset_id": existing["dataset_id"],
             },
         )
 

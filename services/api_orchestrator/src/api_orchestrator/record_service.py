@@ -1013,6 +1013,13 @@ class RecordService:
                 elapsed_ms=elapsed_ms,
                 config=self._config,
             )
+            # Which review, if any, already existed when this verdict landed.
+            # Read immediately before the verdict becomes visible and with no
+            # await in between, so it is exactly "the review that was saved
+            # without a verdict in hand" — the only one this settlement is
+            # entitled to second-guess (see reconcile_quality).
+            existing = self._store.get_capture(capture_id)
+            revision_at_verdict = existing.review_revision if existing else 0
             self._store.update_capture(capture_id, quick_check=quick)
             logger.info(
                 "quick_check settled",
@@ -1022,13 +1029,23 @@ class RecordService:
                     "elapsed_ms": elapsed_ms,
                 },
             )
-            await self.reconcile_quality(capture_id, quick.verdict.quality)
+            await self.reconcile_quality(
+                capture_id,
+                quick.verdict.quality,
+                revision_at_verdict=revision_at_verdict,
+            )
         except Exception:  # noqa: BLE001 - settlement must never crash the app
             logger.exception(
                 "quick_check settlement failed", extra={"capture_id": capture_id}
             )
 
-    async def reconcile_quality(self, capture_id: str, quality: Quality) -> None:
+    async def reconcile_quality(
+        self,
+        capture_id: str,
+        quality: Quality,
+        *,
+        revision_at_verdict: int | None = None,
+    ) -> None:
         """Correct a review that was saved before this verdict landed.
 
         A review saved during settlement derives its quality from a verdict that
@@ -1036,6 +1053,29 @@ class RecordService:
         Once the real verdict is in, that value is corrected — but only when the
         quality is still ``quick_check``-sourced: an operator's own call is a
         human decision and is never overwritten.
+
+        The STATUS is corrected with it, but ONLY for a review that predates the
+        verdict. Collect stamps ``adopted`` from the quality its result panel was
+        showing, and with no verdict to show that is the fallback good — so a
+        Save that beat the settlement adopted data this server then called
+        ``needs_review``. Correcting only the quality left the two halves of one
+        row contradicting each other, and the status is the half that has
+        consequences: ``adopted`` puts the capture in Review's READY lane, which
+        is by design the lane nobody looks at, and makes it dataset-eligible.
+        Such a capture goes back to ``pending`` — NEEDS CHECK, where "Mark OK —
+        include" is the deliberate human confirmation.
+
+        *revision_at_verdict* is what keeps that from eating a real decision.
+        Review's "Mark OK — include" sends ``{review_status: adopted}`` and
+        nothing else, so it arrives looking exactly like Collect's fast save:
+        same fields, same ``quick_check`` quality source. The one thing that
+        differs is WHEN it was written — before this verdict existed (a guess)
+        or after it landed (a judgement about a verdict the operator could
+        actually see). Only the settlement knows where that line falls, so it
+        passes the review revision as of the moment the verdict became visible;
+        a review written after it, or touched since, is left alone. Without that
+        evidence — any other caller — nothing is ever demoted, because demoting
+        a decision nobody can prove was a guess is the worse mistake.
 
         The correction goes through the ordinary §4.1 path, revision bump and
         all. A client that then sees a 409 is seeing the truth: the review it
@@ -1045,20 +1085,41 @@ class RecordService:
             capture = self._store.get_capture(capture_id)
             if capture is None or capture.review_revision == 0:
                 return
-            if capture.quality_source != "quick_check" or capture.quality == quality:
+            if capture.quality_source != "quick_check":
+                return
+            # Not `elif`: the status can need correcting even when the quality
+            # does not. The conservative fallback IS ``needs_review``, so a
+            # verdict confirming it changes no quality at all — and that is
+            # exactly the case where an ``adopted`` was banked on a guess.
+            fields: dict[str, Any] = {
+                "base_revision": capture.review_revision,
+                "quality": quality,
+                "quality_source": "quick_check",
+            }
+            predates_verdict = (
+                revision_at_verdict is not None
+                and revision_at_verdict > 0
+                and capture.review_revision == revision_at_verdict
+            )
+            demote = (
+                predates_verdict
+                and quality != "good"
+                and capture.review_status == "adopted"
+            )
+            if demote:
+                fields["review_status"] = "pending"
+            if capture.quality == quality and not demote:
                 return
             await self._captures.save_review(
-                capture_id,
-                ReviewSaveRequest(
-                    base_revision=capture.review_revision,
-                    quality=quality,
-                    quality_source="quick_check",
-                ),
-                system=True,
+                capture_id, ReviewSaveRequest(**fields), system=True
             )
             logger.info(
-                "review quality re-derived from the settled quick_check",
-                extra={"capture_id": capture_id, "quality": quality},
+                "review re-derived from the settled quick_check",
+                extra={
+                    "capture_id": capture_id,
+                    "quality": quality,
+                    "review_status": fields.get("review_status", capture.review_status),
+                },
             )
         except ApiError as exc:
             # A 409 here means an operator edited the review while we settled.
