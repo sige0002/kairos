@@ -27,11 +27,13 @@
 ## 公開 API（`/api/v1`、無認証）
 
 - 記録: `POST /api/v1/record/prepare`（two-phase start — recorder を先に arm。**DB 行は作らない**: prepare 状態はメモリ上の 1 エントリのみで、応答の `run_id` / `capture_id` は recorder が返したもの〔一致 re-prepare の keep-alive では既存 armed セッションのもの〕を採用する。後続の一致する `start` がその id で行を作って引き継ぎ、不一致・未消費なら recorder 側の auto-disarm に任せる）、`POST /api/v1/record/start`、`POST /api/v1/record/stop`（armed のみで capture が無ければ disarm も兼ねる）、`GET /api/v1/record/status`（recorder へプロキシ — 応答に **`console_git_sha`**（orchestrator 自身のビルド識別。2026-08-05）を足し、recorder の `git_sha` と並べて**ロボット/コンソールの版ズレ**を UI が検知できるようにする。**遅延 reconciliation を兼務**: DB 上 live な capture を recorder が終了済みと報告していれば（例: `MAX_RECORD_BYTES`/`MAX_RECORD_SECONDS` の recorder 内自動停止）通常の stop 経路で completed に確定し、recorder が知らない live capture は即 interrupted 化する — 再起動を待たない）。`prepare` / `start` / `stop` は v1 の request/response の形を維持したうえで **`capture_id` を追加**した。
+- **検証判定（verdict）とゲート（2026-08-05）**: capture の `verdict` は `unknown` / `pass` / `needs_review` の 3 値で、**保存せず毎回 `report/<pipeline>/<capture_id>/summary.json` から導出**する（v1 の gating pipeline は `fast_validation`）。索引に焼くと再実行でズレ、rebuild で失われるため。**`needs_review` の capture は dataset に入れられない**（`409 validation_failed`）— ただし override で人が通せる。**`unknown` はブロックしない**（検証を走らせないデプロイがデータセットを作れなくなるのは別の製品判断）。CaptureDetail に `verdict`、Capture 行に `validation_override`（理由）が載る。
 - **Capture（v2 の中心。runs + episodes の置換）**:
   - `GET /api/v1/captures?state=&review_status=&task=&operator=&robot=&batch=&include_deleted=`（カーソルページング。**墓標は既定で除外**する — 行は削除後も残るが、既定の一覧は operator の作業対象であって「かつて存在した全て」の書庫ではない。`include_deleted=true` で含め、`state=discarded`（または `deleted`）を明示指定した場合は**そのとおりに返す**〔明らかに存在する state を指定したのに黙って空を返す方が混乱を招くため〕）
   - `GET /api/v1/captures/{id}` — CaptureDetail（replica state・`digest_state`・サイドカー・レポートを同梱）
   - `PATCH /api/v1/captures/{id}/review` — `base_revision` 必須の CAS 保存（下記「Review の保存」）
   - `POST /api/v1/captures/{id}/delete` — body `{ kind: "discard"|"delete", reason? }`（下記「削除」）
+  - **`POST /api/v1/captures/{id}/validation-override`（2026-08-05）** — body `{ reason }`（**必須**。`null` で撤回）。検証が `needs_review` の capture を dataset に入れることを人の判断で許可する。ledger に `capture_validation_overridden` を追記してから列に書く（順序は削除と同じ §5 — 記録の無い許可を残さない）
   - `GET /api/v1/captures/{id}/archive/config` — このデプロイが archive 先として許す root（未設定なら UI は archive の導線自体を出さない＝必ず失敗するボタンを置かない）
   - `POST /api/v1/captures/{id}/archive` — capture 単位の archive（下記「archive」）
 - Batch（**Collect の進行を永続化**）: `POST /api/v1/batches`、`PATCH /api/v1/batches/{id}`、`GET /api/v1/batches?status=&robot=&operator=`、`GET /api/v1/batches/{id}`。**`POST/PATCH /api/v1/episodes` は廃止** — episode が持っていた項目は capture 行そのものに載り、書き込みは `PATCH /api/v1/captures/{id}/review` が担う（下記「Batch」）。

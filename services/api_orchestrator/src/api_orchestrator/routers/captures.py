@@ -32,6 +32,7 @@ from api_orchestrator.models import (
     CaptureDetail,
     CaptureListResponse,
     ReviewSaveRequest,
+    ValidationOverrideRequest,
 )
 
 router = APIRouter(prefix="/api/v1/captures", tags=["captures"])
@@ -102,6 +103,33 @@ async def save_review(
     same ``base_revision``.
     """
     return await service.save_review(capture_id, body)
+
+
+@router.post("/{capture_id}/validation-override", response_model=Capture)
+async def override_validation(
+    capture_id: str,
+    body: ValidationOverrideRequest,
+    service: CaptureService = Depends(get_capture_service),
+) -> Capture:
+    """Let a failed-validation capture into datasets anyway, on the record.
+
+    A reason is mandatory for the same purpose as a discard's: the gate is
+    there because a validator found something, and overriding it silently
+    would leave the dataset containing data nobody can account for. Send
+    ``reason: null`` to withdraw a previous override.
+    """
+    reason = (body.reason or "").strip() or None
+    if reason is None and body.reason is not None:
+        raise ApiError(
+            status_code=400,
+            code="reason_required",
+            message=(
+                "An override is a judgement that outranks the validator — the "
+                "ledger line is its only explanation. Give a reason."
+            ),
+            details={"capture_id": capture_id},
+        )
+    return service.set_validation_override(capture_id, reason)
 
 
 @router.post("/{capture_id}/delete", response_model=Capture)

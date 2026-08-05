@@ -80,7 +80,7 @@ logger = logging.getLogger("kairos")
 # found in the field, not by tests, because tests only ever see fresh schemas.
 # The rebuild is the designed absorption path; refusing to bump is how it is
 # bypassed by accident.
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 CATALOG_DIRNAME = "catalog"
 TEMPLATES_SIDECAR = "validation_templates.json"
@@ -168,6 +168,11 @@ CREATE TABLE IF NOT EXISTS captures (
     review_revision    INTEGER NOT NULL DEFAULT 0,
     batch_id           TEXT,
     index_in_batch     INTEGER,
+    -- A human's override of a NEEDS_REVIEW validation verdict, so a dataset
+    -- add can consult it in one read. The verdict itself is DERIVED from the
+    -- reports on disk (see verdict.py) and deliberately not cached here; only
+    -- the human decision is stored, and the ledger keeps its audit copy.
+    validation_override TEXT,
     -- Tombstone (§7). The row is never deleted, only marked.
     deleted_at         TEXT,
     delete_kind        TEXT,
@@ -316,6 +321,7 @@ _CAPTURE_COLUMNS: frozenset[str] = frozenset(
         "quality_source",
         "review_status",
         "review_revision",
+        "validation_override",
         "batch_id",
         "index_in_batch",
         "deleted_at",
@@ -1800,6 +1806,7 @@ class CaptureStore:
             quality_source=row["quality_source"],
             review_status=row["review_status"],
             review_revision=row["review_revision"],
+            validation_override=row["validation_override"],
             batch_id=row["batch_id"],
             index_in_batch=row["index_in_batch"],
             deleted_at=row["deleted_at"],

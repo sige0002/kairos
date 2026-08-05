@@ -13,7 +13,9 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiGet, apiPost } from '../../api/client';
 import { getCapture } from '../../api/captures';
 import { queryKeys } from '../../api/queryKeys';
-import type { ConfigOptions, JobStatus } from '../../api/types';
+import type { ConfigOptions, JobStatus,
+  CaptureDetail,
+} from '../../api/types';
 import { Badge } from '../../components/ui';
 import { ErrorMessage } from '../../components/ErrorMessage';
 import {
@@ -87,6 +89,99 @@ function useCaptureJob(captureId: string, pipeline: string) {
     running: mutation.isPending || !!jobId,
     error: mutation.isError ? mutation.error : null,
   };
+}
+
+/** The validation verdict, and the override that can let a failure through.
+ *
+ *  The verdict is the server's derived one (from the gating pipelines'
+ *  reports) — never a value this screen computes, so it cannot disagree with
+ *  what the dataset gate will actually do. `unknown` is shown as its own state:
+ *  reading "nothing has checked this" as a pass is the exact confusion this
+ *  feature exists to end. */
+function ValidationVerdict({ capture }: { capture: CaptureDetail }) {
+  const queryClient = useQueryClient();
+  const verdict = capture.verdict ?? null;
+  const override = capture.validation_override ?? null;
+
+  const overrideMutation = useMutation({
+    mutationFn: (reason: string | null) =>
+      apiPost<CaptureDetail>(`/captures/${capture.capture_id}/validation-override`, {
+        reason,
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.capture(capture.capture_id),
+      });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.captures });
+    },
+  });
+
+  if (!verdict) return null; // older backend — say nothing rather than guess
+
+  const tone =
+    verdict === 'pass' ? 'green' : verdict === 'needs_review' ? 'red' : 'gray';
+  const label =
+    verdict === 'pass'
+      ? 'VALIDATION PASSED'
+      : verdict === 'needs_review'
+        ? 'VALIDATION FAILED'
+        : 'NOT VALIDATED';
+
+  return (
+    <section className="flex flex-col gap-1.5" data-testid="review-verdict">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge tone={tone}>{label}</Badge>
+        {verdict === 'unknown' && (
+          <span className="text-[11.5px] text-gray-500">
+            No gating validator has reported on this recording yet.
+          </span>
+        )}
+        {override && (
+          <span
+            data-testid="review-verdict-override"
+            className="text-[11.5px] text-amber-700"
+          >
+            Overridden: {override}
+          </span>
+        )}
+      </div>
+      {verdict === 'needs_review' && !override && (
+        <div className="flex flex-col gap-1.5 rounded-control border border-red-200 bg-red-50 px-3 py-2.5">
+          <span className="text-[12px] text-red-800">
+            Datasets refuse this recording while validation says it is broken.
+            Overriding is allowed — with a reason, which is kept in the ledger.
+          </span>
+          <button
+            type="button"
+            data-testid="review-verdict-override-btn"
+            disabled={overrideMutation.isPending}
+            onClick={() => {
+              const reason = window.prompt(
+                'Why should this recording be usable despite the failed validation?',
+                '',
+              );
+              if (!reason || !reason.trim()) return;
+              overrideMutation.mutate(reason.trim());
+            }}
+            className="self-start rounded-control border border-red-300 bg-white px-2.5 py-1 text-[11.5px] font-semibold text-red-700 hover:bg-red-100 disabled:opacity-50"
+          >
+            Override with a reason…
+          </button>
+        </div>
+      )}
+      {override && (
+        <button
+          type="button"
+          data-testid="review-verdict-override-clear"
+          disabled={overrideMutation.isPending}
+          onClick={() => overrideMutation.mutate(null)}
+          className="self-start text-[11px] text-gray-400 hover:text-gray-600 disabled:opacity-50"
+        >
+          Withdraw the override
+        </button>
+      )}
+    </section>
+  );
 }
 
 export function CaptureInspection({ captureId }: { captureId: string }) {
@@ -251,6 +346,8 @@ export function CaptureInspection({ captureId }: { captureId: string }) {
           {leaseReason}. Reports and previews can be run once it finishes.
         </p>
       )}
+
+      <ValidationVerdict capture={capture} />
 
       <QuickCheckVerdict quickCheck={capture.quick_check} />
 

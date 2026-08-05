@@ -30,6 +30,7 @@ from kairos_common import ApiError, ledger_v2
 from kairos_common.ids import new_dataset_id
 from kairos_common.time import utc_now_iso8601
 
+from api_orchestrator import layout as layout_mod
 from api_orchestrator.layout import DataLayout, is_reserved_name
 from api_orchestrator.models import (
     Dataset,
@@ -38,6 +39,12 @@ from api_orchestrator.models import (
     DatasetUpdateRequest,
 )
 from api_orchestrator.store import CaptureStore, DatasetMemberExistsError
+from api_orchestrator.verdict import (
+    GATING_PIPELINES,
+    Verdict,
+    blocks_adoption,
+    verdict_of,
+)
 
 logger = logging.getLogger("kairos")
 
@@ -64,6 +71,23 @@ class DatasetService:
         self._layout = layout
         self._instance_id = instance_id
         self._on_change = on_change
+
+    def _verdict_of(self, capture_id: str) -> Verdict:
+        """Read the gating pipelines' reports and fold them (see verdict.py).
+
+        Reads the same files CaptureService serves, rather than taking a
+        dependency on it: the reports are plain JSON on disk and the whole
+        point of deriving the verdict is that there is only one place it can
+        come from.
+        """
+        return verdict_of(
+            {
+                pipeline: layout_mod.read_json(
+                    self._layout.report_dir(pipeline, capture_id) / "summary.json"
+                )
+                for pipeline in GATING_PIPELINES
+            }
+        )
 
     def _views_changed(self) -> None:
         """Signal that the generated tree is now stale.
@@ -261,6 +285,21 @@ class DatasetService:
                     "capture_id": capture_id,
                     "archive_destination": capture.archive_destination,
                 },
+            )
+        # The validation gate (v1: fast_validation). A capture the validators
+        # called broken may not silently become training data — but the refusal
+        # is overridable, because the operator sometimes knows better than the
+        # check. What is NOT allowed is letting it through with no record.
+        verdict = self._verdict_of(capture_id)
+        if blocks_adoption(verdict, capture.validation_override):
+            raise ApiError(
+                status_code=409,
+                code="validation_failed",
+                message=(
+                    f"{capture_id} did not pass validation. Override it with a "
+                    "reason if you want it in a dataset anyway."
+                ),
+                details={"capture_id": capture_id, "verdict": str(verdict)},
             )
         for membership in self._store.dataset_memberships_for(capture_id):
             other = self._store.get_dataset(membership.dataset_id)

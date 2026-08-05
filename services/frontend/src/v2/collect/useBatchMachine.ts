@@ -2274,6 +2274,19 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
             ? `Saved — Episode ${nextIndex}${seqPart}${op ? ` · ${op}` : ''}`
             : `Saved — Episode ${nextIndex}, not grouped into a set (no batch)`,
         );
+        // Say what validation makes of the take while the operator can still
+        // act on it — a needs_review verdict discovered days later in Review
+        // is a re-setup, not a retake. Best effort: a failed read says nothing
+        // rather than claiming a verdict.
+        void getCapture(captureId)
+          .then((detail) => {
+            if (detail.verdict === 'needs_review') {
+              showToast(
+                `Episode ${nextIndex}: validation failed — Review can override it with a reason`,
+              );
+            }
+          })
+          .catch(() => {});
       } catch (err) {
         // Never swallowed and never retried behind the operator's back (§12).
         // The result panel stays put with their values intact, so a re-apply is

@@ -73,6 +73,7 @@ from api_orchestrator.models import (
     coerce_error,
 )
 from api_orchestrator.store import CaptureStore
+from api_orchestrator.verdict import GATING_PIPELINES, Verdict, verdict_of
 
 logger = logging.getLogger("kairos")
 
@@ -206,7 +207,39 @@ class CaptureService:
             record=record.record.to_json() if record.record else None,
             validation=self._report("fast_validation", capture_id),
             loss=self._report("loss_report", capture_id),
+            verdict=str(self.verdict_of(capture_id)),
         )
+
+    def set_validation_override(self, capture_id: str, reason: str | None) -> Capture:
+        """Record (or clear) a human override of a NEEDS_REVIEW verdict.
+
+        The ledger line is written FIRST and its failure is fatal: an override
+        that survived only as a column would let a capture into a dataset with
+        no durable account of who decided that, which is the exact opacity the
+        gate exists to prevent (§5's ordering, same as the tombstones').
+        """
+        self.get(capture_id)  # 404s on an unknown capture
+        if reason:
+            ledger_v2.append(
+                self._layout.data_dir,
+                "capture_validation_overridden",
+                instance_id=self._instance_id,
+                capture_id=capture_id,
+                payload={
+                    "reason": reason,
+                    "verdict": str(self.verdict_of(capture_id)),
+                },
+            )
+        return self._store.update_capture(capture_id, validation_override=reason)
+
+    def verdict_of(self, capture_id: str) -> Verdict:
+        """The capture's CURRENT validation verdict, read fresh from disk.
+
+        Derived rather than cached on purpose (see verdict.py): the reports
+        outlive the index, so a rebuild restores the verdict for free and a
+        re-run can never leave a stale copy on the row.
+        """
+        return verdict_of({p: self._report(p, capture_id) for p in GATING_PIPELINES})
 
     def _report(self, pipeline: str, capture_id: str) -> dict[str, Any] | None:
         return layout_mod.read_json(

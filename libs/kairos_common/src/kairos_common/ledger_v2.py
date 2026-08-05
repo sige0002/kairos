@@ -78,7 +78,16 @@ class LedgerUnreadableError(OSError):
 
 # Captures leaving this installation.
 CAPTURE_KINDS: frozenset[str] = frozenset(
-    {"capture_discarded", "capture_deleted", "capture_archived"}
+    {
+        "capture_discarded",
+        "capture_deleted",
+        "capture_archived",
+        # A human letting a validation failure through into a dataset. Not a
+        # tombstone — the capture stays — but it belongs here for the same
+        # reason the tombstones do: it is the only durable record of a
+        # judgement that overrode the system's own verdict.
+        "capture_validation_overridden",
+    }
 )
 # Tombstones proper: the capture's local bytes are gone for good. ``archived``
 # is excluded — the bytes moved somewhere the operator chose and the capture is

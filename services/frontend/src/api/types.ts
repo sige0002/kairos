@@ -283,6 +283,9 @@ export interface Capture {
   review_status: ReviewStatus;
   /** 0 = never reviewed. Echoed back as `base_revision` to save an edit. */
   review_revision: number;
+  /** Set when a human let a needs_review verdict into datasets anyway (their
+   *  reason). Null = no override; the gate stands. */
+  validation_override?: string | null;
   batch_id?: string | null;
   index_in_batch?: number | null;
 
@@ -328,7 +331,14 @@ export interface CaptureDetail extends Capture {
   record?: Record<string, unknown> | null;
   validation?: Record<string, unknown> | null;
   loss?: { capture_id?: string; topics?: LossTopic[]; checked_at?: string } | null;
+  /** Validation verdict, DERIVED server-side from the gating pipelines'
+   *  reports on every read. `unknown` means nothing has checked this capture —
+   *  it is not a pass. Absent on an older backend. */
+  verdict?: CaptureVerdict | null;
 }
+
+/** What validation says about a capture (see api_orchestrator/verdict.py). */
+export type CaptureVerdict = 'unknown' | 'pass' | 'needs_review';
 
 /** Query parameters accepted by `GET /api/v1/captures`. */
 export interface CaptureListParams {

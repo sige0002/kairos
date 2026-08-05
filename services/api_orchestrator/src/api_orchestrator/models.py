@@ -290,6 +290,10 @@ class Capture(BaseModel):
     review_status: ReviewStatus = "pending"
     # 0 = never reviewed (no record.json exists). Echoed back as base_revision.
     review_revision: int = 0
+    # Set only when a human let a NEEDS_REVIEW verdict through (the reason
+    # they gave). The verdict itself is derived from the reports on disk —
+    # see api_orchestrator.verdict — and is served on the detail, not here.
+    validation_override: str | None = None
     batch_id: str | None = None
     index_in_batch: int | None = None
     # ---- tombstone (§7); the row survives the deletion ----
@@ -331,6 +335,10 @@ class CaptureDetail(Capture):
     manifest: dict[str, Any] | None = None
     record: dict[str, Any] | None = None
     validation: dict[str, Any] | None = None
+    # Derived verdict (`unknown` | `pass` | `needs_review`) folded from the
+    # gating pipelines' reports — recomputed on every read so a re-run cannot
+    # leave a stale copy behind.
+    verdict: str | None = None
     loss: dict[str, Any] | None = None
 
 
@@ -362,6 +370,17 @@ class ReviewSaveRequest(BaseModel):
     review_status: ReviewStatus | None = None
     batch_id: str | None = None
     index_in_batch: int | None = Field(default=None, ge=0)
+
+
+class ValidationOverrideRequest(BaseModel):
+    """Body for ``POST /api/v1/captures/{id}/validation-override``.
+
+    ``reason`` is REQUIRED: overriding a failed validation is exactly the act
+    that needs an explanation on the record — without one this is just a way to
+    turn the gate off quietly. ``null`` clears a previous override.
+    """
+
+    reason: str | None = Field(default=None, max_length=500)
 
 
 class CaptureDeleteRequest(BaseModel):
