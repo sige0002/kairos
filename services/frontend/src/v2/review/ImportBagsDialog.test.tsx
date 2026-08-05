@@ -115,3 +115,46 @@ test('a scan error is surfaced, not swallowed', async () => {
     'Nothing exists at /nope.',
   );
 });
+
+
+test('a folder whose bags are one level down offers the way in, not a dead end', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('2026-08-04')) {
+      return Promise.resolve(
+        jsonResponse({
+          path: '/data/incoming/2026-08-04',
+          importable: 1,
+          bags: [{ path: '/data/incoming/2026-08-04/s1', name: 's1', importable: true, bytes: 1, topics: 2, message_count: 3 }],
+          nested: [],
+        }),
+      );
+    }
+    return Promise.resolve(
+      jsonResponse({
+        path: '/data/incoming',
+        importable: 0,
+        bags: [],
+        nested: [{ path: '/data/incoming/2026-08-04', name: '2026-08-04', bags: 2 }],
+      }),
+    );
+  });
+
+  renderWithClient(<ImportBagsDialog open onClose={() => {}} onImported={() => {}} />);
+  fireEvent.change(screen.getByTestId('import-path'), {
+    target: { value: '/data/incoming' },
+  });
+  fireEvent.click(screen.getByTestId('import-scan'));
+
+  // Empty result, but never a dead end: the subfolder that holds them is named.
+  const hint = await screen.findByTestId('import-nested-hint');
+  expect(hint).toHaveTextContent('No recordings directly here');
+  expect(screen.getByTestId('import-nested-2026-08-04')).toHaveTextContent('(2)');
+
+  // One click drills into it — no re-typing the path.
+  fireEvent.click(screen.getByTestId('import-nested-2026-08-04'));
+  await waitFor(() =>
+    expect(screen.getByTestId('import-summary')).toHaveTextContent('1 can be imported'),
+  );
+  expect(screen.getByTestId('import-path')).toHaveValue('/data/incoming/2026-08-04');
+});

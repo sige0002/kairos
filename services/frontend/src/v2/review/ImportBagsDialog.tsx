@@ -37,9 +37,13 @@ interface ScanResult {
   path: string;
   bags: ScannedBag[];
   importable: number;
-  /** The walk hit its depth or breadth bound — the list is INCOMPLETE. */
+  /** The scan hit its breadth cap — the list is INCOMPLETE. (Depth is not a
+   *  truncation: one level is the stated policy.) */
   truncated?: boolean;
   max_depth?: number;
+  /** Subfolders that are not bags but hold bags one level further down. The
+   *  list stays one level deep; this is the way down. */
+  nested?: { path: string; name: string; bags: number }[];
 }
 
 type RowState =
@@ -76,14 +80,17 @@ export function ImportBagsDialog({
   const [running, setRunning] = useState(false);
   const [rows, setRows] = useState<Record<string, RowState>>({});
 
-  const runScan = async () => {
+  const runScan = async (target?: string) => {
+    const wanted = (target ?? path).trim();
+    if (!wanted) return;
+    if (target) setPath(target);
     setScanning(true);
     setScanError(null);
     setScan(null);
     setRows({});
     try {
       const result = await apiGet<ScanResult>(
-        `/imports/scan?path=${encodeURIComponent(path.trim())}`,
+        `/imports/scan?path=${encodeURIComponent(wanted)}`,
       );
       setScan(result);
       // Pre-select everything that can actually come in: the common case is
@@ -166,9 +173,10 @@ export function ImportBagsDialog({
           from this browser). Each bag directory — the one holding the{' '}
           <code>.mcap</code> files and <code>metadata.yaml</code> — becomes one
           recording in Review, copied into kairos&apos;s store.{' '}
-          <strong>Subfolders are searched too</strong>, so a tree like{' '}
-          <code>incoming/&lt;date&gt;/&lt;session&gt;/</code> works from the
-          top. Your folder is left untouched unless you choose Move.
+          <strong>Only the folders directly inside are checked</strong> — for a
+          tree like <code>incoming/&lt;date&gt;/&lt;session&gt;/</code>, name
+          the <code>&lt;date&gt;</code> folder. Your folder is left untouched
+          unless you choose Move.
         </p>
 
         <div className="flex gap-2">
@@ -236,10 +244,36 @@ export function ImportBagsDialog({
                 role="alert"
                 className="rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800"
               >
-                This folder is deeper or larger than the scan looks
-                {scan.max_depth ? ` (${scan.max_depth} levels)` : ''} — the list
-                below is INCOMPLETE. Point at a subfolder to see the rest.
+                That folder holds more directories than one scan reports —
+                the list below is INCOMPLETE. Name a subfolder to see the rest.
               </p>
+            )}
+
+            {(scan.nested?.length ?? 0) > 0 && (
+              <div
+                data-testid="import-nested-hint"
+                className="flex flex-col gap-1.5 rounded-control border border-gray-200 bg-gray-50 px-3 py-2.5"
+              >
+                <span className="text-[12px] text-gray-700">
+                  {scan.bags.length === 0
+                    ? 'No recordings directly here, but these subfolders hold some:'
+                    : 'These subfolders hold more recordings one level down:'}
+                </span>
+                <div className="flex flex-wrap gap-1.5">
+                  {scan.nested!.map((n) => (
+                    <button
+                      key={n.path}
+                      type="button"
+                      data-testid={`import-nested-${n.name}`}
+                      disabled={scanning || running}
+                      onClick={() => void runScan(n.path)}
+                      className="rounded-control border border-gray-300 bg-white px-2.5 py-1 font-mono text-[11.5px] text-gray-700 hover:bg-gray-100 disabled:opacity-50"
+                    >
+                      {n.name} <span className="text-gray-400">({n.bags})</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
             )}
 
             <ul
@@ -248,9 +282,9 @@ export function ImportBagsDialog({
             >
               {scan.bags.length === 0 && (
                 <li className="px-3 py-3 text-[12.5px] text-gray-500">
-                  No rosbag found under that folder. Bag directories are the
-                  ones holding the .mcap files — subfolders are searched, so
-                  point at the top of the tree your recordings live in.
+                  No rosbag directly inside that folder. Bag directories are
+                  the ones holding the .mcap files; only one level down is
+                  checked, so name the folder those directories sit in.
                 </li>
               )}
               {scan.bags.map((bag) => {

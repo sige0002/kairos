@@ -514,25 +514,51 @@ class TestPullToAdopt:
 class TestScanFolder:
     """The folder scan: look before you copy, and never crawl forever."""
 
-    def test_it_finds_bags_nested_under_the_folder(
+    def test_it_scans_one_level_and_ignores_unrelated_folders(
         self, client: TestClient, tmp_path: Path
     ) -> None:
-        # The real shape operators have: incoming/<date>/<session>/. A shallow
-        # scan reported the DATE folders as broken bags and found nothing.
-        _make_bag(tmp_path / "2026-08-04" / "session1")
-        _make_bag(tmp_path / "2026-08-05" / "session2")
+        # ONE level by decision (2026-08-05): the bags directly inside the
+        # named folder. A deeper tree is imported by naming the subfolder.
+        _make_bag(tmp_path / "bag_a")
+        _make_bag(tmp_path / "bag_b")
+        _make_bag(tmp_path / "2026-08-04" / "session1")  # nested: not listed
         (tmp_path / "notes").mkdir()
         (tmp_path / "notes" / "readme.txt").write_text("not a bag", encoding="utf-8")
 
         body = client.get(f"/api/v1/imports/scan?path={tmp_path}").json()
 
         names = sorted(b["name"] for b in body["bags"])
-        assert names == ["2026-08-04/session1", "2026-08-05/session2"]
+        assert names == ["bag_a", "bag_b"]
         assert body["importable"] == 2
+        # Depth is the policy, not a truncation — the flag stays clean.
         assert body["truncated"] is False
-        # A plain intermediate folder is not a failed import — it is not a bag
-        # at all, and reporting it as broken is noise the operator must triage.
-        assert all("notes" not in b["name"] for b in body["bags"])
+        # A folder that is not a bag is not a FAILED import: neither the plain
+        # notes/ nor the date folder holding a nested bag may be reported as
+        # broken, or the rows that really are broken get buried.
+        assert all(b["name"] not in {"notes", "2026-08-04"} for b in body["bags"])
+
+    def test_a_folder_holding_nested_bags_is_hinted_not_silently_empty(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        # The dead end this closes: point at incoming/, get an empty list, and
+        # be unable to tell "this folder is empty" from "your bags are one step
+        # further down". The list stays one level deep; the hint is the way in.
+        _make_bag(tmp_path / "2026-08-04" / "session1")
+        _make_bag(tmp_path / "2026-08-04" / "session2")
+        (tmp_path / "notes").mkdir()  # holds nothing: must NOT be hinted
+
+        body = client.get(f"/api/v1/imports/scan?path={tmp_path}").json()
+
+        assert body["bags"] == []
+        assert [(n["name"], n["bags"]) for n in body["nested"]] == [("2026-08-04", 2)]
+
+    def test_a_nested_bag_is_found_by_naming_its_parent(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        _make_bag(tmp_path / "2026-08-04" / "session1")
+        body = client.get(f"/api/v1/imports/scan?path={tmp_path / '2026-08-04'}").json()
+        assert [b["name"] for b in body["bags"]] == ["session1"]
+        assert body["importable"] == 1
 
     def test_a_rejected_bag_is_reported_with_its_remedy(
         self, client: TestClient, tmp_path: Path

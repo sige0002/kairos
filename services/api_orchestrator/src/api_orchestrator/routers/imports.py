@@ -258,7 +258,9 @@ async def scan_folder(request: Request, path: str) -> dict[str, Any]:
             details={"source_path": str(root)},
         )
 
-    candidates, truncated = await asyncio.to_thread(_find_bag_dirs, root, layout)
+    candidates, truncated, skipped = await asyncio.to_thread(
+        _find_bag_dirs, root, layout
+    )
     already = await asyncio.to_thread(_imported_sources, layout)
 
     entries: list[dict[str, Any]] = []
@@ -316,39 +318,79 @@ async def scan_folder(request: Request, path: str) -> dict[str, Any]:
         # that stopped early and looks complete is how a folder gets
         # half-imported and nobody notices the rest.
         "truncated": truncated,
-        "max_depth": SCAN_MAX_DEPTH,
+        "max_depth": SCAN_DEPTH,
+        # Subfolders that are not bags themselves but DO hold bags one level
+        # further down. The scan still lists one level only; this is what turns
+        # an empty result into a next step instead of a dead end.
+        "nested": await asyncio.to_thread(_nested_hints, skipped),
     }
 
 
-# Bounds on the recursive scan. An operator-supplied path is arbitrary — it can
-# be a home directory or a NAS root — so the walk is bounded in both depth and
-# breadth, and says when it hit a bound instead of quietly returning less.
-SCAN_MAX_DEPTH = 5
+def _nested_hints(skipped: list[Path]) -> list[dict[str, Any]]:
+    """`[{path, name, bags}]` for skipped folders that hold bags one level in."""
+    hints: list[dict[str, Any]] = []
+    for directory in skipped:
+        count = _count_bags_inside(directory)
+        if count:
+            hints.append(
+                {"path": str(directory), "name": directory.name, "bags": count}
+            )
+    return hints
+
+
+# ONE level, by decision (2026-08-05): the folders directly inside the one the
+# operator named. Recursion was tried and withdrawn — "the folder my bags are
+# in" is the shape people actually point at, and a walk that wanders into a
+# home directory or a NAS root is a surprise nobody asked for. A nested tree is
+# imported by naming the subfolder.
+SCAN_DEPTH = 1
+# Breadth is still capped: a folder with tens of thousands of entries should
+# report that the list is short, not silently return part of it.
 SCAN_MAX_DIRS = 20_000
 
 
-def _find_bag_dirs(root: Path, layout: Any) -> tuple[list[Path], bool]:
-    """Bag directories at or under *root*, plus whether the walk was cut short.
+def _count_bags_inside(directory: Path) -> int:
+    """How many bag directories sit directly inside *directory* (0 on error).
 
-    Recursive so a tree like ``incoming/<date>/<session>/`` works — pointing at
-    the parent and getting nothing (or, worse, the intermediate folders
-    reported as broken bags) is the shape operators actually have.
+    Used ONLY to hint. The list stays one level deep by decision, but an
+    operator who names the parent of a <date>/<session>/ tree must not be left
+    staring at an empty result unable to tell "this folder is empty" from "your
+    bags are one step further down" — the two look identical and only one is
+    worth acting on.
+    """
+    try:
+        children = [c for c in directory.iterdir() if c.is_dir() and not c.is_symlink()]
+    except OSError:
+        return 0
+    count = 0
+    for child in children:
+        try:
+            if (child / METADATA_FILENAME).is_file() or any(child.glob("*.mcap")):
+                count += 1
+        except OSError:
+            continue
+    return count
 
-    What it does NOT do is walk forever:
 
-    * a directory that IS a bag is not descended into — its ``.mcap`` files are
-      its contents, not more candidates;
-    * kairos's own store subtrees are skipped entirely (importing from them is
-      refused anyway, and ``objects/`` can hold thousands of directories);
-    * hidden directories and symlinks are skipped — the first is where tools
-      keep their caches, the second is how a walk finds a cycle;
-    * depth and total directories are capped, and hitting a cap is REPORTED.
+def _find_bag_dirs(root: Path, layout: Any) -> tuple[list[Path], bool, list[Path]]:
+    """Bag directories directly inside *root*, the short-list flag, and the
+    non-bag folders that were skipped (so the caller can hint about them).
+
+    One level deep (``SCAN_DEPTH``). A directory that is neither a bag nor an
+    attempt at one is simply not listed — it is not a failed import, and
+    reporting every unrelated subfolder as "no metadata.yaml" buries the
+    directories that really are broken.
+
+    Also skipped: kairos's own store subtrees (importing from them is refused
+    anyway, and ``objects/`` can hold thousands of directories), hidden
+    directories, and symlinks.
     """
     if (root / METADATA_FILENAME).is_file():
-        return [root], False
+        return [root], False, []
 
     data_root = layout.data_dir.resolve()
     found: list[Path] = []
+    skipped: list[Path] = []
     visited = 0
     truncated = False
     queue: list[tuple[Path, int]] = [(root, 0)]
@@ -380,14 +422,19 @@ def _find_bag_dirs(root: Path, layout: Any) -> tuple[list[Path], bool]:
                 # metadata.yaml is exactly the case worth reporting).
                 found.append(child)
                 continue
-            if depth + 1 < SCAN_MAX_DEPTH:
+            if depth + 1 < SCAN_DEPTH:
                 queue.append((child, depth + 1))
             else:
-                truncated = True
+                # Not a bag and not descended into: remember it so the caller
+                # can hint if it turns out to hold bags one level further down.
+                skipped.append(child)
+            # Deeper than SCAN_DEPTH is not "truncated": it is the stated
+            # policy. Only the breadth cap below shortens a list the operator
+            # had reason to expect in full.
         if visited > SCAN_MAX_DIRS:
             truncated = True
             break
-    return sorted(found), truncated
+    return sorted(found), truncated, sorted(skipped)
 
 
 def _imported_sources(layout: Any) -> dict[str, str]:
