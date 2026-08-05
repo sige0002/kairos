@@ -35,6 +35,7 @@ from kairos_common.time import utc_now_iso8601
 from pydantic import BaseModel, Field
 
 from api_orchestrator import bag_import
+from api_orchestrator.layout import is_reserved_name
 from api_orchestrator.models import Capture, CaptureState, CaptureTopic
 from api_orchestrator.store import CaptureExistsError
 
@@ -257,16 +258,19 @@ async def scan_folder(request: Request, path: str) -> dict[str, Any]:
             details={"source_path": str(root)},
         )
 
-    candidates = (
-        [root]
-        if (root / METADATA_FILENAME).is_file()
-        else sorted(c for c in root.iterdir() if c.is_dir())
-    )
+    candidates, truncated = await asyncio.to_thread(_find_bag_dirs, root, layout)
     already = await asyncio.to_thread(_imported_sources, layout)
 
     entries: list[dict[str, Any]] = []
     for candidate in candidates:
-        entry: dict[str, Any] = {"path": str(candidate), "name": candidate.name}
+        # Nested bags are named by their path RELATIVE to the scanned folder:
+        # in a tree of <date>/<session>/ the leaf names repeat, and a list of
+        # six identical "session1" rows identifies nothing.
+        try:
+            label = str(candidate.relative_to(root))
+        except ValueError:
+            label = candidate.name
+        entry: dict[str, Any] = {"path": str(candidate), "name": label}
         if str(candidate) in already:
             # Importing it again would make a second copy of the same bag under
             # a second capture_id — indistinguishable afterwards.
@@ -308,7 +312,82 @@ async def scan_folder(request: Request, path: str) -> dict[str, Any]:
         "path": str(root),
         "bags": entries,
         "importable": sum(1 for e in entries if e.get("importable")),
+        # Said out loud rather than silently returning a short list: a scan
+        # that stopped early and looks complete is how a folder gets
+        # half-imported and nobody notices the rest.
+        "truncated": truncated,
+        "max_depth": SCAN_MAX_DEPTH,
     }
+
+
+# Bounds on the recursive scan. An operator-supplied path is arbitrary — it can
+# be a home directory or a NAS root — so the walk is bounded in both depth and
+# breadth, and says when it hit a bound instead of quietly returning less.
+SCAN_MAX_DEPTH = 5
+SCAN_MAX_DIRS = 20_000
+
+
+def _find_bag_dirs(root: Path, layout: Any) -> tuple[list[Path], bool]:
+    """Bag directories at or under *root*, plus whether the walk was cut short.
+
+    Recursive so a tree like ``incoming/<date>/<session>/`` works — pointing at
+    the parent and getting nothing (or, worse, the intermediate folders
+    reported as broken bags) is the shape operators actually have.
+
+    What it does NOT do is walk forever:
+
+    * a directory that IS a bag is not descended into — its ``.mcap`` files are
+      its contents, not more candidates;
+    * kairos's own store subtrees are skipped entirely (importing from them is
+      refused anyway, and ``objects/`` can hold thousands of directories);
+    * hidden directories and symlinks are skipped — the first is where tools
+      keep their caches, the second is how a walk finds a cycle;
+    * depth and total directories are capped, and hitting a cap is REPORTED.
+    """
+    if (root / METADATA_FILENAME).is_file():
+        return [root], False
+
+    data_root = layout.data_dir.resolve()
+    found: list[Path] = []
+    visited = 0
+    truncated = False
+    queue: list[tuple[Path, int]] = [(root, 0)]
+    while queue:
+        directory, depth = queue.pop(0)
+        try:
+            children = sorted(
+                c
+                for c in directory.iterdir()
+                if c.is_dir() and not c.is_symlink() and not c.name.startswith(".")
+            )
+        except OSError:
+            continue  # unreadable dir: skip it, never fail the whole scan
+        for child in children:
+            visited += 1
+            if visited > SCAN_MAX_DIRS:
+                truncated = True
+                break
+            # Never descend into the store itself.
+            try:
+                relative = child.resolve().relative_to(data_root)
+            except (OSError, ValueError):
+                pass
+            else:
+                if relative.parts and is_reserved_name(relative.parts[0]):
+                    continue
+            if (child / METADATA_FILENAME).is_file() or list(child.glob("*.mcap")):
+                # A bag, or something trying to be one (an .mcap with no
+                # metadata.yaml is exactly the case worth reporting).
+                found.append(child)
+                continue
+            if depth + 1 < SCAN_MAX_DEPTH:
+                queue.append((child, depth + 1))
+            else:
+                truncated = True
+        if visited > SCAN_MAX_DIRS:
+            truncated = True
+            break
+    return sorted(found), truncated
 
 
 def _imported_sources(layout: Any) -> dict[str, str]:

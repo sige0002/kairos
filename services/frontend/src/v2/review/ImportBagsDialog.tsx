@@ -37,6 +37,9 @@ interface ScanResult {
   path: string;
   bags: ScannedBag[];
   importable: number;
+  /** The walk hit its depth or breadth bound — the list is INCOMPLETE. */
+  truncated?: boolean;
+  max_depth?: number;
 }
 
 type RowState =
@@ -162,8 +165,10 @@ export function ImportBagsDialog({
           it</strong> (these are multi-GB directories, so nothing is uploaded
           from this browser). Each bag directory — the one holding the{' '}
           <code>.mcap</code> files and <code>metadata.yaml</code> — becomes one
-          recording in Review, copied into kairos&apos;s store. Your folder is
-          left untouched unless you choose Move.
+          recording in Review, copied into kairos&apos;s store.{' '}
+          <strong>Subfolders are searched too</strong>, so a tree like{' '}
+          <code>incoming/&lt;date&gt;/&lt;session&gt;/</code> works from the
+          top. Your folder is left untouched unless you choose Move.
         </p>
 
         <div className="flex gap-2">
@@ -225,14 +230,27 @@ export function ImportBagsDialog({
               </label>
             </div>
 
+            {scan.truncated && (
+              <p
+                data-testid="import-truncated"
+                role="alert"
+                className="rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800"
+              >
+                This folder is deeper or larger than the scan looks
+                {scan.max_depth ? ` (${scan.max_depth} levels)` : ''} — the list
+                below is INCOMPLETE. Point at a subfolder to see the rest.
+              </p>
+            )}
+
             <ul
               className="max-h-72 overflow-auto rounded-control border border-gray-200"
               data-testid="import-list"
             >
               {scan.bags.length === 0 && (
                 <li className="px-3 py-3 text-[12.5px] text-gray-500">
-                  No directories in that folder. Point at the folder that
-                  CONTAINS the bag directories (or at a single bag directory).
+                  No rosbag found under that folder. Bag directories are the
+                  ones holding the .mcap files — subfolders are searched, so
+                  point at the top of the tree your recordings live in.
                 </li>
               )}
               {scan.bags.map((bag) => {

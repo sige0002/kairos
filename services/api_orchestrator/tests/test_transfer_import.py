@@ -509,3 +509,67 @@ class TestPullToAdopt:
         assert body["review_status"] == "adopted"
         assert body["record"]["revision"] == 1
         assert (layout.capture_dir(capture_id) / "metadata.yaml").is_file()
+
+
+class TestScanFolder:
+    """The folder scan: look before you copy, and never crawl forever."""
+
+    def test_it_finds_bags_nested_under_the_folder(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        # The real shape operators have: incoming/<date>/<session>/. A shallow
+        # scan reported the DATE folders as broken bags and found nothing.
+        _make_bag(tmp_path / "2026-08-04" / "session1")
+        _make_bag(tmp_path / "2026-08-05" / "session2")
+        (tmp_path / "notes").mkdir()
+        (tmp_path / "notes" / "readme.txt").write_text("not a bag", encoding="utf-8")
+
+        body = client.get(f"/api/v1/imports/scan?path={tmp_path}").json()
+
+        names = sorted(b["name"] for b in body["bags"])
+        assert names == ["2026-08-04/session1", "2026-08-05/session2"]
+        assert body["importable"] == 2
+        assert body["truncated"] is False
+        # A plain intermediate folder is not a failed import — it is not a bag
+        # at all, and reporting it as broken is noise the operator must triage.
+        assert all("notes" not in b["name"] for b in body["bags"])
+
+    def test_a_rejected_bag_is_reported_with_its_remedy(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        _make_bag(tmp_path / "good")
+        broken = tmp_path / "broken"
+        broken.mkdir()
+        (broken / "x.mcap").write_bytes(b"not really an mcap")
+
+        body = client.get(f"/api/v1/imports/scan?path={tmp_path}").json()
+
+        rows = {b["name"]: b for b in body["bags"]}
+        assert rows["good"]["importable"] is True
+        # Reported, never silently skipped: the operator must know the folder
+        # held something that will not come in.
+        assert rows["broken"]["importable"] is False
+        assert rows["broken"]["reason"]
+
+    def test_the_store_is_never_scanned_into(
+        self, client: TestClient, layout: DataLayout, tmp_path: Path
+    ) -> None:
+        # objects/ can hold thousands of capture dirs, and importing from it is
+        # refused anyway — the walk must not descend into kairos's own store.
+        _make_bag(layout.objects / "some-capture")
+        body = client.get(f"/api/v1/imports/scan?path={layout.data_dir}").json()
+        assert all("objects" not in b["name"] for b in body["bags"])
+
+    def test_a_single_bag_directory_scans_as_itself(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        source = tmp_path / "one_bag"
+        _make_bag(source)
+        body = client.get(f"/api/v1/imports/scan?path={source}").json()
+        assert len(body["bags"]) == 1
+        assert body["bags"][0]["importable"] is True
+
+    def test_a_missing_folder_is_a_useful_400(self, client: TestClient) -> None:
+        resp = client.get("/api/v1/imports/scan?path=/nope/not/here")
+        assert resp.status_code == 400
+        assert resp.json()["error"]["code"] == "import_source_missing"
