@@ -1,0 +1,117 @@
+import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, expect, test, vi } from 'vitest';
+import { setApiBase } from '../../api/client';
+import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
+import { ImportBagsDialog } from './ImportBagsDialog';
+
+const SCAN = {
+  path: '/data/incoming',
+  importable: 2,
+  bags: [
+    { path: '/data/incoming/a', name: 'a', importable: true, bytes: 91_000_000, topics: 16, message_count: 27016, duration_s: 44 },
+    { path: '/data/incoming/b', name: 'b', importable: true, bytes: 12_000_000, topics: 8, message_count: 900, duration_s: 12 },
+    {
+      path: '/data/incoming/broken',
+      name: 'broken',
+      importable: false,
+      reason: 'No metadata.yaml in /data/incoming/broken.',
+      remedy: 'ros2 bag reindex /data/incoming/broken',
+    },
+  ],
+};
+
+/** Fetch stub: scan returns SCAN; POST /imports succeeds unless the path is in `failing`. */
+function mockFetch(failing: string[] = []) {
+  const posts: { source_path: string; move: boolean }[] = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    if (url.includes('/imports/scan')) return Promise.resolve(jsonResponse(SCAN));
+    if (url.includes('/imports') && (init?.method ?? 'GET') === 'POST') {
+      const body = JSON.parse(String(init?.body)) as { source_path: string; move: boolean };
+      posts.push(body);
+      if (failing.includes(body.source_path)) {
+        return Promise.resolve(
+          jsonResponse({ error: { code: 'import_no_mcap', message: 'No .mcap file.' } }, 400),
+        );
+      }
+      return Promise.resolve(jsonResponse({ capture_id: `cap-${body.source_path}` }, 202));
+    }
+    return Promise.resolve(jsonResponse({}));
+  });
+  return posts;
+}
+
+beforeEach(() => setApiBase('/api/v1'));
+afterEach(() => vi.restoreAllMocks());
+
+function open() {
+  renderWithClient(
+    <ImportBagsDialog open onClose={() => {}} onImported={() => {}} />,
+  );
+  fireEvent.change(screen.getByTestId('import-path'), {
+    target: { value: '/data/incoming' },
+  });
+  fireEvent.click(screen.getByTestId('import-scan'));
+}
+
+test('a scan lists every directory, with the un-importable ones and their remedy', async () => {
+  mockFetch();
+  open();
+
+  await screen.findByTestId('import-list');
+  expect(screen.getByTestId('import-summary')).toHaveTextContent('3 directories found');
+  expect(screen.getByTestId('import-summary')).toHaveTextContent('2 can be imported');
+  // A rejected directory is REPORTED, never hidden — with what to do about it.
+  const broken = screen.getByTestId('import-row-broken');
+  expect(broken).toHaveTextContent('No metadata.yaml');
+  expect(broken).toHaveTextContent('ros2 bag reindex');
+  expect(screen.getByLabelText('import broken')).toBeDisabled();
+  // The importable ones are pre-selected: "import this folder" is the case.
+  expect(screen.getByTestId('import-run')).toHaveTextContent('Import 2 bags');
+});
+
+test('a failing bag is skipped and named — the rest of the run still completes', async () => {
+  const posts = mockFetch(['/data/incoming/a']);
+  open();
+  await screen.findByTestId('import-list');
+
+  fireEvent.click(screen.getByTestId('import-run'));
+
+  await waitFor(() => expect(screen.getByTestId('import-failures')).toBeInTheDocument());
+  // Both were attempted: the failure did not abort the run.
+  expect(posts.map((p) => p.source_path)).toEqual([
+    '/data/incoming/a',
+    '/data/incoming/b',
+  ]);
+  expect(screen.getByTestId('import-failed-a')).toHaveTextContent('No .mcap file.');
+  expect(screen.getByTestId('import-failures')).toHaveTextContent('1 folder failed');
+  expect(screen.getByTestId('import-row-b')).toHaveTextContent('queued');
+});
+
+test('copy is the default; move is sent only when chosen', async () => {
+  const posts = mockFetch();
+  open();
+  await screen.findByTestId('import-list');
+
+  fireEvent.click(screen.getByTestId('import-run'));
+  await waitFor(() => expect(posts).toHaveLength(2));
+  expect(posts.every((p) => p.move === false)).toBe(true);
+
+  fireEvent.click(screen.getByTestId('import-mode-move'));
+  fireEvent.click(screen.getByTestId('import-run'));
+  await waitFor(() => expect(posts).toHaveLength(4));
+  expect(posts.slice(2).every((p) => p.move === true)).toBe(true);
+});
+
+test('a scan error is surfaced, not swallowed', async () => {
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+    jsonResponse(
+      { error: { code: 'import_source_missing', message: 'Nothing exists at /nope.' } },
+      400,
+    ) as Response,
+  );
+  open();
+  expect(await screen.findByTestId('import-scan-error')).toHaveTextContent(
+    'Nothing exists at /nope.',
+  );
+});

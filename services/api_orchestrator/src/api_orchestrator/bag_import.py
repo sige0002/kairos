@@ -50,7 +50,7 @@ from kairos_common.errors import ApiError
 from kairos_common.ids import new_capture_id
 from kairos_common.time import utc_now_iso8601
 
-from api_orchestrator.layout import DataLayout
+from api_orchestrator.layout import DataLayout, is_reserved_name
 
 logger = logging.getLogger(__name__)
 
@@ -251,23 +251,34 @@ def inspect_source(source: Path, *, layout: DataLayout) -> SourceBag:
             details={"source_path": str(source)},
         )
 
-    # Importing out of recorded/ would copy a run onto itself (and, for a source
-    # under .incoming/, race the copy that is still writing it).
+    # Importing out of the STORE's own subtrees would copy a capture onto
+    # itself (and, under .incoming/, race the copy still writing it). Only
+    # those are refused — not all of data_dir: `data/<bags>/` is where AGENTS.md
+    # tells operators to drop sample and incoming recordings, and refusing the
+    # documented drop spot made the import unusable without a second mount.
+    data_root = layout.data_dir.resolve()
     try:
-        source.relative_to(layout.data_dir.resolve())
+        relative = source.relative_to(data_root)
     except ValueError:
         pass
     else:
-        raise ApiError(
-            status_code=400,
-            code="import_source_inside_data_dir",
-            message=(
-                f"{source} is already inside kairos's own data directory "
-                f"({layout.data_dir}). That capture is in Review already — "
-                "importing it would only make a second copy of it."
-            ),
-            details={"source_path": str(source), "data_dir": str(layout.data_dir)},
-        )
+        head = relative.parts[0] if relative.parts else ""
+        if not relative.parts or is_reserved_name(head):
+            raise ApiError(
+                status_code=400,
+                code="import_source_inside_data_dir",
+                message=(
+                    f"{source} is inside kairos's own store ({data_root / head}). "
+                    "Those directories hold captures kairos already manages — "
+                    "importing from one would copy a capture onto itself. Point "
+                    "at the folder the bags were recorded into instead."
+                ),
+                details={
+                    "source_path": str(source),
+                    "data_dir": str(layout.data_dir),
+                    "reserved": head,
+                },
+            )
 
     mcap_files = sorted(source.glob("*.mcap"))
     if not mcap_files:

@@ -7,11 +7,14 @@
 // Also carries our own addition — MCAP transfer for split robot/recording-PC
 // deployments — gated behind captures/splitMode.ts, off by default.
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import { queryKeys } from '../../api/queryKeys';
 import { Button, Modal, cn } from '../../components/ui';
 import { DiscardDialog, DeleteDialog } from '../captures/DeleteDialogs';
 import { DetailPanel } from './DetailPanel';
 import { EpisodeTable } from './EpisodeTable';
+import { ImportBagsDialog } from './ImportBagsDialog';
 import { FiltersRail } from './FiltersRail';
 import { Toast } from './Toast';
 import { useFiltersCollapsed, toggleFiltersCollapsed } from './filtersRail';
@@ -32,6 +35,11 @@ const GRID_COLLAPSED =
 export function ReviewScreen() {
   const rv = useReviewState();
   const { conflict, failure } = rv.reviewSave;
+  const queryClient = useQueryClient();
+  // Bringing in bags recorded outside kairos: a Review-side action because an
+  // imported bag's whole reason to exist is to be reviewed, validated and
+  // put into a dataset like any other recording.
+  const [importOpen, setImportOpen] = useState(false);
 
   // FiltersRail collapse (persisted). The collapsed and expanded toggle buttons
   // never mount at once, so after a user toggle we restore focus to whichever
@@ -51,6 +59,32 @@ export function ReviewScreen() {
 
   return (
     <div className="flex flex-col gap-2.5 lg:h-full lg:min-h-0">
+      <div className="flex items-center gap-2.5">
+        <div className="flex-1" />
+        <button
+          type="button"
+          data-testid="review-import-bags"
+          onClick={() => setImportOpen(true)}
+          className="rounded-control border border-gray-200 bg-white px-3 py-1.5 text-[12.5px] font-semibold text-gray-700 hover:bg-gray-50"
+        >
+          ↧ Import bags…
+        </button>
+      </div>
+      <ImportBagsDialog
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        onImported={() => {
+          // An import is QUEUED when the POST answers; the row appears only
+          // once the staged copy has been moved into place, which for a
+          // multi-GB bag is seconds to minutes later. Refetch now and a few
+          // times after, so "I imported it and nothing showed up" needs no
+          // manual reload. Bounded on purpose — this is a nudge, not a poll.
+          const refetch = () =>
+            void queryClient.invalidateQueries({ queryKey: queryKeys.captures });
+          refetch();
+          for (const delay of [3000, 10000, 30000]) setTimeout(refetch, delay);
+        }}
+      />
       {/* A refused save (409). The banner names what is actually stored now, so
           the operator re-applies their decision against the real current value
           instead of guessing what the other terminal chose. */}

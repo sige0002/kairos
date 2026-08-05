@@ -27,6 +27,8 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Request
+from kairos_common.bag_metadata import METADATA_FILENAME
+from kairos_common.capture_sidecars import read_object_manifest
 from kairos_common.errors import ApiError
 from kairos_common.rebuild import ReplicaState
 from kairos_common.time import utc_now_iso8601
@@ -210,6 +212,124 @@ def _create_capture_row(
         ReplicaState.present_unverified,
         path=str(layout.capture_dir(record.capture_id)),
     )
+
+
+@router.get("/scan")
+async def scan_folder(request: Request, path: str) -> dict[str, Any]:
+    """List the bag directories under *path*, with why each can or cannot come in.
+
+    The point is that nothing is copied to find this out. An operator pointing
+    at a folder of 40 recordings gets one screen saying exactly which ones will
+    import, which are already here, and which need `ros2 bag reindex` — before
+    a single gigabyte moves. Without it the only way to learn that the 12th bag
+    has no metadata.yaml is to wait for the 12th copy to fail.
+
+    Scanned shallowly on purpose: *path* itself if it is a bag, otherwise its
+    immediate children. A recursive walk over an operator-supplied path is an
+    unbounded filesystem crawl, and "the folder my bags are in" is always one
+    level in practice.
+    """
+    layout = request.app.state.data_layout
+    root = Path(path).expanduser()
+    try:
+        root = root.resolve(strict=False)
+    except OSError as exc:  # pragma: no cover - exotic FS failure
+        raise ApiError(
+            status_code=400,
+            code="import_source_unresolvable",
+            message=f"Could not resolve {path}: {exc}",
+        ) from exc
+    if not root.exists():
+        raise ApiError(
+            status_code=400,
+            code="import_source_missing",
+            message=(
+                f"Nothing exists at {root}. Give the folder as the SERVER sees "
+                "it (not your laptop's path)."
+            ),
+            details={"source_path": str(root)},
+        )
+    if not root.is_dir():
+        raise ApiError(
+            status_code=400,
+            code="import_source_not_a_directory",
+            message=f"{root} is a file, not a folder of rosbag directories.",
+            details={"source_path": str(root)},
+        )
+
+    candidates = (
+        [root]
+        if (root / METADATA_FILENAME).is_file()
+        else sorted(c for c in root.iterdir() if c.is_dir())
+    )
+    already = await asyncio.to_thread(_imported_sources, layout)
+
+    entries: list[dict[str, Any]] = []
+    for candidate in candidates:
+        entry: dict[str, Any] = {"path": str(candidate), "name": candidate.name}
+        if str(candidate) in already:
+            # Importing it again would make a second copy of the same bag under
+            # a second capture_id — indistinguishable afterwards.
+            entry.update(
+                importable=False,
+                reason_code="already_imported",
+                reason="Already imported — it is in Review.",
+                capture_id=already[str(candidate)],
+            )
+            entries.append(entry)
+            continue
+        try:
+            bag = await asyncio.to_thread(
+                bag_import.inspect_source, candidate, layout=layout
+            )
+        except ApiError as exc:
+            # A rejected directory is REPORTED, never skipped silently: the
+            # operator needs to know the folder held something that will not
+            # come in, and what to do about it.
+            entry.update(
+                importable=False,
+                reason_code=exc.code,
+                reason=exc.message,
+                remedy=(exc.details or {}).get("remedy"),
+            )
+            entries.append(entry)
+            continue
+        entry.update(
+            importable=True,
+            bytes=bag.bytes,
+            topics=len(bag.topics),
+            message_count=bag.message_count,
+            duration_s=bag.duration_s,
+            started_at=bag.started_at,
+        )
+        entries.append(entry)
+
+    return {
+        "path": str(root),
+        "bags": entries,
+        "importable": sum(1 for e in entries if e.get("importable")),
+    }
+
+
+def _imported_sources(layout: Any) -> dict[str, str]:
+    """``imported_from`` → capture_id for every capture already imported here.
+
+    Read from the manifests rather than the index: the manifest is what the §8
+    rebuild restores from, so this answer survives a dropped database exactly
+    like the captures themselves do.
+    """
+    found: dict[str, str] = {}
+    objects = layout.data_dir / "objects"
+    if not objects.is_dir():
+        return found
+    for capture_dir in objects.iterdir():
+        if not capture_dir.is_dir():
+            continue
+        result = read_object_manifest(capture_dir)
+        manifest = result.manifest
+        if manifest is not None and manifest.imported_from:
+            found[manifest.imported_from] = manifest.capture_id
+    return found
 
 
 @router.get("")
