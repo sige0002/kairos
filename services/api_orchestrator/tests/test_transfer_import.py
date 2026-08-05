@@ -9,6 +9,7 @@ the bytes do.
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -599,3 +600,97 @@ class TestScanFolder:
         resp = client.get("/api/v1/imports/scan?path=/nope/not/here")
         assert resp.status_code == 400
         assert resp.json()["error"]["code"] == "import_source_missing"
+
+
+class TestImportMessyFolders:
+    """Operator mistakes and messy real data — not attackers, just Tuesday."""
+
+    def test_a_bag_whose_metadata_is_absurdly_large_is_rejected_not_slurped(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        # A half-finished copy or a concatenation accident. Parsing it would
+        # spend memory proportional to somebody else's mistake, and the answer
+        # would be garbage — so it is refused like any unreadable metadata.
+        source = tmp_path / "huge_meta"
+        _make_bag(source)
+        (source / "metadata.yaml").write_text("a: " + "x" * (17 * 1024 * 1024))
+
+        resp = client.post("/api/v1/imports", json={"source_path": str(source)})
+        assert resp.status_code == 400
+        assert resp.json()["error"]["code"] in {
+            "import_unreadable_metadata",
+            "import_no_metadata",
+        }
+
+    def test_a_source_that_vanished_after_the_scan_fails_that_bag_only(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        # The scan is a snapshot; between it and the import an operator can
+        # move or delete the folder. That must be a clean per-bag 400, not a
+        # crash that takes the bulk run with it.
+        source = tmp_path / "gone"
+        _make_bag(source)
+        client.get(f"/api/v1/imports/scan?path={tmp_path}")
+        shutil.rmtree(source)
+
+        resp = client.post("/api/v1/imports", json={"source_path": str(source)})
+        assert resp.status_code == 400
+        assert resp.json()["error"]["code"] == "import_source_missing"
+
+    def test_a_symlinked_subfolder_is_not_followed(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        # A folder symlinked to its own parent is how a scan finds a cycle;
+        # one symlinked elsewhere is how it silently leaves the tree.
+        _make_bag(tmp_path / "real_bag")
+        (tmp_path / "loop").symlink_to(tmp_path)
+
+        body = client.get(f"/api/v1/imports/scan?path={tmp_path}").json()
+        assert [b["name"] for b in body["bags"]] == ["real_bag"]
+
+    def test_an_empty_mcap_is_reported_not_imported(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        # `ros2 bag record` interrupted at the wrong instant leaves this.
+        source = tmp_path / "empty_mcap"
+        _make_bag(source)
+        for mcap in source.glob("*.mcap"):
+            mcap.write_bytes(b"")
+
+        body = client.get(f"/api/v1/imports/scan?path={tmp_path}").json()
+        row = next(b for b in body["bags"] if b["name"] == "empty_mcap")
+        assert row["importable"] is False
+        assert row["reason"]
+
+    def test_a_unicode_named_bag_round_trips(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        # Operators name folders in their own language, with spaces.
+        name = "収録 2026-08-05 🎥"
+        _make_bag(tmp_path / name)
+        body = client.get(f"/api/v1/imports/scan?path={tmp_path}").json()
+        row = next(b for b in body["bags"] if b["name"] == name)
+        assert row["importable"] is True
+        assert (
+            client.post(
+                "/api/v1/imports", json={"source_path": row["path"]}
+            ).status_code
+            == 202
+        )
+
+    def test_importing_the_same_folder_twice_is_reported_on_the_next_scan(
+        self, client: TestClient, layout: DataLayout, tmp_path: Path
+    ) -> None:
+        source = tmp_path / "once"
+        _make_bag(source)
+        started = client.post("/api/v1/imports", json={"source_path": str(source)})
+        assert started.status_code == 202
+        _await_import(client, started.json()["import_id"])
+
+        # The second scan says so instead of quietly offering a duplicate that
+        # nothing downstream could tell apart from the first.
+        body = client.get(f"/api/v1/imports/scan?path={tmp_path}").json()
+        row = next(b for b in body["bags"] if b["name"] == "once")
+        assert row["importable"] is False
+        assert row["reason_code"] == "already_imported"
+        assert row["capture_id"]

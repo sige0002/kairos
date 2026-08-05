@@ -12,7 +12,7 @@
 // A bulk operation that stops at the first bad directory would leave the
 // operator hand-importing the remainder.
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { apiGet, apiPost } from '../../api/client';
 import { readCaptureError } from '../captures/errors';
 import { Button, Modal, cn } from '../../components/ui';
@@ -79,6 +79,21 @@ export function ImportBagsDialog({
   const [move, setMove] = useState(false);
   const [running, setRunning] = useState(false);
   const [rows, setRows] = useState<Record<string, RowState>>({});
+  // Two guards on the run itself:
+  //  * runInFlight — `running` is state, so it is still false inside the same
+  //    tick as the first click; a double-click would start the loop twice and
+  //    import every selected bag twice, under two capture ids.
+  //  * alive — the dialog can be closed (or Review unmounted) mid-run. The
+  //    loop then stops issuing further imports rather than continuing to
+  //    write into a component nobody is looking at.
+  const runInFlight = useRef(false);
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
 
   const runScan = async (target?: string) => {
     const wanted = (target ?? path).trim();
@@ -108,9 +123,12 @@ export function ImportBagsDialog({
     if (!scan) return;
     const targets = scan.bags.filter((b) => b.importable && selected.has(b.path));
     if (targets.length === 0) return;
+    if (runInFlight.current) return;
+    runInFlight.current = true;
     setRunning(true);
     let anySucceeded = false;
     for (const bag of targets) {
+      if (!alive.current) break; // dialog closed — stop queueing more
       setRows((r) => ({ ...r, [bag.path]: { phase: 'importing' } }));
       try {
         // POST returns 202 as soon as the copy is queued; the capture appears
@@ -136,6 +154,7 @@ export function ImportBagsDialog({
         }));
       }
     }
+    runInFlight.current = false;
     setRunning(false);
     if (anySucceeded) onImported();
   };

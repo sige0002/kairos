@@ -158,3 +158,65 @@ test('a folder whose bags are one level down offers the way in, not a dead end',
   );
   expect(screen.getByTestId('import-path')).toHaveValue('/data/incoming/2026-08-04');
 });
+
+
+test('a double-click on Import does not import everything twice', async () => {
+  const posts = mockFetch();
+  renderWithClient(<ImportBagsDialog open onClose={() => {}} onImported={() => {}} />);
+  fireEvent.change(screen.getByTestId('import-path'), { target: { value: '/data/incoming' } });
+  fireEvent.click(screen.getByTestId('import-scan'));
+  await screen.findByTestId('import-list');
+
+  // Both clicks land in the same tick: `running` state has not flipped yet, so
+  // only a ref can close the window (two runs = two copies of every bag under
+  // two capture ids).
+  const run = screen.getByTestId('import-run');
+  fireEvent.click(run);
+  fireEvent.click(run);
+
+  await waitFor(() => expect(posts.length).toBeGreaterThan(0));
+  await new Promise((r) => setTimeout(r, 50));
+  expect(posts.map((p) => p.source_path)).toEqual([
+    '/data/incoming/a',
+    '/data/incoming/b',
+  ]);
+});
+
+test('closing the dialog mid-run stops queueing further imports', async () => {
+  // A long-running first import, so the close lands between the two.
+  const posts: { source_path: string; move: boolean }[] = [];
+  let release: null | (() => void) = null;
+  const fire = () => release?.();
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    if (url.includes('/imports/scan')) return Promise.resolve(jsonResponse(SCAN));
+    if (url.includes('/imports') && (init?.method ?? 'GET') === 'POST') {
+      const body = JSON.parse(String(init?.body)) as { source_path: string; move: boolean };
+      posts.push(body);
+      if (posts.length === 1) {
+        return new Promise<Response>((resolve) => {
+          release = () => resolve(jsonResponse({ capture_id: 'c1' }, 202) as Response);
+        });
+      }
+      return Promise.resolve(jsonResponse({ capture_id: 'c2' }, 202));
+    }
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  const { unmount } = renderWithClient(
+    <ImportBagsDialog open onClose={() => {}} onImported={() => {}} />,
+  );
+  fireEvent.change(screen.getByTestId('import-path'), { target: { value: '/data/incoming' } });
+  fireEvent.click(screen.getByTestId('import-scan'));
+  await screen.findByTestId('import-list');
+  fireEvent.click(screen.getByTestId('import-run'));
+  await waitFor(() => expect(posts).toHaveLength(1));
+
+  unmount();
+  fire();
+  await new Promise((r) => setTimeout(r, 50));
+
+  // The in-flight one was already sent (the server owns it now); the SECOND is
+  // never queued behind a screen nobody is watching.
+  expect(posts.map((p) => p.source_path)).toEqual(['/data/incoming/a']);
+});

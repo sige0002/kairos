@@ -47,6 +47,14 @@ router = APIRouter(prefix="/api/v1/imports", tags=["imports"])
 # without this the GC may cancel a multi-GB copy mid-flight.
 _import_tasks: set[asyncio.Task[None]] = set()
 
+# How many bag copies may run at once. POST returns 202 immediately, so a bulk
+# run of 40 folders queues 40 tasks in about a second — unbounded, that is 40
+# multi-GB reads and writes competing for one disk, all of them slower and all
+# of them failing together if the disk fills. Two keeps the disk busy without
+# turning a routine import into a thrash. Queued imports simply wait; their
+# ImportRecord stays `queued`, which is what the UI already reports.
+_COPY_SLOTS = asyncio.Semaphore(2)
+
 
 class ImportRequest(BaseModel):
     """Body for ``POST /api/v1/imports``.
@@ -119,10 +127,13 @@ async def _run_import(
     instance_id = request.app.state.instance_id
     try:
         # 1. Copy into staging. Nothing is visible under objects/ yet, so a
-        #    crash here leaves no capture that looks complete.
-        record.bytes_copied = await asyncio.to_thread(
-            bag_import.copy_into_staging, bag, staging
-        )
+        #    crash here leaves no capture that looks complete. The slot bounds
+        #    how many multi-GB copies run at once (see _COPY_SLOTS); the steps
+        #    after it are a small write and a rename, so they need no slot.
+        async with _COPY_SLOTS:
+            record.bytes_copied = await asyncio.to_thread(
+                bag_import.copy_into_staging, bag, staging
+            )
 
         # 2. The manifest goes INSIDE staging so it arrives with the rename
         #    rather than appearing a moment later.

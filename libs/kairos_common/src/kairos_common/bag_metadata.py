@@ -126,6 +126,11 @@ def signature_from_metadata(metadata: dict[str, Any] | None) -> TopicSignature |
     return TopicSignature(hash=digest, count=len(pairs))
 
 
+# Ceiling on metadata.yaml (bytes). Generous: the largest bundled sample is a
+# few tens of KB, and a 512-topic bag is still well under this.
+MAX_METADATA_BYTES = 16 * 1024 * 1024
+
+
 def read_bag_metadata(bag_dir: Path) -> dict[str, Any] | None:
     """Best-effort parse of ``<bag_dir>/metadata.yaml`` (``None`` on any failure).
 
@@ -134,6 +139,12 @@ def read_bag_metadata(bag_dir: Path) -> dict[str, Any] | None:
     """
     path = Path(bag_dir) / METADATA_FILENAME
     try:
+        # A real rosbag2 metadata.yaml is kilobytes. Anything wildly bigger is
+        # a damaged or duplicated file (a half-finished copy, a concatenation
+        # accident) — parsing it would spend memory proportional to somebody
+        # else's mistake, and the answer would be garbage anyway.
+        if path.stat().st_size > MAX_METADATA_BYTES:
+            return None
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, yaml.YAMLError):
         return None
