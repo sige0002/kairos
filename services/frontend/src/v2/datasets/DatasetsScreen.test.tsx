@@ -35,6 +35,9 @@ interface Backend {
   archiveRoots: string[];
   /** Whether the copy verifies. `false` is the honesty case §6 cares about. */
   archiveVerifies: boolean;
+  /** When true, a per-capture archive is refused because the destination
+   *  already holds files (409 destination_not_empty, captures.py). */
+  archiveDestinationNotEmpty: boolean;
   archived: { captureId: string; destination: string; reason: string | null }[];
   // ---- the dataset archive run (§6.x) ------------------------------------
   /** The run `GET /datasets/{id}/archive` serves; null = derived from rows. */
@@ -42,6 +45,10 @@ interface Backend {
   /** When true, the NEXT progress poll seals the run — dataset archived,
    *  members' bytes gone — modelling a run that finished between polls. */
   sealOnPoll: boolean;
+  /** dataset_id of another dataset already holding the archive destination, or
+   *  null. The store claims a folder against the dataset ROW (§6.x), so this
+   *  refusal is not something clearing the folder can fix. */
+  archiveClaimedBy: string | null;
   datasetArchiveCalls: {
     datasetId: string;
     destination: string | null;
@@ -141,9 +148,11 @@ function mockApi(seed: Partial<Backend> = {}): Backend {
     transferAvailable: seed.transferAvailable ?? false,
     archiveRoots: seed.archiveRoots ?? [],
     archiveVerifies: seed.archiveVerifies ?? true,
+    archiveDestinationNotEmpty: seed.archiveDestinationNotEmpty ?? false,
     archived: [],
     archiveRun: seed.archiveRun ?? null,
     sealOnPoll: seed.sealOnPoll ?? false,
+    archiveClaimedBy: seed.archiveClaimedBy ?? null,
     datasetArchiveCalls: [],
     calls: [],
   };
@@ -224,6 +233,34 @@ function mockApi(seed: Partial<Backend> = {}): Backend {
           destination: (body.destination as string | null | undefined) ?? null,
           mode: (body.mode as string | null | undefined) ?? null,
         });
+        // Someone else's folder. The real check runs inside the claiming
+        // transaction (store.py begin_dataset_archive) and answers with the
+        // holder's dataset_id, because the name in the message can be renamed
+        // out from under a bug report.
+        if (backend.archiveClaimedBy && body.destination) {
+          const holder = backend.datasets.find(
+            (d) => d.dataset_id === backend.archiveClaimedBy,
+          );
+          return jsonResponse(
+            {
+              error: {
+                code: 'destination_claimed',
+                message:
+                  `${body.destination}/${body.path} belongs to dataset ` +
+                  `${holder?.name ?? backend.archiveClaimedBy}, which is ` +
+                  `${holder?.status ?? 'archiving'} there. Two datasets in one ` +
+                  'folder would interleave their numbers under a single ' +
+                  'manifest; choose another path.',
+                details: {
+                  dataset_id: datasetId,
+                  destination: `${body.destination}/${body.path}`,
+                  held_by: backend.archiveClaimedBy,
+                },
+              },
+            },
+            409,
+          );
+        }
         if (dataset.status === 'archiving') {
           // A resume: the fake finishes the run on the spot — the claim under
           // test is that the UI re-POSTS with no destination and follows the
@@ -349,6 +386,23 @@ function mockApi(seed: Partial<Backend> = {}): Backend {
         );
       }
       const destination = String(body.destination);
+      // The folder already holds files. The copy has not started, so nothing
+      // was archived and the capture stays exactly where it is.
+      if (backend.archiveDestinationNotEmpty) {
+        return jsonResponse(
+          {
+            error: {
+              code: 'destination_not_empty',
+              message:
+                `${destination}/${captureId} already contains files — ` +
+                'refusing to archive into it. Choose another path, or clear ' +
+                'it if it is the debris of a failed archive.',
+              details: { capture_id: captureId, destination: `${destination}/${captureId}` },
+            },
+          },
+          409,
+        );
+      }
       backend.archived.push({
         captureId,
         destination,
@@ -890,6 +944,44 @@ test('a dataset member is not offered archive at all', async () => {
   );
 });
 
+test('a per-capture archive refused for a full destination says what to do about it', async () => {
+  // Parity with the dataset archive dialog: `<ErrorMessage>` alone gives the
+  // server's sentence and the raw code, and neither says what an operator
+  // should do next. Two archive dialogs that report a refusal differently is
+  // the kind of asymmetry only an operator finds, and only at the worst moment.
+  const backend = mockApi({
+    datasets: [DS_KITCHEN],
+    captures: [CAP_A],
+    archiveRoots: ['/mnt/archive'],
+    archiveDestinationNotEmpty: true,
+  });
+  renderWithClient(<DatasetsScreen />);
+
+  fireEvent.click(await screen.findByTestId('dataset-archive-cap-a'));
+  fireEvent.click(await screen.findByTestId('archive-confirm'));
+
+  const dialog = await screen.findByTestId('archive-dialog');
+  const alert = await within(dialog).findByRole('alert');
+  expect(alert).toHaveAttribute('data-error-code', 'destination_not_empty');
+  expect(alert).toHaveTextContent('already contains files');
+
+  const guidance = within(dialog).getByTestId('archive-error-guidance');
+  // The server offered two ways out — another path, or clearing the debris —
+  // and guidance that repeats only the first silently withdraws the second.
+  expect(guidance).toHaveTextContent(/empty path/i);
+  expect(guidance).toHaveTextContent(/clear/i);
+  // The same code serves the dataset archive, where what would be mixed is
+  // datasets, so the wording may not say "captures" on either surface.
+  expect(guidance.textContent).not.toMatch(/captures/i);
+  // Nothing to tie here: this refusal names no holding dataset.
+  expect(within(dialog).queryByTestId('archive-error-holder')).not.toBeInTheDocument();
+
+  // The copy never started, so the recording is untouched — which is the whole
+  // reason this refusal is a warning and not a loss.
+  expect(backend.archived).toHaveLength(0);
+  expect(backend.captures.map((c) => c.capture_id)).toEqual(['cap-a']);
+});
+
 test('a copy that did not verify is reported as such, never as archived', async () => {
   // The source is deleted moments after the copy, so an unverified archive is
   // the one outcome the operator must not read as success.
@@ -1003,6 +1095,176 @@ test('an archived dataset is read-only: no build, no removal, delete refused wit
   fireEvent.click(memberRowFor('cap-gone'));
   expect(await screen.findByTestId('dataset-member-frozen-note')).toBeInTheDocument();
   expect(screen.queryByTestId('remove-member-btn')).not.toBeInTheDocument();
+});
+
+test('a destination another dataset holds is refused with the reason AND the way out', async () => {
+  // §6.x claims a destination against the dataset ROW, so this is the one
+  // archive refusal an operator cannot clear by emptying the folder or by
+  // waiting for the other run — and the server's sentence says neither. The
+  // dialog has to carry the next step, or the operator retries the same path.
+  const DS_SHELF: Dataset = {
+    ...DS_KITCHEN,
+    dataset_id: 'ds-shelf',
+    name: 'shelf picks',
+    status: 'archiving',
+  };
+  const backend = mockApi({
+    datasets: [DS_KITCHEN, DS_SHELF],
+    captures: [CAP_A],
+    members: [
+      { membership_id: 'm-1', dataset_id: 'ds-kitchen', capture_id: 'cap-a', display_index: 1 },
+    ],
+    archiveRoots: ['/mnt/archive'],
+    archiveClaimedBy: 'ds-shelf',
+  });
+  renderWithClient(<DatasetsScreen />);
+
+  fireEvent.click(await screen.findByTestId(datasetTestId('ds-kitchen')));
+  fireEvent.click(await screen.findByTestId('archive-dataset-btn'));
+  fireEvent.click(await screen.findByTestId('dataset-archive-confirm'));
+
+  const dialog = await screen.findByTestId('dataset-archive-dialog');
+  const alert = await within(dialog).findByRole('alert');
+  expect(alert).toHaveAttribute('data-error-code', 'destination_claimed');
+  expect(alert).toHaveTextContent('belongs to dataset shelf picks');
+
+  // The alert above names the holder "shelf picks"; the envelope carries only
+  // `ds-shelf`. Shown adjacent and unlabelled those read as two different
+  // datasets, so the dialog joins them into one identity — the name to
+  // recognise it by, the id that survives a rename.
+  const holder = within(dialog).getByTestId('dataset-archive-error-holder');
+  expect(holder).toHaveTextContent('shelf picks (ds-shelf)');
+
+  // The next step, which the server cannot know it needs to say.
+  const guidance = within(dialog).getByTestId('dataset-archive-error-guidance');
+  expect(guidance).toHaveTextContent(/emptying the folder does not release it/i);
+  expect(guidance).toHaveTextContent(/neither does that dataset finishing its run/i);
+  // Clearing the folder is a real fix for a FULL destination and a useless,
+  // destructive one here; the two must never read the same.
+  expect(guidance.textContent).not.toMatch(/\bclear\b/i);
+
+  // Nothing started: the dataset is still active, still on the working shelf,
+  // and one request was sent — the refusal is not retried behind the operator.
+  expect(backend.datasets.find((d) => d.dataset_id === 'ds-kitchen')!.status).toBe(
+    'active',
+  );
+  expect(screen.getByTestId(datasetTestId('ds-kitchen'))).toBeInTheDocument();
+  expect(backend.datasetArchiveCalls).toHaveLength(1);
+});
+
+test('a claimed destination whose holder is not in the loaded catalog shows the bare id', async () => {
+  // The join is best-effort by construction: `held_by` is resolved against the
+  // catalog this screen happens to hold, and a list that has not caught up (or
+  // a holder created since the last fetch) has no row to resolve. The fallback
+  // is the id ALONE — never a name-shaped blank like " (ds-…)", which would
+  // read as a dataset whose name is empty rather than one we cannot name.
+  const backend = mockApi({
+    datasets: [DS_KITCHEN],
+    captures: [CAP_A],
+    members: [
+      { membership_id: 'm-1', dataset_id: 'ds-kitchen', capture_id: 'cap-a', display_index: 1 },
+    ],
+    archiveRoots: ['/mnt/archive'],
+    archiveClaimedBy: 'ds-not-in-this-list',
+  });
+  renderWithClient(<DatasetsScreen />);
+
+  fireEvent.click(await screen.findByTestId(datasetTestId('ds-kitchen')));
+  fireEvent.click(await screen.findByTestId('archive-dataset-btn'));
+  fireEvent.click(await screen.findByTestId('dataset-archive-confirm'));
+
+  const dialog = await screen.findByTestId('dataset-archive-dialog');
+  const holder = await within(dialog).findByTestId('dataset-archive-error-holder');
+  expect(holder).toHaveTextContent('ds-not-in-this-list');
+  // No parenthesised second label at all: nothing was invented to fill it.
+  expect(holder.textContent).not.toMatch(/[()]/);
+  expect(holder.textContent).not.toMatch(/undefined|null/);
+  // The refusal itself still lands, and no run started.
+  expect(within(dialog).getByRole('alert')).toHaveAttribute(
+    'data-error-code',
+    'destination_claimed',
+  );
+  expect(backend.datasets.find((d) => d.dataset_id === 'ds-kitchen')!.status).toBe(
+    'active',
+  );
+});
+
+test('a halted run carries the next step, not just the sentence it stopped on', async () => {
+  // The runner's halt arrives as a plain {code, message} inside the progress
+  // payload — no ApiError — so the dialog could reach the server's sentence but
+  // not the catalog's guidance. On `ledger_unreadable` that difference is the
+  // whole outcome: the run is SITTING halted, Resume is right there, and
+  // pressing it changes nothing until a human repairs a file.
+  mockApi({
+    datasets: [
+      {
+        ...DS_KITCHEN,
+        status: 'archiving',
+        archive_destination: '/mnt/archive/op_a/pick_place/kitchen picks',
+        archive_started_at: '2026-07-22T08:30:00Z',
+      },
+    ],
+    captures: [CAP_A],
+    members: [
+      { membership_id: 'm-1', dataset_id: 'ds-kitchen', capture_id: 'cap-a', display_index: 1 },
+    ],
+    archiveRoots: ['/mnt/archive'],
+    archiveRun: {
+      dataset_id: 'ds-kitchen',
+      status: 'archiving',
+      destination: '/mnt/archive/op_a/pick_place/kitchen picks',
+      member_total: 2,
+      members_done: 1,
+      running: false,
+      error: {
+        code: 'ledger_unreadable',
+        message:
+          'The lifecycle ledger could not be read: invalid JSON on line 812. ' +
+          'The run stopped where it stands rather than act on a history it cannot see.',
+      },
+    },
+  });
+  renderWithClient(<DatasetsScreen />);
+
+  fireEvent.click(await screen.findByTestId(datasetTestId('ds-kitchen')));
+  fireEvent.click(await screen.findByTestId('archive-dataset-btn'));
+
+  const halt = await screen.findByTestId('dataset-archive-halt', undefined, { timeout: 5000 });
+  expect(halt).toHaveTextContent('invalid JSON on line 812');
+  // The part the server's sentence does not carry: what has to happen.
+  const guidance = within(halt).getByTestId('dataset-archive-halt-guidance');
+  expect(guidance).toHaveTextContent(/repair or restore/i);
+  expect(guidance.textContent).not.toMatch(/try again|in a moment|shortly/i);
+});
+
+test('a halt whose code the catalog does not know shows the sentence and no invented advice', async () => {
+  mockApi({
+    datasets: [
+      { ...DS_KITCHEN, status: 'archiving', archive_destination: '/mnt/archive/x' },
+    ],
+    captures: [CAP_A],
+    members: [
+      { membership_id: 'm-1', dataset_id: 'ds-kitchen', capture_id: 'cap-a', display_index: 1 },
+    ],
+    archiveRoots: ['/mnt/archive'],
+    archiveRun: {
+      dataset_id: 'ds-kitchen',
+      status: 'archiving',
+      destination: '/mnt/archive/x',
+      member_total: 2,
+      members_done: 1,
+      running: false,
+      error: { code: 'some_future_runner_code', message: 'The run stopped: disk went away.' },
+    },
+  });
+  renderWithClient(<DatasetsScreen />);
+
+  fireEvent.click(await screen.findByTestId(datasetTestId('ds-kitchen')));
+  fireEvent.click(await screen.findByTestId('archive-dataset-btn'));
+
+  const halt = await screen.findByTestId('dataset-archive-halt', undefined, { timeout: 5000 });
+  expect(halt).toHaveTextContent('disk went away');
+  expect(within(halt).queryByTestId('dataset-archive-halt-guidance')).not.toBeInTheDocument();
 });
 
 test('a halted run reports why, stays archiving, and Resume continues it without a destination', async () => {

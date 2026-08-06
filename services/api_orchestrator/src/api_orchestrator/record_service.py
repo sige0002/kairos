@@ -36,7 +36,12 @@ from datetime import UTC, datetime
 from typing import Any
 
 from kairos_common import ApiError, Compression, RecordingConfig, utc_now_iso8601
-from kairos_common.capture_sidecars import TERMINAL_STATES, CaptureState
+from kairos_common.capture_sidecars import (
+    TERMINAL_STATES,
+    CaptureState,
+    SidecarStatus,
+    read_object_manifest,
+)
 from kairos_common.ids import is_uuid7
 from kairos_common.rebuild import ReplicaState
 
@@ -45,6 +50,7 @@ from api_orchestrator.digest import DigestJob
 from api_orchestrator.events import EVENT_RECORD_STATUS, EventHub
 from api_orchestrator.layout import DataLayout
 from api_orchestrator.models import (
+    AUTO_STOP_PREFIX,
     Capture,
     CaptureError,
     CaptureTopic,
@@ -632,8 +638,51 @@ class RecordService:
 
         if recorder_state in TERMINAL_STATES:
             return CaptureState(recorder_state), recorder_error
-        # Completed, idle, or unknown: treat the stop as a completion but keep
-        # any sync error already on the row as a reconciliation target.
+        if recorder_state is None:
+            # We could not ask AT ALL — the recorder answered the stop and then
+            # went away, or died before it could answer. "Nobody is left to
+            # ask" is not evidence that the recording finished, and it used to
+            # be read as exactly that: this returned ``completed``, so a bag
+            # that was never finalised became a good take, dataset-eligible,
+            # on the strength of a guess made in the most optimistic direction.
+            #
+            # The manifest is authoritative (§3) and it is still on disk, so
+            # ask it instead. A terminal manifest means the recorder DID seal
+            # before it died — that take is genuinely complete and calling it
+            # interrupted would send an operator to re-record good data. No
+            # terminal manifest means nothing finalised this bag and no later
+            # event ever will, which is what ``interrupted`` means (§8 rule 2).
+            # Any sync error already on the row is left alone as the specific
+            # account of what went wrong.
+            #
+            # A CORRUPT manifest is deliberately treated as not-sealed, and
+            # that is a genuine trade rather than an oversight. A take that DID
+            # finalise, whose sidecar then became unreadable, is called
+            # ``interrupted`` here — which overstates what we know, because
+            # ``CaptureState`` has no "cannot tell" member and this function
+            # must return one. It is the right way to be wrong: the likeliest
+            # way to get an unparseable manifest is a process killed while
+            # writing it, which is a bag that did not finalise either, and the
+            # row keeps its sync error so the fault stays visible.
+            #
+            # This DIVERGES from ``CaptureService.adopt_manifest_facts``, which
+            # reads the same corrupt file and changes nothing ("§8 rule 4: an
+            # unreadable manifest is reported, never guessed from"). Neither is
+            # a bug. Adoption is optional and can decline — leaving the row as
+            # it was costs nothing. This is the stop path, which MUST commit to
+            # a terminal state right now, and between two guesses it takes the
+            # one that does not mark an unfinalised recording as a good take.
+            read = read_object_manifest(self._layout.capture_dir(capture.capture_id))
+            if (
+                read.status is SidecarStatus.ok
+                and read.manifest is not None
+                and read.manifest.state in TERMINAL_STATES
+            ):
+                return CaptureState(read.manifest.state), coerce_error(
+                    read.manifest.error
+                )
+            return CaptureState.interrupted, None
+        # The recorder answered and is idle or completed: a normal stop.
         return CaptureState.completed, recorder_error
 
     def _active_capture(self) -> Capture | None:
@@ -933,7 +982,7 @@ class RecordService:
         integrity = manifest.get("integrity")
         err = manifest.get("error")
         backstop = (
-            err if isinstance(err, str) and err.startswith("auto-stopped:") else None
+            err if isinstance(err, str) and err.startswith(AUTO_STOP_PREFIX) else None
         )
         return (integrity if isinstance(integrity, str) else None), backstop
 

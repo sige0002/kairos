@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from kairos_common import ApiError, ledger_v2
@@ -47,6 +48,46 @@ from api_orchestrator.verdict import (
 )
 
 logger = logging.getLogger("kairos")
+
+
+@dataclass(frozen=True)
+class DatasetReplayReport:
+    """What one ledger replay rebuilt, and what it needs someone to see.
+
+    ``warnings`` are for an operator, not a log file: the replay can rebuild
+    history the live code would now refuse to create — two datasets archived
+    into one folder is the case that exists — and only the caller knows where
+    such a thing should surface.
+    """
+
+    counts: dict[str, int]
+    warnings: tuple[str, ...] = ()
+
+
+@dataclass
+class _NumberFloor:
+    """One dataset's watermark evidence, gathered during a single replay.
+
+    :attr:`value` is the lowest watermark the ledger can justify: the highest
+    number it saw issued, plus one for each member line whose number was
+    unreadable. Numbers are handed out as watermark + 1, so an unreadable line
+    consumed exactly one — which one is not recoverable, and stepping over it
+    leaves a gap rather than selling a live member's number twice. A line that
+    was a reclaim (the same recording taking its old number back) consumed
+    nothing, so counting it can leave a spare gap; that is the conservative
+    direction and the only one available without knowing which it was.
+
+    Both terms come from the ledger rather than from the row, which is what
+    lets the same replay run twice over a live database — ``KAIROS_REBUILD=1``
+    does exactly that — without the mark creeping upward on each pass.
+    """
+
+    highest: int = 0
+    unreadable: int = 0
+
+    @property
+    def value(self) -> int:
+        return self.highest + self.unreadable
 
 
 class DatasetService:
@@ -393,13 +434,17 @@ class DatasetService:
 
     # ---- rebuild (§8) ------------------------------------------------------
 
-    def restore_from_ledger(self) -> dict[str, int]:
+    def restore_from_ledger(self) -> DatasetReplayReport:
         """Rebuild datasets and memberships by replaying the ledger.
 
         Order is the whole value here: ``member_added`` followed by
         ``member_removed`` for the same number is what says that number is
         *retired* rather than free, and a set-based reconstruction would lose
         exactly that distinction.
+
+        The report carries the replay's counts and any **warnings** it needs an
+        operator to see. The caller is expected to put those somewhere visible;
+        the replay has no channel of its own.
         """
         counts = {
             "datasets": 0,
@@ -409,6 +454,15 @@ class DatasetService:
             "archiving": 0,
             "archived": 0,
         }
+        # Per-dataset evidence for the watermark, accumulated as the replay
+        # walks. Local to this call on purpose: every value it produces is a
+        # function of the ledger alone, so a second replay over the same file
+        # recomputes the same numbers instead of adding to what the first one
+        # left. ``KAIROS_REBUILD=1`` replays onto a live database — the rebuild
+        # upserts captures and replicas and never clears ``datasets`` — so a
+        # watermark that CONSUMED anything per pass would drift upward on every
+        # forced rebuild.
+        floors: dict[str, _NumberFloor] = {}
         for event in ledger_v2.dataset_events(self._layout.data_dir):
             kind = event.get("kind")
             dataset_id = event.get("dataset_id")
@@ -446,7 +500,9 @@ class DatasetService:
                             task=_opt_str(event.get("task")),
                         )
             elif kind == "dataset_member_added":
-                counts["members"] += self._replay_member_added(dataset_id, event)
+                counts["members"] += self._replay_member_added(
+                    dataset_id, event, floors
+                )
             elif kind == "dataset_member_removed":
                 membership_id = event.get("membership_id")
                 if isinstance(membership_id, str):
@@ -456,16 +512,52 @@ class DatasetService:
                 if self._store.delete_dataset(dataset_id):
                     counts["deleted"] += 1
             elif kind == "dataset_archive_started":
-                counts["archiving"] += self._replay_archive_started(dataset_id, event)
+                counts["archiving"] += self._replay_archive_started(
+                    dataset_id, event, floors
+                )
             elif kind == "dataset_archived":
                 self._ensure_dataset_row(dataset_id, event)
                 self._store.mark_dataset_archived(
                     dataset_id, at=_opt_str(event.get("at"))
                 )
                 counts["archived"] += 1
-        return counts
+        warnings = self._report_destination_conflicts()
+        counts["destination_conflicts"] = len(warnings)
+        return DatasetReplayReport(counts=counts, warnings=tuple(warnings))
 
-    def _replay_archive_started(self, dataset_id: str, event: dict[str, Any]) -> int:
+    def _report_destination_conflicts(self) -> list[str]:
+        """Say when the replay rebuilt two claims on one archive folder.
+
+        A live start cannot produce this — the destination claim refuses a
+        second holder — but a ledger written before that guard existed can, and
+        a replay is not the place to refuse history: those archives happened.
+        What it IS the place for is saying so. Left silent, the catalog shows
+        two datasets whose archived record is the same directory, only one of
+        them can be describing its contents, and the first anyone hears of it
+        is an archive refused by a dataset they have never heard of.
+
+        Returns the sentences themselves, not a count: the caller puts them in
+        the store health warnings an operator actually reads. A log line is
+        what you write when there is no channel, and there is one.
+        """
+        warnings: list[str] = []
+        for (
+            destination,
+            dataset_ids,
+        ) in self._store.datasets_sharing_archive_destination().items():
+            warnings.append(
+                f"{destination} is recorded as the archive destination of more "
+                f"than one dataset ({', '.join(dataset_ids)}); the ledger says "
+                "both archived there, and only one of them can describe what "
+                "is in that folder"
+            )
+        for warning in warnings:
+            logger.warning("%s", warning)
+        return warnings
+
+    def _replay_archive_started(
+        self, dataset_id: str, event: dict[str, Any], floors: dict[str, _NumberFloor]
+    ) -> int:
         """Replay one frozen archive start (§6.x).
 
         A run that never reached its seal comes back as ``archiving`` — the
@@ -493,6 +585,7 @@ class DatasetService:
                     "task": event.get("task"),
                     "at": event.get("at"),
                 },
+                floors,
             )
         mode = event.get("mode")
         self._store.mark_dataset_archiving(
@@ -515,28 +608,51 @@ class DatasetService:
             created_at=_opt_str(event.get("at")),
         )
 
-    def _replay_member_added(self, dataset_id: str, event: dict[str, Any]) -> int:
+    def _replay_member_added(
+        self, dataset_id: str, event: dict[str, Any], floors: dict[str, _NumberFloor]
+    ) -> int:
+        """Replay one membership. Returns 1 if a member row came back.
+
+        A line this cannot use is damage, not absence: whatever else it lost,
+        it still says a number was issued, and every early return below has to
+        leave the watermark at least as high as that line put it. Reading a
+        damaged line as absence would lower the mark and let the next add hand
+        a live member's number to a different recording — §6's one prohibition.
+        """
         membership_id = event.get("membership_id")
         capture_id = event.get("capture_id")
         display_index = event.get("display_index")
-        if not isinstance(membership_id, str) or not isinstance(capture_id, str):
-            return 0
+        # First, because the watermark is a column on this row: a membership
+        # whose dataset_created line is missing (a truncated ledger tail) gets
+        # its dataset back from what the membership event itself carries,
+        # rather than dropping the member — and the number — on the floor.
+        self._ensure_dataset_row(dataset_id, event)
+        floor = floors.setdefault(dataset_id, _NumberFloor())
+        if not isinstance(display_index, int) or isinstance(display_index, bool):
+            # The number is the part that did not survive. Which one it was is
+            # unknowable; that one was consumed is not, because numbers are
+            # handed out as watermark + 1. Counting it costs a gap in the
+            # numbering and keeps the retired ones retired.
+            logger.warning(
+                "dataset member line carries no usable display_index; "
+                "retiring a number for it",
+                extra={"dataset_id": dataset_id, "membership_id": membership_id},
+            )
+            floor.unreadable += 1
+        else:
+            floor.highest = max(floor.highest, display_index)
+        # Raise the watermark even where nothing is inserted below: the number
+        # was issued once and must never be issued again.
+        self._store.set_display_index_high_water(dataset_id, floor.value)
         if not isinstance(display_index, int) or isinstance(display_index, bool):
             return 0
-        if self._store.get_dataset(dataset_id) is None:
-            # A membership whose dataset_created line is missing (a truncated
-            # ledger tail). Recreate the dataset from what the membership event
-            # carries rather than dropping the member.
-            self._store.create_dataset(
-                dataset_id,
-                name=str(event.get("dataset_name") or dataset_id),
-                operator=_opt_str(event.get("operator")),
-                task=_opt_str(event.get("task")),
-                created_at=_opt_str(event.get("at")),
+        if not isinstance(membership_id, str) or not isinstance(capture_id, str):
+            logger.warning(
+                "dataset member line names no membership or capture; its "
+                "number stays retired but the member is lost",
+                extra={"dataset_id": dataset_id, "display_index": display_index},
             )
-        # Raise the watermark even if the insert below fails: the number was
-        # issued once and must never be issued again.
-        self._store.set_display_index_high_water(dataset_id, display_index)
+            return 0
         try:
             self._store.add_dataset_member(
                 dataset_id,
@@ -582,9 +698,34 @@ class DatasetService:
         should not read as a brand-new take. The member row is gone, so the
         ledger is the only place the old number survives; latest add wins.
         None = never was a member, allocate the next number as usual.
+
+        An unreadable ledger is refused, never guessed, and never read with
+        ``strict=False``. That hatch returns the lines that did parse, and the
+        line this question turns on is exactly the one that might be missing:
+        a capture that held 002 then reads as never having been a member, so
+        it is issued a fresh number while 002 stays retired — the same
+        recording answering to a different number than every report that
+        already cited it. An incomplete history gives a plausible wrong answer
+        silently, which is worse here than an exception that says so.
         """
+        try:
+            events = ledger_v2.dataset_events(self._layout.data_dir)
+        except ledger_v2.LedgerUnreadableError as exc:
+            path = ledger_v2.ledger_path(self._layout.data_dir)
+            raise ApiError(
+                status_code=503,
+                code="ledger_unreadable",
+                message=(
+                    f"The lifecycle ledger ({path}) "
+                    f"could not be read: {exc}. The number a returning recording "
+                    "takes back is recorded only there, so adding a member now "
+                    "could issue a number that already belongs to another take. "
+                    "Repair or restore the file, then try again."
+                ),
+                details={"dataset_id": dataset_id, "capture_id": capture_id},
+            ) from exc
         last: int | None = None
-        for event in ledger_v2.dataset_events(self._layout.data_dir):
+        for event in events:
             if (
                 event.get("dataset_id") == dataset_id
                 and event.get("kind") == "dataset_member_added"

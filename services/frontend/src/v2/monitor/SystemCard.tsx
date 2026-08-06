@@ -21,9 +21,14 @@ function InfoRow({ label, value, testId }: { label: string; value: string; testI
     <div className="flex items-baseline gap-2 text-xs text-gray-500">
       <span>{label}</span>
       <div className="flex-1" />
+      {/* `truncate` clips on BOTH axes, and at `text-xs` the default 16px line
+          box is a hair shorter than this mono face's ascent+descent — measured
+          2px of the glyphs cut off, which eats a descender or an accent
+          depending on the font stack. Line-height rounding, not a layout
+          failure: `leading-normal` gives the line box the 2px it was short. */}
       <span
         data-testid={testId}
-        className="max-w-[180px] truncate font-mono font-semibold text-gray-700"
+        className="max-w-[180px] truncate font-mono font-semibold leading-normal text-gray-700"
         title={value}
       >
         {value}

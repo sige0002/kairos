@@ -6,7 +6,7 @@
 // (same endpoints and cache-refresh set as the v1 Config tab), so cameras,
 // default topics and expected-Hz all follow the selection immediately.
 
-import { useState, type ReactNode } from 'react';
+import { type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiGet, apiPost } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
@@ -14,6 +14,7 @@ import type { ConfigOptions } from '../../api/types';
 import { Card, cn } from '../../components/ui';
 import { type BatchMachine } from './useBatchMachine';
 import { findProject, usePlans } from '../plans';
+import { RECORDING_CONFIG_KEY } from '../../features/config/ConfigTab';
 
 function CellButton({
   label,
@@ -146,9 +147,16 @@ function MenuItem({
 }
 
 /** Real robot selector — the v1 Config tab's robot switch, relocated here. */
-function RobotCell({ disabled }: { disabled: boolean }) {
+function RobotCell({
+  disabled,
+  open,
+  onToggle,
+}: {
+  disabled: boolean;
+  open: boolean;
+  onToggle: () => void;
+}) {
   const queryClient = useQueryClient();
-  const [open, setOpen] = useState(false);
   const options = useQuery({
     queryKey: queryKeys.configOptions,
     queryFn: ({ signal }) => apiGet<ConfigOptions>('/config/options', { signal }),
@@ -162,18 +170,26 @@ function RobotCell({ disabled }: { disabled: boolean }) {
       // changes the runtime config (defaults + stream panes → the camera
       // tiles) and re-points the editable recording file.
       queryClient.invalidateQueries({ queryKey: queryKeys.runtimeConfig });
-      queryClient.invalidateQueries({ queryKey: ['config', 'recording'] });
+      queryClient.invalidateQueries({ queryKey: RECORDING_CONFIG_KEY });
     },
   });
 
   const robots = options.data?.robots ?? [];
   const active = options.data?.active_robot;
+
+  // The open state lives in the machine (see toggleRobotPicker): the keyboard
+  // shortcut layer has to be able to SEE this overlay, or `r` starts a take
+  // behind the open list. The machine also closes it when the context stops
+  // being editable — a list opened before Start must not stay live over a
+  // running recording, where picking from it would switch robots with no
+  // confirmation and no stop.
+
   return (
     <div className="relative">
       <CellButton
         label="Robot"
         value={select.isPending ? 'switching…' : (active ?? '—')}
-        onClick={() => setOpen((v) => !v)}
+        onClick={onToggle}
         disabled={disabled || robots.length === 0 || select.isPending}
         title="Switch robot config (disabled while recording)"
       />
@@ -187,7 +203,10 @@ function RobotCell({ disabled }: { disabled: boolean }) {
               key={r.id}
               active={r.id === active}
               onClick={() => {
-                setOpen(false);
+                onToggle();
+                // Defence in depth: never act on a selection the guard forbids,
+                // rather than trusting the popover to have been dismissed.
+                if (disabled) return;
                 if (r.id !== active) select.mutate(r.id);
               }}
             >
@@ -279,7 +298,11 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
         title="Change condition (starts a new set once this one has recordings)"
       />
       <Divider />
-      <RobotCell disabled={!machine.ctxEditable} />
+      <RobotCell
+        disabled={!machine.ctxEditable}
+        open={machine.robotPickerOpen}
+        onToggle={machine.toggleRobotPicker}
+      />
       <div className="flex-1" />
       <button
         type="button"

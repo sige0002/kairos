@@ -519,6 +519,8 @@ test('camera health is reported once per fact, not once per render', async () =>
     expect(onHealthChange).toHaveBeenCalledTimes(1);
     expect(onHealthChange.mock.lastCall?.[0]).toEqual({
       streamFailed: false,
+      streamsDown: 0,
+      streamFault: null,
       framesStale: false,
       silentTopics: 0,
       unmonitoredTopics: 0,
@@ -555,6 +557,8 @@ test('camera health is reported once per fact, not once per render', async () =>
 test('a health comparison covers every field of the report', () => {
   const base: CameraHealth = {
     streamFailed: false,
+    streamsDown: 0,
+    streamFault: null,
     framesStale: false,
     silentTopics: 0,
     unmonitoredTopics: 0,
@@ -565,12 +569,53 @@ test('a health comparison covers every field of the report', () => {
   // skips one leaves that fact frozen on screen forever.
   const differing: CameraHealth[] = [
     { ...base, streamFailed: true },
+    { ...base, streamsDown: 1 },
+    { ...base, streamFault: 'peer' },
     { ...base, framesStale: true },
     { ...base, silentTopics: 1 },
     { ...base, unmonitoredTopics: 1 },
     { ...base, totalCameras: 3 },
   ];
   for (const next of differing) expect(sameCameraHealth(base, next)).toBe(false);
-  // A fifth fact added to CameraHealth without a case here fails right there.
+  // A further fact added to CameraHealth without a case here fails right there
+  // — as `streamsDown` and `streamFault` did when E-37 added them.
   expect(differing).toHaveLength(Object.keys(base).length);
+});
+
+// E-37, the wiring rather than the wording. Every pane negotiates its OWN
+// stream, and only the main tile's phase used to reach `onHealthChange` — so a
+// sub camera with no video was invisible to the System card, which is how four
+// black tiles beside one working stream read "5 cameras OK".
+//
+// This drives a REAL failure (the streamer answers the offer with an error, as
+// it does when the service is down) rather than asserting a prop is passed,
+// because a prop that is passed and never called is exactly the hole this test
+// exists to catch.
+test('a sub camera with no video reaches the health report, with its cause', async () => {
+  (globalThis.fetch as ReturnType<typeof vi.fn>).mockImplementation((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes('/stream/start')) return Promise.resolve(jsonResponse({ stream_id: 's-1' }));
+    // The streamer is up enough to hand out a stream id and then fails the
+    // negotiation — every pane fails the same way, together.
+    if (url.includes('/stream/offer')) return Promise.resolve(jsonResponse({}, 502));
+    if (url.includes('/topics')) return Promise.resolve(jsonResponse([]));
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  const reports: CameraHealth[] = [];
+  renderWithClient(
+    <Cameras config={CONFIG} machine={MACHINE} onHealthChange={(h) => reports.push(h)} />,
+  );
+
+  await waitFor(() => {
+    const last = reports[reports.length - 1];
+    expect(last?.streamsDown).toBeGreaterThanOrEqual(2);
+  });
+  const last = reports[reports.length - 1]!;
+  // Both panes, not just the main one — the count is what stops the card
+  // claiming the wall is fine.
+  expect(last.streamsDown).toBe(last.totalCameras);
+  // And the cause is carried, so the row can say which of the three problems
+  // it is instead of "down".
+  expect(last.streamFault).toBe('signaling');
 });

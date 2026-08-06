@@ -20,7 +20,7 @@
 // immediately (the table would feel broken otherwise) but reverts it on ANY
 // failure, so the screen never shows a value the server rejected.
 
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { getCapture, saveReview } from '../../api/captures';
 import { queryKeys } from '../../api/queryKeys';
@@ -42,6 +42,11 @@ export interface ReviewConflict {
 export interface ReviewSaveResult {
   capture: Capture | null;
   error: CaptureErrorReading | null;
+  /** Nothing was sent, because a save for this capture was already on the
+   *  wire. Distinct from an error: no write was refused and nothing was lost —
+   *  but nothing was written either, so a caller that counts outcomes must not
+   *  count it as either a success or a failure. */
+  skipped?: boolean;
 }
 
 export interface SaveOptions {
@@ -57,12 +62,26 @@ export interface ReviewSaveState {
   dismissConflict: () => void;
   /** A failure the operator must acknowledge (the 500 sidecar case). */
   failure: CaptureErrorReading | null;
+  /** Which capture that failure is about. Moves with `failure` — both are
+   *  read off one piece of state, so they cannot come apart. Null exactly
+   *  when `failure` is null. */
+  failureCaptureId: string | null;
   dismissFailure: () => void;
-  saving: boolean;
+  /** Captures with a save on the wire, for rendering. State-backed, so it is
+   *  one render behind the click that started the save. That is right for the
+   *  screen and wrong for a gate — see `isSaving`. */
+  savingCaptureIds: ReadonlySet<string>;
+  /** The gate. Ref-backed, so it already answers true inside the tick the
+   *  click happens in; `savingCaptureIds` does not, and gating on it would let
+   *  a second submission through before React had committed. */
+  isSaving: (captureId: string) => boolean;
   /**
    * Save one capture's review. On failure the optimistic change must be
    * reverted by the caller — the result carries both the outcome and the
    * reading, so a bulk caller can report the real reason per capture.
+   *
+   * At most one save per capture is on the wire at a time; a second is
+   * refused here and returned as `skipped`. See the comment on the guard.
    */
   save: (
     capture: Capture,
@@ -76,8 +95,24 @@ export interface ReviewSaveState {
 export function useReviewSave(scope: string): ReviewSaveState {
   const queryClient = useQueryClient();
   const [conflict, setConflict] = useState<ReviewConflict | null>(null);
-  const [failure, setFailure] = useState<CaptureErrorReading | null>(null);
-  const [saving, setSaving] = useState(false);
+  // Held together with the capture it is about. A banner belongs to ONE
+  // capture, and the pair has to travel as one value or the two halves drift.
+  const [failure, setFailure] = useState<{
+    captureId: string;
+    reading: CaptureErrorReading;
+  } | null>(null);
+  // The ref is the gate and the state is the picture of it. The state is
+  // always a copy of the ref, so the two cannot disagree about WHAT is saving
+  // — only about when, which is the whole reason both exist.
+  const inFlight = useRef<Set<string>>(new Set());
+  const [savingCaptureIds, setSavingCaptureIds] = useState<ReadonlySet<string>>(
+    () => new Set<string>(),
+  );
+  const publishInFlight = useCallback(
+    () => setSavingCaptureIds(new Set(inFlight.current)),
+    [],
+  );
+  const isSaving = useCallback((captureId: string) => inFlight.current.has(captureId), []);
 
   const invalidateList = useCallback(
     () => queryClient.invalidateQueries({ queryKey: queryKeys.captureList(scope) }),
@@ -90,15 +125,33 @@ export function useReviewSave(scope: string): ReviewSaveState {
       changes: Omit<ReviewSaveRequest, 'base_revision'>,
       options: SaveOptions = {},
     ): Promise<ReviewSaveResult> => {
-      setSaving(true);
+      const captureId = capture.capture_id;
+      if (inFlight.current.has(captureId)) {
+        // A save for this capture has not been answered yet, so the
+        // `review_revision` carried here is the one that save already spent.
+        // Sending it again cannot succeed — and the refusal would arrive as
+        // `review_conflict`, which says "someone else saved a review for this
+        // capture first" about the operator's own save. Whichever answer
+        // landed last would then decide whether they were falsely accused or
+        // told nothing at all. Neither is worth classifying: the honest thing
+        // is not to send it.
+        return { capture: null, error: null, skipped: true };
+      }
+      inFlight.current.add(captureId);
+      publishInFlight();
       try {
         const updated = await saveReview(capture.capture_id, {
           ...changes,
           base_revision: capture.review_revision,
         });
-        // A save that lands clears any banner the previous attempt raised.
-        setConflict(null);
-        setFailure(null);
+        // A save that lands supersedes a banner about THIS capture: the
+        // operator re-applied their decision and it took, so the banner is
+        // describing something that is no longer true. It says nothing about
+        // a DIFFERENT capture, whose refusal is still unaddressed and whose
+        // stored value is still the other terminal's — clearing that one
+        // would silence a real conflict on the strength of unrelated work.
+        setConflict((cur) => (cur && cur.captureId !== captureId ? cur : null));
+        setFailure((cur) => (cur && cur.captureId !== captureId ? cur : null));
         if (!options.skipInvalidate) await invalidateList();
         return { capture: updated, error: null };
       } catch (e) {
@@ -116,23 +169,26 @@ export function useReviewSave(scope: string): ReviewSaveState {
           }
           setConflict({ captureId: capture.capture_id, current, reading });
         } else {
-          setFailure(reading);
+          setFailure({ captureId, reading });
         }
         if (!options.skipInvalidate) await invalidateList();
         return { capture: null, error: reading };
       } finally {
-        setSaving(false);
+        inFlight.current.delete(captureId);
+        publishInFlight();
       }
     },
-    [invalidateList],
+    [invalidateList, publishInFlight],
   );
 
   return {
     conflict,
     dismissConflict: useCallback(() => setConflict(null), []),
-    failure,
+    failure: failure?.reading ?? null,
+    failureCaptureId: failure?.captureId ?? null,
     dismissFailure: useCallback(() => setFailure(null), []),
-    saving,
+    savingCaptureIds,
+    isSaving,
     save,
     invalidateList,
   };

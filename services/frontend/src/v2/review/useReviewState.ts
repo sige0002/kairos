@@ -35,7 +35,12 @@ import { useCaptureDeletion } from '../captures/useCaptureDeletion';
 import { mapCapturesToEpisodes, type BatchSeqLookup } from './mapCaptures';
 import { initialTransferSlot, transferReducer } from './transfer';
 import { setSplitMode, useSplitMode } from '../captures/splitMode';
-import { useReviewSave, type ReviewSaveState } from './useReviewSave';
+import type { CaptureErrorReading } from '../captures/errors';
+import {
+  useReviewSave,
+  type ReviewSaveResult,
+  type ReviewSaveState,
+} from './useReviewSave';
 import { episodeLabel } from './types';
 import type {
   DecoratedEpisode,
@@ -113,6 +118,14 @@ export interface ReviewState {
   confirmExcludeBatch: () => void;
   cancelExcludeBatch: () => void;
   returnBatchToReview: () => void;
+  /** Members a batch return could not move, by id. The return has no dialog of
+   *  its own, so this is what lets the screen name them rather than leaving
+   *  "Returned N" to imply the whole set went back. */
+  returnBatchFailures: { captureId: string; error: string }[];
+
+  /** How a banner names the capture it is about. A banner outlives the
+   *  selection and the filters, so it has to identify its own subject. */
+  captureSubject: (captureId: string) => string;
 
   selectedCaptureId: string | null;
   select: (captureId: string) => void;
@@ -167,6 +180,18 @@ export interface ReviewState {
 
   toast: string;
 }
+
+/** What a bulk run says about a member it stepped over because the operator
+ *  had a save of their own still unanswered for it. Reported rather than
+ *  counted as done — nothing was written — but it is not "save failed": the
+ *  server never refused anything, and saying so would send the operator
+ *  looking for a fault that is not there. */
+const SKIPPED_BY_OWN_SAVE =
+  'Skipped — a change you saved for this episode was still being written, so ' +
+  'this did not overwrite it. Run it again.';
+
+const reasonFor = (error: CaptureErrorReading | null) =>
+  error ? `${error.message} ${error.guidance}`.trim() : 'save failed';
 
 export function useReviewState(): ReviewState {
   const queryClient = useQueryClient();
@@ -308,6 +333,10 @@ export function useReviewState(): ReviewState {
   const [operatorFilter, setOperatorFilter] = useState<string>(ALL_OPERATORS);
   const [batchFilter, setBatchFilter] = useState<string | null>(null);
   const toggleBatchFilter = useCallback((batchId: string | null) => {
+    // Drop any previous batch's return failures: the notice names a count with
+    // no batch on it, so carrying it across a filter change would pin one
+    // batch's failure onto another.
+    setReturnBatchFailures([]);
     setBatchFilter((cur) => (batchId === null || cur === batchId ? null : batchId));
   }, []);
 
@@ -421,6 +450,22 @@ export function useReviewState(): ReviewState {
   }, [decorated, selectedCaptureId]);
   const selected = decorated.find((r) => r.captureId === selectedCaptureId);
 
+  // The episode number when the server issued one, else the run_id, else the
+  // capture_id. An id is ugly but it identifies; "Episode —" does not. Reads
+  // the UNFILTERED set on purpose: a banner survives a filter change, and
+  // naming it after whatever the search box currently admits would make the
+  // subject a property of the view rather than of the capture.
+  //
+  // Deliberately NOT memoised. Nothing depends on its identity, and a
+  // `useCallback` here would hold whichever list its dependency array named:
+  // a later edit that reads a different list without updating the deps would
+  // answer from a stale one, which is the same bug wearing a cache. Read live.
+  const captureSubject = (captureId: string) => {
+    const row = decorated.find((r) => r.captureId === captureId);
+    if (row?.ep != null) return `Episode #${row.ep}`;
+    return row?.runId ?? captureId;
+  };
+
   /** Apply one review change optimistically, then save. A refusal drops the
    *  overlay entry so the row returns to the stored value. */
   const applyReview = useCallback(
@@ -429,7 +474,13 @@ export function useReviewState(): ReviewState {
       overlay: { quality?: DisplayQuality; task?: DisplayTaskResult; status?: ReviewStatus },
       changes: Parameters<ReviewSaveState['save']>[1],
       options?: Parameters<ReviewSaveState['save']>[2],
-    ) => {
+    ): Promise<ReviewSaveResult> => {
+      // Return BEFORE touching the overlay. A save for this capture is already
+      // on the wire; the overlay below belongs to it, and setting-then-clearing
+      // it here would drop that save's optimistic value while it is still
+      // unanswered — the row would snap back to the stored value mid-flight.
+      if (reviewSave.isSaving(row.captureId))
+        return { capture: null, error: null, skipped: true };
       setPending((cur) => ({ ...cur, [row.captureId]: { ...cur[row.captureId], ...overlay } }));
       const result = await reviewSave.save(row.capture, changes, options);
       clearPending(row.captureId);
@@ -535,6 +586,9 @@ export function useReviewState(): ReviewState {
     [batchRows],
   );
 
+  const [returnBatchFailures, setReturnBatchFailures] = useState<
+    { captureId: string; error: string }[]
+  >([]);
   const [excludeBatchOpen, setExcludeBatchOpen] = useState(false);
   const [excludeBatchRunning, setExcludeBatchRunning] = useState(false);
   const [excludeBatchDone, setExcludeBatchDone] = useState(0);
@@ -561,11 +615,17 @@ export function useReviewState(): ReviewState {
     setExcludeBatchRunning(true);
     setExcludeBatchDone(0);
     setExcludeBatchFailures([]);
+    // Supersede any "still excluded — return failed" notice. Those episodes
+    // are about to be excluded on purpose, which leaves the sentence literally
+    // true and completely misleading. Cleared HERE rather than when the dialog
+    // opens: opening a dialog supersedes nothing, and the operator may still
+    // be reading the notice while deciding whether to go ahead.
+    setReturnBatchFailures([]);
     void (async () => {
       const failures: { captureId: string; error: string }[] = [];
       let succeeded = 0;
       for (const t of targets) {
-        const { capture, error } = await applyReview(
+        const { capture, error, skipped } = await applyReview(
           t,
           { status: 'excluded', quality: 'Not usable' },
           {
@@ -585,7 +645,7 @@ export function useReviewState(): ReviewState {
           // whichever failure happened to land there last.
           failures.push({
             captureId: t.captureId,
-            error: error ? `${error.message} ${error.guidance}`.trim() : 'save failed',
+            error: skipped ? SKIPPED_BY_OWN_SAVE : reasonFor(error),
           });
         }
         setExcludeBatchDone((d) => d + 1);
@@ -607,19 +667,36 @@ export function useReviewState(): ReviewState {
   const returnBatchToReview = useCallback(() => {
     const targets = batchExcluded;
     if (!targets.length) return;
+    setReturnBatchFailures([]);
     void (async () => {
+      const failures: { captureId: string; error: string }[] = [];
       let restored = 0;
       for (const t of targets) {
-        const { capture } = await applyReview(
+        const { capture, error, skipped } = await applyReview(
           t,
           { status: 'pending' },
           { review_status: 'pending' },
           { skipInvalidate: true },
         );
         if (capture) restored += 1;
+        // Same rule as the batch exclude: named by id, from THIS save's own
+        // result. A capture that stayed excluded because its save failed is
+        // the one fact the operator needs before trusting the count — and
+        // "Returned 2" over a set of 3, with no mention of the third, is a
+        // partial failure wearing a success's clothes.
+        else
+          failures.push({
+            captureId: t.captureId,
+            error: skipped ? SKIPPED_BY_OWN_SAVE : reasonFor(error),
+          });
       }
       await reviewSave.invalidateList();
-      showToast(`Returned ${restored} episode${restored === 1 ? '' : 's'} to review`);
+      setReturnBatchFailures(failures);
+      showToast(
+        failures.length === 0
+          ? `Returned ${restored} episode${restored === 1 ? '' : 's'} to review`
+          : `Returned ${restored}, ${failures.length} failed`,
+      );
     })();
   }, [batchExcluded, applyReview, reviewSave, showToast]);
 
@@ -829,6 +906,9 @@ export function useReviewState(): ReviewState {
     confirmExcludeBatch,
     cancelExcludeBatch,
     returnBatchToReview,
+    returnBatchFailures,
+
+    captureSubject,
 
     selectedCaptureId,
     select,

@@ -22,7 +22,7 @@ from api_orchestrator.layout import DataLayout
 from api_orchestrator.models import Capture, CaptureState
 from conftest import FakeRecorder
 from fastapi.testclient import TestClient
-from kairos_common import Settings, ledger_v2
+from kairos_common import ApiError, Settings, ledger_v2
 from kairos_common.ids import new_capture_id
 from kairos_common.rebuild import ReplicaState
 
@@ -70,9 +70,11 @@ def _seed(client: TestClient, layout: DataLayout) -> str:
     return capture_id
 
 
-def _dataset(client: TestClient, layout: DataLayout, *, members: int) -> dict:
+def _dataset(
+    client: TestClient, layout: DataLayout, *, members: int, name: str = "ds"
+) -> dict:
     dataset = client.post(
-        "/api/v1/datasets", json={"name": "ds", "operator": "alice", "task": "pick"}
+        "/api/v1/datasets", json={"name": name, "operator": "alice", "task": "pick"}
     ).json()
     for _ in range(members):
         client.post(
@@ -874,3 +876,226 @@ class TestOperatorChosenPath:
             )
             assert response.status_code == 409
             assert response.json()["error"]["code"] == "destination_not_empty"
+
+
+class TestDestinationCollision:
+    """Two datasets, one destination folder.
+
+    Two ways to get there, and the second one needs no operator error at all.
+    ``path`` is free text, so two datasets can simply be pointed at one folder.
+    But the DEFAULT path collides too: it is built by ``sanitize_component``,
+    which maps ``/``, ``\\`` and NUL to ``_`` and strips surrounding
+    whitespace, while ``_reject_duplicate_labels`` compares the labels RAW — so
+    ``x/y`` and ``x_y``, or ``ds `` and ``ds``, are two legal datasets that
+    resolve to one directory. ``views.py`` has always known this; it suffixes
+    the later folder to survive it.
+
+    That folder is numbered member directories plus a single manifest saying
+    whose they are, so a second dataset landing in it makes the manifest lie
+    about the bytes beside it. A destination belongs to one dataset.
+    """
+
+    PATH = "handoff/final_set"
+
+    def _two_datasets(self, client: TestClient, layout: DataLayout) -> tuple[str, str]:
+        return (
+            _dataset(client, layout, members=1, name="first")["dataset_id"],
+            _dataset(client, layout, members=1, name="second")["dataset_id"],
+        )
+
+    def test_a_second_dataset_cannot_archive_where_one_already_landed(
+        self, data_dir: Path, tmp_path: Path, fake_recorder: FakeRecorder
+    ) -> None:
+        roots = tmp_path / "nas"
+        roots.mkdir()
+        with _archive_client(data_dir, roots, fake_recorder) as client:
+            layout = client.app.state.data_layout
+            first, second = self._two_datasets(client, layout)
+            body = {"destination": str(roots), "path": self.PATH}
+
+            assert (
+                client.post(f"/api/v1/datasets/{first}/archive", json=body).status_code
+                == 202
+            )
+            _settle(client, first)
+            response = client.post(f"/api/v1/datasets/{second}/archive", json=body)
+
+            assert response.status_code == 409
+            assert response.json()["error"]["code"] in (
+                "destination_not_empty",
+                "destination_claimed",
+            )
+            assert client.get(f"/api/v1/datasets/{second}").json()["status"] == "active"
+            manifest = json.loads((roots / self.PATH / MANIFEST_NAME).read_bytes())
+            assert manifest["dataset_id"] == first
+
+    def test_two_legal_names_that_share_one_default_folder(
+        self, data_dir: Path, tmp_path: Path, fake_recorder: FakeRecorder
+    ) -> None:
+        """No typed path, no operator mistake — just two names kairos accepts.
+
+        ``x/y`` and ``x_y`` differ raw, so the duplicate-label guard admits
+        both; they are identical after sanitizing, so both default to
+        ``<root>/alice/pick/x_y``. This is the collision route that needs
+        nobody to type anything.
+        """
+        roots = tmp_path / "nas"
+        roots.mkdir()
+        with _archive_client(data_dir, roots, fake_recorder) as client:
+            layout = client.app.state.data_layout
+            first = _dataset(client, layout, members=1, name="x/y")
+            second = _dataset(client, layout, members=1, name="x_y")
+            # The premise itself, asserted: both exist as separate datasets.
+            assert "dataset_id" in first and "dataset_id" in second
+            assert first["dataset_id"] != second["dataset_id"]
+            body = {"destination": str(roots)}
+
+            accepted = client.post(
+                f"/api/v1/datasets/{first['dataset_id']}/archive", json=body
+            )
+            assert accepted.status_code == 202, accepted.text
+            _settle(client, first["dataset_id"])
+            target = roots / "alice" / "pick" / "x_y"
+            assert (target / "001" / "bag_0.mcap").is_file()
+
+            response = client.post(
+                f"/api/v1/datasets/{second['dataset_id']}/archive", json=body
+            )
+
+            assert response.status_code == 409, response.text
+            assert response.json()["error"]["code"] in (
+                "destination_not_empty",
+                "destination_claimed",
+            )
+            manifest = json.loads((target / MANIFEST_NAME).read_bytes())
+            assert manifest["dataset_id"] == first["dataset_id"]
+
+    def test_a_cleared_default_folder_is_still_the_first_run_s(
+        self, data_dir: Path, tmp_path: Path, fake_recorder: FakeRecorder
+    ) -> None:
+        """The same two names, and the folder emptied by hand.
+
+        Emptiness is all the disk check has to go on, so this is the case that
+        needs the row-level claim — reached through the default path, with no
+        `path` typed by anybody.
+        """
+        roots = tmp_path / "nas"
+        roots.mkdir()
+        with _archive_client(data_dir, roots, fake_recorder) as client:
+            layout = client.app.state.data_layout
+            store = client.app.state.capture_store
+            first = _dataset(client, layout, members=1, name="ds ")
+            second = _dataset(client, layout, members=1, name="ds")
+            target = roots / "alice" / "pick" / "ds"
+            assert store.begin_dataset_archive(
+                first["dataset_id"], destination=str(target)
+            )
+            target.mkdir(parents=True, exist_ok=True)
+
+            response = client.post(
+                f"/api/v1/datasets/{second['dataset_id']}/archive",
+                json={"destination": str(roots)},
+            )
+
+            assert response.status_code == 409, response.text
+            error = response.json()["error"]
+            assert error["code"] == "destination_claimed"
+            assert error["details"]["held_by"] == first["dataset_id"]
+
+    def test_a_cleared_folder_still_belongs_to_the_first_run(
+        self, data_dir: Path, tmp_path: Path, fake_recorder: FakeRecorder
+    ) -> None:
+        """Emptiness is not the question; whose destination it is, is.
+
+        The not-empty refusal tells the operator they may clear the folder "if
+        it is the debris of an abandoned run" — so sometimes they will, while
+        the first dataset still sits at ``archiving`` with a Resume waiting.
+        If clearing the debris is enough to let a second dataset in, that
+        Resume walks back into somebody else's export.
+        """
+        roots = tmp_path / "nas"
+        roots.mkdir()
+        with _archive_client(data_dir, roots, fake_recorder) as client:
+            layout = client.app.state.data_layout
+            store = client.app.state.capture_store
+            first, second = self._two_datasets(client, layout)
+            target = roots / self.PATH
+            # The first run froze its member set and died before copying; the
+            # operator cleared what little it had written.
+            assert store.begin_dataset_archive(first, destination=str(target))
+            target.mkdir(parents=True, exist_ok=True)
+
+            response = client.post(
+                f"/api/v1/datasets/{second}/archive",
+                json={"destination": str(roots), "path": self.PATH},
+            )
+
+            assert response.status_code == 409
+            assert response.json()["error"]["code"] == "destination_claimed"
+            assert response.json()["error"]["details"]["held_by"] == first
+
+    def test_two_starts_racing_for_one_destination_cannot_both_win(
+        self, data_dir: Path, tmp_path: Path, fake_recorder: FakeRecorder
+    ) -> None:
+        """The check and the copy are not the same instant.
+
+        Both requests resolve the same folder and both find it empty: the
+        first run writes nothing into it until its runner is scheduled, which
+        is after both synchronous halves have already answered 202. The two
+        runners then interleave numbered directories into one folder, where
+        each one's ``001`` is unrecorded debris to the other — which deletes
+        it and copies its own over the top, of bytes the ledger has already
+        recorded as archived.
+        """
+        roots = tmp_path / "nas"
+        roots.mkdir()
+        with _archive_client(data_dir, roots, fake_recorder) as client:
+            layout = client.app.state.data_layout
+            archiver = client.app.state.dataset_archiver
+            first, second = self._two_datasets(client, layout)
+            target = roots / self.PATH
+
+            async def race() -> list[object]:
+                started = await asyncio.gather(
+                    *(
+                        archiver.start(
+                            dataset_id,
+                            destination=str(roots),
+                            path=self.PATH,
+                            mode=None,
+                            reason=None,
+                            roots=[roots],
+                        )
+                        for dataset_id in (first, second)
+                    ),
+                    return_exceptions=True,
+                )
+                await archiver.drain()
+                return list(started)
+
+            outcomes = asyncio.run(race())
+
+            refused = [o for o in outcomes if isinstance(o, ApiError)]
+            assert len(refused) == 1, outcomes
+            assert refused[0].status_code == 409
+            assert refused[0].code in ("destination_not_empty", "destination_claimed")
+            # The loser kept its bytes and its status: nothing about the
+            # refusal is halfway.
+            statuses = sorted(
+                row["status"] for row in client.app.state.capture_store.list_datasets()
+            )
+            assert statuses == ["active", "archived"]
+
+            # The folder holds one dataset, and its manifest accounts for every
+            # capture the ledger says was archived into it.
+            manifest = json.loads((target / MANIFEST_NAME).read_bytes())
+            listed = {m["capture_id"] for m in manifest["members"]}
+            landed = {
+                event["capture_id"]
+                for event in _events(layout, "capture_archived")
+                if Path(event["destination"]).parent == target
+            }
+            assert landed <= listed
+            # Nothing the ledger called archived may be missing from disk.
+            for event in _events(layout, "capture_archived"):
+                assert Path(event["destination"]).is_dir()

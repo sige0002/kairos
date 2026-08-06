@@ -22,6 +22,7 @@ import { DatasetArchiveDialog } from './DatasetArchiveDialog';
 import { DatasetDetail } from './DatasetDetail';
 import { EditDatasetDialog } from './EditDatasetDialog';
 import { ScopeSummary } from './ScopeSummary';
+import { DatasetGoneNote, DatasetGonePane } from './SelectionGone';
 import {
   captureFacts,
   captureWhen,
@@ -126,6 +127,12 @@ function ScopeHeaderBar({ state }: { state: DatasetsState }) {
           {status === 'archiving' ? 'Archive run…' : 'Archive dataset'}
         </button>
       )}
+      {/* This status gate is on the BUTTON only, and the dialog it opens
+          deliberately has none: a hint on a control nobody has committed to is
+          cheap, but a second copy of the server's rule guarding the commitment
+          is one more thing that can drift out of step with it. A dataset
+          archived from another terminal mid-dialog is refused by the server's
+          409, which names the destination and why the record is kept. */}
       {scope.kind === 'dataset' && (
         <button
           type="button"
@@ -322,8 +329,8 @@ function MemberPager({ state }: { state: DatasetsState }) {
  *  in the same breath as the word "delete", because the model it replaced DID
  *  take the recordings with it. */
 function DeleteDatasetDialog({ state }: { state: DatasetsState }) {
-  const name = state.selectedDataset?.dataset.name ?? '';
-  const count = state.selectedDataset?.dataset.member_count ?? 0;
+  const row = state.selectedDataset;
+  const gone = state.selectionGone;
   return (
     <Modal
       open={state.confirmingDatasetDelete}
@@ -337,12 +344,12 @@ function DeleteDatasetDialog({ state }: { state: DatasetsState }) {
             disabled={state.deletingDataset}
             data-testid="delete-dataset-cancel"
           >
-            Cancel
+            {gone ? 'Close' : 'Cancel'}
           </Button>
           <Button
             variant="danger"
             onClick={state.confirmDatasetDelete}
-            disabled={state.deletingDataset}
+            disabled={state.deletingDataset || gone}
             data-testid="delete-dataset-confirm"
           >
             {state.deletingDataset ? 'Deleting…' : 'Delete dataset'}
@@ -351,17 +358,45 @@ function DeleteDatasetDialog({ state }: { state: DatasetsState }) {
       }
     >
       <div data-testid="delete-dataset-dialog" className="flex flex-col gap-3">
-        <p className="text-[13px] leading-relaxed text-gray-600">
-          <span className="font-semibold text-gray-900">{name}</span> and its{' '}
-          {count} membership{count === 1 ? ' is' : 's are'} removed.
-        </p>
-        <p
-          data-testid="delete-dataset-scope"
-          className="rounded-control border border-teal-100 bg-teal-50 px-3 py-2 text-[12.5px] text-teal-900"
-        >
-          No recording is deleted. A dataset is a list of captures, not a copy of
-          them — every capture it named stays exactly where it is.
-        </p>
+        {gone ? (
+          <DatasetGoneNote
+            testId="delete-dataset-gone"
+            datasetId={state.selectedDatasetId}
+          />
+        ) : (
+          <>
+            {/* The row can go out of view under the open dialog (an external
+                status change moves it to the Archived shelf), and a dialog that
+                then says "" and "0 memberships" would be inventing both. Name
+                what is actually known: the id, and the count only when a row
+                is there to report one. */}
+            <p className="text-[13px] leading-relaxed text-gray-600">
+              {row ? (
+                <>
+                  <span className="font-semibold text-gray-900">
+                    {row.dataset.name}
+                  </span>{' '}
+                  and its {row.dataset.member_count} membership
+                  {row.dataset.member_count === 1 ? ' is' : 's are'} removed.
+                </>
+              ) : (
+                <>
+                  <span className="break-all font-mono text-gray-900">
+                    {state.selectedDatasetId}
+                  </span>{' '}
+                  and its memberships are removed.
+                </>
+              )}
+            </p>
+            <p
+              data-testid="delete-dataset-scope"
+              className="rounded-control border border-teal-100 bg-teal-50 px-3 py-2 text-[12.5px] text-teal-900"
+            >
+              No recording is deleted. A dataset is a list of captures, not a copy
+              of them — every capture it named stays exactly where it is.
+            </p>
+          </>
+        )}
         {state.datasetDeleteError != null && (
           <ErrorMessage error={state.datasetDeleteError} />
         )}
@@ -371,28 +406,53 @@ function DeleteDatasetDialog({ state }: { state: DatasetsState }) {
 }
 
 export function DatasetCenter({ state }: { state: DatasetsState }) {
-  const { memberRows, scopeMembers, selected } = state;
+  // The dialogs are mounted OUTSIDE the pane switch on purpose. They used to
+  // live inside the "a dataset is selected" branch, so a dataset deleted by
+  // someone else took any open Delete/Archive dialog down with it mid-decision
+  // — the operator sees a dialog disappear and reads it as their own cancel.
+  // Kept here, they stay up and say what happened (SelectionGone.tsx). Modals
+  // are fixed-position and render null when closed, so this costs the grid
+  // layout nothing.
+  return (
+    <>
+      {state.selectedDataset ? (
+        <SelectedDatasetPane state={state} />
+      ) : state.selectionGone ? (
+        <DatasetGonePane state={state} />
+      ) : (
+        <NoSelectionPane />
+      )}
 
-  // No selection, no table: numbering is per dataset, so a blended
-  // every-dataset listing would show #N columns that identify nothing.
-  if (!state.selectedDataset) {
-    return (
-      <div
-        data-testid="dataset-center"
-        className="flex min-h-0 min-w-0 flex-col items-center justify-center rounded-card border border-gray-200 bg-white p-8 shadow-card"
+      <DeleteDatasetDialog state={state} />
+      <DatasetArchiveDialog state={state} />
+      <EditDatasetDialog state={state} />
+    </>
+  );
+}
+
+/** No selection: numbering is per dataset, so a blended every-dataset listing
+ *  would show #N columns that identify nothing. */
+function NoSelectionPane() {
+  return (
+    <div
+      data-testid="dataset-center"
+      className="flex min-h-0 min-w-0 flex-col items-center justify-center rounded-card border border-gray-200 bg-white p-8 shadow-card"
+    >
+      <p
+        data-testid="dataset-none-selected"
+        className="max-w-[420px] text-center text-[13px] leading-relaxed text-gray-500"
       >
-        <p
-          data-testid="dataset-none-selected"
-          className="max-w-[420px] text-center text-[13px] leading-relaxed text-gray-500"
-        >
-          Select a dataset on the left — or create one with{' '}
-          <span className="font-semibold text-gray-700">+ New</span> — to see its
-          members. Exported sets live under the{' '}
-          <span className="font-semibold text-gray-700">Archived</span> view.
-        </p>
-      </div>
-    );
-  }
+        Select a dataset on the left — or create one with{' '}
+        <span className="font-semibold text-gray-700">+ New</span> — to see its
+        members. Exported sets live under the{' '}
+        <span className="font-semibold text-gray-700">Archived</span> view.
+      </p>
+    </div>
+  );
+}
+
+function SelectedDatasetPane({ state }: { state: DatasetsState }) {
+  const { memberRows, scopeMembers, selected } = state;
 
   return (
     <div
@@ -448,10 +508,6 @@ export function DatasetCenter({ state }: { state: DatasetsState }) {
           <ScopeSummary scope={state.scope} />
         )}
       </div>
-
-      <DeleteDatasetDialog state={state} />
-      <DatasetArchiveDialog state={state} />
-      <EditDatasetDialog state={state} />
     </div>
   );
 }

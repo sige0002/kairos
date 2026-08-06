@@ -109,6 +109,8 @@ export function CollectScreen() {
 
   const [cameraHealth, setCameraHealth] = useState<CameraHealth>({
     streamFailed: false,
+    streamsDown: 0,
+    streamFault: null,
     framesStale: false,
     silentTopics: 0,
     unmonitoredTopics: 0,

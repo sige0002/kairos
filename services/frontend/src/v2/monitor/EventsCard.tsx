@@ -65,7 +65,14 @@ export function EventsCard() {
             >
               <span className={cn('mt-[5px] h-[7px] w-[7px] shrink-0 rounded-sm', DOT_COLOR[ev.tone])} />
               <div className="flex min-w-0 flex-col gap-px">
-                <span className="text-[12.5px] font-semibold text-gray-700">
+                {/* `min-w-0` above lets the column shrink, but a topic name with
+                    no break opportunity — no slash, no space, which is what a
+                    driver that underscores its whole path produces — still has
+                    nowhere to wrap, so it paints straight through the card's
+                    right edge (measured: 448px outside its box). `break-words`
+                    breaks only a word that cannot otherwise fit, so ordinary
+                    titles wrap exactly as before. */}
+                <span className="break-words text-[12.5px] font-semibold text-gray-700">
                   {ev.title}
                   {ev.detail && <span className="font-normal text-gray-400"> · {ev.detail}</span>}
                 </span>

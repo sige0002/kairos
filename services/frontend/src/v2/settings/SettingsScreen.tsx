@@ -30,6 +30,7 @@ import { SystemSection } from './SystemSection';
 import { OtherSection } from './OtherSection';
 import { SettingsToast } from './Toast';
 import { useSettingsState } from './useSettingsState';
+import { usePlansUnsynced } from '../plans';
 
 // Honest rationale for the two sections with nothing to configure yet.
 const PLACEHOLDER_RATIONALE: Record<string, string> = {
@@ -73,7 +74,28 @@ export function SettingsScreen() {
       ) : (
         <OtherSection label={label} rationale={PLACEHOLDER_RATIONALE[label] ?? ''} />
       )}
+      <UnsyncedCatalogNote />
       <SettingsToast message={settings.toast} />
+    </div>
+  );
+}
+
+/** The shared catalog (projects, failure reasons, operators) is pushed to the
+ *  server best-effort, and the editors report an edit the moment it applies
+ *  locally. When that push fails the local copy is still correct FOR THIS
+ *  BROWSER — but every other terminal reads the server's copy, so saying
+ *  nothing let "Project added" stand for a change nobody else would ever see. */
+function UnsyncedCatalogNote() {
+  const unsynced = usePlansUnsynced();
+  if (!unsynced) return null;
+  return (
+    <div
+      data-testid="plans-unsynced"
+      role="status"
+      className="fixed bottom-4 left-1/2 z-50 -translate-x-1/2 rounded-control border border-amber-300 bg-amber-50 px-3.5 py-2 text-[12px] text-amber-800 shadow-card"
+    >
+      Saved on this browser only — the shared catalog could not be reached, so other
+      terminals still show the previous one. It is retried on the next edit or reload.
     </div>
   );
 }

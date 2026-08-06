@@ -300,6 +300,21 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
             >
               ✕
             </button>
+            {rv.returnBatchFailures.length > 0 && (
+              // The return has no dialog to hold its result, and its toast is
+              // gone in seconds — while the episodes that failed stay EXCLUDED,
+              // which hides them from the default table. Without this the
+              // operator's only evidence that the batch did not fully return
+              // has already disappeared by the time they look.
+              <span
+                role="alert"
+                data-testid="review-return-batch-failures"
+                title={rv.returnBatchFailures.map((f) => `${f.captureId}: ${f.error}`).join('\n')}
+                className="rounded-chip bg-red-50 px-2 py-0.5 text-[12px] font-semibold text-red-700"
+              >
+                {rv.returnBatchFailures.length} still excluded — return failed
+              </span>
+            )}
           </>
         )}
         <input

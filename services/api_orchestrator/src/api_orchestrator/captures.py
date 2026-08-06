@@ -261,6 +261,34 @@ class CaptureService:
             self._layout.report_dir(pipeline, capture_id) / "summary.json"
         ).is_file()
 
+    def captures_with_report(self, pipeline: str) -> set[str]:
+        """Every capture id *pipeline* has already reported on, in one listing.
+
+        The set complement of :meth:`has_report` asked once instead of once per
+        capture. "Which of these thousands have a report" is a question about
+        the report directory, not about the catalog: reading it costs one
+        listing plus a check per report that actually EXISTS, where probing
+        per capture costs one syscall per capture for an answer that is
+        usually "no" — 15,000 of them for a single presets request on a
+        5,000-capture store, measured (E-27).
+        """
+        try:
+            entries = list((self._layout.report / pipeline).iterdir())
+        except OSError:
+            # No report directory yet is a complete answer: nothing has run.
+            return set()
+        return {
+            entry.name
+            for entry in entries
+            if entry.is_dir() and (entry / "summary.json").is_file()
+        }
+
+    def present_terminal_ids(self) -> list[str]:
+        """Ids of the validation targets: terminal captures present here."""
+        return self._store.present_terminal_ids(
+            sorted(TERMINAL_STATES), instance_id=self._instance_id
+        )
+
     def list(
         self, limit: int, cursor: str | None = None, **filters: Any
     ) -> tuple[list[Capture], str | None]:
@@ -270,19 +298,6 @@ class CaptureService:
             limit, parsed, instance_id=self._instance_id, **filters
         )
         return items, (str(next_seq) if next_seq is not None else None)
-
-    def list_present_terminal(self) -> list[Capture]:
-        """Terminal captures whose bytes are on this host (validation targets)."""
-        captures = self._store.list_by_states(
-            sorted(TERMINAL_STATES), instance_id=self._instance_id
-        )
-        return [
-            c
-            for c in captures
-            if c.replica is not None
-            and c.replica.state
-            in (ReplicaState.present_unverified, ReplicaState.present_verified)
-        ]
 
     # ---- manifest reconciliation (§3, §8) ----------------------------------
 
@@ -305,9 +320,22 @@ class CaptureService:
         Deliberately writes only the fields that differ, so a pass over an
         agreeing catalog costs nothing and the return value means "the catalog
         was wrong and is now right" rather than "I ran".
+
+        **An unreadable manifest changes nothing here, and DOES decide the
+        state in** :meth:`RecordService._final_state` **— neither is a bug.**
+        This is optional work that can decline: leaving the row as it was costs
+        nothing, and §8 rule 4 says an unreadable manifest is reported rather
+        than guessed from. The stop path cannot decline — it must commit to a
+        terminal state right then — so it treats a corrupt manifest as
+        not-sealed and returns ``interrupted``, which is the better way to be
+        wrong there. That method's docstring carries the full trade; read it
+        before concluding this side is the one with the bug.
         """
         read = read_object_manifest(self._layout.capture_dir(capture_id))
         if read.status is not SidecarStatus.ok or read.manifest is None:
+            # Unreadable: reported by the scan that found it, never adopted
+            # from. See the divergence note above — the stop path decides
+            # differently on this same file, on purpose.
             return False
         manifest = read.manifest
         if manifest.state not in TERMINAL_STATES:

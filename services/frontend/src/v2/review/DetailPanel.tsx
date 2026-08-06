@@ -86,12 +86,14 @@ function DecisionButton({
   onClick,
   children,
   testId,
+  disabled = false,
 }: {
   active?: boolean;
   tone: 'adopt' | 'review' | 'exclude';
   onClick: () => void;
   children: ReactNode;
   testId: string;
+  disabled?: boolean;
 }) {
   const styles: Record<string, string> = {
     adopt: active
@@ -109,9 +111,11 @@ function DecisionButton({
       type="button"
       data-testid={testId}
       onClick={onClick}
+      disabled={disabled}
       className={cn(
         'h-[38px] flex-1 rounded-control text-[13px] font-semibold transition-colors',
         styles[tone],
+        disabled && 'cursor-not-allowed opacity-50',
       )}
     >
       {children}
@@ -153,6 +157,12 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
     );
   }
 
+  // A save for THIS capture is unanswered. Every control below spends
+  // `sel.capture.review_revision`, and that value does not move until the save
+  // lands, so a second decision taken now would carry a revision already
+  // spent. The hook refuses to send it either way (useReviewSave); this is the
+  // half the operator can see, so the refusal is not a click into silence.
+  const saving = rv.reviewSave.savingCaptureIds.has(sel.captureId);
   const badge = headerBadge(sel.reviewLane);
   const availability = availabilityOf(sel.capture);
   // Whether this machine actually holds the bytes. `usable` is the same fact
@@ -236,10 +246,20 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
             <QualityValue quality={sel.quality} />
           </div>
           <div
-            onClick={rv.cycleFinalQuality}
-            title="Click to set: Good → Needs review → Not usable"
+            onClick={saving ? undefined : rv.cycleFinalQuality}
+            aria-disabled={saving}
+            title={
+              saving
+                ? 'Saving the last change…'
+                : 'Click to set: Good → Needs review → Not usable'
+            }
             data-testid="review-final-quality"
-            className="flex cursor-pointer flex-col gap-0.5 rounded-[10px] border border-gray-100 px-3 py-2.5 transition-colors hover:border-teal-200 hover:bg-teal-50"
+            className={cn(
+              'flex flex-col gap-0.5 rounded-[10px] border border-gray-100 px-3 py-2.5 transition-colors',
+              saving
+                ? 'cursor-not-allowed opacity-50'
+                : 'cursor-pointer hover:border-teal-200 hover:bg-teal-50',
+            )}
           >
             <div className="flex items-center gap-1.5">
               <span className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400">
@@ -250,10 +270,16 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
             <QualityValue quality={sel.effectiveQuality} />
           </div>
           <div
-            onClick={rv.cycleTaskResult}
-            title="Click to set: Success ↔ Failure"
+            onClick={saving ? undefined : rv.cycleTaskResult}
+            aria-disabled={saving}
+            title={saving ? 'Saving the last change…' : 'Click to set: Success ↔ Failure'}
             data-testid="review-task-result"
-            className="flex cursor-pointer flex-col gap-0.5 rounded-[10px] border border-gray-100 px-3 py-2.5 transition-colors hover:border-teal-200 hover:bg-teal-50"
+            className={cn(
+              'flex flex-col gap-0.5 rounded-[10px] border border-gray-100 px-3 py-2.5 transition-colors',
+              saving
+                ? 'cursor-not-allowed opacity-50'
+                : 'cursor-pointer hover:border-teal-200 hover:bg-teal-50',
+            )}
           >
             <div className="flex items-center gap-1.5">
               <span className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400">
@@ -384,7 +410,12 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
               this stays for everything recorded before that, and for anything
               written by something other than this screen. */}
           {sel.reviewLane !== 'excluded' && sel.effectiveReviewStatus !== 'adopted' && (
-            <DecisionButton tone="adopt" testId="review-mark-ok" onClick={rv.markOk}>
+            <DecisionButton
+              tone="adopt"
+              testId="review-mark-ok"
+              onClick={rv.markOk}
+              disabled={saving}
+            >
               {sel.reviewLane === 'needs_check'
                 ? 'Mark OK — include'
                 : 'Adopt — include in datasets'}
@@ -395,6 +426,7 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
               tone="exclude"
               testId="review-decision-exclude"
               onClick={() => rv.decide('excluded')}
+              disabled={saving}
             >
               Exclude
             </DecisionButton>
@@ -409,6 +441,7 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
               tone="review"
               testId="review-return-to-review"
               onClick={() => rv.decide('review')}
+              disabled={saving}
             >
               {sel.reviewLane === 'excluded'
                 ? '↩ Return to review'
@@ -416,6 +449,15 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
             </DecisionButton>
           )}
         </div>
+
+        {/* Why the controls above are inert for a moment. Without it the
+            operator's second click lands in silence, which reads as a screen
+            that has stopped responding. */}
+        {saving && (
+          <span data-testid="review-saving" className="text-[11.5px] text-gray-500">
+            Saving…
+          </span>
+        )}
 
         {/* A discoverable bin for a fumbled take (audit P1: delete only
             appeared AFTER excluding, so "get the disk space back" had no

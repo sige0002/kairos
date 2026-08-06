@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Query, Request, status
 from kairos_common import ApiError, utc_now_iso8601
 
+from api_orchestrator.batch_service import BatchService
 from api_orchestrator.models import (
     Batch,
     BatchCreateRequest,
@@ -44,6 +45,10 @@ _MAX_BATCH_ID_ATTEMPTS = 50
 
 def _store(request: Request) -> CaptureStore:
     return request.app.state.capture_store
+
+
+def _service(request: Request) -> BatchService:
+    return request.app.state.batch_service
 
 
 def _allocate_batch_id(now: datetime | None = None) -> str:
@@ -82,7 +87,6 @@ def _summary(store: CaptureStore, batch: Batch) -> BatchSummary:
 @router.post("", response_model=Batch, status_code=status.HTTP_201_CREATED)
 async def create_batch(request: Request, body: BatchCreateRequest) -> Batch:
     """Start a batch. ``robot`` defaults to the orchestrator's active robot."""
-    store = _store(request)
     now = utc_now_iso8601()
     base = _allocate_batch_id()
     for attempt in range(_MAX_BATCH_ID_ATTEMPTS):
@@ -98,7 +102,7 @@ async def create_batch(request: Request, body: BatchCreateRequest) -> Batch:
             created_at=now,
         )
         try:
-            return store.create_batch(batch)
+            return _service(request).create(batch)
         except BatchExistsError:
             continue
     raise ApiError(
@@ -137,7 +141,7 @@ async def patch_batch(
     if body.status in _TERMINAL_BATCH_STATUSES and batch.ended_at is None:
         fields["ended_at"] = utc_now_iso8601()
     try:
-        return store.update_batch(batch_id, **fields)
+        return _service(request).update(batch_id, fields)
     except KeyError as exc:  # deleted between the read and the write
         raise _not_found(batch_id) from exc
 

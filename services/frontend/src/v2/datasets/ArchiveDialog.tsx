@@ -20,7 +20,7 @@
 // opens it is not rendered) — don't advertise what can't run.
 
 import { Button, Modal } from '../../components/ui';
-import { ErrorMessage } from '../../components/ErrorMessage';
+import { ArchiveError } from './ArchiveError';
 import { shortCaptureId } from './data';
 import type { DatasetsState } from './useDatasetsState';
 
@@ -142,7 +142,11 @@ export function ArchiveDialog({ state }: { state: DatasetsState }) {
           />
         </label>
 
-        {state.archiveError != null && <ErrorMessage error={state.archiveError} />}
+        <ArchiveError
+          error={state.archiveError}
+          testIdPrefix="archive-error"
+          resolveDatasetName={state.datasetName}
+        />
       </div>
     </Modal>
   );

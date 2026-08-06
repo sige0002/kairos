@@ -22,8 +22,10 @@ from fastapi.testclient import TestClient
 from kairos_common import ledger_v2
 from kairos_common.capture_sidecars import (
     ObjectManifestV2,
+    RecordV2,
     write_failed_start,
     write_object_manifest,
+    write_record,
 )
 from kairos_common.ids import new_capture_id
 from kairos_common.rebuild import ReplicaState
@@ -57,6 +59,23 @@ def _write_capture(
         (capture_dir / "metadata.yaml").write_text("x: 1\n", encoding="utf-8")
         (capture_dir / "bag_0.mcap").write_bytes(b"\x89MCAP0\r\n")
     write_object_manifest(capture_dir, _manifest(capture_id, instance, **fields))
+    return capture_id
+
+
+def _batched_capture(
+    layout: DataLayout, instance: str, batch_id: str, index: int
+) -> str:
+    """A capture on disk whose record.json says which batch it belonged to."""
+    capture_id = _write_capture(layout, instance)
+    write_record(
+        layout.capture_dir(capture_id),
+        RecordV2(
+            capture_id=capture_id,
+            revision=1,
+            batch_id=batch_id,
+            index_in_batch=index,
+        ),
+    )
     return capture_id
 
 
@@ -346,6 +365,42 @@ class TestFatalConditions:
         assert "lifecycle.jsonl" in message
         assert "deliberately destroyed" in message
 
+    def test_a_healthy_database_does_not_get_a_different_startup_story(
+        self,
+        settings,
+        fake_recorder: FakeRecorder,
+        layout: DataLayout,
+        instance_id: str,
+    ) -> None:
+        """The likeliest way to meet a damaged ledger, and it took a different path.
+
+        The test above needs a rebuild to be triggered before the refusal is
+        reached. But §7's delete resume runs **always, rebuild or not**, so on
+        an ordinary installation — database intact, nothing to rebuild — the
+        damaged ledger is met there instead, and an operator whose only problem
+        is one edited line should not get a different class of failure than one
+        whose database also happened to be missing.
+        """
+        with _boot(settings, fake_recorder) as client:
+            client.post("/api/v1/datasets", json={"name": "ds"})
+        assert layout.db.exists(), "a surviving database is the whole premise"
+        # One damaged line, with a newline after it, so it is not the torn tail
+        # the reader forgives.
+        with ledger_v2.ledger_path(layout.data_dir).open(
+            "a", encoding="utf-8"
+        ) as handle:
+            handle.write('{"kind": "capture_del\n')
+
+        with (
+            pytest.raises(StoreStartupError) as excinfo,
+            _boot(settings, fake_recorder),
+        ):
+            pass
+        message = str(excinfo.value)
+        assert "lifecycle.jsonl" in message
+        # And it names the thing to repair rather than the stack it died on.
+        assert "restore" in message.lower() or "repair" in message.lower()
+
     def test_a_corrupt_instance_file_stops_app_construction(
         self, settings, layout: DataLayout
     ) -> None:
@@ -374,3 +429,78 @@ class TestCatalogSidecars:
         # catalog to catalog/*.json — otherwise a rebuild would quietly lose the
         # UI's vocabulary (§8).
         assert [t["name"] for t in items] == ["t"]
+
+
+class TestBatchesAfterAnExternalDatabaseDeletion:
+    """E-17: `rm kairos.db` and restart, with batches in the picture.
+
+    The rebuild succeeding is the expected outcome — the sidecars are truth and
+    the index is disposable. What the contract does NOT cover is the batches
+    table: a batch's own row has no sidecar and no ledger event, so it is the
+    one part of the catalog that a rebuild cannot bring back. These pin what an
+    operator actually gets: their recordings, without the batch, and told so.
+    """
+
+    def test_recordings_return_but_their_batch_does_not_and_it_is_reported(
+        self,
+        settings,
+        fake_recorder: FakeRecorder,
+        layout: DataLayout,
+        instance_id: str,
+        capsys,
+    ) -> None:
+        batch_id = "batch_20260805_224346"
+        first = _batched_capture(layout, instance_id, batch_id, 1)
+        second = _batched_capture(layout, instance_id, batch_id, 2)
+
+        with _boot(settings, fake_recorder) as client:
+            captures = client.get("/api/v1/captures").json()["items"]
+            assert {c["capture_id"] for c in captures} == {first, second}
+            # The recordings still say which batch they came from...
+            assert {c.get("batch_id") for c in captures} == {batch_id}
+            # ...but the batch itself is not in the catalog, because nothing
+            # outside kairos.db ever recorded it.
+            assert client.get("/api/v1/batches").json()["items"] == []
+
+        # Silence would leave an operator staring at an empty Collect strip
+        # with two recordings naming a batch nobody can find. Asserted on the
+        # emitted log rather than caplog: the app installs its own JSON handler
+        # and does not propagate to the root logger caplog listens on.
+        emitted = capsys.readouterr().out
+        assert "no longer exist" in emitted
+        assert f"{batch_id} x2" in emitted
+
+    def test_the_next_batch_does_not_inherit_the_lost_one_s_identity(
+        self,
+        settings,
+        fake_recorder: FakeRecorder,
+        layout: DataLayout,
+        instance_id: str,
+        monkeypatch,
+    ) -> None:
+        """Ids are minted from the wall clock, so this is a real collision.
+
+        A batch started in the same second as the lost one asks for the same
+        id, and the empty batches table has no reason to refuse. The recordings
+        that still name it would then belong to a batch they were never part
+        of. The clock is pinned here so the collision is certain rather than
+        occasional.
+        """
+        from api_orchestrator.routers import batches as batches_router
+
+        batch_id = "batch_20260805_224346"
+        capture_id = _batched_capture(layout, instance_id, batch_id, 1)
+        monkeypatch.setattr(
+            batches_router, "_allocate_batch_id", lambda *a, **k: batch_id
+        )
+
+        with _boot(settings, fake_recorder) as client:
+            created = client.post(
+                "/api/v1/batches", json={"project": "p", "task": "pick"}
+            )
+            assert created.status_code == 201, created.text
+            assert created.json()["batch_id"] != batch_id
+            # The recording stays where it was: still naming the dead batch,
+            # not silently adopted by the new one.
+            detail = client.get(f"/api/v1/captures/{capture_id}").json()
+            assert detail["batch_id"] == batch_id

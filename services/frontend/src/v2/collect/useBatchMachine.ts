@@ -1252,6 +1252,8 @@ export interface BatchMachine {
 
   // pickers / menu / modals
   batchMenuOpen: boolean;
+  robotPickerOpen: boolean;
+  toggleRobotPicker: () => void;
   projPickerOpen: boolean;
   taskPickerOpen: boolean;
   endModalOpen: boolean;
@@ -2627,6 +2629,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   const [taskPickerOpen, setTaskPickerOpen] = useState(false);
   const [endModalOpen, setEndModalOpen] = useState(false);
   const [issueModalOpen, setIssueModalOpen] = useState(false);
+  const [robotPickerOpen, setRobotPickerOpen] = useState(false);
   const [condModalOpen, setCondModalOpen] = useState(false);
   const [resetModalOpen, setResetModalOpen] = useState(false);
   const [targetModalOpen, setTargetModalOpen] = useState(false);
@@ -2640,11 +2643,31 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     setTaskPickerOpen(false);
     setBatchMenuOpen(false);
   }, [ctxEditable]);
+  const toggleRobotPicker = useCallback(() => {
+    if (!ctxEditable) return;
+    setRobotPickerOpen((v) => !v);
+    setProjPickerOpen(false);
+    setTaskPickerOpen(false);
+    setBatchMenuOpen(false);
+  }, [ctxEditable]);
   const openTaskPicker = useCallback(() => {
     if (!ctxEditable) return;
     setTaskPickerOpen((v) => !v);
     setProjPickerOpen(false);
     setBatchMenuOpen(false);
+  }, [ctxEditable]);
+  // The guards above only stop a picker being OPENED. Nothing dismissed one
+  // already on screen, so a list opened before Start stayed live over a running
+  // recording — and picking from it re-labels the take in flight: with an
+  // episode already recorded it routes through rolloverSet, whose "close the
+  // old set" PATCH is skipped while recording (only the at-rest phases send it)
+  // while the local ROLLOVER_SET runs regardless. Close them when the context
+  // stops being editable.
+  useEffect(() => {
+    if (ctxEditable) return;
+    setRobotPickerOpen(false);
+    setProjPickerOpen(false);
+    setTaskPickerOpen(false);
   }, [ctxEditable]);
   const openCondModal = useCallback(() => {
     if (!condAllowed) return;
@@ -2739,6 +2762,8 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
 
   const pickProject = useCallback(
     (name: string) => {
+      // Never re-label a take in flight, whatever left this handler reachable.
+      if (!ctxEditable) return;
       const plan = findProject(getPlans(), name);
       const t0 = plan.tasks[0];
       const next = {
@@ -2763,10 +2788,11 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
         }).catch(() => {});
       showToast('Project switched — plan reloaded');
     },
-    [state.batchId, rolloverSet, showToast],
+    [state.batchId, ctxEditable, rolloverSet, showToast],
   );
   const pickTask = useCallback(
     (name: string) => {
+      if (!ctxEditable) return;
       const t = findTask(getPlans(), state.project, name);
       const next = {
         project: state.project,
@@ -2787,10 +2813,11 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
         }).catch(() => {});
       showToast('Task switched');
     },
-    [state.project, state.batchId, rolloverSet, showToast],
+    [state.project, state.batchId, ctxEditable, rolloverSet, showToast],
   );
   const pickCustomTask = useCallback(
     (name: string) => {
+      if (!ctxEditable) return;
       const trimmed = name.trim();
       if (!trimmed) return;
       // A free-text task has no plan-defined conditions; clear the condition to
@@ -2812,7 +2839,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
         void patchBatch(state.batchId, { task: trimmed }).catch(() => {});
       showToast('Custom task set');
     },
-    [state.project, state.batchId, rolloverSet, showToast],
+    [state.project, state.batchId, ctxEditable, rolloverSet, showToast],
   );
   const pickCondition = useCallback(
     (condition: string) => {
@@ -2865,11 +2892,19 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   );
 
   // ---- keyboard shortcut layer (D-4) ---------------------------------------
-  // R/S/Space/Esc/? on the window, ignored while typing or when an overlay is
-  // open (modals own their own keys, e.g. Esc-to-close). Enter is deliberately
+  // R/S/Space/Esc/? on the window, ignored while typing or when any REGISTERED
+  // overlay is open (the list below — modals own their own keys, e.g.
+  // Esc-to-close). "Registered", not "any overlay on screen": an overlay whose
+  // open state lives outside this hook is invisible to the guard, which is
+  // exactly how `r` came to start a take behind the Robot picker. Enter is deliberately
   // NOT bound — focus management keeps the primary button focused so the native
   // button handles it.
+  // EVERY overlay that can sit over Collect, not just the ones this hook owns:
+  // the Robot picker's open state was component-local in ContextBar, so this
+  // guard could not see it and `r` started a take behind the open list. Any new
+  // overlay must be registered here or the shortcuts will fire underneath it.
   const anyOverlayOpen =
+    robotPickerOpen ||
     endModalOpen ||
     issueModalOpen ||
     condModalOpen ||
@@ -3000,6 +3035,8 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     endReason: state.endReason,
 
     batchMenuOpen,
+    robotPickerOpen,
+    toggleRobotPicker,
     projPickerOpen,
     taskPickerOpen,
     endModalOpen,

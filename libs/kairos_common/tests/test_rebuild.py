@@ -760,3 +760,45 @@ def test_topics_and_split_survive_the_round_trip(tmp_path: Path) -> None:
     assert row.compression == "zstd"
     # The orchestrator stores these as JSON columns, so they must be encodable.
     assert json.dumps({"topics": list(row.topics), "split": row.split})
+
+
+def test_a_damaged_tombstone_line_does_not_resurrect_the_capture(
+    tmp_path: Path,
+) -> None:
+    """E-20: the ledger was edited by hand and one tombstone line is now junk.
+
+    A truncated TAIL is a write that never completed, so skipping it is right.
+    An interior line is the opposite: the event was fsynced, the capture really
+    was destroyed, and its directory can still be sitting there because the
+    reaper had not got to it. Dropping that line silently makes rule 3 read the
+    healthy manifest instead and hand back a live row — data somebody
+    deliberately destroyed, resurrected by a text editor.
+    """
+    kept = _capture(tmp_path, capture_id=new_capture_id())
+    destroyed = _capture(tmp_path, capture_id=new_capture_id())
+    ledger_v2.append(
+        tmp_path, "capture_deleted", instance_id=INSTANCE, capture_id=destroyed
+    )
+    ledger_v2.append(
+        tmp_path,
+        "capture_discarded",
+        instance_id=INSTANCE,
+        capture_id=kept,
+        payload={"reason": "operator error"},
+    )
+
+    # Damage the FIRST line and leave the rest intact — an edit, not a tail.
+    path = ledger_v2.ledger_path(tmp_path)
+    lines = path.read_text(encoding="utf-8").splitlines()
+    lines[0] = lines[0][: len(lines[0]) // 2]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    # Refusing is the only honest answer: the rebuild cannot tell whether the
+    # damaged line said this capture was destroyed, and the directory is still
+    # there to be believed. Before this was caught, the scan came back with
+    # `state='completed', deleted_at=None` for a capture that had been deleted.
+    with pytest.raises(ledger_v2.LedgerUnreadableError) as excinfo:
+        _run(tmp_path)
+    # Named down to the line, because the operator has to go and repair it.
+    assert "line 1" in str(excinfo.value)
+    assert destroyed not in str(excinfo.value)  # the message is about the FILE

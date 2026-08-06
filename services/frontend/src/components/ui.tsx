@@ -2,7 +2,7 @@
 // These are presentation-only: no data, no app state. Feature tabs compose
 // them so cards, chips, status dots and toggles stay pixel-consistent.
 
-import { useEffect, type ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 
 /** Tiny class-name joiner (no dependency on clsx). */
 export function cn(...parts: Array<string | false | null | undefined>): string {
@@ -226,6 +226,9 @@ export function Modal({
   children?: ReactNode;
   footer?: ReactNode;
 }) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const restoreToRef = useRef<HTMLElement | null>(null);
+
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -235,14 +238,59 @@ export function Modal({
     return () => document.removeEventListener('keydown', onKey);
   }, [open, onClose]);
 
+  // Focus: into the dialog on open, back out on close. Without this a keyboard
+  // operator lost their cursor to <body> the moment a dialog opened — Tab then
+  // restarts at the top of the document, behind the overlay. (Escape has always
+  // worked, so this was never a trap; it was a dialog you could not type into.)
+  useEffect(() => {
+    if (!open) return;
+    const previous = document.activeElement;
+    restoreToRef.current =
+      previous instanceof HTMLElement && previous !== document.body ? previous : null;
+
+    // Deferential: a child that manages its own focus (an `autoFocus` field —
+    // several dialogs have one) has already claimed it, because child effects
+    // run before this parent one. Taking it away would move the cursor off the
+    // very field the dialog exists to have typed into.
+    const node = dialogRef.current;
+    if (node && !node.contains(document.activeElement)) node.focus();
+
+    return () => {
+      const target = restoreToRef.current;
+      restoreToRef.current = null;
+      if (target?.isConnected) {
+        target.focus();
+        return;
+      }
+      // The trigger is GONE — the common case, and the one that made this bug:
+      // a menu item unmounts as the dialog it opened appears. Restoring to a
+      // detached node is a silent no-op that looks like a fix, and guessing
+      // another control could put the cursor on a destructive one. The page
+      // landmark actions nothing, keeps a cursor in the document, and lets Tab
+      // resume in document order.
+      const main = document.querySelector('main');
+      if (main instanceof HTMLElement) {
+        // `main` is not ours, so the tabindex that makes it focusable is put on
+        // only for this call and taken straight off again — leaving it behind
+        // would permanently insert a node into nobody's tab order but its own.
+        const had = main.hasAttribute('tabindex');
+        if (!had) main.setAttribute('tabindex', '-1');
+        main.focus();
+        if (!had) main.removeAttribute('tabindex');
+      }
+    };
+  }, [open]);
+
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div aria-hidden className="absolute inset-0 bg-gray-900/30" onClick={onClose} />
       <div
+        ref={dialogRef}
+        tabIndex={-1}
         role="dialog"
         aria-modal="true"
-        className="relative z-10 w-full max-w-md rounded-card border border-gray-200 bg-white p-5 shadow-float"
+        className="relative z-10 w-full max-w-md rounded-card border border-gray-200 bg-white p-5 shadow-float focus:outline-none"
       >
         {title && <h2 className="mb-2 text-[15px] font-semibold text-gray-900">{title}</h2>}
         {children && <div className="text-sm text-gray-600">{children}</div>}

@@ -14,7 +14,7 @@
 // stays marginal. Clicking a sub promotes its topic to the main slot (and it
 // re-negotiates at the main resolution).
 
-import { useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { apiGet } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
@@ -22,6 +22,7 @@ import type { TopicInfo } from '../../api/types';
 import { cn } from '../../components/ui';
 import {
   useWebRtcStream,
+  type StreamFailure,
   type StreamStats,
   type StreamPhase,
   FRAME_STALE_MS,
@@ -35,6 +36,7 @@ import type { RuntimeConfig } from '../../config';
 import { useMonitorRows } from '../../features/monitor/useMonitorRows';
 import { topicLiveness, type TopicLiveness } from './warnings';
 import type { BatchMachine } from './useBatchMachine';
+import { configSeedKey } from '../seedKey';
 import {
   MAIN_RES_PRESETS,
   MAX_CAMERA_PANES,
@@ -90,6 +92,13 @@ function latColor(ms: number): string {
  *  cameras is in trouble instead of collapsing four tiles into one word. */
 export interface CameraHealth {
   streamFailed: boolean;
+  /** Panes whose OWN stream is not carrying video. Every pane negotiates
+   *  separately, so the main tile's phase was never an answer for the wall
+   *  (E-37: four black tiles summarised as "5 cameras OK"). */
+  streamsDown: number;
+  /** The cause those failures agree on, 'mixed' when they disagree. Primitive,
+   *  because this object is compared field-by-field with `===`. */
+  streamFault: StreamFailure | 'mixed' | null;
   framesStale: boolean;
   /** Panes whose source topic the monitor reports as silent. */
   silentTopics: number;
@@ -334,6 +343,7 @@ function SubCameraTile({
   config,
   onSelect,
   onRemove,
+  onStreamState,
   style,
   sourceLiveness = 'unknown',
 }: {
@@ -345,9 +355,12 @@ function SubCameraTile({
   style: React.CSSProperties;
   /** What the monitor can say about this pane's SOURCE topic. */
   sourceLiveness?: TopicLiveness;
+  /** Report this pane's own stream state up, so the System card can speak for
+   *  the whole wall instead of for the main tile (E-37). */
+  onStreamState?: (topic: string, down: boolean, failure: StreamFailure | null) => void;
 }) {
   const { w, h } = resBounds(pane.subResLabel);
-  const { phase, stream, stats, error, retry } = useWebRtcStream({
+  const { phase, stream, stats, error, failure, retry } = useWebRtcStream({
     webrtcBase: config.endpoints.webrtc,
     topic: pane.topic,
     iceServers: config.ice_servers ?? [],
@@ -359,6 +372,11 @@ function SubCameraTile({
     if (videoRef.current && stream) videoRef.current.srcObject = stream;
   }, [stream]);
   const connected = phase === 'connected';
+  // 'failed' only — a stream still negotiating is not yet a fault, and calling
+  // it one would make every page load flash a camera warning.
+  useEffect(() => {
+    if (pane.topic) onStreamState?.(pane.topic, phase === 'failed', failure);
+  }, [pane.topic, phase, failure, onStreamState]);
   const label = shortCameraLabel(pane.topic);
   return (
     // A plain clickable tile (as the design mock's sub cameras are) rather than a
@@ -487,7 +505,7 @@ export function Cameras({
     return Array.from(new Set(topics));
   }, [config.stream]);
   useEffect(() => {
-    seedCameraPanes(configuredTopics, JSON.stringify(configuredTopics));
+    seedCameraPanes(configuredTopics, configSeedKey(configuredTopics));
   }, [configuredTopics]);
 
   const { panes, mainId, mainResLabel } = useCameraStore();
@@ -513,7 +531,14 @@ export function Cameras({
   const mainTopic = mainPane?.topic;
   const { w: mainW, h: mainH } = resBounds(mainResLabel);
 
-  const { phase, stream, stats, error, retry } = useWebRtcStream({
+  const {
+    phase,
+    stream,
+    stats,
+    error,
+    failure: mainFailure,
+    retry,
+  } = useWebRtcStream({
     webrtcBase: config.endpoints.webrtc,
     topic: mainTopic ?? '',
     iceServers: config.ice_servers ?? [],
@@ -553,6 +578,23 @@ export function Cameras({
   // every poll, so an effect depending on it produced a new health object every
   // render — and the parent's setState, seeing a new reference each time, never
   // settled. The values here change only when one of the facts does.
+  // Every pane's own stream state, reported up by the tiles (E-37). A ref plus
+  // a tick rather than state per report: reports arrive one per tile per phase
+  // change, and setState on each would re-render the wall mid-negotiation.
+  const streamStateRef = useRef<Map<string, { down: boolean; failure: StreamFailure | null }>>(
+    new Map(),
+  );
+  const [streamTick, setStreamTick] = useState(0);
+  const onStreamState = useCallback(
+    (topic: string, down: boolean, failure: StreamFailure | null) => {
+      const prev = streamStateRef.current.get(topic);
+      if (prev && prev.down === down && prev.failure === failure) return;
+      streamStateRef.current.set(topic, { down, failure });
+      setStreamTick((t) => t + 1);
+    },
+    [],
+  );
+
   const framesStale = isFramesStale(stats);
   const silentCount = [...paneLiveness.values()].filter((l) => l === 'silent').length;
   // Counted, not folded into the OK total: a camera nobody measures is not a
@@ -562,15 +604,47 @@ export function Cameras({
   ).length;
   const cameraCount = panes.filter((p) => !!p.topic).length;
   const streamFailed = phase === 'failed';
+  useEffect(() => {
+    if (mainTopic) onStreamState(mainTopic, streamFailed, mainFailure);
+  }, [mainTopic, streamFailed, mainFailure, onStreamState]);
+
+  // Only panes still open count — a removed tile must not keep voting.
+  const openTopics = useMemo(
+    () => new Set(panes.map((p) => p.topic).filter((t): t is string => !!t)),
+    [panes],
+  );
+  const { streamsDown, streamFault } = useMemo(() => {
+    void streamTick; // recompute when a tile reports
+    let down = 0;
+    const kinds = new Set<StreamFailure>();
+    for (const [topic, st] of streamStateRef.current) {
+      if (!openTopics.has(topic) || !st.down) continue;
+      down += 1;
+      if (st.failure) kinds.add(st.failure);
+    }
+    const fault: StreamFailure | 'mixed' | null =
+      kinds.size === 0 ? null : kinds.size > 1 ? 'mixed' : [...kinds][0]!;
+    return { streamsDown: down, streamFault: fault };
+  }, [openTopics, streamTick]);
   const health = useMemo<CameraHealth>(
     () => ({
       streamFailed,
+      streamsDown,
+      streamFault,
       framesStale,
       silentTopics: silentCount,
       unmonitoredTopics: unmonitoredCount,
       totalCameras: cameraCount,
     }),
-    [streamFailed, framesStale, silentCount, unmonitoredCount, cameraCount],
+    [
+      streamFailed,
+      streamsDown,
+      streamFault,
+      framesStale,
+      silentCount,
+      unmonitoredCount,
+      cameraCount,
+    ],
   );
   useEffect(() => {
     onHealthChange?.(health);
@@ -712,6 +786,7 @@ export function Cameras({
           onRemove={pane.source === 'operator' ? () => removeCameraPane(pane.id) : undefined}
           style={{ gridColumn: 2, gridRow: i + 1 }}
           sourceLiveness={livenessOf(pane.topic)}
+          onStreamState={onStreamState}
         />
       ))}
       {addVisible && (

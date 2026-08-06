@@ -137,6 +137,14 @@ class CaptureError(BaseModel):
     message: str
 
 
+# The recorder's marker for "this recording ended because it reached a cap I
+# was configured with" (MAX_RECORD_SECONDS / MAX_RECORD_BYTES). It rides in the
+# manifest's ``error`` field only because that is the one free-text field a
+# manifest has — the recorder's own code says "no error occurred" and sets the
+# state to ``completed``. This is the one message shape whose code IS knowable.
+AUTO_STOP_PREFIX = "auto-stopped:"
+
+
 def coerce_error(value: Any) -> CaptureError | None:
     """Normalize a manifest/rebuild ``error`` into a :class:`CaptureError`.
 
@@ -144,12 +152,22 @@ def coerce_error(value: Any) -> CaptureError | None:
     mapping. A bare string becomes ``recorder_failed`` — the specific code is
     unknowable from a free-text message, and inventing a more precise one would
     make the code field a guess.
+
+    The single exception is the auto-stop note, which the recorder writes with a
+    fixed prefix precisely so it can be told apart. Filing it as
+    ``recorder_failed`` was the guess: it puts a completed take that stopped
+    exactly where it was told under the code that means the recorder faulted,
+    with nothing on the wire to separate it from a kill. It keeps its message —
+    the note names the cap, which is the only place that survives — but under a
+    code that says what happened.
     """
     if value is None or value == "":
         return None
     if isinstance(value, CaptureError):
         return value
     if isinstance(value, str):
+        if value.startswith(AUTO_STOP_PREFIX):
+            return CaptureError(code="auto_stopped", message=value)
         return CaptureError(code="recorder_failed", message=value)
     if isinstance(value, dict) and value.get("code"):
         return CaptureError(

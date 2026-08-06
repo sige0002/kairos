@@ -299,10 +299,26 @@ export function ValidationScreen() {
   }
   // Seed each empty x-suggest param with the first suggestion (same pattern as
   // `template` above): pick a capture with a camera and video_check is one click.
+  //
+  // An x-suggest value is DERIVED FROM THE TARGET (the camera topics of the
+  // selected recording), so a value the operator chose for a previous capture is
+  // not merely stale here — it can name a topic this capture does not contain,
+  // and it used to be submitted that way because `overrides` is only cleared on
+  // a pipeline change. Drop such a value when the new target does not offer it,
+  // which re-seeds from this capture. Params NOT derived from the target
+  // (`template`, a typed threshold) are deliberately left alone: they have
+  // nothing to do with which recording is selected, and wiping them would trade
+  // one silent surprise for another.
   for (const [key, child] of Object.entries(schema.properties ?? {})) {
     const kind = child['x-suggest'];
-    if (!kind || params[key]) continue;
-    const first = suggestions[kind as keyof typeof suggestions]?.[0];
+    if (!kind) continue;
+    const options = suggestions[kind as keyof typeof suggestions] ?? [];
+    const current = params[key];
+    const stale =
+      typeof current === 'string' && current !== '' && options.length > 0 &&
+      !options.includes(current);
+    if (params[key] && !stale) continue;
+    const first = options[0];
     if (first) params[key] = first;
   }
 

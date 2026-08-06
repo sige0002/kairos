@@ -6,7 +6,7 @@
 // the UI says so honestly); optionLabel — human label for an aspect option;
 // RECORDING_CONFIG_KEY — the recording-config query key.
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError, apiGet, getApiBase } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
@@ -83,16 +83,46 @@ export function RecordingConfigEditor({ config }: { config: RuntimeConfig }) {
   // ever sees it.
   const [jsonError, setJsonError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  // What the buffer was last seeded from — the text to measure "unsaved edits"
+  // against, and the payload identity to detect that the FILE moved. (Structural
+  // sharing keeps the object identity of a deep-equal refetch, so an unchanged
+  // file looks exactly like no refetch at all — which is why identity is the
+  // right test here.)
+  const [seededText, setSeededText] = useState('');
+  const seededDataRef = useRef<RecordingConfigPayload | null>(null);
+  // A newer server payload withheld because the operator has unsaved edits.
+  const [pendingServer, setPendingServer] = useState<RecordingConfigPayload | null>(null);
 
-  // Seed the buffer from the fetched config (pretty-printed). Re-seed when the
-  // fetched payload identity changes (e.g. after a robot/recording switch).
+  const seedFrom = useCallback((data: RecordingConfigPayload) => {
+    seededDataRef.current = data;
+    const pretty = JSON.stringify(data.config ?? {}, null, 2);
+    setText(pretty);
+    setSeededText(pretty);
+    setJsonError(null);
+  }, []);
+
+  const dirty = text !== seededText;
+  // Read by the seeding effect, which must NOT re-run just because dirtiness
+  // flipped — typing one character would otherwise look like a server change.
+  const dirtyRef = useRef(false);
+  dirtyRef.current = dirty;
+
+  // Seed the buffer from the fetched config (pretty-printed), and re-seed when
+  // the fetched payload identity changes (a robot/recording switch, or a
+  // reconnect: `event: resync` makes the client refetch EVERY query — see
+  // sse/useEventStream.ts). Re-seeding unconditionally there silently threw
+  // away whatever the operator had typed, so a newer file is adopted only into
+  // a CLEAN buffer; otherwise it is withheld and surfaced.
   useEffect(() => {
-    if (recordingQuery.data) {
-      const cfg = recordingQuery.data.config ?? {};
-      setText(JSON.stringify(cfg, null, 2));
-      setJsonError(null);
+    const data = recordingQuery.data;
+    if (!data) return;
+    if (seededDataRef.current === data) return;
+    if (dirtyRef.current) {
+      setPendingServer(data);
+      return;
     }
-  }, [recordingQuery.data]);
+    seedFrom(data);
+  }, [recordingQuery.data, seedFrom]);
 
   // Debounced client-side JSON validation on every edit — surfaces a parse error
   // (and disables Save) before the operator ever clicks Save.
@@ -112,6 +142,11 @@ export function RecordingConfigEditor({ config }: { config: RuntimeConfig }) {
     mutationFn: (parsed: Record<string, unknown>) => putRecordingConfig(parsed),
     onSuccess: (data) => {
       setSaved(true);
+      // Re-seed from what the server actually wrote, so the buffer and its
+      // baseline both become the saved file (and the effect above sees the same
+      // payload identity it just seeded from, and stays out of the way).
+      seedFrom(data);
+      setPendingServer(null);
       queryClient.setQueryData(RECORDING_CONFIG_KEY, data);
       queryClient.invalidateQueries({ queryKey: queryKeys.runtimeConfig });
       queryClient.invalidateQueries({ queryKey: RECORDING_CONFIG_KEY });
@@ -173,6 +208,32 @@ export function RecordingConfigEditor({ config }: { config: RuntimeConfig }) {
         <p className="mt-2 text-sm text-red-700">Invalid JSON — {jsonError}</p>
       ) : (
         <p className="mt-2 text-xs text-gray-400">Valid JSON</p>
+      )}
+
+      {pendingServer && (
+        <div
+          data-testid="recording-server-changed"
+          className="mt-2 flex flex-col gap-2 rounded-control border border-amber-300 bg-amber-50 p-2 text-sm text-amber-800"
+        >
+          <p>
+            <span className="font-medium">The recording config changed on the server</span> while
+            you were editing — another terminal saved it, or the active robot changed. Your unsaved
+            edits are kept and nothing here was overwritten, but saving now writes over that newer
+            file.
+          </p>
+          <button
+            type="button"
+            data-testid="recording-load-server"
+            onClick={() => {
+              seedFrom(pendingServer);
+              setPendingServer(null);
+              setSaved(false);
+            }}
+            className="self-start rounded-control border border-amber-300 bg-white px-2.5 py-1 text-xs font-semibold text-amber-800 hover:bg-amber-100"
+          >
+            Load the server copy (discards my edits)
+          </button>
+        </div>
       )}
 
       {recording && (

@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
 import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
@@ -42,14 +42,29 @@ interface ApiOptions {
     details?: Record<string, unknown>;
   };
   transferAvailable?: boolean;
+  /** Hold every review save open. The write still happens on ARRIVAL (a real
+   *  server serialises); only the answer waits for `releaseReviews()`, and that
+   *  wait is the window a second click lands in. */
+  holdReviews?: boolean;
 }
 
 /** Everything the Review screen touches: the capture list, the per-capture
- *  detail the inspection loads, config/options, and the delete/review calls. */
+ *  detail the inspection loads, config/options, and the delete/review calls.
+ *
+ *  No compare-and-swap here either: `reviewError` injects the refusal rather
+ *  than `base_revision` earning it, so the conflict tests below pin what the
+ *  SCREEN does with a 409, not that a 409 would arrive. The natural refusal —
+ *  a real second actor saving first — is `e2e/tests/02-review.spec.ts`
+ *  (§13-2). Same note on `mockServer` in useReviewState.test.tsx. */
 function mockApi(initial: Capture[], options: ApiOptions = {}) {
   let items = initial.map((c) => ({ ...c }));
   const deleteCalls: { captureId: string; body: Record<string, unknown> }[] = [];
   const reviewCalls: { captureId: string; body: Record<string, unknown> }[] = [];
+  const heldReviews: (() => void)[] = [];
+  const answer = (r: Response) =>
+    options.holdReviews
+      ? new Promise<Response>((resolve) => heldReviews.push(() => resolve(r)))
+      : Promise.resolve(r);
 
   vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     const url = String(input);
@@ -60,7 +75,7 @@ function mockApi(initial: Capture[], options: ApiOptions = {}) {
 
     if (method === 'PATCH' && url.includes('/review')) {
       if (options.reviewError) {
-        return Promise.resolve(
+        return answer(
           jsonResponse(
             { error: { code: options.reviewError.code, message: options.reviewError.message } },
             options.reviewError.status,
@@ -76,7 +91,7 @@ function mockApi(initial: Capture[], options: ApiOptions = {}) {
         review_revision: items[idx]!.review_revision + 1,
       } as Capture;
       items[idx] = next;
-      return Promise.resolve(jsonResponse(next));
+      return answer(jsonResponse(next));
     }
 
     const del = url.match(/\/captures\/([^/?]+)\/delete/);
@@ -120,7 +135,12 @@ function mockApi(initial: Capture[], options: ApiOptions = {}) {
       return Promise.resolve(jsonResponse({ items: [...items], next_cursor: null }));
     return Promise.resolve(jsonResponse({}));
   });
-  return { deleteCalls, reviewCalls };
+  return {
+    deleteCalls,
+    reviewCalls,
+    /** Answer every held review save, oldest first. */
+    releaseReviews: () => heldReviews.splice(0).forEach((r) => r()),
+  };
 }
 
 beforeEach(() => {
@@ -440,4 +460,235 @@ test('a NEEDS CHECK exception keeps its own wording', async () => {
   // Same control, same server effect; the exception lane still reads as
   // resolving an exception rather than as a dataset step.
   expect(await screen.findByTestId('review-mark-ok')).toHaveTextContent('Mark OK — include');
+});
+
+test('a batch return that fails says so where the operator will still see it', async () => {
+  mockApi(
+    [
+      capture({ capture_id: 'c1', run_id: 'run_1', batch_id: 'b1', index_in_batch: 1 }),
+      capture({
+        capture_id: 'c2',
+        run_id: 'run_2',
+        batch_id: 'b1',
+        index_in_batch: 2,
+        review_status: 'excluded',
+      }),
+      capture({
+        capture_id: 'c3',
+        run_id: 'run_3',
+        batch_id: 'b1',
+        index_in_batch: 3,
+        review_status: 'excluded',
+      }),
+    ],
+    {
+      reviewError: {
+        status: 500,
+        code: 'review_sidecar_write_failed',
+        message: 'record.json could not be written',
+      },
+    },
+  );
+  renderWithClient(<ReviewScreen />);
+
+  await waitFor(() => expect(screen.getByTestId('review-row-c1')).toBeInTheDocument());
+  fireEvent.click(screen.getByTestId('review-batch-chip-c1'));
+  await waitFor(() =>
+    expect(screen.getByTestId('review-return-batch')).toBeInTheDocument(),
+  );
+  fireEvent.click(screen.getByTestId('review-return-batch'));
+
+  // The toast is gone in seconds and both episodes stay excluded, which hides
+  // them from the default table — so the standing notice is the only thing
+  // that keeps the failure in front of the operator.
+  await waitFor(() =>
+    expect(screen.getByTestId('review-return-batch-failures')).toHaveTextContent(
+      '2 still excluded — return failed',
+    ),
+  );
+  // The count alone would let the reasons be dropped on the way to the DOM.
+  // Both episodes are named, each with why it stayed behind.
+  const title = screen.getByTestId('review-return-batch-failures').getAttribute('title');
+  expect(title).toContain('c2');
+  expect(title).toContain('c3');
+  expect(title).toContain('record.json');
+});
+
+// ---- one save at a time, seen from the screen ----------------------------
+
+test('a second decision taken while the save is in flight goes nowhere, visibly', async () => {
+  // Mark OK renders only while the capture is not adopted, and the optimistic
+  // overlay adopts it the instant it is clicked — so the button unmounts and
+  // EXCLUDE, its `flex-1` neighbour, slides into the slot the pointer is
+  // already over. The operator's second click is therefore not a repeat of
+  // their decision but the opposite one, spending a revision already spent.
+  const api = mockApi([capture({ capture_id: 'c1', run_id: 'run_1', index_in_batch: 1 })], {
+    holdReviews: true,
+  });
+  renderWithClient(<ReviewScreen />);
+  await waitFor(() => expect(screen.getByTestId('review-mark-ok')).toBeInTheDocument());
+
+  const bar = screen.getByTestId('review-decision-bar');
+  expect(bar.querySelector('button')).toHaveAttribute('data-testid', 'review-mark-ok');
+  expect(screen.getByTestId('review-mark-ok')).toBeEnabled();
+
+  fireEvent.click(screen.getByTestId('review-mark-ok'));
+  // Positive control: the click really did put a save on the wire. The fetch
+  // goes out in a microtask, so this has to be awaited.
+  await waitFor(() => expect(api.reviewCalls).toHaveLength(1));
+
+  // The slot the pointer is over now holds a different decision.
+  const underCursor = bar.querySelector('button')!;
+  expect(underCursor).toHaveAttribute('data-testid', 'review-decision-exclude');
+  // It is refused, and the screen says why instead of swallowing the click.
+  expect(underCursor).toBeDisabled();
+  expect(screen.getByTestId('review-saving')).toBeInTheDocument();
+
+  fireEvent.click(underCursor);
+  await Promise.resolve();
+  expect(api.reviewCalls).toHaveLength(1);
+
+  // The answer arrives: the notice goes, the controls come back, and the
+  // operator was never told a stranger had edited their capture.
+  await act(async () => {
+    api.releaseReviews();
+  });
+  await waitFor(() => expect(screen.queryByTestId('review-saving')).toBeNull());
+  expect(screen.queryByTestId('review-conflict-banner')).toBeNull();
+  await waitFor(() => expect(screen.getByTestId('review-decision-exclude')).toBeEnabled());
+});
+
+test('double-clicking Final quality saves once and never blames the operator', async () => {
+  // The tile's own tooltip asks for repeat clicks ("Good -> Needs review ->
+  // Not usable"), so two fast clicks are the intended route to the third
+  // value, not operator error.
+  const api = mockApi(
+    [capture({ capture_id: 'c1', run_id: 'run_1', index_in_batch: 1, quality: 'good' })],
+    { holdReviews: true },
+  );
+  renderWithClient(<ReviewScreen />);
+  await waitFor(() =>
+    expect(screen.getByTestId('review-final-quality')).toBeInTheDocument(),
+  );
+
+  fireEvent.click(screen.getByTestId('review-final-quality'));
+  await waitFor(() => expect(api.reviewCalls).toHaveLength(1));
+  expect(api.reviewCalls[0]!.body).toMatchObject({
+    base_revision: 0,
+    quality: 'needs_review',
+  });
+  expect(screen.getByTestId('review-final-quality')).toHaveAttribute(
+    'aria-disabled',
+    'true',
+  );
+
+  fireEvent.click(screen.getByTestId('review-final-quality'));
+  await Promise.resolve();
+  expect(api.reviewCalls).toHaveLength(1);
+  // The value the in-flight save is writing is still on screen.
+  expect(screen.getByTestId('review-final-quality').textContent).toContain('Needs review');
+
+  await act(async () => {
+    api.releaseReviews();
+  });
+  // Neither of the two things the race used to produce: no accusation that
+  // someone else saved first, and no silently dropped second step.
+  expect(screen.queryByTestId('review-conflict-banner')).toBeNull();
+  await waitFor(() =>
+    expect(screen.getByTestId('review-final-quality')).toHaveAttribute(
+      'aria-disabled',
+      'false',
+    ),
+  );
+  // The third value is still reachable. It costs one round trip, and the
+  // revision it spends is the live one.
+  fireEvent.click(screen.getByTestId('review-final-quality'));
+  await waitFor(() => expect(api.reviewCalls).toHaveLength(2));
+  expect(api.reviewCalls[1]!.body).toMatchObject({
+    base_revision: 1,
+    quality: 'not_usable',
+  });
+});
+
+test('a conflict raised by another terminal is still reported', async () => {
+  // The half that must not regress, asserted from the screen: refusing the
+  // operator's own second click must not silence the warning the
+  // compare-and-swap exists to give.
+  mockApi([capture({ capture_id: 'c1', run_id: 'run_1', index_in_batch: 1 })], {
+    reviewError: {
+      status: 409,
+      code: 'review_conflict',
+      message: 'The review changed since you loaded it.',
+    },
+  });
+  renderWithClient(<ReviewScreen />);
+  await waitFor(() => expect(screen.getByTestId('review-mark-ok')).toBeInTheDocument());
+
+  fireEvent.click(screen.getByTestId('review-mark-ok'));
+  const banner = await screen.findByTestId('review-conflict-banner');
+  expect(banner.textContent).toMatch(/Someone else saved a review for this capture first/);
+  // And the screen is usable afterwards: the notice is gone, so the operator
+  // can reload and re-apply rather than facing a permanently frozen bar.
+  await waitFor(() => expect(screen.queryByTestId('review-saving')).toBeNull());
+});
+
+test('a banner that outlives the selection says which episode it is about', async () => {
+  // It has to, now that it does outlive it. A warning the operator cannot
+  // attribute to a capture is not a smaller version of the wiped banner — it
+  // is a different way of being unusable, and swapping one for the other is
+  // not a fix.
+  mockApi(
+    [
+      capture({ capture_id: 'c1', run_id: 'run_1', index_in_batch: 1 }),
+      capture({ capture_id: 'c2', run_id: 'run_2', index_in_batch: 2 }),
+    ],
+    {
+      reviewError: {
+        status: 409,
+        code: 'review_conflict',
+        message: 'The review changed since you loaded it.',
+      },
+    },
+  );
+  renderWithClient(<ReviewScreen />);
+  await waitFor(() => expect(screen.getByTestId('review-row-c1')).toBeInTheDocument());
+
+  fireEvent.click(screen.getByTestId('review-row-c1'));
+  fireEvent.click(screen.getByTestId('review-mark-ok'));
+  await screen.findByTestId('review-conflict-banner');
+  expect(screen.getByTestId('review-conflict-subject').textContent).toBe('Episode #1');
+
+  // The operator moves to another row. The banner still names the episode it
+  // is about, not the one they are now looking at.
+  fireEvent.click(screen.getByTestId('review-row-c2'));
+  await waitFor(() =>
+    expect(screen.getByTestId('review-detail-header').textContent).toContain('#2'),
+  );
+  expect(screen.getByTestId('review-conflict-banner')).toBeInTheDocument();
+  expect(screen.getByTestId('review-conflict-subject').textContent).toBe('Episode #1');
+});
+
+test('the "nothing was saved" notice names its episode too', async () => {
+  // §12's loudest failure carries the same duty as the conflict: it now
+  // outlives the selection, so it has to say what it is about.
+  mockApi(
+    [
+      capture({ capture_id: 'c1', run_id: 'run_1', index_in_batch: 1 }),
+      capture({ capture_id: 'c2', run_id: 'run_2', index_in_batch: 2 }),
+    ],
+    {
+      reviewError: {
+        status: 500,
+        code: 'review_sidecar_write_failed',
+        message: 'could not write record.json',
+      },
+    },
+  );
+  renderWithClient(<ReviewScreen />);
+  await waitFor(() => expect(screen.getByTestId('review-row-c1')).toBeInTheDocument());
+
+  fireEvent.click(screen.getByTestId('review-row-c1'));
+  fireEvent.click(screen.getByTestId('review-mark-ok'));
+  await screen.findByTestId('review-save-failure');
+  expect(screen.getByTestId('review-save-failure-subject').textContent).toBe('Episode #1');
 });

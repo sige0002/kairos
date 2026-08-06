@@ -43,7 +43,16 @@ export interface AlertsPayload {
 
 // ---- query keys + PUT helpers --------------------------------------------
 
-export const ALERTS_CONFIG_KEY = ['config', 'alerts'] as const;
+/** GET /config/alerts resolves the ACTIVE robot's file
+ *  (`config/<robot>/monitoring/alerts.yaml`), so the cache entry has to name the
+ *  robot too. With a single global key the previous robot's rules — and its file
+ *  path — were served from cache under the new robot after a switch, and a Save
+ *  in that window wrote them into the new robot's file. The robot can be switched
+ *  from Settings > Robots OR from Collect's ContextBar, and neither invalidates
+ *  this key, so scoping it is what actually holds. */
+export function alertsConfigKey(robot: string): readonly [string, string, string] {
+  return ['config', 'alerts', robot] as const;
+}
 
 /** PUT body for a single-file aspect editor: the form sends `config`, the
  *  Advanced editor sends `raw` YAML text (the frontend ships no YAML parser). */
@@ -60,10 +69,18 @@ export function putAlertsConfig(body: AspectPutBody): Promise<AlertsPayload> {
 export function formatValidationDetails(error: unknown): string[] {
   if (!(error instanceof ApiError)) return [];
   const errors = error.details?.errors;
-  if (!Array.isArray(errors)) return [];
-  return errors.map((e) => {
-    const rec = e as { loc?: unknown[]; msg?: string };
-    const loc = Array.isArray(rec.loc) ? rec.loc.join('.') : '';
-    return loc ? `${loc}: ${rec.msg ?? ''}` : (rec.msg ?? '');
-  });
+  if (Array.isArray(errors)) {
+    return errors.map((e) => {
+      const rec = e as { loc?: unknown[]; msg?: string };
+      const loc = Array.isArray(rec.loc) ? rec.loc.join('.') : '';
+      return loc ? `${loc}: ${rec.msg ?? ''}` : (rec.msg ?? '');
+    });
+  }
+  // A parse-level cause rather than a field list: `invalid_yaml` sends the YAML
+  // scanner message as `details.error`, and that string is the only thing that
+  // says WHICH LINE the bad character is on. ErrorMessage renders `details.cause`
+  // and nothing else, so without this the operator was told their YAML is
+  // invalid and never told where — on a long alerts.yaml that is a hunt.
+  const parseError = error.details?.error;
+  return typeof parseError === 'string' && parseError.trim() ? [parseError] : [];
 }

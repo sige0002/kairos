@@ -8,6 +8,7 @@ import {
   configMismatchHint,
   firingAlertRows,
   topicLiveness,
+  cameraSummary,
   topicRates,
 } from './warnings';
 
@@ -138,7 +139,8 @@ test('topicRates counts ok vs judged, excluding unknown', () => {
       { name: '/d' }, // no status at all
     ]),
   );
-  expect(rates).toEqual({ ok: 1, judged: 2 });
+  // `withheld` joined this shape with E-23; nothing was dropped here.
+  expect(rates).toEqual({ ok: 1, judged: 2, withheld: 0 });
 });
 
 test('topicRates is null with no snapshot or no judged topic', () => {
@@ -265,4 +267,120 @@ test('topicLiveness lets measured traffic outrank a momentary zero publisher cou
   expect(
     topicLiveness([row({ name: '/cam/head', status: 'ok', publisher_count: 0 })], '/cam/head'),
   ).toBe('live');
+});
+
+// E-23 follow-through. The SSE ingest drops readings it cannot identify, and
+// `topicRates` derives BOTH sides of its ratio from the array the ingest just
+// filtered — so a dropped row leaves the numerator and the denominator
+// together and the card reads "12 / 12 at expected" when the robot published
+// 13. The count of what was withheld has to travel with the ratio, or the one
+// screen an operator watches while RECORDING is the one that cannot say a
+// reading went missing.
+test('topicRates carries the withheld count so the ratio is not read as complete', () => {
+  const rates = topicRates({
+    topics: [
+      { name: '/a', status: 'ok' },
+      { name: '/b', status: 'ok' },
+    ],
+    malformed_dropped: 1,
+  });
+  expect(rates).toEqual({ ok: 2, judged: 2, withheld: 1 });
+});
+
+test('topicRates reports nothing withheld on a clean snapshot', () => {
+  const rates = topicRates({ topics: [{ name: '/a', status: 'ok' }] });
+  expect(rates).toEqual({ ok: 1, judged: 1, withheld: 0 });
+});
+
+// A snapshot where everything was unreadable still has something to say: the
+// old shape returned null here and the row rendered "—", which reads as "the
+// monitor is quiet" rather than "readings arrived and could not be used".
+test('topicRates speaks up when every reading was withheld', () => {
+  expect(topicRates({ topics: [], malformed_dropped: 3 })).toEqual({
+    ok: 0,
+    judged: 0,
+    withheld: 3,
+  });
+});
+
+// ---- E-37: 全滅なのに「5 cameras OK」 -------------------------------------
+//
+// Every camera pane runs its OWN WebRTC connection, but only the MAIN one's
+// phase ever reached the System card. So four black tiles beside a working
+// main stream summarised as "5 cameras OK" in green, and when the main one
+// failed too the row said "main stream failed" — one clause, describing one
+// pane, for a console where every picture was gone.
+//
+// `cameraSummary` is the whole claim in one place, so the row cannot go green
+// while a stream is down and cannot report trouble without naming a cause.
+test('a summary cannot claim every camera is OK while a stream is down', () => {
+  const s = cameraSummary({
+    totalCameras: 5,
+    streamsDown: 4,
+    streamFault: 'peer',
+    silentTopics: 0,
+    unmonitoredTopics: 0,
+    framesStale: false,
+  });
+  expect(s.tone).not.toBe('green');
+  expect(s.value).toContain('4 of 5');
+  // and the operator is told which of the three problems it is
+  expect(s.value).toMatch(/network|connection/i);
+});
+
+test('all cameras down through the streamer names the service, not the network', () => {
+  const s = cameraSummary({
+    totalCameras: 5,
+    streamsDown: 5,
+    streamFault: 'signaling',
+    silentTopics: 0,
+    unmonitoredTopics: 0,
+    framesStale: false,
+  });
+  expect(s.tone).toBe('amber');
+  expect(s.value).toContain('5 of 5');
+  // 'signaling' means the offer never reached the streamer — a different fix
+  // from a network drop, and the reason the whole wall goes black at once.
+  expect(s.value).toMatch(/streamer/i);
+  expect(s.value).not.toMatch(/network/i);
+});
+
+test('mixed causes are not collapsed into one confident reason', () => {
+  const s = cameraSummary({
+    totalCameras: 3,
+    streamsDown: 2,
+    streamFault: 'mixed',
+    silentTopics: 0,
+    unmonitoredTopics: 0,
+    framesStale: false,
+  });
+  expect(s.value).toMatch(/2 of 3/);
+  expect(s.value).toMatch(/more than one reason|mixed/i);
+});
+
+test('a healthy wall still reads OK', () => {
+  const s = cameraSummary({
+    totalCameras: 5,
+    streamsDown: 0,
+    streamFault: null,
+    silentTopics: 0,
+    unmonitoredTopics: 0,
+    framesStale: false,
+  });
+  expect(s.tone).toBe('green');
+  expect(s.value).toBe('5 cameras OK');
+});
+
+// A silent topic is a different fault from a dead stream and keeps priority:
+// there is no picture to fix at the transport layer if nothing is publishing.
+test('a silent source topic still outranks a stream fault', () => {
+  const s = cameraSummary({
+    totalCameras: 5,
+    streamsDown: 1,
+    streamFault: 'peer',
+    silentTopics: 2,
+    unmonitoredTopics: 0,
+    framesStale: false,
+  });
+  expect(s.value).toContain('topic silent');
 });

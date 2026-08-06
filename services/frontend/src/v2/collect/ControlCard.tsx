@@ -310,7 +310,13 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
         else saveRef.current?.focus();
         break;
     }
-  }, [phase, machine.pendingTask, hasTakeover]);
+    // `machine.canStop` is a dependency because focus() on a DISABLED button is
+    // a no-op: Stop is disabled for the first STOP_FLOOR_MS of every take, so
+    // the recording branch above fired while there was nothing to focus, and
+    // without re-running when Stop becomes enabled focus stayed on <body> for
+    // the WHOLE take. (Second effect-dependency bug of this shape: the logic was
+    // right and the deps made it read a stale world.)
+  }, [phase, machine.pendingTask, hasTakeover, machine.canStop]);
 
   // Takeover card's own once-a-second elapsed ticker (the recording card uses
   // the machine's own timer instead).

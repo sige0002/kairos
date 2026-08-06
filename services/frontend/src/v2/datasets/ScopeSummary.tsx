@@ -199,7 +199,13 @@ function StatTile({ value, label, title }: { value: string; label: string; title
       title={title}
       className="flex flex-col gap-0.5 rounded-[10px] border border-gray-100 px-[12px] py-[9px]"
     >
-      <span className="font-mono text-[16px] font-semibold text-gray-900">{value}</span>
+      {/* Most values here are numbers, but "operator" puts a NAME in this slot
+          and an operator id has no break opportunity — measured 360px outside
+          the tile. `break-words` only breaks what cannot otherwise fit, so the
+          numbers are untouched. */}
+      <span className="break-words font-mono text-[16px] font-semibold text-gray-900">
+        {value}
+      </span>
       <span className="text-[11px] text-gray-400">{label}</span>
     </div>
   );

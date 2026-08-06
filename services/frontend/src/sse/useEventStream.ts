@@ -18,6 +18,7 @@ import type {
   MetricsSnapshot,
   RecordStatus,
   RecordStatusEvent,
+  TopicMetric,
   SessionLogEntry,
   SessionLogType,
 } from '../api/types';
@@ -158,8 +159,38 @@ function applyRecordStatus(qc: QueryClient, data: RecordStatusEvent): void {
   );
 }
 
+/**
+ * Write a metrics snapshot, dropping rows nothing downstream can use.
+ *
+ * The stream carries no schema, so a payload can be well-formed JSON with a
+ * wrong-shaped field — and one such row used to reach every consumer. One did:
+ * a non-string `name` threw inside the row sort (features/monitor
+ * useMonitorRows), the throw escaped to the root error boundary, and the WHOLE
+ * console went down — tab bar included, no recovery without a reload, for an
+ * operator who was on Collect and had never opened Monitor.
+ *
+ * This is the first line of defence and the right place for it: meeting a
+ * schema-less stream at ingest fixes every consumer at once, where hardening
+ * one comparator would only protect one sort.
+ *
+ * Rows are DROPPED rather than repaired. A row whose `name` is not a string
+ * cannot be keyed, matched to an expected Hz, or named on screen; coercing it
+ * would invent a topic called "[object Object]" and put a fiction in a
+ * monitoring table. But a reading that disappears in silence is its own small
+ * dishonesty, so the count rides along on `malformed_dropped` and the Monitor
+ * header says it out loud.
+ */
 function applyMetrics(qc: QueryClient, data: MetricsSnapshot): void {
-  qc.setQueryData(queryKeys.metrics, data);
+  const incoming = Array.isArray(data?.topics) ? data.topics : [];
+  const topics = incoming.filter(
+    (t) => t != null && typeof (t as TopicMetric).name === 'string',
+  );
+  const dropped = incoming.length - topics.length;
+  qc.setQueryData(queryKeys.metrics, {
+    ...data,
+    topics,
+    ...(dropped > 0 ? { malformed_dropped: dropped } : {}),
+  });
 }
 
 function applyAlert(qc: QueryClient, data: AlertSnapshot): void {

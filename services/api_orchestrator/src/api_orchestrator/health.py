@@ -23,11 +23,15 @@ describes. A restart re-derives every one of them.
 
 from __future__ import annotations
 
+import logging
 import threading
-from dataclasses import dataclass, field
+from collections.abc import Iterable
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from kairos_common.time import utc_now_iso8601
+
+logger = logging.getLogger("kairos")
 
 
 @dataclass
@@ -126,6 +130,39 @@ class StoreHealth:
     def record_rebuild(self, report: RebuildReport) -> None:
         with self._lock:
             self._rebuild = report
+
+    def add_rebuild_warnings(self, warnings: Iterable[str]) -> None:
+        """Append to the recorded rebuild's warnings (no-op with no rebuild).
+
+        The catalog is rebuilt in two passes — captures and replicas from the
+        sidecars, then datasets from the ledger — and only the first one builds
+        the report. Anything the second pass needs an operator to see arrives
+        after the report is already recorded, so it is added here rather than
+        left in a log line nothing reads.
+        """
+        extra = tuple(warnings)
+        if not extra:
+            return
+        with self._lock:
+            if self._rebuild is None:
+                # Nothing to attach them to, which today cannot happen: the
+                # capture pass records its report before the datasets pass
+                # runs. If that order ever changes — or a datasets-only
+                # rebuild trigger appears — these warnings would vanish with
+                # no trace at all, and the operator's first sign of two
+                # datasets sharing one archive folder would be an archive
+                # refused by a dataset they have never heard of. So it is
+                # said out loud rather than dropped quietly.
+                logger.warning(
+                    "no rebuild report to attach %d warning(s) to; they are "
+                    "lost to the store health card: %s",
+                    len(extra),
+                    "; ".join(extra),
+                )
+                return
+            self._rebuild = replace(
+                self._rebuild, warnings=self._rebuild.warnings + extra
+            )
 
     @property
     def rebuild(self) -> RebuildReport | None:

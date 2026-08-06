@@ -110,7 +110,28 @@ DATASET_KINDS: frozenset[str] = frozenset(
     }
 )
 
-KINDS: frozenset[str] = CAPTURE_KINDS | DATASET_KINDS
+# Collect batches (§8). A batch's row is the only place its project, operator,
+# target and daily number ever lived, so without these lines "delete kairos.db
+# and restart" silently loses every batch while the recordings that belonged to
+# them come back still naming one.
+#
+# Three kinds rather than one, for the same reason datasets have three: what a
+# batch IS at creation and what happens to it later are different facts.
+# ``batch_created`` carries no status — every batch is active when it is
+# created, so a status there would say nothing and a replay that believed it
+# would reconstruct a finished batch as an open one.
+BATCH_KINDS: frozenset[str] = frozenset(
+    {
+        "batch_created",
+        # The full mutable label set after an edit, like ``dataset_updated``:
+        # carrying the complete set means replay order alone reconstructs it.
+        "batch_updated",
+        # The terminal transition: status, why, and when.
+        "batch_ended",
+    }
+)
+
+KINDS: frozenset[str] = CAPTURE_KINDS | DATASET_KINDS | BATCH_KINDS
 
 # Envelope fields the ledger owns. A payload may not set them: a caller that
 # could supply its own ``event_id`` could forge idempotency, and one that could
@@ -194,6 +215,8 @@ def build_event(
         _validate_dataset_archive_started_payload(payload)
     elif kind == "dataset_archived":
         _validate_dataset_archived_payload(payload)
+    elif kind in BATCH_KINDS:
+        _validate_batch_payload(kind, payload)
 
     event: dict[str, Any] = {
         "schema_version": LEDGER_SCHEMA_VERSION,
@@ -205,6 +228,23 @@ def build_event(
     }
     event.update(payload)
     return event
+
+
+def _validate_batch_payload(kind: str, payload: dict[str, Any]) -> None:
+    """Every batch line must say which batch it is about.
+
+    A batch event is the only record of that batch, so one that cannot be
+    attributed is not a partial fact — it is an unattributable one, and the
+    replay would have to drop it silently.
+    """
+    batch_id = payload.get("batch_id")
+    if not isinstance(batch_id, str) or not batch_id:
+        raise ValueError(f"{kind} requires a non-empty batch_id")
+    if kind == "batch_created" and "status" in payload:
+        # Status is not a creation fact; ``batch_ended`` carries it. Refusing
+        # here stops a future caller from reintroducing the stale-status replay
+        # this split exists to prevent.
+        raise ValueError("batch_created may not carry status; use batch_ended")
 
 
 def _validate_archive_payload(payload: dict[str, Any]) -> None:
@@ -425,18 +465,39 @@ def write_event(data_dir: str | Path, event: dict[str, Any]) -> None:
 def read_all(data_dir: str | Path, *, strict: bool = True) -> list[dict[str, Any]]:
     """Every v2 event, oldest first. Missing file = no history.
 
-    Individual lines that do not parse are skipped rather than fatal, and that
-    is load bearing twice over: a write that hit ENOSPC mid-line leaves a
-    truncated tail that must not make the whole ledger unreadable, and pre-v2
-    lines (a different shape entirely) must not be misread as v2 events with
-    missing fields.
+    Two kinds of line are skipped, both because they are well-formed and say so:
+    pre-v2 lines (a different shape entirely, which must not be misread as v2
+    events with missing fields) and kinds this version does not know.
 
-    Failing to read the **file** is a different matter and raises
-    :class:`LedgerUnreadableError` by default. A permission error or a bad
-    sector would otherwise be indistinguishable from "nothing was ever
-    deleted", and every consumer here treats that answer as authoritative.
-    Pass ``strict=False`` only where a missing history genuinely degrades
-    gracefully — never in a rebuild.
+    A line that does not parse at all is skipped ONLY where it can be a write
+    that never completed — see the torn-tail note below. Anywhere else it was a
+    whole, fsynced record until something changed it, so it raises
+    :class:`LedgerUnreadableError`: silently dropping it would state "nothing
+    was ever deleted" about whatever it said, and §5 makes that answer
+    authoritative. Failing to read the **file** raises the same way, for the
+    same reason.
+
+    **Every caller must handle** :class:`LedgerUnreadableError`. This function
+    raising is not the exceptional path it used to be — a damaged line reaches
+    it, and a damaged line is an ordinary consequence of someone editing the
+    file. An unguarded call in a request handler is a bare 500 with no error
+    code; an unguarded call anywhere else is a traceback where a refusal
+    belonged.
+
+    ``strict=False`` returns **the events that did parse** and logs which line
+    was dropped. The result is explicitly INCOMPLETE and must never be used to
+    decide whether something was destroyed or whether a number was issued: a
+    tombstone that is missing reads as "this was never deleted", which is how a
+    destroyed capture comes back, and a missing ``dataset_updated`` re-issues a
+    retired index. Use it only where the answer is shown rather than acted on —
+    a status column that says "no archive recorded" for one row is a wrong
+    pixel; the same gap in a rebuild or an index reclaim is data loss.
+
+    Returning the partial list rather than ``[]`` is deliberate, and it is the
+    safer of the two: ``[]`` is indistinguishable from a ledger where nothing
+    ever happened, which for tombstones is the maximally destructive reading.
+    Fewer facts beats zero facts; neither is authoritative, and ``strict=True``
+    is what authoritative means here.
     """
     path = ledger_path(data_dir)
     try:
@@ -451,19 +512,62 @@ def read_all(data_dir: str | Path, *, strict: bool = True) -> list[dict[str, Any
         return []
 
     events: list[dict[str, Any]] = []
-    for line in text.splitlines():
-        line = line.strip()
+    lines = text.splitlines()
+    # Which line, if any, may legitimately be half-written. An append is one
+    # ``line + "\n"`` to a file opened O_APPEND, so a write that died mid-line
+    # leaves its partial bytes at the END of the file with no newline after
+    # them. That is what this forgives, and the newline test is the whole of
+    # it: without it a hand-edited LAST line — the most recent tombstone, the
+    # likeliest thing an operator touches — is silently dropped again.
+    #
+    # "At the end of the file" is not the same as "the last line forever".
+    # ``append_with_slack_release`` retries after ENOSPC, and O_APPEND puts the
+    # retry's bytes straight after the torn ones, on the same line, with a
+    # newline of its own. The merged line then parses as neither record and is
+    # NOT forgiven — correctly: by then a completed, fsynced record is
+    # unreadable, which is the case this function must refuse rather than skip.
+    torn_tail = len(lines) - 1 if lines and not text.endswith("\n") else -1
+    for index, raw in enumerate(lines):
+        line = raw.strip()
         if not line:
             continue
+        record: Any = None
         try:
             record = json.loads(line)
+            damage = None if isinstance(record, dict) else "is not a JSON object"
         except ValueError:
-            continue
-        if not isinstance(record, dict):
+            damage = "does not parse as JSON"
+        if damage is not None:
+            if index == torn_tail:
+                # The append never completed, so the event never happened and
+                # the history is intact without it.
+                continue
+            # It did complete, and the line is gone anyway. What it said is
+            # unknowable, and the one thing it is most likely to have said is
+            # that a capture was destroyed — which this function returning
+            # without it would state as "nothing was ever deleted". §5 makes
+            # that answer authoritative, so it must not be guessed.
+            message = (
+                f"{path} line {index + 1} {damage}, and it is not a truncated "
+                "final write. A completed append is durable, so this was a "
+                "whole record that has been damaged since — possibly the "
+                "record of something irreversible."
+            )
+            if strict:
+                raise LedgerUnreadableError(message)
+            # Degraded, not empty: keep reading and hand back what survives.
+            # Discarding the readable events too would answer "nothing ever
+            # happened", which for tombstones is the most destructive reading
+            # available — see the strict=False note in the docstring.
+            logger.warning("lifecycle ledger damaged", extra={"error": message})
             continue
         if record.get("schema_version") != LEDGER_SCHEMA_VERSION:
+            # Pre-v2 lines and anything a future version writes: a different
+            # shape, deliberately not read as a v2 event with missing fields.
             continue
         if record.get("kind") not in KINDS:
+            # A kind this version does not know — forward compatibility, not
+            # damage: the line is well-formed and says so.
             continue
         events.append(record)
     return events
@@ -500,6 +604,16 @@ def archive_events(data_dir: str | Path) -> dict[str, dict[str, Any]]:
         if isinstance(capture_id, str) and capture_id:
             latest[capture_id] = event
     return latest
+
+
+def batch_events(data_dir: str | Path) -> list[dict[str, Any]]:
+    """Every batch event, oldest first — the history batches are rebuilt from.
+
+    Order matters here too: ``batch_created`` then ``batch_updated`` for the
+    same batch is what says the later labels win, and ``batch_ended`` after
+    both is what says it is no longer open.
+    """
+    return [event for event in read_all(data_dir) if event.get("kind") in BATCH_KINDS]
 
 
 def dataset_events(data_dir: str | Path) -> list[dict[str, Any]]:

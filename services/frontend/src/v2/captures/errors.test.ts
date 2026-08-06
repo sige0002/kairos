@@ -1,0 +1,201 @@
+// Readings of the capture-store error codes — the part of an error the backend
+// cannot write for itself: what the operator should DO next.
+//
+// These are unit tests because a reading is a pure function of the envelope,
+// and the envelopes are contracts the orchestrator's routers already fix. Where
+// a reading is rendered is tested at the screen that renders it.
+
+import { expect, test } from 'vitest';
+import { ApiError } from '../../api/client';
+import {
+  captureErrorText,
+  isDestructiveFailure,
+  readCaptureCode,
+  readCaptureError,
+} from './errors';
+
+function apiError(
+  status: number,
+  code: string,
+  message: string,
+  details: Record<string, unknown> = {},
+): ApiError {
+  return new ApiError(status, { error: { code, message, details } }, 'fallback');
+}
+
+// The real 409 from dataset_archive.py: another dataset already holds this
+// archive folder. `held_by` is the holding dataset's dataset_id.
+const CLAIMED = () =>
+  apiError(
+    409,
+    'destination_claimed',
+    '/mnt/archive/op_a/pick_place/kitchen picks belongs to dataset shelf ' +
+      'picks, which is archiving there. Two datasets in one folder would ' +
+      'interleave their numbers under a single manifest; choose another path.',
+    {
+      dataset_id: 'ds-kitchen',
+      destination: '/mnt/archive/op_a/pick_place/kitchen picks',
+      held_by: 'ds-shelf',
+    },
+  );
+
+test('a claimed archive destination carries the holder identity for the UI to resolve', () => {
+  const reading = readCaptureError(CLAIMED());
+  expect(reading.code).toBe('destination_claimed');
+  // The server's sentence is kept intact — it is the first line shown.
+  expect(reading.message).toContain('choose another path');
+  // `held_by` is the addressable identity, and the reading passes it through.
+  // The guidance deliberately does NOT print it: the envelope has the id and
+  // the message has the NAME, and showing the two unlabelled and adjacent
+  // ("shelf picks" in the alert, "ds-shelf" underneath) is worse than either
+  // alone. The dialog joins them against the catalog it already holds.
+  expect(reading.details.held_by).toBe('ds-shelf');
+  expect(reading.guidance).not.toContain('ds-shelf');
+  // So the guidance has to stand on its own wherever it is shown.
+  expect(reading.guidance).toMatch(/another dataset/i);
+});
+
+// The same code answers the per-capture archive (captures.py) AND the whole
+// dataset archive (dataset_archive.py), so its guidance may not name one of
+// them: on the dataset dialog, what a full folder would mix is datasets.
+test('the full-destination reading is worded for both archive surfaces', () => {
+  const reading = readCaptureError(
+    apiError(
+      409,
+      'destination_not_empty',
+      '/mnt/archive/x already contains files — refusing to archive into it. ' +
+        'Choose another path, or clear it if it is the debris of an abandoned run.',
+      { destination: '/mnt/archive/x' },
+    ),
+  );
+  expect(reading.guidance).not.toMatch(/captures/i);
+  // And it must not quietly withdraw the option the server just offered:
+  // unlike a CLAIMED destination, clearing debris here genuinely frees the
+  // path, and that contrast is the whole difference between the two codes.
+  expect(reading.guidance).toMatch(/clear/i);
+  expect(readCaptureError(CLAIMED()).guidance).not.toMatch(/\bclear\b/i);
+});
+
+// The two things an operator naturally tries — empty the folder, or wait for
+// the other run to finish — are both useless here, and nothing else on screen
+// says so. store.py's begin_dataset_archive holds the claim against the
+// dataset ROW: an archived dataset keeps its folder permanently, and a halted
+// run keeps its own even after the debris is cleared, because Resume returns.
+test('the claimed-destination reading says the claim is not released by waiting or emptying', () => {
+  const { guidance } = readCaptureError(CLAIMED());
+  expect(guidance).toMatch(/empt/i);
+  expect(guidance).toMatch(/finish/i);
+  // And it says what DOES work.
+  expect(guidance).toMatch(/another|different/i);
+});
+
+// Nothing was copied and nothing was lost — this is a refusal to start, so it
+// must not be styled as a destructive failure, and there is nothing to re-apply
+// after a refetch.
+test('a claimed destination is a warning, not a destructive failure, and needs no reload', () => {
+  const reading = readCaptureError(CLAIMED());
+  expect(reading.severity).toBe('warning');
+  expect(reading.reload).toBe(false);
+});
+
+// Defensive: an envelope with no held_by must still read as a whole sentence
+// and still give the same next step — the identity is the dialog's to add.
+test('a claimed destination with no held_by still gives the next step', () => {
+  const reading = readCaptureError(
+    apiError(409, 'destination_claimed', 'That folder is taken.', {}),
+  );
+  expect(reading.guidance).not.toMatch(/undefined|null/);
+  expect(reading.guidance).toMatch(/another|different/i);
+});
+
+// The toast form is message + guidance, in that order.
+test('the one-line form leads with the server sentence', () => {
+  const text = captureErrorText(CLAIMED());
+  expect(text.indexOf('choose another path')).toBeLessThan(
+    text.indexOf('belongs to another dataset'),
+  );
+});
+
+// The lifecycle ledger has a line that does not parse — hand-edited, or a
+// damaged write. 503, and deliberately the sibling of `ledger_unwritable`.
+// The distinction that has to survive into the wording: the operation was not
+// answered, rather than attempted and failed, and no amount of retrying makes
+// a corrupt file parse.
+const LEDGER_UNREADABLE = () =>
+  apiError(
+    503,
+    'ledger_unreadable',
+    'The lifecycle ledger (/data/lifecycle.jsonl) could not be read: invalid ' +
+      'JSON on line 812. The number a returning recording takes back is ' +
+      'recorded only there, so adding a member now could issue a number that ' +
+      'already belongs to another take. Repair or restore the file, then try again.',
+    { dataset_id: 'ds-kitchen', capture_id: 'cap-a' },
+  );
+
+test('an unreadable ledger says the file must be repaired, never that it will pass', () => {
+  const reading = readCaptureError(LEDGER_UNREADABLE());
+  expect(reading.code).toBe('ledger_unreadable');
+  expect(reading.guidance).toMatch(/repair|restore/i);
+  // The one thing this guidance must never say. A 503 usually means "try again
+  // shortly"; this one will read exactly the same on every retry, and telling
+  // an operator to wait it out is the `destination_claimed` failure again —
+  // advice that cannot work.
+  expect(reading.guidance).not.toMatch(/try again|in a moment|shortly|later|wait/i);
+  // Nothing to refetch: the file is what is wrong, not this client's copy.
+  expect(reading.reload).toBe(false);
+});
+
+test('an unreadable ledger is destructive-severity, like its unwritable sibling', () => {
+  // Not because data was lost — nothing was — but because it must not pass as a
+  // note that fades. It blocks membership numbering and halts an archive run
+  // until a human repairs a file, and §12 reserves this severity for exactly
+  // the failures an operator has to acknowledge.
+  expect(readCaptureError(LEDGER_UNREADABLE()).severity).toBe('destructive');
+  expect(isDestructiveFailure(LEDGER_UNREADABLE())).toBe(true);
+  // Same standing as the sibling it was modelled on.
+  expect(readCaptureError(apiError(503, 'ledger_unwritable', 'x')).severity).toBe(
+    'destructive',
+  );
+});
+
+// The graceful-degradation contract the table relies on: an unmapped code still
+// shows the server's sentence, with no invented advice.
+test('an unmapped code degrades to the server sentence with no guidance', () => {
+  const reading = readCaptureError(apiError(409, 'some_new_code', 'Something specific.'));
+  expect(reading.message).toBe('Something specific.');
+  expect(reading.guidance).toBe('');
+  expect(captureErrorText(apiError(409, 'some_new_code', 'Something specific.'))).toBe(
+    'Something specific.',
+  );
+});
+
+// ---- readings reached by CODE (no envelope to throw) ----------------------
+//
+// The dataset archive runner reports a halt as a plain `{code, message}` inside
+// its progress payload — there is no ApiError to hand `readCaptureError`. The
+// dialog showing that halt therefore had the code and the sentence but no way
+// to reach the guidance, which is how the operator ends up stopped in front of
+// a halted run with no next step.
+
+test('a reading can be reached by code alone, with the same guidance', () => {
+  const byCode = readCaptureCode('ledger_unreadable', 'The ledger could not be read: line 812.');
+  const byEnvelope = readCaptureError(LEDGER_UNREADABLE());
+  expect(byCode.guidance).toBe(byEnvelope.guidance);
+  expect(byCode.severity).toBe(byEnvelope.severity);
+  expect(byCode.message).toBe('The ledger could not be read: line 812.');
+});
+
+test('a code the catalog does not know keeps the server sentence and invents nothing', () => {
+  const reading = readCaptureCode('some_runner_code', 'The run stopped for a reason of its own.');
+  expect(reading.message).toBe('The run stopped for a reason of its own.');
+  expect(reading.guidance).toBe('');
+});
+
+// The runner's payload types `code` and `message` as OPTIONAL, so both can be
+// absent — a halt with no code must not render "undefined" at an operator.
+test('a halt with no code and no message degrades to empty, not to "undefined"', () => {
+  const reading = readCaptureCode(undefined, undefined);
+  expect(reading.message).toBe('');
+  expect(reading.guidance).toBe('');
+  expect(reading.code).toBe('');
+});

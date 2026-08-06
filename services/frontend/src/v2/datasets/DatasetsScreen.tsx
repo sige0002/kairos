@@ -15,6 +15,7 @@
 // underneath it.
 
 import { DeleteDialog, DiscardDialog } from '../captures/DeleteDialogs';
+import { BlockingFailure } from './BlockingFailure';
 import { BuildRail } from './BuildRail';
 import { DatasetCenter } from './DatasetCenter';
 import { DatasetList } from './DatasetList';
@@ -58,6 +59,10 @@ export function DatasetsScreen() {
       />
 
       <Toast message={state.toast} />
+      <BlockingFailure
+        error={state.blockingFailure}
+        onDismiss={state.dismissBlockingFailure}
+      />
     </div>
   );
 }

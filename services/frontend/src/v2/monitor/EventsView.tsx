@@ -106,7 +106,12 @@ export function EventsView() {
             >
               <StatusDot tone={i.tone} className="mt-[5px]" />
               <div className="flex min-w-0 flex-1 flex-col gap-px">
-                <span className="text-[12.5px] font-semibold text-gray-700">
+                {/* Same shape as the Events rail (EventsCard), which was
+                    measured painting a break-opportunity-free topic name 448px
+                    outside its card. Here it is LATENT rather than reproduced:
+                    this view is full-width, so the 118-char name that broke the
+                    330px rail still fits. Same cause, one column wider. */}
+                <span className="break-words text-[12.5px] font-semibold text-gray-700">
                   {i.title}
                   {i.detail && <span className="font-normal text-gray-400"> · {i.detail}</span>}
                 </span>

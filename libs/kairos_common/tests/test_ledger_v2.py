@@ -173,19 +173,118 @@ def test_a_missing_ledger_reads_as_no_history(tmp_path: Path) -> None:
     assert ledger.dataset_events(tmp_path) == []
 
 
-def test_unparseable_and_pre_v2_lines_are_skipped(tmp_path: Path) -> None:
-    """A write that hit ENOSPC mid-line leaves a truncated tail, and v1 lines
-    have a different shape entirely. Neither may make the ledger unreadable."""
+def test_pre_v2_and_unknown_kind_lines_are_skipped(tmp_path: Path) -> None:
+    """v1 lines have a different shape entirely and a future version may write
+    a kind this one has never heard of. Both are well-formed and say so, so
+    neither may make the ledger unreadable — wherever in the file they sit."""
     _append(tmp_path, "dataset_created", payload={"dataset_id": "d1", "name": "n"})
     with ledger.ledger_path(tmp_path).open("a", encoding="utf-8") as handle:
-        handle.write('{"schema_version":2,"kind":"dataset_del\n')  # truncated
         handle.write(json.dumps({"event": "archived", "index": "003"}) + "\n")  # v1
         handle.write(json.dumps({"schema_version": 2, "kind": "nonsense"}) + "\n")
         handle.write("\n")
+    _append(tmp_path, "dataset_created", payload={"dataset_id": "d2", "name": "n"})
 
     events = ledger.read_all(tmp_path)
 
-    assert [event["kind"] for event in events] == ["dataset_created"]
+    assert [event["kind"] for event in events] == ["dataset_created"] * 2
+
+
+def test_a_write_torn_mid_line_is_skipped(tmp_path: Path) -> None:
+    """ENOSPC mid-append leaves a partial last line and no newline after it.
+    That event never reached the disk whole, so it never happened."""
+    _append(tmp_path, "dataset_created", payload={"dataset_id": "d1", "name": "n"})
+    with ledger.ledger_path(tmp_path).open("a", encoding="utf-8") as handle:
+        handle.write('{"schema_version":2,"kind":"dataset_del')  # no newline
+
+    assert [event["kind"] for event in ledger.read_all(tmp_path)] == ["dataset_created"]
+
+
+def test_a_hand_edited_LAST_line_is_refused_even_though_it_is_last(
+    tmp_path: Path,
+) -> None:
+    """Position alone does not make a line forgivable — the missing newline
+    does, because that is what a write dying mid-line leaves behind.
+
+    The most recent line is the most likely one for an operator to open the
+    file and 'fix', and it is the newest tombstone. Forgiving the last line
+    unconditionally would drop exactly that one, silently.
+    """
+    _append(tmp_path, "capture_deleted", capture_id=new_capture_id())
+    path = ledger.ledger_path(tmp_path)
+    damaged = path.read_text(encoding="utf-8").rstrip("\n")
+    # Truncated by a text editor, then saved — so the newline is still there.
+    path.write_text(damaged[: len(damaged) // 2] + "\n", encoding="utf-8")
+
+    with pytest.raises(ledger.LedgerUnreadableError, match="line 1"):
+        ledger.read_all(tmp_path)
+
+
+def test_an_enospc_retry_glued_onto_a_torn_line_is_refused(tmp_path: Path) -> None:
+    """The case the torn-tail rule does NOT cover, reproduced through the
+    module's own recovery path rather than by hand.
+
+    ``append_with_slack_release`` retries after ENOSPC and ``write_event``
+    opens O_APPEND, so the retry lands immediately after the torn bytes — same
+    line, and now with a newline after it. Refusing is right: two records went
+    in, one of them completed, and neither can be read back.
+    """
+    _append(tmp_path, "dataset_created", payload={"dataset_id": "d1", "name": "n"})
+    path = ledger.ledger_path(tmp_path)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write('{"schema_version":2,"kind":"capture_dele')  # ENOSPC here
+    # Space is freed and the append is retried; O_APPEND has no idea a partial
+    # line is sitting there.
+    ledger.append_with_slack_release(
+        tmp_path,
+        "capture_deleted",
+        instance_id=new_instance_id(),
+        capture_id=new_capture_id(),
+    )
+
+    text = path.read_text(encoding="utf-8")
+    assert text.endswith("\n")  # the retry completed, so nothing looks torn
+    with pytest.raises(ledger.LedgerUnreadableError, match="line 2"):
+        ledger.read_all(tmp_path)
+
+
+def test_a_damaged_line_that_is_not_a_torn_tail_is_refused(tmp_path: Path) -> None:
+    """The other half of the rule above, and the reason it has to be a rule.
+
+    A completed append is fsynced, so a whole line that no longer parses was
+    changed after the fact — a hand edit, a bad sector. Skipping it would state
+    "nothing was ever deleted" for whatever it said, which §5 makes
+    authoritative and every consumer believes.
+    """
+    _append(tmp_path, "capture_deleted", capture_id=new_capture_id())
+    _append(tmp_path, "dataset_created", payload={"dataset_id": "d1", "name": "n"})
+    path = ledger.ledger_path(tmp_path)
+    lines = path.read_text(encoding="utf-8").splitlines()
+    lines[0] = lines[0][: len(lines[0]) // 2]  # interior, still newline-terminated
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    with pytest.raises(ledger.LedgerUnreadableError, match="line 1"):
+        ledger.read_all(tmp_path)
+    # The escape hatch degrades to what SURVIVED, not to nothing. Handing back
+    # [] would answer "no capture was ever deleted and no dataset was ever
+    # created" — a confident statement about the whole history, built from one
+    # bad line. The tombstone is the fact that was lost; the dataset event is
+    # still on disk and still true.
+    degraded = ledger.read_all(tmp_path, strict=False)
+    assert [event["kind"] for event in degraded] == ["dataset_created"]
+
+
+def test_a_line_that_parses_to_something_other_than_an_object_is_refused(
+    tmp_path: Path,
+) -> None:
+    """Valid JSON, but no event ever looked like this. It is damage, not a
+    shape from another version — those are objects with a schema_version."""
+    _append(tmp_path, "dataset_created", payload={"dataset_id": "d1", "name": "n"})
+    with ledger.ledger_path(tmp_path).open("a", encoding="utf-8") as handle:
+        handle.write("[1, 2, 3]\n")
+    _append(tmp_path, "dataset_created", payload={"dataset_id": "d2", "name": "n"})
+
+    with pytest.raises(ledger.LedgerUnreadableError, match="line 2"):
+        ledger.read_all(tmp_path)
 
 
 def test_tombstones_report_the_latest_fate_per_capture(tmp_path: Path) -> None:

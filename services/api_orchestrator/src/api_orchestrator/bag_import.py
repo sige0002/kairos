@@ -184,23 +184,86 @@ def _dir_bytes(path: Path) -> int:
     return total
 
 
-def _mcap_is_readable(path: Path) -> str | None:
-    """``None`` when the MCAP parses, else a plain-language reason.
+def _mcap_summary(path: Path) -> tuple[str | None, int | None]:
+    """``(unreadable reason, message count)`` for one shard.
 
     Only the summary/footer section is read — the same Layer-1 trick the
     stop-time quick check uses (``quick_check.read_mcap_summary``), so this
     stays milliseconds even on a multi-GB bag. A file that cannot be opened at
     all is the interesting case: it means the import would land something no
     validator could ever read.
+
+    The count comes from the same read, which is why comparing it against what
+    ``metadata.yaml`` declares costs nothing extra. ``None`` means the file
+    carries no statistics section (an unindexed MCAP) — unknown, not zero, and
+    a caller must not treat it as a shortfall.
     """
     from mcap.reader import make_reader
 
     try:
         with path.open("rb") as fh:
-            make_reader(fh).get_summary()
+            summary = make_reader(fh).get_summary()
     except Exception as exc:  # noqa: BLE001 - mcap raises assorted parse errors
-        return str(exc) or exc.__class__.__name__
-    return None
+        return (str(exc) or exc.__class__.__name__), None
+    if summary is None or summary.statistics is None:
+        return None, None
+    return None, int(summary.statistics.message_count)
+
+
+def _declared_mcaps(info: dict[str, Any]) -> tuple[list[str], str | None]:
+    """``(shard names, damage)`` from ``metadata.yaml``'s own file inventory.
+
+    rosbag2 writes ``relative_file_paths``; older versions carry the same list
+    as ``files[].path``. Both being ABSENT is not a complaint — there is simply
+    nothing to check against, and inventing a failure from it would reject bags
+    that are perfectly whole.
+
+    A field that is present but the wrong shape is the opposite, and the
+    distinction is the same one the lifecycle ledger draws one directory over:
+    damage is not absence. ``relative_file_paths: bag_0.mcap`` — a string where
+    a list belongs — used to fall through to the absent branch and produce an
+    empty inventory, so a bag whose own manifest is malformed imported as
+    though it had declared nothing. That reads the damage as a clean bill of
+    health, which is the one interpretation it cannot bear.
+
+    Only ``.mcap`` entries are returned: a ``.db3`` sibling listed here is a
+    different storage plugin's business, and is rejected earlier if it is all
+    the bag has.
+    """
+    raw: Any = info.get("relative_file_paths")
+    if raw is None:
+        entries: Any = info.get("files")
+        if entries is None:
+            return [], None  # no inventory at all: nothing to check
+        if not isinstance(entries, list):
+            return [], "files is not a list"
+        raw = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                return [], "files contains an entry that is not a mapping"
+            raw.append(entry.get("path"))
+    elif not isinstance(raw, list):
+        return [], "relative_file_paths is not a list"
+
+    names: list[str] = []
+    for entry in raw:
+        if entry is None:
+            continue  # a files[] entry with no path key: nothing declared
+        if not isinstance(entry, str):
+            return [], "the file inventory contains a non-string path"
+        if not entry.endswith(".mcap"):
+            continue
+        # Only the BASENAME is used. The paths are relative to the bag
+        # directory, so a metadata.yaml naming ``../../outside.mcap`` must not
+        # send this looking outside it — collapsed, it is simply looked for
+        # here and reported missing, and the file it named is never touched.
+        #
+        # The price, stated rather than hidden: a bag that genuinely keeps a
+        # shard in a subdirectory (``sub/bag_1.mcap``) is refused as missing
+        # even though the file exists. rosbag2 writes flat paths, so this is
+        # theoretical — but it is a real trade, not a free guard.
+        names.append(Path(entry).name)
+    return names, None
 
 
 def inspect_source(source: Path, *, layout: DataLayout) -> SourceBag:
@@ -338,17 +401,100 @@ def inspect_source(source: Path, *, layout: DataLayout) -> SourceBag:
             details={"source_path": str(source)},
         )
 
-    unreadable = _mcap_is_readable(mcap_files[0])
-    if unreadable is not None:
+    # The bag's own inventory, against the directory. A split recording is only
+    # whole if every shard it declares is here: an interrupted copy leaves the
+    # rest readable and metadata.yaml still counting the messages of the one
+    # that never arrived, so the capture lands looking complete and short.
+    declared, inventory_damage = _declared_mcaps(info)
+    if inventory_damage is not None:
+        raise ApiError(
+            status_code=400,
+            code="import_damaged_inventory",
+            message=(
+                f"{source / METADATA_FILENAME} declares its own files in a shape "
+                f"this cannot read ({inventory_damage}). That is damage, not an "
+                "older format — and read as 'nothing declared' it would let a "
+                "bag missing half its shards import as whole. "
+                f"`ros2 bag reindex {source}` rewrites the file from the MCAPs."
+            ),
+            details={
+                "source_path": str(source),
+                "remedy": f"ros2 bag reindex {source}",
+            },
+        )
+    missing = [name for name in declared if not (source / name).is_file()]
+    if missing:
+        raise ApiError(
+            status_code=400,
+            code="import_missing_shard",
+            message=(
+                f"{METADATA_FILENAME} lists {len(missing)} file(s) that are not "
+                f"in {source}: {', '.join(missing)}. The copy is incomplete — "
+                "the messages they hold would be counted by the catalog and "
+                "absent from the bag. Copy the whole directory again."
+            ),
+            details={"source_path": str(source), "missing": missing},
+        )
+
+    # EVERY shard, not just the first. A recording still being written has a
+    # complete shard 0 and a growing tail, so checking only the first is the
+    # one arrangement guaranteed to miss it.
+    #
+    # Cost, decided deliberately: this is O(shards) per bag and the scan
+    # endpoint runs it over a whole folder, so a directory of hundreds of
+    # multi-shard bags scans proportionally slower. It stays footer-only — a
+    # seek per shard, not a read — and the alternative of checking only the
+    # first and last would let a truncated MIDDLE shard through, which is this
+    # same bug wearing a different hat. If the scan ever turns out to be slow,
+    # measure it and bound it on evidence; do not trade the hole back.
+    counted = 0
+    every_shard_counted = True
+    for mcap in mcap_files:
+        unreadable, count = _mcap_summary(mcap)
+        if unreadable is None:
+            if count is None:
+                every_shard_counted = False
+            else:
+                counted += count
+            continue
         raise ApiError(
             status_code=400,
             code="import_unreadable_mcap",
             message=(
-                f"{mcap_files[0].name} could not be read as an MCAP file "
+                f"{mcap.name} could not be read as an MCAP file "
                 f"({unreadable}). The recording is likely truncated or still "
                 "being written — copy it again once the recorder has stopped."
             ),
-            details={"source_path": str(source), "file": mcap_files[0].name},
+            details={"source_path": str(source), "file": mcap.name},
+        )
+
+    # What the bag SAYS it holds, against what its own summaries count. The
+    # missing-shard check above catches a file that never arrived; this catches
+    # the same harm with every file present — metadata declaring 999,999
+    # messages over a bag holding three, which imports a capture whose
+    # message_count counts messages that are not there.
+    #
+    # Only a SHORTFALL is refused. An unindexed shard reports no statistics at
+    # all, and "unknown" must not be read as "zero", so a single uncounted
+    # shard abandons the comparison rather than inventing a deficit.
+    declared_count = _coerce_int(info.get("message_count"))
+    if every_shard_counted and declared_count is not None and counted < declared_count:
+        raise ApiError(
+            status_code=400,
+            code="import_message_count_short",
+            message=(
+                f"{METADATA_FILENAME} declares {declared_count} messages but the "
+                f"MCAP files hold {counted}. The bag and its own description "
+                "disagree, so importing it would put a count in the catalog "
+                "that nothing on disk supports. "
+                f"`ros2 bag reindex {source}` rewrites the file from the MCAPs."
+            ),
+            details={
+                "source_path": str(source),
+                "declared": declared_count,
+                "counted": counted,
+                "remedy": f"ros2 bag reindex {source}",
+            },
         )
 
     started_ns = _starting_time_ns(info)

@@ -10,7 +10,20 @@ from kairos_common.capture_sidecars import capture_dir, validate_capture_id
 from mcap.reader import make_reader
 from mcap_ros2.reader import read_ros2_messages
 
+
+class CaptureBytesMissing(FileNotFoundError):
+    """The capture's directory is not there — the bytes are, or have gone.
+
+    A ``FileNotFoundError`` so every existing handler still catches it, but its
+    own type so a job failure caused by an absent capture can be reported with
+    its own code instead of the generic one. An external ``rm -rf`` (§9-2) is
+    the ordinary way to arrive here, and "the recording is gone" is a different
+    fact for a caller than "the pipeline broke".
+    """
+
+
 __all__ = [
+    "CaptureBytesMissing",
     "enumerate_topics",
     "find_mcap",
     "iter_decoded_ros2_messages",
@@ -36,7 +49,7 @@ def resolve_source_dir(data_dir: Path, capture_id: str) -> Path:
     """
     source = capture_dir(data_dir, capture_id)
     if not source.is_dir():
-        raise FileNotFoundError(f"No capture found: {source}")
+        raise CaptureBytesMissing(f"No capture found: {source}")
     return source
 
 

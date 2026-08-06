@@ -31,14 +31,15 @@ async def list_presets(request: Request) -> ValidationPresetListResponse:
     """
     catalog = request.app.state.config_catalog
     service = request.app.state.capture_service
-    targets = service.list_present_terminal()
+    targets = service.present_terminal_ids()
     items = []
     for preset in catalog.list_validation_presets():
-        pending = [
-            capture.capture_id
-            for capture in targets
-            if not service.has_report(preset.pipeline, capture.capture_id)
-        ]
+        # One listing of the pipeline's report directory, then a set
+        # difference — rather than asking the filesystem about every target.
+        # This endpoint is polled, and the per-capture form made its cost grow
+        # with the whole catalog (E-27).
+        reported = service.captures_with_report(preset.pipeline)
+        pending = [capture_id for capture_id in targets if capture_id not in reported]
         items.append(
             ValidationPresetInfo(
                 id=preset.id,

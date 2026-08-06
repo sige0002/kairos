@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 from dora_runner.main import create_dora_app
+from dora_runner.mcap_utils import enumerate_topics, find_mcap
 from dora_runner.video_check import (
     MAX_FRAMES,
     PIPELINE_VERSION,
@@ -317,14 +318,41 @@ DATA_DIR = Path(__file__).resolve().parents[3] / "data"
 CAMERA_TOPIC = "/hsrb/head_rgbd_sensor/rgb/image_rect_color/compressed"
 
 
+def _sample_with_camera_topic(
+    sample_capture: tuple[str, Path] | None,
+) -> tuple[str, Path]:
+    """The sample recording, or a skip that says why it cannot be used.
+
+    ``CAMERA_TOPIC`` is a fixed HSR topic while the sample under
+    ``data/objects/`` is whatever the developer last recorded — often another
+    robot, whose camera topics are named differently. Encoding zero frames from
+    a bag that never had that topic tests nothing, so it is skipped.
+
+    The skip NAMES both sides. A bare "skipped" here would be indistinguishable
+    from the deps being absent, and two permanently-red tests train everyone to
+    read the tail of this suite as normal — which is how a real regression in
+    it gets waved through.
+    """
+    if sample_capture is None:
+        pytest.skip("needs a local sample recording under data/objects/")
+    capture_id, directory = sample_capture
+    present = {t["name"] for t in enumerate_topics(find_mcap(directory))}
+    if CAMERA_TOPIC not in present:
+        cameras = sorted(t for t in present if "image" in t or "camera" in t)
+        pytest.skip(
+            f"the sample recording {capture_id} has no {CAMERA_TOPIC}; "
+            f"its camera topics are {cameras or 'none'}. This test is fixed to "
+            "an HSR topic, so another robot's recording cannot exercise it."
+        )
+    return capture_id, directory
+
+
 @pytest.mark.skipif(
     not _HAS_ENCODE_DEPS,
     reason="needs the 'av' and 'Pillow' packages installed",
 )
 def test_video_check_job_encodes_mp4(sample_capture: tuple[str, Path] | None) -> None:
-    if sample_capture is None:
-        pytest.skip("needs a local sample recording under data/objects/")
-    capture_id, _ = sample_capture
+    capture_id, _ = _sample_with_camera_topic(sample_capture)
     app = create_dora_app(Settings(data_dir=str(DATA_DIR)))
     with TestClient(app) as client:
         created = client.post(
@@ -363,9 +391,7 @@ def test_video_check_max_frames_caps_the_encode(
     sample_capture: tuple[str, Path] | None,
 ) -> None:
     """A tiny explicit cap stops the encode early and marks the truncation."""
-    if sample_capture is None:
-        pytest.skip("needs a local sample recording under data/objects/")
-    capture_id, _ = sample_capture
+    capture_id, _ = _sample_with_camera_topic(sample_capture)
     result = run_video_check(
         capture_id=capture_id,
         data_dir=DATA_DIR,
@@ -451,3 +477,28 @@ def test_video_check_max_frames_zero_streams_beyond_default(
     )
     assert capped["summary"]["frames"] == MAX_FRAMES
     assert capped["summary"]["truncated"] is True
+
+
+def test_a_check_that_encodes_nothing_does_not_report_pass(
+    tmp_path: Path, make_capture: Callable[[Path], tuple[str, Path]]
+) -> None:
+    """A video_check with no frames must not read as a check that passed.
+
+    The job state cannot carry this: the run itself did not fail, so it ends
+    `succeeded` either way. Without a verdict in the summary the only
+    machine-readable signal a consumer has is that state, and it says the
+    opposite of the truth — there is no video, no artifact, and the usual cause
+    is a topic that is not in this recording at all.
+    """
+    capture_id, capture_dir = make_capture(tmp_path)
+    _write_compressed_image_mcap(capture_dir / "run_0.mcap", 3)
+
+    result = run_video_check(
+        capture_id=capture_id, data_dir=tmp_path, topic="/not/in/this/bag"
+    )
+
+    summary = result["summary"]
+    assert summary["frames"] == 0
+    assert summary["result"] == "fail"
+    assert result["artifacts"] == []
+    assert summary["note"]

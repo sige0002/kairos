@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
 import type { RuntimeConfig } from '../../config';
@@ -28,16 +28,30 @@ const RECORDING = {
   },
 };
 
+// What GET /config/recording currently serves; flipped to simulate another
+// terminal (or a robot switch) rewriting the file under an open editor.
+let serverRecording: typeof RECORDING = RECORDING;
+
+const RECORDING_CHANGED = {
+  ...RECORDING,
+  config: {
+    ...RECORDING.config,
+    default_topics: [...RECORDING.config.default_topics, '/hsrb/odom'],
+    recording: { start_paused: true, compression: 'none', max_cache_size_mb: 512 },
+  },
+};
+
 function mockFetch() {
   return vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
-    if (url.includes('/config/recording')) return Promise.resolve(jsonResponse(RECORDING));
+    if (url.includes('/config/recording')) return Promise.resolve(jsonResponse(serverRecording));
     return Promise.resolve(jsonResponse({}));
   });
 }
 
 beforeEach(() => {
   setApiBase('/api/v1');
+  serverRecording = RECORDING;
   mockFetch();
 });
 afterEach(() => vi.restoreAllMocks());
@@ -75,4 +89,76 @@ test('the raw JSON editor is demoted to a collapsed Advanced disclosure', async 
   fireEvent.click(screen.getByTestId('recording-advanced-toggle'));
   const editor = (await screen.findByLabelText('recording config json')) as HTMLTextAreaElement;
   await waitFor(() => expect(editor.value).toContain('"robot_name": "airoa_hsr"'));
+});
+
+// ---------------------------------------------------------------------------
+// A REFETCH landing on a dirty JSON buffer — the recording half of the same
+// scenario as AlertsCard. Reached the same way: `event: resync` after a
+// reconnect makes the client call a keyless `qc.invalidateQueries()`
+// (sse/useEventStream.ts), and RECORDING_CONFIG_KEY is additionally invalidated
+// by RobotsSection, ValidationSection and Collect's ContextBar.
+// ---------------------------------------------------------------------------
+
+/** Open Settings > Recording > Advanced and return the seeded JSON editor. */
+async function openAdvancedEditor() {
+  await screen.findByTestId('recording-advanced-toggle');
+  fireEvent.click(screen.getByTestId('recording-advanced-toggle'));
+  const editor = (await screen.findByLabelText('recording config json')) as HTMLTextAreaElement;
+  await waitFor(() => expect(editor.value).toContain('"robot_name": "airoa_hsr"'));
+  return editor;
+}
+
+/** The reconnect refetch, awaited until the component has RE-RENDERED with the
+ *  new payload. The topic count is read straight from the query, not from the
+ *  editor buffer, so it moves whether or not the buffer was clobbered — without
+ *  that probe a "the buffer survived" assertion passes vacuously, because the
+ *  cache updates inside act() a tick before the observer re-renders. */
+async function resyncRefetch(client: { invalidateQueries: () => Promise<void> }) {
+  await act(async () => {
+    await client.invalidateQueries();
+  });
+  await waitFor(() =>
+    expect(screen.getByTestId('recording-topic-count')).toHaveTextContent('3 topics'),
+  );
+}
+
+test('a reconnect refetch does not silently discard unsaved JSON edits', async () => {
+  const { client } = renderWithClient(<RecordingSection config={CONFIG} />);
+  const editor = await openAdvancedEditor();
+
+  const mine = '{\n  "robot_name": "airoa_hsr",\n  "default_topics": ["/my/unsaved/topic"]\n}';
+  fireEvent.change(editor, { target: { value: mine } });
+
+  serverRecording = RECORDING_CHANGED;
+  await resyncRefetch(client);
+
+  expect((screen.getByLabelText('recording config json') as HTMLTextAreaElement).value).toBe(mine);
+  expect(screen.getByTestId('recording-server-changed')).toBeInTheDocument();
+});
+
+test('a CLEAN JSON buffer still adopts the refetched config', async () => {
+  const { client } = renderWithClient(<RecordingSection config={CONFIG} />);
+  await openAdvancedEditor();
+
+  serverRecording = RECORDING_CHANGED;
+  await resyncRefetch(client);
+
+  const editor = screen.getByLabelText('recording config json') as HTMLTextAreaElement;
+  expect(editor.value).toContain('/hsrb/odom');
+  expect(editor.value).toContain('"compression": "none"');
+  expect(screen.queryByTestId('recording-server-changed')).not.toBeInTheDocument();
+});
+
+test('the operator can take the server copy of the recording config', async () => {
+  const { client } = renderWithClient(<RecordingSection config={CONFIG} />);
+  const editor = await openAdvancedEditor();
+  fireEvent.change(editor, { target: { value: '{"robot_name": "mine"}' } });
+
+  serverRecording = RECORDING_CHANGED;
+  await resyncRefetch(client);
+  fireEvent.click(screen.getByTestId('recording-load-server'));
+
+  const after = screen.getByLabelText('recording config json') as HTMLTextAreaElement;
+  expect(after.value).toContain('/hsrb/odom');
+  expect(screen.queryByTestId('recording-server-changed')).not.toBeInTheDocument();
 });

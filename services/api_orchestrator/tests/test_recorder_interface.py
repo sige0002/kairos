@@ -364,6 +364,49 @@ class TestOtherPinnedShapes:
         assert body["error"] is None
         assert body["state"] == "completed"
 
+    def test_a_corrupt_manifest_cannot_clear_the_complaint_it_caused(
+        self,
+        client: TestClient,
+        fake_recorder: FakeRecorder,
+        # The digest must not be the thing that happens to skip this capture;
+        # the point is what adoption does when it IS asked.
+        digests_stay_queued: list[str],
+    ) -> None:
+        """The mirror of the test above, with a REAL unreadable file.
+
+        Both halves of the rule are decided by one fact — whether the sidecar
+        reads back as a valid terminal manifest — so the clearing case is only
+        half a specification.
+
+        Adoption is called DIRECTLY here, and that is the whole point. Driving
+        it through a background pass proves nothing about this rule: those
+        passes may never route a corrupt capture to adoption at all, so the
+        complaint would survive because nothing tried, and the test would pass
+        while the guard it names could be deleted. The row carries a real
+        complaint and the file on disk is real junk, so the only thing standing
+        between them is ``adopt_manifest_facts`` refusing to read it.
+        """
+        started = client.post(
+            "/api/v1/record/start", json={"topics": ["/joint_states"]}
+        ).json()
+        fake_recorder.manifest_corrupt = True
+        fake_recorder.sidecar_corrupt = True
+        client.post("/api/v1/record/stop")
+        capture_id = started["capture_id"]
+        # The stop path filed the fault, so there is now something to lose.
+        assert (
+            client.get(f"/api/v1/captures/{capture_id}").json()["error"]["code"]
+            == "manifest_corrupt"
+        )
+
+        # The recorder's endpoint recovers; the FILE does not.
+        fake_recorder.manifest_corrupt = False
+        service = client.app.state.capture_service
+        assert service.adopt_manifest_facts(capture_id) is False
+
+        body = client.get(f"/api/v1/captures/{capture_id}").json()
+        assert body["error"]["code"] == "manifest_corrupt"
+
     def test_the_bag_is_named_after_the_capture_not_the_run(
         self, client: TestClient, layout: DataLayout, fake_recorder: FakeRecorder
     ) -> None:
@@ -396,3 +439,43 @@ class TestOtherPinnedShapes:
         # next rebuild reads the failed-start sidecar.
         assert body["capture_id"] == known
         assert body["state"] == "failed"
+
+
+class TestRecorderKilledBetweenStopAndConfirmation:
+    """E-9: the operator presses stop and the recorder dies before confirming.
+
+    The two cases differ only in what reached the disk, and that is the whole
+    point: the process being gone says nothing about whether the recording
+    sealed. §3 makes the manifest authoritative, so the answer must come from
+    the sidecar — not from the fact that nobody is left to ask.
+    """
+
+    def test_a_recording_that_did_seal_is_not_reported_as_lost(
+        self, client: TestClient, fake_recorder: FakeRecorder
+    ) -> None:
+        client.post("/api/v1/record/start", json={"topics": ["/joint_states"]})
+        capture_id = fake_recorder.capture_id
+        fake_recorder.die_after_stop = True  # sealed first, then killed
+        client.post("/api/v1/record/stop")
+
+        body = client.get(f"/api/v1/captures/{capture_id}").json()
+        # The bag is finalised and the manifest says so. Calling this
+        # interrupted would send an operator to re-record a good take.
+        assert body["state"] == "completed"
+
+    def test_a_recording_that_never_sealed_is_not_reported_as_clean(
+        self, client: TestClient, fake_recorder: FakeRecorder
+    ) -> None:
+        client.post("/api/v1/record/start", json={"topics": ["/joint_states"]})
+        capture_id = fake_recorder.capture_id
+        fake_recorder.seal_on_stop = False  # killed before finalising
+        fake_recorder.die_after_stop = True
+        client.post("/api/v1/record/stop")
+
+        body = client.get(f"/api/v1/captures/{capture_id}").json()
+        # Nothing finalised this bag: the manifest on disk still says
+        # "recording" and no later event will ever correct it. Reporting
+        # "completed" states that the take is good, which is the one answer
+        # that cannot be recovered from — it is dataset-eligible on the
+        # strength of a guess made because nobody was left to ask.
+        assert body["state"] == "interrupted"

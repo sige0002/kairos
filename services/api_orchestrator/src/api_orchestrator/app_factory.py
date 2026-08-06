@@ -37,6 +37,7 @@ from kairos_common import (
     Settings,
     create_app,
     get_settings,
+    ledger_v2,
     load_recording_config,
     load_stream_config,
     resolve_config_path,
@@ -46,7 +47,8 @@ from kairos_common.stream_config import StreamConfig
 
 from api_orchestrator import bag_import
 from api_orchestrator import views as views_mod
-from api_orchestrator.bootstrap import bootstrap_store, prepare_store
+from api_orchestrator.batch_service import BatchService
+from api_orchestrator.bootstrap import StoreStartupError, bootstrap_store, prepare_store
 from api_orchestrator.captures import CaptureService
 from api_orchestrator.config_catalog import ConfigCatalog
 from api_orchestrator.dataset_archive import DatasetArchiver
@@ -267,6 +269,7 @@ def create_orchestrator_app(
     # A single-slot flag rather than a task per change — ten rapid edits need
     # one regeneration, not ten, and the last one is the only correct answer.
     views_refresh = _ViewsRefresher(capture_store, layout)
+    batch_service = BatchService(capture_store, layout, instance_id=instance_id)
     dataset_service = DatasetService(
         capture_store,
         layout,
@@ -302,7 +305,32 @@ def create_orchestrator_app(
             capture_store, prepared, capture_service, recorder=recorder
         )
         if report is not None:
-            dataset_service.restore_from_ledger()
+            try:
+                # The datasets half of the rebuild. Its warnings join the
+                # capture half's in the same store-health list, because an
+                # operator looking at "what did this rebuild find" should not
+                # have to know the catalog is reconstructed in two passes.
+                # Batches first: they are plain rows with no cross-references,
+                # and a dataset warning should not be lost to a batch failure.
+                health.add_rebuild_warnings(
+                    batch_service.restore_from_ledger().warnings
+                    + dataset_service.restore_from_ledger().warnings
+                )
+            except ledger_v2.LedgerUnreadableError as exc:
+                # The same refusal bootstrap_store makes, for the same reason
+                # and one step later: the dataset replay rebuilds the
+                # never-reuse watermark, and a history it cannot read would
+                # rebuild no watermark at all. Reached only if the file is
+                # damaged between the capture rebuild's read and this one —
+                # narrow, but the alternative is a traceback where an operator
+                # needs a sentence telling them what to repair.
+                raise StoreStartupError(
+                    f"{exc}. The dataset history is what records which "
+                    "display_index numbers were issued, so rebuilding the "
+                    "catalog without it would re-issue numbers that already "
+                    "belong to a recording. Restore or repair the ledger, "
+                    "then start again."
+                ) from exc
         try:
             await record_service.reconcile_on_startup()
         except Exception:  # noqa: BLE001 - never block startup on reconcile
@@ -328,6 +356,7 @@ def create_orchestrator_app(
     app.state.capture_service = capture_service
     app.state.record_service = record_service
     app.state.dataset_service = dataset_service
+    app.state.batch_service = batch_service
     app.state.dataset_archiver = dataset_archiver
     app.state.digest_job = digest
     app.state.reconciler = reconciler

@@ -81,6 +81,15 @@ class FakeRecorder:
         # that really is unreadable, where adoption refuses and the complaint
         # stands. Both are real; a test must say which one it means.
         self.sidecar_corrupt: bool = False
+        # The recorder is killed the instant it has answered /record/stop, so
+        # every later call raises. Deliberately INDEPENDENT of what it wrote to
+        # disk: "died and sealed" and "died without sealing" are different
+        # facts about the recording, and the orchestrator's answer must come
+        # from the sidecar rather than from whether the process is still there.
+        self.die_after_stop: bool = False
+        # Answer /record/stop but write no terminal manifest — killed between
+        # acknowledging and finalising.
+        self.seal_on_stop: bool = True
         # Whether the fake writes objects/<capture_id>/ on start. Off lets a
         # test drive the API without any bytes on disk.
         self.writes_sidecars: bool = True
@@ -225,7 +234,7 @@ class FakeRecorder:
             self.finalized = True
             self.message_count = 1234
             self.bytes = 567890
-            if self.writes_sidecars:
+            if self.writes_sidecars and self.seal_on_stop:
                 self._write_bag()
                 self._write_manifest(self.final_state)
         body: dict[str, Any] = {
@@ -236,6 +245,8 @@ class FakeRecorder:
         }
         if disarmed is not None:
             body["disarmed_capture_id"] = disarmed
+        if self.die_after_stop:
+            self.transport_down = True
         return httpx.Response(200, json=body)
 
     def _status(self) -> httpx.Response:

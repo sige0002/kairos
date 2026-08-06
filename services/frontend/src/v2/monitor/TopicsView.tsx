@@ -21,6 +21,7 @@ import { SystemCard } from './SystemCard';
 import { useNowClock } from './useNowClock';
 import { useRecMarkers } from './useRecMarkers';
 import { MONITOR_WINDOWS, type MonitorWindowId, toggleTopic, windowMs } from './chartSeries';
+import { configSeedKey } from '../seedKey';
 import {
   MAX_PANELS,
   addPanel,
@@ -38,7 +39,7 @@ function formatElapsed(ms: number): string {
 }
 
 export function TopicsView({ config }: { config: RuntimeConfig }) {
-  const { rows, isDiscovering } = useMonitorRows(config);
+  const { rows, isDiscovering, malformedDropped } = useMonitorRows(config);
 
   // Rec-topic picker (shared uiStore, consumed by a Collect-side /record/start).
   // Mirrors v1 LiveTab: seed the selection from the active robot's configured
@@ -49,7 +50,7 @@ export function TopicsView({ config }: { config: RuntimeConfig }) {
   const seedRecordTopics = useUiStore((s) => s.seedRecordTopics);
   const toggleRecordTopic = useUiStore((s) => s.toggleRecordTopic);
   const seedKey = useMemo(
-    () => JSON.stringify(config.defaults.default_topics ?? []),
+    () => configSeedKey(config.defaults.default_topics ?? []),
     [config],
   );
   useEffect(() => {
@@ -122,6 +123,22 @@ export function TopicsView({ config }: { config: RuntimeConfig }) {
           {paused && (
             <span data-testid="freeze-note" className="font-mono text-[11px] text-amber-600">
               Charts frozen · table still live.
+            </span>
+          )}
+          {/* The SSE ingest drops readings it cannot identify rather than
+              letting one take the console down (E-23, sse/useEventStream).
+              Dropping is the right call — a row with no usable name cannot be
+              keyed or named — but a monitoring table quietly showing fewer
+              topics than the robot published would be lying by omission, so
+              the count is stated rather than swallowed. */}
+          {malformedDropped > 0 && (
+            <span
+              data-testid="malformed-note"
+              title="These readings arrived in a shape this screen could not read — no usable topic name — so they were left out rather than shown under an invented one."
+              className="font-mono text-[11px] text-amber-600"
+            >
+              {malformedDropped} reading{malformedDropped === 1 ? '' : 's'} ignored
+              (unreadable)
             </span>
           )}
           <div className="flex-1" />

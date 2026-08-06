@@ -18,6 +18,7 @@ that an approval given while the volume is unidentifiable be refused, because
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -86,8 +87,15 @@ async def refresh_views(request: Request) -> dict[str, Any]:
     The orchestrator owns this tree; dora_runner asks rather than writing. The
     rebuild is a generation directory plus one atomic symlink flip, so ``views``
     never stops resolving and no reader ever sees a half-built tree.
+
+    Off the loop, like the background refresher's own call: regeneration is a
+    filesystem walk that now waits behind whichever regeneration is already
+    running, and doing either of those on the event loop would stall every
+    other request — including, on a bad day, the one holding the lock.
     """
     store = request.app.state.capture_store
     layout = request.app.state.data_layout
-    result = views_mod.regenerate(layout, store.list_view_entries())
+    result = await asyncio.to_thread(
+        views_mod.regenerate, layout, store.list_view_entries()
+    )
     return result.to_dict()

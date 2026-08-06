@@ -22,8 +22,10 @@
 // level off. No roots configured -> the button that opens this never renders.
 
 import { Badge, Button, Modal } from '../../components/ui';
-import { ErrorMessage } from '../../components/ErrorMessage';
+import { readCaptureCode } from '../captures/errors';
+import { ArchiveError } from './ArchiveError';
 import { formatBytes, memberCount, shortCaptureId } from './data';
+import { DatasetGoneNote } from './SelectionGone';
 import type { DatasetsState } from './useDatasetsState';
 
 function ModeRadio({ state }: { state: DatasetsState }) {
@@ -79,16 +81,25 @@ function ModeRadio({ state }: { state: DatasetsState }) {
 
 function ConfirmBody({ state }: { state: DatasetsState }) {
   const row = state.selectedDataset;
-  const name = row?.dataset.name ?? '';
-  const count = row?.dataset.member_count ?? 0;
   const bytes = row ? row.aggregate.bytes : null;
   const copying = state.datasetArchiveMode === 'copy';
 
   return (
     <div className="flex flex-col gap-3">
-      <p className="text-[13px] leading-relaxed text-gray-600">
-        <span className="font-semibold text-gray-900">{name}</span> —{' '}
-        {memberCount(count)}
+      <p className="break-words text-[13px] leading-relaxed text-gray-600">
+        {/* With no row in view (an external status change can take it off this
+            shelf mid-dialog) there is no member count to state — "0 members"
+            would be a number nothing measured. */}
+        {row ? (
+          <>
+            <span className="font-semibold text-gray-900">{row.dataset.name}</span> —{' '}
+            {memberCount(row.dataset.member_count)}
+          </>
+        ) : (
+          <span className="break-all font-mono text-gray-900">
+            {state.selectedDatasetId}
+          </span>
+        )}
         {bytes?.total ? <>, about {formatBytes(bytes.total)}</> : null} — is copied
         to the destination as numbered folders plus a manifest, and every file is
         verified (SHA-256).{' '}
@@ -182,9 +193,11 @@ function ConfirmBody({ state }: { state: DatasetsState }) {
         />
       </label>
 
-      {state.datasetArchiveStartError != null && (
-        <ErrorMessage error={state.datasetArchiveStartError} />
-      )}
+      <ArchiveError
+        error={state.datasetArchiveStartError}
+        testIdPrefix="dataset-archive-error"
+        resolveDatasetName={state.datasetName}
+      />
     </div>
   );
 }
@@ -192,6 +205,10 @@ function ConfirmBody({ state }: { state: DatasetsState }) {
 function ProgressBody({ state }: { state: DatasetsState }) {
   const progress = state.datasetArchiveProgress;
   const halted = progress != null && !progress.running && progress.error != null;
+  const haltGuidance = readCaptureCode(
+    progress?.error?.code,
+    progress?.error?.message,
+  ).guidance;
   const done = progress?.members_done ?? 0;
   const total = progress?.member_total ?? 0;
 
@@ -256,6 +273,18 @@ function ProgressBody({ state }: { state: DatasetsState }) {
               </>
             )}
           </span>
+          {/* The runner's halt is a plain {code, message} in the progress
+              payload, not a thrown ApiError, so the catalog has to be reached
+              by code (errors.ts readCaptureCode). Without this the operator is
+              stopped in front of a halted run, holding a sentence and a Resume
+              button — and for `ledger_unreadable`, pressing Resume changes
+              nothing until someone repairs a file. An unknown code adds
+              nothing rather than inventing advice. */}
+          {haltGuidance && (
+            <span data-testid="dataset-archive-halt-guidance" className="font-semibold">
+              {haltGuidance}
+            </span>
+          )}
           <span>
             Recordings already archived stay archived; Resume continues from the
             first unfinished one.
@@ -263,9 +292,11 @@ function ProgressBody({ state }: { state: DatasetsState }) {
         </div>
       )}
 
-      {state.datasetArchiveStartError != null && (
-        <ErrorMessage error={state.datasetArchiveStartError} />
-      )}
+      <ArchiveError
+        error={state.datasetArchiveStartError}
+        testIdPrefix="dataset-archive-error"
+        resolveDatasetName={state.datasetName}
+      />
     </div>
   );
 }
@@ -278,6 +309,10 @@ export function DatasetArchiveDialog({ state }: { state: DatasetsState }) {
     state.datasetArchiveProgress != null &&
     !state.datasetArchiveProgress.running &&
     !state.datasetArchiveStarting;
+  // Deleted underneath the dialog. There is no run to start and no progress to
+  // report, so the dialog drops both faces and says only that — with the button
+  // dead, because the one thing it must not do is look like it did something.
+  const gone = state.selectionGone;
 
   return (
     <Modal
@@ -285,7 +320,7 @@ export function DatasetArchiveDialog({ state }: { state: DatasetsState }) {
       onClose={state.cancelDatasetArchive}
       title="Archive dataset"
       footer={
-        inProgress ? (
+        inProgress && !gone ? (
           <>
             <Button
               variant="ghost"
@@ -313,12 +348,13 @@ export function DatasetArchiveDialog({ state }: { state: DatasetsState }) {
               disabled={state.datasetArchiveStarting}
               data-testid="dataset-archive-cancel"
             >
-              Cancel
+              {gone ? 'Close' : 'Cancel'}
             </Button>
             <Button
               variant="primary"
               onClick={state.confirmDatasetArchive}
               disabled={
+                gone ||
                 state.datasetArchiveStarting ||
                 state.datasetArchiveDestination === '' ||
                 state.datasetArchivePath.trim() === ''
@@ -335,8 +371,24 @@ export function DatasetArchiveDialog({ state }: { state: DatasetsState }) {
         )
       }
     >
-      <div data-testid="dataset-archive-dialog">
-        {inProgress ? <ProgressBody state={state} /> : <ConfirmBody state={state} />}
+      <div data-testid="dataset-archive-dialog" className="flex flex-col gap-3">
+        {gone ? (
+          <>
+            <DatasetGoneNote
+              testId="dataset-archive-gone"
+              datasetId={state.selectedDatasetId}
+            />
+            <ArchiveError
+              error={state.datasetArchiveStartError}
+              testIdPrefix="dataset-archive-error"
+              resolveDatasetName={state.datasetName}
+            />
+          </>
+        ) : inProgress ? (
+          <ProgressBody state={state} />
+        ) : (
+          <ConfirmBody state={state} />
+        )}
       </div>
     </Modal>
   );

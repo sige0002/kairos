@@ -34,7 +34,7 @@ const GRID_COLLAPSED =
 
 export function ReviewScreen() {
   const rv = useReviewState();
-  const { conflict, failure } = rv.reviewSave;
+  const { conflict, failure, failureCaptureId } = rv.reviewSave;
   const queryClient = useQueryClient();
   // Bringing in bags recorded outside kairos: a Review-side action because an
   // imported bag's whole reason to exist is to be reviewed, validated and
@@ -87,7 +87,10 @@ export function ReviewScreen() {
       />
       {/* A refused save (409). The banner names what is actually stored now, so
           the operator re-applies their decision against the real current value
-          instead of guessing what the other terminal chose. */}
+          instead of guessing what the other terminal chose. It also names the
+          episode: only a save for that same capture supersedes it, so it
+          outlives the selection and the filters, and a warning the operator
+          cannot attribute to a capture is not one they can act on. */}
       {conflict && (
         <div
           role="alert"
@@ -95,6 +98,10 @@ export function ReviewScreen() {
           className="flex flex-wrap items-center justify-between gap-2 rounded-control border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900"
         >
           <span data-testid="review-conflict-message">
+            <strong data-testid="review-conflict-subject">
+              {rv.captureSubject(conflict.captureId)}
+            </strong>
+            {' — '}
             {conflict.reading.message} {conflict.reading.guidance}
             {conflict.current && (
               <>
@@ -128,7 +135,16 @@ export function ReviewScreen() {
           className="flex flex-wrap items-center justify-between gap-2 rounded-control border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800"
         >
           <span>
-            <strong>Not saved.</strong> {failure.message} {failure.guidance}
+            <strong>Not saved.</strong>{' '}
+            {failureCaptureId && (
+              <>
+                <strong data-testid="review-save-failure-subject">
+                  {rv.captureSubject(failureCaptureId)}
+                </strong>
+                {' — '}
+              </>
+            )}
+            {failure.message} {failure.guidance}
           </span>
           <Button
             variant="ghost"

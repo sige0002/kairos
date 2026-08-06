@@ -12,6 +12,22 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 export type StreamPhase = 'idle' | 'starting' | 'negotiating' | 'connected' | 'failed';
 
+/**
+ * WHY a stream failed, as a fact rather than a sentence to re-parse.
+ *
+ * The three are different problems with different next actions, and a summary
+ * that says only "down" leaves the operator guessing between them (E-37):
+ *   'unsupported' — this browser has no WebRTC at all; no robot involved.
+ *   'signaling'   — the offer never reached the streamer service (it is down,
+ *                   unreachable, or answering an error). Every camera fails
+ *                   together, because they all negotiate through it.
+ *   'peer'        — signaling worked and the media path did not: ICE/network
+ *                   between this machine and the streamer.
+ * Set where the failure is DETECTED so nothing downstream has to sniff our own
+ * error strings for a cause we already knew.
+ */
+export type StreamFailure = 'unsupported' | 'signaling' | 'peer';
+
 interface StreamStartResponse {
   stream_id: string;
 }
@@ -103,6 +119,10 @@ export interface UseWebRtcStreamResult {
   phase: StreamPhase;
   stream: MediaStream | null;
   error: string | null;
+  /** Why it failed, typed at the point of detection; null unless `phase` is
+   *  'failed'. A summary that can only say "down" leaves the operator choosing
+   *  between three unrelated next actions (E-37). */
+  failure: StreamFailure | null;
   stats: StreamStats;
   /** Tear down and re-negotiate. */
   retry: () => void;
@@ -132,6 +152,7 @@ export function useWebRtcStream({
   const [phase, setPhase] = useState<StreamPhase>('idle');
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [failure, setFailure] = useState<StreamFailure | null>(null);
   const [stats, setStats] = useState<StreamStats>(EMPTY_STATS);
   const [attempt, setAttempt] = useState(0);
   const pcRef = useRef<RTCPeerConnection | null>(null);
@@ -151,6 +172,7 @@ export function useWebRtcStream({
 
   const retry = useCallback(() => {
     setError(null);
+    setFailure(null);
     autoRetriesRef.current = 0; // a manual retry restores the auto-retry budget
     setAttempt((n) => n + 1);
   }, []);
@@ -164,6 +186,7 @@ export function useWebRtcStream({
     if (!topic || !webrtcBase) return;
     if (typeof RTCPeerConnection === 'undefined') {
       setPhase('failed');
+      setFailure('unsupported');
       setError('WebRTC is not supported in this browser.');
       return;
     }
@@ -181,6 +204,7 @@ export function useWebRtcStream({
       if (s === 'connected') setPhase('connected');
       else if (s === 'failed' || s === 'disconnected' || s === 'closed') {
         setPhase('failed');
+        setFailure('peer');
         setError(`Connection ${s}.`);
       }
     });
@@ -247,6 +271,7 @@ export function useWebRtcStream({
       } catch (err) {
         if (cancelled) return;
         setPhase('failed');
+        setFailure('signaling');
         setError(err instanceof Error ? err.message : String(err));
       }
     }
@@ -356,5 +381,5 @@ export function useWebRtcStream({
     };
   }, [phase, attempt]);
 
-  return { phase, stream, error, stats, retry };
+  return { phase, stream, error, failure, stats, retry };
 }

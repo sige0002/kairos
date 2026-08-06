@@ -73,6 +73,21 @@ const CAPTURE_TOPICS = [
   },
 ];
 
+// Per-capture topic inventories: two recordings from DIFFERENT robots, so a
+// camera topic chosen for one is not even offered by the other. Anything else
+// would let a carried-over parameter look correct by coincidence.
+const TOPICS_BY_CAPTURE: Record<string, { name: string; type: string }[]> = {
+  cap_002: [
+    { name: '/hsrb/joint_states', type: 'sensor_msgs/msg/JointState' },
+    { name: '/hsrb/head_rgbd_sensor/rgb/image_rect_color/compressed', type: 'sensor_msgs/msg/CompressedImage' },
+    { name: '/hsrb/hand_camera/image_raw/compressed', type: 'sensor_msgs/msg/CompressedImage' },
+  ],
+  cap_001: [
+    { name: '/myrobot/joint_states', type: 'sensor_msgs/msg/JointState' },
+    { name: '/myrobot/front_camera/image_raw/compressed', type: 'sensor_msgs/msg/CompressedImage' },
+  ],
+};
+
 const OPTIONS = {
   active_robot: 'airoa_hsr',
   robots: [{ id: 'airoa_hsr', local: false }],
@@ -192,6 +207,9 @@ const BATCHES = {
 };
 
 let requestedUrls: string[] = [];
+// Keeps every submitted job in `running`, so polling continues.
+let jobStaysRunning = false;
+
 /** capture_id -> the error code POST /jobs answers it with. */
 let refuseJobFor: Record<string, string> = {};
 let postedBodies: Record<string, unknown>[] = [];
@@ -203,6 +221,7 @@ beforeEach(() => {
   requestedUrls = [];
   postedBodies = [];
   jobCounter = 0;
+  jobStaysRunning = false;
   resultByJobId = {};
   refuseJobFor = {};
   vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
@@ -223,8 +242,10 @@ beforeEach(() => {
           job_id: id,
           capture_id: 'cap_002',
           pipeline: 'fast_validation',
-          state: 'succeeded',
-          progress: 1,
+          // A job that never finishes, so the client keeps polling — the state
+          // the "does it stop when the operator leaves" test needs.
+          state: jobStaysRunning ? 'running' : 'succeeded',
+          progress: jobStaysRunning ? 0.4 : 1,
         }),
       );
     }
@@ -254,8 +275,10 @@ beforeEach(() => {
           job_id: jobId,
           capture_id: body.capture_id,
           pipeline: body.pipeline,
-          state: 'succeeded',
-          progress: 1,
+          // The submit response seeds the status cache, so a terminal state here
+          // would stop the poll before it ever started.
+          state: jobStaysRunning ? 'running' : 'succeeded',
+          progress: jobStaysRunning ? 0.1 : 1,
         }),
       );
     }
@@ -263,7 +286,11 @@ beforeEach(() => {
       const id = url.split('/captures/')[1] ?? '';
       const capture = CAPTURES.items.find((c) => c.capture_id === id);
       return Promise.resolve(
-        jsonResponse({ ...(capture ?? {}), capture_id: id, topics: CAPTURE_TOPICS }),
+        jsonResponse({
+          ...(capture ?? {}),
+          capture_id: id,
+          topics: TOPICS_BY_CAPTURE[id] ?? CAPTURE_TOPICS,
+        }),
       );
     }
     if (url.includes('/captures')) return Promise.resolve(jsonResponse(CAPTURES));
@@ -557,9 +584,11 @@ test("video_check's topic param is a picker seeded from the target capture's cam
     ),
   );
   expect(select.tagName).toBe('SELECT');
-  // Only camera topics are offered (joint_states is not an option).
+  // Only camera topics are offered, and BOTH of them — cap_002 carries two
+  // cameras plus /hsrb/joint_states, which must not appear.
   expect([...select.options].map((o) => o.value)).toEqual([
     '/hsrb/head_rgbd_sensor/rgb/image_rect_color/compressed',
+    '/hsrb/hand_camera/image_raw/compressed',
   ]);
 
   // Running submits the seeded camera topic against the capture.
@@ -610,4 +639,100 @@ test('a preset whose captures were all discarded reports it instead of showing a
   );
   // No fabricated progress for a run with no jobs in it.
   expect(screen.queryByText('NaN%')).toBeNull();
+});
+
+// ---------------------------------------------------------------------------
+// E-21: a parameter set for one capture must not be submitted against another.
+// `overrides` is cleared when the PIPELINE changes but not when the TARGET
+// does, and the x-suggest auto-seed skips any key already present — so a topic
+// the operator picked for capture A survived a switch to capture B and went out
+// with B's job, naming a topic B does not contain.
+// ---------------------------------------------------------------------------
+
+test('a topic chosen for one capture does not carry to the next one', async () => {
+  renderWithClient(<ValidationScreen />);
+  fireEvent.click(await screen.findByTestId('pipeline-card-video_check'));
+
+  // Target defaults to cap_002. Choose its SECOND camera explicitly — an
+  // explicit choice is what lands in `overrides`.
+  const select = (await screen.findByLabelText('topic')) as HTMLSelectElement;
+  await waitFor(() =>
+    expect(select.value).toBe('/hsrb/head_rgbd_sensor/rgb/image_rect_color/compressed'),
+  );
+  fireEvent.change(select, {
+    target: { value: '/hsrb/hand_camera/image_raw/compressed' },
+  });
+  expect((screen.getByLabelText('topic') as HTMLSelectElement).value).toBe(
+    '/hsrb/hand_camera/image_raw/compressed',
+  );
+
+  // Switch the target to a capture from a different robot.
+  fireEvent.change(screen.getByLabelText('target'), { target: { value: 'cap_001' } });
+
+  // The picker must follow the new capture — the previous robot's camera is not
+  // even among its topics, so keeping it would submit a topic that cannot exist.
+  await waitFor(() =>
+    expect((screen.getByLabelText('topic') as HTMLSelectElement).value).toBe(
+      '/myrobot/front_camera/image_raw/compressed',
+    ),
+  );
+
+  fireEvent.click(screen.getByRole('button', { name: 'Run on selection' }));
+  await waitFor(() => expect(postedBodies.length).toBe(1));
+  expect(postedBodies[0]).toMatchObject({
+    pipeline: 'video_check',
+    capture_id: 'cap_001',
+    params: { topic: '/myrobot/front_camera/image_raw/compressed' },
+  });
+});
+
+test('a parameter unrelated to the capture SURVIVES a target switch', async () => {
+  // The guard must be about staleness, not about wiping the operator's work:
+  // `subject` has nothing to do with which recording is selected, so switching
+  // target must leave it alone.
+  renderWithClient(<ValidationScreen />);
+  fireEvent.click(await screen.findByTestId('pipeline-card-hello_kairos'));
+
+  const subject = (await screen.findByLabelText('subject')) as HTMLInputElement;
+  fireEvent.change(subject, { target: { value: 'a deliberate value' } });
+
+  fireEvent.change(screen.getByLabelText('target'), { target: { value: 'cap_001' } });
+
+  expect((screen.getByLabelText('subject') as HTMLInputElement).value).toBe(
+    'a deliberate value',
+  );
+});
+
+// ---------------------------------------------------------------------------
+// E-36, the "keeps running after the operator leaves" half. A job is the
+// SERVER's work, so it continuing is correct — the question is whether this
+// client leaves a poll running behind it. `useJobResult` polls on a
+// refetchInterval, which react-query stops when the observer unmounts; pinned
+// here because "the poll outlives the screen" is invisible until a machine has
+// been open all day.
+// ---------------------------------------------------------------------------
+
+/** How many GET /jobs/{id}/status calls have been made. */
+function statusPolls() {
+  return requestedUrls.filter((u) => /\/jobs\/[^/]+\/status/.test(u)).length;
+}
+
+test('leaving the Validation tab stops the polling it started', async () => {
+  jobStaysRunning = true;
+  const { unmount } = renderWithClient(<ValidationScreen />);
+  fireEvent.click(await screen.findByTestId('pipeline-card-loss_report'));
+  fireEvent.click(screen.getByRole('button', { name: 'Run on selection' }));
+  await waitFor(() => expect(postedBodies.length).toBe(1));
+
+  // The poll is genuinely live — without this the assertion below would pass on
+  // a screen that never polled at all.
+  await waitFor(() => expect(statusPolls()).toBeGreaterThanOrEqual(2), { timeout: 5000 });
+
+  unmount();
+  // Let anything already dispatched land, then wait out more than one interval.
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  const settled = statusPolls();
+  await new Promise((resolve) => setTimeout(resolve, 1800));
+
+  expect(statusPolls()).toBe(settled);
 });

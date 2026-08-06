@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 import threading
 from collections.abc import Iterable, Iterator, Sequence
@@ -117,6 +118,23 @@ class BatchExistsError(Exception):
         self.batch_id = batch_id
 
 
+class ArchiveDestinationTakenError(Exception):
+    """Another dataset already holds this archive destination.
+
+    A destination is one dataset's folder: numbered member directories plus a
+    single manifest naming whose they are. A second dataset landing in it
+    interleaves its numbers with the first's, overwrites the manifest, and —
+    because each run reads the other's directories as its own unrecorded
+    debris — deletes bytes the ledger has already recorded as archived.
+    """
+
+    def __init__(self, dataset_id: str, destination: str, held_by: str) -> None:
+        super().__init__(f"{destination} is already held by dataset {held_by}")
+        self.dataset_id = dataset_id
+        self.destination = destination
+        self.held_by = held_by
+
+
 class DatasetMemberExistsError(Exception):
     """This capture is already a member of this dataset.
 
@@ -189,7 +207,13 @@ CREATE TABLE IF NOT EXISTS captures (
     created_at         TEXT,
     updated_at         TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_captures_seq ON captures (seq DESC);
+-- There is deliberately NO index on `seq`. It is INTEGER PRIMARY KEY, so it IS
+-- the rowid, and the keyset page already seeks through the table B-tree:
+-- `EXPLAIN QUERY PLAN` gives `SEARCH captures USING INTEGER PRIMARY KEY
+-- (rowid<?)` with or without one. An index on it is a second copy of the rowid
+-- that no query reads and every insert maintains. Dropped rather than merely
+-- not created, so databases that already carry it shed it too.
+DROP INDEX IF EXISTS idx_captures_seq;
 CREATE INDEX IF NOT EXISTS idx_captures_state ON captures (state);
 CREATE INDEX IF NOT EXISTS idx_captures_batch ON captures (batch_id);
 
@@ -563,6 +587,25 @@ class CaptureStore:
 
         The cursor is the ``seq`` of the last item on the previous page. One
         extra row is fetched to decide whether a next page exists.
+
+        **Most filter columns are unindexed, and the case is open.** At 5,000
+        captures (E-27) a filtered page on ``task`` or ``review_status`` serves
+        in **1.8 ms** — no worse than the unfiltered page at 3.7 ms. The plan
+        behind that: ``seq`` is INTEGER PRIMARY KEY, so it is the rowid and the
+        page seeks straight through the table B-tree in the order it already
+        wants (``SEARCH captures USING INTEGER PRIMARY KEY (rowid<?)``),
+        stopping at the limit — an unmatched row costs a comparison, not a sort.
+
+        A second measurement points the other way and is recorded here rather
+        than lost: on ``WHERE operator = ? ORDER BY seq DESC LIMIT 50`` over
+        5,000 rows, an index on ``operator`` took the query from **0.75 ms
+        (SCAN) to 0.35 ms (SEARCH … USING INDEX)** — 2.1x faster. That filter
+        is unselective, so it is not the last word either.
+
+        So: neither number is a mandate. Both are sub-millisecond against a
+        round trip of several, which is why nothing has been added. Anyone who
+        wants the index has a measurement to start from instead of an
+        intuition, and should take their own on a selective filter.
         """
         clauses: list[str] = []
         params: list[Any] = []
@@ -602,6 +645,31 @@ class CaptureStore:
             self._attach_memberships(conn, captures)
         next_cursor = int(page[-1]["seq"]) if has_more and page else None
         return captures, next_cursor
+
+    def present_terminal_ids(
+        self, states: Iterable[str], *, instance_id: str
+    ) -> list[str]:
+        """Ids of captures in one of *states* whose local replica is present.
+
+        Ids rather than rows, because the caller counts them and subtracts a
+        set from them. Building a model per capture to do that costs ~78 ms on
+        a 5,000-capture store (measured) for information the query already has,
+        and the presets screen polls.
+        """
+        values = [str(s) for s in states]
+        if not values:
+            return []
+        state_slots = ", ".join("?" for _ in values)
+        replica_slots = ", ".join("?" for _ in PRESENT_REPLICA_STATES)
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT c.capture_id FROM captures c "
+                f"JOIN replicas r ON r.capture_id = c.capture_id "
+                f"WHERE r.instance_id = ? AND c.state IN ({state_slots}) "
+                f"AND r.state IN ({replica_slots}) ORDER BY c.seq",
+                (instance_id, *values, *sorted(PRESENT_REPLICA_STATES)),
+            ).fetchall()
+        return [row["capture_id"] for row in rows]
 
     def list_by_states(
         self, states: Iterable[str], *, instance_id: str | None = None
@@ -1129,13 +1197,51 @@ class CaptureStore:
         mode: str = "move",
         at: str | None = None,
     ) -> bool:
-        """active → archiving, exactly once. ``False`` = it was not active.
+        """active → archiving, and the destination claimed with it.
 
-        The WHERE clause is the whole concurrency story: two racing starts both
-        reach this UPDATE, one flips the row, the other sees rowcount 0 and
-        reports the conflict. No lock outlives the statement.
+        ``False`` = the dataset was not active. Raises
+        :class:`ArchiveDestinationTakenError` if another dataset already holds
+        the destination.
+
+        Two racing starts of the SAME dataset are settled by the WHERE clause:
+        both reach this UPDATE, one flips the row, the other sees rowcount 0.
+        Two racing starts of DIFFERENT datasets at one destination are settled
+        by the claim scan above it, which cannot interleave with the UPDATE
+        because ``_conn`` holds the store lock across both — the scan and the
+        CAS are **serialized by that lock, not by one transaction**: Python's
+        legacy isolation opens a transaction before DML only, so the SELECT
+        sits outside one, and WAL makes readers non-blocking rather than making
+        the pair atomic.
+
+        **Known limit, deliberate.** That lock is process-wide, so this is
+        closed against FastAPI's threadpool and the event loop, and NOT against
+        a second orchestrator process on one ``kairos.db`` — both could pass
+        the scan and claim one destination. kairos runs one orchestrator per
+        data dir by design, and buying the cross-process case would mean
+        ``BEGIN IMMEDIATE`` before the scan, changing the transaction
+        discipline for every caller of ``_conn``. If that deployment
+        assumption ever stops holding, this is the line to revisit.
+
+        The check has to live down here at all because the caller's own look at
+        the folder happened earlier, and the folder stays empty until a runner
+        is scheduled — so nothing above this point can tell the two apart.
+
+        The claim is the row, not the directory: an archived dataset holds its
+        folder permanently, and a halted run holds its folder even after an
+        operator clears the debris out of it, because Resume will come back.
         """
         with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT dataset_id, archive_destination FROM datasets "
+                "WHERE dataset_id != ? AND archive_destination IS NOT NULL "
+                "AND status IN ('archiving', 'archived')",
+                (dataset_id,),
+            ).fetchall()
+            for row in rows:
+                if _paths_collide(destination, row["archive_destination"]):
+                    raise ArchiveDestinationTakenError(
+                        dataset_id, destination, row["dataset_id"]
+                    )
             cur = conn.execute(
                 "UPDATE datasets SET status = 'archiving', "
                 "archive_destination = ?, archive_mode = ?, "
@@ -1144,6 +1250,28 @@ class CaptureStore:
                 (destination, mode, at or utc_now_iso8601(), dataset_id),
             )
         return cur.rowcount > 0
+
+    def datasets_sharing_archive_destination(self) -> dict[str, list[str]]:
+        """Destinations recorded by more than one dataset row.
+
+        Only a replay can build this: :meth:`begin_dataset_archive` refuses a
+        second live claimant. But a ledger written before that guard existed
+        can hold two archives of one folder, and replaying it is correct — the
+        events happened. Somebody should be told, which is what this is for.
+        """
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT archive_destination AS destination, dataset_id "
+                "FROM datasets WHERE archive_destination IS NOT NULL "
+                "AND status IN ('archiving', 'archived') "
+                "ORDER BY archive_destination, dataset_id"
+            ).fetchall()
+        grouped: dict[str, list[str]] = {}
+        for row in rows:
+            grouped.setdefault(os.path.normpath(row["destination"]), []).append(
+                row["dataset_id"]
+            )
+        return {dest: ids for dest, ids in grouped.items() if len(ids) > 1}
 
     def abort_dataset_archive(self, dataset_id: str) -> None:
         """Roll archiving back to active — only for a start whose ledger append
@@ -1220,8 +1348,25 @@ class CaptureStore:
     # ---- batches -----------------------------------------------------------
 
     def create_batch(self, batch: Batch) -> Batch:
-        """Insert a batch, allocating its per-(robot, local day) number."""
+        """Insert a batch, allocating its per-(robot, local day) number.
+
+        Raises :class:`BatchExistsError` when the id is taken — by a batch row,
+        or by **recordings that still name it**. The second case is what "delete
+        kairos.db and restart" leaves behind: captures come back from their
+        sidecars carrying ``batch_id``, but a batch's own row has no sidecar and
+        no ledger event, so the table comes back empty. Since ids are minted
+        from the wall clock, the next batch that second would be handed the dead
+        one's identity and would silently absorb its recordings. The caller's
+        retry loop then picks a suffixed id, which is the same answer it already
+        gives for a live collision.
+        """
         with self._conn() as conn:
+            claimed = conn.execute(
+                "SELECT 1 FROM captures WHERE batch_id = ? LIMIT 1",
+                (batch.batch_id,),
+            ).fetchone()
+            if claimed is not None:
+                raise BatchExistsError(batch.batch_id)
             seq = self._next_batch_seq(conn, batch.robot, batch.created_at)
             try:
                 conn.execute(
@@ -1251,6 +1396,83 @@ class CaptureStore:
                 raise BatchExistsError(batch.batch_id) from exc
             batch.batch_seq = seq
         return batch
+
+    def delete_batch(self, batch_id: str) -> bool:
+        """Remove a batch row. For the create rollback only (§8).
+
+        Not an operator-facing deletion: the only caller is the create path
+        undoing a row whose ledger line could not be written, before anything
+        else can have seen it. Recordings are never touched — a batch a
+        recording names must not vanish under it.
+        """
+        with self._conn() as conn:
+            cur = conn.execute("DELETE FROM batches WHERE batch_id = ?", (batch_id,))
+        return cur.rowcount > 0
+
+    def restore_batch(self, batch: Batch) -> bool:
+        """Replay form of :meth:`create_batch` — no allocation, no claim check.
+
+        Two differences, both deliberate. The number comes from the event
+        rather than from ``1 + MAX``: it was allocated once, and recomputing it
+        during a replay is how a watermark drifts upward on every rebuild.
+        And the "a capture already names this id" refusal is skipped, because
+        during a replay the captures naming it are *this* batch's own — the
+        guard exists to stop a NEW batch stealing a dead one's identity, which
+        is the opposite situation.
+
+        Idempotent: a batch already in the catalog is left exactly as it is.
+        Returns ``True`` if the row was inserted, ``False`` if one was already
+        there — which lets the caller tell a replayed batch from two different
+        batches claiming one id, a difference ``INSERT OR IGNORE`` swallows.
+        """
+        with self._conn() as conn:
+            cur = conn.execute(
+                """
+                INSERT OR IGNORE INTO batches
+                    (batch_id, robot, project, task, condition, operator,
+                     target_episodes, status, ended_reason, created_at,
+                     ended_at, batch_seq)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    batch.batch_id,
+                    batch.robot,
+                    batch.project,
+                    batch.task,
+                    batch.condition,
+                    batch.operator,
+                    batch.target_episodes,
+                    batch.status,
+                    batch.ended_reason,
+                    batch.created_at,
+                    batch.ended_at,
+                    batch.batch_seq,
+                ),
+            )
+        return cur.rowcount > 0
+
+    def orphaned_batch_ids(self) -> dict[str, int]:
+        """Batch ids recordings still name, with no batch row left. Count each.
+
+        Non-empty only after a rebuild: a batch's row lives solely in this
+        database — no sidecar, no ledger event — while its recordings carry
+        ``batch_id`` in theirs. "Delete kairos.db and restart" therefore
+        restores the recordings and loses the batches, and this is what says by
+        how much. Not repairable from here: project, operator, target and the
+        daily number were never written anywhere else.
+        """
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT c.batch_id AS batch_id, COUNT(*) AS n
+                FROM captures c
+                LEFT JOIN batches b ON b.batch_id = c.batch_id
+                WHERE c.batch_id IS NOT NULL AND b.batch_id IS NULL
+                GROUP BY c.batch_id
+                ORDER BY c.batch_id
+                """
+            ).fetchall()
+        return {row["batch_id"]: row["n"] for row in rows}
 
     @staticmethod
     def _next_batch_seq(
@@ -1978,6 +2200,26 @@ class CaptureStore:
             episodes_recorded=row["episodes_recorded"],
             batch_seq=row["batch_seq"],
         )
+
+
+def _paths_collide(one: str, other: str) -> bool:
+    """Whether two archive destinations are — or contain — one another.
+
+    Nesting counts as a collision: a dataset archived into ``<dest>/sub`` puts
+    its numbered directories underneath another dataset's folder, inside the
+    reach of that folder's manifest.
+
+    Compared as the normalized strings that are stored, not through
+    ``realpath``: a second spelling of one folder through a symlink is left to
+    the not-empty check, which sees the bytes whatever the path is called.
+    """
+    first = os.path.normpath(one)
+    second = os.path.normpath(other)
+    return (
+        first == second
+        or first.startswith(second + os.sep)
+        or second.startswith(first + os.sep)
+    )
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:

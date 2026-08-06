@@ -16,6 +16,7 @@ from kairos_common import ApiError, JobState, Settings, create_app, get_settings
 from kairos_common.ids import is_uuid7
 
 from dora_runner.bagflow_runtime import DoraEndpoint, DoraStack, bagflow_available
+from dora_runner.mcap_utils import CaptureBytesMissing
 from dora_runner.models import (
     JobCreateRequest,
     JobCreateResponse,
@@ -462,10 +463,20 @@ async def _execute_job(
             job.state = JobState.failed
             job.progress = 1.0
             job.logs_tail.append(str(exc))
+            # The capture's bytes being gone is a different fact from the
+            # pipeline breaking, and the only one the operator can act on
+            # without reading a traceback. The message already said so; this
+            # makes it machine-readable, at the moment the job actually looked
+            # for the files rather than by guessing at submit time.
+            code = (
+                "capture_missing"
+                if isinstance(exc, CaptureBytesMissing)
+                else "job_failed"
+            )
             job.result = JobResult(
                 summary={
                     "result": "fail",
-                    "error": {"code": "job_failed", "message": str(exc)},
+                    "error": {"code": code, "message": str(exc)},
                 },
                 artifacts=[],
             )

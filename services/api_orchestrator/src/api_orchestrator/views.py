@@ -28,6 +28,7 @@ import os
 import re
 import secrets
 import shutil
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -56,6 +57,24 @@ KEEP_GENERATIONS = 2
 # trusted: a name containing a slash would otherwise silently create an extra
 # directory level, and one containing ".." would escape views/ entirely.
 _UNSAFE = re.compile(r"[/\\\x00]")
+
+# One regeneration at a time, process-wide. Two callers reach this module from
+# two DIFFERENT threads: a dataset edit schedules a regeneration that runs via
+# ``asyncio.to_thread``, and ``POST /api/v1/views/refresh`` runs one from a
+# request handler. So the lock must be a threading one — an ``asyncio.Lock``
+# belongs to a single event loop and cannot be taken from a worker thread at
+# all, which is where half of this contention lives.
+#
+# What it protects is the whole build → flip → prune sequence, not any single
+# step: each regeneration prunes everything it does not recognise, so two
+# overlapping runs delete the generation the other is about to publish, and
+# ``_prune`` sorts by an ``st_mtime`` read from paths listed a moment earlier —
+# the loser raises ``FileNotFoundError`` out of whichever caller it was.
+#
+# Reentrant purely as a footgun guard: nothing nests today, and a future caller
+# that reaches ``prune_stale`` from inside a regeneration should get a working
+# program rather than a deadlock.
+_REGENERATION = threading.RLock()
 
 
 @dataclass(frozen=True)
@@ -100,7 +119,15 @@ def prune_stale(
     Called from the reconciler's periodic pass. Never touches the generation
     the ``views`` symlink currently points to, however old — the current tree
     is not debris.
+
+    Takes the same lock as :func:`regenerate`: reading ``views`` and then
+    deleting what it did not name is only safe while nobody is repointing it.
     """
+    with _REGENERATION:
+        return _prune_stale(layout, grace_s=grace_s)
+
+
+def _prune_stale(layout: DataLayout, *, grace_s: float) -> int:
     views = layout.views
     try:
         current = os.readlink(views) if views.is_symlink() else None
@@ -150,7 +177,17 @@ def regenerate(layout: DataLayout, entries: list[dict[str, Any]]) -> ViewsResult
     catalog, which is worse than one that reports a problem. So a member that
     cannot be linked is skipped and named, and a dataset that wants a folder
     another dataset already holds is given a suffixed one.
+
+    **One at a time.** Build, flip and prune are one critical section (see
+    ``_REGENERATION``): a second regeneration overlapping this one deletes the
+    generation this one is about to publish, and the two prunes race each other
+    to a ``FileNotFoundError``. Callers wait; nobody interleaves.
     """
+    with _REGENERATION:
+        return _regenerate(layout, entries)
+
+
+def _regenerate(layout: DataLayout, entries: list[dict[str, Any]]) -> ViewsResult:
     generation = secrets.token_hex(8)
     staging = layout.data_dir / f"{GENERATION_PREFIX}{generation}"
     shutil.rmtree(staging, ignore_errors=True)
@@ -304,6 +341,21 @@ def _flip(layout: DataLayout, staging: Path) -> None:
     fsync_dir(layout.data_dir)
 
 
+def _mtime(path: Path) -> float:
+    """Modification time, or ``0.0`` for a path that is already gone.
+
+    A generation can disappear between the listing above and this read. The
+    lock closes the case where another regeneration is the one deleting it,
+    but an operator with ``rm -rf`` is not holding that lock, and a sort key is
+    no place to find out the disk moved. Sorting a vanished directory oldest
+    puts it first in line for a delete that then finds nothing to do.
+    """
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
 def _prune(layout: DataLayout, *, keep: str) -> None:
     """Delete superseded generations, keeping the newest few."""
     generations = sorted(
@@ -315,7 +367,7 @@ def _prune(layout: DataLayout, *, keep: str) -> None:
             and _GENERATION_RE.match(path.name)
             and path.name != f"{GENERATION_PREFIX}{keep}"
         ),
-        key=lambda p: p.stat().st_mtime,
+        key=_mtime,
         reverse=True,
     )
     for stale in generations[KEEP_GENERATIONS - 1 :]:

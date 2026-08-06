@@ -820,6 +820,13 @@ export interface MetricsSnapshot {
   window_s?: number;
   topics: TopicMetric[];
   paused?: boolean;
+  /** NOT from the wire — added by the SSE ingest (sse/useEventStream.ts) when
+   *  it drops rows it cannot identify. A dropped reading that vanished in
+   *  silence would be its own small dishonesty in a monitoring table, so the
+   *  count travels with the snapshot and the screen states it. Absent, not
+   *  zero, on a healthy snapshot: the ingest adds the key only when it has
+   *  something to declare, and every reader defaults it with `?? 0`. */
+  malformed_dropped?: number;
   /** Monitor's own processing health (OL-②.4); null when self-load is off. */
   self_load?: MonitorSelfLoad | null;
 }

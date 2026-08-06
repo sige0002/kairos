@@ -328,11 +328,65 @@ class AspectConfigBody(BaseModel):
     raw: str | None = None
 
 
+class _DuplicateYamlKey(yaml.constructor.ConstructorError):
+    """A mapping key written twice in the operator's YAML."""
+
+    def __init__(self, key: Any, line: int) -> None:
+        super().__init__(None, None, f"found duplicate key {key!r}", None)
+        self.key = key
+        self.line = line
+
+
+class _StrictSafeLoader(yaml.SafeLoader):
+    """SafeLoader that REFUSES duplicate mapping keys.
+
+    PyYAML silently keeps the LAST occurrence, so YAML that visibly contains two
+    rules parses to one and saves with no error — the operator's own text is the
+    only place the dropped rule ever existed. Refusing the save is the honest
+    outcome; nothing valid is lost, since no correct alerts.yaml carries a
+    duplicate key and the canonical writer below never emits one.
+
+    Duplicates are detected on the keys AS WRITTEN, before ``flatten_mapping``
+    expands ``<<`` merges — an anchor legitimately overriding an inherited field
+    is a different thing from the same key typed twice, and must stay allowed.
+    """
+
+    #: ``<<`` — consumed by ``flatten_mapping`` in the base loader and never
+    #: constructed as a key, so it must be stepped over rather than resolved.
+    _MERGE_TAG = "tag:yaml.org,2002:merge"
+
+    def construct_mapping(self, node: Any, deep: bool = False) -> dict[Any, Any]:
+        seen: set[Any] = set()
+        for key_node, _value_node in node.value:
+            if key_node.tag == self._MERGE_TAG:
+                continue
+            key = self.construct_object(key_node, deep=deep)
+            try:
+                duplicate = key in seen
+            except TypeError:
+                continue  # unhashable key: the base loader reports it
+            if duplicate:
+                raise _DuplicateYamlKey(key, key_node.start_mark.line + 1)
+            seen.add(key)
+        return super().construct_mapping(node, deep=deep)
+
+
 def _body_to_mapping(body: AspectConfigBody) -> dict[str, Any]:
     """Normalise an :class:`AspectConfigBody` to a plain mapping (422 on error)."""
     if body.raw is not None:
         try:
-            data = yaml.safe_load(body.raw)
+            data = yaml.load(body.raw, Loader=_StrictSafeLoader)  # noqa: S506
+        except _DuplicateYamlKey as exc:
+            raise ApiError(
+                status_code=422,
+                code="duplicate_key",
+                message=(
+                    f"Duplicate key {exc.key!r} on line {exc.line}. YAML keeps only "
+                    "the last one, so the earlier entry would be dropped without a "
+                    "trace — rename or remove one of them."
+                ),
+                details={"key": str(exc.key), "line": exc.line},
+            ) from exc
         except yaml.YAMLError as exc:
             raise ApiError(
                 status_code=422,

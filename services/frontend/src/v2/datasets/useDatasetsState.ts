@@ -48,7 +48,11 @@ import type {
   DatasetArchiveProgress,
 } from '../../api/types';
 import { availabilityOf } from '../captures/availability';
-import { captureErrorText } from '../captures/errors';
+import {
+  captureErrorText,
+  isDestructiveFailure,
+  readCaptureError,
+} from '../captures/errors';
 import { useCaptureDeletion, type CaptureDeletionState } from '../captures/useCaptureDeletion';
 import {
   ANY_OPERATOR,
@@ -130,6 +134,16 @@ export interface DatasetsState {
   // ---- dataset selection -------------------------------------------------
   selectedDatasetId: string | null;
   selectedDataset: DatasetRow | null;
+  /** A dataset's name for its dataset_id, or null when the loaded catalog has
+   *  no row for it. The archive refusals name the dataset holding a
+   *  destination by ID only, and an id alone is not something an operator
+   *  recognises — this is what lets a dialog show both. */
+  datasetName: (datasetId: string) => string | null;
+  /** The selected dataset is not in the server's list any more — it was deleted
+   *  outside this screen. Distinct from "no selection" and from "hidden by the
+   *  search": both of those leave a live dataset behind, and this one does not,
+   *  so every destructive control aimed at it has to stand down and say why. */
+  selectionGone: boolean;
   selectDataset: (datasetId: string) => void;
   isDatasetSelected: (datasetId: string) => boolean;
   clearDataset: () => void;
@@ -323,6 +337,11 @@ export interface DatasetsState {
   isError: boolean;
 
   toast: string;
+  /** A `destructive`-severity failure, held until the operator dismisses it.
+   *  §12 reserves that severity for what must not pass as a note that fades;
+   *  the toast keeps the ordinary refusals. */
+  blockingFailure: unknown;
+  dismissBlockingFailure: () => void;
 }
 
 /** Milliseconds a search box may keep typing before the lists are refiltered.
@@ -341,6 +360,19 @@ function useDebounced<T>(value: T, delay: number): T {
 }
 
 const TOAST_MS = 2400;
+
+/** A server sentence, terminated, so ours can follow it without fusing.
+ *
+ *  The store is not consistent about a trailing period — "No member m-2 in
+ *  dataset ds-kitchen." has one, "Dataset not found: ds-kitchen" does not — and
+ *  appending to the second produced "…ds-kitchen The member list has been
+ *  reloaded…": one broken sentence, which costs the whole line its credibility.
+ *  Ellipsis and dashes are left alone; they are already a legible ending. */
+function terminated(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed) return '';
+  return /[.!?…—:]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+}
 
 /** Case-insensitive substring match over a capture's own identifying fields —
  *  the candidate picker's find. */
@@ -406,6 +438,7 @@ export function useDatasetsState(): DatasetsState {
   const [datasetArchiveReason, setDatasetArchiveReason] = useState('');
   const [datasetArchiveMode, setDatasetArchiveMode] = useState<'copy' | 'move'>('move');
   const [toast, setToast] = useState('');
+  const [blockingFailure, setBlockingFailure] = useState<unknown>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const showToast = useCallback((message: string) => {
@@ -421,6 +454,23 @@ export function useDatasetsState(): DatasetsState {
     [],
   );
 
+  // Where a refusal goes is the catalog's call, not each call site's: anything
+  // errors.ts marks `destructive` is held until dismissed, everything else
+  // keeps the toast. Reading severity rather than listing codes means a code
+  // added later arrives with the right treatment already.
+  const reportFailure = useCallback(
+    (error: unknown) => {
+      if (isDestructiveFailure(error)) {
+        if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+        setToast('');
+        setBlockingFailure(error);
+        return;
+      }
+      showToast(captureErrorText(error));
+    },
+    [showToast],
+  );
+
   // ---- reads -------------------------------------------------------------
 
   const listQuery = useQuery({
@@ -428,6 +478,18 @@ export function useDatasetsState(): DatasetsState {
     queryFn: ({ signal }) => listDatasets(signal),
   });
   const datasets = useMemo(() => listQuery.data?.items ?? [], [listQuery.data]);
+
+  // This screen is not the only writer: another operator, a curl, a rebuild.
+  // The dataset LIST is the authority on existence, so a selection that is not
+  // in a freshly loaded list was deleted somewhere else — and the screen has to
+  // say that rather than fall back to its ordinary "pick a dataset" prompt,
+  // which the operator reads as their own click having been lost. Gated on a
+  // loaded list: "absent from a list we have not fetched yet" is evidence of
+  // nothing, and a search that merely HIDES the row leaves it here.
+  const selectionGone =
+    selectedDatasetId !== null &&
+    listQuery.isSuccess &&
+    !datasets.some((d) => d.dataset_id === selectedDatasetId);
 
   const capturesQuery = useQuery({
     queryKey: queryKeys.captureList(CAPTURE_SCOPE),
@@ -443,7 +505,9 @@ export function useDatasetsState(): DatasetsState {
   const detailQuery = useQuery({
     queryKey: queryKeys.dataset(selectedDatasetId ?? ''),
     queryFn: ({ signal }) => getDataset(selectedDatasetId ?? '', signal),
-    enabled: selectedDatasetId !== null,
+    // Once the list has said the dataset is gone, asking for its detail can only
+    // 404 on every refetch from here on.
+    enabled: selectedDatasetId !== null && !selectionGone,
   });
 
   const debouncedSearch = useDebounced(search, SEARCH_DEBOUNCE_MS);
@@ -664,11 +728,19 @@ export function useDatasetsState(): DatasetsState {
     mutationFn: (datasetId: string) => deleteDataset(datasetId),
     onSuccess: async (_res, datasetId) => {
       queryClient.removeQueries({ queryKey: queryKeys.dataset(datasetId) });
-      await invalidateDatasets();
+      // Drop the selection BEFORE the list reloads without it, or the refetch
+      // lands on a still-selected id and the screen flashes "this dataset is
+      // gone" at the operator who just deleted it on purpose.
       setConfirmingDatasetDelete(false);
       clearDataset();
+      await invalidateDatasets();
       showToast('Dataset deleted — every recording it listed is untouched');
     },
+    // A refused delete is a statement about the store, not just about this
+    // click: 404 means someone else already deleted it, 409 that it archived
+    // underneath us. Reload so the rest of the screen stops asserting the old
+    // shape; the dialog keeps the error and says what it now knows.
+    onError: () => void invalidateDatasets(),
   });
 
   const addMutation = useMutation({
@@ -678,7 +750,7 @@ export function useDatasetsState(): DatasetsState {
       await invalidateDatasets(member.dataset_id);
       showToast(`Added as #${member.display_index} — the recording did not move`);
     },
-    onError: (error) => showToast(captureErrorText(error)),
+    onError: reportFailure,
   });
 
   const removeMutation = useMutation({
@@ -691,7 +763,21 @@ export function useDatasetsState(): DatasetsState {
           'number is not reused',
       );
     },
-    onError: (error) => showToast(captureErrorText(error)),
+    // The row we aimed at may already be gone (another operator, a curl). Left
+    // alone, the failure would leave that row on screen with a live Remove on
+    // it — a control that can now only fail again. So reload, and say the
+    // server's own words rather than the stock "reload the dataset" guidance:
+    // telling the operator to do what the screen just did is not honesty.
+    onError: async (error, row) => {
+      await invalidateDatasets(row.datasetId);
+      const reading = readCaptureError(error);
+      showToast(
+        reading.reload
+          ? `${terminated(reading.message)} The member list has been reloaded ` +
+              'from the server.'
+          : captureErrorText(error),
+      );
+    },
   });
 
   // §12 obliges the discard dialog to say that a copy may remain on the robot —
@@ -816,6 +902,11 @@ export function useDatasetsState(): DatasetsState {
         `Renamed to “${dataset.name}” — same dataset, same members, same numbers`,
       );
     },
+    // A rename is not destructive, but it is aimed at the same row the other
+    // three dialogs are, and it fails the same way when that row is gone (404)
+    // or frozen (409). Reload for the same reason they do — the dialog keeps
+    // the error and then says what the refetch taught it.
+    onError: () => void invalidateDatasets(),
   });
 
   // ---- combining datasets -------------------------------------------------
@@ -908,6 +999,10 @@ export function useDatasetsState(): DatasetsState {
     },
     [datasetById],
   );
+  const datasetName = useCallback(
+    (datasetId: string) => datasetById.get(datasetId)?.name ?? null,
+    [datasetById],
+  );
   const selectedDatasetRecord = selectedDatasetId
     ? (datasetById.get(selectedDatasetId) ?? null)
     : null;
@@ -961,6 +1056,9 @@ export function useDatasetsState(): DatasetsState {
       queryClient.setQueryData(queryKeys.datasetArchive(progress.dataset_id), progress);
       await invalidateDatasets(progress.dataset_id);
     },
+    // Same reasoning as the delete: a run that was refused (gone, already
+    // archiving) means this screen's picture of the dataset is out of date.
+    onError: () => void invalidateDatasets(selectedDatasetId),
   });
 
   // Completion is observed, not returned: the 202 started the run, and the
@@ -1067,6 +1165,8 @@ export function useDatasetsState(): DatasetsState {
 
     selectedDatasetId,
     selectedDataset: selectedRow,
+    datasetName,
+    selectionGone,
     selectDataset,
     isDatasetSelected: (datasetId) => selectedDatasetId === datasetId,
     clearDataset,
@@ -1252,5 +1352,7 @@ export function useDatasetsState(): DatasetsState {
     isError: listQuery.isError || capturesQuery.isError,
 
     toast,
+    blockingFailure,
+    dismissBlockingFailure: () => setBlockingFailure(null),
   };
 }

@@ -56,7 +56,7 @@ from api_orchestrator.captures import CaptureService, reject_overlapping_destina
 from api_orchestrator.health import StoreHealth
 from api_orchestrator.layout import DataLayout
 from api_orchestrator.models import DatasetArchiveProgress, DatasetMember
-from api_orchestrator.store import CaptureStore
+from api_orchestrator.store import ArchiveDestinationTakenError, CaptureStore
 from api_orchestrator.views import sanitize_component
 
 logger = logging.getLogger("kairos")
@@ -187,9 +187,34 @@ class DatasetArchiver:
                 details={"dataset_id": dataset_id, "destination": str(dataset_dir)},
             )
 
-        if not self._store.begin_dataset_archive(
-            dataset_id, destination=str(dataset_dir), mode=run_mode
-        ):
+        try:
+            claimed = self._store.begin_dataset_archive(
+                dataset_id, destination=str(dataset_dir), mode=run_mode
+            )
+        except ArchiveDestinationTakenError as exc:
+            # The folder looked empty a moment ago, but a run that has not
+            # copied anything yet leaves it empty, and so does an operator who
+            # cleared an abandoned run's debris. Emptiness was never the
+            # question: the destination is one dataset's, and the other one is
+            # still entitled to it.
+            other = self._store.get_dataset(exc.held_by)
+            raise ApiError(
+                status_code=409,
+                code="destination_claimed",
+                message=(
+                    f"{dataset_dir} belongs to dataset "
+                    f"{(other or {}).get('name') or exc.held_by}, which is "
+                    f"{(other or {}).get('status') or 'archiving'} there. Two "
+                    "datasets in one folder would interleave their numbers "
+                    "under a single manifest; choose another path."
+                ),
+                details={
+                    "dataset_id": dataset_id,
+                    "destination": str(dataset_dir),
+                    "held_by": exc.held_by,
+                },
+            ) from exc
+        if not claimed:
             # Lost the CAS: someone else moved the status between our read and
             # this write. Whatever they did, this request's premise is stale.
             raise ApiError(
@@ -527,6 +552,28 @@ class DatasetArchiver:
             run.running = True
             try:
                 await self._run(dataset_id, run)
+            except ledger_v2.LedgerUnreadableError as exc:
+                # Every durable question this run asks goes to the ledger: has
+                # it sealed already, which members are out, what the frozen set
+                # was. Unreadable, none of them can be answered — and the
+                # dangerous answer is not an error but a plausible wrong one.
+                # Hence no ``strict=False`` here either: it returns the lines
+                # that parsed, and if the dropped one is this dataset's seal
+                # the run reads "never sealed" and archives a second time —
+                # in move mode deleting the sources of a dataset that already
+                # left. So the run halts, which is a state resume was built for.
+                logger.error(
+                    "dataset archive run halted: the ledger could not be read",
+                    extra={"dataset_id": dataset_id, "error": str(exc)},
+                )
+                run.error = {
+                    "code": "ledger_unreadable",
+                    "message": (
+                        f"The lifecycle ledger could not be read: {exc}. The run "
+                        "stopped where it stands rather than act on a history it "
+                        "cannot see. Repair or restore the file and resume."
+                    ),
+                }
             except Exception:  # noqa: BLE001 - a run must never crash the app
                 logger.exception(
                     "dataset archive run failed", extra={"dataset_id": dataset_id}

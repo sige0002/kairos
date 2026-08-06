@@ -155,8 +155,22 @@ async def bootstrap_store(
 
     # Always, rebuild or not (§7): a crash between the ledger append and the
     # rename leaves nothing in the database to find.
-    resumed = await captures.resume_delete_pending()
-    resumed += await captures.resume_from_ledger()
+    #
+    # And because it is always, this — not the rebuild above — is where an
+    # ordinary installation MEETS a damaged ledger: database intact, nothing to
+    # rebuild, one edited line. There is one startup story for an unreadable
+    # ledger, and it does not depend on whether a rebuild happened to be
+    # triggered on the way past.
+    try:
+        resumed = await captures.resume_delete_pending()
+        resumed += await captures.resume_from_ledger()
+    except ledger_v2.LedgerUnreadableError as exc:
+        raise StoreStartupError(
+            f"{exc}. lifecycle.jsonl is the only record of a deletion that was "
+            "interrupted part-way, so starting without reading it would leave "
+            "the bytes of a destroyed capture on disk with nothing left to "
+            "finish the job. Restore or repair the file, then start again."
+        ) from exc
     if resumed:
         logger.info("resumed %d interrupted deletion(s) at startup", resumed)
     return report
@@ -214,6 +228,22 @@ async def _rebuild(
         )
     for warning in result.warnings:
         logger.warning("rebuild: %s", warning)
+    orphaned = store.orphaned_batch_ids()
+    if orphaned:
+        # The one part of the catalog a rebuild cannot restore: a batch's own
+        # row has no sidecar and no ledger line, so it does not come back with
+        # the recordings that name it. Saying so is the whole remedy — the
+        # numbers and labels are not recoverable from anywhere — but an
+        # operator whose Collect strip went empty deserves the reason in the
+        # log rather than a silently shorter list.
+        logger.warning(
+            "rebuild: %d recording(s) name %d batch(es) that no longer exist "
+            "(%s). A batch's own row lives only in kairos.db, so it does not "
+            "survive a rebuild; the recordings themselves are intact.",
+            sum(orphaned.values()),
+            len(orphaned),
+            ", ".join(f"{batch_id} x{n}" for batch_id, n in orphaned.items()),
+        )
     if result.deferred:
         logger.warning(
             "rebuild deferred %d unfinalized capture(s) because the recorder "

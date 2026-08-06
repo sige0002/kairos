@@ -26,6 +26,11 @@ export interface SettingsState {
   plans: PlanProjectData[];
   planProjIdx: number;
   planTaskIdx: number;
+  /** The selected task vanished (the catalog changed elsewhere) and a different
+   *  one is on screen. The controls that act on "the selected task" stay inert
+   *  until the operator picks one, so an edit never lands on a task they did
+   *  not choose. */
+  taskSelectionLost: boolean;
   selectProject: (i: number) => void;
   selectTask: (i: number) => void;
   addProject: () => void;
@@ -74,9 +79,27 @@ export function useSettingsState(): SettingsState {
 
   const selectMenu = useCallback((i: number) => setMenuIdx(i), []);
 
-  // Projects can only be added, never removed, so `plans[ppIdx]` always exists.
-  const ppIdx = Math.min(planProjIdx, plans.length - 1);
-  const planProj = plans[ppIdx]!;
+  // The catalog can legitimately be EMPTY. This editor blocks removing the last
+  // project (see removeProject), but the catalog is SHARED: another terminal — or
+  // a direct `PUT /api/v1/plans {"projects": []}` — can empty it, and this browser
+  // adopts an explicitly-emptied catalog as-is (plans.ts adoptServerPlans). So
+  // `plans[ppIdx]` may be undefined; clamping alone is not enough (on an empty
+  // catalog `plans.length - 1` is -1, and plans[-1] is undefined). Every handler
+  // below no-ops when there is no selected project, and PlansSection renders an
+  // empty state.
+  const ppIdx = Math.max(0, Math.min(planProjIdx, plans.length - 1));
+  const planProj = plans[ppIdx];
+  // ONE clamped task cursor per render, used by the handlers below AND returned
+  // to PlansSection. They used to disagree — the view derived `disabled` from
+  // the clamped index while the handlers read the raw state — so after a
+  // partial shrink (the project survives, its task list shortens) "+ Add
+  // condition" was ENABLED and silently did nothing. Sharing one value makes
+  // that impossible: the control is correct, or it is disabled.
+  const ptIdx = Math.min(planTaskIdx, Math.max(0, (planProj?.tasks.length ?? 0) - 1));
+  // The clamp MOVED the cursor, i.e. the task the operator selected is no longer
+  // there and a different one is being shown. Derived rather than stored, so
+  // picking any task clears it — that click IS the re-confirmation.
+  const taskSelectionLost = planTaskIdx > ptIdx && (planProj?.tasks.length ?? 0) > 0;
 
   const selectProject = useCallback((i: number) => {
     setPlanProjIdx(i);
@@ -109,10 +132,13 @@ export function useSettingsState(): SettingsState {
   const removeProject = useCallback((i: number) => {
     const target = plans[i];
     if (!target) return;
-    // A plan needs at least one project: an empty catalog would crash the
-    // editor (it reads plans[idx].name) and the store can't even persist it
-    // (readInitial falls back to the defaults for a zero-length array). So
-    // block the last removal with an honest note rather than half-doing it.
+    // A plan needs at least one project: emptying it here leaves Collect with
+    // no Project/Task/Condition vocabulary, and the store can't even persist
+    // the result (readInitial falls back to the defaults for a zero-length
+    // array), so the deleted projects would silently reappear on reload. Block
+    // the last removal with an honest note rather than half-doing it. (An
+    // empty catalog adopted from the SERVER is a different, supported case —
+    // it renders PlansSection's empty state, see the ppIdx note above.)
     if (plans.length <= 1) {
       showToast('Keep at least one project — the last one can’t be removed');
       return;
@@ -137,27 +163,31 @@ export function useSettingsState(): SettingsState {
   }, [plans, showToast]);
 
   const addTask = useCallback(() => {
+    if (!plans[ppIdx]) return; // empty catalog: no project to add a task to
     const v = window.prompt('New task name', '');
     if (!v) return;
     const next = clonePlans(plans);
-    next[ppIdx]!.tasks.push({ name: v, conditions: [] });
+    const proj = next[ppIdx]!;
+    proj.tasks.push({ name: v, conditions: [] });
     setPlans(next);
-    setPlanTaskIdx(next[ppIdx]!.tasks.length - 1);
+    setPlanTaskIdx(proj.tasks.length - 1);
     showToast(`Task "${v}" added`);
   }, [plans, ppIdx, showToast]);
 
   const renameTask = useCallback(() => {
-    const task = plans[ppIdx]?.tasks[planTaskIdx];
+    if (taskSelectionLost) return;
+    const task = plans[ppIdx]?.tasks[ptIdx];
     if (!task) return;
     const v = window.prompt('Task name', task.name);
     if (!v) return;
     const next = clonePlans(plans);
-    next[ppIdx]!.tasks[planTaskIdx]!.name = v;
+    next[ppIdx]!.tasks[ptIdx]!.name = v;
     setPlans(next);
     showToast('Task renamed');
-  }, [plans, ppIdx, planTaskIdx, showToast]);
+  }, [plans, ppIdx, ptIdx, taskSelectionLost, showToast]);
 
   const removeTask = useCallback((i: number) => {
+    if (!plans[ppIdx]?.tasks[i]) return;
     const next = clonePlans(plans);
     next[ppIdx]!.tasks.splice(i, 1);
     setPlans(next);
@@ -166,31 +196,38 @@ export function useSettingsState(): SettingsState {
   }, [plans, ppIdx, showToast]);
 
   const addCondition = useCallback(() => {
+    // No project (empty catalog) or no task yet — the button is disabled in both
+    // cases, but the handler must not depend on that to stay safe.
+    if (taskSelectionLost) return;
+    if (!plans[ppIdx]?.tasks[ptIdx]) return;
     const v = window.prompt('New condition (e.g. "Object: Left → Tray: Center")', '');
     if (!v) return;
     const next = clonePlans(plans);
-    next[ppIdx]!.tasks[planTaskIdx]!.conditions.push(v);
+    next[ppIdx]!.tasks[ptIdx]!.conditions.push(v);
     setPlans(next);
     showToast('Condition added');
-  }, [plans, ppIdx, planTaskIdx, showToast]);
+  }, [plans, ppIdx, ptIdx, taskSelectionLost, showToast]);
 
   const renameCondition = useCallback((i: number) => {
-    const label = plans[ppIdx]?.tasks[planTaskIdx]?.conditions[i];
+    if (taskSelectionLost) return;
+    const label = plans[ppIdx]?.tasks[ptIdx]?.conditions[i];
     if (label === undefined) return;
     const v = window.prompt('Condition', label);
     if (!v) return;
     const next = clonePlans(plans);
-    next[ppIdx]!.tasks[planTaskIdx]!.conditions[i] = v;
+    next[ppIdx]!.tasks[ptIdx]!.conditions[i] = v;
     setPlans(next);
     showToast('Condition updated');
-  }, [plans, ppIdx, planTaskIdx, showToast]);
+  }, [plans, ppIdx, ptIdx, taskSelectionLost, showToast]);
 
   const removeCondition = useCallback((i: number) => {
+    if (taskSelectionLost) return;
+    if (plans[ppIdx]?.tasks[ptIdx]?.conditions[i] === undefined) return;
     const next = clonePlans(plans);
-    next[ppIdx]!.tasks[planTaskIdx]!.conditions.splice(i, 1);
+    next[ppIdx]!.tasks[ptIdx]!.conditions.splice(i, 1);
     setPlans(next);
     showToast('Condition removed');
-  }, [plans, ppIdx, planTaskIdx, showToast]);
+  }, [plans, ppIdx, ptIdx, taskSelectionLost, showToast]);
 
   // Fail-reason vocabulary (Collect's "What failed?" chips) — same shared-store
   // funnel as the plans handlers above.
@@ -256,7 +293,8 @@ export function useSettingsState(): SettingsState {
     selectMenu,
     plans,
     planProjIdx: ppIdx,
-    planTaskIdx: Math.min(planTaskIdx, Math.max(0, planProj.tasks.length - 1)),
+    planTaskIdx: ptIdx,
+    taskSelectionLost,
     selectProject,
     selectTask,
     addProject,

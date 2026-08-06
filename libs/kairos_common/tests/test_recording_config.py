@@ -199,3 +199,24 @@ def test_a_negative_floor_is_rejected() -> None:
         RecordingConfig.model_validate(
             {"robot_name": "r", "validation": {"min_duration_s": -1}}
         )
+
+
+def test_syntactically_broken_yaml_is_a_ValueError_naming_the_file(
+    tmp_path: Path,
+) -> None:
+    """E-20, config half: someone edits the file by hand and leaves it invalid.
+
+    The loaders promise ``ValueError`` for a config they cannot use, and every
+    caller catches that (plus OSError) to degrade with a warning. PyYAML's
+    ``YAMLError`` is neither, so before this an unparseable file did not
+    degrade — it came out of ``create_orchestrator_app`` as a raw scanner
+    traceback and the service did not start at all, over a file the same
+    handler was already written to tolerate.
+    """
+    path = tmp_path / "recording.yaml"
+    # A tab where YAML forbids one, which is what a hand edit tends to produce.
+    path.write_text("robot_name: r\ntopics:\n\t- /a\n", encoding="utf-8")
+
+    with pytest.raises(ValueError) as excinfo:
+        load_recording_config(path)
+    assert str(path) in str(excinfo.value)

@@ -167,6 +167,14 @@ export const useUiStore = create<UiState>((set) => ({
       // an operator-customized set persists across tab switches / discovery
       // refreshes. On re-seed, clear `recordCustomized` so a stale selection
       // from the previous robot can't be sent to the next Start.
+      //
+      // CALLERS: `key` MUST be order-insensitive — build it with
+      // `configSeedKey` (src/v2/seedKey.ts), never a bare JSON.stringify of the
+      // list. Any difference here DISCARDS the operator's customized selection,
+      // so a plain reorder of `default_topics` (identical set, no semantic
+      // change) would silently reset it while the list still shows everything
+      // they wanted. Two independent call sites had that bug; this is the
+      // invariant that stops a third.
       s.recordSeededKey === key
         ? {}
         : {

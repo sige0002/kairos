@@ -14,7 +14,7 @@ from api_orchestrator.models import Capture, CaptureState
 from conftest import settle_views
 from fastapi.testclient import TestClient
 from kairos_common import ledger_v2
-from kairos_common.ids import new_capture_id
+from kairos_common.ids import new_capture_id, new_membership_id
 
 
 def _capture(client: TestClient, layout: DataLayout, **fields) -> str:
@@ -154,6 +154,83 @@ class TestDisplayIndex:
         # The member row for 3 is gone, so only the ledger remembers that the
         # number was ever issued — which is exactly why the append is fatal.
         assert new_member["display_index"] == 4
+
+    def test_a_line_the_rebuild_cannot_place_still_retires_its_number(
+        self, client: TestClient, layout: DataLayout, settings, fake_recorder
+    ) -> None:
+        """A member line the replay cannot use is damage, not absence.
+
+        Numbers are retired by the ledger and by nothing else, so a line the
+        rebuild fails to turn into a row — an envelope that lost its
+        capture_id, a display_index that is not a number — still says a number
+        was issued. Reading it as absence lowers the watermark and hands a
+        live member's number to a different recording, which is the one thing
+        §6 forbids. Losing a membership is bad; losing it and then re-selling
+        its number is worse.
+        """
+        dataset_id = client.post("/api/v1/datasets", json={"name": "ds"}).json()[
+            "dataset_id"
+        ]
+        for _ in range(2):
+            client.post(
+                f"/api/v1/datasets/{dataset_id}/members",
+                json={"capture_id": _capture(client, layout)},
+            )
+        instance_id = client.app.state.instance_id
+        # 003 — the number is legible; the rest of the line is not.
+        ledger_v2.append(
+            layout.data_dir,
+            "dataset_member_added",
+            instance_id=instance_id,
+            payload={
+                "dataset_id": dataset_id,
+                "membership_id": new_membership_id(),
+                "display_index": 3,
+            },
+        )
+        # A fourth member whose number is the part that did not survive.
+        ledger_v2.append(
+            layout.data_dir,
+            "dataset_member_added",
+            instance_id=instance_id,
+            capture_id=new_capture_id(),
+            payload={
+                "dataset_id": dataset_id,
+                "membership_id": new_membership_id(),
+            },
+        )
+        client.__exit__(None, None, None)
+
+        layout.db.unlink()
+        app = create_orchestrator_app(
+            settings,
+            http_client=httpx.AsyncClient(
+                transport=httpx.MockTransport(fake_recorder.handler)
+            ),
+        )
+        with TestClient(app) as restarted:
+            store = restarted.app.state.capture_store
+            detail = restarted.get(f"/api/v1/datasets/{dataset_id}").json()
+            # Neither damaged line becomes a member — nothing is invented.
+            assert [m["display_index"] for m in detail["members"]] == [1, 2]
+            # Replay the SAME ledger again, which is what KAIROS_REBUILD=1 does
+            # on a live database: the rebuild only ever upserts captures and
+            # replicas, so the dataset rows and their watermark are still here.
+            # A replay that CONSUMED a number per damaged line would drift the
+            # mark up on every forced rebuild — trading a reissue for a leak.
+            marks = [store.get_dataset(dataset_id)["index_high_water"]]
+            for _ in range(3):
+                restarted.app.state.dataset_service.restore_from_ledger()
+                marks.append(store.get_dataset(dataset_id)["index_high_water"])
+            assert marks == [4, 4, 4, 4], marks
+            member = restarted.post(
+                f"/api/v1/datasets/{dataset_id}/members",
+                json={"capture_id": _capture(restarted, layout)},
+            ).json()
+        # 003 is spoken for, and so is the number the unreadable line took,
+        # whichever it was: the next recording starts past both — replayed four
+        # times or once, because the mark is derived from the ledger, not bumped.
+        assert member["display_index"] == 5
 
 
 class TestLabelEdits:
@@ -637,6 +714,91 @@ class TestDisplayIndexReclaim:
             json={"capture_id": _capture(client, layout)},
         ).json()
         assert other["display_index"] == 2
+
+    def test_the_whole_reclaim_history_survives_a_rebuild(
+        self, client: TestClient, layout: DataLayout, settings, fake_recorder
+    ) -> None:
+        """Take, give back, take again — then throw the index away.
+
+        A reclaim is the one time a number is issued twice, so it is the one
+        history a rebuild can get wrong in both directions: hand 002 back to a
+        stranger, or forget that 004 was ever issued. Only the ledger knows,
+        and only in order.
+        """
+        dataset_id = client.post("/api/v1/datasets", json={"name": "ds"}).json()[
+            "dataset_id"
+        ]
+        x, y, z, w = (_capture(client, layout) for _ in range(4))
+
+        def add(capture_id: str) -> dict:
+            response = client.post(
+                f"/api/v1/datasets/{dataset_id}/members",
+                json={"capture_id": capture_id},
+            )
+            assert response.status_code == 201, response.text
+            return response.json()
+
+        def remove(membership_id: str) -> None:
+            assert (
+                client.delete(
+                    f"/api/v1/datasets/{dataset_id}/members/{membership_id}"
+                ).status_code
+                == 204
+            )
+
+        assert [add(c)["display_index"] for c in (x, y, z)] == [1, 2, 3]
+        removed = client.get(f"/api/v1/datasets/{dataset_id}").json()["members"][1]
+        remove(removed["membership_id"])
+        # Y comes back to its own number...
+        again = add(y)
+        assert again["display_index"] == 2
+        remove(again["membership_id"])
+        # ...but leaving a second time does not put 002 back in the pool: a
+        # different recording still gets a never-issued number.
+        assert add(w)["display_index"] == 4
+        client.__exit__(None, None, None)
+
+        layout.db.unlink()
+        app = create_orchestrator_app(
+            settings,
+            http_client=httpx.AsyncClient(
+                transport=httpx.MockTransport(fake_recorder.handler)
+            ),
+        )
+        with TestClient(app) as restarted:
+            members = restarted.get(f"/api/v1/datasets/{dataset_id}").json()["members"]
+            assert {m["capture_id"]: m["display_index"] for m in members} == {
+                x: 1,
+                z: 3,
+                w: 4,
+            }
+            # Y's own row comes back from its sidecars, the way every capture
+            # does; this test is about what the DATASET ledger remembers.
+            restarted.app.state.capture_store.create_capture(
+                Capture(
+                    capture_id=y,
+                    run_id=f"run_{y}",
+                    state=CaptureState.completed,
+                    operator="alice",
+                    task="pick",
+                    started_at="2026-08-01T00:00:00.000Z",
+                )
+            )
+            # The rebuilt index knows both halves: 002 is Y's alone, and the
+            # next stranger continues past the highest number ever issued.
+            assert (
+                restarted.post(
+                    f"/api/v1/datasets/{dataset_id}/members", json={"capture_id": y}
+                ).json()["display_index"]
+                == 2
+            )
+            assert (
+                restarted.post(
+                    f"/api/v1/datasets/{dataset_id}/members",
+                    json={"capture_id": _capture(restarted, layout)},
+                ).json()["display_index"]
+                == 5
+            )
 
     def test_reclaim_is_per_dataset(
         self, client: TestClient, layout: DataLayout

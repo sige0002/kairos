@@ -12,6 +12,7 @@
 // Kept DOM-free so the filtering/counting is unit-testable without React.
 
 import type { AlertEvent, MetricsSnapshot, RecordArming } from '../../api/types';
+import type { StreamFailure } from '../../features/stream/useWebRtcStream';
 import type { MonitorRow } from '../../features/monitor/useMonitorRows';
 import { matchesTopic } from '../../features/record/topics';
 import { toAlertRows, type AlertRow } from '../monitor/alerts';
@@ -92,6 +93,9 @@ export function armingWarning(arming: RecordArming | null): ArmingWarning | null
 export interface TopicRates {
   ok: number;
   judged: number;
+  /** Readings the ingest could not identify, excluded from BOTH sides above
+   *  (E-23). Non-zero means this ratio describes fewer topics than arrived. */
+  withheld: number;
 }
 
 /**
@@ -103,11 +107,20 @@ export interface TopicRates {
  */
 export function topicRates(metrics: MetricsSnapshot | undefined): TopicRates | null {
   const topics = metrics?.topics ?? [];
+  // E-23: the SSE ingest drops readings whose shape it cannot identify, and
+  // BOTH sides of this ratio come from the array it filtered — so a dropped
+  // row leaves the numerator and the denominator together and "12 / 12 at
+  // expected" is reported for a robot that published 13. The withheld count
+  // travels with the ratio so the card can refuse to call that complete. This
+  // is the screen an operator watches WHILE RECORDING; it is the last place a
+  // missing reading should be invisible.
+  const withheld = metrics?.malformed_dropped ?? 0;
   const judged = topics.filter((t) => t.status && t.status !== 'unknown');
-  if (judged.length === 0) return null;
+  if (judged.length === 0 && withheld === 0) return null;
   return {
     ok: judged.filter((t) => t.status === 'ok').length,
     judged: judged.length,
+    withheld,
   };
 }
 
@@ -204,4 +217,109 @@ export function topicLiveness(rows: MonitorRow[], topic: string): TopicLiveness 
   // One measured row anywhere proves the monitor is answering, which is what
   // makes this a gap in COVERAGE rather than a blind monitor.
   return rows.some((r) => r.measured) ? 'unmonitored' : 'unknown';
+}
+
+/** What the System card's Cameras row is allowed to say, in one place. */
+export interface CameraSummaryInput {
+  totalCameras: number;
+  /** Panes whose own WebRTC stream is not connected. Every pane negotiates
+   *  separately, so this is a count across ALL of them, not the main one. */
+  streamsDown: number;
+  /** The cause they agree on, 'mixed' when they do not, null when unknown.
+   *  A PRIMITIVE on purpose: this rides inside CameraHealth, which is compared
+   *  field-by-field with `===` to decide whether the parent's state changed —
+   *  an array would be a fresh reference every render and never settle. */
+  streamFault: StreamFailure | 'mixed' | null;
+  silentTopics: number;
+  unmonitoredTopics: number;
+  framesStale: boolean;
+}
+
+export interface CameraSummary {
+  value: string;
+  chip: string;
+  tone: 'green' | 'amber' | 'gray';
+  title?: string;
+}
+
+/** One cause in the operator's terms, or null when they disagree.
+ *
+ *  Naming a single reason for a mixed set would be a guess dressed as a
+ *  diagnosis, and the three causes send the operator to three different places:
+ *  the streamer service, the network, or this browser. */
+function streamFaultReason(fault: StreamFailure | 'mixed' | null): string | null {
+  if (fault === null) return null;
+  if (fault === 'mixed') return 'more than one reason';
+  if (fault === 'signaling') return 'the streamer did not answer';
+  if (fault === 'peer') return 'the network connection dropped';
+  return 'this browser has no WebRTC';
+}
+
+/**
+ * The Cameras row of the System card (E-37).
+ *
+ * The rule this enforces: the row may not read as "everything is fine" while
+ * any pane's stream is down. It used to, because only the MAIN pane's phase
+ * reached this card — four black tiles beside one working stream summarised as
+ * "5 cameras OK" in green, and a total blackout said "main stream failed",
+ * which describes one pane and one clause for a console with no pictures at
+ * all.
+ *
+ * Faults are ranked by what the operator can act on first: a silent source
+ * topic outranks a stream fault (there is no picture to rescue at the
+ * transport layer if nothing is publishing), and a stream fault outranks a
+ * stale-frame report from the main tile.
+ */
+export function cameraSummary(input: CameraSummaryInput): CameraSummary {
+  const { totalCameras, streamsDown, silentTopics, unmonitoredTopics, framesStale } = input;
+  if (totalCameras === 0) return { value: 'none open', chip: '—', tone: 'gray' };
+  const gap = unmonitoredTopics > 0 ? ` · ${unmonitoredTopics} not monitored` : '';
+
+  if (silentTopics > 0) {
+    return {
+      value: `${silentTopics} of ${totalCameras} cameras: topic silent${gap}`,
+      chip: 'CHECK',
+      tone: 'amber',
+    };
+  }
+  if (streamsDown > 0) {
+    const reason = streamFaultReason(input.streamFault);
+    return {
+      value:
+        `${streamsDown} of ${totalCameras} cameras: no video` +
+        (reason ? ` — ${reason}` : '') +
+        gap,
+      title:
+        'Each camera negotiates its own stream, so this counts every pane, not ' +
+        'just the main one. The reason comes from where the connection failed: ' +
+        'the streamer not answering is a service to restart, a dropped ' +
+        'connection is the network between here and it.',
+      chip: 'CHECK',
+      tone: 'amber',
+    };
+  }
+  if (framesStale) {
+    return {
+      value: `main stream: no frames${gap}`,
+      chip: 'CHECK',
+      tone: 'amber',
+    };
+  }
+  if (unmonitoredTopics > 0) {
+    const known = totalCameras - unmonitoredTopics;
+    return {
+      value: `${known} of ${totalCameras} cameras OK${gap}`,
+      title:
+        'These panes are outside the monitored set, so nothing measures ' +
+        'whether their source topics are still publishing. The preview keeps ' +
+        'showing frames either way.',
+      chip: '—',
+      tone: 'gray',
+    };
+  }
+  return {
+    value: `${totalCameras} camera${totalCameras === 1 ? '' : 's'} OK`,
+    chip: 'OK',
+    tone: 'green',
+  };
 }

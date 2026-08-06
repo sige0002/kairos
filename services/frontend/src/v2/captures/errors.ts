@@ -130,10 +130,40 @@ const GUIDANCE: Record<string, { guidance: string; severity: ErrorSeverity; relo
       '(objects, views, report, catalog and friends). Choose another.',
     severity: 'warning',
   },
+  // The part the server does not say: the claim is PERMANENT.
+  // `begin_dataset_archive` (store.py) holds a destination against the dataset
+  // ROW, not the files in it — an archived dataset keeps its folder for good, a
+  // halted run keeps its own even after an operator clears the debris, a run
+  // that finishes only turns `archiving` into `archived` (still in the scan),
+  // and the ledger has no release event at all, so the hold survives a rebuild.
+  // Emptying the folder and waiting the other run out are the two things an
+  // operator tries first; neither frees the path and the first destroys data.
+  //
+  // WHICH dataset holds it is deliberately not printed here. The envelope
+  // carries `held_by` (an id) while the server's message carries the NAME, and
+  // rendering the two unlabelled and adjacent reads as two different datasets.
+  // The archive dialogs join them against the catalog they already hold
+  // (datasets/ArchiveError.tsx), which is the only place the name is known.
+  destination_claimed: {
+    guidance:
+      'The folder belongs to another dataset for good: the claim is on the ' +
+      'dataset, not on the files in it, so emptying the folder does not ' +
+      'release it and neither does that dataset finishing its run. Archive to ' +
+      'a different path — one no dataset has used.',
+    severity: 'warning',
+  },
+  // Raised by BOTH archive routes — captures.py for one recording,
+  // dataset_archive.py for a whole dataset — so the wording names neither: on
+  // the dataset dialog what a full folder would mix is datasets. And it keeps
+  // the second way out the server itself offers, because withdrawing an option
+  // the operator was just given reads as the two lines disagreeing. Clearing
+  // really does free a FULL destination, which is exactly what separates this
+  // from `destination_claimed`, where it frees nothing and destroys data.
   destination_not_empty: {
     guidance:
-      'The archive destination already holds files. Archiving into it could ' +
-      'mix two captures together, so pick an empty path.',
+      'Two archives in one folder could not be told apart afterwards. Pick an ' +
+      'empty path — or, as the message says, clear this one first if what is ' +
+      'in it is only the debris of a run that never finished.',
     severity: 'warning',
   },
   reason_required: {
@@ -154,6 +184,26 @@ const GUIDANCE: Record<string, { guidance: string; severity: ErrorSeverity; relo
       'The lifecycle ledger could not be written, so nothing was deleted. The ' +
       'ledger is written first on purpose: without its line there would be no ' +
       'record that the data ever existed.',
+    severity: 'destructive',
+  },
+  // The sibling of the above, and the mirror image: there the ledger could not
+  // be WRITTEN, here a line in it cannot be READ. Both are 503, and neither is
+  // the transient 503 that word usually promises — this one reads identically
+  // on every retry, because a corrupt line does not become valid by waiting.
+  // So the guidance names the repair instead of a delay: telling an operator to
+  // try again shortly would be advice that cannot work.
+  //
+  // Destructive severity for what it BLOCKS, not for anything lost (nothing
+  // is): the number a returning recording takes back lives only in the ledger,
+  // so membership cannot be numbered, and an archive run halts where it stood.
+  // Both need a human and a file — not a note that fades.
+  ledger_unreadable: {
+    guidance:
+      'The ledger has a line that does not parse — hand-edited, or a damaged ' +
+      'write — so this could not be answered from the store’s own history ' +
+      'rather than having failed. Repair or restore lifecycle.jsonl; until it ' +
+      'reads, a number cannot be issued and a halted archive run stays where ' +
+      'it stopped.',
     severity: 'destructive',
   },
   volume_unidentified: {
@@ -245,6 +295,42 @@ export function readCaptureError(
     severity: known?.severity ?? 'warning',
     reload: known?.reload ?? false,
     details,
+  };
+}
+
+/**
+ * The same reading, reached by CODE instead of by a thrown envelope.
+ *
+ * Not every failure arrives as an `ApiError`. The dataset archive runner
+ * reports a halt as a plain `{code, message}` inside its progress payload
+ * (`DatasetArchiveProgress.error`), so the dialog showing it has the code and
+ * the server's sentence but nothing to throw — and without this, the guidance
+ * for exactly the codes a halt raises is unreachable on the one surface where
+ * the operator is stopped and waiting to be told what to do.
+ *
+ * Reads the same two tables, so a code cannot mean one thing thrown and another
+ * reported. What it CANNOT reproduce is the pair built from `details` —
+ * `capture_busy` names the job holding the lease, and a plain payload has no
+ * lease to name — so those fall through to no guidance rather than to a
+ * sentence with a hole in it.
+ *
+ * An unknown or absent code returns the message with NO guidance: the same
+ * degradation an unmapped code gets above, for the same reason.
+ */
+export function readCaptureCode(
+  code: string | null | undefined,
+  message: string | null | undefined,
+): CaptureErrorReading {
+  const resolved = code ?? '';
+  const known = GUIDANCE[resolved];
+  const contextual = CONTEXTUAL[resolved];
+  return {
+    code: resolved,
+    message: message ?? '',
+    guidance: known?.guidance ?? contextual?.byContext.default ?? '',
+    severity: known?.severity ?? contextual?.severity ?? 'warning',
+    reload: known?.reload ?? contextual?.reload ?? false,
+    details: {},
   };
 }
 

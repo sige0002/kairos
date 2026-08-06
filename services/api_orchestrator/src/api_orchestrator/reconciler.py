@@ -30,12 +30,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
+import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from kairos_common import ledger_v2
 from kairos_common import rebuild as rebuild_mod
 from kairos_common.capture_sidecars import (
+    OBJECT_MANIFEST_FILENAME,
     TERMINAL_STATES,
     CaptureState,
     SidecarStatus,
@@ -55,6 +59,36 @@ from api_orchestrator.recorder_client import live_capture_ids
 from api_orchestrator.store import PRESENT_REPLICA_STATES, CaptureStore
 
 logger = logging.getLogger("kairos")
+
+# How long a staging directory may sit with no manifest before it is read as
+# debris rather than a transfer in progress. Comfortably longer than any copy —
+# and the copy slot bounds how many can be running at once — while short enough
+# that an abandoned partial does not hold its bytes until somebody notices a
+# disk filling up.
+INCOMING_ORPHAN_GRACE_S = 3600.0
+
+
+def _last_touched(path: Path) -> float:
+    """The newest mtime anywhere under *path*, including *path* itself.
+
+    The whole tree, not one level: a rosbag2 transfer writes into a directory
+    of shards, so the file actually being written is usually not at the top —
+    and a one-level scan would read a live copy as idle and delete it.
+
+    Symlinks are fail-safe in both directions, which is worth stating because
+    the next reader will wonder. ``rglob`` LISTS a symlink but does not descend
+    it, so a planted link cannot redirect this onto an unrelated tree; and
+    ``stat()`` follows it, so a link pointing at a freshly written file can only
+    make a directory look younger — delaying a sweep, never causing one.
+    """
+    newest = path.stat().st_mtime
+    for child in path.rglob("*"):
+        try:
+            newest = max(newest, child.stat().st_mtime)
+        except OSError:
+            continue
+    return newest
+
 
 # How often the background pass runs. Long enough that a busy recording host is
 # not scanning constantly, short enough that an orphaned import shows up in the
@@ -267,6 +301,55 @@ class Reconciler:
             corrupt=None if scan.ledger_unreadable is not None else result.corrupt,
         )
         return result
+
+    def _sweep_incoming_orphans(
+        self, *, grace_s: float = INCOMING_ORPHAN_GRACE_S
+    ) -> int:
+        """Delete staging directories a killed transfer abandoned. Returns count.
+
+        The sibling of ``views.prune_stale`` above: derived debris that only a
+        process which always comes back can collect. An importer killed
+        mid-copy leaves ``.incoming/<id>/`` behind, and because that directory
+        must share a filesystem with ``objects/`` for the landing rename to be
+        atomic, the bytes it holds are exactly the ones recording needs — while
+        appearing in no listing at all, since a staging dir is not a capture
+        until it is published. The in-process failure path removes its own
+        staging; a killed process never runs it.
+
+        **Two conditions, and both are load-bearing.** No manifest, because a
+        staging dir WITH a terminal one is a completed transfer waiting for
+        ``_adopt_incoming`` and deleting it would throw away an arrival. And
+        quiet for *grace_s*, because a copy still running has no manifest yet
+        either — the manifest is written last, precisely so a partial can never
+        be mistaken for a whole one.
+
+        "Quiet" is the newest mtime anywhere inside, not the directory's own.
+        rsync writing a single multi-gigabyte file never touches the directory
+        entry again after creating it, so a sweep that trusted the directory
+        alone would delete a transfer that was still being written.
+        """
+        try:
+            entries = sorted(self._layout.incoming.iterdir())
+        except OSError:
+            return 0
+        now = time.time()
+        swept = 0
+        for entry in entries:
+            if not entry.is_dir() or entry.is_symlink():
+                continue
+            if not is_uuid7(entry.name):
+                continue
+            if (entry / OBJECT_MANIFEST_FILENAME).exists():
+                continue
+            if now - _last_touched(entry) <= grace_s:
+                continue
+            shutil.rmtree(entry, ignore_errors=True)
+            swept += 1
+            logger.warning(
+                "removed an abandoned transfer staging directory",
+                extra={"capture_id": entry.name},
+            )
+        return swept
 
     def _adopt_incoming(self) -> tuple[str, ...]:
         """Move completed ``.incoming/<id>`` staging dirs into ``objects/``.
@@ -484,6 +567,15 @@ class Reconciler:
             )
         result.missing = len(scan.missing)
 
+        # Reads the ledger a second time, deliberately without a guard of its
+        # own. An unreadable ledger cannot reach here: the scan meets it first
+        # and the ``ledger_unreadable`` check above returns before this line —
+        # which is indirect enough to be worth a test, so TestDamagedLedger
+        # pins it. The residue is a ledger damaged BETWEEN the scan and here,
+        # and that costs one pass, not the loop: ``_loop`` catches and logs,
+        # then the next tick runs normally (measured: 28 further passes after
+        # one raising pass). A handler here would buy a logged line we already
+        # get.
         result.resumed_deletes = await self._captures.resume_delete_pending()
         result.resumed_deletes += await self._captures.resume_from_ledger()
         # The slack is consumed by a discard on a full disk (§5). Re-reserving
@@ -505,6 +597,10 @@ class Reconciler:
         # otherwise sit beside ``views`` indefinitely as dangling-symlink
         # debris. Derived state only; nothing the catalog answers from.
         await asyncio.to_thread(views_mod.prune_stale, self._layout)
+        # Same category, different debris: staging directories a killed
+        # transfer left behind, which hold their bytes on the filesystem
+        # recording needs and appear in no listing.
+        await asyncio.to_thread(self._sweep_incoming_orphans)
         return result
 
     async def run_digests(self) -> int:

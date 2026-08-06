@@ -14,14 +14,16 @@ from pathlib import Path
 
 import pytest
 import yaml
+from api_orchestrator import bag_import
 from api_orchestrator.layout import DataLayout
 from api_orchestrator.models import Capture, CaptureState
 from api_orchestrator.transfer import ArrivalConflictError, adopt_incoming
-from conftest import reconcile
+from conftest import reconcile, run_digests
 from fastapi.testclient import TestClient
 from kairos_common.capture_sidecars import (
     ObjectManifestV2,
     RecordV2,
+    read_object_manifest,
     read_record,
     write_object_manifest,
     write_record,
@@ -738,3 +740,289 @@ class TestImportRacesFoundByReview:
         assert "in place" in status["error"]["message"]
         # The bytes were NOT thrown away to make the failure look tidy.
         assert (layout.objects / status["capture_id"]).is_dir()
+
+
+# ---- E-15: a bag that is half-written, short a shard, or lying about itself --
+
+
+def _add_shard(path: Path, index: int, *, content: bytes | None = None) -> Path:
+    """A second/third MCAP beside bag_0, as a split recording produces."""
+    shard = path / f"bag_{index}.mcap"
+    if content is not None:
+        shard.write_bytes(content)
+        return shard
+    with shard.open("wb") as handle:
+        writer = Writer(handle)
+        writer.start()
+        schema = writer.register_schema(
+            name="sensor_msgs/msg/JointState", encoding="ros2msg", data=b"x"
+        )
+        channel = writer.register_channel(
+            topic="/joint_states", message_encoding="cdr", schema_id=schema
+        )
+        writer.add_message(channel_id=channel, log_time=1, publish_time=1, data=b"\x00")
+        writer.finish()
+    return shard
+
+
+def _declare_files(path: Path, names: list[str]) -> None:
+    """Write the ``files:`` inventory rosbag2 puts in metadata.yaml."""
+    metadata = yaml.safe_load((path / "metadata.yaml").read_text(encoding="utf-8"))
+    info = metadata["rosbag2_bagfile_information"]
+    info["relative_file_paths"] = names
+    info["files"] = [{"path": name} for name in names]
+    (path / "metadata.yaml").write_text(yaml.safe_dump(metadata), encoding="utf-8")
+
+
+class TestPartialBagsAreRefused:
+    def test_a_later_shard_still_being_written_is_refused(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        """Only the FIRST mcap was ever opened, so a split recording whose last
+        shard is still growing passed inspection and imported as a complete
+        capture — the index saying one thing and the bytes another."""
+        source = tmp_path / "session"
+        _make_bag(source)
+        _add_shard(source, 1, content=b"\x89MCAP0\r\n truncated mid-write")
+        _declare_files(source, ["bag_0.mcap", "bag_1.mcap"])
+
+        body = client.get(f"/api/v1/imports/scan?path={tmp_path}").json()
+
+        row = {b["name"]: b for b in body["bags"]}["session"]
+        assert row["importable"] is False
+        assert "bag_1.mcap" in row["reason"]
+
+    def test_a_shard_missing_from_the_middle_is_refused(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        """metadata.yaml declares the shards; a copy that dropped one leaves a
+        bag whose own inventory disagrees with the directory. Importing it
+        lands a capture whose message_count counts messages that are not
+        there."""
+        source = tmp_path / "session"
+        _make_bag(source)
+        _add_shard(source, 1)
+        _add_shard(source, 2)
+        _declare_files(source, ["bag_0.mcap", "bag_1.mcap", "bag_2.mcap"])
+        (source / "bag_1.mcap").unlink()  # the interrupted copy
+
+        body = client.get(f"/api/v1/imports/scan?path={tmp_path}").json()
+
+        row = {b["name"]: b for b in body["bags"]}["session"]
+        assert row["importable"] is False
+        assert "bag_1.mcap" in row["reason"]
+
+    def test_a_truncated_MIDDLE_shard_is_refused(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        """The one that defends checking every shard rather than the ends.
+
+        First-and-last would catch a growing tail and the inventory check would
+        catch a deletion, so bounding the loop looks free — and it is not: a
+        shard damaged in the middle of the sequence passes both and imports a
+        capture that is short exactly where nobody looked.
+        """
+        source = tmp_path / "session"
+        _make_bag(source)
+        _add_shard(source, 1, content=b"\x89MCAP0\r\n truncated in the middle")
+        _add_shard(source, 2)
+        _declare_files(source, ["bag_0.mcap", "bag_1.mcap", "bag_2.mcap"])
+
+        body = client.get(f"/api/v1/imports/scan?path={tmp_path}").json()
+
+        row = {b["name"]: b for b in body["bags"]}["session"]
+        assert row["importable"] is False
+        assert "bag_1.mcap" in row["reason"]
+
+    def test_an_unindexed_shard_abandons_the_count_check_instead_of_refusing(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        """A shard with no statistics section reports UNKNOWN, not zero.
+
+        This is the guard that keeps the count check from becoming a
+        false-refusal generator: read "unknown" as "zero" and a perfectly whole
+        bag with one unindexed shard is refused for holding fewer messages than
+        it declares — a bag nobody can import and nothing wrong with it.
+        Nothing else in the suite builds an unindexed MCAP, so this is the only
+        place that distinction is exercised.
+        """
+        from mcap.writer import IndexType
+        from mcap.writer import Writer as RawWriter
+
+        source = tmp_path / "session"
+        _make_bag(source, count=3)
+        with (source / "bag_1.mcap").open("wb") as handle:
+            writer = RawWriter(handle, index_types=IndexType.NONE, use_statistics=False)
+            writer.start()
+            schema = writer.register_schema(
+                name="sensor_msgs/msg/JointState", encoding="ros2msg", data=b"x"
+            )
+            channel = writer.register_channel(
+                topic="/joint_states", message_encoding="cdr", schema_id=schema
+            )
+            for index in range(5):
+                writer.add_message(
+                    channel_id=channel, log_time=index, publish_time=index, data=b"\x00"
+                )
+            writer.finish()
+        # The bag really does hold 8; only 3 of them are countable.
+        metadata = yaml.safe_load((source / "metadata.yaml").read_text())
+        metadata["rosbag2_bagfile_information"]["message_count"] = 8
+        (source / "metadata.yaml").write_text(
+            yaml.safe_dump(metadata), encoding="utf-8"
+        )
+
+        body = client.get(f"/api/v1/imports/scan?path={tmp_path}").json()
+
+        row = {b["name"]: b for b in body["bags"]}["session"]
+        assert row["importable"] is True
+
+    def test_a_declared_path_cannot_reach_outside_the_bag(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        """metadata.yaml is operator-editable input, so its paths are joined
+        under the bag directory and nowhere else.
+
+        The collapse to a basename is what enforces that. Without it the check
+        would stat ``../../outside.mcap`` — and a bag could be declared whole
+        on the strength of a file belonging to something else entirely.
+        """
+        outside = tmp_path / "outside.mcap"
+        outside.write_bytes(b"not part of any bag")
+        source = tmp_path / "session"
+        _make_bag(source)
+        _declare_files(source, ["bag_0.mcap", "../outside.mcap"])
+
+        body = client.get(f"/api/v1/imports/scan?path={tmp_path}").json()
+
+        row = {b["name"]: b for b in body["bags"]}["session"]
+        # Looked for as `outside.mcap` INSIDE the bag, not found, refused.
+        assert row["importable"] is False
+        assert "outside.mcap" in row["reason"]
+        # And the real file it named is untouched.
+        assert outside.read_bytes() == b"not part of any bag"
+
+    def test_an_inventory_of_the_wrong_shape_is_damage_not_absence(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        """A malformed declaration must not read as 'declared nothing'.
+
+        Absent inventories are common and harmless — there is nothing to check
+        against. A field that is present and the wrong type is the opposite,
+        and falling back to the absent branch turns a bag whose own manifest is
+        broken into a bag that passed every check.
+        """
+        source = tmp_path / "session"
+        _make_bag(source)
+        metadata = yaml.safe_load((source / "metadata.yaml").read_text())
+        # A string where a list belongs — one stray edit away from valid.
+        metadata["rosbag2_bagfile_information"]["relative_file_paths"] = "bag_0.mcap"
+        (source / "metadata.yaml").write_text(
+            yaml.safe_dump(metadata), encoding="utf-8"
+        )
+
+        body = client.get(f"/api/v1/imports/scan?path={tmp_path}").json()
+
+        row = {b["name"]: b for b in body["bags"]}["session"]
+        assert row["importable"] is False
+        assert "reindex" in row["reason"]
+
+    def test_a_bag_holding_fewer_messages_than_it_declares_is_refused(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        """The missing-shard harm, with every file present.
+
+        message_count is copied into the catalog from metadata.yaml, so a bag
+        that declares far more than its MCAPs contain lands an episode whose
+        count nothing on disk supports — the same 'looks complete' failure the
+        shard checks exist to stop.
+        """
+        source = tmp_path / "session"
+        _make_bag(source, count=3)
+        metadata = yaml.safe_load((source / "metadata.yaml").read_text())
+        metadata["rosbag2_bagfile_information"]["message_count"] = 999_999
+        (source / "metadata.yaml").write_text(
+            yaml.safe_dump(metadata), encoding="utf-8"
+        )
+
+        body = client.get(f"/api/v1/imports/scan?path={tmp_path}").json()
+
+        row = {b["name"]: b for b in body["bags"]}["session"]
+        assert row["importable"] is False
+        assert "999999" in row["reason"].replace(",", "")
+
+
+class TestMoveLeavesTheOperatorsOwnFilesAlone:
+    """E-16: ``move`` means "this bag now lives in kairos", not "erase this
+    directory". The boundary is drawn around the BAG, and these are what keep
+    it there — the code says so in comments, which no refactor has to read.
+    """
+
+    def test_a_neighbouring_folder_survives_and_keeps_the_directory(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        source = tmp_path / "session"
+        _make_bag(source)
+        (source / "notes").mkdir()
+        (source / "notes" / "calibration.md").write_text("mine", encoding="utf-8")
+
+        started = client.post(
+            "/api/v1/imports", json={"source_path": str(source), "move": True}
+        ).json()
+        _await_import(client, started["import_id"])
+
+        # The bag's files went; the operator's folder did not, and the
+        # directory holding it therefore still exists. An rmtree here would
+        # destroy data that was never imported and would then exist nowhere.
+        assert not (source / "bag_0.mcap").exists()
+        assert (source / "notes" / "calibration.md").read_text() == "mine"
+        assert source.is_dir()
+
+    def test_a_file_dropped_during_the_copy_is_not_deleted(
+        self, client: TestClient, tmp_path: Path, monkeypatch
+    ) -> None:
+        """``move`` deletes the exact set that was copied, not whatever a
+        second ``iterdir()`` finds afterwards. A long copy is exactly when an
+        operator drops something into the folder, and that file was never
+        imported — deleting it would destroy the only copy."""
+        source = tmp_path / "session"
+        _make_bag(source)
+        real_copy = bag_import.copy_into_staging
+
+        def copy_then_drop(bag, staging):
+            written = real_copy(bag, staging)
+            (source / "late_note.txt").write_text("dropped mid-copy", encoding="utf-8")
+            return written
+
+        monkeypatch.setattr(bag_import, "copy_into_staging", copy_then_drop)
+
+        started = client.post(
+            "/api/v1/imports", json={"source_path": str(source), "move": True}
+        ).json()
+        _await_import(client, started["import_id"])
+
+        assert not (source / "bag_0.mcap").exists()
+        assert (source / "late_note.txt").read_text() == "dropped mid-copy"
+
+    def test_a_file_beside_the_bag_travels_INTO_the_capture_and_is_tracked(
+        self, client: TestClient, tmp_path: Path, layout: DataLayout
+    ) -> None:
+        """The other half of the boundary, stated so it is a decision rather
+        than an accident: a top-level file IS taken, and it is tracked once it
+        arrives — hashed into the manifest like everything else, so it can be
+        found and verified rather than sitting in the capture untracked."""
+        source = tmp_path / "session"
+        _make_bag(source)
+        (source / "calibration.yaml").write_text("k: 1\n", encoding="utf-8")
+
+        started = client.post(
+            "/api/v1/imports", json={"source_path": str(source), "move": True}
+        ).json()
+        record = _await_import(client, started["import_id"])
+        capture_id = record["capture_id"]
+
+        landed = layout.capture_dir(capture_id) / "calibration.yaml"
+        assert landed.read_text() == "k: 1\n"
+        run_digests(client)
+        manifest = read_object_manifest(layout.capture_dir(capture_id)).manifest
+        assert "calibration.yaml" in {f.path for f in manifest.files}

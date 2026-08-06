@@ -9,6 +9,7 @@ keyed by the same id the request carried.
 from __future__ import annotations
 
 import sqlite3
+import time
 from pathlib import Path
 
 import pytest
@@ -106,6 +107,38 @@ def test_job_status_carries_the_capture_id(tmp_path: Path) -> None:
         status = client.get(f"/jobs/{created.json()['job_id']}/status").json()
     assert status["capture_id"] == capture_id
     assert "run_id" not in status
+
+
+def test_a_job_whose_capture_vanished_reports_capture_missing(tmp_path: Path) -> None:
+    """§9-2: an external ``rm -rf`` leaves a row whose bytes are gone.
+
+    The submission is still accepted — nothing here stats the filesystem on the
+    operator's behalf, and a check at submit would race the removal anyway. The
+    job then looks for the files, does not find them, and says so with its own
+    code: "the recording is gone" is a different fact for a caller than "the
+    pipeline broke", and only one of them is the operator's to fix.
+    """
+    capture_id = new_capture_id()  # no objects/<capture_id>/ on disk at all
+    app = create_dora_app(Settings(data_dir=str(tmp_path)))
+    with TestClient(app) as client:
+        created = client.post(
+            "/jobs",
+            json={"capture_id": capture_id, "pipeline": "loss_report", "params": {}},
+        )
+        assert created.status_code == 201
+        job_id = created.json()["job_id"]
+        for _ in range(200):
+            status = client.get(f"/jobs/{job_id}/status").json()
+            if status["state"] in {"succeeded", "failed"}:
+                break
+            time.sleep(0.01)
+
+    assert status["state"] == "failed"
+    error = client.get(f"/jobs/{job_id}/result").json()["summary"]["error"]
+    assert error["code"] == "capture_missing"
+    # The path stays in the message: it is what tells the operator WHERE the
+    # bytes were expected.
+    assert capture_id in error["message"]
 
 
 # ---- the runner's own store --------------------------------------------------

@@ -337,3 +337,56 @@ test('bridge events drive the monitorBridge ui state', async () => {
   expect(useUiStore.getState().monitorBridge).toBe('up');
   useUiStore.getState().setMonitorBridge(null);
 });
+
+// E-23. The stream has no schema, so a payload can be well-formed JSON with a
+// wrong-shaped field — and one of those took the ENTIRE console to the root
+// error boundary (measured: tab bar gone, four subsequent good events did not
+// heal it, an operator on Collect lost their screen without ever opening
+// Monitor). Ingest is where a schema-less stream should be met: a row nothing
+// can identify is dropped here rather than written into the cache for every
+// consumer to trip over.
+//
+// DROPPED, not repaired, and deliberately: a row whose `name` is not a string
+// cannot be keyed, matched to an expected Hz, or named on screen. Coercing it
+// would invent a topic called "[object Object]" and put a fiction in a
+// monitoring table. Dropping loses it — so the count travels with the snapshot
+// and the screen says so.
+test('a metrics row with an unusable name is dropped at ingest, and counted', () => {
+  const qc = new QueryClient();
+  dispatchSseEvent(
+    qc,
+    'metrics',
+    JSON.stringify({
+      ts: '2026-08-06T00:00:00Z',
+      topics: [
+        { name: '/good/one', hz: 30 },
+        { name: { unexpected: 'object' }, hz: 12 },
+        { name: '/good/two', hz: 15 },
+        { hz: 9 },
+      ],
+    }),
+  );
+  const stored = qc.getQueryData<MetricsSnapshot>(queryKeys.metrics)!;
+  expect(stored.topics.map((t) => t.name)).toEqual(['/good/one', '/good/two']);
+  expect(stored.malformed_dropped).toBe(2);
+});
+
+test('a healthy metrics snapshot is stored unchanged and reports nothing dropped', () => {
+  const qc = new QueryClient();
+  const snapshot: MetricsSnapshot = {
+    ts: '2026-08-06T00:00:00Z',
+    topics: [{ name: '/camera/head/image_raw', hz: 29.7 }],
+  };
+  dispatchSseEvent(qc, 'metrics', JSON.stringify(snapshot));
+  const stored = qc.getQueryData<MetricsSnapshot>(queryKeys.metrics)!;
+  expect(stored.topics).toEqual(snapshot.topics);
+  expect(stored.malformed_dropped).toBeUndefined();
+});
+
+// `topics` itself can be the wrong shape. Nothing downstream may receive a
+// non-array where it iterates.
+test('a metrics payload whose topics is not an array becomes an empty list', () => {
+  const qc = new QueryClient();
+  dispatchSseEvent(qc, 'metrics', JSON.stringify({ ts: 'x', topics: 'not-a-list' }));
+  expect(qc.getQueryData<MetricsSnapshot>(queryKeys.metrics)!.topics).toEqual([]);
+});

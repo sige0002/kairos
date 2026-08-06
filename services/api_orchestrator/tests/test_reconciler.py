@@ -11,6 +11,7 @@ is the incident.
 from __future__ import annotations
 
 import shutil
+import time
 from unittest.mock import patch
 
 from api_orchestrator.health import missing_threshold
@@ -496,3 +497,186 @@ class TestCorruptVisibility:
             body = booted.get("/api/v1/store/health").json()
         assert [c["capture_id"] for c in body["corrupt"]] == [capture_id]
         assert body["corrupt_source"] == "rebuild"
+
+
+class TestDamagedLedger:
+    """The periodic pass reads the ledger too, and must not act on a gap."""
+
+    def test_the_pass_reports_and_applies_nothing(
+        self, client: TestClient, layout: DataLayout
+    ) -> None:
+        """A damaged line stops the pass at the scan, before anything is applied.
+
+        Worth pinning rather than assuming: the pass goes on to resume
+        interrupted deletions, which reads the ledger a second time with no
+        guard of its own. What keeps that unreachable is this early return —
+        so if the scan ever stops setting ``ledger_unreadable``, or the apply
+        stops checking it, that second read becomes a raw exception out of a
+        background task and this test is what says so.
+        """
+        from kairos_common import ledger_v2
+
+        client.post("/api/v1/datasets", json={"name": "ds"})
+        with ledger_v2.ledger_path(layout.data_dir).open(
+            "a", encoding="utf-8"
+        ) as handle:
+            handle.write('{"kind": "capture_del\n')
+
+        result = reconcile(client)
+
+        assert result.applied is False
+        assert "lifecycle ledger is unreadable" in result.skipped_reason
+        # Nothing adopted, nothing marked missing — the pass saw nothing it
+        # could trust, so it changed nothing.
+        assert result.adopted == 0
+        assert result.missing == 0
+
+
+class TestIncomingOrphans:
+    """A transfer killed mid-copy leaves staging debris nothing ever collects.
+
+    ``.incoming/`` must sit on the same filesystem as ``objects/`` for the
+    landing rename to be atomic, so an abandoned partial eats exactly the space
+    recording needs — while appearing in no listing, because a staging dir is
+    not a capture until it is published. The in-process failure path removes
+    its own staging; a killed process never runs it.
+
+    Superseded views generations are already swept from this pass for the same
+    reason, and this is that sweep's sibling. What makes it safe is the pair of
+    conditions: no manifest AND old. Either one alone deletes a transfer that
+    was about to succeed.
+    """
+
+    def _staged(
+        self, layout: DataLayout, *, manifest: bool, age_s: float
+    ) -> tuple[str, object]:
+        import os
+
+        from kairos_common.capture_sidecars import (
+            ObjectManifestV2,
+            write_object_manifest,
+        )
+
+        capture_id = new_capture_id()
+        staging = layout.incoming_dir(capture_id)
+        staging.mkdir(parents=True)
+        (staging / "bag_0.mcap").write_bytes(b"\x89MCAP0\r\n" + b"payload" * 300)
+        if manifest:
+            write_object_manifest(
+                staging,
+                ObjectManifestV2(
+                    capture_id=capture_id,
+                    source_instance_id="11111111-2222-3333-4444-555555555555",
+                    run_id=f"run_{capture_id[:13]}",
+                    state="completed",
+                    started_at="2026-08-01T00:00:00.000Z",
+                    ended_at="2026-08-01T00:01:00.000Z",
+                ),
+            )
+        stale = time.time() - age_s
+        for path in sorted(staging.rglob("*")) + [staging]:
+            os.utime(path, (stale, stale))
+        return capture_id, staging
+
+    def test_an_abandoned_partial_is_swept_and_the_others_are_not(
+        self, client: TestClient, layout: DataLayout
+    ) -> None:
+        orphan, orphan_dir = self._staged(layout, manifest=False, age_s=7200)
+        awaiting, awaiting_dir = self._staged(layout, manifest=True, age_s=7200)
+        in_flight, in_flight_dir = self._staged(layout, manifest=False, age_s=5)
+        held = sum(p.stat().st_size for p in orphan_dir.rglob("*") if p.is_file())
+        assert held > 0
+
+        for _ in range(3):
+            reconcile(client)
+
+        # The partial nobody will ever finish: gone, and the space with it.
+        assert not orphan_dir.exists()
+        assert client.get(f"/api/v1/captures/{orphan}").status_code == 404
+        # A completed transfer waiting to be published is NOT debris — the
+        # adoption step in this same pass is what publishes it.
+        assert client.get(f"/api/v1/captures/{awaiting}").status_code == 200
+        assert not awaiting_dir.exists()  # because it was adopted, not swept
+        # And a copy that started five seconds ago is still being written.
+        assert in_flight_dir.is_dir()
+        assert (in_flight_dir / "bag_0.mcap").is_file()
+        assert client.get(f"/api/v1/captures/{in_flight}").status_code == 404
+
+    def test_a_slow_copy_of_one_big_file_is_not_swept(
+        self, client: TestClient, layout: DataLayout
+    ) -> None:
+        """The directory's own mtime is not evidence that nothing is happening.
+
+        rsync writing a single multi-GB file for two hours never touches the
+        directory entry after creating it, so a sweep that trusts the directory
+        alone deletes the transfer out from under it. What counts as activity
+        is the most recent write anywhere inside.
+        """
+        import os
+
+        capture_id, staging = self._staged(layout, manifest=False, age_s=7200)
+        # The copy is alive: the file within was written a moment ago, even
+        # though the directory entry itself is two hours old.
+        now = time.time()
+        os.utime(staging / "bag_0.mcap", (now, now))
+
+        reconcile(client)
+
+        assert staging.is_dir()
+        assert (staging / "bag_0.mcap").is_file()
+        assert capture_id  # the id is never published while the copy runs
+
+    def test_a_copy_writing_two_levels_down_is_still_seen_as_active(
+        self, client: TestClient, layout: DataLayout
+    ) -> None:
+        """The scan has to reach the whole tree, not just its top level.
+
+        A rosbag2 recording is a directory of shards, so the file actually
+        being written is usually not at the top of the staging directory. A
+        one-level scan sees only the stale entries above it, reads a live
+        transfer as abandoned, and deletes it — the same loss the mtime check
+        exists to prevent, arriving by a different route. This is what stops
+        ``rglob`` being "simplified" to ``glob`` by someone who sees only the
+        flat case the other tests build.
+        """
+        import os
+
+        capture_id = new_capture_id()
+        staging = layout.incoming_dir(capture_id)
+        shards = staging / "rosbag2_2026_08_05" / "shards"
+        shards.mkdir(parents=True)
+        payload = shards / "bag_0.mcap"
+        payload.write_bytes(b"\x89MCAP0\r\n" + b"payload" * 300)
+        stale = time.time() - 7200
+        for path in sorted(staging.rglob("*"), reverse=True) + [staging]:
+            os.utime(path, (stale, stale))
+        # Every directory entry is two hours old; the bytes are landing now.
+        now = time.time()
+        os.utime(payload, (now, now))
+
+        reconcile(client)
+
+        assert staging.is_dir()
+        assert payload.is_file()
+
+    def test_the_manifest_condition_alone_protects_a_finished_transfer(
+        self, client: TestClient, layout: DataLayout
+    ) -> None:
+        """The sweep is called directly, because adoption normally hides this.
+
+        In a real pass ``_adopt_incoming`` runs first and publishes anything
+        with a terminal manifest, so by the time the sweep looks there is
+        nothing manifest-bearing left — which means a test that goes through
+        the pass cannot tell "left alone by the sweep" from "already adopted".
+        The manifest condition is the safety net for when adoption does NOT
+        run: it failed, or the capture already exists, or the manifest is
+        terminal but the publish was refused. Exercised on its own here.
+        """
+        _, awaiting = self._staged(layout, manifest=True, age_s=7200)
+        _, orphan = self._staged(layout, manifest=False, age_s=7200)
+
+        swept = client.app.state.reconciler._sweep_incoming_orphans()
+
+        assert swept == 1
+        assert awaiting.is_dir(), "a completed transfer is not debris"
+        assert not orphan.exists()

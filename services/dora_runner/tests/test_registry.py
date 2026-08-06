@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
+from pathlib import Path
+
+import pytest
+from dora_runner.models import RequiredTopicTemplate
 from dora_runner.registry import (
     DEFAULT_REGISTRY,
     PipelineRegistry,
     RegisteredPipeline,
+    _resolve_template,
     build_default_registry,
 )
+from dora_runner.store import JobRecord
+from kairos_common import ApiError
 
 
 def test_default_registry_has_runnable_and_placeholders() -> None:
@@ -126,3 +134,80 @@ def test_max_frames_param_defaults_coerces_and_rejects() -> None:
         _max_frames_param({"max_frames": -1})
     with pytest.raises(ApiError):
         _max_frames_param({"max_frames": "full"})
+
+
+# ---- fast_validation template resolution ---------------------------------
+# E-21 asked whether an unknown template silently falls back to a default, which
+# would make a pass untraceable. It does not — but the OMITTED-template path is
+# worth pinning for what its pass is actually worth.
+
+
+def _job(params: dict) -> JobRecord:
+    return JobRecord(
+        job_id="job_1", capture_id="cap_1", pipeline="fast_validation", params=params
+    )
+
+
+def test_a_named_template_that_does_not_exist_is_REFUSED_by_name() -> None:
+    """No silent fallback: the run stops and says which template was missing.
+
+    A fast_validation that quietly ran under some default would report a normal
+    pass for a check the operator never asked for.
+    """
+
+    class _EmptyStore:
+        async def get_template(self, name: str):  # noqa: ANN001, ANN202
+            return None
+
+    with pytest.raises(ApiError) as excinfo:
+        asyncio.run(
+            _resolve_template(
+                _job({"template": "no_such_template"}), _EmptyStore(), Path(".")
+            )
+        )
+    err = excinfo.value
+    assert err.status_code == 400
+    assert err.code == "template_not_found"
+    assert "no_such_template" in err.message
+    assert err.details == {"template": "no_such_template"}
+
+
+def test_an_OMITTED_template_drafts_from_the_capture_and_asserts_almost_nothing(
+    monkeypatch,
+) -> None:
+    """The draft path is deliberate — and near-vacuous. Both belong on the record.
+
+    With no template named, fast_validation builds one from the capture's OWN
+    topic inventory, so "the required topics are present" is true by
+    construction: whatever the bag contains becomes what the bag is required to
+    contain. A pass here asserts that the recording exists and could be read,
+    not that it carries what the operator's robot is supposed to produce.
+
+    It is kept rather than fixed because it is self-identifying — the artifact
+    records `template.name` as `<capture_id>_template`, so a reader can tell a
+    drafted run from a real one — and because full_validation explicitly refuses
+    the same shortcut (see _resolve_optional_template) where it would matter. The
+    Validation screen always fills the param, so this is not reachable from the UI.
+    """
+    bag_topics = [
+        RequiredTopicTemplate(
+            name="/whatever/this/bag/has", type="std_msgs/msg/String"
+        ),
+        RequiredTopicTemplate(name="/and/this/one", type="std_msgs/msg/String"),
+    ]
+    monkeypatch.setattr(
+        "dora_runner.validation.mcap_loader",
+        lambda capture_id, data_dir: {"topics": bag_topics},
+    )
+
+    class _EmptyStore:
+        async def get_template(self, name: str):  # noqa: ANN001, ANN202
+            return None
+
+    template = asyncio.run(_resolve_template(_job({}), _EmptyStore(), Path(".")))
+
+    # Self-identifying in the artifact: a reader can see this was drafted.
+    assert template.name == "cap_1_template"
+    # And the check it produces cannot fail on missing topics: the required set
+    # IS the bag's set, so `missing` is empty for any bag it was drafted from.
+    assert [t.name for t in template.required_topics] == [t.name for t in bag_topics]

@@ -310,6 +310,14 @@ def run_video_check(
         "pipeline": PIPELINE_ID,
         "version": PIPELINE_VERSION,
         "capture_id": capture_id,
+        # pass/fail in the same vocabulary fast_validation uses, because the
+        # job STATE cannot carry this. A run that encodes nothing still ends
+        # `succeeded` — correctly, since the job itself did not fail — so
+        # without a verdict here the only machine-readable signal a consumer
+        # has says the check passed. It did not: there is no video, and the
+        # commonest cause is a topic that does not exist in this recording,
+        # which is precisely what an operator needs told.
+        "result": "pass" if frames_encoded > 0 else "fail",
         "topic": topic,
         "frames": frames_encoded,
         "total_messages": total_messages,

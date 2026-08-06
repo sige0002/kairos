@@ -263,8 +263,15 @@ def load_recording_config(path: str | Path) -> RecordingConfig:
     if not path.exists():
         raise FileNotFoundError(f"Recording config not found: {path}")
 
-    with path.open("r", encoding="utf-8") as fh:
-        raw = yaml.safe_load(fh)
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            raw = yaml.safe_load(fh)
+    except yaml.YAMLError as exc:
+        # A hand edit that left the file unparseable. Callers degrade on
+        # ValueError and OSError; YAMLError is neither, so letting it out
+        # turned "this config is unusable" — which every caller is written to
+        # survive — into a service that does not start.
+        raise ValueError(f"Recording config is not valid YAML: {path}\n{exc}") from exc
 
     if not isinstance(raw, dict):
         raise ValueError(f"Recording config root must be a mapping: {path}")

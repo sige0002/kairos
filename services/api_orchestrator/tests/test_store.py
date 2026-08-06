@@ -25,6 +25,7 @@ from api_orchestrator.models import (
 )
 from api_orchestrator.store import (
     SCHEMA_VERSION,
+    BatchExistsError,
     CaptureStore,
     DatasetMemberExistsError,
 )
@@ -581,6 +582,34 @@ class TestCatalogSidecars:
 
 
 class TestBatches:
+    def test_a_batch_id_a_capture_still_names_is_not_reissued(
+        self, store: CaptureStore
+    ) -> None:
+        """E-17: the batches table is the one thing a rebuild cannot restore.
+
+        Captures come back from their sidecars carrying ``batch_id``, but a
+        batch's own row — project, operator, target, its daily number — lives
+        only in ``kairos.db`` and has neither a sidecar nor a ledger event. So
+        after "delete kairos.db and restart" the batches are simply gone while
+        the recordings that belonged to them still name one.
+
+        That much is a documented consequence of the index being disposable.
+        What must NOT follow is a NEW batch taking the dead one's identity:
+        batch_ids are minted from the wall clock, collision-avoidance asks the
+        batches table, and an empty table says yes. The recordings still naming
+        that id would then be silently absorbed into a batch they were never
+        part of, and every count and export keyed on it would be wrong.
+        """
+        orphaned = _make_capture(
+            batch_id="batch_20260805_224346", index_in_batch=1, run_id="run_a"
+        )
+        store.create_capture(orphaned)
+
+        with pytest.raises(BatchExistsError):
+            store.create_batch(
+                Batch(batch_id="batch_20260805_224346", project="p", task="t")
+            )
+
     def test_recorded_counter_only_grows(self, store: CaptureStore) -> None:
         store.create_batch(Batch(batch_id="batch_1", project="p", task="t"))
         store.increment_episodes_recorded("batch_1")

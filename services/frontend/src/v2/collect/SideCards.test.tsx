@@ -37,6 +37,8 @@ function renderCard(m: BatchMachine = machine) {
       monitorBridge={null}
       cameraHealth={{
         streamFailed: false,
+        streamsDown: 0,
+        streamFault: null,
         framesStale: false,
         silentTopics: 0,
         unmonitoredTopics: 0,
@@ -55,6 +57,8 @@ function renderCardWithCameras(cameraHealth: Partial<CameraHealth>) {
       monitorBridge={null}
       cameraHealth={{
         streamFailed: false,
+        streamsDown: 0,
+        streamFault: null,
         framesStale: false,
         silentTopics: 0,
         unmonitoredTopics: 0,
@@ -318,4 +322,25 @@ test('a silent camera and an unmeasured one are both accounted for', async () =>
   // rather than leaving the reader to assume the other two are fine.
   expect(row).toHaveTextContent('2 of 4 cameras: topic silent · 1 not monitored');
   expect(row).toHaveTextContent('CHECK');
+});
+
+// E-37 — 全滅なのに「5 cameras OK」. Each pane negotiates its own WebRTC
+// stream, but only the MAIN pane's phase used to reach this card, so a wall of
+// black tiles beside one working stream summarised as "5 cameras OK" in green.
+test('the Cameras row will not read OK while panes have no video', () => {
+  renderCardWithCameras({ totalCameras: 5, streamsDown: 4, streamFault: 'peer' });
+  const row = screen.getByText(/cameras: no video/);
+  expect(row).toHaveTextContent('4 of 5');
+  // and the second half of the scenario — 理由が一言 — the row says WHICH of
+  // the three problems it is, because they send the operator to three
+  // different places.
+  expect(row).toHaveTextContent(/the network connection dropped/);
+  expect(screen.queryByText('5 cameras OK')).not.toBeInTheDocument();
+});
+
+test('a total blackout through the streamer names the service, not the network', () => {
+  renderCardWithCameras({ totalCameras: 5, streamsDown: 5, streamFault: 'signaling' });
+  const row = screen.getByText(/cameras: no video/);
+  expect(row).toHaveTextContent('5 of 5');
+  expect(row).toHaveTextContent(/the streamer did not answer/);
 });
