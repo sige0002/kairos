@@ -18,14 +18,14 @@
 import { useEffect, useState } from 'react';
 import { Button, Modal, cn } from '../../components/ui';
 import { readCaptureError } from './errors';
-import type { Capture } from '../../api/types';
+import type { CaptureListItem } from '../../api/types';
 
 // The size figure the confirmation is obliged to show — the shared decimal
 // formatter (one convention everywhere; see review/format.ts).
 export { formatBytes } from '../review/format';
 import { formatBytes, formatWhen } from '../review/format';
 
-export function totalBytes(captures: Capture[]): number | null {
+export function totalBytes(captures: CaptureListItem[]): number | null {
   const known = captures.filter((c) => typeof c.bytes === 'number');
   if (known.length === 0) return null;
   return known.reduce((sum, c) => sum + (c.bytes ?? 0), 0);
@@ -34,7 +34,7 @@ export function totalBytes(captures: Capture[]): number | null {
 /** Name what is being removed (audit P2: "1 recording · 249.2 MB" for an
  *  irreversible action identified nothing). Single capture → its run_id (or
  *  capture_id) + episode number + start time; small sets list run_ids. */
-function identityLines(captures: Capture[]): string[] {
+function identityLines(captures: CaptureListItem[]): string[] {
   if (captures.length === 0 || captures.length > 5) return [];
   return captures.map((c) => {
     const name = c.run_id ?? c.capture_id;
@@ -84,7 +84,7 @@ function reasonLabel(id: DiscardReasonId): string {
  * different failure reasons have no single detail to append, and picking one of
  * them would attach the wrong explanation to the other.
  */
-export function prefillDiscardReason(captures: Capture[]): {
+export function prefillDiscardReason(captures: CaptureListItem[]): {
   chip: DiscardReasonId | null;
   detail: string | null;
 } {
@@ -140,7 +140,7 @@ function DialogError({ error, testId }: { error: unknown; testId: string }) {
 
 export interface DeleteDialogProps {
   open: boolean;
-  captures: Capture[];
+  captures: CaptureListItem[];
   /** True on a split deployment: the robot keeps its own copy (§0). */
   splitDeploy?: boolean;
   busy?: boolean;

@@ -10,9 +10,9 @@ import {
   composeDiscardReason,
   prefillDiscardReason,
 } from './DeleteDialogs';
-import type { Capture } from '../../api/types';
+import type { CaptureListItem } from '../../api/types';
 
-function capture(over: Partial<Capture> = {}): Capture {
+function capture(over: Partial<CaptureListItem> = {}): CaptureListItem {
   return {
     capture_id: 'cap-1',
     state: 'completed',
@@ -23,7 +23,7 @@ function capture(over: Partial<Capture> = {}): Capture {
   };
 }
 
-function renderDialog(captures: Capture[], onConfirm = vi.fn()) {
+function renderDialog(captures: CaptureListItem[], onConfirm = vi.fn()) {
   render(
     <DiscardDialog
       open

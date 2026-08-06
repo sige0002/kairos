@@ -24,7 +24,7 @@ import { listBatches } from '../../api/batches';
 import { queryKeys } from '../../api/queryKeys';
 import type {
   BatchListResponse,
-  Capture,
+  CaptureListItem,
   Quality,
   RetentionInfo,
   ReviewStatus,
@@ -558,13 +558,13 @@ export function useReviewState(): ReviewState {
     onToast: showToast,
   });
   const capturesById = useMemo(() => {
-    const byId = new Map<string, Capture>();
+    const byId = new Map<string, CaptureListItem>();
     for (const row of decorated) byId.set(row.captureId, row.capture);
     return byId;
   }, [decorated]);
   const resolveTargets = useCallback(
     (ids: string[]) =>
-      ids.map((id) => capturesById.get(id)).filter((c): c is Capture => !!c),
+      ids.map((id) => capturesById.get(id)).filter((c): c is CaptureListItem => !!c),
     [capturesById],
   );
   const requestDiscard = useCallback(

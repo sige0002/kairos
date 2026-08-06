@@ -73,6 +73,19 @@ export type RecordState =
  *  an armed session is subscribed but writing nothing. */
 export const ACTIVE_RECORD_STATES = new Set<RecordState>(['recording', 'stopping']);
 
+/** Recorder states that mean a session is OVER, however it went.
+ *
+ *  Not the complement of `ACTIVE_RECORD_STATES`: `created` and `armed` are
+ *  neither active nor terminal, and treating them as terminal would read a
+ *  session that has not started yet as one that has finished. Named as a set
+ *  because reading a take as over is a claim, and the states that support it
+ *  should be enumerated in one place rather than by negation. */
+export const TERMINAL_RECORD_STATES = new Set<RecordState>([
+  'completed',
+  'failed',
+  'interrupted',
+]);
+
 export type JobState = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled';
 
 export type Encoding = 'vp8' | 'h264';
@@ -255,8 +268,19 @@ export type ReviewStatus = 'pending' | 'adopted' | 'excluded';
  *  the UI is REQUIRED to say about reversibility (§12). */
 export type DeleteKind = 'discard' | 'delete';
 
-/** One recording, merged with the operator's review of it (`GET /captures`). */
-export interface Capture {
+/**
+ * One recording as the LIST serves it (`GET /api/v1/captures`) — everything
+ * except its topics. Mirrors `CaptureListItem` in models.py.
+ *
+ * The split is not a size optimisation dressed up as a type: `topics` dominated
+ * the page (at 100 topics a row is ~11.4 KiB of which ~91% is the topic array,
+ * so a 200-row page measured 2.3 MiB against ~208 KiB without it — E-27), and
+ * no list view renders them. Modelled as a base interface rather than an
+ * `Omit<>` so a caller holding a LIST row cannot reach for `.topics` and find
+ * `undefined` at runtime: there is no such property to reach for, and the
+ * compiler says so at the call site.
+ */
+export interface CaptureListItem {
   capture_id: string;
   /** `run_YYYYMMDD_HHMMSS` — DISPLAY ONLY (§1). Never an API key. */
   run_id?: string | null;
@@ -267,7 +291,6 @@ export interface Capture {
   robot?: string | null;
   started_at?: string | null;
   ended_at?: string | null;
-  topics?: CaptureTopic[];
   compression?: string;
   split?: CaptureSplit | null;
   error?: CaptureError | null;
@@ -311,6 +334,20 @@ export interface Capture {
    *  Derived from the replica state, so "verified" is one fact (§9-4). */
   digest_state?: DigestState;
   memberships?: DatasetMembership[];
+}
+
+/**
+ * A recording WITH its topics — every single-capture response (`GET
+ * /captures/{id}`, a review save, a record start/stop, and the captures a batch
+ * detail carries). Mirrors `Capture` in models.py.
+ *
+ * `topics` is required, not optional: the server always sends the field on
+ * these responses (`Field(default_factory=list)`), and making it optional here
+ * would put the list row's `undefined` back into the type the detail screens
+ * read — the exact confusion the split exists to remove.
+ */
+export interface Capture extends CaptureListItem {
+  topics: CaptureTopic[];
 }
 
 /** A capture plus its on-disk sidecars (`GET /api/v1/captures/{id}`). All the
@@ -1062,8 +1099,13 @@ export type BatchStatus = 'active' | 'completed' | 'ended_early';
 export interface Batch {
   batch_id: string;
   robot?: string | null;
-  project: string;
-  task: string;
+  /** Nullable since 2026-08-06: a deployment with an empty plan catalog has no
+   *  project to name, and Collect used to send the `'—'` placeholder it
+   *  DISPLAYS — writing a fabricated label into the shared catalog for good.
+   *  `null` survives a rebuild as `null` (the ledger omits it rather than
+   *  replaying `''`). */
+  project: string | null;
+  task: string | null;
   condition?: string | null;
   operator?: string | null;
   target_episodes: number;
@@ -1079,6 +1121,17 @@ export interface Batch {
    *  stays truthful about what was captured even after a later exclude or
    *  delete. */
   episodes_recorded?: number;
+  /**
+   * `episodes_recorded` is a LOWER BOUND, not a count.
+   *
+   * A rebuild has no record of review saves (the ledger stores facts, not
+   * events), so it reconstructs the counter from the recordings whose
+   * `record.json` still names this batch — and a capture reviewed in and later
+   * deleted took its sidecar with it. Presenting a floor as exact is the
+   * failure this flag exists to prevent, so any surface showing the counter has
+   * to read this too.
+   */
+  episodes_recorded_is_floor?: boolean;
 }
 
 /**
@@ -1107,8 +1160,10 @@ export interface BatchListResponse {
 
 export interface BatchCreateRequest {
   robot?: string | null;
-  project: string;
-  task: string;
+  /** Omit (or send `null`) when there is no plan to name — never the display
+   *  placeholder. See `Batch.project`. */
+  project?: string | null;
+  task?: string | null;
   condition?: string | null;
   operator?: string | null;
   target_episodes?: number;

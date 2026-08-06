@@ -52,6 +52,18 @@ TRASH_DIRNAME = ".trash"
 INCOMING_DIRNAME = ".incoming"
 OBJECT_MANIFEST_FILENAME = "object_manifest.json"
 RECORD_FILENAME = "record.json"
+# The orchestrator's stop-time verdict about the recording (§4.2). A THIRD
+# sidecar rather than a field in one of the other two, because it belongs to
+# neither: ``object_manifest.json`` is the recorder's account of what it wrote,
+# ``record.json`` is the operator's review, and this is the orchestrator's own
+# measurement of the sealed bag.
+#
+# It cannot live in ``record.json`` even though that is where a review-shaped
+# reader would look: §4 spells revision 0 as "no record.json at all", and a
+# settlement happens BEFORE any review — so there is usually no file to add a
+# field to, and creating one at revision 1 would make the operator's first Save
+# (which sends ``base_revision: 0``) fail the compare-and-swap.
+QUICK_CHECK_FILENAME = "quick_check.json"
 ROSBAG2_METADATA_FILENAME = "metadata.yaml"
 # A start that never produced a bag is a *sibling* file, never a directory:
 # the invariant "a directory under objects/ means bytes were written" is what
@@ -681,6 +693,33 @@ def write_object_manifest(target: str | Path, manifest: ObjectManifestV2) -> Pat
         )
     path = _resolve_write(target, OBJECT_MANIFEST_FILENAME)
     return atomic_write_json(path, manifest.to_json())
+
+
+def read_quick_check(target: str | Path) -> dict[str, Any] | None:
+    """Read ``quick_check.json``, or ``None`` if it is absent or unreadable.
+
+    Deliberately not a ``*Read`` result with a status. Unlike the manifest and
+    the review, this sidecar is **derived**: it can be absent because the
+    capture predates the rule, because settlement has not run, or because the
+    file was truncated — and the caller's answer is the same in all three, so a
+    distinction it cannot act on would only invite one to be invented.
+
+    What must NOT happen is the capture being lost with it, which is why this
+    swallows the read rather than the caller's rebuild swallowing an exception.
+    The payload is left as a mapping: its shape is the orchestrator's
+    ``QuickCheck`` model, and this library does not know it.
+    """
+    path = _resolve_read(target, QUICK_CHECK_FILENAME)
+    status, data, _ = _read_sidecar(path)
+    if status is not SidecarStatus.ok or not isinstance(data, dict):
+        return None
+    return data
+
+
+def write_quick_check(target: str | Path, payload: Mapping[str, Any]) -> Path:
+    """Write ``quick_check.json`` through the §3.1 atomic write."""
+    path = _resolve_write(target, QUICK_CHECK_FILENAME)
+    return atomic_write_json(path, dict(payload))
 
 
 def write_record(target: str | Path, record: RecordV2) -> Path:

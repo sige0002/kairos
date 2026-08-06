@@ -266,3 +266,60 @@ test('editing the path after a scan blocks the import until it is rescanned', as
   expect(screen.getByTestId('import-stale-scan')).toHaveTextContent('/data/incoming');
   expect(screen.getByTestId('import-run')).toBeDisabled();
 });
+
+// `POST /imports` can now answer 409 `already_imported` per bag: the source was
+// imported before, and importing it again would make a second copy of the same
+// recording under a second capture_id with nothing afterwards to tell them
+// apart. The scan already refuses such a folder up front, but the scan is a
+// snapshot — another terminal, or an earlier run of this same dialog, can
+// import it in between, so the refusal has to hold at POST time too.
+//
+// WHAT THIS DOES NOT CLAIM, because the test above already does. The bulk
+// mechanics — every bag still attempted, the tally, the neighbouring row still
+// landing — are pinned by "a failing bag is skipped and named", and the catch
+// block is status-agnostic (it reads the error's message and moves on, with no
+// branch on the code). So no mutation can redden this test alone, and a copy of
+// that test with a different status number would be coverage theatre.
+//
+// The one thing that IS new is the content: `already_imported` is the only
+// refusal here that names ANOTHER capture, and that id is the whole remedy —
+// it turns "Failed" into "you already have this, it is over there". A message
+// that reached the operator stripped of it would still pass every assertion
+// above.
+test('the already_imported refusal reaches the operator with the capture it names', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    if (url.includes('/imports/scan')) return Promise.resolve(jsonResponse(SCAN));
+    if (url.includes('/imports') && (init?.method ?? 'GET') === 'POST') {
+      const body = JSON.parse(String(init?.body)) as { source_path: string };
+      if (body.source_path === '/data/incoming/a') {
+        return Promise.resolve(
+          jsonResponse(
+            {
+              error: {
+                code: 'already_imported',
+                message:
+                  '/data/incoming/a is already in Review as capture cap-old. ' +
+                  'Importing it again would make a second copy of the same bag ' +
+                  'under a second capture id, with nothing afterwards to tell ' +
+                  'them apart.',
+              },
+            },
+            409,
+          ),
+        );
+      }
+      return Promise.resolve(jsonResponse({ capture_id: 'cap-b' }, 202));
+    }
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  open();
+  await screen.findByTestId('import-list');
+  fireEvent.click(screen.getByTestId('import-run'));
+
+  const failed = await screen.findByTestId('import-failed-a');
+  expect(failed).toHaveTextContent('already in Review');
+  // The actionable half: WHICH capture already holds it.
+  expect(failed).toHaveTextContent('cap-old');
+});

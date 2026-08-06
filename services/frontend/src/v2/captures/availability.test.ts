@@ -5,9 +5,9 @@ import {
   isCaptureEmpty,
   isCapturePresent,
 } from './availability';
-import type { Capture, ReplicaState } from '../../api/types';
+import type { CaptureListItem, ReplicaState } from '../../api/types';
 
-function capture(partial: Partial<Capture> = {}): Capture {
+function capture(partial: Partial<CaptureListItem> = {}): CaptureListItem {
   return {
     capture_id: 'c1',
     state: 'completed',

@@ -1,10 +1,10 @@
 import { expect, test } from 'vitest';
 import { leaseBlockReason, liveLease } from './lease';
-import type { Capture } from '../../api/types';
+import type { CaptureListItem } from '../../api/types';
 
 const NOW = Date.parse('2026-08-03T10:00:00Z');
 
-function capture(over: Partial<Capture> = {}): Capture {
+function capture(over: Partial<CaptureListItem> = {}): CaptureListItem {
   return {
     capture_id: 'cap-1',
     state: 'completed',

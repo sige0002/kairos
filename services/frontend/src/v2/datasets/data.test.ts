@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import type { Capture, Dataset, DatasetMember, ReplicaState } from '../../api/types';
+import type { CaptureListItem, Dataset, DatasetMember, ReplicaState } from '../../api/types';
 import {
   ANY_OPERATOR,
   aggregate,
@@ -23,7 +23,7 @@ import {
 } from './data';
 
 /** A minimal finished capture; override the fields a case cares about. */
-function capture(over: Partial<Capture> = {}): Capture {
+function capture(over: Partial<CaptureListItem> = {}): CaptureListItem {
   return {
     capture_id: over.capture_id ?? 'cap-1',
     state: over.state ?? 'completed',
@@ -35,7 +35,7 @@ function capture(over: Partial<Capture> = {}): Capture {
 
 /** A capture whose local replica is in *state* (no replica at all = the bytes
  *  have not reached this host). */
-function withReplica(c: Capture, state: ReplicaState | null): Capture {
+function withReplica(c: CaptureListItem, state: ReplicaState | null): CaptureListItem {
   return {
     ...c,
     replica: state ? { instance_id: 'inst-1', state } : null,
@@ -64,7 +64,7 @@ function member(over: Partial<DatasetMember> = {}): DatasetMember {
 }
 
 /** A member row with a capture attached, for the aggregate cases. */
-function row(displayIndex: number, c: Capture | null): MemberRow {
+function row(displayIndex: number, c: CaptureListItem | null): MemberRow {
   return {
     membershipId: `m-${displayIndex}`,
     datasetId: 'ds-1',

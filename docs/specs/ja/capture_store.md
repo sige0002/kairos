@@ -36,6 +36,7 @@
 │   ├── metadata.yaml                  # rosbag2 生成物。kairos は変更しない
 │   ├── object_manifest.json           # §3
 │   ├── record.json                    # §4（未 review なら存在しない）
+│   ├── quick_check.json               # §4.2（停止時の verdict。未 settle なら存在しない）
 │   └── recorder.log                   # finalise 後にここへ移動
 ├── objects/<capture_id>.failed.json   # bag が生まれなかった失敗 start（§3.4）
 ├── objects/<capture_id>.qos.yaml      # 録画中の一時ファイル（sibling）
@@ -134,6 +135,26 @@ rebuild はこのファイルも読み、`state='failed'` の行を作る。削�
 - グローバルなロックはこの用途に使わない（fsync をまたいで全リクエストを直列化してしまうため）。
 - **システム由来の書き換え**（quick_check 確定後の quality 再導出）も同じ経路を通り `revision` を進める（`quality_source=quick_check`）。その結果クライアントが `409` を受けるのは**正しい挙動**。
 - 旧 `POST /episodes` が持っていた副作用（`batches.episodes_recorded` の単調加算・auto-pull の起動）は、「**その capture への初回 review 保存**」へ移設した。
+
+### 4.2 `quick_check.json`（停止時 verdict のサイドカー）
+
+停止時に orchestrator が下す quick_check の verdict を、`objects/<capture_id>/quick_check.json` に
+**settlement が行より先に**書く。中身は API の `quick_check` オブジェクトそのまま（`verdict` / `layer0` /
+`layer1` / `elapsed_ms`）。**未 settle なら存在しない。**
+
+**3 つ目のサイドカーである理由**: `object_manifest.json` は recorder が「何を書いたか」を述べるファイル、
+`record.json` は operator の review。quick_check は**どちらでもない** — orchestrator 自身が sealed bag を
+測った結果である。とくに `record.json` には入れられない: §4 は revision 0 を「`record.json` が存在しない」と
+綴っており、settlement は通常**最初の review より前**に走るので追記する先が無い。revision 1 で新規作成すれば、
+operator の最初の Save（`base_revision: 0`）が CAS に落ちる。
+
+**rebuild はこのファイルから復元する。** 無ければ `null`（＝未実施と同じ表示）で、**でっち上げない**:
+rebuild 時に bag を測り直せば、それは古い時刻を名乗る新しい測定になる。よってこのサイドカーより前に
+収録された capture の verdict は**戻らない** — migration は持たない（§8 の方針どおり rebuild で吸収）。
+壊れて読めない場合も `null` 扱いで、capture 自体は失わない（派生物のために本体を捨てない）。
+
+書き込みに失敗しても settlement は続行し、行には verdict が入る（警告をログに出す）。失うのは
+「rebuild を越える永続性」だけで、operator が待っている verdict を止める理由にはならない。
 
 ## 5. `lifecycle.jsonl` v2
 
@@ -293,7 +314,7 @@ recording ──▶ stopping ──▶ completed
 
 ### 8.2 rebuild（サイドカーからの全再構築）
 
-**入力**: `objects/*/object_manifest.json`、`objects/*.failed.json`、`record.json`、`lifecycle.jsonl`。`jobs` は揮発として rebuild 対象外。`validation_templates` と `plan_catalog` は保存時に `catalog/*.json` へサイドカー二重化し、rebuild で復元する。dataset の archive 状態（§6.1: `archiving` / `archived`、destination 含む）は ledger の replay が復元する。
+**入力**: `objects/*/object_manifest.json`、`objects/*.failed.json`、`record.json`、`quick_check.json`（§4.2）、`lifecycle.jsonl`。`jobs` は揮発として rebuild 対象外。`validation_templates` と `plan_catalog` は保存時に `catalog/*.json` へサイドカー二重化し、rebuild で復元する。dataset の archive 状態（§6.1: `archiving` / `archived`、destination 含む）は ledger の replay が復元する。
 
 **起動時に rebuild する条件**: DB が無い / スキーマ版が違う / `KAIROS_REBUILD` による明示要求。毎回の起動で走るものではない。
 
@@ -304,7 +325,7 @@ recording ──▶ stopping ──▶ completed
 3. **墓標は ledger が manifest に優先**する。
 4. 0 バイト / パース不能な manifest は **CORRUPT として報告**する（「存在しない」扱いは禁止）。**この capture には `captures` 行を作らない** — その manifest だけが「この capture が何であるか」を言えたのだから、行を作れば捏造になる。代わりに (a) corrupt 一覧のエントリ（理由付き）と (b) `state=corrupt` の **replica 行**の 2 つを出す。行の集合そのものが「バイトはここにあるが、その説明が壊れている」と言えるようにするため。結果として `captures` と `replicas` を join すると corrupt な replica が相手なしで残る — **それがまさに修復すべき集合**なので、読み手はこの不一致を許容しなければならない。
 5. review 系は §4.1-4 の乖離規則（サイドカー優先・逆向きは警告）。
-6. **`batches` の行は ledger から rebuild される。** `batch_created` / `batch_updated` / `batch_ended`（§5）が正本で、`project` / `robot` / `condition` / `operator` / `target_episodes` / `batch_seq` / `status` はそこから戻る。replay は**冪等** — 値はすべてイベント側から読み、行から計算し直さないので、`KAIROS_REBUILD=1` を何度掛けても `batch_seq` は動かない。**このイベントより古い ledger には `batch_created` が 1 行も無い**ので、その設置では従来どおりバッチ行は戻らない（例外にも失敗にもせず、下の孤児報告に落ちる）。**これは欠落ではなく決定である**: メタデータは `kairos.db` にしか存在しなかったのだから、遡って埋める材料がどこにも無い。id だけ合っていて中身が空のバッチを作れば、operator には「正直に失われたバッチ」ではなく「存在するが空のバッチ」が見えることになり、修正の形をした新しい誤答になる。よって**このイベント以降に作られたバッチは残り、それ以前のバッチは残らない**。`captures` 側の `batch_id` / `index_in_batch` は従来どおり `record.json` から復元される。**復元されないのは `episodes_recorded` だけ**（review 保存という「出来事」の単調カウンタであり、ledger が記録するのは事実であって出来事の回数ではない — 表示用の `N / 30` は rebuild 後に減りうる）。行の戻らないバッチを capture が指している場合は、その旨を rebuild 時に警告として報告する（store health の warnings に出る）。**id は再利用されない** — capture が名指ししている `batch_id` は取得済みとして扱う。
+6. **`batches` の行は ledger から rebuild される。** `batch_created` / `batch_updated` / `batch_ended`（§5）が正本で、`project` / `robot` / `condition` / `operator` / `target_episodes` / `batch_seq` / `status` はそこから戻る。replay は**冪等** — 値はすべてイベント側から読み、行から計算し直さないので、`KAIROS_REBUILD=1` を何度掛けても `batch_seq` は動かない。**このイベントより古い ledger には `batch_created` が 1 行も無い**ので、その設置では従来どおりバッチ行は戻らない（例外にも失敗にもせず、下の孤児報告に落ちる）。**これは欠落ではなく決定である**: メタデータは `kairos.db` にしか存在しなかったのだから、遡って埋める材料がどこにも無い。id だけ合っていて中身が空のバッチを作れば、operator には「正直に失われたバッチ」ではなく「存在するが空のバッチ」が見えることになり、修正の形をした新しい誤答になる。よって**このイベント以降に作られたバッチは残り、それ以前のバッチは残らない**。`captures` 側の `batch_id` / `index_in_batch` は従来どおり `record.json` から復元される。**`episodes_recorded` だけは event から戻せない**（review 保存という「出来事」の単調カウンタであり、ledger が記録するのは事実であって出来事の回数ではない）。よって replay は**そのバッチを名指ししている capture 行を数え直して**この値を入れ、行に `episodes_recorded_is_floor = 1` を立てる。これは**下限**である: review 済みで後に削除された capture は `record.json` ごと消えているので数えられない（tombstone 行は残るので数える）。0 を入れるのは下限ですらなく誤りだったので改めた — 表示用の `N / 30` は rebuild 後に減りうるが、減りうることが機械可読になっている。行の戻らないバッチを capture が指している場合は、その旨を rebuild 時に警告として報告する（store health の warnings に出る）。**id は再利用されない** — capture が名指ししている `batch_id` は取得済みとして扱う。
 
 ### 8.3 定期 reconciler
 

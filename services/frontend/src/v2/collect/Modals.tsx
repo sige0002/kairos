@@ -197,7 +197,7 @@ function IssueModal({ machine }: { machine: BatchMachine }) {
 
 function ConditionModal({ machine }: { machine: BatchMachine }) {
   const plans = usePlans();
-  const task = findTask(plans, machine.project, machine.task);
+  const task = findTask(plans, machine.project ?? '', machine.task ?? '');
   // Free-text condition input (mirrors the custom-task pattern: trim, ignore
   // empty). A typed condition is just a string on the batch — never added to the
   // plan catalog.

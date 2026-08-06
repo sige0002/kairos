@@ -37,7 +37,6 @@ from pydantic import BaseModel, Field
 from api_orchestrator import bag_import
 from api_orchestrator.layout import is_reserved_name
 from api_orchestrator.models import Capture, CaptureState, CaptureTopic
-from api_orchestrator.store import CaptureExistsError
 
 logger = logging.getLogger(__name__)
 
@@ -93,11 +92,45 @@ async def start_import(request: Request, body: ImportRequest) -> dict[str, Any]:
     # now and a mystery failure after a 20-minute copy.
     bag = await asyncio.to_thread(bag_import.inspect_source, source, layout=layout)
 
-    # An import already in flight for this exact folder cannot be seen by the
-    # scan (its `already_imported` reads finished manifests), so a double
-    # click, a second browser, or a re-run of the same bulk selection would
-    # copy the same bag twice under two capture ids — indistinguishable
-    # afterwards, and paid for twice in disk.
+    # A folder that already FINISHED importing. The scan reports this too, but
+    # the scan's answer was computed before the operator started clicking: two
+    # browsers that both scanned while the folder was importable race in the
+    # window AFTER the first one's copy completes, where
+    # `import_already_running` below no longer fires and the scan's verdict is
+    # stale. The server has to be the authority for the same reason it owns the
+    # episode number (E-7) — the client's picture is always older than the
+    # store's.
+    #
+    # Read from the manifests so it survives a dropped database, at the cost of
+    # a walk of objects/. That is the cost `GET /imports/scan` already pays on
+    # an interactive path; if a large store ever makes it matter, the answer is
+    # an index of `imported_from`, not a client-supplied claim.
+    #
+    # This await must stay ABOVE the in-flight check: everything from there to
+    # the registry `create` below is deliberately await-free, so that two
+    # concurrent requests cannot both find nothing and both claim.
+    already = await asyncio.to_thread(_imported_sources, layout)
+    if str(source) in already:
+        raise ApiError(
+            status_code=409,
+            code="already_imported",
+            message=(
+                f"{source} is already in Review as capture "
+                f"{already[str(source)]}. Importing it again would make a "
+                "second copy of the same bag under a second capture id, with "
+                "nothing afterwards to tell them apart."
+            ),
+            details={
+                "source_path": str(source),
+                "capture_id": already[str(source)],
+            },
+        )
+
+    # An import already in flight for this exact folder cannot be seen above
+    # (that reads finished manifests), so a double click, a second browser, or
+    # a re-run of the same bulk selection would copy the same bag twice under
+    # two capture ids — indistinguishable afterwards, and paid for twice in
+    # disk.
     for existing in _registry(request).list():
         if existing.source_path == str(source) and existing.state == "running":
             raise ApiError(
@@ -114,7 +147,17 @@ async def start_import(request: Request, body: ImportRequest) -> dict[str, Any]:
             )
 
     capture_id = bag_import.claim_capture_id(layout)
-    run_id = bag_import.allocate_import_run_id()
+    # Rows AND the imports still in flight: the row for an import that is
+    # copying does not exist yet (it is written last, deliberately), so the
+    # catalog alone would hand the same name to every bag of a bulk run. No
+    # await separates this from the ``create`` below, so a second request
+    # cannot slip between the two and see neither.
+    run_id = bag_import.allocate_import_run_id(
+        taken=bag_import.taken_run_ids(
+            request.app.state.capture_store, bag_import.RUN_ID_PREFIX
+        )
+        | {rec.run_id for rec in _registry(request).list() if rec.state == "running"}
+    )
     record = _registry(request).create(
         source_path=str(source),
         capture_id=capture_id,
@@ -250,10 +293,15 @@ def _create_capture_row(
         message_count=bag.message_count,
         bytes=bag.bytes,
     )
-    try:
-        store.create_capture(capture)
-    except CaptureExistsError:  # pragma: no cover - the id was just minted
-        pass
+    # Deliberately NOT caught. ``create_capture`` raises ``CaptureExistsError``
+    # for ANY uniqueness clash, not only ``capture_id``, and ``run_id`` is
+    # UNIQUE too — so the old "pragma: no cover - the id was just minted"
+    # swallow turned a rejected row into an import that reported success with
+    # nothing in Review, plus a replica pointing at a capture that did not
+    # exist. Letting it out reaches the caller's post-finalize branch, which
+    # already has the honest words for this state: the bag is in objects/ and
+    # the catalog is behind (``import_catalog_pending``, I-5).
+    store.create_capture(capture)
     store.upsert_replica(
         record.capture_id,
         instance_id,

@@ -25,7 +25,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { getCapture, saveReview } from '../../api/captures';
 import { queryKeys } from '../../api/queryKeys';
 import { readCaptureError, type CaptureErrorReading } from '../captures/errors';
-import type { Capture, ReviewSaveRequest } from '../../api/types';
+import type { Capture, CaptureListItem, ReviewSaveRequest } from '../../api/types';
 
 export interface ReviewConflict {
   captureId: string;
@@ -84,7 +84,7 @@ export interface ReviewSaveState {
    * refused here and returned as `skipped`. See the comment on the guard.
    */
   save: (
-    capture: Capture,
+    capture: CaptureListItem,
     changes: Omit<ReviewSaveRequest, 'base_revision'>,
     options?: SaveOptions,
   ) => Promise<ReviewSaveResult>;
@@ -130,7 +130,7 @@ export function useReviewSave(scope: string): ReviewSaveState {
 
   const save = useCallback(
     async (
-      capture: Capture,
+      capture: CaptureListItem,
       changes: Omit<ReviewSaveRequest, 'base_revision'>,
       options: SaveOptions = {},
     ): Promise<ReviewSaveResult> => {

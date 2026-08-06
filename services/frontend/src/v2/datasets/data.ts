@@ -14,7 +14,7 @@
 // quiet drop would shrink the denominator and make every rate look better than
 // it is.
 
-import type { Capture, Dataset, DatasetMember } from '../../api/types';
+import type { CaptureListItem, Dataset, DatasetMember } from '../../api/types';
 import type { Tone } from '../../components/ui';
 import {
   availabilityOf,
@@ -47,7 +47,7 @@ import { formatBytes } from '../review/format';
  *  rails mix captures from any date, so time-of-day alone is ambiguous. Not
  *  `formatWhen` (below): that is the full locale timestamp for detail prose;
  *  this is the compact row-identity form. */
-export function captureWhen(capture: Capture): string {
+export function captureWhen(capture: CaptureListItem): string {
   const iso = capture.started_at;
   if (!iso) return '—';
   const d = new Date(iso);
@@ -63,7 +63,7 @@ export function captureWhen(capture: Capture): string {
  *  data is this?" (2026-08-03 feedback): same-day runs differ only in their
  *  final digits, so every dataset surface leads with these and keeps the run
  *  name as the secondary, on-disk identity (§1: display only). */
-export function captureFacts(capture: Capture): string {
+export function captureFacts(capture: CaptureListItem): string {
   const parts: string[] = [];
   if (capture.task) parts.push(capture.task);
   if (capture.operator) parts.push(capture.operator);
@@ -121,7 +121,7 @@ export interface MemberRow {
   /** The capture this membership cites, or null when the loaded catalog holds
    *  no row for it. Kept as a row rather than dropped: the membership is real
    *  even when our view of the catalog cannot describe it. */
-  capture: Capture | null;
+  capture: CaptureListItem | null;
 }
 
 // A membership makes two claims about a capture, and the rail must not offer to
@@ -150,7 +150,7 @@ const ADD_BLOCKED_NOT_ADOPTED =
 /** Why this capture cannot join a dataset right now, or null when it can. Both
  *  causes are named when both apply — fixing one and finding the button still
  *  dead is worse than being told twice. */
-export function addBlockedReason(capture: Capture): string | null {
+export function addBlockedReason(capture: CaptureListItem): string | null {
   const reasons: string[] = [];
   if (!isCapturePresent(capture)) reasons.push(ADD_BLOCKED_NOT_HERE);
   if (capture.review_status !== 'adopted') reasons.push(ADD_BLOCKED_NOT_ADOPTED);
@@ -165,7 +165,7 @@ function byDisplayIndex(a: MemberRow, b: MemberRow): number {
 /** Join a dataset's authoritative member list to the loaded captures. */
 export function joinMembers(
   members: DatasetMember[],
-  capturesById: Map<string, Capture>,
+  capturesById: Map<string, CaptureListItem>,
 ): MemberRow[] {
   return members
     .map((m) => ({
@@ -186,7 +186,7 @@ export function joinMembers(
  * already makes. Fetching each dataset's detail to count its members would be
  * one request per row.
  */
-export function membersByDataset(captures: Capture[]): Map<string, MemberRow[]> {
+export function membersByDataset(captures: CaptureListItem[]): Map<string, MemberRow[]> {
   const byDataset = new Map<string, MemberRow[]>();
   for (const capture of captures) {
     for (const m of capture.memberships ?? []) {
@@ -206,7 +206,7 @@ export function membersByDataset(captures: Capture[]): Map<string, MemberRow[]> 
 }
 
 /** Captures indexed for the join above. */
-export function indexCaptures(captures: Capture[]): Map<string, Capture> {
+export function indexCaptures(captures: CaptureListItem[]): Map<string, CaptureListItem> {
   return new Map(captures.map((c) => [c.capture_id, c]));
 }
 
@@ -571,7 +571,7 @@ export function filterMembers(rows: MemberRow[], f: MemberFilter): MemberRow[] {
 
 /** Distinct operators across the loaded captures (facet dropdown choices).
  *  Captures with no operator contribute nothing: there is no name to offer. */
-export function distinctOperators(captures: Capture[]): string[] {
+export function distinctOperators(captures: CaptureListItem[]): string[] {
   const ops = new Set<string>();
   for (const c of captures) if (c.operator) ops.add(c.operator);
   return [...ops].sort();

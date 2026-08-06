@@ -1,12 +1,12 @@
 // Shared label chips used by BOTH Review and Datasets, so a recording reads
 // identically at every pipeline step (Console v2 pipeline UX).
 //
-// They now read a `Capture` directly: v2 merged the run and the episode, so the
+// They now read a `CaptureListItem` directly: v2 merged the run and the episode, so the
 // review fields the chips render live on the capture itself and there is no
 // separate episode object to pass around. Honesty rule unchanged — a missing
 // value renders "—", never a fabricated label.
 
-import type { Capture, Quality, TaskResult } from '../api/types';
+import type { CaptureListItem, Quality, TaskResult } from '../api/types';
 import { Badge, type Tone } from '../components/ui';
 import type {
   DisplayQuality,
@@ -168,7 +168,7 @@ export function CaptureLabelChips({
   isoFallback,
   testId,
 }: {
-  capture: Capture;
+  capture: CaptureListItem;
   batchSeq?: number | null;
   isoFallback?: string | null;
   testId?: string;

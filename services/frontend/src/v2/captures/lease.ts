@@ -10,7 +10,7 @@
 // render and the click, so the refusal stays the race fallback; what this
 // removes is the case where the answer was already on screen.
 
-import type { Capture } from '../../api/types';
+import type { CaptureListItem } from '../../api/types';
 
 export interface LeaseHold {
   owner: string;
@@ -30,7 +30,7 @@ export interface LeaseHold {
  * is barely reachable — acquire always writes both columns together.
  */
 export function liveLease(
-  capture: Capture | null | undefined,
+  capture: CaptureListItem | null | undefined,
   nowMs: number = Date.now(),
 ): LeaseHold | null {
   const owner = capture?.lease_owner;

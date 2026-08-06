@@ -36,6 +36,7 @@ import logging
 import os
 import shutil
 import uuid
+from collections.abc import Container
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -553,10 +554,56 @@ def import_manifest(
     )
 
 
-def allocate_import_run_id(now: datetime | None = None) -> str:
-    """``imported_YYYYmmdd_HHMMSS`` — the display name only (§1)."""
+# Bound on suffix retries when a same-second import run_id is taken, mirroring
+# ``_MAX_BATCH_ID_ATTEMPTS``. A bulk run of 40 needs 39 of them.
+MAX_RUN_ID_ATTEMPTS = 200
+
+
+def allocate_import_run_id(
+    now: datetime | None = None, *, taken: Container[str] = frozenset()
+) -> str:
+    """``imported_YYYYmmdd_HHMMSS`` (+ ``_N`` if taken) — the display name (§1).
+
+    Second resolution is not unique enough on its own. A bulk import POSTs
+    every bag up front — the copies are what ``_COPY_SLOTS`` throttles, not the
+    requests — so forty bags are claimed inside one second and would all be
+    handed the same name. ``captures.run_id`` is UNIQUE, so those are not forty
+    display names, they are thirty-nine rows that cannot be inserted.
+
+    The ``_N`` suffix is the shape AGENTS.md already documents for a run id
+    (``run_YYYYMMDD_HHMMSS(_N)``), and the same answer ``_allocate_batch_id``
+    gives to the same same-second problem.
+    """
     moment = now or datetime.now(UTC)
-    return moment.strftime(f"{RUN_ID_PREFIX}_%Y%m%d_%H%M%S")
+    base = moment.strftime(f"{RUN_ID_PREFIX}_%Y%m%d_%H%M%S")
+    if base not in taken:
+        return base
+    for attempt in range(2, MAX_RUN_ID_ATTEMPTS + 2):
+        candidate = f"{base}_{attempt}"
+        if candidate not in taken:
+            return candidate
+    raise ApiError(
+        status_code=503,
+        code="import_run_id_unavailable",
+        message=(
+            f"Could not allocate a display name for this import: {base} and "
+            f"{MAX_RUN_ID_ATTEMPTS} suffixed variants are all taken. Retry in "
+            "a second."
+        ),
+    )
+
+
+def taken_run_ids(store: Any, prefix: str) -> set[str]:
+    """Every run_id already in the catalog that starts with *prefix*.
+
+    Scoped by prefix so this stays a small read on a store holding thousands of
+    captures: only same-second import names can collide with the one about to
+    be allocated.
+    """
+    rows = store.execute_read(
+        "SELECT run_id FROM captures WHERE run_id LIKE ?", (f"{prefix}%",)
+    )
+    return {row["run_id"] for row in rows if row["run_id"]}
 
 
 def claim_capture_id(layout: DataLayout) -> str:

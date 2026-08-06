@@ -143,11 +143,13 @@ class BatchService:
         every installation older than this event takes exactly that path, and
         the batches it cannot restore are reported by the orphan check instead.
 
-        Every batch that IS restored comes back with ``episodes_recorded`` at
-        zero, because that counter counts review saves — events, not facts —
-        and the ledger records facts. The right call for the ledger, and the
-        wrong thing to leave silent: an operator watching `12 / 30` become
-        `0 / 30` needs the reason on screen, not in a spec. Hence the warning.
+        ``episodes_recorded`` is the one value not read from an event, because
+        it counts review saves — events, not facts — and the ledger records
+        facts. It used to come back at zero, which put `0 / 30` on screen for a
+        finished batch. It is now recounted from the recordings that name the
+        batch: a LOWER BOUND, marked as one on the row, because a capture
+        reviewed in and later deleted took its sidecar with it. A floor that
+        says it is a floor beats both a wrong number and a silent one.
         """
         restored: list[str] = []
         collisions: list[str] = []
@@ -159,6 +161,11 @@ class BatchService:
             if kind == "batch_created":
                 batch = _batch_from_event(batch_id, event)
                 if self._store.restore_batch(batch):
+                    # The recordings are already in the catalog by the time this
+                    # replay runs (the capture rebuild is the pass before it), so
+                    # their batch_id is available to count. Zero was never a
+                    # measurement — it was the absence of one wearing a number.
+                    self._store.rebuild_episodes_recorded(batch_id)
                     restored.append(batch_id)
                 else:
                     collisions.extend(self._compare_existing(batch))
@@ -245,17 +252,19 @@ class BatchService:
 
 
 def _counter_warning(restored: list[str]) -> tuple[str, ...]:
-    """Say that the restored batches came back without their episode counts."""
+    """Say that the restored episode counts are lower bounds."""
     if not restored:
         return ()
     shown = ", ".join(restored[:5])
     if len(restored) > 5:
         shown += f", and {len(restored) - 5} more"
     return (
-        f"{len(restored)} batch(es) were rebuilt from the ledger and their "
-        f"recorded-episode counters start again at 0 ({shown}). That count is "
-        "not in the ledger — it counts review saves rather than facts — so a "
-        "batch's 'N / target' can read lower than before this rebuild.",
+        f"{len(restored)} batch(es) were rebuilt from the ledger ({shown}). "
+        "Their recorded-episode counters were recounted from the recordings "
+        "still naming each batch, because that count is not in the ledger — it "
+        "counts review saves rather than facts. It is therefore a LOWER BOUND: "
+        "an episode reviewed and later deleted cannot be counted, so a batch's "
+        "'N / target' can read lower than before this rebuild.",
     )
 
 
@@ -270,8 +279,8 @@ def _batch_from_event(batch_id: str, event: dict[str, Any]) -> Batch:
     return Batch(
         batch_id=batch_id,
         robot=_opt_str(event.get("robot")),
-        project=str(event.get("project") or ""),
-        task=str(event.get("task") or ""),
+        project=_opt_str(event.get("project")),
+        task=_opt_str(event.get("task")),
         condition=_opt_str(event.get("condition")),
         operator=_opt_str(event.get("operator")),
         target_episodes=target if isinstance(target, int) else 30,

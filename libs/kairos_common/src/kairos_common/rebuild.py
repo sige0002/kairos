@@ -71,6 +71,7 @@ from kairos_common.capture_sidecars import (
     SidecarStatus,
     objects_dir,
     read_object_manifest,
+    read_quick_check,
     read_record,
     trash_dir,
 )
@@ -141,6 +142,12 @@ class CaptureRow:
     # captures whose digest never completed (§8 reconciler) without a second
     # pass over every manifest.
     digest_state: str | None = None
+    # The orchestrator's stop-time verdict, from ``quick_check.json`` (§4.2).
+    # ``None`` means the sidecar is absent or unreadable, which is also what a
+    # capture recorded before that sidecar existed looks like — so the caller
+    # must LEAVE a column alone rather than blank it. Opaque here: the shape
+    # belongs to the orchestrator.
+    quick_check: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -413,7 +420,7 @@ def _row_from_directory(
 
     state = normalize_state(manifest.state, entry)
     review = _review_overlay(entry, capture_id, known, acc)
-    row = _capture_row(manifest, state, review)
+    row = _capture_row(manifest, state, review, read_quick_check(entry))
 
     tombstone = tombstones.get(capture_id)
     if tombstone is not None:
@@ -630,7 +637,12 @@ def _rows_from_ledger_only_tombstones(
         )
 
 
-def _capture_row(manifest: ObjectManifestV2, state: str, review: _Review) -> CaptureRow:
+def _capture_row(
+    manifest: ObjectManifestV2,
+    state: str,
+    review: _Review,
+    quick_check: dict[str, Any] | None = None,
+) -> CaptureRow:
     return CaptureRow(
         capture_id=manifest.capture_id,
         state=state,
@@ -657,6 +669,7 @@ def _capture_row(manifest: ObjectManifestV2, state: str, review: _Review) -> Cap
         batch_id=review.batch_id,
         index_in_batch=review.index_in_batch,
         digest_state=manifest.digest_state,
+        quick_check=quick_check,
     )
 
 

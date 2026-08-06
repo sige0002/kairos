@@ -2,7 +2,7 @@ import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
 import type {
-  Capture,
+  CaptureListItem,
   Dataset,
   DatasetArchiveProgress,
   DatasetMember,
@@ -26,7 +26,7 @@ import { datasetTestId, memberTestId } from './data';
 interface Backend {
   datasets: Dataset[];
   members: DatasetMember[];
-  captures: Capture[];
+  captures: CaptureListItem[];
   /** Per-dataset next display_index; only ever increases. */
   highWater: Record<string, number>;
   /** What `GET /transfer/status` answers — true only on a split deploy. */
@@ -61,7 +61,7 @@ interface Backend {
   calls: string[];
 }
 
-function capture(over: Partial<Capture> = {}): Capture {
+function capture(over: Partial<CaptureListItem> = {}): CaptureListItem {
   return {
     capture_id: over.capture_id ?? 'cap-1',
     state: over.state ?? 'completed',
@@ -71,7 +71,7 @@ function capture(over: Partial<Capture> = {}): Capture {
   };
 }
 
-function replica(state: ReplicaState | null): Partial<Capture> {
+function replica(state: ReplicaState | null): Partial<CaptureListItem> {
   return {
     replica: state ? { instance_id: 'inst-1', state } : null,
     digest_state: state === 'present_verified' ? 'complete' : 'pending',
@@ -127,7 +127,7 @@ const DS_KITCHEN: Dataset = {
   member_count: 0,
 };
 
-function withMemberships(backend: Backend, c: Capture): Capture {
+function withMemberships(backend: Backend, c: CaptureListItem): CaptureListItem {
   const memberships = backend.members
     .filter((m) => m.capture_id === c.capture_id)
     .map((m) => ({
@@ -1502,4 +1502,52 @@ test('a combined set defaults to Copy out, and the seal takes nothing with it', 
   expect(screen.getByTestId('dataset-archived-banner')).toHaveTextContent(
     /stays on this machine/,
   );
+});
+
+// The archive prefill mirrors `views.sanitize_component` so the operator is
+// shown the path the server will actually create. A mirror only helps while it
+// matches: views.py now scrubs the whole C0 range plus DEL
+// (`[/\\\x00-\x1f\x7f]`, added because a folder whose name holds a newline or a
+// tab breaks every reader of this tree that is not this program — a file
+// manager, a glob, a listing piped into `while read`), and the copy here still
+// only scrubbed `/`, `\` and NUL.
+//
+// The consequence is small and specific, which is why it is worth pinning: the
+// server is not relying on this (the archive path is scrubbed server-side and
+// has its own test), so nothing breaks — the prefill just promises a path the
+// server will spell differently, and the operator only finds out afterwards.
+test('the archive prefill scrubs the same characters the server does', async () => {
+  mockApi({
+    datasets: [
+      {
+        ...DS_KITCHEN,
+        // One from each half of the drift: a newline (C0) and DEL.
+        operator: 'op\na',
+        name: 'kitchen\x7fpicks',
+      },
+    ],
+    captures: [CAP_A],
+    members: [
+      { membership_id: 'm-1', dataset_id: 'ds-kitchen', capture_id: 'cap-a', display_index: 1 },
+    ],
+    archiveRoots: ['/mnt/archive'],
+  });
+  renderWithClient(<DatasetsScreen />);
+
+  fireEvent.click(await screen.findByTestId(datasetTestId('ds-kitchen')));
+  fireEvent.click(await screen.findByTestId('archive-dataset-btn'));
+
+  const finalPath = await screen.findByTestId('dataset-archive-final-path');
+  // Control: the component with nothing to scrub comes through verbatim, so
+  // this is a scrub and not a blanket rewrite.
+  expect(finalPath).toHaveTextContent('pick_place');
+  // The claims. Before the mirror was fixed this read
+  // `/mnt/archive/op a/pick_place/kitchenpicks` — note that the operator could
+  // not SEE the problem: the newline renders as a space and DEL as nothing, so
+  // the prefill quietly promised a path the server would spell differently.
+  expect(finalPath).toHaveTextContent('op_a');
+  expect(finalPath).toHaveTextContent('kitchen_picks');
+  // And nothing raw survives into the path the operator is shown.
+  // eslint-disable-next-line no-control-regex -- asserting their ABSENCE.
+  expect(finalPath.textContent ?? '').not.toMatch(/[\x00-\x1f\x7f]/);
 });

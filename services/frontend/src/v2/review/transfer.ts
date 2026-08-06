@@ -12,7 +12,7 @@
 // deciding whether to pull again. Replica state carries that instead.
 
 import { availabilityOf } from '../captures/availability';
-import type { Capture } from '../../api/types';
+import type { CaptureListItem } from '../../api/types';
 import type { TransferPhase, TransferSlot } from './types';
 
 /**
@@ -24,7 +24,7 @@ import type { TransferPhase, TransferSlot } from './types';
  * is told by the availability chip, so the transfer control must not offer to
  * pull something that is not simply absent.
  */
-export function serverTransferPhase(capture: Capture): TransferPhase {
+export function serverTransferPhase(capture: CaptureListItem): TransferPhase {
   return availabilityOf(capture).kind === 'awaiting_transfer' ? 'awaiting' : 'here';
 }
 

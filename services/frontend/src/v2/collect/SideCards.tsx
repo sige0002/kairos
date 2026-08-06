@@ -214,6 +214,7 @@ export function SystemStatusCard({
       totalCameras: cameraHealth.totalCameras,
       streamsDown: cameraHealth.streamsDown,
       streamFault: cameraHealth.streamFault,
+      streamsNoVideo: cameraHealth.streamsNoVideo,
       silentTopics: cameraHealth.silentTopics,
       unmonitoredTopics: cameraHealth.unmonitoredTopics,
       framesStale: cameraHealth.framesStale,
@@ -585,15 +586,25 @@ export function CoverageCard({ machine }: { machine: BatchMachine }) {
   });
 
   const task = machine.task;
-  const planConditions = findTask(plans, machine.project, task).conditions;
+  const planConditions = findTask(plans, machine.project ?? '', task ?? '').conditions;
   const batches = (batchesQuery.data?.items ?? []).filter((b) => b.task === task);
-  const rowsByCondition = new Map<string, number>();
-  const bump = (cond: string, n: number) => {
+  // A sum is a floor as soon as ONE of its terms is: the total is at least this
+  // and possibly more, and there is no way to say which part is uncertain. So
+  // the flag propagates through the addition rather than being shown per batch
+  // — the operator reads the total, not the batches behind it.
+  const rowsByCondition = new Map<string, { recorded: number; isFloor: boolean }>();
+  const bump = (cond: string, n: number, isFloor: boolean) => {
     if (!cond || cond === '—') return;
-    rowsByCondition.set(cond, (rowsByCondition.get(cond) ?? 0) + n);
+    const cur = rowsByCondition.get(cond) ?? { recorded: 0, isFloor: false };
+    rowsByCondition.set(cond, {
+      recorded: cur.recorded + n,
+      isFloor: cur.isFloor || isFloor,
+    });
   };
-  for (const c of planConditions) bump(c, 0);
-  for (const b of batches) bump(b.condition ?? '', b.episodes_recorded ?? 0);
+  for (const c of planConditions) bump(c, 0, false);
+  for (const b of batches) {
+    bump(b.condition ?? '', b.episodes_recorded ?? 0, b.episodes_recorded_is_floor === true);
+  }
   const rows = [...rowsByCondition.entries()];
   if (rows.length === 0) return null; // free-text task with no plan conditions
 
@@ -606,7 +617,7 @@ export function CoverageCard({ machine }: { machine: BatchMachine }) {
         Coverage — {task}
       </span>
       <div className="flex flex-col gap-1">
-        {rows.map(([cond, recorded]) => (
+        {rows.map(([cond, { recorded, isFloor }]) => (
           <div
             key={cond}
             data-testid={`coverage-row-${cond}`}
@@ -626,7 +637,15 @@ export function CoverageCard({ machine }: { machine: BatchMachine }) {
             >
               {cond}
             </span>
-            <span className="shrink-0 font-mono text-[11.5px] text-gray-800">
+            <span
+              className="shrink-0 font-mono text-[11.5px] text-gray-800"
+              title={
+                isFloor
+                  ? 'At least this many — part of this total was rebuilt from the recordings still on disk, so takes deleted after review are not counted.'
+                  : undefined
+              }
+            >
+              {isFloor ? '\u2265 ' : ''}
               {recorded}
             </span>
             <span className="shrink-0 text-[10.5px] text-gray-400">rec</span>

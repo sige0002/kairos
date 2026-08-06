@@ -29,10 +29,10 @@ import {
   memberCount,
   shortCaptureId,
 } from './data';
-import type { Capture } from '../../api/types';
+import type { CaptureListItem } from '../../api/types';
 import type { DatasetsState } from './useDatasetsState';
 
-function CandidateRow({ capture, state }: { capture: Capture; state: DatasetsState }) {
+function CandidateRow({ capture, state }: { capture: CaptureListItem; state: DatasetsState }) {
   const adding = state.addingCaptureId === capture.capture_id;
   const memberships = capture.memberships ?? [];
   // A frozen dataset (§6.x) cannot take members any more than no dataset can —

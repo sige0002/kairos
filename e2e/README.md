@@ -46,6 +46,70 @@ capture disappeared from the UI behind a 500. Left as a race it would be an
 occasional red run that someone re-runs away; planted deliberately it is a
 named, reproducible defect. See below for the history.
 
+## `tools/` — measurements the suite cannot make
+
+Two probes that are **not part of `make test-e2e` and never run in CI**. They
+answer questions a spec cannot: one needs a layout engine (jsdom has none, so
+every width and overflow is `0` there and an assertion about them passes against
+any stylesheet), the other needs a real ICE agent. They are here so the numbers
+in a review round can be reproduced by someone else instead of being taken on
+trust.
+
+Both need the stack up, and both print measurements rather than pass/fail prose.
+Exit code is `1` when a defect is found, so either can gate a manual round.
+
+### `layout-probe.mjs` — E-25 layout resilience
+
+```bash
+make test-e2e-up
+node e2e/tools/layout-probe.mjs --self-test    # ALWAYS run this first
+node e2e/tools/layout-probe.mjs                # the measurement
+node e2e/tools/layout-probe.mjs --zoom 1.5 --tab collect --shots dev_image
+```
+
+Walks every tab at 1280x800 at 100% and 150% zoom and reports three things:
+the page scrolling horizontally, Collect scrolling vertically, and text cut off
+with nothing (no ellipsis, no `title`, no scrollable box) telling the operator
+it was cut. Browser zoom is modelled by shrinking the CSS viewport, which is
+what zoom actually does to layout: 150% on a 1280x800 monitor is 853x533 CSS px.
+
+**Run `--self-test` first, every time.** It plants three defects — an
+over-wide element, an over-tall one, and an unmarked clipped label — and fails
+if the probe does not report all of them. This is not ceremony: the first
+version of this probe reported *12/12 clean* while Collect scrolled 998px at
+150%, because it measured the tab panel's overflow and the panel is not the
+scroller below the `lg` breakpoint. An instrument that has not been shown to
+say "broken" has not yet said anything by saying "clean".
+
+Two rules it follows, both from the E-24 round: it measures **rendered boxes**
+(`scrollWidth` / `clientWidth` / `getBoundingClientRect`) rather than class
+names or style strings, because a `truncate` class that cannot take effect is
+still present in the markup; and it treats an ellipsis, a `title`, or a
+scrollable container as a **mark**, because the defect is text that vanishes
+silently, not text that is shortened visibly.
+
+### `peer-failure-probe.mjs` — E-37 `'peer'` stream classification
+
+```bash
+E2E_WITH_STREAMER=1 bash e2e/scripts/stack.sh up   # the gate omits the streamer
+node e2e/tools/peer-failure-probe.mjs --control    # contrast: streams connect
+node e2e/tools/peer-failure-probe.mjs              # media path broken
+```
+
+Reproduces the one condition that separates `peer` from `signaling`: HTTP fine,
+media path dead. It rewrites **only the port in `a=candidate:` lines**, in both
+the answer (`setRemoteDescription`) and the offer the page posts
+(`POST /stream/offer`) — nothing else, not the ice-ufrag, ice-pwd, DTLS
+fingerprint, `m=` or `c=` lines. Signaling stays real (the streamer answers
+201/200 for real), and the failure is produced by the browser's own ICE agent.
+Both directions must be broken: patching only the answer leaves the offer
+carrying the browser's real candidates, aiortc connects inbound, and the browser
+learns a peer-reflexive candidate and connects anyway — measured, not assumed.
+
+`E2E_WITH_STREAMER=1` is opt-in because the streamer is a ~1.2 GB ROS image and
+no §13 scenario asserts on a camera preview. Without it `/stream/start` is a
+502, which the UI classifies as `signaling` — the wrong branch to be measuring.
+
 ## A defect this suite found (fixed)
 
 `§13-4 Rebuild: a failed start does not take the whole capture list down`

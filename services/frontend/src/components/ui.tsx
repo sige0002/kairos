@@ -208,6 +208,22 @@ export function TrashIcon({
 }
 
 /**
+ * Every tab stop inside *root*, in document order.
+ *
+ * Deliberately NOT filtered on visibility: jsdom cannot measure layout, so an
+ * `offsetParent` check would be untestable here and would quietly do nothing.
+ * The dialog renders its own children and hides none of them, so the list is
+ * the children. `tabIndex >= 0` drops the dialog container itself, which is
+ * focusable (`tabIndex={-1}`) precisely so that it is NOT a tab stop.
+ */
+function tabStopsWithin(root: HTMLElement): HTMLElement[] {
+  const nodes = root.querySelectorAll<HTMLElement>(
+    'a[href], button, input, textarea, select, [tabindex]',
+  );
+  return Array.from(nodes).filter((el) => !el.hasAttribute('disabled') && el.tabIndex >= 0);
+}
+
+/**
  * Lightweight modal/dialog. No portal: the SPA has a single root and the overlay
  * is `fixed` at a high z-index, so the DOM position of this element is
  * irrelevant. ESC and a backdrop click both call `onClose`; `footer` holds the
@@ -232,7 +248,47 @@ export function Modal({
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') {
+        onClose();
+        return;
+      }
+      if (e.key !== 'Tab') return;
+      // Tab containment (E-31's deferred half). Escape has always worked, so
+      // this was never a trap in the sense of being stuck — it was Tab walking
+      // out of the dialog and into the page BEHIND the overlay, where the
+      // cursor is invisible and the controls are the ones the dialog covers.
+      //
+      // Only the two wrap points are taken. In the middle the browser's own tab
+      // order is already correct, and cancelling those keystrokes would replace
+      // a leak with a hijack.
+      const node = dialogRef.current;
+      if (!node) return;
+      const stops = tabStopsWithin(node);
+      if (stops.length === 0) {
+        // Nothing to tab to. Keeping the cursor on the dialog is the whole
+        // point: the alternative is the page behind the overlay.
+        e.preventDefault();
+        node.focus();
+        return;
+      }
+      const first = stops[0]!;
+      const last = stops[stops.length - 1]!;
+      const active = document.activeElement;
+      if (!node.contains(active)) {
+        // The cursor is outside — the dialog just opened onto a page whose
+        // focus it did not take, or a click landed on the backdrop. Bring it in
+        // at the end Tab was heading for.
+        e.preventDefault();
+        (e.shiftKey ? last : first).focus();
+        return;
+      }
+      if (!e.shiftKey && active === last) {
+        e.preventDefault();
+        first.focus();
+      } else if (e.shiftKey && active === first) {
+        e.preventDefault();
+        last.focus();
+      }
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);

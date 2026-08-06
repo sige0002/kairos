@@ -400,7 +400,13 @@ class ReviewSaveRequest(BaseModel):
 
     base_revision: int = Field(ge=0)
     task_result: TaskResult | None = None
-    failure_reason: str | None = None
+    # Bounded like a validation override's reason, and for the same reason: it
+    # is free text that ends up in record.json, on the Review row and in every
+    # delete dialog that names the episode. The values Collect sends come from
+    # the plan catalog's short vocabulary, so this bounds a paste rather than
+    # any real reason. Only the REQUEST is capped — ``RecordV2`` is not, so a
+    # longer value written before this rule still loads and rebuilds.
+    failure_reason: str | None = Field(default=None, max_length=500)
     quality: Quality | None = None
     quality_source: QualitySource | None = None
     review_status: ReviewStatus | None = None
@@ -722,8 +728,12 @@ class Batch(BaseModel):
 
     batch_id: str
     robot: str | None = None
-    project: str
-    task: str
+    # Optional because an empty plan catalog has no project to name. A console
+    # that had to send SOMETHING filled the gap with the dash it displays for
+    # "unset", writing a fabricated label into the catalog for good; null is
+    # the true statement and this is what lets it be made (E-5).
+    project: str | None = None
+    task: str | None = None
     condition: str | None = None
     operator: str | None = None
     target_episodes: int = 30
@@ -736,6 +746,14 @@ class Batch(BaseModel):
     # side effect) and never decremented, so "N / 30" stays truthful about what
     # was captured even after a later exclude or delete.
     episodes_recorded: int = 0
+    # Whether ``episodes_recorded`` is a LOWER BOUND rather than the count.
+    # A rebuild has no record of review saves — the ledger stores facts, not
+    # events — so it reconstructs the counter by counting the recordings whose
+    # ``record.json`` names this batch. That is a floor: a capture reviewed in
+    # and later deleted took its sidecar with it and cannot be counted. The
+    # display has to be able to tell the two apart, so it is a field rather
+    # than a footnote (§8.2 rule 6).
+    episodes_recorded_is_floor: bool = False
     batch_seq: int | None = None
 
 
@@ -743,8 +761,8 @@ class BatchCreateRequest(BaseModel):
     """Body for ``POST /api/v1/batches``."""
 
     robot: str | None = None
-    project: str
-    task: str
+    project: str | None = None
+    task: str | None = None
     condition: str | None = None
     operator: str | None = None
     target_episodes: int = Field(default=30, ge=1)

@@ -75,8 +75,24 @@ export function TopicsView({ config }: { config: RuntimeConfig }) {
   // Honesty (D-8-7): the window is "at most {windowId} since Monitor opened", not a
   // rolling history that predates this session. While the buffer is younger than the
   // selected window, surface how long it has actually been accumulating.
-  const [openedAt] = useState(() => Date.now());
-  const elapsedMs = Math.max(0, now - openedAt);
+  //
+  // Measured on the MONOTONIC clock (E-32): how long this session has been
+  // accumulating is a duration on this machine, and the wall clock is not a
+  // stopwatch. An NTP step forward made `windowNotFull` false at once and the
+  // caveat simply vanished — the screen presenting seconds of buffer as a full
+  // window — and a step back pinned it at "(0s so far)".
+  //
+  // `now` is still what drives this: it is the 1 Hz tick that recomputes the
+  // line, and its freeze-on-pause is what freezes this note with the charts.
+  // Only the MEASUREMENT moved off it. The chart's own time axis is a separate
+  // question and deliberately untouched — samples are stamped with `Date.now()`
+  // in useMetricHistory and aged out against the same clock, so making the axis
+  // monotonic would change what a sample's timestamp means.
+  const [openedAtMono] = useState(() => performance.now());
+  const elapsedMs = useMemo(
+    () => Math.max(0, performance.now() - openedAtMono),
+    [now, openedAtMono],
+  );
   const windowNotFull = elapsedMs < windowMs(windowId);
 
   // --- panels ---------------------------------------------------------------

@@ -17,6 +17,7 @@ import type {
   ArchiveConfig,
   Capture,
   CaptureArchiveRequest,
+  CaptureListItem,
   CaptureArchiveResponse,
   CaptureDeleteRequest,
   CaptureDetail,
@@ -35,8 +36,19 @@ import type {
   StoreRepairResponse,
 } from './types';
 
-/** Max captures the backend will return in one page (routers/captures.py). */
-const CAPTURE_PAGE_LIMIT = 200;
+/**
+ * Max captures the backend will return in one page (routers/captures.py
+ * `MAX_LIMIT`; 1001 is a 422).
+ *
+ * Raised 200 -> 1000 with the server, 2026-08-06. E-27 measured the whole-store
+ * walk at 26 sequential round trips against 5,000 captures, and dropping
+ * `topics` from the list barely moved the wall clock (settle 4,438 -> 4,288 ms)
+ * because the cost was the request COUNT. At 1,000 a page those 26 become 5.
+ *
+ * Only this walk asks for it. The server's default stays 50, because a page an
+ * operator is waiting on must not become a 5,000-row response.
+ */
+const CAPTURE_PAGE_LIMIT = 1000;
 
 /** Bound on cursor-following, so a pathological catalog cannot spin forever. */
 const MAX_PAGES = 50;
@@ -55,12 +67,18 @@ function captureQuery(params: CaptureListParams): Record<string, string | number
   return query;
 }
 
-/** One page of `GET /api/v1/captures` (newest first). */
+/** One page of `GET /api/v1/captures` (newest first).
+ *
+ *  `CaptureListItem`, not `Capture`: the list does not carry `topics` (E-27),
+ *  and the type says so rather than leaving callers an `undefined` to find. */
 export function listCaptures(
   params: CaptureListParams = {},
   signal?: AbortSignal,
-): Promise<Page<Capture>> {
-  return apiGet<Page<Capture>>('/captures', { signal, query: captureQuery(params) });
+): Promise<Page<CaptureListItem>> {
+  return apiGet<Page<CaptureListItem>>('/captures', {
+    signal,
+    query: captureQuery(params),
+  });
 }
 
 /**
@@ -75,11 +93,11 @@ export function listCaptures(
 export async function listAllCaptures(
   params: CaptureListParams = {},
   signal?: AbortSignal,
-): Promise<Page<Capture>> {
-  const items: Capture[] = [];
+): Promise<Page<CaptureListItem>> {
+  const items: CaptureListItem[] = [];
   let cursor: string | undefined = params.cursor;
   for (let page = 0; page < MAX_PAGES; page++) {
-    const res: Page<Capture> = await listCaptures(
+    const res: Page<CaptureListItem> = await listCaptures(
       { ...params, limit: params.limit ?? CAPTURE_PAGE_LIMIT, cursor },
       signal,
     );

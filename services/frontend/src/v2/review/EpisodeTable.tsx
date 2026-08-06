@@ -75,8 +75,7 @@ function transferBadge(row: DecoratedEpisode): { tone: Tone; label: string } {
 // (Tailwind's arbitrary-value classes must appear as complete literal strings
 // in the source for its scanner to pick them up — hence two full strings
 // rather than building one via interpolation.)
-const GRID_COLS =
-  'grid-cols-[56px_48px_108px_96px_72px_80px_96px_minmax(0,1fr)_28px]';
+const GRID_COLS = 'grid-cols-[56px_48px_108px_96px_72px_80px_96px_minmax(0,1fr)_28px]';
 const GRID_COLS_SPLIT =
   'grid-cols-[56px_48px_108px_96px_72px_80px_96px_84px_minmax(0,1fr)_28px]';
 
@@ -139,7 +138,10 @@ function Row({
       <span className="font-mono text-xs text-gray-400">
         {formatTimeOfDay(row.startedAt)}
       </span>
-      <AvailabilityChip capture={row.capture} testId={`review-availability-${row.captureId}`} />
+      <AvailabilityChip
+        capture={row.capture}
+        testId={`review-availability-${row.captureId}`}
+      />
       {rv.splitMode && (
         <Badge tone={transfer.tone} className="w-fit whitespace-nowrap">
           {transfer.label}
@@ -309,7 +311,9 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
               <span
                 role="alert"
                 data-testid="review-return-batch-failures"
-                title={rv.returnBatchFailures.map((f) => `${f.captureId}: ${f.error}`).join('\n')}
+                title={rv.returnBatchFailures
+                  .map((f) => `${f.captureId}: ${f.error}`)
+                  .join('\n')}
                 className="rounded-chip bg-red-50 px-2 py-0.5 text-[12px] font-semibold text-red-700"
               >
                 {rv.returnBatchFailures.length} still excluded — return failed
@@ -338,66 +342,79 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
         Datasets take adopted episodes only: a take saved as a good success arrives
         adopted, and one still pending offers Adopt in its detail.
       </p>
-      <div
-        className={cn(
-          'grid gap-2 border-b border-gray-100 px-[18px] py-2 text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400',
-          rv.splitMode ? GRID_COLS_SPLIT : GRID_COLS,
-        )}
-      >
-        <span>Episode</span>
-        <span>Batch</span>
-        <span>Quality</span>
-        <span>Task result</span>
-        <span>Duration</span>
-        <span>Time</span>
-        <span>Data</span>
-        {rv.splitMode && <span>Transfer</span>}
-        <span className="justify-self-end">Status</span>
-        <span />
-      </div>
-      <div className="flex-1 overflow-auto">
-        {rv.isLoading ? (
-          <p className="px-[18px] py-3 text-sm text-gray-500">Loading episodes…</p>
-        ) : rv.isError ? (
-          <p className="px-[18px] py-3 text-sm text-red-600" role="alert">
-            Couldn&apos;t load recordings{rv.errorMessage ? `: ${rv.errorMessage}` : ''}
-            .
-          </p>
-        ) : rv.rows.length === 0 ? (
-          <p className="px-[18px] py-3 text-sm text-gray-500">
-            No episodes to review yet.
-          </p>
-        ) : (
-          rv.rows.map((row) => (
-            <Row
-              key={row.captureId}
-              row={row}
-              isSelected={row.captureId === rv.selectedCaptureId}
-              rv={rv}
-            />
-          ))
-        )}
-        {/* The sweep stopped before the end of the catalog, so "no more
+      {/* E-25: header and rows share ONE horizontal scroll region.
+          The column track sums to ~666px, but the screen's grid pins this card
+          at its declared `minmax(580px, …)` minimum on a 1280-wide display — so
+          the card's `overflow-hidden` was cutting the last columns off the
+          HEADER with no mark, while the rows below scrolled independently. Both
+          halves of that are wrong: the operator loses a column heading with
+          nothing saying so, and scrolling the rows slides them out from under
+          the headings that name them.
+          Scrolling the two together keeps every column reachable and always
+          labelled. Squeezing the tracks to fit instead would only move the
+          silent cut inside the cells. */}
+      <div className="flex min-h-0 flex-1 flex-col overflow-x-auto">
+        <div
+          className={cn(
+            'grid shrink-0 gap-2 border-b border-gray-100 px-[18px] py-2 text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400',
+            rv.splitMode ? GRID_COLS_SPLIT : GRID_COLS,
+          )}
+        >
+          <span>Episode</span>
+          <span>Batch</span>
+          <span>Quality</span>
+          <span>Task result</span>
+          <span>Duration</span>
+          <span>Time</span>
+          <span>Data</span>
+          {rv.splitMode && <span>Transfer</span>}
+          <span className="justify-self-end">Status</span>
+          <span />
+        </div>
+        <div className="flex-1 overflow-y-auto">
+          {rv.isLoading ? (
+            <p className="px-[18px] py-3 text-sm text-gray-500">Loading episodes…</p>
+          ) : rv.isError ? (
+            <p className="px-[18px] py-3 text-sm text-red-600" role="alert">
+              Couldn&apos;t load recordings
+              {rv.errorMessage ? `: ${rv.errorMessage}` : ''}.
+            </p>
+          ) : rv.rows.length === 0 ? (
+            <p className="px-[18px] py-3 text-sm text-gray-500">
+              No episodes to review yet.
+            </p>
+          ) : (
+            rv.rows.map((row) => (
+              <Row
+                key={row.captureId}
+                row={row}
+                isSelected={row.captureId === rv.selectedCaptureId}
+                rv={rv}
+              />
+            ))
+          )}
+          {/* The sweep stopped before the end of the catalog, so "no more
             episodes" here means "no more that were fetched" — and the counts
             above are of the same partial set. Said where the list ends,
             because that is where an operator concludes it. */}
-        {rv.catalogTruncated && (
-          <p
-            data-testid="catalog-truncated"
-            className="m-[18px] rounded-control border border-amber-200 bg-amber-50 px-2.5 py-2 text-[11px] leading-relaxed text-amber-800"
-          >
-            This is not the whole catalog — there are more recordings than one
-            sweep fetches, so the oldest are not listed here. Narrow the search
-            to reach a specific one.
-          </p>
-        )}
+          {rv.catalogTruncated && (
+            <p
+              data-testid="catalog-truncated"
+              className="m-[18px] rounded-control border border-amber-200 bg-amber-50 px-2.5 py-2 text-[11px] leading-relaxed text-amber-800"
+            >
+              This is not the whole catalog — there are more recordings than one sweep
+              fetches, so the oldest are not listed here. Narrow the search to reach a
+              specific one.
+            </p>
+          )}
+        </div>
       </div>
       <p
         data-testid="review-bridge-caption"
         className="border-t border-gray-100 px-[18px] py-2 text-[11px] text-gray-400"
       >
-        Quality / Task / Batch are saved on the capture itself. Data shows where
-        this machine&apos;s copy stands.
+        Quality / Task / Batch are saved on the capture itself. Data shows where this
+        machine&apos;s copy stands.
       </p>
     </div>
   );

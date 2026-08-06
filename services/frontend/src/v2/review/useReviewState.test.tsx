@@ -6,14 +6,14 @@ import { setApiBase } from '../../api/client';
 import { makeTestClient, jsonResponse } from '../../test/renderWithClient';
 import { setSplitMode } from '../captures/splitMode';
 import { useReviewState, ALL_OPERATORS } from './useReviewState';
-import type { Capture } from '../../api/types';
+import type { CaptureListItem } from '../../api/types';
 
 function wrapper({ children }: { children: ReactNode }) {
   const client = makeTestClient();
   return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
 }
 
-function capture(partial: Partial<Capture> & { capture_id: string }): Capture {
+function capture(partial: Partial<CaptureListItem> & { capture_id: string }): CaptureListItem {
   return {
     state: 'completed',
     review_status: 'pending',
@@ -58,7 +58,7 @@ interface ServerOptions {
  * second actor exists: `e2e/tests/02-review.spec.ts` (§13-2) saves through the
  * API first and then clicks.
  */
-function mockServer(initial: Capture[], options: ServerOptions = {}) {
+function mockServer(initial: CaptureListItem[], options: ServerOptions = {}) {
   let items = initial.map((c) => ({ ...c }));
   const reviewCalls: { captureId: string; body: Record<string, unknown> }[] = [];
   const deleteCalls: { captureId: string; body: Record<string, unknown> }[] = [];
@@ -94,7 +94,7 @@ function mockServer(initial: Capture[], options: ServerOptions = {}) {
         ...(body.quality ? { quality: body.quality } : {}),
         ...(body.task_result ? { task_result: body.task_result } : {}),
         review_revision: (items[idx]!.review_revision ?? 0) + 1,
-      } as Capture;
+      } as CaptureListItem;
       items[idx] = next;
       return answer(jsonResponse(next));
     }

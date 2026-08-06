@@ -90,6 +90,31 @@ function latColor(ms: number): string {
 /** What the SYSTEM STATUS Cameras row needs to describe every pane, not just
  *  the main one. Counts rather than a boolean, so the row can say WHICH of the
  *  cameras is in trouble instead of collapsing four tiles into one word. */
+/**
+ * How long a pane may negotiate without a frame before the row says so.
+ *
+ * A normal connection on this stack settles in 1-3 s (measured: the control run
+ * of e2e/tools/peer-failure-probe.mjs had both panes carrying video well inside
+ * that). 10 s is a wide margin over that, so a slow-but-working start never
+ * flashes a warning, while the failure this exists for — a media path that
+ * never connects at all — was still black at 150 s. Anything in between is a
+ * pane an operator would rightly want to know about.
+ */
+export const NO_VIDEO_AFTER_MS = 10_000;
+
+// Test-only override (same idiom as useBatchMachine's __setStopFloorMs). The
+// alternative — fake timers — has to fake `performance` as well, and installing
+// that clock after the panes have already taken their `waitingSince` baseline
+// computes a NEGATIVE wait. Making the threshold injectable keeps the tests on
+// the real clock, where the plumbing behaves exactly as it ships.
+let noVideoAfterMs: number = NO_VIDEO_AFTER_MS;
+export function __setNoVideoAfterMs(ms: number): void {
+  noVideoAfterMs = ms;
+}
+export function __resetNoVideoAfterMs(): void {
+  noVideoAfterMs = NO_VIDEO_AFTER_MS;
+}
+
 export interface CameraHealth {
   streamFailed: boolean;
   /** Panes whose OWN stream is not carrying video. Every pane negotiates
@@ -99,6 +124,8 @@ export interface CameraHealth {
   /** The cause those failures agree on, 'mixed' when they disagree. Primitive,
    *  because this object is compared field-by-field with `===`. */
   streamFault: StreamFailure | 'mixed' | null;
+  /** Panes negotiating past NO_VIDEO_AFTER_MS with no frame ever (E-37). */
+  streamsNoVideo: number;
   framesStale: boolean;
   /** Panes whose source topic the monitor reports as silent. */
   silentTopics: number;
@@ -357,7 +384,12 @@ function SubCameraTile({
   sourceLiveness?: TopicLiveness;
   /** Report this pane's own stream state up, so the System card can speak for
    *  the whole wall instead of for the main tile (E-37). */
-  onStreamState?: (topic: string, down: boolean, failure: StreamFailure | null) => void;
+  onStreamState?: (
+    topic: string,
+    down: boolean,
+    failure: StreamFailure | null,
+    waitingSince: number | null,
+  ) => void;
 }) {
   const { w, h } = resBounds(pane.subResLabel);
   const { phase, stream, stats, error, failure, retry } = useWebRtcStream({
@@ -374,8 +406,18 @@ function SubCameraTile({
   const connected = phase === 'connected';
   // 'failed' only — a stream still negotiating is not yet a fault, and calling
   // it one would make every page load flash a camera warning.
+  // `since` is when THIS attempt began, on the monotonic clock — the wall clock
+  // is not a stopwatch (E-32) and this figure is a duration measured here.
+  // Reported as null once connected: a pane carrying video is not waiting.
+  const attemptSinceRef = useRef<number | null>(null);
+  if (phase !== 'connected' && attemptSinceRef.current === null) {
+    attemptSinceRef.current = performance.now();
+  }
+  if (phase === 'connected') attemptSinceRef.current = null;
   useEffect(() => {
-    if (pane.topic) onStreamState?.(pane.topic, phase === 'failed', failure);
+    if (pane.topic) {
+      onStreamState?.(pane.topic, phase === 'failed', failure, attemptSinceRef.current);
+    }
   }, [pane.topic, phase, failure, onStreamState]);
   const label = shortCameraLabel(pane.topic);
   return (
@@ -581,19 +623,44 @@ export function Cameras({
   // Every pane's own stream state, reported up by the tiles (E-37). A ref plus
   // a tick rather than state per report: reports arrive one per tile per phase
   // change, and setState on each would re-render the wall mid-negotiation.
-  const streamStateRef = useRef<Map<string, { down: boolean; failure: StreamFailure | null }>>(
-    new Map(),
-  );
+  const streamStateRef = useRef<
+    Map<
+      string,
+      { down: boolean; failure: StreamFailure | null; waitingSince: number | null }
+    >
+  >(new Map());
   const [streamTick, setStreamTick] = useState(0);
   const onStreamState = useCallback(
-    (topic: string, down: boolean, failure: StreamFailure | null) => {
+    (
+      topic: string,
+      down: boolean,
+      failure: StreamFailure | null,
+      waitingSince: number | null = null,
+    ) => {
       const prev = streamStateRef.current.get(topic);
-      if (prev && prev.down === down && prev.failure === failure) return;
-      streamStateRef.current.set(topic, { down, failure });
+      if (
+        prev &&
+        prev.down === down &&
+        prev.failure === failure &&
+        prev.waitingSince === waitingSince
+      ) {
+        return;
+      }
+      streamStateRef.current.set(topic, { down, failure, waitingSince });
       setStreamTick((t) => t + 1);
     },
     [],
   );
+
+  // One ticker for every pane rather than one each: the panes do not change
+  // state on their own while waiting, so without a clock here the count would
+  // never cross the threshold — the report would depend on some other pane
+  // happening to re-render.
+  const [waitTick, setWaitTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setWaitTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
 
   const framesStale = isFramesStale(stats);
   const silentCount = [...paneLiveness.values()].filter((l) => l === 'silent').length;
@@ -604,33 +671,53 @@ export function Cameras({
   ).length;
   const cameraCount = panes.filter((p) => !!p.topic).length;
   const streamFailed = phase === 'failed';
+  // The main pane reports through here rather than through the tile, so it
+  // needs the same waiting baseline — reporting it as null let the main pane
+  // overwrite the tile's entry and made the count come out zero.
+  const mainWaitingSinceRef = useRef<number | null>(null);
+  if (phase !== 'connected' && mainWaitingSinceRef.current === null) {
+    mainWaitingSinceRef.current = performance.now();
+  }
+  if (phase === 'connected') mainWaitingSinceRef.current = null;
   useEffect(() => {
-    if (mainTopic) onStreamState(mainTopic, streamFailed, mainFailure);
-  }, [mainTopic, streamFailed, mainFailure, onStreamState]);
+    if (mainTopic) {
+      onStreamState(mainTopic, streamFailed, mainFailure, mainWaitingSinceRef.current);
+    }
+  }, [mainTopic, streamFailed, mainFailure, phase, onStreamState]);
 
   // Only panes still open count — a removed tile must not keep voting.
   const openTopics = useMemo(
     () => new Set(panes.map((p) => p.topic).filter((t): t is string => !!t)),
     [panes],
   );
-  const { streamsDown, streamFault } = useMemo(() => {
+  const { streamsDown, streamFault, streamsNoVideo } = useMemo(() => {
     void streamTick; // recompute when a tile reports
+    void waitTick; // …and once a second, so a wait can cross the threshold
     let down = 0;
+    let noVideo = 0;
+    const now = performance.now();
     const kinds = new Set<StreamFailure>();
     for (const [topic, st] of streamStateRef.current) {
-      if (!openTopics.has(topic) || !st.down) continue;
-      down += 1;
-      if (st.failure) kinds.add(st.failure);
+      if (!openTopics.has(topic)) continue;
+      if (st.down) {
+        down += 1;
+        if (st.failure) kinds.add(st.failure);
+        continue; // a reported failure is the better answer; do not count twice
+      }
+      if (st.waitingSince != null && now - st.waitingSince > noVideoAfterMs) {
+        noVideo += 1;
+      }
     }
     const fault: StreamFailure | 'mixed' | null =
       kinds.size === 0 ? null : kinds.size > 1 ? 'mixed' : [...kinds][0]!;
-    return { streamsDown: down, streamFault: fault };
-  }, [openTopics, streamTick]);
+    return { streamsDown: down, streamFault: fault, streamsNoVideo: noVideo };
+  }, [openTopics, streamTick, waitTick]);
   const health = useMemo<CameraHealth>(
     () => ({
       streamFailed,
       streamsDown,
       streamFault,
+      streamsNoVideo,
       framesStale,
       silentTopics: silentCount,
       unmonitoredTopics: unmonitoredCount,
@@ -640,6 +727,7 @@ export function Cameras({
       streamFailed,
       streamsDown,
       streamFault,
+      streamsNoVideo,
       framesStale,
       silentCount,
       unmonitoredCount,

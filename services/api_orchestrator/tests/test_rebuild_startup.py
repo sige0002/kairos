@@ -435,10 +435,17 @@ class TestBatchesAfterAnExternalDatabaseDeletion:
     """E-17: `rm kairos.db` and restart, with batches in the picture.
 
     The rebuild succeeding is the expected outcome — the sidecars are truth and
-    the index is disposable. What the contract does NOT cover is the batches
-    table: a batch's own row has no sidecar and no ledger event, so it is the
-    one part of the catalog that a rebuild cannot bring back. These pin what an
-    operator actually gets: their recordings, without the batch, and told so.
+    the index is disposable.
+
+    **The batches HERE do not come back, and that is a property of this
+    fixture rather than of batches in general.** A batch created through
+    ``POST /api/v1/batches`` writes a ``batch_created`` ledger event and is
+    restored by the replay (`test_batches_ledger.py`, §8.2 rule 6).
+    ``_batched_capture`` below writes ``record.json`` straight to disk without
+    going through the API, so its batch_id was never announced to anything —
+    which is precisely the older-installation case worth pinning: recordings
+    that name a batch no event describes. These tests say what an operator gets
+    then — their recordings, without the batch, and told so.
     """
 
     def test_recordings_return_but_their_batch_does_not_and_it_is_reported(

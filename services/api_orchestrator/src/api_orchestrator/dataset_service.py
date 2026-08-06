@@ -32,7 +32,11 @@ from kairos_common.ids import new_dataset_id
 from kairos_common.time import utc_now_iso8601
 
 from api_orchestrator import layout as layout_mod
-from api_orchestrator.layout import DataLayout, is_reserved_name
+from api_orchestrator.layout import (
+    DataLayout,
+    is_reserved_name,
+    reject_unusable_labels,
+)
 from api_orchestrator.models import (
     Dataset,
     DatasetDetail,
@@ -165,6 +169,7 @@ class DatasetService:
     def create(self, *, name: str, operator: str | None, task: str | None) -> Dataset:
         """Create a dataset. The ledger event is written after the row."""
         self._reject_reserved(operator, task, name)
+        reject_unusable_labels(name=name, operator=operator, task=task)
         self._reject_duplicate_labels(name=name, operator=operator, task=task)
         dataset_id = new_dataset_id()
         created_at = utc_now_iso8601()
@@ -220,6 +225,7 @@ class DatasetService:
         operator = request.operator if "operator" in supplied else dataset["operator"]
         task = request.task if "task" in supplied else dataset["task"]
         self._reject_reserved(operator, task, name)
+        reject_unusable_labels(name=name, operator=operator, task=task)
         self._reject_duplicate_labels(
             name=name, operator=operator, task=task, exclude=dataset_id
         )

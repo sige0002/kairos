@@ -39,6 +39,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -63,6 +64,11 @@ logger = logging.getLogger("kairos")
 
 MANIFEST_NAME = "dataset_manifest.json"
 MANIFEST_SCHEMA_VERSION = 1
+
+# The subset of ``views._UNSAFE`` that applies to an operator-supplied archive
+# path: separators are meaningful here (the path is multi-component), a control
+# character never is.
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 
 
 @dataclass
@@ -355,7 +361,13 @@ class DatasetArchiver:
             # Absoluteness is judged BEFORE any stripping: stripping a leading
             # slash first would quietly relabel "/absolute" as relative.
             raw = path.strip()
-            rel = raw.rstrip("/")
+            # Control characters go, separators and dots stay. The operator
+            # names this folder freely and the slashes are meaningful here, but
+            # "no newline in a generated path component" is the tree's rule
+            # (views ``_UNSAFE``) and it cannot be a client's job to keep: this
+            # path is otherwise applied verbatim, so a prefill carrying one
+            # would spell the archive differently from views/ for one dataset.
+            rel = _CONTROL_CHARS.sub("_", raw).rstrip("/")
             if not rel or raw.startswith("/") or Path(rel).is_absolute():
                 raise ApiError(
                     status_code=400,

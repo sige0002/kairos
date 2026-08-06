@@ -72,6 +72,15 @@ REPLAY_CID_FILE="$RUN_DIR/replay.cid"
 # probe are deliberately absent: no scenario asserts on a camera preview, and
 # two 1 GB ROS images that nothing reads would only slow the gate down.
 SERVICES="recorder monitor orchestrator dora_runner frontend"
+# Opt-in only. The streamer is a ~1.2 GB ROS image and no §13 scenario asserts
+# on a camera preview, so the acceptance gate must not pay for it. But the E-37
+# layout/stream probes in e2e/tools DO need a real signaling peer — a stack
+# without it answers /stream/start with a 502, which the UI classifies as
+# 'signaling' and can never reach the 'peer' case being measured. So:
+#   E2E_WITH_STREAMER=1 bash e2e/scripts/stack.sh up
+if [ "${E2E_WITH_STREAMER:-0}" = "1" ]; then
+  SERVICES="$SERVICES streamer"
+fi
 
 # Same derivation as the Makefile, so `make build` and this script tag and find
 # the same images instead of one silently building :dev and the other looking

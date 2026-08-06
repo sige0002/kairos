@@ -16,7 +16,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { deleteCapture } from '../../api/captures';
 import { queryKeys } from '../../api/queryKeys';
 import { captureErrorText } from './errors';
-import type { Capture, DeleteKind } from '../../api/types';
+import type { CaptureListItem, DeleteKind } from '../../api/types';
 
 export interface DeletionFailure {
   captureId: string;
@@ -26,7 +26,7 @@ export interface DeletionFailure {
 export interface CaptureDeletionState {
   /** Which dialog is open, or null. The two are never the same dialog (§12). */
   kind: DeleteKind | null;
-  targets: Capture[];
+  targets: CaptureListItem[];
   busy: boolean;
   /** How many targets have been attempted so far in a bulk run. */
   done: number;
@@ -35,8 +35,8 @@ export interface CaptureDeletionState {
    *  error block); null for a bulk run, whose failures are per-capture. */
   error: unknown;
 
-  requestDiscard: (targets: Capture | Capture[]) => void;
-  requestDelete: (targets: Capture | Capture[]) => void;
+  requestDiscard: (targets: CaptureListItem | CaptureListItem[]) => void;
+  requestDelete: (targets: CaptureListItem | CaptureListItem[]) => void;
   cancel: () => void;
   confirm: (reason: string) => Promise<void>;
 
@@ -47,7 +47,7 @@ export interface CaptureDeletionState {
    *  just pressed, so the retry path is the same press. Only ids are needed:
    *  there is no dialog left that would have to state sizes. */
   discardNow: (
-    targets: Pick<Capture, 'capture_id'> | Pick<Capture, 'capture_id'>[],
+    targets: Pick<CaptureListItem, 'capture_id'> | Pick<CaptureListItem, 'capture_id'>[],
     reason: string,
     successToast?: string,
   ) => Promise<void>;
@@ -70,13 +70,13 @@ export function useCaptureDeletion(
   const { onDeleted, invalidate, onToast } = options;
   const queryClient = useQueryClient();
   const [kind, setKind] = useState<DeleteKind | null>(null);
-  const [targets, setTargets] = useState<Capture[]>([]);
+  const [targets, setTargets] = useState<CaptureListItem[]>([]);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(0);
   const [failures, setFailures] = useState<DeletionFailure[]>([]);
   const [error, setError] = useState<unknown>(null);
 
-  const open = useCallback((next: DeleteKind, list: Capture | Capture[]) => {
+  const open = useCallback((next: DeleteKind, list: CaptureListItem | CaptureListItem[]) => {
     setKind(next);
     setTargets(Array.isArray(list) ? list : [list]);
     setDone(0);
@@ -85,11 +85,11 @@ export function useCaptureDeletion(
   }, []);
 
   const requestDiscard = useCallback(
-    (list: Capture | Capture[]) => open('discard', list),
+    (list: CaptureListItem | CaptureListItem[]) => open('discard', list),
     [open],
   );
   const requestDelete = useCallback(
-    (list: Capture | Capture[]) => open('delete', list),
+    (list: CaptureListItem | CaptureListItem[]) => open('delete', list),
     [open],
   );
 
@@ -147,7 +147,7 @@ export function useCaptureDeletion(
 
   const discardNow = useCallback(
     async (
-      list: Pick<Capture, 'capture_id'> | Pick<Capture, 'capture_id'>[],
+      list: Pick<CaptureListItem, 'capture_id'> | Pick<CaptureListItem, 'capture_id'>[],
       reason: string,
       successToast?: string,
     ) => {

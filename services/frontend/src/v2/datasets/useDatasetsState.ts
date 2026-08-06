@@ -43,8 +43,8 @@ import {
 } from '../../api/captures';
 import { queryKeys } from '../../api/queryKeys';
 import type {
-  Capture,
   CaptureDetail,
+  CaptureListItem,
   DatasetArchiveProgress,
 } from '../../api/types';
 import { availabilityOf } from '../captures/availability';
@@ -252,13 +252,13 @@ export interface DatasetsState {
   // ---- adding a capture --------------------------------------------------
   /** Finished captures not already in the selected dataset, newest first and
    *  capped at CANDIDATE_LIMIT. */
-  candidates: Capture[];
+  candidates: CaptureListItem[];
   /** How many matched before the cap, so the rail can say what it is not
    *  showing. */
   candidateMatchCount: number;
   candidateSearch: string;
   setCandidateSearch: (s: string) => void;
-  addMember: (capture: Capture) => void;
+  addMember: (capture: CaptureListItem) => void;
   addingCaptureId: string | null;
   /** Candidates that cannot join today (not adopted / bytes elsewhere) are
    *  hidden by default; the count is always stated and this reveals them. */
@@ -280,9 +280,9 @@ export interface DatasetsState {
   archiveRoots: string[];
   /** True when this capture may be archived at all: the backend refuses a
    *  capture that is still in any dataset, exactly as it refuses a delete. */
-  canArchive: (capture: Capture) => boolean;
-  archiveTarget: Capture | null;
-  openArchive: (capture: Capture) => void;
+  canArchive: (capture: CaptureListItem) => boolean;
+  archiveTarget: CaptureListItem | null;
+  openArchive: (capture: CaptureListItem) => void;
   cancelArchive: () => void;
   archiveRoot: string;
   setArchiveRoot: (root: string) => void;
@@ -380,7 +380,7 @@ function terminated(text: string): string {
 
 /** Case-insensitive substring match over a capture's own identifying fields —
  *  the candidate picker's find. */
-function captureMatches(capture: Capture, query: string): boolean {
+function captureMatches(capture: CaptureListItem, query: string): boolean {
   const q = query.trim().toLowerCase();
   if (!q) return true;
   return [capture.capture_id, capture.run_id, capture.operator, capture.task]
@@ -409,6 +409,39 @@ export function useDatasetsState(): DatasetsState {
   const [operatorFilter, setOperatorFilter] = useState<string>(seed.operatorFilter);
   const [page, setPage] = useState(1);
 
+  // The URL can also change WITHOUT us: Back, Forward, a session restore, a
+  // bfcache resume. The seed above runs once, and the mirror effect below then
+  // rewrites the restored URL back to the state this screen was already
+  // showing — so the navigation was both ignored and erased. That is the same
+  // failure App.tsx fixed for `?tab=`, one level down and for five more keys.
+  //
+  // Adopting the URL keeps ONE invariant, the shell's: after any history
+  // navigation the console shows what that URL would show on a fresh load. So
+  // this reads through exactly the same `readDatasetsUrl` the seed does — a
+  // second parser here is how the two would drift.
+  //
+  // Idle in the common case: nothing in src/ calls `pushState`, so no in-app
+  // action produces a history entry today. This is what stops that from
+  // becoming a lie the moment one appears.
+  useEffect(() => {
+    const onPop = () => {
+      const next = readDatasetsUrl(window.location.search);
+      setSelectedDatasetId(next.datasetId);
+      setSelectedMembershipId(next.membershipId);
+      setSearch(next.search);
+      setMemberSearch(next.memberSearch);
+      setSort(next.sort);
+      setTaskResultFilter(next.taskResultFilter);
+      setOperatorFilter(next.operatorFilter);
+      setDatasetView(next.view);
+      // The page is not addressable, and a restored view starts at its top
+      // rather than on a page number that belonged to a different selection.
+      setPage(1);
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+
   const [createOpen, setCreateOpen] = useState(false);
   const [newName, setNewName] = useState('');
   const [newOperator, setNewOperator] = useState('');
@@ -432,7 +465,7 @@ export function useDatasetsState(): DatasetsState {
   const [combineError, setCombineError] = useState<unknown>(null);
   const [candidateSearch, setCandidateSearch] = useState('');
   const [showBlockedCandidates, setShowBlockedCandidates] = useState(false);
-  const [archiveTarget, setArchiveTarget] = useState<Capture | null>(null);
+  const [archiveTarget, setArchiveTarget] = useState<CaptureListItem | null>(null);
   const [archiveRoot, setArchiveRoot] = useState('');
   const [archiveSubpath, setArchiveSubpath] = useState('');
   const [archiveReason, setArchiveReason] = useState('');
@@ -755,7 +788,7 @@ export function useDatasetsState(): DatasetsState {
   });
 
   const addMutation = useMutation({
-    mutationFn: (capture: Capture) =>
+    mutationFn: (capture: CaptureListItem) =>
       addDatasetMember(selectedDatasetId ?? '', capture.capture_id),
     onSuccess: async (member) => {
       await invalidateDatasets(member.dataset_id);
@@ -841,7 +874,7 @@ export function useDatasetsState(): DatasetsState {
   // citing something that is no longer here. Offering the control anyway would
   // be offering a guaranteed failure.
   const canArchive = useCallback(
-    (capture: Capture) =>
+    (capture: CaptureListItem) =>
       archiveEnabled &&
       (capture.memberships ?? []).length === 0 &&
       availabilityOf(capture).usable,
@@ -868,7 +901,7 @@ export function useDatasetsState(): DatasetsState {
       : '';
 
   const archiveMutation = useMutation({
-    mutationFn: (capture: Capture) =>
+    mutationFn: (capture: CaptureListItem) =>
       archiveCapture(capture.capture_id, {
         destination: archiveDestination,
         operator: capture.operator ?? null,
@@ -888,7 +921,7 @@ export function useDatasetsState(): DatasetsState {
     },
   });
 
-  const openArchive = useCallback((capture: Capture) => {
+  const openArchive = useCallback((capture: CaptureListItem) => {
     setArchiveTarget(capture);
     setArchiveSubpath('');
     setArchiveReason('');
@@ -1030,7 +1063,16 @@ export function useDatasetsState(): DatasetsState {
   // one owner); this echo mirrors its sanitisation (views.py) so the dialog
   // cannot promise a path the server would spell differently.
   const sanitizeComponent = (value: string | null | undefined, fallback: string) => {
-    const text = (value ?? '').trim().replace(/[/\\\0]/g, '_');
+    // Mirrors `views.sanitize_component`'s `_UNSAFE` — separators, NUL, the
+    // rest of the C0 range and DEL. The control characters matter here for a
+    // second reason beyond matching: they are INVISIBLE in this prefill (a
+    // newline renders as a space, DEL as nothing), so an operator cannot see
+    // that the path they are being shown is not the path the server will make.
+    // The control characters ARE the subject here: this class exists to
+    // remove them, so the rule's usual concern — one typed into a pattern by
+    // accident — is the opposite case.
+    // eslint-disable-next-line no-control-regex
+    const text = (value ?? '').trim().replace(/[/\\\x00-\x1f\x7f]/g, '_');
     return text === '' || text === '.' || text === '..' ? fallback : text;
   };
   const datasetArchiveFinalDir =

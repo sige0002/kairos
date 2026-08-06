@@ -81,7 +81,7 @@ logger = logging.getLogger("kairos")
 # found in the field, not by tests, because tests only ever see fresh schemas.
 # The rebuild is the designed absorption path; refusing to bump is how it is
 # bypassed by accident.
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 CATALOG_DIRNAME = "catalog"
 TEMPLATES_SIDECAR = "validation_templates.json"
@@ -296,8 +296,8 @@ CREATE TABLE IF NOT EXISTS batches (
     seq               INTEGER PRIMARY KEY AUTOINCREMENT,
     batch_id          TEXT NOT NULL UNIQUE,
     robot             TEXT,
-    project           TEXT NOT NULL,
-    task              TEXT NOT NULL,
+    project           TEXT,
+    task              TEXT,
     condition         TEXT,
     operator          TEXT,
     target_episodes   INTEGER NOT NULL DEFAULT 30,
@@ -309,6 +309,10 @@ CREATE TABLE IF NOT EXISTS batches (
     -- decremented, so "N / 30" keeps describing what was captured even after a
     -- later exclude or delete.
     episodes_recorded INTEGER NOT NULL DEFAULT 0,
+    -- 1 when the counter above was reconstructed by a rebuild and is therefore
+    -- a lower bound (§8.2 rule 6): review saves are events, and a rebuild can
+    -- only count the recordings still on disk that name this batch.
+    episodes_recorded_is_floor INTEGER NOT NULL DEFAULT 0,
     batch_seq         INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_batches_seq ON batches (seq DESC);
@@ -730,7 +734,12 @@ class CaptureStore:
         return self._capture_from_row(row) if row is not None else None
 
     def save_review_cas(
-        self, capture_id: str, *, base_revision: int, fields: dict[str, Any]
+        self,
+        capture_id: str,
+        *,
+        base_revision: int,
+        fields: dict[str, Any],
+        renumber_index: bool = False,
     ) -> bool:
         """Step 3 of §4.1: update the review columns **only if unchanged**.
 
@@ -744,13 +753,40 @@ class CaptureStore:
         this row rejected. The caller restamps it from the winning row rather
         than leaving it: §8 rebuilds the catalog from the sidecars, so a file
         left disagreeing with the database would outlive the 409.
+
+        *renumber_index* turns ``index_in_batch`` from a value into a request:
+        the contract calls it a client HINT, and this is where the hint is
+        resolved against everything else in the batch. The caller sets it only
+        when the request actually offered a number to a batch. Read the row
+        afterwards for what was stored — the whole point is that it may not be
+        what was asked for.
         """
         unknown = set(fields) - _REVIEW_COLUMNS
         if unknown:
             raise KeyError(f"Not review fields: {sorted(unknown)}")
-        assignments = ", ".join(f"{name} = ?" for name in fields)
-        prefix = f"{assignments}, " if assignments else ""
         with self._conn() as conn:
+            if renumber_index:
+                # BEGIN IMMEDIATE takes the write lock before the scan, so the
+                # number is allocated by the DATABASE rather than by this
+                # process's lock. That matters more here than it does for
+                # ``begin_dataset_archive`` (which documents the opposite
+                # trade): the value being handed out is printed on the strip
+                # chip, the Review row and every "episode #N" in a delete
+                # dialog, so two orchestrators over one data dir issuing one
+                # number is visible to an operator rather than theoretical.
+                # Scoped to this statement — no other caller of ``_conn``
+                # changes discipline.
+                if not conn.in_transaction:
+                    conn.execute("BEGIN IMMEDIATE")
+                fields = dict(fields)
+                fields["index_in_batch"] = self._free_index(
+                    conn,
+                    capture_id,
+                    batch_id=fields["batch_id"],
+                    hint=fields["index_in_batch"],
+                )
+            assignments = ", ".join(f"{name} = ?" for name in fields)
+            prefix = f"{assignments}, " if assignments else ""
             cur = conn.execute(
                 f"UPDATE captures SET {prefix}review_revision = ?, updated_at = ? "
                 "WHERE capture_id = ? AND review_revision = ?",
@@ -763,6 +799,33 @@ class CaptureStore:
                 ),
             )
         return cur.rowcount > 0
+
+    @staticmethod
+    def _free_index(
+        conn: sqlite3.Connection, capture_id: str, *, batch_id: str, hint: int
+    ) -> int:
+        """*hint* if this batch has it free, else the next number above them all.
+
+        **Retired numbers are not reissued.** Tombstones are counted as holders
+        (no state filter), because a capture deleted in Review is still the
+        thing an operator, a ledger line and an archived folder call "#3" — and
+        the same rule the dataset display index settled on under E-29. So the
+        replacement goes above the high-water mark rather than into the gap.
+
+        Called with the write lock held, so the maximum it reads cannot grow
+        before the UPDATE that follows it.
+        """
+        row = conn.execute(
+            "SELECT MAX(index_in_batch) AS high, "
+            "SUM(index_in_batch = ?) AS taken FROM captures "
+            "WHERE batch_id = ? AND capture_id != ? AND index_in_batch IS NOT NULL",
+            (hint, batch_id, capture_id),
+        ).fetchone()
+        if not row["taken"]:
+            return hint
+        # ``high`` is the maximum over every OTHER row, so high + 1 is free
+        # whatever this row currently holds — it is about to be overwritten.
+        return int(row["high"]) + 1
 
     def delete_capture_row(self, capture_id: str) -> bool:
         """Remove a capture row outright.
@@ -1506,6 +1569,35 @@ class CaptureStore:
                 raise KeyError(batch_id)
         return self.get_batch_or_raise(batch_id)
 
+    def rebuild_episodes_recorded(self, batch_id: str) -> int:
+        """Set the counter to how many recordings name this batch. Returns it.
+
+        Called only by the ledger replay. ``episodes_recorded`` counts review
+        saves — an event — and §8 restores facts, so a rebuild has nothing to
+        replay it from and the batch used to come back at 0 while its episodes
+        sat on disk: Collect then showed ``0 / 30`` for a finished batch.
+
+        Counting the captures that name the batch is the best available answer
+        and is knowably a FLOOR, so the row is marked as one. Two things it
+        cannot see: a capture reviewed in and later deleted (its record.json
+        went with it), and a capture reviewed more than once (which the live
+        counter also only counts once). Tombstones ARE counted — the row
+        survives a delete and it did have a review — so the undercount is
+        narrower than "everything deleted".
+        """
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM captures WHERE batch_id = ?",
+                (batch_id,),
+            ).fetchone()
+            counted = int(row["n"] or 0)
+            conn.execute(
+                "UPDATE batches SET episodes_recorded = ?, "
+                "episodes_recorded_is_floor = 1 WHERE batch_id = ?",
+                (counted, batch_id),
+            )
+        return counted
+
     def increment_episodes_recorded(self, batch_id: str) -> None:
         """Bump the monotone recorded counter (a no-op for an unknown batch)."""
         with self._conn() as conn:
@@ -1926,7 +2018,27 @@ class CaptureStore:
         applied = 0
         with self._conn() as conn:
             for row in captures:
-                self._upsert_rebuilt_capture(conn, row, now)
+                try:
+                    self._upsert_rebuilt_capture(conn, row, now)
+                except sqlite3.IntegrityError as exc:
+                    # The upsert resolves a ``capture_id`` conflict; ``run_id``
+                    # is a SECOND unique index and nothing here can merge on
+                    # it. Two captures on disk sharing a display name is data
+                    # this process did not choose and cannot refuse — but
+                    # letting it out of here aborts the whole pass, and this
+                    # runs from the periodic reconciler, so one duplicate name
+                    # would stop adoption, the incoming sweep, the trash reaper
+                    # and the views prune for good. The capture keeps whatever
+                    # row it already had (or none) and is reported.
+                    logger.error(
+                        "rebuild could not write a capture row; skipped",
+                        extra={
+                            "capture_id": row.capture_id,
+                            "run_id": row.run_id,
+                            "error": str(exc),
+                        },
+                    )
+                    continue
                 applied += 1
             for replica in replicas:
                 conn.execute(
@@ -1980,6 +2092,13 @@ class CaptureStore:
             "archive_destination": row.archive_destination,
             "updated_at": now,
         }
+        if row.quick_check is not None:
+            # Only when the sidecar HAD one. Absent means "this capture predates
+            # quick_check.json, or settlement never ran, or the file was
+            # truncated" — none of which is evidence that a verdict the row
+            # already holds is wrong, and blanking it would make a reconcile
+            # pass over an older store erase the very thing §4.2 added.
+            columns["quick_check"] = json.dumps(row.quick_check)
         if row.review_from_sidecar:
             columns.update(
                 {
@@ -2221,6 +2340,7 @@ class CaptureStore:
             created_at=row["created_at"],
             ended_at=row["ended_at"],
             episodes_recorded=row["episodes_recorded"],
+            episodes_recorded_is_floor=bool(row["episodes_recorded_is_floor"]),
             batch_seq=row["batch_seq"],
         )
 

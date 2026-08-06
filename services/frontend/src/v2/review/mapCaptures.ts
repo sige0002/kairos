@@ -23,12 +23,12 @@
 // neither was wrong-looking. A capture the server gave no index has no episode
 // number, and the row renders "—" like every other unknown.
 
-import type { Capture } from '../../api/types';
+import type { CaptureListItem } from '../../api/types';
 import { displayQuality, displayTaskResult, formatBatchLabel } from '../episodeChips';
 import { serverTransferPhase } from './transfer';
 import type { DisplayQuality, DisplayTaskResult, EpisodeRow } from './types';
 
-/** Capture states that can be reviewed: finished, one way or another. */
+/** CaptureListItem states that can be reviewed: finished, one way or another. */
 const REVIEWABLE = new Set(['completed', 'failed', 'interrupted']);
 
 /** Milliseconds between two ISO instants (undefined when indeterminate).
@@ -50,7 +50,7 @@ export type BatchSeqLookup = (batchId: string | null | undefined) => {
 } | null;
 
 export function mapCapturesToEpisodes(
-  captures: Capture[],
+  captures: CaptureListItem[],
   batchSeq: BatchSeqLookup = () => null,
 ): EpisodeRow[] {
   const reviewable = captures.filter((c) => REVIEWABLE.has(c.state));

@@ -1,8 +1,8 @@
 import { expect, test } from 'vitest';
 import { initialTransferSlot, serverTransferPhase, transferReducer } from './transfer';
-import type { Capture, ReplicaState } from '../../api/types';
+import type { CaptureListItem, ReplicaState } from '../../api/types';
 
-function capture(replicaState: ReplicaState | null): Capture {
+function capture(replicaState: ReplicaState | null): CaptureListItem {
   return {
     capture_id: 'c1',
     state: 'completed',

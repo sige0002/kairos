@@ -38,6 +38,7 @@ The cross-service source of truth that defines the **identity, placement, and du
 │   ├── metadata.yaml                  # produced by rosbag2. kairos does not modify it
 │   ├── object_manifest.json           # §3
 │   ├── record.json                    # §4 (absent until reviewed)
+│   ├── quick_check.json               # §4.2 (the stop-time verdict; absent until settled)
 │   └── recorder.log                   # moved here after finalise
 ├── objects/<capture_id>.failed.json   # a failed start that produced no bag (§3.4)
 ├── objects/<capture_id>.qos.yaml      # temporary file during recording (sibling)
@@ -136,6 +137,31 @@ rebuild reads this file too and creates a `state='failed'` row. The deletion pat
 - A global lock is not used for this (it would serialize every request across an fsync).
 - **System-originated rewrites** (re-deriving quality once quick_check has settled) go through the same path and advance `revision` (`quality_source=quick_check`). A client receiving a `409` as a result is **correct behavior**.
 - The side effects the old `POST /episodes` carried (the monotonic increment of `batches.episodes_recorded`, launching auto-pull) have been relocated to "**the first review save for that capture**".
+
+### 4.2 `quick_check.json` (the stop-time verdict sidecar)
+
+The quick_check verdict the orchestrator reaches at stop time is written to
+`objects/<capture_id>/quick_check.json`, **by settlement and before the row**. The contents are the
+API's `quick_check` object as-is (`verdict` / `layer0` / `layer1` / `elapsed_ms`). **Absent until
+settled.**
+
+**Why a third sidecar**: `object_manifest.json` is the recorder's account of what it wrote, and
+`record.json` is the operator's review. quick_check is **neither** — it is the orchestrator's own
+measurement of the sealed bag. It particularly cannot go in `record.json`: §4 spells revision 0 as
+"`record.json` does not exist", and settlement usually runs **before the first review**, so there is
+nothing to add a field to. Creating one at revision 1 would make the operator's first Save
+(`base_revision: 0`) fail the CAS.
+
+**Rebuild restores from this file.** When it is absent the value is `null` (displayed the same as
+never-run) and is **not fabricated**: re-measuring the bag at rebuild time would be a new
+measurement wearing an old timestamp. A capture recorded before this sidecar existed therefore does
+**not** get its verdict back — there is no migration (absorbed by rebuild, per §8). An unreadable
+file is treated as `null` too, and the capture itself is not lost (a derived file does not take the
+recording with it).
+
+A failed write does not stop settlement: the row still receives the verdict and a warning is
+logged. What is lost is only durability across a rebuild, which is no reason to withhold a verdict
+the operator is waiting for.
 
 ## 5. `lifecycle.jsonl` v2
 
@@ -295,7 +321,7 @@ Only these five — `recording` / `stopping` / `completed` / `interrupted` / `fa
 
 ### 8.2 rebuild (full reconstruction from the sidecars)
 
-**Inputs**: `objects/*/object_manifest.json`, `objects/*.failed.json`, `record.json`, `lifecycle.jsonl`. `jobs` is treated as volatile and is out of scope for rebuild. `validation_templates` and `plan_catalog` are duplicated into sidecars under `catalog/*.json` when saved, and restored by rebuild. A dataset's archive state (§6.1: `archiving` / `archived`, destination included) is restored by replaying the ledger.
+**Inputs**: `objects/*/object_manifest.json`, `objects/*.failed.json`, `record.json`, `quick_check.json` (§4.2), `lifecycle.jsonl`. `jobs` is treated as volatile and is out of scope for rebuild. `validation_templates` and `plan_catalog` are duplicated into sidecars under `catalog/*.json` when saved, and restored by rebuild. A dataset's archive state (§6.1: `archiving` / `archived`, destination included) is restored by replaying the ledger.
 
 **Conditions for rebuilding at startup**: the DB is absent / the schema version differs / an explicit request via `KAIROS_REBUILD`. It is not something that runs on every startup.
 
@@ -306,7 +332,7 @@ Only these five — `recording` / `stopping` / `completed` / `interrupted` / `fa
 3. **For tombstones, the ledger takes precedence over the manifest.**
 4. A 0-byte / unparsable manifest is **reported as CORRUPT** (treating it as "does not exist" is forbidden). **No `captures` row is created for that capture** — that manifest was the only thing that could say "what this capture is", so creating a row would be fabrication. Instead, two things are emitted: (a) an entry in the corrupt list (with the reason) and (b) a **replica row** with `state=corrupt`. This is so that the set of rows itself can say "the bytes are here, but their description is broken". As a consequence, joining `captures` to `replicas` leaves the corrupt replica with no counterpart — **that is exactly the set to repair**, so a reader has to tolerate this mismatch.
 5. Review fields follow the divergence rule of §4.1-4 (sidecar wins; the reverse direction is a warning).
-6. **`batches` rows are rebuilt from the ledger.** `batch_created` / `batch_updated` / `batch_ended` (§5) are authoritative, and `project` / `robot` / `condition` / `operator` / `target_episodes` / `batch_seq` / `status` all come back from them. The replay is **idempotent** — every value is read from the event rather than recomputed from the row, so `KAIROS_REBUILD=1` can be applied any number of times without `batch_seq` moving. **A ledger older than this event holds no `batch_created` lines at all**, so on those installations the batch rows still do not come back (neither an exception nor a failure: it falls through to the orphan report below). **This is a decision, not a gap**: the metadata only ever existed in `kairos.db`, so there is nothing to back-fill it from, and minting a batch that has the right id and no contents would show the operator a batch that exists and is blank rather than one that is honestly gone — a new wrong answer wearing the shape of a fix. So **batches created after this event survive; batches created before it do not**. `batch_id` / `index_in_batch` on the `captures` side are restored from `record.json` as before. **The only field that is not restored is `episodes_recorded`** — a monotone counter of review saves, which are events rather than facts, and the ledger records facts (the displayed `N / 30` can therefore go down after a rebuild). Where a capture points at a batch whose row did not come back, the rebuild reports it as a warning (visible in store health). **Ids are never reused** — a `batch_id` that a capture still names is treated as taken.
+6. **`batches` rows are rebuilt from the ledger.** `batch_created` / `batch_updated` / `batch_ended` (§5) are authoritative, and `project` / `robot` / `condition` / `operator` / `target_episodes` / `batch_seq` / `status` all come back from them. The replay is **idempotent** — every value is read from the event rather than recomputed from the row, so `KAIROS_REBUILD=1` can be applied any number of times without `batch_seq` moving. **A ledger older than this event holds no `batch_created` lines at all**, so on those installations the batch rows still do not come back (neither an exception nor a failure: it falls through to the orphan report below). **This is a decision, not a gap**: the metadata only ever existed in `kairos.db`, so there is nothing to back-fill it from, and minting a batch that has the right id and no contents would show the operator a batch that exists and is blank rather than one that is honestly gone — a new wrong answer wearing the shape of a fix. So **batches created after this event survive; batches created before it do not**. `batch_id` / `index_in_batch` on the `captures` side are restored from `record.json` as before. **`episodes_recorded` is the one field no event can restore** — a monotone counter of review saves, which are events rather than facts, and the ledger records facts. The replay therefore **recounts it from the capture rows still naming that batch** and sets `episodes_recorded_is_floor = 1` on the row. That figure is a **lower bound**: a capture that was reviewed in and later deleted took its `record.json` with it and cannot be counted (tombstone rows survive, so they are). Writing 0 was not even a lower bound — it was wrong — so it was changed. The displayed `N / 30` can still go down after a rebuild, but now the fact that it can is machine-readable. Where a capture points at a batch whose row did not come back, the rebuild reports it as a warning (visible in store health). **Ids are never reused** — a `batch_id` that a capture still names is treated as taken.
 
 ### 8.3 Periodic reconciler
 

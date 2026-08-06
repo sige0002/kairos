@@ -10,7 +10,7 @@
 // server speaks `not_usable`, the operator reads "Not usable", and letting the
 // wire format leak into table cells is how the two drift.
 
-import type { Capture, CaptureState, ReviewStatus } from '../../api/types';
+import type { CaptureListItem, CaptureState, ReviewStatus } from '../../api/types';
 
 export type DisplayQuality = 'Good' | 'Needs review' | 'Not usable';
 export type DisplayTaskResult = 'Success' | 'Failure';
@@ -80,7 +80,7 @@ export interface EpisodeRow {
   /** The capture this row was built from — the source for the availability
    *  chip, the deletion dialogs (which are obliged to state count and bytes)
    *  and the detail panel, so none of them re-derives or re-fetches it. */
-  capture: Capture;
+  capture: CaptureListItem;
 }
 
 /** An EpisodeRow plus the session state layered on top: the operator's

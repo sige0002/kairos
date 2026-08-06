@@ -111,6 +111,7 @@ export function CollectScreen() {
     streamFailed: false,
     streamsDown: 0,
     streamFault: null,
+    streamsNoVideo: 0,
     framesStale: false,
     silentTopics: 0,
     unmonitoredTopics: 0,

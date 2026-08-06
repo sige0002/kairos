@@ -10,7 +10,7 @@
 import type { JSONSchema } from '../../schema/jsonSchema';
 import type {
   BatchSummary,
-  Capture,
+  CaptureListItem,
   ValidationOption,
   ValidationPreset,
 } from '../../api/types';
@@ -33,13 +33,13 @@ const SELECT_CLASS =
 /** What to call a capture on screen. `run_id` is display-only (§1) and can be
  *  absent — a capture pulled from another host may have none — in which case
  *  the capture_id it is actually keyed by is shown rather than invented. */
-export function captureLabel(capture: Pick<Capture, 'capture_id' | 'run_id'>): string {
+export function captureLabel(capture: Pick<CaptureListItem, 'capture_id' | 'run_id'>): string {
   return capture.run_id || capture.capture_id;
 }
 
 /** A capture option's text: its name, and for one that cannot be validated from
  *  here, the §8 state standing in the way. */
-function captureOptionLabel(capture: Capture): string {
+function captureOptionLabel(capture: CaptureListItem): string {
   const availability = availabilityOf(capture);
   return availability.usable
     ? captureLabel(capture)
@@ -80,7 +80,7 @@ export function ParamsPanel({
   onParamsChange: (next: Record<string, unknown>) => void;
   templateOptions: ValidationOption[];
   /** Terminal captures, newest first — every one of them a possible target. */
-  captures: Capture[];
+  captures: CaptureListItem[];
   capturesLoading: boolean;
   /** True when the capture sweep stopped before the end of the catalog, so the
    *  options below — and their counts — are of what was fetched. */
@@ -92,7 +92,7 @@ export function ParamsPanel({
   targetId: string;
   onTargetChange: (id: string) => void;
   /** The capture `targetId` names, when it names one (not "all" or a batch). */
-  selectedCapture: Capture | null;
+  selectedCapture: CaptureListItem | null;
   /** Why the selected target cannot be validated from this host, when it can't. */
   targetNote?: string;
   onRun: () => void;

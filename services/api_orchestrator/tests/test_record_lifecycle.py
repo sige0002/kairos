@@ -251,11 +251,24 @@ class TestStop:
         # Model a start whose row never committed: the recorder is writing and
         # nothing here claims to be active. Reporting success would send the
         # operator on while the bag keeps growing.
+        #
+        # This fake writes NO sidecar for that id, so there is nothing on disk
+        # to reconstruct the capture from (§8 rule 4) — which is what makes the
+        # refusal the right answer here rather than the recovery E-17 added for
+        # the case where the manifest IS there.
         fake_recorder.state = "recording"
         fake_recorder.run_id = "run_orphan"
         fake_recorder.capture_id = "01920000-0000-7000-8000-0000000000bb"
         response = client.post("/api/v1/record/stop")
-        assert response.status_code == 404  # nothing to report
+        # Was a 404 whose code (`no_captures`) came from the empty-store
+        # fallback rather than from any decision about this capture — the same
+        # fallback that, with one earlier take in the store, answered 200 and
+        # named it (E-17). The refusal is now about THIS capture and says so.
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "stop_capture_unfiled"
+        assert response.json()["error"]["details"]["capture_id"] == (
+            fake_recorder.capture_id
+        )
         assert fake_recorder.stop_call_count == 1
 
 

@@ -26,7 +26,7 @@ import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import type { QueryClient } from '@tanstack/react-query';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
-import type { Capture, Dataset, DatasetMember, ReplicaState } from '../../api/types';
+import type { CaptureListItem, Dataset, DatasetMember, ReplicaState } from '../../api/types';
 import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
 import { DatasetsScreen } from './DatasetsScreen';
 import { datasetTestId, memberTestId } from './data';
@@ -34,7 +34,7 @@ import { datasetTestId, memberTestId } from './data';
 interface Backend {
   datasets: Dataset[];
   members: DatasetMember[];
-  captures: Capture[];
+  captures: CaptureListItem[];
   archiveRoots: string[];
   /** When set, POST /datasets/{id}/members answers with this envelope. */
   addMemberError: { status: number; code: string; message: string } | null;
@@ -42,7 +42,7 @@ interface Backend {
   calls: string[];
 }
 
-function capture(over: Partial<Capture> = {}): Capture {
+function capture(over: Partial<CaptureListItem> = {}): CaptureListItem {
   return {
     capture_id: over.capture_id ?? 'cap-1',
     state: over.state ?? 'completed',
@@ -52,7 +52,7 @@ function capture(over: Partial<Capture> = {}): Capture {
   };
 }
 
-function replica(state: ReplicaState | null): Partial<Capture> {
+function replica(state: ReplicaState | null): Partial<CaptureListItem> {
   return {
     replica: state ? { instance_id: 'inst-1', state } : null,
     digest_state: state === 'present_verified' ? 'complete' : 'pending',
@@ -139,7 +139,7 @@ function mockApi(seed: Partial<Backend> = {}): Backend {
     ...d,
     member_count: backend.members.filter((m) => m.dataset_id === d.dataset_id).length,
   });
-  const withMemberships = (c: Capture): Capture => ({
+  const withMemberships = (c: CaptureListItem): CaptureListItem => ({
     ...c,
     memberships: backend.members
       .filter((m) => m.capture_id === c.capture_id)

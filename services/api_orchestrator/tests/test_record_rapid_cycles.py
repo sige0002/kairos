@@ -25,7 +25,7 @@ from __future__ import annotations
 import time
 
 from api_orchestrator.store import CaptureStore
-from conftest import FakeRecorder
+from conftest import FakeRecorder, reconcile, run_digests
 from fastapi.testclient import TestClient
 
 CYCLES = 40
@@ -143,3 +143,116 @@ def test_forty_cycles_leave_no_per_recording_state_behind(
     # stop. Anything left over is one recording's worth of per-topic counters
     # per cycle, held until the process exits.
     assert service._record_baselines == {}
+
+
+def test_forty_cycles_in_one_batch_number_the_episodes_one_to_forty(
+    client: TestClient, fake_recorder: FakeRecorder
+) -> None:
+    """The numbering an operator actually sees, at shift scale.
+
+    The loop above pins ``run_id``/``capture_id`` uniqueness, which is identity.
+    ``index_in_batch`` is the DISPLAY number — the strip chip, the Review row,
+    the "episode #N" in a delete dialog — and it is allocated by a different
+    mechanism (the store resolves the client's hint, E-7). Forty of them in one
+    batch is where a gap or a repeat would show up, and neither the rapid-cycle
+    loop (it creates no batch) nor the collision test (two captures) covers it.
+    """
+    created = client.post(
+        "/api/v1/batches",
+        json={"project": "p", "task": "pick", "target_episodes": CYCLES},
+    )
+    assert created.status_code == 201, created.text
+    batch_id = created.json()["batch_id"]
+
+    for index in range(1, CYCLES + 1):
+        started = client.post("/api/v1/record/start", json={"topics": TOPICS})
+        assert started.status_code == 200, started.text
+        capture_id = started.json()["capture_id"]
+        assert client.post("/api/v1/record/stop").status_code == 200
+        saved = client.patch(
+            f"/api/v1/captures/{capture_id}/review",
+            json={
+                "base_revision": 0,
+                "task_result": "success",
+                "review_status": "adopted",
+                "batch_id": batch_id,
+                "index_in_batch": index,
+            },
+        )
+        assert saved.status_code == 200, saved.text
+    _await_settlement(client)
+
+    detail = client.get(f"/api/v1/batches/{batch_id}")
+    assert detail.status_code == 200, detail.text
+    body = detail.json()
+    numbers = sorted(c["index_in_batch"] for c in body["captures"])
+    assert numbers == list(range(1, CYCLES + 1))
+    assert body["episode_count"] == CYCLES
+    # The monotone counter the coverage display reads. It counts first review
+    # saves, so forty recordings each saved once must land on forty.
+    assert body["episodes_recorded"] == CYCLES
+
+
+def test_forty_cycles_do_not_accumulate_open_file_descriptors(
+    client: TestClient, fake_recorder: FakeRecorder
+) -> None:
+    """The literal reading of "handle accumulation" in the adopted scenario.
+
+    The sibling test above pins the orchestrator's own per-recording
+    bookkeeping, which is memory. This counts OS handles: a sqlite connection
+    left open per cycle, an httpx connection per stop, a sidecar written
+    without closing — none of which show up in ``RecordService`` at all, and
+    all of which end a long shift as "too many open files".
+
+    Digest and reconcile run inside the loop because they are the paths that
+    open bags and take leases; the three existing tests run neither, so the
+    configuration that actually accumulates handles was never driven.
+
+    The tolerance is for churn outside this loop (a lazily opened log stream,
+    an arena the allocator grew), not for a per-cycle leak: forty cycles that
+    each leaked even one handle would be forty over.
+    """
+    import os
+
+    def open_handles() -> int:
+        return len(os.listdir("/proc/self/fd"))
+
+    hub = client.app.state.event_hub
+    # Warm up: the first cycle opens whatever is opened once (the recorder's
+    # connection pool, the bag reader's buffers) and would otherwise read as a
+    # leak with no way to tell the difference.
+    client.post("/api/v1/record/start", json={"topics": TOPICS})
+    client.post("/api/v1/record/stop")
+    _await_settlement(client)
+    run_digests(client)
+    reconcile(client)
+
+    before = open_handles()
+    subscribers_before = len(hub._subscribers)
+
+    for _ in range(CYCLES):
+        assert (
+            client.post("/api/v1/record/start", json={"topics": TOPICS}).status_code
+            == 200
+        )
+        assert client.post("/api/v1/record/stop").status_code == 200
+    _await_settlement(client)
+    run_digests(client)
+    reconcile(client)
+
+    after = open_handles()
+    assert after - before <= 5, (
+        f"{after - before} file descriptors accumulated over {CYCLES} cycles "
+        f"({before} -> {after})"
+    )
+    # An SSE publisher that registered a subscriber per record_status event
+    # would grow the fan-out set forever while every send got slower.
+    assert len(hub._subscribers) == subscribers_before
+    # The digest queue is work, not a ledger: everything queued by the loop has
+    # to have been drained by the run above.
+    assert (
+        client.app.state.capture_store.captures_needing_digest(
+            client.app.state.instance_id
+        )
+        == []
+    )

@@ -1,8 +1,8 @@
 import { expect, test } from 'vitest';
 import { mapCapturesToEpisodes } from './mapCaptures';
-import type { Capture, CaptureState } from '../../api/types';
+import type { CaptureListItem, CaptureState } from '../../api/types';
 
-function capture(partial: Partial<Capture> & { capture_id: string }): Capture {
+function capture(partial: Partial<CaptureListItem> & { capture_id: string }): CaptureListItem {
   return {
     state: 'completed',
     review_status: 'pending',

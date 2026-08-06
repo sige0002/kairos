@@ -234,6 +234,23 @@ export interface CameraSummaryInput {
    *  contents are identical, pushing state and re-rendering for a report that
    *  carries no news, which is the one thing that comparison exists to stop. */
   streamFault: StreamFailure | 'mixed' | null;
+  /**
+   * Panes that have been negotiating past `NO_VIDEO_AFTER_MS` without ever
+   * carrying a frame.
+   *
+   * A SEPARATE PREDICATE from `streamsDown`, and that separation is the point.
+   * `streamsDown` counts panes that REPORTED a failure, so the row's green OK
+   * was derived from the absence of a failure report rather than the presence
+   * of video. Measured against a real stack (E-37, Batch D): with the media
+   * path broken but signaling healthy, the peer connection never reaches
+   * `failed` — ICE simply never completes — so nothing was ever reported, and
+   * the row read "2 cameras OK" for 150 seconds while both <video> elements sat
+   * at 0x0 with readyState 0.
+   *
+   * This counts the evidence directly: no video, for longer than connecting
+   * takes.
+   */
+  streamsNoVideo: number;
   silentTopics: number;
   unmonitoredTopics: number;
   framesStale: boolean;
@@ -275,7 +292,14 @@ function streamFaultReason(fault: StreamFailure | 'mixed' | null): string | null
  * stale-frame report from the main tile.
  */
 export function cameraSummary(input: CameraSummaryInput): CameraSummary {
-  const { totalCameras, streamsDown, silentTopics, unmonitoredTopics, framesStale } = input;
+  const {
+    totalCameras,
+    streamsDown,
+    streamsNoVideo,
+    silentTopics,
+    unmonitoredTopics,
+    framesStale,
+  } = input;
   if (totalCameras === 0) return { value: 'none open', chip: '—', tone: 'gray' };
   const gap = unmonitoredTopics > 0 ? ` · ${unmonitoredTopics} not monitored` : '';
 
@@ -298,6 +322,24 @@ export function cameraSummary(input: CameraSummaryInput): CameraSummary {
         'just the main one. The reason comes from where the connection failed: ' +
         'the streamer not answering is a service to restart, a dropped ' +
         'connection is the network between here and it.',
+      chip: 'CHECK',
+      tone: 'amber',
+    };
+  }
+  // After the reported failures, because a pane that named its cause is more
+  // use than one that has not finished trying. Says only what is known: no
+  // frames have arrived and it is still trying. Deliberately NO typed reason —
+  // signaling answered, so this is not `signaling`; the peer connection has not
+  // failed, so it is not `peer`; naming one would be a guess in the shape of a
+  // diagnosis, which is the rule the mixed-cause case already follows.
+  if (streamsNoVideo > 0) {
+    return {
+      value: `${streamsNoVideo} of ${totalCameras} cameras: no video — still connecting${gap}`,
+      title:
+        'These panes have been negotiating longer than connecting normally ' +
+        'takes and have never carried a frame. Why is not established yet: ' +
+        'the streamer answered, and the connection has not reported a failure ' +
+        '— it simply has not delivered video.',
       chip: 'CHECK',
       tone: 'amber',
     };

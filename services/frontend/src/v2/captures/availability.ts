@@ -21,7 +21,7 @@
 //     capture with zero bytes or zero messages passes it, and reading a plain
 //     green "verified" there is how an empty recording gets shipped.
 
-import type { Capture, DigestState, ReplicaState } from '../../api/types';
+import type { CaptureListItem, DigestState, ReplicaState } from '../../api/types';
 import type { Tone } from '../../components/ui';
 
 export type AvailabilityKind =
@@ -73,7 +73,7 @@ const AWAITING_TRANSFER: Availability = {
  * not emptiness — an unreported count means unknown, and calling that empty
  * would be inventing the very fact the field is missing.
  */
-export function isCaptureEmpty(capture: Capture): boolean {
+export function isCaptureEmpty(capture: CaptureListItem): boolean {
   return capture.bytes === 0 || capture.message_count === 0;
 }
 
@@ -84,7 +84,7 @@ export function isCaptureEmpty(capture: Capture): boolean {
  * are here and readable, but nothing has hashed them yet, so the UI says what
  * it actually knows rather than borrowing the verified badge early.
  */
-export function availabilityOf(capture: Capture): Availability {
+export function availabilityOf(capture: CaptureListItem): Availability {
   const replica = capture.replica;
   if (!replica) return AWAITING_TRANSFER;
   return availabilityFor(
@@ -226,14 +226,14 @@ export function availabilityFor(
 
 /** True when a capture's bytes are readable on this host — the precondition
  *  every job, video preview and archive shares. */
-export function isCapturePresent(capture: Capture): boolean {
+export function isCapturePresent(capture: CaptureListItem): boolean {
   return availabilityOf(capture).usable;
 }
 
 /** True when the capture is on its way out or already gone (§7 tombstone).
  *  A screen holding one must stop offering live controls for it: the bytes are
  *  going or gone, and every action would be refused. */
-export function isTombstoned(capture: Capture): boolean {
+export function isTombstoned(capture: CaptureListItem): boolean {
   return (
     capture.state === 'delete_pending' ||
     capture.state === 'discarded' ||

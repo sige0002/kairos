@@ -45,6 +45,7 @@ from kairos_common.capture_sidecars import (
     TRASH_DIRNAME,
     validate_capture_id,
 )
+from kairos_common.errors import ApiError
 from kairos_common.ids import new_instance_id
 from kairos_common.time import utc_now_iso8601
 
@@ -405,6 +406,48 @@ def digest_input_files(capture_dir: Path) -> list[Path]:
             continue
         files.append(child)
     return files
+
+
+# NAME_MAX: the longest single directory entry every filesystem kairos targets
+# will accept, in bytes. Both a dataset's labels and a recording's
+# operator/task become one such entry under ``views/`` — the dataset's directly,
+# the recording's through ``COALESCE(d.operator, c.operator)`` when a dataset
+# leaves them unset — so one budget covers both.
+MAX_LABEL_BYTES = 255
+
+
+def reject_unusable_labels(**labels: str | None) -> None:
+    """Refuse a label that cannot be a directory entry (§6).
+
+    A limit the filesystem states in BYTES, which is why a character cap does
+    not express it: 200 emoji are 800 bytes and 200 kanji are 600.
+
+    Lives here rather than beside either caller because there are two of them
+    and they are the two ends of the same path: a dataset's own labels, and the
+    recording labels a dataset inherits when it sets none. Capping only the
+    first left the tree reachable through the second.
+
+    This is the door, not the only defence: ``views.regenerate`` still skips a
+    member it cannot place, because manifests rebuilt from an older
+    installation were never asked.
+    """
+    for field, value in labels.items():
+        if value is None:
+            continue
+        size = len(value.encode("utf-8"))
+        if size <= MAX_LABEL_BYTES:
+            continue
+        raise ApiError(
+            status_code=400,
+            code="label_too_long",
+            message=(
+                f"{field} is {size} bytes; it becomes a folder name under "
+                f"views/ and cannot exceed {MAX_LABEL_BYTES} bytes. Note that "
+                "this is a byte count: accented, kanji and emoji characters "
+                "each take several."
+            ),
+            details={"field": field, "bytes": size, "limit": MAX_LABEL_BYTES},
+        )
 
 
 def is_reserved_name(name: str) -> bool:

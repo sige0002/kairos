@@ -42,6 +42,7 @@ from kairos_common.capture_sidecars import (
     ObjectManifestV2,
     SidecarStatus,
     read_object_manifest,
+    write_quick_check,
 )
 from kairos_common.ids import is_uuid7
 from kairos_common.rebuild import ReplicaState
@@ -49,7 +50,7 @@ from kairos_common.rebuild import ReplicaState
 from api_orchestrator.captures import CaptureService
 from api_orchestrator.digest import DigestJob
 from api_orchestrator.events import EVENT_RECORD_STATUS, EventHub
-from api_orchestrator.layout import DataLayout
+from api_orchestrator.layout import DataLayout, reject_unusable_labels
 from api_orchestrator.models import (
     AUTO_STOP_PREFIX,
     Capture,
@@ -221,6 +222,11 @@ class RecordService:
         store already contains the failure) and then propagates — the caller
         armed nothing and must know.
         """
+        # Before the recorder is told anything. These labels reach views/ as
+        # path components whenever a dataset leaves its own unset
+        # (``COALESCE(d.operator, c.operator)``), so the dataset-side cap alone
+        # left the tree reachable from here (E-11).
+        reject_unusable_labels(operator=req.operator, task=req.task)
         req.operator = _default_meta(req.operator, _UNKNOWN_OPERATOR)
         req.task = _default_meta(req.task, _UNKNOWN_TASK)
         topics = self._resolve_topics(req.topics)
@@ -304,6 +310,11 @@ class RecordService:
         recorder named a capture; otherwise the failed-start sidecar it wrote is
         what the next rebuild turns into a row (§3.4).
         """
+        # Before the recorder is told anything. These labels reach views/ as
+        # path components whenever a dataset leaves its own unset
+        # (``COALESCE(d.operator, c.operator)``), so the dataset-side cap alone
+        # left the tree reachable from here (E-11).
+        reject_unusable_labels(operator=req.operator, task=req.task)
         req.operator = _default_meta(req.operator, _UNKNOWN_OPERATOR)
         req.task = _default_meta(req.task, _UNKNOWN_TASK)
         topics = self._resolve_topics(req.topics)
@@ -721,17 +732,90 @@ class RecordService:
             self._store.get_capture(capture_id) if capture_id is not None else None
         )
         if capture is None:
-            await self._recorder.stop()
-            logger.warning(
-                "stopped a recorder session that has no capture row",
-                extra={"capture_id": capture_id, "run_id": status.get("run_id")},
-            )
-            return None
+            if capture_id is None:
+                # An active recorder that will not say what it is recording.
+                # Nothing can be filed under an id we do not have, so the old
+                # behaviour (stop it and report the newest row) is all there is
+                # — but the caller no longer reports somebody else's take.
+                await self._recorder.stop()
+                logger.warning(
+                    "stopped a recorder session that named no capture",
+                    extra={"run_id": status.get("run_id")},
+                )
+                return None
+            return await self._recover_row(capture_id, status)
         logger.warning(
             "adopting a recording the catalog did not have as active",
             extra={"capture_id": capture.capture_id, "row_state": str(capture.state)},
         )
         return capture
+
+    async def _recover_row(self, capture_id: str, status: dict[str, Any]) -> Capture:
+        """Rebuild the row for a live capture the catalog lost, so Stop can finish.
+
+        This is the ``kairos.db`` deleted mid-recording case (E-17). §8's rule 1
+        deliberately leaves a live capture out of the rebuild — its directory
+        has no terminal manifest, and adopting it would invent a finished
+        recording out of one still being written — so after the restart the
+        recorder is writing and no row claims to be active.
+
+        Recreating the row here, from the manifest the recorder itself wrote,
+        puts the capture back on the ORDINARY stop path: the caller goes on to
+        mark it stopping, stop the recorder, sync the metadata, take the
+        terminal state from the sealed manifest and settle it. Reproducing that
+        sequence in a second place would be the way to have two answers for
+        what a finished recording is.
+
+        Nothing is invented. Every field comes from ``object_manifest.json``,
+        and a manifest that cannot be read means §8 rule 4 applies — there is
+        no capture to file, and saying so is the honest end.
+        """
+        read = read_object_manifest(self._layout.capture_dir(capture_id))
+        manifest = read.manifest if read.status is SidecarStatus.ok else None
+        if manifest is None or manifest.capture_id != capture_id:
+            # Stop it anyway: a recorder left writing is worse than either
+            # answer, and this is the one thing we can still do for the bag.
+            await self._recorder.stop()
+            logger.error(
+                "stopped a live recording that cannot be filed",
+                extra={"capture_id": capture_id, "sidecar": str(read.status)},
+            )
+            raise ApiError(
+                status_code=409,
+                code="stop_capture_unfiled",
+                message=(
+                    f"The recording was stopped, but {capture_id} could not be "
+                    "added to the catalog: its object_manifest.json is missing "
+                    "or unreadable, and a capture cannot be reconstructed "
+                    "without it. Anything on disk under "
+                    f"objects/{capture_id}/ is still there."
+                ),
+                details={"capture_id": capture_id, "run_id": status.get("run_id")},
+            )
+        logger.warning(
+            "rebuilding the row for a live capture the catalog had lost",
+            extra={"capture_id": capture_id, "manifest_state": manifest.state},
+        )
+        recovered = self._store.upsert_capture(
+            Capture(
+                capture_id=capture_id,
+                run_id=manifest.run_id,
+                source_instance_id=manifest.source_instance_id,
+                state=CaptureState.recording,
+                started_at=manifest.started_at,
+                operator=manifest.operator,
+                task=manifest.task,
+                robot=manifest.robot,
+                topics=[CaptureTopic.model_validate(t) for t in manifest.topics],
+            )
+        )
+        self._store.upsert_replica(
+            capture_id,
+            self._instance_id,
+            ReplicaState.present_unverified,
+            path=str(self._layout.capture_dir(capture_id)),
+        )
+        return recovered
 
     def _last_capture_or_idle(self) -> Capture:
         """The newest capture, for an idempotent stop with nothing active."""
@@ -1147,6 +1231,25 @@ class RecordService:
             # entitled to second-guess (see reconcile_quality).
             existing = self._store.get_capture(capture_id)
             revision_at_verdict = existing.review_revision if existing else 0
+            # Sidecar first, then the row — §8's ordering, because the row is an
+            # index of what is on disk. Without the file this verdict was the
+            # one thing in the store that "delete kairos.db and restart" could
+            # not bring back (E-17), and its absence renders as an empty space
+            # rather than as a loss.
+            try:
+                await asyncio.to_thread(
+                    write_quick_check, capture_dir, quick.model_dump(mode="json")
+                )
+            except OSError as exc:
+                # Not fatal and not silent. The verdict still reaches the row,
+                # so this session is unaffected; what is lost is durability
+                # across a rebuild, and that is worth a line in the log rather
+                # than withholding a verdict the operator is waiting for.
+                logger.warning(
+                    "quick_check settled but its sidecar could not be written; "
+                    "this verdict will not survive a catalog rebuild",
+                    extra={"capture_id": capture_id, "error": str(exc)},
+                )
             self._store.update_capture(capture_id, quick_check=quick)
             logger.info(
                 "quick_check settled",

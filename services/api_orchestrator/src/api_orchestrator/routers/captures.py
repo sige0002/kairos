@@ -38,7 +38,11 @@ from api_orchestrator.models import (
 router = APIRouter(prefix="/api/v1/captures", tags=["captures"])
 
 DEFAULT_LIMIT = 50
-MAX_LIMIT = 200
+# 1000, not 200: Datasets walks the whole store to build its tree, and at 200 a
+# 5,000-capture store cost 26 sequential round trips (E-27). The DEFAULT stays
+# 50 — a page an operator waits for should not become a 5,000-row response —
+# so this only widens what a client deliberately asking for everything may ask.
+MAX_LIMIT = 1000
 
 
 @router.get("", response_model=CaptureListResponse)

@@ -461,6 +461,7 @@ class CaptureService:
                 capture_id,
                 base_revision=request.base_revision,
                 fields={name: merged[name] for name in _REVIEW_FIELDS},
+                renumber_index=_offers_an_index(request, merged),
             )
             if not applied:
                 # Someone else won between our sidecar write and this CAS — the
@@ -480,6 +481,18 @@ class CaptureService:
                 raise _review_conflict(winner, request.base_revision)
 
             saved = self.get(capture_id)
+            if saved.index_in_batch != merged["index_in_batch"]:
+                # The hint collided and the store issued a different number.
+                # record.json still carries the hint, and §8 rebuilds the
+                # catalog from it — so a file left unamended puts the duplicate
+                # back the first time somebody deletes kairos.db. Same revision,
+                # so this is the same save finishing rather than a new one.
+                await asyncio.to_thread(
+                    _restore_record_from_row,
+                    capture_dir,
+                    saved,
+                    wrote_revision=revision,
+                )
 
         if request.base_revision == 0 and self._on_first_review is not None:
             # Outside the mutex: the first-review side effects (batch counter,
@@ -1426,6 +1439,27 @@ def _merge_review(capture: Capture, request: ReviewSaveRequest) -> dict[str, Any
         name: (getattr(request, name) if name in supplied else getattr(capture, name))
         for name in _REVIEW_FIELDS
     }
+
+
+def _offers_an_index(request: ReviewSaveRequest, merged: dict[str, Any]) -> bool:
+    """Whether this save is CLAIMING a number, rather than carrying one.
+
+    Only a request that explicitly sends ``index_in_batch`` alongside a batch is
+    offering a hint the store may overrule. Two cases are deliberately left out:
+
+    * a save that omits the field. Review's edits are exactly that — they patch
+      a failure_reason or a verdict, and the merge carries the existing number
+      through untouched. Re-resolving it there would let an unrelated edit
+      renumber an episode an operator is looking at, and would rewrite legacy
+      rows that have held a duplicate since before this rule existed.
+    * a number with no batch to be a number IN. Nothing collides, and there is
+      no roster to allocate from.
+    """
+    return (
+        "index_in_batch" in request.model_fields_set
+        and merged["index_in_batch"] is not None
+        and merged["batch_id"] is not None
+    )
 
 
 def _derive_quality(

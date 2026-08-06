@@ -56,7 +56,13 @@ KEEP_GENERATIONS = 2
 # and dataset names come from operators, so they are sanitized rather than
 # trusted: a name containing a slash would otherwise silently create an extra
 # directory level, and one containing ".." would escape views/ entirely.
-_UNSAFE = re.compile(r"[/\\\x00]")
+#
+# Control characters go too, though the kernel would accept them. This tree
+# exists to be read by things that are not this program — a file manager, a
+# training script's glob, a listing piped into `while read` — and a folder
+# whose name contains a newline or a tab breaks all of them while looking, in
+# any log or error message, like two folders or like nothing at all.
+_UNSAFE = re.compile(r"[/\\\x00-\x1f\x7f]")
 
 # One regeneration at a time, process-wide. Two callers reach this module from
 # two DIFFERENT threads: a dataset edit schedules a regeneration that runs via
@@ -216,17 +222,24 @@ def _regenerate(layout: DataLayout, entries: list[dict[str, Any]]) -> ViewsResul
         index = int(entry.get("display_index") or 0)
 
         parent = staging / operator / task / dataset_name
-        parent.mkdir(parents=True, exist_ok=True)
         link = parent / f"{index:03d}"
         # Relative, and counted from the link's own depth: the tree must stay
         # valid when the whole data directory is moved or bind-mounted at a
         # different path, which an absolute target would not survive.
+        #
+        # The mkdir is inside the guard, not above it. A label longer than
+        # NAME_MAX fails HERE rather than at the symlink (ENAMETOOLONG), and
+        # letting that escape breaks this function's central promise: the flip
+        # is at the end, so an exception mid-walk leaves ``views`` on the tree
+        # from before the change and every later regeneration hits the same
+        # row — one unusable label freezes the tree for every dataset, for
+        # good. Datasets are guarded on the way in, but a capture's own
+        # operator/task reach here through ``COALESCE`` in
+        # ``list_view_entries`` and are bounded by nothing.
         try:
+            parent.mkdir(parents=True, exist_ok=True)
             link.symlink_to(Path("../../../..") / OBJECTS_DIRNAME / capture_id)
         except OSError as exc:
-            # Two members cannot share a path once folders are disambiguated
-            # (display_index is unique within a dataset), so reaching this is a
-            # surprise — and still not a reason to throw the tree away.
             skipped.append(
                 f"{capture_id}: could not link at {operator}/{task}/"
                 f"{dataset_name}/{index:03d}: {exc}"

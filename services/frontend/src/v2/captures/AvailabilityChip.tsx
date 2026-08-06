@@ -4,13 +4,13 @@
 
 import { Badge } from '../../components/ui';
 import { availabilityOf, type Availability } from './availability';
-import type { Capture } from '../../api/types';
+import type { CaptureListItem } from '../../api/types';
 
 export function AvailabilityChip({
   capture,
   testId,
 }: {
-  capture: Capture;
+  capture: CaptureListItem;
   testId?: string;
 }) {
   const availability = availabilityOf(capture);
