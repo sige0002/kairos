@@ -76,21 +76,21 @@ def create_probe_app(*, subscriber: ProbeSubscriber | None = None) -> FastAPI:
         finally:
             await asyncio.to_thread(service.stop)
 
-    app = create_app(SERVICE_NAME, settings=settings)
+    # Readiness reflects that the subscriber node is up; live but not ready
+    # until then (e.g. ROS not reachable yet).
+    async def readyz(response: Response) -> dict[str, str]:
+        if not service.is_ready():
+            response.status_code = 503
+            return {"status": "not_ready"}
+        return {"status": "ready"}
+
+    app = create_app(SERVICE_NAME, settings=settings, readyz=readyz)
     app.router.lifespan_context = lifespan
     app.state.probe = service
 
-    # Replace create_app's always-ready /readyz with a subscriber-aware one
-    # (Starlette matches the first registered route, so drop the default first).
-    app.router.routes = [
-        route
-        for route in app.router.routes
-        if getattr(route, "path", None) != "/readyz"
-    ]
-
     @app.get("/")
     async def root() -> dict[str, str]:
-        return {"service": SERVICE_NAME, "stage": "ol-3.3"}
+        return {"service": SERVICE_NAME}
 
     @app.get("/topics", response_model=TopicsResponse)
     async def topics() -> TopicsResponse:
@@ -124,13 +124,6 @@ def create_probe_app(*, subscriber: ProbeSubscriber | None = None) -> FastAPI:
             _multi_sample_sse(service, topic, field_list, interval),
             media_type="text/event-stream",
         )
-
-    @app.get("/readyz", tags=["health"])
-    async def readyz(response: Response) -> dict[str, str]:
-        if not service.is_ready():
-            response.status_code = 503
-            return {"status": "not_ready"}
-        return {"status": "ready"}
 
     return app
 
