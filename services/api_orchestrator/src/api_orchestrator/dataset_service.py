@@ -37,6 +37,7 @@ from api_orchestrator.layout import (
     is_reserved_name,
     reject_unusable_labels,
 )
+from api_orchestrator.ledger_guard import append_or_503
 from api_orchestrator.models import (
     Dataset,
     DatasetDetail,
@@ -676,24 +677,18 @@ class DatasetService:
         self, kind: str, payload: dict[str, Any], *, capture_id: str | None = None
     ) -> None:
         """Append a dataset event; every kind is fatal on failure (§5)."""
-        try:
-            ledger_v2.append_with_slack_release(
-                self._layout.data_dir,
-                kind,
-                instance_id=self._instance_id,
-                capture_id=capture_id,
-                payload={k: v for k, v in payload.items() if v is not None},
-            )
-        except OSError as exc:
-            raise ApiError(
-                status_code=503,
-                code="ledger_unwritable",
-                message=(
-                    f"The lifecycle ledger could not be written ({exc}), so the "
-                    "dataset change was not applied. Datasets are recoverable "
-                    "only from this file, so it is not safe to proceed without it."
-                ),
-            ) from exc
+        append_or_503(
+            self._layout.data_dir,
+            kind,
+            instance_id=self._instance_id,
+            capture_id=capture_id,
+            payload={k: v for k, v in payload.items() if v is not None},
+            failure=lambda exc: (
+                f"The lifecycle ledger could not be written ({exc}), so the "
+                "dataset change was not applied. Datasets are recoverable "
+                "only from this file, so it is not safe to proceed without it."
+            ),
+        )
 
     def _reclaimable_index(self, dataset_id: str, capture_id: str) -> int | None:
         """The number this capture last held in this dataset, if any (§6).

@@ -63,12 +63,13 @@ from kairos_common.capture_sidecars import (
 )
 from kairos_common.ids import is_uuid7
 from kairos_common.rebuild import ReplicaState
-from kairos_common.time import utc_now_iso8601
+from kairos_common.time import parse_iso8601, utc_now_iso8601
 
 from api_orchestrator import fileops
 from api_orchestrator import layout as layout_mod
-from api_orchestrator.health import StoreHealth
+from api_orchestrator.health import StoreHealth, require_delete_available
 from api_orchestrator.layout import DataLayout
+from api_orchestrator.ledger_guard import append_or_503
 from api_orchestrator.models import (
     ArchivedFile,
     Capture,
@@ -784,25 +785,21 @@ class CaptureService:
             payload["reason"] = reason
         if capture.run_id:
             payload["run_id"] = capture.run_id
-        try:
-            ledger_v2.append_with_slack_release(
-                self._layout.data_dir,
-                _LEDGER_KIND[kind],
-                instance_id=self._instance_id,
-                capture_id=capture.capture_id,
-                payload=payload,
-            )
-            self.ensure_ledger_slack()
-        except OSError as exc:
-            raise ApiError(
-                status_code=503,
-                code="ledger_unwritable",
-                message=(
-                    "The lifecycle ledger could not be written, so the deletion "
-                    f"was not started: {exc}. Nothing was removed."
-                ),
-                details={"capture_id": capture.capture_id},
-            ) from exc
+        append_or_503(
+            self._layout.data_dir,
+            _LEDGER_KIND[kind],
+            instance_id=self._instance_id,
+            capture_id=capture.capture_id,
+            payload=payload,
+            failure=lambda exc: (
+                "The lifecycle ledger could not be written, so the deletion "
+                f"was not started: {exc}. Nothing was removed."
+            ),
+            details={"capture_id": capture.capture_id},
+        )
+        # Outside the guard on purpose: it never raises OSError (it logs and
+        # returns False), so it was only ever inside the old try by proximity.
+        self.ensure_ledger_slack()
 
     # ---- archive (§6) ------------------------------------------------------
 
@@ -956,25 +953,19 @@ class CaptureService:
         # anyone check the copy years later.
         if result.entries:
             payload["files"] = result.entries
-        try:
-            ledger_v2.append_with_slack_release(
-                self._layout.data_dir,
-                "capture_archived",
-                instance_id=self._instance_id,
-                capture_id=capture_id,
-                payload=payload,
-            )
-        except OSError as exc:
-            raise ApiError(
-                status_code=503,
-                code="ledger_unwritable",
-                message=(
-                    f"The archive copy at {target} succeeded but could not "
-                    f"be recorded in the ledger: {exc}. The source was NOT "
-                    "deleted; remove the copy or retry."
-                ),
-                details={"capture_id": capture_id},
-            ) from exc
+        append_or_503(
+            self._layout.data_dir,
+            "capture_archived",
+            instance_id=self._instance_id,
+            capture_id=capture_id,
+            payload=payload,
+            failure=lambda exc: (
+                f"The archive copy at {target} succeeded but could not "
+                f"be recorded in the ledger: {exc}. The source was NOT "
+                "deleted; remove the copy or retry."
+            ),
+            details={"capture_id": capture_id},
+        )
 
         self.finish_archived_member(capture_id, destination=str(target))
         await asyncio.to_thread(layout_mod.move_to_trash, self._layout, capture_id)
@@ -1074,7 +1065,7 @@ class CaptureService:
                 continue
             if self._store.dataset_memberships_for(capture.capture_id):
                 continue
-            started = _parse_iso8601(capture.started_at)
+            started = parse_iso8601(capture.started_at)
             if started is None or started >= cutoff:
                 continue
             size = layout_mod.dir_bytes(self._layout.capture_dir(capture.capture_id))
@@ -1131,15 +1122,8 @@ class CaptureService:
         reject_overlapping_destination(target, source, self._layout.data_dir)
 
     def _require_delete_available(self) -> None:
-        if self._health.delete_available:
-            return
-        raise ApiError(
-            status_code=503,
-            code="delete_unavailable",
-            message=(
-                "Deleting is not available on this deployment: "
-                f"{self._health.delete_unavailable_reason}"
-            ),
+        require_delete_available(
+            self._health, "Deleting is not available on this deployment"
         )
 
     @staticmethod
@@ -1529,17 +1513,6 @@ def _parse_cursor(cursor: str | None) -> int | None:
             code="invalid_cursor",
             message="cursor must be an opaque token from a prior page.",
         ) from exc
-
-
-def _parse_iso8601(value: str | None) -> datetime | None:
-    """Parse a UTC ISO8601 stamp (``None`` when absent or unparseable)."""
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(value)
-    except ValueError:
-        return None
-    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed
 
 
 __all__ = ["MAX_REAP_ATTEMPTS", "CaptureService", "UNFINALIZED_STATES"]

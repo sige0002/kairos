@@ -33,6 +33,7 @@ from typing import Any
 from kairos_common import ApiError, ledger_v2
 
 from api_orchestrator.layout import DataLayout
+from api_orchestrator.ledger_guard import append_or_503
 from api_orchestrator.models import Batch
 from api_orchestrator.store import BatchExistsError, CaptureStore
 
@@ -232,23 +233,17 @@ class BatchService:
     # ---- helpers -----------------------------------------------------------
 
     def _append(self, kind: str, payload: dict[str, Any]) -> None:
-        try:
-            ledger_v2.append_with_slack_release(
-                self._layout.data_dir,
-                kind,
-                instance_id=self._instance_id,
-                payload={k: v for k, v in payload.items() if v is not None},
-            )
-        except OSError as exc:
-            raise ApiError(
-                status_code=503,
-                code="ledger_unwritable",
-                message=(
-                    f"The lifecycle ledger could not be written ({exc}), so the "
-                    "batch change was not applied. A batch that is not in the "
-                    "ledger does not survive a rebuild, and its id stays taken."
-                ),
-            ) from exc
+        append_or_503(
+            self._layout.data_dir,
+            kind,
+            instance_id=self._instance_id,
+            payload={k: v for k, v in payload.items() if v is not None},
+            failure=lambda exc: (
+                f"The lifecycle ledger could not be written ({exc}), so the "
+                "batch change was not applied. A batch that is not in the "
+                "ledger does not survive a rebuild, and its id stays taken."
+            ),
+        )
 
 
 def _counter_warning(restored: list[str]) -> tuple[str, ...]:

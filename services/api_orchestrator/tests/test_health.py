@@ -20,12 +20,10 @@ def test_healthz(client: TestClient) -> None:
     assert resp.json() == {"status": "ok"}
 
 
-def test_root_reports_stage1(client: TestClient) -> None:
+def test_root_reports_service(client: TestClient) -> None:
     resp = client.get("/")
     assert resp.status_code == 200
-    body = resp.json()
-    assert body["service"] == "api_orchestrator"
-    assert body["stage"] == "stage1"
+    assert resp.json() == {"service": "api_orchestrator"}
 
 
 def test_runtime_config_shape(client: TestClient) -> None:

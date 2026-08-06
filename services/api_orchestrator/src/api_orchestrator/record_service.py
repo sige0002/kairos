@@ -46,6 +46,8 @@ from kairos_common.capture_sidecars import (
 )
 from kairos_common.ids import is_uuid7
 from kairos_common.rebuild import ReplicaState
+from kairos_common.record_meta import UNKNOWN_OPERATOR, UNKNOWN_TASK, default_meta
+from kairos_common.time import parse_iso8601
 
 from api_orchestrator.captures import CaptureService
 from api_orchestrator.digest import DigestJob
@@ -86,12 +88,6 @@ _BASELINE_TIMEOUT_S = 1.0
 # Bound on suffix-retries when an allocated run_id collides with an existing
 # row (same-second starts). One retry practically always suffices.
 _MAX_RUN_ID_ATTEMPTS = 50
-
-# Placeholders for empty session metadata. Unlike v1 these no longer key a
-# directory path — objects/<capture_id> carries no operator or task (§2) — but
-# they still keep every capture filterable and labelable in the UI.
-_UNKNOWN_OPERATOR = "unknown_operator"
-_UNKNOWN_TASK = "unknown_task"
 
 # The recorder's code for "the manifest is there and cannot be parsed" (§10).
 # It arrives as a 500 rather than a 404 precisely so it is not read as "no
@@ -227,8 +223,8 @@ class RecordService:
         # (``COALESCE(d.operator, c.operator)``), so the dataset-side cap alone
         # left the tree reachable from here (E-11).
         reject_unusable_labels(operator=req.operator, task=req.task)
-        req.operator = _default_meta(req.operator, _UNKNOWN_OPERATOR)
-        req.task = _default_meta(req.task, _UNKNOWN_TASK)
+        req.operator = default_meta(req.operator, UNKNOWN_OPERATOR)
+        req.task = default_meta(req.task, UNKNOWN_TASK)
         topics = self._resolve_topics(req.topics)
         async with self._lifecycle_lock:
             run_id = self._allocate_run_id()
@@ -315,8 +311,8 @@ class RecordService:
         # (``COALESCE(d.operator, c.operator)``), so the dataset-side cap alone
         # left the tree reachable from here (E-11).
         reject_unusable_labels(operator=req.operator, task=req.task)
-        req.operator = _default_meta(req.operator, _UNKNOWN_OPERATOR)
-        req.task = _default_meta(req.task, _UNKNOWN_TASK)
+        req.operator = default_meta(req.operator, UNKNOWN_OPERATOR)
+        req.task = default_meta(req.task, UNKNOWN_TASK)
         topics = self._resolve_topics(req.topics)
         async with self._lifecycle_lock:
             await self._verify_no_active_recording()
@@ -1440,11 +1436,6 @@ def _unique_run_id(store: CaptureStore, run_id: str) -> str:
     return f"{run_id}_{int(time.time())}"
 
 
-def _default_meta(value: str | None, default: str) -> str:
-    """Coerce empty/whitespace metadata to a stable placeholder."""
-    return value.strip() if value and value.strip() else default
-
-
 def _coerce_int(value: Any) -> int | None:
     if isinstance(value, bool):
         return None
@@ -1455,18 +1446,8 @@ def _coerce_int(value: Any) -> int | None:
     return None
 
 
-def _parse_iso8601(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(value)
-    except ValueError:
-        return None
-    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed
-
-
 def _iso_to_ns(value: str | None) -> int | None:
-    parsed = _parse_iso8601(value)
+    parsed = parse_iso8601(value)
     if parsed is None:
         return None
     return int(parsed.timestamp() * 1_000_000_000)

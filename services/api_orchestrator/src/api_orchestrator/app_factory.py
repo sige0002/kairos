@@ -25,20 +25,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, Request
-from fastapi.routing import APIRoute
 from kairos_common import (
     ApiError,
     Settings,
     create_app,
     get_settings,
     ledger_v2,
-    load_recording_config,
+    load_recording_config_or_none,
     load_stream_config,
     resolve_config_path,
 )
@@ -88,17 +87,25 @@ logger = logging.getLogger("kairos")
 SERVICE_NAME = "api_orchestrator"
 
 
+def _warn_recording_config(log: logging.Logger, path: Path, exc: Exception) -> None:
+    """Report an unusable RECORDING_CONFIG in the orchestrator's own wording."""
+    if isinstance(exc, FileNotFoundError):
+        log.warning("RECORDING_CONFIG not found", extra={"path": str(path)})
+    else:
+        log.warning("RECORDING_CONFIG invalid", extra={"error": str(exc)})
+
+
 def _load_recording_config(settings: Settings) -> RecordingConfig | None:
     """Load RECORDING_CONFIG if present; tolerate its absence in dev/tests."""
-    path = Path(resolve_config_path(settings.recording_config))
-    if not path.exists():
-        logger.warning("RECORDING_CONFIG not found", extra={"path": str(path)})
-        return None
-    try:
-        return load_recording_config(path)
-    except (ValueError, OSError) as exc:
-        logger.warning("RECORDING_CONFIG invalid", extra={"error": str(exc)})
-        return None
+    return load_recording_config_or_none(
+        resolve_config_path(settings.recording_config),
+        logger,
+        on_unavailable=_warn_recording_config,
+        # Wider than the default: a file that exists but cannot be read (a
+        # permission error, a directory in its place) is reported as absent
+        # like any other unusable config, rather than failing construction.
+        degrade_on=(OSError, ValueError),
+    )
 
 
 def _load_stream_config(settings: Settings) -> StreamConfig | None:
@@ -117,13 +124,12 @@ def _component_state(ok: bool) -> str:
     return "ok" if ok else "unreachable"
 
 
-def _override_readyz(
-    app: FastAPI,
+def _readyz_probe(
     recorder: RecorderClient,
     monitor: MonitorClient,
     streamer: StreamerClient,
-) -> None:
-    """Replace the skeleton ``/readyz`` with one that checks the downstreams.
+) -> Callable[[], Awaitable[dict[str, object]]]:
+    """Build the ``/readyz`` probe that checks the downstreams.
 
     The recorder gates readiness; monitor and streamer outages are degraded
     dependencies. The store's own condition is deliberately NOT folded in here:
@@ -132,13 +138,7 @@ def _override_readyz(
     designed to keep working through. ``GET /api/v1/store/health`` is where that
     lives instead.
     """
-    app.router.routes = [
-        r
-        for r in app.router.routes
-        if not (isinstance(r, APIRoute) and r.path == "/readyz")
-    ]
 
-    @app.get("/readyz", tags=["health"])
     async def readyz() -> dict[str, object]:
         recorder_ok = await recorder.healthz()
         monitor_ok = await monitor.healthz()
@@ -153,6 +153,8 @@ def _override_readyz(
                 "streamer": _component_state(streamer_ok),
             },
         }
+
+    return readyz
 
 
 def create_orchestrator_app(
@@ -208,7 +210,11 @@ def create_orchestrator_app(
         settings.config_dir, settings.config_local_dir, settings.robot
     )
 
-    app = create_app(SERVICE_NAME, settings=settings)
+    app = create_app(
+        SERVICE_NAME,
+        settings=settings,
+        readyz=_readyz_probe(recorder, monitor, streamer),
+    )
 
     async def on_first_review(capture: Capture) -> None:
         """The side effects §4.1 moved off the retired ``POST /episodes``.
@@ -402,7 +408,6 @@ def create_orchestrator_app(
     app.include_router(retention_router.router)
     app.include_router(transfer_router.router)
     app.include_router(imports_router.router)
-    _override_readyz(app, recorder, monitor, streamer)
 
     _register_root_and_config(app, settings)
     return app
@@ -533,7 +538,7 @@ def _register_root_and_config(app: FastAPI, settings: Settings) -> None:
 
     @app.get("/")
     async def root() -> dict[str, str]:
-        return {"service": SERVICE_NAME, "stage": "stage1"}
+        return {"service": SERVICE_NAME}
 
     @app.get("/api/v1/config")
     async def runtime_config(request: Request) -> dict[str, object]:

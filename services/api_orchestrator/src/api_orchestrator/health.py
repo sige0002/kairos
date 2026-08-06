@@ -29,6 +29,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from typing import Any
 
+from kairos_common.errors import ApiError
 from kairos_common.time import utc_now_iso8601
 
 logger = logging.getLogger("kairos")
@@ -233,6 +234,24 @@ class StoreHealth:
                 "last_reconcile_at": self._last_reconcile_at,
                 "last_reconcile": self._last_reconcile,
             }
+
+
+def require_delete_available(health: StoreHealth, lead: str) -> None:
+    """Refuse an operation that removes bytes when deletion is withdrawn (§2).
+
+    *lead* is the caller's own sentence — deleting and archiving withdraw for
+    the same reason but have to say so differently, since an operator asking to
+    archive has not asked to delete anything and needs to be told why the two
+    are the same request underneath. The reason is appended by this function so
+    a withdrawal always explains itself rather than just failing.
+    """
+    if health.delete_available:
+        return
+    raise ApiError(
+        status_code=503,
+        code="delete_unavailable",
+        message=f"{lead}: {health.delete_unavailable_reason}",
+    )
 
 
 @dataclass

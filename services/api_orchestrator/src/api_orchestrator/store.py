@@ -54,6 +54,7 @@ from kairos_common.rebuild import CaptureRow, ReplicaRow, ReplicaState
 from kairos_common.time import utc_iso8601_of, utc_now_iso8601
 
 from api_orchestrator import row_mappers
+from api_orchestrator.layout import read_json
 from api_orchestrator.models import (
     Batch,
     Capture,
@@ -1704,7 +1705,7 @@ class CaptureStore:
         if catalog is None:
             return restored
 
-        payload = _read_json(catalog / TEMPLATES_SIDECAR)
+        payload = read_json(catalog / TEMPLATES_SIDECAR)
         for item in (payload or {}).get("items", []):
             try:
                 template = ValidationTemplate.model_validate(item)
@@ -1723,7 +1724,7 @@ class CaptureStore:
                 )
             restored["validation_templates"] += 1
 
-        plan = _read_json(catalog / PLAN_CATALOG_SIDECAR)
+        plan = read_json(catalog / PLAN_CATALOG_SIDECAR)
         if plan is not None and isinstance(plan.get("projects"), list):
 
             def _side_list(key: str) -> list[str] | None:
@@ -1969,12 +1970,3 @@ def _paths_collide(one: str, other: str) -> bool:
         or first.startswith(second + os.sep)
         or second.startswith(first + os.sep)
     )
-
-
-def _read_json(path: Path) -> dict[str, Any] | None:
-    """Best-effort read of a JSON sidecar (``None`` on any failure)."""
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    return data if isinstance(data, dict) else None

@@ -48,14 +48,16 @@ from typing import Any
 
 from kairos_common import ApiError, ledger_v2
 from kairos_common.archive_paths import resolve_archive_destination
+from kairos_common.atomic_io import atomic_write_text
 from kairos_common.capture_sidecars import CaptureState
 from kairos_common.rebuild import ReplicaState
 from kairos_common.time import utc_now_iso8601
 
 from api_orchestrator import layout as layout_mod
 from api_orchestrator.captures import CaptureService, reject_overlapping_destination
-from api_orchestrator.health import StoreHealth
+from api_orchestrator.health import StoreHealth, require_delete_available
 from api_orchestrator.layout import DataLayout
+from api_orchestrator.ledger_guard import append_or_503
 from api_orchestrator.models import DatasetArchiveProgress, DatasetMember
 from api_orchestrator.store import ArchiveDestinationTakenError, CaptureStore
 from api_orchestrator.views import sanitize_component
@@ -524,25 +526,19 @@ class DatasetArchiver:
         ):
             if value:
                 payload[key] = value
-        try:
-            ledger_v2.append_with_slack_release(
-                self._layout.data_dir,
-                "dataset_archive_started",
-                instance_id=self._instance_id,
-                payload=payload,
-            )
-        except OSError as exc:
-            raise ApiError(
-                status_code=503,
-                code="ledger_unwritable",
-                message=(
-                    f"The lifecycle ledger could not be written ({exc}), so "
-                    "the archive was not started. The frozen member set lives "
-                    "only in this file; without it a crashed run could not "
-                    "say what it was doing."
-                ),
-                details={"dataset_id": dataset_id},
-            ) from exc
+        append_or_503(
+            self._layout.data_dir,
+            "dataset_archive_started",
+            instance_id=self._instance_id,
+            payload=payload,
+            failure=lambda exc: (
+                f"The lifecycle ledger could not be written ({exc}), so "
+                "the archive was not started. The frozen member set lives "
+                "only in this file; without it a crashed run could not "
+                "say what it was doing."
+            ),
+            details={"dataset_id": dataset_id},
+        )
 
     def _launch(self, dataset_id: str) -> None:
         run = self._runs.setdefault(dataset_id, _RunState())
@@ -932,17 +928,15 @@ class DatasetArchiver:
             "members": entries,
             "totals": {"members": len(entries), "bytes": bytes_total},
         }
-        data = (
+        text = (
             json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=False) + "\n"
-        ).encode("utf-8")
-        dataset_dir.mkdir(parents=True, exist_ok=True)
-        final = dataset_dir / MANIFEST_NAME
-        tmp = dataset_dir / f".{MANIFEST_NAME}.{os.getpid()}.tmp"
-        tmp.write_bytes(data)
-        # Same-directory rename: atomic on every filesystem the destination
-        # could be, including ones other than the store's own.
-        os.replace(tmp, final)
-        return data
+        )
+        # §3.1's one atomic write, same as every other sidecar: the temp file is
+        # fsynced before any name refers to it and the rename is same-directory,
+        # so it stays atomic on whatever filesystem the destination turns out to
+        # be. The bytes are returned because the seal event hashes them.
+        atomic_write_text(dataset_dir / MANIFEST_NAME, text)
+        return text.encode("utf-8")
 
     def _append_seal(
         self,
@@ -1016,15 +1010,10 @@ class DatasetArchiver:
 
     def _require_delete_available(self) -> None:
         """Same withdrawal as delete/archive (§7): the run removes sources."""
-        if self._health.delete_available:
-            return
-        raise ApiError(
-            status_code=503,
-            code="delete_unavailable",
-            message=(
-                "Archiving removes the source and deleting is not available "
-                f"on this deployment: {self._health.delete_unavailable_reason}"
-            ),
+        require_delete_available(
+            self._health,
+            "Archiving removes the source and deleting is not available "
+            "on this deployment",
         )
 
     def _views_changed(self) -> None:
