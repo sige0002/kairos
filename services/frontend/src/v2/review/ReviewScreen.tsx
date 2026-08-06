@@ -16,7 +16,7 @@ import { DetailPanel } from './DetailPanel';
 import { EpisodeTable } from './EpisodeTable';
 import { ImportBagsDialog } from './ImportBagsDialog';
 import { FiltersRail } from './FiltersRail';
-import { Toast } from './Toast';
+import { Toast } from '../shared/Toast';
 import { useFiltersCollapsed, toggleFiltersCollapsed } from './filtersRail';
 import { episodeLabel } from './types';
 import { formatBytes } from './format';
@@ -230,7 +230,7 @@ export function ReviewScreen() {
         <DetailPanel rv={rv} />
       </div>
 
-      <Toast message={rv.toast} />
+      <Toast message={rv.toast} testId="review-toast" />
 
       <Modal
         open={rv.excludePending}

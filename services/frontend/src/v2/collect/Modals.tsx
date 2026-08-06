@@ -11,6 +11,7 @@ import { useState } from 'react';
 import { Button, Modal, cn } from '../../components/ui';
 import { END_REASONS, type BatchMachine } from './useBatchMachine';
 import { findTask, usePlans } from '../plans';
+import { Toast } from '../shared/Toast';
 
 function ReasonChip({
   active,
@@ -427,16 +428,6 @@ function ShortcutsSheet({ machine }: { machine: BatchMachine }) {
         ))}
       </div>
     </Modal>
-  );
-}
-
-function Toast({ message }: { message: string }) {
-  if (!message) return null;
-  return (
-    <div className="fixed bottom-[26px] left-1/2 z-[60] flex -translate-x-1/2 items-center gap-2 rounded-control bg-gray-900 px-[18px] py-[11px] text-sm font-medium text-gray-50 shadow-float">
-      <span className="h-[7px] w-[7px] rounded-sm bg-teal-400" />
-      {message}
-    </div>
   );
 }
 

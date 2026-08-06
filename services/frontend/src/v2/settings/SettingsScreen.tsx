@@ -28,7 +28,7 @@ import { DataQualitySection } from './DataQualitySection';
 import { ValidationSection } from './ValidationSection';
 import { SystemSection } from './SystemSection';
 import { OtherSection } from './OtherSection';
-import { SettingsToast } from './Toast';
+import { Toast } from '../shared/Toast';
 import { useSettingsState } from './useSettingsState';
 import { usePlansUnsynced } from '../plans';
 
@@ -75,7 +75,7 @@ export function SettingsScreen() {
         <OtherSection label={label} rationale={PLACEHOLDER_RATIONALE[label] ?? ''} />
       )}
       <UnsyncedCatalogNote />
-      <SettingsToast message={settings.toast} />
+      <Toast message={settings.toast} testId="settings-toast" />
     </div>
   );
 }

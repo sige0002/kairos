@@ -74,6 +74,7 @@ import {
   type TaskResultFilter,
 } from './data';
 import { readDatasetsUrl, writeDatasetsUrl } from './url';
+import { useToast } from '../shared/useToast';
 
 export type { TaskResultFilter } from './data';
 
@@ -363,8 +364,6 @@ function useDebounced<T>(value: T, delay: number): T {
   return settled;
 }
 
-const TOAST_MS = 2400;
-
 /** A server sentence, terminated, so ours can follow it without fusing.
  *
  *  The store is not consistent about a trailing period — "No member m-2 in
@@ -474,22 +473,8 @@ export function useDatasetsState(): DatasetsState {
   const [datasetArchivePath, setDatasetArchivePath] = useState('');
   const [datasetArchiveReason, setDatasetArchiveReason] = useState('');
   const [datasetArchiveMode, setDatasetArchiveMode] = useState<'copy' | 'move'>('move');
-  const [toast, setToast] = useState('');
+  const { toast, showToast, clearToast } = useToast();
   const [blockingFailure, setBlockingFailure] = useState<unknown>(null);
-  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const showToast = useCallback((message: string) => {
-    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-    setToast(message);
-    toastTimerRef.current = setTimeout(() => setToast(''), TOAST_MS);
-  }, []);
-
-  useEffect(
-    () => () => {
-      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-    },
-    [],
-  );
 
   // Where a refusal goes is the catalog's call, not each call site's: anything
   // errors.ts marks `destructive` is held until dismissed, everything else
@@ -498,14 +483,13 @@ export function useDatasetsState(): DatasetsState {
   const reportFailure = useCallback(
     (error: unknown) => {
       if (isDestructiveFailure(error)) {
-        if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-        setToast('');
+        clearToast();
         setBlockingFailure(error);
         return;
       }
       showToast(captureErrorText(error));
     },
-    [showToast],
+    [clearToast, showToast],
   );
 
   // ---- reads -------------------------------------------------------------

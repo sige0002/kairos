@@ -11,7 +11,7 @@
 // `objects/<capture_id>` and writes to `report/<pipeline>/<capture_id>/`. A
 // dataset has no directory to aim a job at (§6), so there is no second kind of
 // target — a dataset's captures are validated as the captures they are.
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   useMutation,
   useQuery,
@@ -50,8 +50,9 @@ import {
 import { listBatches } from '../../api/batches';
 import { ResultsPanel, type ActiveOutcome } from './ResultsPanel';
 import type { RequiredTopic } from './resultsMapping';
-import { Toast } from './Toast';
+import { Toast } from '../shared/Toast';
 import { useJobResult } from './useJobResult';
+import { useToast } from '../shared/useToast';
 
 const EMPTY_SCHEMA: JSONSchema = { type: 'object', properties: {} };
 const FALLBACK_SCHEMA: JSONSchema = {
@@ -136,15 +137,7 @@ export function ValidationScreen() {
   const [active, setActive] = useState<ActiveRun | null>(null);
   const [jobStates, setJobStates] = useState<Record<string, JobProbeUpdate>>({});
   const [selectedCaptureId, setSelectedCaptureId] = useState<string | null>(null);
-  const [toast, setToast] = useState('');
-  const toastTimer = useRef<number | undefined>(undefined);
-
-  const showToast = useCallback((message: string) => {
-    setToast(message);
-    window.clearTimeout(toastTimer.current);
-    toastTimer.current = window.setTimeout(() => setToast(''), 2400);
-  }, []);
-  useEffect(() => () => window.clearTimeout(toastTimer.current), []);
+  const { toast, showToast } = useToast();
 
   const pipelinesQuery = useQuery({
     queryKey: queryKeys.pipelines,

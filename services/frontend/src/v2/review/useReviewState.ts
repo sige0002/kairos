@@ -16,7 +16,7 @@
 // removes the source. Keeping the old name next to the new endpoint would be
 // the most dangerous kind of familiar.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiGet, apiPost } from '../../api/client';
 import { listAllCaptures } from '../../api/captures';
@@ -51,6 +51,7 @@ import type {
   ReviewLane,
   TransferSlot,
 } from './types';
+import { useToast } from '../shared/useToast';
 
 /** Review's own fetch scope: one sweep of everything reviewable, a different
  *  shape from any per-page list, so it gets its own cache entry. */
@@ -267,19 +268,7 @@ export function useReviewState(): ReviewState {
   );
 
   // ---- toast --------------------------------------------------------------
-  const [toast, setToast] = useState('');
-  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const showToast = useCallback((msg: string) => {
-    setToast(msg);
-    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-    toastTimerRef.current = setTimeout(() => setToast(''), 2400);
-  }, []);
-  useEffect(
-    () => () => {
-      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-    },
-    [],
-  );
+  const { toast, showToast } = useToast();
 
   const reviewSave = useReviewSave(REVIEW_SCOPE);
 

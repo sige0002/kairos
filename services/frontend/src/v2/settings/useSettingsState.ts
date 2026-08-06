@@ -6,7 +6,7 @@
 // edit here shows up in Collect immediately. The store's server model is Phase
 // 2.5; it's browser-local for now.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { clonePlans, type PlanProjectData } from './data';
 import {
   setFailReasons,
@@ -16,8 +16,7 @@ import {
   useOperators,
   usePlans,
 } from '../plans';
-
-const TOAST_MS = 2400;
+import { useToast } from '../shared/useToast';
 
 export interface SettingsState {
   menuIdx: number;
@@ -66,16 +65,7 @@ export function useSettingsState(): SettingsState {
   const operators = useOperators();
   const [planProjIdx, setPlanProjIdx] = useState(0);
   const [planTaskIdx, setPlanTaskIdx] = useState(0);
-  const [toast, setToast] = useState('');
-
-  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => () => { if (toastTimerRef.current) clearTimeout(toastTimerRef.current); }, []);
-
-  const showToast = useCallback((message: string) => {
-    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-    setToast(message);
-    toastTimerRef.current = setTimeout(() => setToast(''), TOAST_MS);
-  }, []);
+  const { toast, showToast } = useToast();
 
   const selectMenu = useCallback((i: number) => setMenuIdx(i), []);
 

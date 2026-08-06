@@ -19,7 +19,7 @@ import { BlockingFailure } from './BlockingFailure';
 import { BuildRail } from './BuildRail';
 import { DatasetCenter } from './DatasetCenter';
 import { DatasetList } from './DatasetList';
-import { Toast } from './Toast';
+import { Toast } from '../shared/Toast';
 import { useDatasetsState } from './useDatasetsState';
 
 export function DatasetsScreen() {
@@ -58,7 +58,7 @@ export function DatasetsScreen() {
         onConfirm={(reason) => void deletion.confirm(reason)}
       />
 
-      <Toast message={state.toast} />
+      <Toast message={state.toast} testId="toast" />
       <BlockingFailure
         error={state.blockingFailure}
         onDismiss={state.dismissBlockingFailure}
