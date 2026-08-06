@@ -50,7 +50,6 @@ __all__ = [
     "JobCreateResponse",
     "JobResult",
     "JobStatus",
-    "PipelineDefinition",
     "Quality",
     "QualitySource",
     "QuickCheck",
@@ -809,16 +808,6 @@ class BatchListResponse(BaseModel):
 
 
 # ---- jobs / validation ------------------------------------------------------
-
-
-class PipelineDefinition(BaseModel):
-    """Pipeline entry surfaced by dora_runner."""
-
-    id: str
-    name: str
-    description: str | None = None
-    enabled: bool = True
-    schema_: dict[str, Any] = Field(default_factory=dict, alias="schema")
 
 
 class JobCreateRequest(BaseModel):

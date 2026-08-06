@@ -46,42 +46,43 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from kairos_common import Compression, JobState
+from kairos_common import Compression
 from kairos_common.atomic_io import atomic_write_json
 from kairos_common.capture_sidecars import DigestState
 from kairos_common.ids import new_membership_id
 from kairos_common.rebuild import CaptureRow, ReplicaRow, ReplicaState
-from kairos_common.time import utc_now_iso8601
+from kairos_common.time import utc_iso8601_of, utc_now_iso8601
 
+from api_orchestrator import row_mappers
 from api_orchestrator.models import (
     Batch,
     Capture,
     CaptureState,
-    CaptureTopic,
     DatasetMember,
     DatasetMembership,
     JobCreateResponse,
     JobResult,
     JobStatus,
-    QuickCheck,
     Replica,
-    Split,
     ValidationTemplate,
-    coerce_error,
+)
+from api_orchestrator.schema import (
+    BATCH_UPDATE_FIELDS as _BATCH_UPDATE_FIELDS,
+)
+from api_orchestrator.schema import (
+    CAPTURE_COLUMNS as _CAPTURE_COLUMNS,
+)
+from api_orchestrator.schema import (
+    REVIEW_COLUMNS as _REVIEW_COLUMNS,
+)
+from api_orchestrator.schema import (
+    SCHEMA as _SCHEMA,
+)
+from api_orchestrator.schema import (
+    SCHEMA_VERSION,
 )
 
 logger = logging.getLogger("kairos")
-
-# The schema generation this code speaks. A database stamped with anything else
-# is discarded and rebuilt from sidecars — see the module docstring.
-#
-# BUMP THIS WHENEVER _SCHEMA CHANGES. The jobs run_id→capture_id rename shipped
-# without a bump, so live version-2 databases existed with EITHER shape and
-# every POST /jobs against an old one died on "no column named capture_id" —
-# found in the field, not by tests, because tests only ever see fresh schemas.
-# The rebuild is the designed absorption path; refusing to bump is how it is
-# bypassed by accident.
-SCHEMA_VERSION = 7
 
 CATALOG_DIRNAME = "catalog"
 TEMPLATES_SIDECAR = "validation_templates.json"
@@ -147,251 +148,6 @@ class DatasetMemberExistsError(Exception):
         super().__init__(f"{capture_id} is already in dataset {dataset_id}")
         self.dataset_id = dataset_id
         self.capture_id = capture_id
-
-
-_SCHEMA = """
--- One recording, merged with the operator's review of it. Replaces v1's
--- runs + episodes pair: those were joined on run_id in every read path, and
--- keeping them apart meant a delete had to cascade correctly in two places.
-CREATE TABLE IF NOT EXISTS captures (
-    -- Insertion order for cursor paging. capture_id is a UUIDv7 and would sort
-    -- by mint time too, but seq is stable against a rebuild that re-inserts
-    -- rows in directory order.
-    seq                INTEGER PRIMARY KEY AUTOINCREMENT,
-    capture_id         TEXT NOT NULL UNIQUE,
-    -- Display name only (§1). NULL is allowed and meaningful: a row rebuilt
-    -- from a ledger tombstone alone has no run_id to recover.
-    run_id             TEXT UNIQUE,
-    source_instance_id TEXT,
-    state              TEXT NOT NULL,
-    operator           TEXT,
-    task               TEXT,
-    robot              TEXT,
-    started_at         TEXT,
-    ended_at           TEXT,
-    topics             TEXT NOT NULL DEFAULT '[]',
-    compression        TEXT NOT NULL DEFAULT 'none',
-    split              TEXT,
-    error              TEXT,
-    message_count      INTEGER,
-    bytes              INTEGER,
-    quick_check        TEXT,
-    -- Review columns: a CACHE of record.json, which is authoritative (§4.1-4).
-    task_result        TEXT,
-    failure_reason     TEXT,
-    quality            TEXT,
-    quality_source     TEXT,
-    review_status      TEXT NOT NULL DEFAULT 'pending',
-    -- The CAS token. 0 means no record.json exists at all.
-    review_revision    INTEGER NOT NULL DEFAULT 0,
-    batch_id           TEXT,
-    index_in_batch     INTEGER,
-    -- A human's override of a NEEDS_REVIEW validation verdict, so a dataset
-    -- add can consult it in one read. The verdict itself is DERIVED from the
-    -- reports on disk (see verdict.py) and deliberately not cached here; only
-    -- the human decision is stored, and the ledger keeps its audit copy.
-    validation_override TEXT,
-    -- Tombstone (§7). The row is never deleted, only marked.
-    deleted_at         TEXT,
-    delete_kind        TEXT,
-    delete_reason      TEXT,
-    -- Archive (§6). Beyond §8's column list, and deliberately: rebuild
-    -- reconstructs a row from a capture_archived event and carries these two
-    -- fields, so without columns for them every rebuild would forget where an
-    -- archived capture went — the one question the archive event exists for.
-    archived_at        TEXT,
-    archive_destination TEXT,
-    -- Lease (§7.1): a job is touching objects/<capture_id> right now.
-    lease_owner        TEXT,
-    lease_expires_at   TEXT,
-    created_at         TEXT,
-    updated_at         TEXT
-);
--- There is deliberately NO index on `seq`. It is INTEGER PRIMARY KEY, so it IS
--- the rowid, and the keyset page already seeks through the table B-tree:
--- `EXPLAIN QUERY PLAN` gives `SEARCH captures USING INTEGER PRIMARY KEY
--- (rowid<?)` with or without one. An index on it is a second copy of the rowid
--- that no query reads and every insert maintains. Dropped rather than merely
--- not created, so databases that already carry it shed it too.
-DROP INDEX IF EXISTS idx_captures_seq;
-CREATE INDEX IF NOT EXISTS idx_captures_state ON captures (state);
-CREATE INDEX IF NOT EXISTS idx_captures_batch ON captures (batch_id);
-
--- Where each installation's copy of a capture stands. Keyed by instance so a
--- transferred capture can say "present here, absent there" rather than one
--- global boolean that is wrong on at least one machine.
-CREATE TABLE IF NOT EXISTS replicas (
-    capture_id      TEXT NOT NULL,
-    instance_id     TEXT NOT NULL,
-    state           TEXT NOT NULL,
-    path            TEXT,
-    manifest_digest TEXT,
-    verified_at     TEXT,
-    updated_at      TEXT,
-    PRIMARY KEY (capture_id, instance_id)
-);
-CREATE INDEX IF NOT EXISTS idx_replicas_state ON replicas (instance_id, state);
-
--- A dataset is rows plus ledger events (§6). No directory tree, no move, no
--- dataset.json: the physical <operator>/<task>/<NNN> hierarchy is retired.
-CREATE TABLE IF NOT EXISTS datasets (
-    dataset_id TEXT PRIMARY KEY,
-    name       TEXT NOT NULL,
-    operator   TEXT,
-    task       TEXT,
-    status     TEXT NOT NULL DEFAULT 'active',
-    created_at TEXT,
-    -- Highest display_index ever ISSUED in this dataset, including numbers
-    -- whose member has since been removed. Numbers are never reused (§6), so
-    -- the next one is always this + 1 — MAX() over live members would hand a
-    -- retired number to a different recording.
-    index_high_water INTEGER NOT NULL DEFAULT 0,
-    -- The terminal transition (§6.1). These cache what the ledger's
-    -- dataset_archive_started / dataset_archived events hold durably: the
-    -- resolved directory the bytes went to, when, and HOW — mode 'copy'
-    -- sealed the set and kept the recordings here, 'move' removed them.
-    -- status walks active → archiving → archived and never back.
-    archive_destination TEXT,
-    archive_mode        TEXT,
-    archive_started_at  TEXT,
-    archived_at         TEXT
-);
-
-CREATE TABLE IF NOT EXISTS dataset_members (
-    membership_id TEXT PRIMARY KEY,
-    dataset_id    TEXT NOT NULL,
-    capture_id    TEXT NOT NULL,
-    display_index INTEGER NOT NULL,
-    created_at    TEXT,
-    UNIQUE (dataset_id, display_index),
-    UNIQUE (dataset_id, capture_id)
-);
-CREATE INDEX IF NOT EXISTS idx_members_capture ON dataset_members (capture_id);
-
-CREATE TABLE IF NOT EXISTS jobs (
-    seq        INTEGER PRIMARY KEY AUTOINCREMENT,
-    job_id     TEXT NOT NULL UNIQUE,
-    capture_id TEXT NOT NULL,
-    pipeline   TEXT NOT NULL,
-    state      TEXT NOT NULL,
-    progress   REAL NOT NULL DEFAULT 0,
-    logs_tail  TEXT NOT NULL DEFAULT '[]',
-    result     TEXT,
-    created_at TEXT,
-    updated_at TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_jobs_seq ON jobs (seq DESC);
-
-CREATE TABLE IF NOT EXISTS validation_templates (
-    seq             INTEGER PRIMARY KEY AUTOINCREMENT,
-    name            TEXT NOT NULL,
-    version         INTEGER NOT NULL,
-    required_topics TEXT NOT NULL DEFAULT '[]',
-    UNIQUE (name, version)
-);
-CREATE INDEX IF NOT EXISTS idx_validation_templates_seq
-    ON validation_templates (seq DESC);
-
-CREATE TABLE IF NOT EXISTS batches (
-    seq               INTEGER PRIMARY KEY AUTOINCREMENT,
-    batch_id          TEXT NOT NULL UNIQUE,
-    robot             TEXT,
-    project           TEXT,
-    task              TEXT,
-    condition         TEXT,
-    operator          TEXT,
-    target_episodes   INTEGER NOT NULL DEFAULT 30,
-    status            TEXT NOT NULL DEFAULT 'active',
-    ended_reason      TEXT,
-    created_at        TEXT,
-    ended_at          TEXT,
-    -- Monotone: incremented on the FIRST review save for a capture and never
-    -- decremented, so "N / 30" keeps describing what was captured even after a
-    -- later exclude or delete.
-    episodes_recorded INTEGER NOT NULL DEFAULT 0,
-    -- 1 when the counter above was reconstructed by a rebuild and is therefore
-    -- a lower bound (§8.2 rule 6): review saves are events, and a rebuild can
-    -- only count the recordings still on disk that name this batch.
-    episodes_recorded_is_floor INTEGER NOT NULL DEFAULT 0,
-    batch_seq         INTEGER
-);
-CREATE INDEX IF NOT EXISTS idx_batches_seq ON batches (seq DESC);
-
-CREATE TABLE IF NOT EXISTS plan_catalog (
-    id         INTEGER PRIMARY KEY CHECK (id = 1),
-    payload    TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-"""
-
-# Columns :meth:`CaptureStore.update_capture` may target. A typo guard: an
-# unknown name raises instead of silently updating nothing.
-_CAPTURE_COLUMNS: frozenset[str] = frozenset(
-    {
-        "run_id",
-        "source_instance_id",
-        "state",
-        "operator",
-        "task",
-        "robot",
-        "started_at",
-        "ended_at",
-        "topics",
-        "compression",
-        "split",
-        "error",
-        "message_count",
-        "bytes",
-        "quick_check",
-        "task_result",
-        "failure_reason",
-        "quality",
-        "quality_source",
-        "review_status",
-        "review_revision",
-        "validation_override",
-        "batch_id",
-        "index_in_batch",
-        "deleted_at",
-        "delete_kind",
-        "delete_reason",
-        "archived_at",
-        "archive_destination",
-        "lease_owner",
-        "lease_expires_at",
-    }
-)
-
-# Columns a §4.1 review save may write. Deliberately narrower than
-# _CAPTURE_COLUMNS: a review edit must never reach a recording fact.
-_REVIEW_COLUMNS: frozenset[str] = frozenset(
-    {
-        "task_result",
-        "failure_reason",
-        "quality",
-        "quality_source",
-        "review_status",
-        "batch_id",
-        "index_in_batch",
-    }
-)
-
-_BATCH_UPDATE_FIELDS: frozenset[str] = frozenset(
-    {
-        "robot",
-        "project",
-        "task",
-        "condition",
-        "operator",
-        "target_episodes",
-        "status",
-        "ended_reason",
-        "created_at",
-        "ended_at",
-    }
-)
-
-_JSON_COLUMNS: frozenset[str] = frozenset({"topics", "split", "error", "quick_check"})
 
 
 class CaptureStore:
@@ -852,8 +608,8 @@ class CaptureStore:
         than merely checking for a non-null owner.
         """
         now = datetime.now(UTC)
-        expires = (now + timedelta(seconds=ttl_s)).isoformat().replace("+00:00", "Z")
-        stamp = now.isoformat().replace("+00:00", "Z")
+        expires = utc_iso8601_of(now + timedelta(seconds=ttl_s))
+        stamp = utc_iso8601_of(now)
         with self._conn() as conn:
             cur = conn.execute(
                 "UPDATE captures SET lease_owner = ?, lease_expires_at = ?, "
@@ -876,7 +632,7 @@ class CaptureStore:
 
     def has_live_lease(self, capture_id: str) -> bool:
         """Whether an unexpired lease is held on this capture."""
-        stamp = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        stamp = utc_now_iso8601()
         with self._conn() as conn:
             row = conn.execute(
                 "SELECT 1 FROM captures WHERE capture_id = ? "
@@ -887,7 +643,7 @@ class CaptureStore:
 
     def holds_lease(self, capture_id: str, owner: str) -> bool:
         """Whether *owner* still holds an unexpired lease (mid-job re-check)."""
-        stamp = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        stamp = utc_now_iso8601()
         with self._conn() as conn:
             row = conn.execute(
                 "SELECT 1 FROM captures WHERE capture_id = ? AND lease_owner = ? "
@@ -988,7 +744,7 @@ class CaptureStore:
         rather than at the job, so a full queue does not churn on rows that can
         never be processed.
         """
-        stamp = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        stamp = utc_now_iso8601()
         terminal = sorted(
             {
                 CaptureState.completed.value,
@@ -2124,118 +1880,18 @@ class CaptureStore:
         )
 
     # ---- (de)serialization -------------------------------------------------
+    # Implementations live in row_mappers.py. Bound as class attributes (not
+    # re-implemented) so every call site keeps going through the class — a
+    # class-level patch of e.g. ``_capture_from_row`` still intercepts them.
 
-    @staticmethod
-    def _encode(name: str, value: Any) -> Any:
-        """Encode one model-level field into its column representation."""
-        if name == "topics":
-            return json.dumps(
-                [
-                    t.model_dump() if isinstance(t, CaptureTopic) else t
-                    for t in (value or [])
-                ]
-            )
-        if name in _JSON_COLUMNS:
-            if value is None:
-                return None
-            if hasattr(value, "model_dump"):
-                return json.dumps(value.model_dump(mode="json"))
-            return json.dumps(value)
-        if name in {"state", "compression", "review_status"}:
-            return None if value is None else str(getattr(value, "value", value))
-        return value
-
-    def _capture_columns(self, capture: Capture) -> dict[str, Any]:
-        """Render a full :class:`Capture` into its INSERT column mapping."""
-        return {
-            "capture_id": capture.capture_id,
-            "run_id": capture.run_id,
-            "source_instance_id": capture.source_instance_id,
-            "state": str(capture.state),
-            "operator": capture.operator,
-            "task": capture.task,
-            "robot": capture.robot,
-            "started_at": capture.started_at,
-            "ended_at": capture.ended_at,
-            "topics": self._encode("topics", capture.topics),
-            "compression": str(capture.compression),
-            "split": self._encode("split", capture.split),
-            "error": self._encode("error", capture.error),
-            "message_count": capture.message_count,
-            "bytes": capture.bytes,
-            "quick_check": self._encode("quick_check", capture.quick_check),
-            "task_result": capture.task_result,
-            "failure_reason": capture.failure_reason,
-            "quality": capture.quality,
-            "quality_source": capture.quality_source,
-            "review_status": capture.review_status,
-            "review_revision": capture.review_revision,
-            "batch_id": capture.batch_id,
-            "index_in_batch": capture.index_in_batch,
-            "deleted_at": capture.deleted_at,
-            "delete_kind": capture.delete_kind,
-            "delete_reason": capture.delete_reason,
-            "archived_at": capture.archived_at,
-            "archive_destination": capture.archive_destination,
-            "lease_owner": capture.lease_owner,
-            "lease_expires_at": capture.lease_expires_at,
-            "created_at": capture.created_at,
-            "updated_at": capture.updated_at,
-        }
-
-    @staticmethod
-    def _capture_from_row(row: sqlite3.Row) -> Capture:
-        topics_raw = json.loads(row["topics"]) if row["topics"] else []
-        split_raw = json.loads(row["split"]) if row["split"] else None
-        error_raw = json.loads(row["error"]) if row["error"] else None
-        qc_raw = json.loads(row["quick_check"]) if row["quick_check"] else None
-        return Capture(
-            capture_id=row["capture_id"],
-            run_id=row["run_id"],
-            source_instance_id=row["source_instance_id"],
-            state=CaptureState(row["state"]),
-            operator=row["operator"],
-            task=row["task"],
-            robot=row["robot"],
-            started_at=row["started_at"],
-            ended_at=row["ended_at"],
-            topics=[CaptureTopic.model_validate(t) for t in topics_raw],
-            compression=Compression(row["compression"]),
-            split=Split.model_validate(split_raw) if split_raw else None,
-            error=coerce_error(error_raw),
-            message_count=row["message_count"],
-            bytes=row["bytes"],
-            quick_check=QuickCheck.model_validate(qc_raw) if qc_raw else None,
-            task_result=row["task_result"],
-            failure_reason=row["failure_reason"],
-            quality=row["quality"],
-            quality_source=row["quality_source"],
-            review_status=row["review_status"],
-            review_revision=row["review_revision"],
-            validation_override=row["validation_override"],
-            batch_id=row["batch_id"],
-            index_in_batch=row["index_in_batch"],
-            deleted_at=row["deleted_at"],
-            delete_kind=row["delete_kind"],
-            delete_reason=row["delete_reason"],
-            archived_at=row["archived_at"],
-            archive_destination=row["archive_destination"],
-            lease_owner=row["lease_owner"],
-            lease_expires_at=row["lease_expires_at"],
-            created_at=row["created_at"],
-            updated_at=row["updated_at"],
-        )
-
-    @staticmethod
-    def _replica_from_row(row: sqlite3.Row) -> Replica:
-        return Replica(
-            instance_id=row["instance_id"],
-            state=ReplicaState(row["state"]),
-            path=row["path"],
-            manifest_digest=row["manifest_digest"],
-            verified_at=row["verified_at"],
-            updated_at=row["updated_at"],
-        )
+    _encode = staticmethod(row_mappers.encode_field)
+    _capture_columns = staticmethod(row_mappers.capture_columns)
+    _capture_from_row = staticmethod(row_mappers.capture_from_row)
+    _replica_from_row = staticmethod(row_mappers.replica_from_row)
+    _member_from_row = staticmethod(row_mappers.member_from_row)
+    _job_from_row = staticmethod(row_mappers.job_from_row)
+    _template_from_row = staticmethod(row_mappers.template_from_row)
+    _batch_from_row = staticmethod(row_mappers.batch_from_row)
 
     @staticmethod
     def _attach_replica(
@@ -2293,56 +1949,6 @@ class CaptureStore:
             )
         for capture in captures:
             capture.memberships = by_capture.get(capture.capture_id, [])
-
-    @staticmethod
-    def _member_from_row(row: sqlite3.Row) -> DatasetMember:
-        return DatasetMember(
-            membership_id=row["membership_id"],
-            dataset_id=row["dataset_id"],
-            capture_id=row["capture_id"],
-            display_index=row["display_index"],
-            created_at=row["created_at"],
-        )
-
-    @staticmethod
-    def _job_from_row(row: sqlite3.Row) -> JobStatus:
-        return JobStatus(
-            job_id=row["job_id"],
-            capture_id=row["capture_id"],
-            pipeline=row["pipeline"],
-            state=JobState(row["state"]),
-            progress=float(row["progress"]),
-            logs_tail=json.loads(row["logs_tail"]) if row["logs_tail"] else [],
-        )
-
-    @staticmethod
-    def _template_from_row(row: sqlite3.Row) -> ValidationTemplate:
-        return ValidationTemplate(
-            name=row["name"],
-            version=row["version"],
-            required_topics=(
-                json.loads(row["required_topics"]) if row["required_topics"] else []
-            ),
-        )
-
-    @staticmethod
-    def _batch_from_row(row: sqlite3.Row) -> Batch:
-        return Batch(
-            batch_id=row["batch_id"],
-            robot=row["robot"],
-            project=row["project"],
-            task=row["task"],
-            condition=row["condition"],
-            operator=row["operator"],
-            target_episodes=row["target_episodes"],
-            status=row["status"],
-            ended_reason=row["ended_reason"],
-            created_at=row["created_at"],
-            ended_at=row["ended_at"],
-            episodes_recorded=row["episodes_recorded"],
-            episodes_recorded_is_floor=bool(row["episodes_recorded_is_floor"]),
-            batch_seq=row["batch_seq"],
-        )
 
 
 def _paths_collide(one: str, other: str) -> bool:

@@ -49,7 +49,7 @@ from kairos_common.capture_sidecars import (
 )
 from kairos_common.errors import ApiError
 from kairos_common.ids import new_capture_id
-from kairos_common.time import utc_now_iso8601
+from kairos_common.time import utc_iso8601_of, utc_now_iso8601
 
 from api_orchestrator.layout import DataLayout, is_reserved_name
 
@@ -116,9 +116,7 @@ def _ns_to_iso(ns: int | None) -> str | None:
     if ns is None or ns <= 0:
         return None
     try:
-        return (
-            datetime.fromtimestamp(ns / 1e9, tz=UTC).isoformat().replace("+00:00", "Z")
-        )
+        return utc_iso8601_of(datetime.fromtimestamp(ns / 1e9, tz=UTC))
     except (OverflowError, OSError, ValueError):
         return None
 
