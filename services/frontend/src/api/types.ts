@@ -1081,20 +1081,18 @@ export interface Batch {
   episodes_recorded?: number;
 }
 
-/** Compact per-capture row inside a batch list item (`BatchSummary.episodes`). */
-export interface BatchEpisodeSummary {
-  index: number;
-  capture_id: string;
-  run_id?: string | null;
-  batch_seq?: number | null;
-  task_result?: TaskResult | null;
-  quality?: Quality | null;
-  review_status: ReviewStatus;
-}
-
+/**
+ * A batch as the LIST serves it (`GET /api/v1/batches`): a count of its live
+ * captures, and no row per capture.
+ *
+ * The list used to carry a compact summary of every capture of every batch —
+ * which `GET /api/v1/batches/{id}` already serves in full and better, at one
+ * query per batch (E-27). Anything that needs a batch's episodes asks for that
+ * batch. Deliberately NOT optional here: a field the list does not send must
+ * not be a field a caller can reach for and find undefined at runtime.
+ */
 export interface BatchSummary extends Batch {
   episode_count: number;
-  episodes: BatchEpisodeSummary[];
 }
 
 /** A batch plus its FULL captures (`GET /api/v1/batches/{id}`). */

@@ -16,7 +16,7 @@ import { queryKeys } from '../../api/queryKeys';
 import type { ConfigOptions, JobStatus,
   CaptureDetail,
 } from '../../api/types';
-import { Badge } from '../../components/ui';
+import { Badge, cn } from '../../components/ui';
 import { ErrorMessage } from '../../components/ErrorMessage';
 import {
   JsonBlock,
@@ -28,6 +28,7 @@ import {
   spanMs,
 } from '../captures/inspect';
 import { isTombstoned } from '../captures/availability';
+import { readCaptureNote } from './captureNote';
 import { leaseBlockReason, liveLease } from '../captures/lease';
 import { JobErrorNote, isTombstoneError } from '../captures/JobErrorNote';
 import { QuickCheckVerdict } from './QuickCheckVerdict';
@@ -184,6 +185,36 @@ function ValidationVerdict({ capture }: { capture: CaptureDetail }) {
   );
 }
 
+/** The recorder's own account of a recording, coloured by what its code means
+ *  rather than by the field being populated at all. */
+function CaptureNote({ error }: { error: NonNullable<CaptureDetail['error']> }) {
+  const note = readCaptureNote(error.code);
+  return (
+    <p
+      data-testid="review-capture-error"
+      data-error-code={error.code}
+      data-severity={note.severity}
+      className={cn(
+        'rounded-control px-3 py-2 text-[12px]',
+        note.severity === 'notice' ? 'bg-gray-50 text-gray-600' : 'bg-red-50 text-red-700',
+      )}
+    >
+      {note.label && <span className="block font-medium">{note.label}</span>}
+      {/* The fallback only speaks for a FAULT. A notice with no message would
+       *  otherwise be told it failed — latent today (the one notice code always
+       *  carries the recorder's sentence), and wrong the moment it is not. */}
+      <span>
+        {error.message || (note.severity === 'fault' ? 'This recording failed.' : '')}
+      </span>
+      {error.code && (
+        <span className="mt-0.5 block font-mono text-[11px] opacity-70">
+          ({error.code})
+        </span>
+      )}
+    </p>
+  );
+}
+
 export function CaptureInspection({ captureId }: { captureId: string }) {
   const detailQuery = useQuery({
     queryKey: queryKeys.capture(captureId),
@@ -270,18 +301,12 @@ export function CaptureInspection({ captureId }: { captureId: string }) {
         // refusal (errors.ts) or a control action (ControlCard), there is no
         // next step for the UI to add, and inventing one would be a second
         // voice over the record.
-        <p
-          data-testid="review-capture-error"
-          data-error-code={capture.error.code}
-          className="rounded-control bg-red-50 px-3 py-2 text-[12px] text-red-700"
-        >
-          <span>{capture.error.message || 'This recording failed.'}</span>
-          {capture.error.code && (
-            <span className="mt-0.5 block font-mono text-[11px] opacity-70">
-              ({capture.error.code})
-            </span>
-          )}
-        </p>
+        //
+        // What the code DOES decide is severity (captureNote.ts): the manifest
+        // field is the only one a recorder has, so it carries faults and
+        // ordinary outcomes alike, and colouring by whether it is set at all
+        // put a take that stopped where it was told into the red box.
+        <CaptureNote error={capture.error} />
       )}
 
       <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5">

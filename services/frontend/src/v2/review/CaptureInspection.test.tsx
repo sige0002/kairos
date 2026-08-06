@@ -308,3 +308,107 @@ test('a failed capture leads with the sentence and trails the code', async () =>
   expect(note).toHaveTextContent('(recorder_failed)');
   expect(note.textContent).not.toMatch(/^recorder_failed:/);
 });
+
+// ---- the panel colours by MEANING, not by presence -----------------------
+
+test('a take stopped by its own cap is not shown as a failure', async () => {
+  // `auto_stopped` is a completed recording that ended exactly where it was
+  // configured to. It arrived in the red box because the panel coloured by
+  // whether `capture.error` was set at all — so the mechanism is what is
+  // fixed here, not this one code: any benign code added later inherits it.
+  mockApi({
+    capture: detail({
+      state: 'completed',
+      error: {
+        code: 'auto_stopped',
+        message: 'auto-stopped: recording ran 600s, reaching MAX_RECORD_SECONDS=600',
+      },
+    }),
+  });
+  renderWithClient(<CaptureInspection captureId={CAP} />);
+
+  const note = await screen.findByTestId('review-capture-error');
+  // The defect itself, asserted first so the failure names it: a take that
+  // did what it was told rendered in the red fault box.
+  expect(note.className).not.toMatch(/red/);
+  expect(note).toHaveAttribute('data-severity', 'notice');
+  // Not a colour-only signal: the classification is also in words, because
+  // "why is this box grey" is not a question the colour can answer.
+  expect(note).toHaveTextContent('Stopped at the configured limit');
+  // The recorder's own sentence still leads the detail, and the code is still
+  // there for a bug report — a notice loses the alarm, not the account.
+  expect(note.textContent).toContain('reaching MAX_RECORD_SECONDS=600');
+  expect(note).toHaveTextContent('(auto_stopped)');
+  // And it never calls a completed take a failure.
+  expect(note.textContent).not.toMatch(/failed/i);
+});
+
+test('a real recorder fault still reads as one', async () => {
+  // The other half. Positive control for the panel: if the severity were
+  // simply never wired through, the test above could pass on a panel that had
+  // stopped being red for everything.
+  mockApi({
+    capture: detail({
+      state: 'failed',
+      error: {
+        code: 'recorder_failed',
+        message: 'recorder restarted while the capture was recording',
+      },
+    }),
+  });
+  renderWithClient(<CaptureInspection captureId={CAP} />);
+
+  const note = await screen.findByTestId('review-capture-error');
+  expect(note).toHaveAttribute('data-severity', 'fault');
+  expect(note.className).toMatch(/red/);
+  expect(note.textContent).not.toMatch(/Stopped at the configured limit/);
+});
+
+test('an unrecognised code keeps the server sentence and stays red', async () => {
+  // The failure mode a severity table invites: a code nobody mapped renders
+  // as nothing, or renders as benign. It must do neither.
+  mockApi({
+    capture: detail({
+      state: 'failed',
+      error: { code: 'some_future_code', message: 'the disk went away mid-write' },
+    }),
+  });
+  renderWithClient(<CaptureInspection captureId={CAP} />);
+
+  const note = await screen.findByTestId('review-capture-error');
+  expect(note).toHaveAttribute('data-severity', 'fault');
+  expect(note.className).toMatch(/red/);
+  expect(note.textContent).toContain('the disk went away mid-write');
+  expect(note).toHaveTextContent('(some_future_code)');
+});
+
+test('a notice with no message of its own is not told it failed', async () => {
+  // Reachable, not hypothetical: `coerce_error` builds a CaptureError from a
+  // STRUCTURED manifest error too, and that branch defaults the message to ""
+  // (models.py). A code with no sentence therefore arrives here — and the
+  // panel's fallback, written when every note was a fault, would have called
+  // a completed take a failure.
+  mockApi({
+    capture: detail({
+      state: 'completed',
+      error: { code: 'auto_stopped', message: '' },
+    }),
+  });
+  renderWithClient(<CaptureInspection captureId={CAP} />);
+
+  const note = await screen.findByTestId('review-capture-error');
+  expect(note.textContent).not.toMatch(/failed/i);
+  // It is not left saying nothing either: the label carries the meaning.
+  expect(note).toHaveTextContent('Stopped at the configured limit');
+});
+
+test('a FAULT with no message of its own still says something', async () => {
+  // The other side of the same fallback, and the reason it was there.
+  mockApi({
+    capture: detail({ state: 'failed', error: { code: 'recorder_failed', message: '' } }),
+  });
+  renderWithClient(<CaptureInspection captureId={CAP} />);
+
+  const note = await screen.findByTestId('review-capture-error');
+  expect(note).toHaveTextContent('This recording failed.');
+});

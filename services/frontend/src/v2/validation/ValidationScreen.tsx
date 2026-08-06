@@ -176,6 +176,13 @@ export function ValidationScreen() {
     [capturesQuery.data],
   );
   const presentCaptures = useMemo(() => captures.filter(isCapturePresent), [captures]);
+  // `listAllCaptures` follows the cursor for at most MAX_PAGES and then stops,
+  // returning what it has WITH the unfinished cursor — so a non-null cursor
+  // means the sweep did not reach the end of the catalog, and every count on
+  // this screen ("all captures on this host", a batch's members) is a count of
+  // what was fetched. The signal was already in the response and thrown away
+  // (E-27).
+  const catalogTruncated = capturesQuery.data?.next_cursor != null;
   // Default target = the newest capture whose bytes are readable HERE (the list
   // is newest-first). Defaulting to one that is merely catalogued would put a
   // job that can only fail one click away.
@@ -193,20 +200,29 @@ export function ValidationScreen() {
     queryFn: () => listBatches(),
     staleTime: 15_000,
   });
+  // `episode_count` is the server's own count of the batch's live captures; the
+  // list carries no row per capture (E-27) and this screen needs none — it is
+  // already holding the catalog those rows would have summarised.
   const batches = useMemo(
-    () => (batchesQuery.data?.items ?? []).filter((b) => (b.episodes ?? []).length > 0),
+    () => (batchesQuery.data?.items ?? []).filter((b) => b.episode_count > 0),
     [batchesQuery.data],
   );
-  const presentCaptureIds = useMemo(
-    () => new Set(presentCaptures.map((c) => c.capture_id)),
-    [presentCaptures],
-  );
+  // Members, grouped once rather than scanned per batch: a batch's members ARE
+  // the captures carrying its batch_id (§4.1), and only the ones whose bytes are
+  // here can be validated.
+  const presentIdsByBatch = useMemo(() => {
+    const byBatch = new Map<string, string[]>();
+    for (const c of presentCaptures) {
+      if (!c.batch_id) continue;
+      const ids = byBatch.get(c.batch_id);
+      if (ids) ids.push(c.capture_id);
+      else byBatch.set(c.batch_id, [c.capture_id]);
+    }
+    return byBatch;
+  }, [presentCaptures]);
   const batchCaptureIds = useCallback(
-    (b: (typeof batches)[number]) =>
-      (b.episodes ?? [])
-        .map((e) => e.capture_id)
-        .filter((id) => presentCaptureIds.has(id)),
-    [presentCaptureIds],
+    (b: (typeof batches)[number]) => presentIdsByBatch.get(b.batch_id) ?? [],
+    [presentIdsByBatch],
   );
   const selectedBatch = targetId.startsWith(BATCH_VALUE_PREFIX)
     ? (batches.find((b) => `${BATCH_VALUE_PREFIX}${b.batch_id}` === targetId) ?? null)
@@ -557,6 +573,7 @@ export function ValidationScreen() {
             suggestions={suggestions}
             captures={captures}
             capturesLoading={capturesQuery.isPending}
+            catalogTruncated={catalogTruncated}
             batches={batches}
             batchCaptureCount={(b) => batchCaptureIds(b).length}
             targetId={targetId}

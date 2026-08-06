@@ -130,6 +130,10 @@ export interface DatasetsState {
   setOperatorFilter: (o: string) => void;
   /** Distinct operators across the loaded captures (facet choices). */
   operatorOptions: string[];
+  /** The capture sweep hit its page cap, so everything derived from it
+   *  describes PART of the catalog. Nothing on screen may read as complete
+   *  while this is true. */
+  catalogTruncated: boolean;
 
   // ---- dataset selection -------------------------------------------------
   selectedDatasetId: string | null;
@@ -496,6 +500,13 @@ export function useDatasetsState(): DatasetsState {
     queryFn: ({ signal }) => listAllCaptures({}, signal),
   });
   const captures = useMemo(() => capturesQuery.data?.items ?? [], [capturesQuery.data]);
+  // `listAllCaptures` follows the cursor for at most MAX_PAGES and then stops,
+  // returning what it has WITH the unfinished cursor — so a non-null cursor
+  // here means the sweep did not reach the end of the catalog. The signal was
+  // already in the response and every consumer threw it away, which is how a
+  // rail that lists 10,000 of 12,000 recordings ends as quietly as one that
+  // lists all of them (E-27).
+  const catalogTruncated = capturesQuery.data?.next_cursor != null;
   const capturesById = useMemo(() => indexCaptures(captures), [captures]);
 
   // The selected dataset's members come from its own endpoint rather than from
@@ -1162,6 +1173,7 @@ export function useDatasetsState(): DatasetsState {
     operatorFilter,
     setOperatorFilter,
     operatorOptions,
+    catalogTruncated,
 
     selectedDatasetId,
     selectedDataset: selectedRow,

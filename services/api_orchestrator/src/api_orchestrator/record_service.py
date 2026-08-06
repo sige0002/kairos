@@ -39,6 +39,7 @@ from kairos_common import ApiError, Compression, RecordingConfig, utc_now_iso860
 from kairos_common.capture_sidecars import (
     TERMINAL_STATES,
     CaptureState,
+    ObjectManifestV2,
     SidecarStatus,
     read_object_manifest,
 )
@@ -816,7 +817,20 @@ class RecordService:
             # overwriting that with a generic error and leaving bytes at the
             # live session's value is how 10 MB of data came to be shown as
             # "0 B / empty" (§3: the manifest is authoritative).
+            #
+            # Read before adopting so the settlement below is built from the
+            # same file the adoption decided on.
+            sealed = self._sealed_manifest(capture.capture_id)
             if self._captures.adopt_manifest_facts(capture.capture_id):
+                # A capture that reached a terminal state gets a quick check,
+                # whichever route found it. Only ``stop()`` used to settle one,
+                # so everything reconciled here stayed unsettled FOREVER —
+                # nothing re-settles a capture later. The gap fell exactly where
+                # it hurts: MAX_RECORD_SECONDS is the unattended backstop, and
+                # unattended means no console is polling, so the poll that
+                # reaches the settling path is the thing that is missing.
+                if sealed is not None:
+                    self._settle_reconciled(capture.capture_id, sealed)
                 interrupted += 1
                 continue
             self._store.update_capture(
@@ -829,6 +843,65 @@ class RecordService:
             )
             interrupted += 1
         return interrupted
+
+    def _sealed_manifest(self, capture_id: str) -> ObjectManifestV2 | None:
+        """This capture's own terminal manifest, or ``None`` if it has none.
+
+        ``None`` covers all three of "no sidecar", "unreadable" and "not
+        finalised" on purpose: each means nothing sealed this recording, and a
+        recording nothing sealed has no verdict to reach.
+        """
+        read = read_object_manifest(self._layout.capture_dir(capture_id))
+        if read.status is not SidecarStatus.ok or read.manifest is None:
+            return None
+        return read.manifest if read.manifest.state in TERMINAL_STATES else None
+
+    def _settle_reconciled(self, capture_id: str, manifest: ObjectManifestV2) -> None:
+        """Settle the quick check for a capture reconciled outside ``stop()``.
+
+        Everything comes from THIS capture's sealed sidecar rather than from the
+        live recorder, which is the difference that matters on these routes: by
+        the time anything reconciles a capped take the recorder has usually
+        moved on, and asking it would attribute the NEXT recording's integrity —
+        and its absence of an auto-stop note — to this one.
+
+        ``stop_ns`` is the capture's own end stamp for the same reason.
+        Reconciliation can run minutes or hours after the recorder capped
+        itself, so ``now()`` would pull monitor incidents that fired long after
+        the bag closed into this recording's window and report them as its own.
+        An unreadable stamp yields ``None``, which the window filter already
+        handles by keeping incidents rather than placing them on a guess.
+        """
+        capture = self._store.get_capture(capture_id)
+        if capture is None:
+            return
+        err = manifest.error
+        backstop = (
+            err if isinstance(err, str) and err.startswith(AUTO_STOP_PREFIX) else None
+        )
+        self._schedule_settlement(
+            capture,
+            integrity=manifest.integrity,
+            backstop=backstop,
+            stop_ns=_iso_to_ns(manifest.ended_at),
+        )
+
+    def settle_adopted(self, capture_id: str) -> None:
+        """Settle a capture the periodic reconciliation pass adopted (§8).
+
+        The route ``_interrupt_all`` cannot reach. With the orchestrator up and
+        nobody touching the console there is no poll, no start and no restart,
+        so the 120s pass is the FIRST thing to find a recorder that capped
+        itself — which is precisely the unattended case ``MAX_RECORD_SECONDS``
+        exists for. Adopting the manifest's facts without settling left that
+        capture with no verdict for good.
+
+        A capture with nothing sealed on disk is left alone, exactly as above:
+        there is no recording to reach a verdict about.
+        """
+        sealed = self._sealed_manifest(capture_id)
+        if sealed is not None:
+            self._settle_reconciled(capture_id, sealed)
 
     async def _verify_no_active_recording(self) -> None:
         """Ensure nothing is genuinely recording before starting a new session."""
@@ -992,7 +1065,7 @@ class RecordService:
         *,
         integrity: str | None,
         backstop: str | None,
-        stop_ns: int,
+        stop_ns: int | None,
     ) -> None:
         """Fire the quick-check settlement as a background task (never blocks)."""
         try:
@@ -1013,9 +1086,14 @@ class RecordService:
         *,
         integrity: str | None,
         backstop: str | None,
-        stop_ns: int,
+        stop_ns: int | None,
     ) -> None:
-        """Compute the two-layer quick check and persist it on the capture."""
+        """Compute the two-layer quick check and persist it on the capture.
+
+        ``stop_ns`` is ``None`` only when the end stamp could not be read; the
+        incident window then keeps every incident instead of filtering on a
+        bound nobody knows.
+        """
         started = time.monotonic()
         capture_id = capture.capture_id
         try:

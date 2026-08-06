@@ -42,6 +42,10 @@ interface ApiOptions {
     details?: Record<string, unknown>;
   };
   transferAvailable?: boolean;
+  /** When true, every capture page reports another page after it, so the sweep
+   *  ends at the client's own MAX_PAGES cap — the real truncation path, not a
+   *  faked flag. */
+  capturesNeverEnd?: boolean;
   /** Hold every review save open. The write still happens on ARRIVAL (a real
    *  server serialises); only the answer waits for `releaseReviews()`, and that
    *  wait is the window a second click lands in. */
@@ -132,7 +136,12 @@ function mockApi(initial: Capture[], options: ApiOptions = {}) {
       return Promise.resolve(jsonResponse({ days: 0, candidates: [], total_bytes: 0 }));
     if (url.includes('/batches')) return Promise.resolve(jsonResponse({ items: [] }));
     if (url.includes('/captures'))
-      return Promise.resolve(jsonResponse({ items: [...items], next_cursor: null }));
+      return Promise.resolve(
+        jsonResponse({
+          items: [...items],
+          next_cursor: options.capturesNeverEnd ? 'more' : null,
+        }),
+      );
     return Promise.resolve(jsonResponse({}));
   });
   return {
@@ -691,4 +700,31 @@ test('the "nothing was saved" notice names its episode too', async () => {
   fireEvent.click(screen.getByTestId('review-mark-ok'));
   await screen.findByTestId('review-save-failure');
   expect(screen.getByTestId('review-save-failure-subject').textContent).toBe('Episode #1');
+});
+
+// ---- the catalog sweep's own limit ---------------------------------------
+// "N shown" and the lane tallies beside it are counts over one cursor sweep
+// that gives up after MAX_PAGES. Where the list ends is where an operator
+// concludes there is nothing more, so that is where the caveat belongs (E-27).
+
+test('a catalog too big for one sweep says so where the list ends', async () => {
+  mockApi([capture({ capture_id: 'c1', run_id: 'run_1', index_in_batch: 1 })], {
+    capturesNeverEnd: true,
+  });
+  renderWithClient(<ReviewScreen />);
+
+  const note = await screen.findByTestId('catalog-truncated', undefined, {
+    timeout: 10000,
+  });
+  expect(note).toHaveTextContent(/not the whole catalog|more recordings than/i);
+  // It says what to do about it rather than only that something is wrong.
+  expect(note).toHaveTextContent(/search/i);
+});
+
+test('a catalog that fits reports nothing — the note is not decoration', async () => {
+  mockApi([capture({ capture_id: 'c1', run_id: 'run_1', index_in_batch: 1 })]);
+  renderWithClient(<ReviewScreen />);
+
+  await screen.findByTestId('review-row-c1');
+  expect(screen.queryByTestId('catalog-truncated')).not.toBeInTheDocument();
 });

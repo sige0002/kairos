@@ -377,6 +377,20 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
             />
           ))
         )}
+        {/* The sweep stopped before the end of the catalog, so "no more
+            episodes" here means "no more that were fetched" — and the counts
+            above are of the same partial set. Said where the list ends,
+            because that is where an operator concludes it. */}
+        {rv.catalogTruncated && (
+          <p
+            data-testid="catalog-truncated"
+            className="m-[18px] rounded-control border border-amber-200 bg-amber-50 px-2.5 py-2 text-[11px] leading-relaxed text-amber-800"
+          >
+            This is not the whole catalog — there are more recordings than one
+            sweep fetches, so the oldest are not listed here. Narrow the search
+            to reach a specific one.
+          </p>
+        )}
       </div>
       <p
         data-testid="review-bridge-caption"

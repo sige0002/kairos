@@ -35,6 +35,10 @@ interface Backend {
   archiveRoots: string[];
   /** Whether the copy verifies. `false` is the honesty case §6 cares about. */
   archiveVerifies: boolean;
+  /** When true, every capture page reports another page after it, so the
+   *  client's own MAX_PAGES cap is reached and the sweep comes back
+   *  truncated — the real path, not a faked flag. */
+  capturesNeverEnd: boolean;
   /** When true, a per-capture archive is refused because the destination
    *  already holds files (409 destination_not_empty, captures.py). */
   archiveDestinationNotEmpty: boolean;
@@ -148,6 +152,7 @@ function mockApi(seed: Partial<Backend> = {}): Backend {
     transferAvailable: seed.transferAvailable ?? false,
     archiveRoots: seed.archiveRoots ?? [],
     archiveVerifies: seed.archiveVerifies ?? true,
+    capturesNeverEnd: seed.capturesNeverEnd ?? false,
     archiveDestinationNotEmpty: seed.archiveDestinationNotEmpty ?? false,
     archived: [],
     archiveRun: seed.archiveRun ?? null,
@@ -449,7 +454,7 @@ function mockApi(seed: Partial<Backend> = {}): Backend {
     if (path === '/captures') {
       return jsonResponse({
         items: backend.captures.map((c) => withMemberships(backend, c)),
-        next_cursor: null,
+        next_cursor: backend.capturesNeverEnd ? 'more' : null,
       });
     }
 
@@ -833,6 +838,35 @@ test('deleting a dataset removes the rows and says no recording is touched', asy
   await waitFor(() =>
     expect(screen.getByTestId('dataset-none-selected')).toBeInTheDocument(),
   );
+});
+
+// E-27's other half. `listAllCaptures` follows the cursor for at most 50 pages
+// x 200 and then stops, returning what it has WITH the unfinished cursor —
+// honest in the client, and silent on screen. An operator reads the rail,
+// sees the recordings end, and concludes that is the catalog. That is the same
+// family as "12 / 12 at expected" and "5 cameras OK": a confident answer that
+// is wrong. No backend change is needed to say so — the signal is already in
+// the response the screen throws away.
+test('a catalog too large to sweep says so instead of ending quietly', { timeout: 20000 }, async () => {
+  mockApi({
+    datasets: [DS_KITCHEN],
+    captures: [CAP_A, CAP_B],
+    capturesNeverEnd: true,
+  });
+  renderWithClient(<DatasetsScreen />);
+
+  const note = await screen.findByTestId('catalog-truncated', undefined, { timeout: 10000 });
+  expect(note).toHaveTextContent(/not the whole catalog|more recordings than/i);
+  // It says what to do about it rather than only that something is wrong.
+  expect(note).toHaveTextContent(/search/i);
+});
+
+test('a catalog that fits reports nothing — the note is not decoration', async () => {
+  mockApi({ datasets: [DS_KITCHEN], captures: [CAP_A, CAP_B] });
+  renderWithClient(<DatasetsScreen />);
+
+  await screen.findByTestId('dataset-candidate-cap-a');
+  expect(screen.queryByTestId('catalog-truncated')).not.toBeInTheDocument();
 });
 
 // ---- archive capability --------------------------------------------------

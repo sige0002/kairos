@@ -114,6 +114,9 @@ class FakeRecorder:
         self.last_prepare_payload: dict[str, Any] | None = None
         self.prepare_call_count: int = 0
         self.prepared_capture_id: str | None = None
+        # The armed session's run_id, which is what /record/status reports while
+        # armed (see _status) — not the previous session's.
+        self.prepared_run_id: str | None = None
         # Models the recorder extending an already-armed matching session, whose
         # ids were fixed at first arm time.
         self.prepare_extend_run_id: str | None = None
@@ -156,6 +159,9 @@ class FakeRecorder:
                 self.prepare_status, json={"error": self.prepare_error}
             )
         self.prepared_capture_id = self.prepared_capture_id or new_capture_id()
+        self.prepared_run_id = (
+            self.prepare_extend_run_id or self.last_prepare_payload["run_id"]
+        )
         # An armed session already owns objects/<id>/ with no manifest in it, so
         # it counts as live (§10) — a rebuild that missed it would see a
         # manifest-less directory and report an orphan.
@@ -186,6 +192,7 @@ class FakeRecorder:
             else new_capture_id()
         )
         self.prepared_capture_id = None
+        self.prepared_run_id = None
         self.state = "recording"
         self.robot = self.last_start_payload.get("robot")
         self.started_at = "2026-08-01T00:00:00.000Z"
@@ -228,6 +235,7 @@ class FakeRecorder:
             # rev.2.4 names the cancelled capture so the caller need not guess.
             disarmed = self.prepared_capture_id
             self.prepared_capture_id = None
+            self.prepared_run_id = None
             self.state = "idle"
         if self.state in ("recording", "stopping"):
             self.state = self.final_state
@@ -250,14 +258,21 @@ class FakeRecorder:
         return httpx.Response(200, json=body)
 
     def _status(self) -> httpx.Response:
+        armed = self.state == "armed" and self.prepared_capture_id is not None
         body: dict[str, Any] = {
             "state": self.state,
             # The real recorder keeps reporting the LAST session's ids after it
             # stops, which is how the orchestrator correlates an auto-stop it
             # never asked for. Consumers that need "is this live" must read
             # ``state``, not the presence of an id.
-            "run_id": self.run_id,
-            "capture_id": self.capture_id,
+            #
+            # WHILE ARMED it reports the ARMED session's ids instead (recorder
+            # `_status_locked`: "report the ARMED run/capture/topics, not the
+            # previous session's"). Nothing is committed for an armed session,
+            # so a fake that named the previous capture here made reconciliation
+            # believe the recorder still held a capture it had already finished.
+            "run_id": self.prepared_run_id if armed else self.run_id,
+            "capture_id": self.prepared_capture_id if armed else self.capture_id,
             **self._live_ids_field(),
             "started_at": self.started_at,
             "message_count": self.message_count,

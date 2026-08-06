@@ -32,6 +32,7 @@ import asyncio
 import logging
 import shutil
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -185,6 +186,7 @@ class Reconciler:
         *,
         instance_id: str,
         recorder: Any | None = None,
+        on_settle: Callable[[str], None] | None = None,
         interval_s: float = DEFAULT_INTERVAL_S,
     ) -> None:
         self._store = store
@@ -194,6 +196,12 @@ class Reconciler:
         self._digest = digest
         self._instance_id = instance_id
         self._recorder = recorder
+        # Called with each capture whose terminal manifest this pass adopted,
+        # so the quick check settles here too (§"quick_check"). A callback
+        # rather than a RecordService reference: the pass needs one behaviour
+        # from it, and taking the whole service would put the thing that starts
+        # recordings inside the thing that reconciles them.
+        self._on_settle = on_settle
         self._interval_s = interval_s
         self._task: asyncio.Task[None] | None = None
         self._stopping = asyncio.Event()
@@ -552,6 +560,24 @@ class Reconciler:
         for capture_id in scan.settleable:
             if self._captures.adopt_manifest_facts(capture_id):
                 result.settled += 1
+                # Adopting the facts is only half of settling a capture: a
+                # terminal capture also gets a quick check, whichever route
+                # found it. This is the route the UNATTENDED case takes — an
+                # idle orchestrator has no poll, no start and no restart, so
+                # nothing else ever reaches a recorder that hit its own cap.
+                #
+                # Only what was actually ADOPTED is settled: an adoption that
+                # declined — an unreadable or non-terminal manifest — has no
+                # sealed recording to reach a verdict about.
+                #
+                # What stops a pass every 120 seconds from settling the same
+                # capture again is NOT this gate but ``_facts_diverge`` in the
+                # scan, which never puts a row already in step with its manifest
+                # into ``settleable``. Named here because the consequence lands
+                # here: a re-settle rewrites the verdict and re-runs the review
+                # correction behind an operator's back.
+                if self._on_settle is not None:
+                    self._on_settle(capture_id)
 
         for capture_id in scan.missing:
             # §9-2: bytes removed behind kairos's back are NOT a deletion. The

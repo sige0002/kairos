@@ -97,6 +97,15 @@ export function useReviewSave(scope: string): ReviewSaveState {
   const [conflict, setConflict] = useState<ReviewConflict | null>(null);
   // Held together with the capture it is about. A banner belongs to ONE
   // capture, and the pair has to travel as one value or the two halves drift.
+  //
+  // One slot, not a list. Two captures failing in turn means the second
+  // displaces the first — reachable now that a banner outlives the selection.
+  // Measured rather than argued: with both answering 500, the first capture is
+  // left `pending` / NEEDS CHECK, quality unset, revision unmoved, and still
+  // counted in the work queue. What is lost is the REASON, not the fact, so
+  // this is display capacity rather than correctness. Pinned by
+  // `a displaced failure notice loses the reason, not the fact` — if that ever
+  // stops holding, the single-slot design has to be re-argued.
   const [failure, setFailure] = useState<{
     captureId: string;
     reading: CaptureErrorReading;

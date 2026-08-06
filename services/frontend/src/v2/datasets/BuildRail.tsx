@@ -183,6 +183,19 @@ export function BuildRail({ state }: { state: DatasetsState }) {
             )}
           </div>
         )}
+        {/* The sweep stopped before the end of the catalog, so "no more
+            recordings" here means "no more that were fetched". Said where the
+            list ends, because that is where an operator concludes it. */}
+        {state.catalogTruncated && (
+          <p
+            data-testid="catalog-truncated"
+            className="mt-1.5 rounded-control border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] leading-relaxed text-amber-800"
+          >
+            This is not the whole catalog — there are more recordings than one
+            sweep fetches, so the oldest are not listed here. Narrow the search
+            to reach a specific one.
+          </p>
+        )}
         {state.blockedCandidateCount > 0 && (
           <button
             type="button"

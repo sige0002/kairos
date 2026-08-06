@@ -292,6 +292,7 @@ def create_orchestrator_app(
         digest,
         instance_id=instance_id,
         recorder=recorder,
+        on_settle=record_service.settle_adopted,
     )
 
     @asynccontextmanager

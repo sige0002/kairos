@@ -54,6 +54,7 @@ export function ParamsPanel({
   suggestions,
   captures,
   capturesLoading,
+  catalogTruncated,
   batches,
   batchCaptureCount,
   targetId,
@@ -81,6 +82,9 @@ export function ParamsPanel({
   /** Terminal captures, newest first — every one of them a possible target. */
   captures: Capture[];
   capturesLoading: boolean;
+  /** True when the capture sweep stopped before the end of the catalog, so the
+   *  options below — and their counts — are of what was fetched. */
+  catalogTruncated?: boolean;
   /** Batches with at least one capture (newest first). */
   batches: BatchSummary[];
   /** How many of a batch's captures are on this host (validatable) — 0 disables. */
@@ -175,6 +179,20 @@ export function ParamsPanel({
             className="text-[11px] leading-relaxed text-amber-700"
           >
             {targetNote}
+          </span>
+        )}
+        {/* The sweep stopped before the end of the catalog, so an older
+            recording may simply not be in the list above, and the counts on
+            these options are of what was fetched. Said beside the picker,
+            because that is where they are read as totals. */}
+        {catalogTruncated && (
+          <span
+            data-testid="catalog-truncated"
+            className="rounded-control border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] leading-relaxed text-amber-800"
+          >
+            This is not the whole catalog — there are more recordings than one
+            sweep fetches, so the oldest are not offered here and every count
+            above is of what was fetched.
           </span>
         )}
         <span className="text-[11px] text-gray-400">

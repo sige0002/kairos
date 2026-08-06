@@ -33,7 +33,6 @@ __all__ = [
     "Batch",
     "BatchCreateRequest",
     "BatchDetail",
-    "BatchEpisodeSummary",
     "BatchListResponse",
     "BatchPatchRequest",
     "BatchStatus",
@@ -275,13 +274,20 @@ class DatasetMembership(BaseModel):
     display_index: int
 
 
-class Capture(BaseModel):
-    """One recording, merged with the operator's review of it (§8).
+class CaptureListItem(BaseModel):
+    """One recording as the LIST serves it — everything except its topics.
 
     Replaces v1's ``Run`` + ``Episode`` pair. The review fields here are a
     **cache** of ``record.json``, which is authoritative (§4.1-4);
     ``review_revision`` is the CAS token a client must echo back as
     ``base_revision`` to save an edit.
+
+    The split exists because ``topics`` is per-recording data no list view
+    renders, and it dominates the page: at 100 topics a row is ~11.4 KiB of
+    which ~91% is the topic array, so a 200-row page measured 2.3 MiB against
+    ~208 KiB without it (E-27). Modelled as a base class rather than an
+    exclusion so the schema says it outright — a reader of the OpenAPI
+    document should not have to know which route filters what.
     """
 
     capture_id: str
@@ -293,7 +299,6 @@ class Capture(BaseModel):
     robot: str | None = None
     started_at: str | None = None
     ended_at: str | None = None
-    topics: list[CaptureTopic] = Field(default_factory=list)
     compression: Compression = Compression.none
     split: Split | None = None
     error: CaptureError | None = None
@@ -336,6 +341,19 @@ class Capture(BaseModel):
     memberships: list[DatasetMembership] = Field(default_factory=list)
 
 
+class Capture(CaptureListItem):
+    """A recording with its topics — every single-capture response (§8).
+
+    ``topics`` lives here rather than on the list item; see
+    :class:`CaptureListItem` for why. Everything that serves ONE capture —
+    the detail, a review save, a record start/stop — returns this, so the one
+    screen that reads topics (Review's inspection panel, which fetches the
+    detail) is unaffected by the list not carrying them.
+    """
+
+    topics: list[CaptureTopic] = Field(default_factory=list)
+
+
 class CaptureDetail(Capture):
     """A capture plus the on-disk sidecars and reports (``GET /captures/{id}``).
 
@@ -363,7 +381,7 @@ class CaptureDetail(Capture):
 class CaptureListResponse(BaseModel):
     """Cursor-paginated capture list (``GET /api/v1/captures``)."""
 
-    items: list[Capture]
+    items: list[CaptureListItem]
     next_cursor: str | None = None
 
 
@@ -743,23 +761,20 @@ class BatchPatchRequest(BaseModel):
     target_episodes: int | None = Field(default=None, ge=1, le=500)
 
 
-class BatchEpisodeSummary(BaseModel):
-    """Compact per-capture row in a batch list item."""
-
-    index: int
-    capture_id: str
-    run_id: str | None = None
-    batch_seq: int | None = None
-    task_result: TaskResult | None = None
-    quality: Quality | None = None
-    review_status: ReviewStatus = "pending"
-
-
 class BatchSummary(Batch):
-    """A batch plus its capture count and compact summaries."""
+    """A batch plus how many live captures it holds (``GET /api/v1/batches``).
+
+    A count, deliberately, not a row per capture. The list carried a compact
+    summary of every capture of every batch — 817 KiB and one query per batch
+    at 50 x 100 (E-27) — which ``GET /api/v1/batches/{id}`` already serves in
+    full and better. Anything needing one batch's episodes asks for that batch.
+
+    Not paginated instead: this list is aggregated unfiltered to compute
+    coverage, and a default limit would silently shorten a total presented as
+    complete.
+    """
 
     episode_count: int = 0
-    episodes: list[BatchEpisodeSummary] = Field(default_factory=list)
 
 
 class BatchDetail(Batch):

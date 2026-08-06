@@ -34,6 +34,10 @@ interface ServerOptions {
   >;
   retention?: unknown;
   transferAvailable?: boolean;
+  /** When true, every capture page reports another page after it, so the
+   *  sweep ends at the client's own MAX_PAGES cap — the real truncation path,
+   *  not a faked flag. */
+  capturesNeverEnd?: boolean;
   /** Hold every review save open. The compare-and-swap is still decided on
    *  ARRIVAL (a real server serialises); only the delivery of the answer waits
    *  for `releaseReviews()`. That wait is the window a second click lands in. */
@@ -133,7 +137,12 @@ function mockServer(initial: Capture[], options: ServerOptions = {}) {
       );
     if (url.includes('/batches')) return Promise.resolve(jsonResponse({ items: [] }));
     if (url.includes('/captures'))
-      return Promise.resolve(jsonResponse({ items: [...items], next_cursor: null }));
+      return Promise.resolve(
+        jsonResponse({
+          items: [...items],
+          next_cursor: options.capturesNeverEnd ? 'more' : null,
+        }),
+      );
     return Promise.resolve(jsonResponse({}));
   });
 
@@ -924,4 +933,70 @@ test('a banner names its capture even when the filters have hidden it', async ()
     expect(result.current.rows.some((r) => r.captureId === 'c1')).toBe(false),
   );
   expect(result.current.captureSubject('c1')).toBe('Episode #1');
+});
+
+test('a displaced failure notice loses the reason, not the fact', async () => {
+  // `conflict` and `failure` are one slot each, not lists, so a second failure
+  // displaces the first. That became reachable when banners started outliving
+  // the selection, and the question is whether it is a correctness problem.
+  //
+  // It is not, and this is the evidence rather than the assertion: a refused
+  // save reverts its optimistic change, so the displaced capture is still
+  // sitting in the work queue, unreviewed, with its revision unmoved. What the
+  // operator loses is the sentence explaining why — not the fact that it needs
+  // attention. If that ever stops being true, this fails and the single-slot
+  // design has to be re-argued.
+  const SIDECAR = {
+    status: 500,
+    code: 'review_sidecar_write_failed',
+    message: 'could not write record.json',
+  };
+  mockServer(
+    [
+      capture({ capture_id: 'c1', review_revision: 4 }),
+      capture({ capture_id: 'c2', review_revision: 4 }),
+    ],
+    { reviewErrors: { c1: SIDECAR, c2: SIDECAR } },
+  );
+  const { result } = await renderReview();
+
+  act(() => result.current.select('c1'));
+  await act(async () => result.current.markOk());
+  await waitFor(() => expect(result.current.reviewSave.failureCaptureId).toBe('c1'));
+
+  act(() => result.current.select('c2'));
+  await act(async () => result.current.markOk());
+  await waitFor(() => expect(result.current.reviewSave.failureCaptureId).toBe('c2'));
+
+  // c1's banner is gone. c1 itself is not.
+  const c1 = result.current.rows.find((r) => r.captureId === 'c1')!;
+  expect(c1.reviewLane).toBe('needs_check');
+  expect(c1.effectiveReviewStatus).toBe('pending');
+  expect(c1.effectiveQuality).toBeNull();
+  // The revision never moved, which is the proof that nothing was written.
+  expect(c1.reviewRevision).toBe(4);
+  // And it is still counted in the queue the operator works from.
+  expect(result.current.nNeedsCheck).toBe(2);
+});
+
+// ---- the catalog sweep's own limit ---------------------------------------
+// Review's rows, its lane counts and its bulk sets all come from one cursor
+// sweep that gives up after MAX_PAGES. When it does, every one of those is a
+// number about what was fetched, presented as a number about the catalog — so
+// the state has to carry the fact, not just the rows (E-27).
+
+test('a sweep that stops short of the end of the catalog is reported', async () => {
+  mockServer([capture({ capture_id: 'c1' })], { capturesNeverEnd: true });
+  const { result } = await renderReview();
+
+  expect(result.current.catalogTruncated).toBe(true);
+  // The rows it did fetch are still usable — this is a caveat, not an error.
+  expect(result.current.rows.length).toBeGreaterThan(0);
+});
+
+test('a catalog that fits reports nothing — the flag is not decoration', async () => {
+  mockServer([capture({ capture_id: 'c1' })]);
+  const { result } = await renderReview();
+
+  expect(result.current.catalogTruncated).toBe(false);
 });

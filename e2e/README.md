@@ -34,6 +34,10 @@ never imports. The acceptance layer is a separate project with its own
 | `06-recorder-honesty.spec.ts` | regression | If the recorder dies while I am recording, the screen says so instead of running a timer for a recording nobody can see — and when it comes back it offers me the interrupted take with its real size and why it ended, not a fresh recording. |
 | `07-dataset-archive.spec.ts` | §6.1 | When I archive a finished dataset, the dialog shows me the exact folder it will land in, every recording is copied and hash-verified before its copy here is removed, the folder describes itself with a manifest the ledger can vouch for — and even after the database is destroyed, kairos still says the dataset is archived and where it went. |
 
+This is the §13 acceptance minimum, not a coverage sweep. A screen with no row
+above has no acceptance evidence here — its evidence is its unit suite. Say so
+when reporting a green run, because that is where the over-reading happens.
+
 `04-rebuild.spec.ts` carries a second test beyond the §13 minimum — *a failed
 start does not take the whole capture list down*. It is there because the
 scenario above hit that bug by accident once: a recording that failed to arm

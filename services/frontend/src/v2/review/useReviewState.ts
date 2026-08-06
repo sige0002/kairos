@@ -88,6 +88,11 @@ export interface ReviewState {
   isLoading: boolean;
   isError: boolean;
   errorMessage: string | null;
+  /** True when the capture sweep hit its page cap and stopped short of the end
+   *  of the catalog. The rows below — and every tally, lane count and bulk set
+   *  taken over them — are then about what was fetched, not about everything
+   *  there is, which is a difference the screen has to say out loud (E-27). */
+  catalogTruncated: boolean;
 
   rows: DecoratedEpisode[];
   /** Count of NEEDS CHECK exceptions — the operator's work queue. */
@@ -202,6 +207,9 @@ export function useReviewState(): ReviewState {
     // once the catalog outgrows it.
     queryFn: ({ signal }) => listAllCaptures({}, signal),
   });
+  // The sweep stops after MAX_PAGES and returns what it has WITH the unfinished
+  // cursor, so a non-null cursor means it never reached the end of the catalog.
+  const catalogTruncated = capturesQuery.data?.next_cursor != null;
 
   // Batch numbers for the row labels. A separate, best-effort read: the batch
   // is display metadata, so a failure costs a "—" in one column rather than
@@ -878,6 +886,7 @@ export function useReviewState(): ReviewState {
     isLoading: capturesQuery.isPending,
     isError,
     errorMessage,
+    catalogTruncated,
 
     rows,
     nNeedsCheck,

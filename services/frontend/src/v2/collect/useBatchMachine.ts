@@ -26,7 +26,7 @@ import {
 } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError, apiGet, apiPost } from '../../api/client';
-import { createBatch, listBatches, patchBatch } from '../../api/batches';
+import { createBatch, getBatch, listBatches, patchBatch } from '../../api/batches';
 import { getCapture, listCaptures, saveReview } from '../../api/captures';
 import { queryKeys } from '../../api/queryKeys';
 import { useUiStore } from '../../store/uiStore';
@@ -42,7 +42,6 @@ import { RECORDING_CONFIG_KEY } from '../../features/config/ConfigTab';
 import {
   ACTIVE_RECORD_STATES,
   liveCaptureIds,
-  type BatchEpisodeSummary,
   type BatchSummary,
   type Capture,
   type CaptureDetail,
@@ -861,26 +860,28 @@ function useBatchState(): MachineState {
 // disturbs an active recording. On API failure the localStorage restore stands.
 let serverHydrated = false;
 
-/** Map a server batch's capture summary to the local display record. */
-function serverEpisodeToRecord(ep: BatchEpisodeSummary): EpisodeRecord {
+/** Map one of a batch's captures to the local display record. A capture IS the
+ *  episode (§8), so its `index_in_batch` is the number on the strip. */
+function serverEpisodeToRecord(capture: Capture): EpisodeRecord {
   return {
-    index: ep.index,
+    index: capture.index_in_batch ?? 0,
     // Collect's live quality axis is good | review; a server 'not_usable'
     // (e.g. a Review exclude) has no Collect equivalent, so it shows as review.
-    quality: ep.quality === 'good' ? 'good' : 'review',
-    taskResult: ep.task_result === 'failure' ? 'fail' : 'ok',
-    captureId: ep.capture_id,
+    quality: capture.quality === 'good' ? 'good' : 'review',
+    taskResult: capture.task_result === 'failure' ? 'fail' : 'ok',
+    captureId: capture.capture_id,
   };
 }
 
-/** Adopt the server's active batch as the durable context. When the server
- *  reports none we deliberately leave local state alone (a no-op) rather than
- *  clobber it — the local blob may hold a just-finished batch whose PATCH has
- *  not landed yet; it self-heals on the next recording. Volatile phase stays at
- *  rest. */
-function applyServerRestore(batch: BatchSummary | null): void {
+/** Adopt the server's active batch as the durable context, with *captures* from
+ *  that batch's detail — the list is a count and carries no episodes (E-27).
+ *  When the server reports no active batch we deliberately leave local state
+ *  alone (a no-op) rather than clobber it — the local blob may hold a
+ *  just-finished batch whose PATCH has not landed yet; it self-heals on the
+ *  next recording. Volatile phase stays at rest. */
+function applyServerRestore(batch: BatchSummary | null, captures: Capture[]): void {
   if (!batch) return;
-  const serverEpisodes = batch.episodes.map(serverEpisodeToRecord);
+  const serverEpisodes = captures.map(serverEpisodeToRecord);
   // Same batch as the local blob? Then local episodes the server does NOT have
   // (a review save whose response hadn't landed when the page went away) must
   // survive the restore — replacing the list wholesale flipped a just-saved chip
@@ -1818,9 +1819,11 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   useEffect(() => {
     if (serverHydrated) return;
     serverHydrated = true;
-    // One GET /batches serves both jobs: restore the newest *active* batch (server
+    // One GET /batches serves both jobs: find the newest *active* batch (server
     // truth over the localStorage fallback) AND predict the next batch number from
-    // today's batches (the honest pre-state before any batch exists).
+    // today's batches (the honest pre-state before any batch exists). Restoring
+    // that active batch then costs one more request — its detail, the only place
+    // its captures are served.
     const atRestPhase = (p: Phase) =>
       p === 'ready' || p === 'completed' || p === 'ended' || p === 'paused';
     listBatches()
@@ -1831,17 +1834,24 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
         if (!atRestPhase(getStoreSnapshot().phase)) return;
         const active = items.find((b) => b.status === 'active') ?? null;
         if (active) {
-          applyServerRestore(active);
+          // The list is a count per batch, not a row per capture (E-27), so the
+          // batch's episodes come from its detail. A detail that cannot be read
+          // leaves the localStorage restore standing: adopting the list item
+          // alone would put an empty strip beside a non-zero recorded count,
+          // which the operator cannot tell from "nothing was recorded".
+          let batchCaptures: Capture[];
+          try {
+            batchCaptures = (await getBatch(active.batch_id)).captures;
+          } catch {
+            return;
+          }
+          applyServerRestore(active, batchCaptures);
           // The merge may have kept local-only records for captures the server
-          // has since deleted — indistinguishable, from the batch list alone,
-          // from a review save that hasn't landed (no batch_id yet). Ask about
-          // each suspect and prune the proven-dead; a fetch failure keeps the
-          // record (offline resilience beats a false removal).
-          const serverIds = new Set(
-            (active.episodes ?? [])
-              .map((e) => e.capture_id)
-              .filter((id): id is string => typeof id === 'string'),
-          );
+          // has since deleted — indistinguishable, from the batch alone, from a
+          // review save that hasn't landed (no batch_id yet). Ask about each
+          // suspect and prune the proven-dead; a fetch failure keeps the record
+          // (offline resilience beats a false removal).
+          const serverIds = new Set(batchCaptures.map((c) => c.capture_id));
           const suspects = getStoreSnapshot()
             .episodes.map((e) => e.captureId)
             .filter((id): id is string => !!id && !serverIds.has(id));

@@ -1540,6 +1540,29 @@ class CaptureStore:
             ).fetchall()
         return {row["batch_id"]: row["batch_seq"] for row in rows}
 
+    def live_capture_counts(self, batch_ids: Iterable[str]) -> dict[str, int]:
+        """Live capture count per batch, in ONE query (§8, E-27).
+
+        Same filter as :meth:`list_captures_by_batch` — tombstones drop out,
+        because the count is displayed beside a caption promising "recordings
+        still on disk". Grouped rather than asked per batch: the list endpoint
+        used to run one query per batch to produce nothing but these numbers.
+        """
+        ids = [str(b) for b in batch_ids]
+        if not ids:
+            return {}
+        id_slots = ", ".join("?" for _ in ids)
+        state_slots = ", ".join("?" for _ in TOMBSTONE_STATES)
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT batch_id, COUNT(*) AS n FROM captures "
+                f"WHERE batch_id IN ({id_slots}) "
+                f"AND state NOT IN ({state_slots}) GROUP BY batch_id",
+                (*ids, *sorted(TOMBSTONE_STATES)),
+            ).fetchall()
+        counts = {row["batch_id"]: row["n"] for row in rows}
+        return {batch_id: counts.get(batch_id, 0) for batch_id in ids}
+
     def list_batches(
         self,
         status: str | None = None,

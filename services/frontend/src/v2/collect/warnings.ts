@@ -227,8 +227,12 @@ export interface CameraSummaryInput {
   streamsDown: number;
   /** The cause they agree on, 'mixed' when they do not, null when unknown.
    *  A PRIMITIVE on purpose: this rides inside CameraHealth, which is compared
-   *  field-by-field with `===` to decide whether the parent's state changed —
-   *  an array would be a fresh reference every render and never settle. */
+   *  field-by-field with `===` (sameCameraHealth) to decide whether the parent
+   *  has news. The health object is memoized over primitive deps, so an array
+   *  here would not loop — it would be stable until the memo recomputes. What
+   *  it WOULD do is compare unequal on every recomputation even when its
+   *  contents are identical, pushing state and re-rendering for a report that
+   *  carries no news, which is the one thing that comparison exists to stop. */
   streamFault: StreamFailure | 'mixed' | null;
   silentTopics: number;
   unmonitoredTopics: number;

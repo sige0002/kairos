@@ -1026,10 +1026,21 @@ test('a volatile phase is NOT restored on reload — recording resolves to ready
 // is no episodes resource and no browser-local mirror of it any more.
 // ---------------------------------------------------------------------------
 
+/** A batch as the server holds it. `captures` is what `GET /batches/{id}`
+ *  serves; the LIST is a count and never carries it (E-27), which is exactly
+ *  what `phase2Fetch` reproduces. */
+interface BatchFixture extends Record<string, unknown> {
+  batch_id: string;
+  captures?: Record<string, unknown>[];
+}
+
 interface Phase2Opts {
   captureId?: string;
   batchId?: string;
-  activeBatches?: unknown[];
+  activeBatches?: BatchFixture[];
+  /** HTTP status for `GET /batches/{id}` when the detail must be refused —
+   *  the restore's only source of episodes, so its failure is its own case. */
+  batchDetailStatus?: number;
   /** Status + body for `PATCH /captures/{id}/review` when it must be refused. */
   reviewFails?: { status: number; body: Record<string, unknown> };
   /** capture_ids the server's `GET /captures` list reports as still existing —
@@ -1045,6 +1056,14 @@ interface Phase2Opts {
 function phase2Fetch(opts: Phase2Opts = {}) {
   const captureId = opts.captureId ?? 'cap_1';
   const batchId = opts.batchId ?? 'batch_x';
+  const fixtures = opts.activeBatches ?? [];
+  // The list item is the fixture MINUS its captures: the server's list serves a
+  // count per batch, so a restore reading the list alone finds no episodes.
+  const listItems = fixtures.map((fixture) => {
+    const item: Record<string, unknown> = { ...fixture };
+    delete item.captures;
+    return item;
+  });
   const calls: {
     url: string;
     method: string;
@@ -1072,8 +1091,35 @@ function phase2Fetch(opts: Phase2Opts = {}) {
         jsonResponse({ batch_id: batchId, status: body?.status ?? 'active' }),
       );
     }
+    // GET /batches/{id} — the detail, and the ONLY place a batch's captures
+    // are served. Matched before the list so the two never collide.
+    const batchDetail = /\/batches\/([^/?]+)$/.exec(url);
+    if (method === 'GET' && batchDetail) {
+      const id = decodeURIComponent(batchDetail[1]!);
+      const fixture = fixtures.find((b) => b.batch_id === id);
+      if (opts.batchDetailStatus || !fixture) {
+        return Promise.resolve(
+          jsonResponse(
+            { error: { code: 'batch_not_found', message: `no batch ${id}` } },
+            opts.batchDetailStatus ?? 404,
+          ),
+        );
+      }
+      const { captures: batchCaptures = [], ...batch } = fixture;
+      return Promise.resolve(
+        jsonResponse({
+          ...batch,
+          episode_count: batchCaptures.length,
+          captures: batchCaptures.map((c) => ({
+            state: 'completed',
+            review_revision: 1,
+            ...c,
+          })),
+        }),
+      );
+    }
     if (url.includes('/batches') && method === 'GET') {
-      return Promise.resolve(jsonResponse({ items: opts.activeBatches ?? [] }));
+      return Promise.resolve(jsonResponse({ items: listItems }));
     }
     if (url.includes('/review') && method === 'PATCH') {
       if (opts.reviewFails) {
@@ -1452,9 +1498,9 @@ test('reload restores the active batch from the server (GET /batches?status=acti
         target_episodes: 30,
         status: 'active',
         episode_count: 2,
-        episodes: [
+        captures: [
           {
-            index: 1,
+            index_in_batch: 1,
             capture_id: 'cap_r1',
             run_id: 'run_r1',
             task_result: 'success',
@@ -1462,7 +1508,7 @@ test('reload restores the active batch from the server (GET /batches?status=acti
             review_status: 'pending',
           },
           {
-            index: 2,
+            index_in_batch: 2,
             capture_id: 'cap_r2',
             run_id: 'run_r2',
             task_result: 'failure',
@@ -1484,6 +1530,183 @@ test('reload restores the active batch from the server (GET /batches?status=acti
   // Second episode's needs_review maps to the local 'review' quality axis.
   expect(result.current.stats.nReview).toBe(1);
   expect(result.current.stats.epNext).toBe(3);
+});
+
+// The batch list is a count per batch, not a row per capture (E-27), so the
+// episodes of the restored batch can only come from its detail. Reading them
+// off the list item instead is not a smaller restore — it is no restore at
+// all, and the failure is silent: the hydrate chain's trailing catch (there
+// for an unreachable API) swallows the TypeError and Collect comes back empty
+// after a reload, mid-batch.
+test('the active-batch restore reads the batch detail for its episodes', async () => {
+  const { calls } = phase2Fetch({
+    activeBatches: [
+      // A finished batch, listed first. It exists so "one detail request" means
+      // "the active one" and not "one per batch": with a single batch in the
+      // list those two are the same number, and a restore that walked every
+      // batch's detail — the N+1 the server just removed, rebuilt on the
+      // client — would count as one request and pass. Its captures are
+      // deliberately real, so a restore that took the FIRST batch's detail
+      // instead of the active one is caught by the strip below, not only by
+      // the request count.
+      {
+        batch_id: 'batch_done',
+        batch_seq: 2,
+        project: 'Bin Picking',
+        task: 'Bin to Tray',
+        condition: 'Bin: empty',
+        target_episodes: 30,
+        status: 'completed',
+        episode_count: 3,
+        episodes_recorded: 3,
+        captures: [
+          {
+            index_in_batch: 1,
+            capture_id: 'cap_old1',
+            run_id: 'run_old1',
+            task_result: 'success',
+            quality: 'good',
+            review_status: 'adopted',
+          },
+          {
+            index_in_batch: 2,
+            capture_id: 'cap_old2',
+            run_id: 'run_old2',
+            task_result: 'success',
+            quality: 'good',
+            review_status: 'adopted',
+          },
+          {
+            index_in_batch: 3,
+            capture_id: 'cap_old3',
+            run_id: 'run_old3',
+            task_result: 'success',
+            quality: 'good',
+            review_status: 'adopted',
+          },
+        ],
+      },
+      {
+        batch_id: 'batch_detail',
+        batch_seq: 3,
+        project: 'Bin Picking',
+        task: 'Bin to Tray',
+        condition: 'Bin: full',
+        target_episodes: 30,
+        status: 'active',
+        // The list carries these two numbers about its captures and nothing else.
+        episode_count: 2,
+        episodes_recorded: 2,
+        captures: [
+          {
+            index_in_batch: 1,
+            capture_id: 'cap_d1',
+            run_id: 'run_d1',
+            task_result: 'success',
+            quality: 'good',
+            review_status: 'adopted',
+          },
+          {
+            index_in_batch: 2,
+            capture_id: 'cap_d2',
+            run_id: 'run_d2',
+            task_result: 'failure',
+            quality: 'needs_review',
+            review_status: 'pending',
+          },
+        ],
+      },
+    ],
+  });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+
+  // The strip is populated from the detail's captures, keyed by capture_id and
+  // placed by index_in_batch (§1) — not merely counted.
+  await waitFor(() => expect(result.current.episodes).toHaveLength(2));
+  expect(result.current.episodes.map((e) => e.captureId)).toEqual([
+    'cap_d1',
+    'cap_d2',
+  ]);
+  expect(result.current.episodes.map((e) => e.index)).toEqual([1, 2]);
+  expect(result.current.stats.nReview).toBe(1);
+  expect(result.current.batchSeq).toBe(3);
+  expect(
+    calls.some((c) => c.method === 'GET' && c.url.includes('/batches/batch_detail')),
+  ).toBe(true);
+  // And the detail was asked for the ACTIVE batch only — one extra request, not
+  // one per batch (the N+1 the server-side change just removed). The finished
+  // batch in the list is never opened: nothing on this screen wants it.
+  expect(calls.some((c) => c.url.includes('/batches/batch_done'))).toBe(false);
+  expect(
+    calls.filter((c) => c.method === 'GET' && /\/batches\/[^/?]+$/.test(c.url)),
+  ).toHaveLength(1);
+  // No capture is a suspect (all of them are the server's), so the restore does
+  // not go on to interrogate /captures/{id} about any of them.
+  expect(calls.some((c) => c.url.includes('/captures/cap_d1'))).toBe(false);
+});
+
+// A detail that cannot be read is the case the localStorage fallback exists
+// for. Adopting the list item alone would replace a strip of real episodes
+// with an empty one beside a non-zero count — a worse answer than the
+// fallback, and one the operator cannot tell from "nothing was recorded".
+test('a batch detail that fails leaves the localStorage restore standing', async () => {
+  window.localStorage.setItem(
+    BATCH_STORAGE_KEY,
+    JSON.stringify({
+      batchSeq: 9,
+      recordedCount: 2,
+      batchId: 'batch_offline',
+      episodes: [
+        { index: 1, quality: 'good', taskResult: 'ok', captureId: 'cap_l1' },
+        { index: 2, quality: 'good', taskResult: 'ok', captureId: 'cap_l2' },
+      ],
+      project: 'Local project',
+      task: 'Local task',
+      condition: 'Local condition',
+    }),
+  );
+  __rehydrateBatchStore();
+  const { calls } = phase2Fetch({
+    batchDetailStatus: 503,
+    activeBatches: [
+      {
+        batch_id: 'batch_offline',
+        batch_seq: 9,
+        project: 'Server project',
+        task: 'Server task',
+        target_episodes: 30,
+        status: 'active',
+        episode_count: 2,
+        episodes_recorded: 2,
+        captures: [
+          {
+            index_in_batch: 1,
+            capture_id: 'cap_l1',
+            run_id: 'run_l1',
+            task_result: 'success',
+            quality: 'good',
+            review_status: 'pending',
+          },
+        ],
+      },
+    ],
+  });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+
+  await waitFor(() =>
+    expect(
+      calls.some((c) => c.method === 'GET' && c.url.includes('/batches/batch_offline')),
+    ).toBe(true),
+  );
+  // The local context survives whole: episodes, count and labels.
+  expect(result.current.episodes).toHaveLength(2);
+  expect(result.current.stats.nRecorded).toBe(2);
+  expect(result.current.project).toBe('Local project');
+  expect(result.current.task).toBe('Local task');
 });
 
 // ---------------------------------------------------------------------------
@@ -1608,9 +1831,9 @@ test('an active server batch overrides a stale local batch (server wins, not dis
         status: 'active',
         episodes_recorded: 5,
         episode_count: 1,
-        episodes: [
+        captures: [
           {
-            index: 5,
+            index_in_batch: 5,
             capture_id: 'cap_r5',
             run_id: 'run_r5',
             task_result: 'success',
@@ -1647,10 +1870,10 @@ test('restore keeps the recorded count monotone after a Review delete (episodes_
         status: 'active',
         episodes_recorded: 3, // 3 episodes were recorded …
         episode_count: 2,
-        episodes: [
+        captures: [
           // … but one was deleted in Review, so only 2 survive (index 2 gone).
           {
-            index: 1,
+            index_in_batch: 1,
             capture_id: 'cap_r1',
             run_id: 'run_r1',
             task_result: 'success',
@@ -1658,7 +1881,7 @@ test('restore keeps the recorded count monotone after a Review delete (episodes_
             review_status: 'adopted',
           },
           {
-            index: 3,
+            index_in_batch: 3,
             capture_id: 'cap_r3',
             run_id: 'run_r3',
             task_result: 'success',
@@ -1691,9 +1914,9 @@ test('an excluded episode still counts toward the recorded total', async () => {
         status: 'active',
         episodes_recorded: 2,
         episode_count: 2,
-        episodes: [
+        captures: [
           {
-            index: 1,
+            index_in_batch: 1,
             capture_id: 'cap_r1',
             run_id: 'run_r1',
             task_result: 'success',
@@ -1701,7 +1924,7 @@ test('an excluded episode still counts toward the recorded total', async () => {
             review_status: 'pending',
           },
           {
-            index: 2,
+            index_in_batch: 2,
             capture_id: 'cap_r2',
             run_id: 'run_r2',
             task_result: 'success',
@@ -1754,9 +1977,9 @@ test('a server restore never LOWERS a higher local recorded count', async () => 
         status: 'active',
         episodes_recorded: 2,
         episode_count: 2,
-        episodes: [
+        captures: [
           {
-            index: 1,
+            index_in_batch: 1,
             capture_id: 'cap_r1',
             run_id: 'run_r1',
             task_result: 'success',
@@ -1764,7 +1987,7 @@ test('a server restore never LOWERS a higher local recorded count', async () => 
             review_status: 'pending',
           },
           {
-            index: 2,
+            index_in_batch: 2,
             capture_id: 'cap_r2',
             run_id: 'run_r2',
             task_result: 'success',
@@ -1822,9 +2045,9 @@ test('a same-batch server restore keeps an episode the server does not know abou
         status: 'active',
         episodes_recorded: 2,
         episode_count: 2,
-        episodes: [
+        captures: [
           {
-            index: 1,
+            index_in_batch: 1,
             capture_id: 'cap_r1',
             run_id: 'run_r1',
             task_result: 'success',
@@ -1832,7 +2055,7 @@ test('a same-batch server restore keeps an episode the server does not know abou
             review_status: 'pending',
           },
           {
-            index: 2,
+            index_in_batch: 2,
             capture_id: 'cap_r2',
             run_id: 'run_r2',
             task_result: 'success',
@@ -2069,9 +2292,9 @@ test('changing the condition once the set has a recording rolls the set over (ol
         target_episodes: 20,
         status: 'active',
         episode_count: 1,
-        episodes: [
+        captures: [
           {
-            index: 1,
+            index_in_batch: 1,
             capture_id: 'cap_r1',
             run_id: 'run_r1',
             task_result: 'success',
@@ -2125,7 +2348,7 @@ test('changing the condition before any recording updates in place (PATCH {condi
         target_episodes: 20,
         status: 'active',
         episode_count: 0,
-        episodes: [],
+        captures: [],
       },
     ],
   });
@@ -2170,7 +2393,7 @@ test('pickCustomCondition trims whitespace and ignores an empty value', async ()
         target_episodes: 20,
         status: 'active',
         episode_count: 0,
-        episodes: [],
+        captures: [],
       },
     ],
   });
@@ -2211,7 +2434,7 @@ test('changing the task before any recording PATCHes {task, condition} onto the 
         target_episodes: 20,
         status: 'active',
         episode_count: 0,
-        episodes: [],
+        captures: [],
       },
     ],
   });
@@ -2255,7 +2478,7 @@ test('changing the project before any recording PATCHes {project, task, conditio
         target_episodes: 20,
         status: 'active',
         episode_count: 0,
-        episodes: [],
+        captures: [],
       },
     ],
   });
@@ -2296,7 +2519,7 @@ test('a custom task before any recording PATCHes only {task} (no condition sent 
         target_episodes: 20,
         status: 'active',
         episode_count: 0,
-        episodes: [],
+        captures: [],
       },
     ],
   });
@@ -2375,9 +2598,9 @@ test('changing the project once the set has a recording rolls over with a Plan c
         target_episodes: 30,
         status: 'active',
         episode_count: 1,
-        episodes: [
+        captures: [
           {
-            index: 1,
+            index_in_batch: 1,
             capture_id: 'cap_r1',
             run_id: 'run_r1',
             task_result: 'success',

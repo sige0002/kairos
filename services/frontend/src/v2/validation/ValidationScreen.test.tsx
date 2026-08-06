@@ -32,6 +32,8 @@ const CAPTURES = {
       replica: null,
       batch_id: 'batch_x',
     },
+    // Not in batch_x: the batch is cap_001 + cap_003, so a batch run over it
+    // must not sweep this one in.
     {
       capture_id: 'cap_002',
       run_id: 'run_002',
@@ -40,7 +42,6 @@ const CAPTURES = {
       review_revision: 0,
       replica: REPLICA_HERE,
       digest_state: 'complete',
-      batch_id: 'batch_x',
     },
     {
       capture_id: 'cap_001',
@@ -169,8 +170,10 @@ const RUNTIME_CONFIG = {
   },
 };
 
-// One batch: cap_001 is on this host (validatable); cap_003 is catalogued but
-// its bytes are elsewhere.
+// One batch of two — cap_001, which is on this host (validatable), and cap_003,
+// which is catalogued but whose bytes are elsewhere. The list item is a COUNT
+// and carries no row per capture (E-27); membership is read off the captures'
+// own `batch_id`, which is what a batch's membership has always been (§4.1).
 const BATCHES = {
   items: [
     {
@@ -184,24 +187,6 @@ const BATCHES = {
       episodes_recorded: 2,
       episode_count: 2,
       batch_seq: 4,
-      episodes: [
-        {
-          index: 1,
-          capture_id: 'cap_001',
-          run_id: 'run_001',
-          task_result: 'success',
-          quality: 'good',
-          review_status: 'pending',
-        },
-        {
-          index: 2,
-          capture_id: 'cap_003',
-          run_id: 'run_003',
-          task_result: 'success',
-          quality: 'good',
-          review_status: 'adopted',
-        },
-      ],
     },
   ],
 };
@@ -209,6 +194,10 @@ const BATCHES = {
 let requestedUrls: string[] = [];
 // Keeps every submitted job in `running`, so polling continues.
 let jobStaysRunning = false;
+// When true, every capture page reports another page after it, so the client's
+// own MAX_PAGES cap is what ends the sweep — the real truncation path, not a
+// faked flag.
+let capturesNeverEnd = false;
 
 /** capture_id -> the error code POST /jobs answers it with. */
 let refuseJobFor: Record<string, string> = {};
@@ -222,6 +211,7 @@ beforeEach(() => {
   postedBodies = [];
   jobCounter = 0;
   jobStaysRunning = false;
+  capturesNeverEnd = false;
   resultByJobId = {};
   refuseJobFor = {};
   vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
@@ -293,7 +283,13 @@ beforeEach(() => {
         }),
       );
     }
-    if (url.includes('/captures')) return Promise.resolve(jsonResponse(CAPTURES));
+    if (url.includes('/captures')) {
+      return Promise.resolve(
+        jsonResponse(
+          capturesNeverEnd ? { ...CAPTURES, next_cursor: 'more' } : CAPTURES,
+        ),
+      );
+    }
     return Promise.resolve(jsonResponse({}));
   });
 });
@@ -569,6 +565,55 @@ test('a batch target validates every capture of that batch that is here (blast r
     pipeline: 'fast_validation',
     capture_id: 'cap_001',
   });
+});
+
+// E-27: the batch list stopped shipping a row per capture. A screen that read
+// its bulk targets off those rows loses every batch — silently, since an empty
+// optgroup looks exactly like a host with no batches. This one holds the whole
+// capture catalog already, so it owes the server nothing but the count.
+test('batch targets survive a list that carries no per-capture rows', async () => {
+  renderWithClient(<ValidationScreen />);
+  const target = (await screen.findByLabelText('target')) as HTMLSelectElement;
+
+  const option = await screen.findByRole('option', {
+    name: /07\/13 · #4 · pick/,
+  });
+  expect(option).toBeInTheDocument();
+  expect((option as HTMLOptionElement).value).toBe('batch:batch_x');
+  expect((option as HTMLOptionElement).disabled).toBe(false);
+  expect(
+    within(target).queryByRole('option', { name: 'No batches with captures' }),
+  ).not.toBeInTheDocument();
+  // Membership came from the captures already on hand, so no batch detail was
+  // fetched to rebuild what the screen was holding.
+  expect(requestedUrls.some((u) => /\/batches\/[^/?]+$/.test(u))).toBe(false);
+});
+
+// ---- the catalog sweep's own limit ---------------------------------------
+// The targets here are drawn from a cursor sweep that gives up after
+// MAX_PAGES. "All captures on this host (N)" and a batch's "(n on this host)"
+// are then counts of what was fetched, presented as counts of what exists.
+
+test('a catalog too big for one sweep says so beside the targets', async () => {
+  capturesNeverEnd = true;
+  renderWithClient(<ValidationScreen />);
+
+  const note = await screen.findByTestId('catalog-truncated', undefined, {
+    timeout: 10000,
+  });
+  expect(note).toHaveTextContent(/not the whole catalog|more recordings than/i);
+  // It says what the numbers next to it actually mean, not just that something
+  // is wrong.
+  expect(note).toHaveTextContent(/fetched/i);
+});
+
+test('a catalog that fits reports nothing — the note is not decoration', async () => {
+  renderWithClient(<ValidationScreen />);
+
+  await waitFor(() =>
+    expect((screen.getByLabelText('target') as HTMLSelectElement).value).toBe('cap_002'),
+  );
+  expect(screen.queryByTestId('catalog-truncated')).not.toBeInTheDocument();
 });
 
 test("video_check's topic param is a picker seeded from the target capture's cameras", async () => {

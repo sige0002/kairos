@@ -24,7 +24,6 @@ from api_orchestrator.models import (
     Batch,
     BatchCreateRequest,
     BatchDetail,
-    BatchEpisodeSummary,
     BatchListResponse,
     BatchPatchRequest,
     BatchSummary,
@@ -65,22 +64,10 @@ def _default_robot(request: Request, robot: str | None) -> str | None:
 
 
 def _summary(store: CaptureStore, batch: Batch) -> BatchSummary:
-    captures = store.list_captures_by_batch(batch.batch_id)
+    """One batch's list item. The count is a query; the roster is not here."""
+    counts = store.live_capture_counts([batch.batch_id])
     return BatchSummary(
-        **batch.model_dump(),
-        episode_count=len(captures),
-        episodes=[
-            BatchEpisodeSummary(
-                index=capture.index_in_batch or 0,
-                capture_id=capture.capture_id,
-                run_id=capture.run_id,
-                batch_seq=batch.batch_seq,
-                task_result=capture.task_result,
-                quality=capture.quality,
-                review_status=capture.review_status,
-            )
-            for capture in captures
-        ],
+        **batch.model_dump(), episode_count=counts.get(batch.batch_id, 0)
     )
 
 
@@ -160,10 +147,13 @@ async def list_batches(
     batch.
     """
     store = _store(request)
+    batches = store.list_batches(status, robot=robot, operator=operator)
+    # One grouped query for every count, rather than one query per batch.
+    counts = store.live_capture_counts([b.batch_id for b in batches])
     return BatchListResponse(
         items=[
-            _summary(store, b)
-            for b in store.list_batches(status, robot=robot, operator=operator)
+            BatchSummary(**b.model_dump(), episode_count=counts.get(b.batch_id, 0))
+            for b in batches
         ]
     )
 
