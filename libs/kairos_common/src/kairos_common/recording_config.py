@@ -16,6 +16,8 @@ typos; pydantic reports the offending location so the operator can fix it.
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated
@@ -280,3 +282,49 @@ def load_recording_config(path: str | Path) -> RecordingConfig:
         return RecordingConfig.model_validate(raw)
     except ValidationError as exc:
         raise ValueError(_format_validation_error(path, exc)) from exc
+
+
+# The failures every consumer is written to survive: the file is absent, or it
+# is there but unusable (unparseable YAML, or it fails validation).
+DEGRADE_ON_UNUSABLE: tuple[type[Exception], ...] = (FileNotFoundError, ValueError)
+
+
+def _warn_unavailable(logger: logging.Logger, path: Path, exc: Exception) -> None:
+    """Default report: one WARNING naming the failure, then carry on."""
+    logger.warning("recording config unavailable: %s", exc)
+
+
+def load_recording_config_or_none(
+    path: str | Path,
+    logger: logging.Logger,
+    *,
+    on_unavailable: Callable[
+        [logging.Logger, Path, Exception], None
+    ] = _warn_unavailable,
+    degrade_on: tuple[type[Exception], ...] = DEGRADE_ON_UNUSABLE,
+) -> RecordingConfig | None:
+    """Load the RECORDING_CONFIG, degrading to ``None`` when it is unusable.
+
+    Every service that reads this file is written to run without it — the
+    recorder falls back to each publisher's offered QoS, the monitor seeds no
+    topics, the orchestrator serves empty defaults — so a missing or malformed
+    config is reported and swallowed rather than being a reason to refuse to
+    boot.
+
+    Args:
+        path: The ``RECORDING_CONFIG`` path.
+        logger: The caller's logger, handed to *on_unavailable*.
+        on_unavailable: How the failure is reported. The default logs one
+            WARNING; pass a reporter to word it differently (it can tell an
+            absent file from an unusable one by the exception type).
+        degrade_on: Which failures degrade to ``None``. Widen it (``OSError``)
+            to also survive a file that exists but cannot be read — a
+            permission error, or a directory in its place — instead of failing
+            app construction.
+    """
+    path = Path(path)
+    try:
+        return load_recording_config(path)
+    except degrade_on as exc:
+        on_unavailable(logger, path, exc)
+        return None
