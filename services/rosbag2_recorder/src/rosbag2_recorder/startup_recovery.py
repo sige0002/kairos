@@ -7,9 +7,8 @@ under ``objects/`` that this recorder itself could have abandoned.
 The functions take the live :class:`~rosbag2_recorder.recorder.RecorderSession`
 and call back through it (``session._recover_capture`` and friends) rather than
 calling each other directly, so the dispatch is the same one the methods had
-before the split. The handful of values the recorder holds as module constants
-— the clock, the ISO-8601 formatter, the ``unknown_*`` placeholders, the log
-path — are passed in by those thin methods instead of imported from
+before the split. What the recorder still holds itself — the clock and the log
+path — is passed in by those thin methods rather than imported from
 :mod:`rosbag2_recorder.recorder`, which keeps the dependency one-way and keeps
 the clock substitutable in the recorder's own namespace.
 """
@@ -35,6 +34,8 @@ from kairos_common.capture_sidecars import (
 )
 from kairos_common.ids import is_uuid7
 from kairos_common.rebuild import has_bag
+from kairos_common.record_meta import UNKNOWN_OPERATOR, UNKNOWN_TASK
+from kairos_common.time import utc_iso8601_of
 
 if TYPE_CHECKING:
     from rosbag2_recorder.recorder import RecorderSession
@@ -233,21 +234,19 @@ def synthesize_manifest(
     capture_id: str,
     *,
     now: Callable[[], str],
-    iso8601_of: Callable[[datetime], str],
-    unknown_operator: str,
-    unknown_task: str,
 ) -> None:
     """Write an ``interrupted`` manifest for a capture that never got one.
 
     Every field is best-effort: the operator, task and topic selection died
     with the process that knew them. What can be measured is measured, and
-    what cannot falls back to the same ``unknown_*`` placeholders a live
-    start uses — deliberately NOT null. Null operator/task is §3.3's
-    import-only spelling, which ``bag_import`` sets to say "this capture
-    came from somewhere else"; a recovered capture was recorded right here,
-    and borrowing the import spelling would misfile its origin. ``unknown_*``
-    fabricates nothing: it is the same honest "we don't know" the live path
-    already writes when a standalone start names no operator.
+    what cannot falls back to the same shared ``unknown_*`` placeholders a
+    live start uses (:mod:`kairos_common.record_meta`) — deliberately NOT
+    null. Null operator/task is §3.3's import-only spelling, which
+    ``bag_import`` sets to say "this capture came from somewhere else"; a
+    recovered capture was recorded right here, and borrowing the import
+    spelling would misfile its origin. ``unknown_*`` fabricates nothing: it
+    is the same honest "we don't know" the live path already writes when a
+    standalone start names no operator.
 
     The ``run_id`` is synthesized from the directory's mtime because the
     manifest requires one and it is a display name only (§1) — no key, no
@@ -263,10 +262,10 @@ def synthesize_manifest(
         source_instance_id=session._instance_id,
         run_id="run_recovered_" + stamp.strftime("%Y%m%d_%H%M%S"),
         state=CaptureState.interrupted.value,
-        started_at=iso8601_of(stamp),
+        started_at=utc_iso8601_of(stamp),
         ended_at=now(),
-        operator=unknown_operator,
-        task=unknown_task,
+        operator=UNKNOWN_OPERATOR,
+        task=UNKNOWN_TASK,
         robot=session._configured_robot(),
         topics=tuple(
             {"name": name, "type": type_, "qos": None}
