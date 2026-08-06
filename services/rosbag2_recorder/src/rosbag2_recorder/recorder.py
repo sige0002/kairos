@@ -14,13 +14,12 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
-import re
 import shutil
 import signal
 import subprocess
 import threading
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import IO, Any
@@ -35,20 +34,17 @@ from kairos_common import (
 )
 from kairos_common.capture_sidecars import (
     ROSBAG2_METADATA_FILENAME,
-    UNFINALIZED_STATES,
     CaptureState,
     DigestState,
     ObjectManifestV2,
     SidecarStatus,
     capture_dir,
-    incoming_dir,
     objects_dir,
     read_object_manifest,
-    trash_dir,
     write_failed_start,
     write_object_manifest,
 )
-from kairos_common.ids import is_uuid7, new_capture_id
+from kairos_common.ids import new_capture_id
 from kairos_common.instance import load_or_create_instance
 
 # Imported for exactly one predicate, deliberately: "does this capture hold data"
@@ -57,6 +53,7 @@ from kairos_common.instance import load_or_create_instance
 # a rebuild — §9-5 forbids that, and this is a pure function over a directory.
 from kairos_common.rebuild import has_bag
 
+from rosbag2_recorder import integrity, preflight, startup_recovery
 from rosbag2_recorder.models import (
     QosProfile,
     RecordArming,
@@ -71,10 +68,6 @@ from rosbag2_recorder.models import (
 from rosbag2_recorder.qos import build_qos_overrides, write_qos_overrides_file
 
 logger = logging.getLogger("kairos.rosbag2_recorder")
-
-# Refuse to start a recording if less free space than this is available; a few
-# hundred MB is a conservative floor so we fail fast (507) rather than mid-run.
-MIN_FREE_BYTES = 256 * 1024 * 1024
 
 # How long to wait for the bag process to exit after SIGINT before escalating.
 STOP_TIMEOUT_S = 30.0
@@ -108,9 +101,6 @@ RESUME_SERVICE_TIMEOUT_S = 5.0
 
 # States in which a session is actively holding (or finalising) the subprocess.
 _ACTIVE_STATES = frozenset({RunState.recording, RunState.stopping})
-
-# Terminal states that mean the recording did not end the way it was asked to.
-_BROKEN_STATES = frozenset({RunState.failed, RunState.interrupted})
 
 # Session-metadata placeholders for a standalone recorder call. Since v2 the
 # operator/task no longer key a path, but they still must not be null on a
@@ -150,13 +140,6 @@ def _recorder_log_path(objects_root: Path, capture_id: str) -> Path:
 
 # The recorder's own log, once archived into the capture directory it belongs to.
 RECORDER_LOG_FILENAME = "recorder.log"
-
-# rosbag2's in-recorder MessageCache logs the messages it dropped on cache
-# overflow at shutdown (MessageCache::log_dropped, WARN to stderr):
-#   "Cache buffers lost messages per topic:\n\t<topic>: <n>\nTotal lost: <N>"
-# Scanning the captured log for the total turns a silent in-recorder drop into a
-# visible integrity signal (OpenLUTRA does not surface this at all).
-_TOTAL_LOST_RE = re.compile(r"Total lost:\s*(\d+)")
 
 
 # MCAP storage-plugin options for zstd compression. We use MCAP-native *chunk*
@@ -353,96 +336,21 @@ class RecorderSession:
             logger.warning("could not relax permissions on %s", path)
 
     def ensure_ready(self) -> None:
-        """Raise if the recorder cannot serve recordings (readiness probe).
-
-        Readiness == the objects root is writable with enough free space.
-        Reuses the same check ``start`` runs so /readyz predicts start success.
-        """
-        self._check_writable_and_space()
+        """Raise if the recorder cannot serve recordings (readiness probe)."""
+        preflight.ensure_ready(self)
 
     def _check_writable_and_space(self) -> None:
-        """Raise 507 if ``/data/objects`` is not writable or space is low.
-
-        Also creates ``.trash/`` and ``.incoming/``. The recorder is the only
-        service running as root, so it is the only one that can hand uid 1000 a
-        writable root. ``.trash`` is where the orchestrator renames captures on
-        delete (§7 step 3) and ``.incoming`` is where imports are staged before
-        their ``os.replace`` into ``objects/`` (§2); a root-owned one of either
-        would fail at runtime, on the operator's delete or import, rather than
-        here at startup. Creating all three side by side is also what makes
-        them same-filesystem by construction, which those renames require.
-        """
-        root = self._objects_root()
-        try:
-            root.mkdir(parents=True, exist_ok=True)
-            # Keep the objects root host-writable (so capture dirs can be moved
-            # to .trash and removed) — §2.
-            self._make_host_writable(root)
-            for sibling_root in (
-                trash_dir(self._data_dir),
-                incoming_dir(self._data_dir),
-            ):
-                sibling_root.mkdir(parents=True, exist_ok=True)
-                self._make_host_writable(sibling_root)
-        except OSError as exc:
-            raise ApiError(
-                status_code=507,
-                code="data_not_writable",
-                message="Recording directory is not writable.",
-                details={"path": str(root), "error": str(exc)},
-            ) from exc
-        if not os.access(root, os.W_OK):
-            raise ApiError(
-                status_code=507,
-                code="data_not_writable",
-                message="Recording directory is not writable.",
-                details={"path": str(root)},
-            )
-        free = shutil.disk_usage(root).free
-        if free < MIN_FREE_BYTES:
-            raise ApiError(
-                status_code=507,
-                code="insufficient_space",
-                message="Insufficient free space to start recording.",
-                details={"free_bytes": free, "required_bytes": MIN_FREE_BYTES},
-            )
-        self._check_cache_ram()
+        """Raise 507 if ``/data/objects`` is not writable or space is low."""
+        preflight.check_writable_and_space(self)
 
     def _check_cache_ram(self) -> None:
-        """Raise 507 if the configured record cache needs more RAM than is free.
-
-        rosbag2 double-buffers the message cache, so worst-case memory is ~2x
-        ``--max-cache-size``. We require that plus the disk safety margin to be
-        available so a large cache can't OOM-kill the recorder mid-run. Skipped
-        when the cache is unset (rosbag2 default) or free RAM can't be read.
-        """
-        cache_mb = self._max_cache_size_mb()
-        if cache_mb <= 0:
-            return
-        need = 2 * cache_mb * 1024 * 1024 + MIN_FREE_BYTES
-        avail = self._available_ram_bytes()
-        if avail is not None and avail < need:
-            raise ApiError(
-                status_code=507,
-                code="insufficient_memory",
-                message="Not enough free RAM for the configured record cache.",
-                details={
-                    "required_bytes": need,
-                    "available_bytes": avail,
-                    "max_cache_size_mb": cache_mb,
-                },
-            )
+        """Raise 507 if the configured record cache needs more RAM than is free."""
+        preflight.check_cache_ram(self)
 
     @staticmethod
     def _available_ram_bytes() -> int | None:
         """Free RAM in bytes from ``/proc/meminfo`` MemAvailable (None if absent)."""
-        try:
-            for line in Path("/proc/meminfo").read_text().splitlines():
-                if line.startswith("MemAvailable:"):
-                    return int(line.split()[1]) * 1024
-        except (OSError, ValueError, IndexError):
-            return None
-        return None
+        return preflight.available_ram_bytes()
 
     # -- command construction ----------------------------------------------
 
@@ -1788,31 +1696,10 @@ class RecorderSession:
             self._log_file = None
 
     def _scan_dropped_messages(self, capture_id: str | None) -> int | None:
-        """Messages the in-recorder cache dropped this run, from the captured log.
-
-        rosbag2 logs ``Total lost: N`` once at shutdown when its MessageCache
-        overflowed. Returns that N, ``0`` when the log exists with no such line
-        (no overflow), or ``None`` when the log is unavailable/unreadable (drop
-        count unknown — e.g. a stubbed spawn in unit tests).
-
-        Both log locations are tried, because the two callers see different
-        ones: finalise scans before :meth:`_archive_log` moves the sibling in,
-        while crash recovery scans a capture whose log was archived first. A
-        single hard-coded location would silently report "unknown" for one of
-        them, which reads as "no overflow was detectable" rather than "nobody
-        looked in the right place".
-        """
+        """Messages the in-recorder cache dropped this run, from the captured log."""
         if not capture_id:
             return None
-        for path in self._recorder_log_locations(capture_id):
-            try:
-                text = path.read_text(errors="replace")
-            except OSError:
-                continue
-            # One report per run (at shutdown); take the last match to be safe.
-            matches = _TOTAL_LOST_RE.findall(text)
-            return int(matches[-1]) if matches else 0
-        return None
+        return integrity.scan_dropped_messages(self._recorder_log_locations(capture_id))
 
     def _recorder_log_locations(self, capture_id: str) -> tuple[Path, Path]:
         """Where a capture's log can be: the live sibling, then the archived copy."""
@@ -1822,38 +1709,18 @@ class RecorderSession:
         )
 
     def _classify_integrity(self) -> str:
-        """Classify recording integrity from state + cache-drop count.
-
-        ``failed`` whenever the recording did not end cleanly — a capture that
-        was interrupted is missing whatever the operator meant to record after
-        the crash, which the drop count cannot describe. Otherwise ``unknown``
-        when the drop count could not be determined, ``dropped`` when the cache
-        lost >0 messages, and ``ok`` when a readable log reported no overflow.
-        """
-        if self._state in _BROKEN_STATES:
-            return "failed"
-        if self._dropped_messages is None:
-            return "unknown"
-        return "dropped" if self._dropped_messages > 0 else "ok"
+        """Classify recording integrity from state + cache-drop count."""
+        return integrity.classify_integrity(self._state, self._dropped_messages)
 
     def _archive_log(self, capture_id: str | None) -> None:
-        """Move the sibling recorder log into the capture dir (best-effort).
-
-        Done at finalise — while the recorder is still the capture's sole writer
-        (§3.3). Adding a file after the digest job has sealed ``files`` would
-        make the sealed digest describe a directory that no longer matches, so
-        this must never run over a capture the recorder has already handed off.
-        A missing sibling (stubbed spawn) is a no-op.
-        """
+        """Move the sibling recorder log into the capture dir (best-effort)."""
         if not capture_id:
             return
-        src = _recorder_log_path(self._objects_root(), capture_id)
-        dst = self._capture_dir(capture_id) / RECORDER_LOG_FILENAME
-        try:
-            if src.exists():
-                src.replace(dst)
-        except OSError:
-            logger.warning("could not archive recorder log for %s", capture_id)
+        integrity.archive_log(
+            _recorder_log_path(self._objects_root(), capture_id),
+            self._capture_dir(capture_id) / RECORDER_LOG_FILENAME,
+            capture_id,
+        )
 
     def _cleanup_log_file(self, capture_id: str | None) -> None:
         """Close the log handle and drop the sibling log (failed-start paths)."""
@@ -2361,281 +2228,48 @@ class RecorderSession:
             "bytes": self._recorded_bytes(capture_id),
         }
 
+    # -- startup reconciliation ---------------------------------------------
+
     def reconcile_on_startup(self) -> None:
-        """Finalise captures a previous process left mid-flight.
-
-        Scans ``objects/`` for manifests still in ``recording``/``stopping`` —
-        the only states this process would still own had it not died — and
-        rewrites them so the audit trail reflects the crash/restart. The new
-        state comes from the same discriminator finalise and the rebuild use:
-        a capture with a bag is ``interrupted``, one without ever produced
-        nothing and is ``failed``.
-
-        Directories with **no manifest at all** are reclaimed here too (see
-        :meth:`_adopt_manifestless_capture`). They can only be this recorder's
-        own abandoned arm or start — imports land atomically from
-        ``.incoming/`` — and leaving them would break §2's invariant that an
-        incomplete directory under ``objects/`` means a live capture, which is
-        exactly what makes the orchestrator's scan trustworthy.
-
-        Every other manifest is left strictly alone (§3.3). Once a capture is
-        terminal the orchestrator's digest job is its sole writer, and a
-        rewrite from here would race — or silently undo — the single atomic
-        write that seals ``files``/``manifest_digest``. A corrupt manifest is
-        reported and left as it is, never repaired (§8 rule 4).
-        """
-        root = self._objects_root()
-        try:
-            children = sorted(root.iterdir())
-        except FileNotFoundError:
-            return
-        except OSError:
-            logger.exception("could not scan %s for interrupted captures", root)
-            return
-
-        for child in children:
-            # Nothing kairos writes under objects/ is a symlink, and following
-            # one would let a planted link redirect a manifest rewrite outside
-            # the store entirely.
-            if child.is_symlink() or not child.is_dir():
-                continue
-            capture_id = child.name
-            if not is_uuid7(capture_id):
-                continue
-            self._recover_capture(child, capture_id)
+        """Finalise captures a previous process left mid-flight."""
+        startup_recovery.reconcile_on_startup(self)
 
     def _recover_capture(self, path: Path, capture_id: str) -> None:
         """Rewrite one crashed capture's manifest, if it is ours to rewrite."""
-        read = read_object_manifest(path)
-        if read.status is SidecarStatus.corrupt:
-            logger.error(
-                "capture manifest is unreadable; leaving it untouched",
-                extra={
-                    "capture_id": capture_id,
-                    "error": read.error,
-                    "component": "recorder",
-                },
-            )
-            return
-        if read.status is SidecarStatus.missing:
-            self._adopt_manifestless_capture(path, capture_id)
-            return
-        manifest = read.manifest
-        if manifest is None or manifest.state not in UNFINALIZED_STATES:
-            return
-        if manifest.capture_id != capture_id:
-            # The manifest names a different capture than the directory it sits
-            # in. Rewriting it would stamp this directory's id onto whatever
-            # that other capture actually is.
-            logger.error(
-                "capture manifest names another capture; leaving it untouched",
-                extra={
-                    "capture_id": capture_id,
-                    "manifest_capture_id": manifest.capture_id,
-                    "component": "recorder",
-                },
-            )
-            return
-
-        recovered_state = (
-            CaptureState.interrupted.value
-            if has_bag(path)
-            else CaptureState.failed.value
-        )
-        # Siblings first: the manifest write is the handoff (§3.3), and adding
-        # recorder.log to the directory afterwards would leave the digest job's
-        # sealed file list describing a directory that no longer matches.
-        self._archive_log(capture_id)
-        self._cleanup_qos_file(capture_id)
-        self._cleanup_storage_config(capture_id)
-        # Re-measure rather than carrying the last manifest's numbers forward.
-        # Those were written at start, before the recording ran; a crash after
-        # an hour would otherwise be filed as the few kilobytes that existed in
-        # its first second, and the drop count the process reported on its way
-        # down would never be read at all.
-        meta = self._read_rosbag2_metadata(capture_id)
-        recovered = replace(
-            manifest,
-            state=recovered_state,
-            ended_at=manifest.ended_at or utc_now_iso8601(),
-            error=(
-                manifest.error
-                or f"recorder restarted while the capture was {manifest.state}"
-            ),
-            message_count=(
-                self._message_count(meta)
-                if meta is not None
-                else manifest.message_count
-            ),
-            bytes=self._recorded_bytes(capture_id),
-            dropped_messages=self._scan_dropped_messages(capture_id),
-            integrity="failed",
-            digest_state=DigestState.pending.value,
-            files=None,
-            manifest_digest=None,
-        )
-        try:
-            write_object_manifest(path, recovered)
-        except OSError:
-            logger.exception(
-                "could not rewrite the interrupted capture's manifest",
-                extra={"capture_id": capture_id, "component": "recorder"},
-            )
-            return
-        self._make_host_writable(path)
-        logger.info(
-            "recovered a capture left mid-flight",
-            extra={
-                "capture_id": capture_id,
-                "run_id": manifest.run_id,
-                "state": recovered_state,
-                "component": "recorder",
-            },
-        )
+        startup_recovery.recover_capture(self, path, capture_id, now=utc_now_iso8601)
 
     def _adopt_manifestless_capture(self, path: Path, capture_id: str) -> None:
-        """Reclaim an ``objects/<id>/`` that has no manifest at all.
-
-        Such a directory can only be this recorder's own abandoned work: an arm
-        or a start that died between ``ros2 bag record`` creating its output
-        directory and the first manifest write. Imports never produce one —
-        they are completed under ``.incoming/`` and moved in with a single
-        ``os.replace`` (§2) — so there is no third party whose directory this
-        could be, and leaving it in place would break the invariant that an
-        incomplete directory under ``objects/`` means a *live* capture.
-
-        Whether it is worth keeping is decided by the same discriminator as
-        everywhere else. Bytes on disk become an ``interrupted`` capture with a
-        synthesized manifest, because throwing away a recording just for
-        missing its sidecar is not a call this function gets to make. Nothing on
-        disk is deleted outright: a crash while armed is materially a disarm,
-        and a disarm writes no failure record.
-        """
-        if self._holds_recorded_data(path):
-            self._synthesize_manifest(path, capture_id)
-            return
-        # No bag: remove the directory and the siblings that only made sense
-        # while it was being spawned into.
-        removed = self._remove_capture_dir(capture_id)
-        self._cleanup_qos_file(capture_id)
-        self._cleanup_storage_config(capture_id)
-        _recorder_log_path(self._objects_root(), capture_id).unlink(missing_ok=True)
-        if removed:
-            # Only when it is genuinely gone: _remove_capture_dir has already
-            # warned about residue, and announcing a removal on top of that
-            # would leave two log lines flatly contradicting each other for
-            # whoever reads them during an incident.
-            logger.warning(
-                "removed an empty capture directory left by a crash while armed "
-                "or starting; no bag was ever written, so there is nothing to "
-                "recover",
-                extra={"capture_id": capture_id, "component": "recorder"},
-            )
+        """Reclaim an ``objects/<id>/`` that has no manifest at all."""
+        startup_recovery.adopt_manifestless_capture(
+            self,
+            path,
+            capture_id,
+            log_path=_recorder_log_path(self._objects_root(), capture_id),
+        )
 
     def _synthesize_manifest(self, path: Path, capture_id: str) -> None:
-        """Write an ``interrupted`` manifest for a capture that never got one.
-
-        Every field is best-effort: the operator, task and topic selection died
-        with the process that knew them. What can be measured is measured, and
-        what cannot falls back to the same ``unknown_*`` placeholders a live
-        start uses — deliberately NOT null. Null operator/task is §3.3's
-        import-only spelling, which ``bag_import`` sets to say "this capture
-        came from somewhere else"; a recovered capture was recorded right here,
-        and borrowing the import spelling would misfile its origin. ``unknown_*``
-        fabricates nothing: it is the same honest "we don't know" the live path
-        already writes when a standalone start names no operator.
-
-        The ``run_id`` is synthesized from the directory's mtime because the
-        manifest requires one and it is a display name only (§1) — no key, no
-        path, nothing that a collision could corrupt.
-        """
-        stamp = self._directory_timestamp(path)
-        self._archive_log(capture_id)
-        self._cleanup_qos_file(capture_id)
-        self._cleanup_storage_config(capture_id)
-        meta = self._read_rosbag2_metadata(capture_id)
-        manifest = ObjectManifestV2(
-            capture_id=capture_id,
-            source_instance_id=self._instance_id,
-            run_id="run_recovered_" + stamp.strftime("%Y%m%d_%H%M%S"),
-            state=CaptureState.interrupted.value,
-            started_at=_iso8601_of(stamp),
-            ended_at=utc_now_iso8601(),
-            operator=_UNKNOWN_OPERATOR,
-            task=_UNKNOWN_TASK,
-            robot=self._configured_robot(),
-            topics=tuple(
-                {"name": name, "type": type_, "qos": None}
-                for name, type_ in self._metadata_topics(meta)
-            ),
-            message_count=self._message_count(meta) if meta is not None else None,
-            bytes=self._recorded_bytes(capture_id),
-            dropped_messages=self._scan_dropped_messages(capture_id),
-            integrity="failed",
-            error=(
-                "recovered from bytes on disk: the recorder died before it wrote "
-                "a manifest, so operator, task and settings are unknown"
-            ),
-            digest_state=DigestState.pending.value,
-        )
-        try:
-            write_object_manifest(path, manifest)
-        except OSError:
-            logger.exception(
-                "could not synthesize a manifest for an orphaned capture",
-                extra={"capture_id": capture_id, "component": "recorder"},
-            )
-            return
-        self._make_host_writable(path)
-        logger.warning(
-            "adopted a capture directory that had no manifest; it holds a bag, "
-            "so it was recovered as interrupted with synthesized metadata",
-            extra={
-                "capture_id": capture_id,
-                "run_id": manifest.run_id,
-                "component": "recorder",
-            },
+        """Write an ``interrupted`` manifest for a capture that never got one."""
+        startup_recovery.synthesize_manifest(
+            self,
+            path,
+            capture_id,
+            now=utc_now_iso8601,
+            iso8601_of=_iso8601_of,
+            unknown_operator=_UNKNOWN_OPERATOR,
+            unknown_task=_UNKNOWN_TASK,
         )
 
     @staticmethod
     def _holds_recorded_data(path: Path) -> bool:
-        """Whether a manifest-less directory is worth keeping: real bytes or none.
-
-        Stricter than :func:`has_bag` on purpose, and only for this decision.
-        ``has_bag`` answers "is there a bag here" for a capture that already has
-        a manifest, where a row exists either way and agreeing with the
-        rebuild's spelling is what matters (§8 rule 2). Here the question is
-        whether to *invent* a capture, and the difference is a single file: a
-        paused ``ros2 bag record`` creates its storage file the moment it
-        starts, so a crash while armed leaves a 0-byte ``.mcap`` and nothing
-        else. Counting that as a recording would publish an empty capture with
-        fabricated metadata for an operator to puzzle over, when the honest
-        reading is that the arm was cancelled by the crash.
-        """
-        if (path / ROSBAG2_METADATA_FILENAME).is_file():
-            return True
-        try:
-            return any(mcap.stat().st_size > 0 for mcap in path.glob("*.mcap"))
-        except OSError:
-            return False
+        """Whether a manifest-less directory is worth keeping: real bytes or none."""
+        return startup_recovery.holds_recorded_data(path)
 
     @staticmethod
     def _directory_timestamp(path: Path) -> datetime:
         """The capture directory's mtime — when its last bytes were written."""
-        try:
-            return datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
-        except OSError:
-            return datetime.now(UTC)
+        return startup_recovery.directory_timestamp(path)
 
     @staticmethod
     def _metadata_topics(meta: dict[str, Any] | None) -> list[tuple[str, str | None]]:
         """``(name, type)`` for every topic rosbag2 recorded, or an empty list."""
-        if meta is None:
-            return []
-        topics: list[tuple[str, str | None]] = []
-        for item in meta.get("topics_with_message_count") or []:
-            tmeta = (item or {}).get("topic_metadata") or {}
-            name = tmeta.get("name")
-            if name:
-                topics.append((name, tmeta.get("type")))
-        return topics
+        return startup_recovery.metadata_topics(meta)
