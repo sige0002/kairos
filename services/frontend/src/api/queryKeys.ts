@@ -53,3 +53,8 @@ export const queryKeys = {
   probeTopics: ['probe', 'topics'] as const,
   probeFields: (topic: string) => ['probe', 'fields', topic] as const,
 } as const;
+
+// The recording-config query key. Lives here (not in the Settings editor):
+// four screens read it — the Settings editor, the Robots section, Collect's
+// context bar and its pre-arm engine — so it is registry-owned like the rest.
+export const RECORDING_CONFIG_KEY = ['config', 'recording'] as const;

@@ -51,5 +51,3 @@ export const green = {
   700: '#15803d',
 } as const;
 
-export const fontSans = "'Inter Tight', system-ui, sans-serif";
-export const fontMono = "'IBM Plex Mono', ui-monospace, monospace";

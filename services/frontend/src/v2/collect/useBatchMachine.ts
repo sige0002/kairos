@@ -22,7 +22,6 @@ import {
   useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
 } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError, apiGet, apiPost } from '../../api/client';
@@ -35,7 +34,6 @@ import { useCaptureDeletion } from '../captures/useCaptureDeletion';
 import { needsReload } from '../captures/errors';
 import { useRecordStatus } from '../captures/useRecordStatus';
 import { findProject, findTask, getPlans } from '../plans';
-import { RECORDING_CONFIG_KEY } from '../../features/config/ConfigTab';
 import {
   ACTIVE_RECORD_STATES,
   TERMINAL_RECORD_STATES,
@@ -46,11 +44,9 @@ import {
   type QuickCheckVerdict,
   type RecordArming,
   type RecordIntegrity,
-  type RecordPrepareResponse,
   type RecordStartRequest,
   type RecordState,
   type RecordStatus,
-  type RecordingConfigPayload,
   type ReviewSaveRequest,
   CaptureListItem,
 } from '../../api/types';
@@ -75,8 +71,6 @@ import {
   ADVICE_ITEMS,
   COLLECT_DISCARD_REASON,
   COLLECT_UNSAVED_DISCARD_REASON,
-  PREARM_KEEPALIVE_LEAD_MS,
-  PREARM_RETRY_MS,
   QUICKCHECK_FALLBACK_MS,
   RETAKE_DISCARD_REASON,
   SAVED_FLASH_MS,
@@ -114,6 +108,9 @@ import type {
   RecordSelection,
   UseBatchMachineArgs,
 } from './machine/contract';
+import { useCollectOverlays } from './hooks/useCollectOverlays';
+import { useCollectShortcuts } from './hooks/useCollectShortcuts';
+import { usePreArm } from './hooks/usePreArm';
 
 /** Normalise a thrown error to a MachineError. A backend code passes through; a
  *  5xx or a transport failure (no code) is treated as an unreachable recorder so
@@ -304,137 +301,18 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   const takeoverResumedOwn = !!takeover && takeover.captureId === state.lastCaptureId;
 
   // ---- pre-arm (two-phase start) -------------------------------------------
-  // While the operator sits ready-to-record, keep the recorder ARMED — a
-  // standing /record/prepare, kept alive by matching re-prepares shortly before
-  // its disarm deadline — so Start is a near-instant resume instead of a
-  // multi-second spawn + DDS-discovery wait. Bounded and honest:
-  //  - config-gated (recording.pre_arm): an armed recorder carries
-  //    recording-level DDS receive load, so a tight-budget robot turns it off;
-  //  - only while this tab is visible and the phase is ready/result (the
-  //    recorder's own prepare_disarm_timeout_s cleans up an abandoned arm);
-  //  - best-effort: a failed prepare is never surfaced — Start simply falls
-  //    back to the full synchronous path.
-  const recordingConfigQuery = useQuery({
-    queryKey: RECORDING_CONFIG_KEY,
-    queryFn: ({ signal }) =>
-      apiGet<RecordingConfigPayload>('/config/recording', { signal }),
-    staleTime: 60_000,
+  // The engine lives in hooks/usePreArm.ts (config gate, visibility pause,
+  // keep-alive re-prepares); only the armed flag comes back.
+  const { preArmed } = usePreArm({
+    phase: state.phase,
+    recorderState,
+    noSelection,
+    takeoverCaptureId,
+    operator,
+    task: state.task,
+    selectionTopics: selection.topics,
+    armingDisarmAt: arming?.disarm_at ?? null,
   });
-  const preArmEnabled = useMemo(() => {
-    const cfg = recordingConfigQuery.data?.config;
-    if (!cfg || typeof cfg !== 'object') return false; // unknown yet -> don't arm
-    const tuning = (cfg as { recording?: { pre_arm?: unknown } }).recording;
-    return tuning?.pre_arm !== false; // present-but-unset defaults on (model default)
-  }, [recordingConfigQuery.data]);
-
-  // Pause the engine while the tab is hidden (the recorder's TTL disarms an
-  // abandoned session on its own); resume re-arms on the next visibility.
-  const pageVisible = useSyncExternalStore(
-    (notify) => {
-      document.addEventListener('visibilitychange', notify);
-      return () => document.removeEventListener('visibilitychange', notify);
-    },
-    () => document.visibilityState === 'visible',
-    () => true,
-  );
-
-  // Arm while the operator is between recordings on this screen: 'ready' (about
-  // to start) and 'result' (labeling — the next start follows right after).
-  // recorderState gates out recording/stopping (incl. takeover) AND the
-  // pre-first-poll null, so we never prepare blind.
-  const preArmed = recorderState === 'armed';
-  const preArmEligible =
-    preArmEnabled &&
-    !noSelection &&
-    takeoverCaptureId == null &&
-    (state.phase === 'ready' || state.phase === 'result') &&
-    // A fresh recorder reports `created`; there is no `idle` on the wire (§10).
-    (preArmed ||
-      recorderState === 'created' ||
-      recorderState === 'completed' ||
-      recorderState === 'failed' ||
-      recorderState === 'interrupted');
-
-  // operator/task ride along on prepare for completeness but are NOT part of
-  // the armed-session match (metadata comes from the eventual start request),
-  // so they are read via refs — typing in the operator field must not re-fire
-  // prepares.
-  const operatorRef = useRef(operator);
-  operatorRef.current = operator;
-  const taskRef = useRef(state.task);
-  taskRef.current = state.task;
-
-  const preArmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const preArmInFlightRef = useRef(false);
-  // JSON key of the last selection we prepared with: a selection change while
-  // armed must re-prepare now (the recorder swaps the mismatched session).
-  const lastPreparedKeyRef = useRef<string | null>(null);
-  const armingDisarmAt = arming?.disarm_at ?? null;
-
-  useEffect(() => {
-    if (!preArmEligible || !pageVisible) {
-      if (preArmTimerRef.current) {
-        clearTimeout(preArmTimerRef.current);
-        preArmTimerRef.current = null;
-      }
-      return;
-    }
-    let cancelled = false;
-    const topicsKey = JSON.stringify(selection.topics);
-
-    const schedule = (ms: number) => {
-      if (preArmTimerRef.current) clearTimeout(preArmTimerRef.current);
-      preArmTimerRef.current = setTimeout(fire, Math.max(ms, 1_000));
-    };
-    const fire = () => {
-      if (cancelled || preArmInFlightRef.current) return;
-      preArmInFlightRef.current = true;
-      const body: RecordStartRequest = { topics: selection.topics };
-      if (operatorRef.current.trim()) body.operator = operatorRef.current.trim();
-      if (taskRef.current?.trim()) body.task = taskRef.current.trim();
-      apiPost<RecordPrepareResponse>('/record/prepare', body)
-        .then(() => {
-          lastPreparedKeyRef.current = topicsKey;
-          // Reflect armed + the new disarm_at on the shared status query; the
-          // effect re-runs off that data and schedules the next keep-alive.
-          void queryClient.invalidateQueries({ queryKey: queryKeys.recordStatus });
-        })
-        .catch(() => {
-          // Best-effort by design (e.g. 409 lost a race with a start, older
-          // backend without /record/prepare): retry later, never surface.
-          if (!cancelled) schedule(PREARM_RETRY_MS);
-        })
-        .finally(() => {
-          preArmInFlightRef.current = false;
-        });
-    };
-
-    if (!preArmed || lastPreparedKeyRef.current !== topicsKey) {
-      fire();
-    } else {
-      // Armed and matching — extend shortly before the recorder's deadline.
-      const deadlineMs = armingDisarmAt ? Date.parse(armingDisarmAt) : NaN;
-      schedule(
-        Number.isFinite(deadlineMs)
-          ? deadlineMs - Date.now() - PREARM_KEEPALIVE_LEAD_MS
-          : PREARM_RETRY_MS,
-      );
-    }
-    return () => {
-      cancelled = true;
-      if (preArmTimerRef.current) {
-        clearTimeout(preArmTimerRef.current);
-        preArmTimerRef.current = null;
-      }
-    };
-  }, [
-    preArmEligible,
-    pageVisible,
-    preArmed,
-    armingDisarmAt,
-    selection.topics,
-    queryClient,
-  ]);
 
   // ---- unsaved-take scan (D-3) ---------------------------------------------
   // A completed capture that has never been reviewed, is recent, and is not the
@@ -1492,72 +1370,39 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     state.phase === 'paused';
   const condAllowed = state.phase === 'ready';
 
-  const [batchMenuOpen, setBatchMenuOpen] = useState(false);
-  const [projPickerOpen, setProjPickerOpen] = useState(false);
-  const [taskPickerOpen, setTaskPickerOpen] = useState(false);
-  const [endModalOpen, setEndModalOpen] = useState(false);
-  const [issueModalOpen, setIssueModalOpen] = useState(false);
-  const [robotPickerOpen, setRobotPickerOpen] = useState(false);
-  const [condModalOpen, setCondModalOpen] = useState(false);
-  const [resetModalOpen, setResetModalOpen] = useState(false);
-  const [targetModalOpen, setTargetModalOpen] = useState(false);
-  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const {
+    batchMenuOpen,
+    projPickerOpen,
+    taskPickerOpen,
+    endModalOpen,
+    issueModalOpen,
+    robotPickerOpen,
+    condModalOpen,
+    resetModalOpen,
+    targetModalOpen,
+    shortcutsOpen,
+    toggleBatchMenu,
+    openProjPicker,
+    toggleRobotPicker,
+    openTaskPicker,
+    openCondModal,
+    openEndModal,
+    openIssueModal,
+    openResetModal,
+    openTargetModal,
+    openShortcuts,
+    setBatchMenuOpen,
+    setProjPickerOpen,
+    setTaskPickerOpen,
+    setEndModalOpen,
+    setIssueModalOpen,
+    setCondModalOpen,
+    setResetModalOpen,
+    setTargetModalOpen,
+    setShortcutsOpen,
+  } = useCollectOverlays({ ctxEditable, condAllowed });
   const [adviceIdx, setAdviceIdx] = useState(0);
 
-  const toggleBatchMenu = useCallback(() => setBatchMenuOpen((v) => !v), []);
-  const openProjPicker = useCallback(() => {
-    if (!ctxEditable) return;
-    setProjPickerOpen((v) => !v);
-    setTaskPickerOpen(false);
-    setBatchMenuOpen(false);
-  }, [ctxEditable]);
-  const toggleRobotPicker = useCallback(() => {
-    if (!ctxEditable) return;
-    setRobotPickerOpen((v) => !v);
-    setProjPickerOpen(false);
-    setTaskPickerOpen(false);
-    setBatchMenuOpen(false);
-  }, [ctxEditable]);
-  const openTaskPicker = useCallback(() => {
-    if (!ctxEditable) return;
-    setTaskPickerOpen((v) => !v);
-    setProjPickerOpen(false);
-    setBatchMenuOpen(false);
-  }, [ctxEditable]);
-  // The guards above only stop a picker being OPENED. Nothing dismissed one
-  // already on screen, so a list opened before Start stayed live over a running
-  // recording — and picking from it re-labels the take in flight: with an
-  // episode already recorded it routes through rolloverSet, whose "close the
-  // old set" PATCH is skipped while recording (only the at-rest phases send it)
-  // while the local ROLLOVER_SET runs regardless. Close them when the context
-  // stops being editable.
-  useEffect(() => {
-    if (ctxEditable) return;
-    setRobotPickerOpen(false);
-    setProjPickerOpen(false);
-    setTaskPickerOpen(false);
-  }, [ctxEditable]);
-  const openCondModal = useCallback(() => {
-    if (!condAllowed) return;
-    setCondModalOpen(true);
-    setBatchMenuOpen(false);
-  }, [condAllowed]);
-  const openEndModal = useCallback(() => {
-    setEndModalOpen(true);
-    setBatchMenuOpen(false);
-  }, []);
-  const openIssueModal = useCallback(() => {
-    setIssueModalOpen(true);
-    setBatchMenuOpen(false);
-  }, []);
-  const openResetModal = useCallback(() => {
-    setResetModalOpen(true);
-    setBatchMenuOpen(false);
-  }, []);
-  const openTargetModal = useCallback(() => {
-    setTargetModalOpen(true);
-    setBatchMenuOpen(false);
-  }, []);
   const changeTarget = useCallback(
     (target: number) => {
       const t = Math.max(1, Math.min(500, Math.floor(target)));
@@ -1572,7 +1417,6 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     },
     [state.batchId, showToast],
   );
-  const openShortcuts = useCallback(() => setShortcutsOpen(true), []);
   const closeModals = useCallback(() => {
     setEndModalOpen(false);
     setIssueModalOpen(false);
@@ -1783,51 +1627,14 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     projPickerOpen ||
     taskPickerOpen ||
     batchMenuOpen;
-  // R-to-start must not fire into a takeover (would 409); read it via a ref so
-  // the listener stays stable.
-  const takeoverActiveRef = useRef(false);
-  takeoverActiveRef.current = !!takeover;
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const t = e.target as HTMLElement | null;
-      const tag = t?.tagName;
-      const typing =
-        tag === 'INPUT' ||
-        tag === 'TEXTAREA' ||
-        tag === 'SELECT' ||
-        (t?.isContentEditable ?? false);
-      if (typing) return;
-      // While an overlay is open, only let it handle its own keys.
-      if (anyOverlayOpen) return;
-      const phase = getStoreSnapshot().phase;
-      if (e.key === 'r' || e.key === 'R') {
-        if (phase === 'ready' && !takeoverActiveRef.current) {
-          e.preventDefault();
-          startRecording();
-        }
-      } else if (
-        e.key === 's' ||
-        e.key === 'S' ||
-        e.key === ' ' ||
-        e.key === 'Spacebar'
-      ) {
-        if (phase === 'recording') {
-          e.preventDefault();
-          stopRecording();
-        }
-      } else if (e.key === 'Escape') {
-        if (phase === 'arming') {
-          e.preventDefault();
-          cancelArming();
-        }
-      } else if (e.key === '?') {
-        e.preventDefault();
-        setShortcutsOpen(true);
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [anyOverlayOpen, startRecording, stopRecording, cancelArming]);
+  useCollectShortcuts({
+    anyOverlayOpen,
+    takeoverActive: !!takeover,
+    startRecording,
+    stopRecording,
+    cancelArming,
+    openShortcutsSheet: openShortcuts,
+  });
 
   const stats: BatchStats = useMemo(() => {
     // The recorded count / next number are MONOTONE (from recordedCount) so a

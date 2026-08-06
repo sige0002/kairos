@@ -34,35 +34,6 @@ export type MonitorBridge = 'up' | 'down' | null;
  *  fits the viewport without page scroll. */
 export const MAX_STREAM_PANES = 4;
 
-// Live Scope band (OL-③.2 successor): add-style panels overlaid on the Live
-// tab, below the [Stream | Monitor] grid. Two panel kinds share one shell —
-// Health (monitor-derived, no payload decode) and Signal (topic_probe-derived
-// decoded fields). Persisted here (not component state) so the band survives a
-// Live tab unmount on tab switch.
-export type ScopeMetric = 'hz' | 'shortfall' | 'jitter';
-export interface ScopeHealthPanel {
-  id: number;
-  kind: 'health';
-  metric: ScopeMetric;
-  topics: string[];
-}
-export interface ScopeSignalPanel {
-  id: number;
-  kind: 'signal';
-  series: ProbeSeries[];
-  hz: number;
-}
-export type ScopePanel = ScopeHealthPanel | ScopeSignalPanel;
-/** Fields settable via `updateScopePanel`: metric/topics apply to a health
- *  panel, series/hz to a signal panel — the caller only sends the ones that
- *  apply to the panel's own kind. */
-export interface ScopePanelPatch {
-  metric?: ScopeMetric;
-  topics?: string[];
-  series?: ProbeSeries[];
-  hz?: number;
-}
-export type ScopeWindowId = '30s' | '1m' | '5m';
 export type ProbeWindowId = '10s' | '30s' | '1m';
 
 interface UiState {

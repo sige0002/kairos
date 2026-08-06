@@ -12,7 +12,8 @@ import { queryKeys } from '../../api/queryKeys';
 import type { ConfigAspect, ConfigOptions, ValidationPreset } from '../../api/types';
 import { Badge, Card } from '../../components/ui';
 import { ErrorMessage } from '../../components/ErrorMessage';
-import { optionLabel, RECORDING_CONFIG_KEY } from '../../features/config/ConfigTab';
+import { RECORDING_CONFIG_KEY } from '../../api/queryKeys';
+import { optionLabel } from './RecordingConfigEditor';
 import { useUiStore } from '../../store/uiStore';
 
 interface PresetListResponse {

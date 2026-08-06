@@ -19,7 +19,7 @@ export const DEFAULT_TAB: V2TabId = 'collect';
 
 // Deep-link ids from the old Live/Graph/Probe/Recordings/Datasets/Config IA,
 // redirected to their v2 home so bookmarks and pop-out windows keep working.
-export const LEGACY_TAB_REDIRECTS: Record<string, V2TabId> = {
+const LEGACY_TAB_REDIRECTS: Record<string, V2TabId> = {
   live: 'collect',
   graph: 'monitor',
   probe: 'monitor',
@@ -28,7 +28,7 @@ export const LEGACY_TAB_REDIRECTS: Record<string, V2TabId> = {
   config: 'settings',
 };
 
-export function isV2TabId(id: string): id is V2TabId {
+function isV2TabId(id: string): id is V2TabId {
   return V2_TABS.some((t) => t.id === id);
 }
 

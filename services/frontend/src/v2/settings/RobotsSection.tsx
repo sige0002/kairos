@@ -28,11 +28,8 @@ import { useRecordStatus } from '../captures/useRecordStatus';
 import type { RuntimeConfig } from '../../config';
 import { Badge, Button, Card, Modal, cn } from '../../components/ui';
 import { ErrorMessage } from '../../components/ErrorMessage';
-import {
-  optionLabel,
-  RECORDING_CONFIG_KEY,
-  RecordingConfigEditor,
-} from '../../features/config/ConfigTab';
+import { RECORDING_CONFIG_KEY } from '../../api/queryKeys';
+import { optionLabel, RecordingConfigEditor } from './RecordingConfigEditor';
 
 const TOPIC_CHIP_CLASS =
   'inline-flex items-center gap-1.5 rounded-chip bg-teal-100 px-2.5 py-1 font-mono text-[11.5px] font-semibold text-teal-700';

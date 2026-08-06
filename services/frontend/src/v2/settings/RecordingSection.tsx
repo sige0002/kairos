@@ -15,7 +15,8 @@ import type { RuntimeConfig } from '../../config';
 import { Badge, Card, cn } from '../../components/ui';
 import { ErrorMessage } from '../../components/ErrorMessage';
 import { matchesTopic } from '../../features/record/topics';
-import { RECORDING_CONFIG_KEY, RecordingConfigEditor } from '../../features/config/ConfigTab';
+import { RECORDING_CONFIG_KEY } from '../../api/queryKeys';
+import { RecordingConfigEditor } from './RecordingConfigEditor';
 
 /** The subset of the RecordingConfig (kairos_common) this view renders. The full
  *  object is opaque JSON; these are the fields the form surfaces. */

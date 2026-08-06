@@ -14,7 +14,7 @@ import type { ConfigOptions } from '../../api/types';
 import { Card, cn } from '../../components/ui';
 import { type BatchMachine } from './useBatchMachine';
 import { findProject, usePlans } from '../plans';
-import { RECORDING_CONFIG_KEY } from '../../features/config/ConfigTab';
+import { RECORDING_CONFIG_KEY } from '../../api/queryKeys';
 
 function CellButton({
   label,

@@ -96,31 +96,6 @@ export function TaskResultChip({
   );
 }
 
-const REVIEW_STATUS_TONE: Record<string, Tone> = {
-  adopted: 'green',
-  excluded: 'red',
-  pending: 'gray',
-};
-
-export function ReviewStatusChip({
-  status,
-  testId,
-}: {
-  status: string;
-  testId?: string;
-}) {
-  return (
-    <span data-testid={testId} className="w-fit">
-      <Badge
-        tone={REVIEW_STATUS_TONE[status] ?? 'gray'}
-        className="w-fit whitespace-nowrap"
-      >
-        {status.toUpperCase()}
-      </Badge>
-    </span>
-  );
-}
-
 /** "MM/DD · #N" from a server batch_seq. A null seq yields `fallback`
  *  (default "—"): the batch number is the server's to assign, and a capture
  *  reviewed into no batch genuinely has none. */

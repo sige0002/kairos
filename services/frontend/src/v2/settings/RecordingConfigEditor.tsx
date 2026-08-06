@@ -1,28 +1,23 @@
-// Recording-config editing pieces shared by v2 Settings (the v1 Config tab
-// that used to live here was removed once Settings reached parity). Exports:
+// Recording-config editing pieces for v2 Settings (moved here from the v1-era
+// features/config/ConfigTab.tsx once nothing v1 was left in it). Exports:
 // RecordingConfigEditor — editable JSON for the ACTIVE robot's RECORDING_CONFIG
 // (PUT /api/v1/config/recording; default_topics / robot_name apply immediately,
 // recorder QoS + monitor expected_hz load at startup so they apply on restart —
-// the UI says so honestly); optionLabel — human label for an aspect option;
-// RECORDING_CONFIG_KEY — the recording-config query key.
+// the UI says so honestly); optionLabel — human label for an aspect option.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError, apiGet, getApiBase } from '../../api/client';
-import { queryKeys } from '../../api/queryKeys';
+import { RECORDING_CONFIG_KEY, queryKeys } from '../../api/queryKeys';
 import type {
   ApiErrorBody,
   AspectOption,
   ConfigAspect,
   RecordingConfigPayload,
 } from '../../api/types';
-import { useRecordStatus } from '../../v2/captures/useRecordStatus';
+import { useRecordStatus } from '../captures/useRecordStatus';
 import type { RuntimeConfig } from '../../config';
 import { ErrorMessage } from '../../components/ErrorMessage';
-
-// Local key (queryKeys is shared and owned elsewhere); the recording-config
-// query is Config-tab-local, so a plain stable tuple is enough.
-export const RECORDING_CONFIG_KEY = ['config', 'recording'] as const;
 
 /** PUT the edited config. Inline (no apiPut helper) so client.ts is untouched. */
 async function putRecordingConfig(
