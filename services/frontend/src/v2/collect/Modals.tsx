@@ -1,11 +1,18 @@
-// Collect-scoped modals (End set early / Report issue / Change condition)
+// Collect-scoped modals (End batch early / Report issue / Change condition)
 // plus the toast. Rendered at the screen level per the design mock's MODALS
 // section. ("Set" is the operator-facing name for a batch.)
+//
+// Discard is deliberately NOT here. On Collect it is one click with no dialog
+// (user decision 2026-08-03: the press is the consent; the ledger records that
+// no reason was asked) — only Review still opens the shared DiscardDialog,
+// where §12's wording obligations live.
 
 import { useState } from 'react';
 import { Button, Modal, cn } from '../../components/ui';
 import { END_REASONS, type BatchMachine } from './useBatchMachine';
 import { findTask, usePlans } from '../plans';
+import { Toast } from '../shared/Toast';
+import { formatBytes } from '../review/format';
 
 function ReasonChip({
   active,
@@ -41,8 +48,8 @@ function EndBatchModal({ machine }: { machine: BatchMachine }) {
       onClose={machine.closeModals}
       title={
         machine.batchSeq != null
-          ? `End set ${machine.batchSeq} early?`
-          : 'End set early?'
+          ? `End batch ${machine.batchSeq} early?`
+          : 'End batch early?'
       }
       footer={
         <>
@@ -54,7 +61,7 @@ function EndBatchModal({ machine }: { machine: BatchMachine }) {
             onClick={machine.confirmEndBatch}
             disabled={!canConfirm}
           >
-            End set
+            End batch
           </Button>
         </>
       }
@@ -112,22 +119,22 @@ function ResetBatchModal({ machine }: { machine: BatchMachine }) {
     <Modal
       open={machine.resetModalOpen}
       onClose={machine.closeModals}
-      title={empty ? 'Reset set?' : `Reset set${seq}?`}
+      title={empty ? 'Reset batch?' : `Reset batch${seq}?`}
       footer={
         <>
           <Button variant="ghost" onClick={machine.closeModals}>
             Cancel
           </Button>
           <Button data-testid="reset-batch-confirm" onClick={machine.resetBatch}>
-            Reset set
+            Reset batch
           </Button>
         </>
       }
     >
       {empty ? (
         <p className="text-[12.5px] leading-relaxed text-gray-600">
-          Nothing has been recorded in this set yet, so this just clears local state —
-          no set is created or closed, and the set number is unchanged.
+          Nothing has been recorded in this batch yet, so this just clears local state —
+          no batch is created or closed, and the batch number is unchanged.
         </p>
       ) : (
         <>
@@ -176,7 +183,7 @@ function IssueModal({ machine }: { machine: BatchMachine }) {
       }
     >
       <p className="mb-2">
-        Attached to Set {machine.batchSeq ?? '—'}, Episode {machine.stats.epNext}{' '}
+        Attached to Batch {machine.batchSeq ?? '—'}, Episode {machine.stats.epNext}{' '}
         context automatically.
       </p>
       <textarea
@@ -192,9 +199,9 @@ function IssueModal({ machine }: { machine: BatchMachine }) {
 
 function ConditionModal({ machine }: { machine: BatchMachine }) {
   const plans = usePlans();
-  const task = findTask(plans, machine.project, machine.task);
+  const task = findTask(plans, machine.project ?? '', machine.task ?? '');
   // Free-text condition input (mirrors the custom-task pattern: trim, ignore
-  // empty). A typed condition is just a string on the set — never added to the
+  // empty). A typed condition is just a string on the batch — never added to the
   // plan catalog.
   const [custom, setCustom] = useState('');
   const submitCustom = () => {
@@ -218,7 +225,7 @@ function ConditionModal({ machine }: { machine: BatchMachine }) {
       <p className="mb-3">
         {hasRecordings
           ? 'This set already has recordings — changing the condition closes it and starts a new set, so earlier episodes keep their condition.'
-          : 'Applies to this set. No episodes are recorded yet.'}
+          : 'Applies to this batch. No episodes are recorded yet.'}
       </p>
       <div className="flex flex-col gap-1.5">
         {task.conditions.map((c) => (
@@ -292,7 +299,7 @@ function TargetModal({ machine }: { machine: BatchMachine }) {
       }
     >
       <p className="mb-3 text-[12.5px] leading-relaxed text-gray-600">
-        Planned episodes for this set (currently{' '}
+        Planned episodes for this batch (currently{' '}
         <span className="font-mono text-gray-800">{machine.targetEpisodes}</span>,
         recorded{' '}
         <span className="font-mono text-gray-800">{machine.stats.nRecorded}</span>).
@@ -312,79 +319,8 @@ function TargetModal({ machine }: { machine: BatchMachine }) {
       {completesNow && (
         <p className="mt-2 text-[12px] leading-relaxed text-amber-700">
           {machine.stats.nRecorded} episode(s) are already recorded, so this target
-          marks the set complete immediately.
+          marks the batch complete immediately.
         </p>
-      )}
-    </Modal>
-  );
-}
-
-function formatBytes(bytes: number | null): string | null {
-  if (!bytes) return null;
-  const u = ['B', 'KB', 'MB', 'GB', 'TB'];
-  let v = bytes;
-  let i = 0;
-  while (v >= 1024 && i < u.length - 1) {
-    v /= 1024;
-    i += 1;
-  }
-  return `${v.toFixed(i === 0 ? 0 : 2)} ${u[i]}`;
-}
-
-// Discard-episode confirmation: unlike v1's post-stop Keep/Discard prompt, this
-// lives on the result phase (the operator already reviewed the take). Confirm
-// runs a real DELETE /runs/{id}; a failure keeps the episode and shows the error.
-function DiscardModal({ machine }: { machine: BatchMachine }) {
-  const size = formatBytes(machine.discardRunBytes);
-  return (
-    <Modal
-      open={machine.discardModalOpen}
-      onClose={machine.closeModals}
-      title="Discard this episode?"
-      footer={
-        <>
-          <Button
-            variant="ghost"
-            onClick={machine.closeModals}
-            disabled={machine.isDiscarding}
-          >
-            Keep
-          </Button>
-          <Button
-            variant="danger"
-            onClick={machine.confirmDiscard}
-            disabled={machine.isDiscarding}
-          >
-            {machine.isDiscarding ? 'Discarding…' : 'Discard permanently'}
-          </Button>
-        </>
-      }
-    >
-      <p className="text-[12.5px] leading-relaxed text-gray-600">
-        This permanently deletes the recorded run
-        {machine.discardRunId ? (
-          <>
-            {' '}
-            <span className="font-mono text-gray-800">{machine.discardRunId}</span>
-          </>
-        ) : null}
-        {size ? ` (${size})` : ''} from disk, then re-arms for a fresh take of this
-        episode. This cannot be undone.
-      </p>
-      {!machine.discardRunId && (
-        <p className="mt-2 text-[12px] text-gray-400">
-          Nothing was persisted for this take yet — this just re-records the episode.
-        </p>
-      )}
-      {machine.discardError && (
-        <div
-          role="alert"
-          data-testid="discard-error"
-          className="mt-3 rounded-control border border-red-200 bg-red-50/70 px-3 py-2 text-[12px] text-red-800"
-        >
-          <span className="font-semibold">Discard failed</span> — {machine.discardError}
-          . The episode is kept.
-        </div>
       )}
     </Modal>
   );
@@ -405,7 +341,7 @@ function formatElapsedClock(startedAt: string | null): string {
 // whether it's a resumed-own recording or another session's.
 function TakeoverStopModal({ machine }: { machine: BatchMachine }) {
   const t = machine.takeover;
-  const size = formatBytes(t?.bytes ?? null) ?? '—';
+  const size = formatBytes(t?.bytes);
   return (
     <Modal
       open={machine.takeoverStopModalOpen}
@@ -450,41 +386,6 @@ function TakeoverStopModal({ machine }: { machine: BatchMachine }) {
   );
 }
 
-// Confirm discarding an unsaved take from the recovery banner (D-3). A real
-// DELETE /runs/{id} runs on confirm.
-function UnsavedDiscardModal({ machine }: { machine: BatchMachine }) {
-  const size = formatBytes(machine.unsavedTake?.bytes ?? null) ?? 'It';
-  return (
-    <Modal
-      open={machine.unsavedDiscardModalOpen}
-      onClose={machine.closeModals}
-      title="Discard this take?"
-      footer={
-        <>
-          <Button
-            variant="ghost"
-            onClick={machine.closeModals}
-            disabled={machine.isDiscardingUnsaved}
-          >
-            Keep
-          </Button>
-          <Button
-            variant="danger"
-            onClick={machine.confirmDiscardUnsavedTake}
-            disabled={machine.isDiscardingUnsaved}
-          >
-            {machine.isDiscardingUnsaved ? 'Deleting…' : 'Delete'}
-          </Button>
-        </>
-      }
-    >
-      <p className="text-[12.5px] leading-relaxed text-gray-600">
-        {size} will be permanently deleted.
-      </p>
-    </Modal>
-  );
-}
-
 // Keyboard-shortcuts help sheet (opened with `?`). Collect-local — the shared
 // header is out of scope for this screen (deviation noted in the change report).
 function ShortcutsSheet({ machine }: { machine: BatchMachine }) {
@@ -519,16 +420,6 @@ function ShortcutsSheet({ machine }: { machine: BatchMachine }) {
   );
 }
 
-function Toast({ message }: { message: string }) {
-  if (!message) return null;
-  return (
-    <div className="fixed bottom-[26px] left-1/2 z-[60] flex -translate-x-1/2 items-center gap-2 rounded-control bg-gray-900 px-[18px] py-[11px] text-sm font-medium text-gray-50 shadow-float">
-      <span className="h-[7px] w-[7px] rounded-sm bg-teal-400" />
-      {message}
-    </div>
-  );
-}
-
 export function CollectModals({ machine }: { machine: BatchMachine }) {
   return (
     <>
@@ -537,9 +428,7 @@ export function CollectModals({ machine }: { machine: BatchMachine }) {
       <IssueModal machine={machine} />
       <TargetModal machine={machine} />
       <ConditionModal machine={machine} />
-      <DiscardModal machine={machine} />
       <TakeoverStopModal machine={machine} />
-      <UnsavedDiscardModal machine={machine} />
       <ShortcutsSheet machine={machine} />
       <Toast message={machine.toast} />
     </>

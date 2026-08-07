@@ -156,7 +156,7 @@ def summarize(outcome: FlowOutcome) -> dict[str, Any]:
             wall_s=outcome.wall_s,
         ),
         "flow": outcome.flow,
-        "run_id": outcome.run_id,
+        "capture_id": outcome.capture_id,
         "metrics": {
             "required": presence.get("required") if presence else None,
             "matched": presence.get("matched") if presence else None,
@@ -179,26 +179,24 @@ def summarize(outcome: FlowOutcome) -> dict[str, Any]:
 
 async def run_fast_validation(
     *,
-    run_id: str,
+    capture_id: str,
     data_dir: Path,
     endpoint: DoraEndpoint,
     job_name: str,
     template: ValidationTemplate,
     flow: str = DEFAULT_FLOW,
-    dataset_dir: str | None = None,
     timeout_s: float | None = None,
 ) -> dict[str, Any]:
-    """Run the required-topic gate over a recorded run; return the job result."""
+    """Run the required-topic gate over one capture; return the job result."""
     return await run_bagflow_pipeline(
         pipeline_id=PIPELINE_ID,
-        run_id=run_id,
+        capture_id=capture_id,
         data_dir=data_dir,
         flow=flow,
         endpoint=endpoint,
         job_name=job_name,
         summarize=summarize,
         template=template,
-        dataset_dir=dataset_dir,
         flow_dirs=flow_search_dirs(),
         timeout_s=timeout_s,
     )

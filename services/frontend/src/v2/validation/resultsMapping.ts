@@ -1,10 +1,11 @@
-// Maps a set of terminal job outcomes (one per target run submitted together,
-// e.g. "Run on selection" against "All completed runs") onto the design mock's
-// OK / WARNING / FAIL tiles + stacked ratio bar + per-run rows.
+// Maps a set of terminal job outcomes (one per target capture submitted
+// together, e.g. "Run on selection" against "All captures on this host") onto
+// the design mock's OK / WARNING / FAIL tiles + stacked ratio bar + per-capture
+// rows.
 //
 // The mock's "per-episode" rows assume many results from one submission — that
-// only exists here when a job was submitted per target run in a batch. A
-// single-run submission has exactly one outcome and one summary.json, which
+// only exists here when a job was submitted per capture in a batch. A
+// single-capture submission has exactly one outcome and one summary.json, which
 // carries far richer pipeline-specific detail than three buckets can show, so
 // the screen renders the generic SummaryResult for it instead (see
 // ValidationScreen / ResultsPanel: `hasEpisodeBreakdown` gates the choice).
@@ -15,7 +16,12 @@
 // field.
 import type { Summary } from '../../features/validation/SummaryResult';
 
-export type OutcomeTone = 'OK' | 'WARNING' | 'FAIL';
+// CANCELED is deliberately its OWN tone rather than a shade of FAIL: the
+// operator stopped the job, and reporting their own decision back to them as
+// a failure is how a screen loses the right to be believed about real ones.
+// It is counted in none of the three tiles (see tileCounts) — a job that was
+// stopped produced no verdict to bucket.
+export type OutcomeTone = 'OK' | 'WARNING' | 'FAIL' | 'CANCELED';
 
 /** A required topic from a fast_validation template (name + optional msg type). */
 export interface RequiredTopic {
@@ -72,15 +78,25 @@ export function buildChecklist(
 }
 
 export interface EpisodeOutcome {
-  runId: string;
+  /** The capture the job ran on — its report lives at
+   *  `report/<pipeline>/<capture_id>/` (contract §10.5). */
+  captureId: string;
+  /** What to call that capture on screen. Absent when the capture is not in the
+   *  loaded catalog page, in which case the row shows the capture_id itself. */
+  label?: string;
   /** The job never produced a clean verdict (orchestration failure / errored
    *  fetching its result) — distinct from the pipeline itself reporting fail. */
   orchestrationFailed?: boolean;
+  /** The operator cancelled this job. Takes precedence over every other signal:
+   *  a cancelled job also fails to produce a result, and reading THAT as the
+   *  outcome would report the cancellation as a fault. */
+  canceled?: boolean;
   summary?: Summary;
 }
 
 export interface EpisodeRow {
-  runId: string;
+  captureId: string;
+  label?: string;
   tone: OutcomeTone;
   /** 0-100, when the summary exposes a coverage-like metric; else null. */
   coverage: number | null;
@@ -110,6 +126,7 @@ function coverageOf(summary: Summary | undefined): number | null {
 }
 
 function toneOf(outcome: EpisodeOutcome): OutcomeTone {
+  if (outcome.canceled) return 'CANCELED';
   if (outcome.orchestrationFailed) return 'WARNING';
   const result = outcome.summary?.result;
   if (result === 'pass') return 'OK';
@@ -117,14 +134,15 @@ function toneOf(outcome: EpisodeOutcome): OutcomeTone {
   return 'WARNING';
 }
 
-/** Only a multi-run batch has enough outcomes for a meaningful breakdown. */
+/** Only a multi-capture batch has enough outcomes for a meaningful breakdown. */
 export function hasEpisodeBreakdown(outcomes: EpisodeOutcome[]): boolean {
   return outcomes.length > 1;
 }
 
 export function mapEpisodeRows(outcomes: EpisodeOutcome[]): EpisodeRow[] {
   return outcomes.map((o) => ({
-    runId: o.runId,
+    captureId: o.captureId,
+    label: o.label,
     tone: toneOf(o),
     coverage: coverageOf(o.summary),
   }));
@@ -132,6 +150,13 @@ export function mapEpisodeRows(outcomes: EpisodeOutcome[]): EpisodeRow[] {
 
 function pct(n: number, total: number): number {
   return total === 0 ? 0 : Math.round((n / total) * 1000) / 10;
+}
+
+/** How many of these rows were cancelled. Kept OUT of TileCounts so the three
+ *  tiles keep meaning "of the jobs that produced a verdict"; the panel prints
+ *  this beside them so the numbers still add up on screen. */
+export function canceledCount(rows: EpisodeRow[]): number {
+  return rows.filter((r) => r.tone === 'CANCELED').length;
 }
 
 export function tileCounts(rows: EpisodeRow[]): TileCounts {

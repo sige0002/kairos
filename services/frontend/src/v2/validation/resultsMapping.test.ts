@@ -7,45 +7,60 @@ import {
   type EpisodeOutcome,
 } from './resultsMapping';
 
-test('a single-run submission never has an episode breakdown', () => {
-  const outcomes: EpisodeOutcome[] = [{ runId: 'run_001', summary: { result: 'pass' } }];
+const CAP_1 = '01920000-0000-7000-8000-000000000001';
+const CAP_2 = '01920000-0000-7000-8000-000000000002';
+const CAP_3 = '01920000-0000-7000-8000-000000000003';
+const CAP_4 = '01920000-0000-7000-8000-000000000004';
+const CAP_5 = '01920000-0000-7000-8000-000000000005';
+
+test('a single-capture submission never has an episode breakdown', () => {
+  const outcomes: EpisodeOutcome[] = [{ captureId: CAP_1, summary: { result: 'pass' } }];
   expect(hasEpisodeBreakdown(outcomes)).toBe(false);
 });
 
-test('a batch of more than one run has an episode breakdown', () => {
+test('a batch of more than one capture has an episode breakdown', () => {
   const outcomes: EpisodeOutcome[] = [
-    { runId: 'run_001', summary: { result: 'pass' } },
-    { runId: 'run_002', summary: { result: 'fail' } },
+    { captureId: CAP_1, summary: { result: 'pass' } },
+    { captureId: CAP_2, summary: { result: 'fail' } },
   ];
   expect(hasEpisodeBreakdown(outcomes)).toBe(true);
 });
 
 test('maps pass/fail/unknown/orchestration-failure summaries onto OK/FAIL/WARNING rows', () => {
   const outcomes: EpisodeOutcome[] = [
-    { runId: 'run_001', summary: { result: 'pass' } },
-    { runId: 'run_002', summary: { result: 'fail' } },
-    { runId: 'run_003', summary: { result: 'something-else' } },
-    { runId: 'run_004', orchestrationFailed: true },
-    { runId: 'run_005' }, // still running / no summary yet
+    { captureId: CAP_1, summary: { result: 'pass' } },
+    { captureId: CAP_2, summary: { result: 'fail' } },
+    { captureId: CAP_3, summary: { result: 'something-else' } },
+    { captureId: CAP_4, orchestrationFailed: true },
+    { captureId: CAP_5 }, // still running / no summary yet
   ];
   const rows = mapEpisodeRows(outcomes);
   expect(rows.map((r) => r.tone)).toEqual(['OK', 'FAIL', 'WARNING', 'WARNING', 'WARNING']);
+  expect(rows.map((r) => r.captureId)).toEqual([CAP_1, CAP_2, CAP_3, CAP_4, CAP_5]);
+});
+
+test('a row keeps the capture display name, and leaves it unset when there is none', () => {
+  const rows = mapEpisodeRows([
+    { captureId: CAP_1, label: 'run_20260713_120000', summary: { result: 'pass' } },
+    { captureId: CAP_2, summary: { result: 'pass' } },
+  ]);
+  expect(rows.map((r) => r.label)).toEqual(['run_20260713_120000', undefined]);
 });
 
 test('pulls a 0-100 coverage number from summary.coverage or summary.metrics.coverage', () => {
   const rows = mapEpisodeRows([
-    { runId: 'a', summary: { result: 'pass', coverage: 95.2 } },
-    { runId: 'b', summary: { result: 'pass', metrics: { coverage: 72.1 } } },
-    { runId: 'c', summary: { result: 'pass' } },
+    { captureId: CAP_1, summary: { result: 'pass', coverage: 95.2 } },
+    { captureId: CAP_2, summary: { result: 'pass', metrics: { coverage: 72.1 } } },
+    { captureId: CAP_3, summary: { result: 'pass' } },
   ]);
   expect(rows.map((r) => r.coverage)).toEqual([95.2, 72.1, null]);
 });
 
 test('tileCounts buckets rows into OK/WARNING/FAIL with rounded percentages', () => {
   const rows = mapEpisodeRows([
-    { runId: '1', summary: { result: 'pass' } },
-    { runId: '2', summary: { result: 'pass' } },
-    { runId: '3', summary: { result: 'fail' } },
+    { captureId: CAP_1, summary: { result: 'pass' } },
+    { captureId: CAP_2, summary: { result: 'pass' } },
+    { captureId: CAP_3, summary: { result: 'fail' } },
   ]);
   const counts = tileCounts(rows);
   expect(counts).toMatchObject({ ok: 2, warning: 0, fail: 1, total: 3 });

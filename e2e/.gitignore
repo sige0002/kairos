@@ -1,0 +1,6 @@
+node_modules/
+# Per-run scratch: the stack's data dir, the generated env files, the replay
+# container id. Everything here is recreated by `scripts/stack.sh up`.
+.run/
+test-results/
+playwright-report/

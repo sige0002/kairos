@@ -14,28 +14,27 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from dora_runner.mcap_utils import enumerate_topics, find_mcap, validate_run_id
+from dora_runner.mcap_utils import enumerate_topics, find_mcap, resolve_source_dir
 from dora_runner.models import ValidationTemplate
 
 
-def mcap_loader(run_id: str, data_dir: Path) -> dict[str, Any]:
-    """Load a run's paths and enumerate its MCAP topics."""
-    validate_run_id(run_id)
-    run_dir = data_dir / "recorded" / run_id
-    mcap_path = find_mcap(run_dir)
+def mcap_loader(capture_id: str, data_dir: Path) -> dict[str, Any]:
+    """Load a capture's paths and enumerate its MCAP topics."""
+    capture_dir = resolve_source_dir(data_dir, capture_id)
+    mcap_path = find_mcap(capture_dir)
     return {
-        "run_id": run_id,
-        "run_dir": str(run_dir),
+        "capture_id": capture_id,
+        "capture_dir": str(capture_dir),
         "mcap_path": str(mcap_path),
         "topics": enumerate_topics(mcap_path),
     }
 
 
-def generate_template(run_id: str, data_dir: Path) -> ValidationTemplate:
-    """Generate a draft validation template from a run's MCAP topics."""
-    loaded = mcap_loader(run_id, data_dir)
+def generate_template(capture_id: str, data_dir: Path) -> ValidationTemplate:
+    """Generate a draft validation template from a capture's MCAP topics."""
+    loaded = mcap_loader(capture_id, data_dir)
     return ValidationTemplate(
-        name=f"{run_id}_template",
+        name=f"{capture_id}_template",
         version=1,
         required_topics=loaded["topics"],
     )

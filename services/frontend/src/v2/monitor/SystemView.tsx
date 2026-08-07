@@ -7,14 +7,12 @@
 // cadence as the right-rail SystemCard (they share the 'system' query key).
 
 import { useQuery } from '@tanstack/react-query';
-import { apiGet } from '../../api/client';
-import type { SystemInfo } from '../../api/types';
+import { getSystemInfo } from '../../api/system';
+import { SYSTEM_INFO_POLL_MS } from '../pollingPolicy';
 import type { RuntimeConfig } from '../../config';
 import { Card } from '../../components/ui';
 import { formatBytes } from '../review/format';
 import { ComponentHealth } from './ComponentHealth';
-
-const REFETCH_MS = 5000;
 
 function Row({ label, value, testId }: { label: string; value: string; testId?: string }) {
   return (
@@ -63,9 +61,9 @@ function Panel({ title, children }: { title: string; children: React.ReactNode }
 export function SystemView({ config }: { config: RuntimeConfig }) {
   const { data } = useQuery({
     queryKey: ['system'],
-    queryFn: ({ signal }) => apiGet<SystemInfo>('/api/v1/system', { signal }),
-    staleTime: REFETCH_MS,
-    refetchInterval: REFETCH_MS,
+    queryFn: ({ signal }) => getSystemInfo({ signal }),
+    staleTime: SYSTEM_INFO_POLL_MS,
+    refetchInterval: SYSTEM_INFO_POLL_MS,
   });
 
   const cpuValue =

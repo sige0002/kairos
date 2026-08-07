@@ -52,7 +52,8 @@ DEFAULT_BUNDLED_FLOWS_DIR = "/opt/kairos/flows"
 DEFAULT_FLOW = "default"
 FLOW_SUFFIXES = (".yml", ".yaml")
 
-# A flow name becomes a file name under the flows dir: same guard as run_id.
+# A flow name becomes a file name under the flows dir, so it is charset-guarded
+# for the same reason a capture_id is: no separators, no traversal.
 _FLOW_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _TOKEN_RE = re.compile(r"\$\{(KAIROS_[A-Z0-9_]+)\}")
 
@@ -159,7 +160,7 @@ class FlowBindings:
     restates a topic list or a threshold that already has a home in kairos config.
     """
 
-    run_id: str
+    capture_id: str
     bag_dir: Path
     report_path: Path
     report_dir: Path
@@ -171,7 +172,7 @@ class FlowBindings:
         """Token -> replacement text (JSON for the structured ones: a bagflow
         ``env:`` value is a string, and the check nodes parse JSON there)."""
         return {
-            "KAIROS_RUN_ID": self.run_id,
+            "KAIROS_CAPTURE_ID": self.capture_id,
             "KAIROS_BAG_DIR": str(self.bag_dir),
             "KAIROS_REPORT": str(self.report_path),
             "KAIROS_REPORT_DIR": str(self.report_dir),

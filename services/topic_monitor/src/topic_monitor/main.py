@@ -27,7 +27,7 @@ from kairos_common import (
     RecordingConfig,
     create_app,
     get_settings,
-    load_recording_config,
+    load_recording_config_or_none,
     resolve_config_path,
     utc_now_iso8601,
 )
@@ -53,20 +53,6 @@ SERVICE_NAME = "topic_monitor"
 _STREAM_INTERVAL_S = 1.0
 
 
-def _load_config(recording_config_path: str) -> RecordingConfig | None:
-    """Load the RECORDING_CONFIG, tolerating its absence.
-
-    The allowlist (``default_topics``), ``expected_hz`` and QoS overrides come
-    from this file. If it is missing or invalid the monitor still boots (with no
-    topics seeded), so we log and continue rather than refusing to start.
-    """
-    try:
-        return load_recording_config(recording_config_path)
-    except (FileNotFoundError, ValueError) as exc:
-        logger.warning("recording config unavailable: %s", exc)
-        return None
-
-
 def _build_subscriber(config: RecordingConfig | None) -> TopicSubscriber:
     """Build the rclpy-backed subscriber over the config allowlist."""
     allowlist = list(config.default_topics) if config is not None else []
@@ -81,7 +67,11 @@ def create_monitor_app(*, subscriber: TopicSubscriber | None = None) -> FastAPI:
             ``FakeSubscriber``); defaults to the rclpy-backed implementation.
     """
     settings = get_settings()
-    config = _load_config(resolve_config_path(settings.recording_config))
+    # The allowlist (``default_topics``), ``expected_hz`` and QoS overrides come
+    # from this file; without it the monitor boots with no topics seeded.
+    config = load_recording_config_or_none(
+        resolve_config_path(settings.recording_config), logger
+    )
     sub = subscriber if subscriber is not None else _build_subscriber(config)
     # Wire the alert engine (MON-C1): without this the /alerts route is always
     # empty because nothing ever builds the AlertRules the engine evaluates. The
@@ -114,23 +104,22 @@ def create_monitor_app(*, subscriber: TopicSubscriber | None = None) -> FastAPI:
         finally:
             await asyncio.to_thread(service.stop)
 
-    app = create_app(SERVICE_NAME, settings=settings)
+    # Readiness reflects that the subscriber node is up; live but not ready
+    # until then (e.g. ROS not reachable yet).
+    async def readyz(response: Response) -> dict[str, str]:
+        if not service.is_ready():
+            response.status_code = 503
+            return {"status": "not_ready"}
+        return {"status": "ready"}
+
+    app = create_app(SERVICE_NAME, settings=settings, readyz=readyz)
     app.router.lifespan_context = lifespan
     app.state.monitor = service
 
-    # create_app registers a default always-ready /readyz; drop it so our
-    # subscriber-aware probe below serves the path (Starlette matches the first
-    # registered route, so the default would otherwise win).
-    app.router.routes = [
-        route
-        for route in app.router.routes
-        if getattr(route, "path", None) != "/readyz"
-    ]
-
     @app.get("/")
     async def root() -> dict[str, str]:
-        """Root identifying the service and stage."""
-        return {"service": SERVICE_NAME, "stage": "stage2"}
+        """Root identifying the service."""
+        return {"service": SERVICE_NAME}
 
     @app.get("/topics", response_model=TopicsResponse)
     async def topics() -> TopicsResponse:
@@ -178,15 +167,6 @@ def create_monitor_app(*, subscriber: TopicSubscriber | None = None) -> FastAPI:
         ),
     ) -> IncidentsResponse:
         return IncidentsResponse(incidents=service.incidents(since_ns))
-
-    # Readiness reflects that the subscriber node is up; live but not ready
-    # until then (e.g. ROS not reachable yet).
-    @app.get("/readyz", tags=["health"])
-    async def readyz(response: Response) -> dict[str, str]:
-        if not service.is_ready():
-            response.status_code = 503
-            return {"status": "not_ready"}
-        return {"status": "ready"}
 
     return app
 

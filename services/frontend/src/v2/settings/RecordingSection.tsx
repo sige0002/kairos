@@ -9,13 +9,13 @@
 
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { apiGet } from '../../api/client';
-import type { RecordingConfigPayload } from '../../api/types';
+import { getRecordingConfig } from '../../api/config';
 import type { RuntimeConfig } from '../../config';
 import { Badge, Card, cn } from '../../components/ui';
 import { ErrorMessage } from '../../components/ErrorMessage';
 import { matchesTopic } from '../../features/record/topics';
-import { RECORDING_CONFIG_KEY, RecordingConfigEditor } from '../../features/config/ConfigTab';
+import { RECORDING_CONFIG_KEY } from '../../api/queryKeys';
+import { RecordingConfigEditor } from './RecordingConfigEditor';
 
 /** The subset of the RecordingConfig (kairos_common) this view renders. The full
  *  object is opaque JSON; these are the fields the form surfaces. */
@@ -62,7 +62,7 @@ export function RecordingSection({ config }: { config: RuntimeConfig | undefined
 
   const recordingQuery = useQuery({
     queryKey: RECORDING_CONFIG_KEY,
-    queryFn: ({ signal }) => apiGet<RecordingConfigPayload>('/config/recording', { signal }),
+    queryFn: ({ signal }) => getRecordingConfig({ signal }),
   });
 
   const cfg = (recordingQuery.data?.config ?? null) as RecordingConfigView | null;
@@ -127,7 +127,7 @@ export function RecordingSection({ config }: { config: RuntimeConfig | undefined
               </span>
             </SummaryField>
             {/* Cross-host split: pull the run's files from the robot right
-                after Collect Save (importer sidecar; compose.recording.yaml).
+                after Collect Save (importer sidecar; compose/recording.yaml).
                 Default OFF — nothing transfers without an explicit opt-in.
                 Edited like pre_arm, via Advanced JSON
                 (transfer.auto_pull_on_save). Inert on a single-host deploy. */}

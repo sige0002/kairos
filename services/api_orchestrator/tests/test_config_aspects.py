@@ -14,7 +14,6 @@ from pathlib import Path
 import httpx
 import yaml
 from api_orchestrator.app_factory import create_orchestrator_app
-from api_orchestrator.store import RunStore
 from fastapi.testclient import TestClient
 from kairos_common import Settings
 
@@ -48,6 +47,7 @@ def _tree(tmp_path: Path, *, alerts: dict | None = None) -> Path:
 
 def _client(root: Path, fake_recorder) -> TestClient:
     settings = Settings(
+        data_dir=str(root.parent / "data"),
         robot=_ROBOT,
         config_dir=str(root),
         config_local_dir=str(root / "local"),
@@ -57,9 +57,7 @@ def _client(root: Path, fake_recorder) -> TestClient:
     http_client = httpx.AsyncClient(
         transport=httpx.MockTransport(fake_recorder.handler)
     )
-    app = create_orchestrator_app(
-        settings, store=RunStore(":memory:"), http_client=http_client
-    )
+    app = create_orchestrator_app(settings, http_client=http_client)
     return TestClient(app)
 
 
@@ -148,3 +146,111 @@ def test_put_alerts_accepts_derived_rules_block(tmp_path: Path, fake_recorder) -
         resp = c.put("/api/v1/config/alerts", json={"config": cfg})
         assert resp.status_code == 200
         assert resp.json()["config"]["derived_rules"]["enabled"] is False
+
+
+# ---- YAML hazards in the Advanced (raw) editor ---------------------------
+# The frontend ships no YAML parser, so `raw` is parsed here and the file is
+# rewritten CANONICALLY from the validated model. That round trip is where an
+# operator's text can lose meaning, so each hazard is pinned to the behaviour we
+# want rather than left to whatever PyYAML happens to do.
+
+
+def test_put_alerts_rejects_duplicate_keys_naming_the_key(
+    tmp_path: Path, fake_recorder
+) -> None:
+    """A duplicated key must be REFUSED, not silently resolved to the last one.
+
+    PyYAML keeps the last occurrence and drops the earlier silently, so this
+    text — which visibly contains two rules — would save with one rule and no
+    error at all. A refused save is fine; a save that drops a rule is not.
+    """
+    root = _tree(tmp_path)
+    target = root / _ROBOT / "monitoring" / "alerts.yaml"
+    raw = (
+        "rules:\n"
+        "  - topic: /hsrb/joint_states\n"
+        "    metric: hz\n"
+        "    op: lt\n"
+        "    threshold: 15\n"
+        "rules:\n"
+        "  - topic: /hsrb/odom\n"
+        "    metric: gap\n"
+        "    op: gt\n"
+        "    threshold: 2\n"
+    )
+    with _client(root, fake_recorder) as c:
+        resp = c.put("/api/v1/config/alerts", json={"raw": raw})
+        assert resp.status_code == 422
+        err = resp.json()["error"]
+        # The operator is looking at YAML that reads as valid, so the message has
+        # to say WHICH key collided — "invalid YAML" alone is half a fix.
+        assert "rules" in err["message"]
+        assert "duplicate" in err["message"].lower()
+        # Nothing was written.
+        assert not target.exists()
+
+
+def test_put_alerts_rejects_a_duplicate_key_inside_one_rule(
+    tmp_path: Path, fake_recorder
+) -> None:
+    """Same hazard one level down: two `topic:` in a single rule."""
+    raw = (
+        "rules:\n"
+        "  - topic: /hsrb/joint_states\n"
+        "    topic: /hsrb/odom\n"
+        "    metric: hz\n"
+        "    op: lt\n"
+        "    threshold: 15\n"
+    )
+    with _client(_tree(tmp_path), fake_recorder) as c:
+        resp = c.put("/api/v1/config/alerts", json={"raw": raw})
+        assert resp.status_code == 422
+        assert "topic" in resp.json()["error"]["message"]
+
+
+def test_put_alerts_rejects_tabs_loudly(tmp_path: Path, fake_recorder) -> None:
+    """Tabs are a hard YAML scan error — already loud, pinned so it stays that way.
+
+    The scanner message goes in ``details.error`` and is the only part that says
+    WHERE the bad character is; the client renders it (see configAspects'
+    formatValidationDetails), so the contract is pinned on both sides.
+    """
+    with _client(_tree(tmp_path), fake_recorder) as c:
+        resp = c.put("/api/v1/config/alerts", json={"raw": "rules:\n\t- topic: /a\n"})
+        assert resp.status_code == 422
+        err = resp.json()["error"]
+        assert err["code"] == "invalid_yaml"
+        assert "line 2" in err["details"]["error"]
+
+
+def test_put_alerts_expands_anchors_keeping_every_rule(
+    tmp_path: Path, fake_recorder
+) -> None:
+    """Anchors/merge keys EXPAND: the structure is lost, the meaning is not.
+
+    Both rules survive, and because the response carries the rewritten file the
+    editor re-seeds from it — so the operator sees the expansion immediately
+    rather than keeping an illusion of anchors that are no longer on disk. That
+    is loud enough, so this is recorded as intended behaviour, not a defect.
+    """
+    root = _tree(tmp_path)
+    raw = (
+        "rules:\n"
+        "  - &base\n"
+        "    topic: /hsrb/joint_states\n"
+        "    metric: hz\n"
+        "    op: lt\n"
+        "    threshold: 15\n"
+        "  - <<: *base\n"
+        "    topic: /hsrb/odom\n"
+    )
+    with _client(root, fake_recorder) as c:
+        resp = c.put("/api/v1/config/alerts", json={"raw": raw})
+        assert resp.status_code == 200
+        rules = resp.json()["config"]["rules"]
+        assert [r["topic"] for r in rules] == ["/hsrb/joint_states", "/hsrb/odom"]
+        # The merged rule really inherited the anchor's fields …
+        assert rules[1]["metric"] == "hz"
+        # … and what comes back is the expanded file, with no anchor left in it.
+        assert "&base" not in resp.json()["raw"]
+        assert "<<" not in resp.json()["raw"]

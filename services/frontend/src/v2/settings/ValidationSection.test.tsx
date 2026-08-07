@@ -27,8 +27,8 @@ const OPTIONS = {
 
 const PRESETS = {
   items: [
-    { id: 'fast', name: 'Fast validation', description: 'Required-topic check', pipeline: 'fast_validation', total: 5, pending: 2, pending_run_ids: ['r1', 'r2'] },
-    { id: 'loss', name: 'Loss report', pipeline: 'loss_report', total: 5, pending: 0, pending_run_ids: [] },
+    { id: 'fast', name: 'Fast validation', description: 'Required-topic check', pipeline: 'fast_validation', total: 5, pending: 2, pending_capture_ids: ['r1', 'r2'] },
+    { id: 'loss', name: 'Loss report', pipeline: 'loss_report', total: 5, pending: 0, pending_capture_ids: [] },
   ],
 };
 

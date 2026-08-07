@@ -20,16 +20,24 @@ export function formatTimeOfDay(iso?: string): string {
   return d.toLocaleTimeString('en-GB', { hour12: false });
 }
 
-/** Human-readable byte size ("7.6 MB"); "—" when unknown (null/undefined). */
+/** Human-readable byte size ("7.6 MB"); "—" when unknown (null/undefined).
+ *  DECIMAL units (1 MB = 1e6 B) — the ONE convention every screen shares. This
+ *  file used 1024-math under decimal labels while Datasets used 1e6, so the
+ *  same capture showed two different sizes, both labelled MB (audit P2). */
 export function formatBytes(bytes?: number | null): string {
   if (bytes === undefined || bytes === null) return '—';
-  if (bytes < 1024) return `${bytes} B`;
-  const units = ['KB', 'MB', 'GB', 'TB'];
-  let value = bytes / 1024;
-  let i = 0;
-  while (value >= 1024 && i < units.length - 1) {
-    value /= 1024;
-    i += 1;
-  }
-  return `${value.toFixed(1)} ${units[i]}`;
+  if (bytes >= 1e12) return `${(bytes / 1e12).toFixed(1)} TB`;
+  if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`;
+  if (bytes >= 1e6) return `${(bytes / 1e6).toFixed(1)} MB`;
+  if (bytes >= 1e3) return `${(bytes / 1e3).toFixed(1)} kB`;
+  return `${bytes} B`;
+}
+
+/** Full local timestamp, ALWAYS 24-hour ("05/08/2026, 00:51:04") — the one
+ *  detail-prose form. Bare toLocaleString() rendered 12-hour under en-US while
+ *  the tables were 24-hour, so one screen mixed both clocks (audit P2). */
+export function formatWhen(iso?: string | null): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('en-GB', { hour12: false });
 }

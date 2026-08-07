@@ -1,4 +1,4 @@
-<!-- Mirror of README.ja.md (the Japanese file is canonical). Keep this file in sync by hand — the sync-docs skill was retired. -->
+<!-- AUTO-GENERATED from README.ja.md. Do not edit by hand — edit the Japanese source and run /sync-docs. -->
 # kairos
 
 **日本語: [README.ja.md](README.ja.md)**
@@ -7,8 +7,8 @@ A system that **records, monitors, validates, and converts** ROS 2 robot data. T
 recording format is **MCAP**, and live video, live metrics, and post-hoc validation are all
 organized around this "source of truth."
 
-> **Status:** All 7 services + frontend implemented (Stage 1–4). The architecture below is based on
-> the `fig_const/` diagrams.
+> **Status:** All 7 services (frontend included) plus the UI-driven acceptance suite
+> (`make test-e2e`) are implemented. The architecture below is based on the `fig_const/` diagrams.
 
 ## Architecture
 
@@ -32,8 +32,14 @@ flowchart TB
   end
 
   FE["frontend<br/>Vite + React + TS"]
-  MCAP[("/data/recorded/&lt;run_id&gt;/*.mcap<br/>= the source of truth")]
-  OUT[("/data/report/, /data/&lt;operator&gt;/&lt;task&gt;/<br/>reports &amp; datasets")]
+
+  subgraph store["capture store (/data)"]
+    MCAP[("objects/&lt;capture_id&gt;/<br/>*.mcap + object_manifest.json<br/>+ record.json = the source of truth")]
+    LEDGER[("lifecycle.jsonl<br/>ledger of discards, deletes, archives")]
+    DB[("kairos.db<br/>index; rebuildable from the sidecars")]
+    VIEWS[("views/ · .trash/<br/>dataset symlink tree / deletion staging")]
+    OUT[("report/&lt;pipeline&gt;/&lt;capture_id&gt;/<br/>reports")]
+  end
 
   TOPICS --> REC & MON & PROBE & WEB
   REC --> MCAP
@@ -41,6 +47,9 @@ flowchart TB
   FE <-->|"REST / SSE / WebRTC"| ORC
   ORC <--> REC & MON & PROBE & WEB
   ORC <-->|"POST /jobs"| DR
+  ORC -->|"indexes, deletes, regenerates views"| DB
+  ORC --> MCAP & LEDGER & VIEWS
+  MCAP -.->|"rebuild at startup"| DB
   WEB -.->|"media goes direct"| FE
 ```
 
@@ -67,12 +76,12 @@ flowchart LR
 | [topic_probe](docs/specs/en/topic_probe.md) | A generic probe that live-plots **numeric fields** of selected topics. Decoding is **isolated** to this service so it doesn't affect recording or monitoring. |
 | [webrtc_streamer](docs/specs/en/webrtc_streamer.md) | Low-latency camera **preview** (ROS 2 image → browser). Not a recording path. |
 | [api_orchestrator](docs/specs/en/api_orchestrator.md) | The single API hub. Handles job lifecycle, state, configuration, and result aggregation. |
-| [dora_runner](docs/specs/en/dora_runner.md) | Post-recording **validation & conversion** pipeline. Validation runs as a bundled **bagflow flow on real dora**. Enabled: `fast_validation` / `full_validation` / `dataset_export` / `loss_report` / `video_check` / `signal_report`. |
+| [dora_runner](docs/specs/en/dora_runner.md) | Post-recording **validation & conversion** pipeline. Validation runs as a bundled **bagflow flow on real dora**. Enabled: `fast_validation` / `full_validation` / `loss_report` / `video_check` / `signal_report`. |
 | [frontend](docs/specs/en/frontend.md) | A backend-driven Web UI (UI labels in English). Role tabs (Console v2): Collect / Review / Datasets / Validation / Monitor / Settings. |
 
 ## Specification docs
 
-For the detailed spec of each service, see [docs/specs/en/](docs/specs/en/README.md). Based on `fig_const/`, this is the **canonical design** (unspecified items fixed as recommended designs; no authentication).
+For the detailed spec of each service, see [docs/specs/en/](docs/specs/en/README.md). How recorded data is laid out and kept durable (`objects/<capture_id>`, sidecars, deletion, rebuilding the DB) is collected in [capture_store](docs/specs/en/capture_store.md) as the cross-service foundation. Based on `fig_const/`, this is the **canonical design** (unspecified items fixed as recommended designs; no authentication).
 
 ## Getting started
 
@@ -87,10 +96,11 @@ For the detailed spec of each service, see [docs/specs/en/](docs/specs/en/README
 ```bash
 make build                    # build the images (first time and after code changes; needs network)
 make up                       # start (detached). Robot selected via ROBOT (default airoa_hsr)
-# or with plain docker compose:
+# or with plain docker compose (compose files live under compose/;
+# --project-directory pins relative paths to the repo root):
 cp .env.example .env          # edit as needed
-docker compose build
-docker compose up
+docker compose --project-directory . -f compose/compose.yaml build
+docker compose --project-directory . -f compose/compose.yaml up
 ```
 
 > **`make up` does not build** (it only starts). Building needs the network even when nothing changed,
@@ -164,6 +174,7 @@ selected with a single `ROBOT` (default `airoa_hsr`); `make` resolves `config/<r
 | `make load` | Load overview: CPU (per-core **and** per-machine) / measured NIC throughput + link utilization / measured DDS bandwidth / data disk free |
 | `make smoke` / `make smoke-record` | End-to-end check (PASS/FAIL) / with record start/stop |
 | `make test` / `make test-py` / `make test-fe` / `make lint` / `make fmt` | Test, lint, format |
+| `make test-e2e` | Acceptance tests from the UI (real browser + real stack + bag replay). **Does not build images** — run `make build` first |
 
 To use a different robot, switch `ROBOT` like `make up ROBOT=<robot>` (`make` resolves `config/<robot>/`
 (committed) / `config/local/<robot>/` (gitignored) and passes them to each service). For a different bag,
@@ -302,26 +313,39 @@ Collect / Review / Datasets / Validation / Monitor / Settings).
    BAG=/data/airoa-moma-mcap/000730 docker compose -f deploy/test/compose.yaml run --rm rosbag_player
    ```
 2. **Record**: start from the UI (Collect tab) or `POST /api/v1/record/start {"topics":"all"}` → an MCAP is
-   created under `/data/recorded/<run_id>/` (stop with `POST /api/v1/record/stop`). If you fill in the
-   header's **OP chip (operator)** and Collect's **Task**, that content plus the topics, count, and start/end
-   are saved to `/data/recorded/<run_id>/session.json` in the same directory as the MCAP, and are also shown
-   in the Review tab. A recording can be **deleted from the Review tab** (two steps: Exclude → Delete from
-   disk; deletes the DB row + `/data/recorded/<run_id>`). The recorder `chmod 0777`s its output, so it can
-   also be deleted from the host side (outside the container) without sudo.
+   created under `/data/objects/<capture_id>/` (stop with `POST /api/v1/record/stop`). The `capture_id` is a
+   UUIDv7 issued by the recorder, and paths, the API, and the DB are all keyed by it (`run_id` is the display
+   name). If you fill in the header's **OP chip (operator)** and Collect's **Task**, that content plus the
+   topics, count, and start/end are saved to `object_manifest.json` in the same directory as the MCAP, and are
+   also shown in the Review tab. A recording can be **deleted from the Review tab** (two steps: Exclude →
+   Discard / Delete; the deletion goes through `.trash`, and **a tombstone row stays in the catalog**, so
+   "where did it go?" can still be answered later). The recorder `chmod 0777`s its output, so it can also be
+   deleted from the host side (outside the container) without sudo — but **that does not count as a deletion**.
+   A copy that disappears outside kairos shows up as a `missing_unmanaged` warning (nothing vanishes silently).
 3. **Monitor / preview**: live health (Hz / gaps / bandwidth) via `GET /metrics`, WebRTC camera preview via
    `/stream`. In the UI, the Collect tab owns the camera previews and recording controls, and the Monitor tab
    owns topic health (**always shows every topic on the graph**, overlaying live Hz on the monitored ones).
    The sample bag's Hz shows up with the default `ROBOT=airoa_hsr` (which topics to record/monitor is defined
    per robot in [`config/`](config/README.md); reflected as a pre-selection in the Monitor tab's Rec checks).
-4. **Post-recording validation & processing** (via `POST /api/v1/jobs`, through `dora_runner`):
-   - `fast_validation` — validates the presence/absence of required topics → `pass`/`fail` in `/data/report/fast_validation/<run_id>/summary.json`.
+4. **Post-recording validation & processing** (via `POST /api/v1/jobs {capture_id, pipeline}`, through `dora_runner`):
+   - `fast_validation` — validates the presence/absence of required topics → `pass`/`fail` in `/data/report/fast_validation/<capture_id>/summary.json`.
    - `loss_report` — per-topic loss estimation (the Review tab's "Run loss report").
    - `video_check` — mp4 preview of camera topics (Review tab; play via `GET /api/v1/files/...`).
-   - `dataset_export` — export a completed recording to `data/<operator>/<task>/NNN` (in the UI: the Review tab's "Export ready"; listed in the Datasets tab).
+5. **Organizing datasets** (Datasets tab): **add** recordings to a dataset or **take them out**
+   (`POST /api/v1/datasets/{id}/members`). A dataset is a set in the DB, and **not one byte of the recording
+   itself moves**, so re-adding a recording or having it belong to several datasets is free.
+   A human-navigable symlink tree is generated at `data/views/<operator>/<task>/<dataset>/<NNN>`.
 
 ### Tests / integration tests
 
 - **Unit tests**: `make test` (= each Python service `uv run --extra test pytest` + frontend `npm run build && npm test && npm run lint`).
+- **Acceptance tests (from the UI, against a real stack)**: `make test-e2e`. It brings up a real stack on
+  dedicated ports and a dedicated data dir and drives the frontend in a real browser (Playwright) against a
+  real bag on loop playback. 5 scenarios = record → digest completes / Review save and conflict rejection /
+  Discard and the ledger tombstone / deleting `kairos.db` and recovering / `rm -rf` → SUSPECT → Repair.
+  It **coexists** with a developer's `make up` (different ports, different data dir).
+  **`make test-e2e` does not build images** (the same rule as `make up`). After changing code, run `make build`
+  first — forget it and you get a green run against the **stale code** inside the containers.
 - **Smoke test (prints PASS/FAIL)**: after the stack is up, `make smoke` (= `bash deploy/test/smoke.sh`).
   It validates health → `GET /api/v1/config` `default_topics` → topic discovery → the monitor's live metrics, in order, and
   prints the result (`make smoke-record` also runs record start/stop). This is the entry point for resolving "I tested it but nothing comes out."

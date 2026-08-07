@@ -1,38 +1,49 @@
-// Post-export inspection of the selected dataset — the v2-styled wrapper around
-// the SHARED inspect pieces (src/features/inspect/inspect.tsx): the loss_report
-// table, the on-demand video_check mp4 players, and the raw JSON sidecar blocks.
-// These are REUSED as-is (never reimplemented): VideoPlayer carries the WebRTC
-// MTU fixes' sibling job-polling logic and LossTable/JsonBlock the shared
-// formatting. The jobs are keyed by the dataset's original run_id and read the
-// moved MCAP via params.dataset_dir (detail.path).
+// Post-hoc inspection of the selected member's capture — the v2-styled wrapper
+// around the SHARED inspect pieces (src/v2/captures/inspect.tsx): the
+// loss_report table, the on-demand video_check mp4 players, and the raw JSON
+// sidecar blocks. They are REUSED as-is rather than reimplemented, so a capture
+// reads identically here and in Review.
+//
+// Every job is keyed by capture_id (§10.5). A job resolves its source as
+// `objects/<capture_id>` whether or not the capture belongs to a dataset, which
+// is why nothing about this panel changes when a membership is added or
+// removed.
 
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiGet, apiPost } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
-import type { DatasetDetail, JobStatus } from '../../api/types';
-import { ErrorMessage } from '../../components/ErrorMessage';
-import {
-  JsonBlock,
-  LossTable,
-  TERMINAL,
-  VideoCheckSection,
-} from '../../features/inspect/inspect';
+import { INSPECTION_JOB_POLL_MS } from '../pollingPolicy';
+import type { CaptureDetail, JobStatus, LossTopic } from '../../api/types';
+import { JobErrorNote } from '../captures/JobErrorNote';
+import { JsonBlock, LossTable, TERMINAL, VideoCheckSection } from '../captures/inspect';
+import { isCapturePresent } from '../captures/availability';
 
-export function DatasetInspection({ detail }: { detail: DatasetDetail }) {
+/** The `loss` sidecar is a free-form dict on the wire; only its topic list is
+ *  rendered, and only when it really is a list. */
+function lossTopics(detail: CaptureDetail): LossTopic[] | null {
+  const topics = detail.loss?.topics;
+  return Array.isArray(topics) ? topics : null;
+}
+
+export function DatasetInspection({ detail }: { detail: CaptureDetail }) {
   const queryClient = useQueryClient();
   const [lossJobId, setLossJobId] = useState<string | null>(null);
-  const runId = detail.run_id ?? null;
-  const detailKey = queryKeys.dataset(detail.operator, detail.task, detail.index);
+  const captureId = detail.capture_id;
+  const detailKey = queryKeys.capture(captureId);
+  // A job reads objects/<capture_id>, so it cannot run against a capture whose
+  // bytes are not on this host — a normal state for a dataset member (§12), not
+  // an error, so the control explains itself instead of failing.
+  const present = isCapturePresent(detail);
 
-  // Launch a loss_report job against the exported dir; poll to terminal, then
-  // re-fetch the detail so detail.loss renders (same flow as v1 Recordings).
+  // Launch a loss_report job; poll to terminal, then re-fetch the capture so
+  // detail.loss renders.
   const lossMutation = useMutation({
     mutationFn: () =>
       apiPost<JobStatus>('/jobs', {
         pipeline: 'loss_report',
-        run_id: runId ?? '',
-        params: { dataset_dir: detail.path },
+        capture_id: captureId,
+        params: {},
       }),
     onSuccess: (job) => setLossJobId(job.job_id),
   });
@@ -40,9 +51,7 @@ export function DatasetInspection({ detail }: { detail: DatasetDetail }) {
   useQuery({
     queryKey: queryKeys.job(lossJobId ?? ''),
     queryFn: ({ signal }) =>
-      apiGet<JobStatus>(`/jobs/${encodeURIComponent(lossJobId ?? '')}/status`, {
-        signal,
-      }),
+      apiGet<JobStatus>(`/jobs/${encodeURIComponent(lossJobId ?? '')}/status`, { signal }),
     enabled: !!lossJobId,
     refetchInterval: (q) => {
       const state = q.state.data?.state;
@@ -51,9 +60,11 @@ export function DatasetInspection({ detail }: { detail: DatasetDetail }) {
         setLossJobId(null);
         return false;
       }
-      return 1500;
+      return INSPECTION_JOB_POLL_MS;
     },
   });
+
+  const topics = lossTopics(detail);
 
   return (
     <div className="flex flex-col gap-4" data-testid="dataset-inspection">
@@ -66,41 +77,39 @@ export function DatasetInspection({ detail }: { detail: DatasetDetail }) {
             type="button"
             data-testid="run-loss-report-btn"
             onClick={() => lossMutation.mutate()}
-            disabled={!runId || lossMutation.isPending || !!lossJobId}
+            disabled={!present || lossMutation.isPending || !!lossJobId}
+            title={
+              present
+                ? undefined
+                : 'The recording is not readable on this machine, so there is nothing to analyze here.'
+            }
             className="rounded-[9px] border border-teal-200 px-2.5 py-1 text-xs font-bold text-teal-700 hover:bg-teal-50 disabled:opacity-50"
           >
-            {lossJobId
-              ? 'Analyzing…'
-              : lossMutation.isPending
-                ? 'Starting…'
-                : 'Run loss report'}
+            {lossJobId ? 'Analyzing…' : lossMutation.isPending ? 'Starting…' : 'Run loss report'}
           </button>
         </div>
-        {lossMutation.isError && <ErrorMessage error={lossMutation.error} />}
-        {detail.loss?.topics ? (
-          <LossTable topics={detail.loss.topics} />
+        <JobErrorNote error={lossMutation.isError ? lossMutation.error : null} testId="dataset-loss-error" />
+        {topics ? (
+          <LossTable topics={topics} />
         ) : (
           <p className="text-xs leading-relaxed text-gray-500">
-            Per-topic loss rate (gap-based estimate) computed straight from the exported
-            MCAP. Shortfalls are an observed estimate, not confirmed packet loss.
+            Per-topic loss rate (gap-based estimate) computed straight from the MCAP.
+            Shortfalls are an observed estimate, not confirmed packet loss.
           </p>
         )}
       </section>
 
-      {runId ? (
-        <VideoCheckSection
-          topics={detail.topics}
-          runId={runId}
-          datasetDir={detail.path}
-        />
+      {present ? (
+        <VideoCheckSection topics={detail.topics ?? []} captureId={captureId} />
       ) : (
         <section>
           <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
             Video check
           </span>
-          <p className="mt-1.5 text-xs text-gray-500">
-            No run id on this dataset — camera previews need a source run to re-decode
-            from.
+          <p className="mt-1.5 text-xs leading-relaxed text-gray-500">
+            No readable copy of this recording on this machine, so there are no frames
+            to decode. The membership is unaffected — a dataset may cite a capture
+            whose bytes live elsewhere.
           </p>
         </section>
       )}
@@ -109,20 +118,12 @@ export function DatasetInspection({ detail }: { detail: DatasetDetail }) {
         <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           Sidecars
         </span>
-        <JsonBlock label="Manifest" value={detail.manifest} />
+        <JsonBlock label="Object manifest" value={detail.manifest} />
+        <JsonBlock label="Record (review)" value={detail.record} />
         <JsonBlock label="Validation" value={detail.validation} />
-        <JsonBlock label="Dataset json" value={detail.dataset} />
-        {/* The labels that survived export (task result / quality / review
-            status + batch context) — the file a training-set assembler reads. */}
-        <JsonBlock label="Episode json" value={detail.episode} />
-        {!detail.manifest &&
-          !detail.validation &&
-          !detail.dataset &&
-          !detail.episode && (
-            <p className="text-xs text-gray-500">
-              No JSON sidecars present in this dataset.
-            </p>
-          )}
+        {!detail.manifest && !detail.record && !detail.validation && (
+          <p className="text-xs text-gray-500">No JSON sidecars present for this capture.</p>
+        )}
       </section>
     </div>
   );

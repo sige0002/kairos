@@ -1,25 +1,21 @@
-"""Transfer endpoints (``/api/v1/transfer``) — UI-triggered run pulls (split).
+"""Transfer endpoints (``/api/v1/transfer``) — pulling captures off the robot.
 
 In the cross-host split the recorder writes MCAP on the ROBOT's disk and the
-recording PC copies finalised runs over through the importer sidecar
-(``deploy/sync/``, defined only in ``compose.recording.yaml``; it binds
+recording PC copies finished captures over through the importer sidecar
+(``deploy/sync/``, defined only in ``compose/recording.yaml``; it binds
 127.0.0.1, so the orchestrator is its only caller — the UI goes through here).
 
-- ``GET /status`` reports whether the transfer channel exists at all: the
-  importer's ``/healthz`` answers only on a recording-PC (split) deploy, so
-  ``available`` is the frontend's split-mode signal. ``auto_pull_on_save``
-  mirrors the live recording config's opt-in for context.
-- ``POST /pull`` queues a pull of one run (``run_id``) or of every finalised
-  run (empty body) and relays the importer's 202-style ack. The importer
-  serialises pulls and copies only finalised runs, so the call is safe at any
-  time; an unreachable importer (single-host deploy) surfaces as the client's
-  unified 503 ``importer_unreachable``.
+§10.6 rekeys this to ``capture_id``. Two consequences worth stating:
 
-Completion is NOT reported here — the importer ack is fire-and-forget. The
-frontend observes it through the runs list: ``bag_local`` flips true once
-``metadata.yaml`` appears in the run's FINAL path (the importer stages
-in-flight pulls under ``.incoming/`` and atomic-renames on completion, so
-that is the "fully imported, never partial" marker).
+* Completion is still not reported here — the importer ack is fire-and-forget.
+  What the frontend watches instead is the capture's **replica state**, which
+  flips to ``present_unverified`` once the reconciler adopts the arrived
+  directory. The v1 ``bag_local`` boolean is gone: it could only say "here" or
+  "not here", and could not distinguish a copy that never arrived from one that
+  was deliberately deleted.
+* The importer stages under ``.incoming/<capture_id>`` and the orchestrator
+  moves it into ``objects/`` with one ``os.replace``, so a capture visible under
+  ``objects/`` is never a partial copy (§2).
 """
 
 from __future__ import annotations
@@ -31,14 +27,23 @@ router = APIRouter(prefix="/api/v1/transfer", tags=["transfer"])
 
 
 class TransferPullRequest(BaseModel):
-    """Body for ``POST /api/v1/transfer/pull``; no ``run_id`` = all finalised."""
+    """Body for ``POST /api/v1/transfer/pull``.
 
-    run_id: str | None = None
+    No ``capture_id`` means "pull every finished capture" — forwarded to the
+    importer as its explicit ``{"all": true}`` opt-in (an empty body is a 400
+    on that side, so a sweep is always a deliberate request).
+    """
+
+    capture_id: str | None = None
 
 
 @router.get("/status")
 async def transfer_status(request: Request) -> dict[str, object]:
-    """Whether the pull channel is available + the auto-pull opt-in state."""
+    """Whether the pull channel exists at all, plus the auto-pull opt-in.
+
+    The importer's ``/healthz`` answers only on a recording-PC (split) deploy,
+    so ``available`` doubles as the frontend's split-mode signal.
+    """
     config = request.app.state.recording_config
     return {
         "available": await request.app.state.importer_client.healthz(),
@@ -52,6 +57,6 @@ async def transfer_status(request: Request) -> dict[str, object]:
 async def transfer_pull(
     request: Request, body: TransferPullRequest
 ) -> dict[str, object]:
-    """Queue a pull of one run (or all finalised runs) from the robot."""
-    ack = await request.app.state.importer_client.pull(body.run_id)
-    return {"queued": True, "run_id": body.run_id, **ack}
+    """Queue a pull of one capture (or all finished ones) from the robot."""
+    ack = await request.app.state.importer_client.pull(body.capture_id)
+    return {"queued": True, "capture_id": body.capture_id, **ack}

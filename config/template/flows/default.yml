@@ -7,14 +7,14 @@
 # 入れ替えられる（コード変更なし・UI 変更なし）。
 #
 # 実行のされ方（詳細: docs/specs/ja/dora_runner.md）:
-#   POST /api/v1/jobs {pipeline: "full_validation", run_id, params: {flow: "default"}}
-#   → kairos が per-run の作業ディレクトリにこのファイルを実体化し
+#   POST /api/v1/jobs {pipeline: "full_validation", capture_id, params: {flow: "default"}}
+#   → kairos が per-capture の作業ディレクトリにこのファイルを実体化し
 #     （bag/report 注入・${KAIROS_*} 展開・path 解決）、bagflow CLI が dora の
 #     dataflow を生成して実行 → report.json → summary.json（pass/fail）。
 #
 # kairos が足すので **ここには書かない**もの:
-#   bag:     data/recorded/<run_id>（または params.dataset_dir の書き出し先）
-#   report:  data/report/full_validation/<run_id>/report.json
+#   bag:     data/objects/<capture_id>
+#   report:  data/report/full_validation/<capture_id>/report.json
 #
 # 使える置換トークン（文字列値のどこにでも書ける。未知の ${KAIROS_*} はエラー）:
 #   ${KAIROS_EXPECT_HZ}        {topic: hz} の JSON。必須トピック（Config タブの
@@ -23,9 +23,9 @@
 #                              ＝「存在必須・レート不問」。expected_hz_patterns に
 #                              一致するトピックは実レートで上書きされる。
 #   ${KAIROS_REQUIRED_TOPICS}  必須トピック名の JSON 配列（独自ノード向け）
-#   ${KAIROS_RUN_ID}           run_id
+#   ${KAIROS_CAPTURE_ID}       capture_id（UUIDv7。旧 ${KAIROS_RUN_ID} は廃止）
 #   ${KAIROS_BAG_DIR}          収録ディレクトリ（metadata.yaml + *.mcap）
-#   ${KAIROS_REPORT_DIR}       data/report/full_validation/<run_id>
+#   ${KAIROS_REPORT_DIR}       data/report/full_validation/<capture_id>
 #   ${KAIROS_REPORT}           上記 + /report.json
 #
 # ノードの path:

@@ -4,7 +4,7 @@ Multiplexes the orchestrator's event sources into a single Server-Sent-Events
 stream per ``api_orchestrator.md``:
 
 - ``record_status`` — emitted by the run lifecycle on state changes
-  (``{run_id, state, message_count, bytes}``).
+  (``{capture_id, run_id, state, message_count, bytes}``).
 - ``metrics`` — topic_monitor's periodic snapshot (proxied from its
   ``/metrics/stream``).
 - ``alert`` — topic_monitor alerts (proxied from its ``/alerts/stream``).

@@ -1,0 +1,106 @@
+# =============================================================================
+# kairos — RECORDING-HOST compose (the separate-PC half of the cross-host split).
+#
+# Runs the three services that do NOT touch DDS — orchestrator (httpx + SQLite),
+# dora_runner (reads MCAP via the mcap lib, CPU-heavy validation/conversion), and
+# frontend (nginx). Because NONE of these join the robot's DDS graph, running them
+# on a separate PC cannot load the robot's onboard system. They reach the
+# robot-edge services (compose/robot.yaml) over HTTP at the robot's LAN IP, set
+# via *_HOST in .env (copy .env.split.example -> .env and fill in ROBOT_IP).
+#
+# This is a STANDALONE file (not an overlay): it contains ONLY the recording-host
+# services, so you physically cannot start a DDS reader here by accident. Service
+# definitions are pulled from compose/compose.yaml via `extends` (no drift).
+#
+#   # on the RECORDING PC:
+#   cp .env.split.example .env   # set RECORDER_HOST/TOPIC_MONITOR_HOST/WEBRTC_HOST/
+#                                #     TOPIC_PROBE_HOST/WEBRTC_HOST/PROBE_HOST = robot IP
+#   docker compose --project-directory . -f compose/recording.yaml build   # first time / after a code change
+#   docker compose --project-directory . -f compose/recording.yaml up -d
+#   # (or:  make recording-up)
+#
+# MCAP boundary: the recorder writes bags on the ROBOT's disk. Pull COMPLETED runs
+# to this PC with `make import-runs` (rsync) BEFORE running dora — do NOT point
+# dora at robot storage over NFS (dora scanning large MCAPs would make the robot
+# serve disk/network = loading the robot). See docs/specs/ja/deployment_topology.md.
+# =============================================================================
+name: kairos-recording
+
+services:
+  orchestrator:
+    extends:
+      file: compose/compose.yaml
+      service: orchestrator
+  dora_runner:
+    extends:
+      file: compose/compose.yaml
+      service: dora_runner
+  frontend:
+    extends:
+      file: compose/compose.yaml
+      service: frontend
+    # The inherited `depends_on: orchestrator (service_healthy)` is valid here —
+    # the orchestrator is co-located on this recording PC, so the frontend waits
+    # for it to pass its healthcheck before starting (its first request proxies
+    # to the orchestrator). The robot-edge streamer/probe it also proxies to are
+    # reached lazily at request time, so they need no ordering.
+
+  # Pull sidecar (recording-host ONLY — deliberately NOT in compose/compose.yaml, so the
+  # single-host `make up` never runs it): rsyncs FINALISED captures from the
+  # robot into this PC's ./data/objects behind a tiny localhost HTTP trigger.
+  # The orchestrator POSTs /pull right after a Collect Save when the recording
+  # config opts in (transfer.auto_pull_on_save — DEFAULT OFF: nothing is
+  # transferred unless you enable it). The robot-side copy is left in place.
+  # Manual `make import-runs` keeps working independently of this sidecar.
+  # Measured 2026-07-16 (harness since removed; see git history of
+  # deploy/test/overlap_eval/): a pull overlapping an active recording does not
+  # degrade recorded topic rates; BWLIMIT exists to protect the WebRTC
+  # preview's share of a thin link (WiFi/Tailscale), not the recording.
+  importer:
+    build:
+      context: deploy/sync
+    image: kairos-importer:${KAIROS_VERSION:-dev}
+    restart: unless-stopped
+    # Host networking like the rest of the stack; the daemon binds 127.0.0.1
+    # (IMPORTER_BIND) so only the co-located orchestrator can trigger pulls.
+    network_mode: host
+    env_file:
+      - path: ${KAIROS_ENV_FILE:-.env}
+        required: false
+    environment:
+      ROBOT_SSH: ${ROBOT_SSH:-}
+      ROBOT_DATA_DIR: ${ROBOT_DATA_DIR:-/home/robot/kairos/data}
+      DATA_DIR: /data
+      BWLIMIT: ${BWLIMIT:-0}
+      IMPORTER_BIND: ${IMPORTER_BIND:-127.0.0.1}
+      IMPORTER_PORT: ${IMPORTER_PORT:-8030}
+      # Periodic catch-up sweep (seconds); 0 = off. Off by default: with the
+      # default auto_pull_on_save=false NOTHING must transfer on its own.
+      IMPORT_SWEEP_S: ${IMPORT_SWEEP_S:-0}
+      # Auth inside the container: the key is bind-mounted to a fixed path (see
+      # volumes); password auth reads ROBOT_SSH_PASSWORD via the env_file.
+      ROBOT_SSH_KEY: /robot_key
+      # accept-new: trust-on-first-use per container lifetime — same trusted-LAN
+      # posture as the rest of the (no-auth) stack. Fail fast when the robot is
+      # down instead of hanging a queued pull.
+      IMPORT_SSH_OPTS: >-
+        -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/known_hosts
+        -o ConnectTimeout=3 -o ServerAliveInterval=5 -o ServerAliveCountMax=3
+    volumes:
+      - ${DATA_DIR:-./data}:/data
+      # Host path of the ssh identity (ROBOT_SSH_KEY in .env.split); /dev/null
+      # when unset — import_runs.sh treats an empty /robot_key as "no key".
+      - ${ROBOT_SSH_KEY:-/dev/null}:/robot_key:ro
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - >-
+          import os,urllib.request;
+          urllib.request.urlopen(f"http://127.0.0.1:{os.environ.get('IMPORTER_PORT','8030')}/healthz",
+          timeout=3)
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s

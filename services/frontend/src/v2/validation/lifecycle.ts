@@ -6,7 +6,7 @@
 // treated as a promotion candidate (Candidate, so "Promote to Standard…" has
 // something to demo), and everything else is Experimental. This is purely a
 // UI affordance — it never changes what a pipeline actually does or which
-// runs it's allowed to touch.
+// captures it's allowed to touch.
 import type { Tone } from '../../components/ui';
 
 export type Lifecycle = 'Standard' | 'Candidate' | 'Experimental' | 'Draft';

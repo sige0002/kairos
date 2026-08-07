@@ -1,21 +1,23 @@
 """Retention endpoint (``GET /api/v1/retention``).
 
-Surfaces the recordings that ``RETENTION_DAYS`` marks as old-and-unexported so
-the Review UI can nudge the operator to reclaim them. Per the 2026-07-14
-adjudication this feature is deliberately *advisory only*: it NEVER deletes
-anything and runs no background job. Candidates are computed on request (cheap:
-the runs table plus best-effort directory sizes), and deletion always goes
-through the existing confirmed ``DELETE /api/v1/runs/{id}`` path. Exported
-datasets (whose run row is gone) are untouchable and never appear here.
+Surfaces the captures ``RETENTION_DAYS`` marks as reclaimable so the Review UI
+can nudge the operator. Deliberately *advisory only*: it NEVER deletes anything
+and runs no background job, and deletion always goes through the confirmed
+``POST /api/v1/captures/{id}/delete`` path.
+
+§10 redefines what a candidate is. The v1 rule — "a row still exists, therefore
+it was never exported" — is meaningless now that §6 keeps the row forever, so a
+candidate is a capture that no dataset cites, whose review left it ``pending``
+or ``excluded``, and which is older than the retention period.
 """
 
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
 
-from api_orchestrator.deps import get_run_service
+from api_orchestrator.captures import CaptureService
+from api_orchestrator.deps import get_capture_service
 from api_orchestrator.models import RetentionResponse
-from api_orchestrator.runs import RunService
 
 router = APIRouter(prefix="/api/v1/retention", tags=["retention"])
 
@@ -23,7 +25,7 @@ router = APIRouter(prefix="/api/v1/retention", tags=["retention"])
 @router.get("", response_model=RetentionResponse)
 async def get_retention(
     request: Request,
-    service: RunService = Depends(get_run_service),
+    service: CaptureService = Depends(get_capture_service),
 ) -> RetentionResponse:
     """Return the current retention candidates and their total size.
 

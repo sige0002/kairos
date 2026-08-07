@@ -6,14 +6,14 @@
 // (same endpoints and cache-refresh set as the v1 Config tab), so cameras,
 // default topics and expected-Hz all follow the selection immediately.
 
-import { useState, type ReactNode } from 'react';
+import { type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiGet, apiPost } from '../../api/client';
+import { getConfigOptions, selectConfig } from '../../api/config';
 import { queryKeys } from '../../api/queryKeys';
-import type { ConfigOptions } from '../../api/types';
 import { Card, cn } from '../../components/ui';
 import { type BatchMachine } from './useBatchMachine';
 import { findProject, usePlans } from '../plans';
+import { RECORDING_CONFIG_KEY } from '../../api/queryKeys';
 
 function CellButton({
   label,
@@ -47,6 +47,26 @@ function CellButton({
       </span>
     </button>
   );
+}
+
+/**
+ * The catalog's "there is nothing here" fallback, as it arrives in the header.
+ *
+ * `createBatchMachineState` seeds project/task from the shared catalog and
+ * falls back to this em dash when the catalog is empty — the same placeholder
+ * `plans.ts` uses. It is not a name, and a header cell is the one place it must
+ * not be rendered as though it were one: the operator gets a populated-looking
+ * header with two cells they cannot act on and nothing saying why, or where the
+ * fix is. (Reported as a side finding during E-5, which reached Collect from a
+ * catalog another terminal emptied.)
+ */
+const NO_PLAN = '—';
+
+function planCellValue(value: string | null): ReactNode {
+  // `null` is the state the machine now holds when there is no catalog; the em
+  // dash is the same state as restored from an older persisted blob.
+  if (value !== null && value !== NO_PLAN) return value;
+  return <span className="font-normal text-gray-400">no plans configured</span>;
 }
 
 function StaticCell({ label, value }: { label: string; value: ReactNode }) {
@@ -146,34 +166,49 @@ function MenuItem({
 }
 
 /** Real robot selector — the v1 Config tab's robot switch, relocated here. */
-function RobotCell({ disabled }: { disabled: boolean }) {
+function RobotCell({
+  disabled,
+  open,
+  onToggle,
+}: {
+  disabled: boolean;
+  open: boolean;
+  onToggle: () => void;
+}) {
   const queryClient = useQueryClient();
-  const [open, setOpen] = useState(false);
   const options = useQuery({
     queryKey: queryKeys.configOptions,
-    queryFn: ({ signal }) => apiGet<ConfigOptions>('/config/options', { signal }),
+    queryFn: ({ signal }) => getConfigOptions({ signal }),
   });
   const select = useMutation({
     mutationFn: (id: string) =>
-      apiPost<ConfigOptions>('/config/select', { category: 'robot', id }),
+      selectConfig({ category: 'robot', id }),
     onSuccess: (data) => {
       queryClient.setQueryData(queryKeys.configOptions, data);
-      // Same refresh set as v1 ConfigTab's selectMutation: a robot switch
+      // Same refresh set as Settings > Robots' selectMutation: a robot switch
       // changes the runtime config (defaults + stream panes → the camera
       // tiles) and re-points the editable recording file.
       queryClient.invalidateQueries({ queryKey: queryKeys.runtimeConfig });
-      queryClient.invalidateQueries({ queryKey: ['config', 'recording'] });
+      queryClient.invalidateQueries({ queryKey: RECORDING_CONFIG_KEY });
     },
   });
 
   const robots = options.data?.robots ?? [];
   const active = options.data?.active_robot;
+
+  // The open state lives in the machine (see toggleRobotPicker): the keyboard
+  // shortcut layer has to be able to SEE this overlay, or `r` starts a take
+  // behind the open list. The machine also closes it when the context stops
+  // being editable — a list opened before Start must not stay live over a
+  // running recording, where picking from it would switch robots with no
+  // confirmation and no stop.
+
   return (
     <div className="relative">
       <CellButton
         label="Robot"
         value={select.isPending ? 'switching…' : (active ?? '—')}
-        onClick={() => setOpen((v) => !v)}
+        onClick={onToggle}
         disabled={disabled || robots.length === 0 || select.isPending}
         title="Switch robot config (disabled while recording)"
       />
@@ -187,7 +222,10 @@ function RobotCell({ disabled }: { disabled: boolean }) {
               key={r.id}
               active={r.id === active}
               onClick={() => {
-                setOpen(false);
+                onToggle();
+                // Defence in depth: never act on a selection the guard forbids,
+                // rather than trusting the popover to have been dismissed.
+                if (disabled) return;
                 if (r.id !== active) select.mutate(r.id);
               }}
             >
@@ -213,7 +251,7 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
       : phase === 'ended'
         ? '· ended early'
         : `· next #${stats.epNext}`;
-  const curProject = findProject(plans, machine.project);
+  const curProject = findProject(plans, machine.project ?? '');
   // Real count of what the NEXT recording captures (config defaults + the
   // Monitor picker), mirroring v1 LiveTab's idleTopicLabel.
   const recTopicsLabel = selection.customized
@@ -226,7 +264,7 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
     <Card className="relative flex shrink-0 items-center px-[18px] py-2.5 [@media(max-height:860px)]:py-1.5">
       <CellButton
         label="Project"
-        value={machine.project}
+        value={planCellValue(machine.project)}
         onClick={machine.openProjPicker}
         disabled={!machine.ctxEditable}
         title="Change project (from plan)"
@@ -234,22 +272,22 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
       <Divider />
       <CellButton
         label="Task"
-        value={machine.task}
+        value={planCellValue(machine.task)}
         onClick={machine.openTaskPicker}
         disabled={!machine.ctxEditable}
         title="Change task (from plan)"
       />
       <Divider />
-      {/* Server batch number (operator-facing "Set N"), no fabricated "/5"
-          planned-count. Before the set is created (on the first recording) we
+      {/* Server batch number, no fabricated "/5"
+          planned-count. Before the batch is created (on the first recording) we
           show an honest, muted prediction of the number it will most likely get
           rather than a bare "—". The real number is assigned server-side, hence
           "next". */}
       <StaticCell
-        label="Set"
+        label="Batch"
         value={
           machine.batchSeq != null ? (
-            `Set ${machine.batchSeq}`
+            `Batch ${machine.batchSeq}`
           ) : (
             <span className="font-normal text-gray-400">
               next #{machine.predictedSeq ?? 1}
@@ -265,6 +303,15 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
         label="Episode"
         value={
           <>
+            {/* A rebuild reconstructs the counter from the sidecars still on
+                disk, so it cannot count a capture that was reviewed in and
+                later deleted. Saying "12 / 30" of a lower bound sends the
+                operator to re-record takes they already have. */}
+            {machine.recordedIsFloor && (
+              <span title="At least this many — the count was rebuilt from the recordings still on disk, so takes deleted after review are not counted.">
+                &ge;{' '}
+              </span>
+            )}
             {stats.nRecorded} / {machine.targetEpisodes}{' '}
             <span className="text-teal-600">{epNextText}</span>
           </>
@@ -279,7 +326,11 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
         title="Change condition (starts a new set once this one has recordings)"
       />
       <Divider />
-      <RobotCell disabled={!machine.ctxEditable} />
+      <RobotCell
+        disabled={!machine.ctxEditable}
+        open={machine.robotPickerOpen}
+        onToggle={machine.toggleRobotPicker}
+      />
       <div className="flex-1" />
       <button
         type="button"
@@ -296,20 +347,30 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
         onClick={machine.toggleBatchMenu}
         className="inline-flex items-center gap-1.5 rounded-control border border-gray-200 bg-white px-3.5 py-2 text-[13px] font-semibold text-gray-700 hover:bg-gray-50"
       >
-        Set menu <span className="text-[11px] text-gray-400">▾</span>
+        Batch menu <span className="text-[11px] text-gray-400">▾</span>
       </button>
 
       {machine.projPickerOpen && (
         <PickerPopover className="left-3.5 top-[58px]" heading="Project (from plan)">
-          {plans.map((p) => (
-            <PickItem
-              key={p.name}
-              active={p.name === machine.project}
-              onClick={() => machine.pickProject(p.name)}
-            >
-              {p.name}
-            </PickItem>
-          ))}
+          {/* The one real dead end on an empty catalog: with nothing to pick
+              this popover was a blank rectangle. (The Task picker has always
+              had `Custom…`, so it is never a dead end.) */}
+          {plans.length === 0 ? (
+            <span className="px-3 pb-1.5 pt-0.5 text-[12px] leading-relaxed text-gray-500">
+              No projects in the shared catalog. Add one in Settings &gt; Projects &amp;
+              tasks.
+            </span>
+          ) : (
+            plans.map((p) => (
+              <PickItem
+                key={p.name}
+                active={p.name === machine.project}
+                onClick={() => machine.pickProject(p.name)}
+              >
+                {p.name}
+              </PickItem>
+            ))
+          )}
         </PickerPopover>
       )}
       {machine.taskPickerOpen && (
@@ -344,9 +405,9 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
             Pause set
           </MenuItem>
           <MenuItem onClick={machine.openEndModal} danger>
-            End set early…
+            End batch early…
           </MenuItem>
-          <MenuItem onClick={machine.openResetModal}>Reset set…</MenuItem>
+          <MenuItem onClick={machine.openResetModal}>Reset batch…</MenuItem>
           <MenuItem onClick={machine.openTargetModal}>Change target…</MenuItem>
           <MenuItem onClick={machine.openIssueModal}>Report issue…</MenuItem>
           <MenuItem onClick={machine.openCondModal} disabled={!machine.condAllowed}>

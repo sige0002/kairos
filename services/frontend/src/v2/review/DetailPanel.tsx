@@ -1,17 +1,28 @@
-// Detail column: selected episode header, the REAL run inspection (detail rows,
-// video_check, loss_report, fast_validation, JSON sidecars — RunInspection.tsx),
-// the operator's local quality/task overrides (Phase 1, start from "—"), the
-// adopt/keep/exclude decision (Phase 2 local), and cross-tab deep links. In a
-// split deployment an un-transferred episode shows the transfer placeholder
-// instead — its MCAP is still on the robot PC, so there's nothing to inspect.
+// Detail column: selected capture header, the REAL inspection (detail rows,
+// video_check, loss_report, fast_validation, JSON sidecars —
+// CaptureInspection.tsx), the quality/task edits, the adopt/keep/exclude
+// decision, and cross-tab deep links.
+//
+// A capture whose bytes have not arrived shows the transfer placeholder instead
+// of the inspection. That is a normal state on a split deployment, not an error:
+// §12 requires a capture with review data and no local copy to render, because
+// reviewing before the pull is the intended order there.
 
 import type { ReactNode } from 'react';
+import { useCallback } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { getCapture } from '../../api/captures';
+import { queryKeys } from '../../api/queryKeys';
 import { Badge, cn, type Tone } from '../../components/ui';
-import { RunInspection } from './RunInspection';
-import type { Quality, ReviewLane } from './types';
+import { AvailabilityChip } from '../captures/AvailabilityChip';
+import { availabilityOf } from '../captures/availability';
+import { CaptureInspection } from './CaptureInspection';
+import type { CaptureLabels, LabelEditing } from './LabelRows';
+import { episodeLabel } from './types';
+import type { DisplayQuality, ReviewLane } from './types';
 import type { ReviewState } from './useReviewState';
 
-function qualityTone(q: Quality): Tone {
+function qualityTone(q: DisplayQuality): Tone {
   if (q === 'Good') return 'green';
   if (q === 'Needs review') return 'amber';
   return 'red';
@@ -25,12 +36,14 @@ function headerBadge(lane: ReviewLane): { label: string; tone: Tone } {
   return { label: 'NEEDS CHECK', tone: 'amber' };
 }
 
-// The Collect → Review → Datasets pipeline for this episode, so the operator can
+// The Collect → Review → Datasets pipeline for this capture, so the operator can
 // see where it is and what the next step is (the "adopt did nothing visible"
-// complaint). Export / In dataset aren't observable from Review, so they stay
-// upcoming; the current step is highlighted.
+// complaint). The "In dataset" step reads REAL membership from the capture
+// detail (the same query CaptureInspection uses, deduped by React Query) — it
+// used to light up "●" for any READY capture, contradicting a Datasets tab
+// with zero datasets (audit P1). Unknown (detail still loading) stays "○".
 type StepState = 'done' | 'current' | 'todo' | 'off';
-function PipelineStrip({ lane }: { lane: ReviewLane }) {
+function PipelineStrip({ lane, inDataset }: { lane: ReviewLane; inDataset: boolean | null }) {
   const ready = lane === 'ready';
   const excluded = lane === 'excluded';
   const steps: { label: string; state: StepState }[] = [
@@ -38,8 +51,7 @@ function PipelineStrip({ lane }: { lane: ReviewLane }) {
     // NEEDS CHECK is the current review step; READY/EXCLUDED are past it.
     { label: 'Reviewed', state: lane === 'needs_check' ? 'current' : 'done' },
     { label: 'Ready', state: ready ? 'done' : excluded ? 'off' : 'todo' },
-    { label: 'Export', state: ready ? 'current' : 'todo' },
-    { label: 'In dataset', state: 'todo' },
+    { label: 'In dataset', state: inDataset === true ? 'done' : 'todo' },
   ];
   const glyph: Record<StepState, string> = {
     done: '✓',
@@ -76,12 +88,14 @@ function DecisionButton({
   onClick,
   children,
   testId,
+  disabled = false,
 }: {
   active?: boolean;
   tone: 'adopt' | 'review' | 'exclude';
   onClick: () => void;
   children: ReactNode;
   testId: string;
+  disabled?: boolean;
 }) {
   const styles: Record<string, string> = {
     adopt: active
@@ -99,9 +113,11 @@ function DecisionButton({
       type="button"
       data-testid={testId}
       onClick={onClick}
+      disabled={disabled}
       className={cn(
         'h-[38px] flex-1 rounded-control text-[13px] font-semibold transition-colors',
         styles[tone],
+        disabled && 'cursor-not-allowed opacity-50',
       )}
     >
       {children}
@@ -109,8 +125,8 @@ function DecisionButton({
   );
 }
 
-/** A quality badge, or a muted "—" when unset (no automated quality model). */
-function QualityValue({ quality }: { quality: Quality | null }) {
+/** A quality badge, or a muted "—" when unset. */
+function QualityValue({ quality }: { quality: DisplayQuality | null }) {
   if (!quality) return <span className="text-[12.5px] text-gray-400">—</span>;
   return (
     <Badge tone={qualityTone(quality)} className="w-fit">
@@ -121,6 +137,53 @@ function QualityValue({ quality }: { quality: Quality | null }) {
 
 export function DetailPanel({ rv }: { rv: ReviewState }) {
   const sel = rv.selected;
+  // Same key CaptureInspection uses — React Query dedupes the request; this
+  // just lets the pipeline strip read REAL dataset membership (see
+  // PipelineStrip). null = detail not loaded yet.
+  const detailQuery = useQuery({
+    queryKey: queryKeys.capture(sel?.captureId ?? ''),
+    queryFn: ({ signal }) => getCapture(sel!.captureId, signal),
+    enabled: !!sel,
+  });
+  const inDataset = detailQuery.data
+    ? (detailQuery.data.memberships?.length ?? 0) > 0
+    : null;
+
+  // The operator/task/robot edit rides the SAME compare-and-swap save every
+  // other Review control uses (§4.1), so a label edit that races another
+  // terminal is refused and surfaced by the one conflict banner rather than by
+  // a second mechanism with its own idea of what a conflict looks like.
+  const queryClient = useQueryClient();
+  const captureId = sel?.captureId ?? null;
+  const capture = sel?.capture ?? null;
+  const saveLabels = useCallback(
+    async (next: CaptureLabels): Promise<string | null> => {
+      if (!capture || !captureId) return 'Nothing is selected.';
+      const { capture: updated, error, skipped } = await rv.reviewSave.save(capture, next);
+      if (skipped) {
+        return 'A save for this recording is still going — try again in a moment.';
+      }
+      if (error) return `${error.message} ${error.guidance}`.trim();
+      // The save invalidates the capture LIST, which is not what this panel
+      // renders: the rows come from the capture DETAIL, whose own re-read is up
+      // to ten seconds away. Fold the reply in so the edit is visible now.
+      //
+      // MERGED, not replaced: the detail carries the on-disk sidecars
+      // (manifest, record, loss, validation) that a review response does not,
+      // and overwriting wholesale would blank half the inspection.
+      if (updated) {
+        queryClient.setQueryData(queryKeys.capture(captureId), (prev) =>
+          prev ? { ...prev, ...updated } : prev,
+        );
+      }
+      return null;
+    },
+    [capture, captureId, rv.reviewSave, queryClient],
+  );
+  const labels: LabelEditing = {
+    save: saveLabels,
+    saving: captureId ? rv.reviewSave.savingCaptureIds.has(captureId) : false,
+  };
 
   if (!sel) {
     return (
@@ -132,8 +195,20 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
     );
   }
 
+  // A save for THIS capture is unanswered. Every control below spends
+  // `sel.capture.review_revision`, and that value does not move until the save
+  // lands, so a second decision taken now would carry a revision already
+  // spent. The hook refuses to send it either way (useReviewSave); this is the
+  // half the operator can see, so the refusal is not a click into silence.
+  const saving = rv.reviewSave.savingCaptureIds.has(sel.captureId);
   const badge = headerBadge(sel.reviewLane);
-  const showInspection = !rv.splitMode || sel.transferSlot.phase === 'transferred';
+  const availability = availabilityOf(sel.capture);
+  // Whether this machine actually holds the bytes. `usable` is the same fact
+  // the inspection gates on: present and readable.
+  const bytesHere = availability.usable;
+  // The inspection reads the local bag, so it needs the bytes to be here —
+  // which is a fact about the replica, not about the deployment topology.
+  const showInspection = availability.usable;
 
   return (
     // overflow-hidden + an inner scroll region: the header and the decision
@@ -147,9 +222,10 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
         className="flex items-center gap-2.5 border-b border-gray-100 px-[18px] py-3"
       >
         <span className="font-mono text-sm font-semibold text-gray-900">
-          Episode #{sel.ep}
+          Episode {episodeLabel(sel.ep)}
         </span>
         <span className="text-xs text-gray-400">Batch {sel.batch}</span>
+        <AvailabilityChip capture={sel.capture} testId="review-detail-availability" />
         <div className="flex-1" />
         <span data-testid="review-detail-status">
           <Badge tone={badge.tone}>{badge.label}</Badge>
@@ -158,14 +234,18 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
 
       <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-[18px] py-3.5">
         {showInspection ? (
-          <RunInspection runId={sel.runId} />
+          <CaptureInspection captureId={sel.captureId} labels={labels} />
         ) : (
-          <div className="flex flex-col items-center justify-center gap-2.5 rounded-[10px] border border-dashed border-gray-300 bg-gray-50 px-4 py-8 text-center">
+          <div
+            data-testid="review-no-local-copy"
+            data-availability={availability.kind}
+            className="flex flex-col items-center justify-center gap-2.5 rounded-[10px] border border-dashed border-gray-300 bg-gray-50 px-4 py-8 text-center"
+          >
             <span className="text-sm font-medium text-gray-600">
-              Data is on the robot PC
+              Nothing to inspect here
             </span>
-            <span className="text-xs text-gray-400">
-              This episode hasn&apos;t been transferred to the recording PC yet.
+            <span className="max-w-[320px] text-xs text-gray-400">
+              {availability.detail}
             </span>
             {sel.transferSlot.phase === 'transferring' ? (
               // Indeterminate: rsync progress isn't observable through the pull
@@ -179,14 +259,19 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
                 </span>
               </div>
             ) : (
-              <button
-                type="button"
-                data-testid="review-transfer-button"
-                onClick={() => rv.transferOne(sel.runId)}
-                className="rounded-control bg-teal-600 px-3.5 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-teal-700"
-              >
-                Transfer to recording PC
-              </button>
+              // Only offered for a capture that is simply absent. Every other
+              // replica state (trashed, removed, missing, corrupt) has a story
+              // the chip already tells, and pulling would not be the answer.
+              sel.transferSlot.phase === 'awaiting' && (
+                <button
+                  type="button"
+                  data-testid="review-transfer-button"
+                  onClick={() => rv.transferOne(sel.captureId)}
+                  className="rounded-control bg-teal-600 px-3.5 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-teal-700"
+                >
+                  Transfer to recording PC
+                </button>
+              )
             )}
           </div>
         )}
@@ -199,10 +284,20 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
             <QualityValue quality={sel.quality} />
           </div>
           <div
-            onClick={rv.cycleFinalQuality}
-            title="Click to set: Good → Needs review → Not usable"
+            onClick={saving ? undefined : rv.cycleFinalQuality}
+            aria-disabled={saving}
+            title={
+              saving
+                ? 'Saving the last change…'
+                : 'Click to set: Good → Needs review → Not usable'
+            }
             data-testid="review-final-quality"
-            className="flex cursor-pointer flex-col gap-0.5 rounded-[10px] border border-gray-100 px-3 py-2.5 transition-colors hover:border-teal-200 hover:bg-teal-50"
+            className={cn(
+              'flex flex-col gap-0.5 rounded-[10px] border border-gray-100 px-3 py-2.5 transition-colors',
+              saving
+                ? 'cursor-not-allowed opacity-50'
+                : 'cursor-pointer hover:border-teal-200 hover:bg-teal-50',
+            )}
           >
             <div className="flex items-center gap-1.5">
               <span className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400">
@@ -213,10 +308,16 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
             <QualityValue quality={sel.effectiveQuality} />
           </div>
           <div
-            onClick={rv.cycleTaskResult}
-            title="Click to set: Success ↔ Failure"
+            onClick={saving ? undefined : rv.cycleTaskResult}
+            aria-disabled={saving}
+            title={saving ? 'Saving the last change…' : 'Click to set: Success ↔ Failure'}
             data-testid="review-task-result"
-            className="flex cursor-pointer flex-col gap-0.5 rounded-[10px] border border-gray-100 px-3 py-2.5 transition-colors hover:border-teal-200 hover:bg-teal-50"
+            className={cn(
+              'flex flex-col gap-0.5 rounded-[10px] border border-gray-100 px-3 py-2.5 transition-colors',
+              saving
+                ? 'cursor-not-allowed opacity-50'
+                : 'cursor-pointer hover:border-teal-200 hover:bg-teal-50',
+            )}
           >
             <div className="flex items-center gap-1.5">
               <span className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400">
@@ -251,27 +352,44 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
           </div>
         </div>
 
-        <PipelineStrip lane={sel.reviewLane} />
+        <PipelineStrip lane={sel.reviewLane} inDataset={inDataset} />
 
-        {sel.isArchived && (
+        {sel.isExcluded && (
           <div className="flex flex-col gap-1.5 rounded-[10px] border border-gray-200 bg-gray-50 px-3 py-2.5">
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <span className="text-[12px] font-semibold text-gray-600">
-                Excluded — kept on disk
+                {bytesHere ? 'Excluded — still on disk' : 'Excluded'}
               </span>
               <div className="flex-1" />
               <button
                 type="button"
-                data-testid="review-delete-one"
-                onClick={() => rv.requestDelete(sel.runId)}
-                className="rounded-control border border-red-200 px-2.5 py-1 text-[11.5px] font-semibold text-red-700 transition-colors hover:bg-red-50"
+                data-testid="review-discard-one"
+                onClick={() => rv.requestDiscard([sel.captureId])}
+                title="Never uploaded and not worth keeping. Irreversible; a reason is required."
+                className="rounded-control border border-red-200 px-2.5 py-1 text-[11.5px] font-bold text-red-700 transition-colors hover:bg-red-50"
               >
-                Delete from disk…
+                Discard (not uploaded)…
+              </button>
+              <button
+                type="button"
+                data-testid="review-delete-one"
+                onClick={() => rv.requestDelete([sel.captureId])}
+                title="Remove this recording from this machine. The catalog keeps a record of it."
+                className="rounded-control border border-gray-300 px-2.5 py-1 text-[11.5px] font-semibold text-gray-700 transition-colors hover:bg-gray-100"
+              >
+                Delete…
               </button>
             </div>
+            {/* Only claim there is space to reclaim when the bytes are actually
+                here. Printing it directly under "The files vanished from this
+                machine" told the operator to free space that is already gone. */}
             <span className="text-[11px] text-gray-400">
-              Excluded from dataset use, but the recording still occupies disk. Deleting
-              reclaims that storage and is permanent.
+              {bytesHere
+                ? 'Excluding is only a label — the recording still occupies disk. ' +
+                  'Both removals free that space and neither can be undone.'
+                : 'Excluding is only a label. This machine no longer holds the ' +
+                  'files, so there is no space to reclaim — a removal records ' +
+                  'the decision, and cannot be undone.'}
             </span>
           </div>
         )}
@@ -289,9 +407,7 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
             type="button"
             onClick={rv.goValidation}
             disabled={!showInspection}
-            title={
-              showInspection ? undefined : 'Transfer the recording to this PC first'
-            }
+            title={showInspection ? undefined : availability.detail}
             className={cn(
               'text-[12.5px] font-semibold',
               showInspection
@@ -302,30 +418,45 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
             Open in Validation →
           </button>
           <div className="flex-1" />
-          {/* Real local history: how many quality/task overrides the operator
-              has applied to this episode this session. */}
-          <span
-            data-testid="review-override-history"
-            className="text-[11.5px] text-gray-400"
-          >
-            {rv.selectedOverrideCount > 0
-              ? `${rv.selectedOverrideCount} override${rv.selectedOverrideCount === 1 ? '' : 's'} this session`
-              : 'no overrides yet'}
+          {/* The CAS token. Shown because it is the thing a conflict is about:
+              when another terminal saves first, this is the number that moved. */}
+          <span data-testid="review-revision" className="text-[11.5px] text-gray-400">
+            {sel.reviewRevision === 0
+              ? 'not reviewed yet'
+              : `revision ${sel.reviewRevision}`}
           </span>
         </div>
       </div>
 
       {/* Pinned decision bar — always visible, never behind a scroll. Exception-
-          review actions: READY (good or confirmed) needs no click; you only
-          resolve a NEEDS CHECK exception (Mark OK / Exclude). */}
+          review actions: a NEEDS CHECK exception is resolved (Mark OK /
+          Exclude); a READY capture needs no review, but it still needs to have
+          been ADOPTED before Datasets will take it. */}
       <div
         data-testid="review-decision-bar"
         className="flex flex-col gap-2 border-t border-gray-100 bg-gray-50/60 px-[18px] py-3"
       >
         <div className="flex flex-wrap gap-1.5">
-          {sel.reviewLane === 'needs_check' && (
-            <DecisionButton tone="adopt" testId="review-mark-ok" onClick={rv.markOk}>
-              Mark OK — include
+          {/* One control, two vocabularies. Adoption is what Datasets requires
+              (data.ts: a capture Review has not adopted is refused), and it was
+              reachable ONLY from the NEEDS CHECK lane — so a good take, which
+              never visits that lane, could not enter a training set while a
+              mediocre one could. It disappears once adopted: a READY, adopted
+              capture genuinely needs no action.
+
+              Captures saved from Collect as a good success now arrive adopted;
+              this stays for everything recorded before that, and for anything
+              written by something other than this screen. */}
+          {sel.reviewLane !== 'excluded' && sel.effectiveReviewStatus !== 'adopted' && (
+            <DecisionButton
+              tone="adopt"
+              testId="review-mark-ok"
+              onClick={rv.markOk}
+              disabled={saving}
+            >
+              {sel.reviewLane === 'needs_check'
+                ? 'Mark OK — include'
+                : 'Adopt — include in datasets'}
             </DecisionButton>
           )}
           {sel.reviewLane !== 'excluded' && (
@@ -333,6 +464,7 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
               tone="exclude"
               testId="review-decision-exclude"
               onClick={() => rv.decide('excluded')}
+              disabled={saving}
             >
               Exclude
             </DecisionButton>
@@ -347,6 +479,7 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
               tone="review"
               testId="review-return-to-review"
               onClick={() => rv.decide('review')}
+              disabled={saving}
             >
               {sel.reviewLane === 'excluded'
                 ? '↩ Return to review'
@@ -355,21 +488,31 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
           )}
         </div>
 
-        {/* READY → the next pipeline step (export), right where the operator is.
-            Hidden when nothing is exportable (e.g. split mode with every READY
-            run still on the robot — transfer first). */}
-        {sel.reviewLane === 'ready' &&
-          sel.state === 'completed' &&
-          rv.readyExportable.length > 0 && (
+        {/* Why the controls above are inert for a moment. Without it the
+            operator's second click lands in silence, which reads as a screen
+            that has stopped responding. */}
+        {saving && (
+          <span data-testid="review-saving" className="text-[11.5px] text-gray-500">
+            Saving…
+          </span>
+        )}
+
+        {/* A discoverable bin for a fumbled take (audit P1: delete only
+            appeared AFTER excluding, so "get the disk space back" had no
+            findable path). Muted on purpose — exclude stays the primary flow;
+            the same reason-required, irreversible dialog does the guarding. */}
+        {!sel.isExcluded && (
           <button
             type="button"
-            data-testid="review-export-cta"
-            onClick={rv.requestExportReady}
-            className="flex items-center justify-center gap-1.5 rounded-control bg-teal-600 px-3 py-2 text-[12.5px] font-bold text-white transition-colors hover:bg-teal-700"
+            data-testid="review-delete-direct"
+            onClick={() => rv.requestDelete([sel.captureId])}
+            title="Remove this recording from this machine. The catalog keeps a record. A dialog confirms first."
+            className="self-start rounded-control px-2 py-1 text-[11.5px] font-medium text-gray-400 transition-colors hover:bg-red-50 hover:text-red-700"
           >
-            Ready — Export now ({rv.readyExportable.length}) →
+            🗑 Delete this recording…
           </button>
         )}
+
       </div>
     </div>
   );

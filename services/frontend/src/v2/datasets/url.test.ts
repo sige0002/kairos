@@ -16,24 +16,24 @@ test('the default view writes NO keys of its own', () => {
 test('keys this module does not own are preserved', () => {
   const out = writeDatasetsUrl('?tab=datasets&solo=1', {
     ...DEFAULT_URL_STATE,
-    task: 'kitchen_pick',
+    datasetId: 'ds-01930000-0000-7000-8000-000000000001',
   });
   const p = new URLSearchParams(out);
   expect(p.get('tab')).toBe('datasets');
   expect(p.get('solo')).toBe('1');
-  expect(p.get('dstask')).toBe('kitchen_pick');
+  expect(p.get('dsid')).toBe('ds-01930000-0000-7000-8000-000000000001');
 });
 
 test('a full state round-trips', () => {
   const state = {
     search: 'kitchen',
-    episodeSearch: '#12',
+    memberSearch: '#12',
     sort: 'alpha' as const,
     taskResultFilter: 'failure' as const,
     operatorFilter: 'op_a',
-    task: 'kitchen_pick',
-    condition: 'dim',
-    datasetDir: 'op_a/kitchen_pick/001',
+    view: 'archived' as const,
+    datasetId: 'ds-1',
+    membershipId: 'm-7',
   };
   expect(readDatasetsUrl(writeDatasetsUrl('?tab=datasets', state))).toEqual(state);
 });
@@ -41,27 +41,40 @@ test('a full state round-trips', () => {
 test('values needing encoding round-trip (spaces, arrows, slashes)', () => {
   const state = {
     ...DEFAULT_URL_STATE,
-    task: 'Pick and Place',
-    condition: 'Object: Left → Tray: Center',
-    datasetDir: 'data/unknown_operator/Pick and Place/011',
+    search: 'Object: Left → Tray: Center',
+    memberSearch: 'Pick and Place / retry',
+    operatorFilter: 'Ops Team A',
   };
   expect(readDatasetsUrl(writeDatasetsUrl('', state))).toEqual(state);
 });
 
-test('a task with a null condition is distinguishable from no selection', () => {
-  const selected = { ...DEFAULT_URL_STATE, task: 'shelf_restock', condition: null };
+test('a dataset with no member selected is distinguishable from no selection', () => {
+  const selected = { ...DEFAULT_URL_STATE, datasetId: 'ds-1', membershipId: null };
   const written = writeDatasetsUrl('', selected);
-  expect(new URLSearchParams(written).has('dscond')).toBe(false);
+  expect(new URLSearchParams(written).has('dsmem')).toBe(false);
   expect(readDatasetsUrl(written)).toEqual(selected);
   // ...and that is NOT the same as having selected nothing.
-  expect(readDatasetsUrl('').task).toBeNull();
+  expect(readDatasetsUrl('').datasetId).toBeNull();
 });
 
-test('a condition with no task is ignored rather than half-restored', () => {
-  expect(readDatasetsUrl('?dscond=dim')).toEqual(DEFAULT_URL_STATE);
+test('a membership with no dataset is ignored rather than half-restored', () => {
+  expect(readDatasetsUrl('?dsmem=m-7')).toEqual(DEFAULT_URL_STATE);
   // The writer never emits one either.
-  const written = writeDatasetsUrl('', { ...DEFAULT_URL_STATE, condition: 'dim' });
-  expect(new URLSearchParams(written).has('dscond')).toBe(false);
+  const written = writeDatasetsUrl('', { ...DEFAULT_URL_STATE, membershipId: 'm-7' });
+  expect(new URLSearchParams(written).has('dsmem')).toBe(false);
+});
+
+test('the addressable identities are ids, never a directory path', () => {
+  // §6 retired `dataset_dir`; nothing this module writes may reintroduce it as
+  // a de-facto identity through the query string.
+  const written = writeDatasetsUrl('', {
+    ...DEFAULT_URL_STATE,
+    datasetId: 'ds-1',
+    membershipId: 'm-7',
+  });
+  const keys = [...new URLSearchParams(written).keys()];
+  expect(keys).toEqual(['dsid', 'dsmem']);
+  expect(written).not.toContain('dataset_dir');
 });
 
 test('invalid values fall back to the default instead of being trusted', () => {
@@ -80,6 +93,6 @@ test('an absent operator reads as the any-operator sentinel, and writes as absen
 });
 
 test('clearing a field removes its key rather than leaving it empty', () => {
-  const written = writeDatasetsUrl('?dsq=kitchen&dsep=op_a/kitchen_pick/001', DEFAULT_URL_STATE);
+  const written = writeDatasetsUrl('?dsq=kitchen&dsid=ds-1&dsmem=m-7', DEFAULT_URL_STATE);
   expect(written).toBe('');
 });

@@ -11,14 +11,15 @@ installed. The integration path (real ``ros2 bag record``) runs in Docker.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
-import re
 import shutil
 import signal
 import subprocess
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -32,18 +33,39 @@ from kairos_common import (
     Settings,
     utc_now_iso8601,
 )
-
-from rosbag2_recorder.manifest import (
+from kairos_common.capture_sidecars import (
     ROSBAG2_METADATA_FILENAME,
-    Manifest,
-    manifest_path,
-    read_manifest,
-    run_dir,
-    validate_run_id,
-    write_failed_start_record,
-    write_manifest,
-    write_session,
+    CaptureState,
+    DigestState,
+    ObjectManifestV2,
+    SidecarStatus,
+    capture_dir,
+    objects_dir,
+    read_object_manifest,
+    write_failed_start,
+    write_object_manifest,
 )
+from kairos_common.ids import new_capture_id
+from kairos_common.instance import load_or_create_instance
+
+# Imported for exactly one predicate, deliberately: "does this capture hold data"
+# decides ``interrupted`` vs ``failed`` in BOTH finalise and the orchestrator's
+# rebuild, and the two must never drift apart (§8 rule 2). Nothing here waits on
+# a rebuild — §9-5 forbids that, and this is a pure function over a directory.
+from kairos_common.rebuild import has_bag
+
+# The operator/task placeholders a RECORDED capture falls back to. Shared with
+# the orchestrator's /api/v1/record/start so both entry points into a recording
+# write the SAME values — they used to be two copies kept in step by a comment.
+from kairos_common.record_meta import UNKNOWN_OPERATOR, UNKNOWN_TASK, default_meta
+from kairos_common.time import utc_iso8601_of
+
+from rosbag2_recorder import arming, integrity, preflight, startup_recovery
+
+# Re-exported, not redefined: the constant belongs with the readiness gate that
+# uses it (arming.py), but ``rosbag2_recorder.recorder`` is where the recorder's
+# ROS node name has always been imported from.
+from rosbag2_recorder.arming import RECORDER_NODE_NAME as RECORDER_NODE_NAME
 from rosbag2_recorder.models import (
     QosProfile,
     RecordArming,
@@ -53,14 +75,11 @@ from rosbag2_recorder.models import (
     RunState,
     SplitConfig,
     TopicEntry,
+    validate_run_id,
 )
 from rosbag2_recorder.qos import build_qos_overrides, write_qos_overrides_file
 
 logger = logging.getLogger("kairos.rosbag2_recorder")
-
-# Refuse to start a recording if less free space than this is available; a few
-# hundred MB is a conservative floor so we fail fast (507) rather than mid-run.
-MIN_FREE_BYTES = 256 * 1024 * 1024
 
 # How long to wait for the bag process to exit after SIGINT before escalating.
 STOP_TIMEOUT_S = 30.0
@@ -82,67 +101,40 @@ SIZE_POLL_S = 2.0
 # disk-full crash, non-zero error exit) is abnormal -> the run is ``failed``.
 _CLEAN_STOP_RETURNCODES = frozenset({0, 130, -int(signal.SIGINT)})
 
-# `ros2 bag record` registers its node under this name; its pause/resume/
-# is_paused services live at /<node>/... (rosbag2_interfaces). Used by the
-# --start-paused readiness gate.
-RECORDER_NODE_NAME = "rosbag2_recorder"
-# How often the readiness gate polls the ROS graph for the recorder's
-# subscriptions while it is paused.
-SUBSCRIPTION_POLL_S = 0.2
-# How long to wait for the recorder's resume/is_paused services to appear.
-RESUME_SERVICE_TIMEOUT_S = 5.0
-
 # States in which a session is actively holding (or finalising) the subprocess.
 _ACTIVE_STATES = frozenset({RunState.recording, RunState.stopping})
 
-# Session-metadata placeholders for a standalone recorder call. The orchestrator
-# normalizes these (the dataset path is data/<operator>/<task>, so a null
-# component is unkeyable), but the recorder must also default them so a direct
-# /record/start writes a keyable session.json. Values match the orchestrator's
-# (api_orchestrator/runs.py) so both paths yield the same placeholders.
-_UNKNOWN_OPERATOR = "unknown_operator"
-_UNKNOWN_TASK = "unknown_task"
+
+def _qos_overrides_path(objects_root: Path, capture_id: str) -> Path:
+    """Path of the QoS overrides file (a sibling of the capture dir)."""
+    return objects_root / f"{capture_id}.qos.yaml"
 
 
-def _default_meta(value: str | None, default: str) -> str:
-    """Coerce an empty/whitespace metadata field to a stable placeholder."""
-    return value.strip() if value and value.strip() else default
+def _mcap_storage_config_path(objects_root: Path, capture_id: str) -> Path:
+    """Path of the MCAP storage-config file (a sibling of the capture dir)."""
+    return objects_root / f"{capture_id}.mcap-storage.yaml"
 
 
-def _qos_overrides_path(recorded_root: Path, run_id: str) -> Path:
-    """Path of the QoS overrides file (a sibling of the run dir)."""
-    return recorded_root / f"{run_id}.qos.yaml"
-
-
-def _mcap_storage_config_path(recorded_root: Path, run_id: str) -> Path:
-    """Path of the MCAP storage-config file (a sibling of the run dir)."""
-    return recorded_root / f"{run_id}.mcap-storage.yaml"
-
-
-def _recorder_log_path(recorded_root: Path, run_id: str) -> Path:
-    """Path of the recorder's captured stdout+stderr log (sibling of the run dir).
+def _recorder_log_path(objects_root: Path, capture_id: str) -> Path:
+    """The recorder's captured stdout+stderr log (sibling of the capture dir).
 
     Captured to a FILE (not a PIPE) so it can never stall the stop-time MCAP
     flush, and so finalise can scan it for rosbag2's cache-overflow drop report.
-    A sibling because the run dir must not exist before ``ros2 bag record``
-    creates it; finalise archives the log into the run dir afterwards.
+    A sibling because the capture dir must not exist before ``ros2 bag record``
+    creates it; finalise archives the log into the capture dir afterwards.
     """
-    return recorded_root / f"{run_id}.recorder.log"
+    return objects_root / f"{capture_id}.recorder.log"
 
 
-# rosbag2's in-recorder MessageCache logs the messages it dropped on cache
-# overflow at shutdown (MessageCache::log_dropped, WARN to stderr):
-#   "Cache buffers lost messages per topic:\n\t<topic>: <n>\nTotal lost: <N>"
-# Scanning the captured log for the total turns a silent in-recorder drop into a
-# visible integrity signal (OpenLUTRA does not surface this at all).
-_TOTAL_LOST_RE = re.compile(r"Total lost:\s*(\d+)")
+# The recorder's own log, once archived into the capture directory it belongs to.
+RECORDER_LOG_FILENAME = "recorder.log"
 
 
 # MCAP storage-plugin options for zstd compression. We use MCAP-native *chunk*
 # compression (via --storage-config-file) rather than rosbag2 file-level
 # compression (--compression-mode file): file-level produces a `<run>_0.mcap.zstd`
 # that breaks every `*.mcap` glob + the MCAP reader (recorder bytes check, dora
-# fast_validation/video_check/dataset_export/loss_report). Chunk compression keeps
+# fast_validation/video_check/loss_report). Chunk compression keeps
 # the output a normal `<run>_0.mcap` that the MCAP library transparently inflates,
 # so all readers work unchanged. `Fastest` + noChunkCRC keeps live-record CPU low.
 _MCAP_ZSTD_STORAGE_CONFIG = (
@@ -153,11 +145,9 @@ _MCAP_ZSTD_STORAGE_CONFIG = (
 def _iso8601_after(seconds: float) -> str:
     """ISO8601 (Z-suffixed, ms precision) *seconds* from now.
 
-    Used for the arming auto-resume deadline (``resume_at``); the format matches
-    ``kairos_common.utc_now_iso8601`` so timestamps are consistent across fields.
+    Used for the arming auto-resume deadline (``resume_at``).
     """
-    moment = datetime.now(UTC) + timedelta(seconds=seconds)
-    return moment.strftime("%Y-%m-%dT%H:%M:%S.") + f"{moment.microsecond // 1000:03d}Z"
+    return utc_iso8601_of(datetime.now(UTC) + timedelta(seconds=seconds))
 
 
 def _normalise_topics(topics: list[str] | str) -> list[str] | str:
@@ -193,6 +183,10 @@ class _Armed:
 
     generation: int
     run_id: str
+    # Minted at prepare (§1). The paused subprocess is already writing into
+    # objects/<capture_id>/, so this — unlike run_id — is fixed for good: a
+    # matching start() commits under it, a disarm throws it (and the dir) away.
+    capture_id: str
     # The PREPARE request: used to decide whether a later start() "matches"
     # (spawn-affecting fields only — see RecorderSession._armed_matches).
     request: RecordStartRequest
@@ -219,6 +213,30 @@ class _Armed:
     timer: threading.Timer | None = None
 
 
+@dataclass
+class _Spawned:
+    """What :meth:`RecorderSession._spawn_and_await` hands back on success.
+
+    A live, confirmed-up ``ros2 bag record`` plus everything its two callers
+    need afterwards: ``prepare()`` parks all of it on an :class:`_Armed`, while
+    ``start()`` only commits the capture and its staged topics. ``arm_result``
+    is whatever the injected arming step returned — ``_prepare_arm``'s
+    ``(node, resume_client, is_paused_client, owns_rclpy)`` for ``prepare()``,
+    and ``None`` for ``start()`` (whose gate resumes rather than handing back
+    clients, and may not have run at all).
+    """
+
+    capture_id: str
+    staged_topics: list[TopicEntry]
+    qos_path: Path | None
+    storage_config_path: Path | None
+    # Pre-spawn stamp, kept for the failure records. NOT the capture's
+    # started_at: start() re-reads the clock once the bag is actually up.
+    started_at: str
+    process: subprocess.Popen[bytes]
+    arm_result: Any
+
+
 class RecorderSession:
     """Owns at most one ``ros2 bag record`` subprocess and its run state.
 
@@ -236,19 +254,30 @@ class RecorderSession:
         # Resolve to an absolute path so --output and manifest paths do not
         # depend on the process cwd (settings.data_dir defaults to "./data").
         self._data_dir = Path(settings.data_dir).resolve()
+        # This installation's identity (§1), stamped into every manifest we
+        # write. Minted on first start of any service and never regenerated; a
+        # corrupt instance.json raises here rather than inventing a second
+        # identity for a data_dir that already has one.
+        self._instance_id = load_or_create_instance(self._data_dir).instance_id
 
         # Current-session fields. ``state`` is the single source of truth for
         # whether a session is active; the rest are only meaningful while one is.
         self._state: RunState = RunState.created
         self._run_id: str | None = None
+        # The capture the session is (or last was) recording. Minted at prepare
+        # or at start, and the only key that resolves to bytes on disk.
+        self._capture_id: str | None = None
         self._started_at: str | None = None
         self._compression: Compression = Compression.none
         self._split: SplitConfig | None = None
         self._topics: list[TopicEntry] = []
         self._process: subprocess.Popen[bytes] | None = None
-        # Optional session metadata (written to session.json beside the MCAP).
+        # Optional session metadata (written to the capture's manifest).
         self._operator: str | None = None
+        # Two-host provenance for the live session (rides manifest `extra`).
+        self._stamp: dict[str, Any] | None = None
         self._task: str | None = None
+        self._robot: str | None = None
 
         # MAX_RECORD_BYTES auto-stop watcher. 0 disables (default).
         self._max_record_bytes: int = settings.max_record_bytes
@@ -284,18 +313,24 @@ class RecorderSession:
 
     # -- preconditions ------------------------------------------------------
 
-    def _recorded_root(self) -> Path:
-        return self._data_dir / "recorded"
+    def _objects_root(self) -> Path:
+        """``<data_dir>/objects`` — where every capture directory lives (§2)."""
+        return objects_dir(self._data_dir)
+
+    def _capture_dir(self, capture_id: str) -> Path:
+        """``<data_dir>/objects/<capture_id>`` — one capture's bytes."""
+        return capture_dir(self._data_dir, capture_id)
 
     @staticmethod
     def _make_host_writable(path: Path) -> None:
         """Relax *path* (a directory) to 0o777 so it is host-deletable.
 
-        The recorder runs as root, so its ``recorded/`` root and per-run dirs are
-        root-owned. Setting the directory mode to world-writable lets the host
-        user — and the orchestrator's delete endpoint (uid 1000) — remove
-        recordings without sudo. Deleting a file only needs write on its
-        directory, so the bag files themselves need no mode change. Best-effort.
+        The recorder runs as root, so the roots it creates and the per-capture
+        dirs are root-owned. Setting the directory mode to world-writable lets
+        the host user — and the orchestrator (uid 1000) — move a capture into
+        ``.trash`` and remove it without sudo. Deleting or renaming a file only
+        needs write on its directory, so the bag files themselves need no mode
+        change. Best-effort.
         """
         try:
             path.chmod(0o777)
@@ -303,85 +338,27 @@ class RecorderSession:
             logger.warning("could not relax permissions on %s", path)
 
     def ensure_ready(self) -> None:
-        """Raise if the recorder cannot serve recordings (readiness probe).
-
-        Readiness == the recorded root is writable with enough free space.
-        Reuses the same check ``start`` runs so /readyz predicts start success.
-        """
-        self._check_writable_and_space()
+        """Raise if the recorder cannot serve recordings (readiness probe)."""
+        preflight.ensure_ready(self)
 
     def _check_writable_and_space(self) -> None:
-        """Raise 507 if ``/data/recorded`` is not writable or space is low."""
-        root = self._recorded_root()
-        try:
-            root.mkdir(parents=True, exist_ok=True)
-            # Keep the recorded root host-deletable (so run dirs can be removed).
-            self._make_host_writable(root)
-        except OSError as exc:
-            raise ApiError(
-                status_code=507,
-                code="data_not_writable",
-                message="Recording directory is not writable.",
-                details={"path": str(root), "error": str(exc)},
-            ) from exc
-        if not os.access(root, os.W_OK):
-            raise ApiError(
-                status_code=507,
-                code="data_not_writable",
-                message="Recording directory is not writable.",
-                details={"path": str(root)},
-            )
-        free = shutil.disk_usage(root).free
-        if free < MIN_FREE_BYTES:
-            raise ApiError(
-                status_code=507,
-                code="insufficient_space",
-                message="Insufficient free space to start recording.",
-                details={"free_bytes": free, "required_bytes": MIN_FREE_BYTES},
-            )
-        self._check_cache_ram()
+        """Raise 507 if ``/data/objects`` is not writable or space is low."""
+        preflight.check_writable_and_space(self)
 
     def _check_cache_ram(self) -> None:
-        """Raise 507 if the configured record cache needs more RAM than is free.
-
-        rosbag2 double-buffers the message cache, so worst-case memory is ~2x
-        ``--max-cache-size``. We require that plus the disk safety margin to be
-        available so a large cache can't OOM-kill the recorder mid-run. Skipped
-        when the cache is unset (rosbag2 default) or free RAM can't be read.
-        """
-        cache_mb = self._max_cache_size_mb()
-        if cache_mb <= 0:
-            return
-        need = 2 * cache_mb * 1024 * 1024 + MIN_FREE_BYTES
-        avail = self._available_ram_bytes()
-        if avail is not None and avail < need:
-            raise ApiError(
-                status_code=507,
-                code="insufficient_memory",
-                message="Not enough free RAM for the configured record cache.",
-                details={
-                    "required_bytes": need,
-                    "available_bytes": avail,
-                    "max_cache_size_mb": cache_mb,
-                },
-            )
+        """Raise 507 if the configured record cache needs more RAM than is free."""
+        preflight.check_cache_ram(self)
 
     @staticmethod
     def _available_ram_bytes() -> int | None:
         """Free RAM in bytes from ``/proc/meminfo`` MemAvailable (None if absent)."""
-        try:
-            for line in Path("/proc/meminfo").read_text().splitlines():
-                if line.startswith("MemAvailable:"):
-                    return int(line.split()[1]) * 1024
-        except (OSError, ValueError, IndexError):
-            return None
-        return None
+        return preflight.available_ram_bytes()
 
     # -- command construction ----------------------------------------------
 
     def _build_command(
         self,
-        run_id: str,
+        capture_id: str,
         topics: list[str] | str,
         request: RecordStartRequest,
         qos_path: Path | None,
@@ -391,13 +368,14 @@ class RecorderSession:
     ) -> list[str]:
         """Assemble the ``ros2 bag record`` argv for this run.
 
-        ``--output`` is the run directory; rosbag2 writes
-        ``<run_id>_*.mcap`` + ``metadata.yaml`` inside it. ``force_paused``
-        always adds ``--start-paused`` regardless of ``recording.start_paused``
-        (used by ``prepare()``: arming without pausing first would begin
-        writing immediately, defeating the whole point of two-phase start).
+        ``--output`` is the capture directory; rosbag2 derives the bag files'
+        names from its basename, so they come out ``<capture_id>_*.mcap``
+        alongside ``metadata.yaml``. ``force_paused`` always adds
+        ``--start-paused`` regardless of ``recording.start_paused`` (used by
+        ``prepare()``: arming without pausing first would begin writing
+        immediately, defeating the whole point of two-phase start).
         """
-        out = run_dir(self._data_dir, run_id)
+        out = self._capture_dir(capture_id)
         cmd: list[str] = [
             "ros2",
             "bag",
@@ -463,7 +441,7 @@ class RecorderSession:
         rosbag2 flushes and writes ``metadata.yaml`` cleanly.
 
         stdout/stderr are redirected to a per-run log FILE (``_pending_log_path``,
-        a sibling of the run dir), NOT a PIPE. A regular file has no fixed-size
+        a sibling of the capture dir), NOT a PIPE. A regular file has no fixed-size
         buffer, so — like inheriting to the container log — the recorder's
         stop-time cleanup-log burst can never fill a buffer and block the final
         MCAP flush (the pipe-stall failure mode, OL-①.3). Unlike inheriting, the
@@ -495,6 +473,161 @@ class RecorderSession:
                 message="A recording session is already active.",
                 details={"run_id": self._run_id, "state": self._state.value},
             )
+
+    def _spawn_and_await(
+        self,
+        request: RecordStartRequest,
+        run_id: str,
+        *,
+        force_paused: bool,
+        arm: Callable[[str, list[str], bool], Any] | None,
+    ) -> _Spawned:
+        """Mint the capture, spawn ``ros2 bag record``, and confirm it came up.
+
+        The spawn path ``prepare()`` and the synchronous ``start()`` share: stage
+        the topic selection, mint the capture_id, materialise the QoS and
+        storage-config siblings, build the argv, reset the integrity state,
+        spawn, wait for the output dir, then run the arming gate. Each failure
+        raises 507 and leaves the store the way §3.4 requires — a
+        ``.failed.json`` sibling and nothing else.
+
+        The callers differ only in how the subprocess is paused and armed.
+        ``prepare()`` passes ``force_paused=True`` (arming without pausing first
+        would begin writing immediately, defeating two-phase start) and arms via
+        ``_prepare_arm``, which matches subscriptions and hands back a live node
+        + clients WITHOUT resuming. ``start()`` passes ``force_paused=False`` —
+        ``_build_command`` still adds ``--start-paused`` on its own when
+        ``recording.start_paused`` is on — and arms via ``_arm_and_resume``,
+        which resumes and returns nothing; ``arm=None`` skips the gate entirely.
+
+        Caller holds ``self._lock``.
+        """
+        topics = request.topics
+        # Freeze the topic selection. For an explicit list we record each name
+        # now; "all" is expanded by rosbag2 at the DDS layer and reconciled from
+        # metadata.yaml at finalise time. Staged in a local and committed to
+        # self._topics only on success, so a failed start cannot leave the
+        # previous run's status carrying these topics.
+        selected = list(topics) if topics != "all" else []
+        staged_topics = [
+            TopicEntry(name=name, qos=self._resolve_qos(name, request))
+            for name in selected
+        ]
+
+        # The capture's identity is minted HERE, before the spawn: the
+        # subprocess immediately owns objects/<capture_id>/, so the id has to
+        # exist first (§1).
+        capture_id = new_capture_id()
+
+        # The QoS file is a sibling of the capture dir; the capture dir itself
+        # must NOT exist before spawn (ros2 bag record refuses a pre-existing
+        # --output). So nothing here may create it.
+        qos_path = self._materialise_qos(capture_id, selected, request)
+        storage_config_path = self._materialise_storage_config(capture_id, request)
+        cmd = self._build_command(
+            capture_id,
+            topics,
+            request,
+            qos_path,
+            storage_config_path,
+            force_paused=force_paused,
+        )
+
+        # Fresh integrity state for this attempt; _spawn_process captures the
+        # recorder's stdout+stderr here so finalise can scan it for drops.
+        self._dropped_messages = None
+        self._integrity = "unknown"
+        self._pending_log_path = _recorder_log_path(self._objects_root(), capture_id)
+
+        started_at = utc_now_iso8601()
+        try:
+            process = self._spawn_process(cmd)
+        except (OSError, ValueError) as exc:
+            marker_error = self._fail(
+                capture_id, run_id, started_at, request, staged_topics, str(exc)
+            )
+            raise ApiError(
+                status_code=507,
+                code="record_spawn_failed",
+                message="Failed to start the recording process.",
+                details=self._failed_start_details(
+                    capture_id, marker_error, error=str(exc)
+                ),
+            ) from exc
+
+        # Confirm ros2 bag record actually started: wait for it to create its
+        # --output directory (it does so only after passing its own checks).
+        # If it exits — or hangs without creating the dir — it failed to start.
+        if not self._await_started(capture_id, process):
+            # Kill a still-alive but stuck process so it cannot later create the
+            # output dir behind our back, then clear any directory it managed to
+            # create in the meantime — it was alive a moment ago and may have
+            # created the dir just as we gave up on it. This keeps §3.4 exact: a
+            # failed start is a .failed.json sibling and NOTHING else, never a
+            # marker plus a directory the next scan reads as a capture.
+            self._terminate_failed_start(process)
+            returncode = process.returncode
+            self._remove_capture_dir(capture_id)
+            marker_error = self._fail(
+                capture_id,
+                run_id,
+                started_at,
+                request,
+                staged_topics,
+                f"ros2 bag record did not create the output dir (rc={returncode})",
+            )
+            raise ApiError(
+                status_code=507,
+                code="record_start_failed",
+                message="The recording process failed to start.",
+                details=self._failed_start_details(
+                    capture_id, marker_error, run_id=run_id, returncode=returncode
+                ),
+            )
+
+        # The bag process is up. When spawned --start-paused it is now waiting
+        # paused: bring subscriptions live before anything is recorded, so the
+        # bag begins with all topics subscribed (no dropped first frames during
+        # DDS discovery). FAIL-SAFE: any failure here must NOT leave a paused
+        # recorder silently capturing nothing — kill it and fail the start.
+        # Reset the arming snapshot for this attempt; populated below only when
+        # the readiness gate actually runs.
+        self._arming = None
+        arm_result: Any = None
+        if arm is not None:
+            try:
+                arm_result = arm(run_id, selected, topics == "all")
+            except Exception as exc:  # noqa: BLE001 - convert to a clean fail
+                self._terminate_failed_start(process)
+                self._remove_capture_dir(capture_id)
+                # Drop the partial arming snapshot; this session never started.
+                self._arming = None
+                marker_error = self._fail(
+                    capture_id,
+                    run_id,
+                    started_at,
+                    request,
+                    staged_topics,
+                    f"arming: {exc}",
+                )
+                raise ApiError(
+                    status_code=507,
+                    code="record_arm_failed",
+                    message="Recording failed to arm (subscribe + resume).",
+                    details=self._failed_start_details(
+                        capture_id, marker_error, run_id=run_id, error=str(exc)
+                    ),
+                ) from exc
+
+        return _Spawned(
+            capture_id=capture_id,
+            staged_topics=staged_topics,
+            qos_path=qos_path,
+            storage_config_path=storage_config_path,
+            started_at=started_at,
+            process=process,
+            arm_result=arm_result,
+        )
 
     # -- two-phase start (prepare -> resume) ---------------------------------
 
@@ -546,80 +679,15 @@ class RecorderSession:
                 self._disarm_locked()
             previous_state = self._state
 
-            topics = request.topics
-            selected = list(topics) if topics != "all" else []
-            staged_topics = [
-                TopicEntry(name=name, qos=self._resolve_qos(name, request))
-                for name in selected
-            ]
-            qos_path = self._materialise_qos(run_id, selected, request)
-            storage_config_path = self._materialise_storage_config(run_id, request)
-            # ALWAYS spawn --start-paused here, regardless of recording.
-            # start_paused: arming without pausing first would begin writing
-            # immediately, defeating the whole point of two-phase start.
-            cmd = self._build_command(
-                run_id,
-                topics,
-                request,
-                qos_path,
-                storage_config_path,
-                force_paused=True,
+            # ALWAYS spawn --start-paused here, regardless of
+            # recording.start_paused, and arm WITHOUT resuming: the matched
+            # node + Resume/IsPaused clients come back alive so a later
+            # start() is just a resume call.
+            spawned = self._spawn_and_await(
+                request, run_id, force_paused=True, arm=self._prepare_arm
             )
-
-            self._dropped_messages = None
-            self._integrity = "unknown"
-            self._pending_log_path = _recorder_log_path(self._recorded_root(), run_id)
-
-            started_at = utc_now_iso8601()
-            try:
-                process = self._spawn_process(cmd)
-            except (OSError, ValueError) as exc:
-                self._fail(run_id, started_at, request, staged_topics, str(exc))
-                raise ApiError(
-                    status_code=507,
-                    code="record_spawn_failed",
-                    message="Failed to start the recording process.",
-                    details={"error": str(exc)},
-                ) from exc
-
-            if not self._await_started(run_id, process):
-                self._terminate_failed_start(process)
-                returncode = process.returncode
-                self._fail(
-                    run_id,
-                    started_at,
-                    request,
-                    staged_topics,
-                    f"ros2 bag record did not create the output dir (rc={returncode})",
-                )
-                raise ApiError(
-                    status_code=507,
-                    code="record_start_failed",
-                    message="The recording process failed to start.",
-                    details={"run_id": run_id, "returncode": returncode},
-                )
-
-            # Bag process is up, still paused. Wait for subscription match and
-            # hold the (now-matched) Resume/IsPaused clients — but do NOT
-            # resume. FAIL-SAFE: any failure here must not leave a paused
-            # process lying around silently; kill it and fail like today's
-            # single-call arm gate does.
-            self._arming = None
-            try:
-                node, resume_client, is_paused_client, owns_rclpy = self._prepare_arm(
-                    run_id, selected, topics == "all"
-                )
-            except Exception as exc:  # noqa: BLE001 - convert to a clean fail
-                self._terminate_failed_start(process)
-                shutil.rmtree(run_dir(self._data_dir, run_id), ignore_errors=True)
-                self._arming = None
-                self._fail(run_id, started_at, request, staged_topics, f"arming: {exc}")
-                raise ApiError(
-                    status_code=507,
-                    code="record_arm_failed",
-                    message="Recording failed to arm (subscribe + resume).",
-                    details={"run_id": run_id, "error": str(exc)},
-                ) from exc
+            capture_id = spawned.capture_id
+            node, resume_client, is_paused_client, owns_rclpy = spawned.arm_result
 
             # SUCCESS: detach the log handle from instance state into the armed
             # bundle. self._log_file/_pending_log_path must not keep pointing
@@ -645,13 +713,14 @@ class RecorderSession:
             armed = _Armed(
                 generation=generation,
                 run_id=run_id,
+                capture_id=capture_id,
                 request=request,
-                staged_topics=staged_topics,
-                started_at=started_at,
+                staged_topics=spawned.staged_topics,
+                started_at=spawned.started_at,
                 previous_state=previous_state,
-                process=process,
-                qos_path=qos_path,
-                storage_config_path=storage_config_path,
+                process=spawned.process,
+                qos_path=spawned.qos_path,
+                storage_config_path=spawned.storage_config_path,
                 pending_log_path=armed_pending_log_path,
                 log_file=armed_log_file,
                 node=node,
@@ -667,10 +736,15 @@ class RecorderSession:
 
             logger.info(
                 "recording session armed",
-                extra={"run_id": run_id, "component": "recorder"},
+                extra={
+                    "run_id": run_id,
+                    "capture_id": capture_id,
+                    "component": "recorder",
+                },
             )
             return RecordPrepareResponse(
                 run_id=run_id,
+                capture_id=capture_id,
                 state=RunState.armed,
                 arming=self._arming.model_copy(deep=True) if self._arming else None,
                 disarm_at=disarm_at,
@@ -732,10 +806,15 @@ class RecorderSession:
         timer.start()
         logger.info(
             "armed session extended (matching re-prepare)",
-            extra={"run_id": armed.run_id, "component": "recorder"},
+            extra={
+                "run_id": armed.run_id,
+                "capture_id": armed.capture_id,
+                "component": "recorder",
+            },
         )
         return RecordPrepareResponse(
             run_id=armed.run_id,
+            capture_id=armed.capture_id,
             state=RunState.armed,
             arming=self._arming.model_copy(deep=True) if self._arming else None,
             disarm_at=disarm_at,
@@ -761,6 +840,62 @@ class RecorderSession:
             and prepared.qos_overrides == request.qos_overrides
         )
 
+    def _claim_armed_locked(
+        self, request: RecordStartRequest
+    ) -> RecordStatusResponse | None:
+        """Consume the armed session, if any. ``None`` = caller must spawn.
+
+        A matching armed session is resumed and committed (the two-phase fast
+        path); a non-matching one is disarmed so the caller falls through to a
+        full synchronous start. Caller must hold ``self._lock``.
+
+        Called from BOTH of :meth:`start`'s lock blocks. The second call is the
+        one that matters: an armed session can appear during the start_delay
+        window between them, and skipping the check there leaves that session
+        with no owner at all — see the comment at the second call site.
+        """
+        if self._state is not RunState.armed or self._armed is None:
+            return None
+        if self._armed_matches(self._armed, request):
+            return self._start_from_armed(request)
+        logger.warning(
+            "armed session does not match the start request; disarming",
+            extra={
+                "run_id": self._armed.run_id,
+                "capture_id": self._armed.capture_id,
+                "component": "recorder",
+            },
+        )
+        self._disarm_locked()
+        return None
+
+    def _remove_capture_dir(self, capture_id: str) -> bool:
+        """Delete a capture directory that never became a recording.
+
+        Returns whether it is actually gone, so a caller cannot go on to
+        announce a removal that did not happen.
+
+        Residue is reported rather than ignored: a directory under ``objects/``
+        with no manifest breaks §2's invariant, and the next startup has to
+        guess what it was (see :meth:`_adopt_manifestless_capture`). Deletion
+        stays best-effort — a failure here must not turn a cancelled arm into a
+        failed request — but it is never silent.
+        """
+        path = self._capture_dir(capture_id)
+        shutil.rmtree(path, ignore_errors=True)
+        if path.exists():
+            logger.warning(
+                "could not fully remove an abandoned capture directory; "
+                "startup recovery will have to reclaim it",
+                extra={
+                    "capture_id": capture_id,
+                    "path": str(path),
+                    "component": "recorder",
+                },
+            )
+            return False
+        return True
+
     def _start_from_armed(self, request: RecordStartRequest) -> RecordStatusResponse:
         """Fast resume path: a matching armed session exists — resume + commit.
 
@@ -782,7 +917,7 @@ class RecorderSession:
             self._resume_armed(armed)
         except Exception as exc:  # noqa: BLE001 - convert to a clean fail
             self._terminate_failed_start(armed.process)
-            shutil.rmtree(run_dir(self._data_dir, armed.run_id), ignore_errors=True)
+            self._remove_capture_dir(armed.capture_id)
             self._teardown_armed_rclpy(armed)
             # Restore the detached log handle so the existing _fail() cleanup
             # (which closes/unlinks via self._log_file) finds and closes it.
@@ -790,7 +925,8 @@ class RecorderSession:
             self._arming = None
             self._armed = None
             self._state = armed.previous_state
-            self._fail(
+            marker_error = self._fail(
+                armed.capture_id,
                 armed.run_id,
                 armed.started_at,
                 armed.request,
@@ -801,7 +937,12 @@ class RecorderSession:
                 status_code=507,
                 code="record_arm_failed",
                 message="Recording failed to arm (subscribe + resume).",
-                details={"run_id": armed.run_id, "error": str(exc)},
+                details=self._failed_start_details(
+                    armed.capture_id,
+                    marker_error,
+                    run_id=armed.run_id,
+                    error=str(exc),
+                ),
             ) from exc
 
         # Resumed: no longer waiting.
@@ -813,13 +954,16 @@ class RecorderSession:
         self._process = armed.process
         self._state = RunState.recording
         self._run_id = armed.run_id
+        self._capture_id = armed.capture_id
         self._started_at = utc_now_iso8601()
         self._compression = request.compression
         self._split = request.split
-        # operator/task come from the START request (armed.request is stale
-        # prepare-time metadata; see _armed_matches).
-        self._operator = _default_meta(request.operator, _UNKNOWN_OPERATOR)
-        self._task = _default_meta(request.task, _UNKNOWN_TASK)
+        # operator/task/robot come from the START request (armed.request is
+        # stale prepare-time metadata; see _armed_matches).
+        self._operator = default_meta(request.operator, UNKNOWN_OPERATOR)
+        self._stamp = self._build_stamp(request.console_stamp)
+        self._task = default_meta(request.task, UNKNOWN_TASK)
+        self._robot = self._resolve_robot(request)
         self._topics = armed.staged_topics
         self._log_file = armed.log_file
         self._pending_log_path = armed.pending_log_path
@@ -836,10 +980,14 @@ class RecorderSession:
         self._armed = None
 
         self._write_manifest()
-        self._start_size_watcher(armed.run_id)
+        self._start_size_watcher(armed.capture_id)
         logger.info(
             "recording started (fast resume from armed)",
-            extra={"run_id": armed.run_id, "component": "recorder"},
+            extra={
+                "run_id": armed.run_id,
+                "capture_id": armed.capture_id,
+                "component": "recorder",
+            },
         )
         return self._status_locked()
 
@@ -848,13 +996,14 @@ class RecorderSession:
 
         Terminates the paused subprocess (process-group SIGTERM — there is no
         recorded data to flush cleanly, the process never left the paused
-        state), removes the run dir + sibling qos/storage-config/log files,
+        state), removes the capture dir + sibling qos/storage-config/log files,
         destroys the held rclpy node (+ shuts down rclpy if this session owned
         the context), cancels the auto-disarm timer, and restores the state to
         whatever it was before ``prepare()`` armed it (so disarming a session
         never erases visibility of a genuinely-completed previous run). Writes
         NO failure record: a disarm is a deliberate or expired cancel, not a
-        recording failure.
+        recording failure. The minted capture_id dies with it — nothing ever
+        committed under it, so nothing can refer to it.
         """
         armed = self._armed
         if armed is None:
@@ -862,14 +1011,14 @@ class RecorderSession:
         if armed.timer is not None:
             armed.timer.cancel()
         self._terminate_failed_start(armed.process)
-        shutil.rmtree(run_dir(self._data_dir, armed.run_id), ignore_errors=True)
+        self._remove_capture_dir(armed.capture_id)
         self._teardown_armed_rclpy(armed)
         # Restore the detached log handle so the existing cleanup helpers
         # (which act on self._log_file) can close + unlink it normally.
         self._log_file = armed.log_file
-        self._cleanup_qos_file(armed.run_id)
-        self._cleanup_storage_config(armed.run_id)
-        self._cleanup_log_file(armed.run_id)
+        self._cleanup_qos_file(armed.capture_id)
+        self._cleanup_storage_config(armed.capture_id)
+        self._cleanup_log_file(armed.capture_id)
         self._armed = None
         self._arming = None
         self._state = armed.previous_state
@@ -893,19 +1042,11 @@ class RecorderSession:
         with self._lock:
             self._raise_if_active()
             self._check_writable_and_space()
-
-            if self._state is RunState.armed and self._armed is not None:
-                if self._armed_matches(self._armed, request):
-                    return self._start_from_armed(request)
-                logger.warning(
-                    "armed session does not match the start request; disarming",
-                    extra={
-                        "run_id": self._armed.run_id,
-                        "component": "recorder",
-                    },
-                )
-                self._disarm_locked()
-                # Falls through to the full synchronous path below.
+            claimed = self._claim_armed_locked(request)
+            if claimed is not None:
+                return claimed
+            # Nothing armed (or it did not match and was disarmed): fall
+            # through to the full synchronous path below.
 
         # Let drivers/cameras ramp up so they are publishing before recording
         # begins (RECORDING_CONFIG recording.start_delay_s). Done OUTSIDE the
@@ -916,97 +1057,35 @@ class RecorderSession:
 
         with self._lock:
             self._raise_if_active()
+            # A prepare() can have armed a session while we slept above, and
+            # that is the NORMAL console sequence: it pre-arms, then the
+            # operator presses start a moment later. Re-checking here is not
+            # belt-and-braces — without it this path spawns a second
+            # ``ros2 bag record`` and strands the armed one: nothing would ever
+            # disarm it (the auto-disarm timer no-ops because the state is no
+            # longer ``armed``), its directory is absent from live_capture_ids,
+            # and two recorders write the same topics at once.
+            claimed = self._claim_armed_locked(request)
+            if claimed is not None:
+                return claimed
 
-            topics = request.topics
-            # Freeze the topic selection. For an explicit list we record each
-            # name now; "all" is expanded by rosbag2 at the DDS layer and
-            # reconciled from metadata.yaml at finalise time. Staged in a local
-            # and committed to self._topics only on success, so a failed start
-            # cannot leave the previous run's status carrying these topics.
-            selected = list(topics) if topics != "all" else []
-            staged_topics = [
-                TopicEntry(name=name, qos=self._resolve_qos(name, request))
-                for name in selected
-            ]
-
-            # The QoS file is a sibling of the run dir; the run dir itself must
-            # NOT exist before spawn (ros2 bag record refuses a pre-existing
-            # --output). So nothing here may create run_dir(run_id).
-            qos_path = self._materialise_qos(run_id, selected, request)
-            storage_config_path = self._materialise_storage_config(run_id, request)
-            cmd = self._build_command(
-                run_id, topics, request, qos_path, storage_config_path
+            # No prepare() ran (or its armed session did not match), so this
+            # spawns its own subprocess and mints the capture's identity (§1).
+            # force_paused is False here — _build_command still adds
+            # --start-paused on its own when recording.start_paused is on, and
+            # the gate that resumes it runs only in that same case.
+            spawned = self._spawn_and_await(
+                request,
+                run_id,
+                force_paused=False,
+                arm=self._arm_and_resume if self._start_paused_enabled() else None,
             )
+            capture_id = spawned.capture_id
 
-            # Fresh integrity state for this attempt; _spawn_process captures the
-            # recorder's stdout+stderr here so finalise can scan it for drops.
-            self._dropped_messages = None
-            self._integrity = "unknown"
-            self._pending_log_path = _recorder_log_path(self._recorded_root(), run_id)
-
-            started_at = utc_now_iso8601()
-            try:
-                process = self._spawn_process(cmd)
-            except (OSError, ValueError) as exc:
-                self._fail(run_id, started_at, request, staged_topics, str(exc))
-                raise ApiError(
-                    status_code=507,
-                    code="record_spawn_failed",
-                    message="Failed to start the recording process.",
-                    details={"error": str(exc)},
-                ) from exc
-
-            # Confirm ros2 bag record actually started: wait for it to create its
-            # --output directory (it does so only after passing its own checks).
-            # If it exits — or hangs without creating the dir — it failed to start.
-            if not self._await_started(run_id, process):
-                # Kill a still-alive but stuck process so it cannot later create
-                # the output dir behind our back.
-                self._terminate_failed_start(process)
-                returncode = process.returncode
-                self._fail(
-                    run_id,
-                    started_at,
-                    request,
-                    staged_topics,
-                    f"ros2 bag record did not create the output dir (rc={returncode})",
-                )
-                raise ApiError(
-                    status_code=507,
-                    code="record_start_failed",
-                    message="The recording process failed to start.",
-                    details={"run_id": run_id, "returncode": returncode},
-                )
-
-            # The bag process is up. When spawned --start-paused it is now
-            # waiting paused: bring subscriptions live, then resume — so the bag
-            # begins with all topics subscribed (no dropped first frames during
-            # DDS discovery). FAIL-SAFE: any failure here must NOT leave a paused
-            # recorder silently capturing nothing — kill it and fail the start.
-            # Reset the arming snapshot for this attempt; populated below only
-            # when the --start-paused readiness gate actually runs.
-            self._arming = None
-            if self._start_paused_enabled():
-                try:
-                    self._arm_and_resume(run_id, selected, topics == "all")
-                except Exception as exc:  # noqa: BLE001 - convert to a clean fail
-                    self._terminate_failed_start(process)
-                    shutil.rmtree(run_dir(self._data_dir, run_id), ignore_errors=True)
-                    # Drop the partial arming snapshot; this session never started.
-                    self._arming = None
-                    self._fail(
-                        run_id, started_at, request, staged_topics, f"arming: {exc}"
-                    )
-                    raise ApiError(
-                        status_code=507,
-                        code="record_arm_failed",
-                        message="Recording failed to arm (subscribe + resume).",
-                        details={"run_id": run_id, "error": str(exc)},
-                    ) from exc
-
-            self._process = process
+            self._process = spawned.process
             self._state = RunState.recording
             self._run_id = run_id
+            self._capture_id = capture_id
             # Stamp the session at the moment capture actually begins (the bag
             # process is up and, when armed, resumed) — NOT the pre-spawn
             # `started_at` above, which is seconds earlier (start_delay + spawn
@@ -1016,21 +1095,47 @@ class RecorderSession:
             self._compression = request.compression
             self._split = request.split
             # Default operator/task so a standalone recorder call (no orchestrator
-            # to normalize them) still writes a keyable session.json.
-            self._operator = _default_meta(request.operator, _UNKNOWN_OPERATOR)
-            self._task = _default_meta(request.task, _UNKNOWN_TASK)
-            self._topics = staged_topics
-            # The run dir now exists (ros2 created it), so writing the manifest
-            # into it no longer races the "folder exists" check.
+            # to normalize them) still names one (see UNKNOWN_OPERATOR).
+            self._operator = default_meta(request.operator, UNKNOWN_OPERATOR)
+            self._stamp = self._build_stamp(request.console_stamp)
+            self._task = default_meta(request.task, UNKNOWN_TASK)
+            self._robot = self._resolve_robot(request)
+            self._topics = spawned.staged_topics
+            # The capture dir now exists (ros2 created it), so writing the
+            # manifest into it no longer races the "folder exists" check.
             self._write_manifest()
-            self._start_size_watcher(run_id)
+            self._start_size_watcher(capture_id)
             logger.info(
                 "recording started",
-                extra={"run_id": run_id, "component": "recorder"},
+                extra={
+                    "run_id": run_id,
+                    "capture_id": capture_id,
+                    "component": "recorder",
+                },
             )
             return self._status_locked()
 
-    def _start_size_watcher(self, run_id: str) -> None:
+    def _resolve_robot(self, request: RecordStartRequest) -> str | None:
+        """Which robot this capture came from: the request, else the config.
+
+        The orchestrator knows the active robot and passes it; a standalone
+        ``/record/start`` does not, so the recorder's own RECORDING_CONFIG is
+        the honest second answer. ``None`` only when neither knows.
+        """
+        if request.robot and request.robot.strip():
+            return request.robot.strip()
+        return self._configured_robot()
+
+    def _configured_robot(self) -> str | None:
+        """The robot this recorder is configured for, if it has a config.
+
+        The only answer available to crash recovery, which has no request to
+        read — and the right one: whatever this recorder was set up to record
+        is what produced the bytes it is reclaiming.
+        """
+        return self._config.robot_name if self._config is not None else None
+
+    def _start_size_watcher(self, capture_id: str) -> None:
         """Start the auto-stop watcher (no-op when both limits are disabled).
 
         Runs a daemon thread that polls the run and triggers ``stop()`` once
@@ -1047,14 +1152,14 @@ class RecorderSession:
         self._watcher_stop.clear()
         watcher = threading.Thread(
             target=self._watch_size,
-            args=(run_id,),
-            name=f"size-watcher-{run_id}",
+            args=(capture_id,),
+            name=f"size-watcher-{capture_id}",
             daemon=True,
         )
         self._size_watcher = watcher
         watcher.start()
 
-    def _watch_size(self, run_id: str) -> None:
+    def _watch_size(self, capture_id: str) -> None:
         """Poll the run and auto-stop on the byte or wall-clock limit.
 
         Triggered via the public ``stop()`` (which takes the lock and is
@@ -1066,7 +1171,7 @@ class RecorderSession:
         started = time.monotonic()
         while not self._watcher_stop.wait(SIZE_POLL_S):
             if byte_limit > 0:
-                size = self._recorded_bytes(run_id)
+                size = self._recorded_bytes(capture_id)
                 if size >= byte_limit:
                     self._auto_stop_reason = (
                         f"auto-stopped: recorded {size} bytes reached "
@@ -1074,7 +1179,7 @@ class RecorderSession:
                     )
                     logger.warning(
                         "MAX_RECORD_BYTES exceeded; auto-stopping",
-                        extra={"run_id": run_id, "component": "recorder"},
+                        extra={"capture_id": capture_id, "component": "recorder"},
                     )
                     self.stop()
                     return
@@ -1087,7 +1192,7 @@ class RecorderSession:
                     )
                     logger.warning(
                         "MAX_RECORD_SECONDS exceeded; auto-stopping",
-                        extra={"run_id": run_id, "component": "recorder"},
+                        extra={"capture_id": capture_id, "component": "recorder"},
                     )
                     self.stop()
                     return
@@ -1108,11 +1213,11 @@ class RecorderSession:
             watcher.join(timeout=SIZE_POLL_S + 1.0)
         self._size_watcher = None
 
-    def _await_started(self, run_id: str, process: subprocess.Popen[bytes]) -> bool:
+    def _await_started(self, capture_id: str, process: subprocess.Popen[bytes]) -> bool:
         """Wait for ``ros2 bag record`` to create its output dir.
 
-        Success REQUIRES the run directory to actually exist — that is the only
-        proof ros2 passed its own checks and is recording into a real bag.
+        Success REQUIRES the capture directory to actually exist — that is the
+        only proof ros2 passed its own checks and is recording into a real bag.
         Returns ``True`` only once the dir exists; returns ``False`` if the
         process exits first OR the dir has still not appeared by
         ``START_DIR_TIMEOUT_S`` (even if the process is still alive). We never
@@ -1120,7 +1225,7 @@ class RecorderSession:
         itself (writing the manifest), re-introducing the pre-existing-output-dir
         failure for any retry/observer.
         """
-        target = run_dir(self._data_dir, run_id)
+        target = self._capture_dir(capture_id)
         deadline = time.monotonic() + START_DIR_TIMEOUT_S
         while True:
             if target.exists():
@@ -1205,180 +1310,38 @@ class RecorderSession:
         self._apply_post_discovery_delay()
 
     def _arm_and_resume(self, run_id: str, topics: list[str], all_mode: bool) -> None:
-        """Wait until ``ros2 bag record`` has subscribed to the target topics,
-        then resume it (it was spawned ``--start-paused``).
-
-        Raises on any hard failure so the caller fails the start rather than
-        leaving a paused recorder capturing nothing. rclpy + rosbag2_interfaces
-        are imported lazily so the module imports without ROS; the live path runs
-        in the ROS image (verified in Docker, like the monitor's rclpy paths).
-
-        This is the single-call gate (``recording.start_paused``): the node it
-        creates is transient — it exists purely to arm-then-resume within this
-        one call, unlike ``_prepare_arm``'s node, which is kept alive across
-        ``prepare()`` -> ``start()``.
-        """
-        import rclpy
-        from rclpy.node import Node
-        from rosbag2_interfaces.srv import IsPaused, Resume
-
-        timeout = (
-            self._config.recording.subscription_ready_timeout_s
-            if self._config is not None
-            else 5.0
-        )
-        owns_rclpy = not rclpy.ok()
-        if owns_rclpy:
-            rclpy.init()
-        node = Node("kairos_recorder_arming")
-        try:
-            self._await_subscription_match(node, rclpy, topics, all_mode, timeout)
-            self._resume_recorder(rclpy, node, Resume, IsPaused)
-            # Resumed: no longer waiting. Keep the final matched/missing snapshot
-            # (a non-empty ``missing`` means the gate timed out and resumed anyway).
-            if self._arming is not None:
-                self._arming.active = False
-            logger.info("recording armed + resumed", extra={"run_id": run_id})
-        finally:
-            node.destroy_node()
-            if owns_rclpy:
-                rclpy.shutdown()
+        """Wait for subscription match, then resume the paused subprocess."""
+        arming.arm_and_resume(self, run_id, topics, all_mode)
 
     def _prepare_arm(
         self, run_id: str, topics: list[str], all_mode: bool
     ) -> tuple[Any, Any, Any, bool]:
-        """Wait for subscription match and create MATCHED Resume/IsPaused clients.
-
-        Unlike :meth:`_arm_and_resume`, this does NOT call resume and does NOT
-        destroy the node on success: both the node and the clients are handed
-        back to the caller (:meth:`prepare`) to hold on the armed session, so a
-        later fast ``start()`` is just a resume call — no repeat DDS-participant
-        creation or service discovery (the whole point of two-phase start).
-
-        Returns ``(node, resume_client, is_paused_client, owns_rclpy)``. On any
-        failure the node/context are torn down here before raising, so the
-        caller's except-clause only has to deal with the subprocess + run dir.
-        """
-        import rclpy
-        from rclpy.node import Node
-        from rosbag2_interfaces.srv import IsPaused, Resume
-
-        timeout = (
-            self._config.recording.subscription_ready_timeout_s
-            if self._config is not None
-            else 5.0
-        )
-        owns_rclpy = not rclpy.ok()
-        if owns_rclpy:
-            rclpy.init()
-        node = Node("kairos_recorder_arming")
-        try:
-            self._await_subscription_match(node, rclpy, topics, all_mode, timeout)
-            resume_client = node.create_client(Resume, f"/{RECORDER_NODE_NAME}/resume")
-            is_paused_client = node.create_client(
-                IsPaused, f"/{RECORDER_NODE_NAME}/is_paused"
-            )
-            if not resume_client.wait_for_service(timeout_sec=RESUME_SERVICE_TIMEOUT_S):
-                raise RuntimeError("recorder resume service did not appear")
-            # is_paused is only used to CONFIRM resume; best-effort like
-            # _resume_recorder (arm anyway if it never appears).
-            is_paused_client.wait_for_service(timeout_sec=2.0)
-            logger.info("recording armed (two-phase prepare)", extra={"run_id": run_id})
-            return node, resume_client, is_paused_client, owns_rclpy
-        except Exception:
-            node.destroy_node()
-            if owns_rclpy:
-                rclpy.shutdown()
-            raise
+        """Wait for subscription match and create MATCHED Resume/IsPaused clients."""
+        return arming.prepare_arm(self, run_id, topics, all_mode)
 
     def _resume_armed(self, armed: _Armed) -> None:
-        """Resume an armed subprocess via its already-matched clients.
-
-        No ``wait_for_service`` calls: ``prepare()`` (:meth:`_prepare_arm`)
-        already confirmed both services are present, so re-waiting here would
-        reintroduce the exact discovery latency two-phase start exists to
-        remove. Same fail-safe confirmation as :meth:`_resume_recorder`: raises
-        if resume doesn't return, or if ``is_paused`` still reports paused
-        afterwards.
-        """
-        import rclpy
-        from rosbag2_interfaces.srv import IsPaused, Resume
-
-        fut = armed.resume_client.call_async(Resume.Request())
-        rclpy.spin_until_future_complete(
-            armed.node, fut, timeout_sec=RESUME_SERVICE_TIMEOUT_S
-        )
-        if fut.result() is None:
-            raise RuntimeError("recorder resume call did not return")
-        f2 = armed.is_paused_client.call_async(IsPaused.Request())
-        rclpy.spin_until_future_complete(armed.node, f2, timeout_sec=3.0)
-        res = f2.result()
-        if res is not None and getattr(res, "paused", False):
-            raise RuntimeError("recorder still paused after resume")
+        """Resume an armed subprocess via its already-matched clients."""
+        arming.resume_armed(armed)
 
     def _teardown_armed_rclpy(self, armed: _Armed) -> None:
-        """Destroy the armed session's held rclpy node (+ shutdown if owned).
-
-        Called both when a session is committed (resume succeeded — the node
-        is no longer needed, the subprocess runs unattended until ``stop()``)
-        and when it is disarmed/failed. Best-effort: teardown must not raise
-        over a session that is being torn down anyway.
-        """
-        try:
-            armed.node.destroy_node()
-        except Exception:  # noqa: BLE001 - best-effort teardown
-            logger.exception("failed to destroy the armed rclpy node")
-        if armed.owns_rclpy:
-            import rclpy
-
-            try:
-                if rclpy.ok():
-                    rclpy.shutdown()
-            except Exception:  # noqa: BLE001
-                logger.exception("failed to shut down the armed rclpy context")
+        """Destroy the armed session's held rclpy node (+ shutdown if owned)."""
+        arming.teardown_armed_rclpy(armed)
 
     def _readiness_targets(
         self, node: Any, topics: list[str], all_mode: bool
     ) -> list[str]:
-        """Topics the readiness gate waits on: the explicit list, or (for
-        ``--all``) every currently-published topic at this instant."""
-        if not all_mode:
-            return list(topics)
-        return [
-            name
-            for name, _types in node.get_topic_names_and_types()
-            if node.count_publishers(name) > 0
-        ]
+        """Topics the readiness gate waits on: the list, or every published one."""
+        return arming.readiness_targets(node, topics, all_mode)
 
     def _recorder_subscribed(self, node: Any, topic: str) -> bool:
         """True once a publisher exists AND the recorder node has subscribed."""
-        if node.count_publishers(topic) == 0:
-            return False
-        return any(
-            info.node_name == RECORDER_NODE_NAME
-            for info in node.get_subscriptions_info_by_topic(topic)
-        )
+        return arming.recorder_subscribed(node, topic)
 
     def _readiness_view(
         self, node: Any, topics: list[str], all_mode: bool
     ) -> tuple[list[str], list[str], list[str]]:
-        """One graph read -> ``(matched, unsubscribed, missing)`` for the targets.
-
-        The gate's "pending" set is ``unsubscribed + missing``; splitting it by
-        CAUSE is what lets the UI say "not publishing" only about a topic that
-        really has no publisher (see :class:`RecordArming`).
-        """
-        matched: list[str] = []
-        unsubscribed: list[str] = []
-        missing: list[str] = []
-        for topic in self._readiness_targets(node, topics, all_mode):
-            if node.count_publishers(topic) == 0:
-                missing.append(topic)
-            elif self._recorder_subscribed(node, topic):
-                matched.append(topic)
-            else:
-                unsubscribed.append(topic)
-        return matched, unsubscribed, missing
+        """One graph read -> ``(matched, unsubscribed, missing)`` for the targets."""
+        return arming.readiness_view(self, node, topics, all_mode)
 
     def _await_recorder_subscribed(
         self,
@@ -1388,28 +1351,10 @@ class RecorderSession:
         all_mode: bool,
         timeout: float,
     ) -> None:
-        """Poll the ROS graph until the recorder has subscribed to every target
-        topic that has a publisher, or until *timeout* (then resume anyway).
-
-        Each poll refreshes the observational arming snapshot (matched vs missing)
-        so the state reflects the latest readiness view (OL-①.4)."""
-        deadline = time.monotonic() + timeout
-        while True:
-            rclpy_mod.spin_once(node, timeout_sec=SUBSCRIPTION_POLL_S)
-            matched, unsubscribed, missing = self._readiness_view(
-                node, topics, all_mode
-            )
-            pending = unsubscribed + missing
-            self._update_arming(matched, unsubscribed, missing)
-            if matched and not pending:
-                return
-            if time.monotonic() >= deadline:
-                if pending:
-                    logger.warning(
-                        "arming timed out; resuming with topics not yet matched",
-                        extra={"pending_topics": pending},
-                    )
-                return
+        """Poll the ROS graph until the recorder has subscribed, or until timeout."""
+        arming.await_recorder_subscribed(
+            self, rclpy_mod, node, topics, all_mode, timeout
+        )
 
     def _update_arming(
         self, matched: list[str], unsubscribed: list[str], missing: list[str]
@@ -1461,25 +1406,7 @@ class RecorderSession:
     ) -> None:
         """Call the recorder's ``~/resume`` service and confirm it is no longer
         paused. Raises if the service is missing or it stays paused."""
-        resume = node.create_client(resume_srv, f"/{RECORDER_NODE_NAME}/resume")
-        if not resume.wait_for_service(timeout_sec=RESUME_SERVICE_TIMEOUT_S):
-            raise RuntimeError("recorder resume service did not appear")
-        fut = resume.call_async(resume_srv.Request())
-        rclpy_mod.spin_until_future_complete(
-            node, fut, timeout_sec=RESUME_SERVICE_TIMEOUT_S
-        )
-        if fut.result() is None:
-            raise RuntimeError("recorder resume call did not return")
-        # Confirm it actually resumed (fail-safe against a silent paused bag).
-        is_paused = node.create_client(
-            is_paused_srv, f"/{RECORDER_NODE_NAME}/is_paused"
-        )
-        if is_paused.wait_for_service(timeout_sec=2.0):
-            f2 = is_paused.call_async(is_paused_srv.Request())
-            rclpy_mod.spin_until_future_complete(node, f2, timeout_sec=3.0)
-            res = f2.result()
-            if res is not None and getattr(res, "paused", False):
-                raise RuntimeError("recorder still paused after resume")
+        arming.resume_recorder(rclpy_mod, node, resume_srv, is_paused_srv)
 
     def _resolve_qos(
         self, topic: str, request: RecordStartRequest
@@ -1491,14 +1418,14 @@ class RecorderSession:
         )
 
     def _materialise_qos(
-        self, run_id: str, selected: list[str], request: RecordStartRequest
+        self, capture_id: str, selected: list[str], request: RecordStartRequest
     ) -> Path | None:
         """Write the QoS overrides file for this run, if any overrides apply.
 
-        The file is written to a *sibling* of the run directory
-        (``<recorded>/<run_id>.qos.yaml``), never inside it: ``ros2 bag record``
-        refuses to start if its ``--output`` directory already exists, so the
-        run dir must not exist until ros2 itself creates it.
+        The file is written to a *sibling* of the capture directory
+        (``objects/<capture_id>.qos.yaml``), never inside it: ``ros2 bag
+        record`` refuses to start if its ``--output`` directory already exists,
+        so the capture dir must not exist until ros2 itself creates it.
 
         For ``--all`` the live topic list is not known here, so config-pattern
         and ``qos_default`` overrides cannot be pre-materialised (no concrete
@@ -1513,32 +1440,34 @@ class RecorderSession:
             request.qos_default,
         )
         return write_qos_overrides_file(
-            overrides, _qos_overrides_path(self._recorded_root(), run_id)
+            overrides, _qos_overrides_path(self._objects_root(), capture_id)
         )
 
-    def _cleanup_qos_file(self, run_id: str) -> None:
+    def _cleanup_qos_file(self, capture_id: str) -> None:
         """Remove the run's QoS overrides sibling file if it was written."""
-        _qos_overrides_path(self._recorded_root(), run_id).unlink(missing_ok=True)
+        _qos_overrides_path(self._objects_root(), capture_id).unlink(missing_ok=True)
 
     def _materialise_storage_config(
-        self, run_id: str, request: RecordStartRequest
+        self, capture_id: str, request: RecordStartRequest
     ) -> Path | None:
         """Write the MCAP storage-config file for zstd compression, if requested.
 
-        Like the QoS file, it is a *sibling* of the run dir (the run dir itself
-        must not exist before ``ros2 bag record`` creates it). Returns ``None``
-        when compression is off (no file written, normal uncompressed record).
+        Like the QoS file, it is a *sibling* of the capture dir (which must not
+        exist before ``ros2 bag record`` creates it). Returns ``None`` when
+        compression is off (no file written, normal uncompressed record).
         """
         if request.compression is not Compression.zstd:
             return None
-        path = _mcap_storage_config_path(self._recorded_root(), run_id)
+        path = _mcap_storage_config_path(self._objects_root(), capture_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(_MCAP_ZSTD_STORAGE_CONFIG, encoding="utf-8")
         return path
 
-    def _cleanup_storage_config(self, run_id: str) -> None:
+    def _cleanup_storage_config(self, capture_id: str) -> None:
         """Remove the run's MCAP storage-config sibling file if it was written."""
-        _mcap_storage_config_path(self._recorded_root(), run_id).unlink(missing_ok=True)
+        _mcap_storage_config_path(self._objects_root(), capture_id).unlink(
+            missing_ok=True
+        )
 
     # -- recording integrity (cache-overflow drop detection) ----------------
 
@@ -1556,66 +1485,45 @@ class RecorderSession:
                 pass
             self._log_file = None
 
-    def _scan_dropped_messages(self, run_id: str | None) -> int | None:
-        """Messages the in-recorder cache dropped this run, from the captured log.
+    def _scan_dropped_messages(self, capture_id: str | None) -> int | None:
+        """Messages the in-recorder cache dropped this run, from the captured log."""
+        if not capture_id:
+            return None
+        return integrity.scan_dropped_messages(self._recorder_log_locations(capture_id))
 
-        rosbag2 logs ``Total lost: N`` once at shutdown when its MessageCache
-        overflowed. Returns that N, ``0`` when the log exists with no such line
-        (no overflow), or ``None`` when the log is unavailable/unreadable (drop
-        count unknown — e.g. a stubbed spawn in unit tests).
-        """
-        if not run_id:
-            return None
-        path = _recorder_log_path(self._recorded_root(), run_id)
-        try:
-            text = path.read_text(errors="replace")
-        except OSError:
-            return None
-        # One report per run (at shutdown); take the last match to be safe.
-        matches = _TOTAL_LOST_RE.findall(text)
-        return int(matches[-1]) if matches else 0
+    def _recorder_log_locations(self, capture_id: str) -> tuple[Path, Path]:
+        """Where a capture's log can be: the live sibling, then the archived copy."""
+        return (
+            _recorder_log_path(self._objects_root(), capture_id),
+            self._capture_dir(capture_id) / RECORDER_LOG_FILENAME,
+        )
 
     def _classify_integrity(self) -> str:
-        """Classify recording integrity from state + cache-drop count.
+        """Classify recording integrity from state + cache-drop count."""
+        return integrity.classify_integrity(self._state, self._dropped_messages)
 
-        ``failed`` if the run failed; otherwise ``unknown`` when the drop count
-        could not be determined, ``dropped`` when the cache lost >0 messages, and
-        ``ok`` when a readable log reported no overflow.
-        """
-        if self._state is RunState.failed:
-            return "failed"
-        if self._dropped_messages is None:
-            return "unknown"
-        return "dropped" if self._dropped_messages > 0 else "ok"
-
-    def _archive_log(self, run_id: str | None) -> None:
-        """Move the sibling recorder log into the run dir (best-effort).
-
-        Done at finalise (the run dir now exists) so the recorder's own log ships
-        beside the bag for audit. A missing sibling (stubbed spawn) is a no-op.
-        """
-        if not run_id:
+    def _archive_log(self, capture_id: str | None) -> None:
+        """Move the sibling recorder log into the capture dir (best-effort)."""
+        if not capture_id:
             return
-        src = _recorder_log_path(self._recorded_root(), run_id)
-        dst = run_dir(self._data_dir, run_id) / "recorder.log"
-        try:
-            if src.exists():
-                src.replace(dst)
-        except OSError:
-            logger.warning("could not archive recorder log for %s", run_id)
+        integrity.archive_log(
+            _recorder_log_path(self._objects_root(), capture_id),
+            self._capture_dir(capture_id) / RECORDER_LOG_FILENAME,
+            capture_id,
+        )
 
-    def _cleanup_log_file(self, run_id: str | None) -> None:
+    def _cleanup_log_file(self, capture_id: str | None) -> None:
         """Close the log handle and drop the sibling log (failed-start paths)."""
         self._close_log_file()
-        if run_id:
-            _recorder_log_path(self._recorded_root(), run_id).unlink(missing_ok=True)
+        if capture_id:
+            _recorder_log_path(self._objects_root(), capture_id).unlink(missing_ok=True)
 
     def stop(self) -> RecordStatusResponse:
         """Stop the active session (idempotent).
 
         Recording -> SIGINT the process group, wait, finalise, return the
         terminal status. ``armed`` -> disarm (the paused subprocess is killed,
-        the empty run dir removed — there is nothing recorded to flush). Any
+        the empty capture dir removed — there is nothing recorded to flush). Any
         other state — idle, or a stop already in progress (``stopping``) —
         returns the current status unchanged.
         """
@@ -1627,8 +1535,13 @@ class RecorderSession:
                 # Without this, an operator-initiated cancel while armed would
                 # leak the paused subprocess forever (stop() would otherwise
                 # silently no-op below, since state is not `recording`).
+                disarmed = self._armed.capture_id if self._armed else None
                 self._disarm_locked()
-                return self._status_locked()
+                # Name the cancelled capture. ``capture_id`` cannot carry it —
+                # it reverts to the last FINALISED capture, which a cancel must
+                # not overwrite — so a caller holding the id from prepare() has
+                # no other way to learn it is now dead.
+                return self._status_locked(disarmed_capture_id=disarmed)
 
             # Only a live ``recording`` session transitions to ``stopping``.
             # Gating on ``recording`` (not ``_ACTIVE_STATES``, which includes
@@ -1685,42 +1598,57 @@ class RecorderSession:
         """Move from ``stopping`` to a terminal state, syncing from metadata.
 
         ``completed`` requires BOTH a clean shutdown return code AND a written
-        ``metadata.yaml``. Metadata presence alone is not enough: an abnormal
-        exit (disk full, partial write, rosbag2 crash, SIGTERM escalation) can
-        leave a stale/partial metadata.yaml, which must be reported ``failed``.
+        ``metadata.yaml`` AND flushed MCAP bytes. Metadata presence alone is not
+        enough: an abnormal exit (disk full, partial write, rosbag2 crash,
+        SIGTERM escalation) can leave a stale/partial metadata.yaml.
+
+        Anything short of that splits on whether a bag exists at all, using the
+        same discriminator the rebuild applies (:func:`has_bag`), so a crashed
+        recording and a cleanly stopped one are judged by one standard (§8 rule
+        2): bytes on disk mean ``interrupted`` — incomplete but real, and worth
+        hashing and keeping — while an empty directory means ``failed``.
 
         *ended_at* is the capture-end stamp taken when the stop was DECIDED
         (see :meth:`stop`); falling back to now() here would silently re-add
         the SIGINT flush time to the session length.
         """
-        run_id = self._run_id
+        capture_id = self._capture_id
         process = self._process
         returncode = process.returncode if process is not None else None
         ended_at = ended_at or utc_now_iso8601()
 
-        meta = self._read_rosbag2_metadata(run_id) if run_id else None
+        meta = self._read_rosbag2_metadata(capture_id) if capture_id else None
         clean_exit = returncode in _CLEAN_STOP_RETURNCODES
         # Stop-time verification (OL-①.3): a flushed bag has its MCAP data on disk.
-        mcap_present = bool(run_id) and self._recorded_bytes(run_id) > 0
-        if meta is not None and clean_exit and mcap_present:
+        mcap_present = bool(capture_id) and self._recorded_bytes(capture_id) > 0
+        if meta is not None:
+            # Sync what the bag says even when the run ended badly: the topic
+            # list is the audit record, and a bad ending is not a reason to
+            # report the recording as having captured nothing.
             self._sync_topics_from_metadata(meta)
+        if meta is not None and clean_exit and mcap_present:
             self._state = RunState.completed
             # A MAX_RECORD_BYTES auto-stop is a *successful* completion at the
             # cap; record why it ended in the note field (no error occurred).
             error = self._auto_stop_reason
-        else:
-            self._state = RunState.failed
+        elif capture_id is not None and has_bag(self._capture_dir(capture_id)):
+            self._state = RunState.interrupted
             if meta is None:
                 error = f"recording produced no metadata.yaml (rc={returncode})"
             elif not mcap_present:
                 # Clean metadata but no MCAP data flushed: the bag is empty/lost.
-                self._sync_topics_from_metadata(meta)
                 error = "recording produced metadata but no MCAP data file"
             else:
-                # Have metadata but the process did not shut down cleanly: still
-                # sync what we can for the audit record, but mark the run failed.
-                self._sync_topics_from_metadata(meta)
                 error = f"recording ended abnormally (rc={returncode})"
+        else:
+            # Neither metadata.yaml nor an MCAP: the process opened its output
+            # directory and wrote nothing into it, so there is no recording to
+            # salvage or hash.
+            self._state = RunState.failed
+            error = (
+                "recording produced no metadata.yaml and no MCAP data "
+                f"(rc={returncode})"
+            )
 
         self._process = None
         self._auto_stop_reason = None
@@ -1729,18 +1657,22 @@ class RecorderSession:
         # the run (a clean run that still dropped messages is completed but
         # integrity="dropped" — the bag is missing data the cache could not hold).
         self._close_log_file()
-        self._dropped_messages = self._scan_dropped_messages(run_id)
+        self._dropped_messages = self._scan_dropped_messages(capture_id)
         self._integrity = self._classify_integrity()
+        if capture_id:
+            # Before the manifest write, which is the handoff point: after it the
+            # capture is terminal and the digest job owns the directory (§3.3).
+            self._cleanup_qos_file(capture_id)
+            self._cleanup_storage_config(capture_id)
+            self._archive_log(capture_id)
         self._write_manifest(ended_at=ended_at, error=error)
-        if run_id:
-            self._cleanup_qos_file(run_id)
-            self._cleanup_storage_config(run_id)
-            self._archive_log(run_id)
         logger.info(
             "recording finalised",
             extra={
-                "run_id": run_id,
+                "run_id": self._run_id,
+                "capture_id": capture_id,
                 "component": "recorder",
+                "state": self._state.value,
                 "integrity": self._integrity,
                 "dropped_messages": self._dropped_messages,
             },
@@ -1748,44 +1680,78 @@ class RecorderSession:
 
     def _fail(
         self,
+        capture_id: str,
         run_id: str,
         started_at: str,
         request: RecordStartRequest,
         topics: list[TopicEntry],
         error: str,
-    ) -> None:
-        """Record a START failure WITHOUT creating a recording run dir.
+    ) -> str | None:
+        """Record a START failure WITHOUT creating a capture directory (§3.4).
 
-        The session never produced a bag, so we must not leave a
-        ``recorded/<run_id>/`` directory that downstream consumers would mistake
-        for a recording. The failure is written to the sibling
-        ``recorded/<run_id>.failed.json`` instead. ``topics`` is the staged
-        selection for this failed attempt (NOT ``self._topics``, which still
-        reflects the previous session).
+        The session never produced a bag, so we must not leave an
+        ``objects/<capture_id>/`` directory: §2's invariant is that a directory
+        under ``objects/`` means bytes were written, and every scan trusts it.
+        The failure goes to the sibling ``objects/<capture_id>.failed.json``
+        instead. ``topics`` is the staged selection for this failed attempt
+        (NOT ``self._topics``, which still reflects the previous session).
+
+        Returns ``None`` when the marker was written, or a description of why
+        it was not — which the caller MUST put in the start's error response.
+        A start that failed and left no record of having failed is one nobody
+        can account for afterwards, so this cannot be swallowed here (§3.4).
         """
-        manifest = Manifest(
+        manifest = ObjectManifestV2(
+            capture_id=capture_id,
+            source_instance_id=self._instance_id,
             run_id=run_id,
-            state=RunState.failed,
-            topics=topics,
+            state=CaptureState.failed.value,
             started_at=started_at,
             ended_at=utc_now_iso8601(),
-            compression=request.compression,
-            split=request.split,
+            operator=default_meta(request.operator, UNKNOWN_OPERATOR),
+            task=default_meta(request.task, UNKNOWN_TASK),
+            robot=self._resolve_robot(request),
+            topics=tuple(topic.model_dump(mode="json") for topic in topics),
+            compression=str(request.compression),
+            split=request.split.model_dump(mode="json") if request.split else None,
+            integrity="failed",
             error=error,
+            digest_state=DigestState.pending.value,
         )
+        marker_error: str | None = None
         try:
-            write_failed_start_record(self._data_dir, manifest)
-        except OSError:
-            logger.exception("failed to write failed-start record")
-        self._cleanup_qos_file(run_id)
-        self._cleanup_storage_config(run_id)
-        self._cleanup_log_file(run_id)
+            write_failed_start(self._data_dir, manifest)
+        except OSError as exc:
+            logger.exception(
+                "could not write the failed-start record",
+                extra={"capture_id": capture_id, "component": "recorder"},
+            )
+            marker_error = str(exc)
+        self._cleanup_qos_file(capture_id)
+        self._cleanup_storage_config(capture_id)
+        self._cleanup_log_file(capture_id)
+        return marker_error
+
+    def _failed_start_details(
+        self, capture_id: str, marker_error: str | None, **extra: Any
+    ) -> dict[str, Any]:
+        """Build the ``details`` of a failed start's error response.
+
+        Always names the capture_id, and — when :meth:`_fail` could not write
+        ``objects/<capture_id>.failed.json`` — says so, because the caller is
+        then the only party that will ever learn the failure left no trace on
+        disk (§3.4).
+        """
+        details: dict[str, Any] = {"capture_id": capture_id, **extra}
+        if marker_error is not None:
+            details["failed_start_record_error"] = marker_error
+        return details
 
     # -- metadata sync ------------------------------------------------------
 
-    def _read_rosbag2_metadata(self, run_id: str) -> dict[str, Any] | None:
-        """Parse the run's rosbag2 ``metadata.yaml`` if present."""
-        path = run_dir(self._data_dir, run_id) / ROSBAG2_METADATA_FILENAME
+    def _read_rosbag2_metadata(self, capture_id: str) -> dict[str, Any] | None:
+        """Parse the capture's rosbag2 ``metadata.yaml`` if present."""
+        path = self._capture_dir(capture_id) / ROSBAG2_METADATA_FILENAME
         if not path.exists():
             return None
         try:
@@ -1822,14 +1788,14 @@ class RecorderSession:
         """Extract the total message count from rosbag2 metadata, best-effort."""
         return int(meta.get("message_count") or 0)
 
-    def _recorded_bytes(self, run_id: str) -> int:
-        """Total size on disk of the run's recorded MCAP files.
+    def _recorded_bytes(self, capture_id: str) -> int:
+        """Total size on disk of the capture's recorded MCAP files.
 
         rosbag2's ``metadata.yaml`` ``files:`` entries do not carry a ``size``
         field in this storage format, so the on-disk size must be measured by
-        stat'ing the actual bag files (covers split parts ``<run_id>_*.mcap``).
+        stat'ing the actual bag files (covers every split part).
         """
-        rd = run_dir(self._data_dir, run_id)
+        rd = self._capture_dir(capture_id)
         if not rd.is_dir():
             return 0
         total = 0
@@ -1846,20 +1812,59 @@ class RecorderSession:
         with self._lock:
             return self._status_locked()
 
-    def _status_locked(self) -> RecordStatusResponse:
+    def _build_stamp(self, console_stamp: dict[str, Any] | None) -> dict[str, Any]:
+        """Identity recorded WITH the capture: which build recorded it, which
+        config file (by content hash) it read, and — when the orchestrator sent
+        its half — which console asked. Rides the manifest's ``extra``
+        passthrough, so the sidecar schema is untouched and older readers
+        simply carry it along."""
+        recorder: dict[str, Any] = {"git_sha": os.environ.get("KAIROS_GIT_SHA") or None}
+        cfg = os.environ.get("RECORDING_CONFIG")
+        if cfg:
+            try:
+                recorder["config_sha256"] = hashlib.sha256(
+                    Path(cfg).read_bytes()
+                ).hexdigest()
+            except OSError:
+                pass  # unreadable config: no hash beats a made-up one
+        stamp: dict[str, Any] = {"recorder": recorder}
+        if console_stamp:
+            stamp["console"] = console_stamp
+        return stamp
+
+    def _disk_free_bytes(self) -> int | None:
+        """Free bytes on THIS recorder's data-dir filesystem (the robot's disk
+        in the split deploy). ``None`` when it cannot be statted — never a
+        made-up number."""
+        try:
+            return shutil.disk_usage(self._data_dir).free
+        except OSError:
+            return None
+
+    def _status_locked(
+        self, *, disarmed_capture_id: str | None = None
+    ) -> RecordStatusResponse:
+        """Build the status payload. Caller must hold ``self._lock``.
+
+        *disarmed_capture_id* is set only by the stop() that cancelled an armed
+        session; every other caller leaves it ``None``.
+        """
         if self._state is RunState.armed and self._armed is not None:
             # Live readiness, not the first-arm snapshot: an armed session can
             # sit armed for a long time (pre-arm keep-alive), and the console
             # renders this as a CURRENT warning ("target topics not
             # publishing"), so it must be re-read here.
             self._refresh_arming_locked()
-            # Nothing has been committed yet (no manifest/session.json, no
-            # capture) — report the ARMED run/topics, not the previous
-            # session's self._run_id/_topics (those stay untouched until a
+            # Nothing has been committed yet (no manifest, no capture row) —
+            # report the ARMED run/capture/topics, not the previous session's
+            # self._run_id/_capture_id/_topics (those stay untouched until a
             # matching start() commits; see prepare()/_start_from_armed()).
             return RecordStatusResponse(
                 state=self._state,
                 run_id=self._armed.run_id,
+                capture_id=self._armed.capture_id,
+                live_capture_ids=self._live_capture_ids_locked(),
+                disarmed_capture_id=disarmed_capture_id,
                 started_at=None,
                 message_count=0,
                 bytes=0,
@@ -1867,17 +1872,22 @@ class RecorderSession:
                 arming=self._arming.model_copy(deep=True) if self._arming else None,
                 dropped_messages=None,
                 integrity="unknown",
+                git_sha=os.environ.get("KAIROS_GIT_SHA") or None,
+                disk_free_bytes=self._disk_free_bytes(),
             )
         message_count, size = 0, 0
-        if self._run_id is not None:
-            meta = self._read_rosbag2_metadata(self._run_id)
+        if self._capture_id is not None:
+            meta = self._read_rosbag2_metadata(self._capture_id)
             if meta is not None:
                 message_count = self._message_count(meta)
             # bytes is the real on-disk size (metadata files[].size is absent).
-            size = self._recorded_bytes(self._run_id)
+            size = self._recorded_bytes(self._capture_id)
         return RecordStatusResponse(
             state=self._state,
             run_id=self._run_id,
+            capture_id=self._capture_id,
+            live_capture_ids=self._live_capture_ids_locked(),
+            disarmed_capture_id=disarmed_capture_id,
             started_at=self._started_at,
             message_count=message_count,
             bytes=size,
@@ -1888,109 +1898,162 @@ class RecorderSession:
             arming=self._arming.model_copy(deep=True) if self._arming else None,
             dropped_messages=self._dropped_messages,
             integrity=self._integrity,
+            git_sha=os.environ.get("KAIROS_GIT_SHA") or None,
+            disk_free_bytes=self._disk_free_bytes(),
         )
+
+    def _live_capture_ids_locked(self) -> list[str]:
+        """The status endpoint's ``live_capture_ids``: what this recorder owns.
+
+        The orchestrator's rebuild MUST skip every id returned here (§8 rule 1,
+        §3.3). An armed capture has a directory but no manifest at all; a
+        recording one has a manifest that still says ``recording``. Adopting
+        either would turn a capture that is being written right now into an
+        ``interrupted`` row — and the finalise that follows would then be
+        writing to a capture the orchestrator already considers finished.
+        """
+        if self._state is RunState.armed and self._armed is not None:
+            return [self._armed.capture_id]
+        if self._state in _ACTIVE_STATES and self._capture_id is not None:
+            return [self._capture_id]
+        return []
 
     def _write_manifest(
         self, ended_at: str | None = None, error: str | None = None
     ) -> None:
-        if self._run_id is None:
+        """Write the capture's ``object_manifest.json`` (§3).
+
+        One file replaces the pre-v2 pair (manifest.json + session.json) that
+        could disagree about the same recording. Written at every point the
+        recorder's view changes: the commit that starts the capture, the
+        transition to ``stopping``, and finalise.
+
+        ``digest_state`` is always ``pending`` and ``files``/``manifest_digest``
+        are always null here: the recorder is the sole writer only up to the
+        terminal state, and the per-file hashes are the orchestrator's single
+        atomic write afterwards (§3.3). Writing anything else would be claiming
+        work this process never did.
+
+        A write failure is logged, not raised — recording must not depend on a
+        sidecar landing (§9-5), and the live capture is excluded from rebuild
+        by the status endpoint's ``live_capture_ids`` for exactly the window
+        in which the manifest may be missing or stale.
+        """
+        capture_id = self._capture_id
+        run_id = self._run_id
+        if capture_id is None or run_id is None:
             return
-        meta = self._read_rosbag2_metadata(self._run_id)
-        manifest = Manifest(
-            run_id=self._run_id,
-            state=self._state,
-            topics=list(self._topics),
-            started_at=self._started_at,
+        meta = self._read_rosbag2_metadata(capture_id)
+        manifest = ObjectManifestV2(
+            extra={"stamp": self._stamp} if self._stamp else {},
+            capture_id=capture_id,
+            source_instance_id=self._instance_id,
+            run_id=run_id,
+            state=str(self._state),
+            started_at=self._started_at or utc_now_iso8601(),
+            operator=self._operator,
+            task=self._task,
+            robot=self._robot,
             ended_at=ended_at,
-            compression=self._compression,
-            split=self._split,
+            topics=tuple(topic.model_dump(mode="json") for topic in self._topics),
             # Finalised counters (OL-①.5): None until the bag's metadata exists.
             message_count=self._message_count(meta) if meta is not None else None,
-            bytes=self._recorded_bytes(self._run_id),
-            error=error,
+            bytes=self._recorded_bytes(capture_id),
+            compression=str(self._compression),
+            split=self._split.model_dump(mode="json") if self._split else None,
             dropped_messages=self._dropped_messages,
             integrity=self._integrity,
+            error=error,
+            digest_state=DigestState.pending.value,
+            files=None,
+            manifest_digest=None,
         )
         try:
-            write_manifest(self._data_dir, manifest)
+            write_object_manifest(self._capture_dir(capture_id), manifest)
         except OSError:
-            logger.exception("failed to write manifest")
-        self._write_session(ended_at=ended_at)
-        # Keep the run dir host-deletable (root container -> host user / UI).
-        self._make_host_writable(run_dir(self._data_dir, self._run_id))
-
-    def _write_session(self, ended_at: str | None = None) -> None:
-        """Write the run's ``session.json`` beside the MCAP (best-effort).
-
-        Mirrors the manifest write points (start / stop / finalise) but is a
-        small, self-contained record of who recorded what, plus the current
-        topic list and counters. A failure here must not affect the recording.
-        """
-        if self._run_id is None:
-            return
-        meta = self._read_rosbag2_metadata(self._run_id)
-        payload = {
-            "run_id": self._run_id,
-            "operator": self._operator,
-            "task": self._task,
-            "state": self._state.value,
-            "started_at": self._started_at,
-            "ended_at": ended_at,
-            "topics": [t.name for t in self._topics],
-            "message_count": self._message_count(meta) if meta is not None else 0,
-            "bytes": self._recorded_bytes(self._run_id),
-        }
-        try:
-            write_session(self._data_dir, self._run_id, payload)
-        except OSError:
-            logger.exception("failed to write session.json")
+            logger.exception(
+                "could not write object_manifest.json",
+                extra={"capture_id": capture_id, "component": "recorder"},
+            )
+        # Keep the capture dir host-writable (root container -> host user / the
+        # orchestrator's delete, which renames it into .trash as uid 1000).
+        self._make_host_writable(self._capture_dir(capture_id))
 
     def get_metadata(self) -> dict[str, Any]:
-        """Return the last run's rosbag2 metadata + kairos manifest (404 if none)."""
+        """The last capture's rosbag2 metadata + its object manifest."""
         with self._lock:
+            capture_id = self._capture_id
             run_id = self._run_id
-        if run_id is None:
+        if capture_id is None:
             raise ApiError(
                 status_code=404,
                 code="no_recording",
                 message="No recording has been made yet.",
             )
-        manifest = read_manifest(self._data_dir, run_id)
-        meta = self._read_rosbag2_metadata(run_id)
+        read = read_object_manifest(self._capture_dir(capture_id))
+        if read.status is SidecarStatus.missing:
+            raise ApiError(
+                status_code=404,
+                code="manifest_not_found",
+                message="No object manifest for the requested capture.",
+                details={"capture_id": capture_id},
+            )
+        if read.manifest is None:
+            # Unreadable is not absent (§8 rule 4): reporting a corrupt manifest
+            # as 404 would tell the caller the capture never existed.
+            raise ApiError(
+                status_code=500,
+                code="manifest_corrupt",
+                message="The capture's object manifest could not be read.",
+                details={"capture_id": capture_id, "error": read.error},
+            )
+        meta = self._read_rosbag2_metadata(capture_id)
         return {
+            "capture_id": capture_id,
             "run_id": run_id,
-            "manifest": manifest.model_dump(mode="json"),
+            "manifest": read.manifest.to_json(),
             "rosbag2_metadata": meta,
             # Real on-disk total of the recorded MCAP files; the orchestrator
             # reads this (rosbag2 metadata files[].size is absent in this format).
-            "bytes": self._recorded_bytes(run_id),
+            "bytes": self._recorded_bytes(capture_id),
         }
 
-    def reconcile_on_startup(self) -> None:
-        """Mark any run left active by a previous process as ``interrupted``.
+    # -- startup reconciliation ---------------------------------------------
 
-        Scans ``/data/recorded`` for manifests still in ``recording``/``stopping``
-        (this process owns no subprocess for them) and rewrites them to
-        ``interrupted`` so the audit trail reflects the crash/restart.
-        """
-        root = self._recorded_root()
-        if not root.is_dir():
-            return
-        for child in sorted(root.iterdir()):
-            if not child.is_dir():
-                continue
-            mpath = manifest_path(self._data_dir, child.name)
-            if not mpath.exists():
-                continue
-            try:
-                manifest = read_manifest(self._data_dir, child.name)
-            except (ApiError, ValueError):
-                continue
-            if manifest.state in _ACTIVE_STATES:
-                manifest.state = RunState.interrupted
-                manifest.ended_at = manifest.ended_at or utc_now_iso8601()
-                write_manifest(self._data_dir, manifest)
-                logger.info(
-                    "marked interrupted run",
-                    extra={"run_id": child.name, "component": "recorder"},
-                )
+    def reconcile_on_startup(self) -> None:
+        """Finalise captures a previous process left mid-flight."""
+        startup_recovery.reconcile_on_startup(self)
+
+    def _recover_capture(self, path: Path, capture_id: str) -> None:
+        """Rewrite one crashed capture's manifest, if it is ours to rewrite."""
+        startup_recovery.recover_capture(self, path, capture_id, now=utc_now_iso8601)
+
+    def _adopt_manifestless_capture(self, path: Path, capture_id: str) -> None:
+        """Reclaim an ``objects/<id>/`` that has no manifest at all."""
+        startup_recovery.adopt_manifestless_capture(
+            self,
+            path,
+            capture_id,
+            log_path=_recorder_log_path(self._objects_root(), capture_id),
+        )
+
+    def _synthesize_manifest(self, path: Path, capture_id: str) -> None:
+        """Write an ``interrupted`` manifest for a capture that never got one."""
+        startup_recovery.synthesize_manifest(
+            self, path, capture_id, now=utc_now_iso8601
+        )
+
+    @staticmethod
+    def _holds_recorded_data(path: Path) -> bool:
+        """Whether a manifest-less directory is worth keeping: real bytes or none."""
+        return startup_recovery.holds_recorded_data(path)
+
+    @staticmethod
+    def _directory_timestamp(path: Path) -> datetime:
+        """The capture directory's mtime — when its last bytes were written."""
+        return startup_recovery.directory_timestamp(path)
+
+    @staticmethod
+    def _metadata_topics(meta: dict[str, Any] | None) -> list[tuple[str, str | None]]:
+        """``(name, type)`` for every topic rosbag2 recorded, or an empty list."""
+        return startup_recovery.metadata_topics(meta)

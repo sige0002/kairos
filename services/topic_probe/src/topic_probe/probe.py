@@ -18,8 +18,8 @@ import logging
 import time
 
 from kairos_common import utc_now_iso8601
+from kairos_common.field_introspect import extract_value, iter_numeric_fields
 
-from topic_probe.field_introspect import extract_value, iter_numeric_fields
 from topic_probe.models import (
     FieldsResponse,
     MultiSample,

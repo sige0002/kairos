@@ -11,10 +11,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Query, status
-from fastapi.routing import APIRoute
 from kairos_common import ApiError, JobState, Settings, create_app, get_settings
+from kairos_common.ids import is_uuid7
 
 from dora_runner.bagflow_runtime import DoraEndpoint, DoraStack, bagflow_available
+from dora_runner.mcap_utils import CaptureBytesMissing
 from dora_runner.models import (
     JobCreateRequest,
     JobCreateResponse,
@@ -80,7 +81,7 @@ def _to_definition(pipeline: RegisteredPipeline) -> PipelineDefinition:
     )
 
 
-def _override_readyz(app: FastAPI) -> None:
+async def _readyz() -> dict[str, object]:
     """Report dora_runner readiness, honest about dora availability (DORA-M2).
 
     The service is READY without the dora CLI — dataflows fall back to the
@@ -88,24 +89,16 @@ def _override_readyz(app: FastAPI) -> None:
     component reports the real executor mode (``available`` vs ``in-process``)
     instead of a fixed ``ok`` that implied dora was bundled.
     """
-    app.router.routes = [
-        route
-        for route in app.router.routes
-        if not (isinstance(route, APIRoute) and route.path == "/readyz")
-    ]
-
-    @app.get("/readyz", tags=["health"])
-    async def readyz() -> dict[str, object]:
-        dora = "available" if dora_cli_available() else "in-process"
-        # `bagflow` is separate from `dora`: plugin dataflows degrade to the
-        # in-process interpreter without the CLI, but the validation gates
-        # cannot — they need the bagflow binaries too (see
-        # registry._fast_validation_pipeline / _full_validation_pipeline).
-        bagflow = "available" if bagflow_available() else "unavailable"
-        return {
-            "status": "ready",
-            "components": {"dora": dora, "bagflow": bagflow},
-        }
+    dora = "available" if dora_cli_available() else "in-process"
+    # `bagflow` is separate from `dora`: plugin dataflows degrade to the
+    # in-process interpreter without the CLI, but the validation gates
+    # cannot — they need the bagflow binaries too (see
+    # registry._fast_validation_pipeline / _full_validation_pipeline).
+    bagflow = "available" if bagflow_available() else "unavailable"
+    return {
+        "status": "ready",
+        "components": {"dora": dora, "bagflow": bagflow},
+    }
 
 
 def create_dora_app(
@@ -126,7 +119,7 @@ def create_dora_app(
         logger.info(
             "reconciled interrupted dora jobs at start", extra={"count": interrupted}
         )
-    app = create_app(SERVICE_NAME, settings=settings)
+    app = create_app(SERVICE_NAME, settings=settings, readyz=_readyz)
     app.state.runner_store = store
     app.state.data_dir = data_dir
     # Bound how many jobs execute at once, and cap each job's wall-clock budget
@@ -152,11 +145,9 @@ def create_dora_app(
 
     app.router.lifespan_context = lifespan
 
-    _override_readyz(app)
-
     @app.get("/")
     async def root() -> dict[str, str]:
-        return {"service": SERVICE_NAME, "stage": "stage3"}
+        return {"service": SERVICE_NAME}
 
     @app.get("/pipelines", response_model=dict[str, list[PipelineDefinition]])
     async def pipelines() -> dict[str, list[PipelineDefinition]]:
@@ -172,9 +163,19 @@ def create_dora_app(
                 code="pipeline_unavailable",
                 message=f"Pipeline is not implemented: {body.pipeline}",
             )
+        # Refused HERE rather than at the first path join (§10.5): a capture_id
+        # is the job's only input, so a value that can never name a capture is a
+        # bad request — not a job that is accepted, queued, and then fails.
+        if not is_uuid7(body.capture_id):
+            raise ApiError(
+                status_code=400,
+                code="invalid_capture_id",
+                message=f"capture_id must be a UUIDv7: {body.capture_id}",
+                details={"capture_id": body.capture_id},
+            )
         job = JobRecord(
             job_id=f"job_{uuid.uuid4().hex}",
-            run_id=body.run_id,
+            capture_id=body.capture_id,
             pipeline=body.pipeline,
             params=body.params,
         )
@@ -276,20 +277,20 @@ def create_dora_app(
     @app.post("/validation/templates/generate", response_model=ValidationTemplate)
     async def generate(body: TemplateGenerateRequest) -> ValidationTemplate:
         try:
-            return generate_template(body.run_id, data_dir)
+            return generate_template(body.capture_id, data_dir)
         except ValueError as exc:
             raise ApiError(
                 status_code=400,
-                code="invalid_run_id",
+                code="invalid_capture_id",
                 message=str(exc),
-                details={"run_id": body.run_id},
+                details={"capture_id": body.capture_id},
             ) from exc
         except FileNotFoundError as exc:
             raise ApiError(
                 status_code=404,
-                code="run_mcap_not_found",
+                code="capture_mcap_not_found",
                 message=str(exc),
-                details={"run_id": body.run_id},
+                details={"capture_id": body.capture_id},
             ) from exc
 
     return app
@@ -451,10 +452,20 @@ async def _execute_job(
             job.state = JobState.failed
             job.progress = 1.0
             job.logs_tail.append(str(exc))
+            # The capture's bytes being gone is a different fact from the
+            # pipeline breaking, and the only one the operator can act on
+            # without reading a traceback. The message already said so; this
+            # makes it machine-readable, at the moment the job actually looked
+            # for the files rather than by guessing at submit time.
+            code = (
+                "capture_missing"
+                if isinstance(exc, CaptureBytesMissing)
+                else "job_failed"
+            )
             job.result = JobResult(
                 summary={
                     "result": "fail",
-                    "error": {"code": "job_failed", "message": str(exc)},
+                    "error": {"code": code, "message": str(exc)},
                 },
                 artifacts=[],
             )

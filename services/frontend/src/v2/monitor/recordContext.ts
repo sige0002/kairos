@@ -1,32 +1,51 @@
 // Pure helpers for the Monitor context strip's REAL recording-state chip (no
 // fabricated episode numbering). Derives the chip from /record/status — the same
-// source the Live tab's RecordHero uses. Kept separate from the component so the
-// active/elapsed derivation is unit-testable.
+// source Collect uses. Kept separate from the component so the active/elapsed
+// derivation is unit-testable.
 
-import type { RecordStatus } from '../../api/types';
-
-// Only recording/stopping is an actually-running session — matching the
-// recorder's _ACTIVE_STATES (and LiveTab's ACTIVE_STATES). `created`/`completed`/
-// `failed` are idle → STANDBY.
-const ACTIVE_STATES = new Set(['recording', 'stopping']);
+import type { RecordStatusView } from '../captures/useRecordStatus';
 
 export interface RecordContext {
   recording: boolean;
+  /** The live capture's identity — the key every other surface uses (§1). */
+  captureId: string | null;
+  /** `run_YYYYMMDD_HHMMSS`, DISPLAY ONLY (§1): never used as a key, and the
+   *  orchestrator may even rewrite it to break a collision. */
   runId: string | null;
   /** ms since capture start (recorder-stamped started_at), or null when idle /
    *  no baseline reported. */
   elapsedMs: number | null;
+  /**
+   * True when we actually KNOW what is live — the recorder answered and named
+   * its live set.
+   *
+   * False covers both an answer without `live_capture_ids` (§10 rev.2.4) and a
+   * poll that failed outright. Neither may render as "nothing is recording":
+   * that is a claim, and we have not verified it.
+   */
+  liveKnown: boolean;
 }
 
 export function computeRecordContext(
-  status: RecordStatus | undefined,
+  view: RecordStatusView,
   nowMs: number,
 ): RecordContext {
-  const recording = !!status && ACTIVE_STATES.has(status.state);
-  if (!recording) return { recording: false, runId: null, elapsedMs: null };
-  const startedAt = status?.started_at ? Date.parse(status.started_at) : NaN;
+  // A stale payload proves nothing, so an unreachable recorder yields the same
+  // "we cannot tell" shape as an answer with no live set — never a REC chip
+  // counting up from a start that ended long ago.
+  const liveKnown = view.reachable && view.live !== null;
+  if (!view.recording) {
+    return { recording: false, captureId: null, runId: null, elapsedMs: null, liveKnown };
+  }
+  const startedAt = view.status?.started_at ? Date.parse(view.status.started_at) : NaN;
   const elapsedMs = Number.isNaN(startedAt) ? null : Math.max(0, nowMs - startedAt);
-  return { recording: true, runId: status?.run_id ?? null, elapsedMs };
+  return {
+    recording: true,
+    captureId: view.captureId,
+    runId: view.status?.run_id ?? null,
+    elapsedMs,
+    liveKnown,
+  };
 }
 
 export function formatElapsed(ms: number | null): string {

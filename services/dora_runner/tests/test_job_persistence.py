@@ -21,12 +21,16 @@ from dora_runner.models import JobResult, RequiredTopicTemplate, ValidationTempl
 from dora_runner.store import JobRecord, RunnerStore
 from fastapi.testclient import TestClient
 from kairos_common import JobState, Settings
+from kairos_common.ids import new_capture_id
+
+# A capture_id is a UUIDv7 everywhere it is used as a key or path segment (§1).
+CAPTURE_ID = new_capture_id()
 
 
 def _running_job(job_id: str) -> JobRecord:
     """A JobRecord in the ``running`` state, as the worker would have left it."""
     job = JobRecord(
-        job_id=job_id, run_id="run_x", pipeline="fast_validation", params={}
+        job_id=job_id, capture_id=CAPTURE_ID, pipeline="fast_validation", params={}
     )
     job.state = JobState.running
     job.progress = 0.1
@@ -39,7 +43,12 @@ def test_reconcile_marks_inflight_jobs_failed_interrupted(tmp_path: Path) -> Non
     db = str(tmp_path / "dora_runner.db")
     store = RunnerStore(db)
     store.persist_job(
-        JobRecord(job_id="j_queued", run_id="r", pipeline="fast_validation", params={})
+        JobRecord(
+            job_id="j_queued",
+            capture_id=CAPTURE_ID,
+            pipeline="fast_validation",
+            params={},
+        )
     )
     store.persist_job(_running_job("j_running"))
     store.close()
@@ -64,7 +73,12 @@ def test_reconcile_leaves_terminal_jobs_untouched(tmp_path: Path) -> None:
     """A succeeded row survives a restart and reconcile is idempotent."""
     db = str(tmp_path / "dora_runner.db")
     store = RunnerStore(db)
-    done = JobRecord(job_id="j_done", run_id="r", pipeline="fast_validation", params={})
+    done = JobRecord(
+        job_id="j_done",
+        capture_id=CAPTURE_ID,
+        pipeline="fast_validation",
+        params={},
+    )
     done.state = JobState.succeeded
     done.progress = 1.0
     done.result = JobResult(
@@ -130,7 +144,11 @@ def test_completed_job_survives_restart(tmp_path: Path) -> None:
     with TestClient(app) as client:
         created = client.post(
             "/jobs",
-            json={"run_id": "run_x", "pipeline": "video_check", "params": {}},
+            json={
+                "capture_id": CAPTURE_ID,
+                "pipeline": "video_check",
+                "params": {},
+            },
         )
         assert created.status_code == 201
         job_id = created.json()["job_id"]

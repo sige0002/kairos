@@ -5,8 +5,9 @@
 
 import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { apiGet } from '../../api/client';
+import { getTopics } from '../../api/system';
 import { queryKeys } from '../../api/queryKeys';
+import { TOPIC_DISCOVERY_POLL_MS } from '../../v2/pollingPolicy';
 import type {
   AlertEvent,
   MetricsSnapshot,
@@ -170,6 +171,31 @@ export interface MonitorData {
   isDiscovering: boolean;
   /** The monitor's own processing health (OL-②.4); null when self-load is off. */
   selfLoad: MonitorSelfLoad | null;
+  /** Readings the SSE ingest could not identify and dropped (E-23). Surfaced
+   *  so a row that vanished does not vanish silently. */
+  malformedDropped: number;
+}
+
+/**
+ * Configured topics first, then measured, then alphabetical.
+ *
+ * `String(...)` around the name is E-23's SECOND line of defence, not its
+ * first: the ingest drops rows it cannot identify (sse/useEventStream
+ * applyMetrics), so a non-string name should never arrive here. It is here
+ * because this file has more than one possible writer, and because of what a
+ * throw in THIS comparator costs — `localeCompare` on a non-string threw for
+ * the whole list, the throw escaped to the root error boundary, and the entire
+ * console went down, tab bar included, for an operator who was on another tab.
+ * A sort is not worth that, so it does not assume its input.
+ */
+export function sortRowsForDisplay<T extends { name: string; configured?: boolean; measured?: boolean }>(
+  rows: T[],
+): T[] {
+  return [...rows].sort((a, b) => {
+    if (a.configured !== b.configured) return a.configured ? -1 : 1;
+    if (a.measured !== b.measured) return a.measured ? -1 : 1;
+    return String(a.name).localeCompare(String(b.name));
+  });
 }
 
 export function useMonitorRows(config?: RuntimeConfig): MonitorData {
@@ -208,15 +234,14 @@ export function useMonitorRows(config?: RuntimeConfig): MonitorData {
   const topicsQuery = useQuery({
     queryKey: queryKeys.topics,
     queryFn: ({ signal }) =>
-      apiGet<TopicInfo[] | { topics?: TopicInfo[]; items?: TopicInfo[] }>('/topics', {
-        signal,
-      }),
-    refetchInterval: 5000,
+      getTopics({ signal }),
+    refetchInterval: TOPIC_DISCOVERY_POLL_MS,
   });
 
   const metrics: TopicMetric[] = metricsQuery.data?.topics ?? [];
   const paused = metricsQuery.data?.paused ?? false;
   const selfLoad = metricsQuery.data?.self_load ?? null;
+  const malformedDropped = metricsQuery.data?.malformed_dropped ?? 0;
   const discovered: TopicInfo[] = asTopicList(topicsQuery.data ?? []);
 
   const rows: MonitorRow[] = useMemo(() => {
@@ -246,18 +271,14 @@ export function useMonitorRows(config?: RuntimeConfig): MonitorData {
         });
       }
     }
-    // Configured topics first, then measured, then alphabetical.
-    return [...byName.values()].sort((a, b) => {
-      if (a.configured !== b.configured) return a.configured ? -1 : 1;
-      if (a.measured !== b.measured) return a.measured ? -1 : 1;
-      return a.name.localeCompare(b.name);
-    });
+    return sortRowsForDisplay([...byName.values()]);
   }, [discovered, metrics, resolve]);
 
   return {
     rows,
     measuredCount: rows.filter((r) => r.measured).length,
     paused,
+    malformedDropped,
     alerts: alertsQuery.data ?? [],
     isDiscovering: topicsQuery.isPending,
     selfLoad,

@@ -19,7 +19,7 @@ import {
   BatchStatsCard,
   CoverageCard,
 } from './SideCards';
-import { Cameras } from './Cameras';
+import { Cameras, sameCameraHealth, type CameraHealth } from './Cameras';
 import { EpisodeStrip } from './EpisodeStrip';
 import { CollectModals } from './Modals';
 import { COL_GAP } from './compact';
@@ -37,32 +37,60 @@ function UnsavedTakeBanner({ machine }: { machine: BatchMachine }) {
     <Card
       role="alert"
       data-testid="unsaved-take-banner"
-      className="flex shrink-0 flex-col gap-2 border-2 border-amber-200 bg-amber-50/70 px-4 py-3"
+      className={cn(
+        'flex shrink-0 flex-col gap-2 border-2 border-amber-200 bg-amber-50/70 px-4 py-3',
+        // The one Collect surface that had no compact step. It sits in the
+        // PINNED half of the left column, above the ControlCard, so every
+        // pixel it takes at a short height is a pixel of headroom the primary
+        // action loses (measured: at 1067x600 the card's headroom is 150px
+        // with this banner up, against 260px without it). Same threshold and
+        // the same "trim, never hide" rule as compact.ts.
+        '[@media(max-height:860px)]:gap-1.5 [@media(max-height:860px)]:py-2',
+      )}
     >
-      <span className="text-[13px] text-amber-900">
-        Unsaved take from {formatTimeOfDay(take.startedAt ?? undefined)} —{' '}
-        {formatBytes(take.bytes)}, {formatHms(take.durationMs ?? undefined)}. Label it
+      <span className="text-[13px] text-amber-900" data-testid="unsaved-take-identity">
+        {machine.unsavedTakeCount > 1
+          ? `${machine.unsavedTakeCount} unsaved takes. Most recent: `
+          : take.interrupted
+            ? 'Interrupted take from '
+            : 'Unsaved take from '}
+        <span className="font-semibold">
+          {formatTimeOfDay(take.startedAt ?? undefined)}
+        </span>{' '}
+        — {formatBytes(take.bytes)}, {formatHms(take.durationMs ?? undefined)}. Label it
         now, or discard it.
+        {machine.unsavedTakeCount > 1 && ' “Later” hides them all until a new one appears.'}
       </span>
+      {/* WHY it ended, not just that it exists. A take the operator did not
+          stop themselves is the case where the reason is the whole question,
+          and a toast has long since gone by the time they look. */}
+      {take.interrupted && (
+        <span className="text-[12px] text-amber-800" data-testid="unsaved-take-reason">
+          It ended on its own:{' '}
+          {take.reason ?? 'the recorder stopped before the take was finished'}.
+          Whatever it managed to write is still here.
+        </span>
+      )}
       <div className="flex gap-2">
         <button
           type="button"
           onClick={machine.labelUnsavedTake}
-          className="h-9 rounded-control bg-teal-600 px-3.5 text-[12.5px] font-bold text-white hover:bg-teal-700"
+          className="h-9 [@media(max-height:860px)]:h-8 rounded-control bg-teal-600 px-3.5 text-[12.5px] font-bold text-white hover:bg-teal-700"
         >
           Label it
         </button>
         <button
           type="button"
           onClick={machine.discardUnsavedTake}
-          className="h-9 rounded-control border border-gray-200 bg-white px-3.5 text-[12.5px] font-semibold text-gray-600 hover:bg-gray-50"
+          disabled={machine.unsavedDiscard.busy}
+          className="h-9 [@media(max-height:860px)]:h-8 rounded-control border border-gray-200 bg-white px-3.5 text-[12.5px] font-semibold text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
         >
           Discard
         </button>
         <button
           type="button"
           onClick={machine.dismissUnsavedTake}
-          className="h-9 rounded-control px-2 text-[12.5px] font-semibold text-gray-500 hover:underline"
+          className="h-9 [@media(max-height:860px)]:h-8 rounded-control px-2 text-[12.5px] font-semibold text-gray-500 hover:underline"
         >
           Later
         </button>
@@ -88,8 +116,22 @@ export function CollectScreen() {
   const defaultTopics = config?.defaults.default_topics ?? [];
   const machine = useBatchMachine({ defaultTopics });
 
-  const [camerasOk, setCamerasOk] = useState(true);
-  const onHealthChange = useCallback((ok: boolean) => setCamerasOk(ok), []);
+  const [cameraHealth, setCameraHealth] = useState<CameraHealth>({
+    streamFailed: false,
+    streamsDown: 0,
+    streamFault: null,
+    streamsNoVideo: 0,
+    framesStale: false,
+    silentTopics: 0,
+    unmonitoredTopics: 0,
+    totalCameras: 0,
+  });
+  // Only re-render when a FACT changed, not merely the object carrying it. The
+  // producer already memoizes, and this keeps a future caller that forgets from
+  // driving a render loop through here.
+  const onHealthChange = useCallback((next: CameraHealth) => {
+    setCameraHealth((prev) => (sameCameraHealth(prev, next) ? prev : next));
+  }, []);
 
   if (!config) {
     return <div className="p-4 text-sm text-gray-400">Loading…</div>;
@@ -160,7 +202,7 @@ export function CollectScreen() {
               machine={machine}
               sseStatus={sseStatus}
               monitorBridge={monitorBridge}
-              camerasOk={camerasOk}
+              cameraHealth={cameraHealth}
             />
             <WarningsCard machine={machine} defaultTopics={defaultTopics} />
             <AdviceCard machine={machine} />

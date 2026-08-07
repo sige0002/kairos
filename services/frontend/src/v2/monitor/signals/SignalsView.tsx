@@ -229,16 +229,27 @@ export function SignalsView() {
             </div>
             <div className="flex flex-wrap gap-2">
               {series.map((s, i) => (
+                // A series label is `<topic leaf> · <field path>`, and both
+                // halves come from the robot: 120-char topics and 88-char field
+                // paths are ordinary on a real arm. Unbounded, one chip grows
+                // wider than the row, `flex-wrap` cannot break it, and the whole
+                // PAGE gains a horizontal scrollbar (measured: 166px of it at
+                // 1280x800/150% zoom). Capped at the row and truncated — the
+                // full `topic · field` stays on the title, so nothing is lost,
+                // and the remove button stays inside the chip where it belongs.
                 <span
                   key={s.id}
                   data-testid={`signals-chip-${s.id}`}
-                  className="inline-flex items-center gap-2 rounded-control border border-gray-200 bg-white py-1 pl-2 pr-1 text-[11.5px]"
+                  className="inline-flex max-w-full min-w-0 items-center gap-2 rounded-control border border-gray-200 bg-white py-1 pl-2 pr-1 text-[11.5px]"
                 >
                   <span
-                    className="inline-block h-[3px] w-3 rounded-sm"
+                    className="inline-block h-[3px] w-3 shrink-0 rounded-sm"
                     style={{ background: PALETTE[i % PALETTE.length] }}
                   />
-                  <span className="font-mono text-gray-700" title={`${s.topic} · ${s.field}`}>
+                  <span
+                    className="min-w-0 truncate font-mono text-gray-700"
+                    title={`${s.topic} · ${s.field}`}
+                  >
                     {seriesLabel(s)}
                   </span>
                   <button
@@ -277,7 +288,24 @@ export function SignalsView() {
             </span>
           </span>
         </div>
-        <div className="min-h-0 flex-1 px-[18px] py-3">
+        {/* uPlot's own bottom legend is KEPT here (unlike the Monitor frequency
+            charts, which scope it away): it is the hover readout, the only place
+            the value under the cursor is shown. But its series cell is one
+            unbreakable line of `<topic leaf> · <field path>`, and on a real arm
+            that is well over 100 characters — enough to push the whole PAGE into
+            horizontal scroll (measured: 207px overhanging at 1280x800/150%
+            zoom). Capped and ellipsised per cell; the chips above carry the same
+            names in full, with the untruncated pair on their title. */}
+        <style>
+          {/* The cap goes on the cell, the ellipsis on `.u-label` — uPlot puts
+              the text in that child div, and `text-overflow` only marks the cut
+              on the element whose own content overflows. On the `th` alone the
+              text was clipped with nothing to say so. */}
+          {'.signals-chart .u-legend th { max-width: 22ch; } ' +
+            '.signals-chart .u-legend .u-label { display: block; max-width: 22ch; ' +
+            'overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }'}
+        </style>
+        <div className="signals-chart min-h-0 flex-1 px-[18px] py-3">
           {series.length === 0 ? (
             <p
               data-testid="signals-empty"

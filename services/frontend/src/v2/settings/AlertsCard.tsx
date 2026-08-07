@@ -7,14 +7,27 @@
 // `metric: loss` rule is accepted but flagged inline (loss_rate is null in the
 // monitor, so it can never fire). The optional derived_rules block is shown
 // read-only and preserved on save.
+//
+// TWO EDITORS, ONE FILE: the table and the raw-YAML textarea both write the
+// same alerts.yaml, and each Save sends ONLY its own view. Left unguarded that
+// silently destroyed work (observed 2026-08-04): raw-YAML edits + the main
+// Save wrote the stale table state, showed "Saved", and kept the never-sent
+// YAML on screen. So each side tracks its own unsaved-ness — the form Save is
+// blocked while the YAML has unsaved edits (with the reason inline), Save YAML
+// states that it discards unsaved table edits, and every successful save
+// re-seeds BOTH views from the server response (never relying on the query
+// cache noticing a change — a byte-identical response keeps its object
+// identity and would skip the effect).
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiGet } from '../../api/client';
+import { getConfigOptions } from '../../api/config';
+import { queryKeys } from '../../api/queryKeys';
 import { Badge, Button, cn } from '../../components/ui';
 import { ErrorMessage } from '../../components/ErrorMessage';
 import {
-  ALERTS_CONFIG_KEY,
+  alertsConfigKey,
   KNOWN_METRICS,
   KNOWN_OPS,
   formatValidationDetails,
@@ -72,31 +85,97 @@ const CELL =
 
 export function AlertsCard() {
   const queryClient = useQueryClient();
+  // alerts.yaml is the ACTIVE robot's file, so the cache entry is keyed by robot
+  // (see alertsConfigKey). Until the active robot is known there is no rules
+  // file to show — better a moment of "Loading" than another robot's rules.
+  const optionsQuery = useQuery({
+    queryKey: queryKeys.configOptions,
+    queryFn: ({ signal }) => getConfigOptions({ signal }),
+  });
+  const activeRobot = optionsQuery.data?.active_robot;
+  const alertsKey = alertsConfigKey(activeRobot ?? '');
   const query = useQuery({
-    queryKey: ALERTS_CONFIG_KEY,
+    queryKey: alertsKey,
     queryFn: ({ signal }) => apiGet<AlertsPayload>('/config/alerts', { signal }),
+    enabled: !!activeRobot,
   });
 
   const [rules, setRules] = useState<RuleForm[]>([]);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [rawText, setRawText] = useState('');
   const [saved, setSaved] = useState(false);
+  // What each editor was last seeded from — the reference "unsaved edits" is
+  // measured against (see the header).
+  const [seededRulesJson, setSeededRulesJson] = useState('[]');
+  const [seededRaw, setSeededRaw] = useState('');
 
   const derived = query.data?.config?.derived_rules ?? null;
 
+  // The payload both buffers currently hold. Compared by identity: react-query's
+  // structural sharing keeps the same object for a deep-equal refetch, so an
+  // unchanged file is indistinguishable from no refetch at all — which is what
+  // makes identity the right test for "the file actually moved".
+  const seededDataRef = useRef<AlertsPayload | null>(null);
+
+  const seedFrom = useCallback((data: AlertsPayload) => {
+    seededDataRef.current = data;
+    const forms = toRuleForms(data.config);
+    setRules(forms);
+    setSeededRulesJson(JSON.stringify(forms));
+    setRawText(data.raw ?? '');
+    setSeededRaw(data.raw ?? '');
+  }, []);
+
+  // True while the next query-data change is our own save's response landing in
+  // the cache — onSuccess has already seeded from it, and re-running the seed
+  // here would also clear the Saved banner the moment it appeared.
+  const justSavedRef = useRef(false);
+
+  // A newer server payload withheld because the operator has unsaved edits.
+  const [pendingServer, setPendingServer] = useState<AlertsPayload | null>(null);
+
+  const formDirty = JSON.stringify(rules) !== seededRulesJson;
+  const rawDirty = rawText !== seededRaw;
+  // Read by the seeding effect, which must NOT re-run merely because dirtiness
+  // flipped (typing one character would otherwise look like a server change).
+  const dirtyRef = useRef(false);
+  dirtyRef.current = formDirty || rawDirty;
+
+  // A REFETCH is not a save. After a drop long enough to fall outside the SSE
+  // ring buffer the server sends `resync` and the client refetches every query
+  // (sse/useEventStream.ts), and RECORDING/robot switches invalidate config keys
+  // too. Re-seeding unconditionally there threw away whatever the operator had
+  // typed, silently — the justSavedRef guard below only ever covered our own
+  // save. So: adopt a newer file only into a CLEAN buffer; when the buffer is
+  // dirty, hold the payload and say so instead of overwriting their work.
   useEffect(() => {
-    if (query.data) {
-      setRules(toRuleForms(query.data.config));
-      setRawText(query.data.raw ?? '');
-      setSaved(false);
+    const data = query.data;
+    if (!data) return;
+    if (justSavedRef.current) {
+      justSavedRef.current = false;
+      return;
     }
-  }, [query.data]);
+    if (seededDataRef.current === data) return;
+    if (dirtyRef.current) {
+      setPendingServer(data);
+      return;
+    }
+    seedFrom(data);
+    setSaved(false);
+  }, [query.data, seedFrom]);
 
   const mutation = useMutation({
     mutationFn: (body: AspectPutBody) => putAlertsConfig(body),
     onSuccess: (data) => {
       setSaved(true);
-      queryClient.setQueryData(ALERTS_CONFIG_KEY, data);
+      justSavedRef.current = true;
+      // Our own write settles any withheld server change: the file is now ours.
+      setPendingServer(null);
+      queryClient.setQueryData(alertsKey, data);
+      // Re-seed BOTH views from what the server actually wrote — the effect
+      // above cannot be relied on for this (a response deep-equal to the cache
+      // keeps its identity and never fires it).
+      seedFrom(data);
     },
   });
 
@@ -128,9 +207,11 @@ export function AlertsCard() {
         </Badge>
       </div>
 
-      {query.isError ? (
+      {optionsQuery.isError ? (
+        <ErrorMessage error={optionsQuery.error} />
+      ) : query.isError ? (
         <ErrorMessage error={query.error} />
-      ) : query.isPending ? (
+      ) : query.isPending || !activeRobot ? (
         <p className="text-sm text-gray-500">Loading alert rules…</p>
       ) : (
         <>
@@ -300,6 +381,32 @@ export function AlertsCard() {
             </ul>
           )}
 
+          {pendingServer && (
+            <div
+              data-testid="alerts-server-changed"
+              className="flex flex-col gap-2 rounded-control border border-amber-300 bg-amber-50 p-2.5 text-[11.5px] text-amber-800"
+            >
+              <p>
+                <span className="font-semibold">alerts.yaml changed on the server</span> while you
+                were editing — another terminal saved it, or the active robot changed. Your unsaved
+                edits are kept and nothing here was overwritten, but saving now writes over that
+                newer file.
+              </p>
+              <button
+                type="button"
+                data-testid="alerts-load-server"
+                onClick={() => {
+                  seedFrom(pendingServer);
+                  setPendingServer(null);
+                  setSaved(false);
+                }}
+                className="self-start rounded-control border border-amber-300 bg-white px-2.5 py-1 font-semibold text-amber-800 hover:bg-amber-100"
+              >
+                Load the server copy (discards my edits)
+              </button>
+            </div>
+          )}
+
           {mutation.isError && (
             <div>
               <ErrorMessage error={mutation.error} />
@@ -317,6 +424,10 @@ export function AlertsCard() {
           {saved && !mutation.isPending && (
             <p data-testid="alerts-saved" className="text-[12.5px] font-medium text-teal-700">
               Saved — applies on the next topic_monitor restart.
+              <span className="ml-1 font-normal text-gray-500">
+                The file is rewritten in canonical form, so comments, key order and YAML
+                anchors are not kept; the editor above now shows the file as written.
+              </span>
             </p>
           )}
 
@@ -325,12 +436,23 @@ export function AlertsCard() {
               type="button"
               data-testid="alerts-save"
               onClick={saveForm}
-              disabled={mutation.isPending}
+              disabled={mutation.isPending || rawDirty}
               className="px-4 py-1.5 text-sm disabled:opacity-50"
             >
               {mutation.isPending ? 'Saving…' : 'Save'}
             </Button>
-            <span className="text-[11px] text-gray-400">The server validates on save.</span>
+            {rawDirty ? (
+              <span
+                data-testid="alerts-form-save-blocked"
+                className="text-[11px] text-amber-700"
+              >
+                The Advanced YAML below has unsaved edits — this Save would
+                silently drop them. Use “Save YAML”, or reopen Data quality to
+                discard them.
+              </span>
+            ) : (
+              <span className="text-[11px] text-gray-400">The server validates on save.</span>
+            )}
           </div>
 
           {/* Advanced: raw YAML (edits derived_rules and anything the table omits). */}
@@ -346,6 +468,14 @@ export function AlertsCard() {
                 ▸
               </span>
               Advanced — edit raw YAML
+              {rawDirty && (
+                <span
+                  data-testid="alerts-raw-dirty"
+                  className="rounded-chip bg-amber-100 px-1.5 text-[10px] font-semibold text-amber-700"
+                >
+                  unsaved
+                </span>
+              )}
               {path && <span className="font-mono text-[11px] font-normal text-gray-400">{path}</span>}
             </button>
             {advancedOpen && (
@@ -358,15 +488,26 @@ export function AlertsCard() {
                   placeholder="rules: []"
                   onChange={(e) => setRawText(e.target.value)}
                 />
-                <Button
-                  type="button"
-                  data-testid="alerts-save-raw"
-                  onClick={saveRaw}
-                  disabled={mutation.isPending}
-                  className="self-start px-4 py-1.5 text-sm disabled:opacity-50"
-                >
-                  {mutation.isPending ? 'Saving…' : 'Save YAML'}
-                </Button>
+                <div className="flex items-center gap-3">
+                  <Button
+                    type="button"
+                    data-testid="alerts-save-raw"
+                    onClick={saveRaw}
+                    disabled={mutation.isPending}
+                    className="px-4 py-1.5 text-sm disabled:opacity-50"
+                  >
+                    {mutation.isPending ? 'Saving…' : 'Save YAML'}
+                  </Button>
+                  {formDirty && (
+                    <span
+                      data-testid="alerts-raw-discard-warn"
+                      className="text-[11px] text-amber-700"
+                    >
+                      The rules table above has unsaved edits — Save YAML writes
+                      the file from this text and discards them.
+                    </span>
+                  )}
+                </div>
               </div>
             )}
           </div>

@@ -13,6 +13,10 @@ from pathlib import Path
 from dora_runner.bagflow_pipeline import FlowOutcome
 from dora_runner.fast_validation import summarize
 from kairos_common import ValidationTemplate
+from kairos_common.ids import new_capture_id
+
+# A capture_id is a UUIDv7 everywhere it is used as a key or path segment (§1).
+CAPTURE_ID = new_capture_id()
 
 TEMPLATE = ValidationTemplate(
     name="airoa_hsr", version=3, required_topics=[{"name": "/joint_states"}]
@@ -25,9 +29,9 @@ def _outcome(
     return FlowOutcome(
         report=report,
         flow="fast_validation",
-        run_id="run_1",
+        capture_id=CAPTURE_ID,
         wall_s=0.42,
-        bag_dir=Path("/data/recorded/run_1"),
+        bag_dir=Path(f"/data/objects/{CAPTURE_ID}"),
         template=template,
     )
 

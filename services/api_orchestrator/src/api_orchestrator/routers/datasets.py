@@ -1,751 +1,163 @@
-"""Dataset endpoints (``/api/v1/datasets``).
+"""Dataset endpoints (``/api/v1/datasets``) — logical sets, no directory tree.
 
-The dataset tree lives under ``data_dir`` as ``<operator>/<task>/<NNN>/`` with a
-``dataset.json`` provenance sidecar (written by dora_runner's ``dataset_export``
-pipeline). These endpoints:
+Contract §6. A dataset is rows plus ledger events; adding a capture moves
+nothing on disk. The browsable ``<operator>/<task>/<dataset>/NNN`` shape still
+exists, but it is *generated* as symlinks under ``views/`` (see
+``POST /api/v1/views/refresh``) rather than assembled by an export job.
 
-- ``GET  /api/v1/datasets`` — browse the exported datasets (scan the tree).
-- ``GET  /api/v1/datasets/{operator}/{task}/{index}`` — inspect ONE exported
-  dataset (sidecars + surviving run-keyed reports), the post-export
-  counterpart of ``GET /runs/{id}``.
-- ``DELETE /api/v1/datasets/{operator}/{task}/{index}`` — delete ONE exported
-  dataset (its directory, the now-orphaned run-keyed reports, and any
-  empty parent dirs), the post-export counterpart of ``DELETE /runs/{id}``.
-- ``POST /api/v1/datasets/export`` — export ONE completed run: run the
-  ``dataset_export`` pipeline (a MOVE) to completion, then delete the run row.
-- ``POST /api/v1/datasets/export-all`` — export EVERY completed run with files,
-  collecting per-run successes/failures (one failure never aborts the batch).
+Everything the v1 router did is gone and is listed in §10's retirement set:
+``GET|DELETE /{operator}/{task}/{index}``, ``POST /index/rebuild``, and
+``POST /export`` / ``export-all``. There is no compatibility alias — an export
+that MOVED recordings is precisely the design v2 replaces, and answering the old
+route with a new meaning would be worse than a 404.
 
-Export MOVES the recording out of ``recorded/`` and the run row is deleted only
-AFTER a confirmed successful export, so a recording is never lost: on failure
-the run stays in ``recorded/`` and in the Recordings list. The run's report
-sidecars (validation / loss / video_check artifacts) are deliberately KEPT on
-export so the dataset detail view can keep showing them.
+``POST /{dataset_id}/archive`` (§6.x) is not that export coming back. The v1
+export was a *move inside the store* that the catalog then forgot; the archive
+is the capture archive's vocabulary — copy, verify, then remove — lifted to a
+dataset, terminal by design, and recorded as ledger events that outlive the
+database. What leaves is gone from here and the record of WHERE it went is
+the point.
 """
 
 from __future__ import annotations
 
-import json
-import logging
-import re
-import shutil
-from pathlib import Path
-from typing import Any
+from fastapi import APIRouter, Depends, Request, Response, status
+from kairos_common.archive_paths import parse_archive_roots
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Request, Response
-from kairos_common import (
-    ApiError,
-    JobState,
-    archive_enabled,
-    lifecycle_ledger,
-    parse_archive_roots,
-    resolve_archive_destination,
-    topic_signature,
+from api_orchestrator.dataset_archive import DatasetArchiver
+from api_orchestrator.dataset_service import DatasetService
+from api_orchestrator.deps import get_dataset_archiver, get_dataset_service
+from api_orchestrator.models import (
+    Dataset,
+    DatasetArchiveProgress,
+    DatasetArchiveRequest,
+    DatasetCreateRequest,
+    DatasetDetail,
+    DatasetListResponse,
+    DatasetMember,
+    DatasetMemberCreateRequest,
+    DatasetUpdateRequest,
 )
-from pydantic import BaseModel, Field
-
-from api_orchestrator import datasets_index
-from api_orchestrator.deps import get_run_service
-from api_orchestrator.models import DatasetDetail, RunState, RunTopic, TopicQos
-from api_orchestrator.runs import RunService
-
-logger = logging.getLogger("kairos")
 
 router = APIRouter(prefix="/api/v1/datasets", tags=["datasets"])
 
-# How long the background bookkeeping waits for an archive job. Deliberately
-# hours, not the client's 120 s default: this is a multi-GB copy plus a full
-# read-back over a network filesystem, and giving up early would only orphan
-# the bookkeeping — the job itself would keep running.
-_ARCHIVE_TIMEOUT_S = 6 * 60 * 60
 
-# Top-level dirs under data_dir that are NOT operators (they hold staging /
-# reports), so the dataset scan must skip them.
-_RESERVED_TOP = {"recorded", "report", "datasets"}
-
-# A dataset path component (operator / task / index) must be a plain single
-# directory name: no separators, no traversal, no NUL. Mirrors dora_runner's
-# _sanitize_component output charset guard.
-_COMPONENT_RE = re.compile(r"^[^/\\\x00]+$")
-
-# A run_id read from dataset.json is joined into data/report/<pipeline>/<run_id>;
-# guard its charset (mirrors the recorder's RUN_ID_PATTERN) before any join.
-_RUN_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+@router.get("", response_model=DatasetListResponse)
+async def list_datasets(
+    service: DatasetService = Depends(get_dataset_service),
+) -> DatasetListResponse:
+    """Every dataset with its member count."""
+    return DatasetListResponse(items=service.list())
 
 
-class DatasetArchiveRequest(BaseModel):
-    """Body of ``POST /api/v1/datasets/{op}/{task}/{index}/archive``."""
-
-    # Absolute path INSIDE one of KAIROS_ARCHIVE_ROOTS; validated server-side
-    # (kairos_common.archive_paths) — never trusted as given.
-    destination: str
-    # Free text kept in the ledger. Archiving is not an accident, but "why did
-    # this leave?" is the question a ledger without it cannot answer.
-    reason: str | None = Field(default=None, max_length=500)
+@router.post("", response_model=Dataset, status_code=status.HTTP_201_CREATED)
+async def create_dataset(
+    body: DatasetCreateRequest,
+    service: DatasetService = Depends(get_dataset_service),
+) -> Dataset:
+    """Create a dataset. Nothing is written under ``objects/``."""
+    return service.create(name=body.name, operator=body.operator, task=body.task)
 
 
-class DatasetExportRequest(BaseModel):
-    """Body of ``POST /api/v1/datasets/export`` — one run to export."""
-
-    run_id: str
-
-
-def _job_failure_reason(res: dict[str, Any]) -> str | None:
-    """Best-effort human cause from a failed ``run_job_to_completion`` result.
-
-    dora_runner nests its ApiError under ``result.summary.error`` (sometimes
-    double-wrapped as ``error.error``); fall back to a plain string error or a
-    ``note``/``message`` on the summary. ``None`` when nothing usable is found.
-    """
-    result = res.get("result")
-    if not isinstance(result, dict):
-        return None
-    summary = result.get("summary")
-    if not isinstance(summary, dict):
-        return None
-    err = summary.get("error")
-    if isinstance(err, dict):
-        inner = err.get("error") if isinstance(err.get("error"), dict) else err
-        message = inner.get("message") or err.get("message")
-        code = inner.get("code") or err.get("code")
-        if message:
-            return f"{message} ({code})" if code else str(message)
-    elif isinstance(err, str) and err.strip():
-        return err
-    note = summary.get("note") or summary.get("message")
-    return note if isinstance(note, str) and note.strip() else None
-
-
-def _read_json(path: Path) -> dict[str, Any] | None:
-    """Best-effort read of a JSON sidecar (``None`` on any failure)."""
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    return data if isinstance(data, dict) else None
-
-
-def _validate_component(value: str, field: str) -> str:
-    """Ensure a dataset path segment is a plain directory name, else 400.
-
-    ``operator``/``task``/``index`` are joined under ``data_dir``; this guard
-    (plus the reserved-top check at the call site) keeps a crafted URL from
-    escaping the dataset tree.
-    """
-    if not value or value in {".", ".."} or not _COMPONENT_RE.match(value):
-        raise ApiError(
-            status_code=400,
-            code="invalid_dataset_path",
-            message=f"Invalid dataset path component: {field}",
-            details={field: value},
-        )
-    return value
-
-
-def _resolve_dataset_dir(
-    data_dir: Path, operator: str, task: str, index: str
-) -> tuple[Path, dict[str, Any]]:
-    """Validate the path and return the dataset dir + its ``dataset.json``.
-
-    Shared by the detail and delete endpoints: 400 on an unsafe component or a
-    reserved top-level dir, 404 when the directory or its ``dataset.json`` is
-    missing (a dir without the sidecar is not a dataset — same rule as the
-    list scan, so delete can never remove an arbitrary directory).
-    """
-    _validate_component(operator, "operator")
-    _validate_component(task, "task")
-    _validate_component(index, "index")
-    if operator in _RESERVED_TOP:
-        raise ApiError(
-            status_code=400,
-            code="invalid_dataset_path",
-            message=f"Not a dataset operator directory: {operator}",
-            details={"operator": operator},
-        )
-    dataset_dir = data_dir / operator / task / index
-    meta = _read_json(dataset_dir / "dataset.json")
-    if not dataset_dir.is_dir() or meta is None:
-        raise ApiError(
-            status_code=404,
-            code="dataset_not_found",
-            message=f"No exported dataset at {operator}/{task}/{index}.",
-            details={"operator": operator, "task": task, "index": index},
-        )
-    return dataset_dir, meta
-
-
-def _dataset_topics(
-    manifest: dict[str, Any] | None,
-    session: dict[str, Any] | None,
-    meta: dict[str, Any],
-) -> list[RunTopic]:
-    """Topic list for the dataset detail view.
-
-    Prefers ``manifest.json`` (name + resolved type + QoS, same source the run
-    row was synced from); falls back to the name-only lists in ``session.json``
-    / ``dataset.json`` (type ``""``), so a dataset with a lost manifest still
-    shows its topics.
-    """
-    raw = (manifest or {}).get("topics")
-    if isinstance(raw, list):
-        topics: list[RunTopic] = []
-        for entry in raw:
-            if not (isinstance(entry, dict) and entry.get("name")):
-                continue
-            qos = entry.get("qos")
-            try:
-                parsed_qos = TopicQos.model_validate(qos) if qos else None
-            except ValueError:
-                parsed_qos = None
-            topics.append(
-                RunTopic(
-                    name=str(entry["name"]),
-                    type=str(entry.get("type") or ""),
-                    qos=parsed_qos,
-                )
-            )
-        if topics:
-            return topics
-    names = (session or {}).get("topics") or meta.get("topics") or []
-    if not isinstance(names, list):
-        return []
-    return [RunTopic(name=n, type="") for n in names if isinstance(n, str) and n]
-
-
-def _opt_str(value: Any) -> str | None:
-    """Coerce a best-effort sidecar field to ``str | None`` (never 500)."""
-    return value if isinstance(value, str) else None
-
-
-def _topic_fields(dataset_dir: Path, meta: dict[str, Any]) -> dict[str, Any]:
-    """The row's topic signature: from ``dataset.json``, else from the bag.
-
-    Exports written before the signature existed have neither field in their
-    ``dataset.json``, so the scan recomputes them from the dataset dir's own
-    ``metadata.yaml`` (a few kB — the whole point of not hashing the MCAP).
-    That makes the legacy catalog self-healing: one rebuild, or one fallback
-    scan, and old episodes become comparable to new ones instead of sitting
-    permanently "unknown".
-
-    Both keys are always present in the returned dict (``None`` when the bag's
-    metadata is missing or unreadable) so the row shape never varies.
-    """
-    hash_ = meta.get("topics_hash")
-    count = meta.get("topic_count")
-    if isinstance(hash_, str) and hash_:
-        return {"topics_hash": hash_, "topic_count": count}
-    signature = topic_signature(dataset_dir)
-    if signature is None:
-        return {"topics_hash": None, "topic_count": None}
-    return {"topics_hash": signature.hash, "topic_count": signature.count}
-
-
-def _run_report(data_dir: Path, run_id: str | None, pipeline: str) -> dict | None:
-    """Best-effort read of a run-keyed report summary that survived export."""
-    if not (isinstance(run_id, str) and _RUN_ID_RE.match(run_id)):
-        return None
-    return _read_json(data_dir / "report" / pipeline / run_id / "summary.json")
-
-
-def _scan_datasets(data_dir: Path) -> list[dict[str, Any]]:
-    """Scan ``data_dir`` for ``<operator>/<task>/<NNN>/dataset.json`` entries.
-
-    Reads ONLY under ``data_dir`` (no request-supplied path is ever joined in),
-    skipping the reserved top-level dirs. Each ``dataset.json`` is read
-    best-effort; missing/unreadable ones still surface a minimal entry from the
-    path itself, so an operator never loses sight of an exported directory.
-    """
-    out: list[dict[str, Any]] = []
-    if not data_dir.is_dir():
-        return out
-    for operator_dir in data_dir.iterdir():
-        if not operator_dir.is_dir() or operator_dir.name in _RESERVED_TOP:
-            continue
-        for task_dir in operator_dir.iterdir():
-            if not task_dir.is_dir():
-                continue
-            for index_dir in task_dir.iterdir():
-                if not index_dir.is_dir():
-                    continue
-                meta = _read_json(index_dir / "dataset.json")
-                if meta is None:
-                    continue
-                row = {
-                    "operator": operator_dir.name,
-                    "task": task_dir.name,
-                    "index": index_dir.name,
-                    "dataset_dir": str(index_dir),
-                    "run_id": meta.get("run_id"),
-                    "bytes": meta.get("bytes"),
-                    "message_count": meta.get("message_count"),
-                    "exported_at": meta.get("exported_at"),
-                }
-                row.update(_topic_fields(index_dir, meta))
-                # Cheap episode-label subset for cards (mirrors the per-row
-                # dataset.json read). Absent episode.json -> keys stay null.
-                # The SAME flattening the catalog rows use, so the two serving
-                # paths stay byte-for-byte identical.
-                episode = _read_json(index_dir / "episode.json")
-                row.update(datasets_index.episode_subset(episode))
-                out.append(row)
-    out.sort(key=lambda d: (d["operator"], d["task"], d["index"]))
-    return out
-
-
-async def _export_one(
-    service: RunService, dora_client: Any, run_id: str
-) -> dict[str, Any]:
-    """Export one completed run (MOVE) then delete its row; return the summary.
-
-    Validates the run is completed and has recorded files, runs the
-    ``dataset_export`` pipeline to completion, and deletes the run row ONLY on a
-    confirmed success. Raises :class:`ApiError` on any precondition or export
-    failure (the run is left untouched in ``recorded/`` and in the list).
-    """
-    run = service.get(run_id)  # 404 if absent
-    if run.state != RunState.completed:
-        raise ApiError(
-            status_code=409,
-            code="run_not_completed",
-            message="Only a completed recording can be exported to a dataset.",
-            details={"run_id": run_id, "state": run.state.value},
-        )
-    if not (service.recorded_dir / run_id).is_dir():
-        raise ApiError(
-            status_code=409,
-            code="no_recorded_files",
-            message="The run has no recorded files to export (already exported?).",
-            details={"run_id": run_id},
-        )
-
-    res = await dora_client.run_job_to_completion(
-        {"pipeline": "dataset_export", "run_id": run_id, "params": {}}
-    )
-    if res.get("state") != JobState.succeeded.value:
-        reason = _job_failure_reason(res)
-        details: dict[str, Any] = {"run_id": run_id, "job_state": res.get("state")}
-        if reason:
-            details["reason"] = reason
-        raise ApiError(
-            status_code=502,
-            code="export_failed",
-            message=(
-                f"The dataset_export job did not succeed: {reason}"
-                if reason
-                else "The dataset_export job did not succeed."
-            ),
-            details=details,
-        )
-    result = res.get("result") or {}
-    summary = result.get("summary", {})
-    # Persist the run's episode labels next to dataset.json BEFORE deleting the
-    # run row (delete cascades the episode). No episode -> no sidecar written.
-    dataset_dir = summary.get("dataset_dir")
-    if isinstance(dataset_dir, str) and dataset_dir:
-        episode = service.write_episode_sidecar(run_id, dataset_dir)
-        # Append the derived root-catalog row (best-effort: the export already
-        # MOVED the data; a catalog write must never fail it — readers fall back
-        # to a tree scan on a stale/corrupt catalog, and it is rebuildable).
-        datasets_index.append_row(
-            service.data_dir,
-            datasets_index.index_row(dataset_dir, summary, episode, service.data_dir),
-        )
-    # Success confirmed: the recording has been MOVED out of recorded/, so
-    # delete the now-orphaned run row (its dir + siblings). The report
-    # sidecars (validation / loss / video_check mp4 cache) are KEPT: they stay
-    # keyed by run_id and back the dataset detail view after export.
-    service.delete(run_id, keep_reports=True)
-    return summary
-
-
-@router.get("")
-async def list_datasets(request: Request) -> dict[str, Any]:
-    """List exported datasets (grouped client-side).
-
-    Served from the ``data/index.jsonl`` catalog when it exists and parses;
-    otherwise a live tree scan (the same rows) — the index is a derived,
-    rebuildable optimization, never a second source of truth.
-    """
-    data_dir = Path(request.app.state.settings.data_dir)
-    rows = datasets_index.list_from_index(data_dir)
-    if rows is None:
-        rows = _scan_datasets(data_dir)
-    return {"datasets": rows}
-
-
-@router.post("/index/rebuild")
-async def rebuild_index(request: Request) -> dict[str, Any]:
-    """Regenerate ``data/index.jsonl`` purely from the on-disk sidecars.
-
-    Scans the dataset tree (``dataset.json`` + ``episode.json``) and rewrites the
-    catalog from scratch, discarding whatever it held. The recovery path when the
-    catalog drifts from the tree (the sidecars are canonical). Returns
-    ``{"count": N}``.
-    """
-    data_dir = Path(request.app.state.settings.data_dir)
-    count = datasets_index.rebuild(data_dir, _scan_datasets(data_dir))
-    return {"count": count}
-
-
-@router.get("/{operator}/{task}/{index}", response_model=DatasetDetail)
-async def dataset_detail(
-    request: Request, operator: str, task: str, index: str
+@router.get("/{dataset_id}", response_model=DatasetDetail)
+async def get_dataset(
+    dataset_id: str,
+    service: DatasetService = Depends(get_dataset_service),
 ) -> DatasetDetail:
-    """Inspect one exported dataset — the post-export ``GET /runs/{id}``.
+    """One dataset and its members, ordered by display_index."""
+    return service.get(dataset_id)
 
-    Reads the ``<operator>/<task>/<index>`` directory's sidecars
-    (``dataset.json`` required — same rule as the list scan — plus
-    ``session.json`` / ``manifest.json`` best-effort) and the run-keyed report
-    summaries that survived export (validation / loss). 404 when the directory
-    or its ``dataset.json`` is missing, 400 on an unsafe path component.
+
+@router.patch("/{dataset_id}", response_model=Dataset)
+async def update_dataset(
+    dataset_id: str,
+    body: DatasetUpdateRequest,
+    service: DatasetService = Depends(get_dataset_service),
+) -> Dataset:
+    """Edit the three labels (name / operator / task). Identity is dataset_id.
+
+    Patch semantics: omitted keeps, explicit null clears (name cannot be
+    cleared). The views/ tree follows, since the labels are its path. Refused
+    once the dataset is no longer active — an archived dataset's labels are
+    baked into the folder its run wrote.
     """
-    data_dir = Path(request.app.state.settings.data_dir)
-    dataset_dir, meta = _resolve_dataset_dir(data_dir, operator, task, index)
-    session = _read_json(dataset_dir / "session.json")
-    manifest = _read_json(dataset_dir / "manifest.json")
-    run_id = meta.get("run_id")
-    files = meta.get("files")
-    return DatasetDetail(
-        operator=operator,
-        task=task,
-        index=index,
-        path=f"{operator}/{task}/{index}",
-        dataset_dir=str(dataset_dir),
-        run_id=_opt_str(run_id),
-        state=_opt_str((session or {}).get("state")),
-        started_at=_opt_str((session or {}).get("started_at")),
-        ended_at=_opt_str((session or {}).get("ended_at")),
-        exported_at=_opt_str(meta.get("exported_at")),
-        bytes=meta.get("bytes"),
-        message_count=meta.get("message_count"),
-        files=[f for f in files if isinstance(f, str)]
-        if isinstance(files, list)
-        else [],
-        topics=_dataset_topics(manifest, session, meta),
-        manifest=manifest,
-        dataset=meta,
-        # Episode labels persisted at export (task_result / quality /
-        # review_status + batch context); null when the run had no episode.
-        episode=_read_json(dataset_dir / "episode.json"),
-        validation=_run_report(data_dir, run_id, "fast_validation"),
-        loss=_run_report(data_dir, run_id, "loss_report"),
-    )
+    return service.update(dataset_id, body)
 
 
-@router.delete("/{operator}/{task}/{index}", status_code=204)
+@router.delete("/{dataset_id}", status_code=204)
 async def delete_dataset(
-    request: Request,
-    operator: str,
-    task: str,
-    index: str,
-    reason: str | None = None,
-    service: RunService = Depends(get_run_service),
+    dataset_id: str,
+    service: DatasetService = Depends(get_dataset_service),
 ) -> Response:
-    """Delete one exported dataset — the post-export ``DELETE /runs/{id}``.
-
-    Removes the ``<operator>/<task>/<index>`` directory, then the run-keyed
-    report sidecars (``data/report/*/<run_id>``, kept at export solely to back
-    this dataset's detail view — unless a live run still owns that run_id) and
-    any now-empty ``<task>`` / ``<operator>`` parent dirs. Same path rules as
-    the detail view: 400 on an unsafe component, 404 when the directory or its
-    ``dataset.json`` is missing. Returns 204 on success.
-
-    The departure is recorded in the lifecycle ledger first (optional ``reason``
-    query param), so "where did 011 go?" stays answerable and the retired
-    ``NNN`` is never handed to a later export.
-    """
-    data_dir = Path(request.app.state.settings.data_dir)
-    dataset_dir, meta = _resolve_dataset_dir(data_dir, operator, task, index)
-    run_id = meta.get("run_id")
-    # Record the departure BEFORE destroying anything. The two orderings fail
-    # differently and only one of them fails safely: append-then-delete can
-    # leave a ledger entry for a delete that then failed (a retired number and
-    # a visible gap — recoverable, and the ledger's docstring calls a gap
-    # information), while delete-then-append can lose the record entirely and
-    # silently make NNN reusable, which is the exact bug the ledger exists to
-    # prevent. append() raises on failure, so nothing is destroyed if the
-    # record cannot be written.
-    _append_ledger(
-        data_dir,
-        lifecycle_ledger.LedgerEntry(
-            event="deleted",
-            operator=operator,
-            task=task,
-            index=index,
-            run_id=_opt_str(run_id),
-            reason=(reason or None),
-            **_ledger_provenance(dataset_dir, meta),
-        ),
-    )
-    try:
-        shutil.rmtree(dataset_dir)
-    except OSError as exc:
-        raise ApiError(
-            status_code=500,
-            code="dataset_delete_failed",
-            message=f"Could not delete the dataset directory: {exc}",
-            details={"operator": operator, "task": task, "index": index},
-        ) from exc
-    # Prune now-empty parents (task, then operator) so the tree doesn't
-    # accumulate husks; rmdir refuses a non-empty dir, which ends the walk.
-    for parent in (dataset_dir.parent, dataset_dir.parent.parent):
-        try:
-            parent.rmdir()
-        except OSError:
-            break
-    # Drop the catalog row for the removed dataset (atomic rewrite). A no-op if
-    # the catalog is absent/corrupt — a later rebuild regenerates it from disk.
-    datasets_index.remove_rows(
-        data_dir,
-        lambda r: (
-            r.get("operator") == operator
-            and r.get("task") == task
-            and r.get("index") == index
-        ),
-    )
-    # The run-keyed reports were kept at export only for this dataset's detail
-    # view; with the dataset gone they are orphans. Leave them alone if a run
-    # row still claims the run_id (e.g. a re-imported run) or it is unsafe.
-    if (
-        isinstance(run_id, str)
-        and _RUN_ID_RE.match(run_id)
-        and not _run_exists(service, run_id)
-    ):
-        report_root = data_dir / "report"
-        if report_root.is_dir():
-            for pipeline_dir in report_root.iterdir():
-                shutil.rmtree(pipeline_dir / run_id, ignore_errors=True)
+    """Delete a dataset and its memberships. No capture is touched."""
+    service.delete(dataset_id)
     return Response(status_code=204)
 
 
-def _ledger_provenance(dataset_dir: Path, meta: dict[str, Any]) -> dict[str, Any]:
-    """The identifying facts a ledger entry carries forward from the sidecar.
-
-    Once the directory is gone the ledger line is all that is left, so it keeps
-    the topic signature (which embodiment this was — see ``bag_metadata``) plus
-    size and message count. Derived through the same helper the catalog uses, so
-    a legacy export with no signature in its sidecar still gets one.
-    """
-    fields = _topic_fields(dataset_dir, meta)
-    return {
-        "topics_hash": fields.get("topics_hash"),
-        "topic_count": fields.get("topic_count"),
-        "bytes": meta.get("bytes") if isinstance(meta.get("bytes"), int) else None,
-        "message_count": (
-            meta.get("message_count")
-            if isinstance(meta.get("message_count"), int)
-            else None
-        ),
-    }
+@router.post(
+    "/{dataset_id}/members",
+    response_model=DatasetMember,
+    status_code=status.HTTP_201_CREATED,
+)
+async def add_member(
+    dataset_id: str,
+    body: DatasetMemberCreateRequest,
+    service: DatasetService = Depends(get_dataset_service),
+) -> DatasetMember:
+    """Add a capture, allocating the next never-before-issued display_index."""
+    return service.add_member(dataset_id, body.capture_id)
 
 
-def _append_ledger(data_dir: Path, entry: lifecycle_ledger.LedgerEntry) -> None:
-    """Append a departure, turning a write failure into a loud 500.
-
-    :func:`lifecycle_ledger.append` raises deliberately — a departure that
-    cannot be recorded must not proceed quietly, because the cost is a reusable
-    ``NNN`` and two recordings that later share one path.
-    """
-    try:
-        lifecycle_ledger.append(data_dir, entry)
-    except OSError as exc:
-        raise ApiError(
-            status_code=500,
-            code="ledger_write_failed",
-            message=(
-                "Could not record this dataset's departure in the lifecycle "
-                "ledger, so nothing was removed."
-            ),
-            details={
-                "operator": entry.operator,
-                "task": entry.task,
-                "index": entry.index,
-                "error": str(exc),
-            },
-        ) from exc
+@router.delete("/{dataset_id}/members/{membership_id}", status_code=204)
+async def remove_member(
+    dataset_id: str,
+    membership_id: str,
+    service: DatasetService = Depends(get_dataset_service),
+) -> Response:
+    """Remove one member. Its display_index stays retired forever (§6)."""
+    service.remove_member(dataset_id, membership_id)
+    return Response(status_code=204)
 
 
-def _archive_roots(request: Request) -> list[Path]:
-    """The deployment's configured archive roots (empty = feature off)."""
-    return parse_archive_roots(getattr(request.app.state.settings, "archive_roots", ""))
-
-
-@router.get("/archive/config")
-async def archive_config(request: Request) -> dict[str, Any]:
-    """Whether archiving is offered here, and to which roots.
-
-    The UI asks this before showing any archive control: with
-    ``KAIROS_ARCHIVE_ROOTS`` unset the answer is ``enabled: false`` and the
-    control is not rendered at all, rather than offering a button whose only
-    possible outcome is a 400.
-    """
-    roots = _archive_roots(request)
-    return {"enabled": archive_enabled(roots), "roots": [str(r) for r in roots]}
-
-
-async def _finish_archive(
-    *,
-    dora_client: Any,
-    data_dir: Path,
-    job_id: str,
-    operator: str,
-    task: str,
-    index: str,
-) -> None:
-    """Await the archive job, then drop the catalog row.
-
-    Runs AFTER the response (FastAPI background task): the copy is multi-GB over
-    a network filesystem, so the request that started it must not wait.
-
-    The lifecycle ledger is deliberately NOT written here. The job is what
-    deletes the source, so the job records the departure first (see
-    ``dataset_archive._departure_entry``) — recording from this side would
-    reopen the window where the data is gone and nothing says where it went,
-    which is the whole reason the ledger exists.
-
-    Every failure path logs rather than raises: the response is long gone, and
-    the job's own status still carries the real outcome for the UI. A failed
-    archive leaves the dataset exactly where it was, still in the catalog.
-    """
-    try:
-        outcome = await dora_client.await_job(job_id, timeout=_ARCHIVE_TIMEOUT_S)
-    except Exception as exc:  # noqa: BLE001 - background task, nothing to raise to
-        logger.error(
-            "archive job could not be awaited",
-            extra={"job_id": job_id, "error": str(exc)},
-        )
-        return
-    if outcome.get("state") != JobState.succeeded.value:
-        logger.warning(
-            "archive job did not succeed; dataset left in place",
-            extra={"job_id": job_id, "state": outcome.get("state")},
-        )
-        return
-    datasets_index.remove_rows(
-        data_dir,
-        lambda r: (
-            r.get("operator") == operator
-            and r.get("task") == task
-            and r.get("index") == index
-        ),
-    )
-    logger.info(
-        "dataset archived",
-        extra={"operator": operator, "task": task, "index": index},
-    )
-
-
-@router.post("/{operator}/{task}/{index}/archive", status_code=202)
+@router.post(
+    "/{dataset_id}/archive",
+    response_model=DatasetArchiveProgress,
+    status_code=status.HTTP_202_ACCEPTED,
+)
 async def archive_dataset(
-    request: Request,
-    background_tasks: BackgroundTasks,
-    operator: str,
-    task: str,
-    index: str,
+    dataset_id: str,
     body: DatasetArchiveRequest,
-) -> dict[str, Any]:
-    """Start archiving one dataset to an allow-listed destination (202).
-
-    Copies the dataset to ``destination``, verifies it byte-for-byte, and only
-    then removes the source; on success the dataset leaves the catalog and the
-    departure is recorded in the lifecycle ledger. Returns immediately with a
-    ``job_id`` to poll (``GET /api/v1/jobs/{job_id}/status``) — a multi-GB copy
-    over a NAS cannot be held open on a request.
-
-    400 when archiving is unconfigured or the destination is outside every
-    configured root; 404 when the dataset does not exist.
-    """
-    data_dir = Path(request.app.state.settings.data_dir)
-    dataset_dir, meta = _resolve_dataset_dir(data_dir, operator, task, index)
-    roots = _archive_roots(request)
-    # Raises 400 (not configured / not absolute / outside the roots) before the
-    # job — and therefore before a single byte is read.
-    destination = resolve_archive_destination(body.destination, roots)
-
-    dora_client = request.app.state.dora_runner_client
-    created = await dora_client.create_job(
-        {
-            "run_id": _opt_str(meta.get("run_id")) or "",
-            "pipeline": "dataset_archive",
-            "params": {
-                "dataset_dir": f"{operator}/{task}/{index}",
-                "destination": str(destination),
-                # NO archive_roots here, deliberately. The runner reads its own
-                # KAIROS_ARCHIVE_ROOTS and ignores anything a caller sends: an
-                # allow-list that travels with the request is not a second
-                # check, it is the same check twice with the caller holding the
-                # pen. Sending an inert field anyway would be bait — the next
-                # reader finds a parameter the runner "forgets" to use and
-                # helpfully wires it back up.
-                # Recorded by the job itself, together with the departure it
-                # is about to make (see dataset_archive._departure_entry).
-                "reason": body.reason or None,
-            },
-        }
-    )
-    job_id = str(created["job_id"])
-    background_tasks.add_task(
-        _finish_archive,
-        dora_client=dora_client,
-        data_dir=data_dir,
-        job_id=job_id,
-        operator=operator,
-        task=task,
-        index=index,
-    )
-    return {
-        "job_id": job_id,
-        "pipeline": "dataset_archive",
-        "destination": str(destination),
-    }
-
-
-def _run_exists(service: RunService, run_id: str) -> bool:
-    """True when a run row with this id still exists in the store."""
-    try:
-        service.get(run_id)
-    except ApiError:
-        return False
-    return True
-
-
-@router.post("/export")
-async def export_dataset(
     request: Request,
-    body: DatasetExportRequest,
-    service: RunService = Depends(get_run_service),
-) -> dict[str, Any]:
-    """Export ONE completed run into the dataset tree, then delete its row.
+    archiver: DatasetArchiver = Depends(get_dataset_archiver),
+) -> DatasetArchiveProgress:
+    """Freeze the dataset and start (or resume) copying it out (§6.x).
 
-    Returns the export summary. 409 if the run is not completed / has no files,
-    404 if unknown, 502 if the export job failed, 504 if it timed out (the run
-    stays in ``recorded/`` and in the list in every failure case).
+    202, not 200: a dataset is N captures and the copy runs in the
+    background. By the time this returns, the member set is frozen in the
+    ledger and the status is ``archiving``; poll the GET below for the rest.
+    Destinations pass the same allow-list as a capture archive.
     """
-    dora_client = request.app.state.dora_runner_client
-    return await _export_one(service, dora_client, body.run_id)
+    return await archiver.start(
+        dataset_id,
+        destination=body.destination,
+        path=body.path,
+        mode=body.mode,
+        reason=body.reason,
+        roots=parse_archive_roots(
+            getattr(request.app.state.settings, "archive_roots", "")
+        ),
+    )
 
 
-@router.post("/export-all")
-async def export_all_datasets(
-    request: Request,
-    service: RunService = Depends(get_run_service),
-) -> dict[str, Any]:
-    """Export every completed run that still has recorded files.
+@router.get("/{dataset_id}/archive", response_model=DatasetArchiveProgress)
+async def dataset_archive_progress(
+    dataset_id: str,
+    archiver: DatasetArchiver = Depends(get_dataset_archiver),
+) -> DatasetArchiveProgress:
+    """The run's progress — polled, so separate from ``GET /{dataset_id}``.
 
-    Each run is exported (MOVE) and its row deleted only on success; one
-    failure never aborts the batch. Returns
-    ``{"exported": [summaries], "failed": [{run_id, error}], "total": N}``.
+    The durable fields survive a restart; ``running``/``current_*``/``error``
+    are this process's memory and honestly reset. ``archiving`` with
+    ``running: false`` means "resumable" — the UI's Resume button.
     """
-    dora_client = request.app.state.dora_runner_client
-    targets = service.list_completed_with_files()
-    exported: list[dict[str, Any]] = []
-    failed: list[dict[str, str]] = []
-    for run in targets:
-        try:
-            summary = await _export_one(service, dora_client, run.run_id)
-            exported.append(summary)
-        except ApiError as exc:
-            failed.append({"run_id": run.run_id, "error": exc.message})
-        except Exception as exc:  # noqa: BLE001 - one bad run must not abort all.
-            failed.append({"run_id": run.run_id, "error": str(exc)})
-    return {"exported": exported, "failed": failed, "total": len(targets)}
+    return archiver.progress_for(dataset_id)

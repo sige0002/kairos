@@ -43,7 +43,7 @@ _prefer_env = $(if $(filter command line,$(origin $(1))),$($(1)),$(or $(call _en
 #   make up ROBOT=airoa_hsr        # bundled HSR sample (default)
 #   make up ROBOT=<robot>          # config/local/<robot>/ (gitignored)
 # The airoa_hsr literal is the bundled-sample default, NOT a knob: its single
-# source of truth is settings.py (Settings.robot) and compose.yaml repeats it in
+# source of truth is settings.py (Settings.robot) and compose/compose.yaml repeats it in
 # every ${ROBOT:-airoa_hsr} fallback — if the bundled default ever changes, all
 # three must move together. Select your own robot via ROBOT (.env or command
 # line), never by editing this default.
@@ -78,6 +78,13 @@ UID ?= $(shell id -u)
 GID ?= $(shell id -g)
 export UID GID
 
+# Host timezone → containers (compose maps TZ through x-ros-env). The recorder
+# mints the human-facing run_YYYYMMDD_HHMMSS from ITS clock; without TZ the
+# containers sit on UTC and every run name is hours away from the wall clock.
+# .env/command line win over the derived value (same precedence as ROBOT).
+TZ := $(call _prefer_env,TZ,$(strip $(shell timedatectl show -p Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null)))
+export TZ
+
 # Sample bag for the replay harness. Bags live UNDER data/ (the rule), so BAG is
 # a path RELATIVE to data/ — e.g. airoa-moma-mcap/000730 -> data/airoa-moma-mcap/000730
 # (an absolute /data/... path also works). Set it persistently in .env (BAG=...),
@@ -105,12 +112,27 @@ export WEBRTC_PUBLIC_URL
 # Release version — single source of truth is the root VERSION file. Exported so
 # every `docker compose` invocation below (single-host COMPOSE and the split
 # COMPOSE_ROBOT / COMPOSE_RECORDING) tags the kairos-*:${KAIROS_VERSION} images
-# instead of the :dev fallback baked into compose.yaml. Cutting a release = bump
+# instead of the :dev fallback baked into compose/compose.yaml. Cutting a release = bump
 # VERSION + update CHANGELOG + git tag (see the README "Releases" section).
 KAIROS_VERSION ?= $(if $(wildcard VERSION),$(strip $(shell cat VERSION)),dev)
 export KAIROS_VERSION
 
-COMPOSE      := docker compose
+# Build identity: the commit every image is built from ('-dirty' when the
+# worktree differs). Baked in via the shared build-args anchor and stamped
+# into capture sidecars by the recorder; sha-only (no timestamp) so the layer
+# cache is only busted by an actual new commit.
+KAIROS_GIT_SHA ?= $(strip $(shell git describe --always --dirty --abbrev=12 2>/dev/null || echo unknown))
+export KAIROS_GIT_SHA
+
+# All deploy compose files live under compose/ (single-host entry =
+# compose/compose.yaml). --project-directory pins relative paths (./config,
+# ./data, MSGS_OVERLAY_DIR…) to the repo root, not compose/.
+# Single-host archive opt-in (capture_store §6.1): the override is appended
+# whenever .env sets ARCHIVE_DIR — same auto-wiring as the recording split
+# below. (The old COMPOSE_FILE-in-.env wiring is retired: an explicit -f
+# always overrode it, which made it a silent-breakage trap.)
+ARCHIVE_OVERRIDE_LOCAL := $(if $(wildcard .env),$(shell grep -qE '^[[:space:]]*ARCHIVE_DIR=' .env 2>/dev/null && echo -f compose/archive.yaml),)
+COMPOSE      := docker compose --project-directory . -f compose/compose.yaml $(ARCHIVE_OVERRIDE_LOCAL)
 # Let the replay harness read the root .env too (so BAG / ROS_DISTRO / RMW set
 # there drive `make rosbag`), when a .env exists.
 TEST_COMPOSE := docker compose $(if $(wildcard .env),--env-file .env,) -f deploy/test/compose.yaml
@@ -282,16 +304,25 @@ images-load: ## load images from kairos-images.tar.gz (IMAGES_FILE=...) on the o
 # ---- config -----------------------------------------------------------------
 # ---- cross-host split (robot-edge / recording-host) -------------------------
 # Record image-heavy topics from a SEPARATE PC without loading the robot: the
-# DDS-reading services run ON the robot (compose.robot.yaml); orchestrator/dora/
-# frontend run on the recording PC (compose.recording.yaml) and never join DDS.
+# DDS-reading services run ON the robot (compose/robot.yaml); orchestrator/dora/
+# frontend run on the recording PC (compose/recording.yaml) and never join DDS.
 # See docs/specs/ja/deployment_topology.md.
 # Split modes read .env.split when it exists (so the single-PC .env stays
 # untouched — no clobber-to-switch), else fall back to .env. KAIROS_ENV_FILE is
-# exported so compose.yaml's per-service `env_file: ${KAIROS_ENV_FILE:-.env}`
+# exported so compose/compose.yaml's per-service `env_file: ${KAIROS_ENV_FILE:-.env}`
 # injects the SAME file into the containers; --env-file feeds ${VAR} interpolation.
 SPLIT_ENV := $(if $(wildcard .env.split),.env.split,$(if $(wildcard .env),.env,))
-COMPOSE_ROBOT     := $(if $(SPLIT_ENV),KAIROS_ENV_FILE=$(SPLIT_ENV),) docker compose $(if $(SPLIT_ENV),--env-file $(SPLIT_ENV),) -f compose.robot.yaml
-COMPOSE_RECORDING := $(if $(SPLIT_ENV),KAIROS_ENV_FILE=$(SPLIT_ENV),) docker compose $(if $(SPLIT_ENV),--env-file $(SPLIT_ENV),) -f compose.recording.yaml
+# Archive destination (opt-in, capture_store §6.1). Wired exactly like the
+# single-host ARCHIVE_OVERRIDE_LOCAL above: the override is appended whenever
+# the split env sets ARCHIVE_DIR (the host half of the pair;
+# KAIROS_ARCHIVE_ROOTS is the container half): setting one without the other
+# is the exports-vanish-with-the-container trap config.md warns about.
+# Robot-edge never mounts it — no orchestrator runs there.
+ARCHIVE_OVERRIDE  := $(if $(SPLIT_ENV),$(shell grep -qE '^[[:space:]]*ARCHIVE_DIR=' $(SPLIT_ENV) 2>/dev/null && echo -f compose/archive.yaml),)
+# Same anchoring as COMPOSE above: relative paths and the split files'
+# `extends: file: compose/compose.yaml` resolve from the repo root.
+COMPOSE_ROBOT     := $(if $(SPLIT_ENV),KAIROS_ENV_FILE=$(SPLIT_ENV),) docker compose --project-directory . $(if $(SPLIT_ENV),--env-file $(SPLIT_ENV),) -f compose/robot.yaml
+COMPOSE_RECORDING := $(if $(SPLIT_ENV),KAIROS_ENV_FILE=$(SPLIT_ENV),) docker compose --project-directory . $(if $(SPLIT_ENV),--env-file $(SPLIT_ENV),) -f compose/recording.yaml $(ARCHIVE_OVERRIDE)
 
 .PHONY: robot-up robot-down robot-build robot-rebuild robot-restart robot-logs robot-ps robot-config-reload \
         robot-images-save recording-up recording-down recording-build recording-rebuild recording-restart \
@@ -388,7 +419,7 @@ backup: ## consistent snapshot -> backups/<ts>.tar.gz: DB (.backup) + recordings
 			cp data/kairos.db "$$tmp/kairos.db"; \
 		fi; \
 	fi; \
-	excl="--exclude=data/kairos.db --exclude=data/kairos.db-wal --exclude=data/kairos.db-shm --exclude=data/report/video_check"; \
+	excl="--exclude=data/kairos.db --exclude=data/kairos.db-wal --exclude=data/kairos.db-shm --exclude=data/report/video_check --exclude=data/.trash --exclude=data/.incoming"; \
 	for d in $(BACKUP_SAMPLE_DIRS); do excl="$$excl --exclude=data/$$d"; done; \
 	tar czf "$$out" $$excl -C "$$tmp" . -C "$(CURDIR)" config $$( [ -d data ] && echo data ); \
 	rm -rf "$$tmp"; \
@@ -426,9 +457,51 @@ test-py: ## run the Python unit-test loop (all services + libs)
 		printf '### %-32s -> ' "$$d"; \
 		(cd "$$d" && uv run --extra test pytest -q 2>&1 | tail -1); \
 	done
+	@printf '### %-32s -> ' "deploy/sync"; \
+	(cd services/api_orchestrator && uv run --extra test pytest -q ../../deploy/sync/tests 2>&1 | tail -1)
 
 test-fe: ## frontend build + test + lint
 	cd services/frontend && npm run build && npm test && npm run lint
+
+# ---- UI acceptance (Playwright) ---------------------------------------------
+# The capture-store acceptance suite (contract §13). It drives a REAL browser
+# against the REAL frontend image, in front of a real orchestrator, recorder,
+# dora_runner and a replayed rosbag — so it is the one check that can fail for
+# reasons the unit suites cannot see (a service that will not boot, an nginx
+# proxy that 502s, a testid that moved).
+#
+# It runs on its own ports, its own ROS domain and its own data directory
+# (e2e/stack.env), so it does not disturb a `make up` stack you have running.
+# Every run starts from an empty data dir.
+#
+#   make test-e2e                          # the whole suite, stack up and down
+#   make test-e2e E2E_ARGS='--headed'      # watch it
+#   make test-e2e E2E_ARGS=tests/03-discard.spec.ts
+#   make test-e2e-up / test-e2e-down       # keep the stack between runs
+#
+# Images are NOT built here (same rule as `up`): a stale image is a lie an
+# acceptance gate must not tell, so run `make build` after changing services/.
+.PHONY: test-e2e test-e2e-deps test-e2e-up test-e2e-down
+test-e2e: test-e2e-deps ## UI acceptance suite (§13): real browser + real stack + replayed bag
+	@bash e2e/scripts/stack.sh up
+	@rc=0; (cd e2e && npx playwright test $(E2E_ARGS)) || rc=$$?; \
+	 bash e2e/scripts/stack.sh down; \
+	 if [ $$rc -ne 0 ]; then \
+	   echo "e2e: FAILED — report: e2e/playwright-report/index.html (npx playwright show-report)"; \
+	 fi; \
+	 exit $$rc
+
+# First run needs the network (npm + the chromium download). On an offline site
+# the browser rides in an image instead — see e2e/README.md.
+test-e2e-deps:
+	@cd e2e && [ -d node_modules ] || npm install
+	@cd e2e && npx playwright install chromium
+
+test-e2e-up: test-e2e-deps ## start the e2e stack and leave it up (iterate with `cd e2e && npx playwright test`)
+	@bash e2e/scripts/stack.sh up
+
+test-e2e-down: ## stop the e2e stack
+	@bash e2e/scripts/stack.sh down
 
 lint: ## ruff check (Python)
 	uvx ruff check libs services

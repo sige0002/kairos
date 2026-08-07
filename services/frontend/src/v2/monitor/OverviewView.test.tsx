@@ -19,7 +19,11 @@ const DISCOVERED = [
   { name: '/hsrb/odom', type: 'nav_msgs/msg/Odometry', publisher_count: 1 },
 ];
 
-function mockFetch(recordStatus: Record<string, unknown> = { state: 'created', run_id: null }) {
+// An idle recorder answers with an EMPTY live list — that array is what says
+// "nothing is live" (§10 rev.2.4); its absence would mean something else.
+const IDLE_STATUS = { state: 'created', run_id: null, live_capture_ids: [] };
+
+function mockFetch(recordStatus: Record<string, unknown> = IDLE_STATUS) {
   return vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
     if (url.includes('/record/status')) return Promise.resolve(jsonResponse(recordStatus));
@@ -78,13 +82,39 @@ test('active incidents come from the real alert buffer; empty state is honest', 
   expect(screen.getByTestId('overview-incidents')).toHaveTextContent('1 firing');
 });
 
-test('REC context when a recording is running (no fabricated episode number)', async () => {
-  mockFetch({ state: 'recording', run_id: 'run_x', started_at: '2026-07-14T10:00:00Z' });
+test('REC context shows the run name AND the capture identity it is keyed by', async () => {
+  mockFetch({
+    state: 'recording',
+    run_id: 'run_x',
+    capture_id: '0199aaaa-0000-7000-8000-00000000000a',
+    live_capture_ids: ['0199aaaa-0000-7000-8000-00000000000a'],
+    started_at: '2026-07-14T10:00:00Z',
+  });
   renderWithClient(
     <OverviewView config={CONFIG} onOpenTopics={vi.fn()} onOpenSignals={vi.fn()} />,
   );
   await waitFor(() => expect(screen.getByTestId('overview-record-state')).toHaveTextContent('REC'));
   expect(screen.getByTestId('overview-record')).toHaveTextContent('run_x');
+  expect(screen.getByTestId('overview-record-capture')).toHaveTextContent(
+    '0199aaaa-0000-7000-8000-00000000000a',
+  );
+});
+
+// §10 rev.2.4: a status response without live_capture_ids is an unreachable or
+// too-old recorder. Showing STANDBY there would be a claim we have not verified.
+test('a status response without live_capture_ids is not shown as STANDBY', async () => {
+  mockFetch({ state: 'created', run_id: null });
+  renderWithClient(
+    <OverviewView config={CONFIG} onOpenTopics={vi.fn()} onOpenSignals={vi.fn()} />,
+  );
+  await waitFor(() =>
+    expect(screen.getByTestId('overview-record-state')).toHaveTextContent(
+      'LIVE STATE UNREPORTED',
+    ),
+  );
+  expect(screen.getByTestId('overview-record')).toHaveTextContent(
+    'cannot be confirmed that nothing is recording',
+  );
 });
 
 test('the Signals jump link fires onOpenSignals', async () => {

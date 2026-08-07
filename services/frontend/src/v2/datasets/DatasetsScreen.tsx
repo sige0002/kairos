@@ -1,34 +1,68 @@
-// Datasets tab (v2 IA). Root mirrors the design mock's 270px / 1fr / 330px
-// three-column grid. 2026-07-21 IA overhaul (user report: the flat one-card-per-
-// episode list became unnavigable as exports grew): the LEFT column now folds
-// GET /api/v1/datasets into a task -> condition group tree (DatasetList), with a
-// search box, recency/A–Z sort, and task-result + operator facets; the CENTER
-// column (DatasetCenter) lists the selected group's episodes and renders the
-// reused per-episode detail (loss report / video check / JSON sidecars) below
-// once a row is picked. Datasets stays a CATALOG ONLY — Review is the single
-// export surface — so the right rail (BuildRail) points there. Mock-only
-// (Phase 2): the recipe-based LeRobot v3 build/version model has no backend yet,
-// so BuildRail's build panel stays explanatory "pending" copy (2026-07-13
-// directive — see data.ts).
+// Datasets tab. Root mirrors the design mock's 270px / 1fr / 330px three-column
+// grid: the LEFT column lists the logical datasets (§6) with a search, a sort
+// and the member facets; the CENTER column lists the selected dataset's members
+// and renders the selected member's capture below it; the RIGHT rail adds
+// finished recordings to the selected dataset.
+//
+// A dataset is a named SET OF CAPTURES: creating one, adding to one and deleting
+// one all move exactly nothing on disk, and the browsable views/ tree is the
+// server's to regenerate. So this screen never exports anything — it edits a
+// list — which is why there is no build progress, no job to watch, and no
+// refresh button.
+//
+// The two removal dialogs are the SHARED ones (captures/DeleteDialogs.tsx),
+// mounted at the root so a run in flight survives the member selection changing
+// underneath it.
 
+import { DeleteDialog, DiscardDialog } from '../captures/DeleteDialogs';
+import { BlockingFailure } from './BlockingFailure';
 import { BuildRail } from './BuildRail';
 import { DatasetCenter } from './DatasetCenter';
 import { DatasetList } from './DatasetList';
-import { Toast } from './Toast';
+import { Toast } from '../shared/Toast';
 import { useDatasetsState } from './useDatasetsState';
 
 export function DatasetsScreen() {
   const state = useDatasetsState();
-  // The single row is pinned to the free space (minmax(0,1fr)) so a long group
-  // tree can never blow the row past the viewport — the auto-row fallback let
-  // it, and the shell's overflow-hidden then clipped the tail with no way to
-  // scroll to older groups. Columns scroll internally.
+  const { deletion } = state;
+  // The single row is pinned to the free space (minmax(0,1fr)) so a long list
+  // can never blow the row past the viewport — the auto-row fallback let it, and
+  // the shell's overflow-hidden then clipped the tail with no way to scroll to
+  // older datasets. Columns scroll internally.
   return (
     <div className="grid grid-cols-1 gap-2.5 lg:h-full lg:min-h-0 lg:grid-cols-[270px_1fr_330px] lg:grid-rows-[minmax(0,1fr)]">
       <DatasetList state={state} />
       <DatasetCenter state={state} />
       <BuildRail state={state} />
-      <Toast message={state.toast} />
+
+      <DiscardDialog
+        open={deletion.kind === 'discard'}
+        captures={deletion.targets}
+        splitDeploy={state.splitDeploy}
+        busy={deletion.busy}
+        error={deletion.error}
+        done={deletion.done}
+        failures={deletion.failures}
+        onCancel={deletion.cancel}
+        onConfirm={(reason) => void deletion.confirm(reason)}
+      />
+      <DeleteDialog
+        open={deletion.kind === 'delete'}
+        captures={deletion.targets}
+        splitDeploy={state.splitDeploy}
+        busy={deletion.busy}
+        error={deletion.error}
+        done={deletion.done}
+        failures={deletion.failures}
+        onCancel={deletion.cancel}
+        onConfirm={(reason) => void deletion.confirm(reason)}
+      />
+
+      <Toast message={state.toast} testId="toast" />
+      <BlockingFailure
+        error={state.blockingFailure}
+        onDismiss={state.dismissBlockingFailure}
+      />
     </div>
   );
 }

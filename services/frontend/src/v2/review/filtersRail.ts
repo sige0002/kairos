@@ -2,7 +2,7 @@
 // its width to the evidence panes on a narrow viewport (1280 is tight with the
 // full 216px filter column) — an operator preference, so it survives a reload.
 //
-// Same module-store + useSyncExternalStore shape as splitMode.ts, plus a
+// Same module-store + useSyncExternalStore shape as captures/splitMode.ts, plus a
 // versioned localStorage mirror (like v2/plans.ts) so the choice persists.
 // localStorage is best-effort: a private-mode / SSR failure just means the
 // preference stays in-memory for the session.

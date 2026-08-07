@@ -2,74 +2,54 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+from kairos_common.capture_sidecars import capture_dir, validate_capture_id
 from mcap.reader import make_reader
 from mcap_ros2.reader import read_ros2_messages
 
-# A run_id becomes a path component under data/recorded and data/report; the
-# charset guard prevents path traversal (mirrors the recorder's RUN_ID_PATTERN).
-_RUN_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
+class CaptureBytesMissing(FileNotFoundError):
+    """The capture's directory is not there — the bytes are, or have gone.
 
-def validate_run_id(run_id: str) -> str:
-    """Return *run_id* if it is a safe single path component, else ValueError.
-
-    Job pipelines join ``run_id`` into ``data/recorded/<run_id>`` and
-    ``data/report/<pipeline>/<run_id>``; without this a caller-supplied
-    ``../..`` would escape the data root.
+    A ``FileNotFoundError`` so every existing handler still catches it, but its
+    own type so a job failure caused by an absent capture can be reported with
+    its own code instead of the generic one. An external ``rm -rf`` (§9-2) is
+    the ordinary way to arrive here, and "the recording is gone" is a different
+    fact for a caller than "the pipeline broke".
     """
-    if not _RUN_ID_RE.match(run_id):
-        raise ValueError(f"invalid run_id (must match ^[A-Za-z0-9_-]+$): {run_id!r}")
-    return run_id
 
 
-# Reserved top-level names under data/ that can never be a dataset operator dir
-# (mirrors dataset_export's reserved set; kept in sync by test_dataset_export).
-_DATASET_RESERVED_TOP = {"recorded", "report", "datasets"}
+__all__ = [
+    "CaptureBytesMissing",
+    "enumerate_topics",
+    "find_mcap",
+    "iter_decoded_ros2_messages",
+    "iter_topic_times",
+    "resolve_source_dir",
+    "source_times",
+    "topic_message_count",
+    "validate_capture_id",
+]
 
 
-def validate_dataset_dir(dataset_dir: str) -> str:
-    """Return *dataset_dir* if it is a safe ``<operator>/<task>/<NNN>`` path.
+def resolve_source_dir(data_dir: Path, capture_id: str) -> Path:
+    """Resolve ``objects/<capture_id>`` — the one place a job's MCAP lives.
 
-    Post-export pipelines (video_check / loss_report) accept a ``dataset_dir``
-    job param that is joined under ``data/``; this guard keeps it to exactly
-    three plain components (no absolute path, no ``.``/``..``, no empty parts,
-    no backslashes) and rejects the reserved top-level dirs, so a
-    caller-supplied value can never escape the dataset tree.
+    Contract §10.5: a job names its input by ``capture_id`` and nothing else.
+    There is no second source to fall back to now that datasets are rows rather
+    than directories (§6), so a capture whose bytes are not here is a missing
+    capture, not a hint to go looking somewhere else.
+
+    Raises ``ValueError`` when *capture_id* is not a UUIDv7 — the guard that
+    keeps the joined path inside ``objects/`` — and ``FileNotFoundError`` when
+    the directory is absent.
     """
-    parts = dataset_dir.split("/")
-    if len(parts) != 3 or any(
-        not p or p in {".", ".."} or "\\" in p or "\x00" in p for p in parts
-    ):
-        raise ValueError(
-            f"invalid dataset_dir (must be <operator>/<task>/<index>): {dataset_dir!r}"
-        )
-    if parts[0] in _DATASET_RESERVED_TOP:
-        raise ValueError(f"invalid dataset_dir (reserved top-level): {dataset_dir!r}")
-    return dataset_dir
-
-
-def resolve_source_dir(data_dir: Path, run_id: str, dataset_dir: str | None) -> Path:
-    """Resolve the directory holding a job's MCAP: recorded run or dataset.
-
-    Default is the canonical ``recorded/<run_id>``; with *dataset_dir* set the
-    job reads an exported ``<operator>/<task>/<NNN>`` instead (the recording was
-    MOVED there by ``dataset_export``, so the run dir no longer exists). Raises
-    ``ValueError`` for an unsafe path and ``FileNotFoundError`` when the
-    resolved directory is missing.
-    """
-    if dataset_dir is not None:
-        source = data_dir / validate_dataset_dir(dataset_dir)
-        if not source.is_dir():
-            raise FileNotFoundError(f"No dataset directory found: {source}")
-        return source
-    source = data_dir / "recorded" / run_id
+    source = capture_dir(data_dir, capture_id)
     if not source.is_dir():
-        raise FileNotFoundError(f"No recorded run found: {source}")
+        raise CaptureBytesMissing(f"No capture found: {source}")
     return source
 
 

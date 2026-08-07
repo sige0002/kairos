@@ -15,7 +15,7 @@
 ## Decisions (owner direction)
 
 1. **Execution model: migrate all pipelines to dora dataflow** (a unified model with a resident coordinator/daemon). `executor="in_process"` is a candidate for removal after migration completes, and is retained for now as migration-period compatibility.
-2. **Plugin distribution & discovery: manifest scan**. Plugins are placed under `services/dora_runner/plugins/<name>`, and at startup `kairos_plugin.yaml` is scanned to auto-register them into the Pipeline Registry. **Adding a pipeline = adding a plugin (no core changes needed)**. 〔Implementation note: implemented as **in-tree direct placement** rather than the originally proposed git submodule. Submodule-ization is a future option.〕
+2. **Plugin distribution & discovery: manifest scan**. Plugins are placed under `services/dora_runner/plugins/<name>`, and at startup `kairos_plugin.yaml` is scanned to auto-register them into the Pipeline Registry. **Adding a pipeline = adding a plugin (no core changes needed)**. (Implementation note: implemented as **in-tree direct placement** rather than the originally proposed git submodule. Submodule-ization is a future option.)
 3. Nodes that use the GPU (auto-annotation, etc.) run as dora nodes with `--gpus`, and are **profile-separated** from the CPU-only default (acceptance review (`dev_docs/arch_review.md` / local working draft) A3).
 
 ## Overview
@@ -25,12 +25,12 @@ flowchart TB
   P["POST /jobs<br/>(via api_orchestrator)"] --> W["worker"]
   W --> REG["Pipeline Registry (built by manifest scan)<br/>auto-registers the bundled pipelines + plugins/&lt;name&gt;<br/>RegisteredPipeline(executor=&quot;dora&quot;,<br/>runner=make_dora_runner(dataflow, manifest))"]
   REG -->|"dora start &lt;dataflow.yml&gt;"| EX["dora coordinator + daemon (brought up at service start)<br/>MCAP Loader → validator / AI node → Writer<br/>(Arrow zero-copy between nodes)"]
-  EX -->|"summary.json / artifacts"| OUT[("/data/report/&lt;pipeline&gt;/&lt;run_id&gt;/")]
+  EX -->|"summary.json / artifacts"| OUT[("/data/report/&lt;pipeline&gt;/&lt;capture_id&gt;/")]
 ```
 
 - **Plugin/Pipeline Registry**: extend `registry.py`'s `PipelineRegistry`. In addition to the bundled pipelines, `discover_plugins()` registers submodules.
 - **Pipeline Executor**: dora coordinator + daemon (resident inside the dora_runner container). Each job does a single `dora start` of a dataflow and waits for it to terminate.
-- **node I/O contract**: conforms to the [dora_runner.md](dora_runner.md) contract (input = run path / MCAP iterator / params, output = metrics / artifacts / report fragments).
+- **node I/O contract**: conforms to the [dora_runner.md](dora_runner.md) contract (input = the `objects/<capture_id>` path / MCAP iterator / params, output = metrics / artifacts / report fragments).
 
 ## 1. Migration to dora dataflow (execution model)
 
@@ -43,11 +43,11 @@ The current `registry.py` has a per-pipeline `runner: async (job, store, data_di
 ```python
 def make_dora_runner(dataflow_yml: Path, manifest: PluginManifest) -> Runner:
     async def _run(job: JobRecord, store: RunnerStore, data_dir: Path) -> dict:
-        report_dir = data_dir / "report" / manifest.id / job.run_id
+        report_dir = data_dir / "report" / manifest.id / job.capture_id
         report_dir.mkdir(parents=True, exist_ok=True)
         env = {
             **os.environ,
-            "KAIROS_RUN_ID": job.run_id,
+            "KAIROS_CAPTURE_ID": job.capture_id,
             "KAIROS_DATA_DIR": str(data_dir),
             "KAIROS_REPORT_DIR": str(report_dir),
             "KAIROS_PARAMS_JSON": json.dumps(job.params),
@@ -56,7 +56,7 @@ def make_dora_runner(dataflow_yml: Path, manifest: PluginManifest) -> Runner:
             "dora", "start", str(dataflow_yml), "--name", job.job_id,
             env=env, stdout=PIPE, stderr=STDOUT,
         )
-        # 進捗/ログは stdout を読みつつ store に流す（SSE へ）
+        # read stdout for progress/logs and stream them into store (to SSE)
         rc = await _pump_logs_and_wait(proc, job, store)
         if rc != 0:
             raise ApiError(status_code=500, code="pipeline_failed",
@@ -83,7 +83,7 @@ def make_dora_runner(dataflow_yml: Path, manifest: PluginManifest) -> Runner:
 nodes:
   - id: mcap_loader
     path: nodes/mcap_loader.py
-    env: { KAIROS_RUN_ID: "${KAIROS_RUN_ID}", KAIROS_DATA_DIR: "${KAIROS_DATA_DIR}" }
+    env: { KAIROS_CAPTURE_ID: "${KAIROS_CAPTURE_ID}", KAIROS_DATA_DIR: "${KAIROS_DATA_DIR}" }
     outputs: [ loaded ]
   - id: validator
     path: nodes/validator.py
@@ -103,7 +103,7 @@ import pyarrow as pa
 node = Node()
 for event in node:
     if event["type"] == "INPUT" and event["id"] == "loaded":
-        summary = validate(event["value"])           # 既存 validator() 相当
+        summary = validate(event["value"])           # equivalent to the existing validator()
         node.send_output("summary", pa.array([json.dumps(summary)]), event["metadata"])
 ```
 
@@ -115,34 +115,34 @@ for event in node:
 
 One plugin = one independent git repository:
 ```
-kairos-validator-<robot>/            # 例: github.com/<org>/kairos-validator-hsr
-├─ kairos_plugin.yaml                # マニフェスト（必須）
-├─ dataflow.yml                      # dora dataflow（executor: dora）
-├─ nodes/                            # dora node 群
+kairos-validator-<robot>/            # e.g. github.com/<org>/kairos-validator-hsr
+├─ kairos_plugin.yaml                # manifest (required)
+├─ dataflow.yml                      # dora dataflow (executor: dora)
+├─ nodes/                            # dora nodes
 │  ├─ mcap_loader.py
 │  ├─ check_joint_limits.py
 │  └─ result_writer.py
-├─ pyproject.toml                    # 依存・パッケージ宣言（任意。Docker build で pip install）
-└─ tests/                            # プラグイン側の単体試験
+├─ pyproject.toml                    # dependencies / package declaration (optional; pip install at Docker build)
+└─ tests/                            # plugin-side unit tests
 ```
 
 Incorporation on the kairos side:
 ```
 services/dora_runner/plugins/
-└─ kairos-validator-hsr/             # ← git submodule（commit ピン留め）
+└─ kairos-validator-hsr/             # ← git submodule (commit-pinned)
 ```
 
 ### 2.2 Manifest `kairos_plugin.yaml`
 
 ```yaml
-apiVersion: kairos.plugin/v1          # 互換チェック用
-id: hsr_joint_validation              # ^[a-z0-9_]+$。registry / report パスのキー
-name: HSR joint validation            # UI 表示名
-description: HSR の関節角・速度の妥当性を MCAP から検証する。
-executor: dora                        # v1 は dora 固定（in_process は移行互換のみ）
-version: 1.2.0                        # report に記録（再現性）
-required_inputs: [ run_id ]
-params_schema:                        # JSON Schema。frontend が自動フォーム化
+apiVersion: kairos.plugin/v1          # for compatibility checks
+id: hsr_joint_validation              # ^[a-z0-9_]+$. Key for registry / report paths
+name: HSR joint validation            # UI display name
+description: Validate the plausibility of HSR joint angles and velocities from MCAP.
+executor: dora                        # fixed to dora in v1 (in_process is migration-compat only)
+version: 1.2.0                        # recorded in the report (reproducibility)
+required_inputs: [ capture_id ]
+params_schema:                        # JSON Schema. frontend turns it into a form automatically
   type: object
   properties:
     joint_limit_margin:
@@ -151,11 +151,11 @@ params_schema:                        # JSON Schema。frontend が自動フォ�
       default: 0.05
       exclusiveMinimum: 0
 outputs:
-  - "report/hsr_joint_validation/<run_id>/summary.json"
+  - "report/hsr_joint_validation/<capture_id>/summary.json"
 entrypoint:
   dataflow: dataflow.yml              # executor: dora
-  # callable: kairos_validator_hsr.run:run   # executor: in_process のとき
-requires:                             # 任意。Docker build 時の検査用
+  # callable: kairos_validator_hsr.run:run   # when executor: in_process
+requires:                             # optional. for checks at Docker build time
   gpu: false
 ```
 
@@ -179,7 +179,7 @@ def discover_plugins(registry: PipelineRegistry, plugins_dir: Path) -> list[Plug
                 params_schema=manifest.params_schema, outputs=manifest.outputs,
                 executor=manifest.executor, runner=runner,
             ))
-        except Exception as exc:                # 1 プラグインの失敗で全体を落とさない
+        except Exception as exc:                # one plugin's failure must not bring everything down
             errors.append(PluginLoadError(str(manifest_path), str(exc)))
             logger.warning("plugin load failed: %s (%s)", manifest_path, exc)
     return errors
@@ -193,13 +193,14 @@ def discover_plugins(registry: PipelineRegistry, plugins_dir: Path) -> list[Plug
 
 Follows the [dora_runner.md](dora_runner.md) contract. Plugin-side nodes:
 
-- **Input (the source node obtains it from `KAIROS_*` env)**: `run_id`, `data_dir`, `params` (JSON). MCAP is read via the loader provided by `kairos_common` (`enumerate_topics` / `find_mcap` / a message iterator; topic filter and time range can be specified). **No rclpy required**.
+- **Input (the source node obtains it from `KAIROS_*` env)**: `capture_id`, `data_dir`, `params` (JSON). MCAP is read from `objects/<capture_id>/` via the loader provided by `kairos_common` (`enumerate_topics` / `find_mcap` / a message iterator; topic filter and time range can be specified). **No rclpy required**.
+- **The capture is presumed to exist**: a plugin only **reads** `objects/<capture_id>/` and must never create it (not even a temp file). If the directory is absent, fail the job — creating it resurrects the tree of a deleted capture and fools both the reaper and rebuild ([capture_store](capture_store.md) §7.1). The only place to write is under `${KAIROS_REPORT_DIR}`.
 - **Output**: the final node (result_writer) writes `${KAIROS_REPORT_DIR}/summary.json`. Its shape is `{ pipeline, version, result?: "pass"|"fail", metrics?, missing?, extra?, checked_at }`. Additional generated products are placed under the same report dir (collected as `artifacts`).
 - **Reproducibility**: always put `pipeline` / `version` (manifest.version) / the versions of the main nodes and models into the summary.
 
 > Carve out a **plugin SDK** in `kairos_common` (loader / summary schema / `send_summary()` helper) so that plugin authors don't have to write boilerplate (TBD: finalize the SDK's public API).
 
-### 2.5 The UI-agnostic contract (plugin authors don't touch the frontend) ★implemented
+### 2.5 The UI-agnostic contract (plugin authors don't touch the frontend) — implemented
 
 **A plugin author writes only the manifest (`kairos_plugin.yaml`) + `dataflow.yml` + `nodes/`** and never touches the frontend.
 Both the input form and the result view are auto-generated **backend-driven**, so adding a pipeline is "drop in a folder and `make rebuild dora`" (**no core change and no UI change**). Broken down by direction:
@@ -239,19 +240,19 @@ So a plugin author's responsibilities are limited to two things:
 ### 3.1 Add / update / pin
 
 ```bash
-# 追加
+# add
 git submodule add https://github.com/<org>/kairos-validator-hsr \
     services/dora_runner/plugins/kairos-validator-hsr
 git commit -m "feat(dora): add hsr_joint_validation plugin (pinned)"
 
-# 更新（プラグイン側の新コミットへポインタを上げる）
+# update (advance the pointer to a new commit on the plugin side)
 git -C services/dora_runner/plugins/kairos-validator-hsr fetch
 git submodule update --remote services/dora_runner/plugins/kairos-validator-hsr
 git commit -am "chore(dora): bump hsr validator to <sha>"
 
-# クローン時
+# when cloning
 git clone --recurse-submodules <kairos>
-# 既存 clone なら
+# for an existing clone
 git submodule update --init --recursive
 ```
 
@@ -262,9 +263,9 @@ git submodule update --init --recursive
 
 `services/dora_runner/Dockerfile`:
 ```dockerfile
-# build context に submodule が checkout 済みであること（CI/make で submodule update --init）
+# the submodule must already be checked out in the build context (CI/make runs submodule update --init)
 COPY services/dora_runner/plugins/ /app/plugins/
-# 各プラグインの依存と node を image に入れる（pyproject があれば）
+# put each plugin's dependencies and nodes into the image (if pyproject exists)
 RUN for d in /app/plugins/*/; do \
       [ -f "$d/pyproject.toml" ] && pip install --no-cache-dir "$d" || true; \
     done
@@ -284,7 +285,7 @@ ENV KAIROS_PLUGINS_DIR=/app/plugins
 
 1. **executor=dora scaffolding**: `dora up` at the entrypoint, and add `make_dora_runner()` and `PluginManifest`. Add daemon liveness to `/readyz`.
 2. **Migrate one bundled pipeline to a dataflow**: turn `fast_validation` into a dataflow by reusing the nodes from `validation.py`, and ensure output parity with the in_process version via tests (golden summary comparison).
-3. **Migrate the remaining bundled pipelines**: `loss_report` / `video_check` / `dataset_export` / `signal_report`. Since `dataset_export` is a file move, it is a single-node dataflow.
+3. **Migrate the remaining bundled pipelines**: `loss_report` / `video_check` / `signal_report` (`dataset_export` was retired in v2 — a dataset became a database row with no physical move).
 4. Enable **discover_plugins() + manifest scan**, and confirm it works even with an empty `plugins/`.
 5. **Turn the sample plugin into a submodule** and pass E2E (discover → `/jobs` → summary.json).
 6. Decide whether to fill the **placeholders (full_validation/dataset_convert/dataset_validation)** with plugins or bundled dataflows, and implement (following the direction of acceptance review (`dev_docs/arch_review.md` / local working draft) M4, unimplemented slots are hidden by default).

@@ -12,6 +12,8 @@
 // Kept DOM-free so the filtering/counting is unit-testable without React.
 
 import type { AlertEvent, MetricsSnapshot, RecordArming } from '../../api/types';
+import type { StreamFailure } from '../../features/stream/useWebRtcStream';
+import type { MonitorRow } from '../../features/monitor/useMonitorRows';
 import { matchesTopic } from '../../features/record/topics';
 import { toAlertRows, type AlertRow } from '../monitor/alerts';
 
@@ -91,6 +93,9 @@ export function armingWarning(arming: RecordArming | null): ArmingWarning | null
 export interface TopicRates {
   ok: number;
   judged: number;
+  /** Readings the ingest could not identify, excluded from BOTH sides above
+   *  (E-23). Non-zero means this ratio describes fewer topics than arrived. */
+  withheld: number;
 }
 
 /**
@@ -102,10 +107,265 @@ export interface TopicRates {
  */
 export function topicRates(metrics: MetricsSnapshot | undefined): TopicRates | null {
   const topics = metrics?.topics ?? [];
+  // E-23: the SSE ingest drops readings whose shape it cannot identify, and
+  // BOTH sides of this ratio come from the array it filtered — so a dropped
+  // row leaves the numerator and the denominator together and "12 / 12 at
+  // expected" is reported for a robot that published 13. The withheld count
+  // travels with the ratio so the card can refuse to call that complete. This
+  // is the screen an operator watches WHILE RECORDING; it is the last place a
+  // missing reading should be invisible.
+  const withheld = metrics?.malformed_dropped ?? 0;
   const judged = topics.filter((t) => t.status && t.status !== 'unknown');
-  if (judged.length === 0) return null;
+  if (judged.length === 0 && withheld === 0) return null;
   return {
     ok: judged.filter((t) => t.status === 'ok').length,
     judged: judged.length,
+    withheld,
+  };
+}
+
+/**
+ * "Nothing is publishing" and "the WRONG THINGS are publishing" render
+ * identically today — same 0/N counters, same "not publishing" wording — even
+ * when a hundred foreign topics are streaming at full rate. The only evidence
+ * anywhere was an unlabelled "N measured · M discovered" on Monitor Overview,
+ * so a robot-config mismatch was effectively unreachable from Collect and read
+ * as a dead robot.
+ *
+ * The distinguishing fact is cheap: the configured topics are silent while the
+ * graph is busy. That is not proof of a mismatch — a robot can legitimately
+ * publish other things — so this returns a possibility to check, never a
+ * verdict, and stays silent for the genuinely quiet graph where the existing
+ * wording is already right.
+ */
+export interface ConfigMismatchHint {
+  configuredSilent: number;
+  discovered: number;
+}
+
+/** How many times more topics than configured must be on the graph before the
+ *  mismatch is worth raising. A robot publishing a few extras is ordinary; one
+ *  publishing an order of magnitude more than we asked for is a question. */
+const MISMATCH_RATIO = 3;
+
+export function configMismatchHint(
+  configuredSilent: number,
+  discovered: number,
+): ConfigMismatchHint | null {
+  // Nothing silent -> nothing to explain. Nothing discovered -> the graph really
+  // is quiet, which the existing "not publishing" wording already describes.
+  if (configuredSilent === 0 || discovered === 0) return null;
+  if (discovered < configuredSilent * MISMATCH_RATIO) return null;
+  return { configuredSilent, discovered };
+}
+
+// ---- per-topic liveness ----------------------------------------------------
+
+/**
+ * Whether a topic is publishing, silent, outside what anyone measures, or
+ * beyond what we can tell at all.
+ *
+ * `unmonitored` and `unknown` are both "we cannot say", kept apart because they
+ * have different fixes: `unmonitored` is a topic nobody was asked to watch (add
+ * it to the monitored set and the answer appears), `unknown` is the monitor
+ * itself not answering (nothing about any topic is established).
+ */
+export type TopicLiveness = 'live' | 'silent' | 'unmonitored' | 'unknown';
+
+/**
+ * Whether a camera tile's SOURCE topic is still publishing.
+ *
+ * Frame deltas cannot answer this. qa-ui hooked RTCPeerConnection and found the
+ * streamer keeps delivering a real 15fps after the source dies — it re-encodes
+ * the frozen last frame — so `framesStaleMs` correctly never fires and the tile
+ * happily reports a live rate for a picture that stopped changing. The monitor
+ * already knows the topic went silent (it shows SILENT, and the add-camera
+ * picker drops to "No image topics found"), so the honest signal is there; it
+ * just was not being read.
+ *
+ * Neither "we cannot say" answer is ever rendered as one of the others: with no
+ * measurement we have not established anything.
+ */
+export function topicLiveness(rows: MonitorRow[], topic: string): TopicLiveness {
+  if (rows.length === 0) return 'unknown';
+  const row = rows.find((r) => r.name === topic);
+  // Discovery no longer lists it: its publisher is gone. This is the case the
+  // add-camera picker already surfaces as "No image topics found".
+  if (!row) return 'silent';
+  if (row.status === 'inactive') return 'silent';
+  // Measured and not flagged inactive: the monitor is seeing traffic on it.
+  // Measurement outranks the publisher count below — the count is a momentary
+  // discovery sample, and a restart flap must not override observed frames;
+  // real silence flips `status` to inactive within the monitor's own window.
+  if (row.measured) return 'live';
+  // Unmeasured, but discovery itself counted the publishers and found none:
+  // the topic is on the graph only because something subscribes to it (our own
+  // preview subscription is enough). No publisher means no frames, regardless
+  // of monitoring coverage — a definite silent, not a coverage gap, and it
+  // holds even when the monitor is blind (the count comes from the /topics
+  // poll, not the metrics snapshot).
+  if (row.publisher_count === 0) return 'silent';
+  // On the graph, but nobody is measuring it — which is NOT the same as
+  // publishing, and used to be read that way. A topic stays in discovery for as
+  // long as anything is attached to it, and the streamer's own preview
+  // subscription is enough to keep it there after the publisher dies. So graph
+  // presence was being turned into a confident frame rate for a picture that
+  // had stopped changing — the same lie the silent overlay was built to stop,
+  // reachable by design for any camera outside the monitored set (on the HSR
+  // profile that is everything the add-camera picker offers).
+  //
+  // One measured row anywhere proves the monitor is answering, which is what
+  // makes this a gap in COVERAGE rather than a blind monitor.
+  return rows.some((r) => r.measured) ? 'unmonitored' : 'unknown';
+}
+
+/** What the System card's Cameras row is allowed to say, in one place. */
+export interface CameraSummaryInput {
+  totalCameras: number;
+  /** Panes whose own WebRTC stream is not connected. Every pane negotiates
+   *  separately, so this is a count across ALL of them, not the main one. */
+  streamsDown: number;
+  /** The cause they agree on, 'mixed' when they do not, null when unknown.
+   *  A PRIMITIVE on purpose: this rides inside CameraHealth, which is compared
+   *  field-by-field with `===` (sameCameraHealth) to decide whether the parent
+   *  has news. The health object is memoized over primitive deps, so an array
+   *  here would not loop — it would be stable until the memo recomputes. What
+   *  it WOULD do is compare unequal on every recomputation even when its
+   *  contents are identical, pushing state and re-rendering for a report that
+   *  carries no news, which is the one thing that comparison exists to stop. */
+  streamFault: StreamFailure | 'mixed' | null;
+  /**
+   * Panes that have been negotiating past `NO_VIDEO_AFTER_MS` without ever
+   * carrying a frame.
+   *
+   * A SEPARATE PREDICATE from `streamsDown`, and that separation is the point.
+   * `streamsDown` counts panes that REPORTED a failure, so the row's green OK
+   * was derived from the absence of a failure report rather than the presence
+   * of video. Measured against a real stack (E-37, Batch D): with the media
+   * path broken but signaling healthy, the peer connection never reaches
+   * `failed` — ICE simply never completes — so nothing was ever reported, and
+   * the row read "2 cameras OK" for 150 seconds while both <video> elements sat
+   * at 0x0 with readyState 0.
+   *
+   * This counts the evidence directly: no video, for longer than connecting
+   * takes.
+   */
+  streamsNoVideo: number;
+  silentTopics: number;
+  unmonitoredTopics: number;
+  framesStale: boolean;
+}
+
+export interface CameraSummary {
+  value: string;
+  chip: string;
+  tone: 'green' | 'amber' | 'gray';
+  title?: string;
+}
+
+/** One cause in the operator's terms, or null when they disagree.
+ *
+ *  Naming a single reason for a mixed set would be a guess dressed as a
+ *  diagnosis, and the three causes send the operator to three different places:
+ *  the streamer service, the network, or this browser. */
+function streamFaultReason(fault: StreamFailure | 'mixed' | null): string | null {
+  if (fault === null) return null;
+  if (fault === 'mixed') return 'more than one reason';
+  if (fault === 'signaling') return 'the streamer did not answer';
+  if (fault === 'peer') return 'the network connection dropped';
+  return 'this browser has no WebRTC';
+}
+
+/**
+ * The Cameras row of the System card (E-37).
+ *
+ * The rule this enforces: the row may not read as "everything is fine" while
+ * any pane's stream is down. It used to, because only the MAIN pane's phase
+ * reached this card — four black tiles beside one working stream summarised as
+ * "5 cameras OK" in green, and a total blackout said "main stream failed",
+ * which describes one pane and one clause for a console with no pictures at
+ * all.
+ *
+ * Faults are ranked by what the operator can act on first: a silent source
+ * topic outranks a stream fault (there is no picture to rescue at the
+ * transport layer if nothing is publishing), and a stream fault outranks a
+ * stale-frame report from the main tile.
+ */
+export function cameraSummary(input: CameraSummaryInput): CameraSummary {
+  const {
+    totalCameras,
+    streamsDown,
+    streamsNoVideo,
+    silentTopics,
+    unmonitoredTopics,
+    framesStale,
+  } = input;
+  if (totalCameras === 0) return { value: 'none open', chip: '—', tone: 'gray' };
+  const gap = unmonitoredTopics > 0 ? ` · ${unmonitoredTopics} not monitored` : '';
+
+  if (silentTopics > 0) {
+    return {
+      value: `${silentTopics} of ${totalCameras} cameras: topic silent${gap}`,
+      chip: 'CHECK',
+      tone: 'amber',
+    };
+  }
+  if (streamsDown > 0) {
+    const reason = streamFaultReason(input.streamFault);
+    return {
+      value:
+        `${streamsDown} of ${totalCameras} cameras: no video` +
+        (reason ? ` — ${reason}` : '') +
+        gap,
+      title:
+        'Each camera negotiates its own stream, so this counts every pane, not ' +
+        'just the main one. The reason comes from where the connection failed: ' +
+        'the streamer not answering is a service to restart, a dropped ' +
+        'connection is the network between here and it.',
+      chip: 'CHECK',
+      tone: 'amber',
+    };
+  }
+  // After the reported failures, because a pane that named its cause is more
+  // use than one that has not finished trying. Says only what is known: no
+  // frames have arrived and it is still trying. Deliberately NO typed reason —
+  // signaling answered, so this is not `signaling`; the peer connection has not
+  // failed, so it is not `peer`; naming one would be a guess in the shape of a
+  // diagnosis, which is the rule the mixed-cause case already follows.
+  if (streamsNoVideo > 0) {
+    return {
+      value: `${streamsNoVideo} of ${totalCameras} cameras: no video — still connecting${gap}`,
+      title:
+        'These panes have been negotiating longer than connecting normally ' +
+        'takes and have never carried a frame. Why is not established yet: ' +
+        'the streamer answered, and the connection has not reported a failure ' +
+        '— it simply has not delivered video.',
+      chip: 'CHECK',
+      tone: 'amber',
+    };
+  }
+  if (framesStale) {
+    return {
+      value: `main stream: no frames${gap}`,
+      chip: 'CHECK',
+      tone: 'amber',
+    };
+  }
+  if (unmonitoredTopics > 0) {
+    const known = totalCameras - unmonitoredTopics;
+    return {
+      value: `${known} of ${totalCameras} cameras OK${gap}`,
+      title:
+        'These panes are outside the monitored set, so nothing measures ' +
+        'whether their source topics are still publishing. The preview keeps ' +
+        'showing frames either way.',
+      chip: '—',
+      tone: 'gray',
+    };
+  }
+  return {
+    value: `${totalCameras} camera${totalCameras === 1 ? '' : 's'} OK`,
+    chip: 'OK',
+    tone: 'green',
   };
 }

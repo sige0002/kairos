@@ -1,10 +1,16 @@
-// Episodes column: header (count, adopt-all, search, transfer-all) + the
-// scrollable row list. Real runs in, decorated with local decisions/overrides
-// (useReviewState); Quality/Task result render the *effective* (post-override)
-// value, matching the mock's `effQuality`/`effTask`.
+// Episodes column: header (counts, bulk controls, search, transfer-all) + the
+// scrollable row list. Captures in, decorated with the operator's in-flight
+// choice (useReviewState); Quality/Task result render the *effective* value,
+// which is the optimistic one until its save lands and the stored one after.
+//
+// The removal controls are two separate buttons, never one with a mode: §12
+// requires Discard and Delete to be distinguishable before the click, not only
+// inside the dialog.
 
 import { Badge, cn, type Tone } from '../../components/ui';
+import { AvailabilityChip } from '../captures/AvailabilityChip';
 import { LaneChip, QualityChip, TaskResultChip } from '../episodeChips';
+import { episodeLabel } from './types';
 import { formatHms, formatTimeOfDay } from './format';
 import type { DecoratedEpisode } from './types';
 import type { ReviewState } from './useReviewState';
@@ -35,10 +41,10 @@ function ArchiveIcon({ size = 14 }: { size?: number }) {
   );
 }
 
-// Quality renders the *effective* (post-override) value via the shared chip; an
-// archived (Excluded) row shows EXCLUDED in the quality column too.
+// Quality renders the *effective* value via the shared chip; an excluded row
+// shows EXCLUDED in the quality column too.
 function QualityCell({ row }: { row: DecoratedEpisode }) {
-  if (row.isArchived)
+  if (row.isExcluded)
     return (
       <Badge tone="red" className="w-fit">
         EXCLUDED
@@ -49,7 +55,7 @@ function QualityCell({ row }: { row: DecoratedEpisode }) {
 
 function transferBadge(row: DecoratedEpisode): { tone: Tone; label: string } {
   switch (row.transferSlot.phase) {
-    case 'transferred':
+    case 'here':
       return { tone: 'green', label: 'transferred' };
     case 'transferring':
       // No % — rsync progress isn't observable through the pull channel.
@@ -69,9 +75,9 @@ function transferBadge(row: DecoratedEpisode): { tone: Tone; label: string } {
 // (Tailwind's arbitrary-value classes must appear as complete literal strings
 // in the source for its scanner to pick them up — hence two full strings
 // rather than building one via interpolation.)
-const GRID_COLS = 'grid-cols-[56px_48px_108px_96px_72px_80px_minmax(0,1fr)_28px]';
+const GRID_COLS = 'grid-cols-[56px_48px_108px_96px_72px_80px_96px_minmax(0,1fr)_28px]';
 const GRID_COLS_SPLIT =
-  'grid-cols-[56px_48px_108px_96px_72px_80px_84px_minmax(0,1fr)_28px]';
+  'grid-cols-[56px_48px_108px_96px_72px_80px_96px_84px_minmax(0,1fr)_28px]';
 
 function Row({
   row,
@@ -85,23 +91,24 @@ function Row({
   const transfer = transferBadge(row);
   return (
     <div
-      data-testid={`review-row-${row.ep}`}
-      onClick={() => rv.select(row.runId)}
-      title={row.runId}
+      data-testid={`review-row-${row.captureId}`}
+      data-capture-id={row.captureId}
+      onClick={() => rv.select(row.captureId)}
+      title={row.runId ?? row.captureId}
       className={cn(
         'grid cursor-pointer items-center gap-2 border-t border-gray-50 px-[18px] py-2 text-sm transition-colors first:border-t-0 hover:bg-gray-50',
         rv.splitMode ? GRID_COLS_SPLIT : GRID_COLS,
         isSelected && 'border-l-[3px] border-l-teal-600 bg-teal-50 pl-[15px]',
-        row.isArchived && 'bg-red-50 opacity-50',
+        row.isExcluded && 'bg-red-50 opacity-50',
       )}
     >
       <span className="font-mono text-[13px] font-semibold text-gray-900">
-        #{row.ep}
+        {episodeLabel(row.ep)}
       </span>
       {row.batchId ? (
         <button
           type="button"
-          data-testid={`review-batch-chip-${row.ep}`}
+          data-testid={`review-batch-chip-${row.captureId}`}
           onClick={(e) => {
             e.stopPropagation();
             rv.toggleBatchFilter(row.batchId);
@@ -131,29 +138,33 @@ function Row({
       <span className="font-mono text-xs text-gray-400">
         {formatTimeOfDay(row.startedAt)}
       </span>
+      <AvailabilityChip
+        capture={row.capture}
+        testId={`review-availability-${row.captureId}`}
+      />
       {rv.splitMode && (
         <Badge tone={transfer.tone} className="w-fit whitespace-nowrap">
           {transfer.label}
         </Badge>
       )}
       <span className="justify-self-end">
-        <LaneChip lane={row.reviewLane} testId={`review-status-${row.ep}`} />
+        <LaneChip lane={row.reviewLane} testId={`review-status-${row.captureId}`} />
       </span>
       <button
         type="button"
-        data-testid={`review-archive-${row.ep}`}
+        data-testid={`review-exclude-${row.captureId}`}
         onClick={(e) => {
           e.stopPropagation();
-          rv.requestArchive(row.runId);
+          rv.requestExclude(row.captureId);
         }}
         title={
-          row.isArchived
+          row.isExcluded
             ? 'Return to review — the exclusion is a label, not a deletion'
             : 'Exclude from training use. The recording is kept and this can be undone.'
         }
         className="flex h-[26px] w-[26px] items-center justify-center rounded-[7px] text-gray-300 transition-colors hover:bg-amber-50 hover:text-amber-700"
       >
-        {row.isArchived ? (
+        {row.isExcluded ? (
           <span className="text-sm text-teal-700">↺</span>
         ) : (
           <ArchiveIcon />
@@ -200,43 +211,57 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
           </>
         )}
         <div className="flex-1" />
-        {rv.hasArchived && (
+        {rv.hasExcluded && (
           <button
             type="button"
-            onClick={rv.toggleArchived}
+            onClick={rv.toggleExcluded}
             className="rounded-control border border-gray-200 bg-white px-3 py-1.5 text-[12.5px] font-semibold text-gray-500 transition-colors hover:bg-gray-50"
           >
-            {rv.showArchived ? 'Hide' : 'Show'} excluded ({rv.nArchived})
+            {rv.showExcluded ? 'Hide' : 'Show'} excluded ({rv.nExcluded})
           </button>
         )}
-        {rv.hasArchived && (
-          <button
-            type="button"
-            data-testid="review-bulk-delete"
-            onClick={rv.requestBulkDelete}
-            title={
-              'Destroys the recordings on disk — irreversible. Excluding only ' +
-              'labels them; this removes the data itself.'
-            }
-            className="rounded-control border border-red-300 bg-white px-3 py-1.5 text-[12.5px] font-bold text-red-700 transition-colors hover:bg-red-50"
-          >
-            Delete excluded from disk ({rv.nArchived})…
-          </button>
+        {rv.hasExcluded && (
+          <>
+            <button
+              type="button"
+              data-testid="review-discard-excluded"
+              onClick={() => rv.requestDiscard(rv.excludedRows.map((r) => r.captureId))}
+              title={
+                'Discard the excluded recordings: they were never uploaded and ' +
+                'are not worth keeping. Irreversible, and a reason is required.'
+              }
+              className="rounded-control border border-red-300 bg-white px-3 py-1.5 text-[12.5px] font-bold text-red-700 transition-colors hover:bg-red-50"
+            >
+              Discard excluded ({rv.nExcluded})…
+            </button>
+            <button
+              type="button"
+              data-testid="review-delete-excluded"
+              onClick={() => rv.requestDelete(rv.excludedRows.map((r) => r.captureId))}
+              title={
+                'Delete the excluded recordings from this machine. The catalog ' +
+                'keeps a record of each one.'
+              }
+              className="rounded-control border border-gray-300 bg-white px-3 py-1.5 text-[12.5px] font-semibold text-gray-700 transition-colors hover:bg-gray-50"
+            >
+              Delete excluded ({rv.nExcluded})…
+            </button>
+          </>
         )}
         {rv.splitMode && (
           <button
             type="button"
             data-testid="review-transfer-all"
-            onClick={rv.transferAllUntransferred}
-            disabled={rv.nUntransferred === 0}
+            onClick={rv.transferAllAwaiting}
+            disabled={rv.nAwaiting === 0}
             title={
-              rv.nUntransferred === 0
-                ? 'Every recording is already transferred'
-                : 'Transfer every recording still only on the robot'
+              rv.nAwaiting === 0
+                ? 'Every recording has reached this machine'
+                : 'Pull every recording whose copy has not arrived yet'
             }
             className="rounded-control border border-gray-200 bg-white px-3 py-1.5 text-[12.5px] font-semibold text-gray-500 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:border-gray-100 disabled:bg-gray-50 disabled:text-gray-300 disabled:hover:bg-gray-50"
           >
-            Transfer untransferred ({rv.nUntransferred})
+            Transfer pending ({rv.nAwaiting})
           </button>
         )}
         {rv.batchFilter && (
@@ -277,35 +302,25 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
             >
               ✕
             </button>
+            {rv.returnBatchFailures.length > 0 && (
+              // The return has no dialog to hold its result, and its toast is
+              // gone in seconds — while the episodes that failed stay EXCLUDED,
+              // which hides them from the default table. Without this the
+              // operator's only evidence that the batch did not fully return
+              // has already disappeared by the time they look.
+              <span
+                role="alert"
+                data-testid="review-return-batch-failures"
+                title={rv.returnBatchFailures
+                  .map((f) => `${f.captureId}: ${f.error}`)
+                  .join('\n')}
+                className="rounded-chip bg-red-50 px-2 py-0.5 text-[12px] font-semibold text-red-700"
+              >
+                {rv.returnBatchFailures.length} still excluded — return failed
+              </span>
+            )}
           </>
         )}
-        <label
-          data-testid="review-include-failed"
-          title="Task-failed recordings are still labeled, useful data"
-          className="flex items-center gap-1.5 text-[11.5px] font-medium text-gray-500"
-        >
-          <input
-            type="checkbox"
-            checked={rv.includeFailed}
-            onChange={(e) => rv.setIncludeFailed(e.target.checked)}
-            className="h-3.5 w-3.5 accent-teal-600"
-          />
-          Include task-failed (labeled)
-        </label>
-        <button
-          type="button"
-          data-testid="review-export-ready"
-          onClick={rv.requestExportReady}
-          disabled={rv.readyExportable.length === 0}
-          title={
-            rv.readyExportable.length === 0
-              ? 'No READY recordings to export yet'
-              : 'Move every READY recording into the Datasets tree'
-          }
-          className="rounded-control bg-teal-600 px-3 py-1.5 text-[12.5px] font-semibold text-white transition-colors hover:bg-teal-700 disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-gray-400 disabled:hover:bg-gray-200"
-        >
-          Export ready ({rv.readyExportable.length})…
-        </button>
         <input
           type="text"
           value={rv.search}
@@ -315,61 +330,91 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
           className="w-[150px] rounded-control border border-gray-200 px-2.5 py-1.5 text-[12.5px] text-gray-700 placeholder:text-gray-400"
         />
       </div>
-      {/* Exception-review: good takes zero clicks; you only check the exceptions. */}
+      {/* Exception-review: a good take costs zero clicks; you only look at the
+          exceptions. */}
       <p
         data-testid="review-adopt-explainer"
         className="border-b border-gray-100 px-[18px] py-1.5 text-[11px] text-gray-400"
       >
-        <span className="font-semibold text-teal-700">READY</span> episodes export as-is
-        — you only resolve the{' '}
+        <span className="font-semibold text-teal-700">READY</span> episodes need no
+        review — you only resolve the{' '}
         <span className="font-semibold text-amber-700">NEEDS CHECK</span> exceptions.
-        Export moves the recording into Datasets.
+        Datasets take adopted episodes only: a take saved as a good success arrives
+        adopted, and one still pending offers Adopt in its detail.
       </p>
-      <div
-        className={cn(
-          'grid gap-2 border-b border-gray-100 px-[18px] py-2 text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400',
-          rv.splitMode ? GRID_COLS_SPLIT : GRID_COLS,
-        )}
-      >
-        <span>Episode</span>
-        <span>Batch</span>
-        <span>Quality</span>
-        <span>Task result</span>
-        <span>Duration</span>
-        <span>Time</span>
-        {rv.splitMode && <span>Transfer</span>}
-        <span className="justify-self-end">Status</span>
-        <span />
-      </div>
-      <div className="flex-1 overflow-auto">
-        {rv.isLoading ? (
-          <p className="px-[18px] py-3 text-sm text-gray-500">Loading episodes…</p>
-        ) : rv.isError ? (
-          <p className="px-[18px] py-3 text-sm text-red-600" role="alert">
-            Couldn&apos;t load recordings{rv.errorMessage ? `: ${rv.errorMessage}` : ''}
-            .
-          </p>
-        ) : rv.rows.length === 0 ? (
-          <p className="px-[18px] py-3 text-sm text-gray-500">
-            No episodes to review yet.
-          </p>
-        ) : (
-          rv.rows.map((row) => (
-            <Row
-              key={row.runId}
-              row={row}
-              isSelected={row.runId === rv.selectedRunId}
-              rv={rv}
-            />
-          ))
-        )}
+      {/* E-25: header and rows share ONE horizontal scroll region.
+          The column track sums to ~666px, but the screen's grid pins this card
+          at its declared `minmax(580px, …)` minimum on a 1280-wide display — so
+          the card's `overflow-hidden` was cutting the last columns off the
+          HEADER with no mark, while the rows below scrolled independently. Both
+          halves of that are wrong: the operator loses a column heading with
+          nothing saying so, and scrolling the rows slides them out from under
+          the headings that name them.
+          Scrolling the two together keeps every column reachable and always
+          labelled. Squeezing the tracks to fit instead would only move the
+          silent cut inside the cells. */}
+      <div className="flex min-h-0 flex-1 flex-col overflow-x-auto">
+        <div
+          className={cn(
+            'grid shrink-0 gap-2 border-b border-gray-100 px-[18px] py-2 text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400',
+            rv.splitMode ? GRID_COLS_SPLIT : GRID_COLS,
+          )}
+        >
+          <span>Episode</span>
+          <span>Batch</span>
+          <span>Quality</span>
+          <span>Task result</span>
+          <span>Duration</span>
+          <span>Time</span>
+          <span>Data</span>
+          {rv.splitMode && <span>Transfer</span>}
+          <span className="justify-self-end">Status</span>
+          <span />
+        </div>
+        <div className="flex-1 overflow-y-auto">
+          {rv.isLoading ? (
+            <p className="px-[18px] py-3 text-sm text-gray-500">Loading episodes…</p>
+          ) : rv.isError ? (
+            <p className="px-[18px] py-3 text-sm text-red-600" role="alert">
+              Couldn&apos;t load recordings
+              {rv.errorMessage ? `: ${rv.errorMessage}` : ''}.
+            </p>
+          ) : rv.rows.length === 0 ? (
+            <p className="px-[18px] py-3 text-sm text-gray-500">
+              No episodes to review yet.
+            </p>
+          ) : (
+            rv.rows.map((row) => (
+              <Row
+                key={row.captureId}
+                row={row}
+                isSelected={row.captureId === rv.selectedCaptureId}
+                rv={rv}
+              />
+            ))
+          )}
+          {/* The sweep stopped before the end of the catalog, so "no more
+            episodes" here means "no more that were fetched" — and the counts
+            above are of the same partial set. Said where the list ends,
+            because that is where an operator concludes it. */}
+          {rv.catalogTruncated && (
+            <p
+              data-testid="catalog-truncated"
+              className="m-[18px] rounded-control border border-amber-200 bg-amber-50 px-2.5 py-2 text-[11px] leading-relaxed text-amber-800"
+            >
+              This is not the whole catalog — there are more recordings than one sweep
+              fetches, so the oldest are not listed here. Narrow the search to reach a
+              specific one.
+            </p>
+          )}
+        </div>
       </div>
       <p
         data-testid="review-bridge-caption"
         className="border-t border-gray-100 px-[18px] py-2 text-[11px] text-gray-400"
       >
-        Quality / Task / Batch from the episode records (server) · pre-Phase-2 entries
-        from this browser.
+        Quality / Task / Batch are saved on the capture itself. Data shows where this
+        machine&apos;s copy stands.
       </p>
     </div>
   );

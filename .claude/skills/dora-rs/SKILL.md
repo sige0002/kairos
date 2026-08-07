@@ -312,8 +312,10 @@ def main() -> None:                           # dora event-loop form — used un
     for event in node:
         ...
 ```
-`ctx` is `NodeContext(plugin_id, run_id, data_dir, params, report_dir)` — the same job context the dora path
-passes as `KAIROS_RUN_ID` / `KAIROS_DATA_DIR` / `KAIROS_REPORT_DIR` / `KAIROS_PARAMS_JSON` env vars.
+`ctx` is `NodeContext(plugin_id, capture_id, data_dir, params, report_dir)` — the same job context the dora path
+passes as `KAIROS_CAPTURE_ID` / `KAIROS_DATA_DIR` / `KAIROS_REPORT_DIR` / `KAIROS_PARAMS_JSON` env vars.
+The capture must already exist: nodes **read** `objects/<capture_id>/` and never create it — a job that
+mkdirs its way to a missing capture resurrects a deleted one behind the reaper's back.
 
 **Level 2 output requirement (the one hard rule):** the **terminal node must write
 `report_dir/summary.json`** in the shape `{pipeline, version, result, metrics, ...}` (`result` ∈

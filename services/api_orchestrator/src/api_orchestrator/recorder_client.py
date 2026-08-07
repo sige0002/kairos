@@ -18,9 +18,11 @@ The client takes an injected :class:`httpx.AsyncClient`, so tests can supply a
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 import httpx
+from kairos_common.ids import is_uuid7
 
 from api_orchestrator.service_client import (
     DEFAULT_TIMEOUT_S,
@@ -30,12 +32,51 @@ from api_orchestrator.service_client import (
 
 __all__ = [
     "DEFAULT_TIMEOUT_S",
-    "RETRIES",
+    "LIVE_CAPTURE_IDS_FIELD",
     "PREPARE_TIMEOUT_S",
+    "RETRIES",
     "START_TIMEOUT_S",
     "STOP_TIMEOUT_S",
     "RecorderClient",
+    "live_capture_ids",
 ]
+
+# The one field on ``/record/status`` and ``/record/stop`` that says which
+# captures the recorder is holding. Pinned by contract §10 (rev.2.3) and named
+# here so a rename breaks one constant and its test, not three call sites.
+LIVE_CAPTURE_IDS_FIELD = "live_capture_ids"
+
+
+def live_capture_ids(status: Mapping[str, Any]) -> set[str] | None:
+    """Captures the recorder is holding, or ``None`` if it did not say.
+
+    This array is the **only** liveness signal (§10 rev.2.3). It is non-empty
+    for ``armed``, ``recording`` and ``stopping``, and empty otherwise — and
+    critically it includes ARMED captures, whose ``objects/<id>/`` exists with
+    no manifest yet. A rebuild that missed those would see a manifest-less
+    directory and either refuse to adopt it or, worse, treat a live arm as an
+    orphan.
+
+    Two distinctions this function exists to preserve:
+
+    **An empty array is an answer; a missing array is not.** ``[]`` means the
+    recorder is genuinely idle, and callers may act on it. An absent or
+    non-list field means the recorder is too old or too broken to say, which
+    §8 rule 1 treats as unreachable — so ``None`` propagates and callers DEFER
+    rather than normalizing live recordings to ``interrupted``.
+
+    **The singular ``capture_id`` is not a liveness signal and is never read
+    here.** It deliberately keeps naming the last capture after that capture
+    reaches a terminal state, so folding it in would mark every just-finished
+    recording as recorder-held forever: §9-4(b) would block its digest until
+    the next recording started, and a rebuild would live-exclude it so no row
+    was ever created.
+    """
+    value = status.get(LIVE_CAPTURE_IDS_FIELD)
+    if not isinstance(value, list):
+        return None
+    return {item for item in value if is_uuid7(item)}
+
 
 # POST /record/stop is special: the recorder's clean SIGINT flush of a large
 # bag can take up to ~30s (its STOP_TIMEOUT_S). The orchestrator must wait it

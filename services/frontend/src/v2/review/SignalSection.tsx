@@ -14,17 +14,18 @@
 // the whole episode onto its first frames, which would lie.
 
 import { useState } from 'react';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiGet, apiPost } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
+import { INSPECTION_JOB_POLL_MS } from '../pollingPolicy';
 import type {
   JobResult,
   JobStatus,
-  RunTopic,
+  CaptureTopic,
   VideoCheckSummary,
 } from '../../api/types';
-import { ErrorMessage } from '../../components/ErrorMessage';
-import { TERMINAL, VideoPlayer, cameraTopics } from '../../features/inspect/inspect';
+import { JobErrorNote, isTombstoneError } from '../captures/JobErrorNote';
+import { TERMINAL, VideoPlayer, cameraTopics } from '../captures/inspect';
 import {
   episodeSpanNs,
   formatContinuity,
@@ -37,7 +38,8 @@ import { LossEventList } from './LossEventList';
 // Run the signal_report pipeline (one shot) and return its parsed summary. Same
 // POST /jobs → poll status → fetch result lifecycle the VideoPlayer uses, so a
 // missing/failed pipeline surfaces as an honest error instead of a dead view.
-function useSignalReport(runId: string) {
+function useSignalReport(captureId: string) {
+  const queryClient = useQueryClient();
   const [jobId, setJobId] = useState<string | null>(null);
   const [report, setReport] = useState<SignalReportExt | null>(null);
   const [jobError, setJobError] = useState<string | null>(null);
@@ -46,13 +48,20 @@ function useSignalReport(runId: string) {
     mutationFn: () =>
       apiPost<JobStatus>('/jobs', {
         pipeline: 'signal_report',
-        run_id: runId,
+        capture_id: captureId,
         params: { topics: null, max_points: 2000 },
       }),
     onSuccess: (job) => {
       setReport(null);
       setJobError(null);
       setJobId(job.job_id);
+    },
+    onError: (error) => {
+      // Same reasoning as the loss/validation jobs: a tombstone 409 is how this
+      // panel finds out the capture was removed elsewhere.
+      if (isTombstoneError(error)) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.capture(captureId) });
+      }
     },
   });
 
@@ -97,7 +106,7 @@ function useSignalReport(runId: string) {
     enabled: !!jobId,
     refetchInterval: (q) => {
       const state = q.state.data?.state;
-      return state && TERMINAL.has(state) ? false : 1500;
+      return state && TERMINAL.has(state) ? false : INSPECTION_JOB_POLL_MS;
     },
   });
 
@@ -110,8 +119,17 @@ function useSignalReport(runId: string) {
   };
 }
 
-export function SignalSection({ runId, topics }: { runId: string; topics: RunTopic[] }) {
-  const sig = useSignalReport(runId);
+export function SignalSection({
+  captureId,
+  topics,
+  blockedReason,
+}: {
+  captureId: string;
+  topics: CaptureTopic[];
+  /** Why the report cannot be run right now (a held lease, §7.1). */
+  blockedReason?: string | null;
+}) {
+  const sig = useSignalReport(captureId);
   const report = sig.report;
 
   const [syncCamera, setSyncCamera] = useState<string | null>(null);
@@ -163,7 +181,8 @@ export function SignalSection({ runId, topics }: { runId: string; topics: RunTop
           type="button"
           data-testid="review-run-signal"
           onClick={sig.run}
-          disabled={sig.running}
+          disabled={sig.running || !!blockedReason}
+          title={blockedReason ?? undefined}
           className="rounded-control border border-teal-200 px-2.5 py-1 text-[11.5px] font-semibold text-teal-700 transition-colors hover:bg-teal-50 disabled:opacity-50"
         >
           {sig.running
@@ -174,7 +193,7 @@ export function SignalSection({ runId, topics }: { runId: string; topics: RunTop
         </button>
       </div>
 
-      {sig.error && <ErrorMessage error={sig.error} />}
+      <JobErrorNote error={sig.error} testId="review-signal-submit-error" />
       {sig.jobError && (
         <p role="alert" className="text-[11.5px] text-red-600" data-testid="review-signal-error">
           {sig.jobError}
@@ -243,7 +262,7 @@ export function SignalSection({ runId, topics }: { runId: string; topics: RunTop
                   )}
                   <VideoPlayer
                     key={syncCamera}
-                    runId={runId}
+                    captureId={captureId}
                     topic={syncCamera}
                     onTimeUpdate={onVideoTime}
                     onSummary={onVideoSummary}

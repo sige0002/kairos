@@ -25,8 +25,6 @@ applies on the next monitor restart (no live-reload path exists — see
 from __future__ import annotations
 
 import logging
-import os
-import tempfile
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -37,6 +35,11 @@ from kairos_common.recording_config import RecordingConfig
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from api_orchestrator.config_catalog import ASPECTS, ConfigCatalog
+from api_orchestrator.config_files import (
+    DuplicateYamlKey,
+    StrictSafeLoader,
+    atomic_write_yaml,
+)
 
 logger = logging.getLogger("kairos")
 
@@ -96,7 +99,7 @@ def _apply_recording(request: Request, catalog: ConfigCatalog) -> None:
         ) from exc
     request.app.state.recording_config = config
     request.app.state.recording_config_path = str(path)
-    request.app.state.run_service.set_recording_config(config)
+    request.app.state.record_service.set_recording_config(config)
     logger.info("recording config applied", extra={"path": str(path)})
 
 
@@ -176,27 +179,6 @@ def _recording_payload(config: RecordingConfig | None, path: str) -> dict[str, A
     }
 
 
-def _atomic_write_yaml(path: Path, data: dict[str, Any]) -> None:
-    """Write *data* to *path* as YAML atomically (temp file + ``os.replace``).
-
-    Creates the parent dir if needed. The temp file is created in the same
-    directory so ``os.replace`` is an atomic same-filesystem rename; on any
-    failure the temp file is removed and the original is left untouched.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(
-        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
-    )
-    tmp = Path(tmp_name)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            yaml.safe_dump(data, fh, sort_keys=False, allow_unicode=True)
-        os.replace(tmp, path)
-    except OSError:
-        tmp.unlink(missing_ok=True)
-        raise
-
-
 @router.get("/recording")
 async def get_recording_config(request: Request) -> dict[str, Any]:
     """Return the live RECORDING_CONFIG (or ``config: null``) + its file path.
@@ -221,7 +203,7 @@ async def put_recording_config(
     The full :class:`RecordingConfig` is editable. On success the validated
     config is written to ``settings.recording_config`` (the only path we ever
     write — never one from the request) and set on ``app.state.recording_config``
-    + the RunService, so ``GET /api/v1/config`` and the next start's
+    + the RecordService, so ``GET /api/v1/config`` and the next start's
     ``default_topics`` reflect it immediately. A schema error yields 422 with the
     field errors; the file is left untouched on any validation failure.
     """
@@ -242,7 +224,7 @@ async def put_recording_config(
         getattr(request.app.state, "recording_config_path", settings.recording_config)
     )
     try:
-        _atomic_write_yaml(path, config.model_dump(mode="json"))
+        atomic_write_yaml(path, config.model_dump(mode="json"))
     except OSError as exc:
         logger.warning("recording config write failed", extra={"error": str(exc)})
         raise ApiError(
@@ -255,7 +237,7 @@ async def put_recording_config(
     # Hot-swap the live copies so the next GET /api/v1/config and the next
     # start's topic resolution use the new config without a restart.
     request.app.state.recording_config = config
-    request.app.state.run_service.set_recording_config(config)
+    request.app.state.record_service.set_recording_config(config)
     logger.info("recording config updated", extra={"path": str(path)})
     return _recording_payload(config, settings.recording_config)
 
@@ -332,7 +314,18 @@ def _body_to_mapping(body: AspectConfigBody) -> dict[str, Any]:
     """Normalise an :class:`AspectConfigBody` to a plain mapping (422 on error)."""
     if body.raw is not None:
         try:
-            data = yaml.safe_load(body.raw)
+            data = yaml.load(body.raw, Loader=StrictSafeLoader)  # noqa: S506
+        except DuplicateYamlKey as exc:
+            raise ApiError(
+                status_code=422,
+                code="duplicate_key",
+                message=(
+                    f"Duplicate key {exc.key!r} on line {exc.line}. YAML keeps only "
+                    "the last one, so the earlier entry would be dropped without a "
+                    "trace — rename or remove one of them."
+                ),
+                details={"key": str(exc.key), "line": exc.line},
+            ) from exc
         except yaml.YAMLError as exc:
             raise ApiError(
                 status_code=422,
@@ -436,7 +429,7 @@ async def put_alerts_config(request: Request, body: AspectConfigBody) -> dict[st
             details={"errors": exc.errors(include_url=False)},
         ) from exc
     try:
-        _atomic_write_yaml(path, config.model_dump(mode="json"))
+        atomic_write_yaml(path, config.model_dump(mode="json"))
     except OSError as exc:
         logger.warning("alerts config write failed", extra={"error": str(exc)})
         raise ApiError(

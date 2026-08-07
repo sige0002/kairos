@@ -1,30 +1,32 @@
-// Review tab (v2 IA) — the episode take-review workflow (adopt / keep in
-// review / exclude), plus a two-step physical delete: Exclude is a reversible
-// review label (kept on disk); Delete permanently reclaims the storage. Root
-// mirrors the design mock's 216px / 1fr / 400px three-column grid (filters,
-// episode list, detail). Episodes come from the real /runs API; see
-// useReviewState.ts for the full behavior.
+// Review tab (v2 IA) — the take-review workflow (adopt / keep in review /
+// exclude) over captures, plus the two REMOVAL intents of §7, which are
+// deliberately separate controls with separate dialogs: Exclude is a reversible
+// review label that keeps the recording, Discard and Delete take the bytes away.
+// Root mirrors the design mock's 216px / 1fr / 400px three-column grid.
 //
 // Also carries our own addition — MCAP transfer for split robot/recording-PC
-// deployments — gated behind SPLIT_MODE (splitMode.ts), off by default.
+// deployments — gated behind captures/splitMode.ts, off by default.
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import { queryKeys } from '../../api/queryKeys';
 import { Button, Modal, cn } from '../../components/ui';
+import { DiscardDialog, DeleteDialog } from '../captures/DeleteDialogs';
 import { DetailPanel } from './DetailPanel';
 import { EpisodeTable } from './EpisodeTable';
+import { ImportBagsDialog } from './ImportBagsDialog';
 import { FiltersRail } from './FiltersRail';
-import { Toast } from './Toast';
+import { Toast } from '../shared/Toast';
 import { useFiltersCollapsed, toggleFiltersCollapsed } from './filtersRail';
+import { episodeLabel } from './types';
 import { formatBytes } from './format';
 import { useReviewState } from './useReviewState';
 
 // Two complete literal grid templates (Tailwind's scanner needs full strings,
 // so we pick between them rather than interpolate a width). The two evidence
 // columns grow with the viewport (the detail pane, weighted 1.2fr, gets the
-// larger share — it was previously a fixed 400px); the table column keeps a
-// hard 580px floor so its 8-column row grid never clips (56+48+108+96+72+80+28
-// fixed tracks + 7×8px gaps + 36px padding). Collapsing the filter rail hands
-// its 216→44px back to those two columns (detail again taking the larger cut).
+// larger share); the table column keeps a hard 580px floor so its row grid
+// never clips. Collapsing the filter rail hands its 216→44px back to those two.
 const GRID_EXPANDED =
   'lg:grid-cols-[216px_minmax(580px,0.8fr)_minmax(400px,1.2fr)]';
 const GRID_COLLAPSED =
@@ -32,8 +34,12 @@ const GRID_COLLAPSED =
 
 export function ReviewScreen() {
   const rv = useReviewState();
-  const del = rv.pendingDeleteRow;
-  const bulkTotalBytes = rv.excludedRows.reduce((sum, r) => sum + (r.bytes ?? 0), 0);
+  const { conflict, failure, failureCaptureId } = rv.reviewSave;
+  const queryClient = useQueryClient();
+  // Bringing in bags recorded outside kairos: a Review-side action because an
+  // imported bag's whole reason to exist is to be reviewed, validated and
+  // put into a dataset like any other recording.
+  const [importOpen, setImportOpen] = useState(false);
 
   // FiltersRail collapse (persisted). The collapsed and expanded toggle buttons
   // never mount at once, so after a user toggle we restore focus to whichever
@@ -53,6 +59,103 @@ export function ReviewScreen() {
 
   return (
     <div className="flex flex-col gap-2.5 lg:h-full lg:min-h-0">
+      <div className="flex items-center gap-2.5">
+        <div className="flex-1" />
+        <button
+          type="button"
+          data-testid="review-import-bags"
+          onClick={() => setImportOpen(true)}
+          className="rounded-control border border-gray-200 bg-white px-3 py-1.5 text-[12.5px] font-semibold text-gray-700 hover:bg-gray-50"
+        >
+          ↧ Import bags…
+        </button>
+      </div>
+      <ImportBagsDialog
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        onImported={() => {
+          // An import is QUEUED when the POST answers; the row appears only
+          // once the staged copy has been moved into place, which for a
+          // multi-GB bag is seconds to minutes later. Refetch now and a few
+          // times after, so "I imported it and nothing showed up" needs no
+          // manual reload. Bounded on purpose — this is a nudge, not a poll.
+          const refetch = () =>
+            void queryClient.invalidateQueries({ queryKey: queryKeys.captures });
+          refetch();
+          for (const delay of [3000, 10000, 30000]) setTimeout(refetch, delay);
+        }}
+      />
+      {/* A refused save (409). The banner names what is actually stored now, so
+          the operator re-applies their decision against the real current value
+          instead of guessing what the other terminal chose. It also names the
+          episode: only a save for that same capture supersedes it, so it
+          outlives the selection and the filters, and a warning the operator
+          cannot attribute to a capture is not one they can act on. */}
+      {conflict && (
+        <div
+          role="alert"
+          data-testid="review-conflict-banner"
+          className="flex flex-wrap items-center justify-between gap-2 rounded-control border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900"
+        >
+          <span data-testid="review-conflict-message">
+            <strong data-testid="review-conflict-subject">
+              {rv.captureSubject(conflict.captureId)}
+            </strong>
+            {' — '}
+            {conflict.reading.message} {conflict.reading.guidance}
+            {conflict.current && (
+              <>
+                {' '}
+                It is now{' '}
+                <strong data-testid="review-conflict-current">
+                  {conflict.current.review_status}
+                  {conflict.current.quality ? ` · ${conflict.current.quality}` : ''}
+                </strong>
+                .
+              </>
+            )}
+          </span>
+          <Button
+            variant="ghost"
+            data-testid="review-conflict-dismiss"
+            onClick={rv.reviewSave.dismissConflict}
+          >
+            Dismiss
+          </Button>
+        </div>
+      )}
+
+      {/* A save that wrote NOTHING (500). §12: never silent — the operator must
+          not walk away believing a label exists that does not. */}
+      {failure && (
+        <div
+          role="alert"
+          data-testid="review-save-failure"
+          data-error-code={failure.code}
+          className="flex flex-wrap items-center justify-between gap-2 rounded-control border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800"
+        >
+          <span>
+            <strong>Not saved.</strong>{' '}
+            {failureCaptureId && (
+              <>
+                <strong data-testid="review-save-failure-subject">
+                  {rv.captureSubject(failureCaptureId)}
+                </strong>
+                {' — '}
+              </>
+            )}
+            {failure.message} {failure.guidance}
+          </span>
+          <Button
+            variant="ghost"
+            data-testid="review-save-failure-dismiss"
+            onClick={rv.reviewSave.dismissFailure}
+          >
+            Dismiss
+          </Button>
+        </div>
+      )}
+
       {rv.showRetentionBanner && (
         <div
           role="status"
@@ -83,7 +186,7 @@ export function ReviewScreen() {
                 {rv.retentionCandidateCount === 1 ? '' : 's'} older than{' '}
                 {rv.retentionDays} days (
                 <span className="font-mono">{formatBytes(rv.retentionTotalBytes)}</span>
-                ) — review and delete what you no longer need.
+                ) — review and remove what you no longer need.
               </span>
               <div className="flex items-center gap-1.5">
                 <Button
@@ -127,21 +230,21 @@ export function ReviewScreen() {
         <DetailPanel rv={rv} />
       </div>
 
-      <Toast message={rv.toast} />
+      <Toast message={rv.toast} testId="review-toast" />
 
       <Modal
-        open={rv.pendingArchiveEp !== null}
-        onClose={rv.cancelArchive}
-        title={`Exclude episode #${rv.pendingArchiveEp}?`}
+        open={rv.excludePending}
+        onClose={rv.cancelExclude}
+        title={`Exclude episode ${rv.pendingExcludeLabel ?? ''}?`}
         footer={
           <>
-            <Button variant="ghost" onClick={rv.cancelArchive}>
+            <Button variant="ghost" onClick={rv.cancelExclude}>
               Cancel
             </Button>
             <Button
               variant="danger"
               data-testid="review-confirm-exclude"
-              onClick={rv.confirmArchive}
+              onClick={rv.confirmExclude}
             >
               Exclude
             </Button>
@@ -152,105 +255,34 @@ export function ReviewScreen() {
         reclassified as Not usable / Excluded — episode numbers are never reassigned.
       </Modal>
 
-      {/* Single physical delete — only reachable from an excluded episode. */}
-      <Modal
-        open={del !== null}
-        onClose={rv.cancelDelete}
-        title={`Delete episode #${del?.ep} from disk?`}
-        footer={
-          <>
-            <Button variant="ghost" onClick={rv.cancelDelete} disabled={rv.deleting}>
-              Cancel
-            </Button>
-            <Button variant="danger" onClick={rv.confirmDelete} disabled={rv.deleting}>
-              {rv.deleting ? 'Deleting…' : 'Delete from disk'}
-            </Button>
-          </>
-        }
-      >
-        <p>
-          Permanently delete{' '}
-          <span data-testid="review-delete-runid" className="font-mono text-gray-800">
-            {del?.runId}
-          </span>{' '}
-          (<span data-testid="review-delete-size">{formatBytes(del?.bytes)}</span>) from
-          disk? This reclaims the storage and <strong>cannot be undone</strong>. The
-          recording is already excluded from dataset use.
-        </p>
-        {rv.deleteError && (
-          <p role="alert" className="mt-2 text-sm text-red-600">
-            {rv.deleteError}
-          </p>
-        )}
-      </Modal>
+      {/* The two removal intents (§12). Separate dialogs, separate testids:
+          the operator must be able to tell which one they are about to do. */}
+      <DiscardDialog
+        open={rv.deletion.kind === 'discard'}
+        captures={rv.deletion.targets}
+        splitDeploy={rv.splitMode}
+        busy={rv.deletion.busy}
+        error={rv.deletion.error}
+        done={rv.deletion.done}
+        failures={rv.deletion.failures}
+        onCancel={rv.deletion.cancel}
+        onConfirm={(reason) => void rv.deletion.confirm(reason)}
+      />
+      <DeleteDialog
+        open={rv.deletion.kind === 'delete'}
+        captures={rv.deletion.targets}
+        splitDeploy={rv.splitMode}
+        busy={rv.deletion.busy}
+        error={rv.deletion.error}
+        done={rv.deletion.done}
+        failures={rv.deletion.failures}
+        onCancel={rv.deletion.cancel}
+        onConfirm={(reason) => void rv.deletion.confirm(reason)}
+      />
 
-      {/* Bulk physical delete of every excluded episode. */}
-      <Modal
-        open={rv.bulkDeleteOpen}
-        onClose={rv.cancelBulkDelete}
-        title={`Delete ${rv.excludedRows.length} excluded recording${rv.excludedRows.length === 1 ? '' : 's'} from disk?`}
-        footer={
-          <>
-            <Button
-              variant="ghost"
-              onClick={rv.cancelBulkDelete}
-              disabled={rv.bulkRunning}
-            >
-              {rv.bulkFailures.length > 0 && !rv.bulkRunning ? 'Close' : 'Cancel'}
-            </Button>
-            <Button
-              variant="danger"
-              onClick={rv.confirmBulkDelete}
-              disabled={rv.bulkRunning || rv.excludedRows.length === 0}
-            >
-              {rv.bulkRunning
-                ? `Deleting… (${rv.bulkDone}/${rv.excludedRows.length})`
-                : `Delete ${rv.excludedRows.length}`}
-            </Button>
-          </>
-        }
-      >
-        <p>
-          Permanently delete these excluded recordings from disk — reclaiming{' '}
-          <span className="font-mono text-gray-800">{formatBytes(bulkTotalBytes)}</span>
-          . This <strong>cannot be undone</strong>.
-        </p>
-        <ul
-          data-testid="review-bulk-list"
-          className="mt-2 max-h-48 overflow-auto rounded-control border border-gray-200 text-xs"
-        >
-          {rv.excludedRows.map((r) => {
-            const failure = rv.bulkFailures.find((f) => f.runId === r.runId);
-            return (
-              <li
-                key={r.runId}
-                className="flex items-center justify-between gap-2 border-t border-gray-100 px-2 py-1 first:border-t-0"
-              >
-                <span className="truncate font-mono text-gray-700">{r.runId}</span>
-                {failure ? (
-                  <span className="shrink-0 text-red-600" title={failure.error}>
-                    failed
-                  </span>
-                ) : (
-                  <span className="shrink-0 font-mono text-gray-400">
-                    {formatBytes(r.bytes)}
-                  </span>
-                )}
-              </li>
-            );
-          })}
-        </ul>
-        {rv.bulkFailures.length > 0 && !rv.bulkRunning && (
-          <p role="alert" className="mt-2 text-sm text-red-600">
-            {rv.bulkFailures.length} deletion{rv.bulkFailures.length === 1 ? '' : 's'}{' '}
-            failed — those recordings are still on disk.
-          </p>
-        )}
-      </Modal>
-
-      {/* Batch-level bulk exclude (blast-radius follow-up): the same reversible
-          semantics as the single-row Exclude, over every not-yet-excluded
-          episode of the filtered batch. */}
+      {/* Batch-level bulk exclude: the same reversible semantics as the
+          single-row Exclude, over every not-yet-excluded capture of the
+          filtered batch. Nothing here removes bytes. */}
       <Modal
         open={rv.excludeBatchOpen}
         onClose={rv.cancelExcludeBatch}
@@ -290,14 +322,16 @@ export function ReviewScreen() {
           className="mt-2 max-h-48 overflow-auto rounded-control border border-gray-200 text-xs"
         >
           {rv.batchExcludable.map((r) => {
-            const failure = rv.excludeBatchFailures.find((f) => f.runId === r.runId);
+            const failure = rv.excludeBatchFailures.find(
+              (f) => f.captureId === r.captureId,
+            );
             return (
               <li
-                key={r.runId}
+                key={r.captureId}
                 className="flex items-center justify-between gap-2 border-t border-gray-100 px-2 py-1 first:border-t-0"
               >
                 <span className="truncate font-mono text-gray-700">
-                  #{r.ep} · {r.runId}
+                  {episodeLabel(r.ep)} · {r.runId ?? r.captureId}
                 </span>
                 {failure ? (
                   <span className="shrink-0 text-red-600" title={failure.error}>
@@ -317,86 +351,6 @@ export function ReviewScreen() {
             {rv.excludeBatchFailures.length} exclude
             {rv.excludeBatchFailures.length === 1 ? '' : 's'} failed — those episodes
             keep their previous status.
-          </p>
-        )}
-      </Modal>
-
-      {/* Export ready → Datasets (exception-review: READY set, one click, MOVE). */}
-      <Modal
-        open={rv.exportReadyOpen}
-        onClose={rv.cancelExportReady}
-        title={`Export ${rv.readyExportable.length} ready recording${rv.readyExportable.length === 1 ? '' : 's'} to Datasets?`}
-        footer={
-          <>
-            <Button
-              variant="ghost"
-              onClick={rv.cancelExportReady}
-              disabled={rv.exportRunning}
-            >
-              {rv.exportFailures.length > 0 && !rv.exportRunning ? 'Close' : 'Cancel'}
-            </Button>
-            <Button
-              onClick={rv.confirmExportReady}
-              disabled={rv.exportRunning || rv.readyExportable.length === 0}
-            >
-              {rv.exportRunning
-                ? `Exporting… (${rv.exportDone}/${rv.readyExportable.length})`
-                : `Export ${rv.readyExportable.length}`}
-            </Button>
-          </>
-        }
-      >
-        <p>
-          Export <strong>moves</strong> each READY recording into the dataset tree (
-          <span className="font-mono text-gray-800">
-            data/&lt;operator&gt;/&lt;task&gt;/NNN
-          </span>
-          ): it <strong>leaves Review</strong> and appears under Datasets.
-          {!rv.includeFailed && ' Task-failed recordings are excluded (toggle above).'}
-        </p>
-        <ul
-          data-testid="review-export-list"
-          className="mt-2 max-h-48 overflow-auto rounded-control border border-gray-200 text-xs"
-        >
-          {rv.readyExportable.map((r) => {
-            const failure = rv.exportFailures.find((f) => f.runId === r.runId);
-            return (
-              <li
-                key={r.runId}
-                className="flex items-center justify-between gap-2 border-t border-gray-100 px-2 py-1 first:border-t-0"
-              >
-                <span className="truncate font-mono text-gray-700">{r.runId}</span>
-                <span
-                  className={cn('shrink-0', failure ? 'text-red-600' : 'text-gray-400')}
-                  title={failure?.error}
-                >
-                  {failure ? 'failed' : `#${r.ep}`}
-                </span>
-              </li>
-            );
-          })}
-        </ul>
-        {rv.readySkipped.length > 0 && (
-          <div
-            data-testid="review-export-skipped"
-            className="mt-2 rounded-control border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-800"
-          >
-            {rv.readySkipped.length} ready recording
-            {rv.readySkipped.length === 1 ? '' : 's'} skipped — only{' '}
-            <strong>completed</strong> runs can be exported:
-            <ul className="mt-1 flex flex-col gap-0.5">
-              {rv.readySkipped.map((r) => (
-                <li key={r.runId} className="truncate font-mono">
-                  #{r.ep} {r.runId} · {r.state}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-        {rv.exportFailures.length > 0 && !rv.exportRunning && (
-          <p role="alert" className="mt-2 text-sm text-red-600">
-            {rv.exportFailures.length} export{rv.exportFailures.length === 1 ? '' : 's'}{' '}
-            failed — those recordings stayed in Review.
           </p>
         )}
       </Modal>

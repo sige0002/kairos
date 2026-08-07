@@ -7,8 +7,8 @@
 // exposed by the API either, and we say so rather than guessing.
 
 import { useQuery } from '@tanstack/react-query';
-import { apiGet } from '../../api/client';
-import type { SystemInfo } from '../../api/types';
+import { getSystemInfo } from '../../api/system';
+import { SYSTEM_INFO_POLL_MS } from '../pollingPolicy';
 import type { RuntimeConfig } from '../../config';
 import { Card } from '../../components/ui';
 import { formatBytes } from '../review/format';
@@ -38,9 +38,9 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 export function SystemSection({ config }: { config: RuntimeConfig | undefined }) {
   const { data } = useQuery({
     queryKey: ['system'],
-    queryFn: ({ signal }) => apiGet<SystemInfo>('/api/v1/system', { signal }),
+    queryFn: ({ signal }) => getSystemInfo({ signal }),
     staleTime: 5000,
-    refetchInterval: 5000,
+    refetchInterval: SYSTEM_INFO_POLL_MS,
   });
 
   const disk = data?.disk ?? null;

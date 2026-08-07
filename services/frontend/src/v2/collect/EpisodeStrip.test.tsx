@@ -31,8 +31,8 @@ test('chips sit on their true episode number across a deletion gap', () => {
     <EpisodeStrip
       machine={machineWith(
         [
-          { index: 1, quality: 'good', taskResult: 'ok', runId: 'r1' },
-          { index: 3, quality: 'good', taskResult: 'ok', runId: 'r3' },
+          { index: 1, quality: 'good', taskResult: 'ok', captureId: 'cap-1' },
+          { index: 3, quality: 'good', taskResult: 'ok', captureId: 'cap-3' },
         ],
         3,
       )}
@@ -53,12 +53,13 @@ test('chips sit on their true episode number across a deletion gap', () => {
   expect(screen.getByTestId('episode-strip-count').textContent).toContain('3 / 30');
 });
 
-test('a server-reallocated index renders at the server slot', () => {
-  // The server moved this save to slot 4 (another terminal took 1-3).
+test('an episode restored at a higher index renders at that slot', () => {
+  // A server restore adopted index_in_batch 4 (episodes 1-3 were deleted in
+  // Review): the chip belongs at slot 4, not at the head of the strip.
   render(
     <EpisodeStrip
       machine={machineWith(
-        [{ index: 4, quality: 'review', taskResult: 'ok', runId: 'r9' }],
+        [{ index: 4, quality: 'review', taskResult: 'ok', captureId: 'cap-9' }],
         4,
       )}
     />,
@@ -67,4 +68,59 @@ test('a server-reallocated index renders at the server slot', () => {
     screen.getByTitle('Episode 4 — Task: Success · Quality: Needs review'),
   ).toBeTruthy();
   expect(screen.getByTitle('Episode 5 — next')).toBeTruthy();
+});
+
+// M6: a take the recorder never named a capture for exists on this screen and
+// nowhere else. A bare count could not be acted on — with two of them the
+// operator cannot tell which takes will be missing after a reload.
+test('unsaved takes are named, not just counted', () => {
+  render(
+    <EpisodeStrip
+      machine={machineWith(
+        [
+          { index: 1, quality: 'good', taskResult: 'ok', captureId: 'cap-1' },
+          { index: 2, quality: 'good', taskResult: 'ok' },
+          { index: 3, quality: 'good', taskResult: 'ok', captureId: 'cap-3' },
+          { index: 4, quality: 'review', taskResult: 'fail' },
+        ],
+        4,
+      )}
+    />,
+  );
+  expect(screen.getByTestId('episode-strip-unsynced')).toHaveTextContent('#2 #4 not saved');
+  // And each one is identifiable on the strip itself, not only in the summary.
+  expect(screen.getByTestId('episode-chip-unsaved-2')).toBeTruthy();
+  expect(screen.getByTestId('episode-chip-unsaved-4')).toBeTruthy();
+  expect(screen.queryByTestId('episode-chip-unsaved-1')).toBeNull();
+});
+
+test('a fully saved batch shows no unsaved notice at all', () => {
+  render(
+    <EpisodeStrip
+      machine={machineWith(
+        [{ index: 1, quality: 'good', taskResult: 'ok', captureId: 'cap-1' }],
+        1,
+      )}
+    />,
+  );
+  expect(screen.queryByTestId('episode-strip-unsynced')).toBeNull();
+});
+
+// A capture carrying no position within the batch has no slot to live in
+// (slots are numbered from 1). It must not vanish: the dashed "recorded
+// earlier; no longer listed" chip would then describe a capture that is right
+// there in the batch.
+test('a capture with no batch position is counted, never silently dropped', () => {
+  render(
+    <EpisodeStrip
+      machine={machineWith(
+        [
+          { index: 1, quality: 'good', taskResult: 'ok', captureId: 'cap-1' },
+          { index: 0, quality: 'good', taskResult: 'ok', captureId: 'cap-x' },
+        ],
+        1,
+      )}
+    />,
+  );
+  expect(screen.getByTestId('episode-strip-unplaced')).toHaveTextContent('+1 unplaced');
 });

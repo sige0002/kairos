@@ -14,7 +14,7 @@
 #   params      optional. forwarded to POST /jobs verbatim.
 #
 # "Not yet validated" is keyed per pipeline (presence of
-# report/<pipeline>/<run_id>/summary.json), so presets sharing a pipeline share
+# report/<pipeline>/<capture_id>/summary.json), so presets sharing a pipeline share
 # that state. Adding a plugin? Just reference its id here — no UI change.
 # =============================================================================
 presets:

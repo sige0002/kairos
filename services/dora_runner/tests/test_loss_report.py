@@ -1,9 +1,9 @@
 """loss_report pipeline tests.
 
 ``estimate_topic_loss`` is pure (operates on a list of message times), so the
-loss methodology is fully unit-testable without an MCAP. The job-level
-traversal guard is checked directly; the end-to-end MCAP path is gated on a
-real local sample recording (skipped otherwise, like test_fast_validation).
+loss methodology is fully unit-testable without an MCAP. The capture_id guard
+is checked directly; the end-to-end MCAP path is gated on a real local sample
+recording (skipped otherwise, like test_fast_validation).
 The publish_time-vs-log_time clock selection (``mcap_utils.source_times``) is
 covered both as a pure function and through a written MCAP.
 """
@@ -11,6 +11,7 @@ covered both as a pure function and through a written MCAP.
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -30,6 +31,7 @@ from dora_runner.mcap_utils import source_times
 from dora_runner.registry import build_default_registry, loss_report_schema
 from fastapi.testclient import TestClient
 from kairos_common import Settings
+from kairos_common.ids import new_capture_id
 
 _MS = 1_000_000  # nanoseconds per millisecond
 
@@ -66,19 +68,27 @@ def test_too_few_samples_reports_reason() -> None:
     assert out["reason"] == "insufficient samples"
 
 
-def test_loss_report_rejects_traversal_run_id(tmp_path: Path) -> None:
-    """A path-traversal run_id must be refused before any filesystem access."""
+@pytest.mark.parametrize(
+    "bad", ["../../etc", "run_20260623_232808", "", "objects/../etc", "not-a-uuid"]
+)
+def test_loss_report_rejects_non_uuid7_capture_id(tmp_path: Path, bad: str) -> None:
+    """Anything that is not a UUIDv7 is refused before any filesystem access.
+
+    A run_id is included deliberately: it is a display name now (§1), and
+    accepting one here is what would let ``report/loss_report/<run_id>/``
+    reappear.
+    """
     data_dir = tmp_path / "data"
-    (data_dir / "recorded").mkdir(parents=True)
-    with pytest.raises(ValueError, match="invalid run_id"):
-        run_loss_report(run_id="../../etc", data_dir=data_dir)
+    (data_dir / "objects").mkdir(parents=True)
+    with pytest.raises(ValueError, match="capture_id must be a UUIDv7"):
+        run_loss_report(capture_id=bad, data_dir=data_dir)
 
 
-def test_loss_report_missing_run_dir_raises(tmp_path: Path) -> None:
+def test_loss_report_missing_capture_dir_raises(tmp_path: Path) -> None:
     data_dir = tmp_path / "data"
-    (data_dir / "recorded").mkdir(parents=True)
-    with pytest.raises(FileNotFoundError):
-        run_loss_report(run_id="run_absent", data_dir=data_dir)
+    (data_dir / "objects").mkdir(parents=True)
+    with pytest.raises(FileNotFoundError, match="No capture found"):
+        run_loss_report(capture_id=new_capture_id(), data_dir=data_dir)
 
 
 # ---- OL-4.3: config-driven thresholds / target topics ---------------------
@@ -159,19 +169,22 @@ def _write_minimal_mcap(path: Path, topics: dict[str, int]) -> None:
         writer.finish()
 
 
-def test_run_loss_report_filters_target_topics(tmp_path: Path) -> None:
+def test_run_loss_report_filters_target_topics(
+    tmp_path: Path, make_capture: Callable[[Path], tuple[str, Path]]
+) -> None:
     data_dir = tmp_path / "data"
-    run_dir = data_dir / "recorded" / "run_x"
-    run_dir.mkdir(parents=True)
-    _write_minimal_mcap(run_dir / "run_x_0.mcap", {"/hsrb/joint_states": 10, "/tf": 10})
+    capture_id, capture_dir = make_capture(data_dir)
+    _write_minimal_mcap(
+        capture_dir / "run_x_0.mcap", {"/hsrb/joint_states": 10, "/tf": 10}
+    )
 
     # No filter -> both topics; glob filter -> only the matching one.
-    full = run_loss_report(run_id="run_x", data_dir=data_dir)
+    full = run_loss_report(capture_id=capture_id, data_dir=data_dir)
     names_full = {t["name"] for t in full["summary"]["topics"]}
     assert names_full == {"/hsrb/joint_states", "/tf"}
 
     filtered = run_loss_report(
-        run_id="run_x", data_dir=data_dir, target_topics=["/hsrb/*"]
+        capture_id=capture_id, data_dir=data_dir, target_topics=["/hsrb/*"]
     )
     names = {t["name"] for t in filtered["summary"]["topics"]}
     assert names == {"/hsrb/joint_states"}
@@ -249,14 +262,15 @@ def test_source_times_rejects_offset_clock_span() -> None:
     assert source == "log_time"
 
 
-def test_run_loss_report_uses_publish_time_when_recorded(tmp_path: Path) -> None:
+def test_run_loss_report_uses_publish_time_when_recorded(
+    tmp_path: Path, make_capture: Callable[[Path], tuple[str, Path]]
+) -> None:
     """Receive-side smoothing must not hide a source-side gap: log_times are
     perfectly regular (the recorder drained a burst evenly) while publish_times
     carry one ~500 ms hole — the report must surface the hole and say which
     clock it used."""
     data_dir = tmp_path / "data"
-    run_dir = data_dir / "recorded" / "run_pub"
-    run_dir.mkdir(parents=True)
+    capture_id, capture_dir = make_capture(data_dir)
     pairs = []
     for i in range(30):
         log = i * 100 * _MS + 3 * _MS  # clean 100 ms receive cadence
@@ -264,9 +278,9 @@ def test_run_loss_report_uses_publish_time_when_recorded(tmp_path: Path) -> None
         pairs.append((log, pub))
     # publish_time of message 0 must be non-zero for the series to qualify.
     pairs[0] = (pairs[0][0], 1)
-    _write_mcap_with_times(run_dir / "run_pub_0.mcap", "/hsrb/joint_states", pairs)
+    _write_mcap_with_times(capture_dir / "run_pub_0.mcap", "/hsrb/joint_states", pairs)
 
-    out = run_loss_report(run_id="run_pub", data_dir=data_dir)
+    out = run_loss_report(capture_id=capture_id, data_dir=data_dir)
     (topic,) = out["summary"]["topics"]
     assert topic["time_source"] == "publish_time"
     # The 500 ms source-side hole is visible; on log_time it would be ~100 ms.
@@ -274,23 +288,26 @@ def test_run_loss_report_uses_publish_time_when_recorded(tmp_path: Path) -> None
     assert topic["loss_rate"] is not None and topic["loss_rate"] > 0.05
 
 
-def test_run_loss_report_survives_offset_publisher_clocks(tmp_path: Path) -> None:
+def test_run_loss_report_survives_offset_publisher_clocks(
+    tmp_path: Path, make_capture: Callable[[Path], tuple[str, Path]]
+) -> None:
     """Regression: switching to publish_time must never be WORSE than log_time.
     Two publishers with a 30 s clock offset feed one topic; log_time is the
     single clean recorder clock. The report must fall back to log_time and NOT
     fabricate the ~90%+ loss / 30 s gap that trusting the split publish clock
     would produce."""
     data_dir = tmp_path / "data"
-    run_dir = data_dir / "recorded" / "run_offset"
-    run_dir.mkdir(parents=True)
+    capture_id, capture_dir = make_capture(data_dir)
     pairs = []
     for i in range(20):
         log = i * 100 * _MS  # clean 100 ms receive cadence, one clock
         pub = i * 100 * _MS + (30_000 * _MS if i % 2 else 1)  # two offset clocks
         pairs.append((log, pub))
-    _write_mcap_with_times(run_dir / "run_offset_0.mcap", "/hsrb/joint_states", pairs)
+    _write_mcap_with_times(
+        capture_dir / "run_offset_0.mcap", "/hsrb/joint_states", pairs
+    )
 
-    out = run_loss_report(run_id="run_offset", data_dir=data_dir)
+    out = run_loss_report(capture_id=capture_id, data_dir=data_dir)
     (topic,) = out["summary"]["topics"]
     assert topic["time_source"] == "log_time"
     # On the clean recorder clock the cadence is regular -> low loss, small gap.
@@ -299,48 +316,32 @@ def test_run_loss_report_survives_offset_publisher_clocks(tmp_path: Path) -> Non
 
 
 def test_run_loss_report_falls_back_to_log_time_for_legacy_bags(
-    tmp_path: Path,
+    tmp_path: Path, make_capture: Callable[[Path], tuple[str, Path]]
 ) -> None:
     """A bag whose writer stamped publish_time == log_time (pre-Jazzy) is
     analysed on log_time, with the fallback stated per topic."""
     data_dir = tmp_path / "data"
-    run_dir = data_dir / "recorded" / "run_legacy"
-    run_dir.mkdir(parents=True)
-    _write_minimal_mcap(run_dir / "run_legacy_0.mcap", {"/hsrb/joint_states": 10})
+    capture_id, capture_dir = make_capture(data_dir)
+    _write_minimal_mcap(capture_dir / "run_legacy_0.mcap", {"/hsrb/joint_states": 10})
 
-    out = run_loss_report(run_id="run_legacy", data_dir=data_dir)
+    out = run_loss_report(capture_id=capture_id, data_dir=data_dir)
     assert all(t["time_source"] == "log_time" for t in out["summary"]["topics"])
 
 
-def test_run_loss_report_reads_exported_dataset_dir(tmp_path: Path) -> None:
-    """After dataset_export MOVED the recording, dataset_dir points the report
-    at data/<operator>/<task>/<NNN>; the summary stays keyed by run_id."""
+def test_run_loss_report_writes_under_capture_id(
+    tmp_path: Path, make_capture: Callable[[Path], tuple[str, Path]]
+) -> None:
+    """§2: the report lands at report/loss_report/<capture_id>/summary.json."""
     data_dir = tmp_path / "data"
-    dataset = data_dir / "yuki" / "pick-place" / "001"
-    dataset.mkdir(parents=True)
-    _write_minimal_mcap(dataset / "run_x_0.mcap", {"/hsrb/joint_states": 10})
+    capture_id, capture_dir = make_capture(data_dir)
+    _write_minimal_mcap(capture_dir / "run_x_0.mcap", {"/hsrb/joint_states": 10})
 
-    out = run_loss_report(
-        run_id="run_x", data_dir=data_dir, dataset_dir="yuki/pick-place/001"
-    )
-    names = {t["name"] for t in out["summary"]["topics"]}
-    assert names == {"/hsrb/joint_states"}
-    assert (data_dir / "report" / "loss_report" / "run_x" / "summary.json").exists()
-
-
-def test_loss_report_rejects_unsafe_dataset_dir(tmp_path: Path) -> None:
-    data_dir = tmp_path / "data"
-    (data_dir / "recorded").mkdir(parents=True)
-    for bad in ("../x/y", "a/b", "a/b/c/d", "a//b", "recorded/a/b", "/abs/a/b"):
-        with pytest.raises(ValueError, match="invalid dataset_dir"):
-            run_loss_report(run_id="run_x", data_dir=data_dir, dataset_dir=bad)
-
-
-def test_loss_report_missing_dataset_dir_raises(tmp_path: Path) -> None:
-    data_dir = tmp_path / "data"
-    (data_dir / "recorded").mkdir(parents=True)
-    with pytest.raises(FileNotFoundError, match="No dataset directory"):
-        run_loss_report(run_id="run_x", data_dir=data_dir, dataset_dir="a/b/001")
+    out = run_loss_report(capture_id=capture_id, data_dir=data_dir)
+    summary_path = data_dir / "report" / "loss_report" / capture_id / "summary.json"
+    assert summary_path.is_file()
+    assert out["artifacts"] == [str(summary_path)]
+    assert out["summary"]["capture_id"] == capture_id
+    assert "run_id" not in out["summary"]
 
 
 def test_pipelines_endpoint_exposes_loss_report_params() -> None:
@@ -356,19 +357,23 @@ def test_pipelines_endpoint_exposes_loss_report_params() -> None:
 # ---- Integration (real sample bag, skipped when absent) -------------------
 
 DATA_DIR = Path(__file__).resolve().parents[3] / "data"
-RUN_ID = "run_20260623_232808"
 
 
-@pytest.mark.skipif(
-    not (DATA_DIR / "recorded" / RUN_ID).is_dir(),
-    reason=f"needs a local sample recording at data/recorded/{RUN_ID}",
-)
-def test_loss_report_job_writes_summary_json() -> None:
+def test_loss_report_job_writes_summary_json(
+    sample_capture: tuple[str, Path] | None,
+) -> None:
+    if sample_capture is None:
+        pytest.skip("needs a local sample recording under data/objects/")
+    capture_id, _ = sample_capture
     app = create_dora_app(Settings(data_dir=str(DATA_DIR)))
     with TestClient(app) as client:
         created = client.post(
             "/jobs",
-            json={"run_id": RUN_ID, "pipeline": "loss_report", "params": {}},
+            json={
+                "capture_id": capture_id,
+                "pipeline": "loss_report",
+                "params": {},
+            },
         )
         assert created.status_code == 201
         job_id = created.json()["job_id"]

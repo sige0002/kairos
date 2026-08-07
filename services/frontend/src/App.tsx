@@ -5,6 +5,7 @@ import { fetchRuntimeConfig, type RuntimeConfig } from './config';
 import { queryKeys } from './api/queryKeys';
 import { useEventStream } from './sse/useEventStream';
 import { useUiStore } from './store/uiStore';
+import { useOperators } from './v2/plans';
 import { CollectScreen } from './v2/collect/CollectScreen';
 import { ReviewScreen } from './v2/review/ReviewScreen';
 import { DatasetsScreen } from './v2/datasets/DatasetsScreen';
@@ -12,6 +13,8 @@ import { ValidationScreen } from './v2/validation/ValidationScreen';
 import { MonitorScreen } from './v2/monitor/MonitorScreen';
 import { SettingsScreen } from './v2/settings/SettingsScreen';
 import { resolveTabId, tabLabel, V2_TABS, type V2TabId } from './v2/tabs';
+import { useOnPopState } from './v2/shared/useOnPopState';
+import { PanelBoundary } from './components/ErrorBoundary';
 import { Hexagon, StatusDot, cn } from './components/ui';
 import type { SseStatus } from './store/uiStore';
 
@@ -70,6 +73,13 @@ function useActiveTab(): V2TabId {
   useEffect(() => {
     if (!activeTab) setActiveTab(resolveTabId(readRoute().tab));
   }, [activeTab, setActiveTab]);
+
+  // Without this the store would keep its own tab, the mirror effect below
+  // would rewrite the restored URL back to it, and the navigation would vanish
+  // — the console showing one tab while its own URL named another. A URL naming
+  // no tab resolves to the default for exactly that reason. (See useOnPopState
+  // for why every mirrored screen needs one of these.)
+  useOnPopState(() => setActiveTab(resolveTabId(readRoute().tab)));
 
   const active = resolveTabId(activeTab || null);
 
@@ -152,7 +162,13 @@ function TabPanel({ active }: { active: V2TabId }) {
         aria-labelledby={`tab-${active}`}
         className="lg:min-h-0 lg:flex-1 lg:overflow-auto"
       >
-        <TabContent tabId={active} />
+        {/* Scoped so a screen that throws costs the screen, not the console.
+            The root boundary is still there as the last resort, but it takes
+            the tab bar with it — and the tab bar is how an operator leaves a
+            broken panel (E-23). `resetKey` clears this one on the way out. */}
+        <PanelBoundary resetKey={active}>
+          <TabContent tabId={active} />
+        </PanelBoundary>
       </section>
     </div>
   );
@@ -244,14 +260,25 @@ const OPERATOR_STORAGE_KEY = 'kairos.operator';
 function OperatorChip() {
   const operator = useUiStore((s) => s.recordOperator);
   const setOperator = useUiStore((s) => s.setRecordOperator);
+  // Attribution roster (Settings > Operators). Non-empty → the popover is a
+  // PICKER (no free text: that is how "yuki"/"Yuki"/"yuki_2" get into labels);
+  // empty → the pre-roster free-text input stands and nothing is gated.
+  const roster = useOperators();
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState('');
 
-  // Mount-only hydrate from localStorage (never overwrite a live edit).
+  // Mount-only hydrate from localStorage (never overwrite a live edit). Storage
+  // access can THROW rather than return null (private mode, or site data blocked
+  // by policy) — and this runs at the shell, so an unguarded throw here reaches
+  // the root ErrorBoundary and takes the whole console down, not just the chip.
   useEffect(() => {
     if (!useUiStore.getState().recordOperator) {
-      const saved = window.localStorage.getItem(OPERATOR_STORAGE_KEY);
-      if (saved) setOperator(saved);
+      try {
+        const saved = window.localStorage.getItem(OPERATOR_STORAGE_KEY);
+        if (saved) setOperator(saved);
+      } catch {
+        // No persisted name available; the chip just starts empty.
+      }
     }
   }, [setOperator]);
 
@@ -268,8 +295,15 @@ function OperatorChip() {
   const save = () => {
     const v = draft.trim();
     setOperator(v);
-    if (v) window.localStorage.setItem(OPERATOR_STORAGE_KEY, v);
-    else window.localStorage.removeItem(OPERATOR_STORAGE_KEY);
+    // A throw in an event handler escapes the ErrorBoundary entirely: the name
+    // would be set but the popover would never close. The name still applies to
+    // this session; it just won't survive a reload.
+    try {
+      if (v) window.localStorage.setItem(OPERATOR_STORAGE_KEY, v);
+      else window.localStorage.removeItem(OPERATOR_STORAGE_KEY);
+    } catch {
+      // Storage unavailable — the in-memory operator still drives recording.
+    }
     setOpen(false);
   };
 
@@ -305,6 +339,40 @@ function OperatorChip() {
           >
             Operator — saved into each recording
           </label>
+          {roster.length > 0 ? (
+            <div className="flex flex-col gap-1" data-testid="operator-roster">
+              {operator.trim() && !roster.includes(operator.trim()) && (
+                <p className="mb-1 rounded-control border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-800">
+                  “{operator.trim()}” is not on the roster — pick a name below
+                  (Settings &gt; Operators edits the list).
+                </p>
+              )}
+              {roster.map((name) => (
+                <button
+                  key={name}
+                  type="button"
+                  data-testid={`operator-pick-${name}`}
+                  onClick={() => {
+                    setOperator(name);
+                    try {
+                      window.localStorage.setItem(OPERATOR_STORAGE_KEY, name);
+                    } catch {
+                      // Same as save(): unpersisted, but the pick still applies.
+                    }
+                    setOpen(false);
+                  }}
+                  className={cn(
+                    'rounded-control border px-2.5 py-1.5 text-left text-sm',
+                    name === operator.trim()
+                      ? 'border-teal-300 bg-teal-50 font-semibold text-teal-700'
+                      : 'border-gray-200 text-gray-700 hover:bg-gray-50',
+                  )}
+                >
+                  {name}
+                </button>
+              ))}
+            </div>
+          ) : (
           <div className="flex gap-2">
             <input
               id="operator-name"
@@ -327,6 +395,7 @@ function OperatorChip() {
               Save
             </button>
           </div>
+          )}
         </div>
       )}
     </div>
@@ -405,7 +474,9 @@ function SoloPage({ tabId, config }: { tabId: V2TabId; config: RuntimeConfig }) 
         aria-label={label}
         className="min-h-0 flex-1 overflow-auto"
       >
-        <TabContent tabId={tabId} />
+        <PanelBoundary resetKey={tabId} standalone>
+          <TabContent tabId={tabId} />
+        </PanelBoundary>
       </section>
     </main>
   );

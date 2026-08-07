@@ -8,7 +8,7 @@ identical between them lives here; a pipeline module supplies only
 * which flow to run and where to look for it (bundled vs. the robot's config),
 * how to turn the bagflow report into its summary (the ``summarize`` callback).
 
-Layout for one job (everything under ``data/report/<pipeline>/<run_id>/``)::
+Layout for one job (everything under ``data/report/<pipeline>/<capture_id>/``)::
 
     summary.json          the kairos verdict (this is what "validated" means)
     report.json           bagflow's own report — kept as an artifact
@@ -48,12 +48,7 @@ from kairos_common.monitoring.expected_hz import make_expected_hz_resolver
 
 from dora_runner.bagflow_flow import FlowBindings, materialize_flow
 from dora_runner.bagflow_runtime import DoraEndpoint, bagflow_available, run_flow
-from dora_runner.mcap_utils import (
-    enumerate_topics,
-    find_mcap,
-    resolve_source_dir,
-    validate_run_id,
-)
+from dora_runner.mcap_utils import enumerate_topics, find_mcap, resolve_source_dir
 
 logger = logging.getLogger("kairos")
 
@@ -132,16 +127,16 @@ def _clean_outputs(report_dir: Path, workdir: Path) -> None:
         (report_dir / name).unlink(missing_ok=True)
 
 
-# Everything a job writes is keyed by (pipeline, run_id), so two jobs on the SAME
-# run and pipeline would wipe each other's workdir mid-flight (a double-clicked
-# "validate"). Jobs run in this one process, so a per-key lock is enough to
-# serialize them; other runs — and the other gate on the same run — still execute
-# concurrently up to KAIROS_DORA_MAX_CONCURRENCY.
-_run_locks: dict[tuple[str, str], asyncio.Lock] = {}
+# Everything a job writes is keyed by (pipeline, capture_id), so two jobs on the
+# SAME capture and pipeline would wipe each other's workdir mid-flight (a
+# double-clicked "validate"). Jobs run in this one process, so a per-key lock is
+# enough to serialize them; other captures — and the other gate on the same
+# capture — still execute concurrently up to KAIROS_DORA_MAX_CONCURRENCY.
+_capture_locks: dict[tuple[str, str], asyncio.Lock] = {}
 
 
-def _run_lock(pipeline_id: str, run_id: str) -> asyncio.Lock:
-    return _run_locks.setdefault((pipeline_id, run_id), asyncio.Lock())
+def _capture_lock(pipeline_id: str, capture_id: str) -> asyncio.Lock:
+    return _capture_locks.setdefault((pipeline_id, capture_id), asyncio.Lock())
 
 
 def node_logs(workdir: Path) -> list[Path]:
@@ -166,14 +161,14 @@ def reported_artifact(path: Path, resolved_root: Path, configured_root: Path) ->
 
 
 def _flow_failure(
-    message: str, *, run_id: str, flow: str, workdir: Path, log_tail: list[str]
+    message: str, *, capture_id: str, flow: str, workdir: Path, log_tail: list[str]
 ) -> ApiError:
     return ApiError(
         status_code=500,
         code="flow_failed",
         message=message,
         details={
-            "run_id": run_id,
+            "capture_id": capture_id,
             "flow": flow,
             "node_logs": [str(path) for path in node_logs(workdir)],
             "log_tail": log_tail,
@@ -187,7 +182,7 @@ class FlowOutcome:
 
     report: dict[str, Any]
     flow: str
-    run_id: str
+    capture_id: str
     wall_s: float
     bag_dir: Path
     template: ValidationTemplate | None
@@ -200,18 +195,17 @@ Summarizer = Callable[[FlowOutcome], dict[str, Any]]
 async def run_bagflow_pipeline(
     *,
     pipeline_id: str,
-    run_id: str,
+    capture_id: str,
     data_dir: Path,
     flow: str,
     endpoint: DoraEndpoint,
     job_name: str,
     summarize: Summarizer,
     template: ValidationTemplate | None = None,
-    dataset_dir: str | None = None,
     flow_dirs: list[Path] | None = None,
     timeout_s: float | None = None,
 ) -> dict[str, Any]:
-    """Run *flow* over a recorded run and return the job result dict."""
+    """Run *flow* over one capture's bag and return the job result dict."""
     if not bagflow_available():
         raise ApiError(
             status_code=503,
@@ -221,18 +215,16 @@ async def run_bagflow_pipeline(
                 "(present in the dora_runner image only)."
             ),
         )
-    validate_run_id(run_id)
-    async with _run_lock(pipeline_id, run_id):
+    async with _capture_lock(pipeline_id, capture_id):
         return await _run_locked(
             pipeline_id=pipeline_id,
-            run_id=run_id,
+            capture_id=capture_id,
             data_dir=data_dir,
             flow=flow,
             endpoint=endpoint,
             job_name=job_name,
             summarize=summarize,
             template=template,
-            dataset_dir=dataset_dir,
             flow_dirs=flow_dirs,
             timeout_s=timeout_s,
         )
@@ -241,29 +233,28 @@ async def run_bagflow_pipeline(
 async def _run_locked(
     *,
     pipeline_id: str,
-    run_id: str,
+    capture_id: str,
     data_dir: Path,
     flow: str,
     endpoint: DoraEndpoint,
     job_name: str,
     summarize: Summarizer,
     template: ValidationTemplate | None,
-    dataset_dir: str | None,
     flow_dirs: list[Path] | None,
     timeout_s: float | None,
 ) -> dict[str, Any]:
-    """The body of one validation, with this run's outputs held exclusively."""
+    """The body of one validation, with this capture's outputs held exclusively."""
     # Every path below is handed to a subprocess whose cwd is the flow's workdir,
     # so they must be absolute: `data_dir` is "./data" by default (settings.py),
     # which the bagflow CLI would otherwise resolve against the wrong directory.
     # Artifacts are reported back in the CONFIGURED shape (see reported_artifact).
     configured_dir = data_dir
     data_dir = data_dir.resolve()
-    bag_dir = resolve_source_dir(data_dir, run_id, dataset_dir)
-    # Fail before starting a dataflow when the run holds no MCAP at all.
+    bag_dir = resolve_source_dir(data_dir, capture_id)
+    # Fail before starting a dataflow when the capture holds no MCAP at all.
     find_mcap(bag_dir)
 
-    report_dir = data_dir / "report" / pipeline_id / run_id
+    report_dir = data_dir / "report" / pipeline_id / capture_id
     workdir = report_dir / "flow"
     report_dir.mkdir(parents=True, exist_ok=True)
     _clean_outputs(report_dir, workdir)
@@ -273,7 +264,7 @@ async def _run_locked(
     required = required_topics(template, config)
     report_path = report_dir / "report.json"
     bindings = FlowBindings(
-        run_id=run_id,
+        capture_id=capture_id,
         bag_dir=bag_dir,
         report_path=report_path,
         report_dir=report_dir,
@@ -313,7 +304,7 @@ async def _run_locked(
         cause = f" {run.error_line}" if run.error_line else ""
         raise _flow_failure(
             f"validation flow produced no report — {reason}.{cause}"[:500],
-            run_id=run_id,
+            capture_id=capture_id,
             flow=flow,
             workdir=workdir,
             log_tail=run.log_tail,
@@ -323,7 +314,7 @@ async def _run_locked(
     except (OSError, ValueError) as exc:
         raise _flow_failure(
             f"validation flow wrote an unreadable report: {exc}",
-            run_id=run_id,
+            capture_id=capture_id,
             flow=flow,
             workdir=workdir,
             log_tail=run.log_tail,
@@ -333,7 +324,7 @@ async def _run_locked(
         FlowOutcome(
             report=report,
             flow=flow,
-            run_id=run_id,
+            capture_id=capture_id,
             wall_s=run.wall_s,
             bag_dir=bag_dir,
             template=template,

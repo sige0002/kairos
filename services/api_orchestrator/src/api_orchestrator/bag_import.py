@@ -14,16 +14,16 @@ Shape of the import, and why each part is the way it is:
   operator, not to us. Even with ``move=true`` the source is deleted only after
   the import is fully finalised — so a failure at any point leaves the original
   exactly where it was.
-* **Staged under ``.incoming/`` and atomic-renamed into place**, the same
-  contract the robot-pull importer follows (e7c8c6a). ``RunService._bag_local``
-  keys "a finalised local copy exists" on ``recorded/<run_id>/metadata.yaml``
-  in the FINAL path, so a partially-copied import must never be visible there.
-  The rename is the single instant at which the run becomes real.
-* **The run row is created only AFTER the rename succeeds.** A row written
-  up-front would be a run with no recording behind it, which every other
-  lifecycle path (startup reconciliation, retention, the pending-validation
-  scan) would then have to learn to ignore. In-flight progress lives in
-  :class:`ImportRegistry` instead, and a failed import leaves nothing to clean.
+* **Staged under ``.incoming/<capture_id>`` and atomic-renamed into place**, the
+  same contract the robot-pull importer follows. §2's invariant is that an
+  incomplete directory under ``objects/`` can only ever be a live recording, so
+  a partially-copied import must never be visible there. The rename is the
+  single instant at which the capture becomes real.
+* **The capture row is created only AFTER the rename succeeds.** A row written
+  up-front would be a capture with no bytes behind it, which every other path
+  (the reconciler, retention, the digest queue) would then have to learn to
+  ignore. In-flight progress lives in :class:`ImportRegistry` instead, and a
+  failed import leaves nothing to clean up.
 
 ``metadata.yaml`` is REQUIRED, and that is a deliberate rejection rather than a
 warning — see :func:`inspect_source`.
@@ -31,38 +31,69 @@ warning — see :func:`inspect_source`.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import os
 import shutil
-import tempfile
 import uuid
+from collections.abc import Container
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from kairos_common.bag_metadata import METADATA_FILENAME, read_bag_metadata
+from kairos_common.capture_sidecars import (
+    ObjectManifestV2,
+    write_object_manifest,
+)
 from kairos_common.errors import ApiError
-from kairos_common.time import utc_now_iso8601
+from kairos_common.ids import new_capture_id
+from kairos_common.rebuild import ReplicaState
+from kairos_common.time import utc_iso8601_of, utc_now_iso8601
+
+from api_orchestrator.layout import DataLayout, is_reserved_name
+from api_orchestrator.models import Capture, CaptureState, CaptureTopic
 
 logger = logging.getLogger(__name__)
-
-# Staging directory for in-flight imports, a sibling of the finalised runs.
-# Dot-prefixed so it sorts and globs out of the way of real run directories.
-INCOMING_DIRNAME = ".incoming"
 
 # Read size for the verified copy (matches the archive pipeline).
 _COPY_CHUNK = 4 * 1024 * 1024
 
-# Prefix for a generated run_id. Satisfies ``^[A-Za-z0-9_-]+$`` (the charset
-# mcap_utils.validate_run_id and the recorder both enforce) by construction,
-# and marks the run's provenance at a glance in Review.
+# Prefix for the display name a bag import gets. capture_id is the identity
+# (§1); this only marks provenance at a glance in the capture list.
 RUN_ID_PREFIX = "imported"
 
-# Bound on suffix retries when a generated run_id collides (two imports started
-# in the same second). Mirrors run/batch id allocation.
-_MAX_RUN_ID_ATTEMPTS = 50
+
+@dataclass(frozen=True)
+class ImportLabels:
+    """Labels the operator supplied for the bags in one import request (§4.3).
+
+    Written straight into the synthesized ``object_manifest.json``, NOT into
+    ``record.json``'s override block, and the difference is the whole point.
+    An import writes the capture's BIRTH manifest, so naming the operator here
+    is the same act as the recorder stamping a ``/record/start`` request — it
+    is what was recorded, not a later correction of it. Putting them in the
+    override block instead would say the opposite: that some earlier value was
+    wrong, when there was never a value at all.
+
+    Filing them as recorded facts is also what makes §4.3 behave sensibly
+    afterwards. A Review edit becomes an override ON TOP of these, and clearing
+    that edit falls back to what the import declared rather than to null.
+    """
+
+    operator: str | None = None
+    task: str | None = None
+    robot: str | None = None
+
+    def __bool__(self) -> bool:
+        return any((self.operator, self.task, self.robot))
+
+
+# The "no labels supplied" default, as a singleton so it can be a parameter
+# default without constructing one per call (and without tripping B008).
+NO_LABELS = ImportLabels()
 
 
 @dataclass
@@ -118,9 +149,7 @@ def _ns_to_iso(ns: int | None) -> str | None:
     if ns is None or ns <= 0:
         return None
     try:
-        return (
-            datetime.fromtimestamp(ns / 1e9, tz=UTC).isoformat().replace("+00:00", "Z")
-        )
+        return utc_iso8601_of(datetime.fromtimestamp(ns / 1e9, tz=UTC))
     except (OverflowError, OSError, ValueError):
         return None
 
@@ -187,26 +216,89 @@ def _dir_bytes(path: Path) -> int:
     return total
 
 
-def _mcap_is_readable(path: Path) -> str | None:
-    """``None`` when the MCAP parses, else a plain-language reason.
+def _mcap_summary(path: Path) -> tuple[str | None, int | None]:
+    """``(unreadable reason, message count)`` for one shard.
 
     Only the summary/footer section is read — the same Layer-1 trick the
     stop-time quick check uses (``quick_check.read_mcap_summary``), so this
     stays milliseconds even on a multi-GB bag. A file that cannot be opened at
     all is the interesting case: it means the import would land something no
     validator could ever read.
+
+    The count comes from the same read, which is why comparing it against what
+    ``metadata.yaml`` declares costs nothing extra. ``None`` means the file
+    carries no statistics section (an unindexed MCAP) — unknown, not zero, and
+    a caller must not treat it as a shortfall.
     """
     from mcap.reader import make_reader
 
     try:
         with path.open("rb") as fh:
-            make_reader(fh).get_summary()
+            summary = make_reader(fh).get_summary()
     except Exception as exc:  # noqa: BLE001 - mcap raises assorted parse errors
-        return str(exc) or exc.__class__.__name__
-    return None
+        return (str(exc) or exc.__class__.__name__), None
+    if summary is None or summary.statistics is None:
+        return None, None
+    return None, int(summary.statistics.message_count)
 
 
-def inspect_source(source: Path, *, recorded_dir: Path) -> SourceBag:
+def _declared_mcaps(info: dict[str, Any]) -> tuple[list[str], str | None]:
+    """``(shard names, damage)`` from ``metadata.yaml``'s own file inventory.
+
+    rosbag2 writes ``relative_file_paths``; older versions carry the same list
+    as ``files[].path``. Both being ABSENT is not a complaint — there is simply
+    nothing to check against, and inventing a failure from it would reject bags
+    that are perfectly whole.
+
+    A field that is present but the wrong shape is the opposite, and the
+    distinction is the same one the lifecycle ledger draws one directory over:
+    damage is not absence. ``relative_file_paths: bag_0.mcap`` — a string where
+    a list belongs — used to fall through to the absent branch and produce an
+    empty inventory, so a bag whose own manifest is malformed imported as
+    though it had declared nothing. That reads the damage as a clean bill of
+    health, which is the one interpretation it cannot bear.
+
+    Only ``.mcap`` entries are returned: a ``.db3`` sibling listed here is a
+    different storage plugin's business, and is rejected earlier if it is all
+    the bag has.
+    """
+    raw: Any = info.get("relative_file_paths")
+    if raw is None:
+        entries: Any = info.get("files")
+        if entries is None:
+            return [], None  # no inventory at all: nothing to check
+        if not isinstance(entries, list):
+            return [], "files is not a list"
+        raw = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                return [], "files contains an entry that is not a mapping"
+            raw.append(entry.get("path"))
+    elif not isinstance(raw, list):
+        return [], "relative_file_paths is not a list"
+
+    names: list[str] = []
+    for entry in raw:
+        if entry is None:
+            continue  # a files[] entry with no path key: nothing declared
+        if not isinstance(entry, str):
+            return [], "the file inventory contains a non-string path"
+        if not entry.endswith(".mcap"):
+            continue
+        # Only the BASENAME is used. The paths are relative to the bag
+        # directory, so a metadata.yaml naming ``../../outside.mcap`` must not
+        # send this looking outside it — collapsed, it is simply looked for
+        # here and reported missing, and the file it named is never touched.
+        #
+        # The price, stated rather than hidden: a bag that genuinely keeps a
+        # shard in a subdirectory (``sub/bag_1.mcap``) is refused as missing
+        # even though the file exists. rosbag2 writes flat paths, so this is
+        # theoretical — but it is a real trade, not a free guard.
+        names.append(Path(entry).name)
+    return names, None
+
+
+def inspect_source(source: Path, *, layout: DataLayout) -> SourceBag:
     """Validate an import source and read what it declares, or raise ApiError.
 
     Every rejection names the offending path and says what to do about it —
@@ -215,11 +307,10 @@ def inspect_source(source: Path, *, recorded_dir: Path) -> SourceBag:
     ``metadata.yaml`` is REQUIRED, and the choice to reject rather than warn is
     deliberate:
 
-    * ``RunService._bag_local`` decides "a finalised local copy exists on this
-      host" purely by the presence of ``recorded/<run_id>/metadata.yaml``. A run
-      imported without one would report ``bag_local=false`` forever, and the
-      Review UI reads that as "still on the robot, not transferred yet" — so the
-      run would be permanently, invisibly mislabelled.
+    * §8's rebuild uses ``metadata.yaml`` (or an ``.mcap``) to tell an
+      ``interrupted`` capture from a ``failed`` one, so a bag imported without
+      it would be reclassified as a failed recording on the next rebuild — the
+      catalog would quietly contradict the import that succeeded.
     * ``kairos_common.bag_metadata.topic_signature`` returns ``None`` without
       it, so the episode would enter the catalog with an UNKNOWN topic set —
       precisely the silent-schema-mismatch failure the signature exists to stop.
@@ -255,23 +346,34 @@ def inspect_source(source: Path, *, recorded_dir: Path) -> SourceBag:
             details={"source_path": str(source)},
         )
 
-    # Importing out of recorded/ would copy a run onto itself (and, for a source
-    # under .incoming/, race the copy that is still writing it).
+    # Importing out of the STORE's own subtrees would copy a capture onto
+    # itself (and, under .incoming/, race the copy still writing it). Only
+    # those are refused — not all of data_dir: `data/<bags>/` is where AGENTS.md
+    # tells operators to drop sample and incoming recordings, and refusing the
+    # documented drop spot made the import unusable without a second mount.
+    data_root = layout.data_dir.resolve()
     try:
-        source.relative_to(recorded_dir.resolve())
+        relative = source.relative_to(data_root)
     except ValueError:
         pass
     else:
-        raise ApiError(
-            status_code=400,
-            code="import_source_inside_recorded",
-            message=(
-                f"{source} is already inside kairos's own recordings directory "
-                f"({recorded_dir}). That run is in Review already — importing it "
-                "would only make a second copy of it."
-            ),
-            details={"source_path": str(source), "recorded_dir": str(recorded_dir)},
-        )
+        head = relative.parts[0] if relative.parts else ""
+        if not relative.parts or is_reserved_name(head):
+            raise ApiError(
+                status_code=400,
+                code="import_source_inside_data_dir",
+                message=(
+                    f"{source} is inside kairos's own store ({data_root / head}). "
+                    "Those directories hold captures kairos already manages — "
+                    "importing from one would copy a capture onto itself. Point "
+                    "at the folder the bags were recorded into instead."
+                ),
+                details={
+                    "source_path": str(source),
+                    "data_dir": str(layout.data_dir),
+                    "reserved": head,
+                },
+            )
 
     mcap_files = sorted(source.glob("*.mcap"))
     if not mcap_files:
@@ -331,17 +433,100 @@ def inspect_source(source: Path, *, recorded_dir: Path) -> SourceBag:
             details={"source_path": str(source)},
         )
 
-    unreadable = _mcap_is_readable(mcap_files[0])
-    if unreadable is not None:
+    # The bag's own inventory, against the directory. A split recording is only
+    # whole if every shard it declares is here: an interrupted copy leaves the
+    # rest readable and metadata.yaml still counting the messages of the one
+    # that never arrived, so the capture lands looking complete and short.
+    declared, inventory_damage = _declared_mcaps(info)
+    if inventory_damage is not None:
+        raise ApiError(
+            status_code=400,
+            code="import_damaged_inventory",
+            message=(
+                f"{source / METADATA_FILENAME} declares its own files in a shape "
+                f"this cannot read ({inventory_damage}). That is damage, not an "
+                "older format — and read as 'nothing declared' it would let a "
+                "bag missing half its shards import as whole. "
+                f"`ros2 bag reindex {source}` rewrites the file from the MCAPs."
+            ),
+            details={
+                "source_path": str(source),
+                "remedy": f"ros2 bag reindex {source}",
+            },
+        )
+    missing = [name for name in declared if not (source / name).is_file()]
+    if missing:
+        raise ApiError(
+            status_code=400,
+            code="import_missing_shard",
+            message=(
+                f"{METADATA_FILENAME} lists {len(missing)} file(s) that are not "
+                f"in {source}: {', '.join(missing)}. The copy is incomplete — "
+                "the messages they hold would be counted by the catalog and "
+                "absent from the bag. Copy the whole directory again."
+            ),
+            details={"source_path": str(source), "missing": missing},
+        )
+
+    # EVERY shard, not just the first. A recording still being written has a
+    # complete shard 0 and a growing tail, so checking only the first is the
+    # one arrangement guaranteed to miss it.
+    #
+    # Cost, decided deliberately: this is O(shards) per bag and the scan
+    # endpoint runs it over a whole folder, so a directory of hundreds of
+    # multi-shard bags scans proportionally slower. It stays footer-only — a
+    # seek per shard, not a read — and the alternative of checking only the
+    # first and last would let a truncated MIDDLE shard through, which is this
+    # same bug wearing a different hat. If the scan ever turns out to be slow,
+    # measure it and bound it on evidence; do not trade the hole back.
+    counted = 0
+    every_shard_counted = True
+    for mcap in mcap_files:
+        unreadable, count = _mcap_summary(mcap)
+        if unreadable is None:
+            if count is None:
+                every_shard_counted = False
+            else:
+                counted += count
+            continue
         raise ApiError(
             status_code=400,
             code="import_unreadable_mcap",
             message=(
-                f"{mcap_files[0].name} could not be read as an MCAP file "
+                f"{mcap.name} could not be read as an MCAP file "
                 f"({unreadable}). The recording is likely truncated or still "
                 "being written — copy it again once the recorder has stopped."
             ),
-            details={"source_path": str(source), "file": mcap_files[0].name},
+            details={"source_path": str(source), "file": mcap.name},
+        )
+
+    # What the bag SAYS it holds, against what its own summaries count. The
+    # missing-shard check above catches a file that never arrived; this catches
+    # the same harm with every file present — metadata declaring 999,999
+    # messages over a bag holding three, which imports a capture whose
+    # message_count counts messages that are not there.
+    #
+    # Only a SHORTFALL is refused. An unindexed shard reports no statistics at
+    # all, and "unknown" must not be read as "zero", so a single uncounted
+    # shard abandons the comparison rather than inventing a deficit.
+    declared_count = _coerce_int(info.get("message_count"))
+    if every_shard_counted and declared_count is not None and counted < declared_count:
+        raise ApiError(
+            status_code=400,
+            code="import_message_count_short",
+            message=(
+                f"{METADATA_FILENAME} declares {declared_count} messages but the "
+                f"MCAP files hold {counted}. The bag and its own description "
+                "disagree, so importing it would put a count in the catalog "
+                "that nothing on disk supports. "
+                f"`ros2 bag reindex {source}` rewrites the file from the MCAPs."
+            ),
+            details={
+                "source_path": str(source),
+                "declared": declared_count,
+                "counted": counted,
+                "remedy": f"ros2 bag reindex {source}",
+            },
         )
 
     started_ns = _starting_time_ns(info)
@@ -365,73 +550,120 @@ def inspect_source(source: Path, *, recorded_dir: Path) -> SourceBag:
     )
 
 
-def session_payload(bag: SourceBag, run_id: str, *, moved: bool) -> dict[str, Any]:
-    """The synthesized ``session.json`` for an imported run.
+def import_manifest(
+    bag: SourceBag,
+    capture_id: str,
+    run_id: str,
+    *,
+    instance_id: str,
+    labels: ImportLabels = NO_LABELS,
+) -> ObjectManifestV2:
+    """The synthesized ``object_manifest.json`` for an imported bag (§3.3).
 
-    ``operator`` and ``task`` are deliberately NULL. They are the two fields no
-    external bag can answer, and guessing them (from a directory name, say)
-    would put a fabricated attribution onto data destined for a training set —
-    the operator fills them in from Review, where the same fields are editable
-    for any recording. Everything else comes from the bag's own metadata.
+    ``operator`` and ``task`` are NULL unless the import request supplied them.
+    They are the two things no external bag can answer, and guessing them —
+    from a directory name, say — would put a fabricated attribution onto data
+    destined for a training set. A human saying so in the request is not a
+    guess, which is why *labels* is the one way they get filled in here; absent
+    that, the operator fills them in from Review, where the same fields are
+    editable for any capture (§4.3).
 
-    ``imported_from`` keeps the provenance the run_id deliberately does not
-    encode, so "where did this come from?" survives without forcing the source
-    path through the run_id charset.
+    ``digest_state`` stays ``pending``: the bytes were copied and verified, but
+    the per-file hashes that the manifest records are the digest job's single
+    atomic write to make (§3.3), not this one's.
     """
-    return {
-        "run_id": run_id,
-        "operator": None,
-        "task": None,
-        "state": "completed",
-        "started_at": bag.started_at,
-        "ended_at": bag.ended_at,
-        "topics": [name for name, _type in bag.topics],
-        "message_count": bag.message_count if bag.message_count is not None else 0,
-        "bytes": bag.bytes,
-        # Provenance of the import itself (kairos-specific, additive).
-        "imported_from": str(bag.path),
-        "imported_at": utc_now_iso8601(),
-        "import_mode": "move" if moved else "copy",
-    }
-
-
-def allocate_import_run_id(now: datetime | None = None) -> str:
-    """``imported_YYYYmmdd_HHMMSS`` — traversal-safe by construction."""
-    moment = now or datetime.now(UTC)
-    return moment.strftime(f"{RUN_ID_PREFIX}_%Y%m%d_%H%M%S")
-
-
-def unique_run_id(recorded_dir: Path, taken: Any, now: datetime | None = None) -> str:
-    """A run_id free both on disk and in the store.
-
-    *taken* is a predicate ``(run_id) -> bool``; both are checked because the
-    two can disagree (a directory left behind by a deleted row, or vice versa)
-    and either collision would corrupt the import.
-    """
-    base = allocate_import_run_id(now)
-    incoming = recorded_dir / INCOMING_DIRNAME
-    incoming.mkdir(parents=True, exist_ok=True)
-    for attempt in range(_MAX_RUN_ID_ATTEMPTS):
-        candidate = base if attempt == 0 else f"{base}_{attempt}"
-        if (recorded_dir / candidate).exists() or taken(candidate):
-            continue
-        # RESERVE the staging directory, don't just check for it. The id is
-        # second-resolution, so two requests in the same second used to pass
-        # the same checks, both `mkdir(exist_ok=True)` the same staging dir,
-        # interleave their copies into it, and finalize one bag built from two
-        # sources — after which `move` could delete a source whose data is not
-        # what landed. `exist_ok=False` makes the winner unambiguous and sends
-        # the loser to the next candidate.
-        try:
-            (incoming / candidate).mkdir(exist_ok=False)
-        except FileExistsError:
-            continue
-        return candidate
-    raise ApiError(
-        status_code=409,
-        code="run_id_unavailable",
-        message="Could not allocate a unique run_id for the import; retry shortly.",
+    return ObjectManifestV2(
+        capture_id=capture_id,
+        source_instance_id=instance_id,
+        run_id=run_id,
+        state="completed",
+        started_at=bag.started_at or utc_now_iso8601(),
+        ended_at=bag.ended_at,
+        operator=labels.operator,
+        task=labels.task,
+        robot=labels.robot,
+        topics=tuple(
+            {"name": name, "type": type_, "qos": None} for name, type_ in bag.topics
+        ),
+        message_count=bag.message_count,
+        bytes=bag.bytes,
+        integrity="unknown",
+        imported_from=str(bag.path),
+        imported_at=utc_now_iso8601(),
     )
+
+
+# Bound on suffix retries when a same-second import run_id is taken, mirroring
+# ``_MAX_BATCH_ID_ATTEMPTS``. A bulk run of 40 needs 39 of them.
+MAX_RUN_ID_ATTEMPTS = 200
+
+
+def allocate_import_run_id(
+    now: datetime | None = None, *, taken: Container[str] = frozenset()
+) -> str:
+    """``imported_YYYYmmdd_HHMMSS`` (+ ``_N`` if taken) — the display name (§1).
+
+    Second resolution is not unique enough on its own. A bulk import POSTs
+    every bag up front — the copies are what ``_COPY_SLOTS`` throttles, not the
+    requests — so forty bags are claimed inside one second and would all be
+    handed the same name. ``captures.run_id`` is UNIQUE, so those are not forty
+    display names, they are thirty-nine rows that cannot be inserted.
+
+    The ``_N`` suffix is the shape AGENTS.md already documents for a run id
+    (``run_YYYYMMDD_HHMMSS(_N)``), and the same answer ``_allocate_batch_id``
+    gives to the same same-second problem.
+    """
+    moment = now or datetime.now(UTC)
+    base = moment.strftime(f"{RUN_ID_PREFIX}_%Y%m%d_%H%M%S")
+    if base not in taken:
+        return base
+    for attempt in range(2, MAX_RUN_ID_ATTEMPTS + 2):
+        candidate = f"{base}_{attempt}"
+        if candidate not in taken:
+            return candidate
+    raise ApiError(
+        status_code=503,
+        code="import_run_id_unavailable",
+        message=(
+            f"Could not allocate a display name for this import: {base} and "
+            f"{MAX_RUN_ID_ATTEMPTS} suffixed variants are all taken. Retry in "
+            "a second."
+        ),
+    )
+
+
+def taken_run_ids(store: Any, prefix: str) -> set[str]:
+    """Every run_id already in the catalog that starts with *prefix*.
+
+    Scoped by prefix so this stays a small read on a store holding thousands of
+    captures: only same-second import names can collide with the one about to
+    be allocated.
+    """
+    rows = store.execute_read(
+        "SELECT run_id FROM captures WHERE run_id LIKE ?", (f"{prefix}%",)
+    )
+    return {row["run_id"] for row in rows if row["run_id"]}
+
+
+def claim_capture_id(layout: DataLayout) -> str:
+    """Mint a capture_id and RESERVE its staging directory.
+
+    §1 puts id minting for an imported bag on the orchestrator rather than the
+    recorder, and the claim happens here — at the start of the import — so every
+    later step (staging path, manifest, run row) names one identity. The
+    directory is created with ``exist_ok=False`` rather than merely checked:
+    reserving the name is what makes two concurrent imports impossible to
+    interleave into one staging directory.
+    """
+    capture_id = new_capture_id()
+    layout.incoming.mkdir(parents=True, exist_ok=True)
+    layout.incoming_dir(capture_id).mkdir(exist_ok=False)
+    return capture_id
+
+
+def write_manifest(staging: Path, manifest: ObjectManifestV2) -> None:
+    """Write the manifest INSIDE staging, so it arrives with the rename."""
+    write_object_manifest(staging, manifest)
 
 
 def copy_into_staging(bag: SourceBag, staging: Path) -> int:
@@ -442,8 +674,8 @@ def copy_into_staging(bag: SourceBag, staging: Path) -> int:
     ``copy2`` preserves mtimes, so the imported bag keeps the timestamps the
     recording actually had.
     """
-    # The directory was already reserved by unique_run_id; creating it here
-    # would paper over a lost reservation.
+    # The directory was already reserved by claim_capture_id; creating it
+    # here would paper over a lost reservation.
     staging.mkdir(parents=True, exist_ok=True)
     written = 0
     copied: list[str] = []
@@ -532,35 +764,16 @@ def remove_moved_source(bag: SourceBag) -> list[str]:
     return remaining
 
 
-def finalize(staging: Path, final: Path) -> None:
-    """Atomically move the staged directory into its final path.
+def finalize(layout: DataLayout, capture_id: str) -> Path:
+    """Atomically move the staged capture into ``objects/``.
 
-    ``os.replace`` is atomic within a filesystem, and staging lives under
-    ``recorded/.incoming`` precisely so it shares one with ``recorded/``. This
-    single call is the instant the run becomes visible as complete — before it,
-    ``metadata.yaml`` does not exist at the final path, so ``_bag_local`` (and
-    therefore Review) correctly reports the run as not yet present.
+    This single call is the instant the capture becomes real: before it, no
+    manifest exists at the final path, so nothing — not the reconciler, not a
+    rebuild, not the UI — can see a half-copied import as a capture.
     """
-    final.parent.mkdir(parents=True, exist_ok=True)
-    os.replace(staging, final)
+    from api_orchestrator.transfer import adopt_incoming
 
-
-def write_session(run_dir: Path, payload: dict[str, Any]) -> None:
-    """Write ``session.json`` into *run_dir* atomically (temp + replace)."""
-    import json
-
-    path = run_dir / "session.json"
-    fd, tmp_name = tempfile.mkstemp(
-        dir=str(run_dir), prefix=".session.json.", suffix=".tmp"
-    )
-    tmp = Path(tmp_name)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(payload, fh, ensure_ascii=False, indent=2)
-        os.replace(tmp, path)
-    except OSError:
-        tmp.unlink(missing_ok=True)
-        raise
+    return adopt_incoming(layout, capture_id)
 
 
 # ---- in-flight import tracking -------------------------------------------
@@ -578,6 +791,7 @@ class ImportRecord:
 
     import_id: str
     source_path: str
+    capture_id: str
     run_id: str
     move: bool
     state: str = "running"  # running | succeeded | failed
@@ -592,6 +806,7 @@ class ImportRecord:
         return {
             "import_id": self.import_id,
             "source_path": self.source_path,
+            "capture_id": self.capture_id,
             "run_id": self.run_id,
             "move": self.move,
             "state": self.state,
@@ -615,11 +830,18 @@ class ImportRegistry:
         self._limit = limit
 
     def create(
-        self, *, source_path: str, run_id: str, move: bool, bytes_total: int
+        self,
+        *,
+        source_path: str,
+        capture_id: str,
+        run_id: str,
+        move: bool,
+        bytes_total: int,
     ) -> ImportRecord:
         record = ImportRecord(
             import_id=uuid.uuid4().hex[:12],
             source_path=source_path,
+            capture_id=capture_id,
             run_id=run_id,
             move=move,
             bytes_total=bytes_total,
@@ -654,3 +876,161 @@ class ImportRegistry:
                     break
             else:  # pragma: no cover - all running; keep them all
                 return
+
+
+# ---- the import pipeline --------------------------------------------------
+
+# How many bag copies may run at once. POST returns 202 immediately, so a bulk
+# run of 40 folders queues 40 tasks in about a second — unbounded, that is 40
+# multi-GB reads and writes competing for one disk, all of them slower and all
+# of them failing together if the disk fills. Two keeps the disk busy without
+# turning a routine import into a thrash. Queued imports simply wait; their
+# ImportRecord stays `queued`, which is what the UI already reports.
+COPY_SLOT_LIMIT = 2
+
+
+def create_capture_row(
+    store: Any,
+    record: ImportRecord,
+    bag: SourceBag,
+    instance_id: str,
+    layout: DataLayout,
+    labels: ImportLabels = NO_LABELS,
+) -> None:
+    """Insert the imported bag as a completed capture with a present replica.
+
+    ``completed`` is the honest state: the recording is over and its bag is
+    whole. ``operator``/``task`` stay null unless the request named them —
+    the two things an external bag cannot tell us, supplied by a human at
+    import or filled in from Review rather than invented here. The row mirrors
+    the manifest written a moment ago, which is what a rebuild would derive.
+    """
+    capture = Capture(
+        capture_id=record.capture_id,
+        run_id=record.run_id,
+        source_instance_id=instance_id,
+        state=CaptureState.completed,
+        operator=labels.operator,
+        task=labels.task,
+        robot=labels.robot,
+        started_at=bag.started_at,
+        ended_at=bag.ended_at,
+        topics=[CaptureTopic(name=name, type=type_) for name, type_ in bag.topics],
+        message_count=bag.message_count,
+        bytes=bag.bytes,
+    )
+    # Deliberately NOT caught. ``create_capture`` raises ``CaptureExistsError``
+    # for ANY uniqueness clash, not only ``capture_id``, and ``run_id`` is
+    # UNIQUE too — so the old "pragma: no cover - the id was just minted"
+    # swallow turned a rejected row into an import that reported success with
+    # nothing in Review, plus a replica pointing at a capture that did not
+    # exist. Letting it out reaches the caller's post-finalize branch, which
+    # already has the honest words for this state: the bag is in objects/ and
+    # the catalog is behind (``import_catalog_pending``, I-5).
+    store.create_capture(capture)
+    store.upsert_replica(
+        record.capture_id,
+        instance_id,
+        # Present but UNVERIFIED: the copy was verified file-by-file on the way
+        # in, but §9-4 reserves present_verified for a sealed manifest, and the
+        # digest job has not run yet.
+        ReplicaState.present_unverified,
+        path=str(layout.capture_dir(record.capture_id)),
+    )
+
+
+async def run_import(
+    bag: SourceBag,
+    record: ImportRecord,
+    layout: DataLayout,
+    *,
+    store: Any,
+    instance_id: str,
+    copy_slots: asyncio.Semaphore,
+    labels: ImportLabels = NO_LABELS,
+) -> None:
+    """Copy, describe, move into place, then create the row. Source last."""
+    staging = layout.incoming_dir(record.capture_id)
+    # Whether the staged copy has been renamed into objects/. Past that instant
+    # the capture EXISTS on disk, so a later failure is a catalog problem, not
+    # a lost import — and must not be reported as if nothing arrived.
+    finalized = False
+    try:
+        # 1. Copy into staging. Nothing is visible under objects/ yet, so a
+        #    crash here leaves no capture that looks complete. The slot bounds
+        #    how many multi-GB copies run at once (see COPY_SLOT_LIMIT); the
+        #    steps after it are a small write and a rename, so they need none.
+        async with copy_slots:
+            record.bytes_copied = await asyncio.to_thread(
+                copy_into_staging, bag, staging
+            )
+
+        # 2. The manifest goes INSIDE staging so it arrives with the rename
+        #    rather than appearing a moment later.
+        await asyncio.to_thread(
+            write_manifest,
+            staging,
+            import_manifest(
+                bag,
+                record.capture_id,
+                record.run_id,
+                instance_id=instance_id,
+                labels=labels,
+            ),
+        )
+
+        # 3. The atomic instant: the capture becomes real here and not before.
+        await asyncio.to_thread(finalize, layout, record.capture_id)
+        finalized = True
+
+        # 4. Row last. A row without its bytes would be a capture every other
+        #    path (reconciler, retention, digest) has to special-case.
+        create_capture_row(store, record, bag, instance_id, layout, labels)
+
+        # 5. Only now may the source go, and only if asked — and only the files
+        #    that were actually imported. The copy takes top-level FILES only,
+        #    so a recursive delete here would destroy an operator's `notes/` or
+        #    `videos/` sitting beside the bag: data that was never imported and
+        #    would then exist nowhere.
+        if record.move:
+            await asyncio.to_thread(remove_moved_source, bag)
+
+        record.state = "succeeded"
+        record.finished_at = utc_now_iso8601()
+        logger.info(
+            "bag imported",
+            extra={"capture_id": record.capture_id, "source": record.source_path},
+        )
+    except Exception as exc:  # noqa: BLE001 - any failure must land in the record
+        if not finalized:
+            # Clean up BEFORE publishing the terminal state: a caller polling
+            # until "failed" is entitled to find nothing half-imported.
+            await asyncio.to_thread(shutil.rmtree, staging, True)
+        record.state = "failed"
+        record.finished_at = utc_now_iso8601()
+        if isinstance(exc, ApiError):
+            record.error_code, record.error_message = exc.code, exc.message
+        else:
+            record.error_code = "import_failed"
+            record.error_message = str(exc) or exc.__class__.__name__
+        if finalized:
+            # The rename already happened: objects/<capture_id> holds a whole
+            # bag with a valid manifest. Deleting it to make the failure tidy
+            # would throw away the operator's data; the sidecar is the truth
+            # (§8) and the next store reconcile adopts it. Say exactly that,
+            # instead of a bare "failed" that reads as "nothing was imported"
+            # while the recording quietly shows up in Review later.
+            record.error_code = "import_catalog_pending"
+            record.error_message = (
+                f"The bag was copied in ({record.capture_id}) but the catalog "
+                f"entry failed: {record.error_message}. The files are in place; "
+                "a store reconcile will list the recording."
+            )
+        logger.warning(
+            "bag import failed",
+            extra={
+                "capture_id": record.capture_id,
+                "source": record.source_path,
+                "error": record.error_code,
+            },
+        )

@@ -10,13 +10,13 @@
 // Every number is measured; each empty state explains itself (no fabrication).
 
 import { useQuery } from '@tanstack/react-query';
-import { apiGet } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
-import type { AlertEvent, RecordStatus, TopicStatus } from '../../api/types';
+import type { AlertEvent, TopicStatus } from '../../api/types';
 import type { RuntimeConfig } from '../../config';
 import { Card, StatusDot } from '../../components/ui';
 import { statusTone, useMonitorRows } from '../../features/monitor/useMonitorRows';
 import { SystemCard } from './SystemCard';
+import { useRecordStatus } from '../captures/useRecordStatus';
 import { useNowClock } from './useNowClock';
 import { computeRecordContext, formatElapsed } from './recordContext';
 import { toAlertRows } from './alerts';
@@ -32,14 +32,10 @@ const TALLY: { status: TopicStatus; label: string }[] = [
 ];
 
 function RecordContextBlock() {
-  const { data } = useQuery({
-    queryKey: queryKeys.recordStatus,
-    queryFn: ({ signal }) => apiGet<RecordStatus>('/record/status', { signal }),
-    refetchInterval: 5000,
-  });
-  const active = !!data && (data.state === 'recording' || data.state === 'stopping');
-  const now = useNowClock(active);
-  const ctx = computeRecordContext(data, now);
+  const view = useRecordStatus();
+  const isPending = view.loading;
+  const now = useNowClock(view.recording);
+  const ctx = computeRecordContext(view, now);
 
   return (
     <Card className="flex flex-col gap-2 px-4 py-3.5" data-testid="overview-record">
@@ -47,26 +43,56 @@ function RecordContextBlock() {
         Recording
       </span>
       {ctx.recording ? (
-        <div className="flex flex-wrap items-center gap-2.5">
+        <>
+          <div className="flex flex-wrap items-center gap-2.5">
+            <span
+              data-testid="overview-record-state"
+              className="inline-flex items-center gap-1.5 rounded-chip bg-red-50 px-[7px] py-0.5 text-[10.5px] font-bold text-red-700"
+            >
+              <span className="h-[7px] w-[7px] animate-recpulse rounded-full bg-red-600" />
+              REC
+            </span>
+            <span className="font-mono text-[13px] font-semibold text-gray-900">
+              {ctx.runId ?? '—'}
+            </span>
+            <span className="font-mono text-xs text-gray-500">{formatElapsed(ctx.elapsedMs)}</span>
+          </div>
+          {/* The run name above is display text (§1); this is the identity the
+              capture list, jobs and reports are keyed by. */}
           <span
-            data-testid="overview-record-state"
-            className="inline-flex items-center gap-1.5 rounded-chip bg-red-50 px-[7px] py-0.5 text-[10.5px] font-bold text-red-700"
+            data-testid="overview-record-capture"
+            className="font-mono text-[11px] text-gray-400"
           >
-            <span className="h-[7px] w-[7px] animate-recpulse rounded-full bg-red-600" />
-            REC
+            capture {ctx.captureId ?? '— (the recorder did not name it)'}
           </span>
-          <span className="font-mono text-[13px] font-semibold text-gray-900">
-            {ctx.runId ?? '—'}
-          </span>
-          <span className="font-mono text-xs text-gray-500">{formatElapsed(ctx.elapsedMs)}</span>
-        </div>
-      ) : (
+        </>
+      ) : isPending ? (
+        <span
+          data-testid="overview-record-state"
+          className="inline-flex w-fit rounded-chip bg-gray-100 px-[7px] py-0.5 text-[10.5px] font-bold text-gray-400"
+        >
+          CHECKING…
+        </span>
+      ) : ctx.liveKnown ? (
         <span
           data-testid="overview-record-state"
           className="inline-flex w-fit rounded-chip bg-gray-100 px-[7px] py-0.5 text-[10.5px] font-bold text-gray-500"
         >
           STANDBY
         </span>
+      ) : (
+        <>
+          <span
+            data-testid="overview-record-state"
+            className="inline-flex w-fit rounded-chip bg-amber-100 px-[7px] py-0.5 text-[10.5px] font-bold text-amber-700"
+          >
+            LIVE STATE UNREPORTED
+          </span>
+          <span className="text-[11.5px] leading-relaxed text-gray-500">
+            The recorder answered without its live-capture list, so it cannot be confirmed that
+            nothing is recording (§10). This is not the same as an idle recorder.
+          </span>
+        </>
       )}
     </Card>
   );

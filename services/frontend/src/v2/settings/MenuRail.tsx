@@ -1,9 +1,8 @@
-// Left menu rail: the 8 settings sections + a footer stamp of the ACTIVE robot.
+// Left menu rail: the settings sections + a footer stamp of the ACTIVE robot.
 
 import { useQuery } from '@tanstack/react-query';
-import { apiGet } from '../../api/client';
+import { getConfigOptions } from '../../api/config';
 import { queryKeys } from '../../api/queryKeys';
-import type { ConfigOptions } from '../../api/types';
 import { Card, cn } from '../../components/ui';
 import { SETTINGS_MENU } from './data';
 import type { SettingsState } from './useSettingsState';
@@ -14,7 +13,7 @@ export function MenuRail({ settings }: { settings: SettingsState }) {
   // so the footer shows the one honest, sourced value we do have.
   const optionsQuery = useQuery({
     queryKey: queryKeys.configOptions,
-    queryFn: ({ signal }) => apiGet<ConfigOptions>('/config/options', { signal }),
+    queryFn: ({ signal }) => getConfigOptions({ signal }),
   });
   const activeRobot = optionsQuery.data?.active_robot;
 

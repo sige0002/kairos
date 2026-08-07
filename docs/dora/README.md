@@ -1,4 +1,4 @@
-<!-- Mirror of docs/dora/README.ja.md (Japanese is the source of truth). Edit the Japanese side first, then update this file by hand. -->
+<!-- AUTO-GENERATED from docs/dora/README.ja.md. Do not edit by hand — edit the Japanese source and run /sync-docs. -->
 
 # dora_runner — validation dev guide (current state / adding a check / unit tests / debugging)
 
@@ -10,10 +10,10 @@
 > resource list at [resources.ja.md](resources.ja.md).
 
 ## Current state (updated 2026-07-26)
-- There are **6 enabled pipelines: `fast_validation` / `full_validation` / `dataset_export` /
+- There are **5 enabled pipelines: `fast_validation` / `full_validation` /
   `loss_report` / `video_check` / `signal_report`** (`dataset_convert` / `dataset_validation` are
   `enabled=false` placeholders; `POST /jobs` rejects them with `pipeline_unavailable`).
-- The registry is **implemented**: `registry.py`'s `build_default_registry()` registers the 6 bundled
+- The registry is **implemented**: `registry.py`'s `build_default_registry()` registers the 5 bundled
   pipelines, and `plugin_loader.discover_plugins()` scans manifests under `KAIROS_PLUGINS_DIR`
   (default `services/dora_runner/plugins/`) and auto-registers them (example plugin `hello_dora`
   included).
@@ -79,7 +79,7 @@ Validation IS a bagflow flow, so "add a check" means "add a node and write it in
 2. **As a plugin** (no core changes needed): put a manifest (`kairos_plugin.yaml`) and the
    implementation under `KAIROS_PLUGINS_DIR`. `discover_plugins()` auto-registers it at startup (see
    `hello_dora` for reference).
-3. For reproducibility, include `pipeline` / `version` in the summary (same convention as the 4
+3. For reproducibility, include `pipeline` / `version` in the summary (the same convention as the
    bundled pipelines).
 4. Running as a dataflow on the dora daemon is a future direction
    ([dora_plugins.md](../specs/en/dora_plugins.md)). Today it runs via the in-process interpreter.
@@ -98,29 +98,29 @@ cargo test -p bagflow-checks --manifest-path services/dora_runner/bagflow/Cargo.
 - **Flow materialization** — `tests/test_bagflow_flow.py` (`${KAIROS_*}` substitution, path
   resolution, search order, the bundled flow).
 - **Real-MCAP flow test** — `tests/test_fast_validation.py`. Depends on a real recording at
-  `data/recorded/<RUN_ID>` **and** on the bagflow/dora binaries; it auto-skips when either is missing
+  `data/objects/<CAPTURE_ID>` **and** on the bagflow/dora binaries; it auto-skips when either is missing
   (i.e. it only runs inside the image). For how to produce a recording, see the integration recipes in
   [AGENTS.md](../../AGENTS.md).
 
 ## Debugging / iteration (an easy-to-debug workflow)
 - **Local CLI** (no HTTP server needed). It uses real dora, so run it **inside the image**:
   ```bash
-  # auto-generate a template and run (build a draft from the run's topics and compare)
-  docker compose exec dora_runner python -m dora_runner.cli <run_id> --data-dir /data
+  # auto-generate a template and run (build a draft from the capture's topics and compare)
+  docker compose exec dora_runner python -m dora_runner.cli <capture_id> --data-dir /data
   # swap the template or the flow and re-run as many times as you like
-  docker compose exec dora_runner python -m dora_runner.cli <run_id> --data-dir /data --template my.yaml
-  docker compose exec dora_runner python -m dora_runner.cli <run_id> --data-dir /data --json  # raw summary
+  docker compose exec dora_runner python -m dora_runner.cli <capture_id> --data-dir /data --template my.yaml
+  docker compose exec dora_runner python -m dora_runner.cli <capture_id> --data-dir /data --json  # raw summary
   ```
-  - The pass/fail maps to the **exit code (0/1)**. Output is `/data/report/fast_validation/<run_id>/summary.json`.
+  - The pass/fail maps to the **exit code (0/1)**. Output is `/data/report/fast_validation/<capture_id>/summary.json`.
   - On a host without the binaries it **says so and exits 2** (it never silently falls back to another
     implementation).
 - **When a flow fails**: the failed job's `details.node_logs` points at
-  `data/report/<pipeline>/<run_id>/flow/.bagflow/out/<uuid>/log_<node>.txt`. The flow that actually ran
+  `data/report/<pipeline>/<capture_id>/flow/.bagflow/out/<uuid>/log_<node>.txt`. The flow that actually ran
   is `flow/flow.yml` in the same directory (after `${KAIROS_*}` substitution).
 - **Drive bagflow directly** (the smallest repro, with kairos out of the picture):
   ```bash
   docker compose exec dora_runner bagflow run --no-attach \
-    --bag /data/recorded/<run_id> --report /tmp/report.json /opt/kairos/flows/fast_validation.yml
+    --bag /data/objects/<capture_id> --report /tmp/report.json /opt/kairos/flows/fast_validation.yml
   ```
 - **Note**: dora_runner owns its coordinator/daemon (127.0.0.1:6112 by default). Pass
   `--coordinator-port 6112` when running `dora list` and friends by hand (6012 is dora's own default,

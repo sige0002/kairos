@@ -1,61 +1,135 @@
-"""Pydantic models and shared enums for the api_orchestrator run lifecycle.
+"""Pydantic models and shared enums for the api_orchestrator capture store v2.
 
-These mirror the schemas in ``docs/specs/ja/api_orchestrator.md`` and the
-shared vocabulary in ``docs/specs/ja/config.md`` (run state enum, QoS, error
-shape). They are the OpenAPI-visible request/response contracts for the public
-``/api/v1`` run-lifecycle endpoints.
+These are the OpenAPI-visible request/response contracts for ``/api/v1``. The
+capture-store vocabulary itself (:class:`CaptureState`, :class:`ReplicaState`,
+:class:`DigestState`) is **imported** from ``kairos_common`` rather than
+restated here: the recorder writes those strings into ``object_manifest.json``
+and the rebuild scanner reads them back, so a second definition in this service
+would be a second thing to keep in sync with the sidecars on disk.
+
+The v1 ``runs``/``episodes`` split is gone (contract §8). One capture carries
+both the recording facts and the operator's review, so what used to be a ``Run``
+joined to an ``Episode`` is now a single :class:`Capture`.
 """
 
 from __future__ import annotations
 
-from enum import StrEnum
 from typing import Any, Literal
 
 from kairos_common import Compression, Durability, JobState, Reliability
-from pydantic import BaseModel, Field
+from kairos_common.capture_sidecars import (
+    TERMINAL_STATES,
+    UNFINALIZED_STATES,
+    CaptureState,
+    DigestState,
+)
 
-# Console v2 Phase 2 controlled vocabularies (design doc
-# console_v2_phase2_episode_model). Kept as Literal aliases so they are visible
-# in the OpenAPI schema and validated at the request boundary.
+# Re-exported, not redefined: dora_runner exchanges these exact models with this
+# service, so they live in kairos_common.contracts and both sides import one
+# definition. Every existing ``from api_orchestrator.models import JobStatus``
+# keeps working. ``JobCreateResponse`` stays local — see the contracts docstring.
+from kairos_common.contracts.jobs import (
+    JobCreateRequest,
+    JobResult,
+    JobStatus,
+    RequiredTopicTemplate,
+    TemplateGenerateRequest,
+    ValidationTemplate,
+    ValidationTemplateListResponse,
+)
+from kairos_common.rebuild import ReplicaState
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+__all__ = [
+    "TERMINAL_STATES",
+    "ArchivedFile",
+    "UNFINALIZED_STATES",
+    "Batch",
+    "BatchCoverageResponse",
+    "BatchCreateRequest",
+    "BatchDetail",
+    "BatchListResponse",
+    "BatchPatchRequest",
+    "BatchStatus",
+    "BatchSummary",
+    "Capture",
+    "CoverageRow",
+    "CaptureDeleteRequest",
+    "CaptureDetail",
+    "CaptureError",
+    "CaptureListResponse",
+    "CaptureState",
+    "CaptureTopic",
+    "DeleteKind",
+    "DigestState",
+    "JobCreateRequest",
+    "JobCreateResponse",
+    "JobResult",
+    "JobStatus",
+    "Quality",
+    "QualitySource",
+    "QuickCheck",
+    "QuickCheckL0Topic",
+    "QuickCheckL1Topic",
+    "QuickCheckLayer0",
+    "QuickCheckLayer1",
+    "QuickCheckVerdict",
+    "RecordPrepareResponse",
+    "RecordStartRequest",
+    "Replica",
+    "ReplicaState",
+    "RequiredTopicTemplate",
+    "RetentionCandidate",
+    "RetentionResponse",
+    "ReviewSaveRequest",
+    "ReviewStatus",
+    "Split",
+    "TaskResult",
+    "TemplateGenerateRequest",
+    "TopicQos",
+    "ValidationPresetInfo",
+    "ValidationPresetListResponse",
+    "ValidationTemplate",
+    "ValidationTemplateListResponse",
+]
+
+# Controlled vocabularies, kept as ``Literal`` aliases so they are visible in the
+# OpenAPI schema and validated at the request boundary.
 TaskResult = Literal["success", "failure"]
 Quality = Literal["good", "needs_review", "not_usable"]
 QualitySource = Literal["operator", "quick_check", "validator"]
 ReviewStatus = Literal["pending", "adopted", "excluded"]
 BatchStatus = Literal["active", "completed", "ended_early"]
-
-
-class RunState(StrEnum):
-    """Run lifecycle state (shared vocabulary, config.md).
-
-    Orchestrator owns this enum; recorder reports a compatible subset.
-    """
-
-    created = "created"
-    recording = "recording"
-    stopping = "stopping"
-    completed = "completed"
-    failed = "failed"
-    interrupted = "interrupted"
+# §7: one endpoint, two intents. ``discard`` is "this was never uploaded and is
+# not worth keeping"; ``delete`` is an ordinary removal. They take the same code
+# path and differ only in the ledger kind and what the UI is required to say
+# about reversibility (§12), which is why they are one field and not two routes.
+DeleteKind = Literal["discard", "delete"]
 
 
 class TopicQos(BaseModel):
-    """Resolved per-topic QoS as recorded for a run."""
+    """Resolved per-topic QoS as recorded for a capture."""
 
     reliability: Reliability
     durability: Durability
     depth: int = Field(ge=0)
 
 
-class RunTopic(BaseModel):
-    """A topic captured in a run, with its resolved type and QoS.
-
-    Sourced from the recorder ``GET /record/metadata`` (the ``"all"`` selector
-    is expanded there); the orchestrator only syncs it into the run row.
-    """
+class CaptureTopic(BaseModel):
+    """A topic captured in a recording, with its resolved type and QoS."""
 
     name: str
-    type: str
+    # A failed start's sidecar (§3.4) records topics BEFORE type discovery
+    # finished, as an explicit null. That is data the rebuild must accept:
+    # one such row must never make the whole catalog unreadable (E2E §13-4
+    # found exactly that as a permanent GET /captures 500).
+    type: str = ""
     qos: TopicQos | None = None
+
+    @field_validator("type", mode="before")
+    @classmethod
+    def _null_type_is_undiscovered(cls, v: object) -> object:
+        return "" if v is None else v
 
 
 class Split(BaseModel):
@@ -65,38 +139,60 @@ class Split(BaseModel):
     max_duration_s: int | None = None
 
 
-class RunError(BaseModel):
-    """Structured reason attached to a run (e.g. a failed start)."""
+class CaptureError(BaseModel):
+    """Structured reason attached to a capture (e.g. a failed start).
+
+    The recorder writes ``object_manifest.json``'s ``error`` as a plain string
+    (§3), so :func:`coerce_error` widens that into this shape rather than the
+    manifest and the API disagreeing about the field's type.
+    """
 
     code: str
     message: str
 
 
-class RunEpisode(BaseModel):
-    """Compact episode summary attached to a run (Console v2 Phase 2).
+# The recorder's marker for "this recording ended because it reached a cap I
+# was configured with" (MAX_RECORD_SECONDS / MAX_RECORD_BYTES). It rides in the
+# manifest's ``error`` field only because that is the one free-text field a
+# manifest has — the recorder's own code says "no error occurred" and sets the
+# state to ``completed``. This is the one message shape whose code IS knowable.
+AUTO_STOP_PREFIX = "auto-stopped:"
 
-    Additively joined onto ``GET /api/v1/runs`` and ``GET /api/v1/runs/{id}`` so
-    the Review tab shows the operator's task result + quality and the adopt /
-    exclude state on any terminal, without an existing run field changing.
-    ``null`` when the run has no episode.
+
+def coerce_error(value: Any) -> CaptureError | None:
+    """Normalize a manifest/rebuild ``error`` into a :class:`CaptureError`.
+
+    Accepts ``None``, the recorder's plain string, or an already-structured
+    mapping. A bare string becomes ``recorder_failed`` — the specific code is
+    unknowable from a free-text message, and inventing a more precise one would
+    make the code field a guess.
+
+    The single exception is the auto-stop note, which the recorder writes with a
+    fixed prefix precisely so it can be told apart. Filing it as
+    ``recorder_failed`` was the guess: it puts a completed take that stopped
+    exactly where it was told under the code that means the recorder faulted,
+    with nothing on the wire to separate it from a kill. It keeps its message —
+    the note names the cap, which is the only place that survives — but under a
+    code that says what happened.
     """
+    if value is None or value == "":
+        return None
+    if isinstance(value, CaptureError):
+        return value
+    if isinstance(value, str):
+        if value.startswith(AUTO_STOP_PREFIX):
+            return CaptureError(code="auto_stopped", message=value)
+        return CaptureError(code="recorder_failed", message=value)
+    if isinstance(value, dict) and value.get("code"):
+        return CaptureError(
+            code=str(value["code"]), message=str(value.get("message", ""))
+        )
+    return None
 
-    episode_id: str
-    batch_id: str
-    # Per-(robot, local day) batch number of this episode's batch (Console v2
-    # Phase 2). Surfaced on the join so Review/Datasets can label a row
-    # "MM/DD · #N" without a second fetch. Null if the batch predates numbering.
-    batch_seq: int | None = None
-    index_in_batch: int
-    task_result: TaskResult
-    failure_reason: str | None = None
-    quality: Quality
-    review_status: ReviewStatus
 
-
-# ---- stop-time quick-check settlement -----------------------------------
+# ---- stop-time quick-check settlement -------------------------------------
 # A two-layer "quick check" settled once, at recording stop, and persisted on
-# the run (see ``quick_check.py`` for the settlement logic + verdict rules).
+# the capture (see ``quick_check.py`` for the settlement logic + verdict rules).
 # Layer 0 is a no-MCAP pull (monitor snapshot + incidents + recorder integrity);
 # Layer 1 is an MCAP summary-only read (per-channel counts, no message scan).
 # The whole object degrades honestly: each layer carries ``available`` flags so
@@ -118,21 +214,14 @@ class QuickCheckL0Topic(BaseModel):
 
 
 class QuickCheckLayer0(BaseModel):
-    """Layer 0 — no MCAP read (~ms): monitor snapshot + incidents + integrity.
-
-    ``available`` is the monitor-derived reachability (metrics/incidents). The
-    recorder-sourced ``integrity`` is populated independently of it (the recorder
-    is a separate service), so a monitor outage still leaves integrity intact.
-    """
+    """Layer 0 — no MCAP read (~ms): monitor snapshot + incidents + integrity."""
 
     available: bool = False
     integrity: str | None = None
     topics: dict[str, QuickCheckL0Topic] = Field(default_factory=dict)
-    # Monitor ``/incidents`` items overlapping the recording window (raw pass-
-    # through of the monitor's contract; see MonitorClient.incidents).
     incidents: list[dict[str, Any]] = Field(default_factory=list)
-    # Additive: the recorder's auto-stop note when MAX_RECORD_SECONDS/BYTES
-    # tripped the stop (else null). Informational — not a verdict trigger.
+    # The recorder's auto-stop note when MAX_RECORD_SECONDS/BYTES tripped the
+    # stop (else null). Informational — not a verdict trigger.
     backstop: str | None = None
 
 
@@ -145,12 +234,7 @@ class QuickCheckL1Topic(BaseModel):
 
 
 class QuickCheckLayer1(BaseModel):
-    """Layer 1 — MCAP summary-only read (<1s): per-channel counts + duration.
-
-    ``summary_available`` is False when the bag has no summary/statistics section
-    (an unclean stop); we deliberately do NOT fall back to a full scan — instead
-    the missing summary is treated as a strong ``needs_review`` signal.
-    """
+    """Layer 1 — MCAP summary-only read (<1s): per-channel counts + duration."""
 
     available: bool = False
     summary_available: bool = False
@@ -161,11 +245,7 @@ class QuickCheckLayer1(BaseModel):
 
 
 class QuickCheckVerdict(BaseModel):
-    """The settled quality call + every specific reason that triggered it.
-
-    ``quality`` is ``good`` only when ``reasons`` is empty; any trigger flips it
-    to ``needs_review`` and appends a human-readable, specific reason.
-    """
+    """The settled quality call + every specific reason that triggered it."""
 
     quality: Literal["good", "needs_review"] = "good"
     reasons: list[str] = Field(default_factory=list)
@@ -181,52 +261,416 @@ class QuickCheck(BaseModel):
     verdict: QuickCheckVerdict = Field(default_factory=QuickCheckVerdict)
 
 
-class Run(BaseModel):
-    """A run as returned by ``GET /api/v1/runs/{id}`` and the record endpoints."""
+# ---- captures --------------------------------------------------------------
 
-    run_id: str
-    state: RunState
-    started_at: str | None = None
-    ended_at: str | None = None
-    topics: list[RunTopic] = Field(default_factory=list)
-    compression: Compression = Compression.none
-    split: Split | None = None
-    message_count: int | None = None
-    bytes: int | None = None
-    error: RunError | None = None
-    # Session metadata captured at record start (who recorded, what task).
+
+class Replica(BaseModel):
+    """Where one installation's copy of a capture stands (§8).
+
+    ``missing_unmanaged`` is the interesting value: it is what an external
+    ``rm -rf`` produces, and §9-2 requires it to surface as a warning rather
+    than be normalised into a completed deletion.
+    """
+
+    instance_id: str
+    state: ReplicaState
+    path: str | None = None
+    manifest_digest: str | None = None
+    verified_at: str | None = None
+    updated_at: str | None = None
+
+
+class DatasetMembership(BaseModel):
+    """A capture's membership in one dataset, as shown on the capture."""
+
+    membership_id: str
+    dataset_id: str
+    dataset_name: str | None = None
+    display_index: int
+
+
+class CaptureListItem(BaseModel):
+    """One recording as the LIST serves it — everything except its topics.
+
+    Replaces v1's ``Run`` + ``Episode`` pair. The review fields here are a
+    **cache** of ``record.json``, which is authoritative (§4.1-4);
+    ``review_revision`` is the CAS token a client must echo back as
+    ``base_revision`` to save an edit.
+
+    The split exists because ``topics`` is per-recording data no list view
+    renders, and it dominates the page: at 100 topics a row is ~11.4 KiB of
+    which ~91% is the topic array, so a 200-row page measured 2.3 MiB against
+    ~208 KiB without it (E-27). Modelled as a base class rather than an
+    exclusion so the schema says it outright — a reader of the OpenAPI
+    document should not have to know which route filters what.
+
+    ``topics_count`` is what the list keeps of that array: the one thing a row
+    actually shows about topics is how many there were, and a client that had
+    to fetch each capture's detail to render a number would spend a request per
+    row to undo the saving above.
+    """
+
+    capture_id: str
+    run_id: str | None = None
+    source_instance_id: str | None = None
+    state: CaptureState
     operator: str | None = None
     task: str | None = None
-    # Console v2 Phase 2: the episode this run belongs to (null when none). Set
-    # by the runs-list / run-detail read path; never persisted on the run row.
-    episode: RunEpisode | None = None
-    # Stop-time quick-check settlement, persisted on the run row (null until the
-    # stop-path settlement completes, or for runs that predate the feature).
+    robot: str | None = None
+    started_at: str | None = None
+    ended_at: str | None = None
+    compression: Compression = Compression.none
+    split: Split | None = None
+    error: CaptureError | None = None
+    message_count: int | None = None
+    bytes: int | None = None
     quick_check: QuickCheck | None = None
-    # Whether a FINALISED local copy of the recording exists on THIS host
-    # (``recorded/<run_id>/metadata.yaml`` present in the FINAL path — the
-    # importer stages pulls under .incoming/ and atomic-renames on completion,
-    # so this doubles as the "fully imported" marker). False on a split
-    # recording PC until the run is pulled from the robot; the Review transfer
-    # UI keys on it. Derived at read time by the list/detail paths, never
-    # persisted (null on write-path responses that don't compute it).
-    bag_local: bool | None = None
+    # ---- review (record.json is authoritative; these mirror it) ----
+    task_result: TaskResult | None = None
+    failure_reason: str | None = None
+    quality: Quality | None = None
+    quality_source: QualitySource | None = None
+    review_status: ReviewStatus = "pending"
+    # 0 = never reviewed (no record.json exists). Echoed back as base_revision.
+    review_revision: int = 0
+    # Set only when a human let a NEEDS_REVIEW verdict through (the reason
+    # they gave). The verdict itself is derived from the reports on disk —
+    # see api_orchestrator.verdict — and is served on the detail, not here.
+    validation_override: str | None = None
+    batch_id: str | None = None
+    index_in_batch: int | None = None
+    # ---- tombstone (§7); the row survives the deletion ----
+    deleted_at: str | None = None
+    delete_kind: DeleteKind | None = None
+    delete_reason: str | None = None
+    # ---- archive (§6): the bytes left deliberately, to a place we recorded ----
+    archived_at: str | None = None
+    archive_destination: str | None = None
+    # ---- lease (§7.1): a job is touching objects/<id> right now ----
+    lease_owner: str | None = None
+    lease_expires_at: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    # ---- derived at read time, never stored on the row ----
+    # This installation's copy. ``null`` only for a capture we have never held.
+    replica: Replica | None = None
+    # ``complete`` once the digest job has sealed per-file hashes into the
+    # manifest. Derived from the replica state so "verified" is one fact, not
+    # two columns that can disagree (§9-4).
+    digest_state: DigestState = DigestState.pending
+    # How many topics the recording captured. The list carries the NUMBER; the
+    # topics themselves are on the detail (see this class's docstring). Always
+    # equals ``len(topics)`` there — :class:`Capture` derives it rather than
+    # letting a caller supply one that could disagree.
+    topics_count: int = 0
+    memberships: list[DatasetMembership] = Field(default_factory=list)
+
+
+class Capture(CaptureListItem):
+    """A recording with its topics — every single-capture response (§8).
+
+    ``topics`` lives here rather than on the list item; see
+    :class:`CaptureListItem` for why. Everything that serves ONE capture —
+    the detail, a review save, a record start/stop — returns this, so the one
+    screen that reads topics (Review's inspection panel, which fetches the
+    detail) is unaffected by the list not carrying them.
+    """
+
+    topics: list[CaptureTopic] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _count_topics(self) -> Capture:
+        """Derive ``topics_count`` from the topics actually carried.
+
+        Computed here rather than stored as a column or passed in by each
+        caller, because those are the two ways the number could come to
+        disagree with the array beside it — and a count that disagrees is
+        worse than no count, since nothing downstream can tell which is
+        right. Every capture is built through this model, so the list's
+        number is always the length of the detail's array by construction.
+        """
+        self.topics_count = len(self.topics)
+        return self
+
+
+class CaptureDetail(Capture):
+    """A capture plus the on-disk sidecars and reports (``GET /captures/{id}``).
+
+    The database row stays the queryable cache; these are read best-effort from
+    disk and are ``null`` when absent, so a capture whose files were deleted
+    still returns cleanly.
+
+    There is deliberately no ``dataset_stats``: it pointed at the
+    ``dataset_export`` pipeline, which §6 retired along with the physical
+    dataset tree, so the field could only ever be ``null``. A field that is
+    structurally incapable of holding a value is worse than a missing one — it
+    invites a client to keep checking it.
+    """
+
+    manifest: dict[str, Any] | None = None
+    record: dict[str, Any] | None = None
+    validation: dict[str, Any] | None = None
+    # Derived verdict (`unknown` | `pass` | `needs_review`) folded from the
+    # gating pipelines' reports — recomputed on every read so a re-run cannot
+    # leave a stale copy behind.
+    verdict: str | None = None
+    loss: dict[str, Any] | None = None
+
+
+class CaptureListResponse(BaseModel):
+    """Cursor-paginated capture list (``GET /api/v1/captures``)."""
+
+    items: list[CaptureListItem]
+    next_cursor: str | None = None
+
+
+class ReviewSaveRequest(BaseModel):
+    """Body for ``PATCH /api/v1/captures/{id}/review`` (§4.1).
+
+    ``base_revision`` is REQUIRED and is the whole point: the save is a
+    compare-and-swap against the capture's current ``review_revision``, so two
+    terminals editing the same capture cannot silently overwrite each other. A
+    mismatch is a ``409`` telling the client to reload, never a merge.
+
+    Every other field is optional and omitted-means-unchanged, except that a
+    field explicitly set to ``null`` clears it — which is why the model tracks
+    ``model_fields_set`` rather than treating ``None`` as "not supplied".
+    """
+
+    base_revision: int = Field(ge=0)
+    task_result: TaskResult | None = None
+    # Bounded like a validation override's reason, and for the same reason: it
+    # is free text that ends up in record.json, on the Review row and in every
+    # delete dialog that names the episode. The values Collect sends come from
+    # the plan catalog's short vocabulary, so this bounds a paste rather than
+    # any real reason. Only the REQUEST is capped — ``RecordV2`` is not, so a
+    # longer value written before this rule still loads and rebuilds.
+    failure_reason: str | None = Field(default=None, max_length=500)
+    quality: Quality | None = None
+    quality_source: QualitySource | None = None
+    review_status: ReviewStatus | None = None
+    batch_id: str | None = None
+    index_in_batch: int | None = Field(default=None, ge=0)
+    # §4.3 label overrides. These three differ from every other field here: they
+    # have a value even on a capture nobody has reviewed, because the manifest
+    # supplied one. So ``null`` does not mean "empty" — it means "stop
+    # overriding", and the capture goes back to what the recorder recorded. On
+    # an imported bag, where the manifest recorded nothing, that is null again.
+    operator: str | None = None
+    task: str | None = None
+    robot: str | None = None
+
+
+class ValidationOverrideRequest(BaseModel):
+    """Body for ``POST /api/v1/captures/{id}/validation-override``.
+
+    ``reason`` is REQUIRED: overriding a failed validation is exactly the act
+    that needs an explanation on the record — without one this is just a way to
+    turn the gate off quietly. ``null`` clears a previous override.
+    """
+
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class CaptureDeleteRequest(BaseModel):
+    """Body for ``POST /api/v1/captures/{id}/delete`` (§7).
+
+    ``reason`` is required for a discard and free text otherwise: a discard is
+    irreversible and the ledger line is the only surviving explanation of why
+    the data is gone.
+    """
+
+    kind: DeleteKind
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class CaptureArchiveRequest(BaseModel):
+    """Body for ``POST /api/v1/captures/{id}/archive`` (§6).
+
+    ``destination`` is an absolute path inside one of ``KAIROS_ARCHIVE_ROOTS``
+    and is validated server-side — archiving copies, verifies, then DELETES the
+    source, so an unconstrained destination would turn this into "copy anywhere,
+    then remove the original".
+    """
+
+    destination: str
+    operator: str | None = None
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class ArchivedFile(BaseModel):
+    """One file as written to the archive destination.
+
+    Same ``{path, size, sha256}`` shape as ``object_manifest.json``'s file list
+    (§3.2), so an archived capture and a local one describe their bytes in one
+    vocabulary.
+    """
+
+    path: str
+    size: int
+    sha256: str
+
+
+class CaptureArchiveResponse(BaseModel):
+    """Result of a completed capture archive.
+
+    ``files`` carries the per-file hashes rather than a count because the
+    source is deleted moments after this is computed: these digests and the
+    matching ``capture_archived`` ledger event are the only things left that
+    can answer "is the archived copy still intact?".
+    """
+
+    capture_id: str
+    destination: str
+    bytes: int
+    file_count: int
+    files: list[ArchivedFile] = Field(default_factory=list)
+    verified: bool = True
+
+
+# ---- datasets (§6: rows + ledger events; no directory tree) ----------------
+
+
+class Dataset(BaseModel):
+    """A logical dataset: a named set of captures, with no physical tree.
+
+    ``status`` walks ``active → archiving → archived`` and never back (§6.x).
+    The three ``archive*`` fields are the durable face of the archive run —
+    they come from database columns replayed out of the ledger, so they
+    survive a rebuild, unlike the in-flight progress served by
+    ``GET /datasets/{id}/archive``.
+    """
+
+    dataset_id: str
+    name: str
+    operator: str | None = None
+    task: str | None = None
+    status: str = "active"
+    created_at: str | None = None
+    member_count: int = 0
+    archive_destination: str | None = None
+    # 'copy' sealed the set and kept the recordings here; 'move' removed them.
+    archive_mode: str | None = None
+    archive_started_at: str | None = None
+    archived_at: str | None = None
+
+
+class DatasetMember(BaseModel):
+    """One capture's membership in a dataset.
+
+    ``display_index`` is the number shown beside the capture inside this
+    dataset. Numbers are never reused after a removal (§6) — the high-water mark
+    is recoverable from the ledger, so a retired number cannot be handed to a
+    second recording and make two different takes share an identity.
+    """
+
+    membership_id: str
+    dataset_id: str
+    capture_id: str
+    display_index: int
+    created_at: str | None = None
+
+
+class DatasetDetail(Dataset):
+    """A dataset plus its members (``GET /api/v1/datasets/{id}``)."""
+
+    members: list[DatasetMember] = Field(default_factory=list)
+
+
+class DatasetArchiveRequest(BaseModel):
+    """``POST /api/v1/datasets/{id}/archive`` — start or resume the run (§6.x).
+
+    ``destination`` is ``<root>/<subpath>`` from the archive allow-list; the
+    server appends ``<operator>/<task>/<name>`` itself, because the views
+    shape has one owner. Omitted on resume — the run continues to the
+    destination its ``started`` event froze, and sending a different one is a
+    409, not a second archive.
+    """
+
+    destination: str | None = None
+    # Where under *destination* the dataset lands, as a RELATIVE path whose
+    # last component is the dataset's folder. Omitted = the server's default
+    # views shape, <operator>/<task>/<name>. Operator-chosen names are free
+    # text; escape and overlap are caught by the same realpath checks as the
+    # destination itself, and a collision with an existing export is the
+    # ordinary 409 destination_not_empty.
+    path: str | None = Field(default=None, max_length=500)
+    # 'move' (default): copy → verify → remove the sources — needs exclusive
+    # members. 'copy': copy → verify → seal, sources untouched — legal for a
+    # dataset that shares recordings with others (a combined set). Omitted on
+    # resume; naming a different mode than the run's is a 409.
+    mode: Literal["copy", "move"] | None = None
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class DatasetArchiveProgress(BaseModel):
+    """``GET /api/v1/datasets/{id}/archive`` — one run's progress.
+
+    Split personality on purpose: ``status`` / ``destination`` / the two
+    timestamps are durable (rows, replayed from the ledger), while ``running``
+    / ``current_*`` / ``error`` are this process's memory and honestly reset
+    on restart. ``running: false`` with status ``archiving`` is the resumable
+    state the UI renders as a Resume button.
+    """
+
+    dataset_id: str
+    status: str
+    destination: str | None = None
+    mode: str | None = None
+    member_total: int = 0
+    members_done: int = 0
+    running: bool = False
+    current_capture_id: str | None = None
+    current_bytes: int | None = None
+    error: dict[str, Any] | None = None
+    archive_started_at: str | None = None
+    archived_at: str | None = None
+
+
+class DatasetCreateRequest(BaseModel):
+    """Body for ``POST /api/v1/datasets``."""
+
+    name: str = Field(min_length=1, max_length=200)
+    operator: str | None = None
+    task: str | None = None
+
+
+class DatasetUpdateRequest(BaseModel):
+    """Body for ``PATCH /api/v1/datasets/{id}`` — edit the three labels.
+
+    Same patch semantics as a review save: an omitted field keeps its value, a
+    field explicitly set to ``null`` clears it. ``name`` cannot be cleared —
+    a dataset without a name has no views path and no way to be spoken about.
+    """
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    operator: str | None = None
+    task: str | None = None
+
+
+class DatasetMemberCreateRequest(BaseModel):
+    """Body for ``POST /api/v1/datasets/{id}/members``."""
+
+    capture_id: str
+
+
+class DatasetListResponse(BaseModel):
+    """``GET /api/v1/datasets``."""
+
+    items: list[Dataset] = Field(default_factory=list)
+
+
+# ---- record lifecycle ------------------------------------------------------
 
 
 class RecordStartRequest(BaseModel):
-    """Body for ``POST /api/v1/record/start``.
-
-    ``topics`` may be an explicit list or the literal ``"all"``; when omitted,
-    the orchestrator falls back to ``recording.yaml`` ``default_topics``.
-    """
+    """Body for ``POST /api/v1/record/start``."""
 
     topics: list[str] | Literal["all"] | None = None
     compression: Compression = Compression.none
     split: Split | None = None
     qos_default: TopicQos | None = None
     qos_overrides: dict[str, TopicQos] | None = None
-    # Optional session metadata, persisted on the run and written to the run's
-    # session.json sidecar (who collected the data, and the task being recorded).
     operator: str | None = None
     task: str | None = None
 
@@ -234,232 +678,109 @@ class RecordStartRequest(BaseModel):
 class RecordPrepareResponse(BaseModel):
     """Response for ``POST /api/v1/record/prepare`` (two-phase start).
 
-    No ``Run`` row exists yet at this point — prepare state lives only in
-    memory on the orchestrator (``RunService._prepared``) until a matching
-    ``POST /api/v1/record/start`` actually persists a row — so this is a
-    distinct shape from :class:`Run`, not a partial/optional-field version of
-    it. ``arming`` is a permissive pass-through of the recorder's readiness
-    snapshot (matched/missing topics, etc.) rather than a tightly-coupled
-    submodel, so a minor field-name difference on the recorder side does not
-    hard-fail this response.
+    No capture row exists yet — prepare state lives only in memory on the
+    orchestrator until a matching ``start`` persists it. ``capture_id`` is the
+    recorder's, minted at prepare time (§1), and is carried through so a client
+    can correlate the eventual capture without waiting for the start response.
     """
 
     run_id: str
+    capture_id: str | None = None
     state: Literal["armed"] = "armed"
     arming: dict[str, Any] = Field(default_factory=dict)
     disarm_at: str | None = None
 
 
-class RunDetail(Run):
-    """A single run plus on-disk audit/report sidecars (``GET /runs/{id}``).
-
-    The base ``Run`` is the SQLite source of truth; these extra fields are read
-    best-effort from disk when present (absent -> ``null``):
-    - ``manifest``: the recorder's ``recorded/<run_id>/manifest.json`` audit.
-    - ``validation``: the latest ``fast_validation`` report summary.
-    - ``dataset_stats``: the latest ``dataset_export`` report summary.
-    - ``loss``: the latest ``loss_report`` per-topic loss summary.
-    """
-
-    manifest: dict[str, Any] | None = None
-    validation: dict[str, Any] | None = None
-    dataset_stats: dict[str, Any] | None = None
-    loss: dict[str, Any] | None = None
-
-
-class RunListResponse(BaseModel):
-    """Cursor-paginated run list (``GET /api/v1/runs``)."""
-
-    items: list[Run]
-    next_cursor: str | None = None
+# ---- retention (§10, redefined) --------------------------------------------
 
 
 class RetentionCandidate(BaseModel):
-    """One recording surfaced by ``GET /api/v1/retention`` as old-and-unexported.
+    """One capture surfaced by ``GET /api/v1/retention`` as reclaimable.
 
-    A *candidate*, never an action: the retention feature only SURFACES runs the
-    operator may want to reclaim (terminal state, still in ``recorded/`` — i.e.
-    not exported — and older than ``RETENTION_DAYS``). Nothing here is deleted
-    automatically; the operator deletes through the existing confirmed
-    ``DELETE /api/v1/runs/{id}`` path. Exported datasets are never candidates.
+    A candidate, never an action. Under v2 the old definition ("a row exists, so
+    it was never exported") is meaningless — §6 keeps the row forever — so a
+    candidate is now a capture that belongs to **no dataset**, is still
+    ``pending`` or ``excluded`` in review, and is older than ``RETENTION_DAYS``.
     """
 
-    run_id: str
+    capture_id: str
+    run_id: str | None = None
     started_at: str | None = None
     bytes: int | None = None
-    state: RunState
-    has_episode: bool = False
+    state: CaptureState
+    review_status: ReviewStatus = "pending"
 
 
 class RetentionResponse(BaseModel):
-    """``GET /api/v1/retention`` — deletion candidates by retention period.
-
-    ``days`` echoes the active ``RETENTION_DAYS`` (``0`` = feature off, always an
-    empty candidate set). ``total_bytes`` sums the candidates' best-effort sizes
-    so the UI can show how much storage reviewing them could reclaim.
-    """
+    """``GET /api/v1/retention`` — reclaim candidates by retention period."""
 
     days: int
     candidates: list[RetentionCandidate] = Field(default_factory=list)
     total_bytes: int = 0
 
 
-class DatasetDetail(BaseModel):
-    """One exported dataset dir + its on-disk sidecars.
+# ---- store health (§8/§9-3) -------------------------------------------------
 
-    (``GET /api/v1/datasets/{operator}/{task}/{index}``) — the post-export
-    counterpart of :class:`RunDetail`. The run row is deleted on export, so
-    everything here is read best-effort from the dataset directory
-    (``dataset.json`` / ``session.json`` / ``manifest.json``) plus the
-    run-keyed report sidecars that survive export, letting the Datasets tab
-    show the same inspection view as Recordings (absent -> ``null``).
-    """
 
-    operator: str
-    task: str
-    index: str
-    # Relative "<operator>/<task>/<index>" under data_dir — pass this as the
-    # `dataset_dir` job param for post-export video_check / loss_report.
+class CorruptEntry(BaseModel):
+    """A sidecar that exists but cannot be read (§8 rule 4)."""
+
+    capture_id: str | None = None
     path: str
-    dataset_dir: str
-    run_id: str | None = None
-    state: str | None = None
-    started_at: str | None = None
-    ended_at: str | None = None
-    exported_at: str | None = None
-    bytes: int | None = None
-    message_count: int | None = None
-    files: list[str] = Field(default_factory=list)
-    # From manifest.json when present (name+type+QoS); else the name-only list
-    # from session.json / dataset.json (type == "").
-    topics: list[RunTopic] = Field(default_factory=list)
-    manifest: dict[str, Any] | None = None
-    dataset: dict[str, Any] | None = None
-    # Episode labels persisted at export time (from episode.json): task_result /
-    # failure_reason / quality / quality_source / review_status + batch context.
-    # ``null`` when the exported run had no episode. Additive (Console v2 Phase 2).
-    episode: dict[str, Any] | None = None
-    validation: dict[str, Any] | None = None
-    loss: dict[str, Any] | None = None
+    reason: str
 
 
-class PipelineDefinition(BaseModel):
-    """Pipeline entry surfaced by dora_runner."""
+class StoreHealth(BaseModel):
+    """``GET /api/v1/store/health`` — what the catalog knows about itself.
 
-    id: str
-    name: str
-    description: str | None = None
-    enabled: bool = True
-    schema_: dict[str, Any] = Field(default_factory=dict, alias="schema")
-
-
-class JobCreateRequest(BaseModel):
-    """Body for ``POST /api/v1/jobs``."""
-
-    run_id: str
-    pipeline: str
-    params: dict[str, Any] = Field(default_factory=dict)
-
-
-class JobCreateResponse(BaseModel):
-    """Response returned after creating a pipeline job."""
-
-    job_id: str
-    run_id: str
-    pipeline: str
-    state: JobState
-    progress: float = Field(default=0.0, ge=0.0, le=1.0)
-    logs_tail: list[str] = Field(default_factory=list)
-
-
-class JobStatus(BaseModel):
-    """OpenAPI-visible job status contract."""
-
-    job_id: str
-    run_id: str
-    pipeline: str
-    state: JobState
-    progress: float = Field(ge=0.0, le=1.0)
-    logs_tail: list[str] = Field(default_factory=list)
-
-
-class JobResult(BaseModel):
-    """Terminal job result."""
-
-    summary: dict[str, Any]
-    artifacts: list[str] = Field(default_factory=list)
-
-
-class RequiredTopicTemplate(BaseModel):
-    """Required topic entry in a validation template."""
-
-    name: str
-    type: str | None = None
-
-
-class ValidationTemplate(BaseModel):
-    """Validation template schema from api_orchestrator.md."""
-
-    name: str
-    version: int
-    required_topics: list[RequiredTopicTemplate] = Field(default_factory=list)
-
-
-class ValidationTemplateListResponse(BaseModel):
-    """Cursor-paginated validation template list."""
-
-    items: list[ValidationTemplate]
-    next_cursor: str | None = None
-
-
-class TemplateGenerateRequest(BaseModel):
-    """Body for ``POST /api/v1/validation/templates/generate``."""
-
-    run_id: str
-
-
-class ValidationPresetInfo(BaseModel):
-    """A one-click validation preset plus its live not-yet-validated targets.
-
-    (``GET /api/v1/validation/presets``) The static fields (``id`` / ``name`` /
-    ``description`` / ``pipeline`` / ``params``) come from the active robot's
-    ``validation_presets.yaml``; the dynamic ones are computed per request:
-    ``total`` completed recordings eligible, of which ``pending`` (listed in
-    ``pending_run_ids``) have no report for this preset's pipeline yet. The
-    Validation tab runs the preset over ``pending_run_ids`` with a single click.
+    Exists because the two failure modes that matter most are both invisible in
+    a normal capture list: a rebuild that could not classify some captures, and
+    a reconciler pass that saw so many files vanish at once that it refused to
+    believe them (§9-3). Both have to be answerable without reading logs.
     """
 
-    id: str
-    name: str
-    description: str = ""
-    pipeline: str
-    params: dict[str, Any] = Field(default_factory=dict)
-    total: int
-    pending: int
-    pending_run_ids: list[str] = Field(default_factory=list)
+    instance_id: str
+    state: Literal["ok", "suspect"] = "ok"
+    # Set when the §9-3 threshold guard latched: the store stopped applying
+    # missing-transitions, the reaper and digests until an operator looks.
+    suspect_reason: str | None = None
+    suspect_at: str | None = None
+    # Whether deletion APIs are available. False when objects/ .trash/ and
+    # .incoming/ are not on one filesystem (§2), which would make the trash
+    # rename an EXDEV copy — silently not the atomic move the design needs.
+    delete_available: bool = True
+    delete_unavailable_reason: str | None = None
+    rebuilt_at: str | None = None
+    rebuild_summary: dict[str, Any] | None = None
+    # Corrupt sidecars as of the most recent COMPLETE scan (§8 rule 4). One
+    # list, not one per pass: both the startup rebuild and the periodic
+    # reconciler scan the same directory, so the newer observation replaces the
+    # older rather than being merged with it.
+    corrupt: list[CorruptEntry] = Field(default_factory=list)
+    # Which pass produced ``corrupt``, and when. Without these "no corruption"
+    # from a scan seconds ago is indistinguishable from the same answer taken
+    # at boot three days ago.
+    corrupt_source: Literal["rebuild", "reconcile"] | None = None
+    corrupt_observed_at: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+    last_reconcile_at: str | None = None
+    last_reconcile: dict[str, Any] | None = None
 
 
-class ValidationPresetListResponse(BaseModel):
-    """List of one-click validation presets (``GET /api/v1/validation/presets``)."""
-
-    items: list[ValidationPresetInfo] = Field(default_factory=list)
-
-
-# ---- Console v2 Phase 2: batches & episodes -----------------------------
+# ---- batches (Collect) ------------------------------------------------------
 
 
 class Batch(BaseModel):
-    """A Collect batch: the episodes recorded in one run of a task/condition.
-
-    ``project`` is a plain string sourced from the Plan; modelling the Plan
-    (Projects/Tasks/Conditions) itself is deferred to Phase 2.5. ``Session`` (the
-    UX-spec Session > Batch > Episode outer level) is also Phase 2.5 TBD.
-    """
+    """A Collect batch: the captures recorded in one run of a task/condition."""
 
     batch_id: str
     robot: str | None = None
-    project: str
-    task: str
+    # Optional because an empty plan catalog has no project to name. A console
+    # that had to send SOMETHING filled the gap with the dash it displays for
+    # "unset", writing a fabricated label into the catalog for good; null is
+    # the true statement and this is what lets it be made (E-5).
+    project: str | None = None
+    task: str | None = None
     condition: str | None = None
     operator: str | None = None
     target_episodes: int = 30
@@ -467,58 +788,35 @@ class Batch(BaseModel):
     ended_reason: str | None = None
     created_at: str | None = None
     ended_at: str | None = None
-    # Monotone count of episodes ever recorded into this batch (incremented on
-    # POST /episodes, never decremented on a run-delete cascade) — the truthful
-    # "N recorded" for Collect's counts, independent of the live episode_count
-    # which shrinks when an episode is deleted.
+    # Monotone count of captures ever reviewed into this batch. Incremented on
+    # the FIRST review save for a capture (§4.1's移設 of the old POST /episodes
+    # side effect) and never decremented, so "N / 30" stays truthful about what
+    # was captured even after a later exclude or delete.
     episodes_recorded: int = 0
-    # Per-(robot, local day) batch number, allocated by the server at create
-    # time (see store._next_batch_seq) — the single human-readable number across
-    # Collect/Review/Datasets. Null only for a row predating numbering.
+    # Whether ``episodes_recorded`` is a LOWER BOUND rather than the count.
+    # A rebuild has no record of review saves — the ledger stores facts, not
+    # events — so it reconstructs the counter by counting the recordings whose
+    # ``record.json`` names this batch. That is a floor: a capture reviewed in
+    # and later deleted took its sidecar with it and cannot be counted. The
+    # display has to be able to tell the two apart, so it is a field rather
+    # than a footnote (§8.2 rule 6).
+    episodes_recorded_is_floor: bool = False
     batch_seq: int | None = None
 
 
-class Episode(BaseModel):
-    """One episode == one run (``run_id`` is unique across episodes)."""
-
-    episode_id: str
-    batch_id: str
-    run_id: str
-    index_in_batch: int
-    task_result: TaskResult
-    failure_reason: str | None = None
-    quality: Quality
-    quality_source: QualitySource = "operator"
-    review_status: ReviewStatus = "pending"
-    created_at: str | None = None
-    updated_at: str | None = None
-
-
 class BatchCreateRequest(BaseModel):
-    """Body for ``POST /api/v1/batches``.
-
-    ``robot`` defaults to the orchestrator's active robot when omitted.
-    """
+    """Body for ``POST /api/v1/batches``."""
 
     robot: str | None = None
-    project: str
-    task: str
+    project: str | None = None
+    task: str | None = None
     condition: str | None = None
     operator: str | None = None
     target_episodes: int = Field(default=30, ge=1)
 
 
 class BatchPatchRequest(BaseModel):
-    """Body for ``PATCH /api/v1/batches/{id}`` (early stop / condition /
-    mid-batch target change).
-
-    ``project``/``task`` are patchable for the empty-batch case only: Collect
-    updates a not-yet-recorded batch in place when the operator switches
-    project/task before the first recording (a batch with recordings rolls over
-    to a new one instead). Without these, such a batch kept its original
-    project/task server-side and later episodes drifted from the operator's
-    choice in ``index.jsonl``.
-    """
+    """Body for ``PATCH /api/v1/batches/{id}``."""
 
     status: BatchStatus | None = None
     ended_reason: str | None = None
@@ -528,67 +826,96 @@ class BatchPatchRequest(BaseModel):
     target_episodes: int | None = Field(default=None, ge=1, le=500)
 
 
-class EpisodeCreateRequest(BaseModel):
-    """Body for ``POST /api/v1/episodes`` (Collect Save).
-
-    ``quality`` is optional: when omitted the backend derives the default from
-    the run's stop-time ``quick_check.verdict.quality`` (with
-    ``quality_source="quick_check"``). Sending an explicit ``quality`` is the
-    operator override and is stored as-is (``quality_source`` then defaults to
-    ``operator``). See ``routers/episodes._resolve_episode_quality``.
-    """
-
-    batch_id: str
-    run_id: str
-    index_in_batch: int = Field(ge=0)
-    task_result: TaskResult
-    failure_reason: str | None = None
-    quality: Quality | None = None
-    quality_source: QualitySource = "operator"
-
-
-class EpisodePatchRequest(BaseModel):
-    """Body for ``PATCH /api/v1/episodes/{id}`` (Review adopt/exclude/override)."""
-
-    task_result: TaskResult | None = None
-    failure_reason: str | None = None
-    quality: Quality | None = None
-    quality_source: QualitySource | None = None
-    review_status: ReviewStatus | None = None
-
-
-class BatchEpisodeSummary(BaseModel):
-    """Compact per-episode row in a batch list item."""
-
-    index: int
-    run_id: str
-    # The parent batch's per-(robot, local day) number (same for every row in
-    # the batch); carried here so a flattened episode list can label rows.
-    batch_seq: int | None = None
-    task_result: TaskResult
-    quality: Quality
-    review_status: ReviewStatus
-
-
 class BatchSummary(Batch):
-    """A batch plus its episode count and compact episode summaries.
+    """A batch plus how many live captures it holds (``GET /api/v1/batches``).
 
-    Returned by ``GET /api/v1/batches`` (list) so Collect can restore an active
-    batch and show progress without a second round-trip per batch.
+    A count, deliberately, not a row per capture. The list carried a compact
+    summary of every capture of every batch — 817 KiB and one query per batch
+    at 50 x 100 (E-27) — which ``GET /api/v1/batches/{id}`` already serves in
+    full and better. Anything needing one batch's episodes asks for that batch.
+
+    Not paginated instead: this list is aggregated unfiltered to compute
+    coverage, and a default limit would silently shorten a total presented as
+    complete.
     """
 
     episode_count: int = 0
-    episodes: list[BatchEpisodeSummary] = Field(default_factory=list)
 
 
 class BatchDetail(Batch):
-    """A batch plus its full episodes (``GET /api/v1/batches/{id}``)."""
+    """A batch plus its full captures (``GET /api/v1/batches/{id}``)."""
 
     episode_count: int = 0
-    episodes: list[Episode] = Field(default_factory=list)
+    captures: list[Capture] = Field(default_factory=list)
 
 
 class BatchListResponse(BaseModel):
-    """Batch list newest-first (``GET /api/v1/batches``)."""
+    """Batch list newest-first (``GET /api/v1/batches``).
+
+    ``total`` counts every batch matching the filters, not the page — it is how
+    a caller that asked for a window knows whether there is more. Optional
+    because it was added after the fact: a client written against the
+    unpaginated list is not required to know the field exists.
+    """
 
     items: list[BatchSummary] = Field(default_factory=list)
+    total: int | None = None
+
+
+class CoverageRow(BaseModel):
+    """One condition's recorded total for a task (``GET /batches/coverage``)."""
+
+    condition: str
+    # Sum of the batches' monotone ``episodes_recorded`` for this condition.
+    recorded: int = 0
+    # True when ANY batch in the sum carries ``episodes_recorded_is_floor``.
+    # A sum is a lower bound as soon as one of its terms is, and there is no
+    # way to say which part is uncertain — so the flag propagates through the
+    # addition rather than being reported per batch.
+    is_floor: bool = False
+
+
+class BatchCoverageResponse(BaseModel):
+    """Per-condition coverage for one task (``GET /api/v1/batches/coverage``).
+
+    Only conditions actually OBSERVED in batches appear, ordered by name. A
+    task's planned-but-never-recorded conditions are the caller's to add as
+    zero rows: the plan catalog is a client-side vocabulary, and a server that
+    invented rows for it would be reporting a plan, not a measurement.
+    """
+
+    task: str
+    rows: list[CoverageRow] = Field(default_factory=list)
+
+
+# ---- jobs / validation ------------------------------------------------------
+
+
+class JobCreateResponse(BaseModel):
+    """Response returned after creating a pipeline job."""
+
+    job_id: str
+    capture_id: str
+    pipeline: str
+    state: JobState
+    progress: float = Field(default=0.0, ge=0.0, le=1.0)
+    logs_tail: list[str] = Field(default_factory=list)
+
+
+class ValidationPresetInfo(BaseModel):
+    """A one-click validation preset plus its live not-yet-validated targets."""
+
+    id: str
+    name: str
+    description: str = ""
+    pipeline: str
+    params: dict[str, Any] = Field(default_factory=dict)
+    total: int
+    pending: int
+    pending_capture_ids: list[str] = Field(default_factory=list)
+
+
+class ValidationPresetListResponse(BaseModel):
+    """List of one-click validation presets."""
+
+    items: list[ValidationPresetInfo] = Field(default_factory=list)

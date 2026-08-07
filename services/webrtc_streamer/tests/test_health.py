@@ -14,9 +14,7 @@ def test_healthz() -> None:
     assert resp.json() == {"status": "ok"}
 
 
-def test_root_reports_stage2() -> None:
+def test_root_reports_service() -> None:
     resp = client.get("/")
     assert resp.status_code == 200
-    body = resp.json()
-    assert body["service"] == "webrtc_streamer"
-    assert body["stage"] == "stage2"
+    assert resp.json() == {"service": "webrtc_streamer"}

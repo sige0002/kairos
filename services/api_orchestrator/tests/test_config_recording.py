@@ -15,7 +15,6 @@ from pathlib import Path
 import httpx
 import yaml
 from api_orchestrator.app_factory import create_orchestrator_app
-from api_orchestrator.store import RunStore
 from fastapi.testclient import TestClient
 from kairos_common import Settings
 
@@ -45,15 +44,14 @@ def _client(tmp_path: Path, fake_recorder, *, seed: dict | None = None) -> TestC
     if seed is not None:
         cfg_path.write_text(yaml.safe_dump(seed), encoding="utf-8")
     settings = Settings(
+        data_dir=str(tmp_path / "data"),
         recording_config=str(cfg_path),
         stream_config="/nonexistent/stream.yaml",
     )
     http_client = httpx.AsyncClient(
         transport=httpx.MockTransport(fake_recorder.handler)
     )
-    app = create_orchestrator_app(
-        settings, store=RunStore(":memory:"), http_client=http_client
-    )
+    app = create_orchestrator_app(settings, http_client=http_client)
     return TestClient(app)
 
 
@@ -113,3 +111,33 @@ def test_put_invalid_returns_422_and_does_not_write(
         # The on-disk file is unchanged, and the live config still the seed.
         assert cfg_path.read_text(encoding="utf-8") == before
         assert c.get("/api/v1/config/recording").json()["config"]["robot_name"] == "hsr"
+
+
+def test_a_hand_broken_config_degrades_instead_of_stopping_the_service(
+    tmp_path: Path, fake_recorder
+) -> None:
+    """E-20, config half: the file was edited outside kairos and left invalid.
+
+    ``_load_recording_config`` is written to warn and carry on for a config it
+    cannot use — that is the whole point of returning ``None``. An unparseable
+    file is the most ordinary way to arrive there, and it must reach the same
+    place as a config that merely fails validation, rather than escaping as a
+    YAML error nobody catches and taking the service down at construction.
+    """
+    cfg_path = tmp_path / "recording.yaml"
+    cfg_path.write_text("robot_name: hsr\ntopics:\n\t- /a\n", encoding="utf-8")
+    settings = Settings(
+        data_dir=str(tmp_path / "data"),
+        recording_config=str(cfg_path),
+        stream_config="/nonexistent/stream.yaml",
+    )
+    http_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(fake_recorder.handler)
+    )
+
+    with TestClient(create_orchestrator_app(settings, http_client=http_client)) as c:
+        body = c.get("/api/v1/config/recording").json()
+        # Reported as absent, with the path, so the Config tab can say which
+        # file to go and fix.
+        assert body["config"] is None
+        assert body["path"] == str(cfg_path)

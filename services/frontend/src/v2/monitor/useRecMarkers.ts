@@ -12,24 +12,22 @@
 // fabricate a marker we didn't witness).
 
 import { useEffect } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { apiGet } from '../../api/client';
-import { queryKeys } from '../../api/queryKeys';
-import type { RecordStatus } from '../../api/types';
 import { useUiStore } from '../../store/uiStore';
+import { useRecordStatus } from '../captures/useRecordStatus';
 import type { ChartMarker } from '../../features/probe/UplotChart';
 
 export function useRecMarkers(): ChartMarker[] {
-  const { data } = useQuery({
-    queryKey: queryKeys.recordStatus,
-    queryFn: ({ signal }) => apiGet<RecordStatus>('/record/status', { signal }),
-    refetchInterval: 5000,
-  });
+  const view = useRecordStatus();
   const markers = useUiStore((s) => s.recMarkers);
   const pushMarker = useUiStore((s) => s.pushRecordMarker);
+  // Only a CONFIRMED state moves the markers. A failed poll would otherwise
+  // keep re-asserting the last known state, and a recorder that died while
+  // recording would never get its STOP marker — the band would read as though
+  // the recording were still running.
+  const state = view.reachable ? (view.status?.state ?? null) : null;
   useEffect(() => {
-    if (data) pushMarker(data.state);
-  }, [data, pushMarker]);
+    if (state) pushMarker(state);
+  }, [state, pushMarker]);
   // RecMarker is structurally identical to ChartMarker ({ t, kind }).
   return markers;
 }

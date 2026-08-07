@@ -1,11 +1,11 @@
-<!-- Mirror of docs/specs/ja/deployment_topology.md (the Japanese file is canonical). Keep this file in sync by hand — the sync-docs skill was retired. -->
+<!-- AUTO-GENERATED from docs/specs/ja/deployment_topology.md. Do not edit by hand — edit the Japanese source and run /sync-docs. -->
 # Deployment topology — recording from a separate PC without overloading the robot
 
 > Status: design finalized (v1). Japanese is the source of truth (treat it as canonical). The English version `docs/specs/en/deployment_topology.md` is an auto-generated mirror (do not edit it directly). **No authentication required.**
 
 > A placement design for recording a rosbag (MCAP) that includes heavy topics such as images
 > from a separate PC (the recording PC), while **not overloading the robot's onboard system at all**. The premise is **wired, same LAN**.
-> The existing single-host configuration (`compose.yaml`) works as-is with no changes (this configuration is an additional "split deployment").
+> The existing single-host configuration (`compose/compose.yaml`) works as-is with no changes (this configuration is an additional "split deployment").
 
 ## 1. The problem: remote DDS subscription overloads the robot
 
@@ -82,8 +82,8 @@ The claim above — "local subscription via ipc:host shared memory = zero additi
 ## 3. Option A (default): edge recording (place the recorder on the robot)
 
 ### 3.1 Configuration files
-- `compose.robot.yaml` … the 4 robot-side services only (reuses definitions from `compose.yaml` via `extends`).
-- `compose.recording.yaml` … the 3 recording-PC-side services only.
+- `compose/robot.yaml` … the 4 robot-side services only (reuses definitions from `compose/compose.yaml` via `extends`).
+- `compose/recording.yaml` … the 3 recording-PC-side services only.
 - **Split into 2 files rather than profiles**: with 1 file + profiles it is easy to "accidentally start a DDS reader on the recording PC".
   **The recording PC's file does not contain any DDS service in the first place**, so the accident cannot happen.
 
@@ -92,14 +92,14 @@ Robot:
 ```bash
 # Place this repository on the robot; match the robot's ROS 2 graph via .env
 cp .env.split.example .env   # edit ROS_DOMAIN_ID / RMW_IMPLEMENTATION / ROS_DISTRO
-make robot-up                # or: docker compose --env-file .env -f compose.robot.yaml up -d --build
+make robot-up                # or: docker compose --project-directory . --env-file .env -f compose/robot.yaml up -d --build
 ```
 - `.env.split.example` has a **"ROS 2 graph (robot side)" section** where you set `ROS_DOMAIN_ID` /
   `RMW_IMPLEMENTATION` / `ROS_DISTRO` (and optionally `CYCLONEDDS_URI` / `FASTRTPS_DEFAULT_PROFILES_FILE` /
   `MSGS_OVERLAY_DIR` / `BIND_HOST`). For `ROS_DISTRO`, **the .env value beats the Makefile default
   (jazzy)** (the image tag/base switches too).
 - Networking: all four robot-side services run with `network_mode: host` + `ipc: host` (inherited via
-  `extends` from `compose.yaml`). The HTTP APIs bind `BIND_HOST` (default `0.0.0.0`) and must be
+  `extends` from `compose/compose.yaml`). The HTTP APIs bind `BIND_HOST` (default `0.0.0.0`) and must be
   reachable from the recording PC across the LAN (trusted-LAN premise; narrow it to the robot's LAN
   interface IP if you must).
 - A robot using the gitignored `config/local/<robot>/` resolves even under plain `docker compose`
@@ -111,7 +111,7 @@ Recording PC:
 ```bash
 cp .env.split.example .env
 # Set ROBOT_IP in .env to the robot's LAN IP. *_HOST references it.
-docker compose -f compose.recording.yaml up -d --build    # or: make recording-up
+docker compose --project-directory . -f compose/recording.yaml up -d --build    # or: make recording-up
 ```
 
 ### 3.3 Seams in the code (default localhost, backward compatible)
@@ -127,19 +127,35 @@ The recorder writes MCAP to **the robot's disk**. dora (CPU-heavy) reads a **PC-
 
 - **Do not mount robot:/data over NFS and let dora read it directly**. If dora scans large MCAP,
   the robot ends up supplying disk/network, which **overloads the robot if recording is in progress** (contrary to the intent of this design).
-- The default is `make import-runs` (`deploy/sync/import_runs.sh`): rsync from the robot **only runs that are finalised (have `metadata.yaml`)**
-  (`--partial --append-verify`, bandwidth-limitable with `BWLIMIT`). It is idempotent and can be run on a timer.
-  In-progress runs are not half-copied.
+- The default is `make import-runs` (`deploy/sync/import_runs.sh`): the unit of discovery is
+  **`objects/<capture_id>`**, and only those whose `object_manifest.json` carries a `state` of
+  **`completed` / `interrupted`** are rsynced from the robot (`--partial --append-verify`,
+  bandwidth-limitable with `BWLIMIT`). `digest_state` is deliberately not part of the condition — the
+  digest is the **receiving** side's job, so waiting on it would deadlock. It is idempotent and can be
+  run on a timer. Each capture is rsynced into `$DATA_DIR/.incoming/<capture_id>` and then, once
+  complete, moved into `objects/` with an `os.replace` on the same filesystem (rsync transfers in
+  sorted order, so `object_manifest.json` arrives ahead of the huge `*.mcap` — a transfer cut short
+  would otherwise leave behind a directory that looks complete while its bag is truncated). That
+  preserves the invariant that **the only incomplete directory ever visible under `objects/` is one
+  the local recorder is in the middle of writing** ([capture_store](capture_store.md) §2). What
+  arrives is picked up and turned into a row by the orchestrator's reconciler, so this script is
+  usable even when the orchestrator is not running.
 - Do not let the recorder POST files (to avoid coupling upload failures to the recording lifecycle).
-- Note: `dora_runner`'s `dataset_export` **moves** files from `recorded/`
-  (`dataset_export.py`). **It is safe against a PC-local copy**, but **destructive if it points at robot storage or a read-only NFS**. Always run it against an already-imported PC-local copy.
+- **v2 removed every step that moves files** (`dataset_export` is retired; a dataset is a DB row).
+  The only thing that still moves bytes is the per-capture archive, whose destination is validated
+  against `KAIROS_ARCHIVE_ROOTS` and rejected when it overlaps `data_dir` (checked in both directions
+  by realpath).
 - **Save-triggered auto-pull (optional, default OFF)**: the recording-PC stack bundles an **importer
-  sidecar** (`deploy/sync/`, defined ONLY in `compose.recording.yaml` — it does not exist in the
-  single-host `compose.yaml`, so `make up` is entirely unaffected). With
+  sidecar** (`deploy/sync/`, defined ONLY in `compose/recording.yaml` — it does not exist in the
+  single-host `compose/compose.yaml`, so `make up` is entirely unaffected). With
   `transfer.auto_pull_on_save: true` in the recording config (edited via Settings > Advanced JSON,
-  the same way as `recording.pre_arm`), the orchestrator POSTs `/pull {run_id}` to the importer right
-  after a Collect Save (`POST /api/v1/episodes`) and only that run is rsynced in (same
-  finalised-only gate, idempotency and resume guarantees as the manual path). **Default false =
+  the same way as `recording.pre_arm`), the orchestrator POSTs `/pull {"capture_id": …}` to the
+  importer right after a Collect Save (**the first review saved against that capture** =
+  `PATCH /api/v1/captures/{id}/review`) and only that capture is rsynced in (same terminal-state
+  gate, idempotency and resume guarantees as the manual path). The importer's `/pull` **validates its
+  body strictly**: either `{"capture_id": <uuid7>}` or `{"all": true}`, and a body it cannot interpret
+  is a `400`. The old behaviour of reading an empty body as "pull everything" was removed — across a
+  key rename, a single mix-up would have turned it into a sweep of the whole robot. **Default false =
   nothing is ever transferred without an explicit opt-in.** The robot-side copy is **kept** (a pull
   is a copy, never a move; robot-side retention is a separate **TBD**). Recovery for failed pulls:
   `IMPORT_SWEEP_S` (periodic sweep, default 0 = off) or the manual `make import-runs`.
@@ -148,12 +164,13 @@ The recorder writes MCAP to **the robot's disk**. dora (CPU-heavy) reads a **PC-
   `ROBOT_SSH_KEY` (absolute path to an identity file, preferred) in `.env.split` (see
   `.env.split.example`). `make import-runs` / `make push-config` / the importer sidecar all read
   the same settings.
-- **Transfer × recording overlap is measured and harmless**: protocol and measured numbers in
-  `deploy/test/overlap_eval/`. Even at 30–60× any real link's intensity (loopback 715 MB/s with
+- **Transfer × recording overlap is measured and harmless** (measured 2026-07-16; the measurement
+  harness dated from the v1-layout era and has been removed — the scripts are in git history at
+  `deploy/test/overlap_eval/`): even at 30–60× any real link's intensity (loopback 715 MB/s with
   doubled ssh crypto), 0 drops and a worst-topic rate change of −0.1 % (well inside §5's <1 %
   primary criterion). `BWLIMIT` is therefore a lever to protect the **WebRTC preview's share of a
-  thin link** (WiFi/Tailscale), not the recording. Rerun the same scripts on the real robot before
-  relying on it there (the measurement box had NVMe + ample CPU).
+  thin link** (WiFi/Tailscale), not the recording. Re-measure before relying on it on the real HSR
+  (the measurement box had NVMe + ample CPU).
 
 ## 4. Option B (alternative): robot-side Zenoh gateway (live full-data recording from a separate PC)
 
@@ -344,7 +361,7 @@ a convergence onto "fix A as the system of record + limit a gated bridge to live
 The only structural solution to "not overloading the robot" is **to not let heavy data leave the robot's DDS onto the network**.
 The default **Option A (edge recording + placement split)** guarantees this by not placing any DDS reader on the recording-PC side.
 Use **Option B (robot-side Zenoh gateway + DDS pinned to localhost)** only when you need live full data from a separate PC.
-The single-host configuration (`compose.yaml`) works as before with nothing changed.
+The single-host configuration (`compose/compose.yaml`) works as before with nothing changed.
 **Option C (a single boundary bridge) has been reviewed in a 3-agent adversarial debate (§5)**: rejected as a permanent
 architecture. It is settled that "recording is always on the robot (A), and the bridge is used only through gates when a
 hard requirement of live PC consumption arises". Because the recording frequency does not drop under any configuration at

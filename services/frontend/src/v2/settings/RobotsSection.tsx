@@ -1,9 +1,9 @@
-// Settings > Robots — real robot selection + per-robot config, at parity with
-// the legacy Config tab (src/features/config/ConfigTab.tsx). The middle column
-// lists the real robots from GET /api/v1/config/options (the active one is
-// marked); selecting a row previews it, and an explicit "Use this robot" action
-// POSTs /api/v1/config/select {category:'robot'} to switch the live system —
-// the same mutation + cache invalidation as ConfigTab's robot buttons.
+// Settings > Robots — real robot selection + per-robot config (superseded the
+// retired v1 Config tab; the recording-config editor it embeds still lives in
+// src/features/config/ConfigTab.tsx). The middle column lists the real robots
+// from GET /api/v1/config/options (the active one is marked); selecting a row
+// previews it, and an explicit "Use this robot" action POSTs
+// /api/v1/config/select {category:'robot'} to switch the live system.
 //
 // The ACTIVE robot shows its editable recording config + per-aspect option
 // pickers. A NON-active robot is shown read-only from GET /api/v1/config/robots/
@@ -16,23 +16,16 @@
 
 import { useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiGet, apiPost } from '../../api/client';
+import { getConfigOptions, getRobotConfig, selectConfig } from '../../api/config';
+import { stopRecord } from '../../api/record';
 import { queryKeys } from '../../api/queryKeys';
-import type {
-  AspectOption,
-  ConfigAspect,
-  ConfigOptions,
-  RecordStatus,
-  RobotConfig,
-} from '../../api/types';
+import type { AspectOption, ConfigAspect, ConfigOptions } from '../../api/types';
+import { useRecordStatus } from '../captures/useRecordStatus';
 import type { RuntimeConfig } from '../../config';
 import { Badge, Button, Card, Modal, cn } from '../../components/ui';
 import { ErrorMessage } from '../../components/ErrorMessage';
-import {
-  optionLabel,
-  RECORDING_CONFIG_KEY,
-  RecordingConfigEditor,
-} from '../../features/config/ConfigTab';
+import { RECORDING_CONFIG_KEY } from '../../api/queryKeys';
+import { optionLabel, RecordingConfigEditor } from './RecordingConfigEditor';
 
 const TOPIC_CHIP_CLASS =
   'inline-flex items-center gap-1.5 rounded-chip bg-teal-100 px-2.5 py-1 font-mono text-[11.5px] font-semibold text-teal-700';
@@ -44,7 +37,7 @@ const ASPECT_LABEL: Record<ConfigAspect, string> = {
   validation: 'Validation',
   validators: 'Validators',
 };
-// Aspects whose selection applies without a service restart (mirrors ConfigTab).
+// Aspects whose selection applies without a service restart.
 const IMMEDIATE: Record<ConfigAspect, boolean> = {
   recording: false,
   stream: true,
@@ -64,25 +57,25 @@ export function RobotsSection({ config }: { config: RuntimeConfig | undefined })
 
   const optionsQuery = useQuery({
     queryKey: queryKeys.configOptions,
-    queryFn: ({ signal }) => apiGet<ConfigOptions>('/config/options', { signal }),
+    queryFn: ({ signal }) => getConfigOptions({ signal }),
   });
 
-  // Single source of truth for "is a capture running" — the same query key
-  // Collect polls (react-query dedups it), so this section's recording guards
-  // can never disagree with Collect about whether recording is live.
-  const recordStatusQuery = useQuery({
-    queryKey: queryKeys.recordStatus,
-    queryFn: ({ signal }) => apiGet<RecordStatus>('/record/status', { signal }),
-  });
-  const recording = recordStatusQuery.data?.state === 'recording';
+  // Switching robots stops whatever is running, so this guard errs towards
+  // asking. `anyLive` covers `armed` too — a prepared session the switch would
+  // silently throw away — and `live === null` is the "we cannot tell" case,
+  // which the hook reports for BOTH a recorder that answered without its live
+  // set and one that is not answering at all. Only an explicit empty list
+  // switches straight through.
+  const recordStatus = useRecordStatus();
+  const captureLive = recordStatus.anyLive;
+  const liveUnknown = recordStatus.live === null;
 
   const selectMutation = useMutation({
     mutationFn: (vars: { category: string; id: string }) =>
-      apiPost<ConfigOptions>('/config/select', vars),
+      selectConfig(vars),
     onSuccess: (data) => {
-      // Same cache surgery as ConfigTab.selectMutation: adopt the fresh options
-      // and refresh the runtime config + the editable recording config that a
-      // robot / aspect switch re-points.
+      // Adopt the fresh options and refresh the runtime config + the editable
+      // recording config that a robot / aspect switch re-points.
       queryClient.setQueryData(queryKeys.configOptions, data);
       queryClient.invalidateQueries({ queryKey: queryKeys.runtimeConfig });
       queryClient.invalidateQueries({ queryKey: RECORDING_CONFIG_KEY });
@@ -90,7 +83,7 @@ export function RobotsSection({ config }: { config: RuntimeConfig | undefined })
   });
 
   const stopMutation = useMutation({
-    mutationFn: () => apiPost<unknown>('/record/stop', {}),
+    mutationFn: () => stopRecord(),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.recordStatus });
     },
@@ -109,7 +102,7 @@ export function RobotsSection({ config }: { config: RuntimeConfig | undefined })
 
   const activate = () => {
     if (!selectedRobotId || isActive) return;
-    if (recording) {
+    if (captureLive || liveUnknown) {
       setConfirmActivate(true);
       return;
     }
@@ -274,7 +267,9 @@ export function RobotsSection({ config }: { config: RuntimeConfig | undefined })
           </>
         }
       >
-        A recording is in progress. Switching robots will stop it. Stop and switch?
+        {captureLive
+          ? 'A capture is live — recording, or armed and waiting for a start. Switching robots will stop it. Stop and switch?'
+          : 'The recorder did not report its live captures, so it cannot be confirmed that nothing is running. Switching robots stops whatever is. Stop and switch?'}
         {stopMutation.isError && (
           <div className="mt-2">
             <ErrorMessage error={stopMutation.error} />
@@ -323,7 +318,7 @@ function ReadOnlyRobotDetail({ robot }: { robot: string }) {
   const query = useQuery({
     queryKey: queryKeys.configRobot(robot),
     queryFn: ({ signal }) =>
-      apiGet<RobotConfig>(`/config/robots/${encodeURIComponent(robot)}`, { signal }),
+      getRobotConfig(robot, { signal }),
   });
 
   return (

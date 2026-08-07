@@ -46,6 +46,12 @@ jobs:
       - name: Unit tests
         working-directory: ${{ matrix.dir }}
         run: uv run --extra test pytest -q
+      # deploy/sync has no package of its own; `make test-py` runs its tests
+      # from the orchestrator venv — mirror that here so CI covers them too.
+      - name: deploy/sync tests
+        if: matrix.dir == 'services/api_orchestrator'
+        working-directory: services/api_orchestrator
+        run: uv run --extra test pytest -q ../../deploy/sync/tests
 
   # ---- Frontend: build + unit tests + lint (mirrors `make test-fe`) ---------
   frontend:
@@ -81,10 +87,10 @@ jobs:
 
   # ---- Compose validation: every compose file parses + interpolates ---------
   # `config -q` fully renders each file (env interpolation + `extends` + merge),
-  # so it catches drift the smoke test would only hit at deploy time. The split
-  # files pull their services from compose.yaml via `extends`. TURN_EXTERNAL_IP
-  # is a required var in compose.turn.yaml with no default — supply a placeholder
-  # so the file renders (its real value is the deploy host's IP).
+  # so it catches drift the smoke test would only hit at deploy time.
+  # TURN_EXTERNAL_IP is a required var in compose/turn.yaml with no default —
+  # supply a placeholder so the file renders (its real value is the deploy
+  # host's IP).
   compose:
     name: compose config
     runs-on: ubuntu-latest
@@ -95,12 +101,17 @@ jobs:
       - name: docker compose config -q
         run: |
           set -e
-          for f in compose.yaml \
-                   compose.recording.yaml \
-                   compose.robot.yaml \
-                   compose.turn.yaml \
-                   compose.zenoh.yaml \
+          for f in compose/turn.yaml \
+                   compose/zenoh.yaml \
                    deploy/test/compose.yaml; do
             echo "== $f =="
             docker compose -f "$f" config -q
+          done
+          # compose/compose.yaml and the split files anchor ./config, ./data
+          # etc. at the repo root (and the split files pull their services from
+          # compose/compose.yaml via `extends`), so they render with
+          # --project-directory . — exactly how the Makefile runs them.
+          for f in compose/compose.yaml compose/robot.yaml compose/recording.yaml; do
+            echo "== $f =="
+            docker compose --project-directory . -f "$f" config -q
           done

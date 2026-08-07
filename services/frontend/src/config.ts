@@ -38,6 +38,8 @@ export interface RuntimeDefaults {
   default_topics?: string[];
   /** Robot name from the active RECORDING_CONFIG (shown for operator context). */
   robot_name?: string;
+  /** Default playback rate for Review's video previews (VIDEO_PLAYBACK_RATE). */
+  video_playback_rate?: number;
   /** Active ROS 2 domain id (shown in the header next to the connection badge). */
   ros_domain_id?: number;
   [key: string]: unknown;
@@ -104,25 +106,6 @@ export const DEV_FALLBACK_CONFIG: RuntimeConfig = {
   schemas: {},
 };
 
-// Tabs the frontend renders even when the backend's GET /api/v1/config omits
-// them (the tab set is normally backend-driven). The Probe tab (OL-3.3) is a
-// pure frontend + topic_probe-service feature; the orchestrator does not yet
-// list it, so we inject it client-side. Integrator note: once the orchestrator
-// adds a `probe` entry to its tabs config, this fallback simply no-ops (it only
-// appends when the id is absent), so it is safe to leave in place.
-export const CLIENT_FALLBACK_TABS: TabConfig[] = [{ id: 'probe', enabled: true }];
-
-/**
- * Merge in client-side fallback tabs (see CLIENT_FALLBACK_TABS) that the backend
- * config may not list yet. Existing tabs (by id) win — a backend-provided entry
- * is never overridden, so its enabled state / order / label take precedence.
- */
-export function ensureClientTabs(tabs: TabConfig[]): TabConfig[] {
-  const present = new Set(tabs.map((t) => t.id));
-  const extra = CLIENT_FALLBACK_TABS.filter((t) => !present.has(t.id));
-  return extra.length ? [...tabs, ...extra] : tabs;
-}
-
 export async function fetchRuntimeConfig(): Promise<RuntimeConfig> {
   let resp: Response;
   try {
@@ -143,40 +126,3 @@ export async function fetchRuntimeConfig(): Promise<RuntimeConfig> {
   return (await resp.json()) as RuntimeConfig;
 }
 
-// Canonical display order, following the operator's pipeline: capture (Live) →
-// review the take (Recordings) → validate → export to a dataset, with the
-// monitoring aids (Graph / Probe) and Config after. A backend tab without an
-// explicit `order` is placed by this rank so the UI reads top-to-bottom as the
-// workflow flows; the backend can still override per-tab with `order`.
-const CANONICAL_TAB_ORDER = [
-  'live',
-  'runs',
-  'validation',
-  'dataset',
-  'graph',
-  'probe',
-  'config',
-];
-
-function canonicalRank(id: string): number {
-  const i = CANONICAL_TAB_ORDER.indexOf(id);
-  return i === -1 ? Number.MAX_SAFE_INTEGER : i;
-}
-
-/**
- * Resolve the ordered, enabled-aware tab list. Order: explicit `order` first
- * (ascending), then the canonical pipeline rank (see CANONICAL_TAB_ORDER), then
- * config order. Disabled tabs are kept so the UI can show them greyed out, but
- * callers filter as needed.
- */
-export function orderTabs(tabs: TabConfig[]): TabConfig[] {
-  return [...tabs]
-    .map((t, i) => ({ t, i }))
-    .sort((a, b) => {
-      const ao = a.t.order ?? canonicalRank(a.t.id);
-      const bo = b.t.order ?? canonicalRank(b.t.id);
-      if (ao !== bo) return ao - bo;
-      return a.i - b.i;
-    })
-    .map(({ t }) => t);
-}

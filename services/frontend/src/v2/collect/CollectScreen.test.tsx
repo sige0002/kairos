@@ -4,9 +4,8 @@ import { setApiBase } from '../../api/client';
 import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
 import { useUiStore } from '../../store/uiStore';
 import { CollectScreen } from './CollectScreen';
-import { __resetBatchStore } from './useBatchMachine';
+import { __resetBatchStore, __setStopFloorMs, __resetStopFloorMs } from './useBatchMachine';
 import { __resetCameraStore } from './cameraStore';
-import { __clearEpisodeOutcomes } from '../episodeBridge';
 import { __resetPlansStore, clonePlans, getPlans, setPlans } from '../plans';
 
 const CONFIG = {
@@ -16,45 +15,88 @@ const CONFIG = {
   schemas: {},
 };
 
-function mockFetch(recordStartBody: Record<string, unknown>) {
+// The capture the screen records in these tests. `run_id` rides along because it
+// is what the operator reads on disk (§1) — every call keys on CAP_1.
+const CAP_1 = '0192f0aa-1111-7000-8000-000000000001';
+const RUN_1 = 'run_20260802_101500';
+
+/** A `Capture` as /record/start, /record/stop and /captures/{id} return it. */
+function capture(extra: Record<string, unknown> = {}) {
+  return {
+    capture_id: CAP_1,
+    run_id: RUN_1,
+    state: 'recording',
+    review_status: 'pending',
+    review_revision: 0,
+    ...extra,
+  };
+}
+
+function mockFetch(startExtra: Record<string, unknown> = {}) {
   return vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
     if (url.includes('/config')) return Promise.resolve(jsonResponse(CONFIG));
-    if (url.includes('/record/start')) return Promise.resolve(jsonResponse(recordStartBody));
-    if (url.includes('/record/stop')) return Promise.resolve(jsonResponse({ run_id: 'run_1', state: 'completed' }));
+    if (url.includes('/record/start')) return Promise.resolve(jsonResponse(capture(startExtra)));
+    if (url.includes('/record/stop'))
+      return Promise.resolve(jsonResponse(capture({ state: 'completed' })));
     return Promise.resolve(jsonResponse({}));
   });
 }
 
 // Like mockFetch but with a controllable GET /record/status body — the real
-// source of the arming note + integrity banner. The status reports idle UNTIL
-// the operator starts here, so the test's own start flow isn't mistaken for a
-// takeover (a server recording we didn't start); afterwards it returns `status`.
+// source of the arming note + integrity banner. Before the operator starts here
+// the recorder answers `created` with an EMPTY live set (a fresh recorder has no
+// `idle` state, §10), so the test's own start flow is never mistaken for a
+// takeover; afterwards it returns `status`.
 function mockFetchWithStatus(opts: {
   start?: Record<string, unknown>;
   status?: Record<string, unknown>;
-  /** Body for the result-panel `GET /runs/{id}` quick_check poll (F1). */
+  /** Body for the result-panel `GET /captures/{id}` quick_check poll (F1). */
   detail?: Record<string, unknown>;
+  /** Status/body for `PATCH /captures/{id}/review`. */
+  review?: { status: number; body: Record<string, unknown> };
 }) {
-  const start = opts.start ?? { run_id: 'run_1', state: 'recording' };
   let started = false;
-  return vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+  return vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     const url = String(input);
+    const method = (init?.method ?? 'GET').toUpperCase();
     if (url.includes('/record/status'))
       return Promise.resolve(
-        jsonResponse(started ? (opts.status ?? {}) : { run_id: null, state: 'idle' }),
+        jsonResponse(
+          started
+            ? { capture_id: CAP_1, run_id: RUN_1, live_capture_ids: [], ...(opts.status ?? {}) }
+            : { capture_id: null, run_id: null, state: 'created', live_capture_ids: [] },
+        ),
       );
     if (url.includes('/record/start')) {
       started = true;
-      return Promise.resolve(jsonResponse(start));
+      return Promise.resolve(jsonResponse(capture(opts.start ?? {})));
     }
-    if (url.includes('/record/stop')) return Promise.resolve(jsonResponse({ run_id: 'run_1', state: 'completed' }));
+    if (url.includes('/record/stop'))
+      return Promise.resolve(jsonResponse(capture({ state: 'completed' })));
     if (url.includes('/config')) return Promise.resolve(jsonResponse(CONFIG));
-    // GET /runs/{id} detail — the result-panel quick_check poll (F1).
-    if (/\/runs\/[^/?]+/.test(url))
+    if (url.includes('/batches') && method === 'POST')
       return Promise.resolve(
-        jsonResponse({ run_id: 'run_1', state: 'completed', ...(opts.detail ?? {}) }),
+        jsonResponse({ ...(init?.body ? JSON.parse(String(init.body)) : {}), batch_id: 'batch_1', batch_seq: 1, status: 'active' }, 201),
       );
+    if (url.includes('/batches')) return Promise.resolve(jsonResponse({ items: [] }));
+    if (url.includes('/review') && method === 'PATCH') {
+      const r = opts.review;
+      if (r) return Promise.resolve(jsonResponse(r.body, r.status));
+      return Promise.resolve(
+        jsonResponse(capture({ state: 'completed', review_revision: 1 })),
+      );
+    }
+    if (url.includes('/delete') && method === 'POST')
+      return Promise.resolve(jsonResponse(capture({ state: 'discarded' })));
+    // GET /captures/{id} — the result-panel quick_check poll (F1) and the
+    // capture the discard dialog states the size of.
+    if (/\/captures\/[^/?]+$/.test(url) && method === 'GET')
+      return Promise.resolve(
+        jsonResponse(capture({ state: 'completed', ...(opts.detail ?? {}) })),
+      );
+    if (url.includes('/captures'))
+      return Promise.resolve(jsonResponse({ items: [], next_cursor: null }));
     return Promise.resolve(jsonResponse({}));
   });
 }
@@ -73,6 +115,9 @@ function phaseTitle() {
 
 beforeEach(() => {
   setApiBase('/api/v1');
+  // These tests are not about the Stop floor; they stop immediately after
+  // starting, which the shipped 1s guard would (correctly) refuse.
+  __setStopFloorMs(0);
   // The batch machine is a module-level store (survives tab-switch unmounts);
   // reset it (and its localStorage mirror) so a recorded episode in one test
   // can't leak into the next test's fresh CollectScreen.
@@ -83,9 +128,6 @@ beforeEach(() => {
   // The camera panes live in a module store too — reset so a prior test's panes
   // can't leak into the next CollectScreen render.
   __resetCameraStore();
-  // A confirmed episode now mirrors into the Collect->Review bridge; clear it
-  // between tests so nothing accumulates across cases.
-  __clearEpisodeOutcomes();
   useUiStore.setState({
     activeTab: '',
     sseStatus: 'closed',
@@ -95,10 +137,15 @@ beforeEach(() => {
     recordCustomized: false,
   });
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  // restoreAllMocks does not touch module state: the stop-floor override set
+  // in beforeEach must be reset explicitly or it survives the test.
+  __resetStopFloorMs();
+});
 
 test('READY phase: shows the Start recording control and context bar', async () => {
-  mockFetch({ run_id: 'run_1', state: 'recording' });
+  mockFetch();
   renderWithClient(<CollectScreen />);
 
   await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
@@ -111,7 +158,7 @@ test('READY phase: shows the Start recording control and context bar', async () 
 });
 
 test('Start recording arms, then flips to RECORDING once /record/start succeeds', async () => {
-  mockFetch({ run_id: 'run_1', state: 'recording' });
+  mockFetch();
   renderWithClient(<CollectScreen />);
 
   await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
@@ -138,20 +185,30 @@ test('a rejected start shows the failed banner and stays on READY', async () => 
 });
 
 test('Stop recording moves to SAVING and shows the honest finalizing copy', async () => {
-  // The stop hangs and the recorder keeps reporting the run as still recording,
+  // The stop hangs and the recorder keeps reporting the capture as still live,
   // so SAVING persists — proving it waits on the real stop event (D-3), not a
-  // fixed timer. Status is idle until we start (avoids the takeover path).
+  // fixed timer. Before the start the recorder is `created` with an empty live
+  // set (no `idle` on the wire, §10), which keeps this off the takeover path.
   let started = false;
   vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
     if (url.includes('/config')) return Promise.resolve(jsonResponse(CONFIG));
     if (url.includes('/record/start')) {
       started = true;
-      return Promise.resolve(jsonResponse({ run_id: 'run_1', state: 'recording' }));
+      return Promise.resolve(jsonResponse(capture()));
     }
     if (url.includes('/record/status'))
       return Promise.resolve(
-        jsonResponse(started ? { run_id: 'run_1', state: 'recording' } : { run_id: null, state: 'idle' }),
+        jsonResponse(
+          started
+            ? {
+                capture_id: CAP_1,
+                run_id: RUN_1,
+                state: 'recording',
+                live_capture_ids: [CAP_1],
+              }
+            : { capture_id: null, run_id: null, state: 'created', live_capture_ids: [] },
+        ),
       );
     if (url.includes('/record/stop')) return new Promise(() => {}); // never resolves
     return Promise.resolve(jsonResponse({}));
@@ -173,7 +230,7 @@ test('Stop recording moves to SAVING and shows the honest finalizing copy', asyn
 // is now the real quick-check (integrity 'ok' → Good), not a fabricated warning.
 test('a failed task on a clean recording stays good quality; the single Save action reflects the outcome', async () => {
   mockFetchWithStatus({
-    status: { run_id: 'run_1', state: 'completed', integrity: 'ok' },
+    status: { state: 'completed', integrity: 'ok' },
   });
   renderWithClient(<CollectScreen />);
   await driveToResult();
@@ -202,7 +259,7 @@ test('a failed task on a clean recording stays good quality; the single Save act
 // "camera rate dropped". A clean run defaults to Good · auto; the operator can
 // override to Not usable (which becomes the honest 'operator' provenance).
 test('result panel shows honest auto quality and an operator override', async () => {
-  mockFetchWithStatus({ status: { run_id: 'run_1', state: 'completed', integrity: 'ok' } });
+  mockFetchWithStatus({ status: { state: 'completed', integrity: 'ok' } });
   renderWithClient(<CollectScreen />);
   await driveToResult();
 
@@ -224,7 +281,7 @@ test('result panel shows honest auto quality and an operator override', async ()
 // REVIEW — the chip and the banner agree because they share one honest source.
 test('result phase shows the real drop banner and a matching NEEDS REVIEW chip', async () => {
   mockFetchWithStatus({
-    status: { run_id: 'run_1', state: 'completed', integrity: 'dropped', dropped_messages: 1234 },
+    status: { state: 'completed', integrity: 'dropped', dropped_messages: 1234 },
   });
   renderWithClient(<CollectScreen />);
   await driveToResult();
@@ -237,7 +294,7 @@ test('result phase shows the real drop banner and a matching NEEDS REVIEW chip',
 
 test('result phase shows the real "Recording failed" banner when integrity is failed', async () => {
   mockFetchWithStatus({
-    status: { run_id: 'run_1', state: 'failed', integrity: 'failed' },
+    status: { state: 'failed', integrity: 'failed' },
   });
   renderWithClient(<CollectScreen />);
   await driveToResult();
@@ -250,7 +307,7 @@ test('result phase shows the real "Recording failed" banner when integrity is fa
 // run reaches the result with QUICK: GOOD and no banner.
 test('no integrity banner when the run integrity is ok', async () => {
   mockFetchWithStatus({
-    status: { run_id: 'run_1', state: 'completed', integrity: 'ok' },
+    status: { state: 'completed', integrity: 'ok' },
   });
   renderWithClient(<CollectScreen />);
   await driveToResult();
@@ -264,7 +321,7 @@ test('no integrity banner when the run integrity is ok', async () => {
 // though the recorder integrity is 'ok' (the verdict is the authority).
 test('result panel shows the settled quick-check reasons and a NEEDS REVIEW chip', async () => {
   mockFetchWithStatus({
-    status: { run_id: 'run_1', state: 'completed', integrity: 'ok' },
+    status: { state: 'completed', integrity: 'ok' },
     detail: {
       quick_check: {
         verdict: {
@@ -289,8 +346,8 @@ test('result panel shows the settled quick-check reasons and a NEEDS REVIEW chip
 // and never blocks Save.
 test('result panel shows a running note while the quick-check verdict is unsettled', async () => {
   mockFetchWithStatus({
-    status: { run_id: 'run_1', state: 'completed', integrity: 'ok' },
-    // detail omitted -> GET /runs/{id} returns no quick_check (unsettled).
+    status: { state: 'completed', integrity: 'ok' },
+    // detail omitted -> GET /captures/{id} returns no quick_check (unsettled).
   });
   renderWithClient(<CollectScreen />);
   await driveToResult();
@@ -302,11 +359,124 @@ test('result panel shows a running note while the quick-check verdict is unsettl
   expect(screen.getByRole('button', { name: /Save — success/ })).toBeEnabled();
 });
 
+// ---------------------------------------------------------------------------
+// Review save (§4.1) and its two refusals (§12).
+// ---------------------------------------------------------------------------
+
+test('Save PATCHes the capture review with base_revision and the batch stamp', async () => {
+  const fetchSpy = mockFetchWithStatus({ status: { state: 'completed', integrity: 'ok' } });
+  renderWithClient(<CollectScreen />);
+  await driveToResult();
+
+  fireEvent.click(screen.getByTestId('save-episode'));
+  await waitFor(() => expect(screen.getByTestId('stat-recorded')).toHaveTextContent('1'));
+
+  const patch = fetchSpy.mock.calls.find(
+    ([u, i]) => String(u).includes(`/captures/${CAP_1}/review`) && i?.method === 'PATCH',
+  );
+  expect(patch).toBeTruthy();
+  const body = JSON.parse(String((patch![1] as RequestInit).body));
+  // A freshly recorded capture has never been reviewed, so the compare-and-swap
+  // token is 0. No override was made, so quality/quality_source are OMITTED and
+  // the server derives them from its own settled verdict.
+  expect(body.base_revision).toBe(0);
+  expect(body.task_result).toBe('success');
+  // A successful take of good data is adopted BY this save: Datasets refuses
+  // anything not adopted, and Review's READY lane has no exception to resolve,
+  // so leaving it pending is what stranded every good recording outside the
+  // training sets. The quality is still the server's to derive — adoption is
+  // the operator's decision, not a claim about the data.
+  expect(body.review_status).toBe('adopted');
+  expect(body.index_in_batch).toBe(1);
+  expect('quality' in body).toBe(false);
+  expect('quality_source' in body).toBe(false);
+});
+
+test('an operator quality override rides along with operator provenance', async () => {
+  const fetchSpy = mockFetchWithStatus({ status: { state: 'completed', integrity: 'ok' } });
+  renderWithClient(<CollectScreen />);
+  await driveToResult();
+
+  fireEvent.click(screen.getByRole('button', { name: 'change' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Not usable' }));
+  fireEvent.click(screen.getByTestId('save-episode'));
+  await waitFor(() => expect(screen.getByTestId('stat-recorded')).toHaveTextContent('1'));
+
+  const patch = fetchSpy.mock.calls.find(
+    ([u, i]) => String(u).includes('/review') && i?.method === 'PATCH',
+  );
+  const body = JSON.parse(String((patch![1] as RequestInit).body));
+  expect(body.quality).toBe('not_usable');
+  expect(body.quality_source).toBe('operator');
+  // "Not usable" is the same statement Review's own exclude makes, so the take
+  // is not left sitting in the queue it was just taken out of.
+  expect(body.review_status).toBe('excluded');
+});
+
+test('a 409 review_conflict is surfaced and the episode is NOT counted', async () => {
+  mockFetchWithStatus({
+    status: { state: 'completed', integrity: 'ok' },
+    review: {
+      status: 409,
+      body: {
+        error: {
+          code: 'review_conflict',
+          message: 'This review was edited elsewhere (revision 2, you sent 0).',
+          details: { current_revision: 2 },
+        },
+      },
+    },
+  });
+  renderWithClient(<CollectScreen />);
+  await driveToResult();
+
+  fireEvent.click(screen.getByTestId('save-episode'));
+
+  const banner = await screen.findByTestId('save-error');
+  expect(banner).toHaveAttribute('data-error-code', 'review_conflict');
+  expect(banner).toHaveTextContent(/edited elsewhere/);
+  expect(banner).toHaveTextContent(/apply your change again/);
+  // The screen stays on the result panel and claims nothing: no chip, no count.
+  expect(phaseTitle()).toHaveTextContent('Episode 1 result');
+  expect(screen.getByTestId('stat-recorded')).toHaveTextContent('0');
+});
+
+test('a 500 review_sidecar_write_failed says NOTHING was saved, loudly', async () => {
+  mockFetchWithStatus({
+    status: { state: 'completed', integrity: 'ok' },
+    review: {
+      status: 500,
+      body: {
+        error: {
+          code: 'review_sidecar_write_failed',
+          message: 'Could not write record.json: No space left on device.',
+          details: {},
+        },
+      },
+    },
+  });
+  renderWithClient(<CollectScreen />);
+  await driveToResult();
+
+  fireEvent.click(screen.getByTestId('save-episode'));
+
+  const banner = await screen.findByTestId('save-error');
+  expect(banner).toHaveAttribute('data-error-code', 'review_sidecar_write_failed');
+  // The destructive framing is the point (§12): a quiet note here reads as a
+  // successful save to an operator who is already reaching for the next take.
+  expect(banner).toHaveTextContent('Not saved');
+  expect(banner).toHaveTextContent(/NOTHING was saved/);
+  expect(screen.getByTestId('stat-recorded')).toHaveTextContent('0');
+  // It stays until the operator dismisses it — never on a timer.
+  fireEvent.click(screen.getByTestId('save-error-dismiss'));
+  await waitFor(() => expect(screen.queryByTestId('save-error')).toBeNull());
+});
+
 test('recording phase shows the real arming matched/missing note from /record/status', async () => {
   mockFetchWithStatus({
     status: {
-      run_id: 'run_1',
       state: 'recording',
+      live_capture_ids: [CAP_1],
       arming: {
         active: false,
         matched_topics: ['/a', '/b', '/c'],
@@ -329,7 +499,7 @@ test('recording phase shows the real arming matched/missing note from /record/st
 // Monitor (where the picker lives). CONFIG has no default_topics and the store
 // is not customized → "all topics".
 test('ContextBar shows the REC topics chip and navigates to Monitor on click', async () => {
-  mockFetch({ run_id: 'run_1', state: 'recording' });
+  mockFetch();
   renderWithClient(<CollectScreen />);
   await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
 
@@ -339,28 +509,62 @@ test('ContextBar shows the REC topics chip and navigates to Monitor on click', a
   await waitFor(() => expect(useUiStore.getState().activeTab).toBe('monitor'));
 });
 
-// Real Discard: the result-phase "Discard & re-record" opens a confirmation
-// modal, then DELETE /api/v1/runs/{run_id} actually removes the run before the
-// local re-record reset (v1 LiveTab Keep/Discard parity).
-test('Discard & re-record confirms, then deletes the run via DELETE /runs/{id}', async () => {
+// Discard (§7): the result-phase "Discard & re-record" is ONE CLICK (user
+// decision 2026-08-03) — no dialog, no typed reason. The press POSTs
+// /captures/{capture_id}/delete with kind 'discard' and the ledger-honest
+// automatic reason, then the batch re-arms for a fresh take.
+test('Discard & re-record discards in one click, keyed on capture_id', async () => {
   const fetchSpy = mockFetchWithStatus({
-    status: { run_id: 'run_1', state: 'completed', integrity: 'ok', bytes: 1048576 },
+    status: { state: 'completed', integrity: 'ok' },
+    detail: { bytes: 1048576 },
   });
   renderWithClient(<CollectScreen />);
   await driveToResult();
 
-  fireEvent.click(screen.getByRole('button', { name: /Discard & re-record this episode/ }));
-  const confirm = await screen.findByRole('button', { name: /Discard permanently/ });
-  fireEvent.click(confirm);
+  fireEvent.click(screen.getByTestId('discard-episode'));
+  // Nothing opens — the press is the consent.
+  expect(screen.queryByTestId('discard-dialog')).toBeNull();
 
   await waitFor(() => {
     const del = fetchSpy.mock.calls.find(
-      ([u, i]) => String(u).includes('/runs/run_1') && i?.method === 'DELETE',
+      ([u, i]) =>
+        String(u).includes(`/captures/${CAP_1}/delete`) && i?.method === 'POST',
     );
     expect(del).toBeTruthy();
+    expect(JSON.parse(String((del![1] as RequestInit).body))).toEqual({
+      kind: 'discard',
+      reason: 'Collect one-click discard (no reason asked)',
+    });
   });
-  // After a successful delete the batch re-arms for a fresh take of this episode.
+  // After a successful discard the batch re-arms for a fresh take.
   await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
+});
+
+// §12: on a split deployment the discard removes only the copy on this machine.
+// With no dialog left to carry that disclosure, the success toast says so
+// unprompted — letting an operator believe the robot's copy went too is
+// exactly the failure this line exists to prevent.
+test('on a split deployment the discard toast says the robot copy is untouched', async () => {
+  const base = mockFetchWithStatus({
+    status: { state: 'completed', integrity: 'ok' },
+  });
+  // /transfer/status answers `available` only where the pull channel exists —
+  // which is the split-mode signal.
+  const inner = base.getMockImplementation()!;
+  base.mockImplementation((input, init) => {
+    if (String(input).includes('/transfer/status'))
+      return Promise.resolve(jsonResponse({ available: true, auto_pull_on_save: true }));
+    return inner(input, init);
+  });
+  renderWithClient(<CollectScreen />);
+  await driveToResult();
+
+  fireEvent.click(screen.getByTestId('discard-episode'));
+  await waitFor(() =>
+    expect(
+      screen.getByText(/the robot's own copy is untouched/i),
+    ).toBeInTheDocument(),
+  );
 });
 
 test('Robot cell lists real robots and switches via POST /config/select', async () => {
@@ -406,7 +610,7 @@ test('Robot cell lists real robots and switches via POST /config/select', async 
 // ---------------------------------------------------------------------------
 
 test('a project added to the shared store appears in the Collect project picker', async () => {
-  mockFetch({ run_id: 'run_1', state: 'recording' });
+  mockFetch();
   // Simulate a Settings edit: add a project to the shared catalog.
   setPlans([...clonePlans(getPlans()), { name: 'Warehouse Sort', tasks: [{ name: 'Sort', conditions: ['Bin: A'] }] }]);
   renderWithClient(<CollectScreen />);
@@ -421,7 +625,7 @@ test('a project added to the shared store appears in the Collect project picker'
 // string and flows it into the real /record/start body — without adding it to
 // the shared plans catalog.
 test('a custom task typed via the Task picker flows into the /record/start body', async () => {
-  const fetchSpy = mockFetch({ run_id: 'run_1', state: 'recording' });
+  const fetchSpy = mockFetch();
   vi.spyOn(window, 'prompt').mockReturnValue('Fold the towel');
   renderWithClient(<CollectScreen />);
   await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
@@ -442,7 +646,7 @@ test('a custom task typed via the Task picker flows into the /record/start body'
 });
 
 test('Collect degrades gracefully when its selected project is absent from the store', async () => {
-  mockFetch({ run_id: 'run_1', state: 'recording' });
+  mockFetch();
   // The machine seeded its project from the default catalog; now replace the
   // catalog so that selection no longer exists (as if it were removed/renamed).
   setPlans([{ name: 'Only Project', tasks: [{ name: 'Only Task', conditions: ['Only Cond'] }] }]);
@@ -456,44 +660,65 @@ test('Collect degrades gracefully when its selected project is absent from the s
   expect(screen.getByRole('button', { name: 'Only Task' })).toBeInTheDocument();
 });
 
-test('Set menu → Reset set on an empty set is a no-op (honest wording)', async () => {
-  mockFetch({ run_id: 'run_1', state: 'recording' });
+test('Batch menu → Reset batch on an empty batch is a no-op (honest wording)', async () => {
+  mockFetch();
   renderWithClient(<CollectScreen />);
   await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
   // No recording yet → no server set → the Set cell shows an honest, muted
   // prediction of the next number instead of a bare "—".
   expect(screen.getByText(/assigned on first recording/)).toBeInTheDocument();
-  expect(screen.queryByText('Set —')).toBeNull();
+  expect(screen.queryByText('Batch —')).toBeNull();
 
-  fireEvent.click(screen.getByText('Set menu'));
-  fireEvent.click(screen.getByText('Reset set…'));
+  fireEvent.click(screen.getByText('Batch menu'));
+  fireEvent.click(screen.getByText('Reset batch…'));
 
   // Empty set → no-number title + no-op wording (nothing created or closed).
-  expect(screen.getByText('Reset set?')).toBeInTheDocument();
+  expect(screen.getByText('Reset batch?')).toBeInTheDocument();
   expect(screen.getByText(/Nothing has been recorded/)).toBeInTheDocument();
 
   fireEvent.click(screen.getByTestId('reset-batch-confirm'));
-  await waitFor(() => expect(screen.queryByText('Reset set?')).toBeNull());
+  await waitFor(() => expect(screen.queryByText('Reset batch?')).toBeNull());
   // Still the prediction pre-state: an empty reset never allocates a number.
   expect(screen.getByText(/assigned on first recording/)).toBeInTheDocument();
-  expect(screen.queryByText('Set —')).toBeNull();
+  expect(screen.queryByText('Batch —')).toBeNull();
 });
 
 // ---------------------------------------------------------------------------
 // D-1 takeover: a server recording this screen isn't driving replaces READY.
 // ---------------------------------------------------------------------------
 
+const CAP_EXT = '0192f0aa-2222-7000-8000-00000000ffff';
+
 test('a server recording surfaces the takeover card instead of READY, and Stop confirms first', async () => {
   vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
     if (url.includes('/config')) return Promise.resolve(jsonResponse(CONFIG));
-    if (url.includes('/runs/run_ext'))
+    if (url.includes(`/captures/${CAP_EXT}`))
       return Promise.resolve(
-        jsonResponse({ run_id: 'run_ext', state: 'recording', topics: [{ name: '/a', type: 'x' }], operator: 'other' }),
+        jsonResponse({
+          capture_id: CAP_EXT,
+          run_id: 'run_20260802_090000',
+          state: 'recording',
+          review_status: 'pending',
+          review_revision: 0,
+          topics: [{ name: '/a', type: 'x' }],
+          operator: 'other',
+        }),
       );
+    if (url.includes('/captures'))
+      return Promise.resolve(jsonResponse({ items: [], next_cursor: null }));
     if (url.includes('/record/status'))
+      // `live_capture_ids` names WHICH capture is live; the singular capture_id
+      // would still point here long after a stop (§10), so it is not the key.
       return Promise.resolve(
-        jsonResponse({ run_id: 'run_ext', state: 'recording', started_at: new Date().toISOString(), bytes: 4096 }),
+        jsonResponse({
+          capture_id: CAP_EXT,
+          run_id: 'run_20260802_090000',
+          state: 'recording',
+          live_capture_ids: [CAP_EXT],
+          started_at: new Date().toISOString(),
+          bytes: 4096,
+        }),
       );
     return Promise.resolve(jsonResponse({}));
   });
@@ -501,9 +726,37 @@ test('a server recording surfaces the takeover card instead of READY, and Stop c
 
   await waitFor(() => expect(phaseTitle()).toHaveTextContent('RECORDING IN PROGRESS'));
   expect(screen.getByText(/wasn't started from this screen/)).toBeInTheDocument();
+  // The run_id is shown as the recording's human-readable name (§1).
+  await waitFor(() =>
+    expect(screen.getByText('run_20260802_090000')).toBeInTheDocument(),
+  );
   // The primary action opens a confirmation (use-error guard), not an instant stop.
   fireEvent.click(screen.getByRole('button', { name: /Stop recording/ }));
   expect(await screen.findByText('Stop this recording?')).toBeInTheDocument();
+});
+
+// §10 rev.2.4: a status with NO `live_capture_ids` means the recorder could not
+// be reached. Treating that as "nothing is live" would hand the operator a READY
+// button while a recording may well be running; treating it as a takeover would
+// invent one. Neither: the screen claims no takeover and the Recorder row says
+// it has no answer.
+test('a status missing live_capture_ids claims no takeover and reports no answer', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/config')) return Promise.resolve(jsonResponse(CONFIG));
+    if (url.includes('/captures'))
+      return Promise.resolve(jsonResponse({ items: [], next_cursor: null }));
+    if (url.includes('/record/status'))
+      return Promise.resolve(
+        jsonResponse({ capture_id: CAP_EXT, run_id: 'run_x', state: 'recording' }),
+      );
+    return Promise.resolve(jsonResponse({}));
+  });
+  renderWithClient(<CollectScreen />);
+
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
+  expect(screen.queryByText('RECORDING IN PROGRESS')).toBeNull();
+  await waitFor(() => expect(screen.getByText('no answer')).toBeInTheDocument());
 });
 
 // ---------------------------------------------------------------------------
@@ -514,13 +767,18 @@ test('an unsaved completed take shows the recovery banner with Label / Discard /
   vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
     if (url.includes('/config')) return Promise.resolve(jsonResponse(CONFIG));
-    if (url.includes('/runs'))
+    if (url.includes('/captures'))
+      // `review_revision: 0` is the server's own "never reviewed" (§4.1) — the
+      // browser-local mirror that used to answer this question is gone.
       return Promise.resolve(
         jsonResponse({
           items: [
             {
-              run_id: 'run_u',
+              capture_id: '0192f0aa-3333-7000-8000-0000000000aa',
+              run_id: 'run_20260802_080000',
               state: 'completed',
+              review_status: 'pending',
+              review_revision: 0,
               started_at: new Date(Date.now() - 60_000).toISOString(),
               ended_at: new Date().toISOString(),
             },
@@ -549,7 +807,7 @@ test('an unsaved completed take shows the recovery banner with Label / Discard /
 // ---------------------------------------------------------------------------
 
 test('focus follows the phase — Start on ready, Save on result (no focus falls to body)', async () => {
-  mockFetchWithStatus({ status: { run_id: 'run_1', state: 'completed', integrity: 'ok' } });
+  mockFetchWithStatus({ status: { state: 'completed', integrity: 'ok' } });
   renderWithClient(<CollectScreen />);
   await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
   await waitFor(() =>
@@ -563,7 +821,7 @@ test('focus follows the phase — Start on ready, Save on result (no focus falls
 });
 
 test('keyboard shortcuts: R starts and S stops, but typing in an input is ignored', async () => {
-  mockFetch({ run_id: 'run_1', state: 'recording' });
+  mockFetch();
   renderWithClient(<CollectScreen />);
   await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
 
@@ -584,9 +842,241 @@ test('keyboard shortcuts: R starts and S stops, but typing in an input is ignore
 });
 
 test('the ? shortcut opens the keyboard-shortcuts sheet', async () => {
-  mockFetch({ run_id: 'run_1', state: 'recording' });
+  mockFetch();
   renderWithClient(<CollectScreen />);
   await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
   fireEvent.keyDown(document.body, { key: '?' });
   expect(await screen.findByText('Keyboard shortcuts')).toBeInTheDocument();
 });
+
+// ---- QA regressions -------------------------------------------------------
+
+// B1: the recorder dies mid-recording. react-query keeps serving the last
+// successful /record/status, so every surface reading `.data` alone kept
+// insisting a recording was in progress. A failed poll must retract the claim.
+test('a recorder that stops answering stops being reported as recording', async () => {
+  let recorderAlive = true;
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/record/status')) {
+      if (!recorderAlive) return Promise.reject(new Error('recorder unreachable'));
+      return Promise.resolve(
+        jsonResponse({
+          capture_id: CAP_1,
+          run_id: RUN_1,
+          state: 'recording',
+          live_capture_ids: [CAP_1],
+          started_at: '2026-08-01T00:00:00.000Z',
+        }),
+      );
+    }
+    if (url.includes('/config')) return Promise.resolve(jsonResponse(CONFIG));
+    if (url.includes('/batches')) return Promise.resolve(jsonResponse({ items: [] }));
+    if (url.includes('/captures'))
+      return Promise.resolve(jsonResponse({ items: [], next_cursor: null }));
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  renderWithClient(<CollectScreen />);
+  // A recording this screen did not start reads as a takeover while the
+  // recorder is answering for it.
+  await waitFor(() =>
+    expect(phaseTitle()).toHaveTextContent('RECORDING IN PROGRESS'),
+  );
+
+  recorderAlive = false;
+  // Once the poll fails the screen stops asserting a recording is running: it
+  // no longer has any evidence that one is.
+  await waitFor(
+    () => expect(phaseTitle()).not.toHaveTextContent('RECORDING IN PROGRESS'),
+    { timeout: 8000 },
+  );
+}, 15000);
+
+// B1 (qa-ui shots/14b): docker-stop the recorder mid-recording and Collect kept
+// showing "RECORDING" with the elapsed timer CLIMBING (00:12 → 00:37) and
+// SYSTEM STATUS "Recorder: recording/REC", while every /record/status returned
+// 503. An animating timer is an active claim that a recording is progressing;
+// once the poll fails we have no evidence of that.
+test('a recorder that dies mid-recording flips the card to unreachable and freezes the timer', async () => {
+  __setStopFloorMs(0);
+  let recorderAlive = true;
+  let started = false;
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/record/status')) {
+      if (!recorderAlive) {
+        return Promise.resolve(
+          jsonResponse(
+            { error: { code: 'recorder_unreachable', message: 'the recorder is unreachable' } },
+            503,
+          ),
+        );
+      }
+      // Idle until THIS screen starts, so its own start is never mistaken for
+      // a takeover.
+      return Promise.resolve(
+        jsonResponse(
+          started
+            ? {
+                capture_id: CAP_1,
+                run_id: RUN_1,
+                state: 'recording',
+                live_capture_ids: [CAP_1],
+                started_at: '2026-08-01T00:00:00.000Z',
+              }
+            : { capture_id: null, run_id: null, state: 'created', live_capture_ids: [] },
+        ),
+      );
+    }
+    if (url.includes('/record/start')) {
+      started = true;
+      return Promise.resolve(jsonResponse(capture({})));
+    }
+    if (url.includes('/config')) return Promise.resolve(jsonResponse(CONFIG));
+    if (url.includes('/batches')) return Promise.resolve(jsonResponse({ items: [] }));
+    if (url.includes('/captures'))
+      return Promise.resolve(jsonResponse({ items: [], next_cursor: null }));
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  renderWithClient(<CollectScreen />);
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
+  fireEvent.click(screen.getByRole('button', { name: /Start recording/ }));
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('RECORDING'));
+
+  recorderAlive = false;
+
+  // The card stops asserting a recording is in progress …
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('RECORDER UNREACHABLE'), {
+    timeout: 10000,
+  });
+  // … and says what it actually knows, and how old that is.
+  const note = screen.getByTestId('recorder-unreachable-note');
+  expect(note).toHaveTextContent('Last known:');
+  expect(note.textContent).toMatch(/\d+s ago/);
+  expect(note.textContent).toMatch(/not current/);
+
+  // The elapsed clock is frozen: whatever it reads now, it still reads later.
+  const frozen = screen.getByTestId('elapsed').textContent;
+  await new Promise((r) => setTimeout(r, 700));
+  expect(screen.getByTestId('elapsed').textContent).toBe(frozen);
+
+  // And SYSTEM STATUS stops reporting the recorder as fine.
+  await waitFor(() =>
+    expect(screen.getByTestId('sys-recorder')).toHaveTextContent('no answer'),
+  );
+}, 20000);
+
+// E-1: the two B1 behaviours above compose into a trap. The elapsed figure is
+// frozen (correctly — it is a claim we can no longer support), and the Stop
+// floor was measured against that same frozen figure. A recorder that dies
+// inside the first second therefore left `elapsedMs` below the floor for good:
+// Stop disabled for the rest of the take, and the S / Space path guarded by the
+// same flag, so the operator had NO way to end it.
+//
+// The floor exists to defeat a double-click, which is a fact about how long the
+// take has existed — not about whether we can still see the recorder. An
+// operator must always be able to end a take; a stop against a recorder that is
+// not there fails loudly, which is honest, whereas forbidding it pre-emptively
+// is not.
+// A recorder that dies the instant its take begins. The start's own status
+// invalidation is the poll that fails, so the freeze lands INSIDE the stop floor
+// with the elapsed figure still at zero — the state the trap needs.
+function mockRecorderDyingAtStart(): { stopAttempts: () => number } {
+  let recorderAlive = true;
+  let started = false;
+  let attempts = 0;
+  const unreachableBody = {
+    error: { code: 'recorder_unreachable', message: 'the recorder is unreachable' },
+  };
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/record/status')) {
+      if (!recorderAlive) return Promise.resolve(jsonResponse(unreachableBody, 503));
+      return Promise.resolve(
+        jsonResponse(
+          started
+            ? {
+                capture_id: CAP_1,
+                run_id: RUN_1,
+                state: 'recording',
+                live_capture_ids: [CAP_1],
+                started_at: '2026-08-01T00:00:00.000Z',
+              }
+            : { capture_id: null, run_id: null, state: 'created', live_capture_ids: [] },
+        ),
+      );
+    }
+    if (url.includes('/record/start')) {
+      started = true;
+      recorderAlive = false;
+      return Promise.resolve(jsonResponse(capture({})));
+    }
+    if (url.includes('/record/stop')) {
+      attempts += 1;
+      return Promise.resolve(jsonResponse(unreachableBody, 503));
+    }
+    if (url.includes('/config')) return Promise.resolve(jsonResponse(CONFIG));
+    if (url.includes('/batches')) return Promise.resolve(jsonResponse({ items: [] }));
+    if (url.includes('/captures'))
+      return Promise.resolve(jsonResponse({ items: [], next_cursor: null }));
+    return Promise.resolve(jsonResponse({}));
+  });
+  return { stopAttempts: () => attempts };
+}
+
+/** Start a take, lose the recorder inside the floor, and return the Stop button
+ *  once the wall clock has cleared the floor. Asserts the trap's preconditions
+ *  on the way through. */
+async function reachUnreachableRecordingPastFloor(): Promise<HTMLElement> {
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
+  fireEvent.click(screen.getByRole('button', { name: /Start recording/ }));
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('RECORDER UNREACHABLE'), {
+    timeout: 10000,
+  });
+  // The card says it cannot see the recorder, and the elapsed figure is frozen
+  // at zero — under the floor, where it now stays.
+  expect(screen.getByTestId('recorder-unreachable-note')).toBeInTheDocument();
+  expect(screen.getByTestId('elapsed')).toHaveTextContent('00:00:00');
+
+  const stop = screen.getByTestId('stop-recording');
+  await waitFor(() => expect(stop).toBeEnabled(), { timeout: 4000 });
+  // The note is still up: nothing here claims the recorder came back.
+  expect(screen.getByTestId('recorder-unreachable-note')).toBeInTheDocument();
+  return stop;
+}
+
+test('a recorder that dies inside the stop floor still lets the operator end the take', async () => {
+  // The floor a real operator gets — this test is about the guard as shipped.
+  __resetStopFloorMs();
+  const recorder = mockRecorderDyingAtStart();
+
+  renderWithClient(<CollectScreen />);
+  const stop = await reachUnreachableRecordingPastFloor();
+
+  // Pressing it really ends the take: the stop is attempted and its failure is
+  // shown, rather than being pre-empted by a control that refuses to be used.
+  fireEvent.click(stop);
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('SAVING'));
+  expect(recorder.stopAttempts()).toBeGreaterThan(0);
+  await waitFor(() =>
+    expect(screen.getByText(/Can't reach the recorder/)).toBeInTheDocument(),
+  );
+}, 20000);
+
+// The keyboard paths are guarded by the same `canStop` the button reads, so
+// they came back with it — but "so it does" is exactly the claim a refactor
+// that splits them would falsify quietly. Space is the one an operator hits
+// without looking, and it is the last way out of a take nobody can end.
+test('Space ends the take too when the recorder died inside the stop floor', async () => {
+  __resetStopFloorMs();
+  const recorder = mockRecorderDyingAtStart();
+
+  renderWithClient(<CollectScreen />);
+  await reachUnreachableRecordingPastFloor();
+
+  fireEvent.keyDown(document.body, { key: ' ' });
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('SAVING'));
+  expect(recorder.stopAttempts()).toBeGreaterThan(0);
+}, 20000);

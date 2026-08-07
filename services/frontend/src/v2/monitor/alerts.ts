@@ -53,7 +53,12 @@ function formatTime(since: string | null | undefined): string {
   if (!since) return '—';
   const d = new Date(since);
   if (Number.isNaN(d.getTime())) return '—';
-  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  return d.toLocaleTimeString('en-GB', {
+    hour12: false,
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
 }
 
 /** Incident identity: one row per (topic, metric), independent of state/since. */

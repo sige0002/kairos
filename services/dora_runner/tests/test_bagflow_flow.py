@@ -15,12 +15,16 @@ from dora_runner.bagflow_flow import (
     resolve_flow,
     resolve_node_path,
 )
+from kairos_common.ids import new_capture_id
+
+# A capture_id is a UUIDv7 everywhere it is used as a key or path segment (§1).
+CAPTURE_ID = new_capture_id()
 
 
 def _bindings(tmp_path: Path) -> FlowBindings:
     return FlowBindings(
-        run_id="run_1",
-        bag_dir=tmp_path / "recorded" / "run_1",
+        capture_id=CAPTURE_ID,
+        bag_dir=tmp_path / "objects" / CAPTURE_ID,
         report_path=tmp_path / "report" / "report.json",
         report_dir=tmp_path / "report",
         required_topics=[

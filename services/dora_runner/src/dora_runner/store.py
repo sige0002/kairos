@@ -3,10 +3,12 @@
 The store is SQLite-backed so job/template state survives a process restart
 (release-readiness finding F4/MS-6: an in-memory store orphaned in-flight work on
 restart, breaking the crash-recovery symmetry the recorder/orchestrator uphold).
-It mirrors :mod:`api_orchestrator.store` conventions — a ``threading.RLock``
-serializes connection use, ``_conn`` opens a fresh connection per call for a file
-DB (and reuses one shared connection for ``:memory:``), and ``_migrate`` records a
-``PRAGMA user_version`` schema version.
+Connection management is :mod:`kairos_common.sqlite_store`, shared with
+``api_orchestrator.store``: a lock serializes connection use, a file DB gets a
+fresh connection per call and ``:memory:`` reuses one held connection. The
+schema POLICY stays here — a stale ``PRAGMA user_version`` drops this service's
+``jobs`` table (see :meth:`RunnerStore._recreate_outdated`), which is a
+different decision from the orchestrator's, and deliberately so.
 
 Execution stays in-process: a running job keeps a live :class:`JobRecord` (holding
 its ``asyncio.Task``) in :attr:`RunnerStore.jobs`, guarded by the asyncio
@@ -23,20 +25,19 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
-import threading
-from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from kairos_common import JobState, utc_now_iso8601
+from kairos_common.sqlite_store import SqliteConnection, set_user_version, user_version
 
 from dora_runner.models import JobResult, JobStatus, ValidationTemplate
 
 # Bumped whenever the schema changes in a non-additive way; recorded via
-# ``PRAGMA user_version`` so a future migration can branch on the on-disk version.
-_SCHEMA_VERSION = 1
+# ``PRAGMA user_version``. Version 2 keys jobs by capture_id (§10.5).
+_SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -44,7 +45,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     -- keeps a stable ordering key for a future job list).
     seq        INTEGER PRIMARY KEY AUTOINCREMENT,
     job_id     TEXT NOT NULL UNIQUE,
-    run_id     TEXT NOT NULL,
+    capture_id TEXT NOT NULL,
     pipeline   TEXT NOT NULL,
     -- The job's params (JSON): makes the persisted row self-describing.
     params     TEXT NOT NULL DEFAULT '{}',
@@ -92,7 +93,7 @@ class JobRecord:
     """
 
     job_id: str
-    run_id: str
+    capture_id: str
     pipeline: str
     params: dict[str, Any]
     state: JobState = JobState.queued
@@ -105,7 +106,7 @@ class JobRecord:
         """Return the public status view."""
         return JobStatus(
             job_id=self.job_id,
-            run_id=self.run_id,
+            capture_id=self.capture_id,
             pipeline=self.pipeline,
             state=self.state,
             progress=self.progress,
@@ -125,7 +126,7 @@ class RunnerStore:
     :attr:`jobs` and :attr:`lock` preserve the previous in-memory surface: the
     asyncio worker still tracks live jobs in the dict under the asyncio lock (that
     guard is what keeps a cancel from racing the worker — BUG-D). The SQLite
-    connection has its own ``threading.RLock`` (``_conn``), independent of the
+    connection carries its own threading lock (inside ``_db``), independent of the
     asyncio lock, so a checkpoint taken while holding the asyncio lock never
     deadlocks.
     """
@@ -137,61 +138,48 @@ class RunnerStore:
         # mutation of ``jobs`` — unchanged from the pre-persistence store.
         self.lock = asyncio.Lock()
 
-        self._path = str(db_path)
-        # Serializes every connection use (reentrant: write helpers nest reads).
-        self._db_lock = threading.RLock()
-        self._shared: sqlite3.Connection | None = None
-        if self._path != ":memory:":
-            Path(self._path).parent.mkdir(parents=True, exist_ok=True)
-        else:
-            # In-memory DBs vanish when their connection closes, so keep one.
-            # check_same_thread=False: FastAPI runs sync work in a thread pool, so
-            # the shared connection is touched from worker threads; the lock
-            # serializes access.
-            self._shared = sqlite3.connect(self._path, check_same_thread=False)
-            self._shared.row_factory = sqlite3.Row
+        # busy_timeout is per-connection: wait for a competing writer rather
+        # than raising "database is locked" at once.
+        self._db = SqliteConnection(
+            db_path, connect_pragmas=("PRAGMA busy_timeout = 5000",)
+        )
+        self._path = self._db.path
         with self._conn() as conn:
+            if not self._db.is_memory:
+                # WAL persists in the file header and lets readers run
+                # concurrently with the single writer, so a job-status poll
+                # never blocks a running job's checkpoint.
+                conn.execute("PRAGMA journal_mode=WAL")
+            self._recreate_outdated(conn)
             conn.executescript(_SCHEMA)
-            self._migrate(conn)
+            set_user_version(conn, _SCHEMA_VERSION)
 
     @staticmethod
-    def _migrate(conn: sqlite3.Connection) -> None:
-        """Record the schema version (``PRAGMA user_version``).
+    def _recreate_outdated(conn: sqlite3.Connection) -> None:
+        """Drop a ``jobs`` table written by an older schema, before recreating it.
 
-        No legacy DB exists, so fresh ``CREATE TABLE IF NOT EXISTS`` is enough; this
-        stamps the version so a future non-additive change can branch on it.
+        Contract §8 calls jobs **volatile** — they are excluded from rebuild
+        precisely because nothing downstream depends on a finished job's row
+        surviving. So a schema change here recreates the table instead of
+        migrating it: the v1 table is keyed by ``run_id``, and a run_id is not a
+        capture_id that a v2 job could resolve to a directory. Keeping those rows
+        would mean serving job history that points at a source layout which no
+        longer exists.
+
+        ``validation_templates`` is deliberately left alone: it is a cache the
+        orchestrator refills (it injects the full template object into a job's
+        params), and it has not changed shape.
         """
-        version = conn.execute("PRAGMA user_version").fetchone()[0]
-        if version < _SCHEMA_VERSION:
-            conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+        if user_version(conn) < _SCHEMA_VERSION:
+            conn.execute("DROP TABLE IF EXISTS jobs")
 
-    @contextmanager
-    def _conn(self) -> Iterator[sqlite3.Connection]:
-        """Yield a connection under the lock, committing on success.
-
-        The lock serializes all access so the shared connection is safe across
-        FastAPI's thread pool. For a file DB a fresh connection is opened per call
-        and closed afterwards; the in-memory DB reuses its single shared connection
-        (closing it would drop the data).
-        """
-        with self._db_lock:
-            if self._shared is not None:
-                yield self._shared
-                self._shared.commit()
-                return
-            conn = sqlite3.connect(self._path)
-            conn.row_factory = sqlite3.Row
-            try:
-                yield conn
-                conn.commit()
-            finally:
-                conn.close()
+    def _conn(self) -> AbstractContextManager[sqlite3.Connection]:
+        """Yield a connection under the lock, committing on success."""
+        return self._db.connect()
 
     def close(self) -> None:
         """Close the shared in-memory connection (no-op for file DBs)."""
-        if self._shared is not None:
-            self._shared.close()
-            self._shared = None
+        self._db.close()
 
     # ---- jobs -------------------------------------------------------------
 
@@ -211,7 +199,7 @@ class RunnerStore:
             conn.execute(
                 """
                 INSERT INTO jobs
-                    (job_id, run_id, pipeline, params, state, progress,
+                    (job_id, capture_id, pipeline, params, state, progress,
                      logs_tail, result, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(job_id) DO UPDATE SET
@@ -223,7 +211,7 @@ class RunnerStore:
                 """,
                 (
                     job.job_id,
-                    job.run_id,
+                    job.capture_id,
                     job.pipeline,
                     json.dumps(job.params),
                     job.state.value,
@@ -250,7 +238,7 @@ class RunnerStore:
         logs = json.loads(row["logs_tail"]) if row["logs_tail"] else []
         return JobStatus(
             job_id=row["job_id"],
-            run_id=row["run_id"],
+            capture_id=row["capture_id"],
             pipeline=row["pipeline"],
             state=JobState(row["state"]),
             progress=float(row["progress"]),

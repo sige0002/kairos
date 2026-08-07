@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 from fastapi import FastAPI, Request, Response
 from fastapi.encoders import jsonable_encoder
@@ -117,13 +118,29 @@ def _install_request_id_middleware(app: FastAPI) -> None:
         return response
 
 
-def create_app(title: str, settings: Settings | None = None) -> FastAPI:
+async def _always_ready() -> dict[str, str]:
+    """Readiness for a service with no dependency of its own to check."""
+    return {"status": "ready"}
+
+
+def create_app(
+    title: str,
+    settings: Settings | None = None,
+    *,
+    readyz: Callable[..., Any] | None = None,
+) -> FastAPI:
     """Create a FastAPI app with kairos cross-cutting concerns wired in.
 
     Args:
         title: Human-readable service title (used in OpenAPI).
         settings: Optional pre-built :class:`Settings`; defaults to the
             process-wide cached instance.
+        readyz: The service's own readiness handler, registered INSTEAD of the
+            always-ready default. Any FastAPI endpoint signature works (sync or
+            async, taking ``Response`` to set a 503). Passing it here rather
+            than adding a second ``/readyz`` afterwards is what keeps the path
+            served exactly once: Starlette matches the first registered route,
+            so a later registration would never be reached.
 
     Returns:
         A configured :class:`FastAPI` app exposing ``/healthz`` and
@@ -151,13 +168,6 @@ def create_app(title: str, settings: Settings | None = None) -> FastAPI:
         """Liveness probe: the process is up and serving."""
         return {"status": "ok"}
 
-    @app.get("/readyz", tags=["health"])
-    async def readyz() -> dict[str, str]:
-        """Readiness probe.
-
-        Stage 0 skeleton always reports ready; services override or extend
-        this once they have real dependencies to check.
-        """
-        return {"status": "ready"}
+    app.get("/readyz", tags=["health"])(readyz or _always_ready)
 
     return app

@@ -18,7 +18,7 @@ import json
 from functools import lru_cache
 from typing import Annotated
 
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -46,10 +46,6 @@ class Settings(BaseSettings):
     # ---- Data / config paths ----------------------------------------------
     data_dir: str = "./data"
     recording_config: str = "config/airoa_hsr/recording/default.yaml"
-    # Recording output root (where the recorder writes <run_id>/...). The
-    # orchestrator uses it to delete a run's directory; the recorder relaxes its
-    # mode to 0o777 so the orchestrator (uid 1000) can remove it.
-    recorded_dir: str = "/data/recorded"
     # Stream tab layout config (initial preview panes); surfaced UI-side via
     # GET /api/v1/config. Optional — missing file just means a single empty pane.
     stream_config: str = "config/airoa_hsr/stream/default.yaml"
@@ -66,7 +62,18 @@ class Settings(BaseSettings):
     # rather than free-form; see kairos_common.archive_paths. Empty (the
     # default) means the feature is not offered at all, and the API advertises
     # it as disabled instead of exposing a control that can only ever fail.
-    archive_roots: str = ""
+    #
+    # The documented name is KAIROS_ARCHIVE_ROOTS (config.md and every
+    # archive_paths docstring say so), so that is the alias that must work: an
+    # operator who followed the docs and still saw no archive control was this
+    # field silently answering only to ARCHIVE_ROOTS — found by E2E scenario 6,
+    # not by any unit test, because unit tests construct Settings directly.
+    archive_roots: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "KAIROS_ARCHIVE_ROOTS", "ARCHIVE_ROOTS", "archive_roots"
+        ),
+    )
 
     # ---- HTTP bind + ports -------------------------------------------------
     # BIND_HOST defaults to 0.0.0.0: LAN exposure is allowed on a trusted LAN
@@ -105,7 +112,7 @@ class Settings(BaseSettings):
     webrtc_host: str = "localhost"
     topic_probe_host: str = "localhost"
     dora_runner_host: str = "localhost"
-    # Importer sidecar (compose.recording.yaml only): pulls finalised runs from
+    # Importer sidecar (compose/recording.yaml only): pulls finalised runs from
     # the robot on request. Co-located with the orchestrator on the recording
     # PC, so it stays localhost even in the split (like dora_runner).
     importer_host: str = "localhost"
@@ -121,6 +128,9 @@ class Settings(BaseSettings):
     # an absolute "http://<host>:8002" to connect the browser directly to the
     # streamer instead (then cors_origins must list that browser origin).
     webrtc_public_url: str = "/webrtc"
+    # Review preview default playback rate (GET /api/v1/config ->
+    # defaults.video_playback_rate; the operator can still change it per player).
+    video_playback_rate: float = 4.0
     # Origins allowed by orchestrator and webrtc_streamer (served + dev).
     # NoDecode: docker compose passes a comma-separated string, not JSON, so
     # skip pydantic-settings' JSON decoding and split it in the validator.

@@ -8,10 +8,10 @@
 > [resources.ja.md](resources.ja.md)。
 
 ## 現状（実装の実態・2026-07-26 更新）
-- 有効な pipeline は **`fast_validation` / `full_validation` / `dataset_export` / `loss_report` /
-  `video_check` / `signal_report` の 6 本**（`dataset_convert` / `dataset_validation` は
+- 有効な pipeline は **`fast_validation` / `full_validation` / `loss_report` /
+  `video_check` / `signal_report` の 5 本**（`dataset_convert` / `dataset_validation` は
   `enabled=false` のプレースホルダ。`POST /jobs` は `pipeline_unavailable` で拒否）。
-- レジストリは **実装済み**: `registry.py` の `build_default_registry()` が同梱 6 本を登録し、
+- レジストリは **実装済み**: `registry.py` の `build_default_registry()` が同梱 5 本を登録し、
   `plugin_loader.discover_plugins()` が `KAIROS_PLUGINS_DIR`（既定 `services/dora_runner/plugins/`）配下の
   manifest をスキャンして自動登録する（例プラグイン `hello_dora` を同梱）。
 - **検証 2 本は実 dora 上の bagflow フロー**（`fast_validation` / `full_validation`）。dora CLI（0.5.0）と
@@ -68,7 +68,7 @@ required_topics:
    プレースホルダ（`enabled=false`）になり `POST /jobs` は `pipeline_unavailable` を返す。
 2. **プラグインとして足す**（コア改修不要）: `KAIROS_PLUGINS_DIR` 配下に manifest（`kairos_plugin.yaml`）と
    実装を置く。`discover_plugins()` が起動時に自動登録する（`hello_dora` を参照）。
-3. summary には再現性のため `pipeline` / `version` を含める（同梱 4 本と同じ規約）。
+3. summary には再現性のため `pipeline` / `version` を含める（同梱パイプラインと同じ規約）。
 4. dora daemon 上で実行する dataflow 化は将来像（[dora_plugins.md](../specs/ja/dora_plugins.md)）。現状は
    in-process インタプリタで動く。
 
@@ -83,27 +83,28 @@ cargo test -p bagflow-checks --manifest-path services/dora_runner/bagflow/Cargo.
 - **report → summary アダプタ** — `tests/test_fast_validation_summary.py`。bagflow の `report.json` を
   手で組み立てて `summary.json` の契約（`missing` / `extra` / `result`）を確認する。dora 不要。
 - **フローの実体化** — `tests/test_bagflow_flow.py`（`${KAIROS_*}` 展開・path 解決・探索順・同梱フロー）。
-- **実 MCAP のフロー試験** — `tests/test_fast_validation.py`。`data/recorded/<RUN_ID>` の実収録
+- **実 MCAP のフロー試験** — `tests/test_fast_validation.py`。`data/objects/<CAPTURE_ID>` の実収録
   **と bagflow/dora バイナリ**に依存し、どちらか欠ければ自動 skip（＝イメージ内でのみ走る）。
+  収録の作り方は [AGENTS.md](../../AGENTS.md) の統合レシピを参照。
 
 ## デバッグ / 反復（でバックしやすい使い方）
 - **ローカル CLI**（HTTP サーバ不要で即実行）。実 dora を使うので**イメージの中で**動かす:
   ```bash
-  # テンプレ自動生成して実行（run の topic から雛形を作り照合）
-  docker compose exec dora_runner python -m dora_runner.cli <run_id> --data-dir /data
+  # テンプレ自動生成して実行（capture の topic から雛形を作り照合）
+  docker compose exec dora_runner python -m dora_runner.cli <capture_id> --data-dir /data
   # テンプレやフローを差し替えて何度も試す
-  docker compose exec dora_runner python -m dora_runner.cli <run_id> --data-dir /data --template my.yaml
-  docker compose exec dora_runner python -m dora_runner.cli <run_id> --data-dir /data --json  # 生 summary
+  docker compose exec dora_runner python -m dora_runner.cli <capture_id> --data-dir /data --template my.yaml
+  docker compose exec dora_runner python -m dora_runner.cli <capture_id> --data-dir /data --json  # 生 summary
   ```
-  - pass/fail を **exit code（0/1）** に反映。出力は `/data/report/fast_validation/<run_id>/summary.json`。
+  - pass/fail を **exit code（0/1）** に反映。出力は `/data/report/fast_validation/<capture_id>/summary.json`。
   - バイナリが無いホストで実行すると**その旨を出して exit 2**（黙って別実装に落ちない）。
 - **フローが落ちたとき**: ジョブ失敗の `details.node_logs` が
-  `data/report/<pipeline>/<run_id>/flow/.bagflow/out/<uuid>/log_<node>.txt` を指す。
+  `data/report/<pipeline>/<capture_id>/flow/.bagflow/out/<uuid>/log_<node>.txt` を指す。
   実際に走ったフローは同じディレクトリの `flow/flow.yml`（`${KAIROS_*}` 展開後）。
 - **bagflow を直接叩く**（kairos を挟まない最小再現）:
   ```bash
   docker compose exec dora_runner bagflow run --no-attach \
-    --bag /data/recorded/<run_id> --report /tmp/report.json /opt/kairos/flows/fast_validation.yml
+    --bag /data/objects/<capture_id> --report /tmp/report.json /opt/kairos/flows/fast_validation.yml
   ```
 - **注意**: dora_runner は自前の coordinator/daemon（既定 127.0.0.1:6112）を持つ。`dora list` などを
   手で叩くときは `--coordinator-port 6112` を付けること（6012 は dora 本来の既定で、ホスト上の他の

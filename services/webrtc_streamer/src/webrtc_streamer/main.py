@@ -153,8 +153,8 @@ def create_streamer_app(
 
     @app.get("/")
     async def root() -> dict[str, str]:
-        """Root identifying the service and stage."""
-        return {"service": SERVICE_NAME, "stage": "stage2"}
+        """Root identifying the service."""
+        return {"service": SERVICE_NAME}
 
     @app.post("/stream/start", status_code=201, response_model=StreamStartResponse)
     async def stream_start(request: StreamStartRequest) -> StreamStartResponse:

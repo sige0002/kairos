@@ -1,42 +1,49 @@
 // Params column (inner-left, 300px): the REAL schema-driven PipelineForm and
-// target-run picker, submitting an actual /jobs POST, plus the real one-click
+// capture picker, submitting an actual /jobs POST, plus the real one-click
 // presets (GET /validation/presets) — each runs its pipeline over exactly the
-// completed runs it hasn't validated yet (`pending_run_ids`).
+// captures it hasn't validated yet (`pending_capture_ids`).
+//
+// Every option in the target selector is a capture, because every job is
+// (contract §10.5). A capture whose bytes are not on this host stays selectable
+// on purpose: the chip and the note beside the selector are the only place the
+// operator finds out WHY it cannot be validated from here.
 import type { JSONSchema } from '../../schema/jsonSchema';
 import type {
   BatchSummary,
-  DatasetEntry,
-  RunSummary,
+  CaptureListItem,
   ValidationOption,
   ValidationPreset,
 } from '../../api/types';
+import { availabilityOf, isCapturePresent } from '../captures/availability';
+import { AvailabilityChip } from '../captures/AvailabilityChip';
 import { formatBatchLabel } from '../episodeChips';
 import { PipelineForm } from '../../features/validation/PipelineForm';
-import { ErrorMessage } from '../../components/ErrorMessage';
+import { JobErrorNote } from '../captures/JobErrorNote';
 import { Badge } from '../../components/ui';
 
-export const ALL_RUNS = '__all__';
-// A dataset target value: `dataset:<dataset_dir>`. Runs use the bare run_id.
-export const DATASET_VALUE_PREFIX = 'dataset:';
+export const ALL_CAPTURES = '__all__';
 // A batch target value: `batch:<batch_id>` — runs the pipeline over every
-// still-present (unexported) run in that batch (the blast-radius check: verify
-// a whole suspect batch in one click).
+// capture of that batch whose bytes are here (the blast-radius check: verify a
+// whole suspect batch in one click). Single captures use the bare capture_id.
 export const BATCH_VALUE_PREFIX = 'batch:';
 
 const SELECT_CLASS =
   'rounded-control border border-gray-200 px-2 py-1.5 font-mono text-sm focus:border-teal-500 focus:outline-none';
 
-/** A dataset option label: `MM/DD · #seq · task` when labeled, else its path. */
-function datasetOptionLabel(d: DatasetEntry): string {
-  if (d.batch_seq != null) {
-    const when = d.exported_at ? new Date(d.exported_at) : null;
-    const md =
-      when && !Number.isNaN(when.getTime())
-        ? `${String(when.getMonth() + 1).padStart(2, '0')}/${String(when.getDate()).padStart(2, '0')}`
-        : null;
-    return `${md ? `${md} · ` : ''}#${d.batch_seq} · ${d.task}`;
-  }
-  return `${d.operator}/${d.task}/${d.index}`;
+/** What to call a capture on screen. `run_id` is display-only (§1) and can be
+ *  absent — a capture pulled from another host may have none — in which case
+ *  the capture_id it is actually keyed by is shown rather than invented. */
+export function captureLabel(capture: Pick<CaptureListItem, 'capture_id' | 'run_id'>): string {
+  return capture.run_id || capture.capture_id;
+}
+
+/** A capture option's text: its name, and for one that cannot be validated from
+ *  here, the §8 state standing in the way. */
+function captureOptionLabel(capture: CaptureListItem): string {
+  const availability = availabilityOf(capture);
+  return availability.usable
+    ? captureLabel(capture)
+    : `${captureLabel(capture)} — ${availability.label}`;
 }
 
 export function ParamsPanel({
@@ -45,55 +52,78 @@ export function ParamsPanel({
   onParamsChange,
   templateOptions,
   suggestions,
-  runs,
-  runsLoading,
-  datasets,
-  datasetsLoading,
+  captures,
+  capturesLoading,
+  catalogTruncated,
   batches,
-  batchRunCount,
-  targetRunId,
-  onTargetRunChange,
-  applicabilityNote,
+  batchCaptureCount,
+  targetId,
+  onTargetChange,
+  selectedCapture,
+  targetNote,
   onRun,
   canRun,
   running,
   progressPct,
   progressLabel,
-  onCompareRuns,
+  onCancelRun,
+  cancelBusy,
+  cancelError,
+  onDismissCancelError,
   presets,
   presetsLoading,
   onRunPreset,
   submitError,
+  submitFailures,
+  captureLabel,
 }: {
   schema: JSONSchema;
   params: Record<string, unknown>;
-  /** Context suggestions for `x-suggest` string params (from the target run). */
+  /** Context suggestions for `x-suggest` params (from the target capture). */
   suggestions?: Record<string, string[]>;
   onParamsChange: (next: Record<string, unknown>) => void;
   templateOptions: ValidationOption[];
-  runs: RunSummary[];
-  runsLoading: boolean;
-  datasets: DatasetEntry[];
-  datasetsLoading: boolean;
-  /** Batches with at least one episode (newest first). */
+  /** Terminal captures, newest first — every one of them a possible target. */
+  captures: CaptureListItem[];
+  capturesLoading: boolean;
+  /** True when the capture sweep stopped before the end of the catalog, so the
+   *  options below — and their counts — are of what was fetched. */
+  catalogTruncated?: boolean;
+  /** Batches with at least one capture (newest first). */
   batches: BatchSummary[];
-  /** How many of a batch's runs are still present (validatable) — 0 disables. */
-  batchRunCount: (b: BatchSummary) => number;
-  targetRunId: string;
-  onTargetRunChange: (id: string) => void;
-  /** Set when the selected pipeline can't run on the selected target type. */
-  applicabilityNote?: string;
+  /** How many of a batch's captures are on this host (validatable) — 0 disables. */
+  batchCaptureCount: (b: BatchSummary) => number;
+  targetId: string;
+  onTargetChange: (id: string) => void;
+  /** The capture `targetId` names, when it names one (not "all" or a batch). */
+  selectedCapture: CaptureListItem | null;
+  /** Why the selected target cannot be validated from this host, when it can't. */
+  targetNote?: string;
   onRun: () => void;
   canRun: boolean;
   running: boolean;
   progressPct: number;
   progressLabel: string;
-  onCompareRuns: () => void;
+  /** Stop every job of this run that has not finished. Absent when there is
+   *  nothing cancellable left (every job already reached an end). */
+  onCancelRun?: () => void;
+  cancelBusy?: boolean;
+  /** A refused cancel, in the operator's words. Held until dismissed: it means
+   *  a job they asked to stop is still running. */
+  cancelError?: string | null;
+  onDismissCancelError?: () => void;
   presets: ValidationPreset[];
   presetsLoading: boolean;
   onRunPreset: (preset: ValidationPreset) => void;
   submitError?: unknown;
+  /** Captures whose job could not be created. Listed rather than counted: a
+   *  preset runs over many captures and "which ones did not run" is the
+   *  question the operator actually has. */
+  submitFailures?: { captureId: string; reason: string }[];
+  captureLabel?: (captureId: string) => string;
 }) {
+  const presentCount = captures.filter(isCapturePresent).length;
+
   return (
     <div className="flex flex-col gap-3 overflow-auto border-r border-gray-100 px-[18px] py-4">
       <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
@@ -101,41 +131,46 @@ export function ParamsPanel({
       </span>
 
       <label className="flex flex-col gap-1 text-sm">
-        <span className="text-[11px] font-medium text-gray-500">Target</span>
+        <span className="flex items-center gap-2">
+          <span className="text-[11px] font-medium text-gray-500">Target</span>
+          {selectedCapture && (
+            <AvailabilityChip capture={selectedCapture} testId="target-availability" />
+          )}
+        </span>
         <select
           aria-label="target"
-          value={targetRunId}
-          onChange={(e) => onTargetRunChange(e.target.value)}
+          value={targetId}
+          onChange={(e) => onTargetChange(e.target.value)}
           disabled={running}
           className={SELECT_CLASS}
         >
-          <option value="">
-            {runsLoading || datasetsLoading ? 'Loading…' : '— Select —'}
-          </option>
-          <optgroup label="Runs (before export)">
-            {runs.length === 0 ? (
+          <option value="">{capturesLoading ? 'Loading…' : '— Select —'}</option>
+          <optgroup label="Captures">
+            {captures.length === 0 ? (
               <option value="" disabled>
-                No completed runs
+                No finished captures
               </option>
             ) : (
               <>
-                <option value={ALL_RUNS}>— All completed runs ({runs.length}) —</option>
-                {runs.map((r) => (
-                  <option key={r.run_id} value={r.run_id}>
-                    {r.run_id}
+                <option value={ALL_CAPTURES} disabled={presentCount === 0}>
+                  — All captures on this host ({presentCount}) —
+                </option>
+                {captures.map((c) => (
+                  <option key={c.capture_id} value={c.capture_id}>
+                    {captureOptionLabel(c)}
                   </option>
                 ))}
               </>
             )}
           </optgroup>
-          <optgroup label="Batches (validate every run of a batch)">
+          <optgroup label="Batches (validate every capture of a batch)">
             {batches.length === 0 ? (
               <option value="" disabled>
-                No batches with unexported runs
+                No batches with captures
               </option>
             ) : (
               batches.map((b) => {
-                const n = batchRunCount(b);
+                const n = batchCaptureCount(b);
                 return (
                   <option
                     key={b.batch_id}
@@ -143,34 +178,37 @@ export function ParamsPanel({
                     disabled={n === 0}
                   >
                     {formatBatchLabel(b.batch_seq, b.created_at)} · {b.task}
-                    {n === 0 ? ' (all exported)' : ` (${n} runs)`}
+                    {n === 0 ? ' (none on this host)' : ` (${n} on this host)`}
                   </option>
                 );
               })
             )}
           </optgroup>
-          <optgroup label="Datasets (exported)">
-            {datasets.length === 0 ? (
-              <option value="" disabled>
-                No exported datasets
-              </option>
-            ) : (
-              datasets.map((d) => (
-                <option
-                  key={d.dataset_dir}
-                  value={`${DATASET_VALUE_PREFIX}${d.dataset_dir}`}
-                >
-                  {datasetOptionLabel(d)}
-                </option>
-              ))
-            )}
-          </optgroup>
         </select>
-        {applicabilityNote && (
-          <span className="text-[11px] text-amber-700">{applicabilityNote}</span>
+        {targetNote && (
+          <span
+            data-testid="target-note"
+            className="text-[11px] leading-relaxed text-amber-700"
+          >
+            {targetNote}
+          </span>
+        )}
+        {/* The sweep stopped before the end of the catalog, so an older
+            recording may simply not be in the list above, and the counts on
+            these options are of what was fetched. Said beside the picker,
+            because that is where they are read as totals. */}
+        {catalogTruncated && (
+          <span
+            data-testid="catalog-truncated"
+            className="rounded-control border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] leading-relaxed text-amber-800"
+          >
+            This is not the whole catalog — there are more recordings than one
+            sweep fetches, so the oldest are not offered here and every count
+            above is of what was fetched.
+          </span>
         )}
         <span className="text-[11px] text-gray-400">
-          Validation only — export stays in Review.
+          Validation only — reviewing and dataset membership live in their own screens.
         </span>
       </label>
 
@@ -183,7 +221,7 @@ export function ParamsPanel({
       />
 
       {/* Real one-click presets (GET /validation/presets): each runs its own
-          pipeline over exactly the completed runs it hasn't validated yet. */}
+          pipeline over exactly the captures it hasn't validated yet. */}
       <div className="flex flex-col gap-1.5">
         <span className="text-xs font-semibold text-gray-700">One-click presets</span>
         {presetsLoading ? (
@@ -225,7 +263,45 @@ export function ParamsPanel({
 
       <div className="flex-1" />
 
-      {submitError != null && <ErrorMessage error={submitError} />}
+      <JobErrorNote error={submitError} testId="validation-submit-error" />
+
+      {(submitFailures?.length ?? 0) > 0 && (
+        <ul
+          data-testid="submit-failures"
+          className="flex flex-col gap-1 rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-[11.5px] text-amber-800"
+        >
+          {submitFailures!.map((f) => (
+            <li key={f.captureId}>
+              <span className="font-semibold">
+                {captureLabel ? captureLabel(f.captureId) : f.captureId}
+              </span>{' '}
+              — {f.reason}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {cancelError && (
+        <div
+          role="alert"
+          data-testid="cancel-error"
+          className="flex flex-col gap-1 rounded-control border border-amber-300 bg-amber-50 px-3 py-2.5 text-[12px] text-amber-900"
+        >
+          <span className="text-[10.5px] font-semibold uppercase tracking-[0.09em]">
+            Not cancelled
+          </span>
+          <span className="font-semibold">{cancelError}</span>
+          <span>The job is still running — try again, or check it in Monitor.</span>
+          <button
+            type="button"
+            onClick={onDismissCancelError}
+            data-testid="cancel-error-dismiss"
+            className="self-start text-[11.5px] font-semibold underline"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {running ? (
         <div className="flex flex-col gap-1.5">
@@ -240,6 +316,17 @@ export function ParamsPanel({
               style={{ width: `${progressPct}%` }}
             />
           </div>
+          {onCancelRun && (
+            <button
+              type="button"
+              data-testid="cancel-run"
+              disabled={cancelBusy}
+              onClick={onCancelRun}
+              className="h-[34px] rounded-[10px] border border-gray-200 bg-white text-[12.5px] font-semibold text-gray-600 hover:border-red-200 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {cancelBusy ? 'Cancelling…' : 'Cancel run'}
+            </button>
+          )}
         </div>
       ) : (
         <button
@@ -251,14 +338,6 @@ export function ParamsPanel({
           Run on selection
         </button>
       )}
-
-      <button
-        type="button"
-        onClick={onCompareRuns}
-        className="h-9 rounded-[10px] border border-gray-200 bg-white text-[12.5px] font-semibold text-gray-500 hover:bg-gray-50"
-      >
-        Compare runs…
-      </button>
     </div>
   );
 }

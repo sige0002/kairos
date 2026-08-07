@@ -1,7 +1,7 @@
 <!-- AUTO-GENERATED from docs/specs/ja/dora_runner.md. Do not edit by hand — edit the Japanese source and run /sync-docs. -->
 # dora_runner specification
 
-> Status: design finalized (v1). Based on `fig_const/dora.png`, with unspecified items fixed as recommended designs. Japanese is the source of truth (treat it as canonical). The English version `docs/specs/en/dora_runner.md` is an auto-generated mirror (do not edit it directly). **No authentication required.**
+> Status: design finalized (**v2 = capture store support**). Based on `fig_const/dora.png`, with unspecified items fixed as recommended designs. Japanese is the source of truth (treat it as canonical). The English version `docs/specs/en/dora_runner.md` is an auto-generated mirror (do not edit it directly). **No authentication required.**
 
 The post-recording **validation / conversion / extension processing pipeline** container (**dora**-based). Taking recorded MCAP as input, it runs validation, conversion, and **AI processing** as asynchronous jobs. All heavy processing is concentrated here, keeping `rosbag2_recorder` / `topic_monitor` lightweight. The design centers on **maximally leveraging dora's extensibility and AI integration**.
 
@@ -15,7 +15,7 @@ The post-recording **validation / conversion / extension processing pipeline** c
 - Each process (validator / converter / **AI node**) is implemented as a **dora node (plugin)** and connected via a **dora dataflow (YAML)**.
 - The **Plugin Registry** registers nodes, and the **Pipeline Registry** manages dataflows (= pipelines). **Adding a pipeline = adding a dataflow YAML + a node**, with no core changes needed.
 - A node's **I/O is fixed as a contract**:
-  - Input: `run` (path / metadata / manifest), an MCAP message iterator (topic filter and time range can be specified), `params`.
+  - Input: `capture` (the `objects/<capture_id>` path / metadata / `object_manifest.json`), an MCAP message iterator (topic filter and time range can be specified), `params`.
   - Output: `metrics` (dict), `artifacts` (a list of generated-output paths), `report` fragments.
   - This lets nodes be freely swapped and chained.
 - **Make AI integration a first-class citizen**: inference / auto-annotation / embedding & search indexing / quality scoring / training dataset conversion (e.g. **LeRobot** format) can be plugged in as **AI dora nodes**.
@@ -25,10 +25,17 @@ The post-recording **validation / conversion / extension processing pipeline** c
 
 ## Input
 
-- `/data/recorded/<run>/*.mcap` (+ `metadata.yaml` / `manifest.json`)
+- `/data/objects/<capture_id>/*.mcap` (+ `metadata.yaml` / `object_manifest.json`) — **this is the only source resolution there is** ([capture_store](capture_store.md) §2)
 - pipeline definitions (dataflow YAML)
 - config ([config](config.md), validation templates, `config/<robot>/flows/*.yml` = `full_validation`'s validation flows)
 - job record (originating from `api_orchestrator`)
+
+### Relationship to the capture store (v2)
+
+- **Every job's mandatory input is a `capture_id`** (changed from the old `run_id`). The `dataset_dir` param is retired — an export no longer moves the bag, so there is no "where it is while recording" and "where it is after export" to switch between in the first place.
+- **Products land in `report/<pipeline>/<capture_id>/`**. Reports under an old `run_id` are thrown away.
+- **Never write into `objects/<capture_id>/`.** dora_runner reads a capture and writes into `report/`, and creates nothing under `objects/` (not even a temp file). Because that holds, **dora_runner does not have to know about capture leases** (the orchestrator takes, renews and releases them on its behalf; [capture_store](capture_store.md) §7.1).
+- If the capture is deleted its directory moves to `.trash`, and a job that was running **fails cleanly** (a late normal ending, not corruption).
 
 ## Constituent components
 
@@ -41,19 +48,19 @@ The post-recording **validation / conversion / extension processing pipeline** c
 ## Runnable pipelines (figure)
 
 - `fast_validation` / `full_validation` / `dataset_convert` / `dataset_validation`
-- **Implemented (`enabled=true`)**: `fast_validation` / `full_validation` / `dataset_export` / `loss_report` / `video_check` / `signal_report` (below). `dataset_convert` / `dataset_validation` are interface and plugin slots only (`enabled=false`).
+- **Implemented (`enabled=true`)**: these five — `fast_validation` / `full_validation` / `loss_report` / `video_check` / `signal_report` (below). `dataset_convert` / `dataset_validation` are interface and plugin slots only (`enabled=false`).
+- **`dataset_export` / `dataset_archive` are retired** (v2). A dataset became a DB row with no physical move behind it ([capture_store](capture_store.md) §6), and archiving is carried by the orchestrator's per-capture endpoint (`POST /api/v1/captures/{id}/archive`). Moving files is no longer dora_runner's job.
 - **Both validation gates (`fast_validation` / `full_validation`) depend on bundled binaries** (bagflow + the dora CLI). Outside the image (a source checkout / CI) they **degrade to `enabled=false` placeholders** whose description says why — we never advertise something that cannot run as runnable.
-- All jobs are launched via `POST /jobs` (proxied by `api_orchestrator`). Each pipeline validates `run_id` (`^[A-Za-z0-9_-]+$`) to prevent path traversal.
+- All jobs are launched via `POST /jobs` (proxied by `api_orchestrator`). Each pipeline validates that the `capture_id` is a well-formed UUIDv7 to prevent path traversal.
 
 ## Implemented pipelines
 
-- **`dataset_export`** — **moves** `recorded/<run_id>` to `data/<operator>/<task>/<NNN>` (operator / task come from the run's `session.json`. `NNN` is zero-padded auto-numbering of 001, 002…. Path components are sanitized). Since it is a per-file rename on the same mount, it is fast even for large bags. **After the move, the recording disappears from `recorded/`** (the orchestrator exports only completed runs, and reserves `NNN` before moving files, so no data is lost even on interruption). `recorded/<run_id>` and its sibling files (`.qos.yaml` / `.failed.json`) are also deleted, and provenance is saved to `<NNN>/dataset.json`. Report: `data/report/dataset_export/<run_id>/summary.json`. Bulk / individual launch is via the orchestrator's `POST /api/v1/datasets/export(-all)` (the run row is also deleted on success).
-- **`loss_report`** — robot-independent, config-free per-topic loss estimation. From the message times of a completed MCAP, it computes the **median interval** per topic and derives `loss ≈ 1 − actual/expected` (read-only, does not decode payloads). The clock **prefers the sender-side `publish_time` (DDS source timestamp)** to keep receive-side jitter (DDS transport, recorder scheduling/cache) out of the cadence estimate. publish_time is trusted only when every message carries a real source stamp (**non-zero** and **different from log_time**) AND the two clocks span the same recording window (within 2x); otherwise (older rosbag2's `pub==log`, a log/source mix, `0`, or offset publisher clocks) it falls back to the single receive-side `log_time` — so publish_time is never worse than before. Note this is an **inferred estimate, not a measurement**: publish_time cannot separate a source that stopped publishing from a message lost in transport before the recorder wrote it (a pre-record loss has no MCAP record, so its publish_time is gone too). **Which clock produced the numbers is stated per topic as `time_source`** (`"publish_time"` / `"log_time"`; honesty rule). Report: `data/report/loss_report/<run_id>/summary.json`.
-- **`video_check`** — on-demand (params `{topic}`) `CompressedImage`→mp4 preview. Generated with PyAV (`av` + `Pillow`), which are **lazily imported** so the service can start even when the packages are absent (when absent it becomes a clearly failed job). Output is `data/report/video_check/<run_id>/<topic>.mp4`, served via `GET /api/v1/files/...`. The encode cap is params `max_frames` (default 900, **`0` = every frame**). A summary cut off at the cap carries `truncated: true` and the real total message count, and the UI shows a "head only" label plus a **Re-encode full episode** button (re-posting `{force: true, max_frames: 0}`). The playback fps is estimated from the frame-time cadence under the same rule as loss_report — **`publish_time` preferred, `log_time` fallback** (the clock used is stated as `fps_time_source` in the summary). The mp4 is encoded to a temp file and atomically renamed, so a re-encode that fails midway never corrupts an mp4 being served. The (run_id, topic) cache is cap-aware (a truncated cache misses a full-length request; an untruncated one within the requested cap hits).
-- **`signal_report`** — robot-independent, **generic** numeric time-series extraction (not JointState-specific; any message with numeric leaves — wrench / odom / cmd_vel, etc. — is in scope). It scans a completed MCAP once ("all numeric leaves in one pass") and walks each message's numeric leaves with the **same `field_introspect` logic** topic_probe's live Signals plotter uses (now shared in `libs/kairos_common`). Paths are dotted/indexed (`pose.position.x` / `position[2]`) — the **same vocabulary as the live view** (a value seen in the UI is addressable in the sidecar by the identical path). The field set is derived from each topic's **first message** (bagel-style episode-0 schema; a later message missing a leaf extracts to `null`), every numeric leaf value is extracted per message, and the aligned series is **downsampled by a uniform stride** so each topic emits at most `max_points` points (default 2000) — into one sidecar. **Image topics (`sensor_msgs/msg/Image` / `CompressedImage`) are excluded** (video_check's job), as are topics with no numeric leaves and topics absent from the recording; each is recorded with a reason in `skipped_topics`. A per-topic **continuity** score is computed from the **full-resolution** inter-arrival intervals (before downsampling): `1 - sum(gap - 1.5*median_interval for gaps > 1.5*median_interval)/duration` (clamped to `[0,1]`; `null` for fewer than 2 messages / zero duration). Using the median as the cadence baseline makes it robust to a handful of long gaps (only the **excess** of a gap beyond 1.5× the typical spacing counts, normalised by the total duration). Timestamps follow the same rule as loss_report / video_check — **`publish_time` preferred, `log_time` fallback** (the clock used is stated per topic as `time_source`). Output: `data/report/signal_report/<run_id>/summary.json`. The frontend (Review "Data integrity") renders loss_events / bins / continuity as the aggregated timeline + event table + summary, synced against the video_check mp4 (**the numeric `fields` stay in the sidecar, but the v2 UI no longer draws the raw waveform chart** — removed 2026-07-15; live waveforms are topic_probe's Signals view). Sidecar shape:
+- **`loss_report`** — robot-independent, config-free per-topic loss estimation. From the message times of a completed MCAP, it computes the **median interval** per topic and derives `loss ≈ 1 − actual/expected` (read-only, does not decode payloads). The clock **prefers the sender-side `publish_time` (DDS source timestamp)** to keep receive-side jitter (DDS transport, recorder scheduling/cache) out of the cadence estimate. publish_time is trusted only when every message carries a real source stamp (**non-zero** and **different from log_time**) AND the two clocks span the same recording window (within 2x); otherwise (older rosbag2's `pub==log`, a log/source mix, `0`, or offset publisher clocks) it falls back to the single receive-side `log_time` — so publish_time is never worse than before. Note this is an **inferred estimate, not a measurement**: publish_time cannot separate a source that stopped publishing from a message lost in transport before the recorder wrote it (a pre-record loss has no MCAP record, so its publish_time is gone too). **Which clock produced the numbers is stated per topic as `time_source`** (`"publish_time"` / `"log_time"`; honesty rule). Report: `data/report/loss_report/<capture_id>/summary.json`.
+- **`video_check`** — on-demand (params `{topic}`) `CompressedImage`→mp4 preview. Generated with PyAV (`av` + `Pillow`), which are **lazily imported** so the service can start even when the packages are absent (when absent it becomes a clearly failed job). Output is `data/report/video_check/<capture_id>/<topic>.mp4`, served via `GET /api/v1/files/...`. The encode cap is params `max_frames` (**`0` = every frame**). The default comes from the `VIDEO_MAX_FRAMES` env (unset = `0` = the full episode — reviewers watch the whole take, the 2026-08-07 decision; set a cap only where encode time/disk actually hurts. A broken value falls back to "everything" — a preview that silently stops short is worse than a slow one). The fps-estimate cadence sample stays bounded independently of the cap (`FPS_SAMPLE_FRAMES`). A summary cut off at the cap carries `truncated: true` and the real total message count, and the UI shows a "head only" label plus a **Re-encode full episode** button (re-posting `{force: true, max_frames: 0}`). The playback fps is estimated from the frame-time cadence under the same rule as loss_report — **`publish_time` preferred, `log_time` fallback** (the clock used is stated as `fps_time_source` in the summary). The mp4 is encoded to a temp file and atomically renamed, so a re-encode that fails midway never corrupts an mp4 being served. The (capture_id, topic) cache is cap-aware (a truncated cache misses a full-length request; an untruncated one within the requested cap hits).
+- **`signal_report`** — robot-independent, **generic** numeric time-series extraction (not JointState-specific; any message with numeric leaves — wrench / odom / cmd_vel, etc. — is in scope). It scans a completed MCAP once ("all numeric leaves in one pass") and walks each message's numeric leaves with the **same `field_introspect` logic** topic_probe's live Signals plotter uses (now shared in `libs/kairos_common`). Paths are dotted/indexed (`pose.position.x` / `position[2]`) — the **same vocabulary as the live view** (a value seen in the UI is addressable in the sidecar by the identical path). The field set is derived from each topic's **first message** (bagel-style episode-0 schema; a later message missing a leaf extracts to `null`), every numeric leaf value is extracted per message, and the aligned series is **downsampled by a uniform stride** so each topic emits at most `max_points` points (default 2000) — into one sidecar. **Image topics (`sensor_msgs/msg/Image` / `CompressedImage`) are excluded** (video_check's job), as are topics with no numeric leaves and topics absent from the recording; each is recorded with a reason in `skipped_topics`. A per-topic **continuity** score is computed from the **full-resolution** inter-arrival intervals (before downsampling): `1 - sum(gap - 1.5*median_interval for gaps > 1.5*median_interval)/duration` (clamped to `[0,1]`; `null` for fewer than 2 messages / zero duration). Using the median as the cadence baseline makes it robust to a handful of long gaps (only the **excess** of a gap beyond 1.5× the typical spacing counts, normalised by the total duration). Timestamps follow the same rule as loss_report / video_check — **`publish_time` preferred, `log_time` fallback** (the clock used is stated per topic as `time_source`). Output: `data/report/signal_report/<capture_id>/summary.json`. The frontend (Review "Data integrity") renders loss_events / bins / continuity as the aggregated timeline + event table + summary, synced against the video_check mp4 (**the numeric `fields` stay in the sidecar, but the v2 UI no longer draws the raw waveform chart** — removed 2026-07-15; live waveforms are topic_probe's Signals view). Sidecar shape:
   ```json
   {
-    "pipeline": "signal_report", "version": "1.1.0", "run_id": "...",
+    "pipeline": "signal_report", "version": "1.1.0", "capture_id": "...",
     "generated_at": "<iso8601>", "params": {"topics": null, "max_points": 2000},
     "span": {"duration_ns": 20034502235},
     "topics": {
@@ -86,7 +93,7 @@ The post-recording **validation / conversion / extension processing pipeline** c
     - **`bins`** — a fixed 600-way split of the global span (`bin_ns = ceil(duration/600)`; the last bin may be short). `densities` is the message count per bin from the full-resolution timestamps (their sum equals `message_count`). A topic with fewer than 2 messages emits `"bins": null`.
 
     The existing `t_ns` stays topic-relative (the chart contract is unchanged); the frontend converts chart-time ↔ the global axis with `start_offset_ns`.
-- **Post-export reads (`params.dataset_dir`)** — `loss_report` / `video_check` / `signal_report` accept an optional `dataset_dir` (`<operator>/<task>/<NNN>`, relative to `data/`) and **read the MCAP from the exported dataset directory** instead of `recorded/<run_id>` (`dataset_export` is a move, so after export there is no bag in `recorded/`). Outputs / caches stay **keyed by run_id** (`data/report/<pipeline>/<run_id>/`) as before, so a video_check mp4 cache generated before export is reused as-is after it (the move preserves mtimes). `dataset_dir` only allows exactly 3 plain-name components (traversal and the reserved names `recorded`/`report`/`datasets` are a `ValueError` → failed job).
+- **`params.dataset_dir` is retired** (v2) — now that a dataset is logical and a recording's bytes never move, the need to switch between "where it is while recording" and "where it is after export" is gone. `loss_report` / `video_check` / `signal_report` all read `objects/<capture_id>`, and outputs / caches are fixed at `data/report/<pipeline>/<capture_id>/`. Putting a capture into a dataset or taking it out leaves both the reports and the mp4 cache valid as they are.
 
 ## `fast_validation`: the required-topic gate (**real dora execution**)
 
@@ -138,7 +145,7 @@ summarize it*.
 ```mermaid
 flowchart TB
   A["config/&lt;robot&gt;/flows/&lt;flow&gt;.yml<br/>authored by the operator (= a bagflow flow.yml)"]
-  B["data/report/full_validation/&lt;run_id&gt;/flow/flow.yml"]
+  B["data/report/full_validation/&lt;capture_id&gt;/flow/flow.yml"]
   C["report.json"]
   D["summary.json (pass / fail)"]
   A -->|"materialize: inject bag/report · expand ${KAIROS_*} · resolve paths"| B
@@ -149,7 +156,7 @@ flowchart TB
 ### How a flow relates to config
 
 - A flow is **not a kairos dialect**. `config/<robot>/flows/*.yml` holds a bagflow flow.yml as-is (omit
-  `bag:` / `report:` — kairos injects the run's own). A job picks one with `params.flow` (default
+  `bag:` / `report:` — kairos injects the capture's own). A job picks one with `params.flow` (default
   `default`), and `GET /pipelines` lists the **discovered flow names as an `enum`** in `params_schema`, so
   the auto-rendered form becomes a picker. A one-click button is just an entry in
   `validation_presets.yaml` (`{pipeline: full_validation, params: {flow: …}}`) — no UI change.
@@ -164,7 +171,7 @@ flowchart TB
   | `${KAIROS_EXPECT_HZ}` | JSON `{topic: hz}`. **Required topics enter at `hz=0`** (= must exist, any rate: `bagflow-topic-rate` reports a topic missing from the bag as a failure and no rate can fall below 0). Topics matching `RECORDING_CONFIG`'s `expected_hz_patterns` are overridden with their real rate |
   | `${KAIROS_REQUIRED_TOPICS}` | JSON array of required topic **names** (for nodes that only need names) |
   | `${KAIROS_REQUIRED_TOPIC_SPECS}` | JSON array of `[{name, type}]` for the required topics (for a node that also checks the declared **message type**, i.e. `bagflow-topic-presence`). Used by `fast_validation`'s bundled flow |
-  | `${KAIROS_RUN_ID}` / `${KAIROS_BAG_DIR}` / `${KAIROS_REPORT_DIR}` / `${KAIROS_REPORT}` | the run and its output locations |
+  | `${KAIROS_CAPTURE_ID}` / `${KAIROS_BAG_DIR}` / `${KAIROS_REPORT_DIR}` / `${KAIROS_REPORT}` | the capture and its output locations (**`${KAIROS_RUN_ID}` is retired** — an unknown `${KAIROS_…}` is an error, so an old flow does not slip through silently, it fails) |
   - Required topics come from **`params.template` → (else) `RECORDING_CONFIG.validation.required_topics`**.
     The orchestrator resolves a template id into the full object for `full_validation` just as it does for
     `fast_validation`, so **choosing a template under Settings → Validation drives both pipelines from one
@@ -190,7 +197,7 @@ bagflow only reports facts (per-node `ok`, per-edge `coverage`, the `incomplete`
   default `0` **reports the number without gating on it** (queue-overflow thinning always shows up in
   coverage — nothing goes missing silently).
 
-Outputs land in `data/report/full_validation/<run_id>/`: `summary.json` (the verdict), `report.json`
+Outputs land in `data/report/full_validation/<capture_id>/`: `summary.json` (the verdict), `report.json`
 (bagflow's own), and `flow/` (the materialized flow plus each node's logs). The summary is shaped for the
 generic `SummaryResult` (`metrics.coverage` is 0-100, which the Validation screen's coverage column reads
 directly). The previous `summary.json` / `report.json` are **deleted before the flow starts**, so a failed
@@ -236,8 +243,8 @@ are recorded in `VENDOR.md`.
 
 ## Output
 
-- `/data/report/<pipeline>/<run>/` (`summary.json` / preview / logs)
-- `/data/converted/<run>/` (output of `dataset_convert`. e.g. training format)
+- `/data/report/<pipeline>/<capture_id>/` (`summary.json` / preview / logs)
+- `/data/converted/<capture_id>/` (output of `dataset_convert`. e.g. training format)
 - job record (the user-facing canonical store is **`api_orchestrator`'s SQLite**; dora_runner also persists its own internal state — see "Persistence and restart reconciliation" below)
 
 ## Persistence and restart reconciliation
@@ -249,12 +256,12 @@ are recorded in `VENDOR.md`.
 
 ## API (service-internal API; public exposure is via `api_orchestrator`)
 
-- `POST /jobs` — `{ run_id, pipeline, params? }` → `{ job_id }`
+- `POST /jobs` — `{ capture_id, pipeline, params? }` → `{ job_id }`
 - `GET /jobs/{id}/status` — `{ state: "queued"|"running"|"succeeded"|"failed"|"canceled", progress, logs_tail }`
 - `GET /jobs/{id}/result` — `{ summary, artifacts: [] }`
 - `POST /jobs/{id}/cancel`
 - `GET /pipelines` — list of available pipelines (dataflows)
-- Validation templates: `GET/POST /validation/templates`, `POST /validation/templates/generate` (generate a draft from a run)
+- Validation templates: `GET/POST /validation/templates`, `POST /validation/templates/generate` (generate a draft from a capture; body `{ capture_id }`)
 - `GET /healthz` / `GET /readyz`
 
 ## Data flow
@@ -285,8 +292,8 @@ flowchart LR
 
   FLOWB[/"the bundled flow<br/>/opt/kairos/flows/fast_validation.yml"/]
   FLOWC[/"the robot's config (read-only)<br/>config&lt;robot&gt;/flows/*.yml"/]
-  BAG[("/data/recorded/&lt;run_id&gt;<br/>*.mcap + metadata.yaml")]
-  OUT[("/data/report/&lt;pipeline&gt;/&lt;run_id&gt;/<br/>summary.json · report.json · flow/")]
+  BAG[("/data/objects/&lt;capture_id&gt;<br/>*.mcap + metadata.yaml")]
+  OUT[("/data/report/&lt;pipeline&gt;/&lt;capture_id&gt;/<br/>summary.json · report.json · flow/")]
 
   J --> API --> REG --> PIPE
   FLOWC -. "wins when it has the same name" .-> PIPE
@@ -308,13 +315,13 @@ flowchart LR
 
 ## Implementation status and development guide
 
-This document is the **source of truth for the design (including the future vision)**. **The currently enabled pipelines are these six: `fast_validation` / `full_validation` / `dataset_export` /
+This document is the **source of truth for the design (including the future vision)**. **The currently enabled pipelines are these five: `fast_validation` / `full_validation` /
 `loss_report` / `video_check` / `signal_report`** (see "Implemented pipelines" above).
 `dataset_convert` / `dataset_validation` are interface only (`enabled=false`; `POST /jobs`
 rejects them with `pipeline_unavailable`).
 
 **Implemented**: the **Plugin/Pipeline Registry** (`registry.py`'s `build_default_registry()` registers the
-6 bundled pipelines, and `plugin_loader.discover_plugins()` scans manifests under `KAIROS_PLUGINS_DIR`
+5 bundled pipelines, and `plugin_loader.discover_plugins()` scans manifests under `KAIROS_PLUGINS_DIR`
 (default `services/dora_runner/plugins/`) for automatic registration; an example `hello_dora` plugin is
 bundled), the **in-process dora dataflow interpreter** (a plugin's `executor: dora` still runs
 in-process, for the reasons below), and **job concurrency limits and per-job timeouts**

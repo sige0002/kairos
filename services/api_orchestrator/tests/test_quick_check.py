@@ -1,32 +1,23 @@
-"""Stop-time quick-check settlement: pure verdict rules, MCAP summary read,
-end-to-end settlement through ``RunService.stop()`` with a mocked monitor, and
-the episode-quality derivation seam.
+"""Stop-time quick-check: the MCAP summary read, the layer builders, the verdict.
 
-The pure builders/verdict are exercised without any I/O; the integration tests
-drive the real settlement (scheduled off the stop path) and drain it
-deterministically before asserting the persisted ``quick_check``.
+Everything here is pure — no monitor, no recorder, no disk beyond a tiny MCAP
+fixture — which is the point of keeping the settlement logic out of the service.
+The end-to-end settlement, and the late re-derivation of a review's quality once
+the verdict lands, are exercised in ``test_record_lifecycle.py`` where a real
+stop drives them.
 """
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 
-import httpx
 import pytest
 from api_orchestrator.models import (
-    Batch,
-    Episode,
-    QuickCheck,
     QuickCheckLayer0,
     QuickCheckLayer1,
-    QuickCheckVerdict,
-    RecordStartRequest,
-    Run,
-    RunState,
 )
-from api_orchestrator.monitor_client import MonitorClient
 from api_orchestrator.quick_check import (
+    DEFAULT_MIN_DURATION_S,
     McapSummary,
     assemble_quick_check,
     build_layer0,
@@ -35,13 +26,9 @@ from api_orchestrator.quick_check import (
     incidents_in_window,
     read_mcap_summary,
     resolve_expected_hz,
+    resolve_min_duration_s,
 )
-from api_orchestrator.recorder_client import RecorderClient
-from api_orchestrator.runs import RunService
-from api_orchestrator.store import RunStore
-from conftest import FakeRecorder
-from fastapi.testclient import TestClient
-from kairos_common import ExpectedHzPattern, RecordingConfig
+from kairos_common import ExpectedHzPattern, RecordingConfig, ValidationConfig
 from mcap.writer import Writer
 
 # ---- tiny MCAP fixture ----------------------------------------------------
@@ -141,6 +128,20 @@ def test_read_mcap_summary_missing_file_is_none(tmp_path: Path) -> None:
     (tmp_path / "empty").mkdir()
     assert read_mcap_summary(tmp_path / "empty") is None
     assert read_mcap_summary(tmp_path / "does_not_exist") is None
+
+
+def test_read_mcap_summary_keeps_an_epoch_zero_start(tmp_path: Path) -> None:
+    # Sim-time / unsynced-clock bags legitimately start at log_time 0. A falsy
+    # check (`start_ns or None`) once turned that into "no time bounds", which
+    # made a perfectly healthy recording read as duration-unknown and verdict
+    # needs_review. Pin the fix: 0 is a real start bound, not an absence.
+    run_dir = tmp_path / "run_zero"
+    step = 100_000_000  # 0.1s
+    _write_tiny_mcap(run_dir / "run_zero.mcap", {"/tf": 100}, start_ns=0, step_ns=step)
+    summary = read_mcap_summary(run_dir)
+    assert summary is not None
+    assert summary.start_ns == 0
+    assert summary.duration_s == pytest.approx(9.9, abs=1e-6)
 
 
 def test_read_mcap_summary_corrupt_bag_degrades(tmp_path: Path) -> None:
@@ -308,498 +309,145 @@ def test_build_layer0_unavailable_when_monitor_absent() -> None:
     assert layer0.integrity == "ok"
 
 
-# ---- integration: settlement through RunService.stop() --------------------
+# ---- minimum duration -----------------------------------------------------
+# Message PRESENCE is not evidence of a usable recording. Inside a fraction of a
+# second every topic can happen to deliver one message, so every other verdict
+# rule passes and the check reports "no issues found" for what was actually a
+# double-clicked start/stop. These pin the criterion that closes that.
 
 
-class _MonitorFakes:
-    """Transport that serves recorder paths via FakeRecorder plus monitor
-    ``/metrics`` and ``/incidents`` bodies (configurable per test)."""
-
-    def __init__(self, recorder: FakeRecorder) -> None:
-        self._recorder = recorder
-        self.metrics_body: dict | None = {
-            "topics": [
-                {
-                    "name": "/tf",
-                    "hz": 30.0,
-                    "rate_shortfall": 0.0,
-                    "gap_max_ms": 10,
-                    "dds_samples_lost": 0,
-                },
-            ]
-        }
-        self.incidents_body: dict | None = {"incidents": []}
-
-    def handler(self, request: httpx.Request) -> httpx.Response:
-        path = request.url.path
-        if path == "/metrics":
-            if self.metrics_body is None:
-                return httpx.Response(
-                    503, json={"error": {"code": "x", "message": "down"}}
-                )
-            return httpx.Response(200, json=self.metrics_body)
-        if path == "/incidents":
-            if self.incidents_body is None:
-                return httpx.Response(
-                    404, json={"error": {"code": "x", "message": "no"}}
-                )
-            return httpx.Response(200, json=self.incidents_body)
-        return self._recorder.handler(request)
-
-
-async def _drive_stop(
-    store: RunStore,
-    fakes: _MonitorFakes,
-    *,
-    config: RecordingConfig | None,
-    recorded_dir: Path,
-    mcap_topics: dict[str, int] | None,
-) -> Run:
-    """start -> (optionally write a bag) -> stop -> drain settlement; return run."""
-    client = httpx.AsyncClient(transport=httpx.MockTransport(fakes.handler))
-    recorder = RecorderClient("http://recorder", client)
-    monitor = MonitorClient("http://monitor", client)
-    svc = RunService(
-        store,
-        recorder,
-        recording_config=config,
-        recorded_dir=recorded_dir,
-        monitor=monitor,
-    )
-    run = await svc.start(RecordStartRequest(topics=["/tf"]))
-    if mcap_topics is not None:
-        start_ns = 1_000_000_000
-        _write_tiny_mcap(
-            recorded_dir / run.run_id / f"{run.run_id}.mcap",
-            mcap_topics,
-            start_ns=start_ns,
-            step_ns=100_000_000,
-        )
-    await svc.stop()
-    await svc.drain_settlements()
-    await client.aclose()
-    return store.get(run.run_id)
-
-
-def test_settlement_good_verdict_end_to_end(tmp_path: Path) -> None:
-    store = RunStore(":memory:")
-    try:
-        fakes = _MonitorFakes(FakeRecorder())
-        run = asyncio.run(
-            _drive_stop(
-                store,
-                fakes,
-                config=None,
-                recorded_dir=tmp_path,
-                mcap_topics={"/tf": 300},
-            )
-        )
-        qc = run.quick_check
-        assert qc is not None
-        assert qc.layer0.available is True
-        assert qc.layer0.integrity == "ok"
-        assert qc.layer1.available is True and qc.layer1.summary_available is True
-        assert qc.layer1.topics["/tf"].message_count == 300
-        assert qc.verdict.quality == "good"
-        assert qc.verdict.reasons == []
-    finally:
-        store.close()
-
-
-def test_settlement_hz_shortfall_end_to_end(tmp_path: Path) -> None:
-    store = RunStore(":memory:")
-    try:
-        cfg = RecordingConfig(
-            robot_name="t",
-            expected_hz_patterns=[ExpectedHzPattern(pattern="/tf", hz=30.0)],
-        )
-        fakes = _MonitorFakes(FakeRecorder())
-        # 30 messages over ~2.9s -> ~10 Hz, well under 0.8 x 30.
-        run = asyncio.run(
-            _drive_stop(
-                store, fakes, config=cfg, recorded_dir=tmp_path, mcap_topics={"/tf": 30}
-            )
-        )
-        qc = run.quick_check
-        assert qc.verdict.quality == "needs_review"
-        assert any("/tf avg" in r and "expected 30Hz" in r for r in qc.verdict.reasons)
-    finally:
-        store.close()
-
-
-def test_settlement_monitor_unreachable_degrades(tmp_path: Path) -> None:
-    store = RunStore(":memory:")
-    try:
-        fakes = _MonitorFakes(FakeRecorder())
-        fakes.metrics_body = None  # monitor /metrics 503
-        fakes.incidents_body = None  # monitor /incidents 404
-        run = asyncio.run(
-            _drive_stop(
-                store,
-                fakes,
-                config=None,
-                recorded_dir=tmp_path,
-                mcap_topics={"/tf": 300},
-            )
-        )
-        qc = run.quick_check
-        assert qc is not None
-        # Layer 0 monitor part is honestly unavailable ...
-        assert qc.layer0.available is False
-        assert qc.layer0.topics == {}
-        # ... but recorder integrity + Layer 1 still land, so the verdict is good.
-        assert qc.layer0.integrity == "ok"
-        assert qc.layer1.summary_available is True
-        assert qc.verdict.quality == "good"
-    finally:
-        store.close()
-
-
-def test_settlement_missing_summary_degrades(tmp_path: Path) -> None:
-    store = RunStore(":memory:")
-    try:
-        fakes = _MonitorFakes(FakeRecorder())
-        # No bag written -> Layer 1 unavailable -> needs_review (honest).
-        run = asyncio.run(
-            _drive_stop(
-                store, fakes, config=None, recorded_dir=tmp_path, mcap_topics=None
-            )
-        )
-        qc = run.quick_check
-        assert qc.layer1.available is False
-        assert qc.layer1.summary_available is False
-        assert qc.verdict.quality == "needs_review"
-        assert any("summary unavailable" in r for r in qc.verdict.reasons)
-    finally:
-        store.close()
-
-
-def test_settlement_captures_start_baseline_for_dds_delta(tmp_path: Path) -> None:
-    """The record-start baseline makes dds_samples_lost whole-window (stop-start)."""
-    store = RunStore(":memory:")
-    try:
-        fakes = _MonitorFakes(FakeRecorder())
-        # Baseline (at start) and stop snapshots share the same client body, so
-        # set a non-zero cumulative value: with an equal baseline the delta is 0.
-        fakes.metrics_body = {
-            "topics": [{"name": "/tf", "hz": 30.0, "dds_samples_lost": 7}]
-        }
-        run = asyncio.run(
-            _drive_stop(
-                store,
-                fakes,
-                config=None,
-                recorded_dir=tmp_path,
-                mcap_topics={"/tf": 300},
-            )
-        )
-        # start baseline 7, stop 7 -> whole-window delta 0 (not the raw 7).
-        assert run.quick_check.layer0.topics["/tf"].dds_samples_lost == 0
-    finally:
-        store.close()
-
-
-# ---- assemble + persistence round-trip ------------------------------------
-
-
-def test_quick_check_store_roundtrip() -> None:
-    store = RunStore(":memory:")
-    try:
-        store.create(Run(run_id="run_qc", state=RunState.completed))
-        qc = assemble_quick_check(
-            layer0=QuickCheckLayer0(available=True, integrity="ok"),
-            layer1=build_layer1(
-                summary=McapSummary(
-                    message_counts={"/tf": 10}, start_ns=0, end_ns=1_000_000_000
-                ),
-                config=None,
-                required_topics=["/tf"],
-            ),
-            elapsed_ms=42,
-        )
-        store.update("run_qc", quick_check=qc)
-        loaded = store.get("run_qc").quick_check
-        assert isinstance(loaded, QuickCheck)
-        assert loaded.elapsed_ms == 42
-        assert loaded.verdict.quality == "good"
-        assert loaded.layer1.topics["/tf"].message_count == 10
-    finally:
-        store.close()
-
-
-# ---- late-settlement episode re-derive (F1) -------------------------------
-
-
-async def _drive_stop_with_episode(
-    store: RunStore,
-    fakes: _MonitorFakes,
-    *,
-    config: RecordingConfig | None,
-    recorded_dir: Path,
-    mcap_topics: dict[str, int] | None,
-    seed_quality: str | None,
-    seed_source: str,
-) -> Episode | None:
-    """start -> save an episode BEFORE settlement -> stop -> drain settlement.
-
-    Seeds an episode on the run while the quick_check is still unsettled (the
-    save-before-settle race), with the given quality + source, then returns the
-    episode after settlement so a test can assert whether it was re-derived.
-    ``seed_quality=None`` seeds no episode (the no-op case).
-    """
-    client = httpx.AsyncClient(transport=httpx.MockTransport(fakes.handler))
-    recorder = RecorderClient("http://recorder", client)
-    monitor = MonitorClient("http://monitor", client)
-    svc = RunService(
-        store,
-        recorder,
-        recording_config=config,
-        recorded_dir=recorded_dir,
-        monitor=monitor,
-    )
-    run = await svc.start(RecordStartRequest(topics=["/tf"]))
-    if mcap_topics is not None:
-        _write_tiny_mcap(
-            recorded_dir / run.run_id / f"{run.run_id}.mcap",
-            mcap_topics,
-            start_ns=1_000_000_000,
-            step_ns=100_000_000,
-        )
-    if seed_quality is not None:
-        store.create_batch(
-            Batch(batch_id="b_seed", project="p", task="t", status="active")
-        )
-        store.create_episode(
-            Episode(
-                episode_id="ep_seed",
-                batch_id="b_seed",
-                run_id=run.run_id,
-                index_in_batch=1,
-                task_result="success",
-                quality=seed_quality,
-                quality_source=seed_source,
-            )
-        )
-    await svc.stop()
-    await svc.drain_settlements()
-    await client.aclose()
-    return store.get_episode_by_run_id(run.run_id)
-
-
-def test_late_settlement_corrects_quick_check_sourced_episode(tmp_path: Path) -> None:
-    """An episode saved with the conservative needs_review fallback (source
-    quick_check) is corrected to the settled 'good' verdict; source stays."""
-    store = RunStore(":memory:")
-    try:
-        fakes = _MonitorFakes(FakeRecorder())
-        episode = asyncio.run(
-            _drive_stop_with_episode(
-                store,
-                fakes,
-                config=None,
-                recorded_dir=tmp_path,
-                mcap_topics={"/tf": 300},  # clean bag -> good verdict
-                seed_quality="needs_review",
-                seed_source="quick_check",
-            )
-        )
-        assert episode is not None
-        assert episode.quality == "good"
-        assert episode.quality_source == "quick_check"
-    finally:
-        store.close()
-
-
-def test_late_settlement_skips_operator_sourced_episode(tmp_path: Path) -> None:
-    """An operator's quality call is never overwritten by the settled verdict,
-    even when the verdict disagrees."""
-    store = RunStore(":memory:")
-    try:
-        cfg = RecordingConfig(
-            robot_name="t",
-            expected_hz_patterns=[ExpectedHzPattern(pattern="/tf", hz=30.0)],
-        )
-        fakes = _MonitorFakes(FakeRecorder())
-        episode = asyncio.run(
-            _drive_stop_with_episode(
-                store,
-                fakes,
-                config=cfg,
-                recorded_dir=tmp_path,
-                mcap_topics={"/tf": 30},  # ~10Hz -> needs_review verdict
-                seed_quality="good",  # operator said good
-                seed_source="operator",
-            )
-        )
-        assert episode is not None
-        # Operator call preserved despite the needs_review verdict.
-        assert episode.quality == "good"
-        assert episode.quality_source == "operator"
-    finally:
-        store.close()
-
-
-def test_late_settlement_no_episode_is_noop(tmp_path: Path) -> None:
-    """Settlement still persists the quick_check when the run has no episode."""
-    store = RunStore(":memory:")
-    try:
-        fakes = _MonitorFakes(FakeRecorder())
-        episode = asyncio.run(
-            _drive_stop_with_episode(
-                store,
-                fakes,
-                config=None,
-                recorded_dir=tmp_path,
-                mcap_topics={"/tf": 300},
-                seed_quality=None,  # no episode seeded
-                seed_source="quick_check",
-            )
-        )
-        assert episode is None
-        # The run itself still settled cleanly.
-        run = next(iter(store.list_by_states([RunState.completed])), None)
-        assert run is not None and run.quick_check is not None
-        assert run.quick_check.verdict.quality == "good"
-    finally:
-        store.close()
-
-
-# ---- run detail / list API surface (frontend reads quick_check here) ------
-
-
-def test_run_detail_endpoint_serializes_quick_check(
-    client: TestClient, store: RunStore
-) -> None:
-    """GET /api/v1/runs/{id} must include the persisted quick_check object.
-
-    This is the exact surface the frontend reads in the 'quickcheck' phase, so
-    assert the HTTP JSON (not just the store round-trip) carries the full shape.
-    """
-    run_id = "run_20260715_010000"
-    store.create(Run(run_id=run_id, state=RunState.completed))
-    qc = assemble_quick_check(
-        layer0=QuickCheckLayer0(available=True, integrity="dropped"),
-        layer1=build_layer1(
-            summary=McapSummary(
-                message_counts={"/tf": 100}, start_ns=0, end_ns=10_000_000_000
-            ),
-            config=None,
-            required_topics=["/tf"],
+def _layer1_lasting(seconds: float, *, messages: int = 300) -> QuickCheckLayer1:
+    return build_layer1(
+        summary=McapSummary(
+            message_counts={"/tf": messages},
+            start_ns=0,
+            end_ns=int(seconds * 1e9),
         ),
-        elapsed_ms=17,
+        config=None,
+        required_topics=["/tf"],
     )
-    store.update(run_id, quick_check=qc)
-
-    body = client.get(f"/api/v1/runs/{run_id}").json()
-    assert body["quick_check"] is not None
-    assert body["quick_check"]["verdict"]["quality"] == "needs_review"
-    assert body["quick_check"]["layer0"]["integrity"] == "dropped"
-    assert body["quick_check"]["layer1"]["topics"]["/tf"]["message_count"] == 100
-    assert body["quick_check"]["elapsed_ms"] == 17
-
-    # And the list surface carries it too (base Run field).
-    listed = client.get("/api/v1/runs").json()["items"]
-    row = next(r for r in listed if r["run_id"] == run_id)
-    assert row["quick_check"]["verdict"]["quality"] == "needs_review"
 
 
-def test_run_detail_quick_check_null_when_unsettled(
-    client: TestClient, store: RunStore
+_CLEAN_L0 = QuickCheckLayer0(available=True, integrity="ok", incidents=[])
+
+
+def test_the_reported_double_click_is_no_longer_good() -> None:
+    """The QA case verbatim: 87ms, 25 messages, every topic present."""
+    verdict = compute_verdict(_CLEAN_L0, _layer1_lasting(0.087, messages=25))
+
+    assert verdict.quality == "needs_review"
+    reason = next(r for r in verdict.reasons if "shorter than" in r)
+    # Both numbers, so the operator can tell an accident from a short take they
+    # meant to keep.
+    assert "0.087s" in reason
+    assert "2s minimum" in reason
+    assert "accidental" in reason
+
+
+def test_a_take_at_the_floor_is_unaffected() -> None:
+    # The boundary is inclusive: exactly the floor is long enough.
+    assert compute_verdict(_CLEAN_L0, _layer1_lasting(2.0)).quality == "good"
+
+
+def test_a_normal_take_is_unaffected() -> None:
+    verdict = compute_verdict(_CLEAN_L0, _layer1_lasting(30.0))
+    assert verdict.quality == "good"
+    assert verdict.reasons == []
+
+
+@pytest.mark.parametrize(
+    ("floor", "duration", "expected"),
+    [
+        (5.0, 3.0, "needs_review"),  # a stricter deployment
+        (5.0, 6.0, "good"),
+        (0.5, 1.0, "good"),  # a looser one
+        (0, 0.05, "good"),  # 0 disables the criterion entirely
+    ],
+)
+def test_the_floor_is_configurable(
+    floor: float, duration: float, expected: str
 ) -> None:
-    """A run with no settled quick_check exposes it as null (not missing)."""
-    run_id = "run_20260715_010001"
-    store.create(Run(run_id=run_id, state=RunState.completed))
-    body = client.get(f"/api/v1/runs/{run_id}").json()
-    assert "quick_check" in body
-    assert body["quick_check"] is None
-
-
-# ---- episode quality derivation (D-2 seam extension) ----------------------
-
-
-def _make_batch_and_run(client: TestClient, store: RunStore, run_id: str) -> str:
-    store.create(Run(run_id=run_id, state=RunState.completed))
-    batch = client.post(
-        "/api/v1/batches", json={"project": "P", "task": "grasp"}
-    ).json()
-    return batch["batch_id"]
-
-
-def _seed_quick_check(store: RunStore, run_id: str, quality: str) -> None:
-    qc = QuickCheck(
-        computed_at="2026-07-15T00:00:00.000Z",
-        layer0=QuickCheckLayer0(available=True, integrity="ok"),
-        layer1=QuickCheckLayer1(available=True, summary_available=True),
-        verdict=QuickCheckVerdict(quality=quality, reasons=[]),
+    verdict = compute_verdict(
+        _CLEAN_L0, _layer1_lasting(duration), min_duration_s=floor
     )
-    store.update(run_id, quick_check=qc)
+    assert verdict.quality == expected
 
 
-def test_episode_quality_derives_from_quick_check(
-    client: TestClient, store: RunStore
-) -> None:
-    """Omitting quality derives it from the run's quick_check verdict."""
-    run_id = "run_20260715_000001"
-    batch_id = _make_batch_and_run(client, store, run_id)
-    _seed_quick_check(store, run_id, "needs_review")
-
-    resp = client.post(
-        "/api/v1/episodes",
-        json={
-            "batch_id": batch_id,
-            "run_id": run_id,
-            "index_in_batch": 0,
-            "task_result": "success",
-        },
+def test_the_floor_comes_from_the_recording_config() -> None:
+    config = RecordingConfig.model_validate(
+        {
+            "robot_name": "r",
+            "default_topics": ["/tf"],
+            "validation": {"min_duration_s": 7.5},
+        }
     )
-    assert resp.status_code == 201
-    ep = resp.json()
-    assert ep["quality"] == "needs_review"
-    assert ep["quality_source"] == "quick_check"
+    assert resolve_min_duration_s(config) == 7.5
+    # No config at all still has to have an opinion — the fallback is what
+    # protects a deployment that never wrote a validation section.
+    assert resolve_min_duration_s(None) == DEFAULT_MIN_DURATION_S
+    # The default deliberately lives in two places (the pure verdict function
+    # must work without a config). This pin is what stops them drifting: change
+    # either alone and a no-config deployment silently disagrees with a
+    # default-config one about what "too short" means.
+    assert DEFAULT_MIN_DURATION_S == ValidationConfig().min_duration_s
 
 
-def test_episode_explicit_quality_is_operator_override(
-    client: TestClient, store: RunStore
-) -> None:
-    """An explicit quality is stored as-is (operator override), not derived."""
-    run_id = "run_20260715_000002"
-    batch_id = _make_batch_and_run(client, store, run_id)
-    _seed_quick_check(store, run_id, "needs_review")  # would derive needs_review
-
-    resp = client.post(
-        "/api/v1/episodes",
-        json={
-            "batch_id": batch_id,
-            "run_id": run_id,
-            "index_in_batch": 0,
-            "task_result": "success",
-            "quality": "good",
-        },
+def test_the_config_floor_reaches_the_persisted_verdict() -> None:
+    config = RecordingConfig.model_validate(
+        {
+            "robot_name": "r",
+            "default_topics": ["/tf"],
+            "validation": {"min_duration_s": 10},
+        }
     )
-    assert resp.status_code == 201
-    ep = resp.json()
-    assert ep["quality"] == "good"
-    assert ep["quality_source"] == "operator"
-
-
-def test_episode_quality_default_without_quick_check(
-    client: TestClient, store: RunStore
-) -> None:
-    """With no quick_check to derive from, omitted quality falls back to
-    needs_review (honest: an unsettled run is not vouched as good)."""
-    run_id = "run_20260715_000003"
-    batch_id = _make_batch_and_run(client, store, run_id)  # no quick_check seeded
-
-    resp = client.post(
-        "/api/v1/episodes",
-        json={
-            "batch_id": batch_id,
-            "run_id": run_id,
-            "index_in_batch": 0,
-            "task_result": "success",
-        },
+    quick = assemble_quick_check(
+        layer0=_CLEAN_L0,
+        layer1=_layer1_lasting(4.0),
+        elapsed_ms=1,
+        config=config,
     )
-    assert resp.status_code == 201
-    ep = resp.json()
-    assert ep["quality"] == "needs_review"
-    assert ep["quality_source"] == "quick_check"
+    # 4s passes the default floor but not this deployment's.
+    assert quick.verdict.quality == "needs_review"
+    assert "10s minimum" in " ".join(quick.verdict.reasons)
+
+
+def test_an_unknown_duration_is_not_good() -> None:
+    """Every message sharing one timestamp leaves no usable time bounds."""
+    layer1 = build_layer1(
+        summary=McapSummary(message_counts={"/tf": 25}, start_ns=5, end_ns=5),
+        config=None,
+        required_topics=["/tf"],
+    )
+    assert layer1.duration_s is None
+
+    verdict = compute_verdict(_CLEAN_L0, layer1)
+    # Unknown-leaning: it cannot be confirmed as a complete take, and a verdict
+    # that cannot vouch for the data must not say it is good.
+    assert verdict.quality == "needs_review"
+    assert any("could not be determined" in r for r in verdict.reasons)
+
+
+def test_an_absent_summary_is_not_double_reported() -> None:
+    layer1 = build_layer1(summary=None, config=None, required_topics=["/tf"])
+    verdict = compute_verdict(_CLEAN_L0, layer1)
+
+    assert verdict.quality == "needs_review"
+    # One fault, one reason: the missing summary already says it louder, and a
+    # second "duration unknown" line would just be the same fact restated.
+    assert any("summary unavailable" in r for r in verdict.reasons)
+    assert not any("could not be determined" in r for r in verdict.reasons)
+
+
+def test_a_short_take_reports_alongside_other_faults() -> None:
+    layer1 = build_layer1(
+        summary=McapSummary(message_counts={"/tf": 1}, start_ns=0, end_ns=50_000_000),
+        config=None,
+        required_topics=["/tf", "/joint_states"],
+    )
+    verdict = compute_verdict(QuickCheckLayer0(integrity="dropped"), layer1)
+    # The criterion is additive, not a replacement: an operator triaging this
+    # needs every reason, not the first one that fired.
+    joined = " ".join(verdict.reasons)
+    assert "shorter than" in joined
+    assert "integrity" in joined
+    assert "/joint_states" in joined

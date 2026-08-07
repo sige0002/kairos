@@ -23,9 +23,22 @@ const DISCOVERED = [
   { name: '/hsrb/odom', type: 'nav_msgs/msg/Odometry', publisher_count: 1 },
 ];
 
-function mockFetch(recordStatus: Record<string, unknown> = { state: 'created', run_id: null }) {
+// An idle recorder answers with an EMPTY live list — that array is what says
+// "nothing is live" (§10 rev.2.4); its absence would mean something else.
+const IDLE_STATUS = { state: 'created', run_id: null, live_capture_ids: [] };
+
+const STORE_HEALTH = {
+  instance_id: 'pc-01',
+  state: 'ok',
+  delete_available: true,
+  corrupt: [],
+  warnings: [],
+};
+
+function mockFetch(recordStatus: Record<string, unknown> = IDLE_STATUS) {
   return vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
+    if (url.includes('/store/health')) return Promise.resolve(jsonResponse(STORE_HEALTH));
     if (url.includes('/config')) return Promise.resolve(jsonResponse(CONFIG));
     if (url.includes('/record/status')) return Promise.resolve(jsonResponse(recordStatus));
     if (url.includes('/topics')) return Promise.resolve(jsonResponse(DISCOVERED));
@@ -73,7 +86,7 @@ test('nav is in §11 spec order', async () => {
   mockFetch();
   renderWithClient(<MonitorScreen />);
   await screen.findByTestId('mon-nav-Overview');
-  for (const label of ['Overview', 'Topics', 'Signals', 'System', 'Events', 'Logs']) {
+  for (const label of ['Overview', 'Topics', 'Signals', 'System', 'Store', 'Events', 'Logs']) {
     expect(screen.getByTestId(`mon-nav-${label}`)).toBeInTheDocument();
   }
 });
@@ -135,6 +148,9 @@ test('sub-nav switches between the real built-out views (no placeholders)', asyn
   fireEvent.click(screen.getByTestId('mon-nav-System'));
   expect(await screen.findByTestId('monitor-system')).toBeInTheDocument();
 
+  fireEvent.click(screen.getByTestId('mon-nav-Store'));
+  expect(await screen.findByTestId('store-health-panel')).toBeInTheDocument();
+
   fireEvent.click(screen.getByTestId('mon-nav-Events'));
   expect(screen.getByTestId('monitor-events')).toBeInTheDocument();
 
@@ -157,8 +173,8 @@ test('← Back to Collect switches the active tab', async () => {
   expect(useUiStore.getState().activeTab).toBe('collect');
 });
 
-test('context strip: STANDBY when no recording is active (no fabricated episode)', async () => {
-  mockFetch({ state: 'created', run_id: null });
+test('context strip: STANDBY when the recorder reports an empty live set', async () => {
+  mockFetch(IDLE_STATUS);
   renderWithClient(<MonitorScreen />);
 
   await waitFor(() => expect(screen.getByTestId('context-state')).toHaveTextContent('STANDBY'));
@@ -166,12 +182,34 @@ test('context strip: STANDBY when no recording is active (no fabricated episode)
   expect(screen.queryByText(/FROM COLLECT WARNING/)).not.toBeInTheDocument();
 });
 
-test('context strip: REC + run_id shown while a real recording is running', async () => {
-  mockFetch({ state: 'recording', run_id: 'run_test', started_at: '2026-07-13T15:00:00Z' });
+test('context strip: REC + run_id + capture id while a real recording is running', async () => {
+  mockFetch({
+    state: 'recording',
+    run_id: 'run_test',
+    capture_id: '0199aaaa-0000-7000-8000-00000000000b',
+    live_capture_ids: ['0199aaaa-0000-7000-8000-00000000000b'],
+    started_at: '2026-07-13T15:00:00Z',
+  });
   renderWithClient(<MonitorScreen />);
 
   await waitFor(() => expect(screen.getByTestId('context-state')).toHaveTextContent('REC'));
   expect(screen.getByTestId('monitor-context')).toHaveTextContent('run_test');
+  // The identity is abbreviated to fit the strip but carried in full.
+  expect(screen.getByTestId('context-capture')).toHaveAttribute(
+    'data-capture-id',
+    '0199aaaa-0000-7000-8000-00000000000b',
+  );
+});
+
+// §10 rev.2.4: an absent live_capture_ids array means the recorder could not be
+// asked. STANDBY there would assert something we have not verified.
+test('context strip: a status without live_capture_ids is not shown as STANDBY', async () => {
+  mockFetch({ state: 'created', run_id: null });
+  renderWithClient(<MonitorScreen />);
+
+  await waitFor(() =>
+    expect(screen.getByTestId('context-state')).toHaveTextContent('LIVE STATE UNREPORTED'),
+  );
 });
 
 test('Topics Events card: honest empty state when the alert buffer is empty', async () => {

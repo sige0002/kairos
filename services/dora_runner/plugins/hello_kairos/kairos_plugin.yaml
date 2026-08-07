@@ -16,7 +16,7 @@ description: >-
   recording); intended as the copy-me starting point for a new plugin.
 executor: dora
 version: 0.1.0
-required_inputs: [run_id]
+required_inputs: [capture_id]
 params_schema:
   type: object
   properties:
@@ -31,7 +31,7 @@ params_schema:
       description: Upper-case the greeting.
       default: false
 outputs:
-  - "report/hello_kairos/<run_id>/summary.json"
+  - "report/hello_kairos/<capture_id>/summary.json"
 entrypoint:
   dataflow: dataflow.yml
 requires:

@@ -10,13 +10,28 @@ from __future__ import annotations
 
 import re
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
-from kairos_common import Compression, Durability, Reliability
+from kairos_common import ApiError, Compression, Durability, Reliability
 from pydantic import BaseModel, Field
 
-# run_id charset guard (path-traversal prevention), per the spec / config.md.
+# run_id charset guard, per the spec / config.md. Since v2 the run_id is a
+# DISPLAY NAME only — ``objects/<capture_id>`` is the path — so this no longer
+# guards a directory name. It still guards the value the orchestrator keys its
+# UNIQUE column by and shows to operators, which is reason enough to keep it.
 RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def validate_run_id(run_id: str) -> str:
+    """Return *run_id* if it matches ``^[A-Za-z0-9_-]+$``, else raise 400."""
+    if not RUN_ID_PATTERN.match(run_id):
+        raise ApiError(
+            status_code=400,
+            code="invalid_run_id",
+            message="run_id must match ^[A-Za-z0-9_-]+$.",
+            details={"run_id": run_id},
+        )
+    return run_id
 
 
 class RunState(StrEnum):
@@ -69,7 +84,8 @@ class RecordStartRequest(BaseModel):
     ``topics`` is either an explicit list or the literal ``"all"`` (expanded to
     the live topic list at start time and frozen into the manifest). ``run_id``
     is allocated by ``api_orchestrator`` and passed in; the recorder validates
-    its charset and uses it verbatim.
+    its charset and uses it verbatim as the recording's display name. The
+    capture's identity (``capture_id``) is minted by the recorder, not passed in.
     """
 
     topics: list[str] | Literal["all"]
@@ -78,9 +94,16 @@ class RecordStartRequest(BaseModel):
     split: SplitConfig | None = None
     qos_default: QosProfile | None = None
     qos_overrides: dict[str, QosProfile] | None = None
-    # Optional session metadata; written to the run's session.json sidecar.
+    # Optional session metadata; written to the capture's object_manifest.json.
     operator: str | None = None
     task: str | None = None
+    # Which robot produced this capture. Omitted -> the recorder falls back to
+    # its RECORDING_CONFIG ``robot_name``, so a standalone call still names one.
+    robot: str | None = None
+    # Console-side identity (orchestrator git sha etc.), stamped verbatim into
+    # the capture manifest's `stamp.console` — half of the two-host provenance.
+    # Absent on direct recorder calls: the stamp then honestly has no console.
+    console_stamp: dict[str, Any] | None = None
 
 
 class TopicEntry(BaseModel):
@@ -152,6 +175,10 @@ class RecordPrepareResponse(BaseModel):
     """
 
     run_id: str
+    # Minted here: the armed session already owns ``objects/<capture_id>/``, and
+    # a matching start() commits under this id (the run_id may differ — see
+    # ``RecorderSession._armed_matches``).
+    capture_id: str
     state: RunState
     arming: RecordArming | None = None
     # ISO8601 instant this armed session auto-disarms if unclaimed. Mirrors
@@ -164,6 +191,9 @@ class RecordStartResponse(BaseModel):
     """Body of a successful ``POST /record/start`` (201)."""
 
     run_id: str
+    # The capture's global identity (§1): the orchestrator's PK and the only
+    # key that resolves to bytes on disk. ``run_id`` is a display name.
+    capture_id: str
     state: RunState
     started_at: str
     # The settled arming snapshot (OL-①.4): /record/start blocks through the
@@ -177,6 +207,25 @@ class RecordStatusResponse(BaseModel):
 
     state: RunState
     run_id: str | None = None
+    # The capture this status describes: the armed one while ``armed``, the live
+    # one while recording/stopping, the last one afterwards. ``null`` only
+    # before this process has recorded anything — a finalised session keeps
+    # naming its capture so the stop response identifies what it just finished.
+    capture_id: str | None = None
+    # The definitive list of captures the recorder is still the sole writer of —
+    # armed, recording or stopping. The orchestrator's rebuild uses it as §8
+    # rule 1's live-exclusion source and MUST skip every id in it: those
+    # directories are mid-flight, and an armed one has no manifest yet at all.
+    # Empty once the session is finalised, which is the answer "none are live"
+    # — distinct from ``capture_id``, which still names the last capture.
+    live_capture_ids: list[str] = Field(default_factory=list)
+    # Set only by a ``stop()`` that cancelled an ARMED session: the capture that
+    # was thrown away, never recorded and never written to disk. It cannot ride
+    # on ``capture_id`` — that names the last *finalised* capture, and a cancel
+    # must not overwrite it — but the caller still needs to know which id it
+    # asked for is now dead, so it stops waiting for a capture that will never
+    # appear. ``null`` on every other stop.
+    disarmed_capture_id: str | None = None
     started_at: str | None = None
     message_count: int = 0
     bytes: int = 0
@@ -184,6 +233,15 @@ class RecordStatusResponse(BaseModel):
     # Present once a ``--start-paused`` arming gate has run for this session
     # (``null`` otherwise). The final snapshot persists while ``recording``.
     arming: RecordArming | None = None
+    # The build this recorder is running (KAIROS_GIT_SHA baked at image build;
+    # ``null`` when built without it). The console compares it with its own to
+    # flag version skew between the robot and the recording PC.
+    git_sha: str | None = None
+    # Free space on the filesystem the RECORDER writes (its own data dir) —
+    # in the split deploy that is the ROBOT's disk, which no console-side
+    # /system probe can see. The UI derives "hours of recording left" from it;
+    # ``null`` when the data dir cannot be statted.
+    disk_free_bytes: int | None = None
     # Recording integrity from rosbag2's in-recorder cache (post-finalise). The
     # cache drops on overflow and reports "Total lost: N"; we surface that count
     # (``null`` = not yet known / unavailable) and a coarse classification:

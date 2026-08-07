@@ -18,8 +18,12 @@ select = ["E", "F", "I", "UP", "B"]
 extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Path"]
 
 [tool.pytest.ini_options]
-# Discover tests across the shared lib and every Python service.
-testpaths = ["libs", "services"]
+# Discover tests across the shared lib, every Python service, and the deploy
+# sidecars. deploy/sync is stdlib-only and has no pyproject of its own, so a
+# bare `pytest` at the root is the only thing that runs its tests — without it
+# listed here the importer's /pull contract would be untested, which is exactly
+# how the v1→v2 rename broke the split transfer unnoticed.
+testpaths = ["libs", "services", "deploy"]
 # importlib mode lets identically-named test modules (each service has its own
 # tests/test_health.py) coexist without sys.path/__init__.py collisions.
 addopts = "-q --import-mode=importlib"

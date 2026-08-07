@@ -4,7 +4,7 @@
 
 > 別 PC（録画用 PC）から、画像など重いトピックを含む rosbag（MCAP）を記録しつつ、
 > **ロボット本体のオンボードシステムを一切圧迫しない**ための配置設計。前提は**有線・同一 LAN**。
-> 既存の単一ホスト構成（`compose.yaml`）は変更なしでそのまま動く（本構成は追加の「分割デプロイ」）。
+> 既存の単一ホスト構成（`compose/compose.yaml`）は変更なしでそのまま動く（本構成は追加の「分割デプロイ」）。
 
 ## 1. 問題：リモート DDS 購読がロボットを圧迫する
 
@@ -84,8 +84,8 @@ sample あたり 1 回で、ローカル記録と同じ）。**重いデータ�
 ## 3. Option A（既定）: エッジ記録（recorder をロボットに置く）
 
 ### 3.1 構成ファイル
-- `compose.robot.yaml` … ロボット側 4 サービスのみ（`compose.yaml` から `extends` で定義を再利用）。
-- `compose.recording.yaml` … 録画 PC 側 3 サービスのみ。
+- `compose/robot.yaml` … ロボット側 4 サービスのみ（`compose/compose.yaml` から `extends` で定義を再利用）。
+- `compose/recording.yaml` … 録画 PC 側 3 サービスのみ。
 - **profiles ではなく 2 ファイルに分けている**: 1 ファイル + profiles だと「DDS リーダを誤って録画 PC で
   起動」しやすい。**録画 PC のファイルにはそもそも DDS サービスが含まれない**ので、事故が起きない。
 
@@ -94,13 +94,13 @@ sample あたり 1 回で、ローカル記録と同じ）。**重いデータ�
 ```bash
 # ロボットに本リポジトリを配置し、.env でロボットの ROS 2 グラフに合わせる
 cp .env.split.example .env   # ROS_DOMAIN_ID / RMW_IMPLEMENTATION / ROS_DISTRO を編集
-make robot-up                # または: docker compose --env-file .env -f compose.robot.yaml up -d --build
+make robot-up                # または: docker compose --project-directory . --env-file .env -f compose/robot.yaml up -d --build
 ```
 - `.env.split.example` に **「ROS 2 graph (robot side)」セクション**があり、`ROS_DOMAIN_ID` /
   `RMW_IMPLEMENTATION` / `ROS_DISTRO`（および任意の `CYCLONEDDS_URI` / `FASTRTPS_DEFAULT_PROFILES_FILE` /
   `MSGS_OVERLAY_DIR` / `BIND_HOST`）をここで設定する。`ROS_DISTRO` は **.env の値が Makefile 既定
   （jazzy）に勝つ**（イメージのタグ/ベースも切り替わる）。
-- ネットワークはロボット側 4 サービスとも `network_mode: host` + `ipc: host`（`compose.yaml` から
+- ネットワークはロボット側 4 サービスとも `network_mode: host` + `ipc: host`（`compose/compose.yaml` から
   `extends` 継承）。HTTP API は `BIND_HOST`（既定 `0.0.0.0`）で bind し、録画 PC から LAN 越しに
   届く必要がある（信頼 LAN 前提。絞る場合はロボットの LAN インタフェース IP に）。
 - gitignored な `config/local/<robot>/` を使うロボットは、各サービスが**起動時に committed →
@@ -112,7 +112,7 @@ make robot-up                # または: docker compose --env-file .env -f comp
 ```bash
 cp .env.split.example .env
 # .env の ROBOT_IP をロボットの LAN IP に。*_HOST はそれを参照する。
-docker compose -f compose.recording.yaml up -d --build    # または: make recording-up
+docker compose --project-directory . -f compose/recording.yaml up -d --build    # または: make recording-up
 ```
 
 ### 3.3 コード上の継ぎ目（既定 localhost、後方互換）
@@ -128,31 +128,43 @@ recorder は MCAP を**ロボットのディスク**に書く。dora（CPU 重�
 
 - **NFS で robot:/data をマウントして dora に直接読ませない**。dora が大きな MCAP を走査すると、
   ロボットがディスク/network を供給することになり、**記録中ならロボットを圧迫する**（本設計の趣旨に反する）。
-- 既定は `make import-runs`（`deploy/sync/import_runs.sh`）: **finalise 済み（`metadata.yaml` がある）run のみ**を
-  ロボットから rsync（`--partial --append-verify`、`BWLIMIT` で帯域制限可）。idempotent でタイマー実行も可。
-  in-progress の run は半端にコピーされない。
+- 既定は `make import-runs`（`deploy/sync/import_runs.sh`）: 発見の単位は **`objects/<capture_id>`** で、
+  **`object_manifest.json` の `state` が `completed` / `interrupted` のものだけ**をロボットから rsync
+  （`--partial --append-verify`、`BWLIMIT` で帯域制限可）。`digest_state` は条件に入れない — digest は
+  **受け取る側**の仕事なので、それを待つとデッドロックする。idempotent でタイマー実行も可。
+  各 capture は `$DATA_DIR/.incoming/<capture_id>` へ rsync してから、完了後に同一 FS の
+  `os.replace` で `objects/` へ入れる（rsync はソート順に転送するので、`object_manifest.json` が
+  巨大な `*.mcap` より先に届く = 途中で切れると「完成しているように見えて bag が切れている」
+  ディレクトリが残ってしまう）。これで「`objects/` に不完全なディレクトリが現れるのは
+  ローカル recorder が書いている最中だけ」という不変条件が保たれる（[capture_store](capture_store.md) §2）。
+  到着したものは orchestrator の reconciler が拾って行にするので、このスクリプトは
+  orchestrator が動いていなくても使える。
 - recorder にファイル POST はさせない（アップロード失敗が記録ライフサイクルに結合するのを避ける）。
-- 注意: `dora_runner` の `dataset_export` は `recorded/` からファイルを **move** する
-  （`dataset_export.py`）。**PC ローカルの複製に対しては安全**だが、**ロボット storage や read-only NFS を
-  指すと破壊的**。必ず import 済みの PC ローカル複製に対して実行すること。
+- **v2 で「ファイルを move する処理」は無くなった**（`dataset_export` は廃止。dataset は DB 行）。
+  唯一バイトを動かすのは capture 単位の archive で、destination は `KAIROS_ARCHIVE_ROOTS` に対して
+  検証され、`data_dir` と重なるものは（realpath で両方向に）拒否される。
 - **Save 連動の自動 pull（オプション・既定 OFF）**: 録画 PC スタックに **importer サイドカー**
-  （`deploy/sync/`、`compose.recording.yaml` のみ — 単一ホスト `compose.yaml` には存在しないので
+  （`deploy/sync/`、`compose/recording.yaml` のみ — 単一ホスト `compose/compose.yaml` には存在しないので
   `make up` には一切影響しない）を同梱。recording config の
   `transfer.auto_pull_on_save: true`（Settings > Advanced JSON で編集、`recording.pre_arm` と同じ流儀）
-  にすると、Collect の Save（`POST /api/v1/episodes`）直後に orchestrator が importer へ
-  `POST /pull {run_id}` を投げ、その run だけを rsync で取り込む（finalise 済みゲート・idempotent・
-  resume は手動と同一保証）。**既定 false = 明示オプトインなしには何も転送しない**。
+  にすると、Collect の Save（**その capture への初回 review 保存** = `PATCH /api/v1/captures/{id}/review`）
+  直後に orchestrator が importer へ `POST /pull {"capture_id": …}` を投げ、その capture だけを rsync で
+  取り込む（終端状態ゲート・idempotent・resume は手動と同一保証）。importer の `/pull` は
+  **body を厳格に検証**する: `{"capture_id": <uuid7>}` か `{"all": true}` のどちらかで、解釈できない
+  body は `400`。空 body を「全部引く」と解釈していた旧挙動は、キー変更の際に取り違え 1 つで
+  ロボット全体のスイープになるため撤去した。**既定 false = 明示オプトインなしには何も転送しない**。
   ロボット側の複製は**残す**（pull は copy であって move ではない。ロボット側 retention は別課題 **TBD**）。
   失敗時の回収は `IMPORT_SWEEP_S`（既定 0=off の定期スイープ）または手動 `make import-runs`。
 - **パスワードレス認証（rsync/ssh 共通・env で設定）**: `.env.split` に `ROBOT_SSH_PASSWORD`
   （sshpass 経由 — 書くだけで動く。平文パスワードである点は信頼 LAN 前提）または
   `ROBOT_SSH_KEY`（identity ファイルの絶対パス・推奨）を設定（`.env.split.example` 参照）。
   `make import-runs` / `make push-config` / importer サイドカーの全経路が同じ設定を読む。
-- **転送×録画の重なりは実測済みで無害**: プロトコルと実測値は `deploy/test/overlap_eval/`。
+- **転送×録画の重なりは実測済みで無害**（2026-07-16 実測。計測ハーネスは v1 レイアウト期の
+  ものだったため撤去済み — スクリプトは git 履歴の `deploy/test/overlap_eval/` にある）:
   実リンクの 30〜60 倍の悲観条件（loopback 715MB/s・ssh 暗号二重）でも drop 0・最悪トピック −0.1%
   （§5 の一次基準 <1% を余裕でクリア）。`BWLIMIT` は録画保護ではなく、細いリンク
-  （WiFi/Tailscale）上の **WebRTC プレビュー帯域保護**用のレバー。HSR 実機投入前に同スクリプトの
-  再走を推奨（この実測は NVMe + 余裕ある CPU の箱での値）。
+  （WiFi/Tailscale）上の **WebRTC プレビュー帯域保護**用のレバー。HSR 実機投入前の再測を推奨
+  （この実測は NVMe + 余裕ある CPU の箱での値）。
 
 ## 4. Option B（代替）: ロボット側 Zenoh ゲートウェイ（別 PC からライブ全データ記録）
 
@@ -328,7 +340,7 @@ C が正当化されるのは A が構造的に供給できない別要件（ラ
 「ロボットを圧迫しない」唯一の構造的解は、**重いデータをロボットの DDS から network に出さない**こと。
 既定の **Option A（エッジ記録 + 配置分割）**は、録画 PC 側に DDS リーダを一切置かないことでこれを保証する。
 別 PC からライブ全データが必要なときだけ **Option B（ロボット側 Zenoh ゲートウェイ + DDS localhost 固定）**を使う。
-単一ホスト構成（`compose.yaml`）は従来どおり何も変えずに動く。
+単一ホスト構成（`compose/compose.yaml`）は従来どおり何も変えずに動く。
 **Option C（境界ブリッジ 1 本化）は 3 エージェント敵対的討論で審査済み（§5）**: 恒久アーキテクチャとしては
 棄却。「記録は常にロボット上（A）、ブリッジはライブ PC 消費の硬要件が立った時のみゲート越しに」が確定。
 現行の圧縮データ帯域では記録周波数はどの構成でも落ちない（実測）ため、今は何も作らないのが正解。

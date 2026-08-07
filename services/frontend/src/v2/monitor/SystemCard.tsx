@@ -6,24 +6,26 @@
 // an honest "—" / omit the bar rather than a fabricated number.
 
 import { useQuery } from '@tanstack/react-query';
-import { apiGet } from '../../api/client';
+import { getSystemInfo } from '../../api/system';
+import { SYSTEM_INFO_POLL_MS } from '../pollingPolicy';
 import { Card } from '../../components/ui';
-import type { SystemInfo } from '../../api/types';
 import { formatBytes } from '../review/format';
 
-// Utilization/disk change over time (the static CPU/GPU names don't), so poll a
-// few seconds apart. The backend caches its samples ~2s, so this is cheap. The
-// 'system' query key is shared with the header readout (which stays static).
-const REFETCH_MS = 5000;
+// The 'system' query key is shared with the header readout (which stays static).
 
 function InfoRow({ label, value, testId }: { label: string; value: string; testId?: string }) {
   return (
     <div className="flex items-baseline gap-2 text-xs text-gray-500">
       <span>{label}</span>
       <div className="flex-1" />
+      {/* `truncate` clips on BOTH axes, and at `text-xs` the default 16px line
+          box is a hair shorter than this mono face's ascent+descent — measured
+          2px of the glyphs cut off, which eats a descender or an accent
+          depending on the font stack. Line-height rounding, not a layout
+          failure: `leading-normal` gives the line box the 2px it was short. */}
       <span
         data-testid={testId}
-        className="max-w-[180px] truncate font-mono font-semibold text-gray-700"
+        className="max-w-[180px] truncate font-mono font-semibold leading-normal text-gray-700"
         title={value}
       >
         {value}
@@ -52,9 +54,9 @@ function Meter({ label, percent, testId }: { label: string; percent: number; tes
 export function SystemCard() {
   const { data } = useQuery({
     queryKey: ['system'],
-    queryFn: ({ signal }) => apiGet<SystemInfo>('/api/v1/system', { signal }),
-    staleTime: REFETCH_MS,
-    refetchInterval: REFETCH_MS,
+    queryFn: ({ signal }) => getSystemInfo({ signal }),
+    staleTime: SYSTEM_INFO_POLL_MS,
+    refetchInterval: SYSTEM_INFO_POLL_MS,
   });
 
   const cpuValue =

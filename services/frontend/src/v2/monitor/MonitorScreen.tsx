@@ -4,6 +4,8 @@
 //   Topics    — the add-panel chart grid + topics table (the mock's own scope)
 //   Signals   — the ported topic_probe numeric-field plotter
 //   System    — host facts + utilization + endpoints + honest component health
+//   Store     — the catalog's opinion of itself: SUSPECT, corrupt sidecars,
+//               rebuild findings and the Repair action (contract §8 / §9-3)
 //   Events    — full-page incident view over the real alert buffer
 //   Logs      — session-local timeline of received SSE lifecycle events
 // The context strip shows the REAL recording state (RecordContextChip).
@@ -17,13 +19,22 @@ import { cn } from '../../components/ui';
 import { TopicsView } from './TopicsView';
 import { OverviewView } from './OverviewView';
 import { SystemView } from './SystemView';
+import { StoreHealthView } from './StoreHealthView';
 import { EventsView } from './EventsView';
 import { LogsView } from './LogsView';
 import { RecordContextChip } from './RecordContextChip';
 import { SignalsView } from './signals/SignalsView';
 import { setPanelTopics, usePanels } from './panelStore';
 
-const MON_NAV = ['Overview', 'Topics', 'Signals', 'System', 'Events', 'Logs'] as const;
+const MON_NAV = [
+  'Overview',
+  'Topics',
+  'Signals',
+  'System',
+  'Store',
+  'Events',
+  'Logs',
+] as const;
 type MonView = (typeof MON_NAV)[number];
 
 export function MonitorScreen() {
@@ -96,6 +107,8 @@ export function MonitorScreen() {
         <SignalsView />
       ) : monView === 'System' ? (
         <SystemView config={config} />
+      ) : monView === 'Store' ? (
+        <StoreHealthView />
       ) : monView === 'Events' ? (
         <EventsView />
       ) : (
