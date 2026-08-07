@@ -138,9 +138,18 @@ class RunnerStore:
         # mutation of ``jobs`` — unchanged from the pre-persistence store.
         self.lock = asyncio.Lock()
 
-        self._db = SqliteConnection(db_path)
+        # busy_timeout is per-connection: wait for a competing writer rather
+        # than raising "database is locked" at once.
+        self._db = SqliteConnection(
+            db_path, connect_pragmas=("PRAGMA busy_timeout = 5000",)
+        )
         self._path = self._db.path
         with self._conn() as conn:
+            if not self._db.is_memory:
+                # WAL persists in the file header and lets readers run
+                # concurrently with the single writer, so a job-status poll
+                # never blocks a running job's checkpoint.
+                conn.execute("PRAGMA journal_mode=WAL")
             self._recreate_outdated(conn)
             conn.executescript(_SCHEMA)
             set_user_version(conn, _SCHEMA_VERSION)

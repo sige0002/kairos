@@ -284,9 +284,12 @@ def load_recording_config(path: str | Path) -> RecordingConfig:
         raise ValueError(_format_validation_error(path, exc)) from exc
 
 
-# The failures every consumer is written to survive: the file is absent, or it
-# is there but unusable (unparseable YAML, or it fails validation).
-DEGRADE_ON_UNUSABLE: tuple[type[Exception], ...] = (FileNotFoundError, ValueError)
+# The failures every consumer is written to survive. ``OSError`` covers both the
+# absent file (FileNotFoundError is one) and the one that is there but cannot be
+# read — a permission error, or a directory in its place. Those are the same
+# fact to a caller that has no config either way, so treating them differently
+# only decided WHICH services refused to start over it.
+DEGRADE_ON_UNUSABLE: tuple[type[Exception], ...] = (OSError, ValueError)
 
 
 def _warn_unavailable(logger: logging.Logger, path: Path, exc: Exception) -> None:
@@ -317,10 +320,8 @@ def load_recording_config_or_none(
         on_unavailable: How the failure is reported. The default logs one
             WARNING; pass a reporter to word it differently (it can tell an
             absent file from an unusable one by the exception type).
-        degrade_on: Which failures degrade to ``None``. Widen it (``OSError``)
-            to also survive a file that exists but cannot be read — a
-            permission error, or a directory in its place — instead of failing
-            app construction.
+        degrade_on: Which failures degrade to ``None``, should a caller need a
+            narrower set than :data:`DEGRADE_ON_UNUSABLE`.
     """
     path = Path(path)
     try:

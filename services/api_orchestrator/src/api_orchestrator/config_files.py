@@ -5,52 +5,41 @@ The Settings screens let an operator edit ``recording/default.yaml`` and
 away from the HTTP layer that decides what to do about them:
 
 :func:`atomic_write_yaml` — a save must never leave a half-written config where
-a service will read one. The write goes to a temp file in the same directory and
-lands with one ``os.replace``, so a reader sees either the old file or the new
-one, and a failure leaves the original untouched.
+a service will read one, and must survive power loss rather than only a
+concurrent reader. It serialises the mapping and hands the bytes to
+``kairos_common.atomic_io``, so an edited config gets the same
+temp → fsync → replace → fsync-dir guarantee as every capture sidecar.
 
 :class:`StrictSafeLoader` — PyYAML silently keeps the LAST of two identical
 mapping keys, so text that visibly contains two rules parses to one and saves
 with no error. Refusing to load such a file is what keeps the operator's own
 text from being the only place the dropped rule ever existed.
 
-This is orchestrator-local rather than a ``kairos_common`` primitive on purpose.
-The duplicate-key refusal is a decision about THIS editor's contract with the
-operator, not a general YAML rule; and ``kairos_common.atomic_io`` is documented
-as the repo's crash-safe write (temp → fsync → replace → fsync dir), which is a
-stronger guarantee than the one this config save has ever made — putting a
-non-fsyncing writer beside it would quietly weaken what that module claims.
+The loader stays orchestrator-local rather than becoming a ``kairos_common``
+primitive: refusing a duplicate key is a decision about THIS editor's contract
+with the operator, not a general YAML rule.
 """
 
 from __future__ import annotations
 
-import os
-import tempfile
 from pathlib import Path
 from typing import Any
 
 import yaml
+from kairos_common.atomic_io import atomic_write_text
 
 
 def atomic_write_yaml(path: Path, data: dict[str, Any]) -> None:
-    """Write *data* to *path* as YAML atomically (temp file + ``os.replace``).
+    """Write *data* to *path* as YAML, durably and atomically.
 
-    Creates the parent dir if needed. The temp file is created in the same
-    directory so ``os.replace`` is an atomic same-filesystem rename; on any
-    failure the temp file is removed and the original is left untouched.
+    Creates the parent dir if needed. Serialising first and writing once means
+    the crash-safe path (temp file in the same directory → fsync → ``os.replace``
+    → fsync the directory) is the shared one rather than a second copy of it;
+    on any failure the temp file is removed and the original is left untouched.
+    Raises ``OSError`` if the file cannot be persisted — the caller turns that
+    into a 500 rather than reporting a save that did not happen.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(
-        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
-    )
-    tmp = Path(tmp_name)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            yaml.safe_dump(data, fh, sort_keys=False, allow_unicode=True)
-        os.replace(tmp, path)
-    except OSError:
-        tmp.unlink(missing_ok=True)
-        raise
+    atomic_write_text(path, yaml.safe_dump(data, sort_keys=False, allow_unicode=True))
 
 
 class DuplicateYamlKey(yaml.constructor.ConstructorError):

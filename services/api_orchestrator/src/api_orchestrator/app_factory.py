@@ -101,10 +101,6 @@ def _load_recording_config(settings: Settings) -> RecordingConfig | None:
         resolve_config_path(settings.recording_config),
         logger,
         on_unavailable=_warn_recording_config,
-        # Wider than the default: a file that exists but cannot be read (a
-        # permission error, a directory in its place) is reported as absent
-        # like any other unusable config, rather than failing construction.
-        degrade_on=(OSError, ValueError),
     )
 
 

@@ -818,10 +818,18 @@ class DatasetArchiver:
         return results
 
     def _read_manifest(self, dataset_dir: Path) -> dict[str, Any] | None:
-        try:
-            return json.loads((dataset_dir / MANIFEST_NAME).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return None
+        """The archive folder's manifest, or ``None`` if it cannot be trusted.
+
+        A manifest that parses to something other than an object counts as
+        absent, exactly like one that is missing or unparseable. Both callers
+        go straight to ``.get("members")``, so returning a list — a truncated
+        write that left a bare array, or a hand-edited file — used to raise
+        ``AttributeError`` out of a resume or a progress poll. "The manifest is
+        not readable" already has a defined answer in both places (re-copy
+        everything; report no progress yet), and that answer is the safe one:
+        a copy re-run verifies and overwrites, so the cost is time, not data.
+        """
+        return layout_mod.read_json(dataset_dir / MANIFEST_NAME)
 
     def _member_progress(
         self, dataset_id: str, dataset: dict[str, Any]

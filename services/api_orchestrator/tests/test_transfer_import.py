@@ -10,6 +10,7 @@ the bytes do.
 from __future__ import annotations
 
 import shutil
+import threading
 from pathlib import Path
 
 import pytest
@@ -702,19 +703,42 @@ class TestImportRacesFoundByReview:
     """Defects a second reviewer (codex) found in the import path."""
 
     def test_the_same_folder_cannot_be_imported_twice_at_once(
-        self, client: TestClient, tmp_path: Path
+        self, client: TestClient, tmp_path: Path, monkeypatch
     ) -> None:
         # The scan's already_imported reads FINISHED manifests, so it cannot
         # see work in flight: a double click or a second browser would copy the
         # same bag twice under two capture ids, indistinguishable afterwards.
         source = tmp_path / "twice"
         _make_bag(source)
+
+        # Hold the first copy open until the second POST has been answered.
+        # Without this the test is a race it usually wins by luck: these bags
+        # are three messages, so the copy can finish before the second request
+        # is issued, and the refusal then comes from `already_imported` — a
+        # DIFFERENT guard, reading finished manifests, which is exactly the one
+        # this test exists to prove is not enough on its own. The copy runs in
+        # a worker thread (``asyncio.to_thread``), so blocking it holds the
+        # import in flight without blocking the app's event loop.
+        release = threading.Event()
+        real_copy = bag_import.copy_into_staging
+
+        def _held_copy(bag: bag_import.SourceBag, staging: Path) -> int:
+            assert release.wait(timeout=10), "second POST never released the copy"
+            return real_copy(bag, staging)
+
+        monkeypatch.setattr(bag_import, "copy_into_staging", _held_copy)
+
         first = client.post("/api/v1/imports", json={"source_path": str(source)})
         assert first.status_code == 202
 
         second = client.post("/api/v1/imports", json={"source_path": str(source)})
         assert second.status_code == 409
         assert second.json()["error"]["code"] == "import_already_running"
+
+        # Let the held copy finish so the import reaches a terminal state
+        # rather than being abandoned mid-flight when the client is torn down.
+        release.set()
+        assert _await_import(client, first.json()["import_id"])["state"] == "succeeded"
 
     def test_a_failure_after_finalize_does_not_claim_nothing_arrived(
         self, client: TestClient, layout: DataLayout, tmp_path: Path, monkeypatch
