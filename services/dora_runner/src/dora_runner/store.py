@@ -3,10 +3,12 @@
 The store is SQLite-backed so job/template state survives a process restart
 (release-readiness finding F4/MS-6: an in-memory store orphaned in-flight work on
 restart, breaking the crash-recovery symmetry the recorder/orchestrator uphold).
-It mirrors :mod:`api_orchestrator.store` conventions — a ``threading.RLock``
-serializes connection use, ``_conn`` opens a fresh connection per call for a file
-DB (and reuses one shared connection for ``:memory:``), and ``_migrate`` records a
-``PRAGMA user_version`` schema version.
+Connection management is :mod:`kairos_common.sqlite_store`, shared with
+``api_orchestrator.store``: a lock serializes connection use, a file DB gets a
+fresh connection per call and ``:memory:`` reuses one held connection. The
+schema POLICY stays here — a stale ``PRAGMA user_version`` drops this service's
+``jobs`` table (see :meth:`RunnerStore._recreate_outdated`), which is a
+different decision from the orchestrator's, and deliberately so.
 
 Execution stays in-process: a running job keeps a live :class:`JobRecord` (holding
 its ``asyncio.Task``) in :attr:`RunnerStore.jobs`, guarded by the asyncio
@@ -23,14 +25,13 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
-import threading
-from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from kairos_common import JobState, utc_now_iso8601
+from kairos_common.sqlite_store import SqliteConnection, set_user_version, user_version
 
 from dora_runner.models import JobResult, JobStatus, ValidationTemplate
 
@@ -125,7 +126,7 @@ class RunnerStore:
     :attr:`jobs` and :attr:`lock` preserve the previous in-memory surface: the
     asyncio worker still tracks live jobs in the dict under the asyncio lock (that
     guard is what keeps a cancel from racing the worker — BUG-D). The SQLite
-    connection has its own ``threading.RLock`` (``_conn``), independent of the
+    connection carries its own threading lock (inside ``_db``), independent of the
     asyncio lock, so a checkpoint taken while holding the asyncio lock never
     deadlocks.
     """
@@ -137,23 +138,12 @@ class RunnerStore:
         # mutation of ``jobs`` — unchanged from the pre-persistence store.
         self.lock = asyncio.Lock()
 
-        self._path = str(db_path)
-        # Serializes every connection use (reentrant: write helpers nest reads).
-        self._db_lock = threading.RLock()
-        self._shared: sqlite3.Connection | None = None
-        if self._path != ":memory:":
-            Path(self._path).parent.mkdir(parents=True, exist_ok=True)
-        else:
-            # In-memory DBs vanish when their connection closes, so keep one.
-            # check_same_thread=False: FastAPI runs sync work in a thread pool, so
-            # the shared connection is touched from worker threads; the lock
-            # serializes access.
-            self._shared = sqlite3.connect(self._path, check_same_thread=False)
-            self._shared.row_factory = sqlite3.Row
+        self._db = SqliteConnection(db_path)
+        self._path = self._db.path
         with self._conn() as conn:
             self._recreate_outdated(conn)
             conn.executescript(_SCHEMA)
-            conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+            set_user_version(conn, _SCHEMA_VERSION)
 
     @staticmethod
     def _recreate_outdated(conn: sqlite3.Connection) -> None:
@@ -171,36 +161,16 @@ class RunnerStore:
         orchestrator refills (it injects the full template object into a job's
         params), and it has not changed shape.
         """
-        if conn.execute("PRAGMA user_version").fetchone()[0] < _SCHEMA_VERSION:
+        if user_version(conn) < _SCHEMA_VERSION:
             conn.execute("DROP TABLE IF EXISTS jobs")
 
-    @contextmanager
-    def _conn(self) -> Iterator[sqlite3.Connection]:
-        """Yield a connection under the lock, committing on success.
-
-        The lock serializes all access so the shared connection is safe across
-        FastAPI's thread pool. For a file DB a fresh connection is opened per call
-        and closed afterwards; the in-memory DB reuses its single shared connection
-        (closing it would drop the data).
-        """
-        with self._db_lock:
-            if self._shared is not None:
-                yield self._shared
-                self._shared.commit()
-                return
-            conn = sqlite3.connect(self._path)
-            conn.row_factory = sqlite3.Row
-            try:
-                yield conn
-                conn.commit()
-            finally:
-                conn.close()
+    def _conn(self) -> AbstractContextManager[sqlite3.Connection]:
+        """Yield a connection under the lock, committing on success."""
+        return self._db.connect()
 
     def close(self) -> None:
         """Close the shared in-memory connection (no-op for file DBs)."""
-        if self._shared is not None:
-            self._shared.close()
-            self._shared = None
+        self._db.close()
 
     # ---- jobs -------------------------------------------------------------
 
