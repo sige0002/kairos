@@ -265,6 +265,10 @@ export function ReviewScreen() {
         error={rv.deletion.error}
         done={rv.deletion.done}
         failures={rv.deletion.failures}
+        blockers={rv.deletion.blockers}
+        clearingBlockers={rv.deletion.clearingBlockers}
+        blockerFailures={rv.deletion.blockerFailures}
+        onClearBlockers={(reason) => void rv.deletion.clearBlockersAndRetry(reason)}
         onCancel={rv.deletion.cancel}
         onConfirm={(reason) => void rv.deletion.confirm(reason)}
       />
@@ -276,6 +280,10 @@ export function ReviewScreen() {
         error={rv.deletion.error}
         done={rv.deletion.done}
         failures={rv.deletion.failures}
+        blockers={rv.deletion.blockers}
+        clearingBlockers={rv.deletion.clearingBlockers}
+        blockerFailures={rv.deletion.blockerFailures}
+        onClearBlockers={(reason) => void rv.deletion.clearBlockersAndRetry(reason)}
         onCancel={rv.deletion.cancel}
         onConfirm={(reason) => void rv.deletion.confirm(reason)}
       />

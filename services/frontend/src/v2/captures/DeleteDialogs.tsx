@@ -17,7 +17,7 @@
 
 import { useEffect, useState } from 'react';
 import { Button, Modal, cn } from '../../components/ui';
-import { readCaptureError } from './errors';
+import { readCaptureError, type LeaseHolder } from './errors';
 import type { CaptureListItem } from '../../api/types';
 
 // The size figure the confirmation is obliged to show — the shared decimal
@@ -121,9 +121,116 @@ export function composeDiscardReason(
   return extra ? `${label} — ${extra}` : label;
 }
 
+/** A holder's lease expiry as a clock time; the raw stamp if it will not parse
+ *  (never a fabricated time). */
+function expiryClock(iso: string | null): string | null {
+  if (!iso) return null;
+  const at = new Date(iso);
+  return Number.isNaN(at.getTime()) ? iso : at.toLocaleTimeString();
+}
+
+/**
+ * What is holding the capture, and the one thing that clears it.
+ *
+ * "Try again later" is no help when the operator cannot see what to wait for,
+ * and waiting was the ONLY option this dialog offered — the lease is what
+ * refuses the removal, so the removal has to be able to reach it. The button
+ * says what it costs, because cancelling here stops work somebody may be
+ * waiting on and nothing else on screen would say so.
+ */
+function BlockedByJobs({
+  holders,
+  clearing,
+  failures,
+  onClear,
+}: {
+  holders: LeaseHolder[];
+  clearing: boolean;
+  failures: { captureId: string; error: string }[];
+  onClear?: () => void;
+}) {
+  const cancellable = holders.filter((h) => h.jobId !== null);
+  // The LAST to lapse is when the capture is free without doing anything —
+  // the earliest would be a promise the other holders break.
+  const lastExpiry = holders
+    .map((h) => h.expiresAt)
+    .filter((v): v is string => !!v)
+    .sort()
+    .at(-1);
+  return (
+    <div className="mt-2" data-testid="busy-holders">
+      <p className="font-semibold">
+        Held by {holders.length} job{holders.length === 1 ? '' : 's'}:
+      </p>
+      <ul className="mt-0.5 flex flex-col gap-0.5">
+        {holders.map((h) => (
+          <li key={h.owner} className="font-mono text-[11.5px]">
+            {h.jobId ?? h.owner}
+            {h.expiresAt ? ` · until ${expiryClock(h.expiresAt)}` : ''}
+          </li>
+        ))}
+      </ul>
+      {lastExpiry && (
+        <p className="mt-1 text-[11.5px]">
+          Left alone, the hold lapses by {expiryClock(lastExpiry)} and the removal
+          will go through.
+        </p>
+      )}
+      {cancellable.length > 0 && onClear && (
+        <>
+          <button
+            type="button"
+            data-testid="busy-cancel-retry"
+            disabled={clearing}
+            onClick={onClear}
+            className="mt-2 rounded-control bg-red-600 px-3 py-1.5 text-[12px] font-bold text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {clearing
+              ? 'Cancelling…'
+              : `Cancel those job${cancellable.length === 1 ? '' : 's'} and retry`}
+          </button>
+          <p className="mt-1 text-[11.5px]">
+            This stops the validation or preview generation they are doing —
+            their work is lost, not paused.
+          </p>
+        </>
+      )}
+      {holders.length > cancellable.length && (
+        <p className="mt-1 text-[11.5px]">
+          Some holders are not jobs (a transfer or the digest queue) and cannot be
+          cancelled from here.
+        </p>
+      )}
+      {failures.length > 0 && (
+        <ul className="mt-1.5 flex flex-col gap-0.5" data-testid="busy-cancel-failures">
+          {failures.map((f) => (
+            <li key={f.captureId} className="text-[11.5px]">
+              <span className="font-mono">{f.captureId.slice(0, 8)}</span> — {f.error}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 /** The error block both dialogs render. Kept identical on purpose: the codes
  *  and what to do about them do not differ between discard and delete. */
-function DialogError({ error, testId }: { error: unknown; testId: string }) {
+function DialogError({
+  error,
+  testId,
+  blockers = [],
+  clearingBlockers = false,
+  blockerFailures = [],
+  onClearBlockers,
+}: {
+  error: unknown;
+  testId: string;
+  blockers?: LeaseHolder[];
+  clearingBlockers?: boolean;
+  blockerFailures?: { captureId: string; error: string }[];
+  onClearBlockers?: () => void;
+}) {
   if (!error) return null;
   const reading = readCaptureError(error, 'delete');
   return (
@@ -134,6 +241,14 @@ function DialogError({ error, testId }: { error: unknown; testId: string }) {
     >
       <p className="font-semibold">{reading.message}</p>
       {reading.guidance && <p className="mt-1">{reading.guidance}</p>}
+      {reading.code === 'capture_busy' && blockers.length > 0 && (
+        <BlockedByJobs
+          holders={blockers}
+          clearing={clearingBlockers}
+          failures={blockerFailures}
+          onClear={onClearBlockers}
+        />
+      )}
     </div>
   );
 }
@@ -148,6 +263,12 @@ export interface DeleteDialogProps {
   /** Progress during a multi-capture run ("3 of 12"). */
   done?: number;
   failures?: { captureId: string; error: string }[];
+  /** Jobs holding the capture, when the refusal was `capture_busy`. */
+  blockers?: LeaseHolder[];
+  clearingBlockers?: boolean;
+  blockerFailures?: { captureId: string; error: string }[];
+  /** Cancel those jobs and retry the removal once, with the reason typed here. */
+  onClearBlockers?: (reason: string) => void;
   onCancel: () => void;
   onConfirm: (reason: string) => void;
 }
@@ -168,6 +289,10 @@ export function DiscardDialog({
   error,
   done = 0,
   failures = [],
+  blockers = [],
+  clearingBlockers = false,
+  blockerFailures = [],
+  onClearBlockers,
   onCancel,
   onConfirm,
 }: DeleteDialogProps) {
@@ -297,7 +422,14 @@ export function DiscardDialog({
           only record of why.
         </p>
         <FailureList failures={failures} testId="discard-failures" />
-        <DialogError error={error} testId="discard-error" />
+        <DialogError
+          error={error}
+          testId="discard-error"
+          blockers={blockers}
+          clearingBlockers={clearingBlockers}
+          blockerFailures={blockerFailures}
+          onClearBlockers={onClearBlockers ? () => onClearBlockers(reason) : undefined}
+        />
       </div>
     </Modal>
   );
@@ -312,6 +444,10 @@ export function DeleteDialog({
   error,
   done = 0,
   failures = [],
+  blockers = [],
+  clearingBlockers = false,
+  blockerFailures = [],
+  onClearBlockers,
   onCancel,
   onConfirm,
 }: DeleteDialogProps) {
@@ -382,7 +518,14 @@ export function DeleteDialog({
           className="mt-1 w-full rounded-control border border-gray-200 px-2 py-1.5 text-sm focus:border-teal-500 focus:outline-none"
         />
         <FailureList failures={failures} testId="delete-failures" />
-        <DialogError error={error} testId="delete-error" />
+        <DialogError
+          error={error}
+          testId="delete-error"
+          blockers={blockers}
+          clearingBlockers={clearingBlockers}
+          blockerFailures={blockerFailures}
+          onClearBlockers={onClearBlockers ? () => onClearBlockers(reason) : undefined}
+        />
       </div>
     </Modal>
   );

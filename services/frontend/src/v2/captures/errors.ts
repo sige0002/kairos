@@ -32,6 +32,54 @@ export interface CaptureErrorReading {
   details: Record<string, unknown>;
 }
 
+/** One job holding the §7.1 lease on a capture, as a `capture_busy` reports it. */
+export interface LeaseHolder {
+  /** The raw owner string, e.g. `job:019f…`. */
+  owner: string;
+  /** The job id, with the `job:` prefix stripped — what `POST /jobs/{id}/cancel`
+   *  takes. Null when the owner is NOT a job (a transfer, the digest queue):
+   *  those hold the capture for reasons this screen cannot cancel, and offering
+   *  to would be offering something that does not exist. */
+  jobId: string | null;
+  /** When this holder's lease lapses on its own. Null when unstated. */
+  expiresAt: string | null;
+}
+
+const JOB_OWNER_PREFIX = 'job:';
+
+/**
+ * Every holder named by a `capture_busy` refusal, soonest to expire last as the
+ * server orders them.
+ *
+ * Reads the `holders` array when the server sends one and falls back to the
+ * single `lease_owner` / `lease_expires_at` pair otherwise — a backend from
+ * before the list still refuses the same way, and one named holder is better
+ * than pretending there are none.
+ */
+export function readLeaseHolders(details: Record<string, unknown>): LeaseHolder[] {
+  const raw = details.holders;
+  const toHolder = (owner: string, expiresAt: string | null): LeaseHolder => ({
+    owner,
+    jobId: owner.startsWith(JOB_OWNER_PREFIX)
+      ? owner.slice(JOB_OWNER_PREFIX.length) || null
+      : null,
+    expiresAt,
+  });
+  if (Array.isArray(raw)) {
+    const holders: LeaseHolder[] = [];
+    for (const entry of raw) {
+      if (typeof entry !== 'object' || entry === null) continue;
+      const row = entry as Record<string, unknown>;
+      const owner = detailString(row, 'owner');
+      if (!owner) continue;
+      holders.push(toHolder(owner, detailString(row, 'expires_at')));
+    }
+    if (holders.length > 0) return holders;
+  }
+  const owner = detailString(details, 'lease_owner');
+  return owner ? [toHolder(owner, detailString(details, 'lease_expires_at'))] : [];
+}
+
 function detailString(details: Record<string, unknown>, key: string): string | null {
   const value = details[key];
   return typeof value === 'string' && value ? value : null;

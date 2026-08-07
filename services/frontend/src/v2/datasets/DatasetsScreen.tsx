@@ -43,6 +43,10 @@ export function DatasetsScreen() {
         error={deletion.error}
         done={deletion.done}
         failures={deletion.failures}
+        blockers={deletion.blockers}
+        clearingBlockers={deletion.clearingBlockers}
+        blockerFailures={deletion.blockerFailures}
+        onClearBlockers={(reason) => void deletion.clearBlockersAndRetry(reason)}
         onCancel={deletion.cancel}
         onConfirm={(reason) => void deletion.confirm(reason)}
       />
@@ -54,6 +58,10 @@ export function DatasetsScreen() {
         error={deletion.error}
         done={deletion.done}
         failures={deletion.failures}
+        blockers={deletion.blockers}
+        clearingBlockers={deletion.clearingBlockers}
+        blockerFailures={deletion.blockerFailures}
+        onClearBlockers={(reason) => void deletion.clearBlockersAndRetry(reason)}
         onCancel={deletion.cancel}
         onConfirm={(reason) => void deletion.confirm(reason)}
       />

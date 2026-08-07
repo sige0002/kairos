@@ -11,11 +11,12 @@
 // there — dropping it from the report is how an operator ends up believing the
 // disk is emptier than it is.
 
-import { useCallback, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { deleteCapture } from '../../api/captures';
+import { cancelJob } from '../../api/jobs';
 import { queryKeys } from '../../api/queryKeys';
-import { captureErrorText } from './errors';
+import { captureErrorText, readCaptureError, readLeaseHolders, type LeaseHolder } from './errors';
 import type { CaptureListItem, DeleteKind } from '../../api/types';
 
 export interface DeletionFailure {
@@ -34,6 +35,25 @@ export interface CaptureDeletionState {
   /** The failure that stopped a single-capture attempt (drives the dialog's
    *  error block); null for a bulk run, whose failures are per-capture. */
   error: unknown;
+
+  /** The jobs holding this capture, when the last refusal was `capture_busy`.
+   *  Empty otherwise — so a screen can key the "cancel them" affordance on
+   *  this alone rather than re-reading the error code itself. */
+  blockers: LeaseHolder[];
+  /** A cancel-and-retry is running. */
+  clearingBlockers: boolean;
+  /** Blocking jobs whose cancel was itself refused, named so the operator can
+   *  see WHICH one is still holding the capture. */
+  blockerFailures: DeletionFailure[];
+  /**
+   * Cancel every blocking job, then retry the removal ONCE.
+   *
+   * Once, deliberately: a retry that lost to a job which started in the
+   * meantime would spin, and each turn of that loop cancels somebody's work.
+   * The second refusal carries the new holders, so the operator sees who it is
+   * now and decides again.
+   */
+  clearBlockersAndRetry: (reason: string) => Promise<void>;
 
   requestDiscard: (targets: CaptureListItem | CaptureListItem[]) => void;
   requestDelete: (targets: CaptureListItem | CaptureListItem[]) => void;
@@ -75,6 +95,8 @@ export function useCaptureDeletion(
   const [done, setDone] = useState(0);
   const [failures, setFailures] = useState<DeletionFailure[]>([]);
   const [error, setError] = useState<unknown>(null);
+  const [clearingBlockers, setClearingBlockers] = useState(false);
+  const [blockerFailures, setBlockerFailures] = useState<DeletionFailure[]>([]);
 
   const open = useCallback((next: DeleteKind, list: CaptureListItem | CaptureListItem[]) => {
     setKind(next);
@@ -82,6 +104,7 @@ export function useCaptureDeletion(
     setDone(0);
     setFailures([]);
     setError(null);
+    setBlockerFailures([]);
   }, []);
 
   const requestDiscard = useCallback(
@@ -101,6 +124,7 @@ export function useCaptureDeletion(
     setTargets([]);
     setFailures([]);
     setError(null);
+    setBlockerFailures([]);
     setDone(0);
   }, [busy]);
 
@@ -143,6 +167,43 @@ export function useCaptureDeletion(
       }
     },
     [kind, targets, queryClient, invalidate, onDeleted, onToast],
+  );
+
+  // Who is holding this capture, read off the refusal itself. Derived rather
+  // than stored: it is a fact about the current error and cannot outlive it.
+  const blockers = useMemo(
+    () => (error ? readLeaseHolders(readCaptureError(error, 'delete').details) : []),
+    [error],
+  );
+
+  const clearBlockersAndRetry = useCallback(
+    async (reason: string) => {
+      // Only jobs can be cancelled. A capture held by a transfer or the digest
+      // queue keeps its holder, and the retry below will be refused again —
+      // which is the honest outcome, not something to paper over.
+      const jobIds = blockers
+        .map((h) => h.jobId)
+        .filter((id): id is string => id !== null);
+      if (jobIds.length === 0) return;
+      setClearingBlockers(true);
+      setBlockerFailures([]);
+      const failed: DeletionFailure[] = [];
+      for (const jobId of jobIds) {
+        try {
+          await cancelJob(jobId);
+        } catch (e) {
+          // Keep going: one job refusing to stop is not a reason to leave the
+          // others running, and the retry may still succeed without it.
+          failed.push({ captureId: jobId, error: captureErrorText(e, 'job') });
+        }
+      }
+      setBlockerFailures(failed);
+      setClearingBlockers(false);
+      // ONE retry. `confirm` republishes `error` (and with it `blockers`), so a
+      // capture that is busy again shows its new holder instead of looping.
+      await confirm(reason);
+    },
+    [blockers, confirm],
   );
 
   const discardNow = useCallback(
@@ -202,6 +263,10 @@ export function useCaptureDeletion(
     done,
     failures,
     error,
+    blockers,
+    clearingBlockers,
+    blockerFailures,
+    clearBlockersAndRetry,
     requestDiscard,
     requestDelete,
     cancel,
