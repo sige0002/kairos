@@ -27,6 +27,7 @@ from dora_runner.mcap_utils import enumerate_topics, find_mcap
 from dora_runner.video_check import (
     MAX_FRAMES,
     PIPELINE_VERSION,
+    _encode_cap_from_env,
     estimate_fps,
     run_video_check,
     sanitize_topic,
@@ -77,9 +78,14 @@ def test_estimate_fps_clamps_and_defaults() -> None:
     assert estimate_fps(fast) == 60
 
 
-def test_frame_cap_constant_is_bounded() -> None:
-    # The cap exists to bound encode time/size; just assert it's a sane bound.
-    assert 0 < MAX_FRAMES <= 5000
+def test_default_encode_cap_is_full_episode_and_env_overridable() -> None:
+    # The default is 0 = encode the full episode (user decision 2026-08-07);
+    # VIDEO_MAX_FRAMES caps it, and a broken value falls back to "everything"
+    # — a preview that silently stops short is worse than a slow one.
+    assert _encode_cap_from_env(None) == 0
+    assert _encode_cap_from_env("900") == 900
+    assert _encode_cap_from_env("abc") == 0
+    assert _encode_cap_from_env("-5") == 0
 
 
 # ---- Job-level guards (no encode deps needed) -----------------------------
@@ -254,9 +260,9 @@ def test_video_check_truncated_cache_misses_on_a_different_cap(
         tmp_path,
         capture_id,
         "/cam/image/compressed",
-        frames=MAX_FRAMES,
+        frames=900,
         truncated=True,
-        max_frames=MAX_FRAMES,
+        max_frames=900,
     )
     with pytest.raises(Exception):  # noqa: B017
         run_video_check(
@@ -406,10 +412,10 @@ def test_video_check_max_frames_caps_the_encode(
     assert (DATA_DIR / summary["file"]).exists()
 
 
-# ---- max_frames=0 (full episode) on a synthetic bag longer than the default --
-# Hermetic (no sample recording): a tiny CompressedImage MCAP with MAX_FRAMES+1
-# frames proves max_frames=0 encodes past the 900 default while the default cap
-# still stops (and truncates) at MAX_FRAMES.
+# ---- the encode cap on a synthetic bag ------------------------------------
+# Hermetic (no sample recording): a tiny CompressedImage MCAP one frame past an
+# explicit cap proves max_frames=0 encodes everything while a cap stops (and
+# truncates) exactly at the cap.
 
 _IMAGE_DEF = (
     "std_msgs/Header header\nstring format\nuint8[] data\n"
@@ -452,30 +458,33 @@ def _write_compressed_image_mcap(path: Path, count: int) -> None:
     not _HAS_ENCODE_DEPS,
     reason="needs the 'av' and 'Pillow' packages installed",
 )
-def test_video_check_max_frames_zero_streams_beyond_default(
+def test_video_check_zero_streams_everything_and_a_cap_truncates(
     tmp_path: Path, make_capture: Callable[[Path], tuple[str, Path]]
 ) -> None:
-    """max_frames=0 must NOT stop at the 900 default — it encodes the full bag.
-
-    Regression guard for the "Re-encode full episode" path (params
-    ``{force: true, max_frames: 0}``): the encoder streams past MAX_FRAMES,
-    while the default cap still stops there and marks ``truncated``.
+    """max_frames=0 (the default) encodes the full bag; an explicit cap stops
+    there and says ``truncated``. The cap mechanism is tested with a literal so
+    the test does not depend on the deployment's VIDEO_MAX_FRAMES.
     """
     topic = "/cam/image/compressed"
+    cap = 12
     capture_id, capture_dir = make_capture(tmp_path)
-    _write_compressed_image_mcap(capture_dir / "run_full_0.mcap", MAX_FRAMES + 1)
+    _write_compressed_image_mcap(capture_dir / "run_full_0.mcap", cap + 1)
 
     full = run_video_check(
         capture_id=capture_id, data_dir=tmp_path, topic=topic, max_frames=0
     )
-    assert full["summary"]["frames"] == MAX_FRAMES + 1
+    assert full["summary"]["frames"] == cap + 1
     assert full["summary"]["truncated"] is False
     assert full["summary"]["max_frames"] == 0
 
     capped = run_video_check(
-        capture_id=capture_id, data_dir=tmp_path, topic=topic, force=True
+        capture_id=capture_id,
+        data_dir=tmp_path,
+        topic=topic,
+        force=True,
+        max_frames=cap,
     )
-    assert capped["summary"]["frames"] == MAX_FRAMES
+    assert capped["summary"]["frames"] == cap
     assert capped["summary"]["truncated"] is True
 
 

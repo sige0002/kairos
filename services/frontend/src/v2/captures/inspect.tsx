@@ -12,6 +12,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { apiGet, apiPost, getApiBase } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
+import { fetchRuntimeConfig } from '../../config';
 import { INSPECTION_JOB_POLL_MS } from '../pollingPolicy';
 import type {
   CaptureTopic,
@@ -158,6 +159,21 @@ export function VideoPlayer({
   // the per-capture lease (§7.1) — see jobQueue.ts.
   const wantSlot = summary === null && jobError === null;
   const slot = useJobSlot(captureId, wantSlot);
+
+  // Default playback rate from the deployment config (VIDEO_PLAYBACK_RATE;
+  // 4x per the 2026-08-07 decision — reviewers scrub, they don't watch
+  // realtime). Applied per new mp4; the operator's in-player change sticks
+  // for that playback because this effect re-runs only on a rate/source change.
+  const runtimeConfigQuery = useQuery({
+    queryKey: queryKeys.runtimeConfig,
+    queryFn: fetchRuntimeConfig,
+    staleTime: Infinity,
+  });
+  const playbackRate = runtimeConfigQuery.data?.defaults?.video_playback_rate ?? 4;
+  useEffect(() => {
+    const v = videoRef.current;
+    if (v) v.playbackRate = playbackRate;
+  }, [playbackRate, summary]);
 
   const mutation = useMutation({
     // `extra` carries the re-encode knobs (force + max_frames); the initial

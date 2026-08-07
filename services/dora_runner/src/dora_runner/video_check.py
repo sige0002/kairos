@@ -55,10 +55,32 @@ from dora_runner.mcap_utils import (
 PIPELINE_ID = "video_check"
 PIPELINE_VERSION = "1.2.1"
 
-# DEFAULT encode cap (params.max_frames overrides; 0 = the full episode):
-# bounds encode time/size — at ~15 fps this is ~60 s of preview, plenty to
-# eyeball. It also bounds the fps-estimate cadence sample either way.
-MAX_FRAMES = 900
+
+def _encode_cap_from_env(raw: str | None) -> int:
+    """Parse ``VIDEO_MAX_FRAMES`` (``0`` = the full episode; the default).
+
+    Anything unparseable or negative falls back to 0 — a review preview that
+    silently stops short is worse than a slow one, so the safe reading of a
+    broken knob is "encode everything".
+    """
+    if raw is None:
+        return 0
+    try:
+        value = int(raw)
+    except ValueError:
+        return 0
+    return value if value >= 0 else 0
+
+
+# DEFAULT encode cap (params.max_frames overrides): ``VIDEO_MAX_FRAMES`` in the
+# environment, 0 (= encode the full episode) when unset. Reviewers watch the
+# whole take (user decision 2026-08-07); set a cap only on machines where
+# encode time/disk for long episodes actually hurts.
+MAX_FRAMES = _encode_cap_from_env(os.environ.get("VIDEO_MAX_FRAMES"))
+# The fps-estimate cadence sample stays bounded regardless of the encode cap:
+# a few hundred inter-frame gaps pin the rate, and an uncapped encode must not
+# turn the estimate into an O(episode) scan.
+FPS_SAMPLE_FRAMES = 900
 # fps is estimated from frame timestamps then clamped to a sane playback range.
 _FPS_MIN = 1
 _FPS_MAX = 60
@@ -237,12 +259,12 @@ def run_video_check(
     # loss_report decides on — so the two pipelines can never disagree on a
     # topic's time_source (a late unknown/zero publish_time must flip both, not
     # just loss_report); the fps itself then comes from the chosen clock's first
-    # MAX_FRAMES samples.
+    # FPS_SAMPLE_FRAMES samples (bounded even when the encode cap is 0 = full).
     total_from_stats = topic_message_count(mcap_path, topic)
     pairs = list(iter_topic_times(mcap_path, topic))
     total_messages = total_from_stats if total_from_stats is not None else len(pairs)
     chosen, fps_time_source = source_times(pairs)
-    cadence = chosen[:MAX_FRAMES]
+    cadence = chosen[:FPS_SAMPLE_FRAMES]
 
     truncated = False
     unsupported = False

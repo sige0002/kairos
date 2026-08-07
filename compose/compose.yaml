@@ -326,6 +326,8 @@ services:
     environment:
       <<: *no-proxy
       DORA_RUNNER_PORT: ${DORA_RUNNER_PORT:-8020}
+      # Review preview encode cap: 0 = the full episode (VIDEO knobs: config.md).
+      VIDEO_MAX_FRAMES: ${VIDEO_MAX_FRAMES:-0}
       ROBOT: ${ROBOT:-airoa_hsr}
       # loss_report validator defaults (config/<robot>/validators/loss_report.yaml).
       LOSS_REPORT_CONFIG: ${LOSS_REPORT_CONFIG:-/config/${ROBOT:-airoa_hsr}/validators/loss_report.yaml}
