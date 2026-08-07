@@ -35,18 +35,13 @@
 
 import { useQuery } from '@tanstack/react-query';
 import { getRecordStatus } from '../../api/record';
+import { RECORD_STATUS_POLL_MS } from '../pollingPolicy';
 import { queryKeys } from '../../api/queryKeys';
 import {
   ACTIVE_RECORD_STATES,
   liveCaptureIds,
   type RecordStatus,
 } from '../../api/types';
-
-/** How often the recorder is polled. The SSE `record_status` event updates the
- *  same cache entry between polls, but it does not carry `live_capture_ids`
- *  (record_service only publishes state/counters), so the ARRAY is only ever as
- *  fresh as this interval. */
-export const RECORD_STATUS_POLL_MS = 5000;
 
 export interface RecordStatusView {
   /** The last response received. May be stale — check `reachable` first. */

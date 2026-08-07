@@ -8,6 +8,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { apiGet } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
+import { VALIDATION_JOB_POLL_MS } from '../pollingPolicy';
 import type { JobResult, JobStatus } from '../../api/types';
 
 const TERMINAL = new Set(['succeeded', 'failed', 'canceled']);
@@ -17,7 +18,8 @@ export function useJobResult(jobId: string) {
     queryKey: queryKeys.job(jobId),
     queryFn: ({ signal }) =>
       apiGet<JobStatus>(`/jobs/${encodeURIComponent(jobId)}/status`, { signal }),
-    refetchInterval: (q) => (q.state.data && TERMINAL.has(q.state.data.state) ? false : 1200),
+    refetchInterval: (q) =>
+      q.state.data && TERMINAL.has(q.state.data.state) ? false : VALIDATION_JOB_POLL_MS,
   });
   const terminal = !!statusQuery.data && TERMINAL.has(statusQuery.data.state);
   const resultQuery = useQuery({

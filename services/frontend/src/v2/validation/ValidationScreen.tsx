@@ -22,6 +22,7 @@ import { apiGet, apiPost } from '../../api/client';
 import { getConfigOptions } from '../../api/config';
 import { getCapture, listAllCaptures } from '../../api/captures';
 import { queryKeys } from '../../api/queryKeys';
+import { VALIDATION_PRESETS_POLL_MS } from '../pollingPolicy';
 import { fetchRuntimeConfig } from '../../config';
 import type { JSONSchema } from '../../schema/jsonSchema';
 import { initialValueFor } from '../../schema/jsonSchema';
@@ -363,7 +364,7 @@ export function ValidationScreen() {
     queryKey: queryKeys.validationPresets,
     queryFn: ({ signal }) =>
       apiGet<{ items: ValidationPreset[] }>('/validation/presets', { signal }),
-    refetchInterval: active && !allSettled ? 3000 : false,
+    refetchInterval: active && !allSettled ? VALIDATION_PRESETS_POLL_MS : false,
   });
   const presets = presetsQuery.data?.items ?? [];
 

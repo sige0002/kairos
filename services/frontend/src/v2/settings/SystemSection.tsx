@@ -8,6 +8,7 @@
 
 import { useQuery } from '@tanstack/react-query';
 import { getSystemInfo } from '../../api/system';
+import { SYSTEM_INFO_POLL_MS } from '../pollingPolicy';
 import type { RuntimeConfig } from '../../config';
 import { Card } from '../../components/ui';
 import { formatBytes } from '../review/format';
@@ -39,7 +40,7 @@ export function SystemSection({ config }: { config: RuntimeConfig | undefined })
     queryKey: ['system'],
     queryFn: ({ signal }) => getSystemInfo({ signal }),
     staleTime: 5000,
-    refetchInterval: 5000,
+    refetchInterval: SYSTEM_INFO_POLL_MS,
   });
 
   const disk = data?.disk ?? null;

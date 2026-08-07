@@ -17,6 +17,7 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiGet, apiPost } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
+import { INSPECTION_JOB_POLL_MS } from '../pollingPolicy';
 import type {
   JobResult,
   JobStatus,
@@ -105,7 +106,7 @@ function useSignalReport(captureId: string) {
     enabled: !!jobId,
     refetchInterval: (q) => {
       const state = q.state.data?.state;
-      return state && TERMINAL.has(state) ? false : 1500;
+      return state && TERMINAL.has(state) ? false : INSPECTION_JOB_POLL_MS;
     },
   });
 

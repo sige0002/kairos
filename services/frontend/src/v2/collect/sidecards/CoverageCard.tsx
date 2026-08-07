@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { listBatches } from '../../../api/batches';
 import { queryKeys } from '../../../api/queryKeys';
+import { COVERAGE_POLL_MS } from '../../pollingPolicy';
 import { Card, cn } from '../../../components/ui';
 import { findTask, usePlans } from '../../plans';
 import type { BatchMachine } from '../useBatchMachine';
@@ -23,7 +24,7 @@ export function CoverageCard({ machine }: { machine: BatchMachine }) {
     queryKey: [...queryKeys.batches, 'coverage'],
     queryFn: ({ signal }) => listBatches({}, signal),
     staleTime: 15_000,
-    refetchInterval: 30_000,
+    refetchInterval: COVERAGE_POLL_MS,
   });
 
   const task = machine.task;

@@ -27,7 +27,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError } from '../../api/client';
 import { getRecordStatus, startRecord, stopRecord } from '../../api/record';
 import { getTransferStatus } from '../../api/transfer';
-import { createBatch, getBatch, listBatches, patchBatch } from '../../api/batches';
+import { patchBatch } from '../../api/batches';
 import { getCapture, listCaptures, saveReview } from '../../api/captures';
 import { queryKeys } from '../../api/queryKeys';
 import { useUiStore } from '../../store/uiStore';
@@ -35,12 +35,9 @@ import { useOperators } from '../plans';
 import { useCaptureDeletion } from '../captures/useCaptureDeletion';
 import { needsReload } from '../captures/errors';
 import { useRecordStatus } from '../captures/useRecordStatus';
-import { findProject, findTask, getPlans } from '../plans';
 import {
   ACTIVE_RECORD_STATES,
-  TERMINAL_RECORD_STATES,
   liveCaptureIds,
-  type Capture,
   type CaptureDetail,
   type Quality as ServerQuality,
   type QuickCheckVerdict,
@@ -49,7 +46,6 @@ import {
   type RecordStartRequest,
   type RecordState,
   type ReviewSaveRequest,
-  CaptureListItem,
 } from '../../api/types';
 import { useToast } from '../shared/useToast';
 
@@ -69,38 +65,21 @@ export {
 export * from './machine/contract';
 
 import {
-  ADVICE_ITEMS,
   COLLECT_DISCARD_REASON,
   COLLECT_UNSAVED_DISCARD_REASON,
-  QUICKCHECK_FALLBACK_MS,
   RETAKE_DISCARD_REASON,
   SAVED_FLASH_MS,
   UNSAVED_MAX_AGE_MS,
   collectReviewStatus,
   type MachineError,
-  type Phase,
   type Quality,
   type QualityOverride,
-  type StopBlockedReason,
 } from './machine/types';
 import {
-  TOMBSTONE_STATES,
-  applyServerRestore,
-  clearLocalBatch,
   dismissedUnsavedCaptures,
   dispatch,
-  getStopFloorMs,
   getStoreSnapshot,
-  getTakeStartMono,
-  hasLocalBatchContext,
-  isServerHydrated,
-  localBatchIsPhantom,
-  markServerHydrated,
   persistDismissed,
-  predictNextSeq,
-  pruneDeadEpisodes,
-  setPredictedSeq,
-  setTakeStartMono,
   useBatchState,
 } from './machine/store';
 import type {
@@ -112,6 +91,9 @@ import type {
 import { useCollectOverlays } from './hooks/useCollectOverlays';
 import { useCollectShortcuts } from './hooks/useCollectShortcuts';
 import { usePreArm } from './hooks/usePreArm';
+import { useTakeClock } from './hooks/useTakeClock';
+import { useBatchLifecycle } from './hooks/useBatchLifecycle';
+import { useCollectContext } from './hooks/useCollectContext';
 
 /** Normalise a thrown error to a MachineError. A backend code passes through; a
  *  5xx or a transport failure (no code) is treated as an unreachable recorder so
@@ -399,136 +381,9 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   );
 
   // ---- batch lifecycle (server API) ----------------------------------------
-  // A server batch is created lazily on the first recording of a batch (and
-  // after "start next batch"), not eagerly, so merely opening Collect never
-  // spawns empty batches. Recording never waits on it; the review save does
-  // await it, because a batch_id that arrives after the save would leave the
-  // capture ungrouped for good.
-  const batchCreateRef = useRef<Promise<string | null> | null>(null);
-  const ensureBatch = useCallback((): Promise<string | null> => {
-    const s = getStoreSnapshot();
-    if (s.batchId) return Promise.resolve(s.batchId);
-    if (batchCreateRef.current) return batchCreateRef.current;
-    const op = useUiStore.getState().recordOperator.trim();
-    const pending = createBatch({
-      // Omitted when there is no plan to name (2026-08-06: both are optional
-      // server-side and stored as null). Sending the header's placeholder wrote
-      // a label nobody chose into the shared catalog, on a row every terminal
-      // reads and with nothing downstream able to tell it from a project
-      // deliberately named "—". `condition` was already guarded this way.
-      project: s.project ?? undefined,
-      task: s.task ?? undefined,
-      condition: s.condition && s.condition !== '—' ? s.condition : undefined,
-      operator: op || undefined,
-      target_episodes: s.targetEpisodes,
-    })
-      .then((batch) => {
-        dispatch({
-          type: 'SET_BATCH',
-          batchId: batch.batch_id,
-          batchSeq: typeof batch.batch_seq === 'number' ? batch.batch_seq : null,
-        });
-        return batch.batch_id;
-      })
-      .catch(() => {
-        // API unreachable. The review still saves — a capture carries its own
-        // review (§8) — it just belongs to no batch, which the receipt says.
-        return null;
-      })
-      .finally(() => {
-        batchCreateRef.current = null;
-      });
-    batchCreateRef.current = pending;
-    return pending;
-  }, []);
-
-  // Once-per-page-load reconcile with the server's active batch. Never on later
-  // tab-switch remounts (module flag), and only while the machine is at rest, so
-  // it can't disturb an in-progress recording. On failure the localStorage
-  // restore already applied at store init stands.
-  useEffect(() => {
-    if (isServerHydrated()) return;
-    markServerHydrated();
-    // One GET /batches serves both jobs: find the newest *active* batch (server
-    // truth over the localStorage fallback) AND predict the next batch number from
-    // today's batches (the honest pre-state before any batch exists). Restoring
-    // that active batch then costs one more request — its detail, the only place
-    // its captures are served.
-    const atRestPhase = (p: Phase) =>
-      p === 'ready' || p === 'completed' || p === 'ended' || p === 'paused';
-    listBatches()
-      .then(async (resp) => {
-        const items = resp.items ?? [];
-        // The predicted pre-state is always safe to refresh from today's batches.
-        setPredictedSeq(predictNextSeq(items));
-        if (!atRestPhase(getStoreSnapshot().phase)) return;
-        const active = items.find((b) => b.status === 'active') ?? null;
-        if (active) {
-          // The list is a count per batch, not a row per capture (E-27), so the
-          // batch's episodes come from its detail. A detail that cannot be read
-          // leaves the localStorage restore standing: adopting the list item
-          // alone would put an empty strip beside a non-zero recorded count,
-          // which the operator cannot tell from "nothing was recorded".
-          let batchCaptures: Capture[];
-          try {
-            batchCaptures = (await getBatch(active.batch_id)).captures;
-          } catch {
-            return;
-          }
-          applyServerRestore(active, batchCaptures);
-          // The merge may have kept local-only records for captures the server
-          // has since deleted — indistinguishable, from the batch alone, from a
-          // review save that hasn't landed (no batch_id yet). Ask about each
-          // suspect and prune the proven-dead; a fetch failure keeps the record
-          // (offline resilience beats a false removal).
-          const serverIds = new Set(batchCaptures.map((c) => c.capture_id));
-          const suspects = getStoreSnapshot()
-            .episodes.map((e) => e.captureId)
-            .filter((id): id is string => !!id && !serverIds.has(id));
-          if (suspects.length > 0) {
-            const dead = new Set<string>();
-            await Promise.all(
-              suspects.map(async (id) => {
-                try {
-                  const capture = await getCapture(id);
-                  if (TOMBSTONE_STATES.has(capture.state)) dead.add(id);
-                } catch (e) {
-                  if (e instanceof ApiError && e.status === 404) dead.add(id);
-                  // Other failures: keep the record.
-                }
-              }),
-            );
-            pruneDeadEpisodes(dead);
-          }
-          return;
-        }
-        // Server reports NO active batch. A local batch context here may be a
-        // phantom left behind after the captures/batches were deleted
-        // server-side (Apple P0). Confirm by checking the batch's captures still
-        // exist, then discard the stale context so the hero counters never
-        // report recordings that don't exist. We keep it on any /captures
-        // failure (offline resilience) or when a capture still backs it.
-        if (!hasLocalBatchContext(getStoreSnapshot())) return;
-        let captures: CaptureListItem[];
-        try {
-          captures = (await listCaptures({ limit: 100 })).items;
-        } catch {
-          return; // /captures unreachable — keep the local context.
-        }
-        const after = getStoreSnapshot();
-        if (
-          atRestPhase(after.phase) &&
-          hasLocalBatchContext(after) &&
-          localBatchIsPhantom(after, captures)
-        ) {
-          clearLocalBatch();
-        }
-      })
-      .catch(() => {
-        /* API unreachable — keep the localStorage fallback; the pre-state falls
-         *  back to "next #1" (predictedSeq stays null). */
-      });
-  }, []);
+  // Lazy batch creation + the once-per-load server reconcile live in
+  // hooks/useBatchLifecycle.ts.
+  const { ensureBatch } = useBatchLifecycle();
 
   // ---- real recording API (mirrors LiveTab's start/stop wiring) -----------
   // Tracks a Cancel (during arming) or an end-batch-early confirmed while
@@ -673,83 +528,22 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     dispatch({ type: 'CANCEL_ARMING' });
   }, [state.phase]);
 
-  // When THIS take began, on the MONOTONIC clock. Shared by the Stop floor
-  // below and the elapsed timer further down.
-  //
-  // The baseline belongs to the RECORDING, not to our connection: it is set
-  // when the take begins and cleared when it ends. Re-deriving it whenever the
-  // recorder's reachability changed restarted the clock at 00:00:00 the moment
-  // an outage ended, presenting a brand-new elapsed time for a take that had
-  // been running — or had already died — throughout.
-  //
-  // E-32: `performance.now()`, not `Date.now()`. Both figures derived from this
-  // baseline are DURATIONS measured entirely on this machine, and the wall
-  // clock is not a stopwatch — NTP steps it, and a console left recording for
-  // hours on a robot PC that just got its network back is the ordinary case.
-  // A backwards step subtracted itself from the elapsed figure, which
-  // `formatElapsed` then clamped to `00:00:00` — indistinguishable from a take
-  // that has not started, and stuck there for as long as the step was large.
-  // Server-stamped times (`started_at`, the recorder's last answer) stay on the
-  // wall clock: they come from another process, and the monotonic clock has no
-  // meaning across machines.
-  //
-  // E-28: the baseline itself lives in the module store (`takeStartMono`), not
-  // in a ref, so it outlives this screen's unmount the way the take does.
-  useEffect(() => {
-    if (state.phase !== 'recording') {
-      setTakeStartMono(null);
-      return;
-    }
-    if (getTakeStartMono() == null) setTakeStartMono(performance.now());
-  }, [state.phase]);
-
-  // M2: Start and Stop occupy the SAME position — START_SUCCEEDED swaps the
-  // ready card for the recording card — so the second half of a real
-  // double-click lands on Stop. qa-ui measured the result: a start at T+0 and
-  // its own stop at T+86ms, an 87ms bag that then had to be reviewed like a
-  // real take.
-  //
-  // A minimum age is the whole guard. 86ms is nowhere near a second and no
-  // deliberate take is that short, so the floor defeats the accident outright.
-  //
-  // Deliberately NOT also gated on the recorder acknowledging the capture: the
-  // stop path already refuses a stop the recorder has not honoured (it stays in
-  // SAVING while `live_capture_ids` still names the capture), so a second gate
-  // here would add nothing except a window — up to a poll interval — in which
-  // an operator cannot end a recording. That is a worse failure than the
-  // accident being prevented, and B1 is exactly the case where the recorder
-  // goes quiet mid-take.
-  //
-  // For the same reason the floor is measured on the take's own clock rather
-  // than on `elapsedMs`. That figure deliberately FREEZES when the recorder stops
-  // answering (B1 below), so a recorder that died inside the first second left
-  // it parked under the floor and Stop disabled for the rest of the take —
-  // keyboard path included, since S / Space go through `canStop` too. The floor
-  // asks how old the take is, which is a fact we still hold when the recorder
-  // is gone; a stop we cannot deliver then fails loudly, which is honest, while
-  // refusing to attempt it is a trap.
-  const [stopFloorPassed, setStopFloorPassed] = useState(false);
-  useEffect(() => {
-    if (state.phase !== 'recording') {
-      setStopFloorPassed(false);
-      return;
-    }
-    // Runs after the baseline effect above (declaration order), so the take's
-    // start is already set for the render that made this a recording.
-    const now = performance.now();
-    const remaining = getStopFloorMs() - (now - (getTakeStartMono() ?? now));
-    if (remaining <= 0) {
-      setStopFloorPassed(true);
-      return;
-    }
-    setStopFloorPassed(false);
-    const id = setTimeout(() => setStopFloorPassed(true), remaining);
-    return () => clearTimeout(id);
-  }, [state.phase]);
-
-  const stopBlockedReason: StopBlockedReason =
-    state.phase === 'recording' && !stopFloorPassed ? 'floor' : null;
-  const canStop = state.phase === 'recording' && stopBlockedReason === null;
+  // ---- take clock + lifecycle gates (E-28 / E-32 / B1) ---------------------
+  // The monotonic baseline, Stop floor, frozen elapsed timer, B1 recovery,
+  // healthy-end detection and the SAVING / QUICK CHECK gates live in
+  // hooks/useTakeClock.ts; the machine keeps only the values the controls read.
+  const { stopBlockedReason, canStop, recorderStaleMs } = useTakeClock({
+    phase: state.phase,
+    currentCaptureId: state.currentCaptureId,
+    recorderReachable,
+    live: recordStatus.live,
+    lastGoodAt: recordStatus.lastGoodAt,
+    statusCaptureId: status?.capture_id,
+    statusState: status?.state,
+    liveCaptures,
+    integrity,
+    showToast,
+  });
 
   const stopRecording = useCallback(() => {
     if (state.phase !== 'recording') return;
@@ -765,188 +559,6 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     dispatch({ type: 'RETRY_STOP' });
     stopMutation.mutate();
   }, [stopMutation]);
-
-  // ---- recording elapsed timer ---------------------------------------------
-  // A slow clock that runs ONLY while the recorder is silent, so the
-  // "last known … Ns ago" figure keeps climbing while the elapsed timer is
-  // frozen. One second is enough for a number read in seconds, and it stops
-  // entirely once the recorder answers again.
-  //
-  // Monotonic for the same reason as the take's baseline above (E-32): the AGE
-  // of a reading is a duration on this machine. Measured wall-clock against the
-  // query cache's `dataUpdatedAt`, a backwards NTP step drove the difference
-  // negative and the clamp rendered it as "0s ago" — a positive claim that a
-  // recorder which has been silent for a minute just answered, which is the one
-  // presentation `useRecordStatus` exists to prevent.
-  const [staleNowMs, setStaleNowMs] = useState(() => performance.now());
-  useEffect(() => {
-    if (recorderReachable) return;
-    setStaleNowMs(performance.now());
-    const id = setInterval(() => setStaleNowMs(performance.now()), 1000);
-    return () => clearInterval(id);
-  }, [recorderReachable]);
-
-  // Our own monotonic mark of WHEN the last good reading landed. The query's
-  // `lastGoodAt` is a wall-clock epoch stamp and stays one — it is the identity
-  // of the reading, and what tells us a new one arrived — but the age is
-  // measured from this.
-  const lastGoodMonoRef = useRef<number | null>(null);
-  useEffect(() => {
-    lastGoodMonoRef.current =
-      recordStatus.lastGoodAt == null ? null : performance.now();
-  }, [recordStatus.lastGoodAt]);
-
-  useEffect(() => {
-    if (state.phase !== 'recording') return;
-    // B1: freeze the elapsed clock while the recorder is silent. An animating
-    // timer is an active claim that a recording is progressing, and once the
-    // poll fails we have no evidence of that — qa-ui watched it climb
-    // 00:12 → 00:37 against a recorder that had been dead the whole time. The
-    // last value stays on screen, labelled as last-known.
-    if (!recorderReachable) return;
-    const id = setInterval(() => {
-      const takeStart = getTakeStartMono();
-      if (takeStart == null) return;
-      dispatch({ type: 'TICK', elapsedMs: performance.now() - takeStart });
-    }, 250);
-    return () => clearInterval(id);
-  }, [state.phase, recorderReachable]);
-
-  // B1-recovery: the recorder is answering again, so everything the machine
-  // believed through the outage is checkable — and a local `recording` phase is
-  // a claim nothing on the server supports. If our capture is not in the live
-  // set, the take ended while we could not see it. Resuming RECORDING on stale
-  // client state alone is how a tab shows a fresh 00:00:00 timer for a
-  // recording that no longer exists.
-  const wasUnreachableRef = useRef(false);
-  useEffect(() => {
-    if (!recorderReachable) {
-      wasUnreachableRef.current = true;
-      return;
-    }
-    if (!wasUnreachableRef.current) return;
-    const live = recordStatus.live;
-    // Still cannot tell what is live — stay as we are rather than guessing.
-    if (live === null) return;
-    wasUnreachableRef.current = false;
-    if (state.phase !== 'recording') return;
-    const captureId = state.currentCaptureId;
-    if (captureId && live.includes(captureId)) return; // genuinely still running
-    dispatch({ type: 'RECORDING_INTERRUPTED' });
-    showToast(
-      'The recording ended while the recorder was unreachable — the take is ' +
-        'listed below for labelling or discarding.',
-    );
-  }, [recorderReachable, recordStatus.live, state.phase, state.currentCaptureId, showToast]);
-
-  // A take that ends while we are watching and HEALTHY. The recovery above only
-  // runs after an outage, so the two ways a recording ends without this screen
-  // asking — the recorder's own MAX_RECORD_SECONDS backstop auto-stopping an
-  // unattended run, and another terminal stopping ours — left the card claiming
-  // RECORDING with a climbing clock indefinitely.
-  //
-  // THREE CONDITIONS AT ONCE, because the errors are not symmetric: being slow
-  // to notice a dead take costs a stale screen, while abandoning a LIVE one
-  // tells the operator their recording is over and invites them to start
-  // another over the top of one still writing. So this fires only when the
-  // recorder is reachable, is reporting a terminal state for OUR capture, and
-  // an EXISTING live array does not name us.
-  //
-  // The live array is read as a positive signal only (§10): `null` means the
-  // recorder is unreachable or its answer too old, never "nothing is live". And
-  // the state field is only ours when `capture_id` matches — that field keeps
-  // naming the LAST capture after a stop, so another session's completion would
-  // otherwise end our take.
-  const sawCaptureLiveRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (state.phase !== 'recording') return;
-    if (!recorderReachable) return;
-    const captureId = state.currentCaptureId;
-    if (!captureId) return;
-    const live = recordStatus.live;
-    // Note the sighting FIRST, and unconditionally: the recorder names a live
-    // capture while reporting `recording`, which is not a terminal state, so
-    // checking the state field before this would mean the sighting was never
-    // recorded and the transition below could never be satisfied.
-    if (live !== null && live.includes(captureId)) {
-      sawCaptureLiveRef.current = captureId;
-      return; // genuinely still running
-    }
-    if (status?.capture_id !== captureId) return;
-    if (!status?.state || !TERMINAL_RECORD_STATES.has(status.state)) return;
-    if (live === null) return;
-    // Only a TRANSITION is evidence. `live_capture_ids` is a positive signal
-    // (§10), so an absence on its own says nothing — and the ordinary case for
-    // an absence is a take the recorder has not caught up to yet, in the window
-    // between our start returning and the first poll that names it. Concluding
-    // "ended" there would abandon a take at the very moment it begins.
-    //
-    // Measured, not reasoned: without this, 38 existing tests went red, every
-    // one of them a flow where the recorder simply never named the capture
-    // live. That is the shape of the false positive this whole effect is
-    // written to avoid, and the suite was full of it.
-    if (sawCaptureLiveRef.current !== captureId) return;
-    // The recovery effect above may have dispatched in this same commit; its
-    // closure still reads `recording`. The reducer would ignore the second
-    // dispatch, but the toast would not.
-    if (getStoreSnapshot().phase !== 'recording') return;
-    dispatch({ type: 'RECORDING_INTERRUPTED' });
-    showToast(
-      'The recording ended on the recorder — the take is listed below for ' +
-        'labelling or discarding.',
-    );
-  }, [
-    state.phase,
-    state.currentCaptureId,
-    recorderReachable,
-    status?.capture_id,
-    status?.state,
-    recordStatus.live,
-    showToast,
-  ]);
-
-  // SAVING advances on the REAL stop event (stopMutation.onSuccess dispatches
-  // SAVED). This secondary gate covers a tab-switch during saving: once the
-  // recorder reports the current run finalised, advance even if the mutation's
-  // callback was on an unmounted instance. A failed stop stays in SAVING (with
-  // the Retry button) and never trips this (state is still 'recording' on the
-  // recorder until a stop succeeds).
-  useEffect(() => {
-    if (state.phase !== 'saving') return;
-    const forThisCapture =
-      state.currentCaptureId == null || status?.capture_id === state.currentCaptureId;
-    // `live_capture_ids` is the definitive answer to "is this still being
-    // written" (§10). A capture still named there is not finalised whatever the
-    // state field says, and advancing past it is the same mistake the stop
-    // confirmation exists to prevent — reached by a different route.
-    const stillLive =
-      state.currentCaptureId != null &&
-      liveCaptures?.includes(state.currentCaptureId) === true;
-    if (status?.state === 'completed' && forThisCapture && !stillLive)
-      dispatch({ type: 'SAVED' });
-  }, [
-    state.phase,
-    state.currentCaptureId,
-    status?.state,
-    status?.capture_id,
-    liveCaptures,
-  ]);
-
-  // QUICK CHECK reads the recorder's real integrity (already on /record/status);
-  // advance as soon as it lands for this run, with a fallback so an older backend
-  // that never classifies integrity can't strand the operator.
-  useEffect(() => {
-    if (state.phase !== 'quickcheck') return;
-    if (integrity != null) {
-      dispatch({ type: 'QUICK_CHECK_DONE' });
-      return;
-    }
-    const id = setTimeout(
-      () => dispatch({ type: 'QUICK_CHECK_DONE' }),
-      QUICKCHECK_FALLBACK_MS,
-    );
-    return () => clearTimeout(id);
-  }, [state.phase, integrity]);
 
   // ---- episode result / confirm --------------------------------------------
   const pickSuccess = useCallback(
@@ -1402,7 +1014,6 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     setTargetModalOpen,
     setShortcutsOpen,
   } = useCollectOverlays({ ctxEditable, condAllowed });
-  const [adviceIdx, setAdviceIdx] = useState(0);
 
   const changeTarget = useCallback(
     (target: number) => {
@@ -1432,177 +1043,27 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     showToast('Issue logged with episode context');
   }, [showToast]);
 
-  // A context change (project/task/condition) once the current set already holds
-  // a recording rolls the set over: close the current one (server-side too, if
-  // it's still active) and open a fresh set carrying the new context. Earlier
-  // episodes keep their original context — condition lives per-batch server-side,
-  // so relabeling in place would retroactively mislabel them. A set with nothing
-  // recorded yet is updated in place instead (no empty set is ever minted).
-  const rolloverSet = useCallback(
-    (
-      endedReason: string,
-      changeLabel: string,
-      next: { project: string | null; task: string | null; condition: string },
-    ) => {
-      // Only close a set that's still active server-side. A 'completed'/'ended'
-      // set was already closed with its true terminal status (by confirmEpisode /
-      // confirmEndBatch) — re-PATCHing would overwrite that; skip it. 'ready' and
-      // 'paused' are the still-active at-rest phases.
-      const stillActive =
-        getStoreSnapshot().phase === 'ready' || getStoreSnapshot().phase === 'paused';
-      const s = getStoreSnapshot();
-      if (s.batchId && stillActive) {
-        void patchBatch(s.batchId, {
-          status: 'ended_early',
-          ended_reason: endedReason,
-        }).catch(() => {});
-      }
-      const oldSeq = s.batchSeq;
-      dispatch({
-        type: 'ROLLOVER_SET',
-        project: next.project,
-        task: next.task,
-        condition: next.condition,
-      });
-      showToast(
-        oldSeq != null
-          ? `Set #${oldSeq} closed (${changeLabel}) — next recording starts a new set`
-          : `Set closed (${changeLabel}) — next recording starts a new set`,
-      );
-    },
-    [showToast],
-  );
-
-  const pickProject = useCallback(
-    (name: string) => {
-      // Never re-label a take in flight, whatever left this handler reachable.
-      if (!ctxEditable) return;
-      const plan = findProject(getPlans(), name);
-      const t0 = plan.tasks[0];
-      const next = {
-        project: plan.name,
-        task: t0?.name ?? '—',
-        condition: t0?.conditions[0] ?? '—',
-      };
-      setProjPickerOpen(false);
-      if (getStoreSnapshot().recordedCount >= 1) {
-        rolloverSet('Plan change', 'project changed', next);
-        return;
-      }
-      dispatch({ type: 'SET_PROJECT', ...next });
-      // An empty batch may already exist (e.g. after Start next set → ensureBatch).
-      // Sync the relabel so later episodes don't drift from the operator's choice
-      // in index.jsonl. A '—' (no) condition is omitted, matching the create path.
-      if (state.batchId)
-        void patchBatch(state.batchId, {
-          project: next.project,
-          task: next.task,
-          condition: next.condition !== '—' ? next.condition : undefined,
-        }).catch(() => {});
-      showToast('Project switched — plan reloaded');
-    },
-    [state.batchId, ctxEditable, rolloverSet, showToast],
-  );
-  const pickTask = useCallback(
-    (name: string) => {
-      if (!ctxEditable) return;
-      const t = findTask(getPlans(), state.project ?? '', name);
-      const next = {
-        project: state.project,
-        task: t?.name ?? '—',
-        condition: t?.conditions[0] ?? '—',
-      };
-      setTaskPickerOpen(false);
-      if (getStoreSnapshot().recordedCount >= 1) {
-        rolloverSet('Task change', 'task changed', next);
-        return;
-      }
-      dispatch({ type: 'SET_TASK', task: next.task, condition: next.condition });
-      // Sync the relabel onto an already-created empty batch (see pickProject).
-      if (state.batchId)
-        void patchBatch(state.batchId, {
-          task: next.task,
-          condition: next.condition !== '—' ? next.condition : undefined,
-        }).catch(() => {});
-      showToast('Task switched');
-    },
-    [state.project, state.batchId, ctxEditable, rolloverSet, showToast],
-  );
-  const pickCustomTask = useCallback(
-    (name: string) => {
-      if (!ctxEditable) return;
-      const trimmed = name.trim();
-      if (!trimmed) return;
-      // A free-text task has no plan-defined conditions; clear the condition to
-      // '—' so a stale plan condition can't ride along with an unrelated task.
-      setTaskPickerOpen(false);
-      if (getStoreSnapshot().recordedCount >= 1) {
-        rolloverSet('Task change', 'task changed', {
-          project: state.project,
-          task: trimmed,
-          condition: '—',
-        });
-        return;
-      }
-      dispatch({ type: 'SET_TASK', task: trimmed, condition: '—' });
-      // Sync the task onto an already-created empty batch. A free-text task has
-      // no plan condition ('—'), so only the task is sent — the batch keeps any
-      // prior condition (PATCH can't clear it to null; a minor residual).
-      if (state.batchId)
-        void patchBatch(state.batchId, { task: trimmed }).catch(() => {});
-      showToast('Custom task set');
-    },
-    [state.project, state.batchId, ctxEditable, rolloverSet, showToast],
-  );
-  const pickCondition = useCallback(
-    (condition: string) => {
-      setCondModalOpen(false);
-      if (getStoreSnapshot().recordedCount >= 1) {
-        rolloverSet('Condition change', 'condition changed', {
-          project: state.project,
-          task: state.task,
-          condition,
-        });
-        return;
-      }
-      dispatch({ type: 'SET_CONDITION', condition });
-      // Persist the condition change on the current server batch (best-effort).
-      if (state.batchId) void patchBatch(state.batchId, { condition }).catch(() => {});
-      showToast('Condition updated');
-    },
-    [state.project, state.task, state.batchId, rolloverSet, showToast],
-  );
-  const pickCustomCondition = useCallback(
-    (condition: string) => {
-      const trimmed = condition.trim();
-      if (!trimmed) return;
-      setCondModalOpen(false);
-      if (getStoreSnapshot().recordedCount >= 1) {
-        rolloverSet('Condition change', 'condition changed', {
-          project: state.project,
-          task: state.task,
-          condition: trimmed,
-        });
-        return;
-      }
-      dispatch({ type: 'SET_CONDITION', condition: trimmed });
-      // A free-text condition is just a string on the batch — persist it in place
-      // the same way a catalog pick does (best-effort); never added to the plan.
-      if (state.batchId)
-        void patchBatch(state.batchId, { condition: trimmed }).catch(() => {});
-      showToast('Condition updated');
-    },
-    [state.project, state.task, state.batchId, rolloverSet, showToast],
-  );
-
-  const advicePrev = useCallback(
-    () => setAdviceIdx((i) => (i - 1 + ADVICE_ITEMS.length) % ADVICE_ITEMS.length),
-    [],
-  );
-  const adviceNext = useCallback(
-    () => setAdviceIdx((i) => (i + 1) % ADVICE_ITEMS.length),
-    [],
-  );
+  // ---- context: project / task / condition ----------------------------------
+  // Pickers + the set-rollover rule live in hooks/useCollectContext.ts.
+  const {
+    pickProject,
+    pickTask,
+    pickCustomTask,
+    pickCondition,
+    pickCustomCondition,
+    adviceIdx,
+    advicePrev,
+    adviceNext,
+  } = useCollectContext({
+    ctxEditable,
+    project: state.project,
+    task: state.task,
+    batchId: state.batchId,
+    showToast,
+    setProjPickerOpen,
+    setTaskPickerOpen,
+    setCondModalOpen,
+  });
 
   // ---- keyboard shortcut layer (D-4) ---------------------------------------
   // R/S/Space/Esc/? on the window, ignored while typing or when any REGISTERED
@@ -1750,10 +1211,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     canStop,
     stopBlockedReason,
     recorderUnreachable: !recorderReachable,
-    recorderStaleMs:
-      !recorderReachable && lastGoodMonoRef.current != null
-        ? Math.max(0, staleNowMs - lastGoodMonoRef.current)
-        : null,
+    recorderStaleMs,
     retryStop,
     pickSuccess,
     pickFailure,

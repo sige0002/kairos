@@ -14,6 +14,7 @@ import { apiGet, apiPost } from '../../api/client';
 import { getConfigOptions } from '../../api/config';
 import { getCapture } from '../../api/captures';
 import { queryKeys } from '../../api/queryKeys';
+import { CAPTURE_DETAIL_POLL_MS, INSPECTION_JOB_POLL_MS } from '../pollingPolicy';
 import type { JobStatus,
   CaptureDetail,
 } from '../../api/types';
@@ -35,11 +36,6 @@ import { JobErrorNote, isTombstoneError } from '../captures/JobErrorNote';
 import { QuickCheckVerdict } from './QuickCheckVerdict';
 import { SignalSection } from './SignalSection';
 import { formatBytes } from './format';
-
-/** How often an open capture detail re-reads itself. Slow enough to be
- *  invisible on a healthy screen, fast enough that a capture discarded
- *  elsewhere turns terminal on its own rather than on the operator's click. */
-const DETAIL_REFRESH_MS = 10_000;
 
 function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -83,7 +79,7 @@ function useCaptureJob(captureId: string, pipeline: string) {
         setJobId(null);
         return false;
       }
-      return 1500;
+      return INSPECTION_JOB_POLL_MS;
     },
   });
   return {
@@ -223,9 +219,8 @@ export function CaptureInspection({ captureId }: { captureId: string }) {
     // A capture can be discarded from another tab while this panel sits open.
     // Without a re-read the panel stayed live-looking — enabled buttons, a
     // reassuring QUICK CHECK — until the operator pressed something and got a
-    // 409, which is finding out by being refused. The lease also changes
-    // underneath (§7.1), so the controls' disabled state has the same need.
-    refetchInterval: DETAIL_REFRESH_MS,
+    // 409, which is finding out by being refused.
+    refetchInterval: CAPTURE_DETAIL_POLL_MS,
     refetchOnWindowFocus: true,
   });
   // The active validation template (config/options aspects.validation.active) —

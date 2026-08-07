@@ -12,6 +12,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { apiGet, apiPost, getApiBase } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
+import { INSPECTION_JOB_POLL_MS } from '../pollingPolicy';
 import type {
   CaptureTopic,
   JobResult,
@@ -249,7 +250,7 @@ export function VideoPlayer({
     enabled: !!jobId,
     refetchInterval: (q) => {
       const state = q.state.data?.state;
-      return state && TERMINAL.has(state) ? false : 1500;
+      return state && TERMINAL.has(state) ? false : INSPECTION_JOB_POLL_MS;
     },
   });
 

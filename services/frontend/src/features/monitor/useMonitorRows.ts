@@ -7,6 +7,7 @@ import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { getTopics } from '../../api/system';
 import { queryKeys } from '../../api/queryKeys';
+import { TOPIC_DISCOVERY_POLL_MS } from '../../v2/pollingPolicy';
 import type {
   AlertEvent,
   MetricsSnapshot,
@@ -234,7 +235,7 @@ export function useMonitorRows(config?: RuntimeConfig): MonitorData {
     queryKey: queryKeys.topics,
     queryFn: ({ signal }) =>
       getTopics({ signal }),
-    refetchInterval: 5000,
+    refetchInterval: TOPIC_DISCOVERY_POLL_MS,
   });
 
   const metrics: TopicMetric[] = metricsQuery.data?.topics ?? [];

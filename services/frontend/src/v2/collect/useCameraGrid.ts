@@ -6,6 +6,7 @@ import { useEffect, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { apiGet } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
+import { TOPIC_DISCOVERY_POLL_MS } from '../pollingPolicy';
 import type { TopicInfo } from '../../api/types';
 import type { RuntimeConfig } from '../../config';
 import { configSeedKey } from '../seedKey';
@@ -37,7 +38,7 @@ export function useCameraGrid(config: RuntimeConfig) {
     queryKey: queryKeys.topics,
     queryFn: ({ signal }) =>
       apiGet<TopicInfo[] | { topics?: TopicInfo[]; items?: TopicInfo[] }>('/topics', { signal }),
-    refetchInterval: 5000,
+    refetchInterval: TOPIC_DISCOVERY_POLL_MS,
   });
   const usedTopics = useMemo(() => new Set(panes.map((p) => p.topic)), [panes]);
   const addOptions = useMemo(

@@ -22,11 +22,7 @@ import type { CorruptEntry, StoreHealth } from '../../api/types';
 import { Badge, Button, Card, CardHeader } from '../../components/ui';
 import { ErrorMessage } from '../../components/ErrorMessage';
 import { readCaptureError } from '../captures/errors';
-
-/** Store condition changes on rebuilds and reconciler passes (minutes apart),
- *  so a slow poll is enough; Refresh is there for the operator who just fixed
- *  a mount and does not want to wait. */
-const REFETCH_MS = 30_000;
+import { STORE_HEALTH_POLL_MS } from '../pollingPolicy';
 
 function formatInstant(iso?: string | null): string {
   if (!iso) return '—';
@@ -113,7 +109,7 @@ export function StoreHealthCard() {
   const healthQuery = useQuery<StoreHealth>({
     queryKey: queryKeys.storeHealth,
     queryFn: ({ signal }) => getStoreHealth(signal),
-    refetchInterval: REFETCH_MS,
+    refetchInterval: STORE_HEALTH_POLL_MS,
   });
 
   const repair = useMutation({

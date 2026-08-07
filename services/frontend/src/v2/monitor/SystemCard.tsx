@@ -7,13 +7,11 @@
 
 import { useQuery } from '@tanstack/react-query';
 import { getSystemInfo } from '../../api/system';
+import { SYSTEM_INFO_POLL_MS } from '../pollingPolicy';
 import { Card } from '../../components/ui';
 import { formatBytes } from '../review/format';
 
-// Utilization/disk change over time (the static CPU/GPU names don't), so poll a
-// few seconds apart. The backend caches its samples ~2s, so this is cheap. The
-// 'system' query key is shared with the header readout (which stays static).
-const REFETCH_MS = 5000;
+// The 'system' query key is shared with the header readout (which stays static).
 
 function InfoRow({ label, value, testId }: { label: string; value: string; testId?: string }) {
   return (
@@ -57,8 +55,8 @@ export function SystemCard() {
   const { data } = useQuery({
     queryKey: ['system'],
     queryFn: ({ signal }) => getSystemInfo({ signal }),
-    staleTime: REFETCH_MS,
-    refetchInterval: REFETCH_MS,
+    staleTime: SYSTEM_INFO_POLL_MS,
+    refetchInterval: SYSTEM_INFO_POLL_MS,
   });
 
   const cpuValue =

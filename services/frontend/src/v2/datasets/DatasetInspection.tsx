@@ -13,6 +13,7 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiGet, apiPost } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
+import { INSPECTION_JOB_POLL_MS } from '../pollingPolicy';
 import type { CaptureDetail, JobStatus, LossTopic } from '../../api/types';
 import { JobErrorNote } from '../captures/JobErrorNote';
 import { JsonBlock, LossTable, TERMINAL, VideoCheckSection } from '../captures/inspect';
@@ -59,7 +60,7 @@ export function DatasetInspection({ detail }: { detail: CaptureDetail }) {
         setLossJobId(null);
         return false;
       }
-      return 1500;
+      return INSPECTION_JOB_POLL_MS;
     },
   });
 

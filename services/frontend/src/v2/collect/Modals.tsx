@@ -12,6 +12,7 @@ import { Button, Modal, cn } from '../../components/ui';
 import { END_REASONS, type BatchMachine } from './useBatchMachine';
 import { findTask, usePlans } from '../plans';
 import { Toast } from '../shared/Toast';
+import { formatBytes } from '../review/format';
 
 function ReasonChip({
   active,
@@ -325,18 +326,6 @@ function TargetModal({ machine }: { machine: BatchMachine }) {
   );
 }
 
-function formatBytes(bytes: number | null): string | null {
-  if (!bytes) return null;
-  const u = ['B', 'KB', 'MB', 'GB', 'TB'];
-  let v = bytes;
-  let i = 0;
-  while (v >= 1024 && i < u.length - 1) {
-    v /= 1024;
-    i += 1;
-  }
-  return `${v.toFixed(i === 0 ? 0 : 2)} ${u[i]}`;
-}
-
 function formatElapsedClock(startedAt: string | null): string {
   if (!startedAt) return '—';
   const t = Date.parse(startedAt);
@@ -352,7 +341,7 @@ function formatElapsedClock(startedAt: string | null): string {
 // whether it's a resumed-own recording or another session's.
 function TakeoverStopModal({ machine }: { machine: BatchMachine }) {
   const t = machine.takeover;
-  const size = formatBytes(t?.bytes ?? null) ?? '—';
+  const size = formatBytes(t?.bytes);
   return (
     <Modal
       open={machine.takeoverStopModalOpen}

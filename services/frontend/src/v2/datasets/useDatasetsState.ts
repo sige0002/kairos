@@ -41,6 +41,7 @@ import {
   updateDataset,
 } from '../../api/captures';
 import { queryKeys } from '../../api/queryKeys';
+import { DATASET_ARCHIVE_POLL_MS } from '../pollingPolicy';
 import { useSplitDeploy } from '../captures/useSplitDeploy';
 import { useBulkRun } from '../shared/useBulkRun';
 import { useOnPopState } from '../shared/useOnPopState';
@@ -1036,13 +1037,12 @@ export function useDatasetsState(): DatasetsState {
       ? `${datasetArchiveDestination}/${datasetArchivePath.trim().replace(/^\/+/, '')}`
       : '';
 
-  // Poll while the selected dataset is archiving — the run is server-owned
-  // and this is its only window. 1 s: the same cadence Validation polls jobs.
+  // Poll while the selected dataset is archiving (DATASET_ARCHIVE_POLL_MS).
   const datasetArchiveQuery = useQuery({
     queryKey: queryKeys.datasetArchive(selectedDatasetId ?? ''),
     queryFn: ({ signal }) => getDatasetArchive(selectedDatasetId ?? '', signal),
     enabled: selectedDatasetId !== null && selectedDatasetRecord?.status === 'archiving',
-    refetchInterval: 1000,
+    refetchInterval: DATASET_ARCHIVE_POLL_MS,
   });
   const datasetArchiveProgress = datasetArchiveQuery.data ?? null;
 

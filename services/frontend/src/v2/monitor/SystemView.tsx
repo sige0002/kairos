@@ -8,12 +8,11 @@
 
 import { useQuery } from '@tanstack/react-query';
 import { getSystemInfo } from '../../api/system';
+import { SYSTEM_INFO_POLL_MS } from '../pollingPolicy';
 import type { RuntimeConfig } from '../../config';
 import { Card } from '../../components/ui';
 import { formatBytes } from '../review/format';
 import { ComponentHealth } from './ComponentHealth';
-
-const REFETCH_MS = 5000;
 
 function Row({ label, value, testId }: { label: string; value: string; testId?: string }) {
   return (
@@ -63,8 +62,8 @@ export function SystemView({ config }: { config: RuntimeConfig }) {
   const { data } = useQuery({
     queryKey: ['system'],
     queryFn: ({ signal }) => getSystemInfo({ signal }),
-    staleTime: REFETCH_MS,
-    refetchInterval: REFETCH_MS,
+    staleTime: SYSTEM_INFO_POLL_MS,
+    refetchInterval: SYSTEM_INFO_POLL_MS,
   });
 
   const cpuValue =

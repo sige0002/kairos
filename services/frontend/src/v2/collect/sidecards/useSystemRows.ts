@@ -7,6 +7,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { apiGet } from '../../../api/client';
 import { queryKeys } from '../../../api/queryKeys';
+import { SYSTEM_INFO_POLL_MS } from '../../pollingPolicy';
 import type { MetricsSnapshot, SystemInfo } from '../../../api/types';
 import type { SseStatus } from '../../../store/uiStore';
 import type { BatchMachine } from '../useBatchMachine';
@@ -67,12 +68,12 @@ export function useSystemRows({
 
   // Real disk free/total for the data-dir filesystem (GET /api/v1/system). Null
   // until measured (older backend / missing data dir) -> honest "—", never a
-  // fabricated figure. Polled a few seconds apart; the backend caches ~2s.
+  // fabricated figure.
   const { data: system } = useQuery({
     queryKey: ['system'],
     queryFn: ({ signal }) => apiGet<SystemInfo>('/api/v1/system', { signal }),
     staleTime: 5000,
-    refetchInterval: 5000,
+    refetchInterval: SYSTEM_INFO_POLL_MS,
   });
   const disk = system?.disk ?? null;
   // Prefer the disk the RECORDER writes (its status reports its own data-dir

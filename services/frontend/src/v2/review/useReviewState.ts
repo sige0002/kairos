@@ -23,6 +23,7 @@ import { getRetention } from '../../api/system';
 import { pullCapture } from '../../api/transfer';
 import { listBatches } from '../../api/batches';
 import { queryKeys } from '../../api/queryKeys';
+import { TRANSFER_PROGRESS_POLL_MS } from '../pollingPolicy';
 import type {
   BatchListResponse,
   CaptureListItem,
@@ -838,9 +839,8 @@ export function useReviewState(): ReviewState {
     );
   }, [baseEpisodes, transfers, showToast]);
 
-  // While any transfer is in flight, poll so an arriving replica is seen within
-  // a few seconds. An rsync of a long episode takes minutes, and the slot
-  // honestly stays "transferring" until the server confirms.
+  // While any transfer is in flight, sweep the list so an arriving replica is
+  // seen promptly (TRANSFER_PROGRESS_POLL_MS).
   const anyTransferring = useMemo(
     () => Object.values(transfers).some((s) => s.phase === 'transferring'),
     [transfers],
@@ -851,7 +851,7 @@ export function useReviewState(): ReviewState {
       void queryClient.invalidateQueries({
         queryKey: queryKeys.captureList(REVIEW_SCOPE),
       });
-    }, 4000);
+    }, TRANSFER_PROGRESS_POLL_MS);
     return () => clearInterval(timer);
   }, [anyTransferring, queryClient]);
 
