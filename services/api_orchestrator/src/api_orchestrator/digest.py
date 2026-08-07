@@ -232,6 +232,16 @@ class DigestJob:
             # restart writes its own recovery manifest). Sealing bytes whose
             # counters the catalog never learned would verify data the UI still
             # calls empty, so the facts are adopted at the same moment (§3).
+            #
+            # **This is NOT a settling route, and it relies on the state guard
+            # above to stay that way.** Every other place that adopts a terminal
+            # manifest also schedules the quick check (E-38: a capture adopted
+            # without one is never settled by anything later). This one does not
+            # need to, because the guard at the top of ``_run`` refuses a
+            # capture whose row is not already terminal — so by the time
+            # execution reaches here, one of the routes that DOES settle has
+            # already been through this capture. Relax that guard and a sixth
+            # unsettled route opens silently, with no test failing to say so.
             if self._captures is not None:
                 self._captures.adopt_manifest_facts(capture_id)
             logger.info(
