@@ -92,6 +92,20 @@ export const store = {
       .filter((e) => e.capture_id === id && (kind === undefined || e.kind === kind));
   },
 
+  /**
+   * A pipeline's verdict for one capture — `report/<pipeline>/<capture_id>/
+   * summary.json` (§10.5, and the `outputs` every pipeline declares).
+   *
+   * Null until the job has written it, so a caller can poll rather than guess
+   * when the run is done. Shape is per-pipeline by design (the plugin contract
+   * fixes only `result`), hence the loose type.
+   */
+  reportSummary(pipeline: string, captureId: string): Record<string, unknown> | null {
+    const p = join(dataDir(), 'report', pipeline, captureId, 'summary.json');
+    if (!existsSync(p)) return null;
+    return JSON.parse(readFileSync(p, 'utf8')) as Record<string, unknown>;
+  },
+
   instanceId(): string {
     const p = join(dataDir(), 'instance.json');
     return (JSON.parse(readFileSync(p, 'utf8')) as { instance_id: string }).instance_id;

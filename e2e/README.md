@@ -33,10 +33,33 @@ never imports. The acceptance layer is a separate project with its own
 | `05-missing-repair.spec.ts` | §13-5 | If files disappear behind kairos's back, nothing silently vanishes from the catalog: the store says SUSPECT, I acknowledge it with Repair, and the affected recordings are marked *missing*. |
 | `06-recorder-honesty.spec.ts` | regression | If the recorder dies while I am recording, the screen says so instead of running a timer for a recording nobody can see — and when it comes back it offers me the interrupted take with its real size and why it ended, not a fresh recording. |
 | `07-dataset-archive.spec.ts` | §6.1 | When I archive a finished dataset, the dialog shows me the exact folder it will land in, every recording is copied and hash-verified before its copy here is removed, the folder describes itself with a manifest the ledger can vouch for — and even after the database is destroyed, kairos still says the dataset is archived and where it went. |
+| `08-validation.spec.ts` | screen | I run the required-topic check on a recording from the Validation screen, and it comes back naming every topic the template demands with a tick or a cross beside it — and the report it leaves on disk says the same thing as the screen did. |
+| `09-monitor.spec.ts` | screen | The topics my robot config asks the monitor to watch show live rates on the Monitor screen; the ones it was never asked to watch say nothing rather than reading zero. |
+| `10-settings.spec.ts` | screen | Settings shows me the recording config that is actually loaded, refuses an edit that is not valid JSON before it can reach the server, and saving it back leaves what the stack reads exactly as it was. |
 
-This is the §13 acceptance minimum, not a coverage sweep. A screen with no row
-above has no acceptance evidence here — its evidence is its unit suite. Say so
-when reporting a green run, because that is where the over-reading happens.
+`01`–`07` are the §13 acceptance minimum. `08`–`10` are not part of it: they
+cover the three screens that minimum never enumerated — Validation, Monitor and
+Settings — which had no acceptance evidence here at all, only unit suites. They
+claim one thing each, chosen because it is the thing a unit suite structurally
+cannot show: that a job started in the browser reaches a real dora coordinator
+and renders; that live rates actually arrive from a real ROS graph; that a save
+rewrites the real config file and gives it back unchanged. `screen` in the
+Contract column means exactly that — a screen's own claim, not a numbered
+scenario from the contract.
+
+That is still not a coverage sweep. A screen with no row above has no acceptance
+evidence here — its evidence is its unit suite. Say so when reporting a green
+run, because that is where the over-reading happens.
+
+`10-settings.spec.ts` is the only scenario that writes outside the per-run data
+dir. It saves through the Settings screen, and that screen edits the repo's own
+committed recording config (`config/<robot>/recording/default.yaml`) because
+that is the file the product edits — compose mounts `./config` into the
+orchestrator read-write. So the scenario reads the bytes first, restores them in
+a `finally`, and its last assertion is that the working tree was left without a
+diff. See the header of `fixtures/config.ts` for why the restore is needed at
+all: the writer re-serialises the whole validated model, so the round trip is
+faithful in meaning but not byte-for-byte.
 
 `04-rebuild.spec.ts` carries a second test beyond the §13 minimum — *a failed
 start does not take the whole capture list down*. It is there because the
@@ -284,8 +307,9 @@ e2e/
     stack.ts              where the stack is; refuses to run against a dead one
     api.ts                orchestrator REST — secondary assertions and setup
     store.ts              sidecars on disk: manifests, record.json, the ledger
+    config.ts             the repo's committed config tree — the one thing written outside .run/
     ui.ts                 page helpers built on committed testids
     global-setup.ts       fail loudly, early, if the stack is not up
-  tests/                  one file per §13 scenario, run in order
+  tests/                  one scenario per file, run in order (01–07 = §13, 08–10 = per-screen)
   .run/                   per-run scratch (data dir, generated env) — gitignored
 ```

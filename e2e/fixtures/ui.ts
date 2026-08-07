@@ -129,6 +129,41 @@ export async function shownRevision(page: Page): Promise<number> {
   return Number(m[1]);
 }
 
+// ---- Monitor › Topics -------------------------------------------------------
+
+/** Open Monitor and switch to the Topics sub-view. The sub-nav is component
+ *  state, not URL state, so there is no `?tab=` shortcut to the table — the
+ *  operator clicks, and so does this. */
+export async function openMonitorTopics(page: Page): Promise<void> {
+  await openTab(page, 'monitor');
+  await page.getByTestId('mon-nav-Topics').click();
+  await expect(page.getByTestId('add-chart')).toBeVisible({ timeout: 30_000 });
+}
+
+export const topicRow = (page: Page, name: string): Locator =>
+  page.getByTestId(`topic-row-${name}`);
+
+/**
+ * One Monitor topic row as the operator reads it, cell by cell.
+ *
+ * The cells carry no testids — only the row does — so they are read in the
+ * order the table's own header declares: Rec | Topic | Hz | Expected |
+ * Bandwidth | Max gap | Status. That positional read is safe here only because
+ * every assertion built on it is also SHAPE-checked (`hz` must look like a
+ * rate, `bandwidth` like a unit-carrying size): a column inserted upstream
+ * shifts the indices and fails those regexes loudly rather than quietly
+ * comparing the wrong column. If a scenario ever needs finer access than this,
+ * the fix is a testid in `services/frontend`, not a cleverer selector here.
+ */
+export async function topicRowCells(
+  page: Page,
+  name: string,
+): Promise<{ hz: string; expected: string; bandwidth: string; gap: string; status: string }> {
+  const cells = await topicRow(page, name).locator(':scope > *').allTextContents();
+  const at = (i: number): string => (cells[i] ?? '').trim();
+  return { hz: at(2), expected: at(3), bandwidth: at(4), gap: at(5), status: at(6) };
+}
+
 // ---- Monitor › Store --------------------------------------------------------
 
 export async function openStoreHealth(page: Page): Promise<void> {
@@ -144,6 +179,39 @@ export async function refreshStoreHealth(page: Page): Promise<void> {
   await expect(refresh).toBeEnabled({ timeout: 30_000 });
   await refresh.click();
   await expect(refresh).toBeEnabled({ timeout: 30_000 });
+}
+
+// ---- Settings › Recording ---------------------------------------------------
+
+/** "Recording" in the Settings menu rail. The rail's testids are positional,
+ *  so the section is confirmed by its OWN testid immediately after the click —
+ *  a reordered menu then fails with "settings-recording never appeared"
+ *  instead of quietly asserting against whatever section index 4 became. */
+const RECORDING_MENU_INDEX = 4;
+
+export async function openRecordingSettings(page: Page): Promise<void> {
+  await openTab(page, 'settings');
+  await page.getByTestId(`settings-menu-item-${RECORDING_MENU_INDEX}`).click();
+  await expect(page.getByTestId('settings-recording')).toBeVisible({ timeout: 30_000 });
+}
+
+/** Reveal the raw-JSON editor — the screen demotes JSON to an "Advanced" disclosure,
+ *  so it is closed on arrival — and hand back its textarea, seeded.
+ *
+ *  The seeding is an effect over `GET /config/recording`, so the textarea is
+ *  mounted and EMPTY for a beat before it holds the config. Reading it in that
+ *  beat yields "" and fails as a JSON parse error several assertions later,
+ *  blaming the wrong thing; waiting for content here keeps that from being a
+ *  race every caller has to remember. */
+export async function openRecordingJsonEditor(page: Page): Promise<Locator> {
+  const toggle = page.getByTestId('recording-advanced-toggle');
+  if ((await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click();
+  await expect(page.getByTestId('recording-advanced')).toBeVisible({ timeout: 30_000 });
+  const editor = page.getByLabel('recording config json', { exact: true });
+  await expect(editor, 'the config editor never loaded the recording config').not.toHaveValue('', {
+    timeout: 30_000,
+  });
+  return editor;
 }
 
 // ---- misc -------------------------------------------------------------------

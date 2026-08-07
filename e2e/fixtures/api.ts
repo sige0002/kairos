@@ -42,6 +42,52 @@ export interface Capture {
   error?: { code: string; message: string } | null;
 }
 
+/** One topic as ROS 2 graph discovery sees it — every topic with a publisher,
+ *  whether or not the monitor is measuring it. */
+export interface DiscoveredTopic {
+  name: string;
+  type: string | null;
+  publisher_count: number;
+}
+
+/** The runtime config the whole console boots from (`GET /config`). Only the
+ *  fields the acceptance specs read are declared. */
+export interface RuntimeConfig {
+  defaults: {
+    robot_name?: string;
+    /** The monitor's subscribe allowlist AND the recorder's default set. A
+     *  topic outside it is discovered but never measured (topic_monitor's
+     *  RosTopicSubscriber subscribes to this list alone). */
+    default_topics: string[];
+    expected_hz?: Record<string, number>;
+  };
+}
+
+/** A selectable config option (`GET /config/options`). The `validation` aspect's
+ *  options are the fast_validation templates, and their `meta.required_topics`
+ *  is what the Validation screen's checklist is built from. */
+export interface AspectOption {
+  id: string;
+  path: string;
+  meta: {
+    name?: string;
+    version?: number;
+    required_topics?: { name: string; type?: string | null }[];
+  };
+}
+
+export interface ConfigOptions {
+  active_robot: string;
+  aspects: Record<string, { active: string | null; options: AspectOption[] }>;
+}
+
+/** `GET`/`PUT /config/recording` — the live RECORDING_CONFIG plus the file it
+ *  was loaded from (a container path under `/config`). */
+export interface RecordingConfigPayload {
+  config: Record<string, unknown> | null;
+  path: string;
+}
+
 export interface StoreHealth {
   state: 'ok' | 'suspect';
   suspect_reason: string | null;
@@ -133,6 +179,22 @@ export const api = {
    *  endpoint exists so a test drives the pass instead of sleeping through it.
    *  It runs the SAME code path — only the schedule is bypassed. */
   reconcile: (): Promise<Record<string, unknown>> => call('POST', '/store/reconcile', undefined),
+
+  /** The runtime config the console boots from. */
+  runtimeConfig: (): Promise<RuntimeConfig> => call('GET', '/config'),
+
+  /** The ROS 2 graph as discovery currently sees it. Distinct from the
+   *  monitor's metrics: discovery lists every topic, the monitor measures only
+   *  the `default_topics` allowlist. */
+  topics: (): Promise<{ topics: DiscoveredTopic[] }> => call('GET', '/topics'),
+
+  /** Robot-first config options + the active selection per aspect. */
+  configOptions: (): Promise<ConfigOptions> => call('GET', '/config/options'),
+
+  /** The live recording config + its path. Used by the Settings scenario to
+   *  state what the screen must be showing, and to prove a save changed
+   *  nothing. */
+  recordingConfig: (): Promise<RecordingConfigPayload> => call('GET', '/config/recording'),
 
   listDatasets: (): Promise<{
     items: {
