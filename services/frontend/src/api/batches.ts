@@ -10,6 +10,7 @@
 import { apiGet, apiPatch, apiPost } from './client';
 import type {
   Batch,
+  BatchCoverageResponse,
   BatchCreateRequest,
   BatchDetail,
   BatchListResponse,
@@ -42,6 +43,28 @@ export function listBatches(
   if (filters.robot) query.robot = filters.robot;
   if (filters.operator) query.operator = filters.operator;
   return apiGet<BatchListResponse>('/batches', { signal, query });
+}
+
+/**
+ * Per-condition recorded totals for ONE task, summed in SQL.
+ *
+ * Collect's Coverage card used to fetch every batch and add them up in the
+ * browser — 817 KiB every 30 s at 5000 batches (E-27). Paging that list could
+ * not have fixed it: a coverage total computed from one page would be silently
+ * short, which is precisely what E-27 is the rule against. So the SUM happens
+ * where the rows are.
+ *
+ * `task` is required (422 without it): a coverage figure spanning tasks would
+ * be adding up unrelated work.
+ */
+export function getBatchCoverage(
+  task: string,
+  signal?: AbortSignal,
+): Promise<BatchCoverageResponse> {
+  return apiGet<BatchCoverageResponse>('/batches/coverage', {
+    signal,
+    query: { task },
+  });
 }
 
 /** A batch plus its full captures. */

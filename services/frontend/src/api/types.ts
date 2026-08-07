@@ -333,6 +333,16 @@ export interface CaptureListItem {
   /** `complete` once the digest job sealed per-file hashes into the manifest.
    *  Derived from the replica state, so "verified" is one fact (§9-4). */
   digest_state?: DigestState;
+  /** How many topics the recording captured. The LIST carries the number; the
+   *  topics themselves are on the detail (see above). The server derives it
+   *  from the array rather than storing it, so on a detail it always equals
+   *  `topics.length` — which is why a row can show the count without the
+   *  per-capture request that would undo the saving the split bought.
+   *
+   *  Optional because a backend from before this field simply omits it, and a
+   *  row that cannot say how many topics it had should read as unknown rather
+   *  than as zero. */
+  topics_count?: number;
   memberships?: DatasetMembership[];
 }
 
@@ -1156,6 +1166,29 @@ export interface BatchDetail extends Batch {
 
 export interface BatchListResponse {
   items: BatchSummary[];
+}
+
+/** One condition's recorded total for a task (`GET /api/v1/batches/coverage`). */
+export interface CoverageRow {
+  condition: string;
+  /** Sum of the batches' monotone `episodes_recorded` for this condition. */
+  recorded: number;
+  /** True when ANY batch in the sum carries `episodes_recorded_is_floor`. A sum
+   *  is a lower bound as soon as one of its terms is, and there is no way to say
+   *  which part is uncertain — so the flag propagates through the addition
+   *  rather than being reported per batch. */
+  is_floor: boolean;
+}
+
+/** Per-condition coverage for ONE task.
+ *
+ *  Only conditions actually OBSERVED in batches appear, ordered by name. A
+ *  task's planned-but-never-recorded conditions are the caller's to add as zero
+ *  rows: the plan catalog is a client-side vocabulary, and a server inventing
+ *  rows for it would be reporting a plan rather than a measurement. */
+export interface BatchCoverageResponse {
+  task: string;
+  rows: CoverageRow[];
 }
 
 export interface BatchCreateRequest {

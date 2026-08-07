@@ -205,6 +205,21 @@ function coverageMachine(): BatchMachine {
 function mockCoverageFetch() {
   return vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
+    // The per-condition SUM is the server's now (E-27: the card used to pull
+    // every batch). These rows are what the endpoint returns for the batches
+    // below: 3 + 2 for "Bin: full", 4 for "Bin: sparse", and the other task's
+    // 9 scoped out server-side by `?task=`.
+    if (url.includes('/batches/coverage')) {
+      return Promise.resolve(
+        jsonResponse({
+          task: 'Bin to Tray',
+          rows: [
+            { condition: 'Bin: full', recorded: 5, is_floor: false },
+            { condition: 'Bin: sparse', recorded: 4, is_floor: false },
+          ],
+        }),
+      );
+    }
     if (url.includes('/batches')) {
       return Promise.resolve(
         jsonResponse({

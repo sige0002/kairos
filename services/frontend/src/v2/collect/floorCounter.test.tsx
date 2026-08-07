@@ -71,6 +71,16 @@ function mockApi(isFloor: boolean) {
         jsonResponse({ run_id: null, state: 'created', live_capture_ids: [] }),
       );
     }
+    // Same figures as the batch fixture above, as the coverage endpoint reports
+    // them: one condition, 12 recorded, floor flag under test.
+    if (url.includes('/batches/coverage')) {
+      return Promise.resolve(
+        jsonResponse({
+          task: TASK,
+          rows: [{ condition: CONDITION, recorded: 12, is_floor: isFloor }],
+        }),
+      );
+    }
     if (url.includes('/batches/b1')) {
       return Promise.resolve(jsonResponse({ ...batch(isFloor), captures: [] }));
     }

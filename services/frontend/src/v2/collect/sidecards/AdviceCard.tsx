@@ -20,27 +20,33 @@ export function AdviceCard({ machine }: { machine: BatchMachine }) {
           Advice for next episode
         </span>
         <div className="flex-1" />
-        <button
-          type="button"
-          onClick={machine.advicePrev}
-          disabled={single}
-          aria-label="previous advice"
-          className="flex h-[22px] w-[22px] items-center justify-center rounded-chip border border-gray-200 bg-white text-[11px] text-gray-500 disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          ‹
-        </button>
-        <span className="font-mono text-[11px] text-gray-400">
-          {machine.adviceIdx + 1} / {ADVICE_ITEMS.length}
-        </span>
-        <button
-          type="button"
-          onClick={machine.adviceNext}
-          disabled={single}
-          aria-label="next advice"
-          className="flex h-[22px] w-[22px] items-center justify-center rounded-chip border border-gray-200 bg-white text-[11px] text-gray-500 disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          ›
-        </button>
+        {/* With one tip the pager is not a disabled control, it is a costume —
+            "1 / 1" plus arrows reads as a generator that happens to have one
+            suggestion, when this card is a static tip (advice generation is
+            deliberately unimplemented). Show paging only when there is paging. */}
+        {!single && (
+          <>
+            <button
+              type="button"
+              onClick={machine.advicePrev}
+              aria-label="previous advice"
+              className="flex h-[22px] w-[22px] items-center justify-center rounded-chip border border-gray-200 bg-white text-[11px] text-gray-500"
+            >
+              ‹
+            </button>
+            <span className="font-mono text-[11px] text-gray-400">
+              {machine.adviceIdx + 1} / {ADVICE_ITEMS.length}
+            </span>
+            <button
+              type="button"
+              onClick={machine.adviceNext}
+              aria-label="next advice"
+              className="flex h-[22px] w-[22px] items-center justify-center rounded-chip border border-gray-200 bg-white text-[11px] text-gray-500"
+            >
+              ›
+            </button>
+          </>
+        )}
       </div>
       <div className="flex flex-col gap-1 rounded-control border border-teal-200 bg-teal-50 px-3 py-2.5 [@media(max-height:860px)]:py-1.5">
         <div className="flex items-center gap-2">

@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { listBatches } from '../../../api/batches';
+import { getBatchCoverage } from '../../../api/batches';
 import { queryKeys } from '../../../api/queryKeys';
 import { COVERAGE_POLL_MS } from '../../pollingPolicy';
 import { Card, cn } from '../../../components/ui';
@@ -14,22 +14,37 @@ import { SIDE_PAD } from '../compact';
  *  figure survives a later exclude or delete. Conditions listed = the plan's ∪
  *  those actually seen in batches, so ad-hoc conditions still show up.
  *
+ *  The SUM is the server's (`GET /batches/coverage`). It used to be this card
+ *  pulling every batch on the host and adding them up in the browser, which is
+ *  817 KiB every 30 s at 5000 batches (E-27) — and paging that list could not
+ *  have fixed it, because a total from one page would be silently short. The ∪
+ *  with the plan's vocabulary stays HERE: the plan catalog is a client-side
+ *  list, and the endpoint deliberately reports only what was measured.
+ *
  *  There is deliberately no "exported" column any more. Under §6 a dataset is a
  *  named set of captures with no condition of its own, so the old count had no
  *  source left — and a coverage number nobody can derive is worse than no
  *  number at all. */
 export function CoverageCard({ machine }: { machine: BatchMachine }) {
   const plans = usePlans();
-  const batchesQuery = useQuery({
-    queryKey: [...queryKeys.batches, 'coverage'],
-    queryFn: ({ signal }) => listBatches({}, signal),
+  const task = machine.task;
+  // `\u2014` is the display placeholder for "no task chosen", and the endpoint
+  // answers 422 without a real one. The card renders nothing in that state
+  // anyway (no plan conditions, no measured rows), so it simply does not ask.
+  const taskKnown = !!task && task !== '\u2014';
+  // The key keeps the `['batches', …]` prefix, so the invalidation the strip
+  // fires after a save still reaches this card, and carries the task so
+  // switching tasks is a different cache entry rather than a stale figure
+  // sitting under a new heading.
+  const coverageQuery = useQuery({
+    queryKey: [...queryKeys.batches, 'coverage', task ?? ''],
+    queryFn: ({ signal }) => getBatchCoverage(task!, signal),
+    enabled: taskKnown,
     staleTime: 15_000,
     refetchInterval: COVERAGE_POLL_MS,
   });
 
-  const task = machine.task;
   const planConditions = findTask(plans, machine.project ?? '', task ?? '').conditions;
-  const batches = (batchesQuery.data?.items ?? []).filter((b) => b.task === task);
   // A sum is a floor as soon as ONE of its terms is: the total is at least this
   // and possibly more, and there is no way to say which part is uncertain. So
   // the flag propagates through the addition rather than being shown per batch
@@ -44,8 +59,8 @@ export function CoverageCard({ machine }: { machine: BatchMachine }) {
     });
   };
   for (const c of planConditions) bump(c, 0, false);
-  for (const b of batches) {
-    bump(b.condition ?? '', b.episodes_recorded ?? 0, b.episodes_recorded_is_floor === true);
+  for (const row of coverageQuery.data?.rows ?? []) {
+    bump(row.condition, row.recorded, row.is_floor === true);
   }
   const rows = [...rowsByCondition.entries()];
   if (rows.length === 0) return null; // free-text task with no plan conditions

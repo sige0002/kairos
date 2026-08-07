@@ -37,7 +37,16 @@ function UnsavedTakeBanner({ machine }: { machine: BatchMachine }) {
     <Card
       role="alert"
       data-testid="unsaved-take-banner"
-      className="flex shrink-0 flex-col gap-2 border-2 border-amber-200 bg-amber-50/70 px-4 py-3"
+      className={cn(
+        'flex shrink-0 flex-col gap-2 border-2 border-amber-200 bg-amber-50/70 px-4 py-3',
+        // The one Collect surface that had no compact step. It sits in the
+        // PINNED half of the left column, above the ControlCard, so every
+        // pixel it takes at a short height is a pixel of headroom the primary
+        // action loses (measured: at 1067x600 the card's headroom is 150px
+        // with this banner up, against 260px without it). Same threshold and
+        // the same "trim, never hide" rule as compact.ts.
+        '[@media(max-height:860px)]:gap-1.5 [@media(max-height:860px)]:py-2',
+      )}
     >
       <span className="text-[13px] text-amber-900" data-testid="unsaved-take-identity">
         {machine.unsavedTakeCount > 1
@@ -66,7 +75,7 @@ function UnsavedTakeBanner({ machine }: { machine: BatchMachine }) {
         <button
           type="button"
           onClick={machine.labelUnsavedTake}
-          className="h-9 rounded-control bg-teal-600 px-3.5 text-[12.5px] font-bold text-white hover:bg-teal-700"
+          className="h-9 [@media(max-height:860px)]:h-8 rounded-control bg-teal-600 px-3.5 text-[12.5px] font-bold text-white hover:bg-teal-700"
         >
           Label it
         </button>
@@ -74,14 +83,14 @@ function UnsavedTakeBanner({ machine }: { machine: BatchMachine }) {
           type="button"
           onClick={machine.discardUnsavedTake}
           disabled={machine.unsavedDiscard.busy}
-          className="h-9 rounded-control border border-gray-200 bg-white px-3.5 text-[12.5px] font-semibold text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+          className="h-9 [@media(max-height:860px)]:h-8 rounded-control border border-gray-200 bg-white px-3.5 text-[12.5px] font-semibold text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
         >
           Discard
         </button>
         <button
           type="button"
           onClick={machine.dismissUnsavedTake}
-          className="h-9 rounded-control px-2 text-[12.5px] font-semibold text-gray-500 hover:underline"
+          className="h-9 [@media(max-height:860px)]:h-8 rounded-control px-2 text-[12.5px] font-semibold text-gray-500 hover:underline"
         >
           Later
         </button>
