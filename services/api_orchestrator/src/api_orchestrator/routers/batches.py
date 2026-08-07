@@ -22,11 +22,13 @@ from kairos_common import ApiError, utc_now_iso8601
 from api_orchestrator.batch_service import BatchService
 from api_orchestrator.models import (
     Batch,
+    BatchCoverageResponse,
     BatchCreateRequest,
     BatchDetail,
     BatchListResponse,
     BatchPatchRequest,
     BatchSummary,
+    CoverageRow,
 )
 from api_orchestrator.store import BatchExistsError, CaptureStore
 
@@ -172,6 +174,37 @@ async def list_batches(
             for b in batches
         ],
         total=store.count_batches(status, robot=robot, operator=operator),
+    )
+
+
+# Declared BEFORE ``/{batch_id}``: Starlette matches routes in registration
+# order, so the parameterised route would otherwise swallow this path and
+# answer "Batch not found: coverage".
+@router.get("/coverage", response_model=BatchCoverageResponse)
+async def batch_coverage(
+    request: Request, task: str = Query(..., min_length=1)
+) -> BatchCoverageResponse:
+    """Per-condition recorded totals for one task, aggregated in SQL.
+
+    Collect's Coverage card used to fetch every batch and add them up in the
+    browser — 817 KiB every 30s at 5000 batches (E-27). Paging that list could
+    not fix it: a coverage total computed from one page would be silently
+    short, which E-27 is precisely the rule against. So the SUM happens where
+    the rows are, and the response carries one row per condition.
+
+    ``task`` is required (422 without it) because that is the only way the
+    figure is ever used — a coverage number spanning tasks would be adding up
+    unrelated work. Conditions the plan lists but nobody has recorded do NOT
+    appear: the plan catalog is the client's vocabulary, and the caller unions
+    its own zero rows in. This endpoint reports only what was measured.
+    """
+    rows = _store(request).coverage_by_condition(task)
+    return BatchCoverageResponse(
+        task=task,
+        rows=[
+            CoverageRow(condition=condition, recorded=recorded, is_floor=is_floor)
+            for condition, recorded, is_floor in rows
+        ],
     )
 
 

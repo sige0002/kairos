@@ -1458,6 +1458,42 @@ class CaptureStore:
             ).fetchall()
         return [self._batch_from_row(r) for r in rows]
 
+    def coverage_by_condition(self, task: str) -> list[tuple[str, int, bool]]:
+        """``(condition, recorded, is_floor)`` per condition of *task*, in SQL.
+
+        Aggregated by the database rather than by summing a batch list: Collect
+        polls this every 30s, and at the 5000-batch scale that motivated E-27
+        the list it used to add up was 817 KiB per response. Grouping here means
+        the wire carries one row per condition — a handful — instead of every
+        batch that ever ran.
+
+        ``recorded`` sums the monotone ``episodes_recorded``; ``is_floor`` is a
+        MAX over the per-batch floor flags, because a sum is a lower bound as
+        soon as one term is (§8.2 rule 6).
+
+        Batches with no condition are excluded, including the literal ``'—'``:
+        that is the dash the console displays for "unset", and a console that
+        had to send something once wrote it into the catalog as a real value
+        (E-5). Counting it would report a condition named after the absence of
+        one. Rows come back ordered by condition so the caller merging its plan
+        vocabulary in gets a stable list.
+        """
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT condition, "
+                "SUM(episodes_recorded) AS recorded, "
+                "MAX(episodes_recorded_is_floor) AS is_floor "
+                "FROM batches "
+                "WHERE task = ? AND condition IS NOT NULL "
+                "AND condition NOT IN ('', '—') "
+                "GROUP BY condition ORDER BY condition",
+                (task,),
+            ).fetchall()
+        return [
+            (row["condition"], int(row["recorded"] or 0), bool(row["is_floor"]))
+            for row in rows
+        ]
+
     def list_captures_by_batch(self, batch_id: str) -> list[Capture]:
         """LIVE captures of a batch — tombstones excluded.
 

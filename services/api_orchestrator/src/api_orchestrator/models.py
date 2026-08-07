@@ -38,13 +38,14 @@ from kairos_common.contracts.jobs import (
     ValidationTemplateListResponse,
 )
 from kairos_common.rebuild import ReplicaState
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 __all__ = [
     "TERMINAL_STATES",
     "ArchivedFile",
     "UNFINALIZED_STATES",
     "Batch",
+    "BatchCoverageResponse",
     "BatchCreateRequest",
     "BatchDetail",
     "BatchListResponse",
@@ -52,6 +53,7 @@ __all__ = [
     "BatchStatus",
     "BatchSummary",
     "Capture",
+    "CoverageRow",
     "CaptureDeleteRequest",
     "CaptureDetail",
     "CaptureError",
@@ -301,6 +303,11 @@ class CaptureListItem(BaseModel):
     ~208 KiB without it (E-27). Modelled as a base class rather than an
     exclusion so the schema says it outright — a reader of the OpenAPI
     document should not have to know which route filters what.
+
+    ``topics_count`` is what the list keeps of that array: the one thing a row
+    actually shows about topics is how many there were, and a client that had
+    to fetch each capture's detail to render a number would spend a request per
+    row to undo the saving above.
     """
 
     capture_id: str
@@ -351,6 +358,11 @@ class CaptureListItem(BaseModel):
     # manifest. Derived from the replica state so "verified" is one fact, not
     # two columns that can disagree (§9-4).
     digest_state: DigestState = DigestState.pending
+    # How many topics the recording captured. The list carries the NUMBER; the
+    # topics themselves are on the detail (see this class's docstring). Always
+    # equals ``len(topics)`` there — :class:`Capture` derives it rather than
+    # letting a caller supply one that could disagree.
+    topics_count: int = 0
     memberships: list[DatasetMembership] = Field(default_factory=list)
 
 
@@ -365,6 +377,20 @@ class Capture(CaptureListItem):
     """
 
     topics: list[CaptureTopic] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _count_topics(self) -> Capture:
+        """Derive ``topics_count`` from the topics actually carried.
+
+        Computed here rather than stored as a column or passed in by each
+        caller, because those are the two ways the number could come to
+        disagree with the array beside it — and a count that disagrees is
+        worse than no count, since nothing downstream can tell which is
+        right. Every capture is built through this model, so the list's
+        number is always the length of the detail's array by construction.
+        """
+        self.topics_count = len(self.topics)
+        return self
 
 
 class CaptureDetail(Capture):
@@ -826,6 +852,32 @@ class BatchListResponse(BaseModel):
 
     items: list[BatchSummary] = Field(default_factory=list)
     total: int | None = None
+
+
+class CoverageRow(BaseModel):
+    """One condition's recorded total for a task (``GET /batches/coverage``)."""
+
+    condition: str
+    # Sum of the batches' monotone ``episodes_recorded`` for this condition.
+    recorded: int = 0
+    # True when ANY batch in the sum carries ``episodes_recorded_is_floor``.
+    # A sum is a lower bound as soon as one of its terms is, and there is no
+    # way to say which part is uncertain — so the flag propagates through the
+    # addition rather than being reported per batch.
+    is_floor: bool = False
+
+
+class BatchCoverageResponse(BaseModel):
+    """Per-condition coverage for one task (``GET /api/v1/batches/coverage``).
+
+    Only conditions actually OBSERVED in batches appear, ordered by name. A
+    task's planned-but-never-recorded conditions are the caller's to add as
+    zero rows: the plan catalog is a client-side vocabulary, and a server that
+    invented rows for it would be reporting a plan, not a measurement.
+    """
+
+    task: str
+    rows: list[CoverageRow] = Field(default_factory=list)
 
 
 # ---- jobs / validation ------------------------------------------------------

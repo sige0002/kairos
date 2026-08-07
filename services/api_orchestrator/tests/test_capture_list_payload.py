@@ -53,6 +53,12 @@ def _capture(client: TestClient, layout: DataLayout, *, topics: int) -> str:
     return capture_id
 
 
+# Bytes a row may gain purely from the DIGITS of ``topics_count`` ("0" vs
+# "100"). Deliberately far below what any per-topic payload would cost: 100
+# topics is thousands of bytes, so nothing real can hide under this bound.
+_COUNT_DIGITS_HEADROOM = 8
+
+
 class TestTheListDoesNotCarryTopics:
     def test_a_list_item_does_not_grow_with_the_topic_count(
         self, client: TestClient, layout: DataLayout
@@ -63,6 +69,11 @@ class TestTheListDoesNotCarryTopics:
         A list row must not grow with how many topics the recording had, by
         any name, or the page size becomes a property of the robot's topic
         count rather than of the page.
+
+        The row does carry ``topics_count``, which grows with the DIGITS of
+        that number — ``0`` to ``100`` is two bytes. That is the distinction
+        this bound draws: a handful of bytes for a number is fine, and any row
+        actually carrying per-topic data is larger by thousands.
         """
         bare = _capture(client, layout, topics=0)
         loaded = _capture(client, layout, topics=100)
@@ -76,11 +87,14 @@ class TestTheListDoesNotCarryTopics:
             capture_id: len(json.dumps(item, sort_keys=True))
             for capture_id, item in by_id.items()
         }
-        assert sizes[loaded] == sizes[bare], (
-            f"the 100-topic row is {sizes[loaded] - sizes[bare]} bytes larger "
+        growth = sizes[loaded] - sizes[bare]
+        assert growth <= _COUNT_DIGITS_HEADROOM, (
+            f"the 100-topic row is {growth} bytes larger "
             "than the 0-topic row — the list is carrying per-topic data"
         )
         assert "topics" not in by_id[loaded]
+        assert by_id[loaded]["topics_count"] == 100
+        assert by_id[bare]["topics_count"] == 0
 
     def test_the_detail_still_carries_them(
         self, client: TestClient, layout: DataLayout
