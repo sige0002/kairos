@@ -480,6 +480,26 @@ export function __rehydrateBatchStore(): void {
 // values. An ESM import binding is read-only on the importing side, so writes
 // have to come back through functions defined here.
 
+let stopConfirmMaxMs: number | null = null;
+let stopConfirmPollMs: number | null = null;
+/** Test seam (same shape as the stop floor's): the real values live in
+ *  pollingPolicy.ts; overriding here lets a test run the confirmation loop in
+ *  milliseconds instead of sitting through the 70 s budget. */
+export function __setStopConfirmMs(maxMs: number, pollMs: number): void {
+  stopConfirmMaxMs = maxMs;
+  stopConfirmPollMs = pollMs;
+}
+export function __resetStopConfirmMs(): void {
+  stopConfirmMaxMs = null;
+  stopConfirmPollMs = null;
+}
+export function getStopConfirmMaxMs(defaultMs: number): number {
+  return stopConfirmMaxMs ?? defaultMs;
+}
+export function getStopConfirmPollMs(defaultMs: number): number {
+  return stopConfirmPollMs ?? defaultMs;
+}
+
 export function getStopFloorMs(): number {
   return stopFloorMs;
 }

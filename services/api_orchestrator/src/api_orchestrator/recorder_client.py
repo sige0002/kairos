@@ -78,12 +78,14 @@ def live_capture_ids(status: Mapping[str, Any]) -> set[str] | None:
     return {item for item in value if is_uuid7(item)}
 
 
-# POST /record/stop is special: the recorder's clean SIGINT flush of a large
-# bag can take up to ~30s (its STOP_TIMEOUT_S). The orchestrator must wait it
-# out — a 3s timeout would 503 while the recorder is still correctly finalizing
-# and the final-state re-sync would never run. Give stop a longer budget than
-# the recorder's flush, with no retry (one long attempt; stop is idempotent).
-STOP_TIMEOUT_S = 35.0
+# POST /record/stop is special: the recorder's stop now escalates
+# SIGINT (30s) -> SIGTERM (30s) -> SIGKILL (5s), so a stop that has to walk
+# the whole chain returns after ~65s — and it is still a SUCCESSFUL stop
+# (finalised as interrupted). The orchestrator must wait the chain out: a
+# shorter timeout 503s while the recorder is correctly escalating, the console
+# shows a failure for a stop that lands seconds later, and the final-state
+# re-sync never runs. One long attempt, no retry (stop is idempotent).
+STOP_TIMEOUT_S = 75.0
 
 # POST /record/start now blocks while the recorder applies start_delay_s AND
 # (for --start-paused) waits for subscriptions to match before resuming

@@ -17,6 +17,21 @@
 // per-frame/1 Hz UI tickers that drive a clock or an animation without touching
 // the network.
 
+/** The post-stop confirmation poll: after POST /record/stop returns, the
+ *  machine re-reads /record/status at this cadence until the recorder reports
+ *  a terminal state. 1 s because the wait is a rosbag2 cache flush measured in
+ *  seconds — the mean detection lag is half this interval, imperceptible
+ *  against the flush, while anything faster just hammers a recorder that is
+ *  busy fsyncing. The count shown to the operator also ticks per second. */
+export const STOP_CONFIRM_POLL_MS = 1000;
+
+/** How long the machine lets that confirmation run before calling the stop
+ *  failed. Sized to the recorder's full escalation chain — SIGINT 30 s +
+ *  SIGTERM 30 s + SIGKILL 5 s — plus margin: inside this window a still-active
+ *  status is a recorder CORRECTLY draining or escalating, and surfacing an
+ *  error there converts normal seconds-long behavior into a false failure. */
+export const STOP_CONFIRM_MAX_MS = 70_000;
+
 /** Dataset archive progress. The run is server-owned and this poll is its only
  *  window, so it is the fastest in the console — a full second slower than
  *  nothing, and still finer than the job polls below. */

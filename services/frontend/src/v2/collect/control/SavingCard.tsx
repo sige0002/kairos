@@ -40,7 +40,12 @@ export function SavingCard({
       </div>
       <span className="text-[12.5px] leading-relaxed text-gray-500">
         {saving
-          ? 'Finalizing the recording…'
+          ? machine.stopFlushSeconds != null
+            ? // The wait is the recorder draining its cache — normal, measured
+              // in seconds, and shown as progress rather than dressed as an
+              // error (the error only appears past the full escalation budget).
+              `Finalizing the recording — the recorder is flushing (${machine.stopFlushSeconds}s)…`
+            : 'Finalizing the recording…'
           : 'Reading recorded counts, gaps and integrity.'}
       </span>
       {/* Indeterminate progress — the real duration isn't known, so no fake %. */}

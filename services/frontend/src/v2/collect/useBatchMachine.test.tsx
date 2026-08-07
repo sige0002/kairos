@@ -14,6 +14,7 @@ import {
   __resetBatchStore,
   __setStopFloorMs,
   __resetStopFloorMs,
+  __setStopConfirmMs,
   __rehydrateBatchStore,
   EPISODES_PER_BATCH,
 } from './useBatchMachine';
@@ -298,6 +299,11 @@ beforeEach(() => {
   // These tests are not about the Stop floor; they stop immediately after
   // starting, which the shipped 1s guard would (correctly) refuse.
   __setStopFloorMs(0);
+  // Nor about the flush-confirmation budget: a zero budget makes the
+  // post-stop poll a single check, so a mock that never reports terminal
+  // is refused immediately instead of after the shipped ~70s escalation
+  // window. The flush-success test below sets its own budget.
+  __setStopConfirmMs(0, 1);
   // The batch machine now lives in a module-level store (so it survives a
   // tab-switch unmount); reset it — and its localStorage mirror — between hook
   // tests so state can't leak from one test into the next.
@@ -576,6 +582,64 @@ test('a stop is refused while live_capture_ids still names our capture', async (
   act(() => result.current.stopRecording());
   await waitFor(() => expect(result.current.stopError?.code).toBe('stop_not_confirmed'));
   expect(result.current.phase).toBe('saving');
+});
+
+// The UX fix (2026-08-07): a recorder that is merely FLUSHING is not a failed
+// stop. rosbag2 drains its cache for seconds after /record/stop returns, and
+// that used to surface as stop_not_confirmed on the very first status check.
+// The confirmation now POLLS until the recorder reports terminal and only
+// errors past the escalation budget — so a flush that finishes inside it
+// advances to QUICK CHECK with no error ever shown.
+test('a stop that confirms on a later poll (flush in progress) is not an error', async () => {
+  // Real budget semantics, fast cadence so several polls fit in the test.
+  __setStopConfirmMs(5000, 5);
+  let stopCalled = false;
+  let postStopStatusCalls = 0;
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/record/start'))
+      return Promise.resolve(jsonResponse(captureBody('cap_1')));
+    if (url.includes('/record/stop')) {
+      stopCalled = true;
+      return Promise.resolve(jsonResponse(captureBody('cap_1', { state: 'completed' })));
+    }
+    if (url.includes('/record/status')) {
+      if (!stopCalled) return Promise.resolve(jsonResponse({}));
+      postStopStatusCalls += 1;
+      if (postStopStatusCalls <= 2) {
+        // Still draining the cache to disk — normal progress, not a failure.
+        return Promise.resolve(
+          jsonResponse({
+            capture_id: 'cap_1',
+            run_id: 'run_cap_1',
+            state: 'stopping',
+            live_capture_ids: ['cap_1'],
+          }),
+        );
+      }
+      // The flush finished: terminal state, nothing live.
+      return Promise.resolve(
+        jsonResponse({
+          capture_id: 'cap_1',
+          run_id: 'run_cap_1',
+          state: 'completed',
+          live_capture_ids: [],
+        }),
+      );
+    }
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  act(() => result.current.startRecording());
+  await waitFor(() => expect(result.current.phase).toBe('recording'));
+
+  act(() => result.current.stopRecording());
+  expect(result.current.phase).toBe('saving');
+  await waitFor(() => expect(result.current.phase).toBe('quickcheck'));
+  expect(result.current.stopError).toBeNull();
 });
 
 // ---------------------------------------------------------------------------

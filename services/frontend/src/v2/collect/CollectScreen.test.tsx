@@ -221,8 +221,11 @@ test('Stop recording moves to SAVING and shows the honest finalizing copy', asyn
 
   fireEvent.click(screen.getByRole('button', { name: /Stop recording/ }));
   await waitFor(() => expect(phaseTitle()).toHaveTextContent('SAVING…'));
-  // Honest, non-fabricated copy (no fake MB/percent).
-  expect(screen.getByText('Finalizing the recording…')).toBeInTheDocument();
+  // Honest, non-fabricated copy (no fake MB/percent): while the stop waits on
+  // the recorder's flush, the card shows the real elapsed seconds.
+  expect(
+    screen.getByText(/Finalizing the recording — the recorder is flushing \(\d+s\)…/),
+  ).toBeInTheDocument();
 });
 
 // Persona finding P1/P4: a failed TASK must not read as "not usable" data, and

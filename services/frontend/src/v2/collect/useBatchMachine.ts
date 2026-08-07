@@ -45,9 +45,11 @@ import {
   type RecordIntegrity,
   type RecordStartRequest,
   type RecordState,
+  type RecordStatus,
   type ReviewSaveRequest,
 } from '../../api/types';
 import { useToast } from '../shared/useToast';
+import { STOP_CONFIRM_MAX_MS, STOP_CONFIRM_POLL_MS } from '../pollingPolicy';
 
 // Public surface: everything Collect (and the tests) imported from this module
 // before the machine/ split keeps resolving here.
@@ -61,6 +63,8 @@ export {
   __rehydrateBatchStore,
   __resetStopFloorMs,
   __setStopFloorMs,
+  __resetStopConfirmMs,
+  __setStopConfirmMs,
 } from './machine/store';
 export * from './machine/contract';
 
@@ -78,6 +82,8 @@ import {
 import {
   dismissedUnsavedCaptures,
   dispatch,
+  getStopConfirmMaxMs,
+  getStopConfirmPollMs,
   getStoreSnapshot,
   persistDismissed,
   useBatchState,
@@ -457,23 +463,37 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
       // array means the recorder is unreachable, not that nothing is live (§10
       // rev.2.4), so it can never be the thing that says "stopped" — the state
       // field is.
-      const after = await getRecordStatus();
-      const stillLive =
-        ACTIVE_RECORD_STATES.has(after.state) ||
+      // A flush takes SECONDS (rosbag2 drains its cache to disk), and inside
+      // the recorder's own escalation budget a still-active status is normal
+      // progress, not a failure. So: poll at STOP_CONFIRM_POLL_MS until the
+      // recorder reports terminal, and only past STOP_CONFIRM_MAX_MS (the full
+      // SIGINT->SIGTERM->SIGKILL chain plus margin) call the stop failed —
+      // that is when Retry becomes a meaningful offer rather than a reflex.
+      const stillLive = (s: RecordStatus) =>
+        ACTIVE_RECORD_STATES.has(s.state) ||
         (capture?.capture_id != null &&
-          liveCaptureIds(after)?.includes(capture.capture_id) === true);
-      if (stillLive) {
-        throw new ApiError(
-          409,
-          {
-            error: {
-              code: 'stop_not_confirmed',
-              message: `The recorder is still ${after.state}. The recording was not stopped — retry.`,
-              details: {},
+          liveCaptureIds(s)?.includes(capture.capture_id) === true);
+      const deadline =
+        performance.now() + getStopConfirmMaxMs(STOP_CONFIRM_MAX_MS);
+      let after = await getRecordStatus();
+      while (stillLive(after)) {
+        if (performance.now() >= deadline) {
+          throw new ApiError(
+            409,
+            {
+              error: {
+                code: 'stop_not_confirmed',
+                message: `The recorder is still ${after.state}. The recording was not stopped — retry.`,
+                details: {},
+              },
             },
-          },
-          'the recorder did not stop',
+            'the recorder did not stop',
+          );
+        }
+        await new Promise((resolve) =>
+          setTimeout(resolve, getStopConfirmPollMs(STOP_CONFIRM_POLL_MS)),
         );
+        after = await getRecordStatus();
       }
       return capture;
     },
@@ -553,6 +573,25 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     dispatch({ type: 'STOP_REQUESTED' });
     stopMutation.mutate();
   }, [state.phase, canStop, stopMutation]);
+
+  // Honest progress for the confirmation wait above: seconds since Stop was
+  // pressed, shown on the SAVING card while the recorder drains. Null outside
+  // the wait, so the card's copy stays the plain one when nothing is flushing.
+  const [stopFlushSeconds, setStopFlushSeconds] = useState<number | null>(null);
+  const stopConfirming = state.phase === 'saving' && stopMutation.isPending;
+  useEffect(() => {
+    if (!stopConfirming) {
+      setStopFlushSeconds(null);
+      return;
+    }
+    const t0 = performance.now();
+    setStopFlushSeconds(0);
+    const id = setInterval(
+      () => setStopFlushSeconds(Math.floor((performance.now() - t0) / 1000)),
+      1000,
+    );
+    return () => clearInterval(id);
+  }, [stopConfirming]);
 
   const retryStop = useCallback(() => {
     if (getStoreSnapshot().phase !== 'saving') return;
@@ -1212,6 +1251,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     stopBlockedReason,
     recorderUnreachable: !recorderReachable,
     recorderStaleMs,
+    stopFlushSeconds,
     retryStop,
     pickSuccess,
     pickFailure,

@@ -253,6 +253,10 @@ export interface BatchMachine {
   /** Milliseconds since the last SUCCESSFUL poll, for "last known: …, Ns ago".
    *  Null when there has never been one. */
   recorderStaleMs: number | null;
+  /** Seconds the post-stop confirmation has been waiting on the recorder's
+   *  flush; null outside that wait. Drives the SAVING card's honest progress
+   *  line instead of an error. */
+  stopFlushSeconds: number | null;
   /** Re-attempt a stop that failed (stays in SAVING). */
   retryStop: () => void;
   pickSuccess: () => void;

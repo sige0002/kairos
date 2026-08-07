@@ -345,7 +345,7 @@ Settings > Data quality から、選択式カタログ（recording / stream / va
 - 重い処理（検証・変換、stage3）は**非同期ジョブキュー**に載せ、request/response から切り離す。進捗は SSE 通知。
 - 永続: **capture の正はディスク上のサイドカー**（`object_manifest.json` / `record.json` / `lifecycle.jsonl`）で、**SQLite はそこから全再構築できる索引**。起動時に DB が無い・スキーマ版が違う・`KAIROS_REBUILD` が立っていれば rebuild する（[capture_store](capture_store.md) §8.2）。`jobs` は揮発として rebuild 対象外、`validation_templates` / `plan_catalog` は `catalog/*.json` へサイドカー二重化して復元する。settings ストアは未実装（収録設定は `PUT /api/v1/config/recording` で設定ファイルへアトミックに永続化する）。
 - **起動シーケンス**: identity（`instance.json`。壊れていれば起動失敗 — 新しい id は全 replica を孤児にする）→ 不変条件（`objects`/`.trash`/`.incoming` の同一 FS 検査、`.ledger-slack` の確保）→ 必要なら rebuild（**ledger が読めなければ起動を中止**。ledger は manifest に優先するので、それ無しに rebuild すると operator が破棄した capture を全部復活させる）→ **delete-resume（rebuild の有無にかかわらず毎回）**。
-- 内部サービス呼び出しは timeout（既定 `3s`）+ retry 1 回。失敗は `status` / `events` に反映（`503`）。
+- 内部サービス呼び出しは timeout（既定 `3s`）+ retry 1 回。失敗は `status` / `events` に反映（`503`）。**例外は recorder への `POST /record/stop`**: retry 無し・長い予算（`75s`）。recorder の停止は SIGINT 30s → SIGTERM 30s → SIGKILL 5s とエスカレーションし、チェーンを最後まで歩いた停止（約 65 秒）も**成功した停止**（interrupted で確定）なので、それを 503 に切らず待ち切る。
 
 ## エラー / 規約 / ネットワーク
 
