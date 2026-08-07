@@ -70,14 +70,19 @@ function transferBadge(row: DecoratedEpisode): { tone: Tone; label: string } {
 // past the last data column would sit inside the row element with no column
 // of its own, and a click anywhere in it (e.g. dead-center of the row) would
 // resolve to whichever adjacent column happens to be nearest, not "nothing".
-// The `minmax(0,1fr)` track absorbs that space so the trailing action column
-// stays pinned to the right edge instead of floating mid-row.
+// The `minmax(96px,1fr)` track absorbs that space so the trailing action column
+// stays pinned to the right edge instead of floating mid-row. The 96px MINIMUM
+// is load-bearing: this flexible track also HOLDS the right-aligned Status
+// chip, and with `minmax(0,…)` a narrow card squeezed the track below the
+// chip's width — the chip (nowrap, un-clipped by the grid) then slid left over
+// the Data column. 96px covers the widest lane label (NEEDS CHECK), so the
+// shared horizontal scroll (E-25) engages instead of an overlap.
 // (Tailwind's arbitrary-value classes must appear as complete literal strings
 // in the source for its scanner to pick them up — hence two full strings
 // rather than building one via interpolation.)
-const GRID_COLS = 'grid-cols-[56px_48px_108px_96px_72px_80px_96px_minmax(0,1fr)_28px]';
+const GRID_COLS = 'grid-cols-[56px_48px_108px_96px_72px_80px_96px_minmax(96px,1fr)_28px]';
 const GRID_COLS_SPLIT =
-  'grid-cols-[56px_48px_108px_96px_72px_80px_96px_84px_minmax(0,1fr)_28px]';
+  'grid-cols-[56px_48px_108px_96px_72px_80px_96px_84px_minmax(96px,1fr)_28px]';
 
 function Row({
   row,
