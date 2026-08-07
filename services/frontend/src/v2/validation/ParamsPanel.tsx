@@ -66,6 +66,10 @@ export function ParamsPanel({
   running,
   progressPct,
   progressLabel,
+  onCancelRun,
+  cancelBusy,
+  cancelError,
+  onDismissCancelError,
   presets,
   presetsLoading,
   onRunPreset,
@@ -100,6 +104,14 @@ export function ParamsPanel({
   running: boolean;
   progressPct: number;
   progressLabel: string;
+  /** Stop every job of this run that has not finished. Absent when there is
+   *  nothing cancellable left (every job already reached an end). */
+  onCancelRun?: () => void;
+  cancelBusy?: boolean;
+  /** A refused cancel, in the operator's words. Held until dismissed: it means
+   *  a job they asked to stop is still running. */
+  cancelError?: string | null;
+  onDismissCancelError?: () => void;
   presets: ValidationPreset[];
   presetsLoading: boolean;
   onRunPreset: (preset: ValidationPreset) => void;
@@ -269,6 +281,28 @@ export function ParamsPanel({
         </ul>
       )}
 
+      {cancelError && (
+        <div
+          role="alert"
+          data-testid="cancel-error"
+          className="flex flex-col gap-1 rounded-control border border-amber-300 bg-amber-50 px-3 py-2.5 text-[12px] text-amber-900"
+        >
+          <span className="text-[10.5px] font-semibold uppercase tracking-[0.09em]">
+            Not cancelled
+          </span>
+          <span className="font-semibold">{cancelError}</span>
+          <span>The job is still running — try again, or check it in Monitor.</span>
+          <button
+            type="button"
+            onClick={onDismissCancelError}
+            data-testid="cancel-error-dismiss"
+            className="self-start text-[11.5px] font-semibold underline"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {running ? (
         <div className="flex flex-col gap-1.5">
           <div className="flex text-xs text-gray-500">
@@ -282,6 +316,17 @@ export function ParamsPanel({
               style={{ width: `${progressPct}%` }}
             />
           </div>
+          {onCancelRun && (
+            <button
+              type="button"
+              data-testid="cancel-run"
+              disabled={cancelBusy}
+              onClick={onCancelRun}
+              className="h-[34px] rounded-[10px] border border-gray-200 bg-white text-[12.5px] font-semibold text-gray-600 hover:border-red-200 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {cancelBusy ? 'Cancelling…' : 'Cancel run'}
+            </button>
+          )}
         </div>
       ) : (
         <button

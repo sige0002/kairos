@@ -27,7 +27,6 @@ import { fetchRuntimeConfig } from '../../config';
 import type { JSONSchema } from '../../schema/jsonSchema';
 import { initialValueFor } from '../../schema/jsonSchema';
 import type {
-  JobState,
   JobStatus,
   JobSubmitRequest,
   PipelineInfo,
@@ -38,7 +37,6 @@ import { TERMINAL_CAPTURE_STATES } from '../../api/types';
 import { availabilityOf, isCapturePresent } from '../captures/availability';
 import { cameraTopics } from '../captures/inspect';
 import { captureErrorText } from '../captures/errors';
-import type { Summary } from '../../features/validation/SummaryResult';
 import { Card } from '../../components/ui';
 import { PipelineRail } from './PipelineRail';
 import { DetailHeader } from './DetailHeader';
@@ -49,10 +47,21 @@ import {
   captureLabel,
 } from './ParamsPanel';
 import { listBatches } from '../../api/batches';
-import { ResultsPanel, type ActiveOutcome } from './ResultsPanel';
+import { ResultsPanel, type ActiveOutcome, type RunJobRow } from './ResultsPanel';
 import type { RequiredTopic } from './resultsMapping';
 import { Toast } from '../shared/Toast';
 import { useJobResult } from './useJobResult';
+import { isCancellable, useJobCancel } from './useJobCancel';
+import {
+  recordJobUpdate,
+  selectRunCapture,
+  startRun,
+  useValidationRun,
+  type ActiveRun,
+  type JobProbeUpdate,
+  type JobRef,
+  type SubmitFailure,
+} from './runStore';
 import { useToast } from '../shared/useToast';
 
 const EMPTY_SCHEMA: JSONSchema = { type: 'object', properties: {} };
@@ -63,42 +72,7 @@ const FALLBACK_SCHEMA: JSONSchema = {
 };
 const FAST_VALIDATION = 'fast_validation';
 
-interface JobRef {
-  capture_id: string;
-  job_id: string;
-}
-
-/** A capture the run could not start a job for, and why in the operator's
- *  terms. Kept per capture rather than collapsed into one error: a preset runs
- *  over many captures, and "which ones did not run" is the whole question. */
-interface SubmitFailure {
-  captureId: string;
-  reason: string;
-}
-
-interface ActiveRun {
-  pipeline: string;
-  jobs: JobRef[];
-  /** Captures skipped because their job could not be created — most often a
-   *  capture discarded or deleted since the preset's pending list was built. */
-  failures: SubmitFailure[];
-  // fast_validation only: the template's required topics, so the checklist card
-  // can show found (✓) rows, not just the summary's `missing` entries.
-  requiredTopics?: RequiredTopic[];
-}
-
-interface JobProbeUpdate {
-  jobId: string;
-  captureId: string;
-  state: JobState;
-  progress: number;
-  terminal: boolean;
-  summary?: Summary;
-  artifacts?: string[];
-  resultErrored: boolean;
-}
-
-/** Invisible per-job poller: reports status/result changes to the parent. */
+/** Invisible per-job poller: reports status/result changes to the run store. */
 function JobProbe({
   job,
   onUpdate,
@@ -132,12 +106,15 @@ function JobProbe({
 
 export function ValidationScreen() {
   const queryClient = useQueryClient();
-  const [selectedIndex, setSelectedIndex] = useState(0);
+  // Null until the operator picks one, so a screen that has not been chosen
+  // for can defer to the run in progress (see selectedIndex below).
+  const [chosenIndex, setChosenIndex] = useState<number | null>(null);
   const [overrides, setOverrides] = useState<Record<string, unknown>>({});
   const [targetId, setTargetId] = useState('');
-  const [active, setActive] = useState<ActiveRun | null>(null);
-  const [jobStates, setJobStates] = useState<Record<string, JobProbeUpdate>>({});
-  const [selectedCaptureId, setSelectedCaptureId] = useState<string | null>(null);
+  // The run lives in a module store, so leaving the tab no longer erases a run
+  // that is still going on the server (see runStore.ts).
+  const { active, jobStates, selectedCaptureId } = useValidationRun();
+  const jobCancel = useJobCancel();
   const { toast, showToast } = useToast();
 
   const pipelinesQuery = useQuery({
@@ -149,6 +126,14 @@ export function ValidationScreen() {
     () => (pipelinesQuery.data?.items ?? []).filter((p) => p.enabled),
     [pipelinesQuery.data],
   );
+  // Coming back to the tab should land on the work in progress. The rail's
+  // selection is component state, so it resets on the unmount — and defaulting
+  // to the first pipeline meant a restored run was hidden behind the results
+  // gate (a run is only shown under its OWN pipeline, audit P1), leaving a
+  // "Cancel run" button with nothing on screen explaining it. An explicit pick
+  // always wins; this only fills the gap where there has not been one.
+  const runIndex = active ? pipelines.findIndex((p) => p.id === active.pipeline) : -1;
+  const selectedIndex = chosenIndex ?? (runIndex >= 0 ? runIndex : 0);
   const selectedPipeline = pipelines[selectedIndex] ?? pipelines[0];
 
   // The whole catalog, cursor followed to exhaustion. A single page would both
@@ -332,21 +317,6 @@ export function ValidationScreen() {
     if (first) params[key] = first;
   }
 
-  const onJobUpdate = useCallback((u: JobProbeUpdate) => {
-    setJobStates((prev) => {
-      const cur = prev[u.jobId];
-      if (
-        cur &&
-        cur.state === u.state &&
-        cur.progress === u.progress &&
-        cur.terminal === u.terminal &&
-        cur.summary === u.summary
-      )
-        return prev;
-      return { ...prev, [u.jobId]: u };
-    });
-  }, []);
-
   const allSettled = !active || active.jobs.every((j) => jobStates[j.job_id]?.terminal);
   // On batch settle, refresh the capture catalog and the presets' pending counts
   // (a preset run just validated some of its pending recordings).
@@ -424,9 +394,7 @@ export function ValidationScreen() {
       return { pipeline: arg.pipeline, jobs, failures, requiredTopics: arg.requiredTopics };
     },
     onSuccess: (run) => {
-      setJobStates({});
-      setActive(run);
-      setSelectedCaptureId(run.jobs[0]?.capture_id ?? null);
+      startRun(run, queryClient);
       if (run.failures.length > 0) {
         const names = run.failures.map((f) => labelFor(f.captureId)).join(', ');
         showToast(
@@ -439,7 +407,7 @@ export function ValidationScreen() {
   });
 
   const selectPipeline = (i: number) => {
-    setSelectedIndex(i);
+    setChosenIndex(i);
     setOverrides({});
   };
 
@@ -495,6 +463,40 @@ export function ValidationScreen() {
       ? `Running on ${active.jobs.length} captures…`
       : `Running on ${active?.jobs[0] ? labelFor(active.jobs[0].capture_id) : ''}…`;
 
+  // Every job of this run that has not reached an end — what "Cancel run"
+  // stops. A job that already finished is not asked about: there is nothing
+  // left to stop, and asking would invite a pointless refusal.
+  const cancellableJobIds = useMemo(
+    () =>
+      (active?.jobs ?? [])
+        .filter((j) => isCancellable(jobStates[j.job_id]?.state ?? 'queued'))
+        .map((j) => j.job_id),
+    [active, jobStates],
+  );
+
+  // The per-job rows the results panel shows while the run is in flight. A job
+  // with no reading yet is `queued`, which is what the server just created.
+  const runJobRows: RunJobRow[] = useMemo(
+    () =>
+      (active?.jobs ?? []).map((j) => ({
+        jobId: j.job_id,
+        captureId: j.capture_id,
+        label: labelFor(j.capture_id),
+        state: jobStates[j.job_id]?.state ?? 'queued',
+      })),
+    [active, jobStates, labelFor],
+  );
+
+  const cancelRun = useCallback(() => {
+    void jobCancel.cancel(cancellableJobIds);
+  }, [jobCancel, cancellableJobIds]);
+  const cancelOneJob = useCallback(
+    (jobId: string) => {
+      void jobCancel.cancel([jobId]);
+    },
+    [jobCancel],
+  );
+
   // Only surface the last run when it belongs to the pipeline being viewed —
   // rendering fast_validation's PASS under loss_report's heading read as a
   // verdict for the wrong pipeline (audit P1). Switching back re-shows it.
@@ -506,6 +508,9 @@ export function ValidationScreen() {
         outcomes: active.jobs.map((j) => ({
           captureId: j.capture_id,
           label: labelFor(j.capture_id),
+          // A cancelled job also errors when its result is fetched, so this has
+          // to be carried separately or the cancellation reads as a fault.
+          canceled: jobStates[j.job_id]?.state === 'canceled',
           orchestrationFailed:
             jobStates[j.job_id]?.state === 'failed' ||
             jobStates[j.job_id]?.resultErrored,
@@ -538,7 +543,7 @@ export function ValidationScreen() {
   return (
     <div className="grid grid-cols-1 gap-2.5 lg:h-full lg:min-h-0 lg:grid-cols-[290px_1fr]">
       {active?.jobs.map((job) => (
-        <JobProbe key={job.job_id} job={job} onUpdate={onJobUpdate} />
+        <JobProbe key={job.job_id} job={job} onUpdate={recordJobUpdate} />
       ))}
 
       <PipelineRail
@@ -579,6 +584,10 @@ export function ValidationScreen() {
             running={running}
             progressPct={progressPct}
             progressLabel={progressLabel}
+            onCancelRun={cancellableJobIds.length > 0 ? cancelRun : undefined}
+            cancelBusy={jobCancel.busy}
+            cancelError={jobCancel.error}
+            onDismissCancelError={jobCancel.dismissError}
             presets={presets}
             presetsLoading={presetsQuery.isPending}
             onRunPreset={runPreset}
@@ -589,7 +598,10 @@ export function ValidationScreen() {
           <ResultsPanel
             active={activeOutcome}
             selectedCaptureId={selectedCaptureId}
-            onSelectCapture={setSelectedCaptureId}
+            onSelectCapture={selectRunCapture}
+            runJobs={runJobRows}
+            onCancelJob={cancelOneJob}
+            cancelPending={jobCancel.pending}
           />
         </div>
       </Card>

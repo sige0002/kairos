@@ -151,6 +151,8 @@ v1 の機能をそのまま維持し、レイアウトのみ v2 化。
 - **一括実行**: 「All completed captures」で選択 pipeline を終端状態の capture すべてに投入（capture ごとに `POST /api/v1/jobs`）。capture 別の進捗リスト（live state、完了で PASS/FAIL）。
 - **バッチ単位の一括検証**（blast-radius 裁定 = 一括検証のみ・alert 永続化なし）: 対象セレクタに「Batches」グループを追加。バッチを選ぶと**そのバッチの capture 全件**に選択 pipeline を投入する（候補 = そのバッチに属し availability が usable な capture。使えないものは理由付きで対象外と表示する）。較正ずれ等バッチ単位でクラスターする欠陥を 1 クリックで検証する入口。
 - **ワンクリック検証プリセット**: `GET /api/v1/validation/presets` のプリセットボタン（`pipeline`＋固定 `params`）。**未検証の capture**（`pending_capture_ids`）へ一括実行。「N pending」表示・0 件は「up to date」で無効化。定義は機体設定 `config/<robot>/validation_presets.yaml`（[config.md](config.md)）。
+- **実行中ジョブの中止**: 走行中の run は「このランのジョブ」一覧（capture・状態チップ）を出し、queued/running のジョブに**ジョブ単位の Cancel**、進捗の下に**残り全部を止める Cancel run** を置く（`POST /api/v1/jobs/{id}/cancel`・`canceled` は terminal state）。中止したジョブは **CANCELED として正直に表示**し、失敗とは混同しない（3 つのタイル＝結果が出たジョブの内訳には数えず、「N of M canceled」を併記する）。中止が拒否された場合は「そのジョブはまだ走っている」と述べて**dismiss するまで保持**する（トーストで流さない）。
+- **run はタブを離れても生きる**: 実行中 run（対象 job と進捗）は module store（`runStore.ts`）に置く。タブ往復でシェルが本画面を unmount しても、戻れば同じ run が見えて中止もできる。**リロード後の復元はしない** — サーバ側に run 資源が無く、復元した run はもはや裏取りできない主張になるため。
 - lifecycle チップ（Experimental → Standard の昇格）は**見た目のみ（TBD: 実体化は将来）**。
 
 ### Monitor — 通信・信号・システム診断

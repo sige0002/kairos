@@ -16,7 +16,12 @@
 // field.
 import type { Summary } from '../../features/validation/SummaryResult';
 
-export type OutcomeTone = 'OK' | 'WARNING' | 'FAIL';
+// CANCELED is deliberately its OWN tone rather than a shade of FAIL: the
+// operator stopped the job, and reporting their own decision back to them as
+// a failure is how a screen loses the right to be believed about real ones.
+// It is counted in none of the three tiles (see tileCounts) — a job that was
+// stopped produced no verdict to bucket.
+export type OutcomeTone = 'OK' | 'WARNING' | 'FAIL' | 'CANCELED';
 
 /** A required topic from a fast_validation template (name + optional msg type). */
 export interface RequiredTopic {
@@ -82,6 +87,10 @@ export interface EpisodeOutcome {
   /** The job never produced a clean verdict (orchestration failure / errored
    *  fetching its result) — distinct from the pipeline itself reporting fail. */
   orchestrationFailed?: boolean;
+  /** The operator cancelled this job. Takes precedence over every other signal:
+   *  a cancelled job also fails to produce a result, and reading THAT as the
+   *  outcome would report the cancellation as a fault. */
+  canceled?: boolean;
   summary?: Summary;
 }
 
@@ -117,6 +126,7 @@ function coverageOf(summary: Summary | undefined): number | null {
 }
 
 function toneOf(outcome: EpisodeOutcome): OutcomeTone {
+  if (outcome.canceled) return 'CANCELED';
   if (outcome.orchestrationFailed) return 'WARNING';
   const result = outcome.summary?.result;
   if (result === 'pass') return 'OK';
@@ -140,6 +150,13 @@ export function mapEpisodeRows(outcomes: EpisodeOutcome[]): EpisodeRow[] {
 
 function pct(n: number, total: number): number {
   return total === 0 ? 0 : Math.round((n / total) * 1000) / 10;
+}
+
+/** How many of these rows were cancelled. Kept OUT of TileCounts so the three
+ *  tiles keep meaning "of the jobs that produced a verdict"; the panel prints
+ *  this beside them so the numbers still add up on screen. */
+export function canceledCount(rows: EpisodeRow[]): number {
+  return rows.filter((r) => r.tone === 'CANCELED').length;
 }
 
 export function tileCounts(rows: EpisodeRow[]): TileCounts {
