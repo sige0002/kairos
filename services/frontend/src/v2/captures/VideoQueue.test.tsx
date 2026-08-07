@@ -1,15 +1,27 @@
-// The real defect (operator's live session): the video section mounts one
-// VideoPlayer per camera topic and each auto-submitted on mount, so a
-// five-camera robot fired five simultaneous POST /jobs for the SAME capture.
-// The §7.1 lease is per capture, so one won and four were refused with 409 —
-// which the operator experienced as "the video doesn't show".
+// Camera previews submit in PARALLEL — all of a capture's cameras at once.
+//
+// This file used to pin the opposite ("one at a time, never two in flight"),
+// and that was right at the time: §7.1's lease was per capture and exclusive,
+// so five tiles auto-submitting on mount meant one winner and four 409
+// capture_busy refusals — which the operator experienced as "the video doesn't
+// show". The client serialised them behind a queue to stop generating that
+// contention.
+//
+// §7.1 now grants a SHARED reader lease: read-only jobs on one capture no
+// longer exclude each other, so there is nothing left for the client to
+// serialise, and taking turns only made five previews take five times as long.
+// What limits real parallelism is the server's own KAIROS_DORA_MAX_CONCURRENCY
+// — which is where a queue belongs, next to the work.
+//
+// The discriminator below is deliberate: with every job held `running`, the old
+// serialised client submits exactly ONE and waits. Asserting that all five
+// arrive cannot pass against it.
 
 import { screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
 import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
 import { VideoCheckSection } from './inspect';
-import { __resetJobQueue } from './jobQueue';
 import type { CaptureTopic } from '../../api/types';
 
 const CAP = 'cap-1';
@@ -23,16 +35,15 @@ const CAMERAS: CaptureTopic[] = [
 ];
 
 /**
- * A server that models the ONE rule this is about: while a job holds the
- * capture, another submission is refused with 409 capture_busy. If the UI ever
- * submits two at once, `refusals` records it — the assertion is that it stays
- * at zero, which is what the operator's nginx log did not show.
+ * A server that accepts concurrent read-only jobs on one capture, as the
+ * shared reader lease now does. It records what was submitted and how many
+ * were in flight at once, so "in parallel" is measured rather than assumed.
  */
-function mockJobs(opts: { failJobFor?: string; holdFirst?: boolean } = {}) {
-  let holder: string | null = null;
+function mockJobs(opts: { failJobFor?: string; holdAll?: boolean } = {}) {
   let seq = 0;
   const submitted: string[] = [];
-  let refusals = 0;
+  let inFlight = 0;
+  let maxInFlight = 0;
   const jobs = new Map<string, { topic: string; state: string }>();
 
   vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
@@ -44,24 +55,10 @@ function mockJobs(opts: { failJobFor?: string; holdFirst?: boolean } = {}) {
         capture_id: string;
         params: { topic: string };
       };
-      if (holder !== null) {
-        refusals += 1;
-        return Promise.resolve(
-          jsonResponse(
-            {
-              error: {
-                code: 'capture_busy',
-                message: `Another job is working on ${body.capture_id}`,
-                details: { lease_owner: holder },
-              },
-            },
-            409,
-          ),
-        );
-      }
       const jobId = `j${++seq}`;
-      holder = jobId;
       submitted.push(body.params.topic);
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
       jobs.set(jobId, { topic: body.params.topic, state: 'running' });
       return Promise.resolve(
         jsonResponse({
@@ -78,14 +75,11 @@ function mockJobs(opts: { failJobFor?: string; holdFirst?: boolean } = {}) {
     if (statusMatch) {
       const jobId = statusMatch[1]!;
       const job = jobs.get(jobId);
-      // `holdFirst` keeps job 1 running forever, so the waiters behind it stay
-      // observably queued instead of the queue draining before an assertion.
-      const held = opts.holdFirst && jobId === 'j1';
-      if (job && !held) {
+      if (job && !opts.holdAll && job.state === 'running') {
         // Terminal on the first poll: succeeded, or failed for one nominated
-        // topic so the release-on-failure path is exercised.
+        // topic so the "one bad topic does not take the others down" path runs.
         job.state = job.topic === opts.failJobFor ? 'failed' : 'succeeded';
-        if (holder === jobId) holder = null;
+        inFlight -= 1;
       }
       return Promise.resolve(
         jsonResponse({
@@ -117,64 +111,67 @@ function mockJobs(opts: { failJobFor?: string; holdFirst?: boolean } = {}) {
 
   return {
     submitted,
-    /** How many submissions the server had to refuse. Must stay 0. */
-    get refusals() {
-      return refusals;
+    /** The most submissions outstanding at any one moment. */
+    get maxInFlight() {
+      return maxInFlight;
     },
   };
 }
 
-beforeEach(() => {
-  setApiBase('/api/v1');
-  __resetJobQueue();
-});
-afterEach(() => {
-  vi.restoreAllMocks();
-  __resetJobQueue();
-});
+beforeEach(() => setApiBase('/api/v1'));
+afterEach(() => vi.restoreAllMocks());
 
-test('five camera previews submit one at a time, never two in flight', async () => {
-  const server = mockJobs();
-  renderWithClient(<VideoCheckSection topics={CAMERAS} captureId={CAP} />);
-
-  // "All cameras" is what the operator pressed; each tile then auto-submits.
-  screen.getByRole('button', { name: 'All cameras' }).click();
-
-  await waitFor(() => expect(server.submitted).toHaveLength(CAMERAS.length), {
-    timeout: 10000,
-  });
-  // The whole point: the server never had to refuse one.
-  expect(server.refusals).toBe(0);
-  // And every camera actually got its preview, rather than four being lost.
-  expect(new Set(server.submitted).size).toBe(CAMERAS.length);
-}, 20000);
-
-test('a preview waiting its turn says so, and is not an error', async () => {
-  // The first job never finishes, so the other four stay where the operator
-  // would see them: waiting, not failed.
-  mockJobs({ holdFirst: true });
+test('every camera submits at once, without waiting for the one before it', async () => {
+  // Nothing ever finishes. A client that took turns would sit on ONE
+  // submission forever, so this is the assertion the old behaviour fails.
+  const server = mockJobs({ holdAll: true });
   renderWithClient(<VideoCheckSection topics={CAMERAS} captureId={CAP} />);
   screen.getByRole('button', { name: 'All cameras' }).click();
 
-  await waitFor(() =>
-    expect(screen.getAllByTestId('video-queued')).toHaveLength(CAMERAS.length - 1),
-  );
-  // Whoever is behind the holder explains itself rather than showing a failure.
-  for (const tile of screen.getAllByTestId('video-queued')) {
-    expect(tile).toHaveTextContent(/Queued behind \d other preview/);
-  }
+  await waitFor(() => expect(server.submitted).toHaveLength(CAMERAS.length));
+  // Measured, not inferred: all five were outstanding together.
+  expect(server.maxInFlight).toBe(CAMERAS.length);
+  expect(new Set(server.submitted)).toEqual(new Set(CAMERAS.map((c) => c.name)));
+});
+
+test('there is no queue position to report any more', async () => {
+  mockJobs({ holdAll: true });
+  renderWithClient(<VideoCheckSection topics={CAMERAS} captureId={CAP} />);
+  screen.getByRole('button', { name: 'All cameras' }).click();
+
+  await waitFor(() => expect(screen.getAllByText('Generating…')).toHaveLength(5));
+  // Waiting-in-line was the only thing this said; with nothing to wait behind,
+  // a tile is either generating, done, or failed. Nothing is refused, either.
+  expect(screen.queryByTestId('video-queued')).toBeNull();
   expect(screen.queryByTestId('video-submit-error')).toBeNull();
 });
 
-test('a failed preview releases the capture so the rest still run', async () => {
-  // The first tile's job fails. Holding the slot for it would strand every
-  // preview behind it — one broken topic becoming a section that never loads.
+test('each camera is submitted exactly once', async () => {
+  // The submit gate changed from "this tile holds the capture" to "this tile
+  // wants an answer", and a gate that re-fires would now spend a real job on
+  // every render instead of merely losing a race.
+  const server = mockJobs();
+  renderWithClient(<VideoCheckSection topics={CAMERAS} captureId={CAP} />);
+  screen.getByRole('button', { name: 'All cameras' }).click();
+
+  await waitFor(() => expect(server.submitted).toHaveLength(CAMERAS.length));
+  // Let any stray re-submission land before claiming there was none.
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  expect(server.submitted).toHaveLength(CAMERAS.length);
+  expect(new Set(server.submitted).size).toBe(CAMERAS.length);
+});
+
+test('one camera that fails does not stop the others', async () => {
   const server = mockJobs({ failJobFor: '/cam/head' });
   renderWithClient(<VideoCheckSection topics={CAMERAS} captureId={CAP} />);
   screen.getByRole('button', { name: 'All cameras' }).click();
 
-  await waitFor(() => expect(server.submitted).toHaveLength(CAMERAS.length), {
-    timeout: 10000,
-  });
-  expect(server.refusals).toBe(0);
-}, 20000);
+  await waitFor(() => expect(server.submitted).toHaveLength(CAMERAS.length));
+  // The broken topic says so, and the other four still produce their preview —
+  // previously this depended on the failure releasing the queue; now they were
+  // never behind it.
+  await waitFor(() => expect(screen.getByText(/decode failed/)).toBeInTheDocument());
+  await waitFor(() =>
+    expect(document.querySelectorAll('video')).toHaveLength(CAMERAS.length - 1),
+  );
+});

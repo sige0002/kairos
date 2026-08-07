@@ -22,7 +22,6 @@ import type {
   VideoCheckSummary,
 } from '../../api/types';
 import { JobErrorNote } from './JobErrorNote';
-import { useJobSlot } from './jobQueue';
 
 // Terminal job states; while a job is non-terminal we keep polling.
 export const TERMINAL = new Set(['succeeded', 'failed', 'canceled']);
@@ -154,11 +153,17 @@ export function VideoPlayer({
   const onSummaryRef = useRef(onSummary);
   onSummaryRef.current = onSummary;
 
-  // This player wants to run a job until it has an answer. The slot is what
-  // keeps five camera tiles from submitting at once and losing four of them to
-  // the per-capture lease (§7.1) — see jobQueue.ts.
-  const wantSlot = summary === null && jobError === null;
-  const slot = useJobSlot(captureId, wantSlot);
+  // This player wants to run a job until it has an answer.
+  //
+  // Every tile submits AS SOON AS IT MOUNTS — all of a capture's cameras at
+  // once. They used to take turns behind a client-side queue, because §7.1's
+  // lease was per capture and exclusive: five tiles meant one winner and four
+  // 409 capture_busy refusals, which the operator experienced as "the video
+  // doesn't show". §7.1 now grants a SHARED reader lease, so read-only jobs on
+  // one capture no longer exclude each other and there is no contention left
+  // to serialise. What actually runs at once is the server's own
+  // KAIROS_DORA_MAX_CONCURRENCY; the rest queue there, where the work is.
+  const wantJob = summary === null && jobError === null;
 
   // Default playback rate from the deployment config (VIDEO_PLAYBACK_RATE;
   // 4x per the 2026-08-07 decision — reviewers scrub, they don't watch
@@ -185,15 +190,11 @@ export function VideoPlayer({
         params: { topic, ...(extra ?? {}) },
       }),
     onSuccess: (job) => setJobId(job.job_id),
-    // A submission that never became a job holds nothing, so the next preview
-    // must not wait on it.
-    onError: () => slot.release(),
   });
 
   // Re-encode the WHOLE episode (force bypasses the cache; 0 = no frame cap).
   // The old mp4 keeps playing elsewhere until the new encode atomically lands.
-  // It joins the same queue: a manual click during a burst of auto-submits is
-  // the same contention as any other.
+  // Clearing the summary is what re-arms the submit effect below.
   const reencodeFull = () => {
     setSummary(null);
     setJobError(null);
@@ -201,15 +202,16 @@ export function VideoPlayer({
     started.current = false;
   };
 
-  // Submit once this player holds the capture (StrictMode-safe). Waiting is not
-  // an error state — the tile says where it is in the queue instead.
+  // Submit as soon as this player wants an answer, and exactly once per want
+  // (StrictMode-safe via the ref). `wantJob` goes true again when a re-encode
+  // clears the summary, which is what lets that path re-submit.
   useEffect(() => {
-    if (!slot.granted || started.current) return;
+    if (!wantJob || started.current) return;
     started.current = true;
     const extra = reencodeRef.current ? { force: true, max_frames: 0 } : undefined;
     reencodeRef.current = false;
     mutation.mutate(extra);
-  }, [slot.granted, mutation]);
+  }, [wantJob, mutation]);
 
   // Apply a seek from the chart. `seekTo` is a fresh object per seek, so the
   // effect fires exactly on a real seek (not on every parent re-render).
@@ -256,10 +258,6 @@ export function VideoPlayer({
           setJobError(message);
         }
         setJobId(null);
-        // Terminal either way: hand the capture to the next preview. A failed
-        // job must release exactly like a successful one, or one broken topic
-        // strands every tile queued behind it.
-        slot.release();
       }
       return status;
     },
@@ -280,13 +278,6 @@ export function VideoPlayer({
       ) : jobError ? (
         <p role="alert" className="text-xs text-red-600">
           {jobError}
-        </p>
-      ) : !slot.granted && wantSlot ? (
-        // Waiting for its turn is not a failure, and must not read as one:
-        // only one job may hold a capture at a time (§7.1), so the tiles take
-        // turns rather than four of them being refused.
-        <p className="text-xs text-gray-500" data-testid="video-queued">
-          Queued behind {slot.ahead} other preview{slot.ahead === 1 ? '' : 's'}…
         </p>
       ) : summary && summary.file ? (
         <>
