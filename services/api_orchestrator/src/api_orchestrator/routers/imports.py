@@ -32,7 +32,11 @@ from kairos_common.errors import ApiError
 from pydantic import BaseModel, Field
 
 from api_orchestrator import bag_import
-from api_orchestrator.layout import is_reserved_name
+from api_orchestrator.layout import (
+    is_reserved_name,
+    reject_unsafe_labels,
+    reject_unusable_labels,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -46,10 +50,40 @@ class ImportRequest(BaseModel):
     no browser upload). ``move`` defaults to false — the operator's source data
     is never destroyed unless they ask, and even then only after the import has
     fully succeeded.
+
+    ``operator``/``task``/``robot`` are optional and are written into the bag's
+    synthesized manifest as RECORDED facts (§3.3), not as §4.3 overrides: an
+    import writes the capture's birth manifest, so naming them here is the same
+    act as the recorder stamping a start request. Omitted means the bag comes in
+    unlabelled, exactly as before, and Review can label it afterwards.
+
+    A bulk import is this endpoint called once per bag, so "apply to every bag
+    in the request" is the client sending the same three values on each call.
     """
 
     source_path: str = Field(min_length=1)
     move: bool = False
+    operator: str | None = None
+    task: str | None = None
+    robot: str | None = None
+
+    def labels(self) -> bag_import.ImportLabels:
+        """The supplied labels, with blank strings read as "not supplied".
+
+        Matches §4.3's review save: a whitespace-only label is not a label, and
+        storing one would put an empty attribution on the capture instead of
+        leaving it honestly absent.
+        """
+        return bag_import.ImportLabels(
+            **{
+                name: value.strip() or None
+                for name, value in (
+                    ("operator", self.operator or ""),
+                    ("task", self.task or ""),
+                    ("robot", self.robot or ""),
+                )
+            }
+        )
 
 
 def _registry(request: Request) -> bag_import.ImportRegistry:
@@ -60,6 +94,15 @@ def _registry(request: Request) -> bag_import.ImportRegistry:
 async def start_import(request: Request, body: ImportRequest) -> dict[str, Any]:
     """Validate a bag directory and queue its import; 202 with the import id."""
     layout = request.app.state.data_layout
+
+    # Before anything else, including the source inspection: a label that
+    # cannot be a folder name must not start a copy it would then have to
+    # explain. Nothing has been claimed or written when this raises.
+    labels = body.labels()
+    reject_unsafe_labels(operator=labels.operator, task=labels.task, robot=labels.robot)
+    reject_unusable_labels(
+        operator=labels.operator, task=labels.task, robot=labels.robot
+    )
 
     source = Path(body.source_path).expanduser()
     try:
@@ -158,6 +201,7 @@ async def start_import(request: Request, body: ImportRequest) -> dict[str, Any]:
             store=request.app.state.capture_store,
             instance_id=request.app.state.instance_id,
             copy_slots=request.app.state.import_copy_slots,
+            labels=labels,
         )
     )
     # Strong refs to in-flight tasks: asyncio only holds weak ones, so without

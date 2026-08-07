@@ -57,7 +57,7 @@
   - `cpu_percent` / `disk` / `gpu_percent` は時間変化するため約 2 秒キャッシュ（SSE 相当のポーリングでも安価）。`nvidia-smi` プローブはワーカースレッドで実行しイベントループをブロックしない
 - ファイル配信: `GET /api/v1/files/{path}` — `data_dir` からの**相対パス**でファイルを配信（トラバーサルガード: `data_dir` 配下のみ。それ以外・不在は `404`）。`video_check` の mp4 プレビュー取得に使う
 - データセット（**論理**。物理 move は全廃）: `GET /api/v1/datasets`、`POST /api/v1/datasets`（body `{ name, operator?, task? }`）、`GET /api/v1/datasets/{dataset_id}`（members 込み）、`DELETE /api/v1/datasets/{dataset_id}`、`POST /api/v1/datasets/{dataset_id}/members`（body `{ capture_id }`）、`DELETE /api/v1/datasets/{dataset_id}/members/{membership_id}`（下記「データセット（論理）」）
-- 取り込み（外部 bag）: **`GET /api/v1/imports/scan?path=<dir>`（2026-08-05）** — フォルダを**1 階層だけ走査**（そのパス自身が bag ならそれ、でなければ直下のディレクトリ。**深さ 1 は裁定** — 操作者が与えたパスの再帰走査は home や NAS ルートへ踏み込みうるため）し、bag でも bag 候補（`.mcap` はあるが `metadata.yaml` が無い等）でもないフォルダは列挙せず（ただしその直下に bag があるものは `nested: [{path, name, bags}]` としてヒント返却する）、各候補に `importable` と、不可なら理由（`already_imported` / `import_no_metadata` …）＋ remedy を付けて返す。**1 バイトもコピーせずに「何が入って何が入らないか」を先に見せる**ための API（操作者が与えたパスの再帰走査は無制限のクロールになるので浅い走査に固定）。`POST /api/v1/imports`（body `{ source_path, move? }` → `202 { import_id }`。source は**サーバ上のパス**（コンテナから見えるパス）〔bag は数 GB でブラウザアップロードの対象ではない〕。検証は同期・コピーは非同期）、`GET /api/v1/imports`、`GET /api/v1/imports/{id}`
+- 取り込み（外部 bag）: **`GET /api/v1/imports/scan?path=<dir>`（2026-08-05）** — フォルダを**1 階層だけ走査**（そのパス自身が bag ならそれ、でなければ直下のディレクトリ。**深さ 1 は裁定** — 操作者が与えたパスの再帰走査は home や NAS ルートへ踏み込みうるため）し、bag でも bag 候補（`.mcap` はあるが `metadata.yaml` が無い等）でもないフォルダは列挙せず（ただしその直下に bag があるものは `nested: [{path, name, bags}]` としてヒント返却する）、各候補に `importable` と、不可なら理由（`already_imported` / `import_no_metadata` …）＋ remedy を付けて返す。**1 バイトもコピーせずに「何が入って何が入らないか」を先に見せる**ための API（操作者が与えたパスの再帰走査は無制限のクロールになるので浅い走査に固定）。`POST /api/v1/imports`（body `{ source_path, move?, operator?, task?, robot? }` → `202 { import_id }`。source は**サーバ上のパス**（コンテナから見えるパス）〔bag は数 GB でブラウザアップロードの対象ではない〕。検証は同期・コピーは非同期）、`GET /api/v1/imports`、`GET /api/v1/imports/{id}`
 - 転送（split 構成）: `GET /api/v1/transfer/status`、`POST /api/v1/transfer/pull`（下記「転送（split 構成）」）
 - 保持期間: `GET /api/v1/retention` — `RETENTION_DAYS` による**削除候補**を返す（`{ days, candidates: [{ capture_id, run_id, started_at, bytes, state, review_status }], total_bytes }`。都度計算、best-effort サイズ）。**助言のみで自動削除しない**。削除は確認付きの `POST /api/v1/captures/{id}/delete` のみ。`RETENTION_DAYS<=0` で候補は空。**v2 で候補の定義を変更**: 「行が存在する＝未エクスポート」という旧定義は、行が消えなくなった以上意味を成さないので全廃した。新しい候補は「**どの dataset からも参照されておらず、`review_status` が `pending` か `excluded` のまま N 日以上経過した capture**」（詳細は [config.md](config.md) の「運用」）
 - `GET /healthz` / `GET /readyz`（`components: { recorder, monitor, streamer }` の疎通も返す）
@@ -98,6 +98,23 @@ alpha 版につき互換レイヤは置かない。**どれも何もしない**�
 - **start 時の operator / task**: 空のときは `unknown_operator` / `unknown_task` を既定値とする。v2 ではパスの構成要素ではなくなったが、`views/` の木と一覧のグルーピングが常に keyable であるよう null を排除する。**予約名**（`objects` / `views` / `.trash` / `.incoming` / `report` / `catalog` / `lifecycle.jsonl` / `instance.json` / `kairos.db`）の検査は、それらがパス構成要素になる **dataset 作成時**に行う（`POST /api/v1/datasets` の `name` / `operator` / `task` → `400 reserved_name`）。 同じ場所で**長さ**も検査する: `name` / `operator` / `task` はいずれも **UTF-8 で 255 バイト（NAME_MAX）以下**で、超えると `400 label_too_long`（`details.field` で該当フィールドを名指しし、入力そのものは返さない）。文字数ではなくバイト数なのは、それがファイルシステムの単位だから — 絵文字 200 字は 800 バイト、漢字 200 字は 600 バイトで、`name` の既存の 200 **文字**上限では表現できない。なお木の側でも `views` の再生成は置けないメンバを **skip して報告**する（古い設置の manifest は誰も検査していないため。→ capture_store §6）。
 - **`record_status` SSE**: record start / stop の状態遷移ごとに `record_status` イベントを発行する（下記 SSE 契約）。
 - **`GET /api/v1/captures/{id}` は CaptureDetail を返す**: capture 行に加えて、ディスク上のサイドカーとレポートを best-effort で同梱する — `manifest`（`object_manifest.json`）/ `record`（`record.json`）/ `validation`（`fast_validation` レポート）/ `loss`（`loss_report` レポート）。各ファイルが無ければ `null`。
+
+### 取り込み時のラベル指定（`operator` / `task` / `robot`）
+
+`POST /api/v1/imports` の body に任意で 3 つ渡せる。省略時は従来どおり**無ラベル**で入る。
+
+- **合成する `object_manifest.json` に直接刻む**（§3.3）。`record.json` の §4.3 override ブロックは
+  **使わない**。import は capture の**出生 manifest を書く経路**なので、ここで operator を名乗るのは
+  recorder が `/record/start` のリクエストから刻むのと同じ「記録された事実」の記入であり、
+  override（＝封印後の訂正）ではない。無かった値に対して「前の値が誤っていた」と主張しないため。
+- この選択のおかげで **rebuild 生存は manifest 経由で自然に成立**し、§4.3 との合成も正しくなる —
+  取り込み後に Review で編集すると override が**この値の上に**乗り、**その編集をクリアすると
+  取り込み時に宣言した値へ戻る**（null ではなく）。一度入力した値が訂正で食い潰されない。
+- **一括指定は「同じ body を対象 bag の数だけ POST する」**。取り込み実行の入口はこの 1 本だけで、
+  UI の一括取り込みも bag ごとに 1 リクエストを送る形で実装されている。
+- バリデーションは §4.3 と同じ（`400 unsafe_label` / `400 label_too_long`）で、**取り込み開始前**に
+  行う。拒否時は import レコードも capture も作られず、`objects/` にも source にも何も起きない
+  （`move=true` でも source は無傷）。空文字・空白のみは「未指定」として扱う。
 
 ## Review の保存（`PATCH /api/v1/captures/{id}/review`）
 

@@ -66,6 +66,36 @@ _COPY_CHUNK = 4 * 1024 * 1024
 RUN_ID_PREFIX = "imported"
 
 
+@dataclass(frozen=True)
+class ImportLabels:
+    """Labels the operator supplied for the bags in one import request (§4.3).
+
+    Written straight into the synthesized ``object_manifest.json``, NOT into
+    ``record.json``'s override block, and the difference is the whole point.
+    An import writes the capture's BIRTH manifest, so naming the operator here
+    is the same act as the recorder stamping a ``/record/start`` request — it
+    is what was recorded, not a later correction of it. Putting them in the
+    override block instead would say the opposite: that some earlier value was
+    wrong, when there was never a value at all.
+
+    Filing them as recorded facts is also what makes §4.3 behave sensibly
+    afterwards. A Review edit becomes an override ON TOP of these, and clearing
+    that edit falls back to what the import declared rather than to null.
+    """
+
+    operator: str | None = None
+    task: str | None = None
+    robot: str | None = None
+
+    def __bool__(self) -> bool:
+        return any((self.operator, self.task, self.robot))
+
+
+# The "no labels supplied" default, as a singleton so it can be a parameter
+# default without constructing one per call (and without tripping B008).
+NO_LABELS = ImportLabels()
+
+
 @dataclass
 class SourceBag:
     """A validated import source: the bag directory and what it declares.
@@ -521,15 +551,22 @@ def inspect_source(source: Path, *, layout: DataLayout) -> SourceBag:
 
 
 def import_manifest(
-    bag: SourceBag, capture_id: str, run_id: str, *, instance_id: str
+    bag: SourceBag,
+    capture_id: str,
+    run_id: str,
+    *,
+    instance_id: str,
+    labels: ImportLabels = NO_LABELS,
 ) -> ObjectManifestV2:
     """The synthesized ``object_manifest.json`` for an imported bag (§3.3).
 
-    ``operator`` and ``task`` are deliberately NULL. They are the two things no
-    external bag can answer, and guessing them — from a directory name, say —
-    would put a fabricated attribution onto data destined for a training set.
-    The operator fills them in from Review, where the same fields are editable
-    for any capture.
+    ``operator`` and ``task`` are NULL unless the import request supplied them.
+    They are the two things no external bag can answer, and guessing them —
+    from a directory name, say — would put a fabricated attribution onto data
+    destined for a training set. A human saying so in the request is not a
+    guess, which is why *labels* is the one way they get filled in here; absent
+    that, the operator fills them in from Review, where the same fields are
+    editable for any capture (§4.3).
 
     ``digest_state`` stays ``pending``: the bytes were copied and verified, but
     the per-file hashes that the manifest records are the digest job's single
@@ -542,8 +579,9 @@ def import_manifest(
         state="completed",
         started_at=bag.started_at or utc_now_iso8601(),
         ended_at=bag.ended_at,
-        operator=None,
-        task=None,
+        operator=labels.operator,
+        task=labels.task,
+        robot=labels.robot,
         topics=tuple(
             {"name": name, "type": type_, "qos": None} for name, type_ in bag.topics
         ),
@@ -857,18 +895,24 @@ def create_capture_row(
     bag: SourceBag,
     instance_id: str,
     layout: DataLayout,
+    labels: ImportLabels = NO_LABELS,
 ) -> None:
     """Insert the imported bag as a completed capture with a present replica.
 
     ``completed`` is the honest state: the recording is over and its bag is
-    whole. ``operator``/``task`` stay null — the two things an external bag
-    cannot tell us, filled in from Review rather than invented here.
+    whole. ``operator``/``task`` stay null unless the request named them —
+    the two things an external bag cannot tell us, supplied by a human at
+    import or filled in from Review rather than invented here. The row mirrors
+    the manifest written a moment ago, which is what a rebuild would derive.
     """
     capture = Capture(
         capture_id=record.capture_id,
         run_id=record.run_id,
         source_instance_id=instance_id,
         state=CaptureState.completed,
+        operator=labels.operator,
+        task=labels.task,
+        robot=labels.robot,
         started_at=bag.started_at,
         ended_at=bag.ended_at,
         topics=[CaptureTopic(name=name, type=type_) for name, type_ in bag.topics],
@@ -903,6 +947,7 @@ async def run_import(
     store: Any,
     instance_id: str,
     copy_slots: asyncio.Semaphore,
+    labels: ImportLabels = NO_LABELS,
 ) -> None:
     """Copy, describe, move into place, then create the row. Source last."""
     staging = layout.incoming_dir(record.capture_id)
@@ -926,7 +971,11 @@ async def run_import(
             write_manifest,
             staging,
             import_manifest(
-                bag, record.capture_id, record.run_id, instance_id=instance_id
+                bag,
+                record.capture_id,
+                record.run_id,
+                instance_id=instance_id,
+                labels=labels,
             ),
         )
 
@@ -936,7 +985,7 @@ async def run_import(
 
         # 4. Row last. A row without its bytes would be a capture every other
         #    path (reconciler, retention, digest) has to special-case.
-        create_capture_row(store, record, bag, instance_id, layout)
+        create_capture_row(store, record, bag, instance_id, layout, labels)
 
         # 5. Only now may the source go, and only if asked — and only the files
         #    that were actually imported. The copy takes top-level FILES only,

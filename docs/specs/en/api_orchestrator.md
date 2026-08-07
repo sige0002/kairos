@@ -58,7 +58,27 @@ The **job management / state management / API hub** container. The single public
   - `cpu_percent` / `disk` / `gpu_percent` change over time, so they are cached for ~2 seconds (cheap even under SSE-like polling). The `nvidia-smi` probe runs in a worker thread and does not block the event loop
 - File serving: `GET /api/v1/files/{path}` — serves a file by a **relative path** from `data_dir` (traversal guard: only under `data_dir`; otherwise / absent is `404`). Used to retrieve `video_check` mp4 previews
 - Datasets (**logical**; physical moves are gone entirely): `GET /api/v1/datasets`, `POST /api/v1/datasets` (body `{ name, operator?, task? }`), `GET /api/v1/datasets/{dataset_id}` (with members), `DELETE /api/v1/datasets/{dataset_id}`, `POST /api/v1/datasets/{dataset_id}/members` (body `{ capture_id }`), `DELETE /api/v1/datasets/{dataset_id}/members/{membership_id}` (see "Datasets (logical)" below)
-- Import (external bags): **`GET /api/v1/imports/scan?path=<dir>` (2026-08-05)** — scans a folder ONE LEVEL deep (the path itself if it is a bag, otherwise its immediate children; that depth is a decision — recursing through an operator-supplied path can wander into a home directory or a NAS root), listing only bags and attempts at one (an unrelated subfolder reported as a failure buries the rows that really are broken); a skipped subfolder that DOES hold bags one level down comes back under `nested: [{path, name, bags}]` so an empty result is a next step rather than a dead end and returns each candidate with `importable` and, when it is not, the reason (`already_imported` / `import_no_metadata` …) plus a remedy. It exists so an operator sees what will and will not come in **before a single byte is copied** (a recursive walk of an operator-supplied path would be an unbounded crawl, hence shallow). `POST /api/v1/imports` (body `{ source_path, move? }` → `202 { import_id }`. The source is **a path on the server** [a bag is several GB and is not something to upload through a browser]. Validation is synchronous, the copy is asynchronous), `GET /api/v1/imports`, `GET /api/v1/imports/{id}`
+- Import (external bags): **`GET /api/v1/imports/scan?path=<dir>` (2026-08-05)** — scans a folder ONE LEVEL deep (the path itself if it is a bag, otherwise its immediate children; that depth is a decision — recursing through an operator-supplied path can wander into a home directory or a NAS root), listing only bags and attempts at one (an unrelated subfolder reported as a failure buries the rows that really are broken); a skipped subfolder that DOES hold bags one level down comes back under `nested: [{path, name, bags}]` so an empty result is a next step rather than a dead end and returns each candidate with `importable` and, when it is not, the reason (`already_imported` / `import_no_metadata` …) plus a remedy. It exists so an operator sees what will and will not come in **before a single byte is copied** (a recursive walk of an operator-supplied path would be an unbounded crawl, hence shallow). `POST /api/v1/imports` (body `{ source_path, move?, operator?, task?, robot? }` → `202 { import_id }`. The source is **a path on the server** [a bag is several GB and is not something to upload through a browser]. Validation is synchronous, the copy is asynchronous), `GET /api/v1/imports`, `GET /api/v1/imports/{id}`
+
+### Labels at import time (`operator` / `task` / `robot`)
+
+`POST /api/v1/imports` optionally takes the three. Omitted, a bag comes in **unlabeled** as before.
+
+- **Stamped directly into the synthesized `object_manifest.json`** (§3.3), NOT into `record.json`'s
+  §4.3 override block. An import is the path that **writes the capture's birth manifest**, so naming
+  an operator here is the same "recorded fact" entry the recorder makes from a `/record/start`
+  request — not an override (a correction of something sealed). It never claims a value that
+  did not exist was wrong.
+- That choice makes **rebuild survival fall out naturally through the manifest**, and composes
+  correctly with §4.3 — a later Review edit lays its override **on top of this value**, and
+  **clearing that edit returns to what the import declared** (not to null). A value someone typed
+  once is never eaten by a correction.
+- **Bulk labeling is "the same body POSTed once per bag"**: this endpoint is the only import
+  entrance, and the UI's bulk import already sends one request per bag.
+- Unsafe labels (`/`, control characters, `.` / `..`, over 255 bytes) are refused **before anything
+  starts** — no capture_id is claimed, no import record exists, nothing to undo (with `move=true`
+  the source is untouched).
+
 - Transfer (split deployments): `GET /api/v1/transfer/status`, `POST /api/v1/transfer/pull` (see "Transfer (split deployments)" below)
 - Retention: `GET /api/v1/retention` — returns the **deletion candidates** by `RETENTION_DAYS` (`{ days, candidates: [{ capture_id, run_id, started_at, bytes, state, review_status }], total_bytes }`. Computed per request, best-effort sizes). **Advisory only — it never auto-deletes.** Deletion goes only through the confirmed `POST /api/v1/captures/{id}/delete`. `RETENTION_DAYS<=0` yields an empty candidate set. **v2 changes what counts as a candidate**: the old definition — "a row exists = not yet exported" — stopped meaning anything once rows no longer disappear, so it is gone entirely. A candidate is now "**a capture that no dataset references and that has sat at `review_status` `pending` or `excluded` for more than N days**" (details in "Operations" in [config.md](config.md))
 - `GET /healthz` / `GET /readyz` (also returns connectivity of `components: { recorder, monitor, streamer }`)

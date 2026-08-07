@@ -14,9 +14,30 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { apiGet, apiPost } from '../../api/client';
+import { useOperators } from '../plans';
 import { readCaptureError } from '../captures/errors';
 import { Button, Modal, cn } from '../../components/ui';
 import { formatBytes } from './format';
+
+/** The label rules the import contract states. Mirrored, not re-invented: the
+ *  server remains the authority and refuses anything else it dislikes — this
+ *  only spares the operator a round trip for the two documented cases. */
+const LABEL_MAX_BYTES = 255;
+function labelProblem(labels: Record<string, string>): string | null {
+  for (const [key, value] of Object.entries(labels)) {
+    if (value.includes('/')) return `The ${key} cannot contain a “/”.`;
+    if (new TextEncoder().encode(value).length > LABEL_MAX_BYTES) {
+      return `The ${key} is longer than ${LABEL_MAX_BYTES} bytes.`;
+    }
+  }
+  return null;
+}
+
+const TAG_FIELDS = [
+  { key: 'operator', label: 'operator' },
+  { key: 'task', label: 'task' },
+  { key: 'robot', label: 'robot' },
+] as const;
 
 /** One candidate directory from `GET /api/v1/imports/scan`. */
 interface ScannedBag {
@@ -81,6 +102,17 @@ export function ImportBagsDialog({
   const [scanning, setScanning] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [move, setMove] = useState(false);
+  // Labels stamped on EVERY bag of this import. A bag recorded outside kairos
+  // has no operator or task of its own — the recorder writes those on a take it
+  // started — so without this the whole import lands unlabelled and invisible
+  // to every operator/task filter. They go into the manifest the capture is
+  // born with; this is not the §4.3 review override.
+  const [tags, setTags] = useState({ operator: '', task: '', robot: '' });
+  // A refusal about the LABELS is not a per-bag failure: the server takes the
+  // whole request or none of it, so it belongs beside the inputs that caused
+  // it and must not be scattered across the rows as N identical row errors.
+  const [tagError, setTagError] = useState<string | null>(null);
+  const operators = useOperators();
   const [running, setRunning] = useState(false);
   const [rows, setRows] = useState<Record<string, RowState>>({});
   // Two guards on the run itself:
@@ -137,6 +169,25 @@ export function ImportBagsDialog({
     const targets = scan.bags.filter((b) => b.importable && selected.has(b.path));
     if (targets.length === 0) return;
     if (runInFlight.current) return;
+    // Only what was actually typed. An empty string is a label that is present
+    // and says nothing; the field is simply left out instead.
+    const labels: Record<string, string> = {};
+    for (const [key, value] of Object.entries(tags)) {
+      const trimmed = value.trim();
+      if (trimmed) labels[key] = trimmed;
+    }
+    // Checked HERE, before a single request. The server refuses a bad label for
+    // the whole request and imports nothing, so sending it would spend N round
+    // trips to learn one thing about an input sitting on this screen. Caught
+    // locally it costs none, keeps what was typed, and — the reason it is not
+    // simply left to the 400 — cannot be confused with the per-bag 400 a
+    // missing .mcap already produces.
+    const problem = labelProblem(labels);
+    if (problem) {
+      setTagError(problem);
+      return;
+    }
+    setTagError(null);
     runInFlight.current = true;
     setRunning(true);
     let anySucceeded = false;
@@ -150,6 +201,7 @@ export function ImportBagsDialog({
         const started = await apiPost<{ capture_id?: string }>('/imports', {
           source_path: bag.path,
           move,
+          ...labels,
         });
         setRows((r) => ({
           ...r,
@@ -283,6 +335,58 @@ export function ImportBagsDialog({
                 />
                 Move (deletes the source after a successful import)
               </label>
+            </div>
+
+            {/* Applied to every bag in THIS import (the server stamps them on
+                each capture's birth manifest). Said once, above the three
+                fields, rather than three times inside their placeholders. */}
+            <div className="flex flex-col gap-1.5 rounded-control border border-gray-200 bg-gray-50/70 px-3 py-2.5">
+              <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+                Labels for every bag in this import (optional)
+              </span>
+              <div className="grid grid-cols-3 gap-2">
+                {TAG_FIELDS.map((field) => (
+                  <input
+                    key={field.key}
+                    type="text"
+                    data-testid={`import-tag-${field.key}`}
+                    aria-label={field.label}
+                    list={field.key === 'operator' ? 'import-tag-operators' : undefined}
+                    value={tags[field.key]}
+                    placeholder={field.label}
+                    disabled={running}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      setTags((cur) => ({ ...cur, [field.key]: value }));
+                      // The refusal was about what was there before.
+                      setTagError(null);
+                    }}
+                    className="rounded-control border border-gray-200 px-2 py-1 text-[12.5px] text-gray-800 focus:border-teal-500 focus:outline-none disabled:bg-gray-100"
+                  />
+                ))}
+              </div>
+              {/* The roster is a convenience, not a constraint: an import may
+                  well predate whoever is on it, so typing a new name stays
+                  allowed. */}
+              <datalist id="import-tag-operators">
+                {operators.map((name) => (
+                  <option key={name} value={name} />
+                ))}
+              </datalist>
+              {tagError ? (
+                <span
+                  role="alert"
+                  data-testid="import-tag-error"
+                  className="rounded-control border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11.5px] text-amber-900"
+                >
+                  {tagError} Nothing was imported — fix the labels and run it again.
+                </span>
+              ) : (
+                <span className="text-[11px] leading-snug text-gray-400">
+                  A bag recorded outside kairos carries no operator or task of its
+                  own. Left blank, it arrives without them.
+                </span>
+              )}
             </div>
 
             {scan.truncated && (
