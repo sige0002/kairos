@@ -328,6 +328,9 @@ services:
       DORA_RUNNER_PORT: ${DORA_RUNNER_PORT:-8020}
       # Review preview encode cap: 0 = the full episode (VIDEO knobs: config.md).
       VIDEO_MAX_FRAMES: ${VIDEO_MAX_FRAMES:-0}
+      VIDEO_ENCODE_THREADS: ${VIDEO_ENCODE_THREADS:-4}
+      VIDEO_ENCODE_PRESET: ${VIDEO_ENCODE_PRESET:-medium}
+      VIDEO_ENCODE_CRF: ${VIDEO_ENCODE_CRF:-23}
       ROBOT: ${ROBOT:-airoa_hsr}
       # loss_report validator defaults (config/<robot>/validators/loss_report.yaml).
       LOSS_REPORT_CONFIG: ${LOSS_REPORT_CONFIG:-/config/${ROBOT:-airoa_hsr}/validators/loss_report.yaml}

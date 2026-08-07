@@ -52,8 +52,12 @@ from dora_runner.mcap_utils import (
 # fallback); summary gained ``fps_time_source``.
 # 1.2.1: the clock choice is now decided over the whole topic (was the capped
 # cadence prefix), so it never disagrees with loss_report; tightened trust rule.
+# 1.3.0: encoder knobs (VIDEO_ENCODE_THREADS/PRESET/CRF). Defaults keep x264's
+# own quality settings (preset medium, crf 23) and add thread_count=4, so
+# output quality is unchanged while wall clock drops; the bump regenerates
+# caches because the bitstream is no longer byte-comparable across versions.
 PIPELINE_ID = "video_check"
-PIPELINE_VERSION = "1.2.1"
+PIPELINE_VERSION = "1.3.0"
 
 
 def _encode_cap_from_env(raw: str | None) -> int:
@@ -77,6 +81,69 @@ def _encode_cap_from_env(raw: str | None) -> int:
 # whole take (user decision 2026-08-07); set a cap only on machines where
 # encode time/disk for long episodes actually hurts.
 MAX_FRAMES = _encode_cap_from_env(os.environ.get("VIDEO_MAX_FRAMES"))
+
+
+def _encode_threads_from_env(raw: str | None) -> int:
+    """Parse ``VIDEO_ENCODE_THREADS`` (0 = x264 auto). Default 4.
+
+    Capped by default rather than auto: one preview must not saturate the box —
+    on a single-host deployment the recorder shares these cores, and the job
+    executor may already be running two encodes.
+    """
+    if raw is None:
+        return 4
+    try:
+        value = int(raw)
+    except ValueError:
+        return 4
+    return value if value >= 0 else 4
+
+
+_X264_PRESETS = frozenset(
+    {
+        "ultrafast",
+        "superfast",
+        "veryfast",
+        "faster",
+        "fast",
+        "medium",
+        "slow",
+        "slower",
+        "veryslow",
+    }
+)
+
+
+def _encode_preset_from_env(raw: str | None) -> str:
+    """Parse ``VIDEO_ENCODE_PRESET``. Default ``medium`` (x264's own default).
+
+    The default deliberately trades no quality: the Review video is also what
+    an operator judges camera health from, and codec mush is indistinguishable
+    from a degraded camera. Set ``veryfast`` where encode speed matters more.
+    """
+    if raw is None:
+        return "medium"
+    value = raw.strip().lower()
+    return value if value in _X264_PRESETS else "medium"
+
+
+def _encode_crf_from_env(raw: str | None) -> int:
+    """Parse ``VIDEO_ENCODE_CRF`` (0-51, lower = better). Default 23."""
+    if raw is None:
+        return 23
+    try:
+        value = int(raw)
+    except ValueError:
+        return 23
+    return value if 0 <= value <= 51 else 23
+
+
+# Encoder settings (all env-tunable; the defaults change wall clock only —
+# threads — never quality).
+ENCODE_THREADS = _encode_threads_from_env(os.environ.get("VIDEO_ENCODE_THREADS"))
+ENCODE_PRESET = _encode_preset_from_env(os.environ.get("VIDEO_ENCODE_PRESET"))
+ENCODE_CRF = _encode_crf_from_env(os.environ.get("VIDEO_ENCODE_CRF"))
+
 # The fps-estimate cadence sample stays bounded regardless of the encode cap:
 # a few hundred inter-frame gaps pin the rate, and an uncapped encode must not
 # turn the estimate into an O(episode) scan.
@@ -305,7 +372,14 @@ def run_video_check(
                     width, height = _even(width), _even(height)
                     fps = estimate_fps(cadence)
                     container = av.open(str(tmp_path), mode="w", format="mp4")
-                    stream = container.add_stream("h264", rate=fps)
+                    # preset/crf explicit (they WERE the x264 defaults, now
+                    # they are a contract), threads capped — see the env knobs.
+                    stream = container.add_stream(
+                        "h264",
+                        rate=fps,
+                        options={"preset": ENCODE_PRESET, "crf": str(ENCODE_CRF)},
+                    )
+                    stream.codec_context.thread_count = ENCODE_THREADS
                     stream.width = width
                     stream.height = height
                     stream.pix_fmt = "yuv420p"
