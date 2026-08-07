@@ -41,6 +41,11 @@ _TERMINAL_BATCH_STATUSES = {"completed", "ended_early"}
 # starts). One retry practically always suffices.
 _MAX_BATCH_ID_ATTEMPTS = 50
 
+# Ceiling on one page of the batch list. Lower than the capture list's because
+# a batch summary is a wide row and the point of the parameter is to keep the
+# response small; a caller wanting everything omits ``limit`` instead.
+MAX_LIMIT = 500
+
 
 def _store(request: Request) -> CaptureStore:
     return request.app.state.capture_store
@@ -139,22 +144,34 @@ async def list_batches(
     status: str | None = Query(None),
     robot: str | None = Query(None),
     operator: str | None = Query(None),
+    limit: int | None = Query(None, ge=1, le=MAX_LIMIT),
+    offset: int = Query(0, ge=0),
 ) -> BatchListResponse:
     """List batches newest-first with their capture counts and summaries.
 
     The filters scope Collect's active-batch restore, so one terminal never
     silently adopts (and appends captures to) another robot's or operator's
     batch.
+
+    ``limit``/``offset`` are optional and both windows are applied in SQL. With
+    no ``limit`` the whole list comes back, which is what every existing caller
+    gets and what Collect's active-batch restore needs — it is looking for one
+    specific batch and cannot find it on page two. The window exists for
+    Coverage, which polls this endpoint every 30s and measured 817 KiB per
+    response at 5000 batches (E-27).
     """
     store = _store(request)
-    batches = store.list_batches(status, robot=robot, operator=operator)
+    batches = store.list_batches(
+        status, robot=robot, operator=operator, limit=limit, offset=offset
+    )
     # One grouped query for every count, rather than one query per batch.
     counts = store.live_capture_counts([b.batch_id for b in batches])
     return BatchListResponse(
         items=[
             BatchSummary(**b.model_dump(), episode_count=counts.get(b.batch_id, 0))
             for b in batches
-        ]
+        ],
+        total=store.count_batches(status, robot=robot, operator=operator),
     )
 
 

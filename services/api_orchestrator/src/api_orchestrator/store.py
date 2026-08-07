@@ -1391,13 +1391,16 @@ class CaptureStore:
         counts = {row["batch_id"]: row["n"] for row in rows}
         return {batch_id: counts.get(batch_id, 0) for batch_id in ids}
 
-    def list_batches(
-        self,
-        status: str | None = None,
-        *,
-        robot: str | None = None,
-        operator: str | None = None,
-    ) -> list[Batch]:
+    @staticmethod
+    def _batch_filters(
+        status: str | None, robot: str | None, operator: str | None
+    ) -> tuple[str, list[Any]]:
+        """The shared ``WHERE`` for the batch list and its count.
+
+        One builder for both so a filter can never scope the page without also
+        scoping the total — which would be a paginated list whose own count
+        disagrees with it.
+        """
         params: list[Any] = []
         clauses: list[str] = []
         for column, value in (
@@ -1408,10 +1411,50 @@ class CaptureStore:
             if value is not None:
                 clauses.append(f"{column} = ?")
                 params.append(value)
-        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        return (f"WHERE {' AND '.join(clauses)}" if clauses else ""), params
+
+    def count_batches(
+        self,
+        status: str | None = None,
+        *,
+        robot: str | None = None,
+        operator: str | None = None,
+    ) -> int:
+        """How many batches match the filters, ignoring any page window."""
+        where, params = self._batch_filters(status, robot, operator)
+        with self._conn() as conn:
+            row = conn.execute(
+                f"SELECT COUNT(*) AS n FROM batches {where}", params
+            ).fetchone()
+        return int(row["n"])
+
+    def list_batches(
+        self,
+        status: str | None = None,
+        *,
+        robot: str | None = None,
+        operator: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[Batch]:
+        """Batches newest-first, optionally one page at a time.
+
+        The window is applied in SQL rather than by slicing the result: at the
+        5000-batch scale that motivated it (E-27), reading every row to return
+        fifty is the cost the page was meant to avoid.
+
+        ``limit=None`` means no window, which is the default and the pre-paging
+        behaviour. SQLite has no OFFSET without a LIMIT, so an offset asked for
+        on its own rides on ``LIMIT -1`` — its spelling for "no bound".
+        """
+        where, params = self._batch_filters(status, robot, operator)
+        window = ""
+        if limit is not None or offset:
+            window = " LIMIT ? OFFSET ?"
+            params.extend([-1 if limit is None else limit, offset])
         with self._conn() as conn:
             rows = conn.execute(
-                f"SELECT * FROM batches {where} ORDER BY seq DESC", params
+                f"SELECT * FROM batches {where} ORDER BY seq DESC{window}", params
             ).fetchall()
         return [self._batch_from_row(r) for r in rows]
 

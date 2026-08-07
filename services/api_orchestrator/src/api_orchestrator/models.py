@@ -816,9 +816,16 @@ class BatchDetail(Batch):
 
 
 class BatchListResponse(BaseModel):
-    """Batch list newest-first (``GET /api/v1/batches``)."""
+    """Batch list newest-first (``GET /api/v1/batches``).
+
+    ``total`` counts every batch matching the filters, not the page — it is how
+    a caller that asked for a window knows whether there is more. Optional
+    because it was added after the fact: a client written against the
+    unpaginated list is not required to know the field exists.
+    """
 
     items: list[BatchSummary] = Field(default_factory=list)
+    total: int | None = None
 
 
 # ---- jobs / validation ------------------------------------------------------
