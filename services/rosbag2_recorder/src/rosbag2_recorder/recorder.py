@@ -60,7 +60,12 @@ from kairos_common.rebuild import has_bag
 from kairos_common.record_meta import UNKNOWN_OPERATOR, UNKNOWN_TASK, default_meta
 from kairos_common.time import utc_iso8601_of
 
-from rosbag2_recorder import integrity, preflight, startup_recovery
+from rosbag2_recorder import arming, integrity, preflight, startup_recovery
+
+# Re-exported, not redefined: the constant belongs with the readiness gate that
+# uses it (arming.py), but ``rosbag2_recorder.recorder`` is where the recorder's
+# ROS node name has always been imported from.
+from rosbag2_recorder.arming import RECORDER_NODE_NAME as RECORDER_NODE_NAME
 from rosbag2_recorder.models import (
     QosProfile,
     RecordArming,
@@ -95,16 +100,6 @@ SIZE_POLL_S = 2.0
 # the shell-convention 130 (128 + SIGINT). Anything else (SIGTERM escalation,
 # disk-full crash, non-zero error exit) is abnormal -> the run is ``failed``.
 _CLEAN_STOP_RETURNCODES = frozenset({0, 130, -int(signal.SIGINT)})
-
-# `ros2 bag record` registers its node under this name; its pause/resume/
-# is_paused services live at /<node>/... (rosbag2_interfaces). Used by the
-# --start-paused readiness gate.
-RECORDER_NODE_NAME = "rosbag2_recorder"
-# How often the readiness gate polls the ROS graph for the recorder's
-# subscriptions while it is paused.
-SUBSCRIPTION_POLL_S = 0.2
-# How long to wait for the recorder's resume/is_paused services to appear.
-RESUME_SERVICE_TIMEOUT_S = 5.0
 
 # States in which a session is actively holding (or finalising) the subprocess.
 _ACTIVE_STATES = frozenset({RunState.recording, RunState.stopping})
@@ -1315,180 +1310,38 @@ class RecorderSession:
         self._apply_post_discovery_delay()
 
     def _arm_and_resume(self, run_id: str, topics: list[str], all_mode: bool) -> None:
-        """Wait until ``ros2 bag record`` has subscribed to the target topics,
-        then resume it (it was spawned ``--start-paused``).
-
-        Raises on any hard failure so the caller fails the start rather than
-        leaving a paused recorder capturing nothing. rclpy + rosbag2_interfaces
-        are imported lazily so the module imports without ROS; the live path runs
-        in the ROS image (verified in Docker, like the monitor's rclpy paths).
-
-        This is the single-call gate (``recording.start_paused``): the node it
-        creates is transient — it exists purely to arm-then-resume within this
-        one call, unlike ``_prepare_arm``'s node, which is kept alive across
-        ``prepare()`` -> ``start()``.
-        """
-        import rclpy
-        from rclpy.node import Node
-        from rosbag2_interfaces.srv import IsPaused, Resume
-
-        timeout = (
-            self._config.recording.subscription_ready_timeout_s
-            if self._config is not None
-            else 5.0
-        )
-        owns_rclpy = not rclpy.ok()
-        if owns_rclpy:
-            rclpy.init()
-        node = Node("kairos_recorder_arming")
-        try:
-            self._await_subscription_match(node, rclpy, topics, all_mode, timeout)
-            self._resume_recorder(rclpy, node, Resume, IsPaused)
-            # Resumed: no longer waiting. Keep the final matched/missing snapshot
-            # (a non-empty ``missing`` means the gate timed out and resumed anyway).
-            if self._arming is not None:
-                self._arming.active = False
-            logger.info("recording armed + resumed", extra={"run_id": run_id})
-        finally:
-            node.destroy_node()
-            if owns_rclpy:
-                rclpy.shutdown()
+        """Wait for subscription match, then resume the paused subprocess."""
+        arming.arm_and_resume(self, run_id, topics, all_mode)
 
     def _prepare_arm(
         self, run_id: str, topics: list[str], all_mode: bool
     ) -> tuple[Any, Any, Any, bool]:
-        """Wait for subscription match and create MATCHED Resume/IsPaused clients.
-
-        Unlike :meth:`_arm_and_resume`, this does NOT call resume and does NOT
-        destroy the node on success: both the node and the clients are handed
-        back to the caller (:meth:`prepare`) to hold on the armed session, so a
-        later fast ``start()`` is just a resume call — no repeat DDS-participant
-        creation or service discovery (the whole point of two-phase start).
-
-        Returns ``(node, resume_client, is_paused_client, owns_rclpy)``. On any
-        failure the node/context are torn down here before raising, so the
-        caller's except-clause only has to deal with the subprocess + capture dir.
-        """
-        import rclpy
-        from rclpy.node import Node
-        from rosbag2_interfaces.srv import IsPaused, Resume
-
-        timeout = (
-            self._config.recording.subscription_ready_timeout_s
-            if self._config is not None
-            else 5.0
-        )
-        owns_rclpy = not rclpy.ok()
-        if owns_rclpy:
-            rclpy.init()
-        node = Node("kairos_recorder_arming")
-        try:
-            self._await_subscription_match(node, rclpy, topics, all_mode, timeout)
-            resume_client = node.create_client(Resume, f"/{RECORDER_NODE_NAME}/resume")
-            is_paused_client = node.create_client(
-                IsPaused, f"/{RECORDER_NODE_NAME}/is_paused"
-            )
-            if not resume_client.wait_for_service(timeout_sec=RESUME_SERVICE_TIMEOUT_S):
-                raise RuntimeError("recorder resume service did not appear")
-            # is_paused is only used to CONFIRM resume; best-effort like
-            # _resume_recorder (arm anyway if it never appears).
-            is_paused_client.wait_for_service(timeout_sec=2.0)
-            logger.info("recording armed (two-phase prepare)", extra={"run_id": run_id})
-            return node, resume_client, is_paused_client, owns_rclpy
-        except Exception:
-            node.destroy_node()
-            if owns_rclpy:
-                rclpy.shutdown()
-            raise
+        """Wait for subscription match and create MATCHED Resume/IsPaused clients."""
+        return arming.prepare_arm(self, run_id, topics, all_mode)
 
     def _resume_armed(self, armed: _Armed) -> None:
-        """Resume an armed subprocess via its already-matched clients.
-
-        No ``wait_for_service`` calls: ``prepare()`` (:meth:`_prepare_arm`)
-        already confirmed both services are present, so re-waiting here would
-        reintroduce the exact discovery latency two-phase start exists to
-        remove. Same fail-safe confirmation as :meth:`_resume_recorder`: raises
-        if resume doesn't return, or if ``is_paused`` still reports paused
-        afterwards.
-        """
-        import rclpy
-        from rosbag2_interfaces.srv import IsPaused, Resume
-
-        fut = armed.resume_client.call_async(Resume.Request())
-        rclpy.spin_until_future_complete(
-            armed.node, fut, timeout_sec=RESUME_SERVICE_TIMEOUT_S
-        )
-        if fut.result() is None:
-            raise RuntimeError("recorder resume call did not return")
-        f2 = armed.is_paused_client.call_async(IsPaused.Request())
-        rclpy.spin_until_future_complete(armed.node, f2, timeout_sec=3.0)
-        res = f2.result()
-        if res is not None and getattr(res, "paused", False):
-            raise RuntimeError("recorder still paused after resume")
+        """Resume an armed subprocess via its already-matched clients."""
+        arming.resume_armed(armed)
 
     def _teardown_armed_rclpy(self, armed: _Armed) -> None:
-        """Destroy the armed session's held rclpy node (+ shutdown if owned).
-
-        Called both when a session is committed (resume succeeded — the node
-        is no longer needed, the subprocess runs unattended until ``stop()``)
-        and when it is disarmed/failed. Best-effort: teardown must not raise
-        over a session that is being torn down anyway.
-        """
-        try:
-            armed.node.destroy_node()
-        except Exception:  # noqa: BLE001 - best-effort teardown
-            logger.exception("failed to destroy the armed rclpy node")
-        if armed.owns_rclpy:
-            import rclpy
-
-            try:
-                if rclpy.ok():
-                    rclpy.shutdown()
-            except Exception:  # noqa: BLE001
-                logger.exception("failed to shut down the armed rclpy context")
+        """Destroy the armed session's held rclpy node (+ shutdown if owned)."""
+        arming.teardown_armed_rclpy(armed)
 
     def _readiness_targets(
         self, node: Any, topics: list[str], all_mode: bool
     ) -> list[str]:
-        """Topics the readiness gate waits on: the explicit list, or (for
-        ``--all``) every currently-published topic at this instant."""
-        if not all_mode:
-            return list(topics)
-        return [
-            name
-            for name, _types in node.get_topic_names_and_types()
-            if node.count_publishers(name) > 0
-        ]
+        """Topics the readiness gate waits on: the list, or every published one."""
+        return arming.readiness_targets(node, topics, all_mode)
 
     def _recorder_subscribed(self, node: Any, topic: str) -> bool:
         """True once a publisher exists AND the recorder node has subscribed."""
-        if node.count_publishers(topic) == 0:
-            return False
-        return any(
-            info.node_name == RECORDER_NODE_NAME
-            for info in node.get_subscriptions_info_by_topic(topic)
-        )
+        return arming.recorder_subscribed(node, topic)
 
     def _readiness_view(
         self, node: Any, topics: list[str], all_mode: bool
     ) -> tuple[list[str], list[str], list[str]]:
-        """One graph read -> ``(matched, unsubscribed, missing)`` for the targets.
-
-        The gate's "pending" set is ``unsubscribed + missing``; splitting it by
-        CAUSE is what lets the UI say "not publishing" only about a topic that
-        really has no publisher (see :class:`RecordArming`).
-        """
-        matched: list[str] = []
-        unsubscribed: list[str] = []
-        missing: list[str] = []
-        for topic in self._readiness_targets(node, topics, all_mode):
-            if node.count_publishers(topic) == 0:
-                missing.append(topic)
-            elif self._recorder_subscribed(node, topic):
-                matched.append(topic)
-            else:
-                unsubscribed.append(topic)
-        return matched, unsubscribed, missing
+        """One graph read -> ``(matched, unsubscribed, missing)`` for the targets."""
+        return arming.readiness_view(self, node, topics, all_mode)
 
     def _await_recorder_subscribed(
         self,
@@ -1498,28 +1351,10 @@ class RecorderSession:
         all_mode: bool,
         timeout: float,
     ) -> None:
-        """Poll the ROS graph until the recorder has subscribed to every target
-        topic that has a publisher, or until *timeout* (then resume anyway).
-
-        Each poll refreshes the observational arming snapshot (matched vs missing)
-        so the state reflects the latest readiness view (OL-①.4)."""
-        deadline = time.monotonic() + timeout
-        while True:
-            rclpy_mod.spin_once(node, timeout_sec=SUBSCRIPTION_POLL_S)
-            matched, unsubscribed, missing = self._readiness_view(
-                node, topics, all_mode
-            )
-            pending = unsubscribed + missing
-            self._update_arming(matched, unsubscribed, missing)
-            if matched and not pending:
-                return
-            if time.monotonic() >= deadline:
-                if pending:
-                    logger.warning(
-                        "arming timed out; resuming with topics not yet matched",
-                        extra={"pending_topics": pending},
-                    )
-                return
+        """Poll the ROS graph until the recorder has subscribed, or until timeout."""
+        arming.await_recorder_subscribed(
+            self, rclpy_mod, node, topics, all_mode, timeout
+        )
 
     def _update_arming(
         self, matched: list[str], unsubscribed: list[str], missing: list[str]
@@ -1571,25 +1406,7 @@ class RecorderSession:
     ) -> None:
         """Call the recorder's ``~/resume`` service and confirm it is no longer
         paused. Raises if the service is missing or it stays paused."""
-        resume = node.create_client(resume_srv, f"/{RECORDER_NODE_NAME}/resume")
-        if not resume.wait_for_service(timeout_sec=RESUME_SERVICE_TIMEOUT_S):
-            raise RuntimeError("recorder resume service did not appear")
-        fut = resume.call_async(resume_srv.Request())
-        rclpy_mod.spin_until_future_complete(
-            node, fut, timeout_sec=RESUME_SERVICE_TIMEOUT_S
-        )
-        if fut.result() is None:
-            raise RuntimeError("recorder resume call did not return")
-        # Confirm it actually resumed (fail-safe against a silent paused bag).
-        is_paused = node.create_client(
-            is_paused_srv, f"/{RECORDER_NODE_NAME}/is_paused"
-        )
-        if is_paused.wait_for_service(timeout_sec=2.0):
-            f2 = is_paused.call_async(is_paused_srv.Request())
-            rclpy_mod.spin_until_future_complete(node, f2, timeout_sec=3.0)
-            res = f2.result()
-            if res is not None and getattr(res, "paused", False):
-                raise RuntimeError("recorder still paused after resume")
+        arming.resume_recorder(rclpy_mod, node, resume_srv, is_paused_srv)
 
     def _resolve_qos(
         self, topic: str, request: RecordStartRequest
