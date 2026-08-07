@@ -3,47 +3,36 @@
 Contract §4.1 (review), §6 (archive), §7 (delete). Each of the three writes to
 the filesystem *and* the database, and each orders those two writes so that a
 crash between them leaves a state the next startup can finish rather than a
-state nobody can interpret.
+state nobody can interpret. They remain one class — :class:`CaptureService` —
+assembled here from three modules that each carry the ordering argument for
+their own half of the contract:
 
-**Review saves the sidecar first** (§4.1). ``record.json`` is authoritative for
-review state, so writing it before the database CAS means a crash in between
-leaves the sidecar *ahead* — the direction rebuild resolves by adopting it. The
-reverse order would leave the database claiming a review that no file records,
-which rebuild can only report as a warning and never repair.
+* :mod:`api_orchestrator.capture_review` — §4.1: the sidecar before the
+  database CAS, and the guarded write that makes writing first safe.
+* :mod:`api_orchestrator.capture_deletion` — §7: the ledger before any byte
+  moves, and the resume paths that finish an interrupted deletion.
+* :mod:`api_orchestrator.capture_archive` — §6: copy, verify, record, and only
+  then remove the source through the ordinary trash pathway.
 
-Writing first is only safe if the write cannot overwrite a decision somebody
-else already committed, so the sidecar write is **itself a compare-and-swap**:
-it refuses unless ``record.json`` still holds the revision the caller built on,
-and a save that loses the database CAS anyway restamps the file from the winning
-row. Without both, two orchestrators can leave the REFUSED decision as the last
-file on disk while the database holds the accepted one — and since §8 rebuilds
-the index from the sidecars, dropping ``kairos.db`` would then reinstate the
-decision the API answered 409 to.
+What stays here is what all three share: the catalog reads, the §3/§8 manifest
+reconciliation, §10 retention, and the guards every mutating path runs first.
 
-**Deletion writes the ledger first** (§7 step 1, §9-1). The ledger line is
-appended before any byte moves, so the recoverable failure is "the ledger claims
-a deletion that has not finished" — which the resume path completes. The other
-direction loses the fact that an operator deliberately destroyed data, and a
-later transfer would quietly bring it back.
+The ``record.json`` compare-and-swap primitives stay here too, rather than
+moving with the review code that calls them. They are the only writers of the
+file §8 rebuilds the whole catalog from, so keeping :func:`_write_record_sidecar`
+and :func:`_restore_record_from_row` in one module keeps that contract readable
+— and lets a caller substitute the writer to drive the interleaving the CAS
+exists to arbitrate (see :meth:`CaptureReviewMixin.save_review`).
 
-**Archive verifies before it deletes** (§6). Copy, read back, compare, write the
-ledger event carrying enough to reconstruct the row, and only then remove the
-source — through the same trash pathway as any other deletion, so an archive
-that goes wrong at the last step leaves the bytes recoverable in exactly the
-place every other failure leaves them.
-
-The per-capture mutex here is deliberately *not* the store's connection lock.
-§4.1 requires one capture's read-modify-write to be atomic across a filesystem
-write, and taking a global lock across an fsync would serialise every unrelated
-request behind one slow disk.
+The per-capture mutex the three responsibilities share lives in
+:mod:`api_orchestrator.capture_locks`, and is deliberately *not* the store's
+connection lock.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import os
-import threading
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -62,23 +51,23 @@ from kairos_common.capture_sidecars import (
     write_record,
 )
 from kairos_common.ids import is_uuid7
-from kairos_common.rebuild import ReplicaState
 from kairos_common.time import parse_iso8601, utc_now_iso8601
 
-from api_orchestrator import fileops
 from api_orchestrator import layout as layout_mod
+from api_orchestrator.capture_archive import (
+    CaptureArchiveMixin,
+    reject_overlapping_destination,
+)
+from api_orchestrator.capture_deletion import MAX_REAP_ATTEMPTS, CaptureDeletionMixin
+from api_orchestrator.capture_locks import CaptureLocks
+from api_orchestrator.capture_review import CaptureReviewMixin
 from api_orchestrator.health import StoreHealth, require_delete_available
 from api_orchestrator.layout import DataLayout
-from api_orchestrator.ledger_guard import append_or_503
 from api_orchestrator.models import (
-    ArchivedFile,
     Capture,
-    CaptureArchiveResponse,
     CaptureDetail,
     CaptureTopic,
-    DeleteKind,
     RetentionCandidate,
-    ReviewSaveRequest,
     Split,
     coerce_error,
 )
@@ -87,40 +76,8 @@ from api_orchestrator.verdict import GATING_PIPELINES, Verdict, verdict_of
 
 logger = logging.getLogger("kairos")
 
-# Ledger kind per delete intent (§5). Two kinds rather than one with a field:
-# a reader scanning history for "what did an operator throw away" must not have
-# to parse a payload to find out.
-_LEDGER_KIND: dict[str, str] = {
-    "discard": "capture_discarded",
-    "delete": "capture_deleted",
-}
 
-# How many times the reaper retries a trashed capture whose bytes will not go
-# away. Bounded because §7 step 5 forbids an unbounded retry loop: after this
-# the replica stays ``trashed`` and the condition is surfaced, which is a
-# problem an operator can see rather than a background task spinning forever.
-MAX_REAP_ATTEMPTS = 3
-
-# How many per-capture mutexes to keep before dropping the idle ones. A capture
-# store holds thousands of captures over a deployment's life and a lock object
-# is tiny, so this is about not growing without bound rather than about memory
-# pressure.
-MAX_TRACKED_MUTEXES = 512
-
-# The review fields a save may carry. Anything else on the request model is
-# envelope (base_revision), never persisted as review state.
-_REVIEW_FIELDS: tuple[str, ...] = (
-    "task_result",
-    "failure_reason",
-    "quality",
-    "quality_source",
-    "review_status",
-    "batch_id",
-    "index_in_batch",
-)
-
-
-class CaptureService:
+class CaptureService(CaptureReviewMixin, CaptureDeletionMixin, CaptureArchiveMixin):
     """Review, delete and archive one capture at a time.
 
     Args:
@@ -148,11 +105,10 @@ class CaptureService:
         self._health = health
         self._instance_id = instance_id
         self._on_first_review = on_first_review
-        # Per-capture mutexes for §4.1. Created lazily and never evicted while
-        # in use; the dict itself is guarded by a plain lock because it is
-        # touched from the event loop and from worker threads.
-        self._mutexes: dict[str, asyncio.Lock] = {}
-        self._mutex_guard = threading.Lock()
+        self._locks = CaptureLocks()
+        # The reaper's per-process attempt bound (§7 step 5). Held on the
+        # service rather than in the deletion mixin so one construction site
+        # still owns every piece of this object's state.
         self._reap_attempts: dict[str, int] = {}
 
     @property
@@ -164,31 +120,8 @@ class CaptureService:
         return self._instance_id
 
     def _mutex(self, capture_id: str) -> asyncio.Lock:
-        """This capture's §4.1 mutex, created on first use.
-
-        Idle entries are dropped once the map grows past
-        :data:`MAX_TRACKED_MUTEXES`. Evicting only UNLOCKED locks is what makes
-        that safe: a held lock stays in the map, so no two callers can ever be
-        handed different lock objects for the same capture. The map is otherwise
-        unbounded in a long-running process that reviews many captures, and this
-        is cheaper than the weak-reference bookkeeping that would be needed to
-        make eviction automatic.
-        """
-        with self._mutex_guard:
-            lock = self._mutexes.get(capture_id)
-            if lock is None:
-                if len(self._mutexes) >= MAX_TRACKED_MUTEXES:
-                    self._evict_idle_mutexes()
-                lock = asyncio.Lock()
-                self._mutexes[capture_id] = lock
-            return lock
-
-    def _evict_idle_mutexes(self) -> None:
-        """Drop unlocked mutexes. Caller holds ``_mutex_guard``."""
-        for capture_id in [
-            key for key, lock in self._mutexes.items() if not lock.locked()
-        ]:
-            del self._mutexes[capture_id]
+        """This capture's §4.1 mutex — the one seam all three paths take."""
+        return self._locks.get(capture_id)
 
     # ---- reads -------------------------------------------------------------
 
@@ -354,689 +287,6 @@ class CaptureService:
             extra={"capture_id": capture_id, "fields": sorted(changes)},
         )
         return True
-
-    # ---- review (§4.1) -----------------------------------------------------
-
-    async def save_review(
-        self, capture_id: str, request: ReviewSaveRequest, *, system: bool = False
-    ) -> Capture:
-        """Save an operator's review: sidecar first, then a database CAS.
-
-        The whole of steps 1-3 runs under this capture's mutex, so a second
-        request for the same capture waits rather than interleaving its sidecar
-        write with ours. Raises 409 on a revision mismatch (before or after the
-        sidecar write), 500 if the sidecar cannot be written — with the database
-        untouched, which is the safe direction.
-
-        *system* marks a write the orchestrator itself originated (the
-        quick_check quality re-derivation). It takes exactly the same path and
-        advances the same revision: a client that then gets a 409 is seeing
-        correct behaviour, not a bug.
-        """
-        async with self._mutex(capture_id):
-            capture = self.get(capture_id)
-            self._reject_review_on_delete(capture)
-            capture = self._adopt_sidecar_if_ahead(capture)
-            if capture.review_revision != request.base_revision:
-                raise _review_conflict(capture, request.base_revision)
-
-            merged = _merge_review(capture, request)
-            _derive_quality(capture, request, merged)
-            revision = request.base_revision + 1
-            record = RecordV2(
-                capture_id=capture_id,
-                revision=revision,
-                review_status=merged["review_status"] or "pending",
-                task_result=merged["task_result"],
-                failure_reason=merged["failure_reason"],
-                quality=merged["quality"],
-                quality_source=merged["quality_source"],
-                batch_id=merged["batch_id"],
-                index_in_batch=merged["index_in_batch"],
-                updated_at=utc_now_iso8601(),
-            )
-            capture_dir = self._layout.capture_dir(capture_id)
-            # Creating objects/<id> is legitimate ONLY for a capture whose bytes
-            # have not arrived yet (the split-deploy review-then-pull flow).
-            # Anything the delete path has touched must never be recreated here,
-            # even though the state check above already refused it: the two
-            # together are what make this safe under the mutex.
-            awaiting_transfer = (
-                capture.delete_kind is None and capture.deleted_at is None
-            )
-            try:
-                await asyncio.to_thread(
-                    _write_record_sidecar,
-                    capture_dir,
-                    record,
-                    allow_create=awaiting_transfer,
-                    base_revision=request.base_revision,
-                )
-            except _SidecarRaceError as exc:
-                # Another orchestrator committed its review between our read and
-                # our write. Refusing here is the whole point of the guard: the
-                # loser's values are dropped rather than written over a decision
-                # that has already been acknowledged to somebody. Same 409 the
-                # database CAS would have produced, one step earlier and without
-                # a clobber in between.
-                logger.info(
-                    "review sidecar write refused: record.json moved on",
-                    extra={
-                        "capture_id": capture_id,
-                        "on_disk_revision": exc.on_disk_revision,
-                        "base_revision": request.base_revision,
-                    },
-                )
-                raise _review_conflict(
-                    self._adopt_sidecar_if_ahead(self.get(capture_id)),
-                    request.base_revision,
-                ) from exc
-            except _CaptureGoneError as exc:
-                raise ApiError(
-                    status_code=409,
-                    code="capture_not_present",
-                    message=(
-                        f"{capture_id} has no local copy and is not awaiting "
-                        f"one, so its review cannot be saved: {exc}"
-                    ),
-                    details={"capture_id": capture_id},
-                ) from exc
-            except OSError as exc:
-                # Nothing has touched the database, so the capture is exactly as
-                # it was and the client may retry with the same base_revision.
-                logger.error(
-                    "review sidecar write failed",
-                    extra={"capture_id": capture_id, "error": str(exc)},
-                )
-                raise ApiError(
-                    status_code=500,
-                    code="review_sidecar_write_failed",
-                    message=(
-                        f"Could not write record.json for {capture_id}: {exc}. "
-                        "Nothing was saved; retry once the disk is writable."
-                    ),
-                    details={"capture_id": capture_id},
-                ) from exc
-
-            applied = self._store.save_review_cas(
-                capture_id,
-                base_revision=request.base_revision,
-                fields={name: merged[name] for name in _REVIEW_FIELDS},
-                renumber_index=_offers_an_index(request, merged),
-            )
-            if not applied:
-                # Someone else won between our sidecar write and this CAS — the
-                # guard above narrows that window but cannot close it, since
-                # read-then-write across two processes is not atomic. The
-                # database is the arbiter, so the file it disagrees with is
-                # ours: restamp it from the winning row. Leaving our values
-                # there would make §8's rebuild reinstate the decision this
-                # request is about to be told was refused.
-                winner = self.get(capture_id)
-                await asyncio.to_thread(
-                    _restore_record_from_row,
-                    capture_dir,
-                    winner,
-                    wrote_revision=revision,
-                )
-                raise _review_conflict(winner, request.base_revision)
-
-            saved = self.get(capture_id)
-            if saved.index_in_batch != merged["index_in_batch"]:
-                # The hint collided and the store issued a different number.
-                # record.json still carries the hint, and §8 rebuilds the
-                # catalog from it — so a file left unamended puts the duplicate
-                # back the first time somebody deletes kairos.db. Same revision,
-                # so this is the same save finishing rather than a new one.
-                await asyncio.to_thread(
-                    _restore_record_from_row,
-                    capture_dir,
-                    saved,
-                    wrote_revision=revision,
-                )
-
-        if request.base_revision == 0 and self._on_first_review is not None:
-            # Outside the mutex: the first-review side effects (batch counter,
-            # auto-pull) talk to other services and must not hold a capture's
-            # lock while they do.
-            await self._on_first_review(saved)
-        if system:
-            logger.info(
-                "system review write applied",
-                extra={"capture_id": capture_id, "revision": saved.review_revision},
-            )
-        return saved
-
-    def _adopt_sidecar_if_ahead(self, capture: Capture) -> Capture:
-        """Catch the row up to ``record.json`` when the file is ahead (§4.1-4).
-
-        The row can legitimately lag the file: a crash between the sidecar write
-        and the CAS leaves exactly that, and so does another orchestrator's save
-        that this process has not read yet. §8 already resolves it in the
-        sidecar's favour at rebuild time — doing the same here, per capture,
-        keeps the guarded write from wedging. Without it a lagging row would
-        make every subsequent save send a ``base_revision`` the file has already
-        passed, and the guard would refuse all of them forever.
-
-        The client still gets a 409 on this attempt, but now with the revision
-        that actually exists, so a reload-and-retry succeeds.
-        """
-        on_disk = read_record(self._layout.capture_dir(capture.capture_id)).record
-        if on_disk is None or on_disk.revision <= capture.review_revision:
-            return capture
-        logger.info(
-            "adopting a record.json that is ahead of the catalog row",
-            extra={
-                "capture_id": capture.capture_id,
-                "row_revision": capture.review_revision,
-                "sidecar_revision": on_disk.revision,
-            },
-        )
-        return self._store.update_capture(
-            capture.capture_id,
-            review_revision=on_disk.revision,
-            review_status=on_disk.review_status,
-            task_result=on_disk.task_result,
-            failure_reason=on_disk.failure_reason,
-            quality=on_disk.quality,
-            quality_source=on_disk.quality_source,
-            batch_id=on_disk.batch_id,
-            index_in_batch=on_disk.index_in_batch,
-        )
-
-    @staticmethod
-    def _reject_review_on_delete(capture: Capture) -> None:
-        """Refuse to review a capture that is being, or has been, deleted.
-
-        ``delete_pending`` is included deliberately. It is the window between
-        the ledger append and the rename (§7 steps 2-3), and a review accepted
-        inside it would write ``record.json`` into a directory that is about to
-        move to ``.trash`` — or, worse, recreate ``objects/<capture_id>/`` after
-        the move, leaving a phantom the next scan has to explain and the reaper
-        will never touch. The operator's delete already won; the review loses.
-        """
-        if capture.state not in (
-            CaptureState.delete_pending,
-            CaptureState.discarded,
-            CaptureState.deleted,
-        ):
-            return
-        pending = capture.state == CaptureState.delete_pending
-        raise ApiError(
-            status_code=409,
-            code="capture_deleting" if pending else "capture_deleted",
-            message=(
-                f"{capture.capture_id} is being "
-                f"{capture.delete_kind or 'delete'}d; its review can no longer "
-                "be changed."
-                if pending
-                else (
-                    f"{capture.capture_id} was "
-                    f"{capture.delete_kind or 'deleted'}"
-                    f"{f' on {capture.deleted_at}' if capture.deleted_at else ''}; "
-                    "its review can no longer be changed."
-                )
-            ),
-            details={
-                "capture_id": capture.capture_id,
-                "state": str(capture.state),
-            },
-        )
-
-    # ---- delete (§7) -------------------------------------------------------
-
-    async def delete(
-        self, capture_id: str, *, kind: DeleteKind, reason: str | None
-    ) -> Capture:
-        """Discard or delete a capture through the trash pathway.
-
-        Order is the contract: ledger, then ``delete_pending``, then the rename,
-        then the tombstone, then the reaper. Every prefix of that sequence is
-        resumable, which is why ``delete_pending`` is written *before* the
-        rename — it is a durable marker of intent, not a record of a failure.
-        """
-        self._require_delete_available()
-        async with self._mutex(capture_id):
-            capture = self.get(capture_id)
-            if capture.state in (CaptureState.discarded, CaptureState.deleted):
-                # Already buried. Returning it beats a 404 or a second ledger
-                # line for one operator action.
-                return capture
-            self._reject_active(capture)
-            self._reject_leased(capture)
-            self._reject_dataset_member(capture)
-
-            self._append_tombstone(capture, kind=kind, reason=reason)
-            self._store.update_capture(
-                capture_id,
-                state=CaptureState.delete_pending,
-                deleted_at=utc_now_iso8601(),
-                delete_kind=kind,
-                delete_reason=reason,
-            )
-            await asyncio.to_thread(self._finish_delete, capture_id, kind)
-            return self.get(capture_id)
-
-    def _finish_delete(self, capture_id: str, kind: DeleteKind) -> None:
-        """Steps 3-4: rename into ``.trash`` and confirm the tombstone.
-
-        Idempotent, and called both by :meth:`delete` and by the resume paths.
-        The three branches §7 names collapse into one here because
-        :func:`layout.move_to_trash` already treats "nothing to move" as a
-        successful no-op.
-        """
-        layout_mod.move_to_trash(self._layout, capture_id)
-        final = CaptureState.discarded if kind == "discard" else CaptureState.deleted
-        self._store.update_capture(capture_id, state=final)
-        self._store.upsert_replica(capture_id, self._instance_id, ReplicaState.trashed)
-
-    def reap(self, capture_id: str) -> bool:
-        """Step 5: physically remove a trashed capture, verifying it is gone.
-
-        Returns ``True`` once ``.trash/<capture_id>`` is verifiably absent, at
-        which point the replica becomes ``absent_managed``. A capture whose
-        bytes survive the removal keeps its ``trashed`` replica and is retried
-        up to :data:`MAX_REAP_ATTEMPTS`; past that the condition is logged as a
-        warning rather than retried forever (§7 step 5).
-
-        The capture's ``report/<pipeline>/<capture_id>/`` directories go too.
-        They are derived data — no ledger event, nothing to recover — but they
-        are served by ``GET /api/v1/files``, so a surviving ``video_check`` mp4
-        would let an operator watch a recording the UI told them was
-        unrecoverable (§12). Their removal deliberately does NOT gate the return
-        value: the replica state describes the capture's own bytes, and a report
-        that will not delete is a different problem from a capture that will
-        not, so conflating them would make one signal answer two questions.
-        """
-        if self._health.suspect:
-            # §9-3: SUSPECT stops the reaper. If the volume is not what we think
-            # it is, "delete these bytes" is the last instruction to obey.
-            return False
-        # Checked BEFORE the removal, not after it. §7 step 5 forbids an
-        # unbounded retry loop, and counting attempts only on failure means the
-        # reconciler re-walks the same undeletable tree on every pass forever —
-        # the bound has to stop the work, not just the logging.
-        # Report GC runs OUTSIDE the trash-attempt bound: the cap exists for
-        # the capture's own bytes, and a stuck trash purge must not silently
-        # stop report cleanup with it. purge_reports is idempotent and warns
-        # on its own residue, so re-walking it per pass is the cheap, honest
-        # behaviour — the operator's signal persists while the condition does.
-        layout_mod.purge_reports(self._layout, capture_id)
-        if self._reap_attempts.get(capture_id, 0) >= MAX_REAP_ATTEMPTS:
-            return False
-
-        purged = layout_mod.purge_from_trash(self._layout, capture_id)
-        if purged:
-            self._store.upsert_replica(
-                capture_id, self._instance_id, ReplicaState.absent_managed
-            )
-            self._reap_attempts.pop(capture_id, None)
-            return True
-        attempts = self._reap_attempts.get(capture_id, 0) + 1
-        self._reap_attempts[capture_id] = attempts
-        if attempts >= MAX_REAP_ATTEMPTS:
-            logger.warning(
-                "trashed capture could not be removed after %d attempts; "
-                "giving up and leaving the replica as trashed for an operator "
-                "to inspect. Remaining: %s",
-                attempts,
-                [str(p) for p in layout_mod.trash_remnants(self._layout, capture_id)],
-                extra={"capture_id": capture_id},
-            )
-        return False
-
-    def reset_reap_attempts(self, capture_id: str) -> None:
-        """Let a capture be reaped again after an operator intervened.
-
-        The attempt bound is per-process and deliberately sticky, so this is the
-        seam that clears it — a Repair, or a fresh delete of the same capture,
-        means the condition that blocked the removal may be gone.
-        """
-        self._reap_attempts.pop(capture_id, None)
-
-    async def resume_delete_pending(self) -> int:
-        """Finish every ``delete_pending`` row (§7's three idempotent branches).
-
-        Run on every startup, not only after a rebuild: a crash between the
-        ledger append and the rename leaves a row here, and until it is
-        finished the capture is neither usable nor gone.
-
-        Each capture is finished under its own mutex, the same one a review save
-        takes. Without it the resume and an in-flight ``PATCH .../review`` can
-        interleave: the review writes ``record.json`` into ``objects/<id>`` just
-        after the resume renamed that directory into ``.trash``, recreating the
-        tree the deletion was in the middle of removing.
-        """
-        pending = self._store.list_by_states([CaptureState.delete_pending.value])
-        for capture in pending:
-            kind: DeleteKind = (
-                "discard" if capture.delete_kind == "discard" else "delete"
-            )
-            async with self._mutex(capture.capture_id):
-                await asyncio.to_thread(self._finish_delete, capture.capture_id, kind)
-            logger.info(
-                "resumed a delete that was interrupted",
-                extra={"capture_id": capture.capture_id, "kind": kind},
-            )
-        return len(pending)
-
-    async def resume_from_ledger(self) -> int:
-        """Re-run the deletion for any tombstone whose bytes are still present.
-
-        §7's startup pass. A crash after the ledger append but before the row
-        was written leaves no ``delete_pending`` row at all, so scanning the
-        database is not enough — the ledger is the only place that remembers the
-        operator's intent. Idempotent: a capture already trashed does nothing.
-
-        Held under the per-capture mutex for the same reason as
-        :meth:`resume_delete_pending`: a concurrent review must not recreate the
-        directory this is removing.
-        """
-        tombstones = ledger_v2.tombstones(self._layout.data_dir)
-        resumed = 0
-        for capture_id, event in tombstones.items():
-            if not is_uuid7(capture_id):
-                continue
-            if not self._layout.capture_dir(capture_id).exists():
-                continue
-            kind: DeleteKind = (
-                "discard" if event.get("kind") == "capture_discarded" else "delete"
-            )
-            reason = event.get("reason")
-            async with self._mutex(capture_id):
-                # Re-checked inside the mutex: a delete that completed while we
-                # waited leaves nothing to resume.
-                if not self._layout.capture_dir(capture_id).exists():
-                    continue
-                existing = self._store.get_capture(capture_id)
-                if existing is None:
-                    logger.warning(
-                        "ledger records a deletion for a capture with no row; "
-                        "completing the removal anyway",
-                        extra={"capture_id": capture_id},
-                    )
-                else:
-                    self._store.update_capture(
-                        capture_id,
-                        state=CaptureState.delete_pending,
-                        deleted_at=event.get("at") or utc_now_iso8601(),
-                        delete_kind=kind,
-                        delete_reason=reason if isinstance(reason, str) else None,
-                    )
-                await asyncio.to_thread(self._finish_delete, capture_id, kind)
-            resumed += 1
-            logger.info(
-                "resumed a deletion from the ledger",
-                extra={"capture_id": capture_id, "kind": kind},
-            )
-        return resumed
-
-    def _append_tombstone(
-        self, capture: Capture, *, kind: DeleteKind, reason: str | None
-    ) -> None:
-        """Step 1: the ledger line, before anything is destroyed.
-
-        Fatal on failure (§5), including out of disk — which is precisely when
-        an operator is trying to discard captures to free space, so the append
-        goes through the slack-release retry.
-        """
-        payload: dict[str, Any] = {}
-        if reason:
-            payload["reason"] = reason
-        if capture.run_id:
-            payload["run_id"] = capture.run_id
-        append_or_503(
-            self._layout.data_dir,
-            _LEDGER_KIND[kind],
-            instance_id=self._instance_id,
-            capture_id=capture.capture_id,
-            payload=payload,
-            failure=lambda exc: (
-                "The lifecycle ledger could not be written, so the deletion "
-                f"was not started: {exc}. Nothing was removed."
-            ),
-            details={"capture_id": capture.capture_id},
-        )
-        # Outside the guard on purpose: it never raises OSError (it logs and
-        # returns False), so it was only ever inside the old try by proximity.
-        self.ensure_ledger_slack()
-
-    # ---- archive (§6) ------------------------------------------------------
-
-    async def archive(
-        self,
-        capture_id: str,
-        *,
-        destination: Path,
-        operator: str | None = None,
-        reason: str | None = None,
-    ) -> CaptureArchiveResponse:
-        """Copy a capture out, verify it, record it, then delete the source.
-
-        The destination has already been validated against
-        ``KAIROS_ARCHIVE_ROOTS`` by the caller. The source removal reuses the
-        ordinary trash pathway rather than an ``rmtree`` of its own: an archive
-        interrupted after the ledger event resumes through exactly the same code
-        as an interrupted discard.
-        """
-        self._require_delete_available()
-        async with self._mutex(capture_id):
-            capture = self.get(capture_id)
-            self._reject_active(capture)
-            self._reject_leased(capture)
-            self._reject_dataset_member(capture)
-            response = await self._archive_into(
-                capture, destination / capture_id, operator=operator, reason=reason
-            )
-
-        logger.info(
-            "capture archived",
-            extra={
-                "capture_id": capture_id,
-                "destination": response.destination,
-                "bytes": response.bytes,
-            },
-        )
-        return response
-
-    async def archive_member(
-        self,
-        capture_id: str,
-        *,
-        dataset_id: str,
-        membership_id: str,
-        display_index: int,
-        target: Path,
-        progress: Callable[[int], None] | None = None,
-    ) -> CaptureArchiveResponse:
-        """Archive one member of the dataset being archived (§6.x).
-
-        Internal to the dataset archive runner — no route reaches this. The
-        one guard it relaxes is its own dataset's membership: the §7 member
-        guard exists so a deletion cannot leave a dataset citing missing
-        bytes, and the run this call belongs to is retiring that dataset from
-        ``views/`` as a whole. Membership of any OTHER dataset still refuses.
-
-        ``target`` is the member's ``<dataset_dir>/<NNN>`` directory, named by
-        the runner: the display_index is dataset identity, and only the run
-        knows it.
-        """
-        self._require_delete_available()
-        async with self._mutex(capture_id):
-            capture = self.get(capture_id)
-            self._reject_active(capture)
-            self._reject_leased(capture)
-            self._reject_dataset_member(capture, except_dataset=dataset_id)
-            response = await self._archive_into(
-                capture,
-                target,
-                extra_payload={
-                    "dataset_id": dataset_id,
-                    "membership_id": membership_id,
-                    "display_index": display_index,
-                },
-                progress=progress,
-            )
-
-        logger.info(
-            "dataset member archived",
-            extra={
-                "capture_id": capture_id,
-                "dataset_id": dataset_id,
-                "display_index": display_index,
-                "destination": response.destination,
-                "bytes": response.bytes,
-            },
-        )
-        return response
-
-    async def copy_out(
-        self,
-        capture_id: str,
-        *,
-        target: Path,
-        progress: Callable[[int], None] | None = None,
-    ) -> fileops.CopyResult:
-        """Copy a capture's bytes to *target*, verified — and change NOTHING.
-
-        The §6.1 copy-mode member step. No ledger event, no row update, no
-        trash: the capture has not gone anywhere, so there is nothing to
-        record about it — the dataset manifest and the run's seal carry the
-        export's own audit trail. Under the mutex so a concurrent review save
-        cannot be read half-written into the copy.
-        """
-        async with self._mutex(capture_id):
-            capture = self.get(capture_id)
-            self._reject_active(capture)
-            return await self._copy_to_target(capture, target, progress=progress)
-
-    async def _archive_into(
-        self,
-        capture: Capture,
-        target: Path,
-        *,
-        operator: str | None = None,
-        reason: str | None = None,
-        extra_payload: dict[str, Any] | None = None,
-        progress: Callable[[int], None] | None = None,
-    ) -> CaptureArchiveResponse:
-        """copy → verify → ledger → row → trash, under the caller's mutex.
-
-        The §9-1 order in one place so the per-capture and per-member archives
-        cannot drift: the ledger line precedes the source deletion, and a
-        failure after the copy leaves the source untouched.
-        """
-        capture_id = capture.capture_id
-        result = await self._copy_to_target(capture, target, progress=progress)
-
-        # rev.2.1: carry enough for a rebuild to reconstruct the row after
-        # the sidecars are gone. Without these the capture would come back
-        # from a rebuild as a bare id with no operator, task or size.
-        payload: dict[str, Any] = {"destination": str(target)}
-        for key, value in (
-            ("run_id", capture.run_id),
-            ("operator", operator or capture.operator),
-            ("task", capture.task),
-            ("bytes", capture.bytes if capture.bytes is not None else result.bytes),
-            ("message_count", capture.message_count),
-        ):
-            if value is not None:
-                payload[key] = value
-        if reason:
-            payload["reason"] = reason
-        if extra_payload:
-            payload.update(extra_payload)
-        # The per-file hashes we just computed while copying. Recording them
-        # is what lets the LEDGER ALONE audit the archive: the manifest is
-        # deleted with the source moments from now, so without this the
-        # event can say "4 GB went to /mnt/nas" and nothing that would let
-        # anyone check the copy years later.
-        if result.entries:
-            payload["files"] = result.entries
-        append_or_503(
-            self._layout.data_dir,
-            "capture_archived",
-            instance_id=self._instance_id,
-            capture_id=capture_id,
-            payload=payload,
-            failure=lambda exc: (
-                f"The archive copy at {target} succeeded but could not "
-                f"be recorded in the ledger: {exc}. The source was NOT "
-                "deleted; remove the copy or retry."
-            ),
-            details={"capture_id": capture_id},
-        )
-
-        self.finish_archived_member(capture_id, destination=str(target))
-        await asyncio.to_thread(layout_mod.move_to_trash, self._layout, capture_id)
-        self._store.upsert_replica(capture_id, self._instance_id, ReplicaState.trashed)
-
-        return CaptureArchiveResponse(
-            capture_id=capture_id,
-            destination=str(target),
-            bytes=result.bytes,
-            file_count=result.files,
-            files=[ArchivedFile.model_validate(entry) for entry in result.entries],
-        )
-
-    async def _copy_to_target(
-        self,
-        capture: Capture,
-        target: Path,
-        *,
-        progress: Callable[[int], None] | None = None,
-    ) -> fileops.CopyResult:
-        """The verified copy both archive modes share: presence check, overlap
-        check, copy with the error vocabulary the routes promise."""
-        capture_id = capture.capture_id
-        source = self._layout.capture_dir(capture_id)
-        if not source.is_dir():
-            raise ApiError(
-                status_code=409,
-                code="capture_not_present",
-                message=(
-                    f"{capture_id} has no local copy to archive "
-                    f"({source} does not exist)."
-                ),
-                details={"capture_id": capture_id},
-            )
-
-        self._reject_overlapping_destination(target, source)
-        try:
-            return await asyncio.to_thread(
-                fileops.copy_tree_verified, source, target, progress=progress
-            )
-        except fileops.DestinationNotEmptyError as exc:
-            raise ApiError(
-                status_code=409,
-                code="destination_not_empty",
-                message=(
-                    f"{target} already contains files — refusing to archive "
-                    "into it. Choose another path, or clear it if it is the "
-                    "debris of a failed archive."
-                ),
-                details={"capture_id": capture_id, "destination": str(target)},
-            ) from exc
-        except (OSError, fileops.VerificationError) as exc:
-            raise ApiError(
-                status_code=500,
-                code="archive_copy_failed",
-                message=(
-                    f"Archiving {capture_id} to {target} failed: {exc}. "
-                    "The recording is untouched."
-                ),
-                details={"capture_id": capture_id, "destination": str(target)},
-            ) from exc
-
-    def finish_archived_member(self, capture_id: str, *, destination: str) -> None:
-        """Mark the row archived — split out so a resume that finds the ledger
-        line already written (a crash between append and row update) can finish
-        exactly this step without re-copying anything."""
-        self._store.update_capture(
-            capture_id,
-            archived_at=utc_now_iso8601(),
-            archive_destination=destination,
-        )
 
     # ---- retention (§10) ---------------------------------------------------
 
@@ -1210,76 +460,6 @@ class _SidecarRaceError(RuntimeError):
         self.on_disk_revision = on_disk_revision
 
 
-def reject_overlapping_destination(target: Path, source: Path, data_dir: Path) -> None:
-    """Refuse an archive destination that overlaps our own data (§6).
-
-    This is a *different* question from the ``KAIROS_ARCHIVE_ROOTS``
-    allow-list, and passing that list is not evidence about this one. The
-    allow-list says where writing is PERMITTED; this says the two paths must
-    not be the same bytes. Set ``KAIROS_ARCHIVE_ROOTS=/data`` — which is a
-    perfectly reasonable thing for an operator to do — and the allow-list
-    happily authorises archiving ``objects/<id>`` into the data directory,
-    after which the source deletion removes the verified copy along with the
-    original and the API reports success with nothing left.
-
-    Resolved through ``realpath`` on both sides so a symlink cannot disguise
-    the overlap, and containment is checked in BOTH directions: a
-    destination inside the data directory is the obvious case, and a data
-    directory inside the destination is the same disaster from the other
-    end.
-
-    Module-level because two callers ask it: the per-capture archive checks
-    ``<destination>/<capture_id>``, and the dataset archive preflight checks
-    the whole resolved dataset directory before any member moves.
-    """
-    real_target = _real_path(target)
-    real_source = _real_path(source)
-    real_data = _real_path(data_dir)
-    pairs = [(real_data, "data_dir")]
-    if real_source != real_data:
-        # The dataset preflight has no single capture to name and passes the
-        # data_dir as both; naming it twice would produce the wrong label.
-        pairs.insert(0, (real_source, "the capture"))
-    for other, label in pairs:
-        if _overlaps(real_target, other):
-            raise ApiError(
-                status_code=400,
-                code="destination_inside_data_dir",
-                message=(
-                    f"The archive destination overlaps {label} "
-                    f"({real_target} vs {other}). Archiving there would "
-                    "delete the copy along with the original."
-                ),
-                details={
-                    "destination": str(real_target),
-                    "data_dir": str(real_data),
-                },
-            )
-
-
-def _real_path(path: Path) -> Path:
-    """``realpath`` of *path*, resolving symlinks in its existing ancestors.
-
-    The archive destination normally does not exist yet, so the part that CAN
-    be spoofed is the part that already does — that is where a planted symlink
-    would live. Resolve the deepest existing ancestor and re-attach the tail.
-    """
-    existing = path
-    while not existing.exists() and existing != existing.parent:
-        existing = existing.parent
-    real_existing = Path(os.path.realpath(existing))
-    try:
-        tail = path.relative_to(existing)
-    except ValueError:  # pragma: no cover - path is its own ancestor
-        return real_existing
-    return real_existing if str(tail) == "." else real_existing / tail
-
-
-def _overlaps(a: Path, b: Path) -> bool:
-    """Whether either path contains the other, or they are the same."""
-    return a == b or a.is_relative_to(b) or b.is_relative_to(a)
-
-
 def _manifest_divergence(
     capture: Capture, manifest: ObjectManifestV2
 ) -> dict[str, Any]:
@@ -1410,87 +590,6 @@ def _restore_record_from_row(
         )
 
 
-def _merge_review(capture: Capture, request: ReviewSaveRequest) -> dict[str, Any]:
-    """Apply a patch to the capture's current review values.
-
-    An omitted field keeps its current value; a field explicitly set to ``null``
-    clears it. ``model_fields_set`` is what distinguishes the two — treating
-    ``None`` as "not supplied" would make it impossible to ever clear a
-    failure_reason once one had been recorded.
-    """
-    supplied = request.model_fields_set
-    return {
-        name: (getattr(request, name) if name in supplied else getattr(capture, name))
-        for name in _REVIEW_FIELDS
-    }
-
-
-def _offers_an_index(request: ReviewSaveRequest, merged: dict[str, Any]) -> bool:
-    """Whether this save is CLAIMING a number, rather than carrying one.
-
-    Only a request that explicitly sends ``index_in_batch`` alongside a batch is
-    offering a hint the store may overrule. Two cases are deliberately left out:
-
-    * a save that omits the field. Review's edits are exactly that — they patch
-      a failure_reason or a verdict, and the merge carries the existing number
-      through untouched. Re-resolving it there would let an unrelated edit
-      renumber an episode an operator is looking at, and would rewrite legacy
-      rows that have held a duplicate since before this rule existed.
-    * a number with no batch to be a number IN. Nothing collides, and there is
-      no roster to allocate from.
-    """
-    return (
-        "index_in_batch" in request.model_fields_set
-        and merged["index_in_batch"] is not None
-        and merged["batch_id"] is not None
-    )
-
-
-def _derive_quality(
-    capture: Capture, request: ReviewSaveRequest, merged: dict[str, Any]
-) -> None:
-    """Fill in an omitted ``quality`` from the capture's settled quick check.
-
-    The operator's Save sends no ``quality`` unless they overrode it, so the
-    default comes from the orchestrator's own stop-time verdict — one place
-    derives it, rather than every client re-deriving it from the same data and
-    disagreeing. An explicit value is the operator's call and passes through
-    untouched.
-
-    With no settled verdict to read (an old capture, or a settlement that has
-    not landed yet) the fallback is ``needs_review``: we cannot vouch for the
-    data, and silently passing it as good is the one wrong answer. The
-    ``quick_check`` source is what later lets
-    :meth:`RecordService.reconcile_quality` correct this value once the real
-    verdict arrives — an ``operator`` source is never touched.
-    """
-    if "quality" in request.model_fields_set and request.quality is not None:
-        return
-    if merged["quality"] is not None and request.base_revision > 0:
-        # Not the first save and no new value supplied: keep what is there.
-        return
-    verdict = capture.quick_check.verdict.quality if capture.quick_check else None
-    merged["quality"] = verdict or "needs_review"
-    merged["quality_source"] = "quick_check"
-
-
-def _review_conflict(capture: Capture, base_revision: int) -> ApiError:
-    return ApiError(
-        status_code=409,
-        code="review_conflict",
-        message=(
-            f"This review was edited elsewhere (revision "
-            f"{capture.review_revision}, you sent {base_revision}). "
-            "Reload the capture and apply your change again."
-        ),
-        details={
-            "capture_id": capture.capture_id,
-            "current_revision": capture.review_revision,
-            "base_revision": base_revision,
-        },
-    )
-
-
 def _require_capture_id(capture_id: str) -> None:
     """Reject anything that is not a UUIDv7 before it becomes a path segment."""
     if not is_uuid7(capture_id):
@@ -1515,4 +614,9 @@ def _parse_cursor(cursor: str | None) -> int | None:
         ) from exc
 
 
-__all__ = ["MAX_REAP_ATTEMPTS", "CaptureService", "UNFINALIZED_STATES"]
+__all__ = [
+    "MAX_REAP_ATTEMPTS",
+    "CaptureService",
+    "UNFINALIZED_STATES",
+    "reject_overlapping_destination",
+]

@@ -380,6 +380,14 @@ def create_orchestrator_app(
     # disk are the durable outcome, and both appear only once an import has
     # finalised, so this is safe to lose on restart.
     app.state.import_registry = bag_import.ImportRegistry()
+    # Per app, not per module. Two apps built in one process (every test that
+    # constructs a second one) would otherwise share both: one app's imports
+    # would hold the other's copy slots, and an asyncio.Semaphore binds to the
+    # first event loop that awaits it, so the second app's first import would
+    # fail with "bound to a different event loop". Constructed here rather than
+    # in the lifespan because a Semaphore takes no loop until it is awaited.
+    app.state.import_tasks = set()
+    app.state.import_copy_slots = asyncio.Semaphore(bag_import.COPY_SLOT_LIMIT)
     app.state.event_hub = event_hub
     app.state.config_catalog = config_catalog
     # Live RECORDING_CONFIG: read at request time by GET /api/v1/config and

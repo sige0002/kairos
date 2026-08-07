@@ -39,9 +39,8 @@ import json
 import logging
 import os
 import sqlite3
-import threading
-from collections.abc import Iterable, Iterator, Sequence
-from contextlib import contextmanager
+from collections.abc import Iterable, Sequence
+from contextlib import AbstractContextManager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -51,6 +50,7 @@ from kairos_common.atomic_io import atomic_write_json
 from kairos_common.capture_sidecars import DigestState
 from kairos_common.ids import new_membership_id
 from kairos_common.rebuild import CaptureRow, ReplicaRow, ReplicaState
+from kairos_common.sqlite_store import SqliteConnection, set_user_version, user_version
 from kairos_common.time import utc_iso8601_of, utc_now_iso8601
 
 from api_orchestrator import row_mappers
@@ -172,12 +172,15 @@ class CaptureStore:
         data_dir: str | Path | None = None,
         instance_id: str | None = None,
     ) -> None:
-        self._path = str(db_path)
+        # busy_timeout is per-connection: wait for a competing writer rather
+        # than raising "database is locked" at once. Opening nothing yet for a
+        # file DB is what lets the version check below delete it first.
+        self._db = SqliteConnection(
+            db_path, connect_pragmas=("PRAGMA busy_timeout = 5000",)
+        )
+        self._path = self._db.path
         self._data_dir = Path(data_dir) if data_dir is not None else None
         self._instance_id = instance_id
-        # Serializes every connection use (reentrant: write helpers nest reads).
-        self._lock = threading.RLock()
-        self._shared: sqlite3.Connection | None = None
         self.was_discarded = False
         # Whether a database file was already there when this process opened it.
         # ``False`` is one of §8's three rebuild triggers ("kairos.db missing"),
@@ -185,25 +188,18 @@ class CaptureStore:
         # because we just created it.
         self.existed_at_open = False
 
-        if self._path != ":memory:":
-            Path(self._path).parent.mkdir(parents=True, exist_ok=True)
+        if not self._db.is_memory:
             self.existed_at_open = Path(self._path).exists()
             self.was_discarded = self._discard_if_wrong_version(Path(self._path))
-        else:
-            # In-memory DBs vanish when their connection closes, so keep one.
-            # check_same_thread=False: FastAPI runs sync handlers in a thread
-            # pool; the module lock serializes access.
-            self._shared = sqlite3.connect(self._path, check_same_thread=False)
-            self._shared.row_factory = sqlite3.Row
 
         with self._conn() as conn:
-            if self._shared is None:
+            if not self._db.is_memory:
                 # WAL persists in the file header and lets readers run
                 # concurrently with the single writer, so a long capture list
                 # never blocks a recording-state write.
                 conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(_SCHEMA)
-            conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            set_user_version(conn, SCHEMA_VERSION)
 
     @staticmethod
     def _discard_if_wrong_version(path: Path) -> bool:
@@ -220,7 +216,7 @@ class CaptureStore:
         try:
             conn = sqlite3.connect(path)
             try:
-                version = conn.execute("PRAGMA user_version").fetchone()[0]
+                version = user_version(conn)
             finally:
                 conn.close()
         except sqlite3.DatabaseError:
@@ -247,30 +243,13 @@ class CaptureStore:
     def instance_id(self) -> str | None:
         return self._instance_id
 
-    @contextmanager
-    def _conn(self) -> Iterator[sqlite3.Connection]:
+    def _conn(self) -> AbstractContextManager[sqlite3.Connection]:
         """Yield a connection under the lock, committing on success."""
-        with self._lock:
-            if self._shared is not None:
-                yield self._shared
-                self._shared.commit()
-                return
-            conn = sqlite3.connect(self._path)
-            conn.row_factory = sqlite3.Row
-            # busy_timeout is per-connection: wait for a competing writer rather
-            # than raising "database is locked" at once.
-            conn.execute("PRAGMA busy_timeout = 5000")
-            try:
-                yield conn
-                conn.commit()
-            finally:
-                conn.close()
+        return self._db.connect()
 
     def close(self) -> None:
         """Close the shared in-memory connection (no-op for file DBs)."""
-        if self._shared is not None:
-            self._shared.close()
-            self._shared = None
+        self._db.close()
 
     def execute_read(self, sql: str, params: Sequence[Any] = ()) -> list[sqlite3.Row]:
         """Run an arbitrary read. For diagnostics and tests, not hot paths."""

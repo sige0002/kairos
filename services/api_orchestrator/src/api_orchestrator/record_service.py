@@ -31,8 +31,9 @@ import logging
 import os
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from kairos_common import ApiError, Compression, RecordingConfig, utc_now_iso8601
@@ -47,7 +48,6 @@ from kairos_common.capture_sidecars import (
 from kairos_common.ids import is_uuid7
 from kairos_common.rebuild import ReplicaState
 from kairos_common.record_meta import UNKNOWN_OPERATOR, UNKNOWN_TASK, default_meta
-from kairos_common.time import parse_iso8601
 
 from api_orchestrator.captures import CaptureService
 from api_orchestrator.digest import DigestJob
@@ -61,29 +61,20 @@ from api_orchestrator.models import (
     Quality,
     RecordPrepareResponse,
     RecordStartRequest,
-    ReviewSaveRequest,
     Split,
     TopicQos,
     coerce_error,
 )
 from api_orchestrator.monitor_client import MonitorClient
-from api_orchestrator.quick_check import (
-    assemble_quick_check,
-    build_layer0,
-    build_layer1,
-    incidents_in_window,
-    read_mcap_summary,
-)
 from api_orchestrator.recorder_client import RecorderClient
+from api_orchestrator.settlement import (
+    MonitorBaseline,
+    SettlementRunner,
+    iso_to_ns,
+)
 from api_orchestrator.store import CaptureExistsError, CaptureStore
 
 logger = logging.getLogger("kairos")
-
-# ---- stop-time quick-check settlement budget ------------------------------
-QUICK_CHECK_BUDGET_S = 4.0
-_SETTLE_MONITOR_TIMEOUT_S = 1.2
-_SETTLE_MCAP_TIMEOUT_S = 1.5
-_BASELINE_TIMEOUT_S = 1.0
 
 # Bound on suffix-retries when an allocated run_id collides with an existing
 # row (same-second starts). One retry practically always suffices.
@@ -117,21 +108,6 @@ class _PreparedEntry:
     match_key: tuple[Any, ...]
 
 
-@dataclass
-class MonitorBaseline:
-    """Per-topic monitor counters snapshotted at record START.
-
-    The monitor's ``dds_samples_lost``/``messages_total`` are cumulative since
-    the monitor started, so the honest per-recording figure is stop minus this.
-    Best-effort: absent when the monitor was unreachable, and the quick check
-    then reports the raw cumulative value rather than a wrong difference.
-    """
-
-    captured_ns: int
-    dds_samples_lost: dict[str, int] = field(default_factory=dict)
-    messages_total: dict[str, int] = field(default_factory=dict)
-
-
 class RecordService:
     """Coordinates capture state across the store and the recorder."""
 
@@ -162,12 +138,34 @@ class RecordService:
         # restart, and the manifest's robot is what every later reader trusts.
         self._active_robot = active_robot
         self._instance_id = instance_id
-        self._record_baselines: dict[str, MonitorBaseline] = {}
-        self._settlement_tasks: set[asyncio.Task[None]] = set()
+        # The quick check settles off the request path (settlement.py). The
+        # three callables are resolved at call time, not bound here: the config
+        # can be swapped by set_recording_config, and the other two route back
+        # through this object so that replacing them on the instance is honoured.
+        self._settlement = SettlementRunner(
+            store,
+            layout,
+            captures,
+            monitor=monitor,
+            config=lambda: self._config,
+            monitor_metric_topics=lambda: self._monitor_metric_topics(),
+            reconcile=lambda *args, **kwargs: self.reconcile_quality(*args, **kwargs),
+            write_quick_check=_write_quick_check,
+        )
         # Serializes the whole start/stop lifecycle so concurrent requests
         # cannot interleave and diverge from the recorder's single session.
         self._lifecycle_lock = asyncio.Lock()
         self._prepared: _PreparedEntry | None = None
+
+    @property
+    def _record_baselines(self) -> dict[str, MonitorBaseline]:
+        """The settlement's unspent start baselines (one per live recording)."""
+        return self._settlement.baselines
+
+    @property
+    def _settlement_tasks(self) -> set[asyncio.Task[None]]:
+        """The settlements still in flight. Empty means every verdict landed."""
+        return self._settlement.tasks
 
     @property
     def layout(self) -> DataLayout:
@@ -354,9 +352,7 @@ class RecordService:
             )
             capture = await self._sync_metadata(capture_id, allow_partial=True)
 
-            baseline = await self._capture_monitor_baseline()
-            if baseline is not None:
-                self._record_baselines[capture_id] = baseline
+            await self._settlement.capture_baseline(capture_id)
             await self._emit_record_status(
                 capture, arming=self._arming_from_start_body(body)
             )
@@ -963,7 +959,7 @@ class RecordService:
             capture,
             integrity=manifest.integrity,
             backstop=backstop,
-            stop_ns=_iso_to_ns(manifest.ended_at),
+            stop_ns=iso_to_ns(manifest.ended_at),
         )
 
     def settle_adopted(self, capture_id: str) -> None:
@@ -1101,30 +1097,6 @@ class RecordService:
 
     # ---- quick-check settlement --------------------------------------------
 
-    async def _capture_monitor_baseline(self) -> MonitorBaseline | None:
-        """Snapshot cumulative monitor counters at record start (best-effort)."""
-        if self._monitor is None:
-            return None
-        try:
-            body = await self._monitor.metrics(timeout=_BASELINE_TIMEOUT_S, retries=0)
-        except ApiError:
-            return None
-        dds: dict[str, int] = {}
-        msgs: dict[str, int] = {}
-        for topic in body.get("topics") or []:
-            if not isinstance(topic, dict):
-                continue
-            name = topic.get("name")
-            if not isinstance(name, str):
-                continue
-            if (value := _coerce_int(topic.get("dds_samples_lost"))) is not None:
-                dds[name] = value
-            if (value := _coerce_int(topic.get("messages_total"))) is not None:
-                msgs[name] = value
-        return MonitorBaseline(
-            captured_ns=time.time_ns(), dds_samples_lost=dds, messages_total=msgs
-        )
-
     async def _integrity_and_backstop(self) -> tuple[str | None, str | None]:
         """The recorder's integrity classification and any auto-stop note."""
         try:
@@ -1148,122 +1120,9 @@ class RecordService:
         stop_ns: int | None,
     ) -> None:
         """Fire the quick-check settlement as a background task (never blocks)."""
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return
-        task = loop.create_task(
-            self._settle_and_persist(
-                capture, integrity=integrity, backstop=backstop, stop_ns=stop_ns
-            )
+        self._settlement.schedule(
+            capture, integrity=integrity, backstop=backstop, stop_ns=stop_ns
         )
-        self._settlement_tasks.add(task)
-        task.add_done_callback(self._settlement_tasks.discard)
-
-    async def _settle_and_persist(
-        self,
-        capture: Capture,
-        *,
-        integrity: str | None,
-        backstop: str | None,
-        stop_ns: int | None,
-    ) -> None:
-        """Compute the two-layer quick check and persist it on the capture.
-
-        ``stop_ns`` is ``None`` only when the end stamp could not be read; the
-        incident window then keeps every incident instead of filtering on a
-        bound nobody knows.
-        """
-        started = time.monotonic()
-        capture_id = capture.capture_id
-        try:
-            baseline = self._record_baselines.pop(capture_id, None)
-            topic_names = [t.name for t in capture.topics]
-            start_ns = _iso_to_ns(capture.started_at)
-
-            monitor_topics = await self._monitor_metric_topics()
-            incidents = await self._monitor_incidents()
-            incidents_window = (
-                incidents_in_window(incidents, start_ns, stop_ns)
-                if incidents is not None
-                else None
-            )
-            layer0 = build_layer0(
-                integrity=integrity,
-                backstop=backstop,
-                monitor_topics=monitor_topics,
-                baseline_dds=baseline.dds_samples_lost if baseline else None,
-                incidents=incidents_window,
-                topic_names=topic_names,
-                config=self._config,
-            )
-
-            capture_dir = self._layout.capture_dir(capture_id)
-            try:
-                summary = await asyncio.wait_for(
-                    asyncio.to_thread(read_mcap_summary, capture_dir),
-                    timeout=_SETTLE_MCAP_TIMEOUT_S,
-                )
-            except (TimeoutError, OSError):
-                summary = None
-            required = topic_names or (
-                list(self._config.default_topics) if self._config else []
-            )
-            layer1 = build_layer1(
-                summary=summary, config=self._config, required_topics=required
-            )
-
-            elapsed_ms = int((time.monotonic() - started) * 1000)
-            quick = assemble_quick_check(
-                layer0=layer0,
-                layer1=layer1,
-                elapsed_ms=elapsed_ms,
-                config=self._config,
-            )
-            # Which review, if any, already existed when this verdict landed.
-            # Read immediately before the verdict becomes visible and with no
-            # await in between, so it is exactly "the review that was saved
-            # without a verdict in hand" — the only one this settlement is
-            # entitled to second-guess (see reconcile_quality).
-            existing = self._store.get_capture(capture_id)
-            revision_at_verdict = existing.review_revision if existing else 0
-            # Sidecar first, then the row — §8's ordering, because the row is an
-            # index of what is on disk. Without the file this verdict was the
-            # one thing in the store that "delete kairos.db and restart" could
-            # not bring back (E-17), and its absence renders as an empty space
-            # rather than as a loss.
-            try:
-                await asyncio.to_thread(
-                    write_quick_check, capture_dir, quick.model_dump(mode="json")
-                )
-            except OSError as exc:
-                # Not fatal and not silent. The verdict still reaches the row,
-                # so this session is unaffected; what is lost is durability
-                # across a rebuild, and that is worth a line in the log rather
-                # than withholding a verdict the operator is waiting for.
-                logger.warning(
-                    "quick_check settled but its sidecar could not be written; "
-                    "this verdict will not survive a catalog rebuild",
-                    extra={"capture_id": capture_id, "error": str(exc)},
-                )
-            self._store.update_capture(capture_id, quick_check=quick)
-            logger.info(
-                "quick_check settled",
-                extra={
-                    "capture_id": capture_id,
-                    "quality": quick.verdict.quality,
-                    "elapsed_ms": elapsed_ms,
-                },
-            )
-            await self.reconcile_quality(
-                capture_id,
-                quick.verdict.quality,
-                revision_at_verdict=revision_at_verdict,
-            )
-        except Exception:  # noqa: BLE001 - settlement must never crash the app
-            logger.exception(
-                "quick_check settlement failed", extra={"capture_id": capture_id}
-            )
 
     async def reconcile_quality(
         self,
@@ -1272,129 +1131,17 @@ class RecordService:
         *,
         revision_at_verdict: int | None = None,
     ) -> None:
-        """Correct a review that was saved before this verdict landed.
-
-        A review saved during settlement derives its quality from a verdict that
-        does not exist yet and falls back to a conservative ``needs_review``.
-        Once the real verdict is in, that value is corrected — but only when the
-        quality is still ``quick_check``-sourced: an operator's own call is a
-        human decision and is never overwritten.
-
-        The STATUS is corrected with it, but ONLY for a review that predates the
-        verdict. Collect stamps ``adopted`` from the quality its result panel was
-        showing, and with no verdict to show that is the fallback good — so a
-        Save that beat the settlement adopted data this server then called
-        ``needs_review``. Correcting only the quality left the two halves of one
-        row contradicting each other, and the status is the half that has
-        consequences: ``adopted`` puts the capture in Review's READY lane, which
-        is by design the lane nobody looks at, and makes it dataset-eligible.
-        Such a capture goes back to ``pending`` — NEEDS CHECK, where "Mark OK —
-        include" is the deliberate human confirmation.
-
-        *revision_at_verdict* is what keeps that from eating a real decision.
-        Review's "Mark OK — include" sends ``{review_status: adopted}`` and
-        nothing else, so it arrives looking exactly like Collect's fast save:
-        same fields, same ``quick_check`` quality source. The one thing that
-        differs is WHEN it was written — before this verdict existed (a guess)
-        or after it landed (a judgement about a verdict the operator could
-        actually see). Only the settlement knows where that line falls, so it
-        passes the review revision as of the moment the verdict became visible;
-        a review written after it, or touched since, is left alone. Without that
-        evidence — any other caller — nothing is ever demoted, because demoting
-        a decision nobody can prove was a guess is the worse mistake.
-
-        The correction goes through the ordinary §4.1 path, revision bump and
-        all. A client that then sees a 409 is seeing the truth: the review it
-        was holding is no longer current.
-        """
-        try:
-            capture = self._store.get_capture(capture_id)
-            if capture is None or capture.review_revision == 0:
-                return
-            if capture.quality_source != "quick_check":
-                return
-            # Not `elif`: the status can need correcting even when the quality
-            # does not. The conservative fallback IS ``needs_review``, so a
-            # verdict confirming it changes no quality at all — and that is
-            # exactly the case where an ``adopted`` was banked on a guess.
-            fields: dict[str, Any] = {
-                "base_revision": capture.review_revision,
-                "quality": quality,
-                "quality_source": "quick_check",
-            }
-            predates_verdict = (
-                revision_at_verdict is not None
-                and revision_at_verdict > 0
-                and capture.review_revision == revision_at_verdict
-            )
-            demote = (
-                predates_verdict
-                and quality != "good"
-                and capture.review_status == "adopted"
-            )
-            if demote:
-                fields["review_status"] = "pending"
-            if capture.quality == quality and not demote:
-                return
-            await self._captures.save_review(
-                capture_id, ReviewSaveRequest(**fields), system=True
-            )
-            logger.info(
-                "review re-derived from the settled quick_check",
-                extra={
-                    "capture_id": capture_id,
-                    "quality": quality,
-                    "review_status": fields.get("review_status", capture.review_status),
-                },
-            )
-        except ApiError as exc:
-            # A 409 here means an operator edited the review while we settled.
-            # Their call wins; nothing to repair.
-            logger.info(
-                "quality reconcile skipped",
-                extra={"capture_id": capture_id, "code": exc.code},
-            )
-        except Exception:  # noqa: BLE001 - never crash the settlement
-            logger.exception(
-                "quality reconcile failed", extra={"capture_id": capture_id}
-            )
+        """Correct a review that was saved before a verdict landed (settlement.py)."""
+        await self._settlement.reconcile_quality(
+            capture_id, quality, revision_at_verdict=revision_at_verdict
+        )
 
     async def _monitor_metric_topics(self) -> list[dict[str, Any]] | None:
-        if self._monitor is None:
-            return None
-        try:
-            body = await self._monitor.metrics(
-                timeout=_SETTLE_MONITOR_TIMEOUT_S, retries=0
-            )
-        except ApiError:
-            return None
-        topics = body.get("topics")
-        return topics if isinstance(topics, list) else None
-
-    async def _monitor_incidents(self) -> list[dict[str, Any]] | None:
-        """The whole incident ring, filtered to the window on this side.
-
-        ``since_ns=0`` deliberately: the monitor's own filter is one-sided, so
-        scoping the fetch to the recording start would MISS an incident that
-        fired before the recording began and stayed open across the whole
-        window — exactly the incident that matters most.
-        """
-        if self._monitor is None:
-            return None
-        try:
-            body = await self._monitor.incidents(
-                0, timeout=_SETTLE_MONITOR_TIMEOUT_S, retries=0
-            )
-        except ApiError:
-            return None
-        items = body.get("incidents")
-        return items if isinstance(items, list) else None
+        return await self._settlement.monitor_metric_topics()
 
     async def drain_settlements(self) -> None:
         """Await in-flight settlements (shutdown / test determinism)."""
-        tasks = list(self._settlement_tasks)
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        await self._settlement.drain()
 
 
 # ---- helpers ---------------------------------------------------------------
@@ -1436,18 +1183,12 @@ def _unique_run_id(store: CaptureStore, run_id: str) -> str:
     return f"{run_id}_{int(time.time())}"
 
 
-def _coerce_int(value: Any) -> int | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return int(value)
-    return None
+def _write_quick_check(capture_dir: Path, payload: dict[str, Any]) -> None:
+    """Indirection so the settlement resolves ``write_quick_check`` from HERE.
 
-
-def _iso_to_ns(value: str | None) -> int | None:
-    parsed = parse_iso8601(value)
-    if parsed is None:
-        return None
-    return int(parsed.timestamp() * 1_000_000_000)
+    The runner is handed this function rather than the imported name, and this
+    body looks the name up in this module at call time. That is what keeps the
+    sidecar write substitutable at the place it has always been substitutable —
+    importing it into ``settlement.py`` would move that seam without saying so.
+    """
+    write_quick_check(capture_dir, payload)

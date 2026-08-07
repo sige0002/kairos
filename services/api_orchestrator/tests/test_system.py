@@ -12,7 +12,7 @@ import collections
 import subprocess
 
 import pytest
-from api_orchestrator.routers import system as system_router
+from api_orchestrator import system_probe
 from fastapi.testclient import TestClient
 
 # A realistic two-logical-core /proc/cpuinfo snippet (model name repeats per core).
@@ -46,7 +46,7 @@ def patch_cpuinfo(monkeypatch: pytest.MonkeyPatch):
         def read_text(self, *_args, **_kwargs) -> str:
             return FAKE_CPUINFO
 
-    monkeypatch.setattr(system_router, "Path", FakePath)
+    monkeypatch.setattr(system_probe, "Path", FakePath)
 
 
 def test_system_reports_cpu_and_gpu(
@@ -54,7 +54,7 @@ def test_system_reports_cpu_and_gpu(
 ) -> None:
     """CPU is parsed from /proc/cpuinfo; GPU comes from a successful nvidia-smi."""
     monkeypatch.setattr(
-        system_router.subprocess,
+        system_probe.subprocess,
         "run",
         lambda *a, **k: _completed("NVIDIA GeForce RTX 4090\n"),
     )
@@ -75,7 +75,7 @@ def test_system_gpu_null_when_nvidia_smi_missing(
     def _raise(*_a, **_k):
         raise FileNotFoundError("nvidia-smi")
 
-    monkeypatch.setattr(system_router.subprocess, "run", _raise)
+    monkeypatch.setattr(system_probe.subprocess, "run", _raise)
 
     resp = client.get("/api/v1/system")
     assert resp.status_code == 200
@@ -89,7 +89,7 @@ def test_system_gpu_null_on_nonzero_exit(
 ) -> None:
     """nvidia-smi returning non-zero (e.g. no driver) yields a null GPU."""
     monkeypatch.setattr(
-        system_router.subprocess,
+        system_probe.subprocess,
         "run",
         lambda *a, **k: _completed("", returncode=9),
     )
@@ -107,7 +107,7 @@ def test_system_gpu_null_on_timeout(
     def _timeout(*_a, **_k):
         raise subprocess.TimeoutExpired(cmd="nvidia-smi", timeout=1.5)
 
-    monkeypatch.setattr(system_router.subprocess, "run", _timeout)
+    monkeypatch.setattr(system_probe.subprocess, "run", _timeout)
 
     resp = client.get("/api/v1/system")
     assert resp.status_code == 200
@@ -126,9 +126,9 @@ def test_system_cpu_null_when_proc_unreadable(
         def read_text(self, *_args, **_kwargs) -> str:
             raise OSError("nope")
 
-    monkeypatch.setattr(system_router, "Path", FailingPath)
+    monkeypatch.setattr(system_probe, "Path", FailingPath)
     monkeypatch.setattr(
-        system_router.subprocess, "run", lambda *a, **k: _completed("", returncode=9)
+        system_probe.subprocess, "run", lambda *a, **k: _completed("", returncode=9)
     )
 
     resp = client.get("/api/v1/system")
@@ -147,7 +147,7 @@ FAKE_PROC_STAT = "cpu  100 0 50 800 40 0 10 0 0 0\ncpu0 100 0 50 800 40 0 10 0 0
 
 def test_read_disk_reports_usage(tmp_path) -> None:
     """A real directory yields DiskInfo with sane, ordered byte counts."""
-    disk = system_router._read_disk(str(tmp_path))
+    disk = system_probe._read_disk(str(tmp_path))
     assert disk is not None
     assert disk.path == str(tmp_path)
     assert disk.total_bytes > 0
@@ -163,8 +163,8 @@ def test_read_disk_falls_back_to_data(monkeypatch: pytest.MonkeyPatch) -> None:
             return Usage(total=100, used=40, free=60)
         raise FileNotFoundError(path)
 
-    monkeypatch.setattr(system_router.shutil, "disk_usage", _usage)
-    disk = system_router._read_disk("/nonexistent/data")
+    monkeypatch.setattr(system_probe.shutil, "disk_usage", _usage)
+    disk = system_probe._read_disk("/nonexistent/data")
     assert disk is not None
     assert disk.path == "/data"
     assert disk.total_bytes == 100
@@ -177,8 +177,8 @@ def test_read_disk_none_when_no_path(monkeypatch: pytest.MonkeyPatch) -> None:
     def _raise(path: str):
         raise FileNotFoundError(path)
 
-    monkeypatch.setattr(system_router.shutil, "disk_usage", _raise)
-    assert system_router._read_disk("/nonexistent/data") is None
+    monkeypatch.setattr(system_probe.shutil, "disk_usage", _raise)
+    assert system_probe._read_disk("/nonexistent/data") is None
 
 
 # ---- cpu utilization -----------------------------------------------------
@@ -186,30 +186,30 @@ def test_read_disk_none_when_no_path(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_read_cpu_times_parses(monkeypatch: pytest.MonkeyPatch) -> None:
     """The aggregate 'cpu' line parses into (busy, total) jiffies."""
-    monkeypatch.setattr(system_router, "_read_proc_stat", lambda: FAKE_PROC_STAT)
-    times = system_router._read_cpu_times()
+    monkeypatch.setattr(system_probe, "_read_proc_stat", lambda: FAKE_PROC_STAT)
+    times = system_probe._read_cpu_times()
     # total = 100+0+50+800+40+0+10 = 1000; idle = 800+40 = 840; busy = 160.
     assert times == (160, 1000)
 
 
 def test_read_cpu_times_none_on_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     """Missing or malformed /proc/stat yields None (never raises)."""
-    monkeypatch.setattr(system_router, "_read_proc_stat", lambda: None)
-    assert system_router._read_cpu_times() is None
-    monkeypatch.setattr(system_router, "_read_proc_stat", lambda: "cpu bad data x\n")
-    assert system_router._read_cpu_times() is None
+    monkeypatch.setattr(system_probe, "_read_proc_stat", lambda: None)
+    assert system_probe._read_cpu_times() is None
+    monkeypatch.setattr(system_probe, "_read_proc_stat", lambda: "cpu bad data x\n")
+    assert system_probe._read_cpu_times() is None
 
 
 def test_cpu_percent_bounds() -> None:
     """Delta busy% is a known value, clamped to [0, 100], null on no baseline."""
     # busy_delta = 20, total_delta = 100 -> 20.0%.
-    assert system_router._cpu_percent((10, 100), (30, 200)) == 20.0
+    assert system_probe._cpu_percent((10, 100), (30, 200)) == 20.0
     # No baseline (first sample) -> null.
-    assert system_router._cpu_percent(None, (30, 200)) is None
+    assert system_probe._cpu_percent(None, (30, 200)) is None
     # No progress (total unchanged) -> null, not a divide-by-zero.
-    assert system_router._cpu_percent((10, 100), (10, 100)) is None
+    assert system_probe._cpu_percent((10, 100), (10, 100)) is None
     # Pathological busy>total still clamps into range.
-    assert system_router._cpu_percent((0, 0), (200, 100)) == 100.0
+    assert system_probe._cpu_percent((0, 0), (200, 100)) == 100.0
 
 
 # ---- endpoint payload shape ----------------------------------------------
@@ -224,7 +224,7 @@ def test_system_payload_has_utilization_shape(
     def _no_nvidia(*_a, **_k):
         raise FileNotFoundError("nvidia-smi")
 
-    monkeypatch.setattr(system_router.subprocess, "run", _no_nvidia)
+    monkeypatch.setattr(system_probe.subprocess, "run", _no_nvidia)
 
     body = client.get("/api/v1/system").json()
     assert set(body) >= {"cpu", "gpu", "cpu_percent", "disk", "gpu_percent"}
@@ -242,9 +242,9 @@ def test_system_cpu_percent_within_bounds(
 ) -> None:
     """A second sample (with a baseline) reports a real busy% in [0, 100]."""
     snaps = iter([(10, 100), (30, 200)])
-    monkeypatch.setattr(system_router, "_read_cpu_times", lambda: next(snaps))
+    monkeypatch.setattr(system_probe, "_read_cpu_times", lambda: next(snaps))
     monkeypatch.setattr(
-        system_router.subprocess, "run", lambda *a, **k: _completed("", returncode=9)
+        system_probe.subprocess, "run", lambda *a, **k: _completed("", returncode=9)
     )
 
     # First request seeds the baseline (cpu_percent is null).
@@ -269,7 +269,7 @@ def test_system_reports_gpu_percent(
             return _completed("42\n")
         return _completed("NVIDIA GeForce RTX 4090\n")
 
-    monkeypatch.setattr(system_router.subprocess, "run", _run)
+    monkeypatch.setattr(system_probe.subprocess, "run", _run)
 
     body = client.get("/api/v1/system").json()
     assert body["gpu"] == "NVIDIA GeForce RTX 4090"

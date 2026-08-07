@@ -31,6 +31,7 @@ warning — see :func:`inspect_source`.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import os
@@ -49,9 +50,11 @@ from kairos_common.capture_sidecars import (
 )
 from kairos_common.errors import ApiError
 from kairos_common.ids import new_capture_id
+from kairos_common.rebuild import ReplicaState
 from kairos_common.time import utc_iso8601_of, utc_now_iso8601
 
 from api_orchestrator.layout import DataLayout, is_reserved_name
+from api_orchestrator.models import Capture, CaptureState, CaptureTopic
 
 logger = logging.getLogger(__name__)
 
@@ -835,3 +838,150 @@ class ImportRegistry:
                     break
             else:  # pragma: no cover - all running; keep them all
                 return
+
+
+# ---- the import pipeline --------------------------------------------------
+
+# How many bag copies may run at once. POST returns 202 immediately, so a bulk
+# run of 40 folders queues 40 tasks in about a second — unbounded, that is 40
+# multi-GB reads and writes competing for one disk, all of them slower and all
+# of them failing together if the disk fills. Two keeps the disk busy without
+# turning a routine import into a thrash. Queued imports simply wait; their
+# ImportRecord stays `queued`, which is what the UI already reports.
+COPY_SLOT_LIMIT = 2
+
+
+def create_capture_row(
+    store: Any,
+    record: ImportRecord,
+    bag: SourceBag,
+    instance_id: str,
+    layout: DataLayout,
+) -> None:
+    """Insert the imported bag as a completed capture with a present replica.
+
+    ``completed`` is the honest state: the recording is over and its bag is
+    whole. ``operator``/``task`` stay null — the two things an external bag
+    cannot tell us, filled in from Review rather than invented here.
+    """
+    capture = Capture(
+        capture_id=record.capture_id,
+        run_id=record.run_id,
+        source_instance_id=instance_id,
+        state=CaptureState.completed,
+        started_at=bag.started_at,
+        ended_at=bag.ended_at,
+        topics=[CaptureTopic(name=name, type=type_) for name, type_ in bag.topics],
+        message_count=bag.message_count,
+        bytes=bag.bytes,
+    )
+    # Deliberately NOT caught. ``create_capture`` raises ``CaptureExistsError``
+    # for ANY uniqueness clash, not only ``capture_id``, and ``run_id`` is
+    # UNIQUE too — so the old "pragma: no cover - the id was just minted"
+    # swallow turned a rejected row into an import that reported success with
+    # nothing in Review, plus a replica pointing at a capture that did not
+    # exist. Letting it out reaches the caller's post-finalize branch, which
+    # already has the honest words for this state: the bag is in objects/ and
+    # the catalog is behind (``import_catalog_pending``, I-5).
+    store.create_capture(capture)
+    store.upsert_replica(
+        record.capture_id,
+        instance_id,
+        # Present but UNVERIFIED: the copy was verified file-by-file on the way
+        # in, but §9-4 reserves present_verified for a sealed manifest, and the
+        # digest job has not run yet.
+        ReplicaState.present_unverified,
+        path=str(layout.capture_dir(record.capture_id)),
+    )
+
+
+async def run_import(
+    bag: SourceBag,
+    record: ImportRecord,
+    layout: DataLayout,
+    *,
+    store: Any,
+    instance_id: str,
+    copy_slots: asyncio.Semaphore,
+) -> None:
+    """Copy, describe, move into place, then create the row. Source last."""
+    staging = layout.incoming_dir(record.capture_id)
+    # Whether the staged copy has been renamed into objects/. Past that instant
+    # the capture EXISTS on disk, so a later failure is a catalog problem, not
+    # a lost import — and must not be reported as if nothing arrived.
+    finalized = False
+    try:
+        # 1. Copy into staging. Nothing is visible under objects/ yet, so a
+        #    crash here leaves no capture that looks complete. The slot bounds
+        #    how many multi-GB copies run at once (see COPY_SLOT_LIMIT); the
+        #    steps after it are a small write and a rename, so they need none.
+        async with copy_slots:
+            record.bytes_copied = await asyncio.to_thread(
+                copy_into_staging, bag, staging
+            )
+
+        # 2. The manifest goes INSIDE staging so it arrives with the rename
+        #    rather than appearing a moment later.
+        await asyncio.to_thread(
+            write_manifest,
+            staging,
+            import_manifest(
+                bag, record.capture_id, record.run_id, instance_id=instance_id
+            ),
+        )
+
+        # 3. The atomic instant: the capture becomes real here and not before.
+        await asyncio.to_thread(finalize, layout, record.capture_id)
+        finalized = True
+
+        # 4. Row last. A row without its bytes would be a capture every other
+        #    path (reconciler, retention, digest) has to special-case.
+        create_capture_row(store, record, bag, instance_id, layout)
+
+        # 5. Only now may the source go, and only if asked — and only the files
+        #    that were actually imported. The copy takes top-level FILES only,
+        #    so a recursive delete here would destroy an operator's `notes/` or
+        #    `videos/` sitting beside the bag: data that was never imported and
+        #    would then exist nowhere.
+        if record.move:
+            await asyncio.to_thread(remove_moved_source, bag)
+
+        record.state = "succeeded"
+        record.finished_at = utc_now_iso8601()
+        logger.info(
+            "bag imported",
+            extra={"capture_id": record.capture_id, "source": record.source_path},
+        )
+    except Exception as exc:  # noqa: BLE001 - any failure must land in the record
+        if not finalized:
+            # Clean up BEFORE publishing the terminal state: a caller polling
+            # until "failed" is entitled to find nothing half-imported.
+            await asyncio.to_thread(shutil.rmtree, staging, True)
+        record.state = "failed"
+        record.finished_at = utc_now_iso8601()
+        if isinstance(exc, ApiError):
+            record.error_code, record.error_message = exc.code, exc.message
+        else:
+            record.error_code = "import_failed"
+            record.error_message = str(exc) or exc.__class__.__name__
+        if finalized:
+            # The rename already happened: objects/<capture_id> holds a whole
+            # bag with a valid manifest. Deleting it to make the failure tidy
+            # would throw away the operator's data; the sidecar is the truth
+            # (§8) and the next store reconcile adopts it. Say exactly that,
+            # instead of a bare "failed" that reads as "nothing was imported"
+            # while the recording quietly shows up in Review later.
+            record.error_code = "import_catalog_pending"
+            record.error_message = (
+                f"The bag was copied in ({record.capture_id}) but the catalog "
+                f"entry failed: {record.error_message}. The files are in place; "
+                "a store reconcile will list the recording."
+            )
+        logger.warning(
+            "bag import failed",
+            extra={
+                "capture_id": record.capture_id,
+                "source": record.source_path,
+                "error": record.error_code,
+            },
+        )

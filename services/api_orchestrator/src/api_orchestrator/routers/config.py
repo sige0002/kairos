@@ -25,8 +25,6 @@ applies on the next monitor restart (no live-reload path exists — see
 from __future__ import annotations
 
 import logging
-import os
-import tempfile
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -37,6 +35,11 @@ from kairos_common.recording_config import RecordingConfig
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from api_orchestrator.config_catalog import ASPECTS, ConfigCatalog
+from api_orchestrator.config_files import (
+    DuplicateYamlKey,
+    StrictSafeLoader,
+    atomic_write_yaml,
+)
 
 logger = logging.getLogger("kairos")
 
@@ -176,27 +179,6 @@ def _recording_payload(config: RecordingConfig | None, path: str) -> dict[str, A
     }
 
 
-def _atomic_write_yaml(path: Path, data: dict[str, Any]) -> None:
-    """Write *data* to *path* as YAML atomically (temp file + ``os.replace``).
-
-    Creates the parent dir if needed. The temp file is created in the same
-    directory so ``os.replace`` is an atomic same-filesystem rename; on any
-    failure the temp file is removed and the original is left untouched.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(
-        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
-    )
-    tmp = Path(tmp_name)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            yaml.safe_dump(data, fh, sort_keys=False, allow_unicode=True)
-        os.replace(tmp, path)
-    except OSError:
-        tmp.unlink(missing_ok=True)
-        raise
-
-
 @router.get("/recording")
 async def get_recording_config(request: Request) -> dict[str, Any]:
     """Return the live RECORDING_CONFIG (or ``config: null``) + its file path.
@@ -242,7 +224,7 @@ async def put_recording_config(
         getattr(request.app.state, "recording_config_path", settings.recording_config)
     )
     try:
-        _atomic_write_yaml(path, config.model_dump(mode="json"))
+        atomic_write_yaml(path, config.model_dump(mode="json"))
     except OSError as exc:
         logger.warning("recording config write failed", extra={"error": str(exc)})
         raise ApiError(
@@ -328,55 +310,12 @@ class AspectConfigBody(BaseModel):
     raw: str | None = None
 
 
-class _DuplicateYamlKey(yaml.constructor.ConstructorError):
-    """A mapping key written twice in the operator's YAML."""
-
-    def __init__(self, key: Any, line: int) -> None:
-        super().__init__(None, None, f"found duplicate key {key!r}", None)
-        self.key = key
-        self.line = line
-
-
-class _StrictSafeLoader(yaml.SafeLoader):
-    """SafeLoader that REFUSES duplicate mapping keys.
-
-    PyYAML silently keeps the LAST occurrence, so YAML that visibly contains two
-    rules parses to one and saves with no error — the operator's own text is the
-    only place the dropped rule ever existed. Refusing the save is the honest
-    outcome; nothing valid is lost, since no correct alerts.yaml carries a
-    duplicate key and the canonical writer below never emits one.
-
-    Duplicates are detected on the keys AS WRITTEN, before ``flatten_mapping``
-    expands ``<<`` merges — an anchor legitimately overriding an inherited field
-    is a different thing from the same key typed twice, and must stay allowed.
-    """
-
-    #: ``<<`` — consumed by ``flatten_mapping`` in the base loader and never
-    #: constructed as a key, so it must be stepped over rather than resolved.
-    _MERGE_TAG = "tag:yaml.org,2002:merge"
-
-    def construct_mapping(self, node: Any, deep: bool = False) -> dict[Any, Any]:
-        seen: set[Any] = set()
-        for key_node, _value_node in node.value:
-            if key_node.tag == self._MERGE_TAG:
-                continue
-            key = self.construct_object(key_node, deep=deep)
-            try:
-                duplicate = key in seen
-            except TypeError:
-                continue  # unhashable key: the base loader reports it
-            if duplicate:
-                raise _DuplicateYamlKey(key, key_node.start_mark.line + 1)
-            seen.add(key)
-        return super().construct_mapping(node, deep=deep)
-
-
 def _body_to_mapping(body: AspectConfigBody) -> dict[str, Any]:
     """Normalise an :class:`AspectConfigBody` to a plain mapping (422 on error)."""
     if body.raw is not None:
         try:
-            data = yaml.load(body.raw, Loader=_StrictSafeLoader)  # noqa: S506
-        except _DuplicateYamlKey as exc:
+            data = yaml.load(body.raw, Loader=StrictSafeLoader)  # noqa: S506
+        except DuplicateYamlKey as exc:
             raise ApiError(
                 status_code=422,
                 code="duplicate_key",
@@ -490,7 +429,7 @@ async def put_alerts_config(request: Request, body: AspectConfigBody) -> dict[st
             details={"errors": exc.errors(include_url=False)},
         ) from exc
     try:
-        _atomic_write_yaml(path, config.model_dump(mode="json"))
+        atomic_write_yaml(path, config.model_dump(mode="json"))
     except OSError as exc:
         logger.warning("alerts config write failed", extra={"error": str(exc)})
         raise ApiError(

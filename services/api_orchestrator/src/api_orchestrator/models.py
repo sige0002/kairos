@@ -23,6 +23,20 @@ from kairos_common.capture_sidecars import (
     CaptureState,
     DigestState,
 )
+
+# Re-exported, not redefined: dora_runner exchanges these exact models with this
+# service, so they live in kairos_common.contracts and both sides import one
+# definition. Every existing ``from api_orchestrator.models import JobStatus``
+# keeps working. ``JobCreateResponse`` stays local — see the contracts docstring.
+from kairos_common.contracts.jobs import (
+    JobCreateRequest,
+    JobResult,
+    JobStatus,
+    RequiredTopicTemplate,
+    TemplateGenerateRequest,
+    ValidationTemplate,
+    ValidationTemplateListResponse,
+)
 from kairos_common.rebuild import ReplicaState
 from pydantic import BaseModel, Field, field_validator
 
@@ -810,18 +824,6 @@ class BatchListResponse(BaseModel):
 # ---- jobs / validation ------------------------------------------------------
 
 
-class JobCreateRequest(BaseModel):
-    """Body for ``POST /api/v1/jobs``.
-
-    Keyed by ``capture_id`` (§10.5): every job resolves its source as
-    ``objects/<capture_id>`` and writes to ``report/<pipeline>/<capture_id>/``.
-    """
-
-    capture_id: str
-    pipeline: str
-    params: dict[str, Any] = Field(default_factory=dict)
-
-
 class JobCreateResponse(BaseModel):
     """Response returned after creating a pipeline job."""
 
@@ -831,52 +833,6 @@ class JobCreateResponse(BaseModel):
     state: JobState
     progress: float = Field(default=0.0, ge=0.0, le=1.0)
     logs_tail: list[str] = Field(default_factory=list)
-
-
-class JobStatus(BaseModel):
-    """OpenAPI-visible job status contract."""
-
-    job_id: str
-    capture_id: str
-    pipeline: str
-    state: JobState
-    progress: float = Field(ge=0.0, le=1.0)
-    logs_tail: list[str] = Field(default_factory=list)
-
-
-class JobResult(BaseModel):
-    """Terminal job result."""
-
-    summary: dict[str, Any]
-    artifacts: list[str] = Field(default_factory=list)
-
-
-class RequiredTopicTemplate(BaseModel):
-    """Required topic entry in a validation template."""
-
-    name: str
-    type: str | None = None
-
-
-class ValidationTemplate(BaseModel):
-    """Validation template schema from api_orchestrator.md."""
-
-    name: str
-    version: int
-    required_topics: list[RequiredTopicTemplate] = Field(default_factory=list)
-
-
-class ValidationTemplateListResponse(BaseModel):
-    """Cursor-paginated validation template list."""
-
-    items: list[ValidationTemplate]
-    next_cursor: str | None = None
-
-
-class TemplateGenerateRequest(BaseModel):
-    """Body for ``POST /api/v1/validation/templates/generate``."""
-
-    capture_id: str
 
 
 class ValidationPresetInfo(BaseModel):

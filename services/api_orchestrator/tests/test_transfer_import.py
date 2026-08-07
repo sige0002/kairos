@@ -729,9 +729,7 @@ class TestImportRacesFoundByReview:
         def _boom(*args: object, **kwargs: object) -> None:
             raise RuntimeError("catalog write failed")
 
-        monkeypatch.setattr(
-            "api_orchestrator.routers.imports._create_capture_row", _boom
-        )
+        monkeypatch.setattr("api_orchestrator.bag_import.create_capture_row", _boom)
         started = client.post("/api/v1/imports", json={"source_path": str(source)})
         status = _await_import(client, started.json()["import_id"])
 
