@@ -280,7 +280,30 @@ discard（未送信の破棄）と delete の共通経路。
 
 ### 7.1 capture lease
 
-`captures` に `lease_owner` / `lease_expires_at` を持つ。digest ジョブ・dora_runner ジョブは `objects/<id>` に触れる前に lease を取得する。discard / delete は live lease 中 `409`。
+**lease は共有（shared reader lease、rev.2.15）。** 1 つの capture を**複数の保持者が同時に持てる**。
+`capture_leases(capture_id, owner, expires_at, acquired_at)`（PK は `(capture_id, owner)`、
+`(capture_id, expires_at)` に index）に 1 保持者 = 1 行で持つ。digest ジョブ・dora_runner ジョブは
+`objects/<id>` に触れる前に保持を取得する。**discard / delete は live な保持者が 1 人でも居れば `409 capture_busy`。**
+
+- **なぜ共有にしたか**: 単一所有者の lease は「誰かが触っている」という記録と「ジョブ同士の排他」を
+  兼ねていたが、後者は目的ではなく、**同一 capture のカメラ N 本を並列にエンコードできない**という
+  実害だけを生んでいた（N は実運用で 2〜5）。よって排他をやめ、記録だけを残した。
+- **守る不変条件は不変**で、保持者ごとに再現される — 失効した保持は保持ではない（読み取りは常に now と
+  比較する）／保持者はそれぞれ独立に失効する／**最後の 1 人が居なくなった時点で capture は削除可能に
+  なる**。あらゆる失敗が「また削除できる」方向へ収束する性質は保たれている。
+- **取得は排他しない**（常に成功する）。したがって**ジョブ投入時の「他が保持しているか」の事前判定は
+  撤去した** — それこそが並列化を阻んでいた門であるため。
+- **GC タスクは持たない。** 失効行は次に同じ capture を取得したときに日和見的に削除する。失効した保持は
+  読み取り時点で既に保持ではないので、掃除は衛生であって正しさではない — だからこそ「死ぬかもしれない
+  常駐タスク」ではなく、どうせ起きる書き込みに相乗りさせられる。
+- **`409` の details は保持者の全リスト**: `{ capture_id, holders: [{owner, expires_at}, …],
+  lease_owner, lease_expires_at }`。`holders` は expires_at 昇順。`lease_owner` /
+  `lease_expires_at` は**最後に失効する保持者**を指すスカラ要約（＝「いつ再試行できるか」の答え）で、
+  単一所有者時代の形しか知らないクライアントのために維持する。
+- **`captures` の `lease_owner` / `lease_expires_at` 列は撤去した。** API 応答の同名フィールドは
+  view `captures_with_lease` が上記スカラ要約として供給する。lease は **volatile で rebuild 対象外**
+  （§8）— lease は「今走っているプロセス」の記述であり、rebuild が走るのはそんなプロセスが居ないとき
+  なので、復元すれば解放する者の居ない保持で capture を永久にロックすることになる。
 
 - lease を失った / state が terminal でなくなったジョブは**中断し何も書かない**。
 - **digest ジョブ**は lease を実行の全区間について取り、最終 manifest 書き込みの**直前に `captures.state` と lease 保持の両方を読み直す**。どちらかが崩れていれば（`delete_pending|discarded|deleted` になった、あるいは lease を失った）**そこで中止する — 更新はしない**。窓を閉じているのは DB のロックではなく **lease そのもの**で、最後の再読は「lease を失ったジョブは黙って諦め何も書かない」という §7.1 の要件を、書き込み可能な最後の瞬間に確認しているだけ。
@@ -288,7 +311,17 @@ discard（未送信の破棄）と delete の共通経路。
 - dora_runner のジョブは **lease 非認知のまま**でよい（書き込み先が `report/` のみで、`objects/` への書き込み禁止は構造的に守られる）。lease の管理は orchestrator 側が代行する: 投入時に取得、**status / result のポーリング観測時に非 terminal なら更新（renew-on-poll）**、terminal を観測したら owner スコープで解放。
   - **取得は job の作成より後になる**（順序は強制されている）。lease の owner 文字列は `job:<job_id>` で、`job_id` を発行するのは dora_runner だから、作成しないと owner が決まらない — その id こそが `409` で operator に見せる名前であり、解放時に照合する鍵でもある。したがって作成 → 取得の順を崩せない。**取得に失敗したら、たった今作った job を打ち消す**（補償的な cancel）。作成の前にも安価な事前チェックを 1 回入れて、この補償経路に入る頻度を下げている（権威ある判定はあくまで後段の取得）。
 - **TTL が保証しないもの（正直に述べる）**: renew-on-poll は「**誰かが観測している間は生きる**」という保証であって、**キュー待ちは保証しない**。dora_runner は並行度を絞るので、投入されたジョブは他のジョブの後ろで待つことがあり、その間に誰もポーリングしなければ lease は失効し delete が勝つ。そのジョブは後で `.trash` へ移ったディレクトリに対して**きれいに失敗する** — 遅い正常終了であって破損ではない。orchestrator が見ていないジョブのために更新ループを回すよりも、この失敗を受け入れる。
-- 失効した lease は lease ではない（`acquire_lease` は現在時刻と比較する）ので、プロセスが死んだジョブが capture を永久にロックすることはない。**あらゆる失敗が「また削除できる」方向へ収束する**のが、この設計が寄りかかっている性質。
+- 失効した lease は lease ではない（読み取りは現在時刻と比較する）ので、プロセスが死んだジョブが capture を永久にロックすることはない。**あらゆる失敗が「また削除できる」方向へ収束する**のが、この設計が寄りかかっている性質。
+- **既知の follow-up（rev.2.15）**: dataset archive の「live lease があれば halt」は今回変更していない。
+  保持者が増えれば halt する機会も増えるので、archive 側を「保持者を待つ」か「保持者ごとに判断する」形へ
+  変えるかは別途裁定する。
+- **同一 pipeline の同時実行（rev.2.15 で裁定済み）**: 投入時の排他が無くなったので、同一 capture に
+  同一 pipeline のジョブを複数投入できる。裁定は**許容** — カメラ用途（video_check）は成果物名が
+  topic 由来なので元から衝突せず、固定名 `summary.json` を書く pipeline も**全成果物書き込みを
+  atomic（tmp → rename）に統一した**ため、同時実行は**丸ごとの last-writer-wins** に正規化される。
+  これは逐次に 2 回走らせたときの「後勝ち」と意味的に同一で、破損（バイト混合・途中読み）は
+  起こらない。完全同一 (capture, pipeline, params) の重複投入を弾く dedup は必要になったときの
+  follow-up とする（UI は既に二重送信を抑止している）。
 
 ## 8. DB スキーマ v2 と再構築
 

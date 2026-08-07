@@ -69,6 +69,7 @@ from kairos_common import (
     iter_numeric_fields,
     utc_now_iso8601,
 )
+from kairos_common.atomic_io import atomic_write_text
 
 from dora_runner.mcap_utils import (
     enumerate_topics,
@@ -479,5 +480,5 @@ def run_signal_report(
     report_dir = data_dir / "report" / "signal_report" / capture_id
     report_dir.mkdir(parents=True, exist_ok=True)
     summary_path = report_dir / "summary.json"
-    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    atomic_write_text(summary_path, json.dumps(summary, indent=2))
     return {"summary": summary, "artifacts": [str(summary_path)]}

@@ -193,49 +193,45 @@ def test_lease_ttl_covers_the_whole_job_budget(monkeypatch) -> None:
 # ---- 409 while held ----------------------------------------------------------
 
 
-def test_a_second_job_on_a_leased_capture_is_refused(
+def test_a_second_job_on_a_held_capture_is_accepted(
     lease_client: TestClient, dora: FakeDora
 ) -> None:
+    """rev.2.15: the case the shared lease exists for.
+
+    Was ``test_a_second_job_on_a_leased_capture_is_refused``, and its companion
+    ``test_a_job_that_loses_the_lease_race_is_cancelled`` is gone with it. Both
+    pinned the single-owner rule, which is exactly what stopped the N camera
+    encoders of one recording running at once. The compensating cancel they
+    also covered is still covered, by
+    ``test_a_failure_after_the_acquire_releases_and_cancels``.
+    """
     capture_id = seed_capture(lease_client)
     assert submit(lease_client, capture_id).status_code == 201
 
-    refused = submit(lease_client, capture_id)
-    assert refused.status_code == 409
-    error = refused.json()["error"]
-    assert error["code"] == "capture_busy"
-    assert error["details"]["lease_owner"] == "job:job_1"
-    # Refused before anything was created: no second job exists to clean up.
-    assert len(dora.created) == 1
+    second = submit(lease_client, capture_id)
+
+    assert second.status_code == 201, second.text
+    assert len(dora.created) == 2
+    assert dora.canceled == []
+    store = lease_client.app.state.capture_store
+    assert [h["owner"] for h in store.lease_holders(capture_id)] == [
+        "job:job_1",
+        "job:job_2",
+    ]
 
 
-def test_a_job_that_loses_the_lease_race_is_cancelled(
+def test_many_jobs_may_hold_one_capture(
     lease_client: TestClient, dora: FakeDora
 ) -> None:
-    """The authoritative check is the acquire, not the pre-flight peek.
-
-    A lease taken between the peek and the acquire (another submitter, or the
-    digest job) must still refuse this submission — and the job dora_runner
-    already accepted has to be called off rather than left running against a
-    capture someone else holds.
-    """
+    """The N-encoder case at its real width (N is 2-5 in practice)."""
     capture_id = seed_capture(lease_client)
+
+    for _ in range(5):
+        assert submit(lease_client, capture_id).status_code == 201
+
     store = lease_client.app.state.capture_store
-    real_acquire = store.acquire_lease
-
-    def steal_then_fail(cid: str, owner: str, *, ttl_s: float) -> bool:
-        # Simulates the race: someone else got there first.
-        real_acquire(cid, "job:someone_else", ttl_s=ttl_s)
-        return real_acquire(cid, owner, ttl_s=ttl_s)
-
-    store.acquire_lease = steal_then_fail  # type: ignore[method-assign]
-    try:
-        refused = submit(lease_client, capture_id)
-    finally:
-        store.acquire_lease = real_acquire  # type: ignore[method-assign]
-
-    assert refused.status_code == 409
-    assert refused.json()["error"]["code"] == "capture_busy"
-    assert dora.canceled == ["job_1"]
+    assert len(store.lease_holders(capture_id)) == 5
+    assert store.has_live_lease(capture_id) is True
 
 
 def test_delete_is_refused_while_a_job_holds_the_lease(
@@ -479,7 +475,7 @@ def test_polling_a_running_job_extends_its_lease(
     assert store.get_capture(capture_id).lease_owner == f"job:{job_id}"
 
 
-def test_renewal_never_steals_a_lease_from_another_job(
+def test_renewal_extends_only_the_polled_jobs_own_hold(
     lease_client: TestClient, dora: FakeDora
 ) -> None:
     """A stale poll for a job whose lease expired must not take it back off the
@@ -491,11 +487,19 @@ def test_renewal_never_steals_a_lease_from_another_job(
     store.release_lease(capture_id, f"job:{stale_job}")
     store.acquire_lease(capture_id, "job:job_later", ttl_s=600)
 
-    # The stale job is still "running", so this poll would renew — but the
-    # lease is someone else's now.
+    before = {h["owner"]: h["expires_at"] for h in store.lease_holders(capture_id)}
+
+    # The stale job is still "running", so this poll renews ITS hold. Under a
+    # shared lease that takes nothing from anyone — but it must not touch the
+    # other holder's row, which is the property this test was always about.
     lease_client.get(f"/api/v1/jobs/{stale_job}/status")
 
-    assert store.get_capture(capture_id).lease_owner == "job:job_later"
+    after = {h["owner"]: h["expires_at"] for h in store.lease_holders(capture_id)}
+    assert after["job:job_later"] == before["job:job_later"], (
+        "renewing one job's hold moved another's expiry; a poll must only ever "
+        "extend the row it names"
+    )
+    assert f"job:{stale_job}" in after
 
 
 # ---- compensation when the create path fails after the acquire ---------------

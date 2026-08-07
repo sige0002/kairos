@@ -401,20 +401,21 @@ class CaptureService(CaptureReviewMixin, CaptureDeletionMixin, CaptureArchiveMix
             )
 
     def _reject_leased(self, capture: Capture) -> None:
-        if not self._store.has_live_lease(capture.capture_id):
+        """§7.1: refuse while ANY reader still holds the capture.
+
+        The guard is unchanged by the shared rewrite — one live holder is
+        enough — but the refusal now names all of them. With N encoders running
+        on one recording, "a job is working on this" is true and useless; an
+        operator deciding whether to wait needs the count and the last expiry.
+        """
+        holders = self._store.lease_holders(capture.capture_id)
+        if not holders:
             return
         raise ApiError(
             status_code=409,
             code="capture_busy",
-            message=(
-                f"{capture.lease_owner} is working on {capture.capture_id} "
-                f"until {capture.lease_expires_at}; try again after that."
-            ),
-            details={
-                "capture_id": capture.capture_id,
-                "lease_owner": capture.lease_owner,
-                "lease_expires_at": capture.lease_expires_at,
-            },
+            message=_busy_message(capture.capture_id, holders),
+            details=_busy_details(capture.capture_id, holders),
         )
 
     def _reject_dataset_member(
@@ -597,6 +598,38 @@ def _restore_record_from_row(
             "could not restore record.json from the winning row",
             extra={"capture_id": capture.capture_id, "error": str(exc)},
         )
+
+
+def _busy_message(capture_id: str, holders: list[dict[str, str]]) -> str:
+    """One sentence for a capture held by one reader or by several."""
+    last = holders[-1]["expires_at"]
+    if len(holders) == 1:
+        return (
+            f"{holders[0]['owner']} is working on {capture_id} until {last}; "
+            "try again after that."
+        )
+    return (
+        f"{len(holders)} jobs are working on {capture_id}; the last finishes "
+        f"by {last}. Try again after that."
+    )
+
+
+def _busy_details(capture_id: str, holders: list[dict[str, str]]) -> dict[str, Any]:
+    """The 409 body. ``holders`` is the truth; the two scalars are the summary.
+
+    ``lease_owner``/``lease_expires_at`` name the holder whose lease expires
+    LAST, which is the honest scalar answer to "who am I waiting on and until
+    when" — it is the moment the capture becomes deletable. They are kept
+    because a client that only knows the single-owner shape still reads them,
+    and they stay correct rather than naming an arbitrary one of N.
+    """
+    last = holders[-1]
+    return {
+        "capture_id": capture_id,
+        "holders": holders,
+        "lease_owner": last["owner"],
+        "lease_expires_at": last["expires_at"],
+    }
 
 
 def _row_label_overrides(

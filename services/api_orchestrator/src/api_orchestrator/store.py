@@ -300,7 +300,7 @@ class CaptureStore:
         """Return one capture with its local replica attached, or ``None``."""
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT * FROM captures WHERE capture_id = ?", (capture_id,)
+                "SELECT * FROM captures_with_lease WHERE capture_id = ?", (capture_id,)
             ).fetchone()
             if row is None:
                 return None
@@ -376,7 +376,8 @@ class CaptureStore:
 
         with self._conn() as conn:
             rows = conn.execute(
-                f"SELECT * FROM captures {where} ORDER BY seq DESC LIMIT ?", params
+                f"SELECT * FROM captures_with_lease {where} ORDER BY seq DESC LIMIT ?",
+                params,
             ).fetchall()
             has_more = len(rows) > limit
             page = rows[:limit]
@@ -421,7 +422,8 @@ class CaptureStore:
         placeholders = ", ".join("?" for _ in values)
         with self._conn() as conn:
             rows = conn.execute(
-                f"SELECT * FROM captures WHERE state IN ({placeholders}) ORDER BY seq",
+                f"SELECT * FROM captures_with_lease "
+                f"WHERE state IN ({placeholders}) ORDER BY seq",
                 values,
             ).fetchall()
             captures = [self._capture_from_row(r) for r in rows]
@@ -465,7 +467,7 @@ class CaptureStore:
         """Look a capture up by its display name (recorder correlation only)."""
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT * FROM captures WHERE run_id = ?", (run_id,)
+                "SELECT * FROM captures_with_lease WHERE run_id = ?", (run_id,)
             ).fetchone()
         return self._capture_from_row(row) if row is not None else None
 
@@ -579,55 +581,96 @@ class CaptureStore:
     # ---- leases (§7.1) -----------------------------------------------------
 
     def acquire_lease(self, capture_id: str, owner: str, *, ttl_s: float) -> bool:
-        """Take or renew the lease on a capture. ``False`` = someone else holds it.
+        """Take or renew *owner*'s hold on a capture. Always succeeds.
 
-        A job must hold this before touching ``objects/<capture_id>``, and
-        discard/delete refuse while it is live. An **expired** lease is not a
-        lease: a job that died holding one must not lock its capture out of
-        deletion forever, which is why the guard compares against now rather
-        than merely checking for a non-null owner.
+        §7.1's lease is SHARED: several readers may hold one capture at once,
+        which is what lets the N camera encoders of a single recording run in
+        parallel. So this no longer arbitrates between jobs — it records that
+        one more of them is touching ``objects/<capture_id>``, and the thing it
+        protects is unchanged: discard and delete refuse while any live holder
+        remains.
+
+        Renewal is the same statement as acquisition, scoped to this owner's row
+        by the primary key, so a poll for one job cannot extend another's.
+
+        Expired rows for this capture are swept here rather than by a timer.
+        An expired lease is already not a lease (every read compares against
+        now), so the sweep is hygiene, not correctness — which is exactly why it
+        can ride on a write that was happening anyway instead of needing a task
+        that could itself die.
         """
         now = datetime.now(UTC)
-        expires = utc_iso8601_of(now + timedelta(seconds=ttl_s))
         stamp = utc_iso8601_of(now)
+        expires = utc_iso8601_of(now + timedelta(seconds=ttl_s))
         with self._conn() as conn:
-            cur = conn.execute(
-                "UPDATE captures SET lease_owner = ?, lease_expires_at = ?, "
-                "updated_at = ? WHERE capture_id = ? AND ("
-                "  lease_owner IS NULL OR lease_owner = ? "
-                "  OR lease_expires_at IS NULL OR lease_expires_at <= ?)",
-                (owner, expires, stamp, capture_id, owner, stamp),
+            conn.execute(
+                "DELETE FROM capture_leases WHERE capture_id = ? AND expires_at <= ?",
+                (capture_id, stamp),
             )
-        return cur.rowcount > 0
+            conn.execute(
+                "INSERT INTO capture_leases (capture_id, owner, expires_at, "
+                "acquired_at) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT (capture_id, owner) DO UPDATE SET expires_at = "
+                "excluded.expires_at",
+                (capture_id, owner, expires, stamp),
+            )
+        return True
 
     def release_lease(self, capture_id: str, owner: str) -> bool:
-        """Drop the lease if *owner* still holds it."""
+        """Drop *owner*'s hold. Other holders are untouched.
+
+        Owner-scoped for the same reason it always was: a stale poll for a
+        finished job must not be able to release the hold of a job that is still
+        working. With several holders that matters more, not less.
+        """
         with self._conn() as conn:
             cur = conn.execute(
-                "UPDATE captures SET lease_owner = NULL, lease_expires_at = NULL, "
-                "updated_at = ? WHERE capture_id = ? AND lease_owner = ?",
-                (utc_now_iso8601(), capture_id, owner),
+                "DELETE FROM capture_leases WHERE capture_id = ? AND owner = ?",
+                (capture_id, owner),
             )
         return cur.rowcount > 0
 
+    def lease_holders(self, capture_id: str) -> list[dict[str, str]]:
+        """Every live holder, soonest expiry first. ``[]`` = nobody.
+
+        The list is what a 409 reports: with N encoders running, "a job is
+        working on this" is true but useless, and an operator deciding whether
+        to wait needs to see how many and until when.
+        """
+        stamp = utc_now_iso8601()
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT owner, expires_at FROM capture_leases "
+                "WHERE capture_id = ? AND expires_at > ? ORDER BY expires_at, owner",
+                (capture_id, stamp),
+            ).fetchall()
+        return [
+            {"owner": row["owner"], "expires_at": row["expires_at"]} for row in rows
+        ]
+
     def has_live_lease(self, capture_id: str) -> bool:
-        """Whether an unexpired lease is held on this capture."""
+        """Whether ANY unexpired hold remains — the delete guard's question."""
         stamp = utc_now_iso8601()
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT 1 FROM captures WHERE capture_id = ? "
-                "AND lease_owner IS NOT NULL AND lease_expires_at > ?",
+                "SELECT 1 FROM capture_leases WHERE capture_id = ? "
+                "AND expires_at > ? LIMIT 1",
                 (capture_id, stamp),
             ).fetchone()
         return row is not None
 
     def holds_lease(self, capture_id: str, owner: str) -> bool:
-        """Whether *owner* still holds an unexpired lease (mid-job re-check)."""
+        """Whether *owner*'s own hold is still live (the mid-job re-check).
+
+        Unchanged in meaning by the shared rewrite: a job re-checks that IT
+        still holds the capture before its final write, and another reader
+        holding one says nothing about that.
+        """
         stamp = utc_now_iso8601()
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT 1 FROM captures WHERE capture_id = ? AND lease_owner = ? "
-                "AND lease_expires_at > ?",
+                "SELECT 1 FROM capture_leases WHERE capture_id = ? AND owner = ? "
+                "AND expires_at > ?",
                 (capture_id, owner, stamp),
             ).fetchone()
         return row is not None
@@ -741,7 +784,10 @@ class CaptureStore:
                 WHERE r.instance_id = ?
                   AND r.state = ?
                   AND c.state IN ({placeholders})
-                  AND (c.lease_owner IS NULL OR c.lease_expires_at <= ?)
+                  AND NOT EXISTS (
+                        SELECT 1 FROM capture_leases l
+                         WHERE l.capture_id = c.capture_id AND l.expires_at > ?
+                      )
                 ORDER BY c.seq
                 """,
                 (
@@ -1506,7 +1552,7 @@ class CaptureStore:
         placeholders = ", ".join("?" for _ in TOMBSTONE_STATES)
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT * FROM captures WHERE batch_id = ? "
+                "SELECT * FROM captures_with_lease WHERE batch_id = ? "
                 f"AND state NOT IN ({placeholders}) "
                 "ORDER BY index_in_batch, seq",
                 (batch_id, *sorted(TOMBSTONE_STATES)),

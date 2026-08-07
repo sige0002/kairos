@@ -294,10 +294,23 @@ class TestLease:
         assert loaded is not None
         assert loaded.lease_owner == "digest"
 
-    def test_a_second_owner_cannot_take_a_live_lease(self, store: CaptureStore) -> None:
+    def test_a_second_owner_may_hold_it_too(self, store: CaptureStore) -> None:
+        """§7.1 leases are SHARED (rev.2.15), so this no longer arbitrates.
+
+        Was ``test_a_second_owner_cannot_take_a_live_lease``. The single-owner
+        rule is what stopped the N camera encoders of one recording running in
+        parallel; what the lease protects — deletion refused while anyone holds
+        it — is asserted below and is unchanged.
+        """
         capture = store.create_capture(_make_capture())
         store.acquire_lease(capture.capture_id, "digest", ttl_s=60)
-        assert store.acquire_lease(capture.capture_id, "export", ttl_s=60) is False
+
+        assert store.acquire_lease(capture.capture_id, "export", ttl_s=60) is True
+        assert [h["owner"] for h in store.lease_holders(capture.capture_id)] == [
+            "digest",
+            "export",
+        ]
+        assert store.has_live_lease(capture.capture_id) is True
 
     def test_the_same_owner_may_renew(self, store: CaptureStore) -> None:
         capture = store.create_capture(_make_capture())

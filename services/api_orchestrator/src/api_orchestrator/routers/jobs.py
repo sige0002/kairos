@@ -9,7 +9,7 @@ lease-ignorant: it reads a capture and writes a report, and knows nothing about
 deletion. So the orchestrator — which owns both the catalog and the deletion
 path — takes the lease on the job's behalf at submission, extends it whenever it
 sees the job still running, and drops it as soon as it sees the job finish.
-While the lease is live, discard and delete answer 409 ``capture_busy`` rather
+While any holder is live, discard and delete answer 409 ``capture_busy`` rather
 than renaming ``objects/<id>`` out from under a running job.
 
 **What the TTL actually guarantees** (rev.2.6). The lease is renewed on
@@ -26,10 +26,17 @@ looked:
   which is why this is accepted rather than papered over with a renewal loop the
   orchestrator would have to run for jobs it is not watching.
 
-An expired lease is already not-a-lease (``store.acquire_lease`` compares
-against *now*), so a job whose process died never locks its capture out of
-deletion forever. That is the property the whole design leans on: every failure
-here resolves toward "deletable again", never toward "permanently stuck".
+An expired hold is already not a hold (every read compares against *now*), so a
+job whose process died never locks its capture out of deletion forever. That is
+the property the whole design leans on, and the shared rewrite preserves it
+holder by holder: each one expires on its own, and the capture becomes deletable
+when the last of them does. Every failure here resolves toward "deletable
+again", never toward "permanently stuck".
+
+**The lease does not gate submission** (rev.2.15). It is shared, so several jobs
+may hold one capture at once — that is what lets the N camera encoders of one
+recording run in parallel, and it is why submitting a job no longer asks whether
+somebody else holds it.
 """
 
 from __future__ import annotations
@@ -51,7 +58,6 @@ from api_orchestrator.models import (
     JobResult,
     JobStatus,
 )
-from api_orchestrator.store import CaptureStore
 
 logger = logging.getLogger("kairos")
 
@@ -198,12 +204,12 @@ async def create_job(request: Request, body: JobCreateRequest) -> JobCreateRespo
             details={"capture_id": body.capture_id, "state": str(capture.state)},
         )
     _reject_tombstoned(capture)
-    # Checked before anything is created: another job already working on this
-    # capture is the common case, and refusing here means no doomed job row is
-    # ever written. The authoritative check is the acquire below — this one only
-    # keeps the compensating cancel rare.
-    if store.has_live_lease(body.capture_id):
-        raise _capture_busy(store, body.capture_id)
+    # No lease gate here any more. §7.1's lease became SHARED precisely so that
+    # several jobs can work on one capture at once — the N camera encoders of a
+    # single recording are the case it exists for — and a pre-flight "somebody
+    # else holds this" would refuse exactly the submissions the change is meant
+    # to allow. What the lease still protects is unchanged and lives on the
+    # delete path: discard and delete refuse while any holder remains.
     if body.pipeline in _TEMPLATE_PIPELINES:
         raw = body.params.get("template")
         if not isinstance(raw, dict):
@@ -223,11 +229,11 @@ async def create_job(request: Request, body: JobCreateRequest) -> JobCreateRespo
     # the acquire necessarily follows the create — and if the capture turns out
     # to be busy after all, the job we just created is cancelled rather than
     # left running against a capture someone else holds.
-    if not store.acquire_lease(
-        body.capture_id, _lease_owner(job_id), ttl_s=_lease_ttl_s()
-    ):
-        await _abandon_job(client, job_id, body.capture_id)
-        raise _capture_busy(store, body.capture_id)
+    # Shared, so this always succeeds; it records one more holder rather than
+    # arbitrating. Still taken AFTER the create because the id is what ties the
+    # hold to the work — it is what a 409 shows an operator and what the release
+    # below matches on.
+    store.acquire_lease(body.capture_id, _lease_owner(job_id), ttl_s=_lease_ttl_s())
     try:
         status_body = await client.job_status(job_id)
         job = JobCreateResponse.model_validate(status_body)
@@ -303,35 +309,6 @@ def _reject_tombstoned(capture: Capture) -> None:
             )
         ),
         details={"capture_id": capture.capture_id, "state": str(capture.state)},
-    )
-
-
-def _capture_busy(store: CaptureStore, capture_id: str) -> ApiError:
-    """The 409 §7.1 requires, naming who holds the capture and until when.
-
-    Worded like the delete path's ``capture_busy`` so an operator meets the same
-    sentence whichever action they were refused.
-    """
-    capture = store.get_capture(capture_id)
-    owner = capture.lease_owner if capture else None
-    expires = capture.lease_expires_at if capture else None
-    # The lease can be gone by the time this message is built (it expired, or
-    # its job finished between the refusal and this read), so the deadline is
-    # only promised when there is one to promise — "until None" is worse than
-    # saying nothing.
-    until = f" until {expires}" if expires else ""
-    return ApiError(
-        status_code=409,
-        code="capture_busy",
-        message=(
-            f"{owner or 'Another job'} is working on {capture_id}"
-            f"{until}; try again in a moment."
-        ),
-        details={
-            "capture_id": capture_id,
-            "lease_owner": owner,
-            "lease_expires_at": expires,
-        },
     )
 
 

@@ -41,12 +41,16 @@ logger = logging.getLogger("kairos")
 # KAIROS_* env convention (see plugin_loader's KAIROS_PLUGINS_DIR / _INPROCESS).
 _MAX_CONCURRENCY_ENV = "KAIROS_DORA_MAX_CONCURRENCY"
 _JOB_TIMEOUT_ENV = "KAIROS_DORA_JOB_TIMEOUT_S"
-_DEFAULT_MAX_CONCURRENCY = 2
+# 4, not 2, since §7.1's lease became shared (rev.2.15): the N camera encoders
+# of ONE recording now run in parallel, so two slots would serialise the very
+# case the change exists for. N is 2-5 in practice, so 4 covers the usual
+# recording without letting a bulk submission thrash one disk.
+_DEFAULT_MAX_CONCURRENCY = 4
 _DEFAULT_JOB_TIMEOUT_S = 900.0
 
 
 def _job_max_concurrency() -> int:
-    """Max jobs executed at once (``KAIROS_DORA_MAX_CONCURRENCY``, default 2)."""
+    """Max jobs executed at once (``KAIROS_DORA_MAX_CONCURRENCY``, default 4)."""
     try:
         return max(1, int(os.environ.get(_MAX_CONCURRENCY_ENV, "")))
     except ValueError:

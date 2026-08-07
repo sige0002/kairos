@@ -17,7 +17,7 @@ from __future__ import annotations
 # found in the field, not by tests, because tests only ever see fresh schemas.
 # The rebuild is the designed absorption path; refusing to bump is how it is
 # bypassed by accident.
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 SCHEMA = """
 -- One recording, merged with the operator's review of it. Replaces v1's
@@ -71,9 +71,9 @@ CREATE TABLE IF NOT EXISTS captures (
     -- archived capture went — the one question the archive event exists for.
     archived_at        TEXT,
     archive_destination TEXT,
-    -- Lease (§7.1): a job is touching objects/<capture_id> right now.
-    lease_owner        TEXT,
-    lease_expires_at   TEXT,
+    -- Leases (§7.1) live in capture_leases, not here: a capture can be held by
+    -- SEVERAL readers at once (N camera encoders on one recording), which a
+    -- pair of columns cannot express.
     created_at         TEXT,
     updated_at         TEXT
 );
@@ -86,6 +86,50 @@ CREATE TABLE IF NOT EXISTS captures (
 DROP INDEX IF EXISTS idx_captures_seq;
 CREATE INDEX IF NOT EXISTS idx_captures_state ON captures (state);
 CREATE INDEX IF NOT EXISTS idx_captures_batch ON captures (batch_id);
+
+-- §7.1 leases: who is touching objects/<capture_id> right now. SHARED — any
+-- number of readers may hold one capture at once, which is what lets the N
+-- camera encoders of one recording run in parallel. What the lease protects is
+-- unchanged: discard and delete refuse while ANY live holder remains.
+--
+-- One row per (capture, owner) so a holder can be renewed and released on its
+-- own. Volatile and NOT rebuilt (§8): a lease describes a process that is
+-- running now, and a rebuild happens when no such process exists — resurrecting
+-- one would lock a capture out of deletion with no job left to release it.
+CREATE TABLE IF NOT EXISTS capture_leases (
+    capture_id  TEXT NOT NULL,
+    owner       TEXT NOT NULL,
+    expires_at  TEXT NOT NULL,
+    acquired_at TEXT,
+    PRIMARY KEY (capture_id, owner)
+);
+-- Covers both questions asked of this table: "is anyone still holding this
+-- capture" and "who, and until when".
+CREATE INDEX IF NOT EXISTS idx_capture_leases_live
+    ON capture_leases (capture_id, expires_at);
+
+-- Captures with their lease summary attached, so every read path that already
+-- did ``SELECT * FROM captures`` keeps one statement and one row shape. The
+-- summary is deliberately the LATEST-expiring live holder: that is the honest
+-- scalar answer to "who is blocking me and until when", because it is the
+-- moment the capture becomes deletable. A caller that needs all of them asks
+-- ``lease_holders`` (the 409 body does).
+--
+-- Expired rows are filtered here rather than deleted on a timer: an expired
+-- lease is already not a lease, so a reader that dies costs one stale row until
+-- the next acquire on that capture sweeps it, and never a capture that cannot
+-- be deleted.
+DROP VIEW IF EXISTS captures_with_lease;
+CREATE VIEW captures_with_lease AS
+SELECT c.*,
+       (SELECT l.owner FROM capture_leases l
+         WHERE l.capture_id = c.capture_id
+           AND l.expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         ORDER BY l.expires_at DESC LIMIT 1) AS lease_owner,
+       (SELECT MAX(l.expires_at) FROM capture_leases l
+         WHERE l.capture_id = c.capture_id
+           AND l.expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) AS lease_expires_at
+FROM captures c;
 
 -- Where each installation's copy of a capture stands. Keyed by instance so a
 -- transferred capture can say "present here, absent there" rather than one
@@ -227,8 +271,6 @@ CAPTURE_COLUMNS: frozenset[str] = frozenset(
         "delete_reason",
         "archived_at",
         "archive_destination",
-        "lease_owner",
-        "lease_expires_at",
     }
 )
 

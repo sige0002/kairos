@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Any
 
 from kairos_common import utc_now_iso8601
+from kairos_common.atomic_io import atomic_write_text
 from mcap.reader import make_reader
 
 from dora_runner.loss_report_config import DEFAULT_GAP_THRESHOLD_MULTIPLIER
@@ -187,5 +188,5 @@ def run_loss_report(
     report_dir = data_dir / "report" / "loss_report" / capture_id
     report_dir.mkdir(parents=True, exist_ok=True)
     summary_path = report_dir / "summary.json"
-    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    atomic_write_text(summary_path, json.dumps(summary, indent=2))
     return {"summary": summary, "artifacts": [str(summary_path)]}

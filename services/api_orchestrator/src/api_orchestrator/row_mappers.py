@@ -83,11 +83,14 @@ def capture_columns(capture: Capture) -> dict[str, Any]:
         "delete_reason": capture.delete_reason,
         "archived_at": capture.archived_at,
         "archive_destination": capture.archive_destination,
-        "lease_owner": capture.lease_owner,
-        "lease_expires_at": capture.lease_expires_at,
         "created_at": capture.created_at,
         "updated_at": capture.updated_at,
     }
+
+
+def _optional_column(row: sqlite3.Row, name: str) -> Any:
+    """A column that only some of the capture SELECTs project."""
+    return row[name] if name in row.keys() else None
 
 
 def capture_from_row(row: sqlite3.Row) -> Capture:
@@ -126,8 +129,10 @@ def capture_from_row(row: sqlite3.Row) -> Capture:
         delete_reason=row["delete_reason"],
         archived_at=row["archived_at"],
         archive_destination=row["archive_destination"],
-        lease_owner=row["lease_owner"],
-        lease_expires_at=row["lease_expires_at"],
+        # Present when the row came from ``captures_with_lease`` (every path
+        # that serves a capture to a client); absent on a raw ``captures`` row.
+        lease_owner=_optional_column(row, "lease_owner"),
+        lease_expires_at=_optional_column(row, "lease_expires_at"),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )

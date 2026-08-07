@@ -44,6 +44,7 @@ from kairos_common import (
     load_recording_config,
     resolve_config_path,
 )
+from kairos_common.atomic_io import atomic_write_text
 from kairos_common.monitoring.expected_hz import make_expected_hz_resolver
 
 from dora_runner.bagflow_flow import FlowBindings, materialize_flow
@@ -331,7 +332,7 @@ async def _run_locked(
         )
     )
     summary_path = report_dir / "summary.json"
-    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    atomic_write_text(summary_path, json.dumps(summary, indent=2))
 
     # The materialized flow is published on every run, pass or fail: "what did
     # this validation actually check?" is asked most often about a run that

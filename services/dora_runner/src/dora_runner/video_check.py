@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Any
 
 from kairos_common import utc_now_iso8601
+from kairos_common.atomic_io import atomic_write_text
 
 from dora_runner.mcap_utils import (
     find_mcap,
@@ -451,7 +452,7 @@ def run_video_check(
     # is just as deterministic for an immutable bag, and re-scanning the whole
     # topic to re-learn "no frames" costs the same seconds as an encode.
     try:
-        sidecar.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+        atomic_write_text(sidecar, json.dumps(summary, indent=2))
     except OSError:
         pass  # caching is best-effort; the result itself is still returned
     return _result(summary, out_path)

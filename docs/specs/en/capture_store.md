@@ -290,15 +290,66 @@ The common path for discard (discarding something not yet sent) and delete.
 
 ### 7.1 capture lease
 
-`captures` carries `lease_owner` / `lease_expires_at`. The digest job and dora_runner jobs acquire a lease before touching `objects/<id>`. discard / delete answer `409` while a lease is live.
+**The lease is shared (a shared reader lease, rev.2.15).** One capture can be **held by several
+holders at once**: one holder = one row in `capture_leases(capture_id, owner, expires_at,
+acquired_at)` (PK `(capture_id, owner)`, index on `(capture_id, expires_at)`). The digest job and
+dora_runner jobs take a hold before touching `objects/<id>`. **discard / delete answer
+`409 capture_busy` while even one live holder exists.**
 
-- A job that has lost its lease, or whose state is no longer terminal, **aborts and writes nothing**.
-- **The digest job** holds the lease for the entire span of its run and, **immediately before the final manifest write, re-reads both `captures.state` and its own hold on the lease**. If either has broken (it became `delete_pending|discarded|deleted`, or the lease was lost) it **aborts right there — it does not update**. What closes the window is not a DB lock but **the lease itself**; the last re-read merely confirms, at the final moment a write is still possible, the §7.1 requirement that "a job that has lost its lease gives up quietly and writes nothing".
-- **A job must not create `objects/<id>/`** (writing a tmp there would resurrect the tree).
-- dora_runner's jobs may remain **lease-unaware** (they write only to `report/`, so the ban on writing to `objects/` holds structurally). orchestrator manages the lease on their behalf: acquire on submission, **renew when a status / result poll observes a non-terminal state (renew-on-poll)**, and release within the owner scope once a terminal state is observed.
-  - **Acquisition necessarily comes after the job is created** (the order is forced). The lease's owner string is `job:<job_id>`, and it is dora_runner that issues `job_id`, so without creating the job there is no owner to name — that id is precisely the name shown to the operator in a `409`, and the key matched against on release. The create → acquire order therefore cannot be broken. **If the acquire fails, the job just created is undone** (a compensating cancel). A cheap pre-check is also run once before creation to reduce how often that compensation path is entered (the authoritative decision remains the acquire that follows).
-- **What the TTL does not guarantee (stated honestly)**: renew-on-poll guarantees "**it stays alive while someone is watching**"; it does **not** cover waiting in the queue. dora_runner caps its concurrency, so a submitted job can sit behind other jobs, and if nobody polls during that time the lease expires and delete wins. That job then **fails cleanly** against a directory that has since moved to `.trash` — a slow, orderly ending, not corruption. We accept this failure rather than run a renewal loop for jobs the orchestrator is not watching.
-- An expired lease is not a lease (`acquire_lease` compares against the current time), so a job whose process died never locks a capture forever. The property this design leans on is that **every failure converges toward "you can delete it again"**.
+- **Why shared**: the single-owner lease conflated "someone is touching this" (the record) with
+  mutual exclusion between jobs — and the exclusion was never the goal; its only observable effect
+  was that a capture's N camera topics (2-5 in practice) could not encode in parallel. So the
+  exclusion is gone and the record remains.
+- **The invariant is unchanged**, reproduced per holder — an expired hold is not a hold (every read
+  compares against now) / holders expire independently / **the moment the last one is gone, the
+  capture is deletable again**. Every failure still converges toward "deletable again".
+- **Acquisition never excludes** (it always succeeds). Accordingly, **the submission-time "is
+  someone holding this" pre-check is removed** — that check was the very gate that serialized the
+  encoders.
+- **No GC task.** Expired rows are swept opportunistically by the next acquisition on the same
+  capture. An expired hold already stopped counting at read time, so the sweep is hygiene, not
+  correctness — which is exactly why it can ride an inevitable write instead of being a resident
+  task that can die.
+- **The `409` details name every holder**: `{ capture_id, holders: [{owner, expires_at}, …],
+  lease_owner, lease_expires_at }`. `holders` is sorted by expires_at; `lease_owner` /
+  `lease_expires_at` are a scalar summary pointing at the **last holder to expire** (= the answer
+  to "when can I retry"), kept for clients that only know the single-owner shape.
+- **The `captures` columns `lease_owner` / `lease_expires_at` are gone.** The API fields of those
+  names are served by the `captures_with_lease` view as the scalar summary above. Leases are
+  **volatile and out of rebuild's scope** (§8) — a lease describes a process running right now, and
+  a rebuild runs precisely when no such process exists; restoring one would lock a capture behind a
+  holder nobody can release.
+
+- A job that lost its hold / whose capture left a terminal state **aborts and writes nothing**.
+- **The digest job** holds for its whole run and re-reads both `captures.state` and its own hold
+  **immediately before the final manifest write**; if either has collapsed it stops there — no
+  update. What closes the window is the lease itself, not a DB lock.
+- **Jobs must not create `objects/<id>/`** (a tmp write would resurrect the tree).
+- dora_runner jobs stay **lease-ignorant** (they write only under `report/`); the orchestrator
+  manages the hold on their behalf: acquire at submission, **renew on every status/result poll
+  observation while non-terminal**, release owner-scoped on observing terminal.
+  - **Acquisition comes after job creation** (the order is forced): the owner string is
+    `job:<job_id>` and dora_runner mints the id — it is also the name a `409` shows an operator and
+    the key release matches on. If a later step fails, the just-created job is cancelled
+    (compensating cancel); a cheap pre-check before creation keeps that path rare.
+- **What the TTL does not guarantee (stated honestly)**: renew-on-poll means "alive while someone
+  is watching", not "alive while queued". A job waiting behind others with nobody polling can lose
+  its hold, and delete wins; that job later fails cleanly against a directory moved to `.trash` — a
+  slow clean failure, not corruption.
+- An expired lease is not a lease (reads compare against now), so a job whose process died can
+  never lock a capture forever. **Every failure converges toward "deletable again"** — the property
+  this design leans on.
+- **Known follow-up (rev.2.15)**: dataset archive's "halt on a live lease" is unchanged; with more
+  holders it will halt more often. Whether archive should wait for holders, or judge per holder, is
+  a separate decision.
+- **Concurrent runs of the same pipeline (adjudicated in rev.2.15)**: with the submission-time
+  exclusion gone, several jobs of one pipeline can run on one capture. The ruling is **allow** —
+  the camera case (video_check) never collided anyway (artifact names derive from the topic), and
+  the pipelines that write a fixed `summary.json` now write **every artifact atomically
+  (tmp → rename)**, so a concurrent run normalizes to **whole-file last-writer-wins** — semantically
+  identical to running twice sequentially, with no torn bytes and no partial reads. De-duplicating
+  a fully identical (capture, pipeline, params) submission is a follow-up if ever needed (the UI
+  already suppresses double-submits).
 
 ## 8. DB schema v2 and rebuild
 
