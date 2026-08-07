@@ -122,6 +122,7 @@ kairos/
   - テスト: **pytest**（ROS 2 ノードの結合は `launch_testing` を任意で）。
   - パッケージ: 各サービスに `pyproject.toml`（PEP 621）。
 - **TypeScript / frontend**: ESLint + Prettier、テストは Vitest、`tsconfig` は strict。
+  - **Collect の新ロジックは `v2/collect/hooks/`（純粋な状態遷移は `machine/`）へ置き、`useBatchMachine.ts` 本体に足さない。** 修正が本体へ積まれて 3,274 行まで育った実績があるため（2026-08 リファクタで分割済み）。既存の抽出済み hook（useTakeClock / usePreArm / useCollectContext 等）が配置の見本。
 - 上記は合意済みのベースライン。個別の追加規約は `docs/` に分離する。
 
 ## ビルド / テスト / 実行コマンド
