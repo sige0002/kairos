@@ -409,6 +409,18 @@ export interface CaptureListParams {
  *  A mismatch is a 409 telling the client to reload — never a merge. */
 export interface ReviewSaveRequest {
   base_revision: number;
+  // ---- the operator-owned labels (editable from Review) ----
+  // An imported bag is born without these: the recorder stamps them on a take
+  // it started, and nothing stamps them on a directory that arrived from
+  // elsewhere. Sent on the same compare-and-swap as the rest of the review.
+  //
+  // Explicit `null` CLEARS a label, returning the field to whatever the
+  // recording's own manifest said. Omitting the key leaves it alone — the two
+  // are different requests, which is why these are `| null` and not just
+  // optional strings.
+  operator?: string | null;
+  task?: string | null;
+  robot?: string | null;
   task_result?: TaskResult | null;
   failure_reason?: string | null;
   quality?: Quality | null;

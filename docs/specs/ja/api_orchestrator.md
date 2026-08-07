@@ -45,7 +45,7 @@
 - Pipeline / Job（stage3。詳細は [dora_runner](dora_runner.md)）: `GET /api/v1/pipelines`、`POST /api/v1/jobs`、`GET /api/v1/jobs/{id}/status`、`GET /api/v1/jobs/{id}/result`、`POST /api/v1/jobs/{id}/cancel`
 - 検証テンプレート: `GET/POST /api/v1/validation/templates`、`POST /api/v1/validation/templates/generate`（capture から雛形生成。body `{ capture_id }`）
 - ワンクリック検証プリセット: `GET /api/v1/validation/presets`（config 定義のプリセット＋未検証 capture 一覧）
-- 設定: `GET /api/v1/config`（frontend 実行時設定: endpoints / tabs / defaults（`ros_domain_id` を含む）/ stream / schemas）。〔`GET/POST /api/v1/settings` は**未実装**（将来）。現状は下の `PUT /api/v1/config/recording` が設定編集の入口〕
+- 設定: `GET /api/v1/config`（frontend 実行時設定: endpoints / tabs / defaults（`ros_domain_id`・`video_playback_rate`〔Review プレビューの既定再生速度。env `VIDEO_PLAYBACK_RATE`、既定 4.0〕を含む）/ stream / schemas）。〔`GET/POST /api/v1/settings` は**未実装**（将来）。現状は下の `PUT /api/v1/config/recording` が設定編集の入口〕
 - 収録設定（フル編集）: `GET /api/v1/config/recording` → `{ config: <RecordingConfig dump>|null, path }`、`PUT /api/v1/config/recording`（body `{ config }`。下記「収録設定のフル編集」参照）
 - アラート規則（単一ファイル・アスペクト編集）: `GET/PUT /api/v1/config/alerts`（topic_monitor のアラート規則。`config/<robot>/monitoring/alerts.yaml`。monitor 再起動時に反映）。`GET` は `{ config, raw, path, warnings }`、`PUT` は body `{ config }`（フォーム）または `{ raw }`（生 YAML）。下記「アラート規則の編集」参照（旧 `GET/PUT /api/v1/config/signals` は Review 波形チャートの撤去に伴い 2026-07-15 に削除）
 - 設定カタログ: `GET /api/v1/config/options`、`POST /api/v1/config/select`（検証テンプレート等のカテゴリ別選択肢と現在の選択）、`GET /api/v1/config/robots/{robot}`（**任意のカタログ機体の設定を read-only で返す** — aspect 毎のパース済み内容+要約。ライブ系を切り替えずに他機体を雛形参照するため（Settings）。未知の機体・不正なパス成分は `404`）
@@ -107,7 +107,18 @@ alpha 版につき互換レイヤは置かない。**どれも何もしない**�
 2. `record.json` を `revision = base_revision + 1` で atomic write。失敗 → **`500 review_sidecar_write_failed`、DB は無変更**（何も保存されていないので、同じ `base_revision` でそのまま再試行できる）。
 3. DB を CAS 更新。`rowcount=0` なら **`409`**。書いたサイドカーは巻き戻さない。
 
-- body: `{ base_revision, task_result?, failure_reason?, quality?, quality_source?, review_status?, batch_id?, index_in_batch? }`。
+- body: `{ base_revision, task_result?, failure_reason?, quality?, quality_source?, review_status?, batch_id?, index_in_batch?, operator?, task?, robot? }`。
+- **`operator` / `task` / `robot` はラベル編集**（規約は [capture_store](capture_store.md) §4.3）。主用途は
+  **取り込み bag のラベル付け**（ラベルを持たずに生まれるので後から人が付けるしかない）だが、通常録画の
+  訂正にも使う。CAS・mutex・サイドカー先行はすべて他の review フィールドと同一経路。
+  - **明示 `null`（および空文字・空白のみ）はクリア** → manifest が記録した値に戻る。取り込み bag では
+    記録が無いので `null` に戻る。**省略は変更なし**（既存の override は保たれる）。
+  - override は `record.json` の `labels` に入り、**manifest は書き換えない**。`kairos.db` を消して
+    再起動しても編集は残る（rebuild が manifest の上に `labels` を適用する）。
+  - `/` `\\`・制御文字・`.` / `..` は **`400 unsafe_label`**、255 バイト超は **`400 label_too_long`**。
+    拒否されたリクエストは**何も適用しない**（同一 body 内の他フィールドも含む）。
+  - `operator` / `task` の編集は `views/` の再生成をスケジュールする（dataset が両方を持たないとき
+    `views/` は capture の値にフォールバックするため）。`robot` はパス構成要素ではないので何もしない。
 - **旧 `POST /episodes` の副作用の移設先がここ**: `batches.episodes_recorded` の単調加算と auto-pull の起動は「**その capture への初回 review 保存**」で起きる。
 - 墓標・非在の capture への保存は `409`（`capture_deleting` / `capture_deleted` / `capture_not_present`）。
 

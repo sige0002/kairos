@@ -451,6 +451,14 @@ class ReviewSaveRequest(BaseModel):
     review_status: ReviewStatus | None = None
     batch_id: str | None = None
     index_in_batch: int | None = Field(default=None, ge=0)
+    # §4.3 label overrides. These three differ from every other field here: they
+    # have a value even on a capture nobody has reviewed, because the manifest
+    # supplied one. So ``null`` does not mean "empty" — it means "stop
+    # overriding", and the capture goes back to what the recorder recorded. On
+    # an imported bag, where the manifest recorded nothing, that is null again.
+    operator: str | None = None
+    task: str | None = None
+    robot: str | None = None
 
 
 class ValidationOverrideRequest(BaseModel):

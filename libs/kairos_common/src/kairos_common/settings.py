@@ -128,6 +128,9 @@ class Settings(BaseSettings):
     # an absolute "http://<host>:8002" to connect the browser directly to the
     # streamer instead (then cors_origins must list that browser origin).
     webrtc_public_url: str = "/webrtc"
+    # Review preview default playback rate (GET /api/v1/config ->
+    # defaults.video_playback_rate; the operator can still change it per player).
+    video_playback_rate: float = 4.0
     # Origins allowed by orchestrator and webrtc_streamer (served + dev).
     # NoDecode: docker compose passes a comma-separated string, not JSON, so
     # skip pydantic-settings' JSON decoding and split it in the validator.

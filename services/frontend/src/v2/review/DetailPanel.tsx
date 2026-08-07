@@ -9,13 +9,15 @@
 // reviewing before the pull is the intended order there.
 
 import type { ReactNode } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useCallback } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getCapture } from '../../api/captures';
 import { queryKeys } from '../../api/queryKeys';
 import { Badge, cn, type Tone } from '../../components/ui';
 import { AvailabilityChip } from '../captures/AvailabilityChip';
 import { availabilityOf } from '../captures/availability';
 import { CaptureInspection } from './CaptureInspection';
+import type { CaptureLabels, LabelEditing } from './LabelRows';
 import { episodeLabel } from './types';
 import type { DisplayQuality, ReviewLane } from './types';
 import type { ReviewState } from './useReviewState';
@@ -147,6 +149,42 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
     ? (detailQuery.data.memberships?.length ?? 0) > 0
     : null;
 
+  // The operator/task/robot edit rides the SAME compare-and-swap save every
+  // other Review control uses (§4.1), so a label edit that races another
+  // terminal is refused and surfaced by the one conflict banner rather than by
+  // a second mechanism with its own idea of what a conflict looks like.
+  const queryClient = useQueryClient();
+  const captureId = sel?.captureId ?? null;
+  const capture = sel?.capture ?? null;
+  const saveLabels = useCallback(
+    async (next: CaptureLabels): Promise<string | null> => {
+      if (!capture || !captureId) return 'Nothing is selected.';
+      const { capture: updated, error, skipped } = await rv.reviewSave.save(capture, next);
+      if (skipped) {
+        return 'A save for this recording is still going — try again in a moment.';
+      }
+      if (error) return `${error.message} ${error.guidance}`.trim();
+      // The save invalidates the capture LIST, which is not what this panel
+      // renders: the rows come from the capture DETAIL, whose own re-read is up
+      // to ten seconds away. Fold the reply in so the edit is visible now.
+      //
+      // MERGED, not replaced: the detail carries the on-disk sidecars
+      // (manifest, record, loss, validation) that a review response does not,
+      // and overwriting wholesale would blank half the inspection.
+      if (updated) {
+        queryClient.setQueryData(queryKeys.capture(captureId), (prev) =>
+          prev ? { ...prev, ...updated } : prev,
+        );
+      }
+      return null;
+    },
+    [capture, captureId, rv.reviewSave, queryClient],
+  );
+  const labels: LabelEditing = {
+    save: saveLabels,
+    saving: captureId ? rv.reviewSave.savingCaptureIds.has(captureId) : false,
+  };
+
   if (!sel) {
     return (
       <div className="flex flex-col overflow-auto rounded-card border border-gray-200 bg-white shadow-card">
@@ -196,7 +234,7 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
 
       <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-[18px] py-3.5">
         {showInspection ? (
-          <CaptureInspection captureId={sel.captureId} />
+          <CaptureInspection captureId={sel.captureId} labels={labels} />
         ) : (
           <div
             data-testid="review-no-local-copy"

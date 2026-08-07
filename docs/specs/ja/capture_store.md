@@ -118,7 +118,8 @@ rebuild はこのファイルも読み、`state='failed'` の行を作る。削�
   "task_result": "success|failure"|null, "failure_reason": str|null,
   "quality": …|null, "quality_source": "operator|quick_check",
   "review_status": "pending|adopted|excluded",
-  "batch_id": str|null, "index_in_batch": N|null, "updated_at": "<ISO8601>" }
+  "batch_id": str|null, "index_in_batch": N|null, "updated_at": "<ISO8601>",
+  "labels": { "operator"?: str, "task"?: str, "robot"?: str } }  // 任意・§4.3
 ```
 
 **review 系フィールドは `record.json` が正、DB はキャッシュ。** これが「kairos.db を消して再起動できる」ことの担保。
@@ -155,6 +156,35 @@ rebuild 時に bag を測り直せば、それは古い時刻を名乗る新し�
 
 書き込みに失敗しても settlement は続行し、行には verdict が入る（警告をログに出す）。失うのは
 「rebuild を越える永続性」だけで、operator が待っている verdict を止める理由にはならない。
+
+### 4.3 ラベル編集（`operator` / `task` / `robot`）
+
+review が書ける列は **measurement と label の区別**で決まる。
+
+- **measurement は不可** — `bytes` / `message_count` / `topics` / `started_at` / `ended_at` / `state` は
+  recorder が観測した事実であり、review では触れない。編集すると封印済み manifest と索引が食い違い、
+  §8 は manifest から rebuild するので**その編集は黙って巻き戻る**。正直に提供できる操作ではない。
+- **label は可** — `operator` / `task` / `robot` は人間による記述であり、review が書ける。
+  これを可能にしたのは**取り込み bag**である: ラベルを持たずに生まれる（記録した人がいない）ので、
+  後から人が付けるしか手が無い。通常録画の「operator が間違っていた」も同じ操作で直る。
+
+**manifest は絶対に書き換えない。** override は `record.json` の `labels` ブロックに置く。これが
+「編集された」という事実をディスク上に残し、かつ**編集を取り消せば録画時の値に戻る**ことを可能にする。
+
+- **キーが無い = override 無し。** 「クリア」は null を書くのではなく**キーを消す**ことで表す。
+  「override されていない」の綴りを 1 つに保つため。空文字・空白のみも同様にクリアとして扱う
+  （空白のラベルはラベルではなく、manifest の値を隠すだけの override になる）。
+- **`labels` は閉じた集合。** 上記 3 キー以外は `record.json` を **CORRUPT** として報告する（§8 rule 4）。
+  自由記述の注釈置き場に育てないため。ただし値の `null` は「override 無し」として**受理する** —
+  PATCH の綴りと同じ言葉でサイドカーを壊せてはならない。
+- **rebuild は manifest を読んでから `labels` を上に適用する。** 順序がこの設計の全部で、
+  逆にすると編集は rebuild のたびに消える（→ §8）。
+- **`views/` は追随する。** `views/` は operator/task で束ねるが、dataset がそれらを持たないとき
+  **capture の値にフォールバックする**（`COALESCE(d.operator, c.operator)`）。したがって
+  operator/task の編集は再生成をスケジュールする。`robot` はパス構成要素ではないので何も起きない。
+- **パス安全性**: `/` `\\`・制御文字・`.` / `..` は **`400 unsafe_label`**、255 バイト超は
+  **`400 label_too_long`**。dataset 側のラベルが `sanitize_component` で書き換えられる既存挙動は
+  変更しない（新しい入口だけ、書き換えでなく拒否にする — 入力した本人がその場に居るため）。
 
 ## 5. `lifecycle.jsonl` v2
 

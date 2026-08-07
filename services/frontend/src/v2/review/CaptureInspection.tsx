@@ -35,6 +35,7 @@ import { leaseBlockReason, liveLease } from '../captures/lease';
 import { JobErrorNote, isTombstoneError } from '../captures/JobErrorNote';
 import { QuickCheckVerdict } from './QuickCheckVerdict';
 import { SignalSection } from './SignalSection';
+import { LabelRows, type LabelEditing } from './LabelRows';
 import { formatBytes } from './format';
 
 function Row({ label, children }: { label: string; children: ReactNode }) {
@@ -212,7 +213,15 @@ function CaptureNote({ error }: { error: NonNullable<CaptureDetail['error']> }) 
   );
 }
 
-export function CaptureInspection({ captureId }: { captureId: string }) {
+export function CaptureInspection({
+  captureId,
+  labels,
+}: {
+  captureId: string;
+  /** Supplied by Review's detail panel to make the operator/task/robot rows
+   *  editable. Absent elsewhere, which leaves them read-only. */
+  labels?: LabelEditing;
+}) {
   const detailQuery = useQuery({
     queryKey: queryKeys.capture(captureId),
     queryFn: ({ signal }) => getCapture(captureId, signal),
@@ -317,9 +326,26 @@ export function CaptureInspection({ captureId }: { captureId: string }) {
             {capture.capture_id}
           </span>
         </Row>
-        <Row label="Operator">{capture.operator || '—'}</Row>
-        <Row label="Task">{capture.task || '—'}</Row>
-        <Row label="Robot">{capture.robot || '—'}</Row>
+        {/* Editable only where a caller passed a saver (Review's detail
+            panel). Everywhere else these stay the plain read-only rows they
+            have always been, rather than offering an edit with nothing behind
+            it. */}
+        {labels ? (
+          <LabelRows
+            values={{
+              operator: capture.operator ?? null,
+              task: capture.task ?? null,
+              robot: capture.robot ?? null,
+            }}
+            editing={labels}
+          />
+        ) : (
+          <>
+            <Row label="Operator">{capture.operator || '—'}</Row>
+            <Row label="Task">{capture.task || '—'}</Row>
+            <Row label="Robot">{capture.robot || '—'}</Row>
+          </>
+        )}
         <Row label="Started">{formatWhen(capture.started_at)}</Row>
         <Row label="Ended">{formatWhen(capture.ended_at)}</Row>
         <Row label="Duration">

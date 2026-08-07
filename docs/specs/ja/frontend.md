@@ -110,6 +110,7 @@ backend-driven な軽量 Web UI（Vite + React + TypeScript）。タブは技術
 
 - 完了収録の一覧＋詳細。各行は capture 1 件（`GET /api/v1/captures`）で、**Batch「MM/DD · #N」/ Task result / Quality / レーン / Availability チップ**を表示。operator 等でフィルタ可能。**一覧はカーソルを最後まで追従**（200件で黙って切れない）し、ヘッダに実データ集計チップ（`n ready · n needs check · n excluded` / `n success · n failure`）。表示番号は**永続 `index_in_batch`**（削除で振り直らない）。判断ボタンは**スクロール外の固定バー**。
 - **例外レビューモデル**: quality が good（または operator 確認済み）の capture は **READY**（追加クリック不要）。**NEEDS CHECK**（quality 非 good かつ未判断）だけが作業キューで、「Mark OK — include」か Exclude で解消する。既定の並びは NEEDS CHECK → READY → EXCLUDED。
+- **ラベル編集(operator / task / robot)**: 詳細パネルの Inspection 行を**その場で編集**できる(値をクリック → 3 つの入力 → Save labels)。主用途は**取り込んだ bag** — recorder は自分が開始した収録にしかこれらを刻まないので、外から来たディレクトリは無ラベルで生まれ、operator / task フィルタから見えないままになる。**未設定は「—」ではなく「Set operator…」**と出して、埋められることを示す。3 つは**1 リクエスト**で、既存 review と**同じ CAS 経路**(`base_revision`・409/500 の扱いも同一)。空白のみは `null` で送って**クリア**(= 収録自身の manifest の値に戻る)。拒否されたときは編集中の入力を保持したままその操作の言葉で理由を出し、**保存されたとは決して表示しない**。
 - **Review 保存は本物の CAS**（`PATCH /api/v1/captures/{id}/review`。[api_orchestrator.md](api_orchestrator.md)「Review の保存」）。**楽観的にコミットしない** — 楽観的な編集は表示するが、失敗すれば元に戻す。
   - **`409`（競合）**: バナーで「他の誰かが先に保存した。リロードして適用し直すこと — 2 つの編集はマージされない」と述べ、**現在サーバに保存されている値を名指しで表示**する（`It is now {review_status} · {quality}`）。そのために `GET /api/v1/captures/{id}` を best-effort で引き直す。
   - **`500`（サイドカー書き込み失敗）**: **必ず明示的に閉じる必要がある**赤いバナーで「**Not saved.** …何も保存されていない — `record.json` が書けなかった。空き容量か権限を直してから保存し直すこと」。トーストのように勝手に消してはならない（消えると、保存されていないのに保存されたと思い込む）。

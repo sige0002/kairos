@@ -120,7 +120,8 @@ rebuild reads this file too and creates a `state='failed'` row. The deletion pat
   "task_result": "success|failure"|null, "failure_reason": str|null,
   "quality": …|null, "quality_source": "operator|quick_check",
   "review_status": "pending|adopted|excluded",
-  "batch_id": str|null, "index_in_batch": N|null, "updated_at": "<ISO8601>" }
+  "batch_id": str|null, "index_in_batch": N|null, "updated_at": "<ISO8601>",
+  "labels": { "operator"?: str, "task"?: str, "robot"?: str } }  // optional - §4.3
 ```
 
 **For review fields, `record.json` is authoritative and the DB is a cache.** This is what makes "you can delete kairos.db and restart" hold.
@@ -162,6 +163,38 @@ recording with it).
 A failed write does not stop settlement: the row still receives the verdict and a warning is
 logged. What is lost is only durability across a rebuild, which is no reason to withhold a verdict
 the operator is waiting for.
+
+### 4.3 Label editing (`operator` / `task` / `robot`)
+
+Which columns a review may write is decided by the **measurement / label distinction**.
+
+- **Measurements are off limits** — `bytes` / `message_count` / `topics` / `started_at` /
+  `ended_at` / `state` are facts the recorder observed; a review does not touch them. Editing one
+  puts the index at odds with the sealed manifest, and §8 rebuilds from the manifest, so **the edit
+  silently rolls back**. Not an operation that can honestly be offered.
+- **Labels are editable** — `operator` / `task` / `robot` are human descriptions, and a review may
+  write them. What makes this necessary is the **imported bag**: it is born unlabeled (nobody
+  recorded one), so a human attaching them later is the only way. "The operator was wrong" on an
+  ordinary recording is fixed by the same operation.
+
+**The manifest is never rewritten.** Overrides live in `record.json`'s `labels` block. That keeps
+the fact of the edit on disk, and makes undoing the edit return to the recorded value.
+
+- **An absent key = no override.** "Clear" is spelled by deleting the key, not by writing null —
+  one spelling for "not overridden". Empty and whitespace-only strings clear too (a blank label is
+  not a label, only an override hiding the manifest's value).
+- **`labels` is a closed set.** Any key beyond the three reports the `record.json` as **CORRUPT**
+  (§8 rule 4) — it must not grow into a free-form annotation bag. A `null` VALUE is accepted as "no
+  override", though: the PATCH's own spelling must not be able to corrupt a sidecar.
+- **Rebuild reads the manifest first, then applies `labels` on top.** That order is the whole
+  design; reversed, every rebuild would erase the edit (→ §8).
+- **`views/` follows.** `views/` groups by operator/task, and when a dataset carries neither it
+  **falls back to the capture's values** (`COALESCE(d.operator, c.operator)`), so an operator/task
+  edit schedules a regeneration. `robot` is not a path component and does nothing.
+- **Path safety**: `/` `\`, control characters and `.` / `..` are **`400 unsafe_label`**; over 255
+  bytes is **`400 label_too_long`**. The existing dataset-side behavior — labels rewritten by
+  `sanitize_component` — is unchanged (only the new entrance rejects instead of rewriting: the
+  person who typed the value is right there).
 
 ## 5. `lifecycle.jsonl` v2
 

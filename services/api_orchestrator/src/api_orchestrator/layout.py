@@ -32,6 +32,7 @@ from __future__ import annotations
 import errno
 import logging
 import os
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -415,6 +416,10 @@ def digest_input_files(capture_dir: Path) -> list[Path]:
 # leaves them unset — so one budget covers both.
 MAX_LABEL_BYTES = 255
 
+# Exactly ``views._UNSAFE``: the characters that cannot survive as a single path
+# component. Restated rather than imported because views.py imports from here.
+_UNSAFE_LABEL = re.compile(r"[/\\\x00-\x1f\x7f]")
+
 
 def reject_unusable_labels(**labels: str | None) -> None:
     """Refuse a label that cannot be a directory entry (§6).
@@ -448,6 +453,50 @@ def reject_unusable_labels(**labels: str | None) -> None:
             ),
             details={"field": field, "bytes": size, "limit": MAX_LABEL_BYTES},
         )
+
+
+def reject_unsafe_labels(**labels: str | None) -> None:
+    """Refuse a capture label that could not be a single path component (§4.3).
+
+    Stricter than :func:`reject_unusable_labels`, and deliberately so. A dataset
+    label reaches ``views/`` through ``sanitize_component``, which rewrites the
+    awkward characters and is pinned by tests — that behaviour predates this and
+    is not changed here. A capture label is a NEW door onto the same tree
+    (``list_view_entries`` falls back to the capture's operator/task when the
+    dataset sets none), and for a new door refusing beats rewriting: the operator
+    typed the value and is present to be told, rather than discovering later that
+    their ``a/b`` became ``a_b`` in a path somebody else is globbing.
+
+    Rejects the separators, the control characters and the two dot names — the
+    same set ``sanitize_component`` treats as unusable, reported instead of
+    rewritten. Empty and whitespace-only are left to the caller: they mean
+    "clear", which is spelled by ``null``.
+    """
+    for field, value in labels.items():
+        if value is None:
+            continue
+        bad = _UNSAFE_LABEL.search(value)
+        if bad is not None:
+            raise ApiError(
+                status_code=400,
+                code="unsafe_label",
+                message=(
+                    f"{field} contains {bad.group()!r}, which cannot appear in a "
+                    "folder name under views/. Separators and control characters "
+                    "are refused here rather than silently rewritten."
+                ),
+                details={"field": field},
+            )
+        if value.strip() in (".", ".."):
+            raise ApiError(
+                status_code=400,
+                code="unsafe_label",
+                message=(
+                    f"{field} cannot be {value.strip()!r}: as a folder name that "
+                    "is a reference to another directory, not a name."
+                ),
+                details={"field": field},
+            )
 
 
 def is_reserved_name(name: str) -> bool:

@@ -24,13 +24,21 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from kairos_common import ApiError
-from kairos_common.capture_sidecars import CaptureState, RecordV2, read_record
+from kairos_common.capture_sidecars import (
+    LABEL_FIELDS,
+    CaptureState,
+    RecordV2,
+    read_object_manifest,
+    read_record,
+)
 from kairos_common.time import utc_now_iso8601
 
+from api_orchestrator.layout import reject_unsafe_labels, reject_unusable_labels
 from api_orchestrator.models import Capture, ReviewSaveRequest
 
 if TYPE_CHECKING:
@@ -49,7 +57,13 @@ _REVIEW_FIELDS: tuple[str, ...] = (
     "review_status",
     "batch_id",
     "index_in_batch",
+    *LABEL_FIELDS,
 )
+
+# The labels that are path components under views/ (§6). ``robot`` is not one:
+# it is carried on the row and shown in the UI, but the tree groups by operator
+# and task only, so editing it changes nothing on disk.
+_VIEWS_LABELS: tuple[str, ...] = ("operator", "task")
 
 
 class CaptureReviewMixin:
@@ -63,6 +77,20 @@ class CaptureReviewMixin:
     _store: CaptureStore
     _layout: DataLayout
     _on_first_review: Callable[[Capture], Awaitable[None]] | None
+    _on_views_change: Callable[[], None] | None
+
+    def _schedule_views_refresh(self, capture_id: str) -> None:
+        """Ask for a views regeneration; never let one fail the save."""
+        if self._on_views_change is None:
+            return
+        try:
+            self._on_views_change()
+        except Exception:  # noqa: BLE001 - a stale tree is not a failed review
+            logger.warning(
+                "could not schedule a views refresh after a label edit",
+                extra={"capture_id": capture_id},
+                exc_info=True,
+            )
 
     async def save_review(
         self, capture_id: str, request: ReviewSaveRequest, *, system: bool = False
@@ -88,6 +116,9 @@ class CaptureReviewMixin:
         # to arbitrate, and the only way to exercise it without scheduling luck.
         from api_orchestrator import captures
 
+        _reject_bad_labels(request)
+        capture_dir = self._layout.capture_dir(capture_id)
+
         async with self._mutex(capture_id):
             capture = self.get(capture_id)
             self._reject_review_on_delete(capture)
@@ -97,6 +128,15 @@ class CaptureReviewMixin:
 
             merged = _merge_review(capture, request)
             _derive_quality(capture, request, merged)
+            # Read under the mutex, like everything else this save decides from:
+            # the overrides already on disk are what an unsupplied label keeps,
+            # and the manifest is what a cleared one falls back to.
+            labels, label_values = _merge_labels(
+                request,
+                current=read_record(capture_dir).record,
+                manifest_labels=_manifest_labels(capture_dir),
+            )
+            merged.update(label_values)
             revision = request.base_revision + 1
             record = RecordV2(
                 capture_id=capture_id,
@@ -108,9 +148,9 @@ class CaptureReviewMixin:
                 quality_source=merged["quality_source"],
                 batch_id=merged["batch_id"],
                 index_in_batch=merged["index_in_batch"],
+                labels=labels,
                 updated_at=utc_now_iso8601(),
             )
-            capture_dir = self._layout.capture_dir(capture_id)
             # Creating objects/<id> is legitimate ONLY for a capture whose bytes
             # have not arrived yet (the split-deploy review-then-pull flow).
             # Anything the delete path has touched must never be recreated here,
@@ -209,6 +249,18 @@ class CaptureReviewMixin:
                     saved,
                     wrote_revision=revision,
                 )
+
+        if any(
+            getattr(saved, name) != getattr(capture, name) for name in _VIEWS_LABELS
+        ):
+            # views/ groups by operator/task, falling back to the CAPTURE's when
+            # its dataset names neither — so an edit that skipped this would
+            # leave the tree filed under the label the capture used to have,
+            # with nothing to say the two had diverged. Best-effort and outside
+            # the mutex, like every other regeneration trigger: the save is
+            # already committed, and a tree that could not be rebuilt is a
+            # ``POST /api/v1/views/refresh`` away, not a failed request.
+            self._schedule_views_refresh(capture_id)
 
         if request.base_revision == 0 and self._on_first_review is not None:
             # Outside the mutex: the first-review side effects (batch counter,
@@ -312,6 +364,71 @@ def _merge_review(capture: Capture, request: ReviewSaveRequest) -> dict[str, Any
         name: (getattr(request, name) if name in supplied else getattr(capture, name))
         for name in _REVIEW_FIELDS
     }
+
+
+def _merge_labels(
+    request: ReviewSaveRequest,
+    *,
+    current: RecordV2 | None,
+    manifest_labels: Mapping[str, str | None],
+) -> tuple[dict[str, str], dict[str, str | None]]:
+    """Work out the §4.3 overrides to store and the values the row should show.
+
+    Returns ``(labels, effective)``. *labels* is the block written to
+    ``record.json`` and holds ONLY overrides — an unsupplied field keeps
+    whatever override it already had, and a cleared one loses its key rather
+    than gaining a null, so the file has one spelling of "not overridden".
+
+    *effective* is what the row displays, which is where clearing gets its
+    meaning: the value falls back to *manifest_labels*, the recorder's own
+    account. On an imported bag that is null again, which is the honest answer —
+    nobody recorded an operator, so removing the human's guess leaves nothing.
+
+    An empty or whitespace-only string is treated as a clear. A label that is
+    blank is not a label, and storing one would put an override on the capture
+    that renders as nothing and hides the manifest's value behind it.
+    """
+    supplied = request.model_fields_set
+    labels: dict[str, str] = dict(current.labels) if current is not None else {}
+    effective: dict[str, str | None] = {}
+    for name in LABEL_FIELDS:
+        if name not in supplied:
+            continue
+        raw = getattr(request, name)
+        value = raw.strip() if isinstance(raw, str) else None
+        if not value:
+            labels.pop(name, None)
+            effective[name] = manifest_labels.get(name)
+        else:
+            labels[name] = value
+            effective[name] = value
+    return labels, effective
+
+
+def _manifest_labels(capture_dir: Path) -> dict[str, str | None]:
+    """What the recorder sealed for the three label fields (§3).
+
+    An unreadable or absent manifest yields nulls rather than raising: the
+    capture may be awaiting its bytes (the split-deploy review-then-pull flow),
+    and a label edit must not depend on them having arrived.
+    """
+    manifest = read_object_manifest(capture_dir).manifest
+    if manifest is None:
+        return dict.fromkeys(LABEL_FIELDS)
+    return {name: getattr(manifest, name) for name in LABEL_FIELDS}
+
+
+def _reject_bad_labels(request: ReviewSaveRequest) -> None:
+    """Validate only the labels this request actually supplied."""
+    supplied = {
+        name: getattr(request, name)
+        for name in LABEL_FIELDS
+        if name in request.model_fields_set
+    }
+    if not supplied:
+        return
+    reject_unsafe_labels(**supplied)
+    reject_unusable_labels(**supplied)
 
 
 def _offers_an_index(request: ReviewSaveRequest, merged: dict[str, Any]) -> bool:

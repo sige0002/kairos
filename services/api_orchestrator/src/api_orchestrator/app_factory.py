@@ -237,12 +237,17 @@ def create_orchestrator_app(
                 extra={"capture_id": capture.capture_id, "error": exc.code},
             )
 
+    # Built before the capture service so a label edit can schedule a
+    # regeneration: a capture's operator/task reach views/ whenever the dataset
+    # holding it sets none of its own (``list_view_entries`` COALESCEs to them).
+    views_refresh = _ViewsRefresher(capture_store, layout)
     capture_service = CaptureService(
         capture_store,
         layout,
         health,
         instance_id=instance_id,
         on_first_review=on_first_review,
+        on_views_change=views_refresh.schedule,
     )
     digest = DigestJob(
         capture_store,
@@ -270,7 +275,6 @@ def create_orchestrator_app(
     # and rebuilds a symlink tree, which a dataset mutation should not wait on.
     # A single-slot flag rather than a task per change — ten rapid edits need
     # one regeneration, not ten, and the last one is the only correct answer.
-    views_refresh = _ViewsRefresher(capture_store, layout)
     batch_service = BatchService(capture_store, layout, instance_id=instance_id)
     dataset_service = DatasetService(
         capture_store,
@@ -474,6 +478,7 @@ def _config_defaults(
             "encoding": "vp8",
             "default_topics": [],
             "ros_domain_id": settings.ros_domain_id,
+            "video_playback_rate": settings.video_playback_rate,
         }
     expected_hz = {
         p.pattern: p.hz
@@ -486,6 +491,7 @@ def _config_defaults(
         "default_topics": list(recording_config.default_topics),
         "robot_name": recording_config.robot_name,
         "ros_domain_id": settings.ros_domain_id,
+        "video_playback_rate": settings.video_playback_rate,
     }
 
 

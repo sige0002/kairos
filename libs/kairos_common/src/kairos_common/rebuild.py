@@ -198,6 +198,8 @@ class _Review:
     quality_source: str | None = None
     batch_id: str | None = None
     index_in_batch: int | None = None
+    # §4.2 label overrides, by field name. Empty = the manifest stands.
+    labels: dict[str, str] = field(default_factory=dict)
     from_sidecar: bool = True
 
 
@@ -648,9 +650,15 @@ def _capture_row(
         state=state,
         run_id=manifest.run_id,
         source_instance_id=manifest.source_instance_id,
-        operator=manifest.operator,
-        task=manifest.task,
-        robot=manifest.robot,
+        # §4.2: the operator's labels are applied OVER the manifest's, and the
+        # order is the whole contract. The manifest is the recorder's sealed
+        # account and is never rewritten, so an edit survives a rebuild only by
+        # being re-applied here — read the manifest first, then let record.json
+        # correct it. A key absent from ``labels`` is not an override, which is
+        # how clearing an edit returns the capture to what was recorded.
+        operator=review.labels.get("operator", manifest.operator),
+        task=review.labels.get("task", manifest.task),
+        robot=review.labels.get("robot", manifest.robot),
         started_at=manifest.started_at,
         ended_at=manifest.ended_at,
         topics=manifest.topics,
@@ -728,4 +736,5 @@ def _review_overlay(
         quality_source=record.quality_source,
         batch_id=record.batch_id,
         index_in_batch=record.index_in_batch,
+        labels=dict(record.labels),
     )

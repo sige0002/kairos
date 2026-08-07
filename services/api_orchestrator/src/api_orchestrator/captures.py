@@ -40,6 +40,7 @@ from typing import Any
 
 from kairos_common import ApiError, Compression, ledger_v2
 from kairos_common.capture_sidecars import (
+    LABEL_FIELDS,
     TERMINAL_STATES,
     UNFINALIZED_STATES,
     CaptureState,
@@ -89,6 +90,11 @@ class CaptureService(CaptureReviewMixin, CaptureDeletionMixin, CaptureArchiveMix
             Carries the side effects §4.1 moved off the retired
             ``POST /episodes``: the batch counter and the auto-pull. Injected so
             this module does not depend on the importer client.
+        on_views_change: Called after a review save that edited a label §6's
+            tree can be built from. A capture's operator/task are what
+            ``views/`` falls back to when the dataset holding it names neither,
+            so an edit that did not schedule a regeneration would leave the
+            browsable tree pointing at the label the capture used to have.
     """
 
     def __init__(
@@ -99,12 +105,14 @@ class CaptureService(CaptureReviewMixin, CaptureDeletionMixin, CaptureArchiveMix
         *,
         instance_id: str,
         on_first_review: Callable[[Capture], Awaitable[None]] | None = None,
+        on_views_change: Callable[[], None] | None = None,
     ) -> None:
         self._store = store
         self._layout = layout
         self._health = health
         self._instance_id = instance_id
         self._on_first_review = on_first_review
+        self._on_views_change = on_views_change
         self._locks = CaptureLocks()
         # The reaper's per-process attempt bound (§7 step 5). Held on the
         # service rather than in the deletion mixin so one construction site
@@ -577,6 +585,7 @@ def _restore_record_from_row(
                 quality_source=capture.quality_source,
                 batch_id=capture.batch_id,
                 index_in_batch=capture.index_in_batch,
+                labels=_row_label_overrides(capture_dir, capture, on_disk),
                 updated_at=utc_now_iso8601(),
             ),
         )
@@ -588,6 +597,35 @@ def _restore_record_from_row(
             "could not restore record.json from the winning row",
             extra={"capture_id": capture.capture_id, "error": str(exc)},
         )
+
+
+def _row_label_overrides(
+    capture_dir: Path, capture: Capture, on_disk: RecordV2
+) -> dict[str, str]:
+    """Which of the winning row's labels are §4.3 overrides rather than recorded.
+
+    The row carries the EFFECTIVE label, so it cannot say on its own whether a
+    value was edited or came off the manifest. Writing all three back as
+    overrides would freeze the recorder's own values into the sidecar, and a
+    later correction to the manifest would then be shadowed by a "decision"
+    nobody made. So the manifest is consulted and only a genuine difference is
+    recorded.
+
+    Dropping the block instead is not an option: this file is what §8 rebuilds
+    from, so a restore that omitted a real edit would undo it the next time
+    somebody deleted ``kairos.db`` — silently, and long after the request that
+    caused it. If the manifest cannot be read, the overrides already on disk are
+    kept for exactly that reason; this is a repair path and must not raise.
+    """
+    manifest = read_object_manifest(capture_dir).manifest
+    if manifest is None:
+        return dict(on_disk.labels)
+    return {
+        name: value
+        for name in LABEL_FIELDS
+        if isinstance(value := getattr(capture, name, None), str)
+        and value != getattr(manifest, name, None)
+    }
 
 
 def _require_capture_id(capture_id: str) -> None:

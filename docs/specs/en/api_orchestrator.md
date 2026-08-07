@@ -46,7 +46,7 @@ The **job management / state management / API hub** container. The single public
 - Pipeline / Job (stage3. Details in [dora_runner](dora_runner.md)): `GET /api/v1/pipelines`, `POST /api/v1/jobs`, `GET /api/v1/jobs/{id}/status`, `GET /api/v1/jobs/{id}/result`, `POST /api/v1/jobs/{id}/cancel`
 - Validation templates: `GET/POST /api/v1/validation/templates`, `POST /api/v1/validation/templates/generate` (generate a draft from a capture; body `{ capture_id }`)
 - One-click validation presets: `GET /api/v1/validation/presets` (config-defined presets + the list of unvalidated captures)
-- Settings: `GET /api/v1/config` (frontend runtime settings: endpoints / tabs / defaults (including `ros_domain_id`) / stream / schemas). [`GET/POST /api/v1/settings` is **not implemented** (future); `PUT /api/v1/config/recording` below is currently the entry point for config editing]
+- Settings: `GET /api/v1/config` (frontend runtime settings: endpoints / tabs / defaults (including `ros_domain_id` and `video_playback_rate` — the Review preview's default playback speed; env `VIDEO_PLAYBACK_RATE`, default 4.0) / stream / schemas). [`GET/POST /api/v1/settings` is **not implemented** (future); `PUT /api/v1/config/recording` below is currently the entry point for config editing]
 - Recording config (full edit): `GET /api/v1/config/recording` → `{ config: <RecordingConfig dump>|null, path }`, `PUT /api/v1/config/recording` (body `{ config }`. See "Full editing of recording config" below)
 - Alert rules (single-file aspect edit): `GET/PUT /api/v1/config/alerts` (topic_monitor alert rules; `config/<robot>/monitoring/alerts.yaml`; applies on monitor restart). `GET` → `{ config, raw, path, warnings }`, `PUT` body `{ config }` (form) or `{ raw }` (raw YAML). See "Editing alert rules" below (the former `GET/PUT /api/v1/config/signals` was removed on 2026-07-15 together with the Review waveform chart)
 - Settings catalog: `GET /api/v1/config/options`, `POST /api/v1/config/select` (per-category choices such as validation templates, and the current selection), `GET /api/v1/config/robots/{robot}` (**returns any catalog robot's config read-only** — the parsed content per aspect + a summary. To reference another robot as a template without hot-swapping the live services (Settings). An unknown robot or an invalid path component is `404`)
@@ -108,7 +108,20 @@ The replacement for the old `POST/PATCH /api/v1/episodes`. **Sidecar-first + CAS
 2. Atomically writes `record.json` with `revision = base_revision + 1`. On failure → **`500 review_sidecar_write_failed`, and the DB is untouched** (nothing was saved, so the same `base_revision` can simply be retried).
 3. CAS-updates the DB. `rowcount=0` → **`409`**. The sidecar that was written is not rolled back.
 
-- body: `{ base_revision, task_result?, failure_reason?, quality?, quality_source?, review_status?, batch_id?, index_in_batch? }`.
+- body: `{ base_revision, task_result?, failure_reason?, quality?, quality_source?, review_status?, batch_id?, index_in_batch?, operator?, task?, robot? }`.
+- **`operator` / `task` / `robot` are label edits** (rules: [capture_store](capture_store.md) §4.3). The
+  main use is **labeling imported bags** (born unlabeled, so a human attaching them later is the only
+  way), but they also fix an ordinary recording's wrong label. CAS, the mutex and sidecar-first are the
+  exact path every other review field takes.
+  - **An explicit `null` (and empty / whitespace-only) clears** → back to what the manifest recorded;
+    on an imported bag that is `null`. **Omitted = unchanged** (an existing override is kept).
+  - Overrides live in `record.json`'s `labels`; **the manifest is never rewritten**. Deleting
+    `kairos.db` and restarting keeps the edit (rebuild applies `labels` over the manifest).
+  - `/` `\\`, control characters and `.` / `..` are **`400 unsafe_label`**; over 255 bytes is
+    **`400 label_too_long`**. A rejected request applies **nothing** (including the same body's other
+    fields).
+  - Editing `operator` / `task` schedules a `views/` regeneration (when a dataset carries neither,
+    `views/` falls back to the capture's values). `robot` is not a path component and does nothing.
 - **This is where the old `POST /episodes` side effects moved to**: the monotone increment of `batches.episodes_recorded` and the auto-pull trigger fire on **the first review save for that capture**.
 - Saving against a tombstoned or absent capture is `409` (`capture_deleting` / `capture_deleted` / `capture_not_present`).
 
@@ -308,7 +321,7 @@ From Settings > Data quality, edit and persist a **single-file config of the act
 - batch (an element of `GET /api/v1/batches` = BatchSummary): `{ batch_id, robot?, project, task, condition?, operator?, target_episodes, status, ended_reason?, created_at, ended_at?, episodes_recorded, episodes_recorded_is_floor, batch_seq?, episode_count }`. In `GET /api/v1/batches/{id}` (BatchDetail), `captures` is the full capture array. The list envelope (BatchListResponse) is `{ items, total? }` — `total` is the **post-filter count of the whole list**, not of the page.
 - batch coverage (`GET /api/v1/batches/coverage`): `{ task, rows: [{ condition, recorded, is_floor }] }`. `condition` is a string (a batch with no condition never becomes a row), `recorded` an integer, `is_floor` a boolean. **Only observed conditions are listed**, so zero rows is itself the correct answer: that task has recorded nothing yet.
 - a capture list item (`GET /api/v1/captures` = CaptureListItem): the CaptureDetail above **minus `topics`, plus `topics_count` (an integer, always equal to `len(topics)`)**. It also carries none of the four sidecar-derived fields (`manifest` / `record` / `validation` / `loss`) nor `verdict` (those are detail-only). The envelope is `{ items, next_cursor? }`. Single-capture responses that include `topics` (detail, review save, record start/stop) keep returning **full `topics` plus `topics_count`**.
-- review save (`PATCH /api/v1/captures/{id}/review`): body `{ base_revision, task_result?, failure_reason?, quality?, quality_source?, review_status?, batch_id?, index_in_batch? }` → the updated Capture.
+- review save (`PATCH /api/v1/captures/{id}/review`): body `{ base_revision, task_result?, failure_reason?, quality?, quality_source?, review_status?, batch_id?, index_in_batch?, operator?, task?, robot? }` → the updated Capture.
 - store health (`GET /api/v1/store/health` = StoreHealth): see "Store health and SUSPECT" above.
 - job (`GET /api/v1/jobs/{id}/status`): `{ job_id, capture_id, pipeline, state, progress, logs_tail }` ([dora_runner](dora_runner.md)).
 

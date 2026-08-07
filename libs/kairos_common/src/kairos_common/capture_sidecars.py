@@ -250,6 +250,13 @@ class RecordV2:
     batch_id: str | None = None
     index_in_batch: int | None = None
     updated_at: str | None = None
+    # §4.3 label overrides: ``{"operator": "alice"}``. A key is present ONLY
+    # when a human set it, so "cleared" is spelled by the key's ABSENCE rather
+    # than by a null — there is then one representation of "no override", and
+    # clearing genuinely returns the capture to what the manifest recorded.
+    # The manifest itself is never rewritten: keeping the operator's labels here
+    # is what makes "this was edited" a fact on disk rather than a lost one.
+    labels: dict[str, str] = field(default_factory=dict)
     schema_version: int = SIDECAR_SCHEMA_VERSION
     extra: dict[str, Any] = field(default_factory=dict)
 
@@ -283,6 +290,10 @@ class RecordV2:
                 "updated_at": self.updated_at or utc_now_iso8601(),
             }
         )
+        if self.labels:
+            # Omitted when empty so an unlabelled capture's record.json is
+            # byte-identical to one written before §4.3 existed.
+            payload["labels"] = dict(self.labels)
         return payload
 
 
@@ -469,8 +480,15 @@ _RECORD_KNOWN_KEYS = frozenset(
         "batch_id",
         "index_in_batch",
         "updated_at",
+        "labels",
     }
 )
+
+# The label fields an operator may override on a capture (§4.3). Deliberately a
+# closed set: these three are the ones the manifest also carries, so an override
+# is always a correction of a recorded value rather than a free-form annotation
+# store growing inside record.json.
+LABEL_FIELDS: tuple[str, ...] = ("operator", "task", "robot")
 
 
 def _require_str(data: Mapping[str, Any], key: str) -> str:
@@ -613,8 +631,34 @@ def record_from_json(data: Mapping[str, Any]) -> RecordV2:
         batch_id=_optional_str(data, "batch_id"),
         index_in_batch=_optional_int(data, "index_in_batch"),
         updated_at=_optional_str(data, "updated_at"),
+        labels=_labels_from_json(data.get("labels")),
         extra={k: v for k, v in data.items() if k not in _RECORD_KNOWN_KEYS},
     )
+
+
+def _labels_from_json(value: Any) -> dict[str, str]:
+    """Validate the §4.3 ``labels`` block. Raises ``ValueError``.
+
+    Absent is the normal state and means "no override". A null value for a key
+    is accepted as a synonym for absence rather than refused: a client that
+    spells "cleared" the way the PATCH body does should not be able to make a
+    capture's sidecar unreadable, and §8 rule 4 would classify the file CORRUPT
+    for a difference that carries no information.
+    """
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise ValueError(f"labels must be a JSON object: {value!r}")
+    labels: dict[str, str] = {}
+    for key, entry in value.items():
+        if key not in LABEL_FIELDS:
+            raise ValueError(f"labels key {key!r} is not one of {list(LABEL_FIELDS)}")
+        if entry is None:
+            continue
+        if not isinstance(entry, str):
+            raise ValueError(f"labels.{key} must be a string: {entry!r}")
+        labels[key] = entry
+    return labels
 
 
 # -- reading ------------------------------------------------------------------

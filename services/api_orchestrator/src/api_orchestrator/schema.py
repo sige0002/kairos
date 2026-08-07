@@ -233,7 +233,21 @@ CAPTURE_COLUMNS: frozenset[str] = frozenset(
 )
 
 # Columns a §4.1 review save may write. Deliberately narrower than
-# CAPTURE_COLUMNS: a review edit must never reach a recording fact.
+# CAPTURE_COLUMNS, and the line it draws is between MEASUREMENTS and LABELS.
+#
+# A measurement — bytes, message_count, topics, started_at, ended_at, state —
+# is what the recorder observed, and a review may never reach one. Editing a
+# measurement would make the catalog disagree with the sealed manifest about
+# what is in the bag, and §8 rebuilds from that manifest, so the edit would
+# silently revert. There is no honest way to offer it.
+#
+# A label — operator, task, robot — is a human's statement about the recording,
+# and a review MAY write one (§4.3). The case that forced the distinction is the
+# imported bag: it is born with no operator and no task, because nobody was
+# there to record them, and the only way it can ever have them is for a person
+# to say so afterwards. The manifest is still never rewritten; the override
+# lives in record.json's ``labels`` block, which is what makes "this was
+# edited" a durable fact and what lets rebuild re-apply it over the manifest.
 REVIEW_COLUMNS: frozenset[str] = frozenset(
     {
         "task_result",
@@ -243,6 +257,9 @@ REVIEW_COLUMNS: frozenset[str] = frozenset(
         "review_status",
         "batch_id",
         "index_in_batch",
+        "operator",
+        "task",
+        "robot",
     }
 )
 
