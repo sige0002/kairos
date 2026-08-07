@@ -6,9 +6,8 @@
 // an honest "—" / omit the bar rather than a fabricated number.
 
 import { useQuery } from '@tanstack/react-query';
-import { apiGet } from '../../api/client';
+import { getSystemInfo } from '../../api/system';
 import { Card } from '../../components/ui';
-import type { SystemInfo } from '../../api/types';
 import { formatBytes } from '../review/format';
 
 // Utilization/disk change over time (the static CPU/GPU names don't), so poll a
@@ -57,7 +56,7 @@ function Meter({ label, percent, testId }: { label: string; percent: number; tes
 export function SystemCard() {
   const { data } = useQuery({
     queryKey: ['system'],
-    queryFn: ({ signal }) => apiGet<SystemInfo>('/api/v1/system', { signal }),
+    queryFn: ({ signal }) => getSystemInfo({ signal }),
     staleTime: REFETCH_MS,
     refetchInterval: REFETCH_MS,
   });

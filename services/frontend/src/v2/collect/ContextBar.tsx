@@ -8,9 +8,8 @@
 
 import { type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiGet, apiPost } from '../../api/client';
+import { getConfigOptions, selectConfig } from '../../api/config';
 import { queryKeys } from '../../api/queryKeys';
-import type { ConfigOptions } from '../../api/types';
 import { Card, cn } from '../../components/ui';
 import { type BatchMachine } from './useBatchMachine';
 import { findProject, usePlans } from '../plans';
@@ -179,11 +178,11 @@ function RobotCell({
   const queryClient = useQueryClient();
   const options = useQuery({
     queryKey: queryKeys.configOptions,
-    queryFn: ({ signal }) => apiGet<ConfigOptions>('/config/options', { signal }),
+    queryFn: ({ signal }) => getConfigOptions({ signal }),
   });
   const select = useMutation({
     mutationFn: (id: string) =>
-      apiPost<ConfigOptions>('/config/select', { category: 'robot', id }),
+      selectConfig({ category: 'robot', id }),
     onSuccess: (data) => {
       queryClient.setQueryData(queryKeys.configOptions, data);
       // Same refresh set as Settings > Robots' selectMutation: a robot switch

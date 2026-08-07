@@ -34,7 +34,7 @@
 // makes a caller derive one from the other.
 
 import { useQuery } from '@tanstack/react-query';
-import { apiGet } from '../../api/client';
+import { getRecordStatus } from '../../api/record';
 import { queryKeys } from '../../api/queryKeys';
 import {
   ACTIVE_RECORD_STATES,
@@ -94,7 +94,7 @@ export interface RecordStatusView {
 export function useRecordStatus(): RecordStatusView {
   const query = useQuery({
     queryKey: queryKeys.recordStatus,
-    queryFn: ({ signal }) => apiGet<RecordStatus>('/record/status', { signal }),
+    queryFn: ({ signal }) => getRecordStatus({ signal }),
     refetchInterval: RECORD_STATUS_POLL_MS,
   });
   return readRecordStatus(query.data, {

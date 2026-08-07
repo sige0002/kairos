@@ -24,7 +24,9 @@ import {
   useState,
 } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ApiError, apiGet, apiPost } from '../../api/client';
+import { ApiError } from '../../api/client';
+import { getRecordStatus, startRecord, stopRecord } from '../../api/record';
+import { getTransferStatus } from '../../api/transfer';
 import { createBatch, getBatch, listBatches, patchBatch } from '../../api/batches';
 import { getCapture, listCaptures, saveReview } from '../../api/captures';
 import { queryKeys } from '../../api/queryKeys';
@@ -46,7 +48,6 @@ import {
   type RecordIntegrity,
   type RecordStartRequest,
   type RecordState,
-  type RecordStatus,
   type ReviewSaveRequest,
   CaptureListItem,
 } from '../../api/types';
@@ -543,7 +544,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   const startInFlightRef = useRef(false);
 
   const startMutation = useMutation({
-    mutationFn: (body: RecordStartRequest) => apiPost<Capture>('/record/start', body),
+    mutationFn: (body: RecordStartRequest) => startRecord(body),
     onSuccess: (capture) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.recordStatus });
       if (cancelledStartRef.current) {
@@ -552,7 +553,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
         // started server-side despite that, stop it now (best-effort) so it
         // doesn't keep running unnoticed.
         if (capture && capture.state !== 'failed') {
-          void apiPost('/record/stop', {}).catch(() => {});
+          void stopRecord().catch(() => {});
         }
         return;
       }
@@ -587,7 +588,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
 
   const stopMutation = useMutation({
     mutationFn: async () => {
-      const capture = await apiPost<Capture>('/record/stop', {});
+      const capture = await stopRecord();
       // A 200 does not on its own prove the recorder stopped. /record/stop is
       // idempotent and answers with the last capture when it finds nothing
       // active, so a recorder still holding the bag can look like success — and
@@ -601,7 +602,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
       // array means the recorder is unreachable, not that nothing is live (§10
       // rev.2.4), so it can never be the thing that says "stopped" — the state
       // field is.
-      const after = await apiGet<RecordStatus>('/record/status');
+      const after = await getRecordStatus();
       const stillLive =
         ACTIVE_RECORD_STATES.has(after.state) ||
         (capture?.capture_id != null &&
@@ -1126,7 +1127,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   const transferQuery = useQuery({
     queryKey: queryKeys.transferStatus,
     queryFn: ({ signal }) =>
-      apiGet<{ available?: boolean }>('/transfer/status', { signal }),
+      getTransferStatus({ signal }),
     staleTime: 60_000,
   });
   const splitDeploy = transferQuery.data?.available === true;
@@ -1218,7 +1219,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   // as an unsaved take for labeling).
   const [takeoverStopModalOpen, setTakeoverStopModalOpen] = useState(false);
   const takeoverStopMutation = useMutation({
-    mutationFn: () => apiPost<Capture>('/record/stop', {}),
+    mutationFn: () => stopRecord(),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.recordStatus });
       void queryClient.invalidateQueries({ queryKey: queryKeys.captures });
@@ -1299,7 +1300,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
       state.phase === 'saving' ||
       state.phase === 'quickcheck'
     ) {
-      void apiPost('/record/stop', {}).catch(() => {});
+      void stopRecord().catch(() => {});
     }
     // Mark the server batch ended-early (best-effort; only if one exists).
     if (state.batchId) {
@@ -1343,7 +1344,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
       state.phase === 'saving' ||
       state.phase === 'quickcheck'
     ) {
-      void apiPost('/record/stop', {}).catch(() => {});
+      void stopRecord().catch(() => {});
     }
     const hadBatch = !!state.batchId;
     if (state.batchId) {

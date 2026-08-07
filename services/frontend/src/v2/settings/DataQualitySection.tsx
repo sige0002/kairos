@@ -8,9 +8,8 @@
 // chart it configured — the integrity view has no per-field selection.)
 
 import { useQuery } from '@tanstack/react-query';
-import { apiGet } from '../../api/client';
+import { getConfigOptions, getRobotConfig } from '../../api/config';
 import { queryKeys } from '../../api/queryKeys';
-import type { ConfigOptions, RobotConfig } from '../../api/types';
 import type { RuntimeConfig } from '../../config';
 import { Card } from '../../components/ui';
 import { ErrorMessage } from '../../components/ErrorMessage';
@@ -41,14 +40,14 @@ export function DataQualitySection({ config }: { config: RuntimeConfig | undefin
   // Need the active robot's directory id to request its config-robots view.
   const optionsQuery = useQuery({
     queryKey: queryKeys.configOptions,
-    queryFn: ({ signal }) => apiGet<ConfigOptions>('/config/options', { signal }),
+    queryFn: ({ signal }) => getConfigOptions({ signal }),
   });
   const active = optionsQuery.data?.active_robot;
 
   const robotQuery = useQuery({
     queryKey: queryKeys.configRobot(active ?? ''),
     queryFn: ({ signal }) =>
-      apiGet<RobotConfig>(`/config/robots/${encodeURIComponent(active!)}`, { signal }),
+      getRobotConfig(active!, { signal }),
     enabled: !!active,
   });
   const robotCfg = robotQuery.data;

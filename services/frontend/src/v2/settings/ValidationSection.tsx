@@ -7,9 +7,10 @@
 // links there rather than duplicating the run UI.
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiGet, apiPost } from '../../api/client';
+import { apiGet } from '../../api/client';
+import { getConfigOptions, selectConfig } from '../../api/config';
 import { queryKeys } from '../../api/queryKeys';
-import type { ConfigAspect, ConfigOptions, ValidationPreset } from '../../api/types';
+import type { ConfigAspect, ValidationPreset } from '../../api/types';
 import { Badge, Card } from '../../components/ui';
 import { ErrorMessage } from '../../components/ErrorMessage';
 import { RECORDING_CONFIG_KEY } from '../../api/queryKeys';
@@ -33,7 +34,7 @@ export function ValidationSection() {
 
   const optionsQuery = useQuery({
     queryKey: queryKeys.configOptions,
-    queryFn: ({ signal }) => apiGet<ConfigOptions>('/config/options', { signal }),
+    queryFn: ({ signal }) => getConfigOptions({ signal }),
   });
   const presetsQuery = useQuery({
     queryKey: queryKeys.validationPresets,
@@ -42,7 +43,7 @@ export function ValidationSection() {
 
   const selectMutation = useMutation({
     mutationFn: (vars: { category: string; id: string }) =>
-      apiPost<ConfigOptions>('/config/select', vars),
+      selectConfig(vars),
     onSuccess: (data) => {
       queryClient.setQueryData(queryKeys.configOptions, data);
       queryClient.invalidateQueries({ queryKey: queryKeys.runtimeConfig });

@@ -19,13 +19,13 @@ import {
   keepPreviousData,
 } from '@tanstack/react-query';
 import { apiGet, apiPost } from '../../api/client';
+import { getConfigOptions } from '../../api/config';
 import { getCapture, listAllCaptures } from '../../api/captures';
 import { queryKeys } from '../../api/queryKeys';
 import { fetchRuntimeConfig } from '../../config';
 import type { JSONSchema } from '../../schema/jsonSchema';
 import { initialValueFor } from '../../schema/jsonSchema';
 import type {
-  ConfigOptions,
   JobState,
   JobStatus,
   JobSubmitRequest,
@@ -253,7 +253,7 @@ export function ValidationScreen() {
 
   const optionsQuery = useQuery({
     queryKey: queryKeys.configOptions,
-    queryFn: ({ signal }) => apiGet<ConfigOptions>('/config/options', { signal }),
+    queryFn: ({ signal }) => getConfigOptions({ signal }),
   });
   const templates: ValidationOption[] = (
     optionsQuery.data?.aspects?.validation?.options ?? []

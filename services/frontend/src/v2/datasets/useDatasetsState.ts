@@ -25,7 +25,6 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiGet } from '../../api/client';
 import {
   addDatasetMember,
   archiveCapture,
@@ -42,9 +41,13 @@ import {
   updateDataset,
 } from '../../api/captures';
 import { queryKeys } from '../../api/queryKeys';
+import { useSplitDeploy } from '../captures/useSplitDeploy';
+import { useBulkRun } from '../shared/useBulkRun';
+import { useOnPopState } from '../shared/useOnPopState';
 import type {
   CaptureDetail,
   CaptureListItem,
+  Dataset,
   DatasetArchiveProgress,
 } from '../../api/types';
 import { availabilityOf } from '../captures/availability';
@@ -408,38 +411,24 @@ export function useDatasetsState(): DatasetsState {
   const [operatorFilter, setOperatorFilter] = useState<string>(seed.operatorFilter);
   const [page, setPage] = useState(1);
 
-  // The URL can also change WITHOUT us: Back, Forward, a session restore, a
-  // bfcache resume. The seed above runs once, and the mirror effect below then
-  // rewrites the restored URL back to the state this screen was already
-  // showing — so the navigation was both ignored and erased. That is the same
-  // failure App.tsx fixed for `?tab=`, one level down and for five more keys.
-  //
-  // Adopting the URL keeps ONE invariant, the shell's: after any history
-  // navigation the console shows what that URL would show on a fresh load. So
-  // this reads through exactly the same `readDatasetsUrl` the seed does — a
-  // second parser here is how the two would drift.
-  //
-  // Idle in the common case: nothing in src/ calls `pushState`, so no in-app
-  // action produces a history entry today. This is what stops that from
-  // becoming a lie the moment one appears.
-  useEffect(() => {
-    const onPop = () => {
-      const next = readDatasetsUrl(window.location.search);
-      setSelectedDatasetId(next.datasetId);
-      setSelectedMembershipId(next.membershipId);
-      setSearch(next.search);
-      setMemberSearch(next.memberSearch);
-      setSort(next.sort);
-      setTaskResultFilter(next.taskResultFilter);
-      setOperatorFilter(next.operatorFilter);
-      setDatasetView(next.view);
-      // The page is not addressable, and a restored view starts at its top
-      // rather than on a page number that belonged to a different selection.
-      setPage(1);
-    };
-    window.addEventListener('popstate', onPop);
-    return () => window.removeEventListener('popstate', onPop);
-  }, []);
+  // The same failure App.tsx fixed for `?tab=`, one level down and for five
+  // more keys (see useOnPopState). This reads through exactly the same
+  // `readDatasetsUrl` the seed above does — a second parser here is how the two
+  // would drift.
+  useOnPopState(() => {
+    const next = readDatasetsUrl(window.location.search);
+    setSelectedDatasetId(next.datasetId);
+    setSelectedMembershipId(next.membershipId);
+    setSearch(next.search);
+    setMemberSearch(next.memberSearch);
+    setSort(next.sort);
+    setTaskResultFilter(next.taskResultFilter);
+    setOperatorFilter(next.operatorFilter);
+    setDatasetView(next.view);
+    // The page is not addressable, and a restored view starts at its top
+    // rather than on a page number that belonged to a different selection.
+    setPage(1);
+  });
 
   const [createOpen, setCreateOpen] = useState(false);
   const [newName, setNewName] = useState('');
@@ -455,13 +444,7 @@ export function useDatasetsState(): DatasetsState {
   const [combineOperator, setCombineOperator] = useState('');
   const [combineTask, setCombineTask] = useState('');
   const [combineSources, setCombineSources] = useState<string[]>([]);
-  const [combineBusy, setCombineBusy] = useState(false);
-  const [combineDone, setCombineDone] = useState(0);
-  const [combineTotal, setCombineTotal] = useState(0);
-  const [combineFailures, setCombineFailures] = useState<
-    { captureId: string; message: string }[]
-  >([]);
-  const [combineError, setCombineError] = useState<unknown>(null);
+  const combine = useBulkRun<{ captureId: string; message: string }>();
   const [candidateSearch, setCandidateSearch] = useState('');
   const [showBlockedCandidates, setShowBlockedCandidates] = useState(false);
   const [archiveTarget, setArchiveTarget] = useState<CaptureListItem | null>(null);
@@ -809,18 +792,9 @@ export function useDatasetsState(): DatasetsState {
   });
 
   // §12 obliges the discard dialog to say that a copy may remain on the robot —
-  // but only where that is true. The pull channel's health check answers on a
-  // split recording-PC deploy and nowhere else, so its availability IS "this is
-  // a split deployment". Read once per session, on the key Review uses, so the
-  // two screens share one probe and cannot disagree about the deployment they
-  // are running on. On error the default (off) stands honestly.
-  const transferStatusQuery = useQuery({
-    queryKey: queryKeys.transferStatus,
-    queryFn: ({ signal }) => apiGet<{ available?: boolean }>('/transfer/status', { signal }),
-    staleTime: Infinity,
-    refetchOnWindowFocus: false,
-    retry: false,
-  });
+  // but only where that is true. The shared probe is what makes this screen and
+  // Review agree about the deployment they are running on.
+  const splitDeploy = useSplitDeploy();
 
   const deletion = useCaptureDeletion({
     invalidate: useMemo(
@@ -945,70 +919,68 @@ export function useDatasetsState(): DatasetsState {
   // bulk rule). The sources are never written to; a dataset is a list, and
   // reading a list does not change it.
   const submitCombine = async () => {
-    if (combineBusy || !combineName.trim() || combineSources.length === 0) return;
-    setCombineBusy(true);
-    setCombineError(null);
-    setCombineFailures([]);
-    setCombineDone(0);
-    setCombineTotal(0);
-    try {
-      // Read every source first: the total is known before the first add, so
-      // the progress can say n of m instead of counting into the unknown.
-      const sourceDetails = [];
-      for (const id of combineSources) {
-        sourceDetails.push(await getDataset(id));
-      }
-      const seen = new Set<string>();
-      const captureIds: string[] = [];
-      for (const detail of sourceDetails) {
-        for (const member of [...detail.members].sort(
-          (a, b) => a.display_index - b.display_index,
-        )) {
-          // A capture in two sources joins once — the new set numbers it at
-          // its first appearance.
-          if (seen.has(member.capture_id)) continue;
-          seen.add(member.capture_id);
-          captureIds.push(member.capture_id);
+    if (combine.running || !combineName.trim() || combineSources.length === 0) return;
+    // Assigned by `prepare`, then read by the loop and the finish — the new
+    // dataset has to exist before the first member can join it. Nothing after
+    // `prepare` runs if it threw, so this is set by the time it is read.
+    let created!: Dataset;
+    await combine.run<string>({
+      prepare: async (setTotal) => {
+        // Read every source first: the total is known before the first add, so
+        // the progress can say n of m instead of counting into the unknown.
+        const sourceDetails = [];
+        for (const id of combineSources) {
+          sourceDetails.push(await getDataset(id));
         }
-      }
-      setCombineTotal(captureIds.length);
+        const seen = new Set<string>();
+        const captureIds: string[] = [];
+        for (const detail of sourceDetails) {
+          for (const member of [...detail.members].sort(
+            (a, b) => a.display_index - b.display_index,
+          )) {
+            // A capture in two sources joins once — the new set numbers it at
+            // its first appearance.
+            if (seen.has(member.capture_id)) continue;
+            seen.add(member.capture_id);
+            captureIds.push(member.capture_id);
+          }
+        }
+        setTotal(captureIds.length);
 
-      const created = await createDataset({
-        name: combineName.trim(),
-        operator: combineOperator.trim() || null,
-        task: combineTask.trim() || null,
-      });
-      const failures: { captureId: string; message: string }[] = [];
-      for (const captureId of captureIds) {
+        created = await createDataset({
+          name: combineName.trim(),
+          operator: combineOperator.trim() || null,
+          task: combineTask.trim() || null,
+        });
+        return captureIds;
+      },
+      attempt: async (captureId) => {
         try {
           await addDatasetMember(created.dataset_id, captureId);
+          return null;
         } catch (error) {
-          failures.push({ captureId, message: captureErrorText(error) });
-          setCombineFailures([...failures]);
+          return { captureId, message: captureErrorText(error) };
         }
-        setCombineDone((done) => done + 1);
-      }
-      await invalidateDatasets(created.dataset_id);
-      setSelectedDatasetId(created.dataset_id);
-      setSelectedMembershipId(null);
-      if (failures.length === 0) {
-        setCombineOpen(false);
-        setCombineSources([]);
-        setCombineName('');
-        setCombineOperator('');
-        setCombineTask('');
-        showToast(
-          `Combined ${captureIds.length} recording${captureIds.length === 1 ? '' : 's'} ` +
-            `into “${created.name}” — the source datasets are untouched`,
-        );
-      }
-      // With failures the dialog stays open: the list of what did not join is
-      // the result, and a toast would swallow it.
-    } catch (error) {
-      setCombineError(error);
-    } finally {
-      setCombineBusy(false);
-    }
+      },
+      afterAll: async ({ succeeded, failures }) => {
+        await invalidateDatasets(created.dataset_id);
+        setSelectedDatasetId(created.dataset_id);
+        setSelectedMembershipId(null);
+        if (failures.length === 0) {
+          setCombineOpen(false);
+          setCombineSources([]);
+          setCombineName('');
+          setCombineOperator('');
+          setCombineTask('');
+          showToast(
+            `Combined ${succeeded} recording${succeeded === 1 ? '' : 's'} ` +
+              `into “${created.name}” — the source datasets are untouched`,
+          );
+        }
+        // With failures the dialog stays open: the list of what did not join is
+        // the result, and a toast would swallow it.
+      },
+    });
   };
 
   // ---- dataset archive (§6.x) --------------------------------------------
@@ -1254,14 +1226,11 @@ export function useDatasetsState(): DatasetsState {
       setCombineName('');
       setCombineOperator('');
       setCombineTask('');
-      setCombineFailures([]);
-      setCombineError(null);
-      setCombineDone(0);
-      setCombineTotal(0);
+      combine.reset();
       setCombineOpen(true);
     },
     cancelCombine: () => {
-      if (!combineBusy) setCombineOpen(false);
+      if (!combine.running) setCombineOpen(false);
     },
     combineChoices: datasets
       .filter((d) => d.status === 'active')
@@ -1284,11 +1253,11 @@ export function useDatasetsState(): DatasetsState {
     combineTask,
     setCombineTask,
     submitCombine: () => void submitCombine(),
-    combineBusy,
-    combineDone,
-    combineTotal,
-    combineFailures,
-    combineError,
+    combineBusy: combine.running,
+    combineDone: combine.done,
+    combineTotal: combine.total,
+    combineFailures: combine.failures,
+    combineError: combine.error,
 
     confirmingDatasetDelete,
     requestDatasetDelete: () => setConfirmingDatasetDelete(selectedRow !== null),
@@ -1334,7 +1303,7 @@ export function useDatasetsState(): DatasetsState {
     blockedCandidateCount: matchedCandidates.length - addableCandidates.length,
 
     deletion,
-    splitDeploy: transferStatusQuery.data?.available === true,
+    splitDeploy,
 
     archiveEnabled,
     archiveRoots,

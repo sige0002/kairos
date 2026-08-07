@@ -5,7 +5,7 @@
 
 import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { apiGet } from '../../api/client';
+import { getTopics } from '../../api/system';
 import { queryKeys } from '../../api/queryKeys';
 import type {
   AlertEvent,
@@ -233,9 +233,7 @@ export function useMonitorRows(config?: RuntimeConfig): MonitorData {
   const topicsQuery = useQuery({
     queryKey: queryKeys.topics,
     queryFn: ({ signal }) =>
-      apiGet<TopicInfo[] | { topics?: TopicInfo[]; items?: TopicInfo[] }>('/topics', {
-        signal,
-      }),
+      getTopics({ signal }),
     refetchInterval: 5000,
   });
 

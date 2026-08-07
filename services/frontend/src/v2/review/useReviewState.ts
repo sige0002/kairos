@@ -18,23 +18,25 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiGet, apiPost } from '../../api/client';
 import { listAllCaptures } from '../../api/captures';
+import { getRetention } from '../../api/system';
+import { pullCapture } from '../../api/transfer';
 import { listBatches } from '../../api/batches';
 import { queryKeys } from '../../api/queryKeys';
 import type {
   BatchListResponse,
   CaptureListItem,
   Quality,
-  RetentionInfo,
   ReviewStatus,
   TaskResult,
 } from '../../api/types';
 import { useUiStore } from '../../store/uiStore';
 import { useCaptureDeletion } from '../captures/useCaptureDeletion';
+import { useBulkRun } from '../shared/useBulkRun';
 import { mapCapturesToEpisodes, type BatchSeqLookup } from './mapCaptures';
 import { initialTransferSlot, transferReducer } from './transfer';
 import { setSplitMode, useSplitMode } from '../captures/splitMode';
+import { useTransferAvailable } from '../captures/useSplitDeploy';
 import type { CaptureErrorReading } from '../captures/errors';
 import {
   useReviewSave,
@@ -199,6 +201,21 @@ const SKIPPED_BY_OWN_SAVE =
 const reasonFor = (error: CaptureErrorReading | null) =>
   error ? `${error.message} ${error.guidance}`.trim() : 'save failed';
 
+/** One refused capture in a batch-level run, named so the operator can find it. */
+interface BatchFailure {
+  captureId: string;
+  error: string;
+}
+
+const batchFailure = (
+  captureId: string,
+  error: CaptureErrorReading | null,
+  skipped: boolean | undefined,
+): BatchFailure => ({
+  captureId,
+  error: skipped ? SKIPPED_BY_OWN_SAVE : reasonFor(error),
+});
+
 export function useReviewState(): ReviewState {
   const queryClient = useQueryClient();
   const capturesQuery = useQuery({
@@ -231,25 +248,16 @@ export function useReviewState(): ReviewState {
   // never blocks Review.
   const retentionQuery = useQuery({
     queryKey: queryKeys.retention,
-    queryFn: ({ signal }) => apiGet<RetentionInfo>('/retention', { signal }),
+    queryFn: ({ signal }) => getRetention({ signal }),
   });
   const retention = retentionQuery.data;
 
   // ---- split mode: derived from the server's transfer channel -------------
-  // The importer sidecar (the robot->PC pull channel) answers its healthz only
-  // on a split recording-PC deploy, so `available` IS "this is a split
-  // deployment". Read once per session so a test/e2e override is not clobbered
-  // by a later refetch; on error the default (off) stands honestly.
+  // The shared probe (useSplitDeploy) answers whether this is a split deploy;
+  // THIS screen is the one that pushes the answer into the global splitMode
+  // store, which the discard dialog reads (§12).
   const splitMode = useSplitMode();
-  const transferStatusQuery = useQuery({
-    queryKey: queryKeys.transferStatus,
-    queryFn: ({ signal }) =>
-      apiGet<{ available?: boolean }>('/transfer/status', { signal }),
-    staleTime: Infinity,
-    refetchOnWindowFocus: false,
-    retry: false,
-  });
-  const transferAvailable = transferStatusQuery.data?.available;
+  const transferAvailable = useTransferAvailable();
   useEffect(() => {
     if (typeof transferAvailable === 'boolean') setSplitMode(transferAvailable);
   }, [transferAvailable]);
@@ -323,6 +331,14 @@ export function useReviewState(): ReviewState {
     [baseEpisodes, pending, transfers],
   );
 
+  // The two batch-level bulk runs (their operations are further down). They are
+  // declared up here because the batch FILTER also clears the return notice —
+  // see toggleBatchFilter immediately below.
+  const excludeBatch = useBulkRun<BatchFailure>();
+  const returnBatch = useBulkRun<BatchFailure>();
+  const { run: runExcludeBatch, reset: resetExcludeBatch } = excludeBatch;
+  const { run: runReturnBatch, reset: resetReturnBatch } = returnBatch;
+
   // ---- filters / search ---------------------------------------------------
   const [showExcluded, setShowExcluded] = useState(false);
   const toggleExcluded = useCallback(() => setShowExcluded((v) => !v), []);
@@ -333,9 +349,9 @@ export function useReviewState(): ReviewState {
     // Drop any previous batch's return failures: the notice names a count with
     // no batch on it, so carrying it across a filter change would pin one
     // batch's failure onto another.
-    setReturnBatchFailures([]);
+    resetReturnBatch();
     setBatchFilter((cur) => (batchId === null || cur === batchId ? null : batchId));
-  }, []);
+  }, [resetReturnBatch]);
 
   // ---- retention (advisory) ----------------------------------------------
   const [retentionFilterActive, setRetentionFilterActive] = useState(false);
@@ -583,73 +599,58 @@ export function useReviewState(): ReviewState {
     [batchRows],
   );
 
-  const [returnBatchFailures, setReturnBatchFailures] = useState<
-    { captureId: string; error: string }[]
-  >([]);
+  // Both batch-level runs step through their targets identically (useBulkRun):
+  // one save at a time, one cache sweep at the end, and a refusal reported BY
+  // ID rather than dropped. Only the payload they save and what they say
+  // afterwards differ, which is what stays written out here.
   const [excludeBatchOpen, setExcludeBatchOpen] = useState(false);
-  const [excludeBatchRunning, setExcludeBatchRunning] = useState(false);
-  const [excludeBatchDone, setExcludeBatchDone] = useState(0);
-  const [excludeBatchFailures, setExcludeBatchFailures] = useState<
-    { captureId: string; error: string }[]
-  >([]);
   const requestExcludeBatch = useCallback(() => {
-    setExcludeBatchFailures([]);
-    setExcludeBatchDone(0);
+    resetExcludeBatch();
     setExcludeBatchOpen(true);
-  }, []);
+  }, [resetExcludeBatch]);
   const cancelExcludeBatch = useCallback(() => {
-    if (excludeBatchRunning) return;
+    if (excludeBatch.running) return;
     setExcludeBatchOpen(false);
-    setExcludeBatchFailures([]);
-    setExcludeBatchDone(0);
-  }, [excludeBatchRunning]);
+    resetExcludeBatch();
+  }, [excludeBatch.running, resetExcludeBatch]);
   const confirmExcludeBatch = useCallback(() => {
     const targets = batchExcludable;
     if (!targets.length) {
       setExcludeBatchOpen(false);
       return;
     }
-    setExcludeBatchRunning(true);
-    setExcludeBatchDone(0);
-    setExcludeBatchFailures([]);
     // Supersede any "still excluded — return failed" notice. Those episodes
     // are about to be excluded on purpose, which leaves the sentence literally
     // true and completely misleading. Cleared HERE rather than when the dialog
     // opens: opening a dialog supersedes nothing, and the operator may still
     // be reading the notice while deciding whether to go ahead.
-    setReturnBatchFailures([]);
+    resetReturnBatch();
     void (async () => {
-      const failures: { captureId: string; error: string }[] = [];
-      let succeeded = 0;
-      for (const t of targets) {
-        const { capture, error, skipped } = await applyReview(
-          t,
-          { status: 'excluded', quality: 'Not usable' },
-          {
-            review_status: 'excluded',
-            quality: 'not_usable',
-            quality_source: 'operator',
-          },
-          // One sweep at the end, not one per capture.
-          { skipInvalidate: true },
-        );
-        if (capture) succeeded += 1;
-        else {
+      const outcome = await runExcludeBatch({
+        items: targets,
+        attempt: async (t) => {
+          const { capture, error, skipped } = await applyReview(
+            t,
+            { status: 'excluded', quality: 'Not usable' },
+            {
+              review_status: 'excluded',
+              quality: 'not_usable',
+              quality_source: 'operator',
+            },
+            // One sweep at the end, not one per capture.
+            { skipInvalidate: true },
+          );
           // Reported by id and NOT dropped: a capture that stayed in the ready
           // set because its save failed is exactly what the operator needs to
           // know before trusting the batch. The message comes from THIS save's
           // result — reading it off the hook's banner state would report
           // whichever failure happened to land there last.
-          failures.push({
-            captureId: t.captureId,
-            error: skipped ? SKIPPED_BY_OWN_SAVE : reasonFor(error),
-          });
-        }
-        setExcludeBatchDone((d) => d + 1);
-        setExcludeBatchFailures([...failures]);
-      }
-      await reviewSave.invalidateList();
-      setExcludeBatchRunning(false);
+          return capture ? null : batchFailure(t.captureId, error, skipped);
+        },
+        afterAll: () => reviewSave.invalidateList(),
+      });
+      if (!outcome) return;
+      const { succeeded, failures } = outcome;
       if (failures.length === 0) {
         showToast(
           `Excluded ${succeeded} episode${succeeded === 1 ? '' : 's'} — recordings kept, reversible`,
@@ -659,43 +660,46 @@ export function useReviewState(): ReviewState {
         showToast(`Excluded ${succeeded}, ${failures.length} failed`);
       }
     })();
-  }, [batchExcludable, applyReview, reviewSave, showToast]);
+  }, [
+    batchExcludable,
+    applyReview,
+    reviewSave,
+    showToast,
+    runExcludeBatch,
+    resetReturnBatch,
+  ]);
 
   const returnBatchToReview = useCallback(() => {
     const targets = batchExcluded;
     if (!targets.length) return;
-    setReturnBatchFailures([]);
     void (async () => {
-      const failures: { captureId: string; error: string }[] = [];
-      let restored = 0;
-      for (const t of targets) {
-        const { capture, error, skipped } = await applyReview(
-          t,
-          { status: 'pending' },
-          { review_status: 'pending' },
-          { skipInvalidate: true },
-        );
-        if (capture) restored += 1;
-        // Same rule as the batch exclude: named by id, from THIS save's own
-        // result. A capture that stayed excluded because its save failed is
-        // the one fact the operator needs before trusting the count — and
-        // "Returned 2" over a set of 3, with no mention of the third, is a
-        // partial failure wearing a success's clothes.
-        else
-          failures.push({
-            captureId: t.captureId,
-            error: skipped ? SKIPPED_BY_OWN_SAVE : reasonFor(error),
-          });
-      }
-      await reviewSave.invalidateList();
-      setReturnBatchFailures(failures);
+      const outcome = await runReturnBatch({
+        items: targets,
+        attempt: async (t) => {
+          const { capture, error, skipped } = await applyReview(
+            t,
+            { status: 'pending' },
+            { review_status: 'pending' },
+            { skipInvalidate: true },
+          );
+          // Same rule as the batch exclude: named by id, from THIS save's own
+          // result. A capture that stayed excluded because its save failed is
+          // the one fact the operator needs before trusting the count — and
+          // "Returned 2" over a set of 3, with no mention of the third, is a
+          // partial failure wearing a success's clothes.
+          return capture ? null : batchFailure(t.captureId, error, skipped);
+        },
+        afterAll: () => reviewSave.invalidateList(),
+      });
+      if (!outcome) return;
+      const { succeeded, failures } = outcome;
       showToast(
         failures.length === 0
-          ? `Returned ${restored} episode${restored === 1 ? '' : 's'} to review`
-          : `Returned ${restored}, ${failures.length} failed`,
+          ? `Returned ${succeeded} episode${succeeded === 1 ? '' : 's'} to review`
+          : `Returned ${succeeded}, ${failures.length} failed`,
       );
     })();
-  }, [batchExcluded, applyReview, reviewSave, showToast]);
+  }, [batchExcluded, applyReview, reviewSave, showToast, runReturnBatch]);
 
   // ---- decisions / overrides ---------------------------------------------
   const decide = useCallback(
@@ -800,7 +804,7 @@ export function useReviewState(): ReviewState {
         if (cur.phase !== 'awaiting') return prev;
         return { ...prev, [captureId]: transferReducer(cur, { type: 'START' }) };
       });
-      apiPost('/transfer/pull', { capture_id: captureId }).catch((err: unknown) => {
+      pullCapture(captureId).catch((err: unknown) => {
         failTransfer(
           [captureId],
           err instanceof Error
@@ -898,13 +902,13 @@ export function useReviewState(): ReviewState {
     batchExcluded,
     requestExcludeBatch,
     excludeBatchOpen,
-    excludeBatchRunning,
-    excludeBatchDone,
-    excludeBatchFailures,
+    excludeBatchRunning: excludeBatch.running,
+    excludeBatchDone: excludeBatch.done,
+    excludeBatchFailures: excludeBatch.failures,
     confirmExcludeBatch,
     cancelExcludeBatch,
     returnBatchToReview,
-    returnBatchFailures,
+    returnBatchFailures: returnBatch.failures,
 
     captureSubject,
 

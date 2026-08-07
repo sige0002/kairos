@@ -22,8 +22,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiGet } from '../../api/client';
+import { getConfigOptions } from '../../api/config';
 import { queryKeys } from '../../api/queryKeys';
-import type { ConfigOptions } from '../../api/types';
 import { Badge, Button, cn } from '../../components/ui';
 import { ErrorMessage } from '../../components/ErrorMessage';
 import {
@@ -90,7 +90,7 @@ export function AlertsCard() {
   // file to show — better a moment of "Loading" than another robot's rules.
   const optionsQuery = useQuery({
     queryKey: queryKeys.configOptions,
-    queryFn: ({ signal }) => apiGet<ConfigOptions>('/config/options', { signal }),
+    queryFn: ({ signal }) => getConfigOptions({ signal }),
   });
   const activeRobot = optionsQuery.data?.active_robot;
   const alertsKey = alertsConfigKey(activeRobot ?? '');

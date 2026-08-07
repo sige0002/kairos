@@ -11,9 +11,10 @@
 import { useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiGet, apiPost } from '../../api/client';
+import { getConfigOptions } from '../../api/config';
 import { getCapture } from '../../api/captures';
 import { queryKeys } from '../../api/queryKeys';
-import type { ConfigOptions, JobStatus,
+import type { JobStatus,
   CaptureDetail,
 } from '../../api/types';
 import { Badge, cn } from '../../components/ui';
@@ -232,7 +233,7 @@ export function CaptureInspection({ captureId }: { captureId: string }) {
   // Validation screen does. No template ⇒ we can't submit an honest job.
   const optionsQuery = useQuery({
     queryKey: queryKeys.configOptions,
-    queryFn: ({ signal }) => apiGet<ConfigOptions>('/config/options', { signal }),
+    queryFn: ({ signal }) => getConfigOptions({ signal }),
   });
   const template = optionsQuery.data?.aspects?.validation?.active ?? '';
 

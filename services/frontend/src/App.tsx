@@ -13,6 +13,7 @@ import { ValidationScreen } from './v2/validation/ValidationScreen';
 import { MonitorScreen } from './v2/monitor/MonitorScreen';
 import { SettingsScreen } from './v2/settings/SettingsScreen';
 import { resolveTabId, tabLabel, V2_TABS, type V2TabId } from './v2/tabs';
+import { useOnPopState } from './v2/shared/useOnPopState';
 import { PanelBoundary } from './components/ErrorBoundary';
 import { Hexagon, StatusDot, cn } from './components/ui';
 import type { SseStatus } from './store/uiStore';
@@ -73,23 +74,12 @@ function useActiveTab(): V2TabId {
     if (!activeTab) setActiveTab(resolveTabId(readRoute().tab));
   }, [activeTab, setActiveTab]);
 
-  // The URL can also change WITHOUT us: Back, Forward, a session restore, a
-  // bfcache resume. The store would keep its own tab, the mirror effect below
+  // Without this the store would keep its own tab, the mirror effect below
   // would rewrite the restored URL back to it, and the navigation would vanish
-  // — the console showing one tab while its own URL named another. Adopting the
-  // URL's tab keeps one invariant: after any history navigation the console
-  // shows what that URL would show on a fresh load. A URL naming no tab
-  // resolves to the default for exactly that reason.
-  //
-  // Idle in the common case: nothing here pushes history entries (every write
-  // is `replaceState`), so today Back leaves the console rather than moving
-  // between tabs. This listener is what stops that from becoming a lie the
-  // moment a `pushState` appears anywhere.
-  useEffect(() => {
-    const onPop = () => setActiveTab(resolveTabId(readRoute().tab));
-    window.addEventListener('popstate', onPop);
-    return () => window.removeEventListener('popstate', onPop);
-  }, [setActiveTab]);
+  // — the console showing one tab while its own URL named another. A URL naming
+  // no tab resolves to the default for exactly that reason. (See useOnPopState
+  // for why every mirrored screen needs one of these.)
+  useOnPopState(() => setActiveTab(resolveTabId(readRoute().tab)));
 
   const active = resolveTabId(activeTab || null);
 

@@ -7,8 +7,7 @@
 // cadence as the right-rail SystemCard (they share the 'system' query key).
 
 import { useQuery } from '@tanstack/react-query';
-import { apiGet } from '../../api/client';
-import type { SystemInfo } from '../../api/types';
+import { getSystemInfo } from '../../api/system';
 import type { RuntimeConfig } from '../../config';
 import { Card } from '../../components/ui';
 import { formatBytes } from '../review/format';
@@ -63,7 +62,7 @@ function Panel({ title, children }: { title: string; children: React.ReactNode }
 export function SystemView({ config }: { config: RuntimeConfig }) {
   const { data } = useQuery({
     queryKey: ['system'],
-    queryFn: ({ signal }) => apiGet<SystemInfo>('/api/v1/system', { signal }),
+    queryFn: ({ signal }) => getSystemInfo({ signal }),
     staleTime: REFETCH_MS,
     refetchInterval: REFETCH_MS,
   });

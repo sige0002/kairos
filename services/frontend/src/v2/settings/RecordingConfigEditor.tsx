@@ -7,7 +7,8 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ApiError, apiGet, getApiBase } from '../../api/client';
+import { ApiError, getApiBase } from '../../api/client';
+import { getRecordingConfig } from '../../api/config';
 import { RECORDING_CONFIG_KEY, queryKeys } from '../../api/queryKeys';
 import type {
   ApiErrorBody,
@@ -58,7 +59,7 @@ export function RecordingConfigEditor({ config }: { config: RuntimeConfig }) {
 
   const recordingQuery = useQuery({
     queryKey: RECORDING_CONFIG_KEY,
-    queryFn: ({ signal }) => apiGet<RecordingConfigPayload>('/config/recording', { signal }),
+    queryFn: ({ signal }) => getRecordingConfig({ signal }),
   });
 
   // Three different things, three different sentences. `recording` is bytes

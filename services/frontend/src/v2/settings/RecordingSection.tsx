@@ -9,8 +9,7 @@
 
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { apiGet } from '../../api/client';
-import type { RecordingConfigPayload } from '../../api/types';
+import { getRecordingConfig } from '../../api/config';
 import type { RuntimeConfig } from '../../config';
 import { Badge, Card, cn } from '../../components/ui';
 import { ErrorMessage } from '../../components/ErrorMessage';
@@ -63,7 +62,7 @@ export function RecordingSection({ config }: { config: RuntimeConfig | undefined
 
   const recordingQuery = useQuery({
     queryKey: RECORDING_CONFIG_KEY,
-    queryFn: ({ signal }) => apiGet<RecordingConfigPayload>('/config/recording', { signal }),
+    queryFn: ({ signal }) => getRecordingConfig({ signal }),
   });
 
   const cfg = (recordingQuery.data?.config ?? null) as RecordingConfigView | null;

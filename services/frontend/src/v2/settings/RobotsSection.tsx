@@ -16,14 +16,10 @@
 
 import { useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiGet, apiPost } from '../../api/client';
+import { getConfigOptions, getRobotConfig, selectConfig } from '../../api/config';
+import { stopRecord } from '../../api/record';
 import { queryKeys } from '../../api/queryKeys';
-import type {
-  AspectOption,
-  ConfigAspect,
-  ConfigOptions,
-  RobotConfig,
-} from '../../api/types';
+import type { AspectOption, ConfigAspect, ConfigOptions } from '../../api/types';
 import { useRecordStatus } from '../captures/useRecordStatus';
 import type { RuntimeConfig } from '../../config';
 import { Badge, Button, Card, Modal, cn } from '../../components/ui';
@@ -61,7 +57,7 @@ export function RobotsSection({ config }: { config: RuntimeConfig | undefined })
 
   const optionsQuery = useQuery({
     queryKey: queryKeys.configOptions,
-    queryFn: ({ signal }) => apiGet<ConfigOptions>('/config/options', { signal }),
+    queryFn: ({ signal }) => getConfigOptions({ signal }),
   });
 
   // Switching robots stops whatever is running, so this guard errs towards
@@ -76,7 +72,7 @@ export function RobotsSection({ config }: { config: RuntimeConfig | undefined })
 
   const selectMutation = useMutation({
     mutationFn: (vars: { category: string; id: string }) =>
-      apiPost<ConfigOptions>('/config/select', vars),
+      selectConfig(vars),
     onSuccess: (data) => {
       // Adopt the fresh options and refresh the runtime config + the editable
       // recording config that a robot / aspect switch re-points.
@@ -87,7 +83,7 @@ export function RobotsSection({ config }: { config: RuntimeConfig | undefined })
   });
 
   const stopMutation = useMutation({
-    mutationFn: () => apiPost<unknown>('/record/stop', {}),
+    mutationFn: () => stopRecord(),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.recordStatus });
     },
@@ -322,7 +318,7 @@ function ReadOnlyRobotDetail({ robot }: { robot: string }) {
   const query = useQuery({
     queryKey: queryKeys.configRobot(robot),
     queryFn: ({ signal }) =>
-      apiGet<RobotConfig>(`/config/robots/${encodeURIComponent(robot)}`, { signal }),
+      getRobotConfig(robot, { signal }),
   });
 
   return (
