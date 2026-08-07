@@ -84,6 +84,31 @@ class DoraRunnerClient(BaseServiceClient):
         """
         created = await self.create_job(payload)
         job_id = str(created["job_id"])
+        return await self.await_job(
+            job_id,
+            interval=interval,
+            backoff=backoff,
+            max_interval=max_interval,
+            timeout=timeout,
+        )
+
+    async def await_job(
+        self,
+        job_id: str,
+        *,
+        interval: float = 0.2,
+        backoff: float = 1.5,
+        max_interval: float = 2.0,
+        timeout: float = 120.0,
+    ) -> dict[str, Any]:
+        """Poll an ALREADY-CREATED job until it reaches a terminal state.
+
+        Split out of :meth:`run_job_to_completion` for flows that must hand the
+        caller a ``job_id`` immediately and do their bookkeeping afterwards —
+        archiving a multi-GB dataset cannot block the request that started it,
+        but something still has to notice when it finished. Same polling and
+        same return shape as :meth:`run_job_to_completion`.
+        """
         deadline = time.monotonic() + timeout
         delay = interval
         while True:

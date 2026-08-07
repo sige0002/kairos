@@ -1,0 +1,17 @@
+# agent-guidance-architect: .codex/agents/ 用カスタムエージェント定義テンプレート。
+# Codex のプロジェクト単位サブエージェント。フィールド仕様は
+# references/codex-spec.md の確認結果に従うこと（このコメントは削除する）。
+
+name = "{{agent-name}}"
+description = "{{いつこのエージェントへ委譲すべきか}}"
+
+developer_instructions = """
+あなたは {{役割}} です。
+
+## 任務
+- {{何を調べ、何を報告するか}}
+
+## 制約
+- 実装ファイルを編集しない
+- 確認できないものは「未確認」と明記する
+"""

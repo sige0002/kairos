@@ -12,37 +12,39 @@ from __future__ import annotations
 
 import httpx
 from api_orchestrator.app_factory import create_orchestrator_app
-from api_orchestrator.store import RunStore
 from kairos_common import Settings
 
 
-def _app(settings: Settings, store: RunStore, fake_recorder):
+def _app(settings: Settings, fake_recorder):
     http_client = httpx.AsyncClient(
         transport=httpx.MockTransport(fake_recorder.handler)
     )
-    return create_orchestrator_app(settings, store=store, http_client=http_client)
+    return create_orchestrator_app(settings, http_client=http_client)
 
 
-def test_default_service_hosts_are_localhost(fake_recorder, store: RunStore) -> None:
-    settings = Settings(recording_config="/nonexistent/recording.yaml")
-    app = _app(settings, store, fake_recorder)
+def test_default_service_hosts_are_localhost(fake_recorder, data_dir) -> None:
+    settings = Settings(
+        data_dir=str(data_dir), recording_config="/nonexistent/recording.yaml"
+    )
+    app = _app(settings, fake_recorder)
     assert app.state.recorder_client.base_url == "http://localhost:8010"
     assert app.state.monitor_client.base_url == "http://localhost:8001"
     assert app.state.streamer_client.base_url == "http://localhost:8002"
     assert app.state.dora_runner_client.base_url == "http://localhost:8020"
 
 
-def test_split_service_hosts_point_at_robot(fake_recorder, store: RunStore) -> None:
+def test_split_service_hosts_point_at_robot(fake_recorder, data_dir) -> None:
     # Recording-PC orchestrator in split mode: DDS-reading services live on the
     # robot; dora_runner stays local (CPU-heavy, runs beside the orchestrator).
     settings = Settings(
+        data_dir=str(data_dir),
         recording_config="/nonexistent/recording.yaml",
         recorder_host="10.0.0.5",
         topic_monitor_host="10.0.0.5",
         webrtc_host="10.0.0.5",
         dora_runner_host="localhost",
     )
-    app = _app(settings, store, fake_recorder)
+    app = _app(settings, fake_recorder)
     assert app.state.recorder_client.base_url == "http://10.0.0.5:8010"
     assert app.state.monitor_client.base_url == "http://10.0.0.5:8001"
     assert app.state.streamer_client.base_url == "http://10.0.0.5:8002"

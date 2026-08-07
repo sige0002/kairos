@@ -61,8 +61,14 @@ def load_stream_config(path: str | Path) -> StreamConfig:
     if not path.exists():
         raise FileNotFoundError(f"Stream config not found: {path}")
 
-    with path.open("r", encoding="utf-8") as fh:
-        raw = yaml.safe_load(fh)
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            raw = yaml.safe_load(fh)
+    except yaml.YAMLError as exc:
+        # See load_recording_config: callers degrade on ValueError, and a
+        # YAMLError escaping instead takes the service down over a file the
+        # handler was written to tolerate.
+        raise ValueError(f"Stream config is not valid YAML: {path}\n{exc}") from exc
 
     if raw is None:
         return StreamConfig()

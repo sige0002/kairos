@@ -1,4 +1,6 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1@sha256:87999aa3d42bdc6bea60565083ee17e86d1f3339802f543c0d03998580f9cb89
+# Digest-pinned on purpose: an unpinned tag makes BuildKit resolve it against the
+# registry on EVERY build, which fails where there is no network (robot in the field).
 # webrtc_streamer — ROS 2 node that subscribes to image topics and streams a
 # low-latency WebRTC camera preview, so it is built FROM the ROS base image.
 # rclpy is lazy-imported, so the FastAPI health endpoints serve without ROS.
@@ -10,19 +12,31 @@ ARG ROS_DISTRO=jazzy
 # without "universe" (seen on a real-robot network). UV_PYTHON_PREFERENCE=
 # only-system + a bare "python3" interpreter name keep uv from trying to
 # download a standalone Python build (also DNS-blocked on the same networks).
+# uv is pinned by version + digest for reproducible builds (see README Releases).
 FROM ros:${ROS_DISTRO}-ros-base AS builder
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.10.0@sha256:78a7ff97cd27b7124a5f3c2aefe146170793c56a1e03321dd31a289f6d82a04f /uv /usr/local/bin/uv
 
-ENV VENV=/opt/venv UV_PYTHON_PREFERENCE=only-system
+# --system-site-packages so the ROS-provided rclpy stays importable; the venv
+# lives at UV_PROJECT_ENVIRONMENT so `uv sync` installs into it.
+# UV_HTTP_TIMEOUT: uv's default is a 30 s READ timeout — a >30 s no-byte stall
+# (congested field Wi-Fi / cellular) kills the download, and the build with it.
+# 600 s rides out stalls; a healthy link never notices (read, not total, time).
+ENV VENV=/opt/venv \
+    UV_PYTHON_PREFERENCE=only-system \
+    UV_PROJECT_ENVIRONMENT=/opt/venv \
+    UV_HTTP_TIMEOUT=600 \
+    UV_HTTP_RETRIES=5
 RUN uv venv --python python3 --system-site-packages $VENV
 ENV PATH="$VENV/bin:$PATH"
 
 WORKDIR /app
 COPY libs/kairos_common /app/libs/kairos_common
 COPY services/webrtc_streamer /app/services/webrtc_streamer
-# --no-editable: a plain uv pip install of a local path defaults to editable,
-# whose .pth points at this builder stage's /app — absent in the runtime stage.
-RUN uv pip install --no-cache-dir --no-editable ./libs/kairos_common ./services/webrtc_streamer
+# Install the exact locked dependency set (--frozen: no `>=` re-resolution) plus
+# the local packages non-editable (--no-editable). The lock's kairos-common path
+# source (../../libs/kairos_common) resolves from the service dir.
+RUN cd /app/services/webrtc_streamer \
+    && uv sync --frozen --no-editable --no-dev
 
 # ---- runtime ----------------------------------------------------------------
 FROM ros:${ROS_DISTRO}-ros-base AS runtime
@@ -43,3 +57,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 EXPOSE 8002
 
 CMD ["python", "-m", "webrtc_streamer.main"]
+
+# Build identity (compose passes it through the shared build-args anchor; make
+# derives it, '-dirty' on an uncommitted tree). Declared LAST on purpose: a new
+# commit then rebuilds only this metadata layer, not the stage above it.
+ARG KAIROS_GIT_SHA=unknown
+ENV KAIROS_GIT_SHA=$KAIROS_GIT_SHA

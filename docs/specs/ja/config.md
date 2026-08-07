@@ -1,6 +1,6 @@
 # 共有設定（config）仕様
 
-> ステータス: 設計確定（v1）。日本語が正本（これを正とする）。英語版 `docs/specs/en/config.md` は自動生成ミラー（直接編集しない）。**認証は不要。** ネットワークは**信頼されたローカルネットワーク（LAN）を前提**とし、LAN 公開を許容する。
+> ステータス: 設計確定（**v2 = capture store 対応**）。日本語が正本（これを正とする）。英語版 `docs/specs/en/config.md` は自動生成ミラー（直接編集しない）。**認証は不要。** ネットワークは**信頼されたローカルネットワーク（LAN）を前提**とし、LAN 公開を許容する。
 
 サービス間で共有する設定の単一ソースと外出しルール。「**簡単に制御できる**」ことを要件とする。
 
@@ -26,10 +26,11 @@
 | キー | 既定 | 説明 |
 |---|---|---|
 | `ROS_DOMAIN_ID` | `0` | 全サービス共通の ROS 2 ドメイン |
+| `TZ` | (make がホストから導出。空=UTC) | コンテナのタイムゾーン。recorder が刻む `run_YYYYMMDD_HHMMSS` の表示名がこの時計で決まる — 未設定だとコンテナは UTC で走り、壁時計と 9 時間（JST）ズレた run 名になる（2026-08-05 是正）。`make` 経由なら自動、素の compose では `.env` に `TZ=Asia/Tokyo` 等を書く |
 | `ROS_DISTRO` | `jazzy` | ベースイメージの ROS 2 ディストロ。`.env` の値が Makefile 組み込み既定に勝つ（`make` が `.env` を読んで export する） |
 | `RMW_IMPLEMENTATION` | `rmw_fastrtps_cpp` | DDS 実装。Fast DDS と Cyclone DDS の両 RMW をイメージに同梱しており、本キーで切替可能。Cyclone DDS のロボットには `rmw_cyclonedds_cpp` を指定する（後述） |
 | `DATA_DIR` | `./data` | ホスト側データ root（→ コンテナ `/data`） |
-| `ROBOT` | `airoa_hsr` | アクティブな機体。`config/<robot>/`（committed）または `config/local/<robot>/`（gitignored）を選ぶ。recording / stream / validation / validators / monitoring の各パスはこれから派生する（Makefile が committed/local を解決し、`docker compose` もネスト補間で尊重。さらに各サービスは**起動時**に、与えられた committed 形のパスが実在しなければ `config/local/` 側へ解決し直す — `kairos_common.resolve_config_path` — ため、素の `docker compose` でも local 機体が解決される）。Config タブで機体 → aspect → option を選択・編集できる |
+| `ROBOT` | `airoa_hsr` | アクティブな機体。`config/<robot>/`（committed）または `config/local/<robot>/`（gitignored）を選ぶ。recording / stream / validation / validators / monitoring の各パスはこれから派生する（Makefile が committed/local を解決し、`docker compose` もネスト補間で尊重。さらに各サービスは**起動時**に、与えられた committed 形のパスが実在しなければ `config/local/` 側へ解決し直す — `kairos_common.resolve_config_path` — ため、素の `docker compose` でも local 機体が解決される）。Settings タブで機体 → aspect → option を選択・編集できる |
 | `RECORDING_CONFIG` | `/config/<robot>/recording/default.yaml` | 収録・監視の YAML（通常は `ROBOT` から自動導出。`.env` で直接指定すると派生より優先される）。compose 経由のパスは**コンテナ絶対**（`./config`→`/config` マウント）（下記） |
 | `STREAM_CONFIG` | `/config/<robot>/stream/default.yaml` | Stream タブの初期ペイン定義。`ROBOT` から自動導出（コンテナ絶対） |
 | `LOSS_REPORT_CONFIG` | `/config/<robot>/validators/loss_report.yaml` | `dora_runner` の loss_report パラメータ。`ROBOT` から自動導出（コンテナ絶対） |
@@ -45,9 +46,16 @@
 | `UID` / `GID` | ホスト uid/gid | 非 root の `api_orchestrator` / `dora_runner` を `user: "${UID:-1000}:${GID:-1000}"` で動かし、host 所有の `./data`・`./config` bind マウントに書けるようにする。bash は `UID` を export せず `GID` を持たないため、`make` が `id -u`/`id -g` を export する。素の `docker compose` で uid≠1000 のホストは `export UID=$(id -u) GID=$(id -g)` が必要 |
 | `WEBRTC_PUBLIC_URL` | `/webrtc` | frontend がカメラ signaling に使うベース URL（`/api/v1/config` の `endpoints.webrtc`）。既定は同一オリジンの相対パス `/webrtc` で、frontend の nginx が `webrtc_streamer` にリバースプロキシする。これにより LAN IP / SSH トンネル / Tailscale など任意のアクセス元から CORS なしで動く。ブラウザを streamer に直接つなぐ旧方式にする場合のみ絶対 URL `http://<host>:8002` を指定する（その場合 `CORS_ORIGINS` に該当 origin を追加） |
 | `CORS_ORIGINS` | `http://localhost:8080,http://localhost:5173` | orchestrator と `webrtc_streamer` が許可する origin（served + dev。LAN 公開時は該当ホストの origin を追加） |
+| `WEBRTC_ICE_SERVERS` | `[]` | カメラプレビューの STUN/TURN。ブラウザ RTCIceServer 形の JSON 配列（`/api/v1/config` の `ice_servers` としてブラウザ＋streamer 両方へ配布）。既定 `[]`=同一 LAN 直結（host candidate のみ）。NAT / WiFi クライアント分離 / インターネット越えのときだけ設定する。空/不正値は「ICE なし」に安全縮退（サービスは落とさない） |
+| `WEBRTC_PACKET_MAX` | `1150` | RTP ペイロード上限（B）。既定 `1150` は MTU 1280 のトンネル（Tailscale/WireGuard）で断片化しないよう aiortc の 1300B 固定を縮小したもの。MTU 1500 の同一 LAN のみ `1300` に戻して overhead を減らせる |
+| `WEBRTC_KEEP_IPV6` | （未設定） | `1` で answer SDP の IPv6 ICE 候補除外を無効化。既定（未設定）では v6 候補を落とす（断片化 IPv6 が WireGuard/Tailscale でブラックホール化しプレビューが黒くなるのを防ぐ）。v6 でしか到達できない網でだけ `1` にする |
 | `LOG_LEVEL` | `INFO` | ログレベル |
-| `RETENTION_DAYS` | `0` | `0`=無効。`>0` で古い run を保持期間で削除候補に |
+| `RETENTION_DAYS` | `0` | `0`=無効。`>0` で古い capture を保持期間で削除候補に（助言のみ） |
+| `KAIROS_ARCHIVE_ROOTS` | (任意・既定は空=無効) | capture / dataset の archive 先として許可するルート（`:` 区切り、**コンテナから見た絶対パス**）。空なら archive 機能自体を提供しない（必ず失敗するボタンを置かない）。destination はここに対して検証され、`data_dir` と重なるものは拒否される（[capture_store](capture_store.md) §6/§6.1）。**必ず volume マウントと対で設定する** — `.env`（split は `.env.split`）に `ARCHIVE_DIR=<host パス>` を足せば、**`make up` / `make recording-up` が `-f compose/archive.yaml` を自動で付ける**（`compose/archive.yaml` が `${ARCHIVE_DIR}` を `/archive` にマウントする。旧 `COMPOSE_FILE` 配線は廃止 — 明示の `-f` に常に負けるため）。マウント無しの root を許可すると、エクスポートは**コンテナ層に書かれて再作成で消える**（move ならその時点で源も削除済み）。素の `docker compose` を使う場合はコマンドラインに `-f compose/archive.yaml` を足す |
+| `KAIROS_REBUILD` | (未設定) | 立てると次回起動時に `kairos.db` をサイドカーから rebuild する。「`kairos.db` を消して再起動」の運用版（動いているコンテナからファイルを消させない） |
 | `MAX_RECORD_BYTES` | `0` | `0`=無制限。`>0` で超過時に記録を自動 stop |
+| `MAX_RECORD_SECONDS` | `600` | 1 録画の wall-clock 上限（秒）。`0`=無効。孤児（zombie）録画のディスク保護バックストップ — タブを閉じても録画は止まらないため、可視の Stop UI が主たる回収で、これは無人時の保険。上限到達の自動停止は orchestrator の遅延 reconciliation により通常の completed として確定する |
+| `DATA_DIR` 直下の**予約名** | — | `objects` / `views` / `.trash` / `.incoming` / `report` / `catalog` / `lifecycle.jsonl` / `instance.json` / `kairos.db`（[capture_store](capture_store.md) §2）。これらと衝突する名前は **`POST /api/v1/datasets` の `name` / `operator` / `task`** に対してのみ `400 reserved_name` で拒否する（その 3 つだけが `views/` のパス構成要素になる）。**録画時の operator / task はパスにならないので対象外。** `objects` / `.trash` / `.incoming` は**同一ファイルシステム**上に無ければならない（起動時に検査し、違反していれば削除系 API が要求ごとに `503` を返す） |
 | `ALERT_CONFIG_PATH` | (任意・既定は空=無効) | `topic_monitor` のアラート定義ファイル（**コンテナ絶対**、規約は `/config/<robot>/monitoring/alerts.yaml`。`config/local/<robot>/...` の override が優先）。空＝アラート無効。`make` は `ROBOT` から自動導出、素の `docker compose` では手で設定 |
 | `CYCLONEDDS_URI` | (任意) | Cyclone DDS の設定ファイル URI（例 `file:///config/cyclonedds.xml`）。クロスホストで multicast discovery が通らない場合に unicast peer を明示するなどに使う。`env_file` 経由でコンテナに渡る（ROS サービスは `/config` を read-only マウント済み） |
 | `NO_PROXY` | `localhost,127.0.0.1` | コンテナ内 HTTP のプロキシ除外（`no_proxy` にも同値を配布）。corporate proxy 配下のホストでは Docker が `HTTP(S)_PROXY` を全コンテナへ注入するため、これが無いとヘルスチェックやサービス間 LAN 呼び出しがプロキシへ吸われて失敗する。クロスホスト分割ではロボット IP を追加する（`.env.split.example` 参照）。orchestrator の内部 httpx クライアントはそもそも `trust_env=False` |
@@ -68,7 +76,7 @@
 | `BAG` | `airoa-moma-mcap/235210` | 再生する bag。`data/` からの相対パス（例 `airoa-moma-mcap/000730`）。絶対パス（`/data/...`）も可。コマンドライン優先指定は `make rosbag BAG=...` |
 | `LOOP` | (空=1 回のみ) | `--loop` を指定するとループ再生（`make rosbag-loop` と同じ効果） |
 
-- サービス間は信頼 LAN 内で通信する（既定は host networking で `localhost:<port>`。内部ポートも上表のとおり）。マルチテナント host ではブリッジ網 + DDS unicast に切替（`compose.yaml` のネットワーク注記参照）。
+- サービス間は信頼 LAN 内で通信する（既定は host networking で `localhost:<port>`。内部ポートも上表のとおり）。マルチテナント host ではブリッジ網 + DDS unicast に切替（`compose/compose.yaml` のネットワーク注記参照）。
 - 共通の設定スキーマは `libs/kairos_common`（pydantic-settings）に置き、各サービスが env を型付きで読む。
 - compose は全 7 サービスに `GET /healthz`（frontend は nginx root）ベースの healthcheck を持ち、frontend は `depends_on: orchestrator (service_healthy)` で orchestrator の healthy を待って起動する。
 
@@ -99,8 +107,8 @@ topic_qos_overrides:       # パターン → QoS（recorder / monitor が適用
 # monitor / recording / validation は config/<robot>/recording/default.yaml を参照（dataset は stage3）
 ```
 
-- **`recording` チューニング**: `start_delay_s`（publisher ウォームアップ待ち）に加え、開始時の購読確立 lag 対策として `start_paused`（既定 `false`／`true` で `--start-paused`＋購読 readiness gate＋resume を有効化）と `subscription_ready_timeout_s`（既定 5.0）を持つ。詳細は [rosbag2_recorder](rosbag2_recorder.md)。
-- **UI からの編集・永続化**: この `RECORDING_CONFIG` 全体は Config タブから編集できる（`GET/PUT /api/v1/config/recording`、[api_orchestrator](api_orchestrator.md)）。`PUT` は `RecordingConfig` で型検証し（失敗は `422`）、設定ファイルへアトミックに書き込んで在メモリ設定をホットスワップする。`default_topics` / `robot_name` は即時反映、`expected_hz` / QoS は各サービスの**再起動時**に反映される。
+- **`recording` チューニング**: `start_delay_s`（publisher ウォームアップ待ち）に加え、開始時の購読確立 lag 対策として `start_paused`（既定 `false`／`true` で `--start-paused`＋購読 readiness gate＋resume を有効化）と `subscription_ready_timeout_s`（既定 5.0）を持つ。two-phase start 用に `prepare_disarm_timeout_s`（既定 120 — 未消費 armed セッションの自動解消）と `pre_arm`（既定 `true` — **frontend が読む**: Collect 画面が ready の間 recorder を armed に保ち Start を即時化する。armed 中は記録相当の DDS 受信負荷が乗るため、受信余力の無いロボットは `false`）。詳細は [rosbag2_recorder](rosbag2_recorder.md)。
+- **UI からの編集・永続化**: この `RECORDING_CONFIG` 全体は Settings タブから編集できる（`GET/PUT /api/v1/config/recording`、[api_orchestrator](api_orchestrator.md)）。`PUT` は `RecordingConfig` で型検証し（失敗は `422`）、設定ファイルへアトミックに書き込んで在メモリ設定をホットスワップする。`default_topics` / `robot_name` は即時反映、`expected_hz` / QoS は各サービスの**再起動時**に反映される。
 
 ## ワンクリック検証プリセット（`config/<robot>/validation_presets.yaml`）
 
@@ -118,8 +126,8 @@ presets:
     pipeline: loss_report
 ```
 
-- `GET /api/v1/validation/presets`（[api_orchestrator](api_orchestrator.md)）が各プリセットに、**その pipeline がまだ検証していない完了収録**（`pending_run_ids`）を付けて返す。ボタン押下でその run すべてに一括実行する（実行対象＝未検証データ）。
-- **「未検証」判定は pipeline 単位**（`report/<pipeline>/<run_id>/summary.json` の有無）。同じ pipeline を使う複数プリセットは「検証済み」状態を共有する（**1 pipeline = 1 preset を推奨**）。
+- `GET /api/v1/validation/presets`（[api_orchestrator](api_orchestrator.md)）が各プリセットに、**その pipeline がまだ検証していない capture**（`pending_capture_ids`）を付けて返す。ボタン押下でその capture すべてに一括実行する（実行対象＝未検証データ）。
+- **「未検証」判定は pipeline 単位**（`report/<pipeline>/<capture_id>/summary.json` の有無）。同じ pipeline を使う複数プリセットは「検証済み」状態を共有する（**1 pipeline = 1 preset を推奨**）。
 - 壊れたエントリ 1 個は skip + warn（他は生きる）。ファイルが無ければプリセット無し。plugin を足したら、その id をここに書くだけで押せる（UI 改修不要）。ひな形は `config/template/validation_presets.yaml`。
 
 ## 実行時設定（`GET /api/v1/config`）
@@ -150,9 +158,9 @@ presets:
 }
 ```
 
-- **タブはレジストリ駆動。** 表示・順序・有効/無効を backend が差し替えられる（「簡単に組み替え可能」の要件）。backend が返すのは上記 6 タブ（`live` は Stream+Monitor+Record を融合、`graph` は時系列ヘルス、`dataset` は変換出力の一覧）。`probe` タブは **frontend がクライアント側で注入**する（backend の `tabs` に無くても表示される）ため、UI 上のタブは Live / Graph / Probe / Recordings / Validation / Datasets / Config の 7 つになる。
-- `stream` は Stream プレビューの初期レイアウト（`columns` と `panes`。`STREAM_CONFIG` 由来）。
-- `schemas` は **JSON Schema（draft 2020-12）**。frontend はこれで各 pipeline の実行フォームを描画する（`pipeline_forms` は `dora_runner` の `/pipelines` から動的に構成。到達不能時は `fast_validation` の静的フォームにフォールバック）。記録開始フォーム（トピック選択）は Live タブが discovery と config から直接構成し、この schema には含めない。
+- **`tabs` は v1 legacy。** v1 では表示・順序・有効/無効を backend が差し替えるレジストリだったが、**Console v2 のタブは frontend 固定の 6 枚**（Collect / Review / Datasets / Validation / Monitor / Settings。旧タブ id はリダイレクト — [frontend.md](frontend.md)）で、このフィールドは表示に使われない。互換のため payload には残る。
+- `stream` はカメラプレビューの初期レイアウト（`columns` と `panes`。`STREAM_CONFIG` 由来。Collect のカメラペインはこれで初期化される）。
+- `schemas` は **JSON Schema（draft 2020-12）**。frontend はこれで各 pipeline の実行フォームを描画する（`pipeline_forms` は `dora_runner` の `/pipelines` から動的に構成。到達不能時は `fast_validation` の静的フォームにフォールバック）。記録開始のトピック選択は Collect / Monitor タブが discovery と config から直接構成し、この schema には含めない。
 
 ## 共通規約
 
@@ -160,8 +168,8 @@ presets:
 - タイムスタンプは **UTC ISO8601**（例 `2026-06-24T01:23:45.123Z`）。
 - エラー形式は全 API 共通: `{ "error": { "code": "...", "message": "...", "details": {} } }`。
 - 各サービスは `GET /healthz`（liveness）/ `GET /readyz`（readiness）を持つ。
-- ログは JSON lines（`run_id` / `component` / `request_id` を含める）。
-- backend は OpenAPI を公開（`/openapi.json`）。frontend はそこからクライアントを自動生成する（Orval、[frontend](frontend.md)）。
+- ログは JSON lines（`capture_id` / `component` / `request_id` を含める）。全サービス共通の request-id middleware（`kairos_common`）が、受信リクエストの `X-Request-ID` を採用（無ければ uuid4 を生成）し、処理中の全ログ行にその `request_id` を付与、応答ヘッダ `X-Request-ID` で返す（呼び出し側での相関に使える）。
+- backend は OpenAPI を公開（`/openapi.json`）。frontend は現状**手書きの型付きクライアント**（`src/api/client.ts` + `types.ts`）で、OpenAPI からの自動生成（Orval 等）は**未採用**（将来の契約ゲート候補、[frontend](frontend.md)）。
 
 ## API 共通規約（全 HTTP サービス）
 
@@ -169,9 +177,41 @@ presets:
 - ステータスコード: `200` / `201` 正常、`400` 不正入力、`404` 不在、`409` 競合（多重 start 等）、`422` バリデーション、`503` 内部サービス不通、`507` 容量不足。本文はエラー形式に従う。
 - 一覧 API はカーソルページング: `?limit`（既定 50）+ `?cursor`、応答 `{ items: [], next_cursor: string|null }`。
 - enum（全サービス共通の語彙）:
-  - run state: `created` | `recording` | `stopping` | `completed` | `failed` | `interrupted`
+  - capture state: `recording` | `stopping` | `completed` | `interrupted` | `failed` | `delete_pending` | `discarded` | `deleted`（後ろ 3 つは削除経路のみ。manifest には現れない — [capture_store](capture_store.md) §8.1）。recorder の内部セッション状態はこれに加えて `created` / `armed` を持つ
+  - replica state: `present_unverified` | `present_verified` | `trashed` | `absent_managed` | `missing_unmanaged` | `corrupt`
+  - digest state: `pending` | `complete`
+  - review status: `pending` | `adopted` | `excluded`
   - job state: `queued` | `running` | `succeeded` | `failed` | `canceled`
   - encoding: `vp8` | `h264`
   - alert metric: `hz` | `bandwidth` | `gap` | `late` | `loss`
   - alert op: `lt` | `gt` | `le` | `ge`
 - 時刻は UTC ISO8601。期間・サイズは数値とし、接尾辞で単位を示す（`*_ms` / `*_bytes` / `*_bps` など）。
+
+## 運用（データライフサイクル）
+
+### 保持期間（`RETENTION_DAYS`）
+
+- `RETENTION_DAYS` は**助言のみ**で、自動削除は一切行わない。`GET /api/v1/retention` が「削除候補」を返す（`{ days, candidates: [{ capture_id, run_id, started_at, bytes, state, review_status }], total_bytes }`）。サイズはディレクトリの best-effort 合計、候補は都度計算。`RETENTION_DAYS<=0` で無効（候補は常に空）。
+- **v2 で候補の定義を変更した。** 「行が存在する = 未エクスポート」という旧定義は、行が削除後も墓標として残るようになった以上（[capture_store](capture_store.md) §7）意味を成さない。新しい候補は「**どの dataset からも参照されておらず、`review_status` が `pending` か `excluded` のまま N 日以上経過した capture**」。
+- 実際の削除は**確認付き** `POST /api/v1/captures/{id}/delete` のみを経由する。Review 画面は候補があると却下可能なバナーを出し、ボタンで対象のみに絞り込む（そこから先の削除はしない）。dataset の member は削除も archive も拒否される。
+
+### 収録データの配置とカタログ
+
+配置・サイドカー・削除・rebuild の規約は **[capture_store](capture_store.md)** に集約した。運用者にとっての要点だけをここに置く:
+
+- 収録の実体は `data/objects/<capture_id>/`。**operator / task / 番号はパスに含まれない**ので、ラベルを直してもファイルは動かない。
+- **`kairos.db` は捨ててよい。** 正本はディスク上のサイドカー（`object_manifest.json` / `record.json`）と `lifecycle.jsonl` で、DB を消して再起動すれば全件再構築される。`KAIROS_REBUILD` を立てても同じことが起こる。
+- v1 の `data/index.jsonl`・`data/recorded/`・`data/<operator>/<task>/<NNN>/` の木・`dataset.json` / `episode.json` は**すべて廃止**した（読まない）。dataset は DB 行になり、`views/` の symlink 木がその人間可読なビューを提供する（全消し・再生成が可能な派生物）。
+
+### バックアップ / リストア
+
+- `make backup` で一貫スナップショットを `backups/<timestamp>.tar.gz` に作成する:
+  - `data/kairos.db` を **`sqlite3 .backup`** で一貫コピー（WAL 込み。`sqlite3` が無ければ db + `-wal` / `-shm` を best-effort コピー）。
+  - `data/objects/`・`data/report/`・`data/catalog/`・`data/lifecycle.jsonl`・`data/instance.json`、および `config/`。
+  - **含まれないもの**: **`data/.trash` と `data/.incoming`**（削除・転送の中間状態。バックアップに固めない）、`data/views/`（symlink の派生物で再生成できる）、生サンプル rosbag 入力（`data/` 直下のサンプルディレクトリ。`BACKUP_SAMPLE_DIRS` で指定、既定は同梱サンプルのみの `airoa-moma-mcap` — 自分のサンプル（ローカルロボットの bag など）は上書きで足す）、mp4 プレビューキャッシュ（`data/report/video_check/`）、`.env` などリポジトリ外の秘密情報。稼働中は録画/レポートが書き換わり得るため、完全な一貫性が要るときは停止中（`make down`）に実行する。
+- **リストア手順**:
+  1. スタックを停止: `make down`。
+  2. リポジトリルート（`<restore_root>`）で展開: `tar xzf backups/<timestamp>.tar.gz -C <restore_root>`。
+  3. `config/` と `data/{objects,report,catalog,lifecycle.jsonl,instance.json}` をそのまま所定パスへ。**`kairos.db` は置かなくてよい** — 置かずに起動すれば、サイドカーと ledger から再構築される（それが正しい復旧経路）。一貫したスナップショットがあるなら置いてもよい（既存を上書きし、古い `-wal` / `-shm` は削除する）。
+  4. `make up` で再起動。起動時に、必要なら rebuild が走り、「録画中のまま残った capture」は `interrupted` に正規化され、途中で止まった削除は resume される。
+  5. `views/` は `POST /api/v1/views/refresh` で作り直せる（バックアップに含めていない）。

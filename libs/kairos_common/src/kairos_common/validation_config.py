@@ -50,7 +50,14 @@ def load_validation_template(path: str | Path) -> ValidationTemplate:
     if not path.exists():
         raise FileNotFoundError(f"Validation template not found: {path}")
 
-    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        # See load_recording_config: a YAMLError is neither ValueError nor
+        # OSError, so it bypasses every caller's degradation path.
+        raise ValueError(
+            f"Validation template is not valid YAML: {path}\n{exc}"
+        ) from exc
     if not isinstance(raw, dict):
         raise ValueError(f"Validation template root must be a mapping: {path}")
     try:

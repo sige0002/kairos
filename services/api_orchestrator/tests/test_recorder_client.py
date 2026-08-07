@@ -126,6 +126,71 @@ def test_stop_uses_longer_timeout_than_status() -> None:
     )
 
 
+def test_prepare_uses_start_length_timeout_and_no_retry() -> None:
+    """prepare gets the same generous budget as start, with a single attempt.
+
+    Regression guard mirroring ``test_stop_uses_longer_timeout_than_status``:
+    prepare blocks through spawn + DDS discovery/subscription-match (the same
+    latency start absorbs today), so a short timeout would 503 a prepare that
+    is still correctly arming, and a retry would just spawn a second session.
+    """
+    from api_orchestrator.recorder_client import PREPARE_TIMEOUT_S, START_TIMEOUT_S
+
+    assert PREPARE_TIMEOUT_S == START_TIMEOUT_S
+    assert _captured_read_timeout("prepare", {"run_id": "r", "topics": []}) == (
+        PREPARE_TIMEOUT_S
+    )
+
+    attempts = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        raise httpx.ReadTimeout("still arming")
+
+    with pytest.raises(ApiError) as exc_info:
+        asyncio.run(_with_client(handler, "prepare", {"run_id": "r", "topics": []}))
+
+    assert exc_info.value.status_code == 503
+    assert attempts["n"] == 1  # one attempt only (retries=0 for prepare)
+
+
+def test_prepare_returns_armed_body() -> None:
+    """A successful prepare returns the recorder's armed body verbatim."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            201,
+            json={
+                "run_id": "run_x",
+                "state": "armed",
+                "arming": {"matched_topics": ["/tf"], "missing_topics": []},
+                "disarm_at": "2026-06-24T00:02:00.000Z",
+            },
+        )
+
+    body = asyncio.run(
+        _with_client(handler, "prepare", {"run_id": "run_x", "topics": ["/tf"]})
+    )
+    assert body["run_id"] == "run_x"
+    assert body["state"] == "armed"
+    assert body["disarm_at"] == "2026-06-24T00:02:00.000Z"
+
+
+def test_prepare_409_passes_through() -> None:
+    """A recorder 409 on prepare (e.g. genuinely already recording) relays as-is."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            409, json={"error": {"code": "already_recording", "message": "busy"}}
+        )
+
+    with pytest.raises(ApiError) as exc_info:
+        asyncio.run(_with_client(handler, "prepare", {"run_id": "r", "topics": []}))
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.code == "already_recording"
+
+
 def test_stop_does_not_retry_transport_failure() -> None:
     """stop makes a single (long) attempt — no retry doubling the wait."""
     attempts = {"n": 0}

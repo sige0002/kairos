@@ -1,0 +1,44 @@
+# =============================================================================
+# OPT-IN TURN relay (coturn) for the WebRTC camera preview.
+#
+# You only need this when a DIRECT WebRTC path can't form between the browser
+# and the streamer — i.e. across NAT / WiFi client-isolation / the internet.
+# On the SAME wired LAN, or over Tailscale (both peers directly routable), a
+# host-candidate pair already carries the media and this is unnecessary.
+#
+# Usage:
+#   1) Run it on a host BOTH peers can reach (usually the robot/streamer host):
+#        TURN_EXTERNAL_IP=<that host's reachable IP> \
+#        TURN_USERNAME=kairos TURN_PASSWORD=<pick-one> \
+#        docker compose -f compose/turn.yaml up -d
+#   2) Point kairos at it via WEBRTC_ICE_SERVERS in .env (see .env.example),
+#      e.g. add {"urls":["turn:<TURN_EXTERNAL_IP>:3478"],
+#                "username":"kairos","credential":"<pick-one>"}
+#   3) Recreate the stack so the streamer + frontend pick up the new config.
+#
+# Trusted-LAN posture: long-term credentials, no TLS. Do NOT expose 3478 or the
+# relay range to the public internet without TLS + strong credentials.
+# =============================================================================
+name: kairos-turn
+
+services:
+  turn:
+    image: coturn/coturn:latest
+    restart: unless-stopped
+    # host networking so the relayed UDP ports are reachable without per-port
+    # docker publishing (coturn allocates within the min/max range below).
+    network_mode: host
+    command:
+      - -n                       # no config file; take everything from flags
+      - --realm=kairos
+      - --listening-port=3478
+      - --min-port=49160
+      - --max-port=49200
+      - --lt-cred-mech           # long-term credentials (username/password)
+      - --user=${TURN_USERNAME:-kairos}:${TURN_PASSWORD:-changeme}
+      # The address candidates are relayed through — MUST be an IP both the
+      # browser and the streamer can reach (LAN IP, or a Tailscale 100.x IP).
+      - --external-ip=${TURN_EXTERNAL_IP:?set TURN_EXTERNAL_IP to this host's reachable IP}
+      - --no-tls
+      - --no-dtls
+      - --no-cli

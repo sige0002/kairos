@@ -1,100 +1,68 @@
-# =============================================================================
-# kairos recording / monitoring config — Toyota HSR (AIRoA MOMA dataset)
-# =============================================================================
-# Concrete config for the airoa-moma-mcap sample bags under data/.
-# Topics/types/rates derived from `ros2 bag info data/airoa-moma-mcap/235210`
-# (HSR mobile manipulator; /hsrb namespace). Used for Stage 1–2 testing.
-# Set RECORDING_CONFIG=config/airoa_hsr/recording/default.yaml to use this file.
-# =============================================================================
-
 robot_name: hsr
-
-# ---- Default topics to record / pre-select (the meaningful HSR streams) -----
 default_topics:
-  - /hsrb/joint_states
-  - /hsrb/wrist_wrench/raw
-  - /hsrb/odom
-  - /hsrb/command_velocity
-  - /hsrb/arm_trajectory_controller/command
-  - /hsrb/head_rgbd_sensor/rgb/image_rect_color/compressed
-  - /hsrb/hand_camera/image_raw/compressed
-
-# ---- Expected Hz for monitor quality (first match wins; from bag counts) -----
+- /hsrb/joint_states
+- /hsrb/wrist_wrench/raw
+- /hsrb/odom
+- /hsrb/command_velocity
+- /hsrb/arm_trajectory_controller/command
+- /hsrb/head_rgbd_sensor/rgb/image_rect_color/compressed
+- /hsrb/hand_camera/image_raw/compressed
 expected_hz_patterns:
-  - pattern: "**/compressed"
-    hz: 30
-  - pattern: "/hsrb/wrist_wrench/raw"
-    hz: 100
-  - pattern: "/hsrb/joint_states"
-    hz: 25
-  - pattern: "/hsrb/base_scan"
-    hz: 40
-  - pattern: "/hsrb/command_velocity"
-    hz: 30
-  - pattern: "/hsrb/arm_trajectory_controller/command"
-    hz: 30
-  - pattern: "/hsrb/odom"
-    hz: 25
-
-# ---- Per-topic QoS overrides (OPTIONAL; first match wins) -------------------
-# By default rosbag2 record ADAPTS to each publisher's offered QoS — the right
-# behavior. Only override when you must force a profile; forcing `reliable` on a
-# best_effort publisher (e.g. the airoa cameras) records ZERO messages. The
-# airoa bags publish with default QoS, so leave this empty (use adaptation).
+- pattern: '**/compressed'
+  hz: 10.0
+- pattern: /hsrb/wrist_wrench/raw
+  hz: 100.0
+- pattern: /hsrb/joint_states
+  hz: 25.0
+- pattern: /hsrb/base_scan
+  hz: 40.0
+- pattern: /hsrb/command_velocity
+  hz: 30.0
+- pattern: /hsrb/arm_trajectory_controller/command
+  hz: 30.0
+- pattern: /hsrb/odom
+  hz: 25.0
 topic_qos_overrides: []
-
 monitor:
   qos_depth: 30
   stamp_quality: true
-  window_s: [1, 5]
-  # OL-②.3: many HSR topics (e.g. /tf, /hsrb/odom, IMU) have no expected_hz above,
-  # so the monitor learns a baseline for them. Faster than the template defaults
-  # because the sample replays are short — a baseline should appear within ~8 s
-  # (snapshots advance the learner ~1/s).
+  window_s:
+  - 1
+  - 5
+  warn_shortfall: 0.02
+  danger_shortfall: 0.05
+  min_status_count: 20.0
+  status_escalate_s: 2.0
+  status_recover_s: 1.0
   baseline_learning: true
   baseline_warmup_s: 8.0
-  baseline_stable_cv: 0.2     # HSR rates are a touch noisier than a clean template
+  baseline_stable_cv: 0.2
   baseline_min_samples: 8
-  # OL-②.4: surface the monitor's own processing health (defaults are fine here).
   self_load_metrics: true
   callback_lag_warn_ms: 50.0
   snapshot_age_warn_s: 2.0
-
 recording:
-  discovery_timeout_s: 10
-  # Pre-spawn blind sleep. 0 with arming below: the --start-paused gate already
-  # waits for real subscription readiness (+ post_discovery settle), so a flat
-  # delay before spawn only adds press-to-capture latency. Raise it only for a
-  # robot whose drivers need ramp-up time BEFORE the recorder even spawns.
+  discovery_timeout_s: 10.0
   start_delay_s: 0.0
-  # Arm by default (OL-①.1): spawn --start-paused, wait until the recorder has
-  # subscribed to the target topics, then resume — no first frames dropped.
   start_paused: true
-  # Extra settle after subscriptions matched, before resume (camera ramp-up).
+  subscription_ready_timeout_s: 5.0
   post_discovery_delay_s: 0.5
-  # In-recorder cache (--max-cache-size, MiB). rosbag2 buffers messages in RAM
-  # and DROPS the overflow if the writer can't keep up (burst / slow storage /
-  # constrained CPU), logging "Total lost: N". rosbag2's default is 100 MiB; 512
-  # gives far more burst headroom (the recorder surfaces any drop as
-  # integrity="dropped"). Worst-case RAM ~2x this; preflighted against free RAM.
+  prepare_disarm_timeout_s: 120.0
+  pre_arm: true
   max_cache_size_mb: 512
   storage: mcap
   compression: none
-
-# ---- fast_validation required topics (dora_runner, stage 3) ------------------
 validation:
   required_topics:
-    - name: /hsrb/joint_states
-      type: sensor_msgs/msg/JointState
-    - name: /hsrb/head_rgbd_sensor/rgb/image_rect_color/compressed
-      type: sensor_msgs/msg/CompressedImage
-    - name: /hsrb/hand_camera/image_raw/compressed
-      type: sensor_msgs/msg/CompressedImage
-    - name: /hsrb/command_velocity
-      type: geometry_msgs/msg/Twist
-    - name: /hsrb/arm_trajectory_controller/command
-      type: trajectory_msgs/msg/JointTrajectory
-
-# Note: /hsrb/servo_states uses a custom type (tmc_control_msgs/msg/ServoState).
-# Recorder stores it as-is (raw bytes); topic_monitor does not decode it; only
-# dataset_convert (stage 3) would need the message definition.
+  - name: /hsrb/joint_states
+    type: sensor_msgs/msg/JointState
+  - name: /hsrb/head_rgbd_sensor/rgb/image_rect_color/compressed
+    type: sensor_msgs/msg/CompressedImage
+  - name: /hsrb/hand_camera/image_raw/compressed
+    type: sensor_msgs/msg/CompressedImage
+  - name: /hsrb/command_velocity
+    type: geometry_msgs/msg/Twist
+  - name: /hsrb/arm_trajectory_controller/command
+    type: trajectory_msgs/msg/JointTrajectory
+transfer:
+  auto_pull_on_save: false

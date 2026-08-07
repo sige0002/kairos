@@ -1,46 +1,22 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { setApiBase } from './api/client';
-import {
-  ensureClientTabs,
-  fetchRuntimeConfig,
-  orderTabs,
-  type RuntimeConfig,
-  type TabConfig,
-} from './config';
+import { fetchRuntimeConfig, type RuntimeConfig } from './config';
 import { queryKeys } from './api/queryKeys';
 import { useEventStream } from './sse/useEventStream';
 import { useUiStore } from './store/uiStore';
-import { LiveTab } from './features/live/LiveTab';
-import { GraphTab } from './features/graph/GraphTab';
-import { ProbeTab } from './features/probe/ProbeTab';
-import { RunsTab } from './features/runs/RunsTab';
-import { ValidationTab } from './features/validation/ValidationTab';
-import { DatasetTab } from './features/dataset/DatasetTab';
-import { ConfigTab } from './features/config/ConfigTab';
-import { SystemInfo } from './features/system/SystemInfo';
+import { useOperators } from './v2/plans';
+import { CollectScreen } from './v2/collect/CollectScreen';
+import { ReviewScreen } from './v2/review/ReviewScreen';
+import { DatasetsScreen } from './v2/datasets/DatasetsScreen';
+import { ValidationScreen } from './v2/validation/ValidationScreen';
+import { MonitorScreen } from './v2/monitor/MonitorScreen';
+import { SettingsScreen } from './v2/settings/SettingsScreen';
+import { resolveTabId, tabLabel, V2_TABS, type V2TabId } from './v2/tabs';
+import { useOnPopState } from './v2/shared/useOnPopState';
+import { PanelBoundary } from './components/ErrorBoundary';
 import { Hexagon, StatusDot, cn } from './components/ui';
 import type { SseStatus } from './store/uiStore';
-
-// Human-readable labels for the registry-driven tabs. The set of tabs and
-// their enabled state come from the backend (GET /api/v1/config); this only
-// supplies default display names when the backend omits a label. The design
-// handoff IA: Live / Graph / Recordings / Validation / Datasets / Config.
-// `runs` stays the internal tab id (backend contract); the label is the
-// operator-facing "Recordings" (the browsable history of recordings).
-const TAB_LABELS: Record<string, string> = {
-  live: 'Live',
-  graph: 'Graph',
-  probe: 'Probe',
-  runs: 'Recordings',
-  validation: 'Validation',
-  dataset: 'Datasets',
-  config: 'Config',
-};
-
-function tabLabel(tab: TabConfig): string {
-  return tab.label ?? TAB_LABELS[tab.id] ?? tab.id;
-}
 
 // ---- per-tab pages (deep link + pop-out) ------------------------------------
 // Each tab is addressable by URL (`?tab=<id>`); `?tab=<id>&solo=1` renders ONLY
@@ -64,121 +40,135 @@ function openTabWindow(id: string): void {
   window.open(tabUrl(id, true), '_blank', 'noopener,noreferrer');
 }
 
-/** Render the feature component for a given tab id. */
-function TabContent({ tabId, config }: { tabId: string; config: RuntimeConfig }) {
+/** Render the screen for a given v2 tab id. */
+function TabContent({ tabId }: { tabId: V2TabId }) {
   switch (tabId) {
-    case 'live':
-      return <LiveTab config={config} />;
-    case 'graph':
-      return <GraphTab config={config} />;
-    case 'probe':
-      return <ProbeTab />;
-    case 'runs':
-      return <RunsTab />;
+    case 'collect':
+      return <CollectScreen />;
+    case 'review':
+      return <ReviewScreen />;
+    case 'datasets':
+      return <DatasetsScreen />;
     case 'validation':
-      return <ValidationTab />;
-    case 'dataset':
-      return <DatasetTab />;
-    case 'config':
-      return <ConfigTab config={config} />;
+      return <ValidationScreen />;
+    case 'monitor':
+      return <MonitorScreen />;
+    case 'settings':
+      return <SettingsScreen />;
     default:
       return <p className="text-sm text-gray-500">Unknown tab: {tabId}</p>;
   }
 }
 
-function Tabs({ config }: { config: RuntimeConfig }) {
-  // ensureClientTabs injects frontend-only tabs (e.g. Probe / OL-3.3) that the
-  // backend config may not list yet; backend-provided tabs always win by id.
-  const ordered = orderTabs(ensureClientTabs(config.tabs));
-  const enabled = ordered.filter((t) => t.enabled);
+/**
+ * Resolves the active v2 tab from the store, seeding it from the URL on first
+ * mount (applying legacy-id redirects — see `resolveTabId`) and keeping the
+ * URL's `?tab=` in sync with it afterwards. `replaceState` — no history spam,
+ * and it doubles as the mechanism that rewrites a legacy deep link in place.
+ */
+function useActiveTab(): V2TabId {
   const activeTab = useUiStore((s) => s.activeTab);
   const setActiveTab = useUiStore((s) => s.setActiveTab);
 
-  // Default the active tab: prefer a deep-linked `?tab=<id>` (if enabled), else
-  // the first enabled tab, once config is known. Also fall back if the active
-  // tab got disabled by a config change.
   useEffect(() => {
-    if (!activeTab) {
-      const { tab } = readRoute();
-      if (tab && enabled.some((t) => t.id === tab)) setActiveTab(tab);
-      else if (enabled[0]) setActiveTab(enabled[0].id);
-    } else if (!enabled.some((t) => t.id === activeTab) && enabled[0]) {
-      setActiveTab(enabled[0].id);
-    }
-  }, [activeTab, enabled, setActiveTab]);
+    if (!activeTab) setActiveTab(resolveTabId(readRoute().tab));
+  }, [activeTab, setActiveTab]);
 
-  const active = activeTab || enabled[0]?.id || '';
+  // Without this the store would keep its own tab, the mirror effect below
+  // would rewrite the restored URL back to it, and the navigation would vanish
+  // — the console showing one tab while its own URL named another. A URL naming
+  // no tab resolves to the default for exactly that reason. (See useOnPopState
+  // for why every mirrored screen needs one of these.)
+  useOnPopState(() => setActiveTab(resolveTabId(readRoute().tab)));
 
-  // Reflect the active tab in the URL (`?tab=<id>`) so a refresh keeps the tab
-  // and the pop-out/deep-link stays accurate. replaceState — no history spam.
+  const active = resolveTabId(activeTab || null);
+
   useEffect(() => {
-    if (!active) return;
+    // Skip until the seed effect above has resolved the real tab from the URL
+    // — otherwise this would briefly overwrite `?tab=` with the pre-seed
+    // default (DEFAULT_TAB) on every load, then immediately correct it.
+    if (!activeTab) return;
     const p = new URLSearchParams(window.location.search);
     if (p.get('tab') !== active || p.has('solo')) {
       p.set('tab', active);
       p.delete('solo');
-      window.history.replaceState(null, '', `${window.location.pathname}?${p.toString()}`);
+      window.history.replaceState(
+        null,
+        '',
+        `${window.location.pathname}?${p.toString()}`,
+      );
     }
-  }, [active]);
+  }, [active, activeTab]);
 
-  const activeTabConfig = ordered.find((t) => t.id === active);
+  return active;
+}
+
+/** The 6-tab pill nav (Collect / Review / Datasets / Validation / Monitor /
+ *  Settings). Fixed client-side — see `./v2/tabs.ts` for why this no longer
+ *  reads the backend's tab registry. */
+function TabNav({ active }: { active: V2TabId }) {
+  const setActiveTab = useUiStore((s) => s.setActiveTab);
   return (
-    <div className="flex flex-col gap-3 lg:min-h-0 lg:flex-1">
-      <div className="flex flex-wrap items-center gap-2 lg:shrink-0">
-        <nav
-          role="tablist"
-          aria-label="kairos tabs"
-          className="flex flex-wrap gap-[3px] self-start rounded-[12px] border border-gray-200 bg-gray-100 p-1"
-        >
-          {ordered.map((tab) => {
-            const on = tab.id === active;
-            return (
-              <button
-                key={tab.id}
-                id={`tab-${tab.id}`}
-                role="tab"
-                aria-selected={on}
-                aria-controls={`panel-${tab.id}`}
-                disabled={!tab.enabled}
-                onClick={() => setActiveTab(tab.id)}
-                className={cn(
-                  'rounded-[9px] px-4 py-2 text-[13.5px] transition-colors disabled:opacity-40',
-                  on
-                    ? 'bg-teal-600 font-semibold text-white shadow-sm'
-                    : 'font-medium text-gray-500 hover:text-gray-700',
-                )}
-              >
-                {tabLabel(tab)}
-              </button>
-            );
-          })}
-        </nav>
-        {/* Pop-out the current tab into its own window (?tab=<id>&solo=1). Kept
-            OUTSIDE the tablist so assistive tech sees only tabs there. Any tab is
-            also directly addressable by its deep-link URL. */}
-        {active && (
+    <nav
+      role="tablist"
+      aria-label="kairos tabs"
+      className="flex flex-wrap gap-[3px] rounded-[12px] border border-gray-200 bg-gray-100 p-1"
+    >
+      {V2_TABS.map((tab) => {
+        const on = tab.id === active;
+        return (
           <button
-            type="button"
-            aria-label={`open ${activeTabConfig ? tabLabel(activeTabConfig) : active} in a new window`}
-            title="Open the current tab in its own window"
-            onClick={() => openTabWindow(active)}
-            className="inline-flex items-center gap-1 rounded-control border border-gray-200 px-2.5 py-1.5 text-[12.5px] text-gray-500 transition-colors hover:bg-white hover:text-teal-700"
+            key={tab.id}
+            id={`tab-${tab.id}`}
+            role="tab"
+            aria-selected={on}
+            aria-controls={`panel-${tab.id}`}
+            onClick={() => setActiveTab(tab.id)}
+            className={cn(
+              'rounded-[9px] px-[18px] py-2 text-[13.5px] transition-colors',
+              on
+                ? 'bg-teal-600 font-semibold text-white shadow-sm'
+                : 'font-medium text-gray-500 hover:text-gray-700',
+            )}
           >
-            ↗<span className="hidden sm:inline">Open in new window</span>
+            {tab.label}
           </button>
-        )}
+        );
+      })}
+    </nav>
+  );
+}
+
+/** The active panel plus its pop-out control. Kept as its own row (outside the
+ *  tablist) so assistive tech sees only tabs in the nav; the pop-out is still
+ *  reachable and every tab remains directly addressable by its deep-link URL. */
+function TabPanel({ active }: { active: V2TabId }) {
+  return (
+    <div className="flex flex-col gap-2 lg:min-h-0 lg:flex-1">
+      <div className="flex justify-end lg:shrink-0">
+        <button
+          type="button"
+          aria-label={`open ${tabLabel(active)} in a new window`}
+          title="Open the current tab in its own window"
+          onClick={() => openTabWindow(active)}
+          className="inline-flex items-center gap-1 rounded-control border border-gray-200 px-2.5 py-1.5 text-[12.5px] text-gray-500 transition-colors hover:bg-white hover:text-teal-700"
+        >
+          ↗<span className="hidden sm:inline">Open in new window</span>
+        </button>
       </div>
       <section
         role="tabpanel"
-        id={active ? `panel-${active}` : undefined}
-        aria-labelledby={active ? `tab-${active}` : undefined}
+        id={`panel-${active}`}
+        aria-labelledby={`tab-${active}`}
         className="lg:min-h-0 lg:flex-1 lg:overflow-auto"
       >
-        {active ? (
-          <TabContent tabId={active} config={config} />
-        ) : (
-          <p className="text-sm text-gray-500">No tabs enabled.</p>
-        )}
+        {/* Scoped so a screen that throws costs the screen, not the console.
+            The root boundary is still there as the last resort, but it takes
+            the tab bar with it — and the tab bar is how an operator leaves a
+            broken panel (E-23). `resetKey` clears this one on the way out. */}
+        <PanelBoundary resetKey={active}>
+          <TabContent tabId={active} />
+        </PanelBoundary>
       </section>
     </div>
   );
@@ -202,7 +192,7 @@ function ConnectionBadge() {
   const label: Record<SseStatus, string> = {
     open: 'DDS connected',
     connecting: 'connecting',
-    reconnecting: 'reconnecting',
+    reconnecting: 'DDS reconnecting…',
     closed: 'disconnected',
   };
   const robotOffline = status === 'open' && bridge === 'down';
@@ -224,7 +214,7 @@ function ConnectionBadge() {
             : 'border-gray-200 bg-white',
       )}
     >
-      <StatusDot tone={robotOffline ? 'amber' : tone[status]} />
+      <StatusDot tone={robotOffline ? 'amber' : tone[status]} pulse={live} />
       <span
         className={cn(
           'font-mono text-[12.5px] font-semibold',
@@ -261,15 +251,204 @@ function EventStreamMount({ url }: { url: string }) {
   return null;
 }
 
+const OPERATOR_STORAGE_KEY = 'kairos.operator';
+
+/** Operator identity chip (v1's Live operator input, relocated): click to set
+ *  the name recorded with each episode. Writes the SAME uiStore field the
+ *  record-start flow reads (`recordOperator` → /record/start `operator`), plus
+ *  localStorage so the name survives a reload — the store itself is in-memory. */
+function OperatorChip() {
+  const operator = useUiStore((s) => s.recordOperator);
+  const setOperator = useUiStore((s) => s.setRecordOperator);
+  // Attribution roster (Settings > Operators). Non-empty → the popover is a
+  // PICKER (no free text: that is how "yuki"/"Yuki"/"yuki_2" get into labels);
+  // empty → the pre-roster free-text input stands and nothing is gated.
+  const roster = useOperators();
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState('');
+
+  // Mount-only hydrate from localStorage (never overwrite a live edit). Storage
+  // access can THROW rather than return null (private mode, or site data blocked
+  // by policy) — and this runs at the shell, so an unguarded throw here reaches
+  // the root ErrorBoundary and takes the whole console down, not just the chip.
+  useEffect(() => {
+    if (!useUiStore.getState().recordOperator) {
+      try {
+        const saved = window.localStorage.getItem(OPERATOR_STORAGE_KEY);
+        if (saved) setOperator(saved);
+      } catch {
+        // No persisted name available; the chip just starts empty.
+      }
+    }
+  }, [setOperator]);
+
+  const initials = operator.trim()
+    ? operator
+        .trim()
+        .split(/\s+/)
+        .map((w) => w[0] ?? '')
+        .slice(0, 2)
+        .join('')
+        .toUpperCase()
+    : 'OP';
+
+  const save = () => {
+    const v = draft.trim();
+    setOperator(v);
+    // A throw in an event handler escapes the ErrorBoundary entirely: the name
+    // would be set but the popover would never close. The name still applies to
+    // this session; it just won't survive a reload.
+    try {
+      if (v) window.localStorage.setItem(OPERATOR_STORAGE_KEY, v);
+      else window.localStorage.removeItem(OPERATOR_STORAGE_KEY);
+    } catch {
+      // Storage unavailable — the in-memory operator still drives recording.
+    }
+    setOpen(false);
+  };
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        aria-label="operator"
+        data-testid="operator-chip"
+        title={
+          operator.trim()
+            ? `Operator: ${operator} — saved into each recording`
+            : 'Set operator name — saved into each recording'
+        }
+        onClick={() => {
+          setDraft(operator);
+          setOpen((v) => !v);
+        }}
+        className={cn(
+          'flex h-8 w-8 items-center justify-center rounded-full border text-xs font-semibold',
+          operator.trim()
+            ? 'border-teal-200 bg-teal-50 text-teal-700 hover:border-teal-400'
+            : 'border-gray-200 bg-gray-100 text-gray-600 hover:border-gray-300',
+        )}
+      >
+        {initials}
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full z-40 mt-2 w-72 rounded-card border border-gray-200 bg-white p-3 shadow-float">
+          <label
+            htmlFor="operator-name"
+            className="mb-1.5 block text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400"
+          >
+            Operator — saved into each recording
+          </label>
+          {roster.length > 0 ? (
+            <div className="flex flex-col gap-1" data-testid="operator-roster">
+              {operator.trim() && !roster.includes(operator.trim()) && (
+                <p className="mb-1 rounded-control border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-800">
+                  “{operator.trim()}” is not on the roster — pick a name below
+                  (Settings &gt; Operators edits the list).
+                </p>
+              )}
+              {roster.map((name) => (
+                <button
+                  key={name}
+                  type="button"
+                  data-testid={`operator-pick-${name}`}
+                  onClick={() => {
+                    setOperator(name);
+                    try {
+                      window.localStorage.setItem(OPERATOR_STORAGE_KEY, name);
+                    } catch {
+                      // Same as save(): unpersisted, but the pick still applies.
+                    }
+                    setOpen(false);
+                  }}
+                  className={cn(
+                    'rounded-control border px-2.5 py-1.5 text-left text-sm',
+                    name === operator.trim()
+                      ? 'border-teal-300 bg-teal-50 font-semibold text-teal-700'
+                      : 'border-gray-200 text-gray-700 hover:bg-gray-50',
+                  )}
+                >
+                  {name}
+                </button>
+              ))}
+            </div>
+          ) : (
+          <div className="flex gap-2">
+            <input
+              id="operator-name"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') save();
+                if (e.key === 'Escape') setOpen(false);
+              }}
+              placeholder="e.g. sadasue"
+              autoFocus
+              data-testid="operator-input"
+              className="w-full rounded-control border border-gray-200 px-2 py-1.5 text-sm focus:border-teal-500 focus:outline-none"
+            />
+            <button
+              type="button"
+              onClick={save}
+              className="rounded-control bg-teal-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-teal-700"
+            >
+              Save
+            </button>
+          </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The kairos wordmark + 6-tab nav + operator context chips, all in one row
+ *  (design mock header). Always mounted — unlike the tab panel below it, it
+ *  never unmounts on a tab switch. */
+function Header({ active, config }: { active: V2TabId; config: RuntimeConfig }) {
+  return (
+    <header className="mb-2.5 flex flex-wrap items-center gap-4 lg:shrink-0">
+      <a
+        href="/"
+        aria-label="kairos — recording console (home)"
+        title="kairos — recording console (home)"
+        className="flex items-center gap-[11px] rounded-control focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+      >
+        <Hexagon size={30} />
+        <span className="text-[20px] font-bold tracking-[-0.02em] text-gray-900">
+          kairos
+        </span>
+      </a>
+      <TabNav active={active} />
+      <div className="flex-1" />
+      <DomainChip domainId={config.defaults.ros_domain_id} />
+      <ConnectionBadge />
+      <OperatorChip />
+    </header>
+  );
+}
+
+/** The console shell: header (nav + status) above the active tab's panel.
+ *  Split out from `App` because it calls hooks (`useActiveTab`) that must not
+ *  run before the render-gate below has resolved the runtime config. */
+function Shell({ config }: { config: RuntimeConfig }) {
+  const active = useActiveTab();
+  return (
+    <>
+      <Header active={active} config={config} />
+      <TabPanel active={active} />
+    </>
+  );
+}
+
 /**
  * Standalone single-tab page (`?tab=<id>&solo=1`): renders ONLY that tab, no tab
- * nav — so an operator can keep e.g. the Live screen in its own window. It runs
- * its own SSE subscription (separate document) and links back to the console.
+ * nav — so an operator can keep e.g. the Monitor screen in its own window. It
+ * runs its own SSE subscription (separate document) and links back to the
+ * console. `tabId` is always a resolved v2 id (see `resolveTabId`).
  */
-function SoloPage({ tabId, config }: { tabId: string; config: RuntimeConfig }) {
-  const ordered = orderTabs(ensureClientTabs(config.tabs));
-  const tab = ordered.find((t) => t.id === tabId);
-  const label = tab ? tabLabel(tab) : tabId;
+function SoloPage({ tabId, config }: { tabId: V2TabId; config: RuntimeConfig }) {
+  const label = tabLabel(tabId);
   return (
     <main className="flex h-screen flex-col bg-gray-50 px-[22px] pb-[22px] pt-2.5">
       <EventStreamMount url={config.endpoints.events} />
@@ -280,7 +459,9 @@ function SoloPage({ tabId, config }: { tabId: string; config: RuntimeConfig }) {
           className="flex items-center gap-2 rounded-control text-gray-600 hover:text-teal-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
         >
           <Hexagon size={20} />
-          <span className="text-[15px] font-bold tracking-[-0.02em] text-gray-900">kairos</span>
+          <span className="text-[15px] font-bold tracking-[-0.02em] text-gray-900">
+            kairos
+          </span>
           <span className="text-gray-300">/</span>
           <span className="text-[14px] font-semibold">{label}</span>
         </a>
@@ -288,8 +469,14 @@ function SoloPage({ tabId, config }: { tabId: string; config: RuntimeConfig }) {
         <DomainChip domainId={config.defaults.ros_domain_id} />
         <ConnectionBadge />
       </header>
-      <section role="tabpanel" aria-label={label} className="min-h-0 flex-1 overflow-auto">
-        <TabContent tabId={tabId} config={config} />
+      <section
+        role="tabpanel"
+        aria-label={label}
+        className="min-h-0 flex-1 overflow-auto"
+      >
+        <PanelBoundary resetKey={tabId} standalone>
+          <TabContent tabId={tabId} />
+        </PanelBoundary>
       </section>
     </main>
   );
@@ -297,7 +484,9 @@ function SoloPage({ tabId, config }: { tabId: string; config: RuntimeConfig }) {
 
 export function App() {
   // Render gate: wait for the backend config before showing the UI. config.ts
-  // provides a dev-only fallback so the SPA renders without a backend.
+  // provides a dev-only fallback so the SPA renders without a backend. Still
+  // fetched even though the v2 tab set is fixed client-side — this is where
+  // the API base, SSE endpoint, ROS domain id and form defaults come from.
   const {
     data: config,
     isPending,
@@ -327,45 +516,20 @@ export function App() {
   }
 
   // Standalone single-tab page (`?tab=<id>&solo=1`) — render just that tab.
+  // Any legacy id is redirected (and the URL rewritten) same as the main view.
   const route = readRoute();
   if (route.solo && route.tab) {
-    const ordered = orderTabs(ensureClientTabs(config.tabs));
-    const valid = ordered.find((t) => t.id === route.tab && t.enabled);
-    if (valid) return <SoloPage tabId={valid.id} config={config} />;
+    const resolved = resolveTabId(route.tab);
+    if (resolved !== route.tab) {
+      window.history.replaceState(null, '', tabUrl(resolved, true));
+    }
+    return <SoloPage tabId={resolved} config={config} />;
   }
 
   return (
     <main className="min-h-screen bg-gray-50 px-[22px] pb-[22px] pt-2.5 lg:flex lg:h-svh lg:min-h-0 lg:flex-col lg:overflow-hidden">
       <EventStreamMount url={config.endpoints.events} />
-      <header className="mb-2.5 flex flex-wrap items-center gap-4 lg:shrink-0">
-        <a
-          href="/"
-          aria-label="kairos — recording console (home)"
-          title="kairos — recording console (home)"
-          className="flex items-center gap-[11px] rounded-control focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
-        >
-          <Hexagon />
-          <span className="text-[21px] font-bold tracking-[-0.02em] text-gray-900">
-            kairos
-          </span>
-        </a>
-        <div className="flex-1" />
-        <div className="flex flex-col items-end gap-1.5">
-          <div className="flex flex-wrap items-center justify-end gap-3">
-            <DomainChip domainId={config.defaults.ros_domain_id} />
-            <ConnectionBadge />
-          </div>
-          <SystemInfo className="justify-end pr-1" />
-        </div>
-        <div
-          aria-label="kairos brand mark"
-          title="kairos — recording console"
-          className="flex h-[34px] w-[34px] items-center justify-center rounded-full border border-gray-200 bg-gray-100 text-[13px] font-semibold text-gray-600"
-        >
-          K
-        </div>
-      </header>
-      <Tabs config={config} />
+      <Shell config={config} />
     </main>
   );
 }

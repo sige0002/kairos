@@ -18,9 +18,11 @@ The client takes an injected :class:`httpx.AsyncClient`, so tests can supply a
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 import httpx
+from kairos_common.ids import is_uuid7
 
 from api_orchestrator.service_client import (
     DEFAULT_TIMEOUT_S,
@@ -30,11 +32,51 @@ from api_orchestrator.service_client import (
 
 __all__ = [
     "DEFAULT_TIMEOUT_S",
+    "LIVE_CAPTURE_IDS_FIELD",
+    "PREPARE_TIMEOUT_S",
     "RETRIES",
     "START_TIMEOUT_S",
     "STOP_TIMEOUT_S",
     "RecorderClient",
+    "live_capture_ids",
 ]
+
+# The one field on ``/record/status`` and ``/record/stop`` that says which
+# captures the recorder is holding. Pinned by contract §10 (rev.2.3) and named
+# here so a rename breaks one constant and its test, not three call sites.
+LIVE_CAPTURE_IDS_FIELD = "live_capture_ids"
+
+
+def live_capture_ids(status: Mapping[str, Any]) -> set[str] | None:
+    """Captures the recorder is holding, or ``None`` if it did not say.
+
+    This array is the **only** liveness signal (§10 rev.2.3). It is non-empty
+    for ``armed``, ``recording`` and ``stopping``, and empty otherwise — and
+    critically it includes ARMED captures, whose ``objects/<id>/`` exists with
+    no manifest yet. A rebuild that missed those would see a manifest-less
+    directory and either refuse to adopt it or, worse, treat a live arm as an
+    orphan.
+
+    Two distinctions this function exists to preserve:
+
+    **An empty array is an answer; a missing array is not.** ``[]`` means the
+    recorder is genuinely idle, and callers may act on it. An absent or
+    non-list field means the recorder is too old or too broken to say, which
+    §8 rule 1 treats as unreachable — so ``None`` propagates and callers DEFER
+    rather than normalizing live recordings to ``interrupted``.
+
+    **The singular ``capture_id`` is not a liveness signal and is never read
+    here.** It deliberately keeps naming the last capture after that capture
+    reaches a terminal state, so folding it in would mark every just-finished
+    recording as recorder-held forever: §9-4(b) would block its digest until
+    the next recording started, and a rebuild would live-exclude it so no row
+    was ever created.
+    """
+    value = status.get(LIVE_CAPTURE_IDS_FIELD)
+    if not isinstance(value, list):
+        return None
+    return {item for item in value if is_uuid7(item)}
+
 
 # POST /record/stop is special: the recorder's clean SIGINT flush of a large
 # bag can take up to ~30s (its STOP_TIMEOUT_S). The orchestrator must wait it
@@ -48,6 +90,16 @@ STOP_TIMEOUT_S = 35.0
 # (subscription_ready_timeout_s). Give it a budget that covers both, with NO
 # retry: a slow-but-succeeding start must not be retried into a 409.
 START_TIMEOUT_S = 25.0
+
+# POST /record/prepare spawns the recorder subprocess ahead of the operator's
+# start action and blocks through the same spawn + DDS discovery/subscription
+# match latency that /record/start absorbs today (see START_TIMEOUT_S), so it
+# shares that budget. NO retry, and deliberately not attempted automatically
+# even on a slow prepare: retrying would just spawn and arm a second session
+# for no benefit — an abandoned prepare (this one, or the one being retried
+# over) auto-disarms on the recorder's own timeout regardless, so there is
+# nothing a client-side retry here would recover.
+PREPARE_TIMEOUT_S = START_TIMEOUT_S
 
 
 class RecorderClient(BaseServiceClient):
@@ -82,6 +134,22 @@ class RecorderClient(BaseServiceClient):
         """
         return await self._request(
             "POST", "/record/start", json=payload, timeout=START_TIMEOUT_S, retries=0
+        )
+
+    async def prepare(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Call recorder ``POST /record/prepare``; returns the recorder body.
+
+        Same body shape as :meth:`start`. Returns ``{run_id, state: "armed",
+        arming, disarm_at}`` (or the recorder's own error, e.g. ``409`` if it
+        is already actively recording). Uses :data:`PREPARE_TIMEOUT_S` with no
+        retry — see that constant's docstring for why retrying is not done.
+        """
+        return await self._request(
+            "POST",
+            "/record/prepare",
+            json=payload,
+            timeout=PREPARE_TIMEOUT_S,
+            retries=0,
         )
 
     async def stop(self) -> dict[str, Any]:

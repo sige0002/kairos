@@ -3,7 +3,7 @@
 # =============================================================================
 # Validation タブ上部の「ワンクリック検証ボタン」を定義する。各 preset は
 # dora_runner の pipeline を固定 params で束ねたもの。ボタンを押すと、その
-# pipeline でまだ検証していない完了収録（recorded/ に残っている run）すべてに
+# pipeline でまだ検証していない完了収録（objects/ にある capture）すべてに
 # 対して一括実行する（実行対象＝未検証データ）。
 #
 # フィールド:
@@ -13,7 +13,7 @@
 #   pipeline    必須。dora_runner の pipeline id（GET /api/v1/pipelines）。
 #   params      任意。POST /jobs にそのまま渡す（fast_validation なら template id）。
 #
-# 「未検証」判定は pipeline 単位（report/<pipeline>/<run_id>/summary.json の有無）。
+# 「未検証」判定は pipeline 単位（report/<pipeline>/<capture_id>/summary.json の有無）。
 # したがって同じ pipeline を使う preset は「検証済み」状態を共有する（1 pipeline
 # = 1 preset を推奨）。plugin を追加すれば、その id をここに書くだけで押せる。
 # =============================================================================
@@ -24,6 +24,15 @@ presets:
     pipeline: fast_validation
     params:
       template: airoa_hsr
+
+  - id: hsr_quick_gate
+    name: HSR quick gate
+    description: >-
+      Decode/blur/brightness/freeze + gap and rate checks on real dora
+      (config/airoa_hsr/flows/default.yml).
+    pipeline: full_validation
+    params:
+      flow: default
 
   - id: loss_scan
     name: Loss scan

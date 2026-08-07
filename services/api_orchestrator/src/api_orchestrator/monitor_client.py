@@ -31,9 +31,41 @@ class MonitorClient(BaseServiceClient):
         """Call monitor ``GET /topics`` (ROS 2 graph discovery)."""
         return await self._request("GET", "/topics")
 
-    async def metrics(self) -> dict[str, Any]:
-        """Call monitor ``GET /metrics`` (periodic snapshot of all topics)."""
-        return await self._request("GET", "/metrics")
+    async def metrics(
+        self, *, timeout: float | None = None, retries: int | None = None
+    ) -> dict[str, Any]:
+        """Call monitor ``GET /metrics`` (periodic snapshot of all topics).
+
+        ``timeout`` / ``retries`` override the default 3s + 1-retry policy — the
+        stop-time quick-check settlement passes a short budget so a slow monitor
+        can't blow the total settlement budget.
+        """
+        return await self._request("GET", "/metrics", timeout=timeout, retries=retries)
+
+    async def incidents(
+        self,
+        since_ns: int,
+        *,
+        timeout: float | None = None,
+        retries: int | None = None,
+    ) -> dict[str, Any]:
+        """Call monitor ``GET /incidents?since_ns=<int>`` (fired-alert history).
+
+        Returns ``{"incidents": [{id, topic, metric, severity, rule_origin,
+        fired_at_ns, cleared_at_ns|null, message}]}``. The stop-time quick check
+        uses this to fold incidents that overlap the recording window into
+        Layer 0. The endpoint is newer than the rest of the monitor API, so
+        callers degrade gracefully: a ``404`` (older monitor) or a transport
+        failure surfaces as an :class:`~kairos_common.ApiError` and the caller
+        marks that part of Layer 0 unavailable rather than failing settlement.
+        """
+        return await self._request(
+            "GET",
+            "/incidents",
+            params={"since_ns": int(since_ns)},
+            timeout=timeout,
+            retries=retries,
+        )
 
     async def stream_sse(
         self, path: str, *, timeout: float | None = None

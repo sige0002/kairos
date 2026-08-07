@@ -4,7 +4,7 @@
 
 > 別 PC（録画用 PC）から、画像など重いトピックを含む rosbag（MCAP）を記録しつつ、
 > **ロボット本体のオンボードシステムを一切圧迫しない**ための配置設計。前提は**有線・同一 LAN**。
-> 既存の単一ホスト構成（`compose.yaml`）は変更なしでそのまま動く（本構成は追加の「分割デプロイ」）。
+> 既存の単一ホスト構成（`compose/compose.yaml`）は変更なしでそのまま動く（本構成は追加の「分割デプロイ」）。
 
 ## 1. 問題：リモート DDS 購読がロボットを圧迫する
 
@@ -76,12 +76,16 @@ sample あたり 1 回で、ローカル記録と同じ）。**重いデータ�
 - 検証計画: [[record_start_two_phase_report]] の再現実験を拡張し、airoa サンプル bag をスケール（新規 OSS bag は探さない）した上で、Fast DDS / Cyclone DDS / Zenoh の 3 方式を横並びで計測する（Iceoryx は対象外のまま）。
 
 **TBD（構成変更・要ユーザ判断・2026-07-09 追記）: kairos 自身の重複購読を 1 本に集約する。** 上の②「同時リーダの削減」は負荷が厳しい間だけ一部リーダを止める運用対策だが、恒常的な対策として recorder / topic_monitor / webrtc_streamer / topic_probe が同じ画像トピックを個別に購読している構成そのものを、1 プロセスが 1 回だけ購読しプロセス内で 4 用途に配る設計に変えれば、SHM の有無に関わらず kairos 側のフルコピー本数を最大 1/4 に減らせる（Iceoryx 対応を待たずに効く、kairos 単独で完結する）。ただし現行の「1 folder = 1 container」（4 コンテナ独立、[README](../../../README.md) 参照）を崩す規模の変更になるため要ユーザ判断。**ROS 2 コンポジション（`rclcpp_components` / component container）はこの用途には使えない**（調査済み: rclpy はコンポジション/intra-process comms 未実装〔`ros2/rclpy#575`, `#599`〕。また仮に対応していても、コンポジションは publisher と subscriber を同一プロセスに置ける場合にのみゼロコピーが効く仕組みで、publisher であるロボット側カメラドライバは kairos の管轄外の既存プロセスのため、そもそも合流できない）。
+**2026-07-10 追記: この TBD は §5（Option C 審査）で裁定済み** — 集約は**非 recorder 3 消費者
+（monitor/streamer/probe）に限り条件付き採用（任意）**、**recorder は構成的に集約外**（独立コンテナ・
+独立 1 ホップ購読を維持）。現行の圧縮帯域では実測上急がない（購読 4 でもロス 0）。非圧縮化が実在化した時に
+§5.3 の確定設計に従う。
 
 ## 3. Option A（既定）: エッジ記録（recorder をロボットに置く）
 
 ### 3.1 構成ファイル
-- `compose.robot.yaml` … ロボット側 4 サービスのみ（`compose.yaml` から `extends` で定義を再利用）。
-- `compose.recording.yaml` … 録画 PC 側 3 サービスのみ。
+- `compose/robot.yaml` … ロボット側 4 サービスのみ（`compose/compose.yaml` から `extends` で定義を再利用）。
+- `compose/recording.yaml` … 録画 PC 側 3 サービスのみ。
 - **profiles ではなく 2 ファイルに分けている**: 1 ファイル + profiles だと「DDS リーダを誤って録画 PC で
   起動」しやすい。**録画 PC のファイルにはそもそも DDS サービスが含まれない**ので、事故が起きない。
 
@@ -90,13 +94,13 @@ sample あたり 1 回で、ローカル記録と同じ）。**重いデータ�
 ```bash
 # ロボットに本リポジトリを配置し、.env でロボットの ROS 2 グラフに合わせる
 cp .env.split.example .env   # ROS_DOMAIN_ID / RMW_IMPLEMENTATION / ROS_DISTRO を編集
-make robot-up                # または: docker compose --env-file .env -f compose.robot.yaml up -d --build
+make robot-up                # または: docker compose --project-directory . --env-file .env -f compose/robot.yaml up -d --build
 ```
 - `.env.split.example` に **「ROS 2 graph (robot side)」セクション**があり、`ROS_DOMAIN_ID` /
   `RMW_IMPLEMENTATION` / `ROS_DISTRO`（および任意の `CYCLONEDDS_URI` / `FASTRTPS_DEFAULT_PROFILES_FILE` /
   `MSGS_OVERLAY_DIR` / `BIND_HOST`）をここで設定する。`ROS_DISTRO` は **.env の値が Makefile 既定
   （jazzy）に勝つ**（イメージのタグ/ベースも切り替わる）。
-- ネットワークはロボット側 4 サービスとも `network_mode: host` + `ipc: host`（`compose.yaml` から
+- ネットワークはロボット側 4 サービスとも `network_mode: host` + `ipc: host`（`compose/compose.yaml` から
   `extends` 継承）。HTTP API は `BIND_HOST`（既定 `0.0.0.0`）で bind し、録画 PC から LAN 越しに
   届く必要がある（信頼 LAN 前提。絞る場合はロボットの LAN インタフェース IP に）。
 - gitignored な `config/local/<robot>/` を使うロボットは、各サービスが**起動時に committed →
@@ -108,7 +112,7 @@ make robot-up                # または: docker compose --env-file .env -f comp
 ```bash
 cp .env.split.example .env
 # .env の ROBOT_IP をロボットの LAN IP に。*_HOST はそれを参照する。
-docker compose -f compose.recording.yaml up -d --build    # または: make recording-up
+docker compose --project-directory . -f compose/recording.yaml up -d --build    # または: make recording-up
 ```
 
 ### 3.3 コード上の継ぎ目（既定 localhost、後方互換）
@@ -124,13 +128,43 @@ recorder は MCAP を**ロボットのディスク**に書く。dora（CPU 重�
 
 - **NFS で robot:/data をマウントして dora に直接読ませない**。dora が大きな MCAP を走査すると、
   ロボットがディスク/network を供給することになり、**記録中ならロボットを圧迫する**（本設計の趣旨に反する）。
-- 既定は `make import-runs`（`deploy/sync/import_runs.sh`）: **finalise 済み（`metadata.yaml` がある）run のみ**を
-  ロボットから rsync（`--partial --append-verify`、`BWLIMIT` で帯域制限可）。idempotent でタイマー実行も可。
-  in-progress の run は半端にコピーされない。
+- 既定は `make import-runs`（`deploy/sync/import_runs.sh`）: 発見の単位は **`objects/<capture_id>`** で、
+  **`object_manifest.json` の `state` が `completed` / `interrupted` のものだけ**をロボットから rsync
+  （`--partial --append-verify`、`BWLIMIT` で帯域制限可）。`digest_state` は条件に入れない — digest は
+  **受け取る側**の仕事なので、それを待つとデッドロックする。idempotent でタイマー実行も可。
+  各 capture は `$DATA_DIR/.incoming/<capture_id>` へ rsync してから、完了後に同一 FS の
+  `os.replace` で `objects/` へ入れる（rsync はソート順に転送するので、`object_manifest.json` が
+  巨大な `*.mcap` より先に届く = 途中で切れると「完成しているように見えて bag が切れている」
+  ディレクトリが残ってしまう）。これで「`objects/` に不完全なディレクトリが現れるのは
+  ローカル recorder が書いている最中だけ」という不変条件が保たれる（[capture_store](capture_store.md) §2）。
+  到着したものは orchestrator の reconciler が拾って行にするので、このスクリプトは
+  orchestrator が動いていなくても使える。
 - recorder にファイル POST はさせない（アップロード失敗が記録ライフサイクルに結合するのを避ける）。
-- 注意: `dora_runner` の `dataset_export` は `recorded/` からファイルを **move** する
-  （`dataset_export.py`）。**PC ローカルの複製に対しては安全**だが、**ロボット storage や read-only NFS を
-  指すと破壊的**。必ず import 済みの PC ローカル複製に対して実行すること。
+- **v2 で「ファイルを move する処理」は無くなった**（`dataset_export` は廃止。dataset は DB 行）。
+  唯一バイトを動かすのは capture 単位の archive で、destination は `KAIROS_ARCHIVE_ROOTS` に対して
+  検証され、`data_dir` と重なるものは（realpath で両方向に）拒否される。
+- **Save 連動の自動 pull（オプション・既定 OFF）**: 録画 PC スタックに **importer サイドカー**
+  （`deploy/sync/`、`compose/recording.yaml` のみ — 単一ホスト `compose/compose.yaml` には存在しないので
+  `make up` には一切影響しない）を同梱。recording config の
+  `transfer.auto_pull_on_save: true`（Settings > Advanced JSON で編集、`recording.pre_arm` と同じ流儀）
+  にすると、Collect の Save（**その capture への初回 review 保存** = `PATCH /api/v1/captures/{id}/review`）
+  直後に orchestrator が importer へ `POST /pull {"capture_id": …}` を投げ、その capture だけを rsync で
+  取り込む（終端状態ゲート・idempotent・resume は手動と同一保証）。importer の `/pull` は
+  **body を厳格に検証**する: `{"capture_id": <uuid7>}` か `{"all": true}` のどちらかで、解釈できない
+  body は `400`。空 body を「全部引く」と解釈していた旧挙動は、キー変更の際に取り違え 1 つで
+  ロボット全体のスイープになるため撤去した。**既定 false = 明示オプトインなしには何も転送しない**。
+  ロボット側の複製は**残す**（pull は copy であって move ではない。ロボット側 retention は別課題 **TBD**）。
+  失敗時の回収は `IMPORT_SWEEP_S`（既定 0=off の定期スイープ）または手動 `make import-runs`。
+- **パスワードレス認証（rsync/ssh 共通・env で設定）**: `.env.split` に `ROBOT_SSH_PASSWORD`
+  （sshpass 経由 — 書くだけで動く。平文パスワードである点は信頼 LAN 前提）または
+  `ROBOT_SSH_KEY`（identity ファイルの絶対パス・推奨）を設定（`.env.split.example` 参照）。
+  `make import-runs` / `make push-config` / importer サイドカーの全経路が同じ設定を読む。
+- **転送×録画の重なりは実測済みで無害**（2026-07-16 実測。計測ハーネスは v1 レイアウト期の
+  ものだったため撤去済み — スクリプトは git 履歴の `deploy/test/overlap_eval/` にある）:
+  実リンクの 30〜60 倍の悲観条件（loopback 715MB/s・ssh 暗号二重）でも drop 0・最悪トピック −0.1%
+  （§5 の一次基準 <1% を余裕でクリア）。`BWLIMIT` は録画保護ではなく、細いリンク
+  （WiFi/Tailscale）上の **WebRTC プレビュー帯域保護**用のレバー。HSR 実機投入前の再測を推奨
+  （この実測は NVMe + 余裕ある CPU の箱での値）。
 
 ## 4. Option B（代替）: ロボット側 Zenoh ゲートウェイ（別 PC からライブ全データ記録）
 
@@ -148,14 +182,139 @@ recorder は MCAP を**ロボットのディスク**に書く。dora（CPU 重�
 - **やってはいけない（隠れた圧迫）**: 重トピックの素のリモート購読 / 重トピックの domain_bridge /
   リモート記録のためだけのロボット側 image_transport 圧縮 / republisher ノード。
 
-## 5. 注意点（pitfalls）
+## 5. Option C（審査済み・条件付き）: 境界ブリッジ 1 本化 — 恒久アーキテクチャとしては**棄却**、ゲート付き残余のみ採用
+
+> 2026-07-10。発端: 「kairos の各コンテナが ROS トピックを個別購読するのは非効率で、今後 dora で複数の
+> バリデーションを足すと通信がパンクするのでは」という懸念。一次評価基準を
+> **「rosbag 記録中に、周囲の機能の影響で記録トピック周波数が落ちないこと」**に固定し、
+> 敵対的レビュアー / 設計擁護者 / 裁定者（運用視点）の 3 エージェント討論で審査した。
+> 定量根拠は単一ホスト・トランスポート実測 330+ セル
+> （[sige0002/ros2-transport-bench](https://github.com/sige0002/ros2-transport-bench) の REPORT.md / REVIEW.md）。
+> 討論の完全な結論のみをここに固定する。
+
+### 5.1 原提案（審査対象）
+
+ロボット側 egress `zenoh-bridge-ros2dds`（DDS を loopback 固定、Option B と同じ）＋ホスト PC 側 ingress
+ブリッジが**ホスト専用 DDS ドメイン（例: 42）に再パブリッシュ**し、既存 4 コンテナ
+（recorder/monitor/streamer/probe）は無改造で domain-42 を購読、新規バリデーションは
+`ros_bridge` 1 本 → dora dataflow（Arrow+shm）→ validator×N。狙いは「物理リンク常に 1 コピー・
+ロボット pub CPU 一定・バリデータ追加の限界コスト CPU のみ・コンテナ統合なし」。
+
+### 5.2 討論の記録（要旨）
+
+**批評の中核（乗算的サバイバルモデル、擁護側も統治原理として受諾）**:
+`recorded_freq = source_publish_rate × Π(各ホップ生存率)`、各生存率 ≤ 1。**ホップは周波数を引くことは
+できても足すことはできない**。Option A の recorder はカメラ→recorder の 1 ホップ（ローカル SHM）、
+原提案 C は 3 ホップ（①robot egress ②LAN zenoh セッション ③domain-42 DDS 再パブリッシュ）で、
+②③は未計測・②は TCP 輻輳でありチューニング不能。ゆえに **C の転送寄与は構造上 ≤0** であり、
+C が正当化されるのは A が構造的に供給できない別要件（ライブ・クロスホスト消費）のときだけ。
+
+| # | 論点 | 裁定 | 反映 |
+|---|---|---|---|
+| 1 | LAN zenoh セッションはチューニング不能な律速点（A に無いホップ） | 成立 | Stage-0 実測ゲート必須。`--max-frequency` の間引きは記録の逃げ道にしない（分母を落とす偽装） |
+| 2 | domain-42 再パブリッシュは第 2 の DDS shed 点（購読者数非依存: 1MB 63〜71% / 10MB 73〜81% shed 実測） | 条件付き成立 | domain-42 は**圧縮・軽トピック限定**（allow-list を assertion 化）＋UDP 経路固定＋rmem 引き上げ。重・非圧縮は載せない |
+| 3 | 計器汚染: ブリッジ越し bag は「ブリッジの出力」を記録し、源の周波数維持を bag から事後検証できない | 条件付き成立 | 受入試験の分母は**独立の publisher achieved レート**（driver 統計 or nominal）。**co-located best_effort 購読者を分母にしない**（それ自身 73% shed → 8Hz/8Hz=100% の偽 PASS を踏む） |
+| 4 | ベンチ好成績（Zenoh ロス0）は `rmw_zenoh_cpp`（native RMW）の実測であり、C が使う `zenoh-bridge-ros2dds`（ゲートウェイ）は 1 セルも未計測 | **成立（決定的）** | REPORT の数値を根拠にブリッジを本番投入することを**禁止**。切り分け時も混同しない |
+| 5 | 共有 ingress ブリッジが PC 側消費者の SPOF になる＋保証クラスが構成的（compose ファイル分離）→設定依存に格下げ | 成立（一次基準への影響は限定） | recorder はロボット上に残すため記録へは波及しない。loopback 固定は **fail-safe assertion**（落ちたらブリッジ起動拒否）に |
+| (a) | ingress シム（DDS-42 再パブリッシュ）は移行足場として要るか | 条件付き成立 | 下記 5.3 の RMW 制約と 3 条件。**ゲートウェイとシムを区別する**ことが裁定の核心 |
+| (b) | reliable カメラ publisher × reliable ブリッジ購読の**共有 writer 結合**（ブリッジ下流の詰まりがロボット上の recorder さえ絞る） | **成立（残存リスク中最重要）** | **reliable ingress を構成的に禁止**（検出したらブリッジ起動拒否）。源トピックは必ず best_effort 購読し、ロスなしが要る消費者へは「ブリッジ自身の writer への reliable 購読」で下流に閉じ込める（源のカメラ writer は実機ドライバ単一で構造上共有＝"専用 writer" は源では不可能）。＋ **source-integrity guard**（ブリッジ追加で publisher achieved レートが下がらないこと）を全 Stage の NO-GO ゲートに |
+
+**討論が確定させた基礎制約（両討論者の見落としを裁定者が補完）**:
+- **native rmw_zenoh は DDS パブリッシャを消費できない**（同一 RMW 両端の原則）。ロボットの publisher が
+  DDS である限り、境界の `zenoh-bridge-ros2dds` は「撤去予定のシム」ではなく**恒久の境界翻訳器**。
+  撤去可能なシムは **PC 側 DDS-42 再パブリッシュだけ**（PC 側消費者を rmw_zenoh 化すれば消える）。
+- **best_effort 共有 writer は読者間結合を起こさない**（遅い reader は自分向けサンプルを落とすだけ）。
+  兄弟が互いを飢えさせる結合は reliable でのみ生じる。
+- **ロボット上記録も非圧縮域では無条件安全ではない**: 10MB@30Hz では best_effort ローカル reader も
+  SHM リング上書きで ~73% shed する（rmem 非依存）。ロスなし記録には源側ノブが必須 —
+  推奨は **rmem チューニング済み UDP 経路**（実測ロス 0%・テール増なし）、reliable QoS は
+  p99 100〜222ms を許容できる場合のみ。
+- **「終着点 = B native」は源が zenoh の時のみ到達可能**。DDS publisher のロボットにおける終着点は
+  「ゲートウェイ（best_effort ingress）＋ PC 側 native rmw_zenoh ピア（DDS-42 全廃）」（same-RMW-both-ends 制約）。
+  **⚠ Stage-0 実測（2026-07-10、G4）による但し書き**: rmw_zenoh_cpp 0.2.9 の購読者を
+  zenoh-bridge-ros2dds v1.9.0 のセッションに直結しても**受信 0（非互換）**。現行バージョン組では
+  この「PC native ピア」終着形は直結不能で、PC 側消費は当面**第 2 ブリッジ（ingress 再パブリッシュ）
+  経由が唯一形態**。bridge↔rmw_zenoh 互換が上流で入るまで、DDS-42 相当は「撤去可能なシム」ではなく
+  構造的に必要。バージョン更新ごとに互換プローブ（下記ハーネス G4 セル）を再走すること。
+- **ライブ重データ経路のインフラ前提を名指しする**: survival=1.0 の条件は「リンク帯域 > 持続ペイロード」。
+  300MB/s なら 10GbE 級 or 送信元圧縮が硬前提。ベンチの 10MB@30Hz フル配送は loopback 値であり、
+  実 NIC 越しは Stage-0 で実測するまで未実証。
+
+### 5.3 総合裁定
+
+**Option C（恒久アーキテクチャ）= 棄却。有用な残余のみ修正採用**（実質「A を system of record に固定＋
+ゲート付きブリッジをライブ消費専用に限定」への収束）。
+
+> 判断の中心事実: **現行の圧縮カメラ実データ（~5.6MB/s）では、どの構成・配置でも記録周波数は落ちない
+> （実測、購読 4 でも全構成ロス 0）。** C の複雑性を正当化するのは非圧縮 10MB@30Hz 想定点だけであり、
+> それは現行デプロイの実測ではない仕様値。**今 C を作る根拠はない。** トリガは「非圧縮/大解像度の実在化」
+> で、その時ですら一次解は A ＋源側ノブ（rmem/QoS）。ブリッジは「ライブ PC 消費という名指しの硬要件」が
+> 立った時のみ、ゲートを 1 段ずつ通して導入する。
+
+**確定設計（修正採用の中身）**:
+1. **recorder は常にロボット上（A 配置）**。源非侵襲とロスなし捕捉を両立できる唯一の配置。
+   PC 側ブリッジ経由の記録は system of record にしない（作る場合もセカンダリ扱い）
+2. 境界ゲートウェイの要否は「ロボット publisher の RMW」で決まる: DDS → ゲートウェイ恒久必須 /
+   ロボットを zenoh 化できるなら native end-to-end でゲートウェイ不要
+3. PC 側 DDS-42 シムは次の **3 条件が全て**揃うときのみ実装: (i) ロボット publisher が DDS かつ管轄外
+   (ii) 再利用したい PC 側消費者が rmw_zenoh 未移植 (iii) **A+rsync で満たせない期日付きの
+   live-PC 全データ記録要件が文書化されている**。無ければ作らない
+4. 境界ブリッジは重・カメラトピックを **best_effort 購読固定**＋ source-integrity guard を NO-GO ゲート化
+5. loopback 固定は fail-safe assertion（net-lo≈0 検査、失敗時はブリッジ起動拒否）＋domain-42 は専用ドメイン隔離
+6. dora バリデータは **post-hoc・PC ローカル・finalise 済み run 限定**（§3.4 の rsync 複製を読む）。
+   ライブ検証が要件化した時のみ、ブリッジ経路のゲートを通す
+7. ロボット上に best_effort 非侵襲のレート監視を 1 本常駐（ブリッジ劣化時に監視まで共倒れさせない）
+8. **reliable ingress 禁止を assertion 化**。reliable QoS は必ずブリッジ下流のみ（ブリッジ自 writer への
+   reliable 購読）。源カメラ writer へ reliable reader を直付けする構成は起動拒否
+9. Stage-0 の計測は**実 LAN（実 NIC・実スイッチ）越し**で、ブリッジ経路と native クロスホスト経路の
+   **両方**を運用ペイロードで行う。「リンク帯域 > 持続ペイロード」を GO 条件に含める
+10. §2 の TBD（重複購読の集約）は**非 recorder 3 消費者（monitor/streamer/probe）に限り条件付き採用（任意）**:
+    ロボットのカメラ購読者 4→2 で recorder の周波数余裕を増やす。ただし **recorder は構成的に集約外**
+    （独立コンテナ・独立 1 ホップ購読のまま）。集約ノードの結合（1 クラッシュ 3 停止）は再起動可能な
+    プレビュー/監視クラスに閉じるため一次基準に非波及。「1 folder = 1 container」を崩す点は要ユーザ判断
+
+### 5.4 受入条件（全 Stage 共通の測定式）
+
+- `R_pub(T)` = publisher の achieved 発行レート。**出典は driver 統計 or nominal 設定レートに固定**
+  （co-located best_effort 購読者を分母に使わない — 偽 PASS 回避）
+- `F(T)` = 記録メッセージ数 / (R_pub × 窓長)
+- 一次条件: 全記録トピックで **F(T) ≥ 0.99 を 10 分以上持続**、負荷条件
+  {recorder 単独 / +monitor / +streamer（実 re-encode）/ +probe（実 decode）/ +dora validator（post-hoc 同時）/ 全同時} の各々で
+- 結合条件（本件の懸念そのもの）: **F(全同時) ≥ 0.99 × F(recorder 単独)**
+- source-integrity guard: 境界 reader を足しても R_pub 自体が下がらないこと。下がれば当該構成 NO-GO
+- 測定は**圧縮 ~5.6MB/s と非圧縮 10MB@30Hz の両方**で行い、どちらで通したか明記
+
+### 5.5 Stage ごとの go/no-go
+
+- **Stage 0（ラボ特性評価、本番なし）**: 計測ハーネスは
+  [ros2-transport-bench/stage0/](https://github.com/sige0002/ros2-transport-bench/tree/main/stage0)
+  として実装済み（netns 疑似 LAN と 2 ホスト実 LAN の 2 モード、ゲート G1〜G4 を実行可能セル化）。
+  netns 予備実測（2026-07-10、GO 判定には不可）: ブリッジチェーンは 300MB/s を F=1.000 で通過・
+  境界 1 コピー厳守・KEEP_LAST writer は 200Mbit 制限下でも絞られず（R_pub 不変、ただし KEEP_ALL
+  変種は未測）・既定カーネルでは**ロボット上 1 ホップ recorder ですら F=0.168**（rmem ノブ必須の実証）。
+  GO = ブリッジ best_effort 固定＋**reliable ingress 不在（assertion）**で
+  source-integrity guard 合格／実部品（zenoh-bridge-ros2dds）・**実 NIC・実スイッチ越し**・実ペイロードで
+  through-bridge と native クロスホストの**両経路** F≥0.99（分母は独立 R_pub）／「リンク帯域 > 持続ペイロード」充足
+  ／ロボット DDS の loopback 固定をバイトカウンタで検証／rollback を各ホスト 1 コマンドで実演。
+  NO-GO = writer が絞られる・F<0.99・DDS が境界外へ漏れる → **A にフォールバック**
+- **Stage 1（プレビューのみブリッジ経由、記録はロボット）**: GO = 全同時負荷（egress ブリッジ稼働込み）で
+  ロボット bag の F≥0.99／domain-42 は圧縮・軽のみ／**ブリッジ kill 中もロボット bag がフルレート継続**を実演。
+  集約ノード（確定設計 10）導入時は「recorder が集約外」を構成確認。
+  NO-GO = ブリッジ稼働で recorder の F が単独比 1% 超低下 → プレビューは既存の軽経路に留める
+- **Stage 2（PC ライブ全データ記録、名指しの硬要件がある時のみ進入）**: ロボット RMW を握れる →
+  native rmw_zenoh に flag-day（DDS-42 シム省略）。ロボットが DDS → ゲートウェイ恒久＋PC 側は
+  rmw_zenoh ピア優先、シムは 5.3-3 の 3 条件下のみ。GO = through F≥0.99 ＋ guard 合格＋
+  **同時記録した on-robot A bag との忠実性 diff <1%**（両方録って突合）。
+  NO-GO = いずれか不合格 → PC ライブ全データは提供せず、**A が system of record のまま**
+
+## 6. 注意点（pitfalls）
 
 - **時刻同期**: ロボットと PC で chrony/PTP/NTP を。メッセージ stamp はロボット由来だが、UI/イベント時刻・
   転送・検証レポートの時刻は各ホスト時計に依存する。
 - **WebRTC**: 本設計の前提（同一 LAN・有線）では動く。nginx が中継するのは**シグナリングのみ**で、
   RTP メディアは P2P。ブラウザは**ロボット IP に直接到達**する必要がある（同一 LAN なら満たす）。
   NAT/VPN 越えは別途 STUN/TURN が要る（aiortc は現状 host candidate のみ）。
-- **config の同期**: orchestrator の Config タブ編集は**録画 PC の /config**に書く。一方 recorder/monitor は
+- **config の同期**: orchestrator の Settings タブ編集は**録画 PC の /config**に書く。一方 recorder/monitor は
   **ロボットの /config**を読む（recorder の `start_paused` / `max_cache_size_mb` / QoS はロボット側 config 由来。
   記録トピックの選択は start ペイロードで渡るので別）。**recorder の挙動を変えるにはロボットの config/ を
   編集して `make robot-config-reload` する**。gitignored な `config/local/<robot>/` は git で運ばれないため、
@@ -166,19 +325,22 @@ recorder は MCAP を**ロボットのディスク**に書く。dora（CPU 重�
   なので、compose が全サービスに `NO_PROXY`（既定 `localhost,127.0.0.1`、`.env.split.example` は
   `ROBOT_IP` も含む）を配り、orchestrator の内部 httpx クライアントは `trust_env=False` でプロキシ環境
   変数を一切見ない。
-- **ロボットの電源断**: ホスト（録画 PC）側は落ちない。Recordings / Validation / Datasets / Config は
-  ローカル完結で動き続け、Live/Graph は「robot offline」を明示する（orchestrator が monitor SSE ブリッジの
+- **ロボットの電源断**: ホスト（録画 PC）側は落ちない。Review / Validation / Datasets / Settings は
+  ローカル完結で動き続け、Collect/Monitor は「robot offline」を明示する（orchestrator が monitor SSE ブリッジの
   up/down を `bridge` イベントとして UI に流す。ヘッダーの緑「DDS connected」はブリッジ up が条件）。
   ロボット向き呼び出しは connect 1s の fail-fast（/topics は約 2s で 503、nginx の /webrtc・/probe は
   `proxy_connect_timeout 3s`）。ノート PC を持ち出して後からデータ確認する運用を想定している。
-  注意: Recordings 一覧は DB 参照のため、**別の orchestrator が録画した run** を `make import-runs` で
+  注意: 収録一覧（Review）は DB 参照のため、**別の orchestrator が録画した run** を `make import-runs` で
   持ち込んでも一覧には出ない（同じ PC の orchestrator で録画した run は出る）。
 - **権限**: recorder が作る MCAP は root 所有。import 側（rsync ユーザ）が読めるよう UID/GID/umask を揃える。
 - **セキュリティ**: 全サービスは信頼 LAN 前提で無認証。分割で公開面が増える点に注意（インターネット非公開）。
 
-## 6. まとめ
+## 7. まとめ
 
 「ロボットを圧迫しない」唯一の構造的解は、**重いデータをロボットの DDS から network に出さない**こと。
 既定の **Option A（エッジ記録 + 配置分割）**は、録画 PC 側に DDS リーダを一切置かないことでこれを保証する。
 別 PC からライブ全データが必要なときだけ **Option B（ロボット側 Zenoh ゲートウェイ + DDS localhost 固定）**を使う。
-単一ホスト構成（`compose.yaml`）は従来どおり何も変えずに動く。
+単一ホスト構成（`compose/compose.yaml`）は従来どおり何も変えずに動く。
+**Option C（境界ブリッジ 1 本化）は 3 エージェント敵対的討論で審査済み（§5）**: 恒久アーキテクチャとしては
+棄却。「記録は常にロボット上（A）、ブリッジはライブ PC 消費の硬要件が立った時のみゲート越しに」が確定。
+現行の圧縮データ帯域では記録周波数はどの構成でも落ちない（実測）ため、今は何も作らないのが正解。

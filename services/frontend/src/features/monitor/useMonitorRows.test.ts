@@ -10,6 +10,7 @@ import type { RuntimeConfig } from '../../config';
 import {
   formatBaseline,
   formatHz,
+  sortRowsForDisplay,
   formatRateShortfall,
   formatSelfLoad,
   rowReason,
@@ -158,4 +159,23 @@ test('selfLoad helpers summarise the monitor self-load (OL-②.4)', () => {
   };
   expect(formatSelfLoad(sl)).toBe('2.5 ms cb · 1.1 s age');
   expect(formatSelfLoad({ status: 'ok' })).toBeNull();
+});
+
+// E-23, second line of defence. The ingest (sse/useEventStream applyMetrics)
+// drops rows it cannot identify, so in practice a bad name never reaches this
+// sort — but this file is reached from more than one writer (a cache seeded by
+// a test, a future consumer that does not go through the stream), and the cost
+// of a throw HERE is not a bad row: it is the whole console, because the throw
+// escapes to the root boundary. So the comparator does not assume.
+test('a row whose name is not a string cannot take the whole sort down', () => {
+  const rows = sortRowsForDisplay([
+    { name: '/b/topic', configured: false, measured: true },
+    { name: { unexpected: 'object' } as unknown as string, configured: false, measured: true },
+    { name: '/a/topic', configured: false, measured: true },
+  ]);
+  // It sorts, it does not throw, and the usable names are still in order.
+  expect(rows.map((r) => String(r.name)).filter((n) => n.startsWith('/'))).toEqual([
+    '/a/topic',
+    '/b/topic',
+  ]);
 });

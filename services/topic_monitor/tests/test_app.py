@@ -14,8 +14,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 from kairos_common import get_settings
+from kairos_common.monitoring.subscriber import FakeSubscriber, TopicGraphEntry
 from topic_monitor.main import app, create_monitor_app
-from topic_monitor.subscriber import FakeSubscriber, TopicGraphEntry
 
 
 def test_rclpy_not_importable_in_test_env() -> None:
@@ -103,6 +103,50 @@ def test_alert_rules_wired_from_config_path(
             sub.feed("/cam", recv_t=0.0, size_bytes=100)
             resp = client.get("/alerts")
             assert resp.status_code == 200
-            assert any(a["topic"] == "/cam" for a in resp.json()["alerts"])
+            cam = next(a for a in resp.json()["alerts"] if a["topic"] == "/cam")
+            # Provenance is surfaced in the live payload (config rule here).
+            assert cam["rule_origin"] == "config"
+            assert cam["severity"] == "warning"
+    finally:
+        get_settings.cache_clear()
+
+
+def test_incidents_endpoint_returns_history_with_fixed_shape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The /incidents contract the orchestrator codes against: a bounded history of
+    # fired/cleared episodes with exactly these fields, filterable by since_ns.
+    alerts = tmp_path / "alerts.yaml"
+    alerts.write_text(
+        "rules:\n  - topic: /cam\n    metric: hz\n    op: lt\n    threshold: 5\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ALERT_CONFIG_PATH", str(alerts))
+    get_settings.cache_clear()
+    try:
+        sub = FakeSubscriber()
+        wired_app = create_monitor_app(subscriber=sub)
+        with TestClient(wired_app) as client:
+            sub.feed("/cam", recv_t=0.0, size_bytes=100)  # fires the config rule
+            resp = client.get("/incidents", params={"since_ns": 0})
+            assert resp.status_code == 200
+            body = resp.json()
+            assert "incidents" in body
+            cam = next(i for i in body["incidents"] if i["topic"] == "/cam")
+            assert set(cam) == {
+                "id",
+                "topic",
+                "metric",
+                "severity",
+                "rule_origin",
+                "fired_at_ns",
+                "cleared_at_ns",
+                "message",
+            }
+            assert cam["metric"] == "hz"
+            assert cam["rule_origin"] == "config"
+            assert cam["severity"] == "warning"
+            assert cam["cleared_at_ns"] is None
+            assert isinstance(cam["fired_at_ns"], int)
     finally:
         get_settings.cache_clear()

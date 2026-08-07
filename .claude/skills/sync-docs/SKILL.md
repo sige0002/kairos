@@ -15,9 +15,10 @@ description: 日本語ドキュメント（正本）から英語ミラーを再�
 
 ## 対応関係（日本語ソース → 英語ミラー）
 
-- `CLAUDE.ja.md` → `CLAUDE.md`
 - `README.ja.md` → `README.md`
 - `docs/specs/ja/<name>.md` → `docs/specs/en/<name>.md`
+- ※ この repo の `AGENTS.md` / `CLAUDE.md` は日本語のみ（英語ミラー無し）。
+  同期対象にしない（AGENTS.md のドキュメント言語規則が正）。
 
 一般則:
 - ルート直下などの `*.ja.md` は、`.ja` を外したパスが英語ミラー。

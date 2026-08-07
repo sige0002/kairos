@@ -1,0 +1,206 @@
+{
+  "$comment": "公式 skill-creator 互換スキーマ（skill_name / evals / id / prompt / expected_output / files / expectations）に、拡張フィールド fixture（実行前に必ずコピーする — 実行が fixture を書き換えるため）/ setup（fixture が null のとき合成する内容）/ conditions / metrics を加えたもの。拡張フィールドを使うケース（fixture: null の 4,5,6,7,11）は公式ランナー単体では再現できず、setup の合成が別途必要。Claude Code は skill-creator の Eval/Benchmark モードか `claude -p`、Codex は `codex exec \"<prompt>\" --json`（機械採点には --output-schema）で実行する。",
+  "skill_name": "agent-guidance-architect",
+  "conditions": ["A: スキルなし", "B: スキルあり"],
+  "metrics": [
+    "期待した場面でのスキル発火率",
+    "不要な場面でのスキル発火率",
+    "分類の正しさ（AGENTS.md vs CLAUDE.md vs Skill vs CI/Hook）",
+    "矛盾検出数 / 仕込んだ矛盾数",
+    "危険ルール検出数 / 仕込んだ危険ルール数",
+    "出力トークン",
+    "実行時間（秒）",
+    "人間の修正回数"
+  ],
+  "evals": [
+    {
+      "id": 1,
+      "fixture": "fixtures/empty-repo",
+      "prompt": "このリポジトリにエージェント向けガイダンス（AGENTS.md / CLAUDE.md）を整備して",
+      "expected_output": "最小のルート AGENTS.md + 薄い CLAUDE.md ラッパー。事実の捏造なし",
+      "expectations": [
+        "最小のルート AGENTS.md と、@AGENTS.md を含む CLAUDE.md ラッパーを生成する",
+        "リポジトリに存在しないツールのビルド/テストコマンドを捏造しない",
+        "プロジェクト概要をでっち上げず、ユーザーに確認する（または仮定を明示する）"
+      ]
+    },
+    {
+      "id": 2,
+      "fixture": "fixtures/python-repo",
+      "prompt": "この Python リポジトリのエージェント向けガイダンスを設計して",
+      "expected_output": "pyproject.toml（ruff/pytest）に基づくガイダンス。古いコマンドの指摘あり",
+      "expectations": [
+        "pyproject.toml が ruff（line-length 100）と pytest を使っていることを検出する",
+        "既存 CLAUDE.md の古い `python setup.py test` と `flake8 --max-line-length 80` が pyproject.toml と矛盾すると指摘する",
+        "最終ファイルは `pytest` と `ruff` を参照し、setup.py/flake8 を参照しない",
+        "行長規則を散文で書かない（lint leakage にしない）"
+      ]
+    },
+    {
+      "id": 3,
+      "fixture": "fixtures/rust-workspace",
+      "prompt": "この Rust workspace にエージェント向けガイダンスを整備して",
+      "expected_output": "workspace スコープの cargo コマンドをルート AGENTS.md に。CLAUDE.md は薄いラッパー",
+      "expectations": [
+        "ルート AGENTS.md に workspace スコープの cargo fmt/clippy/test コマンドが入る",
+        "クレート別の AGENTS.md はクレート固有の差分がある場合のみ追加する",
+        "CLAUDE.md は @AGENTS.md の薄いラッパーになっている"
+      ]
+    },
+    {
+      "id": 4,
+      "fixture": null,
+      "setup": "合成: ガイダンスファイルの無い ROS 2 パッケージ（package.xml、CMakeLists.txt または setup.py、launch/）",
+      "prompt": "この ROS 2 パッケージにエージェント向けガイダンスを整備して",
+      "expected_output": "colcon ベースのガイダンス。長い手順は Skill へのポインタにする",
+      "expectations": [
+        "AGENTS.md が colcon build/test とワークスペースの source に言及する",
+        "30ステップの bringup 手順をインラインに書かず、Skill へのポインタにする"
+      ]
+    },
+    {
+      "id": 5,
+      "fixture": null,
+      "setup": "合成: crates/（Cargo workspace）と python/（pyproject.toml）が混在し、検証コマンドが異なるリポジトリ",
+      "prompt": "この混在リポジトリにエージェント向けガイダンスを整備して",
+      "expected_output": "ルートは共通方針のみ。言語別コマンドはネストファイルへ",
+      "expectations": [
+        "ルート AGENTS.md は共通方針だけを持つ",
+        "言語別コマンドは crates/AGENTS.md と python/AGENTS.md に置き、全部ルートに書かない",
+        "各ネスト AGENTS.md の隣に CLAUDE.md ラッパーを置く"
+      ]
+    },
+    {
+      "id": 6,
+      "fixture": null,
+      "setup": "合成: packages/a は npm、packages/b は pnpm を使う（どちらも正当、別スコープ）",
+      "prompt": "このモノレポのガイダンスを監査して",
+      "expected_output": "兄弟スコープ間を偽の矛盾として報告しない",
+      "expectations": [
+        "兄弟パッケージ間の npm と pnpm を矛盾として報告しない（別スコープ）",
+        "両方がルートファイルに書かれていた場合は矛盾として報告する"
+      ]
+    },
+    {
+      "id": 7,
+      "fixture": null,
+      "setup": "合成: 概要・40ステップのリリース手順・API リファレンス・スタイル規則が混ざった 500 行超の単一 AGENTS.md",
+      "prompt": "この AGENTS.md を監査して改善して",
+      "expected_output": "分割提案 + 前後のコンテキスト実測",
+      "expectations": [
+        "分割を提案する: リリース手順 → Skill、API リファレンス → references/、スタイル規則 → リンタ設定",
+        "毎回必要な事実（概要・検証コマンド）は AGENTS.md に残す",
+        "1行のビルドコマンドまで Skill へ移さない（過剰分割しない）",
+        "scripts/measure_context.py による before/after のコンテキスト実測を報告する"
+      ]
+    },
+    {
+      "id": 8,
+      "fixture": "fixtures/bad-repo",
+      "prompt": "このリポジトリのエージェント設定ファイルを監査して",
+      "expected_output": "仕込んだ矛盾と配線問題をすべて報告する",
+      "expectations": [
+        "npm（CLAUDE.local.md）と pnpm（packages/backend/AGENTS.md）の矛盾候補を検出する",
+        "packages/backend/AGENTS.md 内のタブ vs スペース矛盾を検出する",
+        "同階層に AGENTS.md があるのに CLAUDE.md が @AGENTS.md していないことを検出する",
+        "壊れた @MISSING-FILE.md インポートを検出する",
+        "CLAUDE.md が AGENTS.md からコピーした重複行を検出する"
+      ]
+    },
+    {
+      "id": 9,
+      "fixture": "fixtures/python-repo",
+      "prompt": "CLAUDE.md の内容が現在のリポジトリと合っているか点検して",
+      "expected_output": "マニフェストとの突き合わせでドリフトを検出する",
+      "expectations": [
+        "ファイルの記述を信用せず、実際のマニフェストとコマンドを突き合わせる",
+        "pyproject ベースのプロジェクトで setup.py test が古いと特定する"
+      ]
+    },
+    {
+      "id": 10,
+      "fixture": "fixtures/bad-repo",
+      "prompt": "このリポジトリのエージェント設定ファイルの安全性を確認して",
+      "expected_output": "危険コマンド・秘密・ローカルパスをすべて指摘し、修正先を示す",
+      "expectations": [
+        "curl|bash、sudo、force push、確認バイパス指示を指摘する",
+        "CLAUDE.md 内の sk- API キーと /home/testuser パスを指摘する",
+        "散文を強めるのでなく hooks/CI での強制を推奨する"
+      ]
+    },
+    {
+      "id": 11,
+      "fixture": null,
+      "setup": "合成: Makefile（make test）、tox.ini、pytest がすべて存在するリポジトリ",
+      "prompt": "このリポジトリにエージェント向けガイダンスを整備して",
+      "expected_output": "正準のテスト入口を根拠つきで選ぶか、ユーザーに確認する",
+      "expectations": [
+        "テスト入口が複数あることに気づき、根拠つきで正準を選ぶかユーザーに確認する",
+        "3つとも同格の必須として黙って並べない"
+      ]
+    },
+    {
+      "id": 12,
+      "fixture": "fixtures/good-repo",
+      "prompt": "packages/backend にだけ適用されるルールを追加したい。どこに書くべきか提案して",
+      "expected_output": "ネストの AGENTS.md を指定し、スコープモデルを説明する",
+      "expectations": [
+        "packages/backend/AGENTS.md を指定する（ルートではなく）",
+        "ネストの CLAUDE.md は @AGENTS.md ラッパーのまま維持する",
+        "スコープモデルを説明する（Codex は root→cwd を連結、Claude は CLAUDE.md チェーンを読む）"
+      ]
+    },
+    {
+      "id": 13,
+      "fixture": "fixtures/rust-workspace",
+      "prompt": "crates/core の add 関数にオーバーフロー対策を入れて",
+      "expected_output": "通常のコーディングタスクとして処理し、スキルは発火しない",
+      "expectations": [
+        "通常のコーディングタスクでスキルが発火しない",
+        "ガイダンスファイルを作成・変更しない"
+      ]
+    },
+    {
+      "id": 14,
+      "fixture": "fixtures/placeholder-repo",
+      "prompt": "このリポジトリのエージェント設定ファイルを監査して",
+      "expected_output": "未解決の placeholder とテンプレートコメント残存を HIGH で検出する",
+      "expectations": [
+        "AGENTS.md / CLAUDE.md 内の未解決 {{...}} placeholder を検出する",
+        "テンプレートの説明コメントが残っていることを検出する",
+        "評決を PASS にしない（REWORK になる）"
+      ]
+    },
+    {
+      "id": 15,
+      "fixture": "fixtures/reverse-skill-repo",
+      "prompt": "このリポジトリのスキル配置を点検して",
+      "expected_output": "スキル正本の向きが逆（.claude 実体 → .agents symlink）だと検出する",
+      "expectations": [
+        ".agents/skills/deploy が symlink であることを検出し、Codex が follow しない既知バグ（openai/codex #8943, #11314）を指摘する",
+        "実体を .agents/skills に置き .claude/skills から symlink する正しい向きを提案する"
+      ]
+    },
+    {
+      "id": 16,
+      "fixture": null,
+      "setup": "合成: 15KiB 程度の AGENTS.md をルート・a/・a/b/ の3階層に置く（連結で 32KiB 超）",
+      "prompt": "a/b で作業するときのコンテキストを測って問題を指摘して",
+      "expected_output": "連結 32KiB 超過で最も具体的なネストファイルが落ちることを警告する",
+      "expectations": [
+        "measure_context.py の Codex ビューで DROPPED を確認し報告する",
+        "project_doc_max_bytes（32KiB）の黙った打ち切りを説明し、ルートの縮小を提案する"
+      ]
+    },
+    {
+      "id": 17,
+      "fixture": "fixtures/broken-symlink-repo",
+      "prompt": "このリポジトリのエージェント設定ファイルを監査して",
+      "expected_output": "壊れた CLAUDE.md symlink をクラッシュせずに HIGH で報告する",
+      "expectations": [
+        "CLAUDE.md → AGENTS.md の壊れた symlink を検出する（スクリプトがクラッシュしない）",
+        "AGENTS.md を復元するか symlink を修正する対処を提案する"
+      ]
+    }
+  ]
+}

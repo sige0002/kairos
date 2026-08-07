@@ -13,7 +13,13 @@ ROS 2 トピックの **軽量・非破壊なリアルタイム監視**コンテ
 
 - 監視対象 topics（**allowlist**。`RECORDING_CONFIG` の `default_topics` と整合）
 - topic ごとの `expected_hz`（`RECORDING_CONFIG`、任意）
-- alert 定義（`{ topic, metric, op, threshold }` のリスト、`cooldown_s` / `clear_after_s` を含む）
+- alert 定義（`{ topic, metric, op, threshold }` のリスト、`cooldown_s` / `clear_after_s` / `severity` を含む）
+  - **アラートは incident 単位**（key = `(topic, metric)`）: 発火中は現在値を更新しながら保持し、解消時に `cleared` を明示送出（確実な配達のため約 60s 保持）。UI は 1 incident = 1 行に集約する。
+  - **自動導出ルール（derived）**: `expected_hz` を持ち、その hz を監視する config ルールが無いトピックは、実測 hz の割れから hz incident を **1 件だけ**自動生成する — `hz < 0.8×expected` 持続で WARNING、`hz < 0.5×expected` で DANGER に昇格。比率・ヒステリシスは alerts.yaml の任意ブロック `derived_rules:`（`enabled` / `warn_ratio` / `danger_ratio` / `sustain_s` / `clear_after_s` / `cooldown_s`。既定は有効・0.8・0.5・10s・3s・10s）で上書きする。
+  - **既定 DANGER ルール（default）**: `expected_hz` を**持たない**（= 学習ベースライン基準）トピックでも、monitor 自身の `danger` 分類が約 10 秒持続すれば既定 incident を発火する — テーブルの DANGER と Events が矛盾しない。
+  - **優先順位（同一トピックの hz は 1 機構のみが担当。二重 incident は出ない）**: config ルール > derived ルール > default 合成。config の `(topic, hz)` ルールは derived / default を、derived ルールは default を上書きする。
+  - **来歴（provenance）**: 各 incident は発生元 `rule_origin`（`config` / `derived` / `default`）と `severity`（`warning` / `danger`）を持ち、`/alerts` / SSE / `/incidents` の payload に載る（UI が出所を表示できる）。
+  - **incident 履歴**: 発火→解消の各エピソードを上限付きリングバッファ（直近 500 件）に保持する。ライブの 60s 解消保持より長く残し、`GET /incidents?since_ns=` で「録画ウィンドウ内に発火/解消した incident」を stop 時に後から確定できる。
 
 ## 構成コンポーネント
 
@@ -38,6 +44,7 @@ ROS 2 トピックの **軽量・非破壊なリアルタイム監視**コンテ
 - **Jitter**: 受信時刻（monotonic）の間隔から `interarrival_p50_ms` / `interarrival_p95_ms`。decode 不要の「ちらつき」シグナル（p95 / 最大 gap が stall の前兆）。
 - **Loss**: ROS 2 では一般化困難なため既定 `null`（seq が取れる特殊型のみ算出）。真の loss は出さない（seq 無し、DDS の sample-lost は監視側購読の取りこぼしで publisher/rosbag のロスではない）。
 - **DDS sample-lost**: `dds_samples_lost`（rmw の `message_lost` イベントの累積数）。**seq 無しで唯一誠実に取れる「実際に落ちたサンプル数」**。decode 不要・非破壊。`rate_shortfall`（観測不足）とは別物として明示する。
+- **Message count**: `messages_total`（subscribe 以降の**累積**受信数。ウィンドウで evict されない）。start/stop の 2 点差分で録画ウィンドウ全体の平均レートが取れる。
 - **Observed shortfall**: `rate_shortfall`（= `max(0, 1 - count / (expected_hz × window)）`）と `deficit_per_s`（= `max(0, expected_hz - hz)`）。**真の loss ではなく**、静的 `expected_hz` に対する観測不足（監視自身の best_effort 取りこぼし・executor 遅延・publisher 停止を混ぜた量。naive な count 比と同条件）。`rosbag loss` と誤読させない命名。`expected_hz` 未設定なら `null`。
 - **Status**: 粗い topic 健全度 `status` + `status_reason`。優先度 `inactive > danger > warning > ok > unknown`。`inactive`=無受信（silent）、`unknown`=`expected_hz` 未設定で判定不能、`danger`/`warning`=`rate_shortfall` が閾値（既定 5% / 2%）超過、それ以外 `ok`。低期待レート（expected が窓あたり `min_status_count` 未満）の topic は % でなく**絶対欠落数**で判定し誤検知を防ぐ。さらに**時間ヒステリシス**（既定 escalate 2s / recover 1s）で 1 tick の悪化では赤化しない。閾値・ヒステリシスは `RECORDING_CONFIG` の monitor ブロックで設定可。observed shortfall 由来であり真の loss 判定ではない。
 - `expected_hz` 未設定の topic は Hz / Bandwidth / Gap のみ。Late / shortfall は `null` + reason、`status` は `unknown`（メッセージが無ければ `inactive`）。
@@ -48,13 +55,15 @@ ROS 2 トピックの **軽量・非破壊なリアルタイム監視**コンテ
 - `GET /metrics` — 周期 snapshot（全 topic）。
 - `GET /metrics/stream` — SSE。**topic 差分ではなく周期 snapshot** を配る（UI が単純になる）。
 - `POST /metrics/pause` / `POST /metrics/resume` — 監視の一時停止 / 再開（記録中など負荷を下げる）。
-- `GET /alerts` / `GET /alerts/stream`
+- `GET /alerts` / `GET /alerts/stream` — 現在発火中 / 直近解消の incident（`rule_origin` / `severity` を含む）。
+- `GET /incidents?since_ns=<int>` — incident 履歴（上限付きリング、直近 500 件）。`fired_at_ns` **または** `cleared_at_ns` が `since_ns` 以上のエピソードを返す（`since_ns` 省略 = 全件）。`api_orchestrator` が録画 stop 時に「そのウィンドウで何が発火したか」を確定する情報源。時刻は wall-clock UNIX ナノ秒。
 - `GET /healthz` / `GET /readyz`
 - API 共通規約（エラー形式・型・時刻）は [config](config.md) に従う。
 
 ## 出力スキーマ（例、WebSocket / SSE / JSON）
 
 ```json
+// GET /metrics（および /metrics/stream の各 tick）
 {
   "ts": "2026-06-24T01:23:45.123Z",
   "window_s": 5,
@@ -63,11 +72,28 @@ ROS 2 トピックの **軽量・非破壊なリアルタイム監視**コンテ
       "hz": 29.8, "bandwidth_bps": 51200000, "gap_max_ms": 80,
       "inter_arrival_late_ratio": 0.01, "stamp_delay_ms": 12,
       "interarrival_p50_ms": 33, "interarrival_p95_ms": 41,
-      "loss_rate": null, "dds_samples_lost": 0,
+      "messages_total": 8940, "loss_rate": null, "dds_samples_lost": 0,
       "rate_shortfall": 0.007, "deficit_per_s": 0.2,
       "status": "ok", "status_reason": null, "sensor_preview": null }
   ],
-  "alerts": []
+  "alerts": [
+    { "topic": "/cam/image_raw", "metric": "hz", "op": "lt", "threshold": 15.0,
+      "value": 9.2, "state": "firing", "since": "2026-06-24T01:23:40.000Z",
+      "rule_origin": "derived", "severity": "danger" }
+  ]
+}
+```
+
+```json
+// GET /incidents?since_ns=<int> — 発火→解消の履歴エピソード
+{
+  "incidents": [
+    { "id": "/cam/image_raw|hz|7",
+      "topic": "/cam/image_raw", "metric": "hz",
+      "severity": "danger", "rule_origin": "derived",
+      "fired_at_ns": 1750000000000000000, "cleared_at_ns": null,
+      "message": "/cam/image_raw hz < 15 (value=9.2)" }
+  ]
 }
 ```
 

@@ -16,6 +16,8 @@ typos; pydantic reports the offending location so the operator can fix it.
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated
@@ -146,6 +148,23 @@ class RecordingTuning(_StrictModel):
     # real, not warm-up. Distinct from start_delay_s, which sleeps BEFORE spawn
     # (so it cannot see whether subscriptions actually matched). 0 disables.
     post_discovery_delay_s: Annotated[float, Field(ge=0)] = 0.0
+    # Two-phase start (prepare -> resume): how long an ``armed`` session (a
+    # ``POST /record/prepare`` that spawned + matched subscriptions but was
+    # never claimed by a matching ``POST /record/start``) is kept alive before
+    # it is auto-disarmed (subprocess killed, empty run dir removed). Bounds
+    # the cost of an armed-but-abandoned session: while armed its subscriptions
+    # are live (same DDS reader load as recording), so an unclaimed arm must
+    # not linger indefinitely.
+    prepare_disarm_timeout_s: Annotated[float, Field(gt=0)] = 120.0
+    # Whether the Console keeps a recording PRE-ARMED (two-phase start: a
+    # standing ``POST /record/prepare`` kept alive by matching re-prepares)
+    # while the Collect screen sits ready-to-record, so the operator's Start is
+    # a near-instant resume instead of a multi-second spawn + DDS-discovery
+    # wait. Read by the FRONTEND only — the recorder itself never acts on it.
+    # Cost while armed: the same DDS reader load as recording (a paused
+    # rosbag2 receives and discards), so turn this off for a robot whose
+    # receive-side budget is already tight (see rosbag2_recorder.md).
+    pre_arm: bool = True
     # rosbag2 in-recorder message cache (--max-cache-size, in MiB). The recorder
     # buffers incoming messages in RAM and a writer thread drains them to disk; if
     # the cache fills (burst / slow storage / constrained CPU) rosbag2 DROPS the
@@ -170,9 +189,37 @@ class RequiredTopic(_StrictModel):
 
 
 class ValidationConfig(_StrictModel):
-    """Validation config (dora_runner fast_validation, stage 3)."""
+    """Validation config (dora_runner fast_validation + the stop-time quick check)."""
 
     required_topics: list[RequiredTopic] = Field(default_factory=list)
+    # Shortest recording the stop-time quick check will call "good". A capture
+    # below this is reported as needs_review with the duration in the reason —
+    # never a hard failure, because a deliberately short take is legitimate and
+    # only the operator knows which it was.
+    #
+    # The default exists because per-topic message PRESENCE is not evidence of a
+    # usable recording: in a fraction of a second every topic can happen to
+    # deliver one message, and the check then reports "no issues" for what was
+    # actually a double-clicked start/stop. Two seconds is comfortably below any
+    # real take and comfortably above an accident. ``0`` disables the criterion.
+    min_duration_s: float = Field(default=2.0, ge=0)
+
+
+class TransferConfig(_StrictModel):
+    """Post-save run transfer (cross-host split; read by api_orchestrator).
+
+    In the robot-edge split the recorder writes MCAP on the ROBOT's disk and
+    the recording PC pulls finalised runs over rsync/ssh (``deploy/sync/``).
+    With ``auto_pull_on_save`` the orchestrator asks its importer sidecar
+    (``compose/recording.yaml``) to pull the run right after Collect Save
+    (``POST /api/v1/episodes``), so the run is reviewable seconds later with
+    no manual ``make import-runs``. Default OFF — nothing is ever transferred
+    without an explicit opt-in; the flag is inert on a single-host deploy
+    (the data is already local and no importer runs there). The robot-side
+    copy is left in place either way (robot-side retention is a separate TBD).
+    """
+
+    auto_pull_on_save: bool = False
 
 
 class RecordingConfig(_StrictModel):
@@ -188,6 +235,7 @@ class RecordingConfig(_StrictModel):
     monitor: MonitorConfig = Field(default_factory=MonitorConfig)
     recording: RecordingTuning = Field(default_factory=RecordingTuning)
     validation: ValidationConfig = Field(default_factory=ValidationConfig)
+    transfer: TransferConfig = Field(default_factory=TransferConfig)
 
 
 def _format_validation_error(path: Path, exc: ValidationError) -> str:
@@ -217,8 +265,15 @@ def load_recording_config(path: str | Path) -> RecordingConfig:
     if not path.exists():
         raise FileNotFoundError(f"Recording config not found: {path}")
 
-    with path.open("r", encoding="utf-8") as fh:
-        raw = yaml.safe_load(fh)
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            raw = yaml.safe_load(fh)
+    except yaml.YAMLError as exc:
+        # A hand edit that left the file unparseable. Callers degrade on
+        # ValueError and OSError; YAMLError is neither, so letting it out
+        # turned "this config is unusable" — which every caller is written to
+        # survive — into a service that does not start.
+        raise ValueError(f"Recording config is not valid YAML: {path}\n{exc}") from exc
 
     if not isinstance(raw, dict):
         raise ValueError(f"Recording config root must be a mapping: {path}")
@@ -227,3 +282,50 @@ def load_recording_config(path: str | Path) -> RecordingConfig:
         return RecordingConfig.model_validate(raw)
     except ValidationError as exc:
         raise ValueError(_format_validation_error(path, exc)) from exc
+
+
+# The failures every consumer is written to survive. ``OSError`` covers both the
+# absent file (FileNotFoundError is one) and the one that is there but cannot be
+# read — a permission error, or a directory in its place. Those are the same
+# fact to a caller that has no config either way, so treating them differently
+# only decided WHICH services refused to start over it.
+DEGRADE_ON_UNUSABLE: tuple[type[Exception], ...] = (OSError, ValueError)
+
+
+def _warn_unavailable(logger: logging.Logger, path: Path, exc: Exception) -> None:
+    """Default report: one WARNING naming the failure, then carry on."""
+    logger.warning("recording config unavailable: %s", exc)
+
+
+def load_recording_config_or_none(
+    path: str | Path,
+    logger: logging.Logger,
+    *,
+    on_unavailable: Callable[
+        [logging.Logger, Path, Exception], None
+    ] = _warn_unavailable,
+    degrade_on: tuple[type[Exception], ...] = DEGRADE_ON_UNUSABLE,
+) -> RecordingConfig | None:
+    """Load the RECORDING_CONFIG, degrading to ``None`` when it is unusable.
+
+    Every service that reads this file is written to run without it — the
+    recorder falls back to each publisher's offered QoS, the monitor seeds no
+    topics, the orchestrator serves empty defaults — so a missing or malformed
+    config is reported and swallowed rather than being a reason to refuse to
+    boot.
+
+    Args:
+        path: The ``RECORDING_CONFIG`` path.
+        logger: The caller's logger, handed to *on_unavailable*.
+        on_unavailable: How the failure is reported. The default logs one
+            WARNING; pass a reporter to word it differently (it can tell an
+            absent file from an unusable one by the exception type).
+        degrade_on: Which failures degrade to ``None``, should a caller need a
+            narrower set than :data:`DEGRADE_ON_UNUSABLE`.
+    """
+    path = Path(path)
+    try:
+        return load_recording_config(path)
+    except degrade_on as exc:
+        on_unavailable(logger, path, exc)
+        return None

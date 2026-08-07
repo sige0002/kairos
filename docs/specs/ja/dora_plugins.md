@@ -18,26 +18,17 @@
 
 ## 全体像
 
-```
-                         ┌─────────────────────────────────────────────┐
- POST /jobs ──▶ worker ──▶ Pipeline Registry  (manifest scan で構築)     │
- (api_orchestrator 経由)  │   - 同梱 4本 + plugins/<name> を自動登録      │
-                         │   RegisteredPipeline(executor="dora",        │
-                         │     runner=make_dora_runner(dataflow, manif))│
-                         └───────────────┬─────────────────────────────┘
-                                         │ dora start <dataflow.yml>
-                         ┌───────────────▼─────────────────────────────┐
-                         │ dora coordinator + daemon  (entrypoint で up)│
-                         │   MCAP Loader → validator/AI node → Writer   │
-                         │   （node 間は Arrow ゼロコピー）              │
-                         └───────────────┬─────────────────────────────┘
-                                         │ summary.json / artifacts
-                              /data/report/<pipeline>/<run_id>/
+```mermaid
+flowchart TB
+  P["POST /jobs<br/>（api_orchestrator 経由）"] --> W["worker"]
+  W --> REG["Pipeline Registry（manifest scan で構築）<br/>同梱パイプライン + plugins/&lt;name&gt; を自動登録<br/>RegisteredPipeline(executor=&quot;dora&quot;,<br/>runner=make_dora_runner(dataflow, manifest))"]
+  REG -->|"dora start &lt;dataflow.yml&gt;"| EX["dora coordinator + daemon（サービス起動時に up）<br/>MCAP Loader → validator / AI node → Writer<br/>（node 間は Arrow ゼロコピー）"]
+  EX -->|"summary.json / artifacts"| OUT[("/data/report/&lt;pipeline&gt;/&lt;capture_id&gt;/")]
 ```
 
 - **Plugin/Pipeline Registry**: `registry.py` の `PipelineRegistry` を拡張。同梱 pipeline に加え `discover_plugins()` が submodule を登録する。
 - **Pipeline Executor**: dora coordinator + daemon（dora_runner コンテナ内で常駐）。各 job は dataflow を 1 本 `dora start` して終端を待つ。
-- **node I/O 契約**: [dora_runner.md](dora_runner.md) の契約に準拠（入力 = run パス/MCAP 反復子/params、出力 = metrics/artifacts/report 断片）。
+- **node I/O 契約**: [dora_runner.md](dora_runner.md) の契約に準拠（入力 = `objects/<capture_id>` パス/MCAP 反復子/params、出力 = metrics/artifacts/report 断片）。
 
 ## 1. dora dataflow への移行（実行モデル）
 
@@ -50,11 +41,11 @@
 ```python
 def make_dora_runner(dataflow_yml: Path, manifest: PluginManifest) -> Runner:
     async def _run(job: JobRecord, store: RunnerStore, data_dir: Path) -> dict:
-        report_dir = data_dir / "report" / manifest.id / job.run_id
+        report_dir = data_dir / "report" / manifest.id / job.capture_id
         report_dir.mkdir(parents=True, exist_ok=True)
         env = {
             **os.environ,
-            "KAIROS_RUN_ID": job.run_id,
+            "KAIROS_CAPTURE_ID": job.capture_id,
             "KAIROS_DATA_DIR": str(data_dir),
             "KAIROS_REPORT_DIR": str(report_dir),
             "KAIROS_PARAMS_JSON": json.dumps(job.params),
@@ -90,7 +81,7 @@ def make_dora_runner(dataflow_yml: Path, manifest: PluginManifest) -> Runner:
 nodes:
   - id: mcap_loader
     path: nodes/mcap_loader.py
-    env: { KAIROS_RUN_ID: "${KAIROS_RUN_ID}", KAIROS_DATA_DIR: "${KAIROS_DATA_DIR}" }
+    env: { KAIROS_CAPTURE_ID: "${KAIROS_CAPTURE_ID}", KAIROS_DATA_DIR: "${KAIROS_DATA_DIR}" }
     outputs: [ loaded ]
   - id: validator
     path: nodes/validator.py
@@ -148,7 +139,7 @@ name: HSR joint validation            # UI 表示名
 description: HSR の関節角・速度の妥当性を MCAP から検証する。
 executor: dora                        # v1 は dora 固定（in_process は移行互換のみ）
 version: 1.2.0                        # report に記録（再現性）
-required_inputs: [ run_id ]
+required_inputs: [ capture_id ]
 params_schema:                        # JSON Schema。frontend が自動フォーム化
   type: object
   properties:
@@ -158,7 +149,7 @@ params_schema:                        # JSON Schema。frontend が自動フォ�
       default: 0.05
       exclusiveMinimum: 0
 outputs:
-  - "report/hsr_joint_validation/<run_id>/summary.json"
+  - "report/hsr_joint_validation/<capture_id>/summary.json"
 entrypoint:
   dataflow: dataflow.yml              # executor: dora
   # callable: kairos_validator_hsr.run:run   # executor: in_process のとき
@@ -200,7 +191,8 @@ def discover_plugins(registry: PipelineRegistry, plugins_dir: Path) -> list[Plug
 
 [dora_runner.md](dora_runner.md) の契約に従う。プラグイン側 node は:
 
-- **入力（source node が `KAIROS_*` env から得る）**: `run_id`, `data_dir`, `params`(JSON)。MCAP は `kairos_common` 提供の loader（`enumerate_topics` / `find_mcap` / メッセージ反復子。topic フィルタ・時間範囲指定可）で読む。**rclpy 不要**。
+- **入力（source node が `KAIROS_*` env から得る）**: `capture_id`, `data_dir`, `params`(JSON)。MCAP は `objects/<capture_id>/` から、`kairos_common` 提供の loader（`enumerate_topics` / `find_mcap` / メッセージ反復子。topic フィルタ・時間範囲指定可）で読む。**rclpy 不要**。
+- **capture が存在することが前提**: プラグインは `objects/<capture_id>/` を**読むだけ**で、作ってはならない（tmp ファイルすら）。ディレクトリが無ければジョブを失敗させる — 作ってしまうと、削除された capture のツリーが復活し、reaper と rebuild の両方を騙すことになる（[capture_store](capture_store.md) §7.1）。書き込み先は `${KAIROS_REPORT_DIR}` 配下のみ。
 - **出力**: 最終 node（result_writer）が `${KAIROS_REPORT_DIR}/summary.json` を書く。形は `{ pipeline, version, result?: "pass"|"fail", metrics?, missing?, extra?, checked_at }`。追加生成物は同 report dir 配下に置く（`artifacts` として収集される）。
 - **再現性**: summary に `pipeline` / `version`（manifest.version）/ 主要 node・モデルの版を必ず入れる。
 
@@ -214,11 +206,18 @@ def discover_plugins(registry: PipelineRegistry, plugins_dir: Path) -> list[Plug
 - **入力（実行フォーム）**: manifest の `params_schema`（JSON Schema）が `GET /pipelines` → `GET /api/v1/config` の
   `schemas.pipeline_forms[<id>]` を経て frontend に届き、汎用フォーム `PipelineForm` がレンダリングする
   （string / number / integer / boolean / enum / array-of-string の実用サブセット）。作者は UI コンポーネントを書かない。
+  string プロパティに **`x-suggest` 注釈**（`"camera_topics"` | `"topics"`、2026-07-15）を付けると、Validation タブで
+  選択中のターゲット run の実トピックから **選択式（先頭を自動シード）** になる — トピックパスの手打ち不要
+  （同梱 video_check の `topic` が使用例）。候補が無い状況（dataset ターゲット等）は自由入力へ正直にフォールバック。
 - **パイプライン選択**: Validation タブは `GET /pipelines` の **enabled な全 pipeline** を選択肢に出す。プラグインを追加すれば
   そのまま選択肢に現れる（**pipeline id はハードコードしない**＝[frontend.md](frontend.md) の設計方針）。placeholder（`enabled=false`）は出さない。
 - **出力（結果表示）**: ジョブの `summary.json` を **汎用レンダラ `SummaryResult`** が shape を知らずにそのまま描く——
   `result`（PASS/FAIL バッジ）/ `message`（見出し行）/ `metrics`・その他フィールド（key-value ツリー、ネスト・配列対応）/
   `artifacts` / raw JSON。**新 pipeline 固有の結果ビューを frontend に足す必要はない**。
+- **出力（グラフ・画像＝JSON 以外の結果、2026-07-15）**: ノードが **report dir に画像（png/jpg/svg/gif/webp）を書くだけ**で
+  UI に出る。artifacts として収集されたパスは orchestrator がデータルート相対に正規化し（[api_orchestrator.md](api_orchestrator.md)
+  ジョブ実行）、`SummaryResult` が `GET /api/v1/files/{path}` 経由で**画像はインライン表示・その他ファイルはダウンロードリンク**として
+  レンダリングする。matplotlib 等でプロットを `${KAIROS_REPORT_DIR}/plot.png` に保存すれば、**UI 無改修でグラフ付きの結果画面**になる。
 - **唯一の例外（同梱 fast_validation のみ）**: 必須トピックの pass/fail は template の必須トピック一覧に対して見せた方が分かりやすいため、
   fast_validation だけ専用カードを保持する。それ以外（`loss_report` / `video_check` / **全プラグイン**）は `SummaryResult` に載る。
 
@@ -276,13 +275,13 @@ ENV KAIROS_PLUGINS_DIR=/app/plugins
 
 - daemon 常駐は 1 プロセス。軽量 validator dataflow は短命 node のみで CPU-only PC に収まる。
 - **GPU node**（自動アノテーション等）は manifest `requires.gpu: true` を宣言し、dora node を `--gpus` 付きで起動する別 compose profile（`profiles: [gpu]`）に隔離。**CPU-only 既定構成には GPU プラグインを含めない**。
-- 重い job（`video_check` / 将来の `dataset_convert`）を録画中に走らせない運用は試験/検収の受け入れ条件（`dev_docs/check.md` / `dev_docs/arch_review.md`・ローカル）に従う。job ごと timeout・並行度上限を Executor に持たせる。
+- 重い job（`video_check` / 将来の `dataset_convert`）を録画中に走らせない運用は検収の受け入れ条件（`dev_docs/arch_review.md`・ローカル作業ドラフト）に従う。job ごと timeout・並行度上限を Executor に持たせる。
 
 ## 5. 段階移行プラン
 
 1. **executor=dora の足場**: entrypoint で `dora up`、`make_dora_runner()` と `PluginManifest` を追加。`/readyz` に daemon 死活を追加。
 2. **同梱 pipeline を 1 本 dataflow 化**: `fast_validation` を `validation.py` の node を流用して dataflow 化し、in_process 版と出力一致をテストで担保（golden summary 比較）。
-3. **残り同梱 pipeline を移行**: `loss_report` / `video_check` / `dataset_export`。`dataset_export` はファイル移動なので node 1 個 dataflow。
+3. **残り同梱 pipeline を移行**: `loss_report` / `video_check` / `signal_report`（`dataset_export` は v2 で廃止 — dataset は物理移動を伴わない DB 行になった）。
 4. **discover_plugins() + manifest scan** を有効化し、`plugins/` 空でも回ることを確認。
 5. **サンプルプラグインを submodule 化**して E2E（discover → `/jobs` → summary.json）を通す。
 6. **placeholder（full_validation/dataset_convert/dataset_validation）** を、プラグイン or 同梱 dataflow のどちらで埋めるか決めて実装（検収レビュー（`dev_docs/arch_review.md`・ローカル作業ドラフト） M4 の方針に従い、未実装枠は既定非表示）。

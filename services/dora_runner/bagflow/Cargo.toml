@@ -1,0 +1,24 @@
+# Vendored into kairos — see VENDOR.md for the upstream revisions, the local
+# modifications, and how to re-sync. mcap2dora is a workspace member here
+# (upstream it is a sibling checkout); the CUDA decode PoC is not vendored.
+[workspace]
+resolver = "2"
+members = [
+    "crates/bagflow-source",
+    "crates/bagflow-cli",
+    "crates/bagflow-node",
+    "crates/bagflow-decode",
+    "crates/bagflow-checks",
+    "crates/bagflow-report",
+    "crates/mcap2dora",
+]
+
+[workspace.dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+# preserve_order keeps report.json field order stable and human-diffable
+serde_json = { version = "1", features = ["preserve_order"] }
+serde_yaml = "0.9"
+
+[profile.release]
+lto = "thin"

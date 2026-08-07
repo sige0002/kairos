@@ -6,6 +6,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { queryKeys } from '../../api/queryKeys';
+import { TOPIC_DISCOVERY_POLL_MS } from '../../v2/pollingPolicy';
 import { fetchProbeFields, fetchProbeTopics, probeStreamUrl } from './api';
 import type {
   ProbeFieldsResponse,
@@ -22,7 +23,7 @@ export function useProbeTopics() {
   return useQuery<ProbeTopic[]>({
     queryKey: queryKeys.probeTopics,
     queryFn: fetchProbeTopics,
-    refetchInterval: 5000,
+    refetchInterval: TOPIC_DISCOVERY_POLL_MS,
   });
 }
 

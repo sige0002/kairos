@@ -82,6 +82,7 @@ class BaseServiceClient:
         path: str,
         *,
         json: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
         timeout: float | httpx.Timeout | None = None,
         retries: int | None = None,
     ) -> dict[str, Any]:
@@ -90,8 +91,8 @@ class BaseServiceClient:
         Connection/timeout errors are retried (default once). A non-2xx response
         is surfaced as an :class:`ApiError`: genuine downstream 4xx pass through
         with their own status + code; downstream 5xx and transport failures
-        become a unified ``503``. ``timeout`` / ``retries`` override the defaults
-        for a single call.
+        become a unified ``503``. ``params`` sets the query string; ``timeout`` /
+        ``retries`` override the defaults for a single call.
         """
         url = f"{self._base_url}{path}"
         timeout = self._timeout if timeout is None else timeout
@@ -100,7 +101,7 @@ class BaseServiceClient:
         for _attempt in range(retries + 1):
             try:
                 resp = await self._client.request(
-                    method, url, json=json, timeout=timeout
+                    method, url, json=json, params=params, timeout=timeout
                 )
             except httpx.HTTPError as exc:
                 # Transport-level failure (connect/read timeout, etc.): retry.

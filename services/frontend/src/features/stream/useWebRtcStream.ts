@@ -12,6 +12,22 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 export type StreamPhase = 'idle' | 'starting' | 'negotiating' | 'connected' | 'failed';
 
+/**
+ * WHY a stream failed, as a fact rather than a sentence to re-parse.
+ *
+ * The three are different problems with different next actions, and a summary
+ * that says only "down" leaves the operator guessing between them (E-37):
+ *   'unsupported' — this browser has no WebRTC at all; no robot involved.
+ *   'signaling'   — the offer never reached the streamer service (it is down,
+ *                   unreachable, or answering an error). Every camera fails
+ *                   together, because they all negotiate through it.
+ *   'peer'        — signaling worked and the media path did not: ICE/network
+ *                   between this machine and the streamer.
+ * Set where the failure is DETECTED so nothing downstream has to sniff our own
+ * error strings for a cause we already knew.
+ */
+export type StreamFailure = 'unsupported' | 'signaling' | 'peer';
+
 interface StreamStartResponse {
   stream_id: string;
 }
@@ -80,18 +96,45 @@ export interface StreamStats {
   latencyMs: number | null;
   width: number | null;
   height: number | null;
+  /**
+   * How long the decoded-frame count has been STATIC, in ms; null while frames
+   * are advancing or before we can tell.
+   *
+   * The WebRTC track staying up is not evidence that pictures are arriving: a
+   * publisher can go away while the peer connection, the <video> element and
+   * its clock all carry on, and `framesPerSecond` keeps reporting its last
+   * value. qa-ui watched a tile claim "15fps" for 106 seconds against a topic
+   * with no publisher. frontend.md promises a per-tile MEASUREMENT, so the only
+   * honest source is whether frames actually advanced.
+   */
+  framesStaleMs: number | null;
 }
+
+/** How long frames may stand still before a tile stops claiming a frame rate.
+ *  Two seconds is several frames at any rate worth previewing, so it does not
+ *  trip on ordinary jitter. */
+export const FRAME_STALE_MS = 2000;
 
 export interface UseWebRtcStreamResult {
   phase: StreamPhase;
   stream: MediaStream | null;
   error: string | null;
+  /** Why it failed, typed at the point of detection; null unless `phase` is
+   *  'failed'. A summary that can only say "down" leaves the operator choosing
+   *  between three unrelated next actions (E-37). */
+  failure: StreamFailure | null;
   stats: StreamStats;
   /** Tear down and re-negotiate. */
   retry: () => void;
 }
 
-const EMPTY_STATS: StreamStats = { fps: null, latencyMs: null, width: null, height: null };
+const EMPTY_STATS: StreamStats = {
+  fps: null,
+  latencyMs: null,
+  width: null,
+  height: null,
+  framesStaleMs: null,
+};
 
 // A connected stream that decodes no new frames for this long is "black"; we
 // auto-renegotiate (up to AUTO_RETRY_MAX) — the usual cause is joining an
@@ -109,6 +152,7 @@ export function useWebRtcStream({
   const [phase, setPhase] = useState<StreamPhase>('idle');
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [failure, setFailure] = useState<StreamFailure | null>(null);
   const [stats, setStats] = useState<StreamStats>(EMPTY_STATS);
   const [attempt, setAttempt] = useState(0);
   const pcRef = useRef<RTCPeerConnection | null>(null);
@@ -128,6 +172,7 @@ export function useWebRtcStream({
 
   const retry = useCallback(() => {
     setError(null);
+    setFailure(null);
     autoRetriesRef.current = 0; // a manual retry restores the auto-retry budget
     setAttempt((n) => n + 1);
   }, []);
@@ -141,6 +186,7 @@ export function useWebRtcStream({
     if (!topic || !webrtcBase) return;
     if (typeof RTCPeerConnection === 'undefined') {
       setPhase('failed');
+      setFailure('unsupported');
       setError('WebRTC is not supported in this browser.');
       return;
     }
@@ -158,6 +204,7 @@ export function useWebRtcStream({
       if (s === 'connected') setPhase('connected');
       else if (s === 'failed' || s === 'disconnected' || s === 'closed') {
         setPhase('failed');
+        setFailure('peer');
         setError(`Connection ${s}.`);
       }
     });
@@ -224,6 +271,7 @@ export function useWebRtcStream({
       } catch (err) {
         if (cancelled) return;
         setPhase('failed');
+        setFailure('signaling');
         setError(err instanceof Error ? err.message : String(err));
       }
     }
@@ -253,6 +301,10 @@ export function useWebRtcStream({
     let active = true;
     let lastDecoded = -1;
     let stallSince: number | null = null;
+    // When the decoded count last CHANGED. The auto-retry logic below already
+    // watched this; it just never told the UI, so the tile kept rendering a
+    // frame rate nothing was producing.
+    let lastAdvanceAt: number | null = null;
 
     const id = setInterval(() => {
       const pc = pcRef.current;
@@ -289,15 +341,24 @@ export function useWebRtcStream({
             : rtt
               ? Math.round((rtt * 1000) / 2)
               : null;
+        const nowTs = Date.now();
+        if (framesDecoded != null && framesDecoded !== lastDecoded) {
+          lastAdvanceAt = nowTs;
+        } else if (framesDecoded != null && lastAdvanceAt == null) {
+          // First observation with a count we have not seen move yet: start the
+          // clock here rather than claiming staleness we have not measured.
+          lastAdvanceAt = nowTs;
+        }
         setStats({
           fps: fps != null ? Math.round(fps) : null,
           latencyMs,
           width,
           height,
+          framesStaleMs: lastAdvanceAt != null ? nowTs - lastAdvanceAt : null,
         });
 
         // Stall detection: no new decoded frames → black; auto-renegotiate.
-        const now = Date.now();
+        const now = nowTs;
         if (framesDecoded != null && framesDecoded === lastDecoded) {
           if (stallSince == null) stallSince = now;
           else if (now - stallSince >= STALL_MS && autoRetriesRef.current < AUTO_RETRY_MAX) {
@@ -320,5 +381,5 @@ export function useWebRtcStream({
     };
   }, [phase, attempt]);
 
-  return { phase, stream, error, stats, retry };
+  return { phase, stream, error, failure, stats, retry };
 }

@@ -1,4 +1,4 @@
-"""mcap_loader node: read a recorded MCAP and emit per-topic message counts.
+"""mcap_loader node: read a capture's MCAP and emit per-topic message counts.
 
 Dual-mode (see plugin_loader.py):
 * ``process(inputs, ctx)`` — pure logic, called by the in-process interpreter.
@@ -14,14 +14,13 @@ import os
 from pathlib import Path
 from typing import Any
 
-from dora_runner.mcap_utils import find_mcap, validate_run_id
+from dora_runner.mcap_utils import find_mcap, resolve_source_dir
 from mcap.reader import make_reader
 
 
-def load_topic_counts(run_id: str, data_dir: Path) -> dict[str, Any]:
-    """Enumerate topics with their message counts and the run's time span."""
-    validate_run_id(run_id)
-    mcap_path = find_mcap(data_dir / "recorded" / run_id)
+def load_topic_counts(capture_id: str, data_dir: Path) -> dict[str, Any]:
+    """Enumerate topics with their message counts and the capture's time span."""
+    mcap_path = find_mcap(resolve_source_dir(data_dir, capture_id))
     with mcap_path.open("rb") as fh:
         summary = make_reader(fh).get_summary()
 
@@ -45,7 +44,7 @@ def load_topic_counts(run_id: str, data_dir: Path) -> dict[str, Any]:
             )
     topics.sort(key=lambda topic: topic["name"])
     return {
-        "run_id": run_id,
+        "capture_id": capture_id,
         "mcap_path": str(mcap_path),
         "topics": topics,
         "start_time_ns": start_ns,
@@ -54,7 +53,7 @@ def load_topic_counts(run_id: str, data_dir: Path) -> dict[str, Any]:
 
 
 def process(inputs: dict[str, Any], ctx: Any) -> dict[str, Any]:
-    return {"loaded": load_topic_counts(ctx.run_id, ctx.data_dir)}
+    return {"loaded": load_topic_counts(ctx.capture_id, ctx.data_dir)}
 
 
 def main() -> None:  # pragma: no cover - requires the dora daemon
@@ -62,12 +61,12 @@ def main() -> None:  # pragma: no cover - requires the dora daemon
     from dora import Node
 
     node = Node()
-    run_id = os.environ["KAIROS_RUN_ID"]
+    capture_id = os.environ["KAIROS_CAPTURE_ID"]
     data_dir = Path(os.environ["KAIROS_DATA_DIR"])
     for event in node:
-        # A finite batch: the first timer tick loads the run and emits once.
+        # A finite batch: the first timer tick loads the capture and emits once.
         if event["type"] == "INPUT":
-            loaded = load_topic_counts(run_id, data_dir)
+            loaded = load_topic_counts(capture_id, data_dir)
             node.send_output(
                 "loaded", pa.array([json.dumps(loaded)]), event["metadata"]
             )

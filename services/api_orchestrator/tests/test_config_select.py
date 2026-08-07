@@ -14,7 +14,7 @@ from pathlib import Path
 
 import httpx
 from api_orchestrator.app_factory import create_orchestrator_app
-from api_orchestrator.store import RunStore
+from api_orchestrator.models import Capture, CaptureState
 from fastapi.testclient import TestClient
 from kairos_common import Settings
 
@@ -22,6 +22,11 @@ from kairos_common import Settings
 def _write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
+
+
+# A fixed UUIDv7 so the fake dora's status body can name the same capture the
+# request did without threading the id through the transport.
+_CAPTURE_ID = "01920000-0000-7000-8000-000000000001"
 
 
 def _build_tree(root: Path) -> None:
@@ -83,7 +88,7 @@ class _FakeDora:
                 200,
                 json={
                     "job_id": "job_1",
-                    "run_id": "run_a",
+                    "capture_id": _CAPTURE_ID,
                     "pipeline": "fast_validation",
                     "state": "succeeded",
                     "progress": 1.0,
@@ -93,10 +98,29 @@ class _FakeDora:
         return httpx.Response(404, json={"error": {"code": "nf", "message": path}})
 
 
+def _seed_capture(client: TestClient) -> str:
+    """A terminal capture for the job router to accept a job against.
+
+    ``POST /api/v1/jobs`` refuses an unknown capture (§10.5 keys every job by
+    capture_id), so a template-injection test needs a real one to aim at.
+    """
+    store = client.app.state.capture_store
+    store.create_capture(
+        Capture(
+            capture_id=_CAPTURE_ID,
+            run_id="run_a",
+            state=CaptureState.completed,
+            started_at="2026-08-01T00:00:00.000Z",
+        )
+    )
+    return _CAPTURE_ID
+
+
 def _client(tmp_path: Path, fake_recorder, dora: _FakeDora) -> TestClient:
     root = tmp_path / "config"
     _build_tree(root)
     settings = Settings(
+        data_dir=str(tmp_path / "data"),
         config_dir=str(root),
         config_local_dir=str(root / "local"),
         robot="alpha",
@@ -110,15 +134,15 @@ def _client(tmp_path: Path, fake_recorder, dora: _FakeDora) -> TestClient:
         return fake_recorder.handler(request)
 
     http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    app = create_orchestrator_app(
-        settings, store=RunStore(":memory:"), http_client=http_client
-    )
+    app = create_orchestrator_app(settings, http_client=http_client)
     return TestClient(app)
 
 
-def test_config_tab_is_enabled(client) -> None:
-    tabs = [t["id"] for t in client.get("/api/v1/config").json()["tabs"]]
-    assert "config" in tabs
+def test_tabs_registry_is_retired(client) -> None:
+    """Console v2 fixes its tabs in the frontend; the legacy backend registry
+    stays as an EMPTY list so old clients deserialize cleanly but nothing is
+    advertised (Google review F6: dead v1 contract removed)."""
+    assert client.get("/api/v1/config").json()["tabs"] == []
 
 
 def test_options_are_robot_first(tmp_path: Path, fake_recorder) -> None:
@@ -206,10 +230,15 @@ def test_select_bad_input(tmp_path: Path, fake_recorder) -> None:
 def test_active_validation_injected_into_jobs(tmp_path: Path, fake_recorder) -> None:
     dora = _FakeDora()
     with _client(tmp_path, fake_recorder, dora) as c:
+        capture_id = _seed_capture(c)
         # Template-less fast_validation -> alpha's active (default) template injected.
         c.post(
             "/api/v1/jobs",
-            json={"run_id": "run_a", "pipeline": "fast_validation", "params": {}},
+            json={
+                "capture_id": capture_id,
+                "pipeline": "fast_validation",
+                "params": {},
+            },
         )
         assert dora.last_payload is not None
         assert dora.last_payload["params"]["template"]["name"] == "alpha_default"
@@ -218,7 +247,11 @@ def test_active_validation_injected_into_jobs(tmp_path: Path, fake_recorder) -> 
         c.post("/api/v1/config/select", json={"category": "validation", "id": "strict"})
         c.post(
             "/api/v1/jobs",
-            json={"run_id": "run_a", "pipeline": "fast_validation", "params": {}},
+            json={
+                "capture_id": capture_id,
+                "pipeline": "fast_validation",
+                "params": {},
+            },
         )
         assert dora.last_payload["params"]["template"]["name"] == "alpha_strict"
 
@@ -226,19 +259,88 @@ def test_active_validation_injected_into_jobs(tmp_path: Path, fake_recorder) -> 
         c.post("/api/v1/config/select", json={"category": "robot", "id": "bravo"})
         c.post(
             "/api/v1/jobs",
-            json={"run_id": "run_a", "pipeline": "fast_validation", "params": {}},
+            json={
+                "capture_id": capture_id,
+                "pipeline": "fast_validation",
+                "params": {},
+            },
         )
         assert dora.last_payload["params"]["template"]["name"] == "bravo_default"
+
+
+def test_robot_config_describes_active_robot(tmp_path: Path, fake_recorder) -> None:
+    with _client(tmp_path, fake_recorder, _FakeDora()) as c:
+        body = c.get("/api/v1/config/robots/alpha").json()
+        assert body["robot"] == "alpha"
+        assert body["active"] is True
+        assert body["local"] is False
+        # Derived summary comes from the recording file's parsed content.
+        assert body["summary"]["robot_name"] == "alpha"
+        assert body["summary"]["default_topics"] == ["/a", "/b"]
+        # ros_domain_id is not a RecordingConfig field, so it is absent here.
+        assert body["summary"]["ros_domain_id"] is None
+        # Every aspect the robot has is present with parsed content.
+        rec = body["aspects"]["recording"]
+        assert rec["id"] == "default"
+        assert rec["content"]["default_topics"] == ["/a", "/b"]
+        assert body["aspects"]["stream"]["content"]["columns"] == 2
+        assert body["aspects"]["validation"]["content"]["name"] == "alpha_default"
+        assert (
+            body["aspects"]["validators"]["content"]["gap_threshold_multiplier"] == 5.0
+        )
+
+
+def test_robot_config_reads_non_active_robot_without_switching(
+    tmp_path: Path, fake_recorder
+) -> None:
+    with _client(tmp_path, fake_recorder, _FakeDora()) as c:
+        body = c.get("/api/v1/config/robots/bravo").json()
+        assert body["active"] is False
+        assert body["summary"]["default_topics"] == ["/x"]
+        assert body["aspects"]["recording"]["content"]["robot_name"] == "bravo"
+        # Inspecting a non-active robot must NOT change the active selection.
+        assert c.get("/api/v1/config/options").json()["active_robot"] == "alpha"
+
+
+def test_robot_config_local_robot_missing_aspects_are_null(
+    tmp_path: Path, fake_recorder
+) -> None:
+    with _client(tmp_path, fake_recorder, _FakeDora()) as c:
+        body = c.get("/api/v1/config/robots/charlie").json()
+        assert body["local"] is True
+        assert body["aspects"]["recording"]["content"]["default_topics"] == ["/c"]
+        # charlie has only a recording aspect; the rest resolve to null.
+        assert body["aspects"]["stream"] is None
+        assert body["aspects"]["validation"] is None
+        assert body["aspects"]["validators"] is None
+
+
+def test_robot_config_honours_active_robot_option_pick(
+    tmp_path: Path, fake_recorder
+) -> None:
+    with _client(tmp_path, fake_recorder, _FakeDora()) as c:
+        c.post("/api/v1/config/select", json={"category": "recording", "id": "minimal"})
+        rec = c.get("/api/v1/config/robots/alpha").json()["aspects"]["recording"]
+        assert rec["id"] == "minimal"
+        assert rec["content"]["default_topics"] == ["/a"]
+
+
+def test_robot_config_unknown_robot_is_404(tmp_path: Path, fake_recorder) -> None:
+    with _client(tmp_path, fake_recorder, _FakeDora()) as c:
+        assert c.get("/api/v1/config/robots/nope").status_code == 404
+        # A path-traversal-ish name is not a known robot either.
+        assert c.get("/api/v1/config/robots/local").status_code == 404
 
 
 def test_explicit_template_is_not_overridden(tmp_path: Path, fake_recorder) -> None:
     dora = _FakeDora()
     with _client(tmp_path, fake_recorder, dora) as c:
+        capture_id = _seed_capture(c)
         explicit = {"name": "mine", "version": 1, "required_topics": []}
         c.post(
             "/api/v1/jobs",
             json={
-                "run_id": "run_a",
+                "capture_id": capture_id,
                 "pipeline": "fast_validation",
                 "params": {"template": explicit},
             },

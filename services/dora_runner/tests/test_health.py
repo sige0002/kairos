@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import dora_runner.main as main
+from dora_runner.main import create_dora_app
+from dora_runner.store import RunnerStore
 from fastapi.testclient import TestClient
 
-client = TestClient(main.app)
+# The app is no longer built at module import; construct one with an in-memory
+# store so this smoke test has no filesystem side effect.
+client = TestClient(create_dora_app(store=RunnerStore(":memory:")))
 
 
 def test_healthz() -> None:
@@ -14,12 +18,10 @@ def test_healthz() -> None:
     assert resp.json() == {"status": "ok"}
 
 
-def test_root_reports_stage3() -> None:
+def test_root_reports_service() -> None:
     resp = client.get("/")
     assert resp.status_code == 200
-    body = resp.json()
-    assert body["service"] == "dora_runner"
-    assert body["stage"] == "stage3"
+    assert resp.json() == {"service": "dora_runner"}
 
 
 def test_readyz_reports_dora_in_process(monkeypatch) -> None:

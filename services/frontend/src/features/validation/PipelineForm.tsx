@@ -6,7 +6,8 @@
 //
 // Special case: a field literally named `template` (fast_validation) is a catalog
 // id the orchestrator resolves, so it renders as a SELECT of the known validation
-// options rather than a free-text box (see ValidationTab + routers/jobs.py).
+// options rather than a free-text box (see routers/jobs.py, which resolves the
+// id against the Config catalog before forwarding the job).
 
 import type { JSONSchema } from '../../schema/jsonSchema';
 import { schemaHasType } from '../../schema/jsonSchema';
@@ -21,6 +22,11 @@ interface PipelineFormProps {
   onChange: (next: Record<string, unknown>) => void;
   /** Options for a field literally named `template` (catalog-resolved select). */
   templateOptions?: ValidationOption[];
+  /** Context suggestions keyed by a property's `x-suggest` kind (e.g.
+   *  `camera_topics` from the selected target capture). A string field whose
+   *  schema carries `x-suggest` renders as a select of these instead of a
+   *  free-text box; with no suggestions it falls back to text (honest). */
+  suggestions?: Record<string, string[]>;
 }
 
 /** Parse a free-text "a, b c" string into a clean list of globs. */
@@ -42,6 +48,7 @@ function Field({
   value,
   onChange,
   templateOptions,
+  suggestions,
 }: {
   name: string;
   child: JSONSchema;
@@ -49,6 +56,7 @@ function Field({
   value: unknown;
   onChange: (v: unknown) => void;
   templateOptions?: ValidationOption[];
+  suggestions?: Record<string, string[]>;
 }) {
   const label = (
     <span className="text-[11px] font-medium text-gray-500">
@@ -78,6 +86,37 @@ function Field({
               </option>
             ))
           )}
+        </select>
+      </label>
+    );
+  }
+
+  // x-suggest (string) -> select of context suggestions (e.g. the target run's
+  // camera topics for video_check's `topic`) — no hand-typing full topic paths.
+  // The current value stays selectable even if it isn't in the list (a preset
+  // or an earlier target could have set it), and with no suggestions at all the
+  // field falls through to the plain text input below.
+  const suggestKind = child['x-suggest'];
+  const suggested = suggestKind ? (suggestions?.[suggestKind] ?? []) : [];
+  if (suggestKind && schemaHasType(child, 'string') && suggested.length > 0) {
+    const current = String(value ?? '');
+    const options =
+      current && !suggested.includes(current) ? [current, ...suggested] : suggested;
+    return (
+      <label className="flex flex-col gap-1 text-sm">
+        {label}
+        <select
+          aria-label={name}
+          value={current}
+          onChange={(e) => onChange(e.target.value)}
+          className={FIELD_CLASS}
+        >
+          {!current && <option value="">Select…</option>}
+          {options.map((opt) => (
+            <option key={opt} value={opt}>
+              {opt}
+            </option>
+          ))}
         </select>
       </label>
     );
@@ -175,7 +214,13 @@ function Field({
 }
 
 /** Render a form for a pipeline's params JSON-Schema. Controlled by `value`. */
-export function PipelineForm({ schema, value, onChange, templateOptions }: PipelineFormProps) {
+export function PipelineForm({
+  schema,
+  value,
+  onChange,
+  templateOptions,
+  suggestions,
+}: PipelineFormProps) {
   const properties = schema.properties ?? {};
   const required = new Set(schema.required ?? []);
   const set = (key: string, v: unknown) => onChange({ ...value, [key]: v });
@@ -195,6 +240,7 @@ export function PipelineForm({ schema, value, onChange, templateOptions }: Pipel
           value={value[key]}
           onChange={(v) => set(key, v)}
           templateOptions={key === 'template' ? templateOptions : undefined}
+          suggestions={suggestions}
         />
       ))}
     </>

@@ -16,7 +16,8 @@ config/
 │  ├─ stream/<option>.yaml        # Stream tab initial layout
 │  ├─ monitoring/alerts.yaml      # topic_monitor alert definitions (optional, ALERT_CONFIG_PATH)
 │  ├─ validation/<option>.yaml    # fast_validation template
-│  └─ validators/loss_report.yaml # validator parameters
+│  ├─ validators/loss_report.yaml # validator parameters
+│  └─ flows/<flow>.yml            # full_validation's validation flows (bagflow flow.yml)
 ├─ airoa_hsr/               # bundled sample robot (HSR, data/airoa-moma-mcap/)
 ├─ template/                # starting point for a new robot (copy of airoa_hsr)
 └─ local/<robot>/           # your own robots (gitignored)
@@ -39,6 +40,10 @@ make up ROBOT=<robot>        # config/local/<robot>/ (gitignored, your own robot
   (`GET /api/v1/config/options` · `POST /api/v1/config/select`). Local robots
   (gitignored) appear in the list too, and editing their recording config writes
   back to the gitignored file (never a committed one).
+- **Settings > Data quality** edits one single-file (non-selectable) config:
+  `monitoring/alerts.yaml` (alert rules; `GET/PUT /api/v1/config/alerts`; applies
+  on topic_monitor restart). It writes back atomically to the active robot's
+  file (see `docs/specs/en/api_orchestrator.md`).
 - **A new robot**: copy `config/template/` into `config/<robot>/` (publishable) or
   `config/local/<robot>/` (private), then edit topic names / expected Hz / QoS.
 
@@ -50,7 +55,10 @@ make up ROBOT=<robot>        # config/local/<robot>/ (gitignored, your own robot
 
 - `rosbag2_recorder` … recording `default_topics` (default capture set) + recording QoS.
 - `topic_monitor` … recording `expected_hz_patterns` (Late judgement) + subscription QoS + `monitoring/alerts.yaml` (alert definitions; optional; empty = alerts disabled).
-- `dora_runner` … validation `required_topics` (fast_validation) + validators (loss_report).
+- `dora_runner` … validation `required_topics` (fast_validation; they also reach a `full_validation` flow as
+  `${KAIROS_EXPECT_HZ}`) + validators (loss_report) + `flows/` (the validation flows `full_validation` runs
+  on real dora, selected per job with `params.flow`; see
+  [`docs/specs/en/dora_runner.md`](../docs/specs/en/dora_runner.md)).
 - `frontend` (UI) … via `GET /api/v1/config`: Record/Monitor pre-selection + badges, Stream initial panes.
 
 Topics support globs (fnmatch), first-match-wins. See each YAML's comments and

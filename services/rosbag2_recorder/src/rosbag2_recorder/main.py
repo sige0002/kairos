@@ -16,11 +16,13 @@ from fastapi import FastAPI, Response
 from kairos_common import (
     create_app,
     get_settings,
-    load_recording_config,
+    load_recording_config_or_none,
     resolve_config_path,
 )
 
 from rosbag2_recorder.models import (
+    RecordPrepareRequest,
+    RecordPrepareResponse,
     RecordStartRequest,
     RecordStartResponse,
     RecordStatusResponse,
@@ -32,38 +34,31 @@ logger = logging.getLogger("kairos.rosbag2_recorder")
 SERVICE_NAME = "rosbag2_recorder"
 
 
-def _load_config(recording_config_path: str) -> Any:
-    """Load the RECORDING_CONFIG, tolerating its absence.
-
-    The per-topic QoS overrides come from this file; if it is missing or
-    invalid the recorder still works (rosbag2 follows each publisher's offered
-    QoS), so we log and continue rather than refusing to boot.
-    """
-    try:
-        return load_recording_config(recording_config_path)
-    except (FileNotFoundError, ValueError) as exc:
-        logger.warning("recording config unavailable: %s", exc)
-        return None
-
-
 def create_recorder_app() -> FastAPI:
     """Build the recorder FastAPI app with the session and routes wired in."""
     settings = get_settings()
-    config = _load_config(resolve_config_path(settings.recording_config))
+    # The per-topic QoS overrides come from this file; without it the recorder
+    # still works (rosbag2 follows each publisher's offered QoS).
+    config = load_recording_config_or_none(
+        resolve_config_path(settings.recording_config), logger
+    )
     session = RecorderSession(settings, config)
     session.reconcile_on_startup()
 
-    app = create_app(SERVICE_NAME, settings=settings)
-    app.state.session = session
+    # Readiness reflects that the recorder can write to /data; if the recorded
+    # root is not usable we are live but not ready. A plain ``def`` so Starlette
+    # runs it in its thread pool (``ensure_ready`` touches the filesystem) — the
+    # same reason the record routes below are sync.
+    def readyz(response: Response) -> dict[str, str]:
+        try:
+            session.ensure_ready()
+        except Exception:  # noqa: BLE001 - report unready, never crash the probe
+            response.status_code = 503
+            return {"status": "not_ready"}
+        return {"status": "ready"}
 
-    # create_app registers a default always-ready /readyz; drop it so our
-    # dependency-aware probe below is the one that serves the path (Starlette
-    # matches the first registered route, so the default would otherwise win).
-    app.router.routes = [
-        route
-        for route in app.router.routes
-        if getattr(route, "path", None) != "/readyz"
-    ]
+    app = create_app(SERVICE_NAME, settings=settings, readyz=readyz)
+    app.state.session = session
 
     # These routes are declared with a plain ``def`` (not ``async def``) on
     # purpose: ``session.start``/``stop`` block synchronously (the start delay +
@@ -72,11 +67,19 @@ def create_recorder_app() -> FastAPI:
     # directly on the event loop, so an ``async`` handler here would freeze every
     # request — ``/healthz`` and ``/record/status`` included — for the whole
     # blocking span. None of these handlers await, so a plain ``def`` is correct.
+    @app.post("/record/prepare", status_code=201, response_model=RecordPrepareResponse)
+    def record_prepare(request: RecordPrepareRequest) -> RecordPrepareResponse:
+        return session.prepare(request)
+
     @app.post("/record/start", status_code=201, response_model=RecordStartResponse)
     def record_start(request: RecordStartRequest) -> RecordStartResponse:
         status = session.start(request)
         return RecordStartResponse(
             run_id=status.run_id or request.run_id,
+            # Always set on a successful start (the session commits it before
+            # the status is built), so the empty string is unreachable rather
+            # than a fallback anyone should read.
+            capture_id=status.capture_id or "",
             state=status.state,
             started_at=status.started_at or "",
             # Settled arming snapshot (OL-①.4) so the orchestrator can forward it
@@ -95,18 +98,6 @@ def create_recorder_app() -> FastAPI:
     @app.get("/record/metadata")
     def record_metadata() -> dict[str, Any]:
         return session.get_metadata()
-
-    # Readiness reflects that the recorder can write to /data; if the recorded
-    # root is not usable we are live but not ready. Sync ``def`` for the same
-    # reason as the record routes (``ensure_ready`` may touch the filesystem).
-    @app.get("/readyz", tags=["health"])
-    def readyz(response: Response) -> dict[str, str]:
-        try:
-            session.ensure_ready()
-        except Exception:  # noqa: BLE001 - report unready, never crash the probe
-            response.status_code = 503
-            return {"status": "not_ready"}
-        return {"status": "ready"}
 
     return app
 

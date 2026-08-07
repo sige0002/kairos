@@ -36,7 +36,7 @@ import yaml
 from kairos_common import ApiError
 from pydantic import BaseModel, ConfigDict, Field
 
-from dora_runner.mcap_utils import validate_run_id
+from dora_runner.mcap_utils import resolve_source_dir
 from dora_runner.store import JobRecord, RunnerStore
 
 if TYPE_CHECKING:
@@ -78,7 +78,7 @@ class PluginManifest(BaseModel):
     description: str = ""
     executor: str = "dora"
     version: str = "0.0.0"
-    required_inputs: list[str] = Field(default_factory=lambda: ["run_id"])
+    required_inputs: list[str] = Field(default_factory=lambda: ["capture_id"])
     params_schema: dict[str, Any] = Field(default_factory=dict)
     outputs: list[str] = Field(default_factory=list)
     # entrypoint.dataflow (relative path) for executor=dora; entrypoint.callable
@@ -100,7 +100,7 @@ class NodeContext:
     """The KAIROS_* job context handed to each in-process node (env equivalent)."""
 
     plugin_id: str
-    run_id: str
+    capture_id: str
     data_dir: Path
     params: dict[str, Any]
     report_dir: Path
@@ -172,16 +172,34 @@ def _build_runner(manifest: PluginManifest, plugin_dir: Path) -> Runner:
 # ---- dataflow runner (dora CLI when present, else in-process interpreter) ------
 
 
+def _prepare_report_dir(
+    manifest: PluginManifest, job: JobRecord, data_dir: Path
+) -> Path:
+    """Verify the capture is really there, THEN create the report directory.
+
+    The order is the whole point. ``resolve_source_dir`` is both the
+    defense-in-depth id check (``/jobs`` already refused a non-UUIDv7, and this
+    is the last gate before the id becomes a path segment) and the existence
+    check — so a job aimed at a capture that was deleted, or never arrived,
+    fails before anything is written. Creating the directory first left
+    ``report/<plugin>/<capture_id>/`` behind for a job that could never run,
+    which is indistinguishable on disk from a pipeline that ran and produced
+    nothing.
+    """
+    resolve_source_dir(data_dir, job.capture_id)
+    report_dir = data_dir / "report" / manifest.id / job.capture_id
+    report_dir.mkdir(parents=True, exist_ok=True)
+    return report_dir
+
+
 def _make_dataflow_runner(manifest: PluginManifest, plugin_dir: Path) -> Runner:
     dataflow_yml = plugin_dir / manifest.entrypoint["dataflow"]
 
     async def _run(job: JobRecord, store: RunnerStore, data_dir: Path) -> dict:
-        validate_run_id(job.run_id)  # defense-in-depth before joining into a path
-        report_dir = data_dir / "report" / manifest.id / job.run_id
-        report_dir.mkdir(parents=True, exist_ok=True)
+        report_dir = _prepare_report_dir(manifest, job, data_dir)
         ctx = NodeContext(
             plugin_id=manifest.id,
-            run_id=job.run_id,
+            capture_id=job.capture_id,
             data_dir=data_dir,
             params=job.params,
             report_dir=report_dir,
@@ -201,17 +219,15 @@ def _make_dataflow_runner(manifest: PluginManifest, plugin_dir: Path) -> Runner:
 def _make_callable_runner(manifest: PluginManifest, plugin_dir: Path) -> Runner:
     """Runner for ``executor: in_process`` plugins exposing ``module:function``.
 
-    The callable signature is ``(run_id, data_dir, params, report_dir) -> None``;
+    The callable signature is ``(capture_id, data_dir, params, report_dir) -> None``;
     it must write ``summary.json`` (and any artifacts) under ``report_dir``.
     """
     fn = _load_attr(plugin_dir, manifest.entrypoint["callable"], manifest.id)
 
     async def _run(job: JobRecord, store: RunnerStore, data_dir: Path) -> dict:
-        validate_run_id(job.run_id)
-        report_dir = data_dir / "report" / manifest.id / job.run_id
-        report_dir.mkdir(parents=True, exist_ok=True)
+        report_dir = _prepare_report_dir(manifest, job, data_dir)
         job.progress = 0.4
-        await asyncio.to_thread(fn, job.run_id, data_dir, job.params, report_dir)
+        await asyncio.to_thread(fn, job.capture_id, data_dir, job.params, report_dir)
         return _collect_result(manifest.id, report_dir)
 
     return _run
@@ -270,7 +286,7 @@ async def _run_via_dora_cli(
     """
     env = {
         **os.environ,
-        "KAIROS_RUN_ID": ctx.run_id,
+        "KAIROS_CAPTURE_ID": ctx.capture_id,
         "KAIROS_DATA_DIR": str(ctx.data_dir),
         "KAIROS_REPORT_DIR": str(ctx.report_dir),
         "KAIROS_PARAMS_JSON": json.dumps(ctx.params),

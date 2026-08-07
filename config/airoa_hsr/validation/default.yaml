@@ -5,8 +5,10 @@
 # dora_runner の fast_validation がこれと収録 MCAP の実トピックを照合し、
 # 必須トピックの過不足を pass/fail で判定する（decode 不要・短時間）。
 #
-# Config タブで選択するとアクティブになり、テンプレ未指定の fast_validation
-# ジョブに自動注入される（再起動不要）。name は glob 可、type は任意。
+# Config タブで選択するとアクティブになり、テンプレ未指定の fast_validation /
+# full_validation ジョブに自動注入される（再起動不要）。full_validation では
+# フローに ${KAIROS_EXPECT_HZ}（必須トピックは hz=0 = 存在必須）として届く。
+# name は glob 可、type は任意。
 # 同梱 HSR サンプル（data/airoa-moma-mcap）の主要ストリームを必須にしてある。
 # =============================================================================
 name: airoa_hsr

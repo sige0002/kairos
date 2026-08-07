@@ -1,0 +1,32 @@
+# =============================================================================
+# services/dora_runner/flows/fast_validation.yml — fast_validation の検証フロー
+# =============================================================================
+# **サービス同梱**（イメージ内 /opt/kairos/flows/）のフロー。fast_validation は
+# 「どのロボットでも、operator がフローを1本も書いていなくても動く必須トピック
+# ゲート」なので、robot config ではなくサービス側に置く。
+#
+# 上書きしたい場合は `config/<robot>/flows/fast_validation.yml` を置くだけでよい
+# （同名ならそちらが優先される。docs/specs/ja/dora_runner.md の fast_validation 節）。
+#
+# このファイルは **bagflow の flow.yml そのもの**。kairos 側が実行のたびに足すのは
+# bag / report / ${KAIROS_*} の展開 / path のバイナリ名解決だけ。
+#
+# ここは **bag を1バイトも読まない**（metadata.yaml の topic 一覧だけを見る）
+# 構成なので、4GB の録画でも 100MB の録画でも実行時間はほぼ変わらない。
+# 「速い」ことが fast_validation の存在意義なので、デコードするノードを足すのは
+# full_validation 側（config/<robot>/flows/）で行うこと。
+#
+# ${KAIROS_REQUIRED_TOPIC_SPECS} = Config タブの検証テンプレ（無ければ
+# RECORDING_CONFIG の validation.required_topics）の [{name, type}] そのまま。
+# name は glob（fnmatch）で、type は省略可＝型は問わない。
+# =============================================================================
+nodes:
+  # 必須トピックの存在（+ 型）チェック。metadata 由来・デコード無し・購読無し。
+  - id: topic_presence
+    path: bagflow-topic-presence
+    env:
+      REQUIRED_TOPICS: '${KAIROS_REQUIRED_TOPIC_SPECS}'
+      # 0 件のトピックも「存在する」とみなす（全トピック録画の bag は
+      # service 応答トピックが常時 0 件になるため）。1 以上にすると
+      # 「必須トピックは最低これだけ記録されていること」を要求できる。
+      MIN_MESSAGES: '0'

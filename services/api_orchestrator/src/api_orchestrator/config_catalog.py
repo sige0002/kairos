@@ -174,6 +174,24 @@ class ConfigCatalog:
         entry = self._aspect_files(self._active_robot, aspect).get(option_id)
         return entry[0] if entry else None
 
+    def robot_config_file(self, subdir: str, filename: str) -> Path | None:
+        """Absolute path to ``<active_robot>/<subdir>/<filename>`` (committed or
+        local base dir), whether or not the file exists yet.
+
+        Used by the config editors for aspects that are a single fixed file
+        rather than a selectable ``*.yaml`` option — Signals
+        (``signals/default.yaml``) and the monitor alerts
+        (``monitoring/alerts.yaml``). The base dir is the active robot's
+        committed dir when it has one, else its ``config/local`` dir, so a PUT
+        writes back to the same file the robot's own services read. Returns
+        ``None`` only when the active robot has no config dir at all (so there is
+        nowhere to read or write).
+        """
+        rdir, _ = self._robot_dir(self._active_robot)
+        if rdir is None:
+            return None
+        return rdir / subdir / filename
+
     def _option_meta(self, aspect: str, path: Path) -> dict:
         """Best-effort display metadata for an aspect option (never raises)."""
         try:
@@ -213,6 +231,87 @@ class ConfigCatalog:
                 self._active_robot, aspect
             ).items()
         ]
+
+    # ---- read-only robot inspection (GET /config/robots/{robot}) ----------
+
+    def _resolved_option(self, robot: str, aspect: str) -> str | None:
+        """The selected/default option id for *aspect* of *robot* (or ``None``).
+
+        For the active robot this honours the in-memory per-aspect pick (like
+        :meth:`active_option`); for any other robot there is no selection to
+        honour, so it falls back to ``default`` then the first available file.
+        """
+        files = self._aspect_files(robot, aspect)
+        if not files:
+            return None
+        if robot == self._active_robot:
+            chosen = self._active_option.get(aspect)
+            if chosen in files:
+                return chosen
+        if DEFAULT_OPTION in files:
+            return DEFAULT_OPTION
+        return next(iter(files))
+
+    def _read_yaml_mapping(self, path: Path) -> dict[str, Any] | None:
+        """Best-effort parse of a config file to a plain dict (never raises).
+
+        Read-only inspection must not 500 on a file that fails strict schema
+        validation, so this returns the raw YAML mapping (or ``None`` when the
+        file is unreadable / not a mapping) rather than a validated model.
+        """
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError) as exc:
+            logger.warning(
+                "config file failed to parse",
+                extra={"path": str(path), "error": str(exc)},
+            )
+            return None
+        return data if isinstance(data, dict) else None
+
+    def describe_robot(self, robot: str) -> dict[str, Any] | None:
+        """Read-only view of *robot*'s config, or ``None`` if it is not a known robot.
+
+        For each aspect returns the selected/default file's parsed content (or
+        ``None`` when the robot has no file for that aspect), plus a derived
+        summary (robot name, default_topics, ros_domain_id if present in the
+        recording file). Nothing here mutates the active selection — it is a pure
+        inspection of *robot*, active or not.
+        """
+        if robot not in {r.id for r in self.list_robots()}:
+            return None
+        aspects: dict[str, dict[str, Any] | None] = {}
+        for aspect in ASPECTS:
+            option_id = self._resolved_option(robot, aspect)
+            if option_id is None:
+                aspects[aspect] = None
+                continue
+            path, is_local = self._aspect_files(robot, aspect)[option_id]
+            aspects[aspect] = {
+                "id": option_id,
+                "path": str(path),
+                "local": is_local,
+                "content": self._read_yaml_mapping(path),
+            }
+        recording = aspects.get("recording")
+        rec_content = recording["content"] if recording else None
+        rec_content = rec_content if isinstance(rec_content, dict) else {}
+        topics = rec_content.get("default_topics")
+        summary = {
+            "robot_name": rec_content.get("robot_name") or robot,
+            "default_topics": topics if isinstance(topics, list) else [],
+            # Not part of RecordingConfig (ros_domain_id is a global setting), so
+            # normally absent; surfaced only if a file actually carries it.
+            "ros_domain_id": rec_content.get("ros_domain_id"),
+        }
+        _, local = self._robot_dir(robot)
+        return {
+            "robot": robot,
+            "local": local,
+            "active": robot == self._active_robot,
+            "summary": summary,
+            "aspects": aspects,
+        }
 
     # ---- selection --------------------------------------------------------
 

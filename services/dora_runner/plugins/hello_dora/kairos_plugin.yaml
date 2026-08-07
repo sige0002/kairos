@@ -10,7 +10,7 @@ description: >-
   plugins.
 executor: dora
 version: 0.1.0
-required_inputs: [run_id]
+required_inputs: [capture_id]
 params_schema:
   type: object
   properties:
@@ -21,7 +21,7 @@ params_schema:
       default: 1
       minimum: 0
 outputs:
-  - "report/hello_dora/<run_id>/summary.json"
+  - "report/hello_dora/<capture_id>/summary.json"
 entrypoint:
   dataflow: dataflow.yml
 requires:

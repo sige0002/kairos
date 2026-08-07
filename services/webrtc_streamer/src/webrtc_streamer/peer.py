@@ -102,6 +102,36 @@ def _should_discard_on_state(state: str) -> bool:
     return state in ("failed", "closed")
 
 
+def drop_ipv6_candidates(sdp: str) -> str:
+    """Strip IPv6 ICE candidate lines from an SDP answer.
+
+    Every reachable path we need is IPv4: the LAN host candidates (192.168.x) and
+    the Tailscale candidate (100.x). A node's Tailscale IPv6 (``fd7a:…``) is
+    redundant with its IPv4 — and fragmented IPv6 datagrams are black-holed over
+    WireGuard, so if a browser nominates the v6 pair the (fragmented) media never
+    arrives and the preview goes black. Dropping v6 candidates keeps ICE on the
+    working v4 path. The streamer always advertises at least one v4 host
+    candidate, so this never empties the candidate set. Paired with the
+    ``WEBRTC_PACKET_MAX`` cap (see ``main``), which removes fragmentation on v4
+    too. Set ``WEBRTC_KEEP_IPV6=1`` to disable (e.g. a genuinely v6-only network).
+    """
+    import os
+
+    if os.getenv("WEBRTC_KEEP_IPV6") == "1":
+        return sdp
+    trailing = "\r\n" if sdp.endswith("\n") else ""
+    kept: list[str] = []
+    for line in sdp.splitlines():
+        body = line[2:] if line.startswith("a=") else line
+        if body.startswith("candidate:"):
+            # a=candidate:<foundation> <comp> <transport> <prio> <ip> <port> typ …
+            parts = body.split()
+            if len(parts) >= 5 and ":" in parts[4]:
+                continue  # IPv6 connection address -> drop this candidate
+        kept.append(line)
+    return "\r\n".join(kept) + trailing
+
+
 def h264_available() -> bool:
     """Whether the runtime aiortc/PyAV build can encode H.264.
 
@@ -210,12 +240,41 @@ class AiortcPeerManager:
         *,
         encoding: Encoding = Encoding.vp8,
         max_fps: int = 15,
+        ice_servers: list[dict[str, Any]] | None = None,
     ) -> None:
         self._frames = frames
         self._encoding = encoding
         self._max_fps = max_fps
+        # RTCIceServer JSON dicts (from WEBRTC_ICE_SERVERS via config). Empty =
+        # LAN/direct, host candidates only. Kept raw; turned into RTCIceServer
+        # objects lazily in handle_offer so this module imports without aiortc.
+        self._ice_server_cfgs = ice_servers or []
         self._lock = threading.Lock()
         self._pcs: set[Any] = set()
+
+    def _build_ice_servers(self) -> list[Any]:
+        """Turn the configured RTCIceServer dicts into aiortc ``RTCIceServer``s.
+
+        Skips entries without ``urls`` so a partial/malformed config degrades to
+        fewer (or no) ICE servers rather than failing the offer.
+        """
+        from aiortc import RTCIceServer
+
+        servers: list[Any] = []
+        for entry in self._ice_server_cfgs:
+            if not isinstance(entry, dict):
+                continue
+            urls = entry.get("urls")
+            if not urls:
+                continue
+            servers.append(
+                RTCIceServer(
+                    urls=urls,
+                    username=entry.get("username"),
+                    credential=entry.get("credential"),
+                )
+            )
+        return servers
 
     def client_count(self) -> int:
         with self._lock:
@@ -224,9 +283,10 @@ class AiortcPeerManager:
     async def handle_offer(self, sdp: str, sdp_type: str) -> tuple[str, str]:
         from aiortc import RTCConfiguration, RTCPeerConnection, RTCSessionDescription
 
-        # LAN default: no ICE servers (peers are directly reachable). STUN/TURN
-        # would be distributed via /api/v1/config only for cross-network use.
-        pc = RTCPeerConnection(RTCConfiguration(iceServers=[]))
+        # STUN/TURN come from WEBRTC_ICE_SERVERS (the same RTCIceServer JSON the
+        # browser gets via /api/v1/config), so both peers agree. Empty [] = LAN/
+        # direct with host candidates only (unchanged default behavior).
+        pc = RTCPeerConnection(RTCConfiguration(iceServers=self._build_ice_servers()))
         with self._lock:
             self._pcs.add(pc)
 
@@ -250,7 +310,7 @@ class AiortcPeerManager:
         # all candidates (the spec exchanges complete SDP, no trickle channel).
         await self._await_ice_complete(pc)
         local = pc.localDescription
-        return local.sdp, local.type
+        return drop_ipv6_candidates(local.sdp), local.type
 
     def _force_codec(self, pc: Any, sender: Any) -> None:
         """Restrict the sender to the requested codec, if the API allows it."""
