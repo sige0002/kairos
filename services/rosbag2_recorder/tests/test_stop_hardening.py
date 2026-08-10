@@ -74,6 +74,51 @@ def test_signal_and_wait_escalates_to_sigkill(
             child.stdout.close()
 
 
+def test_escalation_order_is_sigint_then_sigterm_then_sigkill(
+    monkeypatch: pytest.MonkeyPatch, settings: Settings, fake_process: type
+) -> None:
+    """The full ladder, fake-driven: two survived waits → INT, TERM, KILL.
+
+    The real-child test above proves the OS half; this proves the ORDER and
+    the per-stage waits, which it cannot (a real child that ignores both
+    signals dies at the first SIGKILL with no way to observe the sequence).
+    Possible at all only because FakeProcess.wait can now express a delayed
+    exit (`wait_timeouts`) instead of always exiting on the first wait.
+    """
+    import rosbag2_recorder.recorder as rec
+
+    sent: list[int] = []
+    monkeypatch.setattr(rec.os, "getpgid", lambda pid: 424242)
+    monkeypatch.setattr(rec.os, "killpg", lambda pgid, sig: sent.append(sig))
+    proc = fake_process(["ros2", "bag", "record"], wait_timeouts=2)
+
+    RecorderSession(settings, None)._signal_and_wait(proc)
+
+    assert sent == [signal.SIGINT, signal.SIGTERM, signal.SIGKILL]
+    # Three waits ran (one per stage) and the third reaped the process.
+    assert proc.wait_calls == 3
+    assert proc.poll() is not None
+
+
+def test_a_flush_that_survives_one_wait_needs_no_escalation(
+    monkeypatch: pytest.MonkeyPatch, settings: Settings, fake_process: type
+) -> None:
+    """Delayed SUCCESS: a slow flush that exits within the SIGINT budget must
+    end with exactly one signal — escalating into a healthy drain would kill
+    the very flush the wait exists to protect."""
+    import rosbag2_recorder.recorder as rec
+
+    sent: list[int] = []
+    monkeypatch.setattr(rec.os, "getpgid", lambda pid: 424242)
+    monkeypatch.setattr(rec.os, "killpg", lambda pgid, sig: sent.append(sig))
+    proc = fake_process(["ros2", "bag", "record"], wait_timeouts=0)
+
+    RecorderSession(settings, None)._signal_and_wait(proc)
+
+    assert sent == [signal.SIGINT]
+    assert proc.poll() is not None
+
+
 def _recording_session(
     settings: Settings,
     fake_process: type,

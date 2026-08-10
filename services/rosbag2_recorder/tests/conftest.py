@@ -14,6 +14,7 @@ pytest import modes (the service-local ``prepend`` run and the repo-wide
 from __future__ import annotations
 
 import os
+import subprocess
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
@@ -41,19 +42,38 @@ class FakeProcess:
     running recorder (so the start-up "did the output dir appear?" check sees a
     live process). Set ``alive=False`` to simulate a process that exited
     immediately without recording (a start failure).
+
+    ``wait_timeouts`` is the delayed-exit seam, counted in ``wait()`` CALLS
+    rather than seconds (the poll-count convention from the 2026-08-07 timing
+    sweep): the first N waits raise ``TimeoutExpired`` with the process still
+    alive, and only then does a wait return. Before this existed the fake was
+    STRUCTURALLY unable to time out, which made the recorder's
+    SIGINT→SIGTERM→SIGKILL escalation unreachable from any fake-driven test.
     """
 
-    def __init__(self, cmd: list[str], returncode: int = 0, alive: bool = True) -> None:
+    def __init__(
+        self,
+        cmd: list[str],
+        returncode: int = 0,
+        alive: bool = True,
+        wait_timeouts: int = 0,
+    ) -> None:
         self.cmd = cmd
         self.pid = os.getpid()
         self.returncode = returncode
         self._alive = alive
         self.signals: list[int] = []
+        self.wait_timeouts = wait_timeouts
+        self.wait_calls = 0
 
     def poll(self) -> int | None:
         return None if self._alive else self.returncode
 
     def wait(self, timeout: float | None = None) -> int:
+        self.wait_calls += 1
+        if self.wait_timeouts > 0:
+            self.wait_timeouts -= 1
+            raise subprocess.TimeoutExpired(self.cmd, timeout if timeout else 0)
         self._alive = False
         return self.returncode
 

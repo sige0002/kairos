@@ -1434,7 +1434,13 @@ def test_max_record_bytes_auto_stops(
     assert capture_id is not None
     # Wait for the watcher to observe the size and auto-stop.
     deadline = time.monotonic() + 5.0
-    while session.status().state is RunState.recording and time.monotonic() < deadline:
+    # `stopping` is normal progress, not the end (the S2-2 lesson): the
+    # watcher's stop flips recording -> stopping -> completed, and asserting
+    # right at the first non-recording read raced the finalise.
+    while (
+        session.status().state in (RunState.recording, RunState.stopping)
+        and time.monotonic() < deadline
+    ):
         time.sleep(0.02)
 
     assert session.status().state is RunState.completed
@@ -1462,7 +1468,13 @@ def test_max_record_seconds_auto_stops(
     capture_id = session.start(_start_req("run_timecap")).capture_id
     assert capture_id is not None
     deadline = time.monotonic() + 5.0
-    while session.status().state is RunState.recording and time.monotonic() < deadline:
+    # `stopping` is normal progress, not the end (the S2-2 lesson): the
+    # watcher's stop flips recording -> stopping -> completed, and asserting
+    # right at the first non-recording read raced the finalise.
+    while (
+        session.status().state in (RunState.recording, RunState.stopping)
+        and time.monotonic() < deadline
+    ):
         time.sleep(0.02)
 
     assert session.status().state is RunState.completed
