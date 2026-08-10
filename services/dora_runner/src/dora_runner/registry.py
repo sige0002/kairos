@@ -121,6 +121,7 @@ async def _run_fast_validation(
         # `dora stop --name <job_id>` can only ever reach this job's flow.
         job_name=job.job_id,
         template=template,
+        cancel_event=job.cancel_event,
     )
 
 
@@ -191,6 +192,7 @@ async def _run_full_validation(
         job_name=job.job_id,
         template=template,
         min_coverage=_min_coverage_param(job.params),
+        cancel_event=job.cancel_event,
     )
 
 
@@ -225,7 +227,11 @@ def _make_loss_report_runner(config: LossReportConfig) -> Runner:
     ) -> dict:
         kwargs = _loss_report_params(job.params, config)
         return await asyncio.to_thread(
-            run_loss_report, capture_id=job.capture_id, data_dir=data_dir, **kwargs
+            run_loss_report,
+            capture_id=job.capture_id,
+            data_dir=data_dir,
+            cancel=job.cancel_event,
+            **kwargs,
         )
 
     return _run_loss_report
@@ -266,6 +272,7 @@ async def _run_video_check(job: JobRecord, store: RunnerStore, data_dir: Path) -
         force=bool(job.params.get("force")),
         # Encode cap; 0 = full episode (the UI's "re-encode full" path).
         max_frames=_max_frames_param(job.params),
+        cancel=job.cancel_event,
     )
 
 
@@ -320,6 +327,7 @@ async def _run_signal_report(
         data_dir=data_dir,
         topics=_topics_param(job.params),
         max_points=_max_points_param(job.params),
+        cancel=job.cancel_event,
     )
 
 

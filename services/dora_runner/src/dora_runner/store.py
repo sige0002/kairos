@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+import threading
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -101,6 +102,13 @@ class JobRecord:
     logs_tail: list[str] = field(default_factory=list)
     result: JobResult | None = None
     task: asyncio.Task[None] | None = None
+    # Cooperative cancellation: cancel of a RUNNING job sets this event (a
+    # ``threading.Event`` because the heavy work runs in a threadpool or a
+    # subprocess watcher) and the worker stops at its next checkpoint. The
+    # state stays ``running`` until the work is actually dead — see
+    # ``JobStatus.cancel_requested`` for why the flag is public.
+    cancel_requested: bool = False
+    cancel_event: threading.Event = field(default_factory=threading.Event)
 
     def status(self) -> JobStatus:
         """Return the public status view."""
@@ -111,6 +119,7 @@ class JobRecord:
             state=self.state,
             progress=self.progress,
             logs_tail=self.logs_tail[-50:],
+            cancel_requested=self.cancel_requested,
         )
 
 

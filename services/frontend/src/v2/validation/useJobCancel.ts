@@ -46,9 +46,11 @@ export function useJobCancel(): JobCancel {
       for (const jobId of jobIds) {
         try {
           const job = await cancelJob(jobId);
-          // Seed the status cache from the reply so the screen reads `canceled`
-          // now instead of on the next poll — and the poll then stops on its
-          // own, because canceled is terminal.
+          // Seed the status cache from the reply. A queued job comes back
+          // `canceled` (terminal, poll stops). A RUNNING job comes back still
+          // `running` with `cancel_requested` — the cancel is a request the
+          // worker honours at its next checkpoint — so the poll keeps going
+          // and the screen shows the true `canceled` when the work is dead.
           queryClient.setQueryData(queryKeys.job(jobId), job);
         } catch (e) {
           failed.push(jobId);

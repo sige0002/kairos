@@ -14,7 +14,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { deleteCapture } from '../../api/captures';
-import { cancelJob } from '../../api/jobs';
+import { cancelJob, getJobStatus } from '../../api/jobs';
 import { queryKeys } from '../../api/queryKeys';
 import { captureErrorText, readCaptureError, readLeaseHolders, type LeaseHolder } from './errors';
 import type { CaptureListItem, DeleteKind } from '../../api/types';
@@ -22,6 +22,29 @@ import type { CaptureListItem, DeleteKind } from '../../api/types';
 export interface DeletionFailure {
   captureId: string;
   error: string;
+}
+
+// How long clearBlockersAndRetry waits for a cancelled job's work to actually
+// stop before retrying the removal. Sized for the workers' checkpoint cadence
+// (a frame boundary or a subprocess kill — seconds), not the job's full
+// budget: a job that ignores its cancel for this long leaves the retry to be
+// refused with the holder named.
+const CANCEL_SETTLE_MAX_MS = 30_000;
+const CANCEL_SETTLE_POLL_MS = 1000;
+// Job states with work still alive (mirrors the server's non-terminal set).
+const ACTIVE_JOB_STATES = new Set(['queued', 'running']);
+
+// Test seam (same shape as stopConfirm's): the settle wait is a real
+// wall-clock poll, which a unit test must not sit through.
+let cancelSettleMaxMs: number | null = null;
+let cancelSettlePollMs: number | null = null;
+export function __setCancelSettleMs(maxMs: number, pollMs: number): void {
+  cancelSettleMaxMs = maxMs;
+  cancelSettlePollMs = pollMs;
+}
+export function __resetCancelSettleMs(): void {
+  cancelSettleMaxMs = null;
+  cancelSettlePollMs = null;
 }
 
 export interface CaptureDeletionState {
@@ -188,13 +211,39 @@ export function useCaptureDeletion(
       setClearingBlockers(true);
       setBlockerFailures([]);
       const failed: DeletionFailure[] = [];
+      const cancelled: string[] = [];
       for (const jobId of jobIds) {
         try {
           await cancelJob(jobId);
+          cancelled.push(jobId);
         } catch (e) {
           // Keep going: one job refusing to stop is not a reason to leave the
           // others running, and the retry may still succeed without it.
           failed.push({ captureId: jobId, error: captureErrorText(e, 'job') });
+        }
+      }
+      // A cancel of RUNNING work is a request, not a state: the worker stops
+      // at its next checkpoint, and the capture lease is released only when
+      // the orchestrator observes the terminal state. Retrying the delete
+      // before that would rename `objects/<id>` out from under work that is
+      // still writing — the very thing the lease exists to prevent — so wait,
+      // bounded, for each cancelled job to actually end. (The status poll is
+      // itself the observation that releases the lease.) A job that never
+      // stops inside the budget leaves the retry to be refused with the
+      // holder named, which is the honest outcome.
+      const deadline = Date.now() + (cancelSettleMaxMs ?? CANCEL_SETTLE_MAX_MS);
+      for (const jobId of cancelled) {
+        for (;;) {
+          try {
+            const status = await getJobStatus(jobId);
+            if (!ACTIVE_JOB_STATES.has(status.state)) break;
+          } catch {
+            // A failed read is not "the job ended" — keep waiting it out.
+          }
+          if (Date.now() >= deadline) break;
+          await new Promise((resolve) =>
+            setTimeout(resolve, cancelSettlePollMs ?? CANCEL_SETTLE_POLL_MS),
+          );
         }
       }
       setBlockerFailures(failed);

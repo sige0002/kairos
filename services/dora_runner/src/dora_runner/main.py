@@ -17,6 +17,7 @@ from kairos_common.ids import is_uuid7
 from dora_runner.bagflow_runtime import DoraEndpoint, DoraStack, bagflow_available
 from dora_runner.mcap_utils import CaptureBytesMissing
 from dora_runner.models import (
+    JobCanceled,
     JobCreateRequest,
     JobCreateResponse,
     JobResult,
@@ -234,17 +235,32 @@ def create_dora_app(
 
     @app.post("/jobs/{job_id}/cancel", response_model=JobStatus)
     async def cancel_job(job_id: str) -> JobStatus:
+        cancel_queued = False
         async with store.lock:
             job = store.jobs.get(job_id)
-            cancellable = job is not None and job.state in {
-                JobState.queued,
-                JobState.running,
-            }
-            if job is not None and cancellable:
+            if job is not None and job.state == JobState.queued:
+                # Not started yet: cancel is immediate, and the worker honours
+                # the state before running (BUG-D).
+                cancel_queued = True
                 job.state = JobState.canceled
                 job.progress = min(job.progress, 1.0)
                 job.logs_tail.append("Job canceled.")
                 store.persist_job(job)
+            elif job is not None and job.state == JobState.running:
+                # RUNNING work cannot be labelled dead — it has to BE stopped.
+                # The old code flipped the state to `canceled` here and left the
+                # threadpool/subprocess running to completion (the shield in
+                # _execute_job exists so a timeout can't kill it either): the
+                # UI stopped polling, the orchestrator released the capture
+                # lease, and a later delete renamed a directory the job was
+                # still writing. Now cancel REQUESTS: the event stops the work
+                # at its next checkpoint, and only the worker's own JobCanceled
+                # path writes the terminal state.
+                if not job.cancel_requested:
+                    job.cancel_requested = True
+                    job.logs_tail.append("Cancel requested; stopping the work.")
+                    store.persist_job(job)
+                job.cancel_event.set()
         if job is None:
             # No live handle: a job persisted by a previous process (already
             # terminal after startup reconciliation) — cancel is a no-op.
@@ -252,9 +268,9 @@ def create_dora_app(
             if persisted is None:
                 raise _job_not_found(job_id)
             return persisted
-        # Signal the task outside the lock; the worker re-checks `canceled`
-        # under the lock before writing any terminal state (BUG-D).
-        if cancellable and job.task is not None:
+        # Signal a queued job's task outside the lock; the worker re-checks
+        # `canceled` under the lock before writing any terminal state (BUG-D).
+        if cancel_queued and job.task is not None:
             job.task.cancel()
         return job.status()
 
@@ -389,12 +405,20 @@ async def _execute_job(
                 message=f"Pipeline is not implemented: {job.pipeline}",
             )
         await slots.acquire()
+        if job.cancel_event.is_set():
+            # Cancelled while waiting for a slot: nothing has run, so honour it
+            # before spawning work that would have to be stopped again.
+            slots.release()
+            raise JobCanceled
         runner_task: asyncio.Task[dict] = asyncio.ensure_future(
             pipeline.runner(job, store, data_dir)
         )
         try:
             # shield: a timeout/cancel unblocks this await but must NOT cancel the
             # non-cancellable threadpool work running underneath the runner.
+            # An API cancel does not cancel this task either — it sets
+            # job.cancel_event, and the runner raises JobCanceled from its own
+            # checkpoint once the work has actually stopped.
             result = await asyncio.wait_for(asyncio.shield(runner_task), timeout_s)
         finally:
             _release_slot_when_done(runner_task, slots)
@@ -429,9 +453,18 @@ async def _execute_job(
                 artifacts=[],
             )
             store.persist_job(job)
+    except JobCanceled:
+        async with store.lock:
+            # The worker stopped at a cancellation checkpoint (or never
+            # started): the work is genuinely dead, so `canceled` is now a
+            # fact rather than a label.
+            job.state = JobState.canceled
+            job.progress = min(job.progress, 1.0)
+            job.logs_tail.append("Job canceled; the work was stopped.")
+            store.persist_job(job)
     except asyncio.CancelledError:
-        # Reached because cancel_job already set `canceled` under the lock and
-        # cancelled the task; just record it (idempotent).
+        # Reached for a QUEUED job only: cancel_job already set `canceled`
+        # under the lock and cancelled the task; just record it (idempotent).
         job.state = JobState.canceled
         job.logs_tail.append("Job canceled.")
         store.persist_job(job)

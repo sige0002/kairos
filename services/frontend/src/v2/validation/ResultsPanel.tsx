@@ -161,6 +161,8 @@ export interface RunJobRow {
   captureId: string;
   label: string;
   state: JobState;
+  /** Cancel accepted, work still stopping — the row shows "Cancelling…". */
+  cancelRequested?: boolean;
 }
 
 /** The per-job view of a run that is still going: which capture, what state,
@@ -204,11 +206,13 @@ function RunningJobs({
             <button
               type="button"
               data-testid={`cancel-job-${job.captureId}`}
-              disabled={cancelPending.has(job.jobId)}
+              disabled={cancelPending.has(job.jobId) || job.cancelRequested}
               onClick={() => onCancelJob(job.jobId)}
               className="shrink-0 rounded-chip border border-gray-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-gray-600 hover:border-red-200 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {cancelPending.has(job.jobId) ? 'Cancelling…' : 'Cancel'}
+              {cancelPending.has(job.jobId) || job.cancelRequested
+                ? 'Cancelling…'
+                : 'Cancel'}
             </button>
           )}
         </div>

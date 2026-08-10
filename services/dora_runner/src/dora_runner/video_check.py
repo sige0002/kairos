@@ -32,6 +32,7 @@ import io
 import json
 import os
 import re
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +47,7 @@ from dora_runner.mcap_utils import (
     source_times,
     topic_message_count,
 )
+from dora_runner.models import JobCanceled
 
 # Pipeline identity stamped into the summary (reproducibility contract, shared
 # with the other bundled pipelines and the hello_dora plugin example).
@@ -252,6 +254,7 @@ def run_video_check(
     topic: str,
     force: bool = False,
     max_frames: int = MAX_FRAMES,
+    cancel: threading.Event | None = None,
 ) -> dict[str, Any]:
     """Encode a camera *topic*'s frames from the capture's MCAP into mp4.
 
@@ -348,6 +351,10 @@ def run_video_check(
     try:
         try:
             for decoded in iter_decoded_ros2_messages(mcap_path, topics=[topic]):
+                # Cancellation checkpoint, per frame: a full-episode encode is
+                # minutes of wall time, and this loop is where it is spent.
+                if cancel is not None and cancel.is_set():
+                    raise JobCanceled
                 msg = decoded.ros_msg
                 # Happy path: sensor_msgs/CompressedImage (JPEG) -> Pillow decode.
                 if not hasattr(msg, "data") or not hasattr(msg, "format"):

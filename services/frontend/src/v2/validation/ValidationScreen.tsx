@@ -89,6 +89,7 @@ function JobProbe({
       state: statusQuery.data.state,
       progress: statusQuery.data.progress ?? 0,
       terminal,
+      cancelRequested: statusQuery.data.cancel_requested === true,
       summary: terminal ? resultQuery.data?.summary : undefined,
       artifacts: terminal ? resultQuery.data?.artifacts : undefined,
       resultErrored: terminal && resultQuery.isError,
@@ -483,6 +484,7 @@ export function ValidationScreen() {
         captureId: j.capture_id,
         label: labelFor(j.capture_id),
         state: jobStates[j.job_id]?.state ?? 'queued',
+        cancelRequested: jobStates[j.job_id]?.cancelRequested === true,
       })),
     [active, jobStates, labelFor],
   );

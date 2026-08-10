@@ -193,6 +193,24 @@ def test_run_loss_report_filters_target_topics(
     assert all("gap_exceeded" in t for t in filtered["summary"]["topics"])
 
 
+def test_run_loss_report_stops_at_the_cancellation_checkpoint(
+    tmp_path: Path, make_capture: Callable[[Path], tuple[str, Path]]
+) -> None:
+    """A set cancel event stops the MCAP scan instead of running it out."""
+    import threading
+
+    from dora_runner.models import JobCanceled
+
+    data_dir = tmp_path / "data"
+    capture_id, capture_dir = make_capture(data_dir)
+    _write_minimal_mcap(capture_dir / "run_x_0.mcap", {"/hsrb/joint_states": 10})
+
+    cancel = threading.Event()
+    cancel.set()
+    with pytest.raises(JobCanceled):
+        run_loss_report(capture_id=capture_id, data_dir=data_dir, cancel=cancel)
+
+
 def _write_mcap_with_times(
     path: Path, topic: str, pairs: list[tuple[int, int]]
 ) -> None:

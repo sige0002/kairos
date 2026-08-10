@@ -468,6 +468,29 @@ export interface CaptureArchiveResponse {
   verified: boolean;
 }
 
+/** `POST /captures/{id}/archive` answer: the run was ACCEPTED (202) and
+ *  executes server-side. Poll `GET /captures/{id}/archive` for the outcome —
+ *  a multi-GB copy outlives any proxy timeout, so waiting on the POST would
+ *  report "failed" for archives the server completed (S2-1). */
+export interface CaptureArchiveAccepted {
+  capture_id: string;
+  destination: string;
+  state: string;
+}
+
+/** `GET /captures/{id}/archive` — polled while a run executes. `state` walks
+ *  `running → complete | failed`; the terminal entry stays readable until a
+ *  new run replaces it. 404 = no run known (e.g. after a server restart). */
+export interface CaptureArchiveProgress {
+  capture_id: string;
+  destination: string;
+  state: 'running' | 'complete' | 'failed';
+  bytes_done: number;
+  bytes_total: number | null;
+  error: { code: string; message: string } | null;
+  result: CaptureArchiveResponse | null;
+}
+
 /**
  * `GET /api/v1/captures/{id}/archive/config` — whether this deployment may
  * archive at all, and to which roots. `enabled: false` (no KAIROS_ARCHIVE_ROOTS)
@@ -1061,6 +1084,10 @@ export interface JobStatus {
   state: JobState;
   progress?: number;
   logs_tail?: string[];
+  /** A cancel was accepted but the work has not stopped yet: cancelling a
+   *  running job is cooperative, so `state` stays `running` until the worker
+   *  is actually dead and only then turns `canceled`. Keep polling. */
+  cancel_requested?: boolean;
 }
 
 // ---- Cursor pagination --------------------------------------------------

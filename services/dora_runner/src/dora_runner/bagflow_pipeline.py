@@ -31,6 +31,7 @@ import asyncio
 import json
 import logging
 import shutil
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -205,6 +206,7 @@ async def run_bagflow_pipeline(
     template: ValidationTemplate | None = None,
     flow_dirs: list[Path] | None = None,
     timeout_s: float | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> dict[str, Any]:
     """Run *flow* over one capture's bag and return the job result dict."""
     if not bagflow_available():
@@ -228,6 +230,7 @@ async def run_bagflow_pipeline(
             template=template,
             flow_dirs=flow_dirs,
             timeout_s=timeout_s,
+            cancel_event=cancel_event,
         )
 
 
@@ -243,6 +246,7 @@ async def _run_locked(
     template: ValidationTemplate | None,
     flow_dirs: list[Path] | None,
     timeout_s: float | None,
+    cancel_event: threading.Event | None = None,
 ) -> dict[str, Any]:
     """The body of one validation, with this capture's outputs held exclusively."""
     # Every path below is handed to a subprocess whose cwd is the flow's workdir,
@@ -292,7 +296,11 @@ async def _run_locked(
         ) from exc
 
     run = await run_flow(
-        flow_file, name=job_name, endpoint=endpoint, timeout_s=timeout_s
+        flow_file,
+        name=job_name,
+        endpoint=endpoint,
+        timeout_s=timeout_s,
+        cancel_event=cancel_event,
     )
     if not report_path.is_file():
         reason = (

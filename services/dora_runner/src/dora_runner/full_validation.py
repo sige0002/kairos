@@ -11,6 +11,7 @@ this module contributes only the coverage gate and the report -> summary adapter
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,7 @@ async def run_full_validation(
     template: ValidationTemplate | None = None,
     min_coverage: float = 0.0,
     timeout_s: float | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> dict[str, Any]:
     """Run *flow* over one capture's bag and return the job result dict."""
 
@@ -53,4 +55,5 @@ async def run_full_validation(
         summarize=_summarize,
         template=template,
         timeout_s=timeout_s,
+        cancel_event=cancel_event,
     )

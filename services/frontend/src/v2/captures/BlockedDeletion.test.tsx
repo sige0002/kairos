@@ -14,7 +14,11 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
 import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
 import { DeleteDialog } from './DeleteDialogs';
-import { useCaptureDeletion } from './useCaptureDeletion';
+import {
+  __resetCancelSettleMs,
+  __setCancelSettleMs,
+  useCaptureDeletion,
+} from './useCaptureDeletion';
 import type { CaptureListItem } from '../../api/types';
 
 const CAP = 'cap-1';
@@ -49,7 +53,13 @@ const HOLDERS = [
 ];
 
 /**
- * A server whose lease is held until the blocking jobs are cancelled.
+ * A server whose lease is held until the blocking jobs' WORK actually stops.
+ *
+ * Cancel of running work is a request (S1-1): the response is still `running`
+ * with `cancel_requested`, the worker stops at its next checkpoint, and only a
+ * later status poll observes `canceled` — which is also the observation that
+ * releases that job's hold. `job-a` settles one status read late, so the flow
+ * must genuinely wait it out rather than retry into a 409.
  *
  * `stayBusy` models the case the retry must not loop on: a NEW job takes the
  * capture between the cancel and the retry, so the second attempt is refused
@@ -58,8 +68,11 @@ const HOLDERS = [
 function mockServer(opts: { stayBusy?: boolean; cancelFails?: string[] } = {}) {
   const cancels: string[] = [];
   const deletes: number[] = [];
-  let cancelled = 0;
-  let held = true;
+  const statusReads: Record<string, number> = {};
+  const cancelRequested = new Set<string>();
+  // How many status reads after the cancel before the work reports canceled.
+  const settleAfter: Record<string, number> = { 'job-a': 1, 'job-b': 0 };
+  const held = new Set(HOLDERS.map((h) => h.owner));
 
   vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     const url = String(input);
@@ -77,21 +90,43 @@ function mockServer(opts: { stayBusy?: boolean; cancelFails?: string[] } = {}) {
           ),
         );
       }
-      // The orchestrator releases the lease when it observes the cancel — so a
-      // job whose cancel was REFUSED is still holding the capture.
-      cancelled += 1;
-      if (cancelled >= HOLDERS.length) held = false;
-      return Promise.resolve(jsonResponse({ job_id: jobId, state: 'canceled' }));
+      cancelRequested.add(jobId);
+      // Still running: the work stops at its next checkpoint, not here.
+      return Promise.resolve(
+        jsonResponse({ job_id: jobId, state: 'running', cancel_requested: true }),
+      );
+    }
+
+    const status = url.match(/\/jobs\/([^/]+)\/status$/);
+    if (status && method === 'GET') {
+      const jobId = status[1]!;
+      const reads = (statusReads[jobId] = (statusReads[jobId] ?? 0) + 1);
+      if (cancelRequested.has(jobId) && reads > (settleAfter[jobId] ?? 0)) {
+        // The work is dead; observing that is what releases the hold.
+        held.delete(`job:${jobId}`);
+        return Promise.resolve(
+          jsonResponse({ job_id: jobId, state: 'canceled', cancel_requested: true }),
+        );
+      }
+      return Promise.resolve(
+        jsonResponse({
+          job_id: jobId,
+          state: 'running',
+          cancel_requested: cancelRequested.has(jobId),
+        }),
+      );
     }
 
     if (url.includes('/delete') && method === 'POST') {
       deletes.push(deletes.length + 1);
-      if (held || opts.stayBusy) {
+      if (held.size > 0 || opts.stayBusy) {
         return Promise.resolve(
           jsonResponse(
             // A second refusal names whoever holds it NOW.
             busyBody(
-              held ? HOLDERS : [{ owner: 'job:job-c', expires_at: '2026-08-07T12:40:00Z' }],
+              held.size > 0
+                ? HOLDERS.filter((h) => held.has(h.owner))
+                : [{ owner: 'job:job-c', expires_at: '2026-08-07T12:40:00Z' }],
             ),
             409,
           ),
@@ -101,7 +136,7 @@ function mockServer(opts: { stayBusy?: boolean; cancelFails?: string[] } = {}) {
     }
     return Promise.resolve(jsonResponse({}));
   });
-  return { cancels, deletes };
+  return { cancels, deletes, statusReads };
 }
 
 /** The dialog wired to the real hook, as both screens wire it. */
@@ -137,8 +172,14 @@ async function openAndAttemptDelete() {
   return screen.findByTestId('delete-error');
 }
 
-beforeEach(() => setApiBase('/api/v1'));
+beforeEach(() => {
+  setApiBase('/api/v1');
+  // Real budget semantics at a test cadence: the settle wait must still poll,
+  // just not at 1 s per read.
+  __setCancelSettleMs(2000, 5);
+});
 afterEach(() => {
+  __resetCancelSettleMs();
   vi.restoreAllMocks();
   render(<div />);
 });
@@ -175,6 +216,9 @@ test('cancelling the blockers retries the removal and it goes through', async ()
   await waitFor(() => expect(server.deletes).toHaveLength(2));
   // It succeeded, so the dialog closes rather than holding a stale refusal.
   await waitFor(() => expect(screen.queryByTestId('delete-error')).toBeNull());
+  // The retry genuinely WAITED for job-a's work to die (it settles one status
+  // read late): the delete was not fired into a lease that was still held.
+  expect(server.statusReads['job-a']).toBeGreaterThanOrEqual(2);
 });
 
 test('a retry that is blocked again updates the holders and stops there', async () => {

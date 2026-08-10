@@ -20,6 +20,17 @@ from kairos_common.contracts.jobs import (  # noqa: F401
 from pydantic import BaseModel, Field
 
 
+class JobCanceled(Exception):
+    """Raised by a worker that stopped at a cancellation checkpoint.
+
+    Cancelling a running job is cooperative: the API sets the job's
+    ``cancel_event`` and the work raises this at its next checkpoint — a frame
+    boundary, a per-topic step, or the bagflow subprocess watcher killing the
+    CLI. ``main._execute_job`` catches it and records the job ``canceled`` at
+    the moment the work is genuinely dead, never before.
+    """
+
+
 class JobCreateResponse(BaseModel):
     """Minimal job-create response.
 

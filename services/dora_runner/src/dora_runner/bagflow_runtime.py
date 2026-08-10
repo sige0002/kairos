@@ -41,9 +41,12 @@ import os
 import shutil
 import socket
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+from dora_runner.models import JobCanceled
 
 logger = logging.getLogger("kairos")
 
@@ -360,12 +363,19 @@ async def run_flow(
     name: str,
     endpoint: DoraEndpoint,
     timeout_s: float | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> FlowRun:
     """Run one materialized flow to completion (or to its timeout).
 
     ``--no-attach`` returns as soon as the report is written and leaves teardown
     to the daemon (~0.5s of a quick gate's wall time); the report is written
     atomically, so an early return never reads a partial file.
+
+    *cancel_event* is the job's cooperative cancel: while the CLI runs, it is
+    checked twice a second, and a set event kills the CLI, sweeps the dataflow
+    (so no orphaned node keeps holding shared memory) and raises
+    :class:`JobCanceled` — the checkpoint that makes an API cancel actually
+    stop a validation instead of relabelling it.
     """
     budget = timeout_s if timeout_s is not None else flow_timeout_s()
     argv = [
@@ -387,20 +397,35 @@ async def run_flow(
         stderr=asyncio.subprocess.STDOUT,
     )
     timed_out = False
+    communicate = asyncio.ensure_future(proc.communicate())
+    deadline = started + budget + _SUBPROCESS_GRACE_S
     try:
-        stdout, _ = await asyncio.wait_for(
-            proc.communicate(), budget + _SUBPROCESS_GRACE_S
-        )
-        output = stdout.decode(errors="replace")
-    except TimeoutError:
-        timed_out = True
-        proc.kill()
-        stdout, _ = await proc.communicate()
-        output = stdout.decode(errors="replace")
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                proc.kill()
+                stdout, _ = await communicate
+                output = stdout.decode(errors="replace")
+                break
+            # asyncio.wait (not wait_for): a timeout here must poll again, not
+            # cancel the one future that collects the CLI's output.
+            step = min(0.5, remaining) if cancel_event is not None else remaining
+            done, _ = await asyncio.wait({communicate}, timeout=step)
+            if communicate in done:
+                stdout, _ = communicate.result()
+                output = stdout.decode(errors="replace")
+                break
+            if cancel_event is not None and cancel_event.is_set():
+                proc.kill()
+                await communicate
+                await cleanup_flow(name, endpoint)
+                raise JobCanceled
     except asyncio.CancelledError:
-        # Job cancelled from the API: kill the CLI, then sweep the dataflow so no
-        # orphaned node keeps holding shared memory.
+        # The awaiting task itself was cancelled: kill the CLI, then sweep the
+        # dataflow so no orphaned node keeps holding shared memory.
         proc.kill()
+        communicate.cancel()
         await proc.wait()
         await cleanup_flow(name, endpoint)
         raise

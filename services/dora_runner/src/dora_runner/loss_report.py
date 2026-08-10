@@ -35,6 +35,7 @@ from __future__ import annotations
 import fnmatch
 import json
 import statistics
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +45,7 @@ from mcap.reader import make_reader
 
 from dora_runner.loss_report_config import DEFAULT_GAP_THRESHOLD_MULTIPLIER
 from dora_runner.mcap_utils import find_mcap, resolve_source_dir, source_times
+from dora_runner.models import JobCanceled
 
 # Pipeline identity stamped into the summary (reproducibility contract, shared
 # with the other bundled pipelines and the hello_dora plugin example).
@@ -121,6 +123,7 @@ def run_loss_report(
     data_dir: Path,
     target_topics: list[str] | None = None,
     gap_threshold_multiplier: float = DEFAULT_GAP_THRESHOLD_MULTIPLIER,
+    cancel: threading.Event | None = None,
 ) -> dict[str, Any]:
     """Estimate per-topic loss for the capture's MCAP.
 
@@ -149,6 +152,10 @@ def run_loss_report(
     types: dict[str, str] = {}
     with mcap_path.open("rb") as stream:
         for schema, channel, message in make_reader(stream).iter_messages():
+            # Cancellation checkpoint: this read is the job's whole wall time,
+            # so a cancel that only landed after it would not be a cancel.
+            if cancel is not None and cancel.is_set():
+                raise JobCanceled
             time_pairs.setdefault(channel.topic, []).append(
                 (message.log_time, message.publish_time)
             )

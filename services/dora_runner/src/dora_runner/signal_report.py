@@ -59,6 +59,7 @@ from __future__ import annotations
 import json
 import math
 import statistics
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -78,6 +79,7 @@ from dora_runner.mcap_utils import (
     resolve_source_dir,
     source_times,
 )
+from dora_runner.models import JobCanceled
 
 # Pipeline identity stamped into the summary (reproducibility contract, shared
 # with the other bundled pipelines).
@@ -398,6 +400,7 @@ def run_signal_report(
     data_dir: Path,
     topics: list[str] | None = None,
     max_points: int = DEFAULT_MAX_POINTS,
+    cancel: threading.Event | None = None,
 ) -> dict[str, Any]:
     """Extract per-topic numeric time-series from a capture's MCAP into a sidecar.
 
@@ -425,6 +428,9 @@ def run_signal_report(
     accums: dict[str, _TopicAccum] = {}
     if scan_targets:
         for decoded in iter_decoded_ros2_messages(mcap_path, topics=scan_targets):
+            # Cancellation checkpoint: the decode pass is the job's wall time.
+            if cancel is not None and cancel.is_set():
+                raise JobCanceled
             topic = decoded.channel.topic
             if topic in skipped:
                 # Already ruled out (no numeric leaves on its first message).

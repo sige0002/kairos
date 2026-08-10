@@ -63,7 +63,15 @@ class JobCreateRequest(BaseModel):
 
 
 class JobStatus(BaseModel):
-    """OpenAPI-visible job status contract."""
+    """OpenAPI-visible job status contract.
+
+    ``cancel_requested`` reports a cancel that was ACCEPTED but whose work has
+    not stopped yet: cancelling a running job is cooperative (the worker stops
+    at its next checkpoint), so ``state`` stays ``running`` until the work is
+    actually dead and only then turns ``canceled``. A client that stopped
+    polling on the cancel *response* would never learn the truth — this flag is
+    what tells it to keep watching.
+    """
 
     job_id: str
     capture_id: str
@@ -71,6 +79,7 @@ class JobStatus(BaseModel):
     state: JobState
     progress: float = Field(ge=0.0, le=1.0)
     logs_tail: list[str] = Field(default_factory=list)
+    cancel_requested: bool = False
 
 
 class JobResult(BaseModel):

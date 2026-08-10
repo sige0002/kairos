@@ -1,15 +1,24 @@
 // Validation/conversion jobs.
 //
-// Cancel is the one call here for now; submission and polling still happen at
-// their call sites. `POST /jobs/{id}/cancel` answers with the job's new
-// JobStatus, so the caller can seed its cache from the reply instead of waiting
-// for the next poll to notice.
+// Submission and polling still happen at their call sites. `POST
+// /jobs/{id}/cancel` answers with the job's new JobStatus, so the caller can
+// seed its cache from the reply instead of waiting for the next poll to notice.
 
-import { apiPost } from './client';
+import { apiGet, apiPost, type RequestOptions } from './client';
 import type { JobStatus } from './types';
 
-/** Cancel a queued or running job. `canceled` is a terminal state — the job
- *  stops, and it is NOT a failure. */
+/** Cancel a queued or running job. A queued job comes back `canceled`
+ *  outright; a RUNNING one comes back still `running` with `cancel_requested`
+ *  — the worker stops at its next checkpoint, and only then does the state
+ *  turn `canceled`. Callers that need the work to be DEAD (a delete about to
+ *  rename the capture) must keep polling until the state is terminal. */
 export function cancelJob(jobId: string): Promise<JobStatus> {
   return apiPost<JobStatus>(`/jobs/${encodeURIComponent(jobId)}/cancel`, undefined);
+}
+
+export function getJobStatus(
+  jobId: string,
+  opts: RequestOptions = {},
+): Promise<JobStatus> {
+  return apiGet<JobStatus>(`/jobs/${encodeURIComponent(jobId)}/status`, opts);
 }
