@@ -33,6 +33,7 @@ import {
   deleteDataset,
   getArchiveConfig,
   getCapture,
+  getCaptureArchiveProgress,
   getDataset,
   getDatasetArchive,
   listAllCaptures,
@@ -40,12 +41,17 @@ import {
   removeDatasetMember,
   updateDataset,
 } from '../../api/captures';
+import { ApiError } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
-import { DATASET_ARCHIVE_POLL_MS } from '../pollingPolicy';
+import {
+  CAPTURE_ARCHIVE_POLL_MS,
+  DATASET_ARCHIVE_POLL_MS,
+} from '../pollingPolicy';
 import { useSplitDeploy } from '../captures/useSplitDeploy';
 import { useBulkRun } from '../shared/useBulkRun';
 import { useOnPopState } from '../shared/useOnPopState';
 import type {
+  CaptureArchiveProgress,
   CaptureDetail,
   CaptureListItem,
   Dataset,
@@ -78,6 +84,24 @@ import {
   type TaskResultFilter,
 } from './data';
 import { readDatasetsUrl, writeDatasetsUrl } from './url';
+
+// How many consecutive failed progress reads end the archive watch with an
+// error. The run keeps going server-side either way; this only bounds how
+// long a dead server can hold a spinner.
+const ARCHIVE_POLL_MAX_FAILED_READS = 30;
+
+// Test seam (same shape as stopConfirm's): the archive watch is a real
+// wall-clock poll a unit test must not sit through.
+let captureArchivePollMs: number | null = null;
+export function __setCaptureArchivePollMs(ms: number): void {
+  captureArchivePollMs = ms;
+}
+export function __resetCaptureArchivePollMs(): void {
+  captureArchivePollMs = null;
+}
+function getCaptureArchivePollMs(): number {
+  return captureArchivePollMs ?? CAPTURE_ARCHIVE_POLL_MS;
+}
 import { useToast } from '../shared/useToast';
 
 export type { TaskResultFilter } from './data';
@@ -302,6 +326,8 @@ export interface DatasetsState {
   setArchiveReason: (s: string) => void;
   confirmArchive: () => void;
   archiving: boolean;
+  /** Live copy progress while the archive runs server-side (bytes). */
+  archiveProgress: { done: number; total: number | null } | null;
   archiveError: unknown;
 
   // ---- dataset archive (§6.x: the terminal transition) --------------------
@@ -449,6 +475,10 @@ export function useDatasetsState(): DatasetsState {
   const [candidateSearch, setCandidateSearch] = useState('');
   const [showBlockedCandidates, setShowBlockedCandidates] = useState(false);
   const [archiveTarget, setArchiveTarget] = useState<CaptureListItem | null>(null);
+  const [archiveProgress, setArchiveProgress] = useState<{
+    done: number;
+    total: number | null;
+  } | null>(null);
   const [archiveRoot, setArchiveRoot] = useState('');
   const [archiveSubpath, setArchiveSubpath] = useState('');
   const [archiveReason, setArchiveReason] = useState('');
@@ -860,13 +890,76 @@ export function useDatasetsState(): DatasetsState {
       : '';
 
   const archiveMutation = useMutation({
-    mutationFn: (capture: CaptureListItem) =>
-      archiveCapture(capture.capture_id, {
+    mutationFn: async (capture: CaptureListItem) => {
+      // 202: the copy runs SERVER-SIDE (S2-1). A multi-GB copy outlives any
+      // proxy timeout, and completing it in-request produced the worst split
+      // — the server finished (and deleted the source) while the client saw
+      // a 504 "failure". Poll the run to its end instead.
+      await archiveCapture(capture.capture_id, {
         destination: archiveDestination,
         operator: capture.operator ?? null,
         reason: archiveReason.trim() || null,
-      }),
+      });
+      let failedReads = 0;
+      for (;;) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, getCaptureArchivePollMs()),
+        );
+        let progress: CaptureArchiveProgress;
+        try {
+          progress = await getCaptureArchiveProgress(capture.capture_id);
+          failedReads = 0;
+        } catch (e) {
+          if (e instanceof ApiError && e.status === 404) {
+            // The server restarted and lost the progress view. The DATA is
+            // fine either way (untouched source, or ledger-recorded copy) —
+            // say so instead of guessing an outcome.
+            throw new ApiError(
+              404,
+              {
+                error: {
+                  code: 'archive_progress_lost',
+                  message:
+                    'The server restarted while the archive ran; its outcome ' +
+                    'is in the catalog — refresh and check whether the ' +
+                    'recording is still listed.',
+                  details: {},
+                },
+              },
+              'archive progress lost',
+            );
+          }
+          // Transient read failure: the run keeps going server-side, so keep
+          // watching — bounded, so a dead server ends in an error, not a
+          // spinner.
+          failedReads += 1;
+          if (failedReads >= ARCHIVE_POLL_MAX_FAILED_READS) throw e;
+          continue;
+        }
+        setArchiveProgress({
+          done: progress.bytes_done,
+          total: progress.bytes_total,
+        });
+        if (progress.state === 'complete' && progress.result) {
+          return progress.result;
+        }
+        if (progress.state === 'failed') {
+          throw new ApiError(
+            500,
+            {
+              error: {
+                code: progress.error?.code ?? 'archive_failed',
+                message: progress.error?.message ?? 'The archive failed.',
+                details: {},
+              },
+            },
+            'the archive failed',
+          );
+        }
+      }
+    },
     onSuccess: async (res) => {
+      setArchiveProgress(null);
       await invalidateDatasets(selectedDatasetId);
       setArchiveTarget(null);
       setArchiveSubpath('');
@@ -877,6 +970,13 @@ export function useDatasetsState(): DatasetsState {
           : `Copied to ${res.destination}, but it did NOT verify — check it before ` +
               'trusting the copy',
       );
+    },
+    onError: async () => {
+      setArchiveProgress(null);
+      // The failure may have landed at ANY point — including after the copy
+      // and source deletion. Refresh so the list shows what actually
+      // happened, instead of keeping a capture that may no longer exist.
+      await invalidateDatasets(selectedDatasetId);
     },
   });
 
@@ -1323,6 +1423,7 @@ export function useDatasetsState(): DatasetsState {
       if (archiveTarget) archiveMutation.mutate(archiveTarget);
     },
     archiving: archiveMutation.isPending,
+    archiveProgress,
     archiveError: archiveMutation.isError ? archiveMutation.error : null,
 
     isDatasetFrozen,

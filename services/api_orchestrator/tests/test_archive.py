@@ -10,6 +10,7 @@ there is nothing else left that describes the capture.
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
 
 import httpx
@@ -73,6 +74,31 @@ def _seed(
     return capture_id
 
 
+def _archive_and_wait(
+    client: TestClient, capture_id: str, destination: Path, **extra: object
+) -> dict:
+    """POST the archive (accepted with a 202) and poll it to its terminal state.
+
+    S2-1 made the copy a server-side background run; the tests keep asserting
+    the same outcomes, they just wait for them the way a client now does. The
+    wait must happen INSIDE the TestClient context — closing it stops the app
+    loop the run executes on.
+    """
+    response = client.post(
+        f"/api/v1/captures/{capture_id}/archive",
+        json={"destination": str(destination), **extra},
+    )
+    assert response.status_code == 202, response.text
+    deadline = time.monotonic() + 10.0
+    progress: dict = {}
+    while time.monotonic() < deadline:
+        progress = client.get(f"/api/v1/captures/{capture_id}/archive").json()
+        if progress["state"] != "running":
+            return progress
+        time.sleep(0.01)
+    raise AssertionError(f"archive never settled: {progress}")
+
+
 class TestArchive:
     def test_archiving_copies_verifies_records_then_removes_the_source(
         self, data_dir: Path, tmp_path: Path, fake_recorder: FakeRecorder
@@ -84,12 +110,11 @@ class TestArchive:
             capture_id = _seed(client, layout)
 
             destination = roots / "batch_a"
-            response = client.post(
-                f"/api/v1/captures/{capture_id}/archive",
-                json={"destination": str(destination), "operator": "alice"},
+            progress = _archive_and_wait(
+                client, capture_id, destination, operator="alice"
             )
-            assert response.status_code == 200
-            body = response.json()
+            assert progress["state"] == "complete", progress
+            body = progress["result"]
             assert body["file_count"] == 2
             assert body["bytes"] > 0
 
@@ -112,10 +137,7 @@ class TestArchive:
         with _archive_client(data_dir, roots, fake_recorder) as client:
             layout = client.app.state.data_layout
             capture_id = _seed(client, layout)
-            client.post(
-                f"/api/v1/captures/{capture_id}/archive",
-                json={"destination": str(roots)},
-            )
+            _archive_and_wait(client, capture_id, roots)
 
         events = ledger_v2.archive_events(data_dir)
         event = events[capture_id]
@@ -379,10 +401,10 @@ class TestDestinationOverlap:
         with _archive_client(data_dir, roots, fake_recorder) as client:
             layout = client.app.state.data_layout
             capture_id = _seed(client, layout)
-            response = self._archive_to(client, capture_id, roots)
             # The guard must not become a blanket refusal — the ordinary case
             # still has to work.
-            assert response.status_code == 200, response.text
+            progress = _archive_and_wait(client, capture_id, roots)
+            assert progress["state"] == "complete", progress
             assert not layout.capture_dir(capture_id).exists()
 
 
@@ -421,11 +443,8 @@ class TestDestinationNotEmpty:
             capture_id = _seed(client, layout)
             (roots / capture_id).mkdir(parents=True)  # pre-created, but empty
 
-            response = client.post(
-                f"/api/v1/captures/{capture_id}/archive",
-                json={"destination": str(roots)},
-            )
-            assert response.status_code == 200, response.text
+            progress = _archive_and_wait(client, capture_id, roots)
+            assert progress["state"] == "complete", progress
 
 
 class TestArchiveDigests:
@@ -439,10 +458,9 @@ class TestArchiveDigests:
         with _archive_client(data_dir, roots, fake_recorder) as client:
             layout = client.app.state.data_layout
             capture_id = _seed(client, layout)
-            body = client.post(
-                f"/api/v1/captures/{capture_id}/archive",
-                json={"destination": str(roots)},
-            ).json()
+            progress = _archive_and_wait(client, capture_id, roots)
+            assert progress["state"] == "complete", progress
+            body = progress["result"]
 
         assert body["file_count"] == 2
         by_path = {entry["path"]: entry for entry in body["files"]}
@@ -468,10 +486,7 @@ class TestArchiveDigests:
         with _archive_client(data_dir, roots, fake_recorder) as client:
             layout = client.app.state.data_layout
             capture_id = _seed(client, layout)
-            client.post(
-                f"/api/v1/captures/{capture_id}/archive",
-                json={"destination": str(roots)},
-            )
+            _archive_and_wait(client, capture_id, roots)
         (data_dir / "kairos.db").unlink()
 
         with _archive_client(data_dir, roots, fake_recorder) as restarted:

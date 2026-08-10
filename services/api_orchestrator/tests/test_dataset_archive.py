@@ -390,6 +390,42 @@ class TestResume:
             # row, not copied and recorded again.
             assert len(events) == len(members)
 
+    def test_a_recorded_member_whose_copy_vanished_halts_the_resume(
+        self, data_dir: Path, tmp_path: Path, fake_recorder: FakeRecorder
+    ) -> None:
+        """S1-4: "the record says done" is not enough — the destination must
+        still hold the copy before a resume counts the member toward a
+        complete seal. An external destination that lost run 1's verified
+        bytes used to be sealed over with "10/10 verified"."""
+        roots = tmp_path / "nas"
+        roots.mkdir()
+        with _archive_client(data_dir, roots, fake_recorder) as client:
+            layout = client.app.state.data_layout
+            service = client.app.state.capture_service
+            dataset_id, members, target = self._frozen_run(
+                client, layout, roots, members=1
+            )
+            # Member 1 archived for real in run 1...
+            asyncio.run(
+                service.archive_member(
+                    members[0]["capture_id"],
+                    dataset_id=dataset_id,
+                    membership_id=members[0]["membership_id"],
+                    display_index=members[0]["display_index"],
+                    target=target / "001",
+                )
+            )
+            # ...and the destination then lost it (disk swapped / wiped).
+            import shutil
+
+            shutil.rmtree(target / "001")
+
+            progress = self._resume(client, dataset_id)
+
+            assert progress["status"] == "archiving"
+            assert progress["running"] is False
+            assert progress["error"]["code"] == "archived_copy_missing"
+
     def test_a_crash_between_append_and_row_finishes_without_recopying(
         self, data_dir: Path, tmp_path: Path, fake_recorder: FakeRecorder
     ) -> None:

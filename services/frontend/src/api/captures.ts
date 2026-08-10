@@ -16,9 +16,10 @@ import { apiDelete, apiGet, apiPatch, apiPost } from './client';
 import type {
   ArchiveConfig,
   Capture,
+  CaptureArchiveAccepted,
+  CaptureArchiveProgress,
   CaptureArchiveRequest,
   CaptureListItem,
-  CaptureArchiveResponse,
   CaptureDeleteRequest,
   CaptureDetail,
   CaptureListParams,
@@ -153,14 +154,27 @@ export function getArchiveConfig(
   );
 }
 
-/** Copy a capture out, verify it, record it, then delete the source (§6). */
+/** Start archiving a capture out (§6): copy, verify, record, then delete the
+ *  source. 202-accepted — the copy runs server-side; poll
+ *  `getCaptureArchiveProgress` for the outcome (S2-1). */
 export function archiveCapture(
   captureId: string,
   body: CaptureArchiveRequest,
-): Promise<CaptureArchiveResponse> {
-  return apiPost<CaptureArchiveResponse>(
+): Promise<CaptureArchiveAccepted> {
+  return apiPost<CaptureArchiveAccepted>(
     `/captures/${encodeURIComponent(captureId)}/archive`,
     body,
+  );
+}
+
+/** Progress of a capture's archive run (`running → complete | failed`). */
+export function getCaptureArchiveProgress(
+  captureId: string,
+  signal?: AbortSignal,
+): Promise<CaptureArchiveProgress> {
+  return apiGet<CaptureArchiveProgress>(
+    `/captures/${encodeURIComponent(captureId)}/archive`,
+    { signal },
   );
 }
 

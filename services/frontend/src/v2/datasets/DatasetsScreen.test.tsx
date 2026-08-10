@@ -11,6 +11,10 @@ import type {
 import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
 import { DatasetsScreen } from './DatasetsScreen';
 import { datasetTestId, memberTestId } from './data';
+import {
+  __resetCaptureArchivePollMs,
+  __setCaptureArchivePollMs,
+} from './useDatasetsState';
 
 // ---- a fake capture-store, honest about the rules the real one enforces ----
 //
@@ -43,6 +47,14 @@ interface Backend {
    *  already holds files (409 destination_not_empty, captures.py). */
   archiveDestinationNotEmpty: boolean;
   archived: { captureId: string; destination: string; reason: string | null }[];
+  /** In-flight per-capture archive runs (S2-1: 202 + progress poll). One
+   *  `running` read, then the run completes — which is when the server
+   *  removes the source and the list loses the capture, exactly like the
+   *  real registry. */
+  captureArchiveRuns: Record<
+    string,
+    { destination: string; source: string; reason: string | null; reads: number }
+  >;
   // ---- the dataset archive run (§6.x) ------------------------------------
   /** The run `GET /datasets/{id}/archive` serves; null = derived from rows. */
   archiveRun: DatasetArchiveProgress | null;
@@ -155,6 +167,7 @@ function mockApi(seed: Partial<Backend> = {}): Backend {
     capturesNeverEnd: seed.capturesNeverEnd ?? false,
     archiveDestinationNotEmpty: seed.archiveDestinationNotEmpty ?? false,
     archived: [],
+    captureArchiveRuns: {},
     archiveRun: seed.archiveRun ?? null,
     sealOnPoll: seed.sealOnPoll ?? false,
     archiveClaimedBy: seed.archiveClaimedBy ?? null,
@@ -408,20 +421,70 @@ function mockApi(seed: Partial<Backend> = {}): Backend {
           409,
         );
       }
-      backend.archived.push({
-        captureId,
-        destination,
+      // 202-accepted (S2-1): the copy runs server-side; the client polls.
+      backend.captureArchiveRuns[captureId] = {
+        destination: `${destination}/${captureId}`,
+        source: destination,
         reason: (body.reason as string | null) ?? null,
-      });
-      backend.captures = backend.captures.filter((c) => c.capture_id !== captureId);
+        reads: 0,
+      };
+      return jsonResponse(
+        {
+          capture_id: captureId,
+          destination: `${destination}/${captureId}`,
+          state: 'running',
+        },
+        202,
+      );
+    }
+    if (archiveMatch && method === 'GET') {
+      const captureId = decodeURIComponent(archiveMatch[1]!);
+      const run = backend.captureArchiveRuns[captureId];
+      if (!run) {
+        return jsonResponse(
+          { error: { code: 'archive_not_found', message: 'no run' } },
+          404,
+        );
+      }
+      run.reads += 1;
+      if (run.reads <= 1) {
+        return jsonResponse({
+          capture_id: captureId,
+          destination: run.destination,
+          state: 'running',
+          bytes_done: 600_000_000,
+          bytes_total: 1_200_000_000,
+          error: null,
+          result: null,
+        });
+      }
+      // The run completed: this is the moment the server has removed the
+      // source, so the list loses the capture NOW, not at the POST.
+      if (!backend.archived.some((a) => a.captureId === captureId)) {
+        backend.archived.push({
+          captureId,
+          destination: run.source,
+          reason: run.reason,
+        });
+        backend.captures = backend.captures.filter(
+          (c) => c.capture_id !== captureId,
+        );
+      }
       return jsonResponse({
         capture_id: captureId,
-        // The server writes into <destination>/<capture_id> and echoes THAT.
-        destination: `${destination}/${captureId}`,
-        bytes: 1_200_000_000,
-        file_count: 3,
-        files: [],
-        verified: backend.archiveVerifies,
+        destination: run.destination,
+        state: 'complete',
+        bytes_done: 1_200_000_000,
+        bytes_total: 1_200_000_000,
+        error: null,
+        result: {
+          capture_id: captureId,
+          destination: run.destination,
+          bytes: 1_200_000_000,
+          file_count: 3,
+          files: [],
+          verified: backend.archiveVerifies,
+        },
       });
     }
     const deleteMatch = path.match(/^\/captures\/([^/]+)\/delete$/);
@@ -474,8 +537,11 @@ function memberRowFor(captureId: string): HTMLElement {
 beforeEach(() => {
   setApiBase('/api/v1');
   window.history.replaceState(null, '', '/');
+  // The archive watch is a real wall-clock poll (S2-1); run it fast here.
+  __setCaptureArchivePollMs(5);
 });
 afterEach(() => {
+  __resetCaptureArchivePollMs();
   vi.restoreAllMocks();
   window.history.replaceState(null, '', '/');
 });

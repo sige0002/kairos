@@ -48,6 +48,7 @@ from api_orchestrator import bag_import
 from api_orchestrator import views as views_mod
 from api_orchestrator.batch_service import BatchService
 from api_orchestrator.bootstrap import StoreStartupError, bootstrap_store, prepare_store
+from api_orchestrator.capture_archive import CaptureArchiveRuns
 from api_orchestrator.captures import CaptureService
 from api_orchestrator.config_catalog import ConfigCatalog
 from api_orchestrator.dataset_archive import DatasetArchiver
@@ -380,6 +381,9 @@ def create_orchestrator_app(
     # disk are the durable outcome, and both appear only once an import has
     # finalised, so this is safe to lose on restart.
     app.state.import_registry = bag_import.ImportRegistry()
+    # In-flight per-capture archives (S2-1: 202 + poll). Progress only, same
+    # rationale as the import registry: the ledger and the bytes are durable.
+    app.state.capture_archive_runs = CaptureArchiveRuns()
     # Per app, not per module. Two apps built in one process (every test that
     # constructs a second one) would otherwise share both: one app's imports
     # would hold the other's copy slots, and an asyncio.Semaphore binds to the

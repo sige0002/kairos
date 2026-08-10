@@ -4,9 +4,10 @@
 //
 //   copy -> verify (sha256) -> then remove from this machine
 //
-// It is NOT a job. The request returns the finished result — bytes copied and
-// whether they verified — so there is no progress to poll and nothing that keeps
-// running after the dialog closes.
+// The run executes SERVER-SIDE (202 + progress poll, S2-1): a multi-GB copy
+// outlives any proxy timeout, so waiting on the request reported "failed" for
+// archives the server completed — and then deleted the source of. The dialog
+// shows the copy's live progress and stays open until the run ends.
 //
 // The destination is not free text: the deployment configures the roots
 // (KAIROS_ARCHIVE_ROOTS) and the operator picks a subpath under one. That is a
@@ -63,8 +64,22 @@ export function ArchiveDialog({ state }: { state: DatasetsState }) {
           <span className="font-semibold text-gray-800">
             Only after it verifies is the copy here removed.
           </span>{' '}
-          The catalog keeps the capture and records where it went.
+          The catalog keeps the capture and records where it went. The copy runs
+          on the server — a large recording takes a while, and progress is shown
+          here.
         </p>
+
+        {state.archiving && state.archiveProgress && (
+          <p
+            data-testid="archive-progress"
+            className="font-mono text-[12px] text-gray-600"
+          >
+            Copying… {(state.archiveProgress.done / 1_000_000).toFixed(0)} MB
+            {state.archiveProgress.total != null
+              ? ` of ${(state.archiveProgress.total / 1_000_000).toFixed(0)} MB`
+              : ''}
+          </p>
+        )}
 
         <label className="flex flex-col gap-1">
           <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">

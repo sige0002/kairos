@@ -12,7 +12,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -23,13 +24,113 @@ from kairos_common.time import utc_now_iso8601
 from api_orchestrator import fileops
 from api_orchestrator import layout as layout_mod
 from api_orchestrator.ledger_guard import append_or_503
-from api_orchestrator.models import ArchivedFile, Capture, CaptureArchiveResponse
+from api_orchestrator.models import (
+    ArchivedFile,
+    Capture,
+    CaptureArchiveProgress,
+    CaptureArchiveResponse,
+    CaptureError,
+)
 
 if TYPE_CHECKING:
     from api_orchestrator.layout import DataLayout
     from api_orchestrator.store import CaptureStore
 
 logger = logging.getLogger("kairos")
+
+
+@dataclass
+class CaptureArchiveRun:
+    """One background per-capture archive (S2-1: accepted with 202, polled).
+
+    ``bytes_done`` is fed by the copy's progress callback; the terminal entry
+    keeps ``result``/``error`` readable until a new run replaces it.
+    """
+
+    capture_id: str
+    destination: str
+    state: str = "running"
+    bytes_done: int = 0
+    bytes_total: int | None = None
+    error: CaptureError | None = None
+    result: CaptureArchiveResponse | None = None
+    task: asyncio.Task[None] | None = None
+
+    def progress(self) -> CaptureArchiveProgress:
+        return CaptureArchiveProgress(
+            capture_id=self.capture_id,
+            destination=self.destination,
+            state=self.state,
+            bytes_done=self.bytes_done,
+            bytes_total=self.bytes_total,
+            error=self.error,
+            result=self.result,
+        )
+
+
+class CaptureArchiveRuns:
+    """In-memory registry of background capture archives, one per capture.
+
+    In-memory on purpose. An archive that dies with the process leaves either
+    an untouched source (failure before the ledger line) or a debris target
+    directory the next attempt refuses into (``destination_not_empty``) — both
+    already honest, and the DATA's durability is the ledger's job, not this
+    registry's. What a restart loses is only the progress view.
+    """
+
+    def __init__(self) -> None:
+        self._runs: dict[str, CaptureArchiveRun] = {}
+
+    def get(self, capture_id: str) -> CaptureArchiveRun | None:
+        return self._runs.get(capture_id)
+
+    def start(
+        self,
+        capture_id: str,
+        destination: str,
+        bytes_total: int | None,
+        execute: Callable[[CaptureArchiveRun], Awaitable[CaptureArchiveResponse]],
+    ) -> CaptureArchiveRun:
+        """Register and spawn one archive run; 409 if one is already running."""
+        existing = self._runs.get(capture_id)
+        if existing is not None and existing.state == "running":
+            raise ApiError(
+                status_code=409,
+                code="archive_in_progress",
+                message=(
+                    f"{capture_id} is already being archived to {existing.destination}."
+                ),
+                details={
+                    "capture_id": capture_id,
+                    "destination": existing.destination,
+                },
+            )
+        run = CaptureArchiveRun(
+            capture_id=capture_id,
+            destination=destination,
+            bytes_total=bytes_total,
+        )
+        self._runs[capture_id] = run
+        run.task = asyncio.create_task(self._execute(run, execute))
+        return run
+
+    async def _execute(
+        self,
+        run: CaptureArchiveRun,
+        execute: Callable[[CaptureArchiveRun], Awaitable[CaptureArchiveResponse]],
+    ) -> None:
+        try:
+            run.result = await execute(run)
+            run.state = "complete"
+        except ApiError as exc:
+            run.state = "failed"
+            run.error = CaptureError(code=exc.code, message=exc.message)
+        except Exception as exc:  # noqa: BLE001 - the poll is the error channel
+            logger.exception(
+                "capture archive failed", extra={"capture_id": run.capture_id}
+            )
+            run.state = "failed"
+            run.error = CaptureError(code="archive_failed", message=str(exc))
 
 
 class CaptureArchiveMixin:
@@ -45,6 +146,48 @@ class CaptureArchiveMixin:
     _layout: DataLayout
     _instance_id: str
 
+    def archive_preflight(self, capture_id: str, *, destination: Path) -> Capture:
+        """The synchronous refusals of an archive, without copying anything.
+
+        Run by the route BEFORE it answers 202, so an archive that can never
+        run (active capture, held lease, dataset member, overlapping or
+        missing paths) is refused in the response rather than surfacing later
+        as a failed background run. The real run re-checks all of it under the
+        mutex — this is a courtesy check, not the guard.
+        """
+        self._require_delete_available()
+        capture = self.get(capture_id)
+        self._reject_active(capture)
+        self._reject_leased(capture)
+        self._reject_dataset_member(capture)
+        source = self._layout.capture_dir(capture_id)
+        if not source.is_dir():
+            raise ApiError(
+                status_code=409,
+                code="capture_not_present",
+                message=(
+                    f"{capture_id} has no local copy to archive "
+                    f"({source} does not exist)."
+                ),
+                details={"capture_id": capture_id},
+            )
+        target = destination / capture_id
+        self._reject_overlapping_destination(target, source)
+        if target.exists() and (not target.is_dir() or any(target.iterdir())):
+            # The same refusal the copy itself would raise, surfaced while the
+            # response can still be a 409 instead of a failed background run.
+            raise ApiError(
+                status_code=409,
+                code="destination_not_empty",
+                message=(
+                    f"{target} already contains files — refusing to archive "
+                    "into it. Choose another path, or clear it if it is the "
+                    "debris of a failed archive."
+                ),
+                details={"capture_id": capture_id, "destination": str(target)},
+            )
+        return capture
+
     async def archive(
         self,
         capture_id: str,
@@ -52,6 +195,7 @@ class CaptureArchiveMixin:
         destination: Path,
         operator: str | None = None,
         reason: str | None = None,
+        progress: Callable[[int], None] | None = None,
     ) -> CaptureArchiveResponse:
         """Copy a capture out, verify it, record it, then delete the source.
 
@@ -68,7 +212,11 @@ class CaptureArchiveMixin:
             self._reject_leased(capture)
             self._reject_dataset_member(capture)
             response = await self._archive_into(
-                capture, destination / capture_id, operator=operator, reason=reason
+                capture,
+                destination / capture_id,
+                operator=operator,
+                reason=reason,
+                progress=progress,
             )
 
         logger.info(
@@ -351,4 +499,9 @@ def _overlaps(a: Path, b: Path) -> bool:
     return a == b or a.is_relative_to(b) or b.is_relative_to(a)
 
 
-__all__ = ["CaptureArchiveMixin", "reject_overlapping_destination"]
+__all__ = [
+    "CaptureArchiveMixin",
+    "CaptureArchiveRun",
+    "CaptureArchiveRuns",
+    "reject_overlapping_destination",
+]

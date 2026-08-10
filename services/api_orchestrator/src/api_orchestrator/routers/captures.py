@@ -16,16 +16,20 @@ Two response codes here are load-bearing rather than incidental:
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request
 from kairos_common import ApiError, archive_enabled, parse_archive_roots
 from kairos_common.archive_paths import resolve_archive_destination
 
+from api_orchestrator.capture_archive import CaptureArchiveRun, CaptureArchiveRuns
 from api_orchestrator.captures import CaptureService
 from api_orchestrator.deps import get_capture_service
 from api_orchestrator.models import (
     Capture,
+    CaptureArchiveAccepted,
+    CaptureArchiveProgress,
     CaptureArchiveRequest,
     CaptureArchiveResponse,
     CaptureDeleteRequest,
@@ -178,29 +182,70 @@ async def capture_archive_config(request: Request) -> dict[str, Any]:
     return {"enabled": archive_enabled(roots), "roots": [str(r) for r in roots]}
 
 
-@router.post("/{capture_id}/archive", response_model=CaptureArchiveResponse)
+@router.post(
+    "/{capture_id}/archive", response_model=CaptureArchiveAccepted, status_code=202
+)
 async def archive_capture(
     capture_id: str,
     body: CaptureArchiveRequest,
     request: Request,
-    background: BackgroundTasks,
     service: CaptureService = Depends(get_capture_service),
-) -> CaptureArchiveResponse:
-    """Copy a capture out, verify it, record it, then delete the source (§6).
+) -> CaptureArchiveAccepted:
+    """Start archiving a capture out (§6): copy, verify, record, then delete.
 
     The destination is validated against ``KAIROS_ARCHIVE_ROOTS`` before
     anything is copied: this endpoint deletes the source afterwards, which makes
     an unconstrained destination the most dangerous string in the system.
+
+    Answers 202 and runs server-side (S2-1): a multi-GB copy outlives any proxy
+    timeout, and completing it in-request produced the worst possible split —
+    the server finished the archive (and deleted the source) while the client
+    saw a 504 "failure". Poll ``GET /captures/{id}/archive`` for the outcome.
+    The obvious refusals (active capture, held lease, dataset member, bad or
+    overlapping destination) still answer synchronously.
     """
     destination = resolve_archive_destination(body.destination, _archive_roots(request))
-    result = await service.archive(
-        capture_id,
-        destination=destination,
-        operator=body.operator,
-        reason=body.reason,
+    capture = service.archive_preflight(capture_id, destination=destination)
+    runs: CaptureArchiveRuns = request.app.state.capture_archive_runs
+
+    async def execute(run: CaptureArchiveRun) -> CaptureArchiveResponse:
+        def on_progress(bytes_done: int) -> None:
+            run.bytes_done = bytes_done
+
+        result = await service.archive(
+            capture_id,
+            destination=destination,
+            operator=body.operator,
+            reason=body.reason,
+            progress=on_progress,
+        )
+        await asyncio.to_thread(service.reap, capture_id)
+        return result
+
+    run = runs.start(capture_id, str(destination / capture_id), capture.bytes, execute)
+    return CaptureArchiveAccepted(
+        capture_id=capture_id, destination=run.destination, state=run.state
     )
-    background.add_task(service.reap, capture_id)
-    return result
+
+
+@router.get("/{capture_id}/archive", response_model=CaptureArchiveProgress)
+async def capture_archive_progress(
+    capture_id: str, request: Request
+) -> CaptureArchiveProgress:
+    """Progress of this capture's archive run (running → complete | failed).
+
+    404 when no run is known — including after a restart, which loses the
+    in-memory progress view but neither the data nor the ledger record.
+    """
+    run = request.app.state.capture_archive_runs.get(capture_id)
+    if run is None:
+        raise ApiError(
+            status_code=404,
+            code="archive_not_found",
+            message=f"No archive run is known for {capture_id}.",
+            details={"capture_id": capture_id},
+        )
+    return run.progress()
 
 
 def _archive_roots(request: Request) -> list:

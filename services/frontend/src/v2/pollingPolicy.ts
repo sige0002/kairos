@@ -37,6 +37,10 @@ export const STOP_CONFIRM_MAX_MS = 70_000;
  *  nothing, and still finer than the job polls below. */
 export const DATASET_ARCHIVE_POLL_MS = 1000;
 
+/** Per-capture archive progress (S2-1: the copy runs server-side and answers
+ *  202). Same cadence and same rationale as the dataset archive's. */
+export const CAPTURE_ARCHIVE_POLL_MS = 1000;
+
 /** Validation's job hook (useJobResult), until the job reaches a terminal
  *  state. Distinct from INSPECTION_JOB_POLL_MS below purely because that is how
  *  the two were written; both watch `/jobs/{id}/status`. */

@@ -704,11 +704,22 @@ class DatasetArchiver:
         if capture.archived_at is not None and capture.archive_destination == str(
             target
         ):
+            # S1-4: the record says done — the DESTINATION has to agree before
+            # this member counts toward a "complete" seal. A resume is the one
+            # moment anyone looks again; sealing over a target an external
+            # disk has since lost would stamp "10/10 verified" on bytes that
+            # no longer exist anywhere.
+            if not await asyncio.to_thread(self._target_intact, target):
+                run.error = self._missing_copy_error(member.capture_id, target)
+                return False
             await self._tidy_source(member.capture_id, source_present)
             return True
 
         event = ledger_v2.archive_events(self._layout.data_dir).get(member.capture_id)
         if event is not None and event.get("destination") == str(target):
+            if not await asyncio.to_thread(self._target_intact, target):
+                run.error = self._missing_copy_error(member.capture_id, target)
+                return False
             self._captures.finish_archived_member(
                 member.capture_id, destination=str(target)
             )
@@ -748,6 +759,34 @@ class DatasetArchiver:
             return False
         await asyncio.to_thread(self._captures.reap, member.capture_id)
         return True
+
+    @staticmethod
+    def _target_intact(target: Path) -> bool:
+        """Whether an archived member's destination still holds anything.
+
+        A re-stat, not a re-verification: the recorded per-file hashes could
+        prove integrity, but the failure this catches is the copy being GONE
+        (an external destination wiped or swapped since run 1), and for that
+        "a non-empty directory exists" is the cheap honest check.
+        """
+        try:
+            return target.is_dir() and any(target.iterdir())
+        except OSError:
+            return False
+
+    @staticmethod
+    def _missing_copy_error(capture_id: str, target: Path) -> dict[str, Any]:
+        return {
+            "capture_id": capture_id,
+            "code": "archived_copy_missing",
+            "message": (
+                f"The record says this member was archived to {target}, but "
+                "nothing is there now. The destination lost the copy after "
+                "it was verified — not sealing over it. Restore the copy "
+                "(the ledger's per-file hashes can check it) or investigate "
+                "the destination, then resume."
+            ),
+        }
 
     async def _copy_member_out(
         self,

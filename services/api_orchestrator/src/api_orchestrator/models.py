@@ -528,6 +528,38 @@ class CaptureArchiveResponse(BaseModel):
     verified: bool = True
 
 
+class CaptureArchiveAccepted(BaseModel):
+    """``POST /captures/{id}/archive`` answer: the run was ACCEPTED (202).
+
+    The copy of a multi-GB capture takes longer than any proxy timeout, and
+    running it in-request produced the worst possible split: the server
+    completed the archive (and deleted the source) while the client saw a 504
+    "failure" (timing sweep S2-1). The run now executes server-side and the
+    client polls ``GET /captures/{id}/archive``.
+    """
+
+    capture_id: str
+    destination: str
+    state: str = "running"
+
+
+class CaptureArchiveProgress(BaseModel):
+    """``GET /captures/{id}/archive`` — polled while a run executes.
+
+    ``state`` walks ``running → complete | failed``. The terminal entry stays
+    readable until a new run replaces it, so a client that reconnects after
+    the copy finished still learns the outcome instead of a 404.
+    """
+
+    capture_id: str
+    destination: str
+    state: str
+    bytes_done: int = 0
+    bytes_total: int | None = None
+    error: CaptureError | None = None
+    result: CaptureArchiveResponse | None = None
+
+
 # ---- datasets (§6: rows + ledger events; no directory tree) ----------------
 
 
