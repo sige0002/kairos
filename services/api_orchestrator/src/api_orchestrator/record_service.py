@@ -92,6 +92,14 @@ _ACTIVE_RECORDER_STATES = {
     CaptureState.stopping.value,
 }
 
+# How long _final_state keeps re-reading the recorder's status after it
+# answered that it is STILL recording/stopping, before falling back to the
+# manifest. The recorder's own stop has already run its full escalation by the
+# time this is consulted, so a still-active answer here is a finaliser writing
+# its last few files — seconds, not the 65 s SIGINT/SIGTERM/SIGKILL chain.
+_FINAL_STATE_POLL_INTERVAL_S = 0.5
+_FINAL_STATE_POLL_BUDGET_S = 10.0
+
 
 def allocate_run_id(now: datetime | None = None) -> str:
     """``run_YYYYMMDD_HHMMSS`` — a display name, never an API key (§1)."""
@@ -156,6 +164,11 @@ class RecordService:
         # cannot interleave and diverge from the recorder's single session.
         self._lifecycle_lock = asyncio.Lock()
         self._prepared: _PreparedEntry | None = None
+        # Instance copies of the _final_state poll knobs so a test can run the
+        # confirmation in milliseconds (the poll-count seam, same idea as the
+        # frontend's __setStopConfirmMs).
+        self._final_state_poll_interval_s = _FINAL_STATE_POLL_INTERVAL_S
+        self._final_state_poll_budget_s = _FINAL_STATE_POLL_BUDGET_S
 
     @property
     def _record_baselines(self) -> dict[str, MonitorBaseline]:
@@ -255,16 +268,23 @@ class RecordService:
                 disarm_at=body.get("disarm_at"),
             )
 
-    @staticmethod
     def _prepare_match_key(
-        topics: list[str] | str, req: RecordStartRequest
+        self, topics: list[str] | str, req: RecordStartRequest
     ) -> tuple[Any, ...]:
         """What decides whether a ``start`` matches an outstanding ``prepare``.
 
         Mirrors the recorder's own comparison. Session metadata is deliberately
         excluded: operator and task do not change what gets recorded, only how
-        it is labelled afterwards.
+        it is labelled afterwards. The LIVE config's QoS patterns are included
+        because they ride in both payloads (S1-3): a config switched between
+        prepare and start must fall through to a fresh spawn, not resume an
+        armed session materialised under the previous config's QoS.
         """
+        config_patterns = (
+            tuple(o.model_dump_json() for o in self._config.topic_qos_overrides)
+            if self._config is not None
+            else None
+        )
         return (
             topics if isinstance(topics, str) else tuple(topics),
             req.compression.value,
@@ -276,6 +296,7 @@ class RecordService:
                     for name, qos in (req.qos_overrides or {}).items()
                 )
             ),
+            config_patterns,
         )
 
     def _consume_matching_prepared(
@@ -522,6 +543,16 @@ class RecordService:
             payload["qos_overrides"] = {
                 name: qos.model_dump() for name, qos in req.qos_overrides.items()
             }
+        # The LIVE config's pattern QoS overrides ride along on every start:
+        # the recorder's own copy was loaded at ITS startup, so after a robot
+        # switch (config hot-swap, §config select) the recorder would otherwise
+        # keep recording with the previous robot's QoS while labelling captures
+        # with the new robot's name (timing sweep S1-3). Sent even when empty —
+        # "the live config has no overrides" must also supersede a stale file.
+        if self._config is not None:
+            payload["qos_override_patterns"] = [
+                o.model_dump(mode="json") for o in self._config.topic_qos_overrides
+            ]
         # The console half of the two-host provenance stamp: the recorder
         # writes it, together with its own build/config identity, into the
         # capture manifest — so a bad capture is traceable to the exact pair
@@ -640,8 +671,41 @@ class RecordService:
             except ApiError:
                 recorder_state = None
 
+        if recorder_state in _ACTIVE_RECORDER_STATES:
+            # The recorder ANSWERED, and the answer was "still writing". This
+            # used to fall through to the ``completed`` return below — the one
+            # reading that answer can never justify: "nobody answered" got the
+            # careful manifest branch while "I am not done yet" was sealed as a
+            # good take. A finaliser normally clears this in seconds (the
+            # recorder's stop has already escalated by now), so give it a short
+            # poll; whatever it says last decides which branch below runs.
+            recorder_state = await self._await_recorder_settled()
+
         if recorder_state in TERMINAL_STATES:
             return CaptureState(recorder_state), recorder_error
+        if recorder_state in _ACTIVE_RECORDER_STATES:
+            # Still writing after the whole poll budget. The row must go
+            # terminal here (stop() has to commit), and the one state that
+            # cannot be true is ``completed``. The manifest is authoritative:
+            # sealed terminal → that state; anything else → ``interrupted``,
+            # with an error naming what actually happened so the operator sees
+            # "the recorder never confirmed this stop" instead of a good take.
+            read = read_object_manifest(self._layout.capture_dir(capture.capture_id))
+            if (
+                read.status is SidecarStatus.ok
+                and read.manifest is not None
+                and read.manifest.state in TERMINAL_STATES
+            ):
+                return CaptureState(read.manifest.state), coerce_error(
+                    read.manifest.error
+                )
+            return CaptureState.interrupted, CaptureError(
+                code="stop_not_confirmed",
+                message=(
+                    f"the recorder still reported '{recorder_state}' after the "
+                    "stop; the recording was not confirmed stopped"
+                ),
+            )
         if recorder_state is None:
             # We could not ask AT ALL — the recorder answered the stop and then
             # went away, or died before it could answer. "Nobody is left to
@@ -688,6 +752,32 @@ class RecordService:
             return CaptureState.interrupted, None
         # The recorder answered and is idle or completed: a normal stop.
         return CaptureState.completed, recorder_error
+
+    async def _await_recorder_settled(self) -> str | None:
+        """Re-read the recorder's status until it stops answering "active".
+
+        Returns the last state the recorder reported — terminal, some other
+        no-session answer, still-active when the budget ran out — or ``None``
+        when it stopped answering entirely. A single failed read is NOT treated
+        as "gone": the recorder's status route shares its finalise lock, so a
+        timeout mid-flush is the busy recorder this poll exists to wait for
+        (the same lesson as the console's stop confirmation).
+        """
+        deadline = time.monotonic() + self._final_state_poll_budget_s
+        state: str | None = CaptureState.stopping.value
+        answered_recently = True
+        while time.monotonic() < deadline:
+            await asyncio.sleep(self._final_state_poll_interval_s)
+            try:
+                status = await self._recorder.status()
+            except ApiError:
+                answered_recently = False
+                continue
+            answered_recently = True
+            state = status.get("state")
+            if state not in _ACTIVE_RECORDER_STATES:
+                return state
+        return state if answered_recently else None
 
     def _active_capture(self) -> Capture | None:
         """The single capture currently recording/stopping, if any.

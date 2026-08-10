@@ -18,6 +18,7 @@ import { useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { getConfigOptions, getRobotConfig, selectConfig } from '../../api/config';
 import { stopRecord } from '../../api/record';
+import { confirmRecorderStopped } from '../captures/stopConfirm';
 import { queryKeys } from '../../api/queryKeys';
 import type { AspectOption, ConfigAspect, ConfigOptions } from '../../api/types';
 import { useRecordStatus } from '../captures/useRecordStatus';
@@ -54,6 +55,10 @@ export function RobotsSection({ config }: { config: RuntimeConfig | undefined })
   const [addingRobot, setAddingRobot] = useState(false);
   // Robot activation is confirmed first when a recording is running.
   const [confirmActivate, setConfirmActivate] = useState(false);
+  // Shown after a robot switch in THIS session: the ROS services keep their
+  // startup configs until restarted, and pretending the switch was total is
+  // exactly how a mixed-config recording gets made without anyone knowing.
+  const [switchedRobot, setSwitchedRobot] = useState(false);
 
   const optionsQuery = useQuery({
     queryKey: queryKeys.configOptions,
@@ -73,17 +78,26 @@ export function RobotsSection({ config }: { config: RuntimeConfig | undefined })
   const selectMutation = useMutation({
     mutationFn: (vars: { category: string; id: string }) =>
       selectConfig(vars),
-    onSuccess: (data) => {
+    onSuccess: (data, vars) => {
       // Adopt the fresh options and refresh the runtime config + the editable
       // recording config that a robot / aspect switch re-points.
       queryClient.setQueryData(queryKeys.configOptions, data);
       queryClient.invalidateQueries({ queryKey: queryKeys.runtimeConfig });
       queryClient.invalidateQueries({ queryKey: RECORDING_CONFIG_KEY });
+      if (vars.category === 'robot') setSwitchedRobot(true);
     },
   });
 
   const stopMutation = useMutation({
-    mutationFn: () => stopRecord(),
+    mutationFn: async () => {
+      const capture = await stopRecord();
+      // A 200 from /record/stop is not proof the recorder stopped (it answers
+      // with the last capture when nothing is active). Confirm through the
+      // same polling loop Collect's SAVING gate uses — switching configs while
+      // the recorder is still flushing would hot-swap the recording's config
+      // out from under it mid-write.
+      await confirmRecorderStopped(capture?.capture_id ?? null);
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.recordStatus });
     },
@@ -228,6 +242,18 @@ export function RobotsSection({ config }: { config: RuntimeConfig | undefined })
           <div className="p-[18px] text-sm text-gray-500">Select a robot.</div>
         ) : isActive ? (
           <div className="flex flex-col gap-4 p-[18px]">
+            {switchedRobot && (
+              <div
+                data-testid="robot-switch-note"
+                className="rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-[13px] text-amber-800"
+              >
+                Robot switched. Recording topics and QoS follow the new
+                selection from the next start. The ROS services (monitor,
+                streamer, probe) keep the previous robot&apos;s startup config
+                until they are restarted —{' '}
+                <span className="font-mono">make restart monitor streamer probe</span>.
+              </div>
+            )}
             <ActiveRobotDetail config={config} />
             <AspectPickers
               data={data!}
@@ -262,7 +288,11 @@ export function RobotsSection({ config }: { config: RuntimeConfig | undefined })
               Cancel
             </Button>
             <Button variant="danger" onClick={stopAndSwitch} disabled={switching}>
-              {switching ? 'Switching…' : 'Stop & switch'}
+              {stopMutation.isPending
+                ? 'Stopping…'
+                : switching
+                  ? 'Switching…'
+                  : 'Stop & switch'}
             </Button>
           </>
         }

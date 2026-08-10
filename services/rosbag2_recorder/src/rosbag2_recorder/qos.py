@@ -23,6 +23,7 @@ from pathlib import Path
 
 import yaml
 from kairos_common import RecordingConfig
+from kairos_common.recording_config import TopicQosOverride
 
 from rosbag2_recorder.models import QosProfile
 
@@ -37,23 +38,41 @@ def resolve_topic_qos(
     config: RecordingConfig | None,
     request_overrides: dict[str, QosProfile] | None,
     qos_default: QosProfile | None = None,
+    request_patterns: list[TopicQosOverride] | None = None,
 ) -> QosProfile | None:
     """Resolve the QoS override for *topic*, or ``None`` to follow the publisher.
 
     Precedence:
       1. an explicit per-request override for this exact topic name, then
-      2. the first matching ``topic_qos_overrides`` pattern in *config*, then
-      3. the request's ``qos_default`` (applied to every otherwise-unmatched
+      2. the first matching pattern the REQUEST carried
+         (``qos_override_patterns`` — the orchestrator's live config, which
+         supersedes this process's startup copy after a robot switch), then
+      3. the first matching ``topic_qos_overrides`` pattern in *config*
+         (this process's own startup config — consulted only when the request
+         carried no pattern list at all), then
+      4. the request's ``qos_default`` (applied to every otherwise-unmatched
          topic when the caller supplied one).
 
+    A request that carries a pattern list REPLACES the startup config's list
+    rather than layering on it, empty list included: the caller is asserting
+    what the live config says, and "no overrides" is an assertion too.
+
     Returns ``None`` only when none of the above apply (no per-topic override,
-    no config match, and no ``qos_default``), meaning "let rosbag2 adapt to the
+    no pattern match, and no ``qos_default``), meaning "let rosbag2 adapt to the
     publisher's offered QoS" — the default behaviour and the correct one for the
     best_effort cameras when the caller does not force a default.
     """
     if request_overrides and topic in request_overrides:
         return request_overrides[topic]
-    if config is not None:
+    if request_patterns is not None:
+        for override in request_patterns:
+            if fnmatch(topic, override.pattern):
+                return QosProfile(
+                    reliability=override.reliability,
+                    durability=override.durability,
+                    depth=override.depth,
+                )
+    elif config is not None:
         for override in config.topic_qos_overrides:
             if fnmatch(topic, override.pattern):
                 return QosProfile(
@@ -79,16 +98,19 @@ def build_qos_overrides(
     config: RecordingConfig | None,
     request_overrides: dict[str, QosProfile] | None,
     qos_default: QosProfile | None = None,
+    request_patterns: list[TopicQosOverride] | None = None,
 ) -> dict[str, dict[str, object]]:
     """Build the topic -> QoS-profile mapping for the selected *topics*.
 
-    Only topics that resolve to a concrete override (per-topic, config pattern,
-    or *qos_default*) are included; topics left to follow the publisher are
-    omitted so rosbag2 keeps adapting to them.
+    Only topics that resolve to a concrete override (per-topic, request or
+    config pattern, or *qos_default*) are included; topics left to follow the
+    publisher are omitted so rosbag2 keeps adapting to them.
     """
     overrides: dict[str, dict[str, object]] = {}
     for topic in topics:
-        qos = resolve_topic_qos(topic, config, request_overrides, qos_default)
+        qos = resolve_topic_qos(
+            topic, config, request_overrides, qos_default, request_patterns
+        )
         if qos is not None:
             overrides[topic] = _profile_to_rosbag2(qos)
     return overrides

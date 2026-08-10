@@ -13,6 +13,7 @@ from enum import StrEnum
 from typing import Annotated, Any, Literal
 
 from kairos_common import ApiError, Compression, Durability, Reliability
+from kairos_common.recording_config import TopicQosOverride
 from pydantic import BaseModel, Field
 
 # run_id charset guard, per the spec / config.md. Since v2 the run_id is a
@@ -94,6 +95,13 @@ class RecordStartRequest(BaseModel):
     split: SplitConfig | None = None
     qos_default: QosProfile | None = None
     qos_overrides: dict[str, QosProfile] | None = None
+    # Pattern -> QoS overrides from the ORCHESTRATOR'S live recording config.
+    # They take precedence over this process's own ``topic_qos_overrides``,
+    # which were loaded at startup: the orchestrator hot-swaps configs on a
+    # robot switch, while the recorder only re-reads its file on restart — so
+    # without this field a switched robot recorded with the previous robot's
+    # QoS (timing sweep S1-3). Same shape as ``recording.yaml``'s entries.
+    qos_override_patterns: list[TopicQosOverride] | None = None
     # Optional session metadata; written to the capture's object_manifest.json.
     operator: str | None = None
     task: str | None = None

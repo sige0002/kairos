@@ -155,16 +155,38 @@ async def get_robot_config(request: Request, robot: str) -> dict[str, Any]:
 async def config_select(request: Request, body: ConfigSelectRequest) -> dict[str, Any]:
     """Switch the active robot or an aspect option, hot-swapping the live copies.
 
-    Recording / stream selections (and a robot switch, which re-points both) take
-    effect for ``GET /api/v1/config`` immediately; recorder QoS / monitor
-    expected_hz still load at startup, so those parts apply on restart.
+    Recording / stream selections (and a robot switch, which re-points both)
+    take effect immediately for ``GET /api/v1/config`` AND for the next
+    recording's QoS (the live config's patterns ride on every start request —
+    see ``RecordService._build_recorder_payload``). Monitor expected_hz /
+    streamer / probe still load their configs at startup, so those apply on
+    service restart — which the Settings screen states.
+
+    All-or-nothing: if the chosen files fail to LOAD, the selection is rolled
+    back before the error surfaces. Without the rollback a failed select left
+    the catalog switched with the live config old — the robot label changed
+    while everything that records still ran the previous robot (S1-3).
     """
     catalog = _catalog(request)
+    snapshot = catalog.selection_snapshot()
+    prev_recording = getattr(request.app.state, "recording_config", None)
+    prev_recording_path = getattr(request.app.state, "recording_config_path", None)
+    prev_stream = getattr(request.app.state, "stream_config", None)
+    prev_stream_path = getattr(request.app.state, "stream_config_path", None)
     catalog.select(body.category, body.id)
-    if body.category in ("robot", "recording"):
-        _apply_recording(request, catalog)
-    if body.category in ("robot", "stream"):
-        _apply_stream(request, catalog)
+    try:
+        if body.category in ("robot", "recording"):
+            _apply_recording(request, catalog)
+        if body.category in ("robot", "stream"):
+            _apply_stream(request, catalog)
+    except ApiError:
+        catalog.restore_selection(snapshot)
+        request.app.state.recording_config = prev_recording
+        request.app.state.recording_config_path = prev_recording_path
+        request.app.state.record_service.set_recording_config(prev_recording)
+        request.app.state.stream_config = prev_stream
+        request.app.state.stream_config_path = prev_stream_path
+        raise
     return _options_payload(catalog)
 
 

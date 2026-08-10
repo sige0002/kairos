@@ -219,6 +219,39 @@ class TestStop:
         # that finished are indistinguishable from the orchestrator's side.
         assert client.post("/api/v1/record/stop").json()["state"] == final_state
 
+    @pytest.mark.parametrize("final_state", ["completed", "failed"])
+    def test_a_flush_that_outlives_the_stop_response_settles_honestly(
+        self, client: TestClient, fake_recorder: FakeRecorder, final_state: str
+    ) -> None:
+        # Delayed success/failure: the recorder answers /record/stop with
+        # ``stopping`` and keeps flushing for two more status reads. The old
+        # code read status ONCE and sealed any still-active answer as
+        # ``completed``; the fix polls until the recorder settles and reports
+        # what it actually settled into.
+        service = client.app.state.record_service
+        service._final_state_poll_interval_s = 0.01
+        service._final_state_poll_budget_s = 2.0
+        fake_recorder.final_state = final_state
+        fake_recorder.settle_after_status_polls = 2
+        _start(client)
+        assert client.post("/api/v1/record/stop").json()["state"] == final_state
+
+    def test_a_recorder_still_writing_at_the_budget_is_never_completed(
+        self, client: TestClient, fake_recorder: FakeRecorder
+    ) -> None:
+        # S2-6: the recorder ANSWERS, and the answer is "I am not done". That
+        # answer used to be sealed as ``completed`` — a bag still being written
+        # became a good take. It must end ``interrupted`` with an error that
+        # names the unconfirmed stop, never ``completed``.
+        service = client.app.state.record_service
+        service._final_state_poll_interval_s = 0.01
+        service._final_state_poll_budget_s = 0.05
+        fake_recorder.settle_after_status_polls = 10**9
+        _start(client)
+        stopped = client.post("/api/v1/record/stop").json()
+        assert stopped["state"] == "interrupted"
+        assert stopped["error"]["code"] == "stop_not_confirmed"
+
     def test_a_recorder_error_string_becomes_a_structured_error(
         self, client: TestClient, fake_recorder: FakeRecorder
     ) -> None:

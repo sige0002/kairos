@@ -102,6 +102,23 @@ START_DIR_POLL_S = 0.05
 # How often the MAX_RECORD_BYTES watcher checks the on-disk size while recording.
 SIZE_POLL_S = 2.0
 
+
+def _stop_flush_delay_s() -> float:
+    """Test-only injected flush delay (``KAIROS_STOP_FLUSH_DELAY_S``, 0 = off).
+
+    Holds the session in ``stopping`` before the stop signal, modelling the
+    multi-second cache drain of a LARGE bag. It exists for the acceptance
+    suite: its 61 MB fixture flushes in milliseconds, so the console's
+    stop-confirmation polling ran zero real iterations and its regressions
+    were invisible (the 2026-08-07 timing sweep's finding on 36ec49e). Never
+    set in production.
+    """
+    try:
+        return max(0.0, float(os.environ.get("KAIROS_STOP_FLUSH_DELAY_S", "")))
+    except ValueError:
+        return 0.0
+
+
 # Return codes that count as a clean shutdown of ``ros2 bag record`` on the stop
 # path. We stop it with SIGINT: a process that catches SIGINT and exits cleanly
 # returns 0; one terminated by the signal reports ``-SIGINT`` (-2 via Popen) or
@@ -846,6 +863,11 @@ class RecorderSession:
             and prepared.split == request.split
             and prepared.qos_default == request.qos_default
             and prepared.qos_overrides == request.qos_overrides
+            # The live-config QoS patterns are spawn-affecting (they were
+            # materialised into the armed session's overrides file): a config
+            # switched between prepare and start must disarm, not resume with
+            # the previous config's QoS (S1-3).
+            and prepared.qos_override_patterns == request.qos_override_patterns
         )
 
     def _claim_armed_locked(
@@ -1422,7 +1444,11 @@ class RecorderSession:
         from rosbag2_recorder.qos import resolve_topic_qos
 
         return resolve_topic_qos(
-            topic, self._config, request.qos_overrides, request.qos_default
+            topic,
+            self._config,
+            request.qos_overrides,
+            request.qos_default,
+            request.qos_override_patterns,
         )
 
     def _materialise_qos(
@@ -1446,6 +1472,7 @@ class RecorderSession:
             self._config,
             request.qos_overrides,
             request.qos_default,
+            request.qos_override_patterns,
         )
         return write_qos_overrides_file(
             overrides, _qos_overrides_path(self._objects_root(), capture_id)
@@ -1613,6 +1640,9 @@ class RecorderSession:
             # Signal + wait outside the lock so /status stays responsive; the
             # single active session means no other start can race in (start
             # re-checks state).
+            delay = _stop_flush_delay_s()
+            if delay > 0:
+                time.sleep(delay)
             self._signal_and_wait(process)
             with self._lock:
                 self._finalise(ended_at)

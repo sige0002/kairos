@@ -11,6 +11,7 @@ import {
   getPlans,
   setPlans,
 } from '../plans';
+import { __resetStopConfirmMs, __setStopConfirmMs } from '../captures/stopConfirm';
 
 // Runtime config (GET /api/v1/config): the ACTIVE robot's read-only values that
 // the Robots form surfaces (ROS_DOMAIN_ID + recorded topics).
@@ -253,7 +254,10 @@ beforeEach(() => {
   __resetPlansStore();
   mockFetch();
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  __resetStopConfirmMs();
+  vi.restoreAllMocks();
+});
 
 test('lists the real robots and marks the active one', async () => {
   renderWithClient(<SettingsScreen />);
@@ -346,6 +350,77 @@ test('activating a robot while recording confirms first, then stops and switches
   await waitFor(() =>
     expect(selectPosts()).toContainEqual({ category: 'robot', id: 'template' }),
   );
+  // The switch is disclosed as PARTIAL: the ROS services keep their startup
+  // configs until restarted (S1-3) — pretending otherwise is how a
+  // mixed-config recording gets made.
+  const note = await screen.findByTestId('robot-switch-note');
+  expect(note).toHaveTextContent(/until they are restarted/);
+  expect(note).toHaveTextContent('make restart monitor streamer probe');
+});
+
+// S2-5 (timing sweep 2026-08-07): "stop answered 200" is not "stopped". A
+// recorder that is still flushing keeps the config out of reach — switching
+// while it drains would hot-swap the recording's config mid-write. The switch
+// must ride the same confirmation poll Collect's SAVING gate uses.
+test('stop & switch waits out a flushing recorder before selecting', async () => {
+  __setStopConfirmMs(5000, 5);
+  recordState = 'recording';
+  renderWithClient(<SettingsScreen />);
+  fireEvent.click(await screen.findByTestId('robot-row-1'));
+  fireEvent.click(screen.getByTestId('activate-robot'));
+  await screen.findByRole('dialog');
+
+  // From here the recorder acknowledges the stop but keeps flushing for two
+  // more status reads; everything else falls through to the standard mock.
+  const base = globalThis.fetch;
+  let stopped = false;
+  let statusAfterStop = 0;
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    if (url.includes('/record/stop')) {
+      stopped = true;
+      return Promise.resolve(
+        jsonResponse({
+          run_id: 'run_x',
+          capture_id: 'cap_x',
+          state: 'stopping',
+          live_capture_ids: ['cap_x'],
+        }),
+      );
+    }
+    if (stopped && url.includes('/record/status')) {
+      statusAfterStop += 1;
+      if (statusAfterStop <= 2) {
+        return Promise.resolve(
+          jsonResponse({
+            run_id: 'run_x',
+            capture_id: 'cap_x',
+            state: 'stopping',
+            live_capture_ids: ['cap_x'],
+          }),
+        );
+      }
+      return Promise.resolve(
+        jsonResponse({
+          run_id: 'run_x',
+          capture_id: 'cap_x',
+          state: 'completed',
+          live_capture_ids: [],
+        }),
+      );
+    }
+    return (base as typeof fetch)(input as RequestInfo, init);
+  });
+
+  fireEvent.click(screen.getByRole('button', { name: 'Stop & switch' }));
+  // While the recorder still reports the flush, the select must not have fired.
+  await waitFor(() => expect(statusAfterStop).toBeGreaterThanOrEqual(1));
+  expect(selectPosts()).toHaveLength(0);
+  // Once the recorder settles, the switch goes through.
+  await waitFor(() =>
+    expect(selectPosts()).toContainEqual({ category: 'robot', id: 'template' }),
+  );
+  expect(statusAfterStop).toBeGreaterThanOrEqual(3);
 });
 
 // §10 rev.2.4: a status response with no live_capture_ids means the recorder

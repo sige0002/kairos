@@ -642,6 +642,66 @@ test('a stop that confirms on a later poll (flush in progress) is not an error',
   expect(result.current.stopError).toBeNull();
 });
 
+// S2-2 (timing sweep 2026-08-07): a transient status-read failure during the
+// confirmation must not fail the stop. The recorder's status route shares its
+// finalise lock, so a 503/timeout lands exactly while a large bag flushes —
+// aborting there resurrected the stop_not_confirmed banner one fix after it
+// was cured. Only the deadline may call the stop failed.
+test('a status read that fails mid-confirmation keeps polling, not STOP_FAILED', async () => {
+  __setStopConfirmMs(5000, 5);
+  let stopCalled = false;
+  let postStopStatusCalls = 0;
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/record/start'))
+      return Promise.resolve(jsonResponse(captureBody('cap_1')));
+    if (url.includes('/record/stop')) {
+      stopCalled = true;
+      return Promise.resolve(jsonResponse(captureBody('cap_1', { state: 'completed' })));
+    }
+    if (url.includes('/record/status')) {
+      if (!stopCalled) return Promise.resolve(jsonResponse({}));
+      postStopStatusCalls += 1;
+      // First read: the busy recorder 503s. Second read: still flushing.
+      // Third: settled. None of these may surface as a failed stop.
+      if (postStopStatusCalls === 1) {
+        return Promise.reject(new TypeError('fetch failed'));
+      }
+      if (postStopStatusCalls === 2) {
+        return Promise.resolve(
+          jsonResponse({
+            capture_id: 'cap_1',
+            run_id: 'run_cap_1',
+            state: 'stopping',
+            live_capture_ids: ['cap_1'],
+          }),
+        );
+      }
+      return Promise.resolve(
+        jsonResponse({
+          capture_id: 'cap_1',
+          run_id: 'run_cap_1',
+          state: 'completed',
+          live_capture_ids: [],
+        }),
+      );
+    }
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  act(() => result.current.startRecording());
+  await waitFor(() => expect(result.current.phase).toBe('recording'));
+
+  act(() => result.current.stopRecording());
+  expect(result.current.phase).toBe('saving');
+  await waitFor(() => expect(result.current.phase).toBe('quickcheck'));
+  expect(result.current.stopError).toBeNull();
+  expect(postStopStatusCalls).toBeGreaterThanOrEqual(3);
+});
+
 // ---------------------------------------------------------------------------
 // Real recorder status: arming (matched/missing) + integrity (drop/fail).
 // ---------------------------------------------------------------------------

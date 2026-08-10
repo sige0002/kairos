@@ -25,7 +25,7 @@ import {
 } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError } from '../../api/client';
-import { getRecordStatus, startRecord, stopRecord } from '../../api/record';
+import { startRecord, stopRecord } from '../../api/record';
 import { getTransferStatus } from '../../api/transfer';
 import { patchBatch } from '../../api/batches';
 import { getCapture, listCaptures, saveReview } from '../../api/captures';
@@ -37,7 +37,6 @@ import { needsReload } from '../captures/errors';
 import { useRecordStatus } from '../captures/useRecordStatus';
 import {
   ACTIVE_RECORD_STATES,
-  liveCaptureIds,
   type CaptureDetail,
   type Quality as ServerQuality,
   type QuickCheckVerdict,
@@ -45,11 +44,10 @@ import {
   type RecordIntegrity,
   type RecordStartRequest,
   type RecordState,
-  type RecordStatus,
   type ReviewSaveRequest,
 } from '../../api/types';
 import { useToast } from '../shared/useToast';
-import { STOP_CONFIRM_MAX_MS, STOP_CONFIRM_POLL_MS } from '../pollingPolicy';
+import { confirmRecorderStopped } from '../captures/stopConfirm';
 
 // Public surface: everything Collect (and the tests) imported from this module
 // before the machine/ split keeps resolving here.
@@ -82,8 +80,6 @@ import {
 import {
   dismissedUnsavedCaptures,
   dispatch,
-  getStopConfirmMaxMs,
-  getStopConfirmPollMs,
   getStoreSnapshot,
   persistDismissed,
   useBatchState,
@@ -459,42 +455,12 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
       // routes to onError -> STOP_FAILED, which keeps the operator on SAVING
       // with the Retry-stop button instead of pretending the take is done.
       //
-      // `live_capture_ids` is read as a POSITIVE liveness signal only: an absent
-      // array means the recorder is unreachable, not that nothing is live (§10
-      // rev.2.4), so it can never be the thing that says "stopped" — the state
-      // field is.
-      // A flush takes SECONDS (rosbag2 drains its cache to disk), and inside
-      // the recorder's own escalation budget a still-active status is normal
-      // progress, not a failure. So: poll at STOP_CONFIRM_POLL_MS until the
-      // recorder reports terminal, and only past STOP_CONFIRM_MAX_MS (the full
-      // SIGINT->SIGTERM->SIGKILL chain plus margin) call the stop failed —
-      // that is when Retry becomes a meaningful offer rather than a reflex.
-      const stillLive = (s: RecordStatus) =>
-        ACTIVE_RECORD_STATES.has(s.state) ||
-        (capture?.capture_id != null &&
-          liveCaptureIds(s)?.includes(capture.capture_id) === true);
-      const deadline =
-        performance.now() + getStopConfirmMaxMs(STOP_CONFIRM_MAX_MS);
-      let after = await getRecordStatus();
-      while (stillLive(after)) {
-        if (performance.now() >= deadline) {
-          throw new ApiError(
-            409,
-            {
-              error: {
-                code: 'stop_not_confirmed',
-                message: `The recorder is still ${after.state}. The recording was not stopped — retry.`,
-                details: {},
-              },
-            },
-            'the recorder did not stop',
-          );
-        }
-        await new Promise((resolve) =>
-          setTimeout(resolve, getStopConfirmPollMs(STOP_CONFIRM_POLL_MS)),
-        );
-        after = await getRecordStatus();
-      }
+      // The confirmation loop itself is shared with Settings' stop-and-switch
+      // (stopConfirm.ts): poll until the recorder reports terminal, tolerate
+      // transient status-read failures, and only past the escalation budget
+      // surface stop_not_confirmed — that is when Retry becomes a meaningful
+      // offer rather than a reflex.
+      await confirmRecorderStopped(capture?.capture_id ?? null);
       return capture;
     },
     onSuccess: () => {

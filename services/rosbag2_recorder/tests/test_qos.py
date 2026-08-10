@@ -47,6 +47,33 @@ def _config() -> RecordingConfig:
     )
 
 
+def test_request_patterns_supersede_the_startup_config() -> None:
+    """S1-3: the orchestrator's LIVE config patterns beat this process's own.
+
+    After a robot switch the orchestrator hot-swaps its recording config and
+    sends the new patterns on every start; the recorder's startup copy is the
+    stale one and must lose."""
+    live = [
+        TopicQosOverride(
+            pattern="**/compressed",
+            reliability=Reliability.reliable,
+            durability=Durability.volatile,
+            depth=3,
+        )
+    ]
+    qos = resolve_topic_qos("/cam/compressed", _config(), None, None, live)
+    assert qos is not None
+    assert qos.reliability is Reliability.reliable
+    assert qos.depth == 3
+    # A pattern list REPLACES the startup list, it does not layer: a topic the
+    # live list leaves alone follows the publisher even though the startup
+    # config's catch-all would have matched it.
+    assert resolve_topic_qos("/tf_static", _config(), None, None, live) is None
+    # ... and an EMPTY live list is the assertion "no overrides", not a
+    # fallback to the stale file.
+    assert resolve_topic_qos("/cam/compressed", _config(), None, None, []) is None
+
+
 def test_resolve_uses_first_matching_pattern() -> None:
     cfg = _config()
     cam = resolve_topic_qos("/hsrb/hand_camera/image_raw/compressed", cfg, None)

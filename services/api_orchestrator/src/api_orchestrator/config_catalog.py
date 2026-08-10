@@ -315,6 +315,22 @@ class ConfigCatalog:
 
     # ---- selection --------------------------------------------------------
 
+    def selection_snapshot(self) -> tuple[str, dict[str, str]]:
+        """The current (active robot, per-aspect picks), for rollback.
+
+        A select whose chosen files then fail to LOAD must not leave the
+        catalog switched while the live config stays old (timing sweep S1-3:
+        picking a robot with a broken YAML looked like "the switch failed" but
+        had silently re-labelled every next recording with the new robot's
+        name). The router snapshots before selecting and restores on failure.
+        """
+        return (self._active_robot, dict(self._active_option))
+
+    def restore_selection(self, snapshot: tuple[str, dict[str, str]]) -> None:
+        """Put the selection back exactly as ``selection_snapshot`` captured it."""
+        self._active_robot = snapshot[0]
+        self._active_option = dict(snapshot[1])
+
     def select(self, category: str, option_id: str) -> None:
         """Switch the active robot, or an aspect option; 400/404 on bad input."""
         if category not in SELECTABLE_CATEGORIES:
