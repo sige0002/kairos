@@ -2,7 +2,11 @@ import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
 import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
-import { ImportBagsDialog } from './ImportBagsDialog';
+import {
+  __resetImportWatchMs,
+  __setImportWatchMs,
+  ImportBagsDialog,
+} from './ImportBagsDialog';
 
 const SCAN = {
   path: '/data/incoming',
@@ -20,9 +24,17 @@ const SCAN = {
   ],
 };
 
-/** Fetch stub: scan returns SCAN; POST /imports succeeds unless the path is in `failing`. */
-function mockFetch(failing: string[] = []) {
+/** Fetch stub: scan returns SCAN; POST /imports 202s (unless the path is in
+ *  `failing`) with an import_id, and GET /imports/{id} reports the copy —
+ *  one `running` read, then `succeeded` (or `failed` for `copyFails` paths),
+ *  modelling the real registry (S3-2: the 202 is "queued", not "done"). */
+function mockFetch(failing: string[] = [], copyFails: string[] = []) {
   const posts: { source_path: string; move: boolean }[] = [];
+  const records: Record<
+    string,
+    { source: string; reads: number; fails: boolean }
+  > = {};
+  let nextImport = 1;
   vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     const url = String(input);
     if (url.includes('/imports/scan')) return Promise.resolve(jsonResponse(SCAN));
@@ -34,15 +46,66 @@ function mockFetch(failing: string[] = []) {
           jsonResponse({ error: { code: 'import_no_mcap', message: 'No .mcap file.' } }, 400),
         );
       }
-      return Promise.resolve(jsonResponse({ capture_id: `cap-${body.source_path}` }, 202));
+      const importId = `imp-${nextImport++}`;
+      records[importId] = {
+        source: body.source_path,
+        reads: 0,
+        fails: copyFails.includes(body.source_path),
+      };
+      return Promise.resolve(
+        jsonResponse(
+          {
+            import_id: importId,
+            capture_id: `cap-${body.source_path}`,
+            state: 'running',
+            bytes_total: 100,
+          },
+          202,
+        ),
+      );
+    }
+    const status = url.match(/\/imports\/(imp-\d+)$/);
+    if (status) {
+      const rec = records[status[1]!]!;
+      rec.reads += 1;
+      if (rec.reads <= 1) {
+        return Promise.resolve(
+          jsonResponse({
+            import_id: status[1],
+            capture_id: `cap-${rec.source}`,
+            state: 'running',
+            bytes_total: 100,
+            bytes_copied: 50,
+          }),
+        );
+      }
+      return Promise.resolve(
+        jsonResponse({
+          import_id: status[1],
+          capture_id: `cap-${rec.source}`,
+          state: rec.fails ? 'failed' : 'succeeded',
+          bytes_total: 100,
+          bytes_copied: rec.fails ? 50 : 100,
+          error: rec.fails
+            ? { code: 'import_copy_failed', message: 'The copy died in staging.' }
+            : null,
+        }),
+      );
     }
     return Promise.resolve(jsonResponse({}));
   });
   return posts;
 }
 
-beforeEach(() => setApiBase('/api/v1'));
-afterEach(() => vi.restoreAllMocks());
+beforeEach(() => {
+  setApiBase('/api/v1');
+  // The import watch is a real wall-clock poll; run it fast in tests.
+  __setImportWatchMs(5);
+});
+afterEach(() => {
+  __resetImportWatchMs();
+  vi.restoreAllMocks();
+});
 
 function open() {
   renderWithClient(
@@ -85,7 +148,26 @@ test('a failing bag is skipped and named — the rest of the run still completes
   ]);
   expect(screen.getByTestId('import-failed-a')).toHaveTextContent('No .mcap file.');
   expect(screen.getByTestId('import-failures')).toHaveTextContent('1 folder failed');
-  expect(screen.getByTestId('import-row-b')).toHaveTextContent('queued');
+  // The ✓ lands only when the server-side copy actually finished (S3-2).
+  await waitFor(() =>
+    expect(screen.getByTestId('import-row-b')).toHaveTextContent('imported ✓'),
+  );
+});
+
+test('a copy that dies AFTER the 202 flips its row to failed, not ✓ forever', async () => {
+  // The exact S3-2 lie: the old dialog marked a row done at the ack and never
+  // looked again, so a copy that died in staging stayed ✓ on screen.
+  mockFetch([], ['/data/incoming/a']);
+  open();
+  await screen.findByTestId('import-list');
+
+  fireEvent.click(screen.getByTestId('import-run'));
+
+  const failed = await screen.findByTestId('import-failed-a');
+  expect(failed).toHaveTextContent('The copy died in staging.');
+  await waitFor(() =>
+    expect(screen.getByTestId('import-row-b')).toHaveTextContent('imported ✓'),
+  );
 });
 
 test('copy is the default; move is sent only when chosen', async () => {
@@ -97,6 +179,9 @@ test('copy is the default; move is sent only when chosen', async () => {
   await waitFor(() => expect(posts).toHaveLength(2));
   expect(posts.every((p) => p.move === false)).toBe(true);
 
+  // The run now watches the server-side copies to their end (S3-2); the next
+  // run can only start once the first one finished.
+  await waitFor(() => expect(screen.getByTestId('import-run')).not.toBeDisabled());
   fireEvent.click(screen.getByTestId('import-mode-move'));
   fireEvent.click(screen.getByTestId('import-run'));
   await waitFor(() => expect(posts).toHaveLength(4));

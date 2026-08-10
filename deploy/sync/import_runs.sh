@@ -113,6 +113,11 @@ if [ -n "$IMPORT_SSH_OPTS" ]; then
   # shellcheck disable=SC2206 - word-splitting the option string is intended.
   SSH_CMD+=($IMPORT_SSH_OPTS)
 fi
+# Half-open-connection protection, AFTER the operator's own options (ssh takes
+# the FIRST value for an option, so anything in IMPORT_SSH_OPTS still wins).
+# Without these a dead robot link held the serial worker for the kernel's TCP
+# timeout — an hour-plus during which every queued pull sat behind it (S3-1).
+SSH_CMD+=(-o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4)
 if [ -n "$ROBOT_SSH_KEY" ] && [ -s "$ROBOT_SSH_KEY" ]; then
   SSH_CMD+=(-i "$ROBOT_SSH_KEY" -o IdentitiesOnly=yes -o BatchMode=yes)
 elif [ -n "$ROBOT_SSH_PASSWORD" ]; then
@@ -192,7 +197,8 @@ if [ "${#CAPTURES[@]}" -eq 0 ]; then
   exit 0
 fi
 
-RSYNC_OPTS=(-a --partial --append-verify --human-readable -e "${SSH_CMD[*]}")
+RSYNC_OPTS=(-a --partial --append-verify --human-readable --timeout=60 \
+            -e "${SSH_CMD[*]}")
 [ "$BWLIMIT" != "0" ] && RSYNC_OPTS+=(--bwlimit="$BWLIMIT")
 
 # A capture is already here if its manifest is at the FINAL path with a

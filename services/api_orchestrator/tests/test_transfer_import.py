@@ -295,6 +295,27 @@ class TestTransferApi:
         assert response.status_code == 202
         assert fake_importer.pull_bodies == [{"all": True}]
 
+    def test_pull_status_proxies_the_importers_failure_channel(
+        self, client: TestClient, fake_importer
+    ) -> None:
+        """S3-1: the 202 lands before ssh is touched, so it can never be the
+        completion signal — this is where a dead rsync becomes visible."""
+        fake_importer.present = True
+        capture_id = new_capture_id()
+        fake_importer.pull_states[capture_id] = {
+            "state": "failed",
+            "exit_code": 4,
+            "reason": "ssh to the robot failed (auth or network)",
+        }
+        body = client.get(f"/api/v1/transfer/pull/{capture_id}").json()
+        assert body["state"] == "failed"
+        assert body["reason"].startswith("ssh to the robot failed")
+        # No pull known (e.g. the importer restarted): an honest 404, because
+        # the durable arrival signal remains the replica state.
+        assert (
+            client.get(f"/api/v1/transfer/pull/{new_capture_id()}").status_code == 404
+        )
+
     def test_an_absent_importer_reports_the_channel_as_unavailable(
         self, client: TestClient
     ) -> None:

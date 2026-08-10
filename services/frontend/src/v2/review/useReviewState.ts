@@ -20,7 +20,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { listAllCaptures } from '../../api/captures';
 import { getRetention } from '../../api/system';
-import { pullCapture } from '../../api/transfer';
+import { getPullStatus, pullCapture } from '../../api/transfer';
 import { listBatches } from '../../api/batches';
 import { queryKeys } from '../../api/queryKeys';
 import { TRANSFER_PROGRESS_POLL_MS } from '../pollingPolicy';
@@ -854,6 +854,45 @@ export function useReviewState(): ReviewState {
     }, TRANSFER_PROGRESS_POLL_MS);
     return () => clearInterval(timer);
   }, [anyTransferring, queryClient]);
+
+  // The FAILURE channel (S3-1): the replica sweep above can only ever confirm
+  // arrival — a pull whose rsync died looked exactly like one still running,
+  // and the slot said "Transferring…" forever. While anything is in flight,
+  // read each pull's state off the importer and fail the slot when IT says
+  // failed, with its one-line reason. Arrival stays replica-confirmed.
+  const transferringIds = useMemo(
+    () =>
+      Object.entries(transfers)
+        .filter(([, slot]) => slot.phase === 'transferring')
+        .map(([id]) => id),
+    [transfers],
+  );
+  useEffect(() => {
+    if (transferringIds.length === 0) return;
+    let cancelled = false;
+    const timer = setInterval(() => {
+      for (const id of transferringIds) {
+        getPullStatus(id)
+          .then((pull) => {
+            if (cancelled || pull.state !== 'failed') return;
+            failTransfer(
+              [id],
+              pull.reason
+                ? `Transfer failed — ${pull.reason}`
+                : 'Transfer failed (see the importer log)',
+            );
+          })
+          .catch(() => {
+            // 404 (importer restarted) or a transient read error: the replica
+            // sweep remains the arrival signal, so nothing to change here.
+          });
+      }
+    }, TRANSFER_PROGRESS_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [transferringIds, failTransfer]);
 
   const nAwaiting = useMemo(
     () =>
