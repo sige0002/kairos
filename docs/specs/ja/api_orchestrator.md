@@ -156,6 +156,8 @@ body `{ kind: "discard"|"delete", reason? }`。**`discard` は `reason` 必須**
 
 capture 単位で外部ストレージへ退避する。**copy → sha256 verify → ledger(`capture_archived`) → source 削除**（trash 経由）の順序を守る。
 
+- **`202` + サーバ側実行 + 進捗ポーリング**（2026-08 改修）。多 GB のコピーはどんな proxy タイムアウトよりも長く、リクエスト内で完走させると最悪の分裂 — サーバは archive を完了して source を削除したのに、クライアントは 504 の「失敗」を見る — を起こすため。`POST` は同期の拒否（active / lease 保持 / dataset member / 不正・重なり・非空 destination）だけを行ってから `202 {capture_id, destination, state:"running"}` を返し、実行は背景ラン（走行中の再 POST は `409 archive_in_progress`）。
+- `GET /api/v1/captures/{id}/archive` — 進捗。`{state: "running"|"complete"|"failed", bytes_done, bytes_total, error?, result?}` で、終端エントリは次のランが置き換えるまで読める。ラン登録はメモリのみ（再起動後は `404 archive_not_found`）— データの耐久性は ledger の仕事で、失われるのは進捗ビューだけ。`result` は従来の完了応答（per-file hashes 込み）そのもの。
 - destination は `KAIROS_ARCHIVE_ROOTS` に対して検証してから 1 バイトもコピーしない — このエンドポイントは**最後に source を消す**ので、無制限な destination 文字列がシステム上もっとも危険な入力になる。
 - **重なりの拒否は許可リストとは別の検査**（前者を通ったことは後者の証拠にならない）。検査するのは**解決後の書き込み先**（`<destination>/<capture_id>`）で、許可ルートそのものではない — したがって **`data_dir` を含むルートを許可すること自体は禁止していない**（`KAIROS_ARCHIVE_ROOTS=/data` は operator がやりそうな設定であり、許可リストだけでは自分自身の上へコピーしてから source を消す経路が通ってしまう）。`realpath` で両側を解決し（symlink での偽装を防ぐ）、**両方向の包含**を見る。違反は `400 destination_inside_data_dir`。
 - **非空の destination は `409 destination_not_empty`**（コピーのプリミティブ側で拒否する）。
@@ -180,7 +182,8 @@ dataset の終端遷移。capture archive を dataset に持ち上げたもの�
 - `POST /api/v1/transfer/pull` → `202`。body の **`capture_id` は任意**:
   - **指定あり** → importer へ `{"capture_id": …}` を転送し、その capture だけを引く。
   - **省略** → 「完成している capture を全部引く」の意味になり、importer へは**明示的な `{"all": true}` として転送する**。**空の body を送ってはならない** — importer 側は空 body を `400` で拒否する仕様で、これは意図的な設計である。キーを 1 つ落としただけの要求が、狙い撃ちの pull からロボット全体のスイープへ**降格することを構造的に禁じる**ためで、スイープは常に明示的に要求されたときだけ起きる。
-- **完了はこの API では通知されない**（ack は fire-and-forget）。frontend が見るのは capture の **replica state** で、reconciler が届いたディレクトリを採用した時点で `present_unverified` に変わる。v1 の `bag_local` 真偽値は廃止した — 「ここにある / 無い」しか言えず、**届かなかったコピーと意図的に消したコピーを区別できない**ため。
+- **完了（到着）はこの API では通知されない**（ack は fire-and-forget）。frontend が見るのは capture の **replica state** で、reconciler が届いたディレクトリを採用した時点で `present_unverified` に変わる。v1 の `bag_local` 真偽値は廃止した — 「ここにある / 無い」しか言えず、**届かなかったコピーと意図的に消したコピーを区別できない**ため。
+- `GET /api/v1/transfer/pull/{capture_id}` — **失敗チャネル**（2026-08 追加）。202 は importer が ssh に触れる前に返るので完了信号にはなり得ず、rsync が死んだ pull は importer のコンテナログ以外から見えなかった。importer が per-pull に `queued → running → ok | failed` を追跡し（exit code と 1 行の理由付き）、この endpoint がそれをプロキシする。UI は転送中この状態を読み、`failed` でスロットを失敗表示に落とす（到着確認は従来どおり replica state）。pull が知られていなければ `404`（importer 再起動でメモリ上の追跡は消える — 耐久な答えは replica state）。importer 側は加えて (a) **実行中の pull も dedup 対象**（再クリックが同一ファイルへの 2 本目の `--append-verify` rsync を積まない）、(b) スクリプトをプロセスグループごと kill（timeout が bash だけ殺して rsync 孫を残さない）、(c) ssh に `ConnectTimeout` / `ServerAlive*`、rsync に `--timeout=60`（半開 TCP が直列 worker を 1 時間塞がない）。
 - importer は `.incoming/<capture_id>` に staging し、完了後に `os.replace` で `objects/` へ入れる。したがって `objects/` に見えている capture が部分コピーであることはない（[capture_store](capture_store.md) §2）。
 - **auto-pull**: `transfer.auto_pull_on_save` が有効なとき、**その capture への初回 review 保存**の後に orchestrator が上記の pull を 1 件分投げる。既定は無効で、明示的な opt-in が無い限り何も転送しない。
 
@@ -289,6 +292,7 @@ Settings > Data quality から、選択式カタログ（recording / stream / va
 - **ジョブのキーは `capture_id`**（§10.5）。`POST /api/v1/jobs` の body は `{ capture_id, pipeline, params? }`。`dataset_dir` param は廃止した（ソース解決は `objects/<capture_id>` 一本）。
 - **capture lease をここで取る**（[capture_store](capture_store.md) §7.1）: dora_runner は意図的に lease 非認知（capture を読んで report を書くだけで、削除のことを何も知らない）なので、カタログと削除経路の両方を持つ orchestrator が代わりに取る。投入時に取得、**status / result のポーリング観測ごとに更新（renew-on-poll）**、終端を観測したら owner スコープで解放。lease が生きている間、discard / delete は `409 capture_busy` を返す。
   - **TTL が保証するのは「誰かが観測している間」だけ。** 実行中のジョブは UI が status をポーリングするので守られるが、**キュー待ちは守らない** — 誰もポーリングしないまま待たされたジョブは lease を失い、delete が勝つ。そのジョブは後で `.trash` へ移ったディレクトリに対してきれいに失敗する（遅い正常終了であって破損ではない）。docstring も含め、この保証は正確に述べること。
+  - **cancel と lease**（2026-08 改修）: dora_runner の cancel は協調式になり（[dora_runner](dora_runner.md) の API 節）、`running` の job への cancel 応答は `running` + `cancel_requested: true` のまま — `canceled` は**実作業が実際に死んだとき**にだけ観測される。lease の解放は従来どおり終端状態の観測時なので、この変更により「cancel ラベルで lease が解放され、走行中ジョブの capture が `.trash` へ rename される」経路（timing sweep S1-2）は閉じた。UI の「blocked delete → cancel → retry」も、cancel した job が終端に達するのを（有界に）待ってから retry する。
   - 墓標の capture への投入は `409`（`capture_deleting` / `capture_deleted`）。
 - 対象 capture が未知なら **`404`**、まだ記録中 / 停止中なら **`409`**（書き込み途中の bag を読ませない）。
 - `GET /jobs/{id}/result` の **`artifacts` はデータルート相対に正規化**して返す: dora_runner はコンテナ絶対パス（例 `/data/report/<pipeline>/<capture_id>/plot.png`）を報告するが、orchestrator が `data_dir` 配下のものを相対化するので、各 artifact はそのまま `GET /api/v1/files/{path}` で取得できる。これが**プラグインが UI 無改修で画像（プロット等）を表示させる可視化チャネル**（[dora_plugins.md §2.5](dora_plugins.md)）。`data_dir` 外の絶対パス・元から相対のパスは無変換。
