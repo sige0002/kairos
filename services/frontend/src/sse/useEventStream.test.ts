@@ -41,19 +41,51 @@ test('alert snapshots accumulate newest-first in the alerts cache', () => {
     value: 9,
     state: 'firing',
   };
+  // Both incidents stay present in the second snapshot (the monitor re-sends
+  // every incident's current state each tick).
   dispatchSseEvent(qc, 'alert', JSON.stringify({ ts: 't1', alerts: [a1] }));
-  dispatchSseEvent(qc, 'alert', JSON.stringify({ ts: 't2', alerts: [a2] }));
+  dispatchSseEvent(qc, 'alert', JSON.stringify({ ts: 't2', alerts: [a2, a1] }));
   const alerts = qc.getQueryData<AlertEvent[]>(queryKeys.alerts);
   expect(alerts?.[0]).toEqual(a2);
   expect(alerts?.[1]).toEqual(a1);
 });
 
-test('empty alert snapshots do not clobber the alerts cache', () => {
+test('an incident missing from a later snapshot is materialized as cleared', () => {
+  // The snapshot is COMPLETE current state. A firing incident that stops
+  // being mentioned (its cleared ticks fell into an SSE gap, or the monitor
+  // restarted) must flip to cleared — before 2026-08-12 it stayed "firing"
+  // forever because nothing later ever named it again.
+  const qc = new QueryClient();
+  const a1: AlertEvent = {
+    topic: '/a',
+    metric: 'hz',
+    op: 'lt',
+    threshold: 5,
+    value: 1,
+    state: 'firing',
+  };
+  const b1: AlertEvent = { topic: '/b', metric: 'gap', threshold: 2, state: 'firing' };
+  dispatchSseEvent(qc, 'alert', JSON.stringify({ ts: 't1', alerts: [a1, b1] }));
+  dispatchSseEvent(qc, 'alert', JSON.stringify({ ts: 't2', alerts: [b1] }));
+  const alerts = qc.getQueryData<AlertEvent[]>(queryKeys.alerts) ?? [];
+  const impliedClear = alerts.find((a) => a.topic === '/a' && a.state === 'cleared');
+  expect(impliedClear).toMatchObject({ metric: 'hz', value: null, since: 't2' });
+  // The history keeps the original firing event below the recovery.
+  expect(alerts.filter((a) => a.topic === '/a')).toHaveLength(2);
+});
+
+test('an empty snapshot clears still-firing incidents but keeps the history', () => {
   const qc = new QueryClient();
   const a1: AlertEvent = { topic: '/a', metric: 'hz', op: 'lt', threshold: 5 };
   dispatchSseEvent(qc, 'alert', JSON.stringify({ ts: 't1', alerts: [a1] }));
   dispatchSseEvent(qc, 'alert', JSON.stringify({ ts: 't2', alerts: [] }));
-  expect(qc.getQueryData<AlertEvent[]>(queryKeys.alerts)).toEqual([a1]);
+  const alerts = qc.getQueryData<AlertEvent[]>(queryKeys.alerts) ?? [];
+  expect(alerts[0]).toMatchObject({ topic: '/a', state: 'cleared' });
+  expect(alerts[1]).toEqual(a1);
+  // A second empty snapshot with nothing left to clear is a true no-op.
+  const before = alerts;
+  dispatchSseEvent(qc, 'alert', JSON.stringify({ ts: 't3', alerts: [] }));
+  expect(qc.getQueryData<AlertEvent[]>(queryKeys.alerts)).toBe(before);
 });
 
 test('record_status event writes the record status cache, capture_id included', () => {

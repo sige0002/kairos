@@ -349,7 +349,7 @@ export function FrequencyChartCard({
         )}
         <div className="flex-1" />
         <span className="text-gray-400">
-          REC markers are real · observed shortfall, not confirmed loss
+          REC markers are real · observed shortfall — no confirmed loss
         </span>
       </div>
     </Card>
