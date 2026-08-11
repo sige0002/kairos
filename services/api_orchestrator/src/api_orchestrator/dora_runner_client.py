@@ -2,25 +2,15 @@
 
 from __future__ import annotations
 
-import asyncio
-import time
 from typing import Any
 
 import httpx
-from kairos_common import ApiError, JobState
 
 from api_orchestrator.service_client import (
     DEFAULT_TIMEOUT_S,
     RETRIES,
     BaseServiceClient,
 )
-
-# Job states that mean the job has stopped (no further polling needed).
-_TERMINAL_STATES = {
-    JobState.succeeded.value,
-    JobState.failed.value,
-    JobState.canceled.value,
-}
 
 
 class DoraRunnerClient(BaseServiceClient):
@@ -57,86 +47,6 @@ class DoraRunnerClient(BaseServiceClient):
     async def job_result(self, job_id: str) -> dict[str, Any]:
         """Call ``GET /jobs/{id}/result``."""
         return await self._request("GET", f"/jobs/{job_id}/result")
-
-    async def run_job_to_completion(
-        self,
-        payload: dict[str, Any],
-        *,
-        interval: float = 0.2,
-        backoff: float = 1.5,
-        max_interval: float = 2.0,
-        timeout: float = 120.0,
-    ) -> dict[str, Any]:
-        """Create a job and poll until it reaches a terminal state.
-
-        Used by synchronous orchestrator flows (e.g. dataset export) that must
-        know the outcome before responding. Creates the job, then polls
-        ``job_status`` until the state is terminal (``succeeded`` / ``failed`` /
-        ``canceled``). The poll interval starts at *interval* and grows by
-        *backoff* each round, capped at *max_interval*, so a short job is still
-        picked up promptly while a long job doesn't hammer dora_runner with
-        hundreds of requests. On ANY terminal state it fetches ``job_result`` —
-        dora_runner nests its failure cause under the result's ``summary.error``
-        for failed/canceled jobs, so the caller can surface WHY it failed (not
-        just "failed"). Returns ``{"state": <state>, "result": <result dict or
-        None>}``. Raises :class:`ApiError` 504 if *timeout* elapses first (the
-        underlying dora_runner job keeps running).
-        """
-        created = await self.create_job(payload)
-        job_id = str(created["job_id"])
-        return await self.await_job(
-            job_id,
-            interval=interval,
-            backoff=backoff,
-            max_interval=max_interval,
-            timeout=timeout,
-        )
-
-    async def await_job(
-        self,
-        job_id: str,
-        *,
-        interval: float = 0.2,
-        backoff: float = 1.5,
-        max_interval: float = 2.0,
-        timeout: float = 120.0,
-    ) -> dict[str, Any]:
-        """Poll an ALREADY-CREATED job until it reaches a terminal state.
-
-        Split out of :meth:`run_job_to_completion` for flows that must hand the
-        caller a ``job_id`` immediately and do their bookkeeping afterwards —
-        archiving a multi-GB dataset cannot block the request that started it,
-        but something still has to notice when it finished. Same polling and
-        same return shape as :meth:`run_job_to_completion`.
-        """
-        deadline = time.monotonic() + timeout
-        delay = interval
-        while True:
-            status = await self.job_status(job_id)
-            state = str(status.get("state", ""))
-            if state in _TERMINAL_STATES:
-                result: dict[str, Any] | None = None
-                try:
-                    # Fetch the result on success AND failure: the failed-job
-                    # result carries the cause. Best-effort on the failure path
-                    # so a result-fetch hiccup never masks the real outcome.
-                    result = await self.job_result(job_id)
-                except Exception:  # noqa: BLE001
-                    if state == JobState.succeeded.value:
-                        raise
-                    result = None
-                return {"state": state, "result": result}
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            await asyncio.sleep(min(delay, remaining))
-            delay = min(delay * backoff, max_interval)
-        raise ApiError(
-            status_code=504,
-            code="job_timeout",
-            message="Timed out waiting for the dora_runner job to finish.",
-            details={"job_id": job_id, "timeout_s": timeout},
-        )
 
     async def cancel_job(self, job_id: str) -> dict[str, Any]:
         """Call ``POST /jobs/{id}/cancel``."""

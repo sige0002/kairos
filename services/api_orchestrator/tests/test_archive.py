@@ -283,7 +283,7 @@ class TestDatasetMemberArchive:
             ).json()
             target = roots / "ds" / "001"
 
-            response = asyncio.run(
+            asyncio.run(
                 service.archive_member(
                     capture_id,
                     dataset_id=dataset["dataset_id"],
@@ -299,7 +299,6 @@ class TestDatasetMemberArchive:
             row = store.get_capture(capture_id)
             assert row.archived_at is not None
             assert row.archive_destination == str(target)
-            assert response.verified
             # …plus the annotations that say which sealed dataset this
             # recording is NNN of, in the only record that survives the source.
             event = ledger_v2.archive_events(layout.data_dir)[capture_id]

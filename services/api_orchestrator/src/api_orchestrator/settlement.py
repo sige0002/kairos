@@ -53,11 +53,19 @@ from api_orchestrator.store import CaptureStore
 
 logger = logging.getLogger("kairos")
 
-# ---- stop-time quick-check settlement budget ------------------------------
-QUICK_CHECK_BUDGET_S = 4.0
-_SETTLE_MONITOR_TIMEOUT_S = 1.2
+# ---- stop-time quick-check settlement budgets -----------------------------
+# The settlement runs as a BACKGROUND task after stop, so its monitor budget
+# is not on the operator's critical path — and 1.2 s with no retry was a
+# single-host LAN assumption: in the split deployment these calls cross a real
+# network (robot Wi-Fi, Tailscale), where one slow round trip silently
+# downgraded the verdict to its less-informative fallback (timing sweep S4).
+_SETTLE_MONITOR_TIMEOUT_S = 3.0
+_SETTLE_MONITOR_RETRIES = 1
 _SETTLE_MCAP_TIMEOUT_S = 1.5
-_BASELINE_TIMEOUT_S = 1.0
+# The baseline IS on the critical path (snapshotted inside record start), so
+# it stays retry-free with a budget that tolerates a slow split link without
+# adding seconds to every start against a dead monitor.
+_BASELINE_TIMEOUT_S = 2.0
 
 
 @dataclass
@@ -376,7 +384,7 @@ class SettlementRunner:
             return None
         try:
             body = await self._monitor.metrics(
-                timeout=_SETTLE_MONITOR_TIMEOUT_S, retries=0
+                timeout=_SETTLE_MONITOR_TIMEOUT_S, retries=_SETTLE_MONITOR_RETRIES
             )
         except ApiError:
             return None
@@ -395,7 +403,7 @@ class SettlementRunner:
             return None
         try:
             body = await self._monitor.incidents(
-                0, timeout=_SETTLE_MONITOR_TIMEOUT_S, retries=0
+                0, timeout=_SETTLE_MONITOR_TIMEOUT_S, retries=_SETTLE_MONITOR_RETRIES
             )
         except ApiError:
             return None

@@ -64,6 +64,11 @@ from api_orchestrator.views import sanitize_component
 
 logger = logging.getLogger("kairos")
 
+# How long shutdown waits for in-flight archive runs before halting them
+# cleanly (see `drain`). Short: a run that has not finished in this window is
+# hours from finishing, and the whole point is to beat Docker's SIGKILL.
+DRAIN_GRACE_S = 5.0
+
 MANIFEST_NAME = "dataset_manifest.json"
 MANIFEST_SCHEMA_VERSION = 1
 
@@ -275,11 +280,41 @@ class DatasetArchiver:
         run = self._runs.get(dataset_id)
         return run is not None and run.running
 
-    async def drain(self) -> None:
-        """Await in-flight runs (shutdown, and test determinism)."""
+    async def drain(self, *, grace_s: float = DRAIN_GRACE_S) -> None:
+        """Give in-flight runs a short grace, then HALT them cleanly.
+
+        The old unbounded gather meant ``compose down`` blocked behind an
+        archive that can run for hours, until Docker's stop timeout SIGKILLed
+        the process mid-copy — manufacturing exactly the dirty halt S1-4's
+        resume guards against (timing sweep S4). A bounded drain turns
+        shutdown into the CLEAN variant of the state resume was built for:
+        the run is cancelled at an await point, the reason is recorded, and
+        the next start's resume re-checks the destination before sealing
+        anything. Tests that call this for determinism still get the old
+        behaviour — their runs finish inside the grace.
+        """
         tasks = list(self._tasks)
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        if not tasks:
+            return
+        _, pending = await asyncio.wait(tasks, timeout=grace_s)
+        if not pending:
+            return
+        for run in self._runs.values():
+            # Before the cancel, so the wrapper's `finally` only has to flip
+            # `running` — the progress body then shows WHY it halted instead
+            # of a wordless stop.
+            if run.running and run.error is None:
+                run.error = {
+                    "code": "shutdown",
+                    "message": (
+                        "The orchestrator shut down while this run was "
+                        "copying; nothing was lost. Resume to continue from "
+                        "where it stopped."
+                    ),
+                }
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
 
     # ---- start/resume internals ---------------------------------------------
 

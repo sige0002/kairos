@@ -525,7 +525,11 @@ class CaptureArchiveResponse(BaseModel):
     bytes: int
     file_count: int
     files: list[ArchivedFile] = Field(default_factory=list)
-    verified: bool = True
+    # There is deliberately no `verified` flag: verification is not optional on
+    # this path (every file's hash is compared as it lands, and a mismatch
+    # fails the archive before anything is deleted), so a completed response
+    # IS the verification claim. The old always-True field only fed a UI
+    # warning branch that could never fire (timing sweep S4).
 
 
 class CaptureArchiveAccepted(BaseModel):

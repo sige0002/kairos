@@ -339,12 +339,30 @@ class AiortcPeerManager:
             if pc.iceGatheringState == "complete":
                 done.set()
 
+        # The fixed 5 s was a LAN assumption (timing sweep S4): a TURN
+        # allocation over a slow uplink can take longer, and a partial answer
+        # missing its relay candidate is the "connected but black preview"
+        # family. Tunable so a TURN deployment can raise it; the LAN default
+        # stays snappy.
+        import os
+
         try:
-            await asyncio.wait_for(done.wait(), timeout=5.0)
+            timeout_s = float(os.getenv("WEBRTC_ICE_GATHER_TIMEOUT_S", "5.0"))
+        except ValueError:
+            timeout_s = 5.0
+        try:
+            await asyncio.wait_for(done.wait(), timeout=timeout_s)
         except TimeoutError:
             # Proceed with whatever candidates we have; LAN connectivity usually
-            # works with host candidates alone.
-            logger.debug("ICE gathering timed out; sending partial answer")
+            # works with host candidates alone. Logged at WARNING when ICE
+            # servers are configured — there, a partial answer is the likely
+            # cause of a black preview, and debug-level silence hid it.
+            logger.warning(
+                "ICE gathering did not complete within %.1fs; sending a "
+                "partial answer (set WEBRTC_ICE_GATHER_TIMEOUT_S to wait "
+                "longer, e.g. behind TURN)",
+                timeout_s,
+            )
 
     async def _discard(self, pc: Any) -> None:
         with self._lock:

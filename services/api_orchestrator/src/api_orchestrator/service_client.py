@@ -24,11 +24,13 @@ from kairos_common import ApiError
 DEFAULT_TIMEOUT_S = 3.0
 RETRIES = 1
 # Separate, shorter CONNECT budget: on a healthy LAN a TCP connect completes in
-# milliseconds, so 1s only ever bites when the peer host is gone (robot powered
-# off in the cross-host split) — turning each proxied call's failure from a
-# ~3s-per-attempt hang into ~1s, while a slow RESPONSE still gets the full
-# read timeout.
-CONNECT_TIMEOUT_S = 1.0
+# milliseconds, so this only ever bites when the peer host is gone (robot
+# powered off in the cross-host split) — keeping each proxied call's failure
+# well under the ~3s-per-attempt read hang, while a slow RESPONSE still gets
+# the full read timeout. 2s rather than 1s (timing sweep S4): in the split
+# deployment the first packet crosses real Wi-Fi/VPN, where a 1s connect
+# budget misfired on links that were merely slow, not dead.
+CONNECT_TIMEOUT_S = 2.0
 
 
 class BaseServiceClient:
