@@ -89,8 +89,10 @@ STOP_TIMEOUT_S = 75.0
 
 # POST /record/start now blocks while the recorder applies start_delay_s AND
 # (for --start-paused) waits for subscriptions to match before resuming
-# (subscription_ready_timeout_s). Give it a budget that covers both, with NO
-# retry: a slow-but-succeeding start must not be retried into a 409.
+# (subscription_ready_timeout_s). This is the FLOOR budget (correct for the
+# default config waits), with NO retry: a slow-but-succeeding start must not
+# be retried into a 409. RecordService passes a larger budget derived from the
+# live config when its waits exceed the defaults (S2-3, `_start_budget_s`).
 START_TIMEOUT_S = 25.0
 
 # POST /record/prepare spawns the recorder subprocess ahead of the operator's
@@ -127,30 +129,41 @@ class RecorderClient(BaseServiceClient):
             "recorder", base_url, client, timeout_s=timeout_s, retries=retries
         )
 
-    async def start(self, payload: dict[str, Any]) -> dict[str, Any]:
+    async def start(
+        self, payload: dict[str, Any], *, timeout_s: float | None = None
+    ) -> dict[str, Any]:
         """Call recorder ``POST /record/start``; returns the recorder body.
 
-        Uses the longer :data:`START_TIMEOUT_S` budget (no retry) because the
-        recorder blocks during the start delay + the --start-paused readiness
-        gate; retrying a slow-but-succeeding start would hit a 409.
+        No retry — the recorder blocks during the start delay + the
+        --start-paused readiness gate, and retrying a slow-but-succeeding
+        start would hit a 409. ``timeout_s`` lets the caller pass a budget
+        derived from the live config's own waits (S2-3);
+        :data:`START_TIMEOUT_S` is the floor default.
         """
         return await self._request(
-            "POST", "/record/start", json=payload, timeout=START_TIMEOUT_S, retries=0
+            "POST",
+            "/record/start",
+            json=payload,
+            timeout=timeout_s if timeout_s is not None else START_TIMEOUT_S,
+            retries=0,
         )
 
-    async def prepare(self, payload: dict[str, Any]) -> dict[str, Any]:
+    async def prepare(
+        self, payload: dict[str, Any], *, timeout_s: float | None = None
+    ) -> dict[str, Any]:
         """Call recorder ``POST /record/prepare``; returns the recorder body.
 
         Same body shape as :meth:`start`. Returns ``{run_id, state: "armed",
         arming, disarm_at}`` (or the recorder's own error, e.g. ``409`` if it
-        is already actively recording). Uses :data:`PREPARE_TIMEOUT_S` with no
-        retry — see that constant's docstring for why retrying is not done.
+        is already actively recording). Same budget semantics as :meth:`start`
+        (config-derived ``timeout_s``, else :data:`PREPARE_TIMEOUT_S`), with
+        no retry — see that constant's docstring for why retrying is not done.
         """
         return await self._request(
             "POST",
             "/record/prepare",
             json=payload,
-            timeout=PREPARE_TIMEOUT_S,
+            timeout=timeout_s if timeout_s is not None else PREPARE_TIMEOUT_S,
             retries=0,
         )
 

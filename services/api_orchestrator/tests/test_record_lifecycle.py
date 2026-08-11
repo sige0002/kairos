@@ -325,14 +325,16 @@ class TestPrepare:
         client.post("/api/v1/record/prepare", json={"topics": ["/joint_states"]})
         assert _store(client).list_captures(limit=10)[0] == []
 
-    def test_a_rejected_prepare_with_a_capture_id_is_filed_as_failed(
+    def test_a_rejected_prepare_files_no_row_even_with_a_capture_id(
         self, client: TestClient, fake_recorder: FakeRecorder
     ) -> None:
-        # The recorder wrote objects/<id>.failed.json before rejecting, so the
-        # store already contains this failure. Without a row the operator only
-        # meets it after the next rebuild — a §13-4 catalog divergence the
-        # acceptance suite caught live (a pre-arm keep-alive failed to arm and
-        # the capture appeared out of nowhere after rm kairos.db).
+        # S2-7: the recorder no longer mints objects/<id>.failed.json for a
+        # failed pre-arm probe, so filing a row here would be the §13-4
+        # divergence (a row the next rebuild silently drops). The failure
+        # reaches the operator through the propagated rejection — the console
+        # surfaces a failing pre-arm live — not through the capture list.
+        # (The pre-S2-7 contract was the exact opposite: sidecar + row per
+        # failed keep-alive, which piled up a failed capture every 30 s.)
         known = "01920000-0000-7000-8000-0000000000ab"
         fake_recorder.prepare_status = 507
         fake_recorder.prepare_error = {
@@ -345,11 +347,41 @@ class TestPrepare:
         )
         # The caller armed nothing and must know — the rejection propagates.
         assert response.status_code >= 500
-        capture = _store(client).get_capture(known)
-        assert capture is not None
-        assert capture.state == CaptureState.failed
-        assert capture.error is not None
-        assert capture.error.code == "record_arm_failed"
+        assert _store(client).get_capture(known) is None
+        assert _store(client).list_captures(limit=10)[0] == []
+
+    def test_start_budget_scales_with_the_live_configs_waits(
+        self, client: TestClient
+    ) -> None:
+        # S2-3: the flat 25 s budget left 0.5 s of margin against the default
+        # config waits, and a documented `start_delay_s: 10` (camera warm-up)
+        # made every cold start a 503 that filed a failed row onto a recording
+        # that was actually coming up. The budget must follow the config.
+        from kairos_common import RecordingConfig, RecordingTuning
+
+        service = client.app.state.record_service
+        original = service._config
+        try:
+            service._config = None
+            assert service._start_budget_s() == pytest.approx(25.0)
+            # The default waits (2 + 5 + 0) land exactly on the floor.
+            service._config = RecordingConfig(robot_name="t")
+            assert service._start_budget_s() == pytest.approx(25.0)
+            # Camera warm-up: 18 (floor) + 10 + 5 + 0.
+            service._config = RecordingConfig(
+                robot_name="t", recording=RecordingTuning(start_delay_s=10)
+            )
+            assert service._start_budget_s() == pytest.approx(33.0)
+            # The budget never shrinks below the floor constant.
+            service._config = RecordingConfig(
+                robot_name="t",
+                recording=RecordingTuning(
+                    start_delay_s=0, subscription_ready_timeout_s=0
+                ),
+            )
+            assert service._start_budget_s() == pytest.approx(25.0)
+        finally:
+            service._config = original
 
     def test_a_rejected_prepare_with_no_capture_id_creates_no_row(
         self, client: TestClient, fake_recorder: FakeRecorder

@@ -461,6 +461,35 @@ def test_failed_start_writes_a_sibling_marker_not_a_capture_dir(
     assert session.status().state is RunState.created
 
 
+def test_failed_prepare_is_not_filed_as_a_capture(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    """S2-7: a failed pre-arm probe answers 507 but mints no failed capture.
+
+    prepare() is the console's background keep-alive, repeated every 30 s. A
+    persistent arm blocker (topic mismatch, disk full) used to deposit
+    objects/<id>.failed.json — and, through the orchestrator, a failed row —
+    per attempt: an unbounded pile of "Not usable" captures nobody asked to
+    create, while the screen showed nothing. The failure now lives in the
+    response (the console surfaces it) and the log; only an operator start()
+    files.
+    """
+    session = _make_session(
+        settings, fake_process, write_metadata, behavior="no_dir", returncode=1
+    )
+    with pytest.raises(ApiError) as exc:
+        session.prepare(_start_req("run_prearm_fail"))
+
+    assert exc.value.status_code == 507
+    capture_id = exc.value.details["capture_id"]
+    assert is_uuid7(capture_id)
+    # Nothing under objects/ carries this id: no dir, no .failed.json, and no
+    # leftover .qos.yaml / storage-config siblings either.
+    objects_root = Path(settings.data_dir) / "objects"
+    assert list(objects_root.glob(f"{capture_id}*")) == []
+    assert session.status().state is RunState.created
+
+
 def test_failed_start_write_error_is_surfaced_in_the_response(
     settings: Settings,
     fake_process: type,

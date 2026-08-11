@@ -506,6 +506,7 @@ class RecorderSession:
         *,
         force_paused: bool,
         arm: Callable[[str, list[str], bool], Any] | None,
+        file_failure: bool = True,
     ) -> _Spawned:
         """Mint the capture, spawn ``ros2 bag record``, and confirm it came up.
 
@@ -515,6 +516,16 @@ class RecorderSession:
         spawn, wait for the output dir, then run the arming gate. Each failure
         raises 507 and leaves the store the way §3.4 requires — a
         ``.failed.json`` sibling and nothing else.
+
+        ``file_failure=False`` (the ``prepare()`` path) reports failures in the
+        error response only, without minting the ``.failed.json`` sibling: a
+        pre-arm is a background readiness probe the console repeats every 30 s,
+        not an operator's attempt to record, so a persistent arm blocker (topic
+        mismatch, disk full) must not deposit an unbounded pile of failed
+        captures in the store while nothing tells the operator (timing sweep
+        S2-7). The failure still reaches the operator — the console surfaces
+        the failing pre-arm live — and an actual ``start()`` against the same
+        blocker files normally.
 
         The callers differ only in how the subprocess is paused and armed.
         ``prepare()`` passes ``force_paused=True`` (arming without pausing first
@@ -568,8 +579,14 @@ class RecorderSession:
         try:
             process = self._spawn_process(cmd)
         except (OSError, ValueError) as exc:
-            marker_error = self._fail(
-                capture_id, run_id, started_at, request, staged_topics, str(exc)
+            marker_error = self._record_or_discard_failure(
+                file_failure,
+                capture_id,
+                run_id,
+                started_at,
+                request,
+                staged_topics,
+                str(exc),
             )
             raise ApiError(
                 status_code=507,
@@ -593,7 +610,8 @@ class RecorderSession:
             self._terminate_failed_start(process)
             returncode = process.returncode
             self._remove_capture_dir(capture_id)
-            marker_error = self._fail(
+            marker_error = self._record_or_discard_failure(
+                file_failure,
                 capture_id,
                 run_id,
                 started_at,
@@ -627,7 +645,8 @@ class RecorderSession:
                 self._remove_capture_dir(capture_id)
                 # Drop the partial arming snapshot; this session never started.
                 self._arming = None
-                marker_error = self._fail(
+                marker_error = self._record_or_discard_failure(
+                    file_failure,
                     capture_id,
                     run_id,
                     started_at,
@@ -707,9 +726,15 @@ class RecorderSession:
             # ALWAYS spawn --start-paused here, regardless of
             # recording.start_paused, and arm WITHOUT resuming: the matched
             # node + Resume/IsPaused clients come back alive so a later
-            # start() is just a resume call.
+            # start() is just a resume call. file_failure=False: a failed
+            # pre-arm probe answers its caller but is not filed as a failed
+            # capture (S2-7) — only an operator's start() files.
             spawned = self._spawn_and_await(
-                request, run_id, force_paused=True, arm=self._prepare_arm
+                request,
+                run_id,
+                force_paused=True,
+                arm=self._prepare_arm,
+                file_failure=False,
             )
             capture_id = spawned.capture_id
             node, resume_client, is_paused_client, owns_rclpy = spawned.arm_result
@@ -1791,6 +1816,40 @@ class RecorderSession:
                 "dropped_messages": self._dropped_messages,
             },
         )
+
+    def _record_or_discard_failure(
+        self,
+        file_failure: bool,
+        capture_id: str,
+        run_id: str,
+        started_at: str,
+        request: RecordStartRequest,
+        topics: list[TopicEntry],
+        error: str,
+    ) -> str | None:
+        """Dispatch a spawn/arm failure to :meth:`_fail`, or clean up silently.
+
+        The silent branch (``file_failure=False``, the pre-arm probe) removes
+        the same sibling files :meth:`_fail` would but writes no
+        ``.failed.json``: the store must not accumulate a failed capture per
+        keep-alive attempt (S2-7). The failure is still logged here — the log
+        line is then the only durable trace, which is the point.
+        """
+        if file_failure:
+            return self._fail(capture_id, run_id, started_at, request, topics, error)
+        logger.warning(
+            "pre-arm failed; not filed as a capture (background probe)",
+            extra={
+                "capture_id": capture_id,
+                "run_id": run_id,
+                "error": error,
+                "component": "recorder",
+            },
+        )
+        self._cleanup_qos_file(capture_id)
+        self._cleanup_storage_config(capture_id)
+        self._cleanup_log_file(capture_id)
+        return None
 
     def _fail(
         self,

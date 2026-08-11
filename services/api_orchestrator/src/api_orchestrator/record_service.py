@@ -66,7 +66,7 @@ from api_orchestrator.models import (
     coerce_error,
 )
 from api_orchestrator.monitor_client import MonitorClient
-from api_orchestrator.recorder_client import RecorderClient
+from api_orchestrator.recorder_client import START_TIMEOUT_S, RecorderClient
 from api_orchestrator.settlement import (
     MonitorBaseline,
     SettlementRunner,
@@ -85,6 +85,14 @@ _MAX_RUN_ID_ATTEMPTS = 50
 # manifest", and it is preserved onto the capture so an operator can see which
 # recording needs repairing.
 _MANIFEST_CORRUPT = "manifest_corrupt"
+
+# The config-independent share of a recorder start's worst case, for
+# _start_budget_s: subprocess spawn + output-dir wait (3 s) + the resume
+# service round-trips (~15 s bounded) + slack for the UNBOUNDED rclpy/DDS
+# participant init the arming gate performs before any of its timed waits.
+# Floor + the default config waits (2 + 5 + 0) reproduces the long-standing
+# 25 s budget exactly.
+_START_BUDGET_FLOOR_S = 18.0
 
 # Recorder states that mean a session is genuinely in progress.
 _ACTIVE_RECORDER_STATES = {
@@ -224,10 +232,13 @@ class RecordService:
 
         A successful prepare creates no capture row: the recorder holds the
         armed session, and an abandoned prepare auto-disarms on its own
-        timeout. A recorder rejection is filed as a ``failed`` row first (the
-        recorder wrote ``objects/<id>.failed.json`` before rejecting, so the
-        store already contains the failure) and then propagates — the caller
-        armed nothing and must know.
+        timeout. A recorder rejection propagates WITHOUT filing a ``failed``
+        row: the recorder does not mint a ``.failed.json`` for a failed
+        pre-arm probe either (S2-7) — a background keep-alive that cannot arm
+        (topic mismatch, disk full) must not deposit a failed capture every
+        30 s while nothing tells the operator. The console surfaces the
+        failing pre-arm live instead; an operator ``start`` against the same
+        blocker still files normally.
         """
         # Before the recorder is told anything. These labels reach views/ as
         # path components whenever a dataset leaves its own unset
@@ -240,13 +251,9 @@ class RecordService:
         async with self._lifecycle_lock:
             run_id = self._allocate_run_id()
             payload = self._build_recorder_payload(run_id, topics, req)
-            try:
-                body = await self._recorder.prepare(payload)
-            except ApiError as exc:
-                self._file_failed_start_row(
-                    run_id, req, exc, _capture_id_of(exc.details or {})
-                )
-                raise
+            body = await self._recorder.prepare(
+                payload, timeout_s=self._start_budget_s()
+            )
             # A matching re-prepare extends the already-armed session and
             # returns THAT session's ids — adopt them, or a later start would
             # claim ids the recorder never armed.
@@ -342,7 +349,9 @@ class RecordService:
 
             payload = self._build_recorder_payload(run_id, topics, req)
             try:
-                body = await self._recorder.start(payload)
+                body = await self._recorder.start(
+                    payload, timeout_s=self._start_budget_s()
+                )
             except ApiError as exc:
                 return self._record_failed_start(run_id, req, exc, prepared)
 
@@ -512,6 +521,35 @@ class RecordService:
                 message="topics omitted and RECORDING_CONFIG has no default_topics.",
             )
         return default
+
+    def _start_budget_s(self) -> float:
+        """Round-trip budget for recorder ``/record/start`` and ``/record/prepare``.
+
+        The recorder blocks through its config's own bounded waits before it
+        answers — ``start_delay_s`` (pre-spawn ramp-up), the subscription
+        readiness gate, and ``post_discovery_delay_s`` — so a FIXED budget is a
+        booby trap: the flat 25 s left a 0.5 s margin against the default
+        waits, and a documented config choice (``start_delay_s: 10`` for camera
+        warm-up) pushed every cold start into a 503 whose ``_record_failed_start``
+        stamped a ``failed`` row onto a recording that was actually coming up
+        (timing sweep S2-3). Derive the budget from the LIVE config instead —
+        the same config whose QoS patterns ride the start payload — plus a
+        floor for the config-independent parts (spawn + output-dir wait +
+        resume round-trips + the unbounded rclpy/DDS init). Never below
+        :data:`START_TIMEOUT_S`, which stays correct for the defaults. A
+        recorder still running an older config after a select can exceed a
+        SMALLER derived budget, but never this max().
+        """
+        if self._config is None:
+            return START_TIMEOUT_S
+        tuning = self._config.recording
+        derived = (
+            _START_BUDGET_FLOOR_S
+            + tuning.start_delay_s
+            + tuning.subscription_ready_timeout_s
+            + tuning.post_discovery_delay_s
+        )
+        return max(START_TIMEOUT_S, derived)
 
     def _build_recorder_payload(
         self, run_id: str, topics: list[str] | str, req: RecordStartRequest
