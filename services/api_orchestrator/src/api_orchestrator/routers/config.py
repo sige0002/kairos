@@ -1,5 +1,5 @@
 """Config endpoints (``/api/v1/config/options`` + ``/select`` + ``/recording``
-+ ``/alerts``).
++ ``/stream`` + ``/alerts``).
 
 The Config tab reads the per-category options and the active selection, and
 posts a selection. Phase 1 = the ``validation`` category (applies immediately;
@@ -11,6 +11,12 @@ the on-prem ``settings.recording_config`` file and updates the in-memory copy so
 ``GET /api/v1/config`` and the next start reflect it immediately. Recorder QoS
 and monitor expected_hz/allowlist still load at service startup, so those parts
 only fully apply on restart (the UI says so honestly).
+
+``/stream`` mirrors ``/recording`` for the STREAM_CONFIG (the Collect camera
+grid layout): ``GET`` returns the live copy + its path, ``PUT`` validates,
+atomically persists to the ACTIVE stream file, and hot-swaps the in-memory copy
+— the layout is read per-request by ``GET /api/v1/config``, so a save applies
+immediately with no restart caveat.
 
 ``/alerts`` is the per-robot single-file aspect editor Settings > Data quality
 drives (F2''). It resolves the ACTIVE robot's file through the catalog
@@ -32,6 +38,7 @@ import yaml
 from fastapi import APIRouter, Request
 from kairos_common import ApiError, load_recording_config, load_stream_config
 from kairos_common.recording_config import RecordingConfig
+from kairos_common.stream_config import StreamConfig
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from api_orchestrator.config_catalog import ASPECTS, ConfigCatalog
@@ -105,11 +112,20 @@ def _apply_recording(request: Request, catalog: ConfigCatalog) -> None:
 
 def _apply_stream(request: Request, catalog: ConfigCatalog) -> None:
     """Hot-swap the live STREAM_CONFIG (read by GET /api/v1/config) to the active
-    robot's active option; ``None`` when the robot has no stream option."""
+    robot's active option.
+
+    A robot with a config dir but no stream file yet still gets a WRITE
+    target (the conventional ``stream/default.yaml``) so the Settings editor
+    can create the file — the same behaviour the startup path has (which
+    derives the path from ``STREAM_CONFIG``). ``None`` path only when the
+    robot has no config dir at all (nowhere to read or write).
+    """
     path = catalog.resolve_path("stream")
     if path is None:
         request.app.state.stream_config = None
-        request.app.state.stream_config_path = None
+        request.app.state.stream_config_path = catalog.robot_config_file(
+            "stream", "default.yaml"
+        )
         return
     try:
         config = load_stream_config(path)
@@ -262,6 +278,118 @@ async def put_recording_config(
     request.app.state.record_service.set_recording_config(config)
     logger.info("recording config updated", extra={"path": str(path)})
     return _recording_payload(config, settings.recording_config)
+
+
+# ---- stream config (full editor) ------------------------------------------
+# Settings > Robots edits the ACTIVE robot's ACTIVE stream option in place,
+# mirroring /recording: validate, atomically persist, hot-swap the live copy.
+# The file is UI-facing layout only (camera grid columns + panes), so a save
+# genuinely applies immediately — GET /api/v1/config serves the new layout and
+# no ROS service holds a startup copy of it.
+
+
+class StreamConfigBody(BaseModel):
+    """Body for ``PUT /api/v1/config/stream``: ``{config: <object>}``.
+
+    Like :class:`RecordingConfigBody`, ``config`` is opaque here and validated
+    against :class:`StreamConfig` in the handler so schema errors surface as a
+    422 with the offending fields.
+    """
+
+    config: dict[str, Any]
+
+
+def _stream_editor_payload(
+    config: StreamConfig | None, path: str | None, error: str | None = None
+) -> dict[str, Any]:
+    """Shape the GET/PUT response: config dump (or null) + file path + error.
+
+    ``error`` is non-null only for a file that EXISTS but failed to load —
+    the editor must say so instead of presenting the broken file as a clean
+    empty config that a save would silently replace.
+    """
+    return {
+        "config": config.model_dump(mode="json") if config is not None else None,
+        "path": path,
+        "error": error,
+    }
+
+
+def _stream_state(request: Request) -> tuple[StreamConfig | None, str | None]:
+    config: StreamConfig | None = getattr(request.app.state, "stream_config", None)
+    path = getattr(request.app.state, "stream_config_path", None)
+    return config, str(path) if path is not None else None
+
+
+@router.get("/stream")
+async def get_stream_config(request: Request) -> dict[str, Any]:
+    """Return the live STREAM_CONFIG (or ``config: null``) + its file path.
+
+    ``config`` is null when the file is absent or failed to load — the two
+    are distinguished by ``error``: null for an absent file (a save creates
+    it), the loader's message for a present-but-broken one (a save REPLACES
+    it, and the editor warns before letting that happen). ``path`` is null
+    only when the active robot has no config dir at all (nowhere to write —
+    a robot with a config dir but no stream file yet gets the conventional
+    creation target). Sourced from ``app.state.stream_config`` (live), so it
+    reflects any prior PUT or select without a restart; a file fixed on disk
+    behind a broken live state is re-adopted here.
+    """
+    config, path = _stream_state(request)
+    error: str | None = None
+    if config is None and path is not None and Path(path).exists():
+        try:
+            config = load_stream_config(path)
+        except (ValueError, OSError) as exc:
+            error = str(exc)
+        else:
+            # The on-disk file is valid again (fixed outside kairos after a
+            # failed startup load) — converge the live copy to it.
+            request.app.state.stream_config = config
+    return _stream_editor_payload(config, path, error)
+
+
+@router.put("/stream")
+async def put_stream_config(request: Request, body: StreamConfigBody) -> dict[str, Any]:
+    """Validate, atomically persist, and hot-swap the STREAM_CONFIG.
+
+    Writes to the ACTIVE stream file (a robot/aspect selection may have
+    re-pointed it) — never a path from the request. A schema error yields 422
+    with the field errors and leaves the file untouched; a robot without a
+    stream aspect yields 404 (there is no file to write).
+    """
+    try:
+        config = StreamConfig.model_validate(body.config)
+    except ValidationError as exc:
+        raise ApiError(
+            status_code=422,
+            code="invalid_config",
+            message="Stream config failed validation.",
+            details={"errors": exc.errors(include_url=False)},
+        ) from exc
+
+    _, path = _stream_state(request)
+    if path is None:
+        raise ApiError(
+            status_code=404,
+            code="config_not_found",
+            message="The active robot has no stream config file to write.",
+        )
+    try:
+        atomic_write_yaml(Path(path), config.model_dump(mode="json"))
+    except OSError as exc:
+        logger.warning("stream config write failed", extra={"error": str(exc)})
+        raise ApiError(
+            status_code=500,
+            code="config_write_failed",
+            message="Could not persist the stream config.",
+            details={"path": path},
+        ) from exc
+
+    # Hot-swap the live copy so GET /api/v1/config serves the new layout now.
+    request.app.state.stream_config = config
+    logger.info("stream config updated", extra={"path": path})
+    return _stream_editor_payload(config, path)
 
 
 # ---- alerts config (per-robot single-file aspect editor) -------------------

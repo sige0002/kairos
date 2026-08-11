@@ -70,6 +70,19 @@ const RECORDING = {
   path: '/config/airoa_hsr/recording/default.yaml',
 };
 
+// GET /api/v1/config/stream — the Collect camera-pane layout editor's source.
+// `path: null` (a robot without a config dir) and `error` (a present-but-
+// broken file) are flipped per-test.
+let streamPayload: {
+  config: Record<string, unknown> | null;
+  path: string | null;
+  error: string | null;
+} = {
+  config: { columns: 2, panes: [{ topic: '/cam/a' }, { topic: '/cam/b' }] },
+  path: '/config/airoa_hsr/stream/default.yaml',
+  error: null,
+};
+
 // GET /api/v1/config/robots/{robot} — read-only view of a non-active robot.
 const ROBOT_CONFIG_TEMPLATE = {
   robot: 'template',
@@ -184,6 +197,15 @@ function mockFetch() {
       }
       return Promise.resolve(jsonResponse(RECORDING));
     }
+    if (url.includes('/config/stream')) {
+      if (method === 'PUT') {
+        const body = JSON.parse(String((init as RequestInit).body));
+        return Promise.resolve(
+          jsonResponse({ config: body.config, path: streamPayload.path, error: null }),
+        );
+      }
+      return Promise.resolve(jsonResponse(streamPayload));
+    }
     if (url.includes('/config/select')) {
       const body = JSON.parse(String((init as RequestInit).body));
       return Promise.resolve(jsonResponse(echoSelect(body)));
@@ -245,6 +267,11 @@ beforeEach(() => {
   setApiBase('/api/v1');
   recordState = 'created';
   liveReported = true;
+  streamPayload = {
+    config: { columns: 2, panes: [{ topic: '/cam/a' }, { topic: '/cam/b' }] },
+    path: '/config/airoa_hsr/stream/default.yaml',
+    error: null,
+  };
   serverPlans = { projects: null, failure_reasons: null, operators: null, updated_at: null };
   plansGate = null;
   plansPutFails = false;
@@ -520,6 +547,83 @@ test('saving the recording editor PUTs the edited config', async () => {
     expect(JSON.parse(String((put![1] as RequestInit).body))).toEqual({ config: edited });
   });
   expect(await screen.findByText('Saved')).toBeInTheDocument();
+});
+
+test('saving the stream editor PUTs the edited layout and reports immediate apply', async () => {
+  renderWithClient(<SettingsScreen />);
+  const editor = (await screen.findByLabelText('stream config json')) as HTMLTextAreaElement;
+  await waitFor(() => expect(editor.value).toContain('"/cam/a"'));
+
+  const edited = { columns: 3, panes: [{ topic: '/cam/a' }] };
+  fireEvent.change(editor, { target: { value: JSON.stringify(edited, null, 2) } });
+  fireEvent.click(screen.getByTestId('stream-config-save'));
+
+  await waitFor(() => {
+    const calls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls;
+    const put = calls.find(
+      (c) =>
+        String(c[0]).includes('/config/stream') &&
+        ((c[1] as RequestInit)?.method ?? 'GET') === 'PUT',
+    );
+    expect(put).toBeDefined();
+    expect(JSON.parse(String((put![1] as RequestInit).body))).toEqual({ config: edited });
+  });
+  // The saved note states the immediate apply (no restart caveat — honest:
+  // the layout is served per-request by GET /api/v1/config).
+  expect(await screen.findByTestId('stream-saved-note')).toHaveTextContent(
+    /applies immediately/i,
+  );
+});
+
+test('invalid JSON in the stream editor disables Save before the server sees it', async () => {
+  renderWithClient(<SettingsScreen />);
+  const editor = (await screen.findByLabelText('stream config json')) as HTMLTextAreaElement;
+  await waitFor(() => expect(editor.value).toContain('"/cam/a"'));
+
+  fireEvent.change(editor, { target: { value: '{ not json' } });
+  expect(await screen.findByText(/Invalid JSON/)).toBeInTheDocument();
+  expect(screen.getByTestId('stream-config-save')).toBeDisabled();
+  // No PUT went out.
+  const calls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls;
+  const put = calls.find(
+    (c) =>
+      String(c[0]).includes('/config/stream') &&
+      ((c[1] as RequestInit)?.method ?? 'GET') === 'PUT',
+  );
+  expect(put).toBeUndefined();
+});
+
+test('a robot without a config dir gets an explanation, not an editor', async () => {
+  streamPayload = { config: null, path: null, error: null };
+  renderWithClient(<SettingsScreen />);
+  expect(await screen.findByTestId('stream-config-absent')).toHaveTextContent(
+    /has no stream config to edit/i,
+  );
+  expect(screen.queryByLabelText('stream config json')).not.toBeInTheDocument();
+});
+
+test('a present-but-broken stream file is disclosed before a save can replace it', async () => {
+  streamPayload = {
+    config: null,
+    path: '/config/airoa_hsr/stream/default.yaml',
+    error: 'Stream config is not valid YAML: mapping values are not allowed here',
+  };
+  renderWithClient(<SettingsScreen />);
+  const warning = await screen.findByTestId('stream-load-error');
+  expect(warning).toHaveTextContent(/exists but failed to load/i);
+  expect(warning).toHaveTextContent(/saving REPLACES the broken file/i);
+  // The editor stays usable as the recovery path, seeded empty.
+  const editor = (await screen.findByLabelText('stream config json')) as HTMLTextAreaElement;
+  expect(editor.value).toBe('{}');
+});
+
+test('the read-only robot view explains an absent stream config', async () => {
+  renderWithClient(<SettingsScreen />);
+  // Preview the non-active `template` robot (aspects.stream is null there).
+  fireEvent.click(await screen.findByTestId('robot-row-1'));
+  await screen.findByTestId('robot-readonly-banner');
+  expect(await screen.findByText(/has no stream config/i)).toBeInTheDocument();
+  expect(screen.queryByTestId('robot-readonly-stream-config')).not.toBeInTheDocument();
 });
 
 test('menu switches Robots → Plans → Recording (real, not a placeholder) → back', async () => {

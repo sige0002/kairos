@@ -400,6 +400,10 @@ def create_orchestrator_app(
     app.state.recording_config = recording_config
     app.state.recording_config_path = resolve_config_path(settings.recording_config)
     app.state.stream_config = stream_config
+    # Where PUT /api/v1/config/stream writes. Set even when the file is absent
+    # (stream_config None) so a first save CREATES it; a config select re-points
+    # it (or sets it None for a robot without a stream aspect).
+    app.state.stream_config_path = resolve_config_path(settings.stream_config)
 
     app.include_router(config_router.router)
     app.include_router(record_router.router)

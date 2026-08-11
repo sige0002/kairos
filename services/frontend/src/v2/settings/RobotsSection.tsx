@@ -27,6 +27,7 @@ import { Badge, Button, Card, Modal, cn } from '../../components/ui';
 import { ErrorMessage } from '../../components/ErrorMessage';
 import { RECORDING_CONFIG_KEY } from '../../api/queryKeys';
 import { optionLabel, RecordingConfigEditor } from './RecordingConfigEditor';
+import { STREAM_CONFIG_PREFIX, StreamConfigEditor } from './StreamConfigEditor';
 
 const TOPIC_CHIP_CLASS =
   'inline-flex items-center gap-1.5 rounded-chip bg-teal-100 px-2.5 py-1 font-mono text-[11.5px] font-semibold text-teal-700';
@@ -84,6 +85,8 @@ export function RobotsSection({ config }: { config: RuntimeConfig | undefined })
       queryClient.setQueryData(queryKeys.configOptions, data);
       queryClient.invalidateQueries({ queryKey: queryKeys.runtimeConfig });
       queryClient.invalidateQueries({ queryKey: RECORDING_CONFIG_KEY });
+      // A robot or stream-option switch re-points the stream file too.
+      queryClient.invalidateQueries({ queryKey: STREAM_CONFIG_PREFIX });
       if (vars.category === 'robot') setSwitchedRobot(true);
     },
   });
@@ -272,6 +275,18 @@ export function RobotsSection({ config }: { config: RuntimeConfig | undefined })
                 </p>
               )}
             </div>
+            <div>
+              <h3 className="mb-2 text-[13px] font-semibold uppercase tracking-[0.04em] text-gray-500">
+                Stream config
+              </h3>
+              {config ? (
+                <StreamConfigEditor config={config} />
+              ) : (
+                <p className="text-sm text-gray-500">
+                  Stream config is unavailable — the runtime config could not be loaded.
+                </p>
+              )}
+            </div>
           </div>
         ) : (
           <ReadOnlyRobotDetail robot={selectedRobotId} />
@@ -398,6 +413,27 @@ function ReadOnlyRobotDetail({ robot }: { robot: string }) {
             <p className="mt-1.5 text-xs text-gray-400">
               Shown as a template. Activate {robot} to edit its recording config.
             </p>
+          </div>
+          <div>
+            <h3 className="mb-2 text-[13px] font-semibold uppercase tracking-[0.04em] text-gray-500">
+              Stream config
+            </h3>
+            {query.data.aspects.stream ? (
+              <textarea
+                aria-label="stream config json (read-only)"
+                data-testid="robot-readonly-stream-config"
+                readOnly
+                disabled
+                spellCheck={false}
+                value={JSON.stringify(query.data.aspects.stream.content ?? {}, null, 2)}
+                className="h-40 w-full rounded-control border border-gray-200 bg-gray-50 p-2 font-mono text-xs text-gray-600"
+              />
+            ) : (
+              <p className="text-sm text-gray-500">
+                {robot} has no stream config (the Collect camera grid falls back to one empty
+                pane).
+              </p>
+            )}
           </div>
         </>
       )}

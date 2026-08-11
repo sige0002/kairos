@@ -205,6 +205,32 @@ def test_select_local_robot(tmp_path: Path, fake_recorder) -> None:
         assert cfg["stream"] == {"columns": 2, "panes": []}
 
 
+def test_stream_editor_can_create_the_file_for_a_streamless_robot(
+    tmp_path: Path, fake_recorder
+) -> None:
+    """Selecting a robot with a config dir but no stream/ keeps a WRITE target.
+
+    Before 2026-08-12, only the startup path had one — after a select the
+    path went null and PUT answered 404, so whether the editor worked
+    depended on how the robot became active, not on the robot.
+    """
+    with _client(tmp_path, fake_recorder, _FakeDora()) as c:
+        c.post("/api/v1/config/select", json={"category": "robot", "id": "charlie"})
+        body = c.get("/api/v1/config/stream").json()
+        assert body["config"] is None
+        assert body["path"] is not None
+        assert body["path"].endswith("charlie/stream/default.yaml")
+
+        resp = c.put(
+            "/api/v1/config/stream",
+            json={"config": {"columns": 1, "panes": [{"topic": "/c/cam"}]}},
+        )
+        assert resp.status_code == 200
+        created = Path(body["path"])
+        assert created.exists()
+        assert c.get("/api/v1/config").json()["stream"]["columns"] == 1
+
+
 def test_select_bad_input(tmp_path: Path, fake_recorder) -> None:
     with _client(tmp_path, fake_recorder, _FakeDora()) as c:
         assert (
