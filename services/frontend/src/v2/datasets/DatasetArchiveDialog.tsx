@@ -204,7 +204,13 @@ function ConfirmBody({ state }: { state: DatasetsState }) {
 
 function ProgressBody({ state }: { state: DatasetsState }) {
   const progress = state.datasetArchiveProgress;
-  const halted = progress != null && !progress.running && progress.error != null;
+  // Halted = the run is NOT running (and we are not mid-resume) — the same
+  // definition the Resume button below uses. This used to also require an
+  // error, so a run stopped by an orchestrator restart (no error recorded)
+  // wore a teal "archiving" badge for hours next to a Resume button that knew
+  // better (S3-8/D5). A copy that is not copying is halted, error or not.
+  const halted =
+    progress != null && !progress.running && !state.datasetArchiveStarting;
   const haltGuidance = readCaptureCode(
     progress?.error?.code,
     progress?.error?.message,

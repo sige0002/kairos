@@ -164,6 +164,13 @@ export const UNSAVED_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 export const PREARM_KEEPALIVE_LEAD_MS = 20_000;
 // Retry cadence after a failed prepare (or when disarm_at is unknown).
 export const PREARM_RETRY_MS = 30_000;
+// Failed prepares back off (doubling from PREARM_RETRY_MS) up to this cap: a
+// persistent arm blocker does not need a probe every 30 s, and before the
+// recorder-side S2-7 fix each probe minted a failed capture.
+export const PREARM_RETRY_MAX_MS = 300_000;
+// Surface `preArmDegraded` only after this many CONSECUTIVE failures — a
+// single failure is usually a lost race with a start, not a condition.
+export const PREARM_DEGRADED_AFTER_FAILURES = 2;
 
 // The ledger reasons for Collect's one-click discards. Nobody typed these —
 // recording that no reason was asked is the honest entry, and it keeps the

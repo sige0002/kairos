@@ -26,6 +26,103 @@ import { JobErrorNote } from './JobErrorNote';
 // Terminal job states; while a job is non-terminal we keep polling.
 export const TERMINAL = new Set(['succeeded', 'failed', 'canceled']);
 
+/**
+ * Poll a job to terminal, then fetch its result and report OUTSIDE the
+ * status query's `queryFn` (timing sweep S3-4).
+ *
+ * The old shape did the result fetch + `setState` inside the `queryFn`, with
+ * `refetchInterval` returning false once the CACHE said terminal. Two tabs
+ * share that cache: when the other tab's fetch (or an SSE write) landed the
+ * terminal state first, this observer's `queryFn` never ran again — a
+ * succeeded job whose spinner said "Generating…" forever. An effect keyed on
+ * the OBSERVED state runs no matter who wrote it.
+ *
+ * `onSuccess` gets the fetched result; `onError` a display-ready message
+ * (terminal failures include dora_runner's nested error, and a result fetch
+ * that itself fails is surfaced rather than left spinning); `onSettled`
+ * always follows either — clear the job id there.
+ */
+export function useJobCompletion({
+  jobId,
+  label,
+  onSuccess,
+  onError,
+  onSettled,
+}: {
+  jobId: string | null;
+  /** Operator-facing name of the work, e.g. "Video check". */
+  label: string;
+  onSuccess: (result: JobResult) => void;
+  onError: (message: string) => void;
+  onSettled: () => void;
+}): void {
+  const jobQuery = useQuery({
+    queryKey: queryKeys.job(jobId ?? ''),
+    queryFn: ({ signal }) =>
+      apiGet<JobStatus>(`/jobs/${encodeURIComponent(jobId ?? '')}/status`, {
+        signal,
+      }),
+    enabled: !!jobId,
+    refetchInterval: (q) => {
+      const state = q.state.data?.state;
+      return state && TERMINAL.has(state) ? false : INSPECTION_JOB_POLL_MS;
+    },
+  });
+  const jobState = jobQuery.data?.state;
+  const onSuccessRef = useRef(onSuccess);
+  onSuccessRef.current = onSuccess;
+  const onErrorRef = useRef(onError);
+  onErrorRef.current = onError;
+  const onSettledRef = useRef(onSettled);
+  onSettledRef.current = onSettled;
+  useEffect(() => {
+    if (!jobId || !jobState || !TERMINAL.has(jobState)) return;
+    let cancelled = false;
+    void (async () => {
+      if (jobState === 'succeeded') {
+        try {
+          const result = await apiGet<JobResult>(
+            `/jobs/${encodeURIComponent(jobId)}/result`,
+          );
+          if (!cancelled) onSuccessRef.current(result);
+        } catch {
+          if (!cancelled) {
+            onErrorRef.current(
+              `${label} finished but its result could not be loaded — retry.`,
+            );
+          }
+        }
+      } else {
+        // failed/canceled: fetch the terminal result so the failure is shown.
+        // dora_runner nests the ApiError under summary.error(.error).
+        let message = `${label} ${jobState}.`;
+        try {
+          const result = await apiGet<JobResult>(
+            `/jobs/${encodeURIComponent(jobId)}/result`,
+          );
+          const err = (result.summary as Record<string, unknown>)?.error as
+            | {
+                code?: string;
+                message?: string;
+                error?: { code?: string; message?: string };
+              }
+            | undefined;
+          const code = err?.error?.code ?? err?.code;
+          const msg = err?.error?.message ?? err?.message;
+          if (msg) message = code ? `${msg} (${code})` : msg;
+        } catch {
+          // keep the generic message
+        }
+        if (!cancelled) onErrorRef.current(message);
+      }
+      if (!cancelled) onSettledRef.current();
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [jobId, jobState, label]);
+}
+
 export function formatWhen(iso?: string | null): string {
   if (!iso) return '—';
   const d = new Date(iso);
@@ -220,52 +317,16 @@ export function VideoPlayer({
     if (v && seekTo) v.currentTime = seekTo.seconds;
   }, [seekTo]);
 
-  useQuery({
-    queryKey: queryKeys.job(jobId ?? ''),
-    queryFn: async ({ signal }) => {
-      const status = await apiGet<JobStatus>(
-        `/jobs/${encodeURIComponent(jobId ?? '')}/status`,
-        { signal },
-      );
-      if (jobId && TERMINAL.has(status.state)) {
-        if (status.state === 'succeeded') {
-          const result = await apiGet<JobResult>(
-            `/jobs/${encodeURIComponent(jobId)}/result`,
-            { signal },
-          );
-          const s = result.summary as VideoCheckSummary;
-          setSummary(s);
-          onSummaryRef.current?.(s);
-        } else {
-          // failed/canceled: fetch the terminal result so the failure is shown
-          // instead of spinning on "Generating…" forever. dora_runner nests the
-          // ApiError under summary.error(.error).
-          let message = `Video check ${status.state}.`;
-          try {
-            const result = await apiGet<JobResult>(
-              `/jobs/${encodeURIComponent(jobId)}/result`,
-              { signal },
-            );
-            const err = (result.summary as Record<string, unknown>)?.error as
-              | { code?: string; message?: string; error?: { code?: string; message?: string } }
-              | undefined;
-            const code = err?.error?.code ?? err?.code;
-            const msg = err?.error?.message ?? err?.message;
-            if (msg) message = code ? `${msg} (${code})` : msg;
-          } catch {
-            // keep the generic message
-          }
-          setJobError(message);
-        }
-        setJobId(null);
-      }
-      return status;
+  useJobCompletion({
+    jobId,
+    label: 'Video check',
+    onSuccess: (result) => {
+      const s = result.summary as VideoCheckSummary;
+      setSummary(s);
+      onSummaryRef.current?.(s);
     },
-    enabled: !!jobId,
-    refetchInterval: (q) => {
-      const state = q.state.data?.state;
-      return state && TERMINAL.has(state) ? false : INSPECTION_JOB_POLL_MS;
-    },
+    onError: setJobError,
+    onSettled: () => setJobId(null),
   });
 
   return (

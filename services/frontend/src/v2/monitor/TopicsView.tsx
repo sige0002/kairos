@@ -39,7 +39,8 @@ function formatElapsed(ms: number): string {
 }
 
 export function TopicsView({ config }: { config: RuntimeConfig }) {
-  const { rows, isDiscovering, malformedDropped } = useMonitorRows(config);
+  const { rows, isDiscovering, malformedDropped, metricsStale } =
+    useMonitorRows(config);
 
   // Rec-topic picker (shared uiStore, consumed by a Collect-side /record/start).
   // Mirrors v1 LiveTab: seed the selection from the active robot's configured
@@ -139,6 +140,18 @@ export function TopicsView({ config }: { config: RuntimeConfig }) {
           {paused && (
             <span data-testid="freeze-note" className="font-mono text-[11px] text-amber-600">
               Charts frozen · table still live.
+            </span>
+          )}
+          {/* S3-6: with the SSE stream (or the monitor bridge) down, the
+              metrics cache is a snapshot of the moment it died. The rows
+              already withhold measured values (useMonitorRows); this says why
+              the columns emptied instead of leaving a wordless gap. */}
+          {metricsStale && (
+            <span
+              data-testid="metrics-stale-note"
+              className="font-mono text-[11px] text-amber-600"
+            >
+              Live metrics unavailable — measured columns withheld.
             </span>
           )}
           {/* The SSE ingest drops readings it cannot identify rather than

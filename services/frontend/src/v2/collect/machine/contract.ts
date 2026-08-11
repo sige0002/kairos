@@ -109,6 +109,11 @@ export interface BatchMachine {
    *  the next matching Start is a near-instant resume. Server-reported, never
    *  assumed from having sent a prepare. */
   preArmed: boolean;
+  /** Non-null when pre-arm keeps failing (2+ consecutive prepares): the last
+   *  failure's message. Start still works (full synchronous fallback) — this
+   *  is the operator's cue that a fixable blocker (topic mismatch, disk full)
+   *  is being hit, which used to be silent (S2-7). */
+  preArmDegraded: string | null;
 
   // Takeover (D-1): a recording is running server-side that this screen is not
   // driving (another tab/session, or a reload of our own). Null in the normal
@@ -226,8 +231,10 @@ export interface BatchMachine {
   // consent, and the ledger records that no reason was asked. The flow's
   // `busy`/`failures` still drive the button state and the job-voiced errors.
   episodeDiscard: CaptureDeletionState;
-  /** True on a split deployment: the robot keeps its own copy, so a discard only
-   *  removes what is on this machine — the success toast must say so (§12). */
+  /** True unless this is a CONFIRMED single-host deploy: on a split deploy the
+   *  robot keeps its own copy, so a discard only removes what is on this
+   *  machine and the success toast must say so (§12). Fails toward disclosing
+   *  while the probe is unanswered (S3-7 — `useRobotCopyMayRemain`). */
   splitDeploy: boolean;
   /** `run_YYYYMMDD_HHMMSS` of the take being labeled. DISPLAY ONLY (§1). */
   currentRunLabel: string | null;

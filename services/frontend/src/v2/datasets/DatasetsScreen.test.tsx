@@ -459,8 +459,9 @@ function mockApi(seed: Partial<Backend> = {}): Backend {
         });
       }
       // The run completed: this is the moment the server has removed the
-      // source, so the list loses the capture NOW, not at the POST.
-      if (!backend.archived.some((a) => a.captureId === captureId)) {
+      // source, so the list loses the capture NOW, not at the POST. A failed
+      // verification never gets here — the source stays.
+      if (backend.archiveVerifies && !backend.archived.some((a) => a.captureId === captureId)) {
         backend.archived.push({
           captureId,
           destination: run.source,
@@ -473,18 +474,29 @@ function mockApi(seed: Partial<Backend> = {}): Backend {
       return jsonResponse({
         capture_id: captureId,
         destination: run.destination,
-        state: 'complete',
+        // Verification is not optional on this path: a hash mismatch fails
+        // the RUN before the source is deleted, so "did not verify" is a
+        // failed state — never a completed result with a flag on it.
+        state: backend.archiveVerifies ? 'complete' : 'failed',
         bytes_done: 1_200_000_000,
         bytes_total: 1_200_000_000,
-        error: null,
-        result: {
-          capture_id: captureId,
-          destination: run.destination,
-          bytes: 1_200_000_000,
-          file_count: 3,
-          files: [],
-          verified: backend.archiveVerifies,
-        },
+        error: backend.archiveVerifies
+          ? null
+          : {
+              code: 'verification_failed',
+              message:
+                `${captureId} did not verify against its source; the source ` +
+                'was NOT deleted.',
+            },
+        result: backend.archiveVerifies
+          ? {
+              capture_id: captureId,
+              destination: run.destination,
+              bytes: 1_200_000_000,
+              file_count: 3,
+              files: [],
+            }
+          : null,
       });
     }
     const deleteMatch = path.match(/^\/captures\/([^/]+)\/delete$/);
@@ -1082,9 +1094,12 @@ test('a per-capture archive refused for a full destination says what to do about
   expect(backend.captures.map((c) => c.capture_id)).toEqual(['cap-a']);
 });
 
-test('a copy that did not verify is reported as such, never as archived', async () => {
-  // The source is deleted moments after the copy, so an unverified archive is
-  // the one outcome the operator must not read as success.
+test('a copy that did not verify is reported as a failed run, never as archived', async () => {
+  // A completed archive IS the verification claim: the server compares every
+  // file's hash as it lands and a mismatch fails the RUN before the source is
+  // deleted (there is no "copied but unverified" response any more — the old
+  // always-True `verified` flag and its unreachable warning branch are gone).
+  // What the operator must never read as success is therefore a failed run.
   mockApi({
     datasets: [DS_KITCHEN],
     captures: [CAP_A],
@@ -1096,9 +1111,8 @@ test('a copy that did not verify is reported as such, never as archived', async 
   fireEvent.click(await screen.findByTestId('dataset-archive-cap-a'));
   fireEvent.click(await screen.findByTestId('archive-confirm'));
 
-  const toast = await screen.findByTestId('toast');
-  expect(toast).toHaveTextContent(/did NOT verify/);
-  expect(toast).not.toHaveTextContent(/^Archived to/);
+  await screen.findByText(/did not verify/i);
+  expect(screen.queryByTestId('toast')).not.toBeInTheDocument();
 });
 
 // ---- dataset archive (§6.x): the terminal transition ----------------------

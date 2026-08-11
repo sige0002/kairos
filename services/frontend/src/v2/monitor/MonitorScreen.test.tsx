@@ -93,6 +93,9 @@ test('nav is in §11 spec order', async () => {
 
 test('Overview → "chart →" on a danger topic opens Topics with that topic charted', async () => {
   mockFetch();
+  // Seeding the metrics cache models a live SSE stream, so the store must say
+  // the stream is open — the S3-6 gate withholds measured values otherwise.
+  useUiStore.setState({ sseStatus: 'open' });
   const { client } = renderWithClient(<MonitorScreen />);
   client.setQueryData(['metrics'], {
     topics: [{ name: '/hsrb/joint_states', hz: 1, status: 'danger' }],

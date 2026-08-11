@@ -21,6 +21,7 @@ import {
   type MonitorRow,
 } from './useMonitorRows';
 import type { MonitorSelfLoad } from '../../api/types';
+import { useUiStore } from '../../store/uiStore';
 
 const CONFIG = {
   endpoints: { api: '/api/v1', events: '/api/v1/events', webrtc: '' },
@@ -39,6 +40,10 @@ const DISCOVERED = [
 
 beforeEach(() => {
   setApiBase('/api/v1');
+  // The S3-6 freshness gate withholds measured values unless the SSE stream is
+  // open: these tests SEED the metrics cache (modelling a live stream), so the
+  // store must say the stream is live too.
+  useUiStore.setState({ sseStatus: 'open', monitorBridge: null });
   vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     if (String(input).includes('/topics')) {
       return Promise.resolve(

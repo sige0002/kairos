@@ -122,6 +122,24 @@ function isStaleRecordStatus(
 }
 
 function applyRecordStatus(qc: QueryClient, data: RecordStatusEvent): void {
+  // A failing status POLL may not be overwritten by an event (S3-5).
+  // `setQueryData` records a success — it clears the query's error and stamps
+  // `dataUpdatedAt: now` — which is exactly the pair `useRecordStatus` derives
+  // `reachable`/`lastGoodAt` from. An SSE frame is the orchestrator speaking
+  // (and after a reconnect, possibly a REPLAYED frame minutes old); it is not
+  // a successful recorder poll, and letting it pose as one unfroze the
+  // last-known clock and revived stale `live_capture_ids` liveness. While the
+  // poll is failing, the honest display is the failure; the next real poll
+  // brings the truth, and the event is still logged below.
+  const pollState = qc.getQueryState(queryKeys.recordStatus);
+  if (pollState?.error != null) {
+    appendLog(
+      qc,
+      'record_status',
+      `${summarizeRecordStatus(data)} (status poll failing — not applied)`,
+    );
+    return;
+  }
   // Merge onto the previous cache entry rather than replacing it. The arming
   // snapshot (OL-①.4) rides only on the post-arming `recording` event; a later
   // counters-only event omits it, so spreading `prev` first preserves the

@@ -55,6 +55,18 @@ export function ReadyCard({
           </span>
         )}
       </span>
+      {/* Pre-arm failing (S2-7): Start still works via the full synchronous
+          path, but the blocker (topic mismatch, disk full) is the operator's
+          to fix — silence here used to bury it. */}
+      {!machine.preArmed && machine.preArmDegraded && (
+        <span
+          data-testid="prearm-degraded-note"
+          className="text-xs font-medium text-amber-700"
+        >
+          Pre-arm is failing — Start will do a full (slower) start.{' '}
+          {machine.preArmDegraded}
+        </span>
+      )}
       <button
         ref={startRef}
         type="button"

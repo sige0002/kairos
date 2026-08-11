@@ -26,13 +26,13 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError } from '../../api/client';
 import { startRecord, stopRecord } from '../../api/record';
-import { getTransferStatus } from '../../api/transfer';
 import { patchBatch } from '../../api/batches';
 import { getCapture, listCaptures, saveReview } from '../../api/captures';
 import { queryKeys } from '../../api/queryKeys';
 import { useUiStore } from '../../store/uiStore';
 import { useOperators } from '../plans';
 import { useCaptureDeletion } from '../captures/useCaptureDeletion';
+import { useRobotCopyMayRemain } from '../captures/useSplitDeploy';
 import { needsReload } from '../captures/errors';
 import { useRecordStatus } from '../captures/useRecordStatus';
 import {
@@ -218,8 +218,12 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     enabled: !!resultCaptureId,
     refetchInterval: (query) => {
       if (query.state.data?.quick_check?.verdict) return false; // settled -> stop
-      if (query.state.dataUpdateCount >= 3) return false; // bounded backstop
-      return 2000;
+      // Slow down, never stop (S3-8): settlement is sub-second in practice,
+      // but a slow settle used to outlive the old 3-fetch cap and leave
+      // "Quick check running…" on screen with nothing running underneath it.
+      // The query is enabled only while the operator is ON the result panel,
+      // so the tail poll is bounded by their stay, not by a counter.
+      return query.state.dataUpdateCount >= 3 ? 10_000 : 2000;
     },
   });
   const resultCapture: CaptureDetail | null = resultCaptureId
@@ -287,8 +291,8 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
 
   // ---- pre-arm (two-phase start) -------------------------------------------
   // The engine lives in hooks/usePreArm.ts (config gate, visibility pause,
-  // keep-alive re-prepares); only the armed flag comes back.
-  const { preArmed } = usePreArm({
+  // keep-alive re-prepares); the armed flag and the degraded surface come back.
+  const { preArmed, preArmDegraded } = usePreArm({
     phase: state.phase,
     recorderState,
     noSelection,
@@ -737,17 +741,12 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   // identical everywhere a recording can be removed. A Collect-only modal would
   // be a second place for all of that to drift.
   // On a robot + recording-PC split, a discard removes only the copy on THIS
-  // machine, and the dialog is obliged to say so unprompted (§12) — letting an
+  // machine, and the toast is obliged to say so unprompted (§12) — letting an
   // operator believe the robot's copy went too is the failure that line exists
-  // to prevent. `/transfer/status` answers `available` only where the pull
-  // channel exists, which IS the split-mode signal (§10.6).
-  const transferQuery = useQuery({
-    queryKey: queryKeys.transferStatus,
-    queryFn: ({ signal }) =>
-      getTransferStatus({ signal }),
-    staleTime: 60_000,
-  });
-  const splitDeploy = transferQuery.data?.available === true;
+  // to prevent. The SHARED probe (useSplitDeploy.ts) replaced a third local
+  // policy on the same query key (S3-7), and the may-remain variant fails
+  // toward disclosing while the probe is unanswered or failing.
+  const splitDeploy = useRobotCopyMayRemain();
 
   const episodeDiscard = useCaptureDeletion({
     onDeleted: () => {
@@ -786,7 +785,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
       { capture_id: captureId },
       COLLECT_DISCARD_REASON,
       splitDeploy
-        ? "Take discarded from this machine — the robot's own copy is untouched"
+        ? 'Take discarded from this machine — a copy may remain on the robot'
         : 'Take discarded — ready to re-record',
     );
   }, [episodeDiscard, splitDeploy, showToast]);
@@ -874,7 +873,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
       unsavedCapture,
       COLLECT_UNSAVED_DISCARD_REASON,
       splitDeploy
-        ? "Interrupted take discarded from this machine — the robot's own copy is untouched"
+        ? 'Interrupted take discarded from this machine — a copy may remain on the robot'
         : 'Interrupted take discarded',
     );
   }, [unsavedCapture, unsavedDiscard, splitDeploy]);
@@ -1147,6 +1146,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     recorderState,
     liveCaptures,
     preArmed,
+    preArmDegraded,
 
     takeover,
     takeoverResumedOwn,

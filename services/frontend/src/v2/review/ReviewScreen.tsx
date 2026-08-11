@@ -21,6 +21,7 @@ import { useFiltersCollapsed, toggleFiltersCollapsed } from './filtersRail';
 import { episodeLabel } from './types';
 import { formatBytes } from './format';
 import { useReviewState } from './useReviewState';
+import { useRobotCopyMayRemain } from '../captures/useSplitDeploy';
 
 // Two complete literal grid templates (Tailwind's scanner needs full strings,
 // so we pick between them rather than interpolate a width). The two evidence
@@ -34,6 +35,12 @@ const GRID_COLLAPSED =
 
 export function ReviewScreen() {
   const rv = useReviewState();
+  // §12 disclosure for the removal dialogs, failed SAFE: while the split
+  // probe is unanswered or failing this stays true (the note shows), and only
+  // a confirmed single-host answer suppresses it (S3-7). rv.splitMode is the
+  // confirmed-split flag and gates transfer FEATURES, which is the opposite
+  // failure direction — do not swap one for the other.
+  const robotCopyMayRemain = useRobotCopyMayRemain();
   const { conflict, failure, failureCaptureId } = rv.reviewSave;
   const queryClient = useQueryClient();
   // Bringing in bags recorded outside kairos: a Review-side action because an
@@ -260,7 +267,7 @@ export function ReviewScreen() {
       <DiscardDialog
         open={rv.deletion.kind === 'discard'}
         captures={rv.deletion.targets}
-        splitDeploy={rv.splitMode}
+        splitDeploy={robotCopyMayRemain}
         busy={rv.deletion.busy}
         error={rv.deletion.error}
         done={rv.deletion.done}
@@ -275,7 +282,7 @@ export function ReviewScreen() {
       <DeleteDialog
         open={rv.deletion.kind === 'delete'}
         captures={rv.deletion.targets}
-        splitDeploy={rv.splitMode}
+        splitDeploy={robotCopyMayRemain}
         busy={rv.deletion.busy}
         error={rv.deletion.error}
         done={rv.deletion.done}

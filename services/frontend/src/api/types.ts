@@ -459,13 +459,15 @@ export interface ArchivedFile {
  *  source is deleted moments after this is computed: these digests and the
  *  matching ledger event are the only things left that can answer "is the
  *  archived copy still intact?". */
+/** A COMPLETED archive is the verification claim: every file's hash was
+ *  compared as it landed, and a mismatch fails the run before anything is
+ *  deleted — so there is no `verified` flag to check (S4). */
 export interface CaptureArchiveResponse {
   capture_id: string;
   destination: string;
   bytes: number;
   file_count: number;
   files: ArchivedFile[];
-  verified: boolean;
 }
 
 /** `POST /captures/{id}/archive` answer: the run was ACCEPTED (202) and

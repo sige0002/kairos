@@ -546,8 +546,10 @@ test('Discard & re-record discards in one click, keyed on capture_id', async () 
 // §12: on a split deployment the discard removes only the copy on this machine.
 // With no dialog left to carry that disclosure, the success toast says so
 // unprompted — letting an operator believe the robot's copy went too is
-// exactly the failure this line exists to prevent.
-test('on a split deployment the discard toast says the robot copy is untouched', async () => {
+// exactly the failure this line exists to prevent. ("May remain", not "is
+// untouched": the same wording also serves the probe-unanswered case, where
+// the may-remain flag fails toward disclosing — S3-7.)
+test('on a split deployment the discard toast says a robot copy may remain', async () => {
   const base = mockFetchWithStatus({
     status: { state: 'completed', integrity: 'ok' },
   });
@@ -565,7 +567,7 @@ test('on a split deployment the discard toast says the robot copy is untouched',
   fireEvent.click(screen.getByTestId('discard-episode'));
   await waitFor(() =>
     expect(
-      screen.getByText(/the robot's own copy is untouched/i),
+      screen.getByText(/a copy may remain on the robot/i),
     ).toBeInTheDocument(),
   );
 });

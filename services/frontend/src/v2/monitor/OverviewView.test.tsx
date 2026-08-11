@@ -5,6 +5,7 @@ import { queryKeys } from '../../api/queryKeys';
 import type { AlertEvent, MetricsSnapshot } from '../../api/types';
 import type { RuntimeConfig } from '../../config';
 import { jsonResponse, makeTestClient, renderWithClient } from '../../test/renderWithClient';
+import { useUiStore } from '../../store/uiStore';
 import { OverviewView } from './OverviewView';
 
 const CONFIG = {
@@ -35,7 +36,13 @@ function mockFetch(recordStatus: Record<string, unknown> = IDLE_STATUS) {
   });
 }
 
-beforeEach(() => setApiBase('/api/v1'));
+beforeEach(() => {
+  setApiBase('/api/v1');
+  // These tests SEED the metrics cache to model a live SSE stream; the S3-6
+  // freshness gate withholds measured values unless the store agrees the
+  // stream is open.
+  useUiStore.setState({ sseStatus: 'open', monitorBridge: null });
+});
 afterEach(() => vi.restoreAllMocks());
 
 test('STANDBY + a health tally with the danger topic clickable through to Topics', async () => {

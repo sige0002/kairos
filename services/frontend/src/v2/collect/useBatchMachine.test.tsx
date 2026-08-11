@@ -4,6 +4,7 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import type { ReactNode } from 'react';
 import { setApiBase } from '../../api/client';
 import { makeTestClient, jsonResponse } from '../../test/renderWithClient';
+import { __setPreArmRetryBaseMs } from './hooks/usePreArm';
 import { useUiStore } from '../../store/uiStore';
 import { isDestructiveFailure } from '../captures/errors';
 import {
@@ -3428,6 +3429,64 @@ test('preArmed reflects the server-reported armed state, never a sent prepare', 
   });
   await waitFor(() => expect(result.current.preArmed).toBe(true));
   expect(result.current.recorderState).toBe('armed');
+});
+
+// S2-7: silently retrying a failing pre-arm every 30 s hid a persistent arm
+// blocker (topic mismatch, disk full) while — before the recorder-side fix —
+// minting a failed capture per attempt. A failure STREAK must reach the
+// operator; a single failure (usually a lost race with a start) stays silent.
+test('a pre-arm failure streak surfaces preArmDegraded with the blocker', async () => {
+  __setPreArmRetryBaseMs(10);
+  try {
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input);
+      if (url.includes('/config/recording')) {
+        return Promise.resolve(
+          jsonResponse({ config: { recording: { pre_arm: true } }, path: 'p' }),
+        );
+      }
+      if (url.includes('/record/prepare')) {
+        return Promise.resolve(
+          jsonResponse(
+            {
+              error: {
+                code: 'record_arm_failed',
+                message: 'Recording failed to arm (subscribe + resume).',
+                details: {},
+              },
+            },
+            507,
+          ),
+        );
+      }
+      if (url.includes('/record/status')) {
+        return Promise.resolve(
+          jsonResponse({
+            run_id: null,
+            capture_id: null,
+            state: 'created',
+            live_capture_ids: [],
+          }),
+        );
+      }
+      return Promise.resolve(jsonResponse({}));
+    });
+    const { result } = renderHook(
+      () => useBatchMachine({ defaultTopics: ['/tf'] }),
+      { wrapper },
+    );
+    // One failure: silent. Two (the retry also fails): surfaced.
+    await waitFor(
+      () =>
+        expect(result.current.preArmDegraded).toMatch(/failed to arm/i),
+      { timeout: 5000 },
+    );
+    expect(result.current.preArmed).toBe(false);
+    // Start stays usable — the degraded surface is a cue, not a gate.
+    expect(result.current.phase).toBe('ready');
+  } finally {
+    __setPreArmRetryBaseMs(null);
+  }
 });
 
 // M6 (qa-ui shots/08b): two unsaved takes can be pending at once — the recovery

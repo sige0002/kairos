@@ -14,18 +14,12 @@
 // the whole episode onto its first frames, which would lie.
 
 import { useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiGet, apiPost } from '../../api/client';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { apiPost } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
-import { INSPECTION_JOB_POLL_MS } from '../pollingPolicy';
-import type {
-  JobResult,
-  JobStatus,
-  CaptureTopic,
-  VideoCheckSummary,
-} from '../../api/types';
+import type { JobStatus, CaptureTopic, VideoCheckSummary } from '../../api/types';
 import { JobErrorNote, isTombstoneError } from '../captures/JobErrorNote';
-import { TERMINAL, VideoPlayer, cameraTopics } from '../captures/inspect';
+import { VideoPlayer, cameraTopics, useJobCompletion } from '../captures/inspect';
 import {
   episodeSpanNs,
   formatContinuity,
@@ -65,49 +59,16 @@ function useSignalReport(captureId: string) {
     },
   });
 
-  useQuery({
-    queryKey: queryKeys.job(jobId ?? ''),
-    queryFn: async ({ signal }) => {
-      const status = await apiGet<JobStatus>(
-        `/jobs/${encodeURIComponent(jobId ?? '')}/status`,
-        { signal },
-      );
-      if (jobId && TERMINAL.has(status.state)) {
-        if (status.state === 'succeeded') {
-          const result = await apiGet<JobResult>(
-            `/jobs/${encodeURIComponent(jobId)}/result`,
-            { signal },
-          );
-          setReport(result.summary as unknown as SignalReportExt);
-        } else {
-          // failed/canceled: surface the terminal error (dora_runner nests the
-          // ApiError under summary.error(.error)) instead of spinning forever.
-          let message = `Integrity report ${status.state}.`;
-          try {
-            const result = await apiGet<JobResult>(
-              `/jobs/${encodeURIComponent(jobId)}/result`,
-              { signal },
-            );
-            const err = (result.summary as Record<string, unknown>)?.error as
-              | { code?: string; message?: string; error?: { code?: string; message?: string } }
-              | undefined;
-            const code = err?.error?.code ?? err?.code;
-            const msg = err?.error?.message ?? err?.message;
-            if (msg) message = code ? `${msg} (${code})` : msg;
-          } catch {
-            // keep the generic message
-          }
-          setJobError(message);
-        }
-        setJobId(null);
-      }
-      return status;
-    },
-    enabled: !!jobId,
-    refetchInterval: (q) => {
-      const state = q.state.data?.state;
-      return state && TERMINAL.has(state) ? false : INSPECTION_JOB_POLL_MS;
-    },
+  // Terminal handling lives OUTSIDE the status queryFn (S3-4): with two tabs
+  // sharing the query cache, whichever observer fetched last used to be the
+  // only one whose setState ran — the other spun on "Generating…" forever.
+  useJobCompletion({
+    jobId,
+    label: 'Integrity report',
+    onSuccess: (result) =>
+      setReport(result.summary as unknown as SignalReportExt),
+    onError: setJobError,
+    onSettled: () => setJobId(null),
   });
 
   return {

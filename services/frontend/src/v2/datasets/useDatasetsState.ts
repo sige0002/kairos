@@ -47,7 +47,7 @@ import {
   CAPTURE_ARCHIVE_POLL_MS,
   DATASET_ARCHIVE_POLL_MS,
 } from '../pollingPolicy';
-import { useSplitDeploy } from '../captures/useSplitDeploy';
+import { useRobotCopyMayRemain } from '../captures/useSplitDeploy';
 import { useBulkRun } from '../shared/useBulkRun';
 import { useOnPopState } from '../shared/useOnPopState';
 import type {
@@ -823,9 +823,12 @@ export function useDatasetsState(): DatasetsState {
   });
 
   // §12 obliges the discard dialog to say that a copy may remain on the robot —
-  // but only where that is true. The shared probe is what makes this screen and
-  // Review agree about the deployment they are running on.
-  const splitDeploy = useSplitDeploy();
+  // but only where that can be true. The shared probe is what makes this screen
+  // and Review agree about the deployment they are running on, and the
+  // may-remain variant fails toward DISCLOSING: while the probe is unanswered
+  // or failing, a destructive dialog shows the note rather than dropping it
+  // (S3-7). Only a confirmed single-host answer suppresses it.
+  const splitDeploy = useRobotCopyMayRemain();
 
   const deletion = useCaptureDeletion({
     invalidate: useMemo(
@@ -964,11 +967,10 @@ export function useDatasetsState(): DatasetsState {
       setArchiveTarget(null);
       setArchiveSubpath('');
       setArchiveReason('');
+      // A completed archive IS the verification claim (a hash mismatch fails
+      // the run before anything is deleted), so there is no unverified branch.
       showToast(
-        res.verified
-          ? `Archived to ${res.destination} — verified, then removed from this machine`
-          : `Copied to ${res.destination}, but it did NOT verify — check it before ` +
-              'trusting the copy',
+        `Archived to ${res.destination} — verified, then removed from this machine`,
       );
     },
     onError: async () => {
