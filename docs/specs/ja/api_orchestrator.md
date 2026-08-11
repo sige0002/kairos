@@ -47,6 +47,7 @@
 - ワンクリック検証プリセット: `GET /api/v1/validation/presets`（config 定義のプリセット＋未検証 capture 一覧）
 - 設定: `GET /api/v1/config`（frontend 実行時設定: endpoints / tabs / defaults（`ros_domain_id`・`video_playback_rate`〔Review プレビューの既定再生速度。env `VIDEO_PLAYBACK_RATE`、既定 4.0〕を含む）/ stream / schemas）。〔`GET/POST /api/v1/settings` は**未実装**（将来）。現状は下の `PUT /api/v1/config/recording` が設定編集の入口〕
 - 収録設定（フル編集）: `GET /api/v1/config/recording` → `{ config: <RecordingConfig dump>|null, path }`、`PUT /api/v1/config/recording`（body `{ config }`。下記「収録設定のフル編集」参照）
+- Stream 設定（フル編集）: `GET /api/v1/config/stream` → `{ config: <StreamConfig dump>|null, path|null }`、`PUT /api/v1/config/stream`（body `{ config }`。下記「Stream 設定のフル編集」参照）
 - アラート規則（単一ファイル・アスペクト編集）: `GET/PUT /api/v1/config/alerts`（topic_monitor のアラート規則。`config/<robot>/monitoring/alerts.yaml`。monitor 再起動時に反映）。`GET` は `{ config, raw, path, warnings }`、`PUT` は body `{ config }`（フォーム）または `{ raw }`（生 YAML）。下記「アラート規則の編集」参照（旧 `GET/PUT /api/v1/config/signals` は Review 波形チャートの撤去に伴い 2026-07-15 に削除）
 - 設定カタログ: `GET /api/v1/config/options`、`POST /api/v1/config/select`（検証テンプレート等のカテゴリ別選択肢と現在の選択）、`GET /api/v1/config/robots/{robot}`（**任意のカタログ機体の設定を read-only で返す** — aspect 毎のパース済み内容+要約。ライブ系を切り替えずに他機体を雛形参照するため（Settings）。未知の機体・不正なパス成分は `404`）
 - システム情報: `GET /api/v1/system` → `{ cpu: { model, cores }, gpu, cpu_percent, disk, gpu_percent }`（ホストの読み取り専用イントロスペクション。常に `200`）
@@ -281,6 +282,14 @@ UI（Settings タブ）から `RECORDING_CONFIG` 全体を編集・永続化す�
 - `PUT` — body `{ config }`。`config` を `RecordingConfig`（[config](config.md)）で型検証し、失敗時は **`422`**（違反フィールドを `details.errors` に返す）。成功時は **`RECORDING_CONFIG` のファイルへ YAML をアトミックに書き込み**（temp + `os.replace`。書き込み先は常に設定ファイルで、リクエスト由来のパスは使わない）、**メモリ上の設定をホットスワップ**する。
 - 反映タイミング: `GET /api/v1/config` と**次回記録の `default_topics`（robot_name 等を含む）は即時**反映。recorder の QoS / monitor の expected_hz・許可リストは各サービスの**次回再起動時**に適用される（UI もその旨を表示する）。
 
+## Stream 設定のフル編集（`GET/PUT /api/v1/config/stream`）
+
+UI（Settings > Robots）から `STREAM_CONFIG`（`columns` + `panes[].topic`。**現行コンソールが読むのは `panes` のみ** — Collect のカメラペインの初期化元。`columns` はファイル形式として保持されるが v2 レイアウトでは未使用で、UI もそう明言する）を編集・永続化する。`/recording` と同型のミラー。
+
+- `GET` — `{ config, path, error }`。`config: null` はファイル不在/不正で、**`error` が両者を区別する**（null=不在・保存で新規作成、メッセージ=存在するが壊れている・保存は置換 — エディタは警告してから編集させる。ディスク側で直されたファイルはここで再採用される）。`path: null` は**アクティブ機体に config dir 自体が無い**ことを意味する（stream ファイルが無いだけの機体は慣例パス `stream/default.yaml` を作成先として得る — 起動経路と select 経路で挙動が揃う）。
+- `PUT` — body `{ config }`。`StreamConfig`（`columns` 1–4・`panes[].topic`、未知キー拒否）で型検証し、失敗は **`422`**（`details.errors`）。成功時は**アクティブな stream ファイル**（robot / aspect 選択で付け替わる。リクエスト由来のパスは使わない）へアトミックに書き込み、メモリ上の設定をホットスワップする。ファイル不在からの初回保存はファイルを**新規作成**する。`path: null`（config dir なし）への PUT は **`404 config_not_found`**。
+- 反映タイミング: **即時**。レイアウトは `GET /api/v1/config` の `stream` ブロックとしてリクエスト毎に読まれるだけで、ROS サービスは起動時コピーを持たない（recording と違い再起動の但し書きが不要）。
+
 ## アラート規則の編集（`GET/PUT /api/v1/config/alerts`）
 
 Settings > Data quality から、選択式カタログ（recording / stream / validation / validators）ではない**アクティブ機体の単一ファイル設定**を編集・永続化する（F2''）。カタログ経由でアクティブ機体のファイルを解決し（committed / local 両対応）、`PUT` は pydantic で検証（**未知キーは拒否**）してから `/recording` と同じ temp + `os.replace` でアトミックに書き込む。検証失敗は **`422`**（`details.errors`）でファイルは書き換えない。`GET` 応答は `{ config, raw, path }`（`raw` は on-disk の YAML 文字列＝Advanced 生 YAML エディタの初期値。未作成時は `null`）。`PUT` body は `{ config }`（フォーム）または `{ raw }`（生 YAML。frontend は YAML パーサを積まないためサーバ側で解析）で、書き込みは常に検証済みモデルの正規 YAML。（旧 `signals` アスペクト＝Review 波形チャートの既定表示は、チャート撤去に伴い 2026-07-15 にエンドポイント・`config/<robot>/signals/` ごと削除。）
@@ -322,7 +331,7 @@ Settings > Data quality から、選択式カタログ（recording / stream / va
   - `metrics`: `topic_monitor` の周期 snapshot（[topic_monitor](topic_monitor.md) の出力スキーマ）
   - `alert`: `{ topic, metric, level, value, threshold }`
   - `job`: `{ job_id, capture_id, pipeline, state, progress }`
-- 再接続: クライアントは `Last-Event-ID` を送る。サーバは直近イベントをリングバッファ（既定 1000 件 / 5 分）に保持し未送分を再送。範囲外なら `event: resync` を送り、クライアントは全体を再取得する。
+- 再接続: クライアントは `Last-Event-ID` を送る。サーバは直近イベントをリングバッファ（既定 1000 件 / 5 分）に保持し未送分を再送。**保証できない位置なら `event: resync`** を送り、クライアントは全体を再取得する。保証できない位置は 3 通り（2026-08-12 に後ろ 2 つを追補 — 従来は空リングに黙って空 replay を返し、**orchestrator 再起動を跨いだブラウザが resync を受け取れず全キャッシュが古いまま**になっていた）: ①リング最古より古い（バッファから溢れた）、②**このプロセスが発行した最大 ID より先**（同一プロセスではあり得ない＝再起動の痕跡。ID は 1 から振り直される）、③空リングに対して発行済み最大 ID より手前（取り逃したイベントが age で消えた）。唯一保証できる空リング位置＝発行済み最大 ID と一致（完全 caught-up・静穏で age-out しただけ）は resync せず空 replay。**ID の採番は起動時刻ミリ秒を起点**とする（int のまま再起動を跨いで単調 — 旧 boot の ID が新 boot のカウンタに追い越されて「別プロセスのイベントを通常 replay として受け取る」世代衝突を構造的に排除する）。また**遅い購読者のキュー溢れ**（最古 drop）は無言にせず、そのキューの次配信の前に `resync` を注入する。
 
 ## 主要スキーマ（抜粋、OpenAPI 生成対象 / pydantic）
 
