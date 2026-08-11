@@ -4,10 +4,10 @@ The store is SQLite-backed, so a restart no longer orphans in-flight work (F4).
 A job the previous process left ``queued``/``running`` is reconciled to a terminal
 ``failed`` carrying an honest interrupted reason. Because that lands on ``failed``
 (the shared ``JobState`` has no ``interrupted`` member) with the cause under
-``summary.error``, the orchestrator's ``run_job_to_completion`` — which treats
-succeeded/failed/canceled as terminal and reads ``summary.error`` via
-``datasets._job_failure_reason`` — and the Validation UI's generic renderer surface
-it to the user with no changes on their side. These tests exercise that path.
+``summary.error``, every consumer of the terminal set — the orchestrator's
+``datasets._job_failure_reason`` and the Validation UI's generic renderer —
+surfaces it to the user with no changes on their side. These tests exercise
+that path.
 """
 
 from __future__ import annotations

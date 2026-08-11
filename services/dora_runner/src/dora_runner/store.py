@@ -72,10 +72,10 @@ CREATE INDEX IF NOT EXISTS idx_validation_templates_seq
 
 # The honest terminal outcome written to a job whose worker was lost to a restart.
 # ``state`` is ``failed`` (not a new enum member): the shared ``JobState`` has no
-# ``interrupted`` value, and the orchestrator's ``run_job_to_completion`` only
-# treats succeeded/failed/canceled as terminal — so an interrupted job must land on
-# ``failed`` and carry the reason in the summary (exactly like the timeout path),
-# which ``datasets._job_failure_reason`` and the Validation UI already surface.
+# ``interrupted`` value and every consumer treats succeeded/failed/canceled as the
+# terminal set — so an interrupted job must land on ``failed`` and carry the
+# reason in the summary (exactly like the timeout path), which
+# ``datasets._job_failure_reason`` and the Validation UI already surface.
 _INTERRUPTED_MESSAGE = "dora_runner restarted while the job was in flight."
 _INTERRUPTED_SUMMARY: dict[str, Any] = {
     "result": "fail",

@@ -49,6 +49,16 @@ _JOB_TIMEOUT_ENV = "KAIROS_DORA_JOB_TIMEOUT_S"
 _DEFAULT_MAX_CONCURRENCY = 4
 _DEFAULT_JOB_TIMEOUT_S = 900.0
 
+# After the job deadline passes, how long the runner waits for the worker to
+# honour the cooperative stop (the same cancel_event an API cancel sets) before
+# giving up on it. Checkpoints are dense — the bagflow watcher polls its
+# subprocess every 0.5 s, the decoding pipelines check per message/frame — so
+# this only has to absorb one slow checkpoint, not the job itself. A worker
+# that produces its RESULT inside this window is recorded as succeeded: the
+# deadline bounds wall-clock spend, it does not exist to relabel finished work
+# as failed (timing sweep S2-4).
+_TIMEOUT_STOP_GRACE_S = 30.0
+
 
 def _job_max_concurrency() -> int:
     """Max jobs executed at once (``KAIROS_DORA_MAX_CONCURRENCY``, default 4)."""
@@ -296,8 +306,14 @@ def create_dora_app(
 
     @app.post("/validation/templates/generate", response_model=ValidationTemplate)
     async def generate(body: TemplateGenerateRequest) -> ValidationTemplate:
+        # to_thread: this reads the capture's MCAP summary from disk, which for
+        # a large bag on a busy volume takes seconds. Running it ON the event
+        # loop froze every other endpoint for the duration — and past the
+        # client's 3 s budget the caller retried, stacking a second parse on a
+        # loop that had not finished the first (timing sweep S4). Settlement
+        # does the identical read through to_thread already.
         try:
-            return generate_template(body.capture_id, data_dir)
+            return await asyncio.to_thread(generate_template, body.capture_id, data_dir)
         except ValueError as exc:
             raise ApiError(
                 status_code=400,
@@ -340,6 +356,63 @@ def _parse_cursor(cursor: str | None) -> int | None:
         ) from exc
 
 
+class _JobTimedOut(Exception):
+    """A job passed its deadline; ``stopped`` says whether the work then died.
+
+    Distinct from ``JobCanceled`` so the terminal label stays honest: a
+    deadline is a FAILURE (``reason: timeout``), an operator cancel is
+    ``canceled`` — and when both race, the cancel wins (BUG-D).
+    """
+
+    def __init__(self, *, stopped: bool) -> None:
+        super().__init__("job timed out")
+        self.stopped = stopped
+
+
+async def _stop_timed_out_job(
+    job: JobRecord,
+    store: RunnerStore,
+    runner_task: asyncio.Task[dict],
+    *,
+    timeout_s: float,
+) -> dict:
+    """Deadline passed: cooperatively stop the work, then report what happened.
+
+    The pre-S2-4 timeout only RELABELLED — ``failed (job_timeout)`` while the
+    shielded threadpool work ran to completion holding its slot, which under
+    the full-length video encode (VIDEO_MAX_FRAMES=0) meant a false failure
+    plus one of four slots dead for however long the encode took. Route the
+    deadline through the same cooperative machinery an API cancel uses: set
+    ``cancel_event``, let the worker kill its subprocess / stop decoding at
+    the next checkpoint, and wait a short grace window.
+
+    Returns the worker's result when it FINISHES inside that window (a late
+    success is a success). Raises :class:`_JobTimedOut` when the work stopped
+    (``stopped=True``) or ignored the stop past the grace window
+    (``stopped=False``). Raises :class:`JobCanceled` untouched when an API
+    cancel had already requested the stop — that label belongs to the cancel.
+    """
+    api_cancel_first = job.cancel_event.is_set()
+    async with store.lock:
+        if not job.cancel_requested:
+            job.cancel_requested = True
+            job.logs_tail.append(
+                f"Job passed the {timeout_s:g}s deadline; stopping the work."
+            )
+            store.persist_job(job)
+    job.cancel_event.set()
+    try:
+        return await asyncio.wait_for(
+            asyncio.shield(runner_task), _TIMEOUT_STOP_GRACE_S
+        )
+    except JobCanceled:
+        if api_cancel_first:
+            raise
+        raise _JobTimedOut(stopped=True) from None
+    except TimeoutError:
+        raise _JobTimedOut(stopped=False) from None
+
+
 def _release_slot_when_done(task: asyncio.Task[dict], slots: asyncio.Semaphore) -> None:
     """Release a concurrency slot when *task* truly finishes — not when the
     awaiting coroutine is cancelled.
@@ -378,9 +451,13 @@ async def _execute_job(
     """Run a queued job in the process-local async worker.
 
     *slots* bounds how many jobs run concurrently and *timeout_s* caps each
-    job's wall-clock time (DORA-M1). A job past the timeout is failed with
-    ``reason: timeout``; since threadpool work can't be interrupted, it keeps its
-    concurrency slot until the thread finishes (see _release_slot_when_done).
+    job's wall-clock time (DORA-M1). A job past the deadline is STOPPED, not
+    just relabelled (S2-4): the runner sets the same ``cancel_event`` an API
+    cancel does, the worker kills its subprocess / stops decoding at the next
+    checkpoint, and only then is the job failed with ``reason: timeout`` — so
+    the slot actually frees. A worker that instead finishes inside the grace
+    window is recorded as succeeded. Only a worker that ignores the stop keeps
+    its slot until its thread exits (see _release_slot_when_done).
     """
     if slots is None:
         slots = asyncio.Semaphore(_DEFAULT_MAX_CONCURRENCY)
@@ -419,7 +496,12 @@ async def _execute_job(
             # An API cancel does not cancel this task either — it sets
             # job.cancel_event, and the runner raises JobCanceled from its own
             # checkpoint once the work has actually stopped.
-            result = await asyncio.wait_for(asyncio.shield(runner_task), timeout_s)
+            try:
+                result = await asyncio.wait_for(asyncio.shield(runner_task), timeout_s)
+            except TimeoutError:
+                result = await _stop_timed_out_job(
+                    job, store, runner_task, timeout_s=timeout_s
+                )
         finally:
             _release_slot_when_done(runner_task, slots)
         validated = JobResult.model_validate(result)
@@ -433,21 +515,35 @@ async def _execute_job(
             job.state = JobState.succeeded
             job.logs_tail.append("Job succeeded.")
             store.persist_job(job)
-    except TimeoutError:
+    except _JobTimedOut as timed_out:
         async with store.lock:
             # A concurrent cancel must win over a timeout (BUG-D).
             if job.state == JobState.canceled:
                 return
             job.state = JobState.failed
             job.progress = 1.0
-            job.logs_tail.append(f"Job timed out after {timeout_s:g}s.")
+            if timed_out.stopped:
+                detail = "the work was stopped"
+            else:
+                # The one remaining runaway: a worker that ignored the stop
+                # request past the grace window. Its slot stays held until the
+                # thread exits (_release_slot_when_done) — say so instead of
+                # pretending the timeout freed anything.
+                detail = (
+                    "the work did not stop within the "
+                    f"{_TIMEOUT_STOP_GRACE_S:g}s grace window and is still "
+                    "running; its concurrency slot stays held until it exits"
+                )
+            job.logs_tail.append(f"Job timed out after {timeout_s:g}s; {detail}.")
             job.result = JobResult(
                 summary={
                     "result": "fail",
                     "reason": "timeout",
                     "error": {
                         "code": "job_timeout",
-                        "message": f"Job exceeded the {timeout_s:g}s timeout.",
+                        "message": (
+                            f"Job exceeded the {timeout_s:g}s timeout; {detail}."
+                        ),
                     },
                 },
                 artifacts=[],
