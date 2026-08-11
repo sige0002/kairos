@@ -16,6 +16,7 @@ path, not "dora implemented".
 from __future__ import annotations
 
 import asyncio
+import math
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -24,6 +25,11 @@ from kairos_common import ApiError, ValidationTemplate
 
 from dora_runner.bagflow_flow import DEFAULT_FLOW, list_flows
 from dora_runner.bagflow_runtime import DoraEndpoint, bagflow_available
+from dora_runner.clock_check import (
+    DEFAULT_MAX_SAMPLES,
+    DEFAULT_THRESHOLD_MS,
+    run_clock_check,
+)
 from dora_runner.fast_validation import run_fast_validation
 from dora_runner.full_validation import run_full_validation
 from dora_runner.loss_report import run_loss_report
@@ -237,6 +243,79 @@ def _make_loss_report_runner(config: LossReportConfig) -> Runner:
     return _run_loss_report
 
 
+def _threshold_ms_param(params: dict) -> float:
+    """Optional ``threshold_ms`` job param: offset verdict threshold.
+
+    Must be a FINITE number > 0: ``inf`` would silently disable every verdict
+    AND make the summary unserialisable as strict JSON (a bare ``Infinity``
+    token the browser rejects); a bool is a type confusion, not a number.
+    """
+    raw = params.get("threshold_ms")
+    if raw is None:
+        return DEFAULT_THRESHOLD_MS
+    value = 0.0
+    if not isinstance(raw, bool):
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = 0.0
+    if not math.isfinite(value) or value <= 0:
+        raise ApiError(
+            status_code=400,
+            code="invalid_threshold_ms",
+            message="threshold_ms must be a finite number > 0 (milliseconds).",
+        )
+    return value
+
+
+# Decode-budget ceiling: far above any useful sample size, low enough that a
+# fat-fingered value cannot turn the "bounded decode" into a full-bag one.
+MAX_CLOCK_CHECK_SAMPLES = 100_000
+
+
+def _max_samples_param(params: dict) -> int:
+    """Optional ``max_samples_per_topic`` job param: decode budget per topic.
+
+    An integral number in [10, MAX_CLOCK_CHECK_SAMPLES]; a fractional value is
+    rejected (the schema says integer) rather than silently truncated.
+    """
+    raw = params.get("max_samples_per_topic")
+    if raw is None:
+        return DEFAULT_MAX_SAMPLES
+    value = 0
+    if not isinstance(raw, bool):
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            value = 0
+        else:
+            if float(raw) != value:  # 10.9 is not an integer, don't truncate
+                value = 0
+    if not 10 <= value <= MAX_CLOCK_CHECK_SAMPLES:
+        raise ApiError(
+            status_code=400,
+            code="invalid_max_samples",
+            message=(
+                "max_samples_per_topic must be an integer between 10 and "
+                f"{MAX_CLOCK_CHECK_SAMPLES}."
+            ),
+        )
+    return value
+
+
+async def _run_clock_check(job: JobRecord, store: RunnerStore, data_dir: Path) -> dict:
+    target = job.params.get("target_topics")
+    return await asyncio.to_thread(
+        run_clock_check,
+        capture_id=job.capture_id,
+        data_dir=data_dir,
+        threshold_ms=_threshold_ms_param(job.params),
+        max_samples_per_topic=_max_samples_param(job.params),
+        target_topics=coerce_target_topics(target) if target is not None else None,
+        cancel=job.cancel_event,
+    )
+
+
 def _max_frames_param(params: dict) -> int:
     """Optional ``max_frames`` job param: encode cap, ``0`` = the full episode."""
     raw = params.get("max_frames")
@@ -352,6 +431,39 @@ _VIDEO_CHECK_SCHEMA = {
         # Encode cap: default keeps previews short; 0 = the full episode
         # (pair with force to regenerate a truncated preview at full length).
         "max_frames": {"type": "integer", "minimum": 0, "default": MAX_FRAMES},
+    },
+}
+_CLOCK_CHECK_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "threshold_ms": {
+            "type": "number",
+            "title": "Offset threshold (ms)",
+            "description": (
+                "Flag a topic when |median(log_time - header.stamp)| exceeds "
+                "this, or when the bag's head and tail disagree by more."
+            ),
+            "exclusiveMinimum": 0,
+            "default": DEFAULT_THRESHOLD_MS,
+        },
+        "max_samples_per_topic": {
+            "type": "integer",
+            "title": "Samples per topic",
+            "description": (
+                "Decode budget per topic, split between a head and a tail "
+                "window of the recording."
+            ),
+            "minimum": 10,
+            "maximum": MAX_CLOCK_CHECK_SAMPLES,
+            "default": DEFAULT_MAX_SAMPLES,
+        },
+        "target_topics": {
+            "type": "array",
+            "title": "Target topics",
+            "description": "Glob patterns to restrict the check (empty = all topics).",
+            "items": {"type": "string"},
+            "default": [],
+        },
     },
 }
 _SIGNAL_REPORT_SCHEMA = {
@@ -565,6 +677,21 @@ def build_default_registry(
             params_schema=loss_report_schema(config),
             outputs=["report/loss_report/<capture_id>/summary.json"],
             runner=_make_loss_report_runner(config),
+        )
+    )
+    registry.register(
+        RegisteredPipeline(
+            id="clock_check",
+            name="Clock check",
+            description=(
+                "Recorder-vs-publisher clock consistency: compares each "
+                "message's header.stamp (publisher clock) to its MCAP "
+                "log_time (recorder clock) and flags offsets and "
+                "mid-recording clock steps."
+            ),
+            params_schema=_CLOCK_CHECK_SCHEMA,
+            outputs=["report/clock_check/<capture_id>/summary.json"],
+            runner=_run_clock_check,
         )
     )
     registry.register(
