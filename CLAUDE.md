@@ -20,6 +20,8 @@
 - `sync-docs` — 日本語正本から英語ミラーを再生成する（→ AGENTS.md のドキュメントの言語ルール）。
 - `v2-screen-work` / `v2-ui-review` — Console v2 の画面実装と、その完了レビュー。
 - `issue-log` — 遭遇した問題と解決策を `issue/` に記録する。
+- `github-issue-pr` — **ユーザーが明示的に指示したときだけ**: GitHub issue（ラベル必須・
+  bug/documentation を区別）→ ブランチ → PR → 独立エージェントレビュー → マージまでの一気通貫。
 - `tdd-python` — Python モジュールをテストから書く。
 - `ros2-development` / `docker-ros2-development` / `ros2-web-integration` / `robotics-testing` /
   `robotics-software-principles` — ROS 2・コンテナ・Web 連携・テスト設計の実務指針。
