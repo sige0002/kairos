@@ -58,6 +58,7 @@ from api_orchestrator.models import (
     JobResult,
     JobStatus,
 )
+from api_orchestrator.store import PRESENT_REPLICA_STATES
 
 logger = logging.getLogger("kairos")
 
@@ -204,6 +205,7 @@ async def create_job(request: Request, body: JobCreateRequest) -> JobCreateRespo
             details={"capture_id": body.capture_id, "state": str(capture.state)},
         )
     _reject_tombstoned(capture)
+    _reject_not_local(request, capture)
     # No lease gate here any more. §7.1's lease became SHARED precisely so that
     # several jobs can work on one capture at once — the N camera encoders of a
     # single recording are the case it exists for — and a pre-flight "somebody
@@ -270,6 +272,43 @@ async def _abandon_job(client, job_id: str, capture_id: str) -> None:
             "report is harmless",
             extra={"job_id": job_id, "capture_id": capture_id},
         )
+
+
+def _reject_not_local(request: Request, capture: Capture) -> None:
+    """Refuse a job whose bytes the CATALOG says are not on this installation.
+
+    Complements ``_reject_tombstoned`` without crossing its line: that guard
+    deliberately refuses to stat the filesystem on every submission, and this
+    one still doesn't — it reads the replica row (§8), which is a durable
+    catalog claim, not a race. A capture that is still on the robot awaiting
+    transfer, or whose local copy was archived away or observed missing, used
+    to be accepted here and die minutes later inside dora_runner with a bare
+    "no capture found" (timing sweep S1-5 note: nothing server-side checked
+    replica presence before submission). Refusing up front names the actual
+    condition the operator can act on: pull it, restore it, or stop expecting
+    a job to run against bytes this machine does not have.
+
+    No replica row at all is treated as present: rebuild only writes rows for
+    what it can see, and an old catalog that predates replicas must not lock
+    every capture out of validation.
+    """
+    store = request.app.state.capture_store
+    replica = store.get_replica(capture.capture_id, request.app.state.instance_id)
+    if replica is None or str(replica.state) in PRESENT_REPLICA_STATES:
+        return
+    raise ApiError(
+        status_code=409,
+        code="capture_not_local",
+        message=(
+            f"{capture.capture_id} has no local copy on this installation "
+            f"(replica state: {replica.state}); transfer or restore it before "
+            "running a job."
+        ),
+        details={
+            "capture_id": capture.capture_id,
+            "replica_state": str(replica.state),
+        },
+    )
 
 
 def _reject_tombstoned(capture: Capture) -> None:

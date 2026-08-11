@@ -439,6 +439,30 @@ def test_a_capture_whose_bytes_vanished_outside_kairos_still_accepts_a_job(
     assert submit(lease_client, capture_id).status_code == 201
 
 
+def test_a_capture_the_catalog_says_is_elsewhere_is_refused_up_front(
+    lease_client: TestClient,
+) -> None:
+    """S1-5 note: no server-side replica check let a job be submitted for bytes
+    this installation does not hold (still on the robot, or archived away) —
+    it died minutes later inside dora_runner with a bare "no capture found".
+    The replica row is a durable CATALOG claim (§8), not a filesystem guess,
+    so refusing on it does not cross the rm-rf test's line above."""
+    capture_id = seed_capture(lease_client)
+    store = lease_client.app.state.capture_store
+    store.upsert_replica(
+        capture_id,
+        lease_client.app.state.instance_id,
+        ReplicaState.absent_managed,
+    )
+
+    response = submit(lease_client, capture_id)
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "capture_not_local"
+    # Refused before anything was created: no job, no lease.
+    assert not store.has_live_lease(capture_id)
+
+
 # ---- renewal on observation (rev.2.6) ----------------------------------------
 
 

@@ -680,3 +680,112 @@ class TestIncomingOrphans:
         assert swept == 1
         assert awaiting.is_dir(), "a completed transfer is not debris"
         assert not orphan.exists()
+
+
+class TestIncomingAdoptionGate:
+    """S1-5: a terminal manifest alone is not completeness.
+
+    Before this gate, the only thing between a mid-transfer staging dir and
+    ``objects/`` was that rsync happens to send the mcap shards before
+    ``object_manifest.json`` (a filename-sort accident — the shell script's
+    comment even claimed the opposite ordering, D9). Adoption now also
+    requires the staged mcap bytes to reach what the manifest measured at
+    finalise, and a few quiet seconds with no writes anywhere inside. A dir
+    failing either gate is simply left for a later tick — never destroyed.
+    """
+
+    def _staged(
+        self,
+        layout: DataLayout,
+        *,
+        payload: bytes,
+        manifest_bytes: int | None,
+        age_s: float = 7200,
+    ) -> tuple[str, object]:
+        import os
+
+        from kairos_common.capture_sidecars import (
+            ObjectManifestV2,
+            write_object_manifest,
+        )
+
+        capture_id = new_capture_id()
+        staging = layout.incoming_dir(capture_id)
+        staging.mkdir(parents=True)
+        (staging / "bag_0.mcap").write_bytes(payload)
+        write_object_manifest(
+            staging,
+            ObjectManifestV2(
+                capture_id=capture_id,
+                source_instance_id="11111111-2222-3333-4444-555555555555",
+                run_id=f"run_{capture_id[:13]}",
+                state="completed",
+                started_at="2026-08-01T00:00:00.000Z",
+                ended_at="2026-08-01T00:01:00.000Z",
+                bytes=manifest_bytes,
+            ),
+        )
+        stale = time.time() - age_s
+        for path in sorted(staging.rglob("*")) + [staging]:
+            os.utime(path, (stale, stale))
+        return capture_id, staging
+
+    def test_fresh_writes_hold_adoption_until_a_quiet_tick(
+        self, client: TestClient, layout: DataLayout
+    ) -> None:
+        """A terminal manifest next to a file still being written: wait."""
+        import os
+
+        payload = b"\x89MCAP0\r\n" + b"payload" * 300
+        capture_id, staging = self._staged(
+            layout, payload=payload, manifest_bytes=len(payload)
+        )
+        # The transfer wrote into the shard a moment ago — an in-flight rsync,
+        # whatever order it chose to send files in.
+        now = time.time()
+        os.utime(staging / "bag_0.mcap", (now, now))
+
+        reconcile(client)
+
+        # Held in staging: not adopted, and (manifest present) not swept.
+        assert staging.is_dir()
+        assert client.get(f"/api/v1/captures/{capture_id}").status_code == 404
+
+        # The writes stop; the next tick publishes it.
+        stale = time.time() - 60
+        os.utime(staging / "bag_0.mcap", (stale, stale))
+        reconcile(client)
+        assert not staging.exists()
+        assert client.get(f"/api/v1/captures/{capture_id}").status_code == 200
+
+    def test_short_mcap_bytes_hold_adoption_even_when_quiet(
+        self, client: TestClient, layout: DataLayout
+    ) -> None:
+        """The manifest's own byte count is the completeness witness.
+
+        A stalled transfer can be quiet with a truncated shard — quiet is not
+        complete. The recorder's finalise measured the mcap bytes into the
+        manifest, so staged bytes below that number mean the delivery has not
+        finished, however long nothing has moved.
+        """
+        import os
+
+        payload = b"\x89MCAP0\r\n" + b"payload" * 300
+        capture_id, staging = self._staged(
+            layout, payload=payload, manifest_bytes=len(payload) + 500
+        )
+
+        reconcile(client)
+
+        assert staging.is_dir()
+        assert client.get(f"/api/v1/captures/{capture_id}").status_code == 404
+
+        # The rest of the shard arrives and the dir goes quiet: published.
+        with open(staging / "bag_0.mcap", "ab") as handle:
+            handle.write(b"q" * 500)
+        stale = time.time() - 60
+        for path in sorted(staging.rglob("*")) + [staging]:
+            os.utime(path, (stale, stale))
+        reconcile(client)
+        assert not staging.exists()
+        assert client.get(f"/api/v1/captures/{capture_id}").status_code == 200

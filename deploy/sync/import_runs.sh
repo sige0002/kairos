@@ -36,14 +36,17 @@
 # object_manifest.json is skipped. Safe to run on a timer (cron/systemd) —
 # rsync --partial --append-verify resumes interrupted transfers.
 #
-# Partial-import safety: rsync transfers files in SORTED order, and
-# object_manifest.json sorts before the (much larger) *.mcap — an interrupted
-# pull would otherwise leave a final-looking dir with a truncated bag. Each
-# capture is therefore rsynced into $DATA_DIR/.incoming/<capture_id> (which
-# keeps resume state across retries) and moved into objects/ with an atomic
-# same-filesystem rename only after rsync completes. That upholds contract §2's
-# invariant: an incomplete directory under objects/ can only ever be a capture
-# the local recorder is writing — never a half-arrived transfer.
+# Partial-import safety: each capture is rsynced into
+# $DATA_DIR/.incoming/<capture_id> (which keeps resume state across retries)
+# and moved into objects/ with an atomic same-filesystem rename only after
+# rsync completes. That upholds contract §2's invariant: an incomplete
+# directory under objects/ can only ever be a capture the local recorder is
+# writing — never a half-arrived transfer. (rsync does transfer files in
+# sorted order, and the hex-named *.mcap shards happen to sort BEFORE
+# object_manifest.json — a comment here used to claim the reverse, timing
+# sweep D9 — but that ordering is a filename accident, not the safety
+# mechanism: the staging dir + rename is, together with the reconciler's
+# completeness gate below.)
 #
 # The orchestrator adopts what lands: its reconciler picks up both a completed
 # objects/<capture_id> with no row and a leftover .incoming/<capture_id> whose
@@ -210,11 +213,30 @@ is_complete_locally() {
   grep -qE '"state"[[:space:]]*:[[:space:]]*"(completed|interrupted)"' "$dir"
 }
 
-imported=0 skipped=0
+# Deleted-here means deleted, even for a re-pull (timing sweep S4). Local
+# deletion is a ledger tombstone + the bytes leaving objects/ — so an
+# `{"all": true}` pull used to see the capture "missing" and faithfully fetch
+# it back from the robot, resurrecting what the operator removed (the robot
+# keeps its copy until drop-local exists, contract §13). The ledger is the
+# durable record and deletion is permanent (no restore), so a tombstoned
+# capture is skipped forever. Byte-grep is deliberate: the ledger is written
+# by one canonical writer (ledger_v2) with stable JSON formatting.
+is_tombstoned_locally() {
+  local id="$1" ledger="$DATA_DIR/lifecycle.jsonl"
+  [ -f "$ledger" ] || return 1
+  grep -F "\"capture_id\": \"$id\"" "$ledger" \
+    | grep -qE '"kind": "capture_(discarded|deleted)"'
+}
+
+imported=0 skipped=0 skipped_deleted=0
 for capture in "${CAPTURES[@]}"; do
   [ -z "$capture" ] && continue
   if is_complete_locally "$DST_OBJECTS/$capture"; then
     skipped=$((skipped + 1))
+    continue
+  fi
+  if is_tombstoned_locally "$capture"; then
+    skipped_deleted=$((skipped_deleted + 1))
     continue
   fi
   echo "import-runs: pulling $capture"
@@ -244,9 +266,17 @@ for capture in "${CAPTURES[@]}"; do
   else
     mv "$DST_STAGING/$capture" "$DST_OBJECTS/$capture"
   fi
+  # Sibling sidecars ride along (timing sweep S4): objects/<id>.qos.yaml is
+  # the record of the QoS the recorder actually applied, and without it the
+  # pulled copy can only answer "what QoS was this recorded with?" on the
+  # robot. Best-effort — an older robot may not have written one, and a
+  # missing sidecar must not fail the pull that just landed the bytes.
+  rsync "${RSYNC_OPTS[@]}" \
+    "$ROBOT_SSH:$SRC_OBJECTS/$capture.qos.yaml" \
+    "$DST_OBJECTS/$capture.qos.yaml" 2>/dev/null || true
   imported=$((imported + 1))
 done
 
 if [ "$QUIET" != "1" ] || [ "$imported" -gt 0 ]; then
-  echo "import-runs: done. imported=$imported skipped(already present)=$skipped total_finished=${#CAPTURES[@]}"
+  echo "import-runs: done. imported=$imported skipped(already present)=$skipped skipped(deleted here)=$skipped_deleted total_finished=${#CAPTURES[@]}"
 fi

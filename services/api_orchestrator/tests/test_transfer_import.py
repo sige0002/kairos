@@ -334,7 +334,16 @@ class TestTransferApi:
 
 
 def _staged(layout: DataLayout, capture_id: str, instance_id: str) -> None:
-    """A fully-transferred capture sitting in .incoming, as rsync leaves it."""
+    """A fully-transferred capture sitting in .incoming, as rsync leaves it.
+
+    "As rsync leaves it" includes the mtimes: on completion rsync sets every
+    file's mtime back to the SOURCE's (old) value, which is exactly what the
+    adoption quiescence gate (S1-5) reads as "nothing is being written here".
+    Freshly-minted mtimes would model a transfer still in flight instead.
+    """
+    import os
+    import time
+
     staging = layout.incoming_dir(capture_id)
     staging.mkdir(parents=True, exist_ok=True)
     (staging / "metadata.yaml").write_text("x: 1\n", encoding="utf-8")
@@ -351,6 +360,9 @@ def _staged(layout: DataLayout, capture_id: str, instance_id: str) -> None:
             task="pick",
         ),
     )
+    stale = time.time() - 60
+    for path in sorted(staging.rglob("*")) + [staging]:
+        os.utime(path, (stale, stale))
 
 
 class TestRecordMergeByRevision:
