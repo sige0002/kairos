@@ -461,6 +461,146 @@ def test_foreign_encoding_channel_is_skipped_not_fatal(
     assert summary["result"] == "pass"
 
 
+def test_ros2idl_channel_is_skipped_not_fatal(
+    tmp_path: Path, make_capture: Callable[[Path], tuple[str, Path]]
+) -> None:
+    """cdr+ros2idl is well-known MCAP but mcap_ros2's decoder rejects it.
+
+    The review's N1: the first allowlist admitted ros2idl and the decode pass
+    then died with DecoderNotFoundError — the exact crash the allowlist was
+    added to prevent.
+    """
+    data_dir = tmp_path / "data"
+    capture_id, capture_dir = make_capture(data_dir)
+    with (capture_dir / "run_x_0.mcap").open("wb") as fh:
+        w = RawWriter(fh)
+        w.start()
+        schema_id = w.register_schema(
+            name="pkg/msg/Idl", encoding="ros2idl", data=b"module pkg {};"
+        )
+        channel_id = w.register_channel(
+            topic="/idl", message_encoding="cdr", schema_id=schema_id
+        )
+        for i in range(5):
+            ts = _BASE_NS + i * 100 * _MS
+            w.add_message(
+                channel_id=channel_id, log_time=ts, publish_time=ts, data=b"\x00"
+            )
+        w.finish()
+
+    summary = run_clock_check(capture_id=capture_id, data_dir=data_dir)["summary"]
+    topic = _topic(summary, "/idl")
+    assert "not a ROS2 channel" in topic["reason"]
+    assert summary["result"] == "pass"
+
+
+def _unchunked_ros2_writer(fh):
+    """A ros2 Writer over an UNCHUNKED mcap (no chunk index on disk).
+
+    mcap_ros2's Writer does not expose ``use_chunking``, so this rebuilds its
+    tiny __init__ around a raw writer with chunking off (test-only use of the
+    private attributes; the write_message/finish paths are untouched).
+    """
+    from mcap.writer import Writer as McapWriter
+    from mcap_ros2.writer import Writer as Ros2Writer
+    from mcap_ros2.writer import _library_identifier
+
+    w = Ros2Writer.__new__(Ros2Writer)
+    w._writer = McapWriter(output=fh, use_chunking=False)
+    w._encoders = {}
+    w._channel_ids = {}
+    w._writer.start(profile="ros2", library=_library_identifier())
+    w._finished = False
+    return w
+
+
+def test_unchunked_mcap_never_presents_the_head_as_the_tail(
+    tmp_path: Path, make_capture: Callable[[Path], tuple[str, Path]]
+) -> None:
+    """The review's N2: reverse=True is silently ignored without a chunk index.
+
+    An over-budget topic must then report NO tail (with a summary note), not
+    the head under a tail label; a topic within the budget is read forward in
+    full, so its step detection still works.
+    """
+    data_dir = tmp_path / "data"
+    capture_id, capture_dir = make_capture(data_dir)
+    with (capture_dir / "run_x_0.mcap").open("wb") as fh:
+        w = _unchunked_ros2_writer(fh)
+        schema = w.register_msgdef("sensor_msgs/msg/JointState", _JOINT_DEF)
+        for name, n, step_ms in (("/dense", 400, 10), ("/small", 100, 40)):
+            for i in range(n):
+                log = _BASE_NS + i * step_ms * _MS
+                off = 5.0 if i < n * 0.8 else 2000.0  # step at 80%
+                stamp_ns = int(log - off * _MS)
+                w.write_message(
+                    topic=name,
+                    schema=schema,
+                    message={
+                        "header": {
+                            "stamp": {
+                                "sec": stamp_ns // 1_000_000_000,
+                                "nanosec": stamp_ns % 1_000_000_000,
+                            },
+                            "frame_id": "f",
+                        },
+                        "name": ["j"],
+                        "position": [0.0],
+                        "velocity": [0.0],
+                    },
+                    log_time=log,
+                    publish_time=log,
+                )
+        w.finish()
+
+    summary = run_clock_check(capture_id=capture_id, data_dir=data_dir)["summary"]
+    dense = _topic(summary, "/dense")  # 400 > budget: head-only, disclosed
+    assert dense["tail_median_ms"] is None
+    assert dense["step_suspected"] is False
+    assert dense["head_median_ms"] == pytest.approx(5.0, abs=0.1)
+    assert "no chunk index" in summary["note"]
+    small = _topic(summary, "/small")  # 100 <= budget: full read still works
+    assert small["step_suspected"] is True
+
+
+def test_step_only_topic_is_classified_clock_step(
+    tmp_path: Path, make_capture: Callable[[Path], tuple[str, Path]]
+) -> None:
+    """A step whose blended median stays under the threshold: the step IS the
+    diagnosis — no arbitrary clock/source label from a bimodal median."""
+    data_dir = tmp_path / "data"
+    capture_id, capture_dir = make_capture(data_dir)
+    _write_stamped_mcap(
+        capture_dir / "run_x_0.mcap",
+        n=40,
+        offset_ms=lambda i: 5.0 if i < 20 else 600.0,
+    )
+
+    summary = run_clock_check(
+        capture_id=capture_id, data_dir=data_dir, max_samples_per_topic=20
+    )["summary"]
+    topic = _topic(summary, "/arm/joint_states")
+    assert topic["offset_suspected"] is False  # blended median ~300 < 500
+    assert topic["step_suspected"] is True
+    assert topic["offset_kind"] == "clock_step"
+    assert summary["result"] == "fail"
+
+
+def test_zero_budget_direct_call_never_double_counts(
+    tmp_path: Path, make_capture: Callable[[Path], tuple[str, Path]]
+) -> None:
+    """The registry rejects <10, but a direct call must still not lie."""
+    data_dir = tmp_path / "data"
+    capture_id, capture_dir = make_capture(data_dir)
+    _write_stamped_mcap(capture_dir / "run_x_0.mcap", n=1)
+
+    summary = run_clock_check(
+        capture_id=capture_id, data_dir=data_dir, max_samples_per_topic=0
+    )["summary"]
+    topic = _topic(summary, "/arm/joint_states")
+    assert topic["count"] <= topic["message_count"]
+
+
 # ---- publish cross-check + offset_kind --------------------------------------
 
 

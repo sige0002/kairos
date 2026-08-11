@@ -71,6 +71,7 @@ from typing import Any
 
 from kairos_common import utc_now_iso8601
 from kairos_common.atomic_io import atomic_write_text
+from mcap.exceptions import DecoderNotFoundError
 from mcap.reader import make_reader
 from mcap_ros2.decoder import DecoderFactory
 
@@ -87,10 +88,13 @@ DEFAULT_MAX_SAMPLES = 200
 MIN_WINDOW_SAMPLES = 5
 
 _NS_PER_MS = 1_000_000
-# The channel shapes the ROS2 decoder can read; anything else (an imported
-# foreign bag's json/protobuf channel) is reported and skipped, not fatal.
+# The channel shapes mcap_ros2's DecoderFactory can actually read; anything
+# else (an imported foreign bag's json/protobuf channel — and ros2idl, which
+# the decoder explicitly does not support yet) is reported and skipped, not
+# fatal. The DecoderNotFoundError catch in the sampling loop is the belt for
+# any decoder gap this allowlist misses.
 _DECODABLE_MESSAGE_ENCODINGS = {"cdr"}
-_DECODABLE_SCHEMA_ENCODINGS = {"ros2msg", "ros2idl"}
+_DECODABLE_SCHEMA_ENCODINGS = {"ros2msg"}
 
 
 def offset_stats(offsets_ms: list[float]) -> dict[str, Any]:
@@ -186,6 +190,8 @@ def _sample_topic(
     offsets: list[float] = []
     unstamped = 0
     probed = 0
+    if quota <= 0:
+        return offsets, unstamped
     with mcap_path.open("rb") as stream:
         reader = make_reader(stream, decoder_factories=[DecoderFactory()])
         for _schema, _channel, message, decoded in reader.iter_decoded_messages(
@@ -279,6 +285,15 @@ def run_clock_check(
     n_head = (max_samples_per_topic + 1) // 2
     n_tail = max_samples_per_topic // 2
 
+    # reverse=True needs the chunk index: on an UNCHUNKED mcap the reader
+    # silently falls back to a forward scan, which would present the HEAD in
+    # the field labelled tail. Detect that once and degrade honestly: sample
+    # the head only (full budget) and say so, instead of lying about the tail.
+    with mcap_path.open("rb") as stream:
+        mcap_summary = make_reader(stream).get_summary()
+    can_reverse = mcap_summary is not None and len(mcap_summary.chunk_indexes) > 0
+    head_only_used = False
+
     topics = []
     flagged: list[str] = []
     for name in sorted(time_pairs):
@@ -306,26 +321,58 @@ def run_clock_check(
             topics.append(entry)
             continue
 
-        if message_count <= n_head + n_tail:
-            # The whole topic fits the budget: read it once, base the stats on
-            # EVERY sample, and compare the first and last QUARTERS for the
-            # step verdict — a late step inside a chronological half would be
-            # outvoted by that half's clean majority and stay invisible.
-            samples, unstamped = _sample_topic(
-                mcap_path, name, message_count, reverse=False, cancel=cancel
+        try:
+            if message_count <= n_head + n_tail:
+                # The whole topic fits the budget: read it once, base the
+                # stats on EVERY sample, and compare the first and last
+                # QUARTERS for the step verdict — a late step inside a
+                # chronological half would be outvoted by that half's clean
+                # majority and stay invisible.
+                samples, unstamped = _sample_topic(
+                    mcap_path, name, message_count, reverse=False, cancel=cancel
+                )
+                quarter = min(
+                    len(samples) // 2, max(len(samples) // 4, MIN_WINDOW_SAMPLES)
+                )
+                head, tail = samples[:quarter], samples[-quarter:] if quarter else []
+                combined = samples
+            elif can_reverse:
+                head, unstamped_head = _sample_topic(
+                    mcap_path, name, n_head, reverse=False, cancel=cancel
+                )
+                tail, unstamped_tail = _sample_topic(
+                    mcap_path, name, n_tail, reverse=True, cancel=cancel
+                )
+                unstamped = unstamped_head + unstamped_tail
+                combined = head + tail
+            else:
+                # No chunk index: a reverse read would silently scan forward,
+                # so there is no honest way to reach the tail within the
+                # budget. Sample the head with the full budget and disclose.
+                head_only_used = True
+                head, unstamped = _sample_topic(
+                    mcap_path, name, n_head + n_tail, reverse=False, cancel=cancel
+                )
+                tail = []
+                combined = head
+        except DecoderNotFoundError as exc:
+            # The encoding allowlist let something through the decoder cannot
+            # actually read — degrade to the same reported-not-fatal shape.
+            entry.update(offset_stats([]))
+            entry.update(
+                {
+                    "head_median_ms": None,
+                    "tail_median_ms": None,
+                    "publish_offset_median_ms": _publish_offset_median_ms(pairs),
+                    "unstamped_sampled": 0,
+                    "reason": f"decoder unavailable for this channel ({exc})",
+                    "offset_suspected": False,
+                    "step_suspected": False,
+                    "offset_kind": None,
+                }
             )
-            quarter = min(len(samples) // 2, max(len(samples) // 4, MIN_WINDOW_SAMPLES))
-            head, tail = samples[:quarter], samples[-quarter:] if quarter else []
-            combined = samples
-        else:
-            head, unstamped_head = _sample_topic(
-                mcap_path, name, n_head, reverse=False, cancel=cancel
-            )
-            tail, unstamped_tail = _sample_topic(
-                mcap_path, name, n_tail, reverse=True, cancel=cancel
-            )
-            unstamped = unstamped_head + unstamped_tail
-            combined = head + tail
+            topics.append(entry)
+            continue
         stats = offset_stats(combined)
         publish_offset = _publish_offset_median_ms(pairs)
         entry.update(stats)
@@ -363,7 +410,14 @@ def run_clock_check(
                 and abs(entry["head_median_ms"] - entry["tail_median_ms"])
                 > threshold_ms
             )
-            if entry["offset_suspected"] or entry["step_suspected"]:
+            if entry["step_suspected"]:
+                # With a step, the sampled median blends the two regimes —
+                # classifying that blend against the cross-check would hand
+                # one physical event arbitrary, contradictory labels across
+                # topics. The step IS the diagnosis.
+                entry["offset_kind"] = "clock_step"
+                flagged.append(name)
+            elif entry["offset_suspected"]:
                 entry["offset_kind"] = _classify_offset(
                     stats["median_ms"], publish_offset, threshold_ms
                 )
@@ -378,6 +432,12 @@ def run_clock_check(
             "target_topics matched no topic; nothing was checked"
             if patterns
             else "the bag contains no messages; nothing was checked"
+        )
+    elif head_only_used:
+        note = (
+            "the MCAP has no chunk index, so the tail cannot be reached "
+            "within the sample budget — over-budget topics were sampled from "
+            "the head only and their step detection is disabled"
         )
 
     summary: dict[str, Any] = {
@@ -399,12 +459,16 @@ def run_clock_check(
             "(publisher clock): expected to be transport latency. "
             "publish_offset = log_time - publish_time (DDS source stamp), "
             "the same orientation measured without decoding. offset_kind "
-            "classifies a flagged topic: clock_disagreement when the two "
-            "agree (the recorder clock is off), source_stamping when the "
-            "DDS stamps prove the clocks agreed and the header stamps "
-            "themselves are foreign or late (e.g. a re-recorded replay), "
-            "indeterminate without a trustworthy publish_time. An inferred "
-            "check, not a measurement of which clock is right."
+            "classifies a flagged topic: clock_step when the head and tail "
+            "windows disagree (a mid-recording correction; the blended "
+            "median is then a sampling artefact, not the topic's offset), "
+            "clock_disagreement when header and DDS offsets agree (the "
+            "recorder clock is off), source_stamping when the DDS stamps "
+            "prove the clocks agreed and the header stamps themselves are "
+            "foreign or late (e.g. a re-recorded replay), indeterminate "
+            "without a trustworthy publish_time. Median-based windows can "
+            "miss a step landing in roughly the last tenth of a recording. "
+            "An inferred check, not a measurement of which clock is right."
         ),
         "checked_at": utc_now_iso8601(),
     }
