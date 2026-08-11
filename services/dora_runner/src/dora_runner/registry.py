@@ -16,6 +16,7 @@ path, not "dora implemented".
 from __future__ import annotations
 
 import asyncio
+import math
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -243,37 +244,61 @@ def _make_loss_report_runner(config: LossReportConfig) -> Runner:
 
 
 def _threshold_ms_param(params: dict) -> float:
-    """Optional ``threshold_ms`` job param: offset verdict threshold (> 0)."""
+    """Optional ``threshold_ms`` job param: offset verdict threshold.
+
+    Must be a FINITE number > 0: ``inf`` would silently disable every verdict
+    AND make the summary unserialisable as strict JSON (a bare ``Infinity``
+    token the browser rejects); a bool is a type confusion, not a number.
+    """
     raw = params.get("threshold_ms")
     if raw is None:
         return DEFAULT_THRESHOLD_MS
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        value = 0.0
-    if value <= 0:
+    value = 0.0
+    if not isinstance(raw, bool):
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = 0.0
+    if not math.isfinite(value) or value <= 0:
         raise ApiError(
             status_code=400,
             code="invalid_threshold_ms",
-            message="threshold_ms must be a number > 0 (milliseconds).",
+            message="threshold_ms must be a finite number > 0 (milliseconds).",
         )
     return value
 
 
+# Decode-budget ceiling: far above any useful sample size, low enough that a
+# fat-fingered value cannot turn the "bounded decode" into a full-bag one.
+MAX_CLOCK_CHECK_SAMPLES = 100_000
+
+
 def _max_samples_param(params: dict) -> int:
-    """Optional ``max_samples_per_topic`` job param: decode budget (>= 10)."""
+    """Optional ``max_samples_per_topic`` job param: decode budget per topic.
+
+    An integral number in [10, MAX_CLOCK_CHECK_SAMPLES]; a fractional value is
+    rejected (the schema says integer) rather than silently truncated.
+    """
     raw = params.get("max_samples_per_topic")
     if raw is None:
         return DEFAULT_MAX_SAMPLES
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        value = 0
-    if value < 10:
+    value = 0
+    if not isinstance(raw, bool):
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            value = 0
+        else:
+            if float(raw) != value:  # 10.9 is not an integer, don't truncate
+                value = 0
+    if not 10 <= value <= MAX_CLOCK_CHECK_SAMPLES:
         raise ApiError(
             status_code=400,
             code="invalid_max_samples",
-            message="max_samples_per_topic must be an integer >= 10.",
+            message=(
+                "max_samples_per_topic must be an integer between 10 and "
+                f"{MAX_CLOCK_CHECK_SAMPLES}."
+            ),
         )
     return value
 
@@ -429,6 +454,7 @@ _CLOCK_CHECK_SCHEMA = {
                 "window of the recording."
             ),
             "minimum": 10,
+            "maximum": MAX_CLOCK_CHECK_SAMPLES,
             "default": DEFAULT_MAX_SAMPLES,
         },
         "target_topics": {

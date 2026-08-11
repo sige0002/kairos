@@ -16,31 +16,47 @@ recording (an NTP correction) shows as the head and tail of the bag
 disagreeing about that offset, while fabricating a gap or a time reversal in
 ``log_time``.
 
-Method (bounded — never a full-bag decode):
+Method:
 
-- A raw, decode-free pass collects every topic's ``(log_time, publish_time)``
-  pairs: counts, the bag's time window, and — where the writer recorded a
-  TRUSTWORTHY sender-side ``publish_time`` (see ``mcap_utils.source_times``) —
-  the ``publish_time - log_time`` median as an independent cross-check that
-  needs no message decode. A large header offset with a small publish offset
-  points at late stamping on the publisher, not at the clocks.
-- A sampled decode pass reads ``header.stamp`` for up to
-  ``max_samples_per_topic`` messages per topic, split between a HEAD window
-  and a TAIL window of the bag, and compares each stamp to that message's
-  ``log_time``. Median / p05 / p95 / min / max and the negative share are
-  reported per topic; the head/tail split is what detects a mid-recording
-  step.
+- A decode-free sweep collects the SELECTED topics' ``(log_time,
+  publish_time)`` pairs and every channel's encodings. Where the writer
+  recorded a TRUSTWORTHY sender-side ``publish_time`` (see
+  ``mcap_utils.source_times``), the median ``log_time - publish_time`` is
+  reported as an independent cross-check that needs no message decode: it
+  measures the recorder-vs-sender clock relationship through DDS source
+  stamps, in the SAME orientation as the header offset.
+- A bounded decode samples ``header.stamp`` per topic: the first
+  ``n_head`` messages and — read in REVERSE so the tail is genuinely the
+  bag's end — the last ``n_tail`` (``n_head + n_tail = max_samples_per_topic``,
+  default 200). A topic with fewer messages than the budget is read once in
+  full instead — its stats cover every message, and the step verdict compares
+  its first and last QUARTERS (disjoint by construction), so a sample is
+  never counted twice. Decode cost is bounded per topic by
+  ``min(max_samples_per_topic, message_count)`` — never a full-bag decode of
+  a topic that exceeds the budget, and never a second decode of one that
+  doesn't. Topics whose channel is not a CDR/ros2msg one (imported foreign
+  bags) are reported with a reason and skipped, not fatal.
 
 Verdicts (threshold-driven, ``threshold_ms`` param, default 500 ms):
 
 - ``offset_suspected`` — ``|median offset| > threshold``,
 - ``step_suspected`` — the head and tail medians disagree by more than the
   threshold (both windows need a minimum of samples),
-- topics without a decodable, non-zero ``header.stamp`` are reported with a
-  reason and never flagged.
+- ``offset_kind`` classifies a flagged topic using the cross-check:
+  ``clock_disagreement`` when the header offset is consistent with the
+  DDS-stamp clock offset (the recorder clock itself is off),
+  ``source_stamping`` when the DDS stamps prove the clocks agreed and the
+  header stamps themselves are foreign/late (a re-recorded bag REPLAY carries
+  the original session's header stamps and lands here), ``indeterminate``
+  when no trustworthy publish_time exists to tell the two apart.
+- Topics without a decodable, non-zero ``header.stamp`` are reported with a
+  reason and never flagged; a topic whose sampled messages were only PARTLY
+  stamped discloses the unstamped share instead of presenting a clean median.
 
 ``summary.json`` carries ``result: pass|fail`` (fail = any topic flagged) so
-the Validation tab's generic renderer can gate on it, and is written to
+the Validation tab's generic renderer can gate on it — and a ``note`` when
+there was nothing to check (an empty bag, or globs matching no topic), so an
+empty green never silently vouches for a bag it did not look at. Written to
 ``data/report/clock_check/<capture_id>/summary.json``.
 """
 
@@ -71,6 +87,10 @@ DEFAULT_MAX_SAMPLES = 200
 MIN_WINDOW_SAMPLES = 5
 
 _NS_PER_MS = 1_000_000
+# The channel shapes the ROS2 decoder can read; anything else (an imported
+# foreign bag's json/protobuf channel) is reported and skipped, not fatal.
+_DECODABLE_MESSAGE_ENCODINGS = {"cdr"}
+_DECODABLE_SCHEMA_ENCODINGS = {"ros2msg", "ros2idl"}
 
 
 def offset_stats(offsets_ms: list[float]) -> dict[str, Any]:
@@ -96,8 +116,8 @@ def offset_stats(offsets_ms: list[float]) -> dict[str, Any]:
     return {
         "count": n,
         "median_ms": statistics.median(ordered),
-        "p05_ms": ordered[max(0, int(0.05 * (n - 1)))],
-        "p95_ms": ordered[min(n - 1, int(0.95 * (n - 1)))],
+        "p05_ms": ordered[int(0.05 * (n - 1))],
+        "p95_ms": ordered[int(0.95 * (n - 1))],
         "min_ms": ordered[0],
         "max_ms": ordered[-1],
         "negative_share": sum(1 for v in ordered if v < 0) / n,
@@ -129,61 +149,78 @@ def _header_stamp_ns(ros_msg: Any) -> int | None:
 
 
 def _publish_offset_median_ms(pairs: list[tuple[int, int]]) -> float | None:
-    """Median ``publish_time - log_time`` (ms) when publish_time is trustworthy.
+    """Median ``log_time - publish_time`` (ms) when publish_time is trustworthy.
 
-    Reuses the ``source_times`` trust rule: only a series the writer stamped
-    with a REAL sender-side source timestamp for every message (and whose two
-    clocks span the same window) yields a figure; otherwise ``None`` — a
-    writer that copied the receive time in would make the offset a vacuous 0.
+    The recorder-vs-sender clock relationship measured through DDS source
+    stamps, in the SAME orientation as the header offset ("how much later
+    than the sender's stamp did the recorder's clock read"). Reuses the
+    ``source_times`` trust rule: only a series the writer stamped with a REAL
+    sender-side source timestamp for every message (and whose two clocks span
+    the same window) yields a figure; otherwise ``None`` — a writer that
+    copied the receive time in would make the offset a vacuous 0.
     """
     _times, time_source = source_times(pairs)
     if time_source != "publish_time":
         return None
-    return statistics.median((pub - log) / _NS_PER_MS for log, pub in pairs)
+    return statistics.median((log - pub) / _NS_PER_MS for log, pub in pairs)
 
 
-def _collect_window_offsets(
+def _sample_topic(
     mcap_path: Path,
-    quotas: dict[str, int],
+    topic: str,
+    quota: int,
     *,
-    start_time: int,
-    end_time: int | None,
+    reverse: bool,
     cancel: threading.Event | None,
-) -> tuple[dict[str, list[float]], set[str]]:
-    """Decode one bag window, collecting per-topic header offsets (ms).
+) -> tuple[list[float], int]:
+    """Decode up to *quota* messages of one topic from one end of the bag.
 
-    *quotas* maps each wanted topic to its remaining sample budget; iteration
-    stops early once every budget is exhausted, so the decode cost is bounded
-    by the quotas, not the bag length. Returns the per-topic offsets and the
-    set of topics that yielded at least one message but never a usable
-    header stamp (unstamped/headerless).
+    Returns ``(offsets_ms, unstamped)`` where *offsets_ms* are the
+    ``log_time - header.stamp`` values of the stamped messages probed and
+    *unstamped* counts the probed messages without a usable stamp. The
+    iteration stops at *quota* messages PROBED, so the decode cost of a call
+    is at most *quota* messages regardless of the bag length; ``reverse=True``
+    reads from the bag's end, which is what makes the tail window genuinely
+    the tail.
     """
-    offsets: dict[str, list[float]] = {name: [] for name in quotas}
-    headerless: set[str] = set()
-    remaining = dict(quotas)
-    kwargs: dict[str, Any] = {"topics": list(quotas), "start_time": start_time}
-    if end_time is not None:
-        kwargs["end_time"] = end_time
+    offsets: list[float] = []
+    unstamped = 0
+    probed = 0
     with mcap_path.open("rb") as stream:
         reader = make_reader(stream, decoder_factories=[DecoderFactory()])
-        for _schema, channel, message, decoded in reader.iter_decoded_messages(
-            **kwargs
+        for _schema, _channel, message, decoded in reader.iter_decoded_messages(
+            topics=[topic], reverse=reverse
         ):
             if cancel is not None and cancel.is_set():
                 raise JobCanceled
-            topic = channel.topic
-            if remaining.get(topic, 0) <= 0:
-                continue
             stamp_ns = _header_stamp_ns(decoded)
             if stamp_ns is None:
-                headerless.add(topic)
-                remaining[topic] -= 1
+                unstamped += 1
             else:
-                offsets[topic].append((message.log_time - stamp_ns) / _NS_PER_MS)
-                remaining[topic] -= 1
-            if all(budget <= 0 for budget in remaining.values()):
+                offsets.append((message.log_time - stamp_ns) / _NS_PER_MS)
+            probed += 1
+            if probed >= quota:
                 break
-    return offsets, headerless
+    return offsets, unstamped
+
+
+def _classify_offset(
+    header_median_ms: float, publish_offset_ms: float | None, threshold_ms: float
+) -> str:
+    """What kind of problem a flagged offset is, per the DDS cross-check.
+
+    - ``clock_disagreement``: the header offset matches the clock offset the
+      DDS source stamps measure — the recorder clock itself is off.
+    - ``source_stamping``: the DDS stamps prove the two clocks agreed, so the
+      header stamps themselves are foreign or late (a re-recorded REPLAY
+      carries the original session's stamps and lands here).
+    - ``indeterminate``: no trustworthy publish_time to tell the two apart.
+    """
+    if publish_offset_ms is None:
+        return "indeterminate"
+    if abs(header_median_ms - publish_offset_ms) <= threshold_ms:
+        return "clock_disagreement"
+    return "source_stamping"
 
 
 def run_clock_check(
@@ -208,82 +245,116 @@ def run_clock_check(
     source_dir = resolve_source_dir(data_dir, capture_id)
     mcap_path = find_mcap(source_dir)
 
-    # ---- pass 1: decode-free sweep (counts, window, publish cross-check) ----
+    # ---- pass 1: decode-free sweep (pairs for SELECTED topics only) ---------
     time_pairs: dict[str, list[tuple[int, int]]] = {}
     types: dict[str, str] = {}
+    undecodable: dict[str, str] = {}
     with mcap_path.open("rb") as stream:
         for schema, channel, message in make_reader(stream).iter_messages():
             if cancel is not None and cancel.is_set():
                 raise JobCanceled
-            time_pairs.setdefault(channel.topic, []).append(
+            topic = channel.topic
+            if not _topic_matches(topic, patterns):
+                continue
+            time_pairs.setdefault(topic, []).append(
                 (message.log_time, message.publish_time)
             )
-            if channel.topic not in types:
-                types[channel.topic] = schema.name if schema is not None else ""
+            if topic not in types:
+                types[topic] = schema.name if schema is not None else ""
+                schema_encoding = schema.encoding if schema is not None else ""
+                if (
+                    channel.message_encoding not in _DECODABLE_MESSAGE_ENCODINGS
+                    or schema_encoding not in _DECODABLE_SCHEMA_ENCODINGS
+                ):
+                    undecodable[topic] = (
+                        f"not a ROS2 channel (message encoding "
+                        f"{channel.message_encoding!r}, schema encoding "
+                        f"{schema_encoding!r}); header.stamp cannot be read"
+                    )
 
-    selected = {
-        name: pairs
-        for name, pairs in time_pairs.items()
-        if _topic_matches(name, patterns)
-    }
-
-    head_offsets: dict[str, list[float]] = {}
-    tail_offsets: dict[str, list[float]] = {}
-    headerless: set[str] = set()
-    if selected:
-        all_logs = [log for pairs in selected.values() for log, _pub in pairs]
-        t0, t1 = min(all_logs), max(all_logs)
-        half_quota = max(1, max_samples_per_topic // 2)
-        quotas = {name: half_quota for name in selected}
-        # Head window: everything from the start; the per-topic quotas (with
-        # the global early break) bound the decode, not the window end.
-        head_offsets, headerless_head = _collect_window_offsets(
-            mcap_path, quotas, start_time=t0, end_time=None, cancel=cancel
-        )
-        # Tail window: sized so even the sparsest selected topic can fill its
-        # quota (its estimated cadence x quota, padded), capped at half the
-        # bag so head and tail never fully overlap on a short recording.
-        duration = max(1, t1 - t0)
-        sparsest_interval = max(
-            duration // max(1, len(pairs)) for pairs in selected.values()
-        )
-        window = min(duration // 2, sparsest_interval * half_quota * 2)
-        tail_offsets, headerless_tail = _collect_window_offsets(
-            mcap_path, quotas, start_time=t1 - window, end_time=None, cancel=cancel
-        )
-        headerless = headerless_head | headerless_tail
+    # ---- pass 2: bounded per-topic header sampling --------------------------
+    # Budget split; a topic smaller than the whole budget is read ONCE and
+    # split chronologically, so head and tail never overlap and no message is
+    # ever sampled twice (count <= message_count, always).
+    n_head = (max_samples_per_topic + 1) // 2
+    n_tail = max_samples_per_topic // 2
 
     topics = []
     flagged: list[str] = []
-    for name in sorted(selected):
-        pairs = selected[name]
-        head = head_offsets.get(name, [])
-        tail = tail_offsets.get(name, [])
-        combined = head + tail
-        stats = offset_stats(combined)
+    for name in sorted(time_pairs):
+        pairs = time_pairs[name]
+        message_count = len(pairs)
         entry: dict[str, Any] = {
             "name": name,
             "type": types.get(name, ""),
-            "message_count": len(pairs),
-            **stats,
-            "head_median_ms": (
-                statistics.median(head) if len(head) >= MIN_WINDOW_SAMPLES else None
-            ),
-            "tail_median_ms": (
-                statistics.median(tail) if len(tail) >= MIN_WINDOW_SAMPLES else None
-            ),
-            # Sender-side cross-check (no decode): big header offset + small
-            # publish offset = late stamping on the publisher, not the clocks.
-            "publish_offset_median_ms": _publish_offset_median_ms(pairs),
+            "message_count": message_count,
         }
+        if name in undecodable:
+            entry.update(offset_stats([]))
+            entry.update(
+                {
+                    "head_median_ms": None,
+                    "tail_median_ms": None,
+                    "publish_offset_median_ms": _publish_offset_median_ms(pairs),
+                    "unstamped_sampled": 0,
+                    "reason": undecodable[name],
+                    "offset_suspected": False,
+                    "step_suspected": False,
+                    "offset_kind": None,
+                }
+            )
+            topics.append(entry)
+            continue
+
+        if message_count <= n_head + n_tail:
+            # The whole topic fits the budget: read it once, base the stats on
+            # EVERY sample, and compare the first and last QUARTERS for the
+            # step verdict — a late step inside a chronological half would be
+            # outvoted by that half's clean majority and stay invisible.
+            samples, unstamped = _sample_topic(
+                mcap_path, name, message_count, reverse=False, cancel=cancel
+            )
+            quarter = min(len(samples) // 2, max(len(samples) // 4, MIN_WINDOW_SAMPLES))
+            head, tail = samples[:quarter], samples[-quarter:] if quarter else []
+            combined = samples
+        else:
+            head, unstamped_head = _sample_topic(
+                mcap_path, name, n_head, reverse=False, cancel=cancel
+            )
+            tail, unstamped_tail = _sample_topic(
+                mcap_path, name, n_tail, reverse=True, cancel=cancel
+            )
+            unstamped = unstamped_head + unstamped_tail
+            combined = head + tail
+        stats = offset_stats(combined)
+        publish_offset = _publish_offset_median_ms(pairs)
+        entry.update(stats)
+        entry.update(
+            {
+                "head_median_ms": (
+                    statistics.median(head) if len(head) >= MIN_WINDOW_SAMPLES else None
+                ),
+                "tail_median_ms": (
+                    statistics.median(tail) if len(tail) >= MIN_WINDOW_SAMPLES else None
+                ),
+                # Sender-side cross-check (no decode), same orientation as the
+                # header offset: how much later than the sender's stamp the
+                # recorder's clock read.
+                "publish_offset_median_ms": publish_offset,
+                # Probed-but-unusable stamps: disclosed so a partially
+                # unstamped topic never presents a clean median silently.
+                "unstamped_sampled": unstamped,
+            }
+        )
         if stats["count"] == 0:
             entry["reason"] = (
                 "no usable header.stamp (headerless type or zero stamps)"
-                if name in headerless
-                else "no samples in the analysed windows"
+                if unstamped > 0
+                else "no messages sampled"
             )
             entry["offset_suspected"] = False
             entry["step_suspected"] = False
+            entry["offset_kind"] = None
         else:
             entry["offset_suspected"] = abs(stats["median_ms"]) > threshold_ms
             entry["step_suspected"] = (
@@ -293,14 +364,28 @@ def run_clock_check(
                 > threshold_ms
             )
             if entry["offset_suspected"] or entry["step_suspected"]:
+                entry["offset_kind"] = _classify_offset(
+                    stats["median_ms"], publish_offset, threshold_ms
+                )
                 flagged.append(name)
+            else:
+                entry["offset_kind"] = None
         topics.append(entry)
+
+    note: str | None = None
+    if not time_pairs:
+        note = (
+            "target_topics matched no topic; nothing was checked"
+            if patterns
+            else "the bag contains no messages; nothing was checked"
+        )
 
     summary: dict[str, Any] = {
         "pipeline": PIPELINE_ID,
         "version": PIPELINE_VERSION,
         "capture_id": capture_id,
         "result": "fail" if flagged else "pass",
+        "note": note,
         "topics": topics,
         "flagged": flagged,
         "params": {
@@ -311,15 +396,22 @@ def run_clock_check(
         # The honesty note the Review/Validation surfaces can carry verbatim.
         "definition": (
             "offset = log_time (recorder receive clock) - header.stamp "
-            "(publisher clock): expected to be transport latency; a large or "
-            "negative median indicates clock disagreement, and differing "
-            "head/tail medians indicate a clock step during the recording. "
-            "An inferred check, not a measurement of which clock is right."
+            "(publisher clock): expected to be transport latency. "
+            "publish_offset = log_time - publish_time (DDS source stamp), "
+            "the same orientation measured without decoding. offset_kind "
+            "classifies a flagged topic: clock_disagreement when the two "
+            "agree (the recorder clock is off), source_stamping when the "
+            "DDS stamps prove the clocks agreed and the header stamps "
+            "themselves are foreign or late (e.g. a re-recorded replay), "
+            "indeterminate without a trustworthy publish_time. An inferred "
+            "check, not a measurement of which clock is right."
         ),
         "checked_at": utc_now_iso8601(),
     }
     report_dir = data_dir / "report" / "clock_check" / capture_id
     report_dir.mkdir(parents=True, exist_ok=True)
     summary_path = report_dir / "summary.json"
-    atomic_write_text(summary_path, json.dumps(summary, indent=2))
+    # allow_nan=False: a sidecar with a bare `Infinity`/`NaN` token is not
+    # JSON and the browser cannot read it — fail the job loudly instead.
+    atomic_write_text(summary_path, json.dumps(summary, indent=2, allow_nan=False))
     return {"summary": summary, "artifacts": [str(summary_path)]}
