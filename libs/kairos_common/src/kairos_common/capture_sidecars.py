@@ -185,6 +185,13 @@ class ObjectManifestV2:
     # found nothing", which is a different and much more alarming statement.
     files: tuple[ManifestFile, ...] | None = None
     manifest_digest: str | None = None
+    # WHERE the hashes were sealed (the sealing instance's id), stamped by the
+    # digest job at seal time. Load-bearing for honesty (timing sweep S3-3):
+    # sealed at the SOURCE, later hash checks reach back to the recording; but
+    # a bag transferred before sealing gets its hashes minted on the RECEIVER,
+    # and those anchor future integrity checks without proving the transfer.
+    # Null on manifests sealed before this field existed.
+    digest_sealed_by: str | None = None
     # Imported bags only (§3.3): operator/task are null and these say where the
     # bytes came from.
     imported_from: str | None = None
@@ -225,6 +232,7 @@ class ObjectManifestV2:
                     None if self.files is None else [f.to_json() for f in self.files]
                 ),
                 "manifest_digest": self.manifest_digest,
+                "digest_sealed_by": self.digest_sealed_by,
             }
         )
         # Only imported bags carry these; a null pair on every recorded capture
@@ -462,6 +470,7 @@ _MANIFEST_KNOWN_KEYS = frozenset(
         "digest_state",
         "files",
         "manifest_digest",
+        "digest_sealed_by",
         "imported_from",
         "imported_at",
     }
@@ -593,6 +602,7 @@ def object_manifest_from_json(data: Mapping[str, Any]) -> ObjectManifestV2:
         digest_state=str(digest_state),
         files=files,
         manifest_digest=_optional_str(data, "manifest_digest"),
+        digest_sealed_by=_optional_str(data, "digest_sealed_by"),
         imported_from=_optional_str(data, "imported_from"),
         imported_at=_optional_str(data, "imported_at"),
         extra={k: v for k, v in data.items() if k not in _MANIFEST_KNOWN_KEYS},

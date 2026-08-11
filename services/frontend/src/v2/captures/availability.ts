@@ -133,8 +133,11 @@ export function availabilityFor(
             label: 'verified',
             tone: 'green',
             detail:
-              'The copy on this machine is complete and its per-file hashes ' +
-              'match the manifest.',
+              'The copy on this machine matches the hashes sealed in its ' +
+              'manifest. Hashes are sealed wherever the digest job first ran ' +
+              '— for a bag transferred before sealing, that was this machine, ' +
+              'so they anchor future integrity checks rather than prove the ' +
+              'transfer itself.',
             usable: true,
             warn: false,
           };
