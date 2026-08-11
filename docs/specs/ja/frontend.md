@@ -137,7 +137,7 @@ backend-driven な軽量 Web UI（Vite + React + TypeScript）。タブは技術
 - 各 member / 候補行に **Availability チップ**を出す（上記）。**使えない capture（missing / trashed / not here yet）はジョブ・プレビュー・archive の対象にしない。**
 - 詳細 = DatasetDetail（メタデータ / member 一覧 / トピック / loss report / mp4 Video check / サイドカー JSON）。ジョブは `capture_id` で走る（`params.dataset_dir` は廃止）。
 - **capture 単位の archive**: 候補が「archive root が設定済み」「どの dataset の member でもない」「availability が usable」の 3 条件を満たすときだけボタンを出す。ダイアログは destination と `<destination>/<capture_id>` の**両方**を見せ、確定ラベルは「Copy, verify, then remove」。
-  - **verify に失敗したら、成功したふりをしない**: `Copied to {dest}, but it did NOT verify — check it before trusting the copy`。成功時は `Archived to {dest} — verified, then removed from this machine`。
+  - 成功トーストは `Archived to {dest} — verified, then removed from this machine`。**完了応答そのものが verify の主張**（コピー中に per-file hash を照合し、不一致は source を消す前に run 自体が失敗する）なので、「コピーは済んだが未検証」という応答分岐は存在しない（2026-08-11, sweep S4 — 常に True の `verified` フラグと、それを読む到達不能な警告分岐を撤去）。verify の失敗は run の失敗としてエラー面に出る。
 - **dataset 単位の archive（§6.1・終端遷移）**: ヘッダの「Archive dataset」は**成功しうるときだけ**出す（root 設定済み・status が active・member が 1 件以上）。ダイアログは per-capture と同じ境界提示（root 選択＋**Path 入力** — views 形状 `<operator>/<task>/<name>` を先埋めした自由編集のパス。最終着地 `<root>/<path>` を echo し、使用中のパスは 409 で断られる旨も明記）に加えて **mode のラジオ**を持つ: 「Copy out — keep them」（封印のみ・確定ラベル「Copy, verify, then seal」）と「Move out — remove them」（源削除・「Copy, verify, then remove」）。他の active dataset と共有する member がいれば **Copy を既定にし、その理由（n 件が共有）を明記**する — Move はサーバが 409 で列挙拒否する。archived バナーも mode を正直に言い分ける（Copied to … stays on this machine / Archived to … removed from this machine）。202 の後は**同じダイアログが進捗ビューに変わり**、`GET /datasets/{id}/archive` を 1 秒間隔でポーリングして `{done} / {total}`・コピー中の capture・halt 理由を描く。**halt は dismiss する失敗ではない**: run は `archiving` のまま、Resume（destination 無しの再 POST）が続きから再開する。完了トーストは `Archived to {dir} — n recordings verified, then removed from this machine`。
   - **status はバッジで行の同一性の一部**（archiving=amber・archived=gray、一覧行とヘッダの両方）。archived は read-only: 行き先と日時を言うバナーを出し、member の Remove / Discard / Delete と BuildRail の追加は**描かない**（サーバは全部 409 で断るので、出せば確実に失敗するボタンになる）。dataset の Delete は disabled＋「Kept: this record is what remembers where the dataset went.」— **archived の行は移行ログの照会キャッシュ**であり消させない。
 - **Delete**(上記「削除の 2 ダイアログ」)。dataset 自体の削除は `DELETE /api/v1/datasets/{dataset_id}` で、**capture のバイトには触れない**（archiving / archived は上記の通り 409）。
@@ -193,6 +193,8 @@ v1 の Graph / Probe / Live 健全性パネルの統合先。サブナビは **O
 
 - 単一の SSE ストリーム（`GET /api/v1/events`）を購読し、イベント種別ごとに TanStack Query キャッシュへ反映する。コンポーネントはキーを購読して再描画。
 - SSE 切断は UI（ヘッダの接続チップ）に明示し、自動再接続する（`Last-Event-ID`）。
+- **鮮度の規律**（2026-08-11, sweep S3-5/S3-6）: (a) `record_status` の SSE イベントは、**status ポーリングが失敗している間はキャッシュへ適用しない**（`setQueryData` は query のエラーを消し `dataUpdatedAt` を今に進める＝到達不能な recorder を「新鮮」に蘇生してしまう。再接続後のリプレイは分オーダー古い可能性がある。イベント自体はログに残す）。(b) Monitor の Topics テーブルは、SSE が open でない・monitor bridge が down のとき**実測列を出さない**（凍結スナップショットを現在値として描かない。Collect の system card と同じゲートで、理由の注記を出す）。
+- **ジョブ watcher のイディオム**（sweep S3-4）: 「terminal を検知したら result を fetch して setState」は **queryFn の中に書かない** — 2 タブがキャッシュを共有すると、先に fetch した側しか setState が走らず、残りは成功したジョブに恒久スピナーを出す。status の queryFn は純粋に保ち、終端処理は観測した state に対する effect で行う（共通フック `useJobCompletion`）。
 
 ## 出力（呼ぶ API）
 
@@ -212,7 +214,10 @@ v1 の Graph / Probe / Live 健全性パネルの統合先。サブナビは **O
 ## 設計方針
 
 - **正直原則**: 測れないものは表示しない（latency / loss の偽装禁止・shortfall≠loss）。値をでっち上げない — 取得できない値・未実装の判定は「—」やモック明示で示す。品質（quality）とタスク結果（task result）を混同しない。**「読めなかった」を「異常なし」に見せない**（Store health の空表示・Availability の unknown）。
-- **失敗はその操作の言葉で説明する。** エラーメッセージは「何が起きたか」ではなく「あなたのその操作がどうなったか」を述べる（`Not saved.` / `Copied … but it did NOT verify` / lease 所有者を名指しした `capture_busy`）。破壊的操作の失敗は消えるトーストにしない。
+- **失敗はその操作の言葉で説明する。** エラーメッセージは「何が起きたか」ではなく「あなたのその操作がどうなったか」を述べる（`Not saved.` / lease 所有者を名指しした `capture_busy`）。破壊的操作の失敗は消えるトーストにしない。（分割 discard のトースト文言は「a copy may remain on the robot」— 確定 split と probe 未回答の両方で真になる表現。）
+- **fetch 層のデッドライン**（2026-08-11, sweep S3-8）: 全リクエストに既定 30 秒の deadline（`AbortSignal.timeout`）。半開 TCP が「どの画面でも終わらないスピナー」になるのを防ぐ。サーバ側予算が長い呼び出しは個別に上書きする — `record/stop` 90s（recorder のエスカレーション ~75s を client 側で切らない）、`record/start` / `prepare` 60s（config 導出予算）。
+- **split プローブは 1 本・開示は fail-safe**（sweep S3-7）: `/transfer/status` の probe は共有フック 1 つ（60s stale・リトライあり。失敗が再マウントまで「単一ホスト」として固着しない）。**機能ゲート**（転送 UI）は `available === true` のみで有効化し、**§12 の破壊的ダイアログの開示**（「ロボット側にコピーが残りうる」）は逆向きに倒す — 確定した単一ホストの答えだけが注記を抑止し、未回答・失敗中は表示する（`useRobotCopyMayRemain`）。
+- **pre-arm の失敗は隠さない**（sweep S2-7）: prepare の連続失敗（2 回以上）は Ready カードに amber で表示し（Start は同期フル起動へフォールバックするので塞がらない）、リトライは 30s から指数バックオフ（上限 5 分）。recorder 側はこの失敗を capture として filed しない（→ capture_store §3.4）。
 - **非侵入**: 監視表示は monitor の raw / no-decode + best_effort 由来。ペイロード decode は `topic_probe` に隔離。
 - **画面あたりの image subscription 予算**: プレビューはタブ表示中のみ購読し離脱で解放、サブカメラは低解像度強制、集約値カード（System 等）は orchestrator の API 値のみで新規 subscription を作らない。同時フル解像度は 1 本まで。
 - 実パスを持たない / pipeline をハードコードしない / schema・設定は backend が渡す。

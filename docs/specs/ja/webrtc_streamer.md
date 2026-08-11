@@ -37,6 +37,7 @@ ROS 2 の image トピックをブラウザへ低遅延配信する**プレビ�
 
 - ICE / ネットワーク到達性:
   - 既定は `ice_servers = []`（host candidate のみ。同一 LAN 内で直接到達）。NAT / WiFi クライアント分離 / インターネット越えが必要な場合のみ `WEBRTC_ICE_SERVERS`（STUN/TURN の JSON 配列）を設定する。値はブラウザと streamer の両方に `/api/v1/config` 経由で配布される。空/不正値は「ICE なし」に安全に縮退する（サービスは落とさない）。
+  - answer 前の ICE gathering 待ちは `WEBRTC_ICE_GATHER_TIMEOUT_S`（既定 `5.0`）。超過時は部分 answer を送る（LAN では host candidate で足りる）が、TURN 経由では relay candidate を欠いた部分 answer が「接続はするが映像が黒い」族の原因になるため、遅い uplink の TURN 構成ではこの値を上げる（超過は WARNING でログされる。2026-08-11, sweep S4）。
   - answer SDP から **IPv6 候補を既定で除外**する（`WEBRTC_KEEP_IPV6=1` で無効化）。断片化した IPv6 データグラムは WireGuard/Tailscale でブラックホール化されるため、ICE が v6 ペアを選ぶとメディアが届かずプレビューが黒くなる。到達可能な経路（LAN の v4 host 候補・Tailscale の `100.x`）はすべて v4 なので候補集合が空になることはない。
   - RTP ペイロード上限を `WEBRTC_PACKET_MAX`（既定 `1150`）で縮小する。aiortc は 1300B 固定で ~1350B(v4)/~1370B(v6) のデータグラムを作り、MTU 1280 のトンネル（Tailscale/WireGuard）では毎パケットが断片化する。1150 なら RTP/SRTP/UDP/IP ヘッダ込みで 1280 に収まり断片化しない。MTU 1500 の同一 LAN では 1300 に戻して overhead を減らしてもよい。
 - CORS: 既定（`WEBRTC_PUBLIC_URL=/webrtc`）では frontend の nginx 経由の同一オリジンになるため CORS は不要。絶対 URL を設定してブラウザから直接 offer する旧方式の場合のみ `CORS_ORIGINS`（[config](config.md)）を streamer に適用する。

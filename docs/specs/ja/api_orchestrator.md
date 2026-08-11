@@ -210,7 +210,7 @@ capture 一覧には**決して現れない 2 つの最悪の状態**を可視�
 
 ## 停止時クイックチェック（`quick_check` settlement）
 
-録画停止時に orchestrator が **2 層のクイックチェックを一度だけ確定（settle）**し、capture 行に `quick_check`（JSON）として永続化する。分担: topic_monitor = 常時のライブ検知、**orchestrator = 停止時の一度きりの確定**、dora_runner = 事後のディープ解析（quick_check には手を出さない）。**stop の HTTP 応答は現状以上に遅延させない**: capture を終端状態（`completed` 等）に確定し `record_status` を発行したあと、確定処理を **stop 経路の外（バックグラウンドタスク）**で走らせ、完了時に capture 行を `quick_check` で更新する。総予算は約 `4s`（各下流呼び出しに個別タイムアウト・no-retry）。タイムアウト時は**完了した分だけ**を `available` フラグを正直に落として永続化する（正直な degradation）。
+録画停止時に orchestrator が **2 層のクイックチェックを一度だけ確定（settle）**し、capture 行に `quick_check`（JSON）として永続化する。分担: topic_monitor = 常時のライブ検知、**orchestrator = 停止時の一度きりの確定**、dora_runner = 事後のディープ解析（quick_check には手を出さない）。**stop の HTTP 応答は現状以上に遅延させない**: capture を終端状態（`completed` 等）に確定し `record_status` を発行したあと、確定処理を **stop 経路の外（バックグラウンドタスク）**で走らせ、完了時に capture 行を `quick_check` で更新する。各下流呼び出しに個別タイムアウト — monitor 読みは `3s`＋retry 1（2026-08-11, sweep S4: 旧 1.2s/no-retry は単一ホスト LAN の仮定で、split では 1 往復の遅さが verdict を黙って情報の少ない fallback に落としていた。背景タスクなので operator を待たせない）、MCAP summary 読みは `1.5s`。START 時のベースライン取得だけは start 経路上なので `2s`・no-retry のまま。タイムアウト時は**完了した分だけ**を `available` フラグを正直に落として永続化する（正直な degradation）。
 
 settle を積むのは stop 経路だけではない — **terminal manifest を採用したあらゆる経路**が同じ確定を走らせる: `GET /record/status` の遅延 reconciliation、新規 start 時の stale live 行の整理、orchestrator 再起動時の interrupt、そして**定期 reconciler の採用パス**（無人運用で上限自動停止に最初に到達するのはこの経路）。stop 以外の経路では入力を live recorder ではなく**当該 capture 自身のサイドカー**から取り、ウィンドウ終端は `now()` ではなく **`ended_at`** を使う（数分〜数時間後の照合が、収録後の monitor incident を窓に取り込まないため）。
 
@@ -295,6 +295,7 @@ Settings > Data quality から、選択式カタログ（recording / stream / va
   - **cancel と lease**（2026-08 改修）: dora_runner の cancel は協調式になり（[dora_runner](dora_runner.md) の API 節）、`running` の job への cancel 応答は `running` + `cancel_requested: true` のまま — `canceled` は**実作業が実際に死んだとき**にだけ観測される。lease の解放は従来どおり終端状態の観測時なので、この変更により「cancel ラベルで lease が解放され、走行中ジョブの capture が `.trash` へ rename される」経路（timing sweep S1-2）は閉じた。UI の「blocked delete → cancel → retry」も、cancel した job が終端に達するのを（有界に）待ってから retry する。
   - 墓標の capture への投入は `409`（`capture_deleting` / `capture_deleted`）。
 - 対象 capture が未知なら **`404`**、まだ記録中 / 停止中なら **`409`**（書き込み途中の bag を読ませない）。
+- **バイトがこの設置に無い capture への投入は `409 capture_not_local`**（2026-08-11, sweep S1-5 併記）: replica 行（§8）が `present_*` 以外（転送待ち・archive 済み・missing 観測済み）を言っているときは、dora_runner の中で数分後に裸の "no capture found" で死なせず、operator が行動できる状態名（`replica_state`）を挙げて投入時に断る。判断は**カタログの replica 行**であってファイルシステムの stat ではない（`rm -rf` 直後の未検出は従来どおり遅い失敗のまま — 投入毎の stat は明瞭さと引き換えにレースを持ち込むだけ）。replica 行が**無い** capture は通す（replica 導入前の古いカタログを検証から締め出さない）。
 - `GET /jobs/{id}/result` の **`artifacts` はデータルート相対に正規化**して返す: dora_runner はコンテナ絶対パス（例 `/data/report/<pipeline>/<capture_id>/plot.png`）を報告するが、orchestrator が `data_dir` 配下のものを相対化するので、各 artifact はそのまま `GET /api/v1/files/{path}` で取得できる。これが**プラグインが UI 無改修で画像（プロット等）を表示させる可視化チャネル**（[dora_plugins.md §2.5](dora_plugins.md)）。`data_dir` 外の絶対パス・元から相対のパスは無変換。
 - `fast_validation`: `params.template` の **id（カタログのファイル stem。例 `airoa_hsr`）を Config カタログでフル template に解決**してから `dora_runner` へ転送する（dora_runner の template ストアは空起動のため、bare id は 404 になる）。id が空 / 不在なら現在の選択（active）にフォールバック。既に dict（フル template）ならそのまま通す。
 
@@ -349,7 +350,7 @@ Settings > Data quality から、選択式カタログ（recording / stream / va
 - 重い処理（検証・変換、stage3）は**非同期ジョブキュー**に載せ、request/response から切り離す。進捗は SSE 通知。
 - 永続: **capture の正はディスク上のサイドカー**（`object_manifest.json` / `record.json` / `lifecycle.jsonl`）で、**SQLite はそこから全再構築できる索引**。起動時に DB が無い・スキーマ版が違う・`KAIROS_REBUILD` が立っていれば rebuild する（[capture_store](capture_store.md) §8.2）。`jobs` は揮発として rebuild 対象外、`validation_templates` / `plan_catalog` は `catalog/*.json` へサイドカー二重化して復元する。settings ストアは未実装（収録設定は `PUT /api/v1/config/recording` で設定ファイルへアトミックに永続化する）。
 - **起動シーケンス**: identity（`instance.json`。壊れていれば起動失敗 — 新しい id は全 replica を孤児にする）→ 不変条件（`objects`/`.trash`/`.incoming` の同一 FS 検査、`.ledger-slack` の確保）→ 必要なら rebuild（**ledger が読めなければ起動を中止**。ledger は manifest に優先するので、それ無しに rebuild すると operator が破棄した capture を全部復活させる）→ **delete-resume（rebuild の有無にかかわらず毎回）**。
-- 内部サービス呼び出しは timeout（既定 `3s`）+ retry 1 回。失敗は `status` / `events` に反映（`503`）。**例外は recorder への `POST /record/stop`**: retry 無し・長い予算（`75s`）。recorder の停止は SIGINT 30s → SIGTERM 30s → SIGKILL 5s とエスカレーションし、チェーンを最後まで歩いた停止（約 65 秒）も**成功した停止**（interrupted で確定）なので、それを 503 に切らず待ち切る。
+- 内部サービス呼び出しは timeout（既定 `3s`）+ retry 1 回。失敗は `status` / `events` に反映（`503`）。**例外は recorder への `POST /record/stop`**: retry 無し・長い予算（`75s`）。recorder の停止は SIGINT 30s → SIGTERM 30s → SIGKILL 5s とエスカレーションし、チェーンを最後まで歩いた停止（約 65 秒）も**成功した停止**（interrupted で確定）なので、それを 503 に切らず待ち切る。**`POST /record/start` / `/record/prepare` も例外**（retry 無し）: 予算は固定 25 秒ではなく**ライブ config から導出**する（2026-08-11, sweep S2-3）— 床 18 秒（spawn＋出力 dir 待ち＋resume 往復＋rclpy 初期化の余裕）＋ `start_delay_s` ＋ `subscription_ready_timeout_s` ＋ `post_discovery_delay_s`、下限 25 秒。固定 25 秒は既定 config に対して余裕 0.5 秒しかなく、文書化された設定（カメラ暖機の `start_delay_s: 10`）で**全 cold start が 503**＋起動中の録画に failed 行、という壊れ方をしていた。
 
 ## エラー / 規約 / ネットワーク
 

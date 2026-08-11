@@ -70,7 +70,7 @@ ROS 2 のトピックを **MCAP に正式記録する**コンテナ。公式の�
   - **`disarmed_capture_id`** — armed セッションを `stop` がキャンセルしたときだけ、捨てられた capture を名指しする。それを `capture_id` に載せることはできない（そちらは直近の**確定した** capture を指しており、キャンセルで上書きしてはならない）が、呼び出し側は「自分が要求した id はもう現れない」ことを知る必要がある。他の stop では `null`。
 - `GET /record/metadata` — 直近 capture の metadata。`{ capture_id, run_id, manifest, rosbag2_metadata, bytes }`。manifest が壊れている場合は `404` ではなく **`500 manifest_corrupt`**（「読めない」を「無い」と報告しない）。
 - `GET /healthz` / `GET /readyz`
-- 異常: `/data/objects` 書込不可・空き容量不足は記録を拒否（`507` 相当）。多重 start / 多重 prepare は `409`。失敗 start の `507` の `details` には **`capture_id` を必ず含める**。サイドカーの書き込み自体に失敗したときだけ `failed_start_record_error` を付ける。
+- 異常: `/data/objects` 書込不可・空き容量不足は記録を拒否（`507` 相当）。多重 start / 多重 prepare は `409`。失敗 start の `507` の `details` には **`capture_id` を必ず含める**。サイドカーの書き込み自体に失敗したときだけ `failed_start_record_error` を付ける。**失敗した `prepare` は例外**（2026-08-11, sweep S2-7）: `507`＋`capture_id` は同じだが、**`.failed.json` サイドカーは書かない**（materialise 済みの `.qos.yaml` 等の一時ファイルは掃除する）。prepare はコンソールの背景 keep-alive（30 秒周期）であり、恒久的な arm 阻害を capture として毎回 filed すると store に「Not usable」の山が無言で積もる — 失敗の永続記録はログ、operator への通知はコンソールの pre-arm degraded 表示が担う（→ capture_store §3.4）。
 
 ### 起動時の復旧（放棄された arm / start の分類）
 

@@ -79,7 +79,8 @@ The **audit record** written by recorder. It consolidates v1's `manifest.json` +
   "integrity": "ok|dropped|failed|unknown", "error": str|null,
   "digest_state": "pending|complete",
   "files": null | [ { "path": …, "size": …, "sha256": … } … ],
-  "manifest_digest": null | "sha256:…"
+  "manifest_digest": null | "sha256:…",
+  "digest_sealed_by": null | "<instance_id>"   // the instance that sealed (§10; null on older manifests)
 }
 ```
 
@@ -109,6 +110,8 @@ Sort `files` by `path` ascending, concatenate them as `f"{path}\n{size}\n{sha256
 A start that produced not one byte of bag leaves a **sibling file** rather than a directory (to preserve the invariant "a directory directly under `objects/` means bytes were written"). It is written with the §3.1 helper, and **a write failure is not swallowed** — beyond the error log, the start error response (`507`) carries what failed (`failed_start_record_error`).
 
 rebuild reads this file too and creates a `state='failed'` row. The deletion path and the reaper also cover a capture's sibling files (`.failed.json` / `.qos.yaml`).
+
+**Exception: a failed `prepare` (pre-arm probe) is not filed** (2026-08-11, sweep S2-7). A prepare is the console's background keep-alive repeated every 30 seconds, not an operator's recording action. Under a persistent arm blocker (topic mismatch, disk full), the old contract piled up a `.failed.json` + failed row **every 30 seconds** with nothing on screen. Now the recorder writes no sidecar for a failed prepare (temporary files are cleaned up), the orchestrator files no row, and the failure returns to the console as the error response — Collect shows "pre-arm failing" and retries with exponential backoff. A failed operator `start` is still always filed.
 
 > **Implementation note (found by E2E §13-4)**: the failed-start sidecar records topics from before type discovery finished, so `type` can be an explicit `null`. rebuild faithfully turns that into a row, so if any API model refuses `null`, **the whole of `GET /api/v1/captures` becomes a permanent `500`** (the row stays in the DB, so a restart does not fix it). Normalize `null` to "not yet discovered" = the empty string.
 
@@ -423,7 +426,7 @@ Only these five — `recording` / `stopping` / `completed` / `interrupted` / `fa
 A consistency pass that runs continuously, separate from rebuild. It picks up:
 
 - An `objects/<id>` that has a valid manifest but no DB row (where a crashed import or a race with rebuild lands) → adopt the row.
-- Something left complete in `.incoming/<id>` (an importer that died between the rsync and the rename) → move it into `objects/` and adopt it.
+- Something left complete in `.incoming/<id>` (an importer that died between the rsync and the rename) → move it into `objects/` and adopt it. **A terminal manifest alone is not "complete"** (2026-08-11, sweep S1-5 — the old protection was the single accident that the mcap shards sort before the manifest in a filename sort). Adoption now passes two independent gates first: (a) **byte completeness** — the staged `*.mcap` sizes sum to at least the manifest's `bytes` (the value the recorder measured at finalise; manifests without `bytes` skip this gate). (b) **quiescence** — nothing anywhere inside the directory was written in the last 5 seconds (the same whole-tree mtime walk the orphan sweep uses; rsync restores source mtimes on completion, so a finished transfer passes immediately). A directory that fails either gate is **simply left for a later tick** — nothing is destroyed. The quiescence gate also closes the race where adoption slips into the gap between an import's `write_manifest` and `finalize` awaits.
 - Terminal with `digest_state=pending` → re-submit to the digest queue.
 - Resuming `delete_pending` (§7).
 - Marking vanished copies `missing_unmanaged` (**under the threshold guard**, described below).
@@ -458,6 +461,9 @@ These are not the kind of properties you can "fix later". Break one even once, a
 - per-file sha256 → completed by the single atomic write of §3.3 → record `replicas.manifest_digest` → `present_verified`.
 - While it runs, surface `digest_state=pending` in the UI (never blend "verified" with "being verified").
 - After a crash, the reconciler re-submits the pending work (partial results are thrown away and it starts over).
+- **Mutable and derived sidecars are excluded from what gets hashed**: `object_manifest.json` (the file being written), `record.json` (mutable), and additionally `quick_check.json` (2026-08-11 — settlement writes it after stop **on its own clock**, so one landing after the seal would make every later comparison misread a derived file's arrival as corruption of the capture).
+- **An unverified copy of an already-sealed manifest is genuinely compared** (2026-08-11, sweep S3-3). When a replica is `present_unverified` but the manifest says `digest_state=complete`, the old implementation promoted to `present_verified` without comparing a single byte (a bag truncated in transit could arrive verified). Now the local per-file hashes are checked against the manifest's `files`: a match promotes; **a mismatch marks the replica `corrupt`** and never touches the manifest (the manifest is evidence). Manifests sealed under the old rule that included `quick_check.json` are compared with that entry ignored (and the `manifest_digest` cross-check skipped in that case).
+- **The seal's origin is stamped into the manifest**: sealing writes `digest_sealed_by` (the sealing instance's id). Hashes **sealed at the source** anchor back to the recording itself; hashes **sealed on a receiver** (the robot side runs no orchestrator, so a transfer can precede any sealing) are "the reference for every future integrity check" and **not proof of the transfer itself** — the UI's verified wording says so. A receipt-style design where the robot seals digests before transfer remains TBD under §13 (D12).
 
 ## 11. API (summary)
 
@@ -497,5 +503,5 @@ The pytest side guards a different layer: crash injection (kill → restart → 
 
 ## 13. Out of scope (next branch)
 
-- The edge → server transfer subsystem, hub mode, receipts, drop-local (formal replica management for copies left behind on the robot is resolved there). In the current split deployment, a discard is "**discarding the copy on the recording PC**", and a copy may still remain on the robot — the UI states that honestly alongside.
+- The edge → server transfer subsystem, hub mode, receipts, drop-local (formal replica management for copies left behind on the robot is resolved there). In the current split deployment, a discard is "**discarding the copy on the recording PC**", and a copy may still remain on the robot — the UI states that honestly alongside. **Interim re-fetch guard** (2026-08-11, sweep S4): the importer's pull skips any capture with a tombstone (`capture_discarded` / `capture_deleted`) in the local ledger — so while drop-local does not exist, an `{"all": true}` pull cannot drag a deleted capture back from the robot (deletion has no restore, so skipping forever is safe).
 - `task_revision_id`, and automating retention / capacity (this branch goes **only as far as fixing the definitions that are displayed**).

@@ -235,7 +235,7 @@ bagflow は「事実」だけを報告する（ノードごとの `ok`・エッ�
 
 - **job / validation template を SQLite に永続化**する（`store.py`。既定 `<data_dir>/dora_runner.db`＝`report/` ツリーと同じデータディレクトリ直下。`api_orchestrator.store` と同じ規約: `threading.RLock` でコネクションを直列化し、`PRAGMA user_version` でスキーマ版を記録）。以前は in-memory で、プロセス再起動で job/template が消えていた（release-readiness の F4/MS-6）。
 - **実行系は in-process のまま**（分散キューではなく、永続化するのは**状態**）。実行中の job は `asyncio.Task` を持つ live な `JobRecord` として保持し、状態遷移（queued → running → 終端）ごとに行へ**チェックポイント**する（ログ 1 行ごとには書かない）。`logs_tail` は終端行にそのまま保存される。
-- **再起動リコンサイル**: 起動時（`create_dora_app`）に `queued` / `running` のまま残った job を終端の `failed` へ確定し、理由を `summary` に載せる（`{result:"fail", reason:"interrupted", error:{code:"job_interrupted", message:"dora_runner restarted while the job was in flight."}}`）＋ `logs_tail` に注記を追記する。`JobState` に `interrupted` 値は無く、`api_orchestrator` の `run_job_to_completion` が終端とみなすのは succeeded/failed/canceled のみなので、**interrupted は `failed` に集約し理由を summary に持たせる**（timeout と同じ表現）。これにより `datasets._job_failure_reason` と Validation タブの汎用レンダラがそのままユーザーへ提示でき、orchestrator / frontend の改修は不要。
+- **再起動リコンサイル**: 起動時（`create_dora_app`）に `queued` / `running` のまま残った job を終端の `failed` へ確定し、理由を `summary` に載せる（`{result:"fail", reason:"interrupted", error:{code:"job_interrupted", message:"dora_runner restarted while the job was in flight."}}`）＋ `logs_tail` に注記を追記する。`JobState` に `interrupted` 値は無く、全消費側が終端とみなすのは succeeded/failed/canceled のみなので、**interrupted は `failed` に集約し理由を summary に持たせる**（timeout と同じ表現）。これにより `datasets._job_failure_reason` と Validation タブの汎用レンダラがそのままユーザーへ提示でき、orchestrator / frontend の改修は不要。
 - `GET /jobs/{id}/status` / `GET /jobs/{id}/result` は live な `JobRecord` を優先し、無ければ SQLite の行から応答する（再起動後に worker が消えた job も終端状態・結果を返せる）。
 
 ## API（サービス内部 API。公開は `api_orchestrator` 経由）
@@ -309,7 +309,18 @@ manifest をスキャンして自動登録する。例として `hello_dora` プ
 in-process インタプリタ**（プラグインの `executor: dora` は下記の理由で in-process 実行）、
 **ジョブの並行度上限・per-job timeout**（`KAIROS_DORA_MAX_CONCURRENCY` / `KAIROS_DORA_JOB_TIMEOUT_S`）、
 **job/template の SQLite 永続化と再起動リコンサイル**（上記「永続化と再起動リコンサイル」）。
-各パイプラインの重い読込・エンコードは worker スレッドに退避する。
+各パイプラインの重い読込・エンコードは worker スレッドに退避する
+（`POST /validation/templates/generate` の MCAP summary 読みも `to_thread` — event loop 上での同期読みは
+実行中の全 endpoint を止めていた。2026-08-11, sweep S4）。
+
+**per-job timeout は作業を実際に止める**（2026-08-11, sweep S2-4）。期限超過は cancel と同じ協調機構
+（`cancel_event` → worker のチェックポイントで subprocess kill / デコード停止）を発火し、猶予 30 秒
+（`_TIMEOUT_STOP_GRACE_S`）で結末を見届けてから確定する: (a) 猶予内に**止まった** → `failed`
+（`reason: timeout`、「the work was stopped」）でスロットは実際に解放される。(b) 猶予内に**完走した** →
+`succeeded`（期限は wall-clock の上限であって、終わった仕事を failed に塗り替える装置ではない）。
+(c) 止まらなかった → `failed` で「still running; slot stays held」と明記（スロットはスレッド終了まで
+保持 — 従来はこれが唯一の挙動で、全編エンコードの長尺 bag が偽 failed＋スロット死蔵になっていた）。
+API cancel が先に要求していた場合は `canceled` が勝つ（BUG-D と同じ規則）。
 
 **dora の同梱状況（2026-07-26 更新）**: **dora CLI（0.5.0）と同梱 bagflow の Rust ノードは dora_runner
 イメージに入っている**。実 dora で動くのは **検証 2 本（`fast_validation` / `full_validation`）**で、

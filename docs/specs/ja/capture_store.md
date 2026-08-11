@@ -77,7 +77,8 @@ recorder が書く**監査記録**。v1 の `manifest.json` + `session.json` を
   "integrity": "ok|dropped|failed|unknown", "error": str|null,
   "digest_state": "pending|complete",
   "files": null | [ { "path": …, "size": …, "sha256": … } … ],
-  "manifest_digest": null | "sha256:…"
+  "manifest_digest": null | "sha256:…",
+  "digest_sealed_by": null | "<instance_id>"   // 封印した instance（§10。旧 manifest は null）
 }
 ```
 
@@ -107,6 +108,8 @@ root 所有のファイルでも tmp + replace なら uid 1000 から更新で�
 bag が 1 バイトも生まれなかった start は、ディレクトリではなく**兄弟ファイル**を残す（「`objects/` 直下のディレクトリ＝バイトが書かれた」という不変条件を守るため）。§3.1 のヘルパで書き、**書き込み失敗を握り潰さない** — error ログに加えて、start のエラーレスポンス（`507`）に失敗内容を含める（`failed_start_record_error`）。
 
 rebuild はこのファイルも読み、`state='failed'` の行を作る。削除系・reaper は capture の兄弟ファイル（`.failed.json` / `.qos.yaml`）も対象にする。
+
+**例外: 失敗した `prepare`（pre-arm probe）は filed されない**（2026-08-11, sweep S2-7）。prepare はコンソールが 30 秒ごとに繰り返す背景の keep-alive であり、operator の記録操作ではない。恒久的な arm 阻害（topic 不一致・disk full）があると、旧仕様では **30 秒に 1 つ** `.failed.json`＋failed 行が積み上がり、画面には何も出なかった。今は recorder が prepare 失敗にサイドカーを書かず（一時ファイルは掃除）、orchestrator も行を作らず、失敗はエラー応答としてコンソールへ返る — Collect が「pre-arm failing」を表示し、リトライは指数バックオフする。operator の `start` の失敗は従来どおり必ず filed される。
 
 > **実装上の注意（E2E §13-4 が発見）**: 失敗 start のサイドカーは、型の discovery が終わる前の topics を記録するため `type` が明示的な `null` になりうる。rebuild はそれを忠実に行にするので、`null` を受け付けない API モデルがあると **`GET /api/v1/captures` 全体が恒久的に `500`** になる（行が DB に残るため再起動でも直らない）。`null` は「未 discovery」＝空文字列に正規化する。
 
@@ -395,7 +398,7 @@ recording ──▶ stopping ──▶ completed
 rebuild とは別に、常時走る整合パス。次を拾う:
 
 - 有効な manifest を持つのに DB 行が無い `objects/<id>`（import のクラッシュ・rebuild とのレースの着地点）→ 行を採用。
-- `.incoming/<id>` に完成して残っているもの（rsync と rename の間で死んだ importer）→ `objects/` へ移して採用。
+- `.incoming/<id>` に完成して残っているもの（rsync と rename の間で死んだ importer）→ `objects/` へ移して採用。**「完成」の判定は terminal manifest だけでは足りない**（2026-08-11, sweep S1-5 — 従来の守りは「mcap がファイル名ソートで manifest より先に転送される」という偶然 1 枚だった）。採用前に 2 つの独立ゲートを通す: (a) **バイト完全性** — staging 内 `*.mcap` の合計サイズが manifest の `bytes`（recorder が finalise 時に実測した値）に達していること（`bytes` 未記載の manifest はスキップ）。(b) **静穏** — ディレクトリ内のどこにも直近 5 秒の書き込みが無いこと（orphan sweep と同じ全木 mtime 走査。rsync は完了時に mtime を転送元の値へ戻すので、完了済みは即座に通る）。どちらかに落ちたら**次の tick に回すだけ**で、何も破壊しない。この静穏ゲートは、import の `write_manifest` と `finalize` の 2 await の隙間に採用が割り込むレースも同時に閉じる。
 - terminal かつ `digest_state=pending` → digest キューへ再投入。
 - `delete_pending` の resume（§7）。
 - 消えたコピーの `missing_unmanaged` 化（**閾値ガード配下**、後述）。
@@ -430,6 +433,9 @@ rebuild とは別に、常時走る整合パス。次を拾う:
 - per-file sha256 → §3.3 の単一 atomic write で完成 → `replicas.manifest_digest` を記録 → `present_verified`。
 - 実行中は `digest_state=pending` を UI に出す（「検証済み」と「検証中」を混ぜない）。
 - クラッシュ後は reconciler が pending を再投入する（途中結果は捨てて最初からやり直す）。
+- **hash 対象から可変・派生サイドカーを除く**: `object_manifest.json`（書く対象自身）、`record.json`（可変）、加えて `quick_check.json`（2026-08-11 — settlement が stop 後に**自分の時計で**書くため、封印より後に着地すると以後の照合が「派生ファイルの到着」を capture の破損として誤読する）。
+- **封印済み manifest に対する未検証コピーは、本当に照合する**（2026-08-11, sweep S3-3）。`digest_state=complete` の manifest を持つ replica が `present_unverified` の場合、旧実装は 1 バイトも比べずに `present_verified` へ昇格していた（転送中に切断された bag が到着即 verified になり得た）。今はローカルの per-file hash を manifest の `files` と突き合わせ、一致で昇格、**不一致は replica を `corrupt`** にして manifest には触れない（manifest は証拠）。旧規約で `quick_check.json` を含めて封印された manifest は、そのエントリを無視して照合する（その場合 `manifest_digest` の照合はスキップ）。
+- **封印の出所を manifest に刻む**: 封印時に `digest_sealed_by`（封印した instance の id）を書く。**source で封印**された hash は録画そのものに遡って錨を下ろすが、**受信側で封印**された hash（robot 側は orchestrator を走らせないので、転送が封印より先行する）は「以後の整合性チェックの基準」であって**転送そのものの証明ではない** — UI の verified 文言もそう述べる。robot 側で digest を封印してから転送する受領書型の設計は §13 のまま TBD（D12）。
 
 ## 11. API（要約）
 
@@ -469,5 +475,5 @@ pytest 側は別の層を守る: §7 手順 1〜5 の各段での kill → 再�
 
 ## 13. スコープ外（次ブランチ）
 
-- edge → server の転送 subsystem・hub モード・receipt・drop-local（ロボット側に残置されたコピーの正式な replica 管理はここで解消する）。現状の split デプロイでは、discard は「**録画 PC 上のコピーの破棄**」であり、ロボット側にコピーが残っている可能性がある — UI はそれを正直に併記する。
+- edge → server の転送 subsystem・hub モード・receipt・drop-local（ロボット側に残置されたコピーの正式な replica 管理はここで解消する）。現状の split デプロイでは、discard は「**録画 PC 上のコピーの破棄**」であり、ロボット側にコピーが残っている可能性がある — UI はそれを正直に併記する。**暫定の再取得ガード**（2026-08-11, sweep S4）: importer の pull はローカル ledger の墓標（`capture_discarded` / `capture_deleted`）を持つ capture をスキップする — drop-local が無い間、`{"all": true}` の pull が削除済み capture をロボットから引き戻すのを防ぐ（削除に復元は無いので恒久スキップで安全）。
 - `task_revision_id`、retention / capacity の自動化（本ブランチは**表示定義の修正まで**）。

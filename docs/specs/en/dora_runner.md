@@ -251,7 +251,7 @@ are recorded in `VENDOR.md`.
 
 - **Jobs and validation templates are persisted in SQLite** (`store.py`; default `<data_dir>/dora_runner.db`, beside the `report/` tree in the same data directory). It follows the same conventions as `api_orchestrator.store`: a `threading.RLock` serializes connection use, and `PRAGMA user_version` records the schema version. Previously this state was in-memory and was lost on process restart (release-readiness finding F4/MS-6).
 - **Execution stays in-process** (this persists *state*, not a distributed queue). A running job is held as a live `JobRecord` (owning its `asyncio.Task`) and is **checkpointed** to its row on each state transition (queued → running → terminal); it is not written per log line. `logs_tail` is stored with the terminal row.
-- **Restart reconciliation**: on startup (`create_dora_app`), any job left `queued`/`running` is resolved to a terminal `failed` state carrying the reason in its `summary` (`{result:"fail", reason:"interrupted", error:{code:"job_interrupted", message:"dora_runner restarted while the job was in flight."}}`), and an interrupted note is appended to `logs_tail`. `JobState` has no `interrupted` member, and `api_orchestrator`'s `run_job_to_completion` treats only succeeded/failed/canceled as terminal — so **interrupted collapses onto `failed` with the reason in the summary** (the same representation as timeout). `datasets._job_failure_reason` and the Validation tab's generic renderer then surface it to the user with no orchestrator/frontend changes.
+- **Restart reconciliation**: on startup (`create_dora_app`), any job left `queued`/`running` is resolved to a terminal `failed` state carrying the reason in its `summary` (`{result:"fail", reason:"interrupted", error:{code:"job_interrupted", message:"dora_runner restarted while the job was in flight."}}`), and an interrupted note is appended to `logs_tail`. `JobState` has no `interrupted` member, and every consumer treats only succeeded/failed/canceled as terminal — so **interrupted collapses onto `failed` with the reason in the summary** (the same representation as timeout). `datasets._job_failure_reason` and the Validation tab's generic renderer then surface it to the user with no orchestrator/frontend changes.
 - `GET /jobs/{id}/status` / `GET /jobs/{id}/result` prefer the live `JobRecord` and fall back to the SQLite row, so a job whose worker vanished with the old process still returns a terminal state and result.
 
 ## API (service-internal API; public exposure is via `api_orchestrator`)
@@ -327,7 +327,19 @@ bundled), the **in-process dora dataflow interpreter** (a plugin's `executor: do
 in-process, for the reasons below), and **job concurrency limits and per-job timeouts**
 (`KAIROS_DORA_MAX_CONCURRENCY` / `KAIROS_DORA_JOB_TIMEOUT_S`), and **SQLite persistence of jobs/templates with
 restart reconciliation** (see "Persistence and restart reconciliation" above). Each pipeline's heavy reads and
-encoding are offloaded to worker threads.
+encoding are offloaded to worker threads
+(the MCAP summary read behind `POST /validation/templates/generate` goes through `to_thread` too — a
+synchronous read on the event loop froze every other endpoint for its duration; 2026-08-11, sweep S4).
+
+**The per-job timeout actually stops the work** (2026-08-11, sweep S2-4). Passing the deadline fires the
+same cooperative machinery a cancel uses (`cancel_event` → subprocess kill / decode stop at the worker's
+checkpoint) and watches the outcome for a 30-second grace window (`_TIMEOUT_STOP_GRACE_S`) before
+concluding: (a) the work **stopped** within the grace → `failed` (`reason: timeout`, "the work was
+stopped") and the slot genuinely frees. (b) the work **finished** within the grace → `succeeded` (the
+deadline caps wall-clock spend; it is not a device for relabelling finished work as failed). (c) it did
+not stop → `failed` stating "still running; slot stays held" (the slot is held until the thread exits —
+previously this was the only behaviour, so a long full-length encode became a false failure plus a dead
+slot). If an API cancel had requested the stop first, `canceled` wins (the same rule as BUG-D).
 
 **dora bundling status (updated 2026-07-26)**: the **dora CLI (0.5.0) and the bundled bagflow Rust nodes
 now ship in the dora_runner image**. What runs on real dora is **both validation gates
