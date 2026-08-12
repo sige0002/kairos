@@ -132,6 +132,12 @@ log/
 /deploy/msgs_overlay/robot/*
 !/deploy/msgs_overlay/robot/.gitkeep
 
+# LeRobot converter (optional feature, capture_store §6.2): the rosbag2lerobot
+# source tree is SITE-PROVIDED, not vendored — each site (or a company fork)
+# supplies it, so kairos updates never reset it. Only the README with the
+# setup instructions is tracked. See deploy/lerobot/README.md.
+/deploy/lerobot/converter/
+
 # 参考フォルダ
 /ref
 

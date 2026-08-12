@@ -1,17 +1,17 @@
 # syntax=docker/dockerfile:1@sha256:87999aa3d42bdc6bea60565083ee17e86d1f3339802f543c0d03998580f9cb89
 # Digest-pinned on purpose: an unpinned tag makes BuildKit resolve it against the
 # registry on EVERY build, which fails where there is no network (robot in the field).
-# lerobot_exporter — the resident LeRobot v3 export service. It carries the
-# bundled rosbag2lerobot converter (services/lerobot_exporter/rosbag2lerobot, a
-# SHA-pinned git submodule) and runs it as a subprocess per export; the FastAPI
-# wrapper itself stays thin.
+# lerobot_exporter — the resident LeRobot v3 export service. It installs the
+# SITE-PROVIDED rosbag2lerobot converter (deploy/lerobot/converter, a gitignored
+# tree each site supplies — see deploy/lerobot/README.md) and runs it as a
+# subprocess per export; the FastAPI wrapper itself stays thin.
 #
 # Two things the converter needs that the wrapper does not:
 #   - ffmpeg, as an external BINARY (the converter shells out to it per camera
 #     stream), so it is an apt package rather than a Python wheel.
-#   - its own dependency set, which is the submodule's business — installed from
-#     the submodule at build time rather than pinned a second time in this
-#     service's uv.lock.
+#   - its own dependency set, which is the converter's business — installed from
+#     deploy/lerobot/converter at build time rather than pinned a second time in
+#     this service's uv.lock.
 #
 # Base image pinned by patch tag + digest so a rebuild resolves the same bytes.
 # 3.12 (not the 3.11 the converter's own floor allows) because kairos_common —
@@ -42,11 +42,13 @@ COPY services/lerobot_exporter/src /app/services/lerobot_exporter/src
 RUN cd /app/services/lerobot_exporter \
     && uv sync --frozen --no-editable --no-dev
 
-# The bundled converter, installed into the same venv. Copied and resolved
-# separately from the lock above: its dependencies are declared by the submodule
-# at its pinned SHA, and duplicating them in this service's lock would create a
-# second place to update whenever the submodule moves.
-COPY services/lerobot_exporter/rosbag2lerobot /app/rosbag2lerobot
+# The site-provided converter, installed into the same venv. Copied and resolved
+# separately from the lock above: its dependencies are the converter's own, and
+# duplicating them in this service's lock would create a second place to update.
+# From deploy/lerobot/converter (gitignored, site-supplied) — a build here fails
+# fast with "COPY failed" if it was not populated; deploy/lerobot/README.md and
+# `make build` both say how.
+COPY deploy/lerobot/converter /app/rosbag2lerobot
 RUN uv pip install --python $VENV /app/rosbag2lerobot
 
 # ---- runtime ----------------------------------------------------------------

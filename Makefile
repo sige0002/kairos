@@ -263,15 +263,28 @@ down: ## stop + remove the stack
 stop: ## stop the stack (keep containers)
 	$(COMPOSE) stop $(SVC)
 
+# The lerobot_exporter image installs a SITE-PROVIDED converter from
+# deploy/lerobot/converter (gitignored, not a submodule — see
+# deploy/lerobot/README.md). Guard the build so a missing tree fails with these
+# instructions instead of a bare "COPY failed", but ONLY when that image is
+# actually being built (no service arg = all, or the arg names the exporter).
+define _require_converter
+	@if { [ -z "$(SVC)" ] || echo " $(SVC) " | grep -q " lerobot-exporter "; } \
+	   && [ -n "$(LEROBOT_OVERRIDE_LOCAL)" ] \
+	   && [ ! -e deploy/lerobot/converter/pyproject.toml ]; then \
+	  echo "deploy/lerobot/converter is missing (the LeRobot converter is site-provided)."; \
+	  echo "  git clone https://github.com/sige0002/rosbag2lerobot deploy/lerobot/converter"; \
+	  echo "  (or your own fork). See deploy/lerobot/README.md."; \
+	  exit 1; \
+	fi
+endef
+
 build: ## build images: `make build` (all) or `make build monitor`
-	@# lerobot_exporter vendors rosbag2lerobot as a git submodule; a fresh clone
-	@# or worktree has the gitlink but not the files, and a build from that
-	@# state bakes an empty package. No-op when submodules are already there.
-	@git submodule update --init --recursive
+	$(call _require_converter)
 	$(COMPOSE) build $(SVC)
 
 rebuild: ## rebuild + recreate service(s) — the "apply my code changes" command
-	@git submodule update --init --recursive
+	$(call _require_converter)
 	$(COMPOSE) up -d --build --force-recreate $(SVC)
 
 build-pull: ## rebuild pulling FRESH base images (ros/python/node upstream). NEEDS NETWORK
