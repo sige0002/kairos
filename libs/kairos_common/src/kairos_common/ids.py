@@ -123,6 +123,11 @@ def new_event_id() -> str:
     return uuid7()
 
 
+def new_export_id() -> str:
+    """A LeRobot export run's identity (§6.2): lease owner suffix, staging dir."""
+    return uuid7()
+
+
 def new_membership_id() -> str:
     """A dataset member's stable id (§1) — the URL/testid handle for one member."""
     return uuid7()

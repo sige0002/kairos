@@ -46,6 +46,8 @@ The cross-service source of truth that defines the **identity, placement, and du
 ├── .trash/<capture_id>/               # intermediate state of deletion (§7). must be on the same FS as objects/
 ├── views/                             # generated symlink tree (§6). can be wiped and regenerated
 ├── report/<pipeline>/<capture_id>/    # dora_runner artifacts
+├── exports/<name>/                    # LeRobot export artifacts (§6.2). Derived, regenerable
+│   └── (exports/.staging/<export_id>/ # symlink staging for conversion input; gone when the job ends)
 ├── catalog/                           # sidecar duplication of validation_templates / plan_catalog
 ├── lifecycle.jsonl                    # §5
 ├── instance.json                      # §1
@@ -55,7 +57,7 @@ The cross-service source of truth that defines the **identity, placement, and du
 ```
 
 - **Paths carry no meaning.** A capture's directory name is its `capture_id` and nothing else; operator, task, and number do not appear in it. Files no longer have to be moved every time a label is corrected, and the state "the power died partway through a move" disappears structurally.
-- **Reserved names** (directly under `data_dir`): `objects` / `views` / `.trash` / `.incoming` / `report` / `catalog` / `lifecycle.jsonl` / `instance.json` / `kairos.db`. A name colliding with one of these is rejected with `400 reserved_name` **at dataset creation** (the `name` / `operator` / `task` of `POST /api/v1/datasets`) — those three become path components under `views/`, so a collision would tread on the store's own layout. A recording's operator / task never becomes a path and is therefore not subject to this check.
+- **Reserved names** (directly under `data_dir`): `objects` / `views` / `.trash` / `.incoming` / `report` / `exports` / `catalog` / `lifecycle.jsonl` / `instance.json` / `kairos.db`. A name colliding with one of these is rejected with `400 reserved_name` **at dataset creation** (the `name` / `operator` / `task` of `POST /api/v1/datasets`) — those three become path components under `views/`, so a collision would tread on the store's own layout. A recording's operator / task never becomes a path and is therefore not subject to this check.
 - **Removed**: the old `recorded/`, the 3-level `<operator>/<task>/<NNN>` dataset tree, and `data/index.jsonl`.
 - **Invariant**: the only incomplete capture directory that ever appears directly under `objects/` is **the live capture recorder is currently writing**. Imports and transfers are always completed in `.incoming/<capture_id>` first, then moved into `objects/` with `os.replace`. Therefore a directory visible in `objects/` (and not live) is always a complete copy.
 - **Startup check**: verify that `objects/`, `.trash/`, and `.incoming/` share the same `st_dev`. If they do not (a layout in which `os.rename` returns `EXDEV`), **deletion and archive answer `503 delete_unavailable` per request**. The routes themselves stay registered: rather than vanishing, they **refuse and state the reason** — and that reason also appears in `delete_unavailable_reason` of `GET /api/v1/store/health`, so an operator reads "why it cannot be used" instead of "the button is gone". An implicit fallback to copy + delete is forbidden — so that we never build behavior that promises an "atomic move" and in fact deletes only part of the way.
@@ -266,6 +268,44 @@ The dataset's terminal state. It lifts the capture archive's vocabulary (copy �
 - **views/**: `list_view_entries` restricts itself to `status='active'`. Starting an archive removes the dataset from views/ **as a declaration** — never by dropping into regeneration's "the source is gone, skip it" path.
 - **rebuild**: `dataset_archive_started` reconstructs the dataset row and the member rows on its own (a self-contained payload, against a truncated ledger), and with no seal present it restores the dataset **still `archiving`** — resumability survives the total loss of the DB. The members' capture rows are carried, unchanged, by the existing `capture_archived` reconstruction.
 - **Progress**: volatile (`GET /api/v1/datasets/{id}/archive`). The count of completed members is derived from the rows; the bytes being copied and the halt reason are process memory — honestly reset by a restart. It is not put in the jobs table (the volatile, out-of-rebuild contract).
+
+### 6.2 LeRobot export of a dataset (derived-artifact generation — non-terminal)
+
+Converts a dataset to the training format (LeRobot v3) under `exports/<name>/`. Unlike archive it is
+**non-terminal** — the dataset's status does not change and the export can be run any number of times.
+The executor is the resident `lerobot_exporter` container (opt-in overlay; it spawns the bundled
+rosbag2lerobot as a subprocess per conversion).
+
+- **Input snapshot**: at `POST /api/v1/datasets/{id}/export` the orchestrator resolves the members to a
+  capture list (in `display_index` order; members without local bytes and with review_status=excluded
+  are dropped) and pins each capture's effective task label — resolved by the §4.3 rule
+  (record.json override → manifest → row fallback) **under the capture mutex**. The live views/ tree
+  is never used as input.
+- **Leases**: every targeted capture gets a shared lease `export:<export_id>` (held while queued too,
+  extended on observation, released at the terminal state). No freezing — the snapshot plus the lease
+  give the same guarantee.
+- **Staging**: real directories at `exports/.staging/<export_id>/<NNN>/` with **per-file symlinks** to
+  the MCAP(s) and `metadata.yaml` only. Episodes with a task label get a `task.json`; a source bag
+  that carries its own `task.json` keeps it and gets no injection (the same collision rule as the §6
+  projection). Nothing is ever written into `objects/`. Staging is removed when the job ends.
+- **Destination and naming**: the root is fixed at `exports/`. Names are
+  `<operator>_<profile>_<memo>` (mixed operators become the fixed word `mixed`; only the trailing memo
+  may be omitted; views-style sanitisation). Collisions are 409 `destination_not_empty`. Paths are
+  recorded data-root-relative — no absolute path is ever baked. The host-side location is decided by
+  `.env`'s `EXPORTS_DIR` (default `<data_dir>/exports`) via the mount.
+- **Concurrency**: intake is an unbounded FIFO queue; execution slots default to 1
+  (`KAIROS_LEROBOT_MAX_CONCURRENCY`). Only a duplicate submission for the same dataset is refused with
+  409 `export_in_progress`. Running concurrently with recording is allowed (the container's `cpus:`
+  cap plus the recorder's drop detection are the guardrails).
+- **Record**: when the orchestrator first observes the successful terminal state it appends
+  `dataset_exported` to the ledger (export_id, output path relative to the data root, profile +
+  config sha256, the capture snapshot, counts). No row is created (the artifact is derived; its own
+  source of truth is the output tree's `meta/conversion_log.json`). `dataset_exported` is not a
+  tombstone.
+- **Deletion**: `exports/<name>/` is a derivative — plain deletion, not the trash pathway.
+  Regeneration is just re-running the same dataset with the same profile.
+- **Progress**: volatile. The exporter reads the conversion heartbeat (`meta/progress.json`) and
+  reports `queued/running/complete/failed/canceled` plus per-episode / in-episode progress and stalls.
 
 ## 7. Unified deletion (via trash, with tombstones)
 

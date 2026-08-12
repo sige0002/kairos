@@ -107,6 +107,13 @@ DATASET_KINDS: frozenset[str] = frozenset(
         # ``capture_archived``, the data still exists, just not here.
         "dataset_archive_started",
         "dataset_archived",
+        # A LeRobot export completed (§6.2). NON-terminal and not a tombstone:
+        # the dataset is untouched and the artifact is a derivative. Recorded
+        # so "what left this installation as training data, built from which
+        # captures, with which config" survives the exports/ folder itself
+        # being deleted or carried away. Replay ignores it (no row to rebuild —
+        # the output tree's own conversion_log.json is its source of truth).
+        "dataset_exported",
     }
 )
 
@@ -215,6 +222,8 @@ def build_event(
         _validate_dataset_archive_started_payload(payload)
     elif kind == "dataset_archived":
         _validate_dataset_archived_payload(payload)
+    elif kind == "dataset_exported":
+        _validate_dataset_exported_payload(payload)
     elif kind in BATCH_KINDS:
         _validate_batch_payload(kind, payload)
 
@@ -303,6 +312,33 @@ def _validate_archive_files(files: Any) -> None:
             raise ValueError(
                 f"capture_archived files[].sha256 must be 64 lowercase hex "
                 f"characters: {entry!r}"
+            )
+
+
+def _validate_dataset_exported_payload(payload: dict[str, Any]) -> None:
+    """Check a ``dataset_exported`` payload (§6.2): a completed LeRobot export.
+
+    ``output`` is data-root RELATIVE (``exports/<name>``) — an absolute path
+    would bake one mount point's view into a record that outlives every mount.
+    ``captures`` is the input snapshot: without it the line could not answer
+    "built from which recordings" once the dataset's membership changes.
+    """
+    for key in ("dataset_id", "export_id", "output"):
+        value = payload.get(key)
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"dataset_exported requires a non-empty {key}: {value!r}")
+    output = payload["output"]
+    if output.startswith("/"):
+        raise ValueError(
+            f"dataset_exported output must be data-root relative: {output!r}"
+        )
+    captures = payload.get("captures")
+    if not isinstance(captures, list) or not captures:
+        raise ValueError("dataset_exported requires a non-empty captures snapshot")
+    for entry in captures:
+        if not isinstance(entry, dict) or not entry.get("capture_id"):
+            raise ValueError(
+                f"dataset_exported captures[] entries need a capture_id: {entry!r}"
             )
 
 

@@ -55,6 +55,7 @@ logger = logging.getLogger("kairos")
 VIEWS_DIRNAME = "views"
 REPORT_DIRNAME = "report"
 CATALOG_DIRNAME = "catalog"
+EXPORTS_DIRNAME = "exports"
 DB_FILENAME = "kairos.db"
 
 # Identifies the physical volume the data directory lives on. Compared before
@@ -82,6 +83,7 @@ RESERVED_NAMES: frozenset[str] = frozenset(
         INCOMING_DIRNAME,
         REPORT_DIRNAME,
         CATALOG_DIRNAME,
+        EXPORTS_DIRNAME,
         "lifecycle.jsonl",
         "instance.json",
         DB_FILENAME,

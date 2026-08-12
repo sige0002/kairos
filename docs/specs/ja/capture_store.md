@@ -44,6 +44,8 @@
 ├── .trash/<capture_id>/               # 削除の中間状態（§7）。objects/ と同一 FS 必須
 ├── views/                             # 生成 symlink 木（§6）。全消し再生成可
 ├── report/<pipeline>/<capture_id>/    # dora_runner 成果物
+├── exports/<name>/                    # LeRobot export の成果物（§6.2）。派生物・再生成可
+│   └── (exports/.staging/<export_id>/ # 変換入力の symlink staging。ジョブ終了で消える)
 ├── catalog/                           # validation_templates / plan_catalog の sidecar 二重化
 ├── lifecycle.jsonl                    # §5
 ├── instance.json                      # §1
@@ -53,7 +55,7 @@
 ```
 
 - **パスに意味を持たせない。** capture のディレクトリ名は `capture_id` だけで、operator・task・番号は入らない。ラベルを直すたびにファイルを動かす必要がなくなり、「移動の途中で電源が落ちた」という状態が構造的に消える。
-- **予約名**（`data_dir` 直下）: `objects` / `views` / `.trash` / `.incoming` / `report` / `catalog` / `lifecycle.jsonl` / `instance.json` / `kairos.db`。これらと衝突する名前は **dataset 作成時**（`POST /api/v1/datasets` の `name` / `operator` / `task`）に `400 reserved_name` で拒否する — その 3 つは `views/` のパス構成要素になるので、衝突するとストア自身のレイアウトを踏む。録画時の operator / task はパスにならないため、この検査の対象ではない。
+- **予約名**（`data_dir` 直下）: `objects` / `views` / `.trash` / `.incoming` / `report` / `exports` / `catalog` / `lifecycle.jsonl` / `instance.json` / `kairos.db`。これらと衝突する名前は **dataset 作成時**（`POST /api/v1/datasets` の `name` / `operator` / `task`）に `400 reserved_name` で拒否する — その 3 つは `views/` のパス構成要素になるので、衝突するとストア自身のレイアウトを踏む。録画時の operator / task はパスにならないため、この検査の対象ではない。
 - **廃止**: 旧 `recorded/`、`<operator>/<task>/<NNN>` の 3 階層データセット木、`data/index.jsonl`。
 - **不変条件**: 完全でない capture ディレクトリが `objects/` 直下に現れるのは「**recorder が現在書いている live capture**」だけ。import・転送は必ず `.incoming/<capture_id>` に完成させてから `os.replace` で `objects/` へ入れる。したがって `objects/` に見えている（かつ live でない）ディレクトリは、常に完全なコピーである。
 - **起動時検査**: `objects/` と `.trash/` と `.incoming/` の `st_dev` 一致を検証する。不一致（`os.rename` が `EXDEV` になる構成）なら**削除・archive は要求ごとに `503 delete_unavailable` を返す**。ルート自体は登録されたまま残り、消えるのではなく**理由を述べて断る** — その理由は `GET /api/v1/store/health` の `delete_unavailable_reason` にも出るので、operator は「ボタンが無い」ではなく「なぜ使えないか」を読める。copy + delete への暗黙のフォールバックは禁止 — 「アトミックな移動」を約束しておいて実際には途中まで消える、という挙動を作らないため。
@@ -256,6 +258,38 @@ dataset の終端。capture archive の語彙（copy → verify → remove）を
 - **views/**: `list_view_entries` が `status='active'` に限定する。archive 開始で dataset は views/ から**宣言として**消える — regenerate の「原本が無いから skip」経路に落とさない。
 - **rebuild**: `dataset_archive_started` は dataset 行と member 行を単独で再建し（truncated ledger 対策の自己完結 payload）、封印が無ければ **`archiving` のまま復元**する — resume 可能性は DB 全損を生き延びる。member の capture 行は既存の `capture_archived` 再構築がそのまま引き受ける。
 - **進捗**: 揮発（`GET /api/v1/datasets/{id}/archive`）。member 単位の完了数は行から導出し、コピー中のバイト数・halt 理由はプロセスメモリ — 再起動で正直にリセットされる。jobs テーブルには置かない（揮発・非 rebuild 契約）。
+
+### 6.2 dataset の LeRobot export（派生物の生成・非終端）
+
+dataset を学習用形式（LeRobot v3）へ変換して `exports/<name>/` に書き出す。archive と違い
+**非終端** — dataset の状態は変わらず、何度でも実行できる。実行主体は常駐の `lerobot_exporter`
+コンテナ（opt-in overlay。同梱の rosbag2lerobot を変換ごとに subprocess 起動）。
+
+- **入力のスナップショット**: orchestrator が `POST /api/v1/datasets/{id}/export` の時点で member を
+  capture リストへ解決し（`display_index` 順・ローカルバイト不在と review_status=excluded は落とす）、
+  各 capture の実効 task ラベルを **§4.3 の解決規則（record.json override → manifest → row
+  フォールバック）で capture mutex 下**に読んで固める。views/ の生木は使わない。
+- **lease**: 全対象 capture に共有 lease `export:<export_id>` を張る（queued の間も保持・
+  観測ごとに延長・終端で解放）。freeze はしない — スナップショット + lease が同じ保証を与える。
+- **staging**: `exports/.staging/<export_id>/<NNN>/` に実ディレクトリを作り、MCAP と
+  `metadata.yaml` だけを**ファイル単位 symlink**で張る。task ラベルがある episode には
+  `task.json` を書く（源 bag が自前の `task.json` を持つ場合はそれを優先し注入しない — §6 の
+  投影衝突ルールと同じ向き）。`objects/` へは一切書かない。staging はジョブ終了で削除。
+- **保存先と命名**: root は `exports/` 固定。名前は `<operator>_<profile名>_<メモ>`
+  （operator 混在は固定語 `mixed`。省略できるのは末尾のメモだけ。views と同じ sanitize）。
+  衝突は 409 `destination_not_empty`。パスの記録は data-root 相対で統一し、絶対パスを焼かない。
+  ホスト上の置き場所は `.env` の `EXPORTS_DIR`（既定 `<data_dir>/exports`）がマウントで決める。
+- **並行**: 受付は FIFO キューで無制限、実行スロットは既定 1（`KAIROS_LEROBOT_MAX_CONCURRENCY`）。
+  同一 dataset の多重投入だけ 409 `export_in_progress`。録画との同時実行は許可
+  （コンテナ `cpus:` 上限 + recorder のドロップ検出がガードレール）。
+- **記録**: 成功の終端を orchestrator が初めて観測したとき ledger に `dataset_exported` を
+  append（export_id・出力相対パス・profile + config sha256・capture スナップショット・件数）。
+  行は作らない（成果物は派生物で、正本は出力木自身の `meta/conversion_log.json`）。
+  `dataset_exported` は墓標ではない。
+- **削除**: `exports/<name>/` は派生物なので通常の削除でよく、trash 経路を通らない。
+  再生成は同じ dataset + 同じ profile で再実行するだけ。
+- **進捗**: 揮発。exporter が変換の heartbeat（`meta/progress.json`）を読んで
+  `queued/running/complete/failed/canceled` + episode 単位/episode 内の進捗 + stall を返す。
 
 ## 7. 削除の統一（trash 経由・墓標）
 

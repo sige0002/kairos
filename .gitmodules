@@ -1,0 +1,3 @@
+[submodule "services/lerobot_exporter/rosbag2lerobot"]
+	path = services/lerobot_exporter/rosbag2lerobot
+	url = https://github.com/sige0002/rosbag2lerobot.git
