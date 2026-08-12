@@ -234,7 +234,14 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
 
       <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-[18px] py-3.5">
         {showInspection ? (
-          <CaptureInspection captureId={sel.captureId} labels={labels} />
+          // Keyed by capture so selecting another episode MOUNTS a fresh
+          // inspection instead of re-rendering this one with a new id. Its
+          // state is all per-capture — the running job id, a frozen submission
+          // error, and the snapshot a failed attempt compares its report
+          // against — and none of it survives the change honestly: a failed
+          // validation on one episode carried its note onto the next, where it
+          // described an attempt that never touched that recording.
+          <CaptureInspection key={sel.captureId} captureId={sel.captureId} labels={labels} />
         ) : (
           <div
             data-testid="review-no-local-copy"

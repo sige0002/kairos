@@ -8,7 +8,7 @@
 // fields are read best-effort from disk by the server, so a capture whose files
 // are gone still returns cleanly and simply shows nothing for them.
 
-import { useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiGet, apiPost } from '../../api/client';
 import { getConfigOptions } from '../../api/config';
@@ -25,6 +25,7 @@ import {
   LossTable,
   TERMINAL,
   VideoCheckSection,
+  checkedAt,
   formatDuration,
   formatWhen,
   spanMs,
@@ -72,8 +73,12 @@ function useCaptureJob(
   // still calling it the last completed check, denying the very result it was
   // pointing at.
   const [signatureAtSubmit, setSignatureAtSubmit] = useState<string | null>(null);
+  // Mirrored in an effect rather than written during render: the value is only
+  // ever read from `onMutate`, which runs from a click — long after commit.
   const signatureRef = useRef(reportSignature);
-  signatureRef.current = reportSignature;
+  useEffect(() => {
+    signatureRef.current = reportSignature;
+  }, [reportSignature]);
   const mutation = useMutation({
     mutationFn: (params: Record<string, unknown>) =>
       apiPost<JobStatus>('/jobs', { pipeline, capture_id: captureId, params }),
@@ -137,16 +142,6 @@ function reportSignature(report: unknown): string | null {
   return `${result}|${at}`;
 }
 
-/** A report's own completion instant, or null when it carries none this panel
- *  can render. A string that does not parse is dropped rather than echoed:
- *  "checked 2026-13-45T99:99:99Z" still reads as a date to anyone skimming,
- *  which is worse than saying no time at all. */
-function checkedAt(report: unknown): string | null {
-  if (typeof report !== 'object' || report === null) return null;
-  const at = (report as Record<string, unknown>).checked_at;
-  if (typeof at !== 'string' || !at) return null;
-  return Number.isNaN(new Date(at).getTime()) ? null : at;
-}
 
 /** The validation verdict, and the override that can let a failure through.
  *
@@ -351,20 +346,25 @@ export function CaptureInspection({
   //   - a stored result that has not moved ⇒ name it, and date it.
   //   - nothing stored at all ⇒ claim no result. Pointing at one that does not
   //     exist is the same lie in the other direction.
-  const staleValidationNote = validation.reportMovedOn
-    ? 'A check completed after this attempt failed — the badge above is that ' +
-      'newer result, possibly this attempt having landed after all.'
-    : validationResult
-      ? `The ${validationResult.toUpperCase()} badge above is the last completed check` +
-        `${validationCheckedAt ? ` (${formatWhen(validationCheckedAt)})` : ''}, not this attempt.`
-      : undefined;
-  const staleLossNote = loss.reportMovedOn
-    ? 'A loss report completed after this attempt failed — the table below is ' +
-      'that newer result, possibly this attempt having landed after all.'
-    : capture.loss?.topics
-      ? `The table below is the last completed loss report` +
-        `${lossCheckedAt ? ` (${formatWhen(lossCheckedAt)})` : ''}, not this attempt.`
-      : undefined;
+  //
+  // Both branches are gated on the result actually RENDERING, not merely on a
+  // sidecar having changed. A report can move to something this panel shows
+  // nothing for — vanish in a store rebuild, or land without a `result` — and
+  // then "the badge above is that newer result" points at empty space.
+  const staleValidationNote = !validationResult
+    ? undefined
+    : validation.reportMovedOn
+      ? 'A check completed after this attempt failed — the badge above is that ' +
+        'newer result, possibly this attempt having landed after all.'
+      : `The ${validationResult.toUpperCase()} badge above is the last completed check` +
+        `${validationCheckedAt ? ` (${formatWhen(validationCheckedAt)})` : ''}, not this attempt.`;
+  const staleLossNote = !capture.loss?.topics
+    ? undefined
+    : loss.reportMovedOn
+      ? 'A loss report completed after this attempt failed — the table below is ' +
+        'that newer result, possibly this attempt having landed after all.'
+      : `The table below is the last completed loss report` +
+        `${lossCheckedAt ? ` (${formatWhen(lossCheckedAt)})` : ''}, not this attempt.`;
 
   return (
     <div data-testid="review-inspection" className="flex flex-col gap-3">

@@ -16,7 +16,14 @@ import { queryKeys } from '../../api/queryKeys';
 import { INSPECTION_JOB_POLL_MS } from '../pollingPolicy';
 import type { CaptureDetail, JobStatus, LossTopic } from '../../api/types';
 import { JobErrorNote } from '../captures/JobErrorNote';
-import { JsonBlock, LossTable, TERMINAL, VideoCheckSection } from '../captures/inspect';
+import {
+  JsonBlock,
+  LossTable,
+  TERMINAL,
+  VideoCheckSection,
+  checkedAt,
+  formatWhen,
+} from '../captures/inspect';
 import { isCapturePresent } from '../captures/availability';
 
 /** The `loss` sidecar is a free-form dict on the wire; only its topic list is
@@ -65,13 +72,26 @@ export function DatasetInspection({ detail }: { detail: CaptureDetail }) {
   });
 
   const topics = lossTopics(detail);
+  const lossCheckedAt = checkedAt(detail.loss);
 
   return (
     <div className="flex flex-col gap-4" data-testid="dataset-inspection">
       <section>
         <div className="mb-1.5 flex items-center justify-between gap-2">
-          <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
-            Loss report
+          <span className="flex items-baseline gap-1.5">
+            <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+              Loss report
+            </span>
+            {/* Dated for the same reason as Review's (#9): a table a failed
+                attempt calls "the last completed report" has to be datable, or
+                the operator cannot tell which run produced it. */}
+            {topics && (
+              <span data-testid="dataset-loss-checked" className="text-[11px] text-gray-500">
+                {lossCheckedAt
+                  ? `checked ${formatWhen(lossCheckedAt)}`
+                  : 'last completed report'}
+              </span>
+            )}
           </span>
           <button
             type="button"
@@ -96,7 +116,8 @@ export function DatasetInspection({ detail }: { detail: CaptureDetail }) {
           testId="dataset-loss-error"
           staleNote={
             topics
-              ? 'The table below is the last completed loss report, not this attempt.'
+              ? `The table below is the last completed loss report` +
+                `${lossCheckedAt ? ` (${formatWhen(lossCheckedAt)})` : ''}, not this attempt.`
               : undefined
           }
           onRetry={() => lossMutation.mutate()}

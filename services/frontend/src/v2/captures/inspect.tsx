@@ -129,6 +129,22 @@ export function formatWhen(iso?: string | null): string {
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('en-GB', { hour12: false });
 }
 
+/** A pipeline report's own completion instant (`checked_at`), or null when it
+ *  carries none this UI can render.
+ *
+ *  Shared by both panels that date a stored report. An unparseable value is
+ *  dropped rather than passed to `formatWhen`, which echoes what it cannot
+ *  parse: "checked 2026-13-45T99:99:99Z" still reads as a date to anyone
+ *  skimming, and a report that cannot say when it ran is better left saying
+ *  nothing. `formatWhen` keeps the echo for the recording's own timestamps,
+ *  where the raw value is the only thing there is to show. */
+export function checkedAt(report: unknown): string | null {
+  if (typeof report !== 'object' || report === null) return null;
+  const at = (report as Record<string, unknown>).checked_at;
+  if (typeof at !== 'string' || !at) return null;
+  return Number.isNaN(new Date(at).getTime()) ? null : at;
+}
+
 export function formatDuration(ms?: number): string {
   if (ms === undefined || ms === null) return '';
   const s = Math.round(ms / 1000);
@@ -242,6 +258,13 @@ export function VideoPlayer({
   // Set when the operator asked for a full re-encode, so the queued submission
   // carries the knobs the click meant rather than the mount defaults.
   const reencodeRef = useRef(false);
+  // What the last submission actually asked for. A retry has to resend it: a
+  // failed "Re-encode full episode" that came back as a short head-only preview
+  // would answer a different question than the one the operator asked, and
+  // silently — the note promises to re-run the same work.
+  const lastExtraRef = useRef<{ force?: boolean; max_frames?: number } | undefined>(
+    undefined,
+  );
   // Sync plumbing: the <video> element + latest callbacks (refs keep the query
   // callbacks and event handlers out of effect deps).
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -289,13 +312,13 @@ export function VideoPlayer({
     onSuccess: (job) => setJobId(job.job_id),
   });
 
-  // Try the same preview again after a failure. Goes through the mutation
-  // directly rather than re-arming the submit effect: `started` is that
-  // effect's once-per-want guard, and resetting it would re-submit on every
-  // subsequent render too.
+  // Try the SAME work again after a failure — the knobs the failed submission
+  // carried, not the mount defaults. Goes through the mutation directly rather
+  // than re-arming the submit effect: `started` is that effect's once-per-want
+  // guard, and resetting it would re-submit on every subsequent render too.
   const retryVideo = () => {
     setJobError(null);
-    mutation.mutate();
+    mutation.mutate(lastExtraRef.current);
   };
 
   // Re-encode the WHOLE episode (force bypasses the cache; 0 = no frame cap).
@@ -316,6 +339,7 @@ export function VideoPlayer({
     started.current = true;
     const extra = reencodeRef.current ? { force: true, max_frames: 0 } : undefined;
     reencodeRef.current = false;
+    lastExtraRef.current = extra;
     mutation.mutate(extra);
   }, [wantJob, mutation]);
 

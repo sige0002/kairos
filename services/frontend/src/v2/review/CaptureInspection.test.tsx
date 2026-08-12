@@ -718,3 +718,28 @@ test('a lost re-run replaces the previous failure instead of stacking on it', as
   await waitFor(() => expect(screen.queryByTestId('review-signal-error')).toBeNull());
   expect(screen.getAllByTestId(/^review-signal-.*-retry$/)).toHaveLength(1);
 });
+
+// N3: the moved-on branch names "the badge above", but the badge is gated on a
+// `result` the note never checked. A report can move to something this panel
+// renders nothing for — vanish in a store rebuild, or land without a verdict —
+// and then the sentence points at empty space.
+test('the moved-on note is not shown when there is no badge to point at', async () => {
+  const client = makeTestClient();
+  mockApi({
+    capture: PASSED(),
+    jobNetworkFailure: {},
+    // The report moved, but to something with no verdict in it.
+    captureAfterFailure: detail({ validation: { checked_at: '2026-08-12T11:41:00Z' } }),
+  });
+  renderWithClient(<CaptureInspection captureId={CAP} />, { client });
+
+  fireEvent.click(await screen.findByTestId('review-run-validation'));
+  await screen.findByTestId('review-validation-error');
+
+  void client.invalidateQueries({ queryKey: queryKeys.capture(CAP) });
+  await waitFor(() => expect(screen.queryByTestId('review-validation-checked')).toBeNull());
+
+  // The failure is still stated — only the claim about a badge is dropped.
+  expect(screen.getByTestId('review-validation-error')).toBeInTheDocument();
+  expect(screen.queryByTestId('review-validation-error-stale')).toBeNull();
+});

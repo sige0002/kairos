@@ -50,6 +50,9 @@ interface ApiOptions {
    *  server serialises); only the answer waits for `releaseReviews()`, and that
    *  wait is the window a second click lands in. */
   holdReviews?: boolean;
+  /** Every POST /jobs is lost on the way out, as a dead connection loses it —
+   *  a rejected fetch, not an error response. */
+  jobsUnreachable?: boolean;
 }
 
 /** Everything the Review screen touches: the capture list, the per-capture
@@ -118,6 +121,10 @@ function mockApi(initial: Capture[], options: ApiOptions = {}) {
       }
       items = items.filter((c) => c.capture_id !== id);
       return Promise.resolve(jsonResponse({}, 200));
+    }
+
+    if (method === 'POST' && url.endsWith('/jobs') && options.jobsUnreachable) {
+      return Promise.reject(new TypeError('Failed to fetch'));
     }
 
     const detail = url.match(/\/captures\/([^/?]+)$/);
@@ -747,4 +754,38 @@ test('the episode search and the operator filter both have accessible names', as
   expect(screen.getByRole('combobox', { name: 'Operator' })).toBe(
     screen.getByTestId('review-operator-filter'),
   );
+});
+
+// N1: the detail panel rendered <CaptureInspection captureId={…}/> with no key,
+// so selecting another episode re-rendered the SAME instance with a new id.
+// Everything that panel holds is per-capture — a running job id, a frozen
+// submission error, and the report snapshot a failed attempt compares against —
+// and none of it belongs to the episode the operator switched to. A failed
+// validation on one recording carried its note onto the next, where it
+// described an attempt that never touched that recording.
+test('a failed check does not follow the operator to the next episode', async () => {
+  mockApi(
+    [
+      capture({ capture_id: 'c1', run_id: 'run_1', index_in_batch: 1 }),
+      capture({ capture_id: 'c2', run_id: 'run_2', index_in_batch: 2 }),
+    ],
+    { jobsUnreachable: true },
+  );
+  renderWithClient(<ReviewScreen />);
+  await waitFor(() => expect(screen.getByTestId('review-row-c1')).toBeInTheDocument());
+
+  fireEvent.click(screen.getByTestId('review-row-c1'));
+  fireEvent.click(await screen.findByTestId('review-run-validation'));
+  await screen.findByTestId('review-validation-error');
+
+  fireEvent.click(screen.getByTestId('review-row-c2'));
+  await waitFor(() =>
+    expect(screen.getByTestId('review-detail-header').textContent).toContain('#2'),
+  );
+
+  // Episode 2 was never asked to validate anything, so it has nothing to say
+  // about a failed attempt — and above all must not claim a check "landed
+  // after all" against a recording this attempt never touched.
+  expect(screen.queryByTestId('review-validation-error')).toBeNull();
+  expect(screen.queryByTestId('review-validation-error-stale')).toBeNull();
 });
