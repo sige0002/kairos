@@ -10,6 +10,7 @@ import { ApiError } from '../../api/client';
 import {
   captureErrorText,
   isDestructiveFailure,
+  isTransportCode,
   needsReload,
   readCaptureCode,
   readCaptureError,
@@ -239,6 +240,7 @@ test('the same failure is recognised across browsers, not just Chromium', () => 
   for (const message of [
     'NetworkError when attempting to fetch resource.',
     'Load failed',
+    'Network request failed',
     'fetch failed',
   ]) {
     expect(readCaptureError(new TypeError(message)).code).toBe('network_unreachable');
@@ -282,4 +284,13 @@ test('the one-line toast form carries the reading, not the browser string', () =
   expect(text).not.toMatch(/failed to fetch/i);
   expect(text).toMatch(/could not reach the server/i);
   expect(text).toMatch(/orchestrator/i);
+});
+
+test('the transport codes are identifiable as a family, not by their spelling', () => {
+  // Surfaces that announce a refusal ask this to word themselves honestly (the
+  // Collect save banner). Asked here so the judgement stays with the codes.
+  expect(isTransportCode('network_unreachable')).toBe(true);
+  expect(isTransportCode('network_timeout')).toBe(true);
+  expect(isTransportCode('review_conflict')).toBe(false);
+  expect(isTransportCode('unknown')).toBe(false);
 });

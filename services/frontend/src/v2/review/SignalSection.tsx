@@ -154,23 +154,32 @@ export function SignalSection({
         </button>
       </div>
 
-      {/* A failed submission leaves the previous report on screen untouched
-          (`report` is only cleared once a new job is accepted), so the note has
-          to say which of the two the reader is looking at — the #9 defect, in
-          its second location — and carry the way to try again. */}
-      <JobErrorNote
-        error={sig.error}
-        testId="review-signal-submit-error"
-        staleNote={
-          report
-            ? 'The integrity report below is the last completed run, not this attempt.'
-            : undefined
-        }
-        onRetry={sig.run}
-        retryDisabled={sig.running || !!blockedReason}
-        retryLabel="Retry integrity report"
-      />
-      {sig.jobError && (
+      {/* ONE note, for the LATEST attempt. The two channels do not clear each
+          other — `jobError` is only reset when a submission succeeds — so a run
+          that failed inside the pipeline and was then re-run into a dead
+          network left both set, and the section rendered two identical alerts
+          with two identical Retry buttons describing different attempts. A
+          submit error is always the more recent of the two: reaching a job at
+          all clears it, so if it is set, nothing has been accepted since.
+
+          A failed submission also leaves the previous report on screen
+          untouched (`report` is cleared only once a new job is accepted), so
+          that branch says which of the two the reader is looking at — the #9
+          defect in its second location — and carries the way to try again. */}
+      {sig.error ? (
+        <JobErrorNote
+          error={sig.error}
+          testId="review-signal-submit-error"
+          staleNote={
+            report
+              ? 'The integrity report below is the last completed run, not this attempt.'
+              : undefined
+          }
+          onRetry={sig.run}
+          retryDisabled={sig.running || !!blockedReason}
+          retryLabel="Retry integrity report"
+        />
+      ) : sig.jobError ? (
         // A job that ran and failed, rather than one that could not be started.
         // No stale note: an accepted job clears the previous report, so there is
         // nothing left beside this to confuse it with.
@@ -181,7 +190,7 @@ export function SignalSection({
           retryDisabled={sig.running || !!blockedReason}
           retryLabel="Retry integrity report"
         />
-      )}
+      ) : null}
 
       {!report && !sig.running && !sig.jobError && !sig.error && (
         <p className="text-[11.5px] text-gray-500">

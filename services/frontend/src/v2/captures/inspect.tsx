@@ -289,6 +289,15 @@ export function VideoPlayer({
     onSuccess: (job) => setJobId(job.job_id),
   });
 
+  // Try the same preview again after a failure. Goes through the mutation
+  // directly rather than re-arming the submit effect: `started` is that
+  // effect's once-per-want guard, and resetting it would re-submit on every
+  // subsequent render too.
+  const retryVideo = () => {
+    setJobError(null);
+    mutation.mutate();
+  };
+
   // Re-encode the WHOLE episode (force bypasses the cache; 0 = no frame cap).
   // The old mp4 keeps playing elsewhere until the new encode atomically lands.
   // Clearing the summary is what re-arms the submit effect below.
@@ -334,12 +343,25 @@ export function VideoPlayer({
       <div className="truncate font-mono text-[11px] text-gray-600" title={topic}>
         {topic}
       </div>
+      {/* Both failures get the same treatment (#9): the reading rather than the
+          raw browser string, and the way to try again in the same place as the
+          news. No stale note here — neither branch renders beside a previous
+          result, because a failure replaces the player rather than sitting
+          above it. */}
       {mutation.isError ? (
-        <JobErrorNote error={mutation.error} testId="video-submit-error" />
+        <JobErrorNote
+          error={mutation.error}
+          testId="video-submit-error"
+          onRetry={retryVideo}
+          retryDisabled={mutation.isPending || !!jobId}
+        />
       ) : jobError ? (
-        <p role="alert" className="text-xs text-red-600">
-          {jobError}
-        </p>
+        <JobErrorNote
+          error={jobError}
+          testId="video-job-error"
+          onRetry={retryVideo}
+          retryDisabled={mutation.isPending || !!jobId}
+        />
       ) : summary && summary.file ? (
         <>
           <video

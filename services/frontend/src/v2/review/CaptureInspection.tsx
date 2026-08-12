@@ -8,7 +8,7 @@
 // fields are read best-effort from disk by the server, so a capture whose files
 // are gone still returns cleanly and simply shows nothing for them.
 
-import { useState, type ReactNode } from 'react';
+import { useRef, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiGet, apiPost } from '../../api/client';
 import { getConfigOptions } from '../../api/config';
@@ -52,12 +52,34 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
 // sidecar (loss / validation) appears. Keyed by capture_id (§10.5); the job
 // resolves its source as objects/<capture_id> and writes to
 // report/<pipeline>/<capture_id>/.
-function useCaptureJob(captureId: string, pipeline: string) {
+function useCaptureJob(
+  captureId: string,
+  pipeline: string,
+  /** Identity of this pipeline's stored report right now (see
+   *  `reportSignature`), so a failed attempt can tell whether the report it
+   *  points at is still the one it was pointing at. */
+  reportSignature: string | null,
+) {
   const queryClient = useQueryClient();
   const [jobId, setJobId] = useState<string | null>(null);
+  // What the stored report was when this attempt was submitted.
+  //
+  // The note a failed attempt renders points AT that report ("the badge above
+  // is the last completed check"), the panel re-reads itself every
+  // CAPTURE_DETAIL_POLL_MS, and a mutation error is frozen where it happened.
+  // So a run whose ANSWER was lost while the run itself completed — the exact
+  // case the guidance warns about — would refresh the badge underneath a note
+  // still calling it the last completed check, denying the very result it was
+  // pointing at.
+  const [signatureAtSubmit, setSignatureAtSubmit] = useState<string | null>(null);
+  const signatureRef = useRef(reportSignature);
+  signatureRef.current = reportSignature;
   const mutation = useMutation({
     mutationFn: (params: Record<string, unknown>) =>
       apiPost<JobStatus>('/jobs', { pipeline, capture_id: captureId, params }),
+    onMutate: () => {
+      setSignatureAtSubmit(signatureRef.current);
+    },
     onSuccess: (job) => setJobId(job.job_id),
     onError: (error) => {
       // A 409 naming a tombstone is the news that this capture is gone —
@@ -87,7 +109,43 @@ function useCaptureJob(captureId: string, pipeline: string) {
     run: (params: Record<string, unknown>) => mutation.mutate(params),
     running: mutation.isPending || !!jobId,
     error: mutation.isError ? mutation.error : null,
+    /** A report landed after this attempt was submitted — quite possibly this
+     *  attempt itself, having reached the server without its answer getting
+     *  back. Whatever is on screen is no longer the thing the attempt failed
+     *  beside, so the note must stop calling it that. */
+    reportMovedOn: mutation.isError && signatureAtSubmit !== reportSignature,
   };
+}
+
+/** The identity of a stored report, as the SERVER wrote it.
+ *
+ *  Compared as a VALUE, never against the browser clock: `checked_at` comes
+ *  from the pipeline container's clock and `Date.now()` from this machine's,
+ *  and kairos ships a validator (`clock_check`) precisely because those two
+ *  disagree in the field. A changed signature says a new report landed without
+ *  needing the two machines to agree on what time it is.
+ *
+ *  The limit: a backend old enough to write no `checked_at` cannot be told
+ *  apart from itself this way — two runs reaching the same verdict look
+ *  identical, and the note stays as it was. That is a miss, not a false claim,
+ *  which is the right way round. */
+function reportSignature(report: unknown): string | null {
+  if (typeof report !== 'object' || report === null) return null;
+  const row = report as Record<string, unknown>;
+  const at = typeof row.checked_at === 'string' ? row.checked_at : '';
+  const result = typeof row.result === 'string' ? row.result : '';
+  return `${result}|${at}`;
+}
+
+/** A report's own completion instant, or null when it carries none this panel
+ *  can render. A string that does not parse is dropped rather than echoed:
+ *  "checked 2026-13-45T99:99:99Z" still reads as a date to anyone skimming,
+ *  which is worse than saying no time at all. */
+function checkedAt(report: unknown): string | null {
+  if (typeof report !== 'object' || report === null) return null;
+  const at = (report as Record<string, unknown>).checked_at;
+  if (typeof at !== 'string' || !at) return null;
+  return Number.isNaN(new Date(at).getTime()) ? null : at;
 }
 
 /** The validation verdict, and the override that can let a failure through.
@@ -241,8 +299,16 @@ export function CaptureInspection({
   });
   const template = optionsQuery.data?.aspects?.validation?.active ?? '';
 
-  const loss = useCaptureJob(captureId, 'loss_report');
-  const validation = useCaptureJob(captureId, 'fast_validation');
+  const loss = useCaptureJob(
+    captureId,
+    'loss_report',
+    reportSignature(detailQuery.data?.loss),
+  );
+  const validation = useCaptureJob(
+    captureId,
+    'fast_validation',
+    reportSignature(detailQuery.data?.validation),
+  );
 
   if (detailQuery.isPending)
     return <p className="text-[12.5px] text-gray-500">Loading capture…</p>;
@@ -267,23 +333,38 @@ export function CaptureInspection({
     capture.validation && typeof capture.validation.result === 'string'
       ? (capture.validation.result as string)
       : null;
-  // When the stored verdict was reached. Written by the pipeline itself
-  // (fast_validation / the bagflow adapter both stamp `checked_at`), so it is
-  // the run's own completion time and not this client's clock. Absent on a
-  // report from before the field existed, in which case the badge is labelled
-  // as the last completed check with no time rather than given a made-up one.
-  const validationCheckedAt =
-    capture.validation && typeof capture.validation.checked_at === 'string'
-      ? (capture.validation.checked_at as string)
-      : null;
+  // When each stored report was reached. Written by the pipeline itself
+  // (fast_validation and the bagflow adapter both stamp `checked_at`, as does
+  // loss_report), so it is the run's own completion time and not this client's
+  // clock. Absent on a report from before the field existed, and dropped when
+  // it does not parse — in both cases the label says only what is known rather
+  // than inventing or echoing a date.
+  const validationCheckedAt = checkedAt(capture.validation);
+  const lossCheckedAt = checkedAt(capture.loss);
   // The sentence that separates a stored result from a failed attempt (#9): a
   // beta operator saw "Failed to fetch" beside an untouched PASS and could not
-  // tell which of the two was current. Only claims a stored result when there
-  // is one.
-  const staleValidationNote = validationResult
-    ? `The ${validationResult.toUpperCase()} badge above is the last completed check` +
-      `${validationCheckedAt ? ` (${formatWhen(validationCheckedAt)})` : ''}, not this attempt.`
-    : undefined;
+  // tell which of the two was current. Three cases, and only one of them is
+  // that first sentence:
+  //   - a report landed since the attempt was submitted ⇒ what is on screen is
+  //     NOT the thing this attempt failed beside, and may well be this attempt
+  //     having got through. Say that, hedged, rather than deny it.
+  //   - a stored result that has not moved ⇒ name it, and date it.
+  //   - nothing stored at all ⇒ claim no result. Pointing at one that does not
+  //     exist is the same lie in the other direction.
+  const staleValidationNote = validation.reportMovedOn
+    ? 'A check completed after this attempt failed — the badge above is that ' +
+      'newer result, possibly this attempt having landed after all.'
+    : validationResult
+      ? `The ${validationResult.toUpperCase()} badge above is the last completed check` +
+        `${validationCheckedAt ? ` (${formatWhen(validationCheckedAt)})` : ''}, not this attempt.`
+      : undefined;
+  const staleLossNote = loss.reportMovedOn
+    ? 'A loss report completed after this attempt failed — the table below is ' +
+      'that newer result, possibly this attempt having landed after all.'
+    : capture.loss?.topics
+      ? `The table below is the last completed loss report` +
+        `${lossCheckedAt ? ` (${formatWhen(lossCheckedAt)})` : ''}, not this attempt.`
+      : undefined;
 
   return (
     <div data-testid="review-inspection" className="flex flex-col gap-3">
@@ -462,7 +543,22 @@ export function CaptureInspection({
       {completed && (
         <section>
           <div className="mb-1.5 flex items-center justify-between gap-2">
-            <h4 className="text-[12.5px] font-medium text-gray-700">Loss report</h4>
+            <span className="flex items-baseline gap-1.5">
+              <h4 className="text-[12.5px] font-medium text-gray-700">Loss report</h4>
+              {/* Dated for the same reason as the validation badge: a table
+                  called "the last completed report" by a failed attempt has to
+                  be datable, or the operator cannot tell which run it is. */}
+              {capture.loss?.topics && (
+                <span
+                  data-testid="review-loss-checked"
+                  className="text-[11px] text-gray-500"
+                >
+                  {lossCheckedAt
+                    ? `checked ${formatWhen(lossCheckedAt)}`
+                    : 'last completed report'}
+                </span>
+              )}
+            </span>
             <button
               type="button"
               data-testid="review-run-loss"
@@ -479,11 +575,7 @@ export function CaptureInspection({
           <JobErrorNote
             error={loss.error}
             testId="review-loss-error"
-            staleNote={
-              capture.loss?.topics
-                ? 'The table below is the last completed loss report, not this attempt.'
-                : undefined
-            }
+            staleNote={staleLossNote}
             onRetry={() => loss.run({})}
             retryDisabled={loss.running || !!leaseReason}
             retryLabel="Retry loss report"

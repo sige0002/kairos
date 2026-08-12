@@ -88,7 +88,21 @@ export function DatasetInspection({ detail }: { detail: CaptureDetail }) {
             {lossJobId ? 'Analyzing…' : lossMutation.isPending ? 'Starting…' : 'Run loss report'}
           </button>
         </div>
-        <JobErrorNote error={lossMutation.isError ? lossMutation.error : null} testId="dataset-loss-error" />
+        {/* Same shape as Review's sections (#9): the note sits directly above a
+            table the server stored earlier, so it says which of the two this
+            is and carries the way to try again. */}
+        <JobErrorNote
+          error={lossMutation.isError ? lossMutation.error : null}
+          testId="dataset-loss-error"
+          staleNote={
+            topics
+              ? 'The table below is the last completed loss report, not this attempt.'
+              : undefined
+          }
+          onRetry={() => lossMutation.mutate()}
+          retryDisabled={!present || lossMutation.isPending || !!lossJobId}
+          retryLabel="Retry loss report"
+        />
         {topics ? (
           <LossTable topics={topics} />
         ) : (

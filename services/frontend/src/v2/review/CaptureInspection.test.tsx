@@ -10,7 +10,12 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
-import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
+import {
+  jsonResponse,
+  makeTestClient,
+  renderWithClient,
+} from '../../test/renderWithClient';
+import { queryKeys } from '../../api/queryKeys';
 import { CaptureInspection } from './CaptureInspection';
 import type { CaptureDetail } from '../../api/types';
 
@@ -64,6 +69,9 @@ function mockApi(opts: {
    *  than answering. `attempts` bounds it, so a retry can be observed
    *  succeeding after the connection comes back. */
   jobNetworkFailure?: { message?: string; attempts?: number };
+  /** What a re-read returns after a submission was lost — the run that got
+   *  through anyway and finished, which the panel's own poll then picks up. */
+  captureAfterFailure?: CaptureDetail;
 }) {
   let current = opts.capture;
   let networkFailuresLeft = opts.jobNetworkFailure
@@ -77,6 +85,7 @@ function mockApi(opts: {
       posted.push(JSON.parse(String(init?.body)));
       if (networkFailuresLeft > 0) {
         networkFailuresLeft -= 1;
+        if (opts.captureAfterFailure) current = opts.captureAfterFailure;
         // Exactly how a browser reports a request it could not complete: a
         // bare TypeError, no response, no envelope.
         return Promise.reject(
@@ -546,4 +555,166 @@ test('a stale loss table is separated from a failed loss attempt too', async () 
   const stale = await screen.findByTestId('review-loss-error-stale');
   expect(stale.textContent).toMatch(/last completed loss report, not this attempt/i);
   expect(screen.getByTestId('review-loss-error-retry')).toBeEnabled();
+});
+
+// F1: the note points AT the stored result, the mutation error is frozen where
+// it happened, and the panel re-reads itself every CAPTURE_DETAIL_POLL_MS. So
+// the run whose ANSWER was lost while the run itself completed — the exact case
+// the guidance hedges about — used to refresh the badge underneath a note still
+// calling it the last completed check, denying the very result it pointed at.
+test('a check that lands after the attempt fails is not denied by the note', async () => {
+  const client = makeTestClient();
+  mockApi({
+    capture: PASSED(),
+    jobNetworkFailure: {},
+    // The submission reached the server after all; only its answer was lost.
+    captureAfterFailure: detail({
+      validation: {
+        result: 'fail',
+        checked_at: '2026-08-12T11:41:00Z',
+        template: { name: 'tmpl', version: 1 },
+      },
+    }),
+  });
+  renderWithClient(<CaptureInspection captureId={CAP} />, { client });
+
+  fireEvent.click(await screen.findByTestId('review-run-validation'));
+  await screen.findByTestId('review-validation-error');
+
+  // Stand in for the 10 s detail poll: the panel re-reads the capture and finds
+  // the verdict of the run that got through.
+  void client.invalidateQueries({ queryKey: queryKeys.capture(CAP) });
+  await waitFor(() =>
+    expect(screen.getByTestId('review-validation-checked')).toHaveTextContent(
+      new Date('2026-08-12T11:41:00Z').toLocaleString('en-GB', { hour12: false }),
+    ),
+  );
+
+  // The defect: the note went on calling a result that landed AFTER this
+  // attempt "the last completed check ... not this attempt".
+  const stale = screen.getByTestId('review-validation-error-stale');
+  expect(stale.textContent).not.toMatch(/not this attempt/i);
+  expect(stale.textContent).toMatch(/completed after this attempt failed/i);
+  // And it does not swing to the opposite overclaim either — another terminal
+  // could have run that check, so the attribution stays hedged.
+  expect(stale.textContent).toMatch(/possibly/i);
+});
+
+test('a result that has not moved is still named as the last completed check', async () => {
+  // The control for the test above: without this, dropping the claim entirely
+  // would pass just as well, and the note would stop saying the one thing it
+  // exists to say.
+  const client = makeTestClient();
+  mockApi({ capture: PASSED(), jobNetworkFailure: {} });
+  renderWithClient(<CaptureInspection captureId={CAP} />, { client });
+
+  fireEvent.click(await screen.findByTestId('review-run-validation'));
+  await screen.findByTestId('review-validation-error');
+
+  void client.invalidateQueries({ queryKey: queryKeys.capture(CAP) });
+  await waitFor(() => expect(screen.getByTestId('review-validation-error-stale')).toBeInTheDocument());
+  expect(screen.getByTestId('review-validation-error-stale').textContent).toMatch(
+    /PASS badge above is the last completed check.*not this attempt/i,
+  );
+});
+
+// F6: `formatWhen` echoes anything it cannot parse, so a malformed sidecar
+// rendered "checked 2026-13-45T99:99:99Z" — which still reads as a date.
+test('an unparseable checked_at is dropped, not echoed', async () => {
+  mockApi({
+    capture: detail({ validation: { result: 'pass', checked_at: '2026-13-45T99:99:99Z' } }),
+  });
+  renderWithClient(<CaptureInspection captureId={CAP} />);
+
+  const checked = await screen.findByTestId('review-validation-checked');
+  expect(checked).toHaveTextContent('last completed check');
+  expect(checked.textContent).not.toMatch(/2026-13-45/);
+});
+
+// F3: the loss table is called "the last completed loss report" by a failed
+// attempt, so it has to be datable too — loss_report stamps `checked_at` just
+// as fast_validation does.
+test('the stored loss table is dated like the validation badge', async () => {
+  mockApi({
+    capture: detail({
+      loss: {
+        topics: [{ name: '/head_camera/image_raw', count: 900, hz: 30 }],
+        checked_at: '2026-08-12T09:15:00Z',
+      },
+    }),
+  });
+  renderWithClient(<CaptureInspection captureId={CAP} />);
+
+  const checked = await screen.findByTestId('review-loss-checked');
+  expect(checked).toHaveTextContent(
+    `checked ${new Date('2026-08-12T09:15:00Z').toLocaleString('en-GB', { hour12: false })}`,
+  );
+});
+
+// ---- F2: one note, for the latest attempt --------------------------------
+//
+// The integrity section has two error channels that do not clear each other:
+// `jobError` (a job that ran and failed) is reset only when a LATER submission
+// succeeds. So a pipeline failure followed by a re-run into a dead network left
+// both set, and the section rendered two identical role="alert" boxes with two
+// identical Retry buttons, describing different attempts.
+
+/** POST /jobs answers `jobPosts` in order — 'ok' accepts, 'network' rejects —
+ *  and the accepted job then runs and fails inside the pipeline. */
+function mockSignalApi(jobPosts: ('ok' | 'network')[]) {
+  let call = 0;
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    const method = (init?.method ?? 'GET').toUpperCase();
+    if (url.endsWith('/jobs') && method === 'POST') {
+      const answer = jobPosts[call++] ?? 'ok';
+      if (answer === 'network') return Promise.reject(new TypeError('Failed to fetch'));
+      return Promise.resolve(
+        jsonResponse({ job_id: 'j1', capture_id: CAP, pipeline: 'signal_report', state: 'queued' }),
+      );
+    }
+    if (url.includes('/jobs/j1/status'))
+      return Promise.resolve(
+        jsonResponse({ job_id: 'j1', capture_id: CAP, pipeline: 'signal_report', state: 'failed' }),
+      );
+    if (url.includes('/jobs/j1/result'))
+      return Promise.resolve(
+        jsonResponse({
+          summary: { error: { code: 'pipeline_unavailable', message: 'bagflow is not bundled' } },
+        }),
+      );
+    if (url.includes('/config/options')) return Promise.resolve(jsonResponse(CONFIG_OPTIONS));
+    if (url.includes(`/captures/${CAP}`)) return Promise.resolve(jsonResponse(detail()));
+    return Promise.resolve(jsonResponse({}));
+  });
+}
+
+test('a job that ran and failed is stated, and offers its own retry', async () => {
+  // No coverage existed for this channel at all — it was a bare <p> with the
+  // raw sentence and no way forward but the button that had just failed.
+  mockSignalApi(['ok']);
+  renderWithClient(<CaptureInspection captureId={CAP} />);
+
+  fireEvent.click(await screen.findByTestId('review-run-signal'));
+
+  const err = await screen.findByTestId('review-signal-error');
+  expect(err).toHaveTextContent('bagflow is not bundled');
+  expect(screen.getByTestId('review-signal-error-retry')).toBeEnabled();
+});
+
+test('a lost re-run replaces the previous failure instead of stacking on it', async () => {
+  mockSignalApi(['ok', 'network']);
+  renderWithClient(<CaptureInspection captureId={CAP} />);
+
+  fireEvent.click(await screen.findByTestId('review-run-signal'));
+  await screen.findByTestId('review-signal-error');
+
+  // Re-run from the note itself — the second submission never lands.
+  fireEvent.click(screen.getByTestId('review-signal-error-retry'));
+
+  const submit = await screen.findByTestId('review-signal-submit-error');
+  expect(submit).toHaveAttribute('data-error-code', 'network_unreachable');
+  // The defect: two alerts, two Retry buttons, two different attempts.
+  await waitFor(() => expect(screen.queryByTestId('review-signal-error')).toBeNull());
+  expect(screen.getAllByTestId(/^review-signal-.*-retry$/)).toHaveLength(1);
 });

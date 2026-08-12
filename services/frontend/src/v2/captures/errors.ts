@@ -364,6 +364,17 @@ function errorField(error: unknown, key: 'name' | 'message'): string {
   return typeof value === 'string' ? value : '';
 }
 
+/** True for the codes minted below — a request that never reached an answer,
+ *  as opposed to one the server considered and refused.
+ *
+ *  Surfaces that announce a refusal have to word themselves differently for
+ *  these: "Save refused" over "Could not reach the server" says something
+ *  nobody did. Exported so that judgement lives with the codes rather than
+ *  being re-derived from their spelling at each call site. */
+export function isTransportCode(code: string): boolean {
+  return code === NETWORK_UNREACHABLE.code || code === NETWORK_TIMEOUT.code;
+}
+
 /** The reading for a failure that never produced an HTTP answer, or null when
  *  the thrown value is not one. */
 function readTransportError(
