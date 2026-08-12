@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """LeRobot export endpoints (§6.2): snapshot, leases, proxy, ledger record.
 
 The exporter itself is faked at the HTTP boundary — these tests are about the

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """``fast_validation`` — the required-topic gate, running on bagflow/dora.
 
 This is the pipeline every recording goes through: *does this bag contain the

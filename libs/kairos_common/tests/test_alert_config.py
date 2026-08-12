@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Alert-rule YAML loader (MON-C1): valid load, missing file, malformed.
 
 These lock in the failure policy: an unset/missing path yields no rules (the

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Contract changes the endurance campaign's cross-cutting findings needed.
 
 Four unrelated defects that all end in the same place — a client forced to

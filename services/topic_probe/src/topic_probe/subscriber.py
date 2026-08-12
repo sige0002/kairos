@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The ROS abstraction seam for topic_probe.
 
 The probe service (:mod:`topic_probe.probe`) depends only on this Protocol,

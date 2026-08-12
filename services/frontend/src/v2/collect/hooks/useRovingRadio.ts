@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // One tab stop for a group of mutually exclusive options (#17), where choosing
 // one is EXPENSIVE.
 //

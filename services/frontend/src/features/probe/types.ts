@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Probe-tab-local types (lane-local; NOT added to src/api/types.ts). These
 // mirror the topic_probe service contract (services/topic_probe/src/.../models.py),
 // consumed same-origin via the nginx /probe/ proxy.

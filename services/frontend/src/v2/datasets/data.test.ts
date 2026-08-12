@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 import { describe, expect, test } from 'vitest';
 import type { CaptureListItem, Dataset, DatasetMember, ReplicaState } from '../../api/types';
 import {

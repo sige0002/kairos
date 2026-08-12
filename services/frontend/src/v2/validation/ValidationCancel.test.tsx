@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The two halves of the endurance finding "validation jobs keep going, unseen
 // and unstoppable":
 //

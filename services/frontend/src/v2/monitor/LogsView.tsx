@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Monitor > Logs — a session event timeline (§11). A chronological feed of the
 // real SSE lifecycle events received since this page opened (record_status /
 // alert / job), read from the bounded ring buffer useEventStream keeps in the

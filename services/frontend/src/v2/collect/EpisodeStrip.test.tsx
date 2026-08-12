@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The strip must place every chip on its TRUE episode number (index_in_batch),
 // not its array position — a Review export/delete of an earlier episode used to
 // slide the later chips left, making the newest episode read as "not recorded"

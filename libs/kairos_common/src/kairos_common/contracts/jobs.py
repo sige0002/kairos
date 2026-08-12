@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The job and validation-template models shared by orchestrator and dora_runner.
 
 The orchestrator's ``/api/v1/jobs`` is a proxy: it forwards to dora_runner's

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """object_manifest.json / record.json: what they must reject, and never lose."""
 
 from __future__ import annotations

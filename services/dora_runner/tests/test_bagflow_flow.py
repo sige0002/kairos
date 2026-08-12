@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Flow materialization: the seam between kairos config and a bagflow flow.yml."""
 
 from __future__ import annotations

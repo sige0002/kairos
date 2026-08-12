@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Shared bagflow machinery: how kairos config reaches a flow, and job hygiene.
 
 Both gates (``fast_validation`` / ``full_validation``) run through

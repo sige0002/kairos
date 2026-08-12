@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Post-hoc inspection of the selected member's capture — the v2-styled wrapper
 // around the SHARED inspect pieces (src/v2/captures/inspect.tsx): the
 // loss_report table, the on-demand video_check mp4 players, and the raw JSON

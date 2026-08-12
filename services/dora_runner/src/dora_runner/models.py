@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """HTTP and internal models for dora_runner."""
 
 from __future__ import annotations

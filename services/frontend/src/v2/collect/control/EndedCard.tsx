@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // ENDED: the set stopped short of its target. The summary leads with what was
 // kept, because the operator's first question after an early end is whether
 // the episodes already recorded survived it.

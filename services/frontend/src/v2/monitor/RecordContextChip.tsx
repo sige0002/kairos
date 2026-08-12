@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Monitor context strip chip: the REAL current recording state (REC + run_id +
 // capture id + elapsed while a capture is running, STANDBY otherwise), from
 // /record/status — no invented episode number or time range. Shares the

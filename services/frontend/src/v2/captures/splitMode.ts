@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Whether this is a SPLIT deployment: the recorder writes on the robot and the
 // recording PC pulls finished captures across.
 //

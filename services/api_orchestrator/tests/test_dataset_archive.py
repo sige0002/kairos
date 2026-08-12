@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The dataset archive run (§6.x): freeze, copy out, seal — and every resume.
 
 The run is N per-capture archives plus a start and a seal, so the tests here

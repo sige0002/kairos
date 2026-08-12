@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """E-14: a relabel while the archive dialog is open must not move the export.
 
 The adopted scenario says the bytes land in the OLD name's folder while the

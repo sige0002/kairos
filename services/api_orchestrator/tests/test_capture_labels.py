@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """§4.3: editing a capture's operator, task and robot.
 
 The case that forced this is the imported bag. It is born with no operator and

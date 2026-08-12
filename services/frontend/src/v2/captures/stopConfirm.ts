@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Post-stop confirmation, shared by every caller of POST /record/stop that
 // must not walk on until the recorder has actually let go. `/record/stop` is
 // idempotent and answers with the LAST capture when it finds nothing active

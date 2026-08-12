@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Typed callers for the LeRobot export surface (§6.2): a whole dataset
 // converted to a LeRobot v3 tree under `exports/`.
 //

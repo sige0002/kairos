@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Domain types for the api_orchestrator REST/SSE contract.
 // Source of truth: docs/specs/ja/api_orchestrator.md and config.md.
 

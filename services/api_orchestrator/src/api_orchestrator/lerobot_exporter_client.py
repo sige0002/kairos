@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Internal HTTP client for the lerobot_exporter service (§6.2)."""
 
 from __future__ import annotations

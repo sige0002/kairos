@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Settings > Data quality > Alerts — form-first editor for the ACTIVE robot's
 // topic_monitor alert rules (GET/PUT /api/v1/config/alerts). Replaces the old
 // "not exposed by the API" note with a real rules table (topic / metric / op /

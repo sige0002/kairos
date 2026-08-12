@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Capture endpoints (``/api/v1/captures``) — the v2 replacement for runs.
 
 Contract §10. One resource now covers what ``/runs`` and ``/episodes`` used to

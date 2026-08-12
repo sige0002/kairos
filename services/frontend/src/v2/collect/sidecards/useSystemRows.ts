@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Where the System status rows come from. Three live sources are mixed here —
 // the console's /api/v1/system, the recorder's own /record/status, and the
 // monitor's SSE metrics — and each row is responsible for saying WHICH of them

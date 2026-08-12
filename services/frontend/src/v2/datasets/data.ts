@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Pure aggregation / search / sort helpers for the Datasets tab.
 //
 // A dataset is a NAME and a SET OF MEMBERSHIPS (§6). It carries no directory,

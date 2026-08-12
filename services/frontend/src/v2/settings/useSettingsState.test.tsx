@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The plan-editor handlers as a TOTAL contract over the shared catalog.
 //
 // PlansSection never offers these controls without a project (it renders an

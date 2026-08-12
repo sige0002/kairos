@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Row ↔ model conversion for the capture store.
 
 Pure functions split out of ``store.py``: each one renders a model into its

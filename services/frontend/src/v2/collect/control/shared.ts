@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Small pieces shared by more than one phase card: the compact-viewport gap,
 // the elapsed clock (takeover + recording), and the end-of-set summary line
 // that ENDED and COMPLETED both print.

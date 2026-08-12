@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Domain types for the Review screen.
 //
 // A capture (api/types.ts) is the real signal: v2 merged the run and the

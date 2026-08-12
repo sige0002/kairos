@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """SSE aggregation hub for ``GET /api/v1/events``.
 
 Multiplexes the orchestrator's event sources into a single Server-Sent-Events

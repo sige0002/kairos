@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Settings placeholder for the two sections that have nothing honest to configure
 // yet — Dataset profiles and Users & permissions. Each explains WHY there is
 // nothing here (not "coming soon" filler), so the operator isn't left hunting for

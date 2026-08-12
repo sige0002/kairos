@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Job/template persistence + restart reconciliation for dora_runner.
 
 The store is SQLite-backed, so a restart no longer orphans in-flight work (F4).

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // "Convert to LeRobot" (§6.2): the selected dataset converted to a LeRobot v3
 // tree under `exports/`.
 //

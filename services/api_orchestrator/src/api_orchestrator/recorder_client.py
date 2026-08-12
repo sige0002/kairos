@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Internal HTTP client for the rosbag2_recorder service.
 
 The orchestrator drives the recorder over its internal API (``/record/start``,

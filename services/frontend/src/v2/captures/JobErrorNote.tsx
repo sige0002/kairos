@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // A refused pipeline job, in the voice of the action that failed.
 //
 // Job submission shares three codes with the review and removal flows —

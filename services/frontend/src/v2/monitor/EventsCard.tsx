@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Right-rail Events list — REAL alerts from the monitor. The `alert` SSE snapshot
 // is accumulated into a rolling max-100 buffer in the TanStack Query cache by
 // useEventStream (queryKeys.alerts); we READ that cache (no second SSE

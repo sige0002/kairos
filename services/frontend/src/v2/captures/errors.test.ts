@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Readings of the capture-store error codes — the part of an error the backend
 // cannot write for itself: what the operator should DO next.
 //

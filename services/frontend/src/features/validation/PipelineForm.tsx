@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Generic, backend-driven pipeline params form (OL-4.2). Renders one control
 // per property of a JSON-Schema (from GET /api/v1/config -> schemas.pipeline_forms)
 // so the orchestrator/dora_runner own the form shape and the UI never hardcodes

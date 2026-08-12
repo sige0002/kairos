@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """One place that turns an unwritable ledger into a ``503 ledger_unwritable``.
 
 Contract §5: every ledger append is fatal to the operation it precedes. Deletes,

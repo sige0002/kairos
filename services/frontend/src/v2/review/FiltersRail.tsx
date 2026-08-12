@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Filters column. Only two controls really filter the list: the table's search
 // box and the Operator select here (Operator is the one dimension the /runs API
 // actually carries). The rest — Batch, Data quality, Task result, Date range —

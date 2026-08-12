@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Shared plan catalog (``/api/v1/plans``) — the batch-label vocabulary.
 
 Pins the seed/adopt contract the frontend relies on: a never-set catalog is

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The screen noticing that a recording ENDED without it.
 //
 // A take can finish while this console is watching and healthy: the recorder's

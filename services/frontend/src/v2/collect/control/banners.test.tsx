@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The save banner's HEADER is a claim of its own, separate from the message
 // under it. It had exactly two settings — "Not saved" for the destructive codes
 // and "Save refused" for everything else — which was true while everything else

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """video_check pipeline tests.
 
 The pure helpers (topic -> filename sanitization, fps estimate, frame cap) are

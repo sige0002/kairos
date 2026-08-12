@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The stream registry: one source + peer manager per previewed topic.
 
 :class:`StreamRegistry` is the streamer's coordinator. It owns the live streams

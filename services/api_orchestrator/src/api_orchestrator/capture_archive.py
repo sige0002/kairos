@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """§6: archiving a capture out of the store, verified, before the source goes.
 
 **Archive verifies before it deletes.** Copy, read back, compare, write the

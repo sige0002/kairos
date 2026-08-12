@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Pure transfer state machine (awaiting -> transferring -> here), kept separate
 // from useReviewState so the transitions are directly unit-testable.
 //

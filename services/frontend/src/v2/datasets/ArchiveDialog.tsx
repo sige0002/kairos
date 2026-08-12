@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Archive one capture to an allow-listed path (§6). This is the only control on
 // the screen that moves data OFF this machine, so the dialog's job is to make
 // the consequence unmissable before it starts:

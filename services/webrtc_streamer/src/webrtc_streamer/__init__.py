@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """webrtc_streamer: ROS 2 image -> browser WebRTC preview (Stage 0 skeleton).
 
 Stage 0 provides only a runnable FastAPI shell (/healthz, /readyz, stub root).

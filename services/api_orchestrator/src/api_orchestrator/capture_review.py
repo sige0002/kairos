@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """§4.1: saving an operator's review — the sidecar first, then the database.
 
 **Review saves the sidecar first.** ``record.json`` is authoritative for review

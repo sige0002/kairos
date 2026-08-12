@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Active warnings: the live signals that mean this take is being recorded worse
 // than the operator thinks. Never a fabricated one.
 //

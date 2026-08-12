@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """C2: ``GET /api/v1/batches`` takes an optional page, and still serves the lot.
 
 E-27 shrank this response by moving the per-capture rows out of it, and recorded

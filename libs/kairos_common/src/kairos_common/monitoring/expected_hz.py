@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Resolve a topic's expected Hz from RECORDING_CONFIG patterns (first match).
 
 ``expected_hz_patterns`` in the recording config maps glob patterns to an

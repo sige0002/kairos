@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The "Convert to LeRobot" control in the scope header, next to Archive.
 //
 // Its own component, and not an inline block in ScopeHeaderBar, because the

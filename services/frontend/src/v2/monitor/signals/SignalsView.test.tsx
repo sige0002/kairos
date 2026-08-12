@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // E-24 — the series chip, and what keeps a 120-character topic name from
 // taking the page with it.
 //

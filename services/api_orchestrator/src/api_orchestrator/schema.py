@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """SQLite DDL and column allow-lists for the capture store.
 
 Split out of ``store.py`` so the schema reads as one document. The store is an

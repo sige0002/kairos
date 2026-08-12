@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // EPISODE RESULT: the one card where the operator decides something. The
 // quick-check verdict is the server's; the task outcome is theirs; and nothing
 // is written until Save.

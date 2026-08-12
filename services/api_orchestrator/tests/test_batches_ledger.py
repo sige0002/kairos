@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Batches survive "delete kairos.db and restart" (§8), via the ledger.
 
 A batch used to live only in the database: no sidecar, no ledger line. So the

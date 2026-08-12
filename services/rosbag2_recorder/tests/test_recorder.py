@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """State machine + recording mechanics, with the subprocess mocked out.
 
 The ``ros2 bag record`` spawn and OS-signal delivery are replaced by the

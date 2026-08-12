@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The store's opinion of its own condition, shared across the process.
 
 Contract §8 (rebuild reporting) and §9-3 (the SUSPECT latch). Three facts have

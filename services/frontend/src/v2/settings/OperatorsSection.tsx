@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Settings > Operators — the attribution roster (project-lead ruling: NOT
 // authentication; no passwords, no permissions). Names added here become the
 // header OP picker's choices, and picking one is REQUIRED before recording —

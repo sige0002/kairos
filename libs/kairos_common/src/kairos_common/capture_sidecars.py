@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The two files that make a capture self-describing on disk.
 
 ``objects/<capture_id>/object_manifest.json`` (contract §3) is the recorder's

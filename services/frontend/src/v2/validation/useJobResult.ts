@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Poll a submitted job to a terminal state, then fetch its result: GET
 // /jobs/{id}/status until terminal, then GET /jobs/{id}/result once.
 //

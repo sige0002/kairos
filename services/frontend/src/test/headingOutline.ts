@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Shared assertion for the #14 heading structure, used by each screen's own
 // test file.
 //

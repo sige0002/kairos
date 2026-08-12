@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """EventHub replay/resync decisions (``_replay_since`` + overflow gaps).
 
 The contract (api_orchestrator.md): a reconnecting client whose

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Shared configuration reads and the robot switch.
 //
 // `/config/options` is the deployment's menu (which robots exist, which is

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The task.json projection (rosbag2lerobot's per-bag sidecar format)."""
 
 from __future__ import annotations

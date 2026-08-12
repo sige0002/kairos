@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The three operator-owned labels on a capture — operator / task / robot —
 // as rows of the inspection's definition list, editable in place.
 //

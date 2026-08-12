@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Batch stats: the running tally for the set in progress.
 
 import { Card, cn } from '../../../components/ui';

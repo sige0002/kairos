@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Retention's v2 definition (§10) and the store-health surface (§8, §2).
 
 Retention had to be redefined outright. The v1 rule — "a row still exists, so it

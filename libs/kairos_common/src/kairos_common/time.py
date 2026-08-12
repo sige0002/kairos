@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Time helpers. Timestamps are UTC ISO8601 across all kairos APIs."""
 
 from __future__ import annotations

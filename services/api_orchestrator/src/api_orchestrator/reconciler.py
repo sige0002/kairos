@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The periodic pass that keeps the catalog and the disk agreeing.
 
 Contract §8 (adoption, digest re-enqueue), §7 (delete resume, the reaper) and

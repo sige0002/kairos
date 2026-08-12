@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """QoS auto-match for topic_monitor subscriptions.
 
 Goal: subscribe with a QoS *compatible* with every publisher on a topic so we do

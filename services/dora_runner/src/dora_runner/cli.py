@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Local CLI for iterating on validation without the HTTP server.
 
 The whole point is fast, debuggable iteration: point it at a capture and it

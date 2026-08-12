@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Capture store v2 — schema, CAS review saves, leases, replicas, datasets.
 
 The store is the queryable cache in front of the sidecars, so the tests that

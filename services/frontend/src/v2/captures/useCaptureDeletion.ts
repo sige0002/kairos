@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The shared discard/delete flow (contract §7 + §12).
 //
 // Every screen that can remove a recording drives the SAME state machine, so

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Config endpoints (``/api/v1/config/options`` + ``/select`` + ``/recording``
 + ``/stream`` + ``/alerts``).
 

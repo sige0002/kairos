@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Ranked loss-event table under the integrity timeline (signal_report v1.1).
 // Lists every topic's inferred loss events (topic / time / duration / est. lost
 // / severity) RANKED worst-first — majors before minors, longer before shorter —

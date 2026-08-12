@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Honest component-health chips for the System views (Monitor + Settings).
 //
 // The orchestrator DOES expose a real per-component readiness view at its

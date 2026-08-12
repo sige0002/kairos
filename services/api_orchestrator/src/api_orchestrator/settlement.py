@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The quick check settled once at stop, off the request path.
 
 Contract §9-5 is what shapes this: stop must not depend on the ledger, a digest

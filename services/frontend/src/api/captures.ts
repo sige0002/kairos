@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Typed callers for the capture-store v2 API surface (contract §10). Every
 // screen goes through here rather than hand-writing paths, so the retirement of
 // /api/v1/runs and /api/v1/episodes is enforced by there being nothing to call.

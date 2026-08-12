@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // #16 — page-level horizontal overflow at 375px and 768px.
 //
 // WHAT THESE CAN AND CANNOT SHOW. jsdom has no layout engine: it computes no

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Settings > System — read-only deployment facts. ROS_DOMAIN_ID + robot from the
 // runtime config, the service endpoints the browser talks to, the runtime data
 // dir + free space from GET /api/v1/system, and the honest component health

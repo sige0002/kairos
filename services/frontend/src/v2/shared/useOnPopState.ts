@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Adopt the URL when the browser changes it under us.
 //
 // The URL can change WITHOUT the app doing anything: Back, Forward, a session

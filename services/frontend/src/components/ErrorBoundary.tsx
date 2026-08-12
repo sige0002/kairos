@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Root error boundary: React unmounts the whole tree if a render throws, so a
 // single malformed SSE/API payload that slips past a component's own guards
 // would otherwise white-out the entire UI. This catches it, keeps the shell

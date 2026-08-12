@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The committed config tree the stack runs on — the one thing this suite
 // touches that lives OUTSIDE the per-run data dir.
 //

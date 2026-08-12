@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Cancelling validation jobs.
 //
 // A job that is queued or running can be stopped; anything else has already

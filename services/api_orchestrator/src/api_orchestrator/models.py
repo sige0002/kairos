@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Pydantic models and shared enums for the api_orchestrator capture store v2.
 
 These are the OpenAPI-visible request/response contracts for ``/api/v1``. The

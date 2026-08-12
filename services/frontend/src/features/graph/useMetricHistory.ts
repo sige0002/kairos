@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Rolling client-side metric history for the Graph tab. topic_monitor streams
 // point-in-time snapshots over SSE (`metrics`); we accumulate a per-topic
 // history of every graphable field into ONE shared buffer so any number of

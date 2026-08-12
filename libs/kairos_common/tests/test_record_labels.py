@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The §4.3 ``labels`` block: its schema, and the order rebuild applies it in.
 
 ``record.json`` gains one optional block. The rule it encodes is that the

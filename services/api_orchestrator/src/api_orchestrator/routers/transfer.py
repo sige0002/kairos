@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Transfer endpoints (``/api/v1/transfer``) — pulling captures off the robot.
 
 In the cross-host split the recorder writes MCAP on the ROBOT's disk and the

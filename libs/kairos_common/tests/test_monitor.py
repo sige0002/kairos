@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """MonitorService end-to-end via FakeSubscriber (no ROS).
 
 Feeds synthetic samples through the same sink the real subscriber uses and

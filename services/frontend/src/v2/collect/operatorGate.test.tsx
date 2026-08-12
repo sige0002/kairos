@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // #11: a recording must be able to say who made it.
 //
 // Start used to be gated on the operator only once Settings held a roster, and

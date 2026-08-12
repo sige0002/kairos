@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """api_orchestrator service entry point (Stage 1: run lifecycle).
 
 Builds the wired app via :func:`create_orchestrator_app` (runs store, recorder

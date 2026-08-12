@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Shared plan catalog (Projects → Tasks → Conditions) for Console v2 — the
 // SINGLE source of truth for both the Settings "Projects & tasks" editor and the
 // Collect screen's project/task/condition pickers. Previously each screen kept

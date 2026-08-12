@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Reading and writing the operator-editable YAML config files.
 
 The Settings screens let an operator edit ``recording/default.yaml`` and

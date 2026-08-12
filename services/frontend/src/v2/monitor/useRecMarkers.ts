@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // REC/STOP markers for the Monitor frequency chart, from the REAL /record/status
 // stream — the same source the v1 Live Scope band used. The active<->idle edge
 // derivation lives in the uiStore (pushRecordMarker: only recording/stopping is

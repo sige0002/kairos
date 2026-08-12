@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Open/closed state of every Collect overlay this hook family owns (pickers,
 // modals, the batch menu, the shortcuts sheet), extracted from
 // useBatchMachine.ts. Pure UI state: no API calls, no machine dispatches.

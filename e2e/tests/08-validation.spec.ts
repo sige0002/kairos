@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Validation — the screen that answers "is this recording usable?"
 //
 //   pick fast_validation → point it at a recording → Run → the required-topic

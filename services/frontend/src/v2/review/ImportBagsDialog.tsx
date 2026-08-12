@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Review > Import bags — bring recordings made outside kairos into the catalog.
 //
 // The shape is "look before you copy": the operator names a FOLDER (a server

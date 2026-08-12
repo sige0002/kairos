@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The dataset member's loss table gets the same dating as Review's (#9): a
 // failed attempt's note calls it "the last completed loss report", and a table
 // the operator cannot date is one they cannot tell apart from the run they just

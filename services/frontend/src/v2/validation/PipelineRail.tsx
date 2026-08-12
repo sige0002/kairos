@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Left column: the real, enabled pipeline list (GET /pipelines). Each card shows
 // the pipeline's real id + description, plus a client-side lifecycle chip (see
 // lifecycle.ts — the orchestrator doesn't report a lifecycle yet).

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Local state for the Settings screen: menu selection and the plans
 // (project/task/condition) editor. Robot selection is real and lives in
 // RobotsSection (GET /api/v1/config/options). The plans catalog is the SHARED

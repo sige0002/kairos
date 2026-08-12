@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Collect context bar: Robot / Project / Task / Batch / Episode / Condition
 // cells plus the Batch menu. Project/task/condition are plan-based mock
 // selections (see useBatchMachine's PLANS) — the backend has no plan/batch

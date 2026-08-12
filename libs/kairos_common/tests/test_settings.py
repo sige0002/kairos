@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Settings parsing — focus on WEBRTC_ICE_SERVERS.
 
 WEBRTC_ICE_SERVERS lives in the SHARED Settings that every service loads, so a

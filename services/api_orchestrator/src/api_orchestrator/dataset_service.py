@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Logical datasets: database rows plus ledger events, and nothing on disk.
 
 Contract §6. A dataset used to be a directory tree that recordings were *moved*

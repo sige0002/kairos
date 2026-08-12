@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // M4 (qa-ui p12): tab A discards a capture; tab B still has its detail panel
 // open. The panel stayed fully interactive, and "Run loss report" / "Run
 // integrity report" answered 409 capture_deleted with NOTHING appearing on the

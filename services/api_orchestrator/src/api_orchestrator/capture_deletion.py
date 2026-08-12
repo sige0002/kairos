@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """§7: discarding and deleting a capture, and the resume paths that finish one.
 
 **Deletion writes the ledger first** (§7 step 1, §9-1). The ledger line is

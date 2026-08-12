@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Application factory for api_orchestrator — capture store v2.
 
 Builds the FastAPI app on ``kairos_common.create_app`` and wires the v2 stack:

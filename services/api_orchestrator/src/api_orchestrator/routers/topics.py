@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Topic discovery + live metrics proxy (``/api/v1/topics*``).
 
 The orchestrator is the single public API; topic data originates in

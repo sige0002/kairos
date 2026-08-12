@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // One set of System status rows, shared by the two cards that have to agree
 // about them.
 //

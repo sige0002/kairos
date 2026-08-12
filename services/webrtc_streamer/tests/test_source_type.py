@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Unit tests for image-topic type resolution (no ROS needed).
 
 ``_is_compressed_topic`` decides whether a topic carries CompressedImage (vs raw

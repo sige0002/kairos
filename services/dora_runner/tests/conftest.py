@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Shared fixtures: the capture-keyed layout every pipeline test writes into.
 
 Contract §2/§10.5. A job's source is ``objects/<capture_id>`` and its output is

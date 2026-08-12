@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """``signal_report`` pipeline: post-hoc numeric time-series for Review charts.
 
 Event-driven (button -> job), post-hoc, and read-only with respect to the

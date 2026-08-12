@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """``/api/v1/captures``: listing, detail, and the §4.1 review save.
 
 The review save is where two terminals can collide, so most of this file is

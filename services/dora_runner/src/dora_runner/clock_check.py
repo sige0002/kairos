@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """``clock_check`` pipeline: recorder-vs-publisher clock consistency for a capture.
 
 Event-driven (button -> job), post-hoc, and read-only with respect to the

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Operator-facing readings of the capture-store error codes.
 //
 // The backend already writes good messages; what it cannot know is what the

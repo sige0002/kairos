@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Results column: renders the OK/WARNING/FAIL tiles + ratio bar + per-capture
 // rows when the active submission was a batch (multiple target captures — see
 // resultsMapping.ts for why that's the gate), otherwise falls back to the

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // E-22 at the CALL SITES.
 //
 // `seedKey.test.ts` proves `configSeedKey` is order-insensitive and that the

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Internal HTTP client for the dora_runner service."""
 
 from __future__ import annotations

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Infrastructure settings (three-layer config #1: root ``.env``).
 
 These are the values docker compose resolves at startup and passes to each

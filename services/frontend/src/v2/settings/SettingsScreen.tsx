@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Settings tab (v2 IA) — absorbs the old Config tab plus robot profiles and
 // batch plans. Root mirrors the design mock's 216px / 250px / 1fr three-column
 // grid (settings menu, then either a list+detail pair or a single wide section).

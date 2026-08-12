@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The status pill the System status and Active warnings cards both end their
 // rows with. One tone vocabulary, so "OK" is the same green everywhere.
 

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Tests for the RECORDING_CONFIG loader and the Settings model."""
 
 from __future__ import annotations

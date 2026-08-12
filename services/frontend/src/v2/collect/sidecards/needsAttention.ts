@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // System status rows that are NOT passing, restated for the Active warnings
 // card in the operator's terms (#13).
 //

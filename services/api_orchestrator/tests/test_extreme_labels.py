@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """E-11: labels an operator can type that a filesystem cannot hold.
 
 ``name`` / ``operator`` / ``task`` are free text AND the three components of

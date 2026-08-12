@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Monitor > Overview — the diagnostic landing (§11). A single glance answers
 // "is capture running, is anything unhealthy, and where do I look next":
 //   - record context (REC + run + elapsed, or STANDBY) from /record/status,

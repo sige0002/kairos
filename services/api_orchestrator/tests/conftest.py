@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Shared fixtures: an in-process fake recorder and a wired v2 app.
 
 The fake recorder is an ``httpx.MockTransport`` implementing just enough of the

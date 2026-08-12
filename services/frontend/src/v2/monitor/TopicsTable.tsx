@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Topics table (below the frequency chart): real per-topic health rows,
 // merging ROS graph discovery with the live SSE metrics snapshot — same data
 // source as the old Monitor/Live-tab table (src/features/monitor/useMonitorRows.ts).

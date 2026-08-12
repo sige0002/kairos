@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Settings > Failure reasons — the vocabulary Collect offers when an episode
 // is marked Failure ("What failed?" chips). Edits funnel through the SHARED
 // plans store (src/v2/plans.ts): Collect updates immediately, and the list is

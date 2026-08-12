@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 import { useQuery } from '@tanstack/react-query';
 import { getBatchCoverage } from '../../../api/batches';
 import { queryKeys } from '../../../api/queryKeys';

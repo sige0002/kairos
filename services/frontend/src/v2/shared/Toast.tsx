@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 /** The dark bottom-center toast pill shared by every v2 screen.
  *
  *  The outer live region stays mounted whether or not a toast is showing:

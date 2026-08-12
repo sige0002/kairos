@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """E-39: forty recordings back to back, and what is left over afterwards.
 
 A collection shift is not one recording, it is dozens — start, stop, label,

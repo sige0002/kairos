@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Stream-config editor for v2 Settings > Robots — the ACTIVE robot's ACTIVE
 // stream option edited in place as JSON, mirroring RecordingConfigEditor
 // (GET/PUT /api/v1/config/stream). The file is UI-facing only and served

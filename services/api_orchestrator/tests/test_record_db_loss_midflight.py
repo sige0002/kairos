@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """E-17: ``kairos.db`` deleted while a recording is in flight, then a restart.
 
 §8 says the database is an index that can be thrown away and rebuilt from the

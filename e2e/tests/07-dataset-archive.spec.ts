@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Contract §6.1, E2E scenario 6 — the dataset's terminal transition.
 //
 //   build a dataset → Archive → archived badge → the destination holds the

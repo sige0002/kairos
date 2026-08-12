@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Regression pin for the defect class the §13 scenarios cannot reach:
 // **a live claim that outruns what the UI actually knows.**
 //

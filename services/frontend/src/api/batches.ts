@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Typed callers for `/api/v1/batches` — Collect's grouping of captures.
 //
 // A batch groups the captures recorded in one run of a task/condition. There is

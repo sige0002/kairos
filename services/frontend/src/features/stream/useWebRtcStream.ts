@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Native WebRTC preview against webrtc_streamer (see docs/specs/ja/webrtc_streamer.md).
 // Flow (non-trickle, WHEP-style HTTP offer/answer):
 //   1. POST {webrtc}/stream/start { topic } -> { stream_id }

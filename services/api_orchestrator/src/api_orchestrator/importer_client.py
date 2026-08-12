@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Internal HTTP client for the importer sidecar (cross-host split).
 
 The importer (``deploy/sync/``, defined ONLY in ``compose/recording.yaml``)

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The camera wall's health aggregation (E-37), split out of Cameras.tsx:
 // every pane's own stream state (reported by the tiles), the no-video-yet
 // timers, the monitor's per-topic liveness counts, and the memoized

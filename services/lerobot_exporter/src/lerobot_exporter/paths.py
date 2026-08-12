@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Where an export reads from and writes to, and the guards on those names.
 
 The store root is fixed (``<data_dir>/exports/``): the only place guaranteed to

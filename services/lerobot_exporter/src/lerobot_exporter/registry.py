@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The export queue: one FIFO, N execution slots, one subprocess per export.
 
 Shape and discipline follow dora_runner's job worker, with one difference that

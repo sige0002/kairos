@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """§7.1 as a SHARED reader lease (rev.2.15).
 
 The lease used to have one owner, which made it two things at once: a record of

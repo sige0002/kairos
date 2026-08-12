@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Presentational pieces of the Collect camera wall, split out of Cameras.tsx:
 // the stats/placeholder/overlay chips, the sub-tile (with its own WebRTC
 // stream) and the add-camera tile. Container logic stays in Cameras.tsx.

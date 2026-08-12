@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """bagflow node helper for Python validator authors.
 
 Hides the bagflow wire protocol (EOS markers, completion ack, coverage

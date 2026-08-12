@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """An export end to end: staging, the converter's argv, and every terminal path.
 
 The converter is the stub in ``fake_converter.py``, which snapshots what it was

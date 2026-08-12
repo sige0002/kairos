@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """E-27: the validation presets endpoint must not scale with the catalog.
 
 ``GET /api/v1/validation/presets`` shows "N pending" per preset, which needs

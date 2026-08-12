@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """``loss_report`` pipeline: per-topic gap-based loss estimate for a run.
 
 Event-driven (button -> job), post-hoc, and read-only with respect to the

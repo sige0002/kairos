@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Validation/conversion jobs.
 //
 // Submission and polling still happen at their call sites. `POST

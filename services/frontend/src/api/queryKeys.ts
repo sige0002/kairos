@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Centralized TanStack Query keys so SSE dispatch and components agree on the
 // cache locations they read/write.
 //

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The digest job (§11, gated by §9-4): hashing a finished capture once.
 
 ``present_verified`` is the only claim in the system that a copy is intact, and

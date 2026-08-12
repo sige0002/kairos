@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // "Convert to LeRobot" (§6.2): the gate, the dialog's refusals, and the run.
 //
 // Driven through a harness that mounts the real hook with the real button and

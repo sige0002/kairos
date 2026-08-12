@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Shared monitor data: merges ROS 2 graph discovery (GET /api/v1/topics) with
 // the live SSE `metrics` snapshot into per-topic health rows. Extracted from
 // MonitorTab so both the standalone Monitor table and the fused Live tab's

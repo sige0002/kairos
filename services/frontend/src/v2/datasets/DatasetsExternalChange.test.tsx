@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // E-19 — the store changed underneath the screen.
 //
 // This screen is never the only writer. Another operator has the same page

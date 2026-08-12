@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // READY: the pre-take card. Start is the only primary action, and it is gated
 // on the two things a recording cannot be made without — at least one topic,
 // and an operator who owns it.

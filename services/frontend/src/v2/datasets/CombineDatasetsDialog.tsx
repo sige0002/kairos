@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Combine datasets (§6): a NEW dataset listing every member of the chosen
 // sources, sources untouched. Because a dataset is rows plus ledger events,
 // combining is ordinary building done in bulk — create one dataset, then the

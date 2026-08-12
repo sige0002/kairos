@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Dataset endpoints (``/api/v1/datasets``) — logical sets, no directory tree.
 
 Contract §6. A dataset is rows plus ledger events; adding a capture moves

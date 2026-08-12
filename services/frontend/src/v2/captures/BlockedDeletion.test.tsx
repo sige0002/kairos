@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Removing a capture that a job is holding (§7.1).
 //
 // What the operator hit: the delete came back "another job is working on this

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Smoke test: the service starts and answers /healthz (no ROS required)."""
 
 from __future__ import annotations

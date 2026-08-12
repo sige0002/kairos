@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Zustand store for UI-only state (not server state). Server state lives in
 // TanStack Query; SSE pushes update the Query cache. Here we keep the active
 // tab and the live SSE connection status so the header can surface it.

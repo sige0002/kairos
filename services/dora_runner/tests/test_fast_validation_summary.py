@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """fast_validation's report -> summary adapter (no dora, no MCAP).
 
 The Validation screen renders a bespoke required-topic checklist from

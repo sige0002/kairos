@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Advice for next episode: the static collection-technique tips, paged by the
 // operator. The only card here that reads nothing live.
 

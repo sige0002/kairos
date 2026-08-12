@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """UUIDv7: valid by RFC 9562, and sortable by the order it was minted in."""
 
 from __future__ import annotations

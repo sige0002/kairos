@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The one naming contract for LeRobot export output names (§6.2).
 
 Shared so the orchestrator (which COMPOSES ``<operator>_<profile>_<memo>`` and

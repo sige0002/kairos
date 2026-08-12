@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Robot-first selectable config catalog for the Config tab.
 
 The config tree is robot-first: ``config/<robot>/<aspect>/<option>.yaml`` for the

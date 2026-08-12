@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Pipeline registry (OL-④): metadata + runnable dispatch, no if/elif."""
 
 from __future__ import annotations

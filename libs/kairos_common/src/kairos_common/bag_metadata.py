@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Topic signature of a recorded bag, derived from its rosbag2 ``metadata.yaml``.
 
 WHY (2026-07-26 ML-consumer review, finding F1): a (task, condition) group is

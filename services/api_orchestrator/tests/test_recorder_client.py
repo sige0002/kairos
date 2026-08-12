@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Unit tests for the recorder HTTP client: retry, timeout, error mapping.
 
 These drive the async client directly via ``asyncio.run`` to avoid an async

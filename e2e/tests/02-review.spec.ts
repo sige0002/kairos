@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Contract §13, scenario 2 — Review.
 //
 //   save labels → assert through the UI (the revision line and the conflict

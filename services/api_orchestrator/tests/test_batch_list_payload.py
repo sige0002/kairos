@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """E-27: the batch list carries a count, not every episode of every batch.
 
 ``GET /api/v1/batches`` bundled a compact row for every capture of every batch:

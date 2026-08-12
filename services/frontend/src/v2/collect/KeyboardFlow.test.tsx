@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // E-31: can a take be run end to end without a mouse, and does anything fire
 // or lose focus when it should not?
 //

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """mcap_loader node: read a capture's MCAP and emit per-topic message counts.
 
 Dual-mode (see plugin_loader.py):

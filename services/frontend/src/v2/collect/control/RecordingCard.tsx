@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // RECORDING: the take is running. B1 also puts the "recorder stopped
 // answering" face of this card here — same card, but it stops asserting that a
 // recording is still happening.

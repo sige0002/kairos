@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Signals sub-view (v2 Monitor) — the v1 Probe tab's generic numeric-field live
 // plotter, ported into the v2 skin. Capability is REAL and reused wholesale: the
 // topic list / field introspection / multi-topic overlay SSE all come from

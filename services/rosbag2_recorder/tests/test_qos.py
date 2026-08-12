@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """QoS resolution + override-file generation from recording config / request."""
 
 from __future__ import annotations

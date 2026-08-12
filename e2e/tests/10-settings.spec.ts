@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Settings › Recording — the one screen that WRITES the config the rest of the
 // stack runs on.
 //

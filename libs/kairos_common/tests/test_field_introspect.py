@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Pure-logic tests for numeric-field introspection (no ROS).
 
 Feeds plain Python / fake-decoded objects (``SimpleNamespace`` stands in for a

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Recording lifecycle: prepare, start, stop, status — and what stop settles.
 
 The orchestrator drives the recorder and files the result as a capture. Under v2

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """run_id validation and the path safety that rests on capture_id being a UUIDv7."""
 
 from __future__ import annotations

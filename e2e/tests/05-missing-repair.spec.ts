@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Contract §13, scenario 5 — an out-of-band `rm -rf objects/<id>`.
 //
 //   remove the files behind kairos's back → Repair from the Monitor store-health

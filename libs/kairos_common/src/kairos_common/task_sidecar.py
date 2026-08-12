@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Project a capture's task label into a rosbag2lerobot ``task.json`` sidecar.
 
 rosbag2lerobot (the LeRobot v3 converter) reads an optional ``task.json`` next

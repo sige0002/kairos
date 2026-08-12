@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The data directory's shape, and the filesystem invariants that depend on it.
 
 Contract §2. Everything the capture store does to disk goes through here, so

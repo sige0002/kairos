@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Tests for the container entrypoint's custom-message overlay sourcing.
 
 The entrypoint (``docker-entrypoint.sh``) sources the ROS underlay and, when

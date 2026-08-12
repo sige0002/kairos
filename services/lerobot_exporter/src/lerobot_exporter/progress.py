@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Read the converter's progress out of the output tree it is writing.
 
 Two files, two questions, deliberately separate:

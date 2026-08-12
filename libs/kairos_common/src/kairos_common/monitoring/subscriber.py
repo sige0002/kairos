@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The ROS abstraction seam for topic_monitor.
 
 The windowed-metric math (``metrics.py``) and the monitoring service

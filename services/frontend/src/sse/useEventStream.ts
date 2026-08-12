@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Single SSE subscription (GET /api/v1/events) that fans events into the
 // TanStack Query cache. Components read the cache (useQuery with the same keys)
 // and re-render. Reconnection is handled by the browser-native EventSource,

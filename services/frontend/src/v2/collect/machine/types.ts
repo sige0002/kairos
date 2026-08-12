@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Domain vocabulary and constants of the Collect batch machine, split out of
 // useBatchMachine.ts (which re-exports everything here — external imports are
 // unchanged).

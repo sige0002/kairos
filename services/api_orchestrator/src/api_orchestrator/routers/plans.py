@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Shared plan catalog (Projects -> Tasks -> Conditions) — ``/api/v1/plans``.
 
 The catalog is the label VOCABULARY Collect stamps onto batches and episodes

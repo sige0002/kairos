@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Shared fixtures: a capture store on disk, a stub converter, and one loop.
 
 Every lifecycle test drives the REAL FastAPI app over ``httpx.ASGITransport``

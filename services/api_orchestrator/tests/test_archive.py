@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Archiving a capture (§6): copy, verify, record, then delete the source.
 
 Archiving is the one operation that both writes bytes somewhere new and destroys

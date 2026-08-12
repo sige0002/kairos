@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Bringing a capture's bytes into ``objects/`` — imports and robot pulls.
 
 Contract §2's invariant and §10.6. Anything arriving from outside — an operator

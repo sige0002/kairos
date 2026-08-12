@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Shared pytest fixtures for the rosbag2_recorder tests.
 
 The tests run without ROS 2 installed, so the ``ros2 bag record`` subprocess is

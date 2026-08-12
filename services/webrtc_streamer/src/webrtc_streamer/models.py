@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Request/response models and the stream state enum for webrtc_streamer.
 
 These shapes are the streamer's public HTTP contract. The frontend calls

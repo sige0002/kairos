@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The --start-paused readiness gate: everything here talks to ROS.
 
 Split out of :mod:`rosbag2_recorder.recorder` unchanged, to keep every rclpy and

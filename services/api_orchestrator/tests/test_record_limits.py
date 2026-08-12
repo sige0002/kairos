@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """E-38: a recording that ends at its own cap, and what the catalog calls it.
 
 ``MAX_RECORD_SECONDS`` / ``MAX_RECORD_BYTES`` are the recorder's disk-protection

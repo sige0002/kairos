@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """``video_check`` pipeline: on-demand mp4 preview of a camera topic.
 
 Event-driven (button -> job), post-hoc, and read-only with respect to the

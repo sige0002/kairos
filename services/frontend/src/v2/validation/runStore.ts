@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The current validation run, parked in module scope.
 //
 // App.tsx renders only the active tab, so the Validation screen is UNMOUNTED

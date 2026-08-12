@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Bespoke fast_validation result card: a per-required-topic checklist (found ✓
 // / missing ✕ + expected msg type) with a PASS/FAIL badge and an "+N extra
 // topics" note. fast_validation keeps this purpose-built view because "are my

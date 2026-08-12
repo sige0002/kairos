@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // SAVING and QUICK CHECK: the two waits between the take ending and its
 // result. One card, because the operator has nothing to do in either — only
 // the title and the line under it differ.

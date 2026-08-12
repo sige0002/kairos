@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The one place the UI learns what the recorder is doing.
 //
 // Every surface that asks "is a recording running?" goes through this hook,

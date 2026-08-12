@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Multi-panel behaviour for the Monitor Topics view (v1 Graph tab add/remove
 // parity): the "+ Add chart" affordance, per-panel topic-set independence, the
 // primary panel's table-click binding, non-primary Remove, and the GLOBAL

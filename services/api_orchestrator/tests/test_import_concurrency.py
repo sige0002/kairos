@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Bag import under interruption and contention (the E-15 follow-ups).
 
 Three of the listed cases were already pinned elsewhere and are not repeated

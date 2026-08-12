@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The reconciler (§8 adoption, §7 reaping, §9-3 the threshold guard).
 
 The guard is the part worth most of this file. A bind mount that comes unmounted

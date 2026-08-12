@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The document heading for a tab.
 //
 // The console had no h1 or h2 anywhere in the shell, so a screen-reader user

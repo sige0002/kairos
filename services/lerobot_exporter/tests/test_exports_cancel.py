@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Cancel actually stops the work — and only then says so.
 
 A status that reads ``canceled`` while ffmpeg is still writing into the output

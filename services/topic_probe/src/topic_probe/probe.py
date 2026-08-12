@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The topic_probe service logic (ROS-free, driven through the seam).
 
 Wires a :class:`~topic_probe.subscriber.ProbeSubscriber` to the API: topic

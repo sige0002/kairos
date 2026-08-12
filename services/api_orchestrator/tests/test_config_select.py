@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Config tab catalog: robot -> aspect -> option listing/selection + apply.
 
 Robot-first config tree: ``config/<robot>/<aspect>/*.yaml`` (committed) and

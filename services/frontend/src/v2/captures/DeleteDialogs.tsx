@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The two deletion dialogs (contract §12). They deliberately do NOT share a
 // component: the operator must be able to tell, from the dialog alone, which of
 // the two they are about to do.

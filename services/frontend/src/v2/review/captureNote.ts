@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // How a capture's own recorded outcome should READ.
 //
 // `capture.error` is the recorder's account of one recording, carried in the

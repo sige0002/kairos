@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Maps a set of terminal job outcomes (one per target capture submitted
 // together, e.g. "Run on selection" against "All captures on this host") onto
 // the design mock's OK / WARNING / FAIL tiles + stacked ratio bar + per-capture

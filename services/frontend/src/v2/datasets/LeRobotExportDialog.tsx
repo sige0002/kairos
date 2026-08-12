@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Convert the selected dataset to LeRobot v3 (§6.2).
 //
 // The dialog has two faces, like the dataset archive's, for the same reason:

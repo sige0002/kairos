@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The banners and notes the phase cards raise above their own controls. All of
 // them are driven by REAL recorder/orchestrator data — none of them invents a
 // figure, and each says which moment it describes.

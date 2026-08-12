@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Pure-function tests for the Collect Active-warnings / Topic-rates mapping.
 
 import { expect, test } from 'vitest';

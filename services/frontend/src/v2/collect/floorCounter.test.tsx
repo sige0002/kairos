@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // `episodes_recorded` after a rebuild is a LOWER BOUND, and has to say so.
 //
 // The counter is advanced by the first review save of each capture, and the

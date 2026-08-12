@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // System status: one row per thing that can quietly stop working during a
 // take. The rows themselves are derived in useSystemRows — this card only
 // lays them out.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Touch targets that are bigger than they look.
 //
 // The console is dense by intent and is used on tablets, which are two facts

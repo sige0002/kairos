@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Runtime knobs for the exporter, read from ``KAIROS_LEROBOT_*`` env vars.
 
 They follow the in-tree convention for service-specific tuning (dora_runner's

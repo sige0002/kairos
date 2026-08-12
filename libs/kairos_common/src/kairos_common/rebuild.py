@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Reconstructing the catalog from what is actually on disk.
 
 Contract §8. ``kairos.db`` is an index, not the truth: delete it and restarting

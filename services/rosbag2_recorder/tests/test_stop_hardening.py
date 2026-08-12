@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Stop-path hardening: the recorder must never leave a bag process writing.
 
 Both cases here end the same way if left unfixed — the recorder reports the

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Contract §13, scenario 3 — Discard.
 //
 //   the reason-required modal → the capture disappears from the lists →

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Monitor tab (v2 IA) — absorbs the old Graph + Probe tabs plus the header's old
 // SystemInfo footer. All six §11 sub-views are built out on real data:
 //   Overview  — diagnostic landing (record context, topic-health tally, incidents)

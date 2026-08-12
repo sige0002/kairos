@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Minimal JSON Schema (draft 2020-12) typing and helpers, just enough to drive
 // backend-provided forms (record_start, pipeline_forms). We intentionally
 // support a pragmatic subset: object/array/string/number/integer/boolean,

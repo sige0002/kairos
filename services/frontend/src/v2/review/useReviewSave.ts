@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Saving a review (contract §4.1 + §12).
 //
 // `PATCH /captures/{id}/review` is a compare-and-swap: the client echoes the

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """FastAPI dependencies for the capture-store routers.
 
 The services are built once at startup and held on ``app.state``; handlers

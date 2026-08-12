@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The shared export-name contract (§6.2): compose to exactly what validates."""
 
 from __future__ import annotations

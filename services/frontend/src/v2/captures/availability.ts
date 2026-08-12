@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Availability: what the UI is allowed to say about a capture's BYTES.
 //
 // Two facts combine (contract §8, §11): the local replica's state, and whether

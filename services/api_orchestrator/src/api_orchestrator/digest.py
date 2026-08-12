@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The digest job: hashing a finished capture and sealing the result.
 
 Contract §11, gated by §9-4. Once the recorder has finalised a capture, nothing

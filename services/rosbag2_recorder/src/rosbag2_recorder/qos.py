@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Build the ``--qos-profile-overrides-path`` YAML for ``ros2 bag record``.
 
 By default rosbag2 records each topic with the QoS its publisher offers, which

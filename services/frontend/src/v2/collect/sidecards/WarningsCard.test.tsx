@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // #13 — the Active warnings card claimed "✓ No active warnings" while System
 // status rows immediately above it read CHECK. These lock the rule that
 // replaced it: the all-clear speaks for the checks too, so it may only appear

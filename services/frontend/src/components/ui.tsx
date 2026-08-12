@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Shared visual primitives for the "Neutral Teal" design language (handoff).
 // These are presentation-only: no data, no app state. Feature tabs compose
 // them so cards, chips, status dots and toggles stay pixel-consistent.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Monitor > System — the full-page host + deployment view (§11). Everything is
 // real: host facts + live utilization from GET /api/v1/system (CPU model/cores,
 // GPU or "not detected", disk path/free/total, CPU%/GPU% when measurable),

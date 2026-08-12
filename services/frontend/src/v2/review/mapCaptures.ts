@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Maps captures into Review rows.
 //
 // Everything comes from the capture: v2 merged the run and the episode, so

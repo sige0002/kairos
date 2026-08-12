@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """clock_check pipeline tests.
 
 The stats helper is pure and unit-tested directly; the pipeline is exercised

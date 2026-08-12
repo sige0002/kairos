@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """A damaged ledger line, driven through the routes that read the ledger.
 
 ``ledger_v2.read_all`` raises :class:`LedgerUnreadableError` for a line that was

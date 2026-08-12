@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Shared base for internal HTTP clients to other kairos services.
 
 The orchestrator drives several internal services (recorder, topic_monitor,

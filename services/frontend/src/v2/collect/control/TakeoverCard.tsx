@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The takeover card (D-1): a recording is running on this robot that this
 // screen is not driving. It replaces the phase card entirely, so the only
 // actions offered are the ones that make sense for someone else's take.

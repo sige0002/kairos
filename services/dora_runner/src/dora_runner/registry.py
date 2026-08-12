@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Pipeline registry: metadata + runnable adapters for dora_runner (OL-④).
 
 Replaces the static ``PIPELINES`` list and the ``if/elif job.pipeline == ...``

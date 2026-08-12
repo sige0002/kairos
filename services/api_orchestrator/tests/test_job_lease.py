@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The capture lease around a dora_runner job (§7.1).
 
 A job reads ``objects/<capture_id>`` for as long as it runs, and deletion

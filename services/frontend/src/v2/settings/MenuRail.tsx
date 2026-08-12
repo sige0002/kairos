@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Left menu rail: the settings sections + a footer stamp of the ACTIVE robot.
 
 import { useQuery } from '@tanstack/react-query';

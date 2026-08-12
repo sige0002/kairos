@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The retry a failed preview offers has to re-run the SAME work.
 //
 // A camera tile submits twice with different meaning: the mount job takes the

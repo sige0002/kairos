@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The Collect header against an EMPTY shared plan catalog.
 //
 // Reported as a side finding during E-5, whose subject was Settings

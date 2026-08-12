@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Center column. Two vertically stacked panes:
 //   TOP  — the scope's members, ~10 rows tall with internal scroll, fronted by a
 //          pinned Summary row and its own member search. It BUILDS at most one

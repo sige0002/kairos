@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """lerobot_exporter service: profiles, exports, and the queue behind them."""
 
 from __future__ import annotations

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """LeRobot export endpoints (§6.2): dataset → LeRobot v3 via lerobot_exporter.
 
 The orchestrator's half of the export: it owns the catalog, so it resolves the

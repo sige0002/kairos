@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Two regenerations of ``views/`` must never be in the tree at once.
 
 Nothing used to serialize :func:`views.regenerate`. Two callers reach it from

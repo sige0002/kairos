@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // SectionLabel is the shared card-header primitive — every `<CardHeader>` plus
 // FiltersRail, ChecklistCard and SummaryResult title themselves through it, so
 // it alone accounts for a large share of the console's h2 layer (#14).

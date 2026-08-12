@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Design tokens for the kairos console v2 shell (the six role-based tabs:
 // Collect / Review / Datasets / Validation / Monitor / Settings), lifted from
 // the design mock (kairos-console-v2.dc.html).

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """``full_validation`` — the operator-authored bagflow gate.
 
 Where ``fast_validation`` runs one bundled, metadata-only flow, this pipeline

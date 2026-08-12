@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // ARMING: the readiness gate is open and the recorder is matching its target
 // topics. Recording begins on its own once the recorder confirms, so the only
 // control here is the way out.

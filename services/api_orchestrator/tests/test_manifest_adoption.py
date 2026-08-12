@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The manifest is authoritative for what was recorded (§3, §8).
 
 A capture does not always reach a terminal state through the stop path. A

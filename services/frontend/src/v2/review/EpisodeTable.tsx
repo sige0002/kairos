@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Episodes column: header (counts, bulk controls, search, transfer-all) + the
 // scrollable row list. Captures in, decorated with the operator's in-flight
 // choice (useReviewState); Quality/Task result render the *effective* value,

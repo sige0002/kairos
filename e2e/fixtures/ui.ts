@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Page helpers for the real frontend.
 //
 // Everything here selects on committed data-testids or on accessible roles —

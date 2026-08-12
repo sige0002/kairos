@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Job deadline semantics (timing sweep S2-4).
 
 The pre-S2-4 timeout only relabelled: ``failed (job_timeout)`` while the

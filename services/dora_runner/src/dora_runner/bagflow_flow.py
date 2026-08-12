@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """bagflow flow catalog + per-job materialization (spec: docs/specs/ja/dora_runner.md).
 
 kairos does not invent a flow dialect: a file under ``config/<robot>/flows/`` **is**

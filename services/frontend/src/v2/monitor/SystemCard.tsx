@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Right-rail System card, from GET /api/v1/system. Shows the host's static
 // facts (CPU model / core count, GPU name) plus live utilization the backend now
 // measures: CPU busy %, GPU % (only when a GPU is present), and data-dir storage

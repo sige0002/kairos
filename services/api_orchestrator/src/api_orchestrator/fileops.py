@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Copying and hashing bytes we are about to become responsible for.
 
 Both callers here are irreversible in the same way: :func:`copy_tree_verified`

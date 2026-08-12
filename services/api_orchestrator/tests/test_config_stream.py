@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Stream-config editor endpoints (``GET``/``PUT`` ``/api/v1/config/stream``).
 
 Settings > Robots edits the Collect camera-grid layout (STREAM_CONFIG) in

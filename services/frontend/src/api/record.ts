@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Recording control (contract §3): the four calls that arm, start, stop and
 // observe a take.
 //

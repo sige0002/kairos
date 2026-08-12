@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 import { expect, test } from 'vitest';
 import { ANY_OPERATOR } from './data';
 import { DEFAULT_URL_STATE, readDatasetsUrl, writeDatasetsUrl } from './url';

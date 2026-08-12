@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Settings > Robots — real robot selection + per-robot config (superseded the
 // retired v1 Config tab; the recording-config editor it embeds still lives in
 // src/features/config/ConfigTab.tsx). The middle column lists the real robots

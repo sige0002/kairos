@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The one probe that answers "is this a split (robot + recording-PC) deploy?".
 //
 // Review, Datasets and Collect all need it — Review to gate its transfer UI,

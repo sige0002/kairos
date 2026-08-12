@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Guarded static-file serving (``GET /api/v1/files/{file_path}``).
 
 dora_runner writes artifacts (e.g. ``video_check`` mp4 previews) under the shared

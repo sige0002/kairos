@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Right column, top: camera tiles for the robot's cameras plus operator-added
 // previews. Panes come from the Collect camera store (cameraStore.ts): seeded
 // from the robot's configured stream panes (config.stream.panes) and re-seeded

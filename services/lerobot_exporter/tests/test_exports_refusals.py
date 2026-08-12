@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """What ``POST /exports`` refuses, and with which code."""
 
 from __future__ import annotations

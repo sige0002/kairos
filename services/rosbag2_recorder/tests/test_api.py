@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """HTTP-layer tests: routes, status codes, and start-body parsing/validation.
 
 Exercises the FastAPI app end to end with the subprocess mocked, so request

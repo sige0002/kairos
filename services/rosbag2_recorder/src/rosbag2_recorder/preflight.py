@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Start-time preconditions: somewhere to write, and room to write it.
 
 Split out of :mod:`rosbag2_recorder.recorder` unchanged. Every check here

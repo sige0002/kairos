@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Rendering/interaction tests for the aggregated integrity timeline.
 
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';

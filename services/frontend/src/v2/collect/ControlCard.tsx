@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The phase-driven control card (left column, top): READY / ARMING /
 // RECORDING / SAVING+QUICK-CHECK / EPISODE RESULT / PAUSED / ENDED / COMPLETED —
 // or, when a recording is running that this screen isn't driving, the takeover

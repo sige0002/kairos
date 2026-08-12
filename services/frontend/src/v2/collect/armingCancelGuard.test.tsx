@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // #8, the interaction half: ARMING's Cancel must not answer to the press that
 // put it on screen.
 //

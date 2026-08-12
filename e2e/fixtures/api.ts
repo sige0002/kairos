@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The orchestrator's HTTP API — used for SECONDARY assertions and for setup.
 //
 // The rule this file exists to keep visible (contract §13): a scenario's

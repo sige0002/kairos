@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Recording integrity: what the in-recorder cache dropped, and how to file it.
 
 Split out of :mod:`rosbag2_recorder.recorder` unchanged. These are pure

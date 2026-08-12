@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // How often each thing in the console re-reads itself.
 //
 // These were literals scattered across ~15 files, and the drift was already

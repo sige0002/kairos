@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Shared label chips used by BOTH Review and Datasets, so a recording reads
 // identically at every pipeline step (Console v2 pipeline UX).
 //

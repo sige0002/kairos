@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The BatchMachine return-value contract (what useBatchMachine hands the
 // Collect components), split out of useBatchMachine.ts.
 

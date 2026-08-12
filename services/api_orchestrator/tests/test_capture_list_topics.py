@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The capture list carries a topic COUNT, never the topic array (E-27).
 
 ``topics`` is per-recording data no list row renders, and it dominates the

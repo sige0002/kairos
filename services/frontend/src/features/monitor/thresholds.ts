@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Observed-shortfall status thresholds, as PERCENT, mirroring the backend
 // defaults in topic_monitor/metrics.py (DEFAULT_WARN_SHORTFALL = 0.02,
 // DEFAULT_DANGER_SHORTFALL = 0.05). Used to draw the 2% / 5% reference lines on

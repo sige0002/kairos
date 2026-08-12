@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Settings > Validation — CONFIGURE validation, don't run it. Two things:
 //   - pick the active robot's validation template + validators option (the same
 //     POST /api/v1/config/select aspect pattern the Robots section uses), and

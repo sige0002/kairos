@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Left column: the logical datasets (§6). One row per dataset — a name, the
 // operator/task it was created under, and an honest one-line aggregate over its
 // members. There is no tree here any more because there is nothing to nest: a

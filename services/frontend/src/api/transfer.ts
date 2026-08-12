@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The robot->PC pull channel (split deploy).
 //
 // The importer sidecar answers its healthz ONLY on a split recording-PC

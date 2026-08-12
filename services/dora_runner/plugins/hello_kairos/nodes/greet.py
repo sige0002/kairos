@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """greet node: turn the input params into a kairos greeting summary.
 
 Template plugin (see docs/specs/ja/dora_plugins.md). Dual-mode, like every

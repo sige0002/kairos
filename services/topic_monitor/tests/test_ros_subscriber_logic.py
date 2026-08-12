@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 def test_resolve_qos_floors_at_configured_monitor_depth():
     from kairos_common import RecordingConfig
     from topic_monitor.ros_subscriber import RosTopicSubscriber

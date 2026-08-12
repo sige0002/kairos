@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Reconciling the store at boot: captures a previous process left mid-flight.
 
 Split out of :mod:`rosbag2_recorder.recorder` unchanged. Everything here runs

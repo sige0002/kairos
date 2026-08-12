@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Validation screen (v2 IA). The pipeline list, the schema-driven params form,
 // job submission/poll, the generic result renderer, the bespoke fast_validation
 // checklist and the one-click presets are all real, reusing

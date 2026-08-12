@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // What to do with a take the operator backed out of while it was still arming
 // (#8).
 //

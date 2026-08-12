@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Stop-time quick-check: the MCAP summary read, the layer builders, the verdict.
 
 Everything here is pure — no monitor, no recorder, no disk beyond a tiny MCAP

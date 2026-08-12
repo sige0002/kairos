@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """E-4: two datasets that want the same folder must not freeze ``views/``.
 
 The generated tree is ``<operator>/<task>/<dataset>/<NNN>`` (§6) and nothing in

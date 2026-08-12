@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Generic, backend-driven result view. Renders ANY pipeline's summary.json
 // without knowing its shape, so a plugin author never edits the UI to surface a
 // new pipeline's output (see docs/specs/ja/dora_plugins.md §「UI 非依存の契約」).

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The recording session manager: one ``ros2 bag record`` subprocess at a time.
 
 This is the recorder's core. It owns a single recording session (1 container =

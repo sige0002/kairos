@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The job contract: a capture_id names the source, the outputs and the row.
 
 Contract §10.5. These are the assertions that stop the run_id-keyed layout from

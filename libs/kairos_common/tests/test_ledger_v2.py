@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """lifecycle.jsonl v2: what may be written, what reads back, and the ENOSPC exit."""
 
 from __future__ import annotations

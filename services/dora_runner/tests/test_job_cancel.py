@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Job cancellation semantics.
 
 BUG-D: a cancelled job's state must not be clobbered by the worker — it

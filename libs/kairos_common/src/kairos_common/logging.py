@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """JSON-lines logging setup shared by all kairos services.
 
 Logs are emitted as one JSON object per line so they aggregate cleanly. Per

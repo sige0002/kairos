@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """loss_report pipeline tests.
 
 ``estimate_topic_loss`` is pure (operates on a list of message times), so the

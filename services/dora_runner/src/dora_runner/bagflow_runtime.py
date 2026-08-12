@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Running bagflow flows: a private dora stack, one subprocess per job, cleanup.
 
 dora is a real runtime here (not the in-process interpreter): a job shells out to

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Collect's ContextBar pickers vs a live recording — Robot, Project and Task.
 //
 // Settings > Robots takes a careful path for this: it confirms, stops the

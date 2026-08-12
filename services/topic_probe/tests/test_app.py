@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """App-level tests: the FastAPI app boots and serves WITHOUT rclpy installed.
 
 Proves the lazy-import guard — importing ``topic_probe.main`` and serving the

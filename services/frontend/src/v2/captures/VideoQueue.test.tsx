@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Camera previews submit in PARALLEL — all of a capture's cameras at once.
 //
 // This file used to pin the opposite ("one at a time, never two in flight"),

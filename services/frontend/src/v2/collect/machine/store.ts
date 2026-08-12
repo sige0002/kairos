@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Module-level external store for the batch machine (state that must survive
 // the Collect screen's unmount on a tab switch), plus its localStorage
 // persistence and the Phase 2 server restore. Split out of useBatchMachine.ts.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // "Data integrity" section of the Review detail (RunInspection). Runs the dora
 // `signal_report` pipeline (per-topic message timing over episode time) and
 // answers the reviewer's actual question — is this episode's data whole? — with

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Scan the active robot's LeRobot profile library and report what it holds.
 
 A profile is a rosbag2lerobot robot config YAML under

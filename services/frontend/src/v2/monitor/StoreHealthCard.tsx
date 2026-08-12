@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Monitor > Store — what the catalog knows about ITSELF (contract §8 / §9-3).
 //
 // This panel exists because the store's two worst conditions are invisible in an

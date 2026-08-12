@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Archive the WHOLE selected dataset to an allow-listed path (§6.x) — the
 // dataset's terminal transition, and the only control on the screen that both
 // moves data off this machine and freezes what it leaves behind:

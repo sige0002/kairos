@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Edit a dataset's three labels (§6). Identity is dataset_id, so a rename
 // changes what the dataset is CALLED, never what it IS: same members, same
 // numbers, same history. The views/ tree follows server-side — the labels are

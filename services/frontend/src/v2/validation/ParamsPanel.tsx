@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Params column (inner-left, 300px): the REAL schema-driven PipelineForm and
 // capture picker, submitting an actual /jobs POST, plus the real one-click
 // presets (GET /validation/presets) — each runs its pipeline over exactly the

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Local state for the Datasets tab.
 //
 // A dataset is rows plus ledger events (§6): creating one writes a row, adding

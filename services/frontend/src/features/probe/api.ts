@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Tiny same-origin client for the topic_probe service. The probe endpoints live
 // under /probe/ (nginx reverse-proxies to the topic_probe container; the Vite dev
 // server proxies it too), which is NOT under the orchestrator's /api/v1 base — so

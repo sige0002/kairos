@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Request/response models and the run state enum for rosbag2_recorder.
 
 The shapes here are the recorder's *internal* API (called by ``api_orchestrator``,

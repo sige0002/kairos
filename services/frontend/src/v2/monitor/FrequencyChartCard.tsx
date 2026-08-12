@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // One chart PANEL for the Monitor Topics view: the panel's selected topics'
 // chosen metric over time, OVERLAID as distinct series on the shared uPlot
 // infrastructure (src/features/probe/UplotChart.tsx — NEVER rewritten; its

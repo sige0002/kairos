@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Alert engine: incident firing + cooldown / clear_after hysteresis,
 cleared-state retention, and the default DANGER incident (D-9 ③)."""
 

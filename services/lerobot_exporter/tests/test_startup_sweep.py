@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Startup removes leftover staging, and removal never reaches recorded bytes."""
 
 from __future__ import annotations

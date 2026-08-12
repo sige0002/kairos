@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """lifecycle.jsonl v2: the append-only record of what was destroyed or declared.
 
 Contract §5. One JSON object per line at ``<data_dir>/lifecycle.jsonl``, newest

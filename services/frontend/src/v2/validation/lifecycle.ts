@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Pipeline lifecycle (Standard / Candidate / Experimental / Draft) is a
 // Phase 2 backend concept (docs/specs/ja/dora_plugins.md has no lifecycle
 // field on PipelineInfo yet). Until the orchestrator reports one, the rail

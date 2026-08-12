@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Review tab (v2 IA) — the take-review workflow (adopt / keep in review /
 // exclude) over captures, plus the two REMOVAL intents of §7, which are
 // deliberately separate controls with separate dialogs: Exclude is a reversible

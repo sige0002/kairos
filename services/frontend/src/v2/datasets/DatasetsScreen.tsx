@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Datasets tab. Root mirrors the design mock's 270px / 1fr / 330px three-column
 // grid: the LEFT column lists the logical datasets (§6) with a search, a sort
 // and the member facets; the CENTER column lists the selected dataset's members

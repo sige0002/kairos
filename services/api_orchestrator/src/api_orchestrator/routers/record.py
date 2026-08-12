@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Recording control endpoints (``/api/v1/record/*``).
 
 ``prepare``, ``start``, and ``stop`` drive the capture lifecycle through the

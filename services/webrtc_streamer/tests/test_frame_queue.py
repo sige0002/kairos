@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """LatestFrame: latest-frame-wins drop-old behaviour + close semantics."""
 
 from __future__ import annotations

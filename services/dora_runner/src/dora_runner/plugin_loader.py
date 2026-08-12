@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Plugin discovery + a generic dataflow runner (see docs/specs/ja/dora_plugins.md).
 
 A plugin is a directory under ``KAIROS_PLUGINS_DIR`` (default

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // A failure the operator has to acknowledge, rather than one that fades.
 //
 // errors.ts sorts readings into two severities, and the difference is not

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The capture lease (contract §7.1), read for the UI.
 //
 // A job takes the lease before touching `objects/<capture_id>`, and while it is

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Collect screen: the operator's recording console. Batch/episode/phase state
 // is a frontend-local machine (useBatchMachine) — the backend has no
 // Session/Batch/Episode model yet (Phase 2). Start/Stop are real orchestrator

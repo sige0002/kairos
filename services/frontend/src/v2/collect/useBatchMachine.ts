@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Collect screen state machine: batch -> episode -> phase. The batch grouping
 // and the per-take flow are frontend-local; everything that touches data is
 // real. startRecording()/stopRecording() call the orchestrator's /record/start

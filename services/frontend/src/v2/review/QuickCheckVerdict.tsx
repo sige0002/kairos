@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Quick-check verdict for the Review detail: the "why is this needs_review"
 // answer surfaced inline, so nobody has to open the JSON sidecar to learn it
 // (persona OP2's friction). Renders NOTHING when the run has no quick_check

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Bringing bytes in: bag import, arrival adoption, and the auto-pull (§10.6).
 
 Everything arriving from outside lands in ``.incoming/<capture_id>`` and is

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Build the converter's input tree without copying (or touching) a byte.
 
 An export stages ``exports/.staging/<export_id>/<dir>/`` as a REAL directory

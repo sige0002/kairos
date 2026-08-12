@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """rosbag2_recorder service entry point (Stage 1).
 
 ROS 2 topics -> MCAP, the canonical recording path. This module wires the

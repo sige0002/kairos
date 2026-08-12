@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """lerobot_exporter: dataset -> LeRobot v3 conversion service for kairos.
 
 The service is resident (a member of the compose stack, idle at rest) and runs

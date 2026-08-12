@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 import { beforeEach, expect, test } from 'vitest';
 import { useUiStore } from './uiStore';
 

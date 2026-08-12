@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 import { fireEvent, screen, within } from '@testing-library/react';
 import { expect, test } from 'vitest';
 import { queryKeys } from '../../api/queryKeys';

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Collect's context pickers (project / task / condition) and the set-rollover
 // rule, extracted from useBatchMachine.ts: a context change once the current
 // set already holds a recording closes that set and opens a fresh one; a set

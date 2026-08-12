@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """``GET /api/v1/batches/coverage`` — per-condition totals aggregated in SQL.
 
 Collect's Coverage card used to fetch every batch and add them up in the

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Module-level store for the Collect screen's camera panes — the operator's
 // per-session choices (which cameras are open, which is the main tile, and each
 // tile's resolution) that must survive a tab-switch unmount. The Collect screen

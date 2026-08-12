@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Shared post-hoc inspection pieces for a capture's content: JSON sidecar
 // blocks, the loss_report table, and the on-demand video_check mp4 players.
 //

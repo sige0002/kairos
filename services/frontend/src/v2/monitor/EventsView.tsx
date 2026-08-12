@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Monitor > Events — the full-page incident view (§11). Same source as the
 // right-rail EventsCard (the SSE-populated alert buffer, queryKeys.alerts) but
 // folded into one row per (topic, metric) with the current value + firing/cleared

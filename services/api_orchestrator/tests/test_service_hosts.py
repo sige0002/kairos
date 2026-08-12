@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Downstream service hosts are configurable for the robot-edge split.
 
 The orchestrator reaches the recorder/monitor/streamer/dora over HTTP. In the

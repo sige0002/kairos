@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Pre-arm engine (two-phase start), extracted from useBatchMachine.ts.
 // While the operator sits ready-to-record, keep the recorder ARMED — a
 // standing /record/prepare, kept alive by matching re-prepares shortly before

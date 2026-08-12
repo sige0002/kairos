@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Aggregated integrity timeline for the Review "Data integrity" section: ONE
 // lane on the episode-global axis directly under the synced video, acting as an
 // annotated scrubber. Each bin is the WORST condition across every topic at

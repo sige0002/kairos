@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Bottom-right episode strip: N / target counter + a horizontally scrollable
 // row of `targetEpisodes` chips (done / review / fail / current / future) +
 // running totals. The chip count follows the batch's own target (editable via

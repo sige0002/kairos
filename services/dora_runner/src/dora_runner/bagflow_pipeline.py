@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Running one bagflow flow for one job — the machinery both gates share.
 
 ``fast_validation`` and ``full_validation`` are the same act with different

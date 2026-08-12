@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Recording-config editing pieces for v2 Settings (moved here from the v1-era
 // features/config/ConfigTab.tsx once nothing v1 was left in it). Exports:
 // RecordingConfigEditor — editable JSON for the ACTIVE robot's RECORDING_CONFIG

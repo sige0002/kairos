@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """UUIDv7 identifiers: globally unique, and sortable by when they were minted.
 
 Every durable v2 identity (capture_id, event_id, membership_id, dataset_id) is a

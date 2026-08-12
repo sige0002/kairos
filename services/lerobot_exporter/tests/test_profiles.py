@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """``GET /profiles``: the robot's profile library, and what it says without
 a validator."""
 

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Topics sub-view (the mock's own scope, §11): chart PANELS + topics table on the
 // left, Events + System on the right. Restores the v1 Graph tab's add/remove-panel
 // model — each panel is one metric × its own overlaid topic set — in the v2 skin.

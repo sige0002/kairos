@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Logical datasets (§6): membership rows, retired numbers, generated views.
 
 A dataset no longer moves anything on disk. Two properties carry the weight:

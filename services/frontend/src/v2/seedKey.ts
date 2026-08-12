@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The key that answers "did the CONFIG behind this selection change?" for the
 // seed-once/re-seed-on-robot-switch stores (uiStore.seedRecordTopics,
 // cameraStore.seedCameraPanes). Those stores re-seed — discarding whatever the

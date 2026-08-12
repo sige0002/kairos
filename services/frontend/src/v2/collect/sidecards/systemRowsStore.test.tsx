@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The store's lifecycle, which nothing else pins: the two cards agree only for
 // as long as publish/clear behave, and StrictMode (on in the app, off in RTL by
 // default) drives a mount → unmount → mount that passes through an EMPTY store

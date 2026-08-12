@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // E-32: the terminal's wall clock is not a stopwatch.
 //
 // A recording console runs for hours on a machine that may be stepped by NTP at

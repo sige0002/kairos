@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The aiortc seam: SDP offer/answer + per-client PeerConnection lifecycle.
 
 One stream shares a single frame source (latest-frame-wins) across clients, but

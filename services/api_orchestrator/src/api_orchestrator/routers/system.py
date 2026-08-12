@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Host system info (``GET /api/v1/system``): CPU + GPU + utilization + disk.
 
 Read-only, non-intrusive operator context for the UI header and the Monitor /

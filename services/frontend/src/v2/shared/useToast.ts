@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 export const TOAST_MS = 2400;

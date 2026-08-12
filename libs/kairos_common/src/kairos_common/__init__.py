@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Shared settings, config loader, and FastAPI helpers for kairos services.
 
 This package holds the plumbing every service shares (infrastructure settings,

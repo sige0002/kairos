@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """E-7: two tabs in one batch must not both get episode #1.
 
 ``index_in_batch`` is what the strip chip, the Review row and every

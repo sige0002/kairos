@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // COMPLETED: the set hit its target. Same summary and same next-set control as
 // ENDED, in the one green frame the screen ever shows.
 

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Submission is unbounded; execution is not.
 
 Acceptance never blocks — an operator queueing three datasets should not have to

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Startup rebuild (§8): the catalog reconstructed from what is on disk.
 
 ``kairos.db`` is an index, not the truth. Deleting it and restarting must bring

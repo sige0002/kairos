@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The generated ``views/`` tree: a browsable shape over logical datasets.
 
 Contract §6. Datasets are rows plus ledger events; nothing is moved on disk. But

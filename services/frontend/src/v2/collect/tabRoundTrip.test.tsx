@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // E-28, the Collect half: what a tab round-trip does to a LIVE take.
 //
 // The shell unmounts the screen on a tab switch and mounts a fresh one on the

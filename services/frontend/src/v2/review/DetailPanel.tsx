@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Detail column: selected capture header, the REAL inspection (detail rows,
 // video_check, loss_report, fast_validation, JSON sidecars —
 // CaptureInspection.tsx), the quality/task edits, the adopt/keep/exclude

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // PAUSED: the set is held. Nothing is at risk, and the card says so before it
 // offers the way back.
 

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """SQLite capture store v2 — the queryable cache in front of the sidecars.
 
 Contract §8. The v1 store treated ``kairos.db`` as the source of truth and the

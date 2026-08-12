@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Smoke tests: health endpoints, root, and the render-gate config endpoint.
 
 Uses the wired app fixture (in-memory store + fake recorder) so importing the

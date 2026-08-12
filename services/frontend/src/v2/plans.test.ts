@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { jsonResponse } from '../test/renderWithClient';
 import {

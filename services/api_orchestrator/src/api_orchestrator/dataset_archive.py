@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The dataset archive run (§6.x): freeze, copy out one member at a time, seal.
 
 The terminal transition for a dataset. ``POST /datasets/{id}/archive`` runs the

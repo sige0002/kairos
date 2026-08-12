@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Review screen state: fetches captures, maps them to rows (mapCaptures.ts),
 // and drives the operator's decisions back to the server.
 //

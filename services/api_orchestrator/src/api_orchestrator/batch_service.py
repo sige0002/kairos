@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Collect batches: database rows plus ledger events (§8).
 
 A batch's row used to be the only record it ever existed. It has no sidecar —

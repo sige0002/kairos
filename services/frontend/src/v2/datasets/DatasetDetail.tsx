@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The selected member's capture — rendered BELOW the member table inside the
 // center column. Real capture fields (`GET /api/v1/captures/{id}`): messages,
 // size, topics, the label chips, and the reused inspection (loss report / video

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Right column: building the selected dataset by adding captures to it.
 //
 // This is the whole of "assembling a training set" under §6 — a membership row

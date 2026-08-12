@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Capture-level operations: review, delete, archive, and the resume paths.
 
 Contract §4.1 (review), §6 (archive), §7 (delete). Each of the three writes to

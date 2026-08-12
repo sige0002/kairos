@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The recording lifecycle under v2: prepare, start, stop, status.
 
 The shape of ``/api/v1/record/*`` is unchanged from v1 (§10) — what is new is

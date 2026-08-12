@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Real per-capture inspection for the Review detail panel: fetches
 // GET /captures/{id} and surfaces the recording facts (operator/task/timestamps/
 // duration/message-count/size/topics), the on-demand video_check players, the

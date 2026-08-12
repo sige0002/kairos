@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Settings > Projects & tasks (the mock's "Plans" section) — projects list
 // (middle column) + selected project's tasks/conditions editor (right
 // column). Edits funnel through the SHARED plans store (src/v2/plans.ts):

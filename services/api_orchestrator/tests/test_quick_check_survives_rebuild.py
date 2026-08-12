@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """E-17(B): the stop-time verdict must survive "delete kairos.db and restart".
 
 §8's central promise is that the database is an index: throw it away, restart,

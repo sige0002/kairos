@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Feature-local types + helpers for the single-file config aspect editor
 // Settings > Data quality drives: topic_monitor alert rules
 // (GET/PUT /api/v1/config/alerts). Kept here (not in api/types.ts) because

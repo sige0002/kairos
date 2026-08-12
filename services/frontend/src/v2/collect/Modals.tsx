@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Collect-scoped modals (End batch early / Report issue / Change condition)
 // plus the toast. Rendered at the screen level per the design mock's MODALS
 // section. ("Set" is the operator-facing name for a batch.)

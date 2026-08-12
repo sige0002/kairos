@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 import { render, screen } from '@testing-library/react';
 import { afterEach, expect, test, vi } from 'vitest';
 import { useUiStore } from '../../store/uiStore';

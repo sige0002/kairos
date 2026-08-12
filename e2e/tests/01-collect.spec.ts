@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Contract §13, scenario 1 — Collect.
 //
 //   record → stop → the capture appears in the UI → digest_state pending →

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Thin typed fetch wrapper around the api_orchestrator REST API. We keep this
 // dependency-light (native fetch) and surface the shared error envelope.
 

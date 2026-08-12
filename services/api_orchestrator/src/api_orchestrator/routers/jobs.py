@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Pipeline job endpoints (``/api/v1/jobs``).
 
 Keyed by ``capture_id`` (§10.5): a job resolves its source as

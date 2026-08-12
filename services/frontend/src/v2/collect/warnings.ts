@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Pure mapping for the Collect "Active warnings" card and the System status
 // "Topic rates" row — both sourced from REAL live data (the SSE alert buffer +
 // the monitor's metrics snapshot), never fabricated (honesty rule).

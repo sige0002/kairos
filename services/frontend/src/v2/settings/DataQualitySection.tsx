@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Settings > Data quality — what "good" and "important" mean for the active
 // robot. The top card is a READ-ONLY view sourced from GET /api/v1/config/robots/
 // {robot} (RobotConfig): expected-Hz reference rates + the monitor's shortfall

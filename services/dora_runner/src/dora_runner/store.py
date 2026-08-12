@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Persistent job and validation-template state for dora_runner.
 
 The store is SQLite-backed so job/template state survives a process restart

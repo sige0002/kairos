@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The server-batch lifecycle, extracted from useBatchMachine.ts: lazy batch
 // creation (ensureBatch) and the once-per-page-load reconcile of the durable
 // local batch context against the server's active batch (Phase 2 restore,

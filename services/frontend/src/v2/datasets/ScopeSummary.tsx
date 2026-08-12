@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Bottom-pane SUMMARY view: an overview of the current scope, shown whenever no
 // member is selected. Scope = the selected dataset, else every member of every
 // dataset in the list. Everything is computed from real capture fields (see

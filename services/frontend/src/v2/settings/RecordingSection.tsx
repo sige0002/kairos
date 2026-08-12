@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Settings > Recording — a form-FIRST view of the ACTIVE robot's recording
 // config (GET /api/v1/config/recording), with the raw-JSON editor demoted to an
 // "Advanced" disclosure (spec §12: JSON is Advanced). Everything shown is read

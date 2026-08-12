@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The store on disk: object_manifest.json, record.json, lifecycle.jsonl.
 //
 // These are the sidecar truths §13 asks each scenario to corroborate — the
