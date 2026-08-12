@@ -59,7 +59,13 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
   const saveRef = useRef<HTMLButtonElement>(null);
   const failReasonRef = useRef<HTMLButtonElement>(null);
   const takeoverStopRef = useRef<HTMLButtonElement>(null);
+  const armingTitleRef = useRef<HTMLSpanElement>(null);
   const hasTakeover = !!takeover;
+  // ARMING's Cancel is guarded for its first moments (#8). The flag is the
+  // machine's, not this card's, because the Escape shortcut reaches
+  // `cancelArming` without passing the button.
+  const cancelArmed = machine.canCancelArming;
+
   useEffect(() => {
     if (hasTakeover) {
       takeoverStopRef.current?.focus();
@@ -70,7 +76,13 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
         startRef.current?.focus();
         break;
       case 'arming':
-        cancelRef.current?.focus();
+        // Cancel is disabled for the guard window, and focus() on a disabled
+        // button is a no-op — which left focus on <body> for the whole of a
+        // fast pre-armed start (~16ms), where ARMING can come and go without
+        // the guard ever opening. The title holds focus until the button can
+        // take it.
+        if (cancelArmed) cancelRef.current?.focus();
+        else armingTitleRef.current?.focus();
         break;
       case 'recording':
         stopRef.current?.focus();
@@ -90,7 +102,9 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
     // without re-running when Stop becomes enabled focus stayed on <body> for
     // the WHOLE take. (Second effect-dependency bug of this shape: the logic was
     // right and the deps made it read a stale world.)
-  }, [phase, machine.pendingTask, hasTakeover, machine.canStop]);
+    //
+    // `cancelArmed` is here for exactly the same reason, one phase earlier.
+  }, [phase, machine.pendingTask, hasTakeover, machine.canStop, cancelArmed]);
 
   // Quality override expander (D-2): collapsed by default; opening it reveals the
   // three chips. Auto-open once the operator has already overridden.
@@ -107,7 +121,9 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
   }
 
   if (phase === 'arming') {
-    return <ArmingCard machine={machine} cancelRef={cancelRef} />;
+    return (
+      <ArmingCard machine={machine} cancelRef={cancelRef} titleRef={armingTitleRef} />
+    );
   }
 
   if (phase === 'recording') {

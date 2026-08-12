@@ -48,6 +48,8 @@ import {
 } from '../../api/types';
 import { useToast } from '../shared/useToast';
 import { confirmRecorderStopped } from '../captures/stopConfirm';
+import { useCancelledStartCleanup } from './hooks/useCancelledStartCleanup';
+import { useActivationGuard } from './hooks/useActivationGuard';
 
 // Public surface: everything Collect (and the tests) imported from this module
 // before the machine/ split keeps resolving here.
@@ -67,6 +69,7 @@ export {
 export * from './machine/contract';
 
 import {
+  ARMING_CANCEL_GUARD_MS,
   COLLECT_DISCARD_REASON,
   COLLECT_UNSAVED_DISCARD_REASON,
   RETAKE_DISCARD_REASON,
@@ -396,6 +399,9 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   // arming/recording, so a start that lands late — or a stop that fails — is
   // reconciled instead of leaving an orphaned recorder session running.
   const cancelledStartRef = useRef(false);
+  // …and what to do about it once the start lands: stop, then discard, in that
+  // order (hooks/useCancelledStartCleanup.ts, #8).
+  const cancelledStart = useCancelledStartCleanup({ onToast: showToast });
   // Synchronous double-start guard. The phase check inside startRecording reads
   // the CLOSURE's `state.phase`, which does not update until the next render —
   // so two clicks (or two keypresses) landing in the same tick both saw
@@ -411,10 +417,11 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
       if (cancelledStartRef.current) {
         cancelledStartRef.current = false;
         // The operator already backed out locally. If the recorder actually
-        // started server-side despite that, stop it now (best-effort) so it
-        // doesn't keep running unnoticed.
+        // started server-side despite that, stop it so it doesn't keep running
+        // unnoticed — AND discard the sub-second bag it wrote, which otherwise
+        // survives the cancel as a take nobody meant to make (#8).
         if (capture && capture.state !== 'failed') {
-          void stopRecord().catch(() => {});
+          void cancelledStart.reconcile(capture.capture_id ?? null);
         }
         return;
       }
@@ -436,6 +443,17 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     onError: (err) => {
       if (cancelledStartRef.current) {
         cancelledStartRef.current = false;
+        // No cleanup here, deliberately. A transport failure means we never
+        // learned a capture_id, so the only way to name a target would be to
+        // read whatever is live off /record/status — and a live capture we
+        // cannot attribute may be another driver's take (D-1), which the
+        // cleanup path is careful NOT to touch for the same reason. Stopping
+        // and discarding on a guess trades an orphan for somebody else's lost
+        // recording, which is the worse of the two.
+        //
+        // It does not go unseen: the machine is back at `ready`, so a recorder
+        // that did start surfaces on the takeover card, and once stopped, on
+        // the unsaved-take banner. Tracked on #8 rather than closed with it.
         return;
       }
       dispatch({ type: 'START_FAILED', error: toMachineError(err) });
@@ -512,11 +530,24 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     ensureBatch,
   ]);
 
+  // The arming Cancel ignores its first moments on screen (#8): it lands where
+  // Start was, so the second press of a double-click used to back out of the
+  // take the first press began. Kept in the machine rather than on the card
+  // because the Escape shortcut reaches `cancelArming` without going near the
+  // button — the same reason `canStop` lives here.
+  const canCancelArming = useActivationGuard(
+    state.phase === 'arming',
+    ARMING_CANCEL_GUARD_MS,
+  );
+
   const cancelArming = useCallback(() => {
     if (state.phase !== 'arming') return;
+    // Guarded here as well as on the control, so Escape cannot walk around the
+    // button's disabled state.
+    if (!canCancelArming) return;
     cancelledStartRef.current = true;
     dispatch({ type: 'CANCEL_ARMING' });
-  }, [state.phase]);
+  }, [state.phase, canCancelArming]);
 
   // ---- take clock + lifecycle gates (E-28 / E-32 / B1) ---------------------
   // The monotonic baseline, Stop floor, frozen elapsed timer, B1 recovery,
@@ -909,7 +940,9 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     if (!state.endReason) return;
     if (state.phase === 'arming') {
       // A start may still land after we've moved on — treat it like a manual
-      // cancel so it gets auto-stopped instead of orphaned.
+      // cancel, so it gets stopped and discarded instead of orphaned. Ending
+      // the set is as much a "never mind" as Cancel is; the take it would leave
+      // behind is the same sub-second one.
       cancelledStartRef.current = true;
     } else if (
       state.phase === 'recording' ||
@@ -1212,6 +1245,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
 
     startRecording,
     cancelArming,
+    canCancelArming,
     stopRecording,
     canStop,
     stopBlockedReason,
