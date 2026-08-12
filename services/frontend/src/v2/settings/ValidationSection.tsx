@@ -58,9 +58,9 @@ export function ValidationSection() {
   return (
     <Card className="flex min-w-0 flex-col gap-5 overflow-auto p-[18px] lg:col-span-2" data-testid="settings-validation">
       <div className="flex items-center gap-2.5">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           Validation
-        </span>
+        </h2>
         {data && (
           <span className="font-mono text-[13px] font-semibold text-gray-900">{data.active_robot}</span>
         )}

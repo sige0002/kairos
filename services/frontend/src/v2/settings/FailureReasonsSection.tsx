@@ -19,9 +19,9 @@ export function FailureReasonsSection({ settings }: { settings: SettingsState })
       data-testid="settings-fail-reasons"
     >
       <div className="flex flex-col gap-1 border-b border-gray-100 px-4 py-[13px]">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           Failure reasons
-        </span>
+        </h2>
         <span className="text-[12px] leading-relaxed text-gray-500">
           The options Collect offers when an episode is marked Failure. Shared
           with every terminal (saved with the plan catalog). Edits apply to

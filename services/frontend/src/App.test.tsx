@@ -101,6 +101,29 @@ test('clicking a tab switches the active panel', async () => {
   );
 });
 
+// #14 — heading structure. The console had no h1 or h2 anywhere in the shell,
+// so a screen-reader user could not navigate it by heading at all. This covers
+// the SHELL's half of the fix — that the mounted screen titles the document
+// and that switching tabs retitles it. Each screen's own outline is asserted in
+// its own test file (src/test/headingOutline.ts).
+test('the mounted screen titles the document, and switching tabs retitles it', async () => {
+  renderWithClient(<App />);
+  await waitFor(() => screen.getByRole('tab', { name: 'Collect' }));
+
+  // One h1, naming where you are. Exactly one because the shell mounts a single
+  // screen at a time — a second would mean two screens are alive at once.
+  const h1s = await screen.findAllByRole('heading', { level: 1 });
+  expect(h1s).toHaveLength(1);
+  expect(h1s[0]).toHaveTextContent('Collect');
+
+  fireEvent.click(screen.getByRole('tab', { name: 'Review' }));
+  await waitFor(() => {
+    const next = screen.getAllByRole('heading', { level: 1 });
+    expect(next).toHaveLength(1);
+    expect(next[0]).toHaveTextContent('Review');
+  });
+}, 20000);
+
 // E-28. The browser can change the URL underneath a running SPA — Back,
 // Forward, a session restore, a bfcache resume — and until this was handled the
 // console kept rendering the tab its store held while its own URL named a
@@ -211,7 +234,11 @@ test('a legacy solo deep link (?tab=probe&solo=1) redirects and rewrites the URL
   await waitFor(() =>
     expect(screen.queryByText(/Loading kairos/i)).not.toBeInTheDocument(),
   );
-  expect(screen.getByText('Monitor')).toBeInTheDocument();
+  // The screen's own h1 (#14). "Monitor" is now on screen twice — the solo
+  // header's label and this heading — so the assertion names which one it
+  // means, and in doing so proves the redirect landed on the Monitor SCREEN
+  // rather than merely rewriting the URL.
+  expect(screen.getByRole('heading', { level: 1, name: 'Monitor' })).toBeInTheDocument();
   expect(window.location.search).toMatch(/tab=monitor/);
   expect(window.location.search).toMatch(/solo=1/);
 });
@@ -304,6 +331,24 @@ test('a screen that throws costs the panel, not the console — and the tab bar 
   );
   expect(screen.getByTestId('panel-error')).toBeInTheDocument();
   expect(screen.getByTestId('panel-error')).toHaveTextContent(/malformed payload/);
+});
+
+// #14. The fallback REPLACES the screen, so the screen's own ScreenTitle h1
+// unmounts with it. Titling the fallback h2 would leave the document with no h1
+// at all — the precise gap the heading sweep closed — for the one state where a
+// screen-reader user most needs to know what they are looking at.
+test('a panel that has thrown still titles the document', () => {
+  const Boom = () => {
+    throw new Error('malformed payload reached render');
+  };
+  render(
+    <PanelBoundary resetKey="monitor">
+      <Boom />
+    </PanelBoundary>,
+  );
+  const h1s = screen.getAllByRole('heading', { level: 1 });
+  expect(h1s).toHaveLength(1);
+  expect(h1s[0]).toHaveTextContent('This screen stopped rendering');
 });
 
 test('switching tabs clears a panel that had thrown, with no reload', () => {

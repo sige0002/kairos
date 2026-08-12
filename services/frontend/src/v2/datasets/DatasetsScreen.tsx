@@ -21,6 +21,7 @@ import { DatasetCenter } from './DatasetCenter';
 import { DatasetList } from './DatasetList';
 import { Toast } from '../shared/Toast';
 import { useDatasetsState } from './useDatasetsState';
+import { ScreenTitle } from '../shared/ScreenTitle';
 
 export function DatasetsScreen() {
   const state = useDatasetsState();
@@ -31,6 +32,7 @@ export function DatasetsScreen() {
   // older datasets. Columns scroll internally.
   return (
     <div className="grid grid-cols-1 gap-2.5 lg:h-full lg:min-h-0 lg:grid-cols-[270px_1fr_330px] lg:grid-rows-[minmax(0,1fr)]">
+      <ScreenTitle>Datasets</ScreenTitle>
       <DatasetList state={state} />
       <DatasetCenter state={state} />
       <BuildRail state={state} />

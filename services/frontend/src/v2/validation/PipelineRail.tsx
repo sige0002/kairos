@@ -19,9 +19,9 @@ export function PipelineRail({
   return (
     <Card className="flex min-h-0 flex-col overflow-auto">
       <div className="flex items-center gap-2.5 border-b border-gray-100 px-4 py-[13px]">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           Pipelines
-        </span>
+        </h2>
         <div className="flex-1" />
         <button
           type="button"

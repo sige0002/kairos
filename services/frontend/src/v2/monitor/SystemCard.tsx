@@ -73,7 +73,7 @@ export function SystemCard() {
 
   return (
     <Card className="flex shrink-0 flex-col gap-2.5 px-4 py-3.5">
-      <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">System</span>
+      <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">System</h2>
       <InfoRow label="CPU" value={cpuValue} />
       {cpuPercent != null && <Meter label="CPU load" percent={cpuPercent} testId="cpu-load" />}
       <InfoRow label="GPU" value={gpuValue} />

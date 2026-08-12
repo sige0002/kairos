@@ -17,9 +17,9 @@ export function PausedCard({ machine }: { machine: BatchMachine }) {
     >
       <div className="flex items-center gap-2">
         <span className="h-[9px] w-[9px] rounded-sm bg-gray-400" />
-        <span data-testid="phase-title" className="text-[17px] font-bold text-gray-500">
+        <h2 data-testid="phase-title" className="text-[17px] font-bold text-gray-500">
           PAUSED
-        </span>
+        </h2>
       </div>
       <span className="text-[12.5px] text-gray-500">
         Set is paused. Recorded episodes are safe.

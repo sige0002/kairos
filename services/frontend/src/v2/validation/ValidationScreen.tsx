@@ -63,6 +63,7 @@ import {
   type SubmitFailure,
 } from './runStore';
 import { useToast } from '../shared/useToast';
+import { ScreenTitle } from '../shared/ScreenTitle';
 
 const EMPTY_SCHEMA: JSONSchema = { type: 'object', properties: {} };
 const FALLBACK_SCHEMA: JSONSchema = {
@@ -529,6 +530,7 @@ export function ValidationScreen() {
   if (!selectedPipeline) {
     return (
       <div className="grid grid-cols-1 gap-2.5 lg:h-full lg:min-h-0 lg:grid-cols-[290px_1fr]">
+        <ScreenTitle>Validation</ScreenTitle>
         <PipelineRail
           pipelines={pipelines}
           selectedIndex={0}
@@ -544,6 +546,7 @@ export function ValidationScreen() {
 
   return (
     <div className="grid grid-cols-1 gap-2.5 lg:h-full lg:min-h-0 lg:grid-cols-[290px_1fr]">
+      <ScreenTitle>Validation</ScreenTitle>
       {active?.jobs.map((job) => (
         <JobProbe key={job.job_id} job={job} onUpdate={recordJobUpdate} />
       ))}

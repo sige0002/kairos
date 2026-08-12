@@ -123,9 +123,9 @@ export function BuildRail({ state }: { state: DatasetsState }) {
   return (
     <div className="flex min-h-0 flex-col overflow-hidden rounded-card border border-gray-200 bg-white shadow-card">
       <div className="shrink-0 border-b border-gray-100 px-[18px] py-[13px]">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           Build dataset
-        </span>
+        </h2>
       </div>
 
       <div className="shrink-0 border-b border-gray-100 px-[18px] py-[13px]">
@@ -149,9 +149,9 @@ export function BuildRail({ state }: { state: DatasetsState }) {
       </div>
 
       <div className="flex shrink-0 flex-col gap-2 border-b border-gray-100 px-[18px] py-[11px]">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           Recordings
-        </span>
+        </h3>
         <input
           type="search"
           data-testid="dataset-candidate-search"

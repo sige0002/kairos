@@ -15,6 +15,7 @@ import {
   __resetCaptureArchivePollMs,
   __setCaptureArchivePollMs,
 } from './useDatasetsState';
+import { expectScreenHeadingOutline } from '../../test/headingOutline';
 
 // ---- a fake capture-store, honest about the rules the real one enforces ----
 //
@@ -1888,3 +1889,11 @@ test('a failed loss run does not follow the operator to the next member', async 
   expect(screen.queryByTestId('dataset-loss-error-stale')).toBeNull();
   expect(screen.queryByTestId('dataset-loss-error-retry')).toBeNull();
 });
+
+// #14 — heading structure. This screen must title itself exactly once and
+// descend one heading level at a time, so a screen-reader user can navigate it
+// by heading instead of reading it as one flat run of text.
+test('titles itself with a single h1 and skips no heading level', async () => {
+  renderWithClient(<DatasetsScreen />);
+  await expectScreenHeadingOutline('Datasets');
+}, 20000);

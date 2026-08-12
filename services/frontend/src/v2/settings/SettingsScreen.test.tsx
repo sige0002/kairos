@@ -12,6 +12,7 @@ import {
   setPlans,
 } from '../plans';
 import { __resetStopConfirmMs, __setStopConfirmMs } from '../captures/stopConfirm';
+import { expectScreenHeadingOutline } from '../../test/headingOutline';
 
 // Runtime config (GET /api/v1/config): the ACTIVE robot's read-only values that
 // the Robots form surfaces (ROS_DOMAIN_ID + recorded topics).
@@ -1127,3 +1128,11 @@ test('a catalog edit that DOES reach the server raises no such note', async () =
   });
   expect(screen.queryByTestId('plans-unsynced')).not.toBeInTheDocument();
 });
+
+// #14 — heading structure. This screen must title itself exactly once and
+// descend one heading level at a time, so a screen-reader user can navigate it
+// by heading instead of reading it as one flat run of text.
+test('titles itself with a single h1 and skips no heading level', async () => {
+  renderWithClient(<SettingsScreen />);
+  await expectScreenHeadingOutline('Settings');
+}, 20000);

@@ -83,9 +83,9 @@ export function WarningsCard({
           column, and a count pushed off the edge is the same silence this card
           is being fixed for. */}
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           Active warnings
-        </span>
+        </h2>
         <div className="flex-1" />
         {/* The bare "0" is reachable ONLY when there is nothing to report at
             all — neither a warning nor an open check. It is what the all-clear
@@ -170,9 +170,9 @@ export function WarningsCard({
           data-testid="collect-needs-attention"
           className="flex flex-col gap-1.5 rounded-control border border-gray-200 bg-gray-50 px-3 py-2.5"
         >
-          <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+          <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
             System checks ({checks.length})
-          </span>
+          </h3>
           {checks.map((item) => (
             <div
               key={item.label}

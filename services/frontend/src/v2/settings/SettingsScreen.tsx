@@ -31,6 +31,7 @@ import { OtherSection } from './OtherSection';
 import { Toast } from '../shared/Toast';
 import { useSettingsState } from './useSettingsState';
 import { usePlansUnsynced } from '../plans';
+import { ScreenTitle } from '../shared/ScreenTitle';
 
 // Honest rationale for the two sections with nothing to configure yet.
 const PLACEHOLDER_RATIONALE: Record<string, string> = {
@@ -54,6 +55,7 @@ export function SettingsScreen() {
 
   return (
     <div className="grid grid-cols-1 gap-2.5 lg:h-full lg:min-h-0 lg:grid-cols-[216px_250px_1fr]">
+      <ScreenTitle>Settings</ScreenTitle>
       <MenuRail settings={settings} />
       {label === 'Robots' ? (
         <RobotsSection config={config} />

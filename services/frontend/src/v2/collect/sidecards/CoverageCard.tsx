@@ -70,9 +70,9 @@ export function CoverageCard({ machine }: { machine: BatchMachine }) {
       className={cn('flex shrink-0 flex-col gap-1.5', SIDE_PAD)}
       data-testid="coverage-card"
     >
-      <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+      <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
         Coverage — {task}
-      </span>
+      </h2>
       <div className="flex flex-col gap-1">
         {rows.map(([cond, { recorded, isFloor }]) => (
           <div

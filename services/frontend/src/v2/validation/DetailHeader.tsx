@@ -20,7 +20,7 @@ export function DetailHeader({
       data-testid="detail-header"
       className="flex items-center gap-2.5 border-b border-gray-100 px-[18px] py-[13px]"
     >
-      <span className="text-[15px] font-bold text-gray-900">{pipeline.id}</span>
+      <h2 className="text-[15px] font-bold text-gray-900">{pipeline.id}</h2>
       <Badge tone={lifecycleTone(lifecycle)}>{lifecycle.toUpperCase()}</Badge>
       {pipeline.description && (
         <span className="min-w-0 truncate text-xs text-gray-400" title={pipeline.description}>

@@ -27,7 +27,7 @@ export function ReadyCard({
   startRef: React.Ref<HTMLButtonElement>;
   /** Focus target while Start is disabled. A disabled button refuses focus(),
    *  and the phase would otherwise leave it on <body> (D-4). */
-  titleRef: React.Ref<HTMLSpanElement>;
+  titleRef: React.Ref<HTMLHeadingElement>;
 }) {
   const { stats } = machine;
   const blocked = machine.noSelection || machine.operatorMissing;
@@ -41,14 +41,14 @@ export function ReadyCard({
     >
       <div className="flex items-center gap-2">
         <span className="h-[9px] w-[9px] animate-recpulse rounded-sm bg-teal-600" />
-        <span
+        <h2
           ref={titleRef}
           data-testid="phase-title"
           tabIndex={-1}
           className="text-[17px] font-bold text-teal-700 outline-none"
         >
           READY
-        </span>
+        </h2>
         <div className="flex-1" />
         <span className="font-mono text-xs text-gray-500">
           Ep {stats.epNext} / {machine.targetEpisodes}

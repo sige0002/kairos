@@ -143,9 +143,9 @@ export function RobotsSection({ config }: { config: RuntimeConfig | undefined })
     <>
       <Card className="flex flex-col overflow-auto" data-testid="robots-list">
         <div className="border-b border-gray-100 px-4 py-[13px]">
-          <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+          <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
             Robots
-          </span>
+          </h2>
         </div>
         <div className="flex flex-col gap-1.5 p-3">
           {optionsQuery.isError ? (
@@ -198,15 +198,15 @@ export function RobotsSection({ config }: { config: RuntimeConfig | undefined })
       <Card className="flex min-w-0 flex-col overflow-auto" data-testid="robot-form">
         <div className="flex items-center gap-2.5 border-b border-gray-100 px-[18px] py-[13px]">
           {addingRobot ? (
-            <span className="text-[15px] font-bold text-gray-900">Add robot</span>
+            <h2 className="text-[15px] font-bold text-gray-900">Add robot</h2>
           ) : (
             <>
-              <span
+              <h2
                 data-testid="robot-form-name"
                 className="font-mono text-[15px] font-bold text-gray-900"
               >
                 {selectedRobotId ?? '—'}
-              </span>
+              </h2>
               {isActive ? (
                 <Badge tone="green" dot>
                   active

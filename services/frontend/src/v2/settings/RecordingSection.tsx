@@ -74,9 +74,9 @@ export function RecordingSection({ config }: { config: RuntimeConfig | undefined
   return (
     <Card className="flex min-w-0 flex-col overflow-auto lg:col-span-2" data-testid="settings-recording">
       <div className="flex items-center gap-2.5 border-b border-gray-100 px-[18px] py-[13px]">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           Recording
-        </span>
+        </h2>
         <span data-testid="recording-robot" className="font-mono text-[13px] font-semibold text-gray-900">
           {cfg?.robot_name ?? config?.defaults.robot_name ?? '—'}
         </span>
@@ -144,9 +144,9 @@ export function RecordingSection({ config }: { config: RuntimeConfig | undefined
 
           <div className="flex flex-col gap-2">
             <div className="flex items-center gap-2">
-              <span className="text-[13px] font-semibold uppercase tracking-[0.04em] text-gray-500">
+              <h3 className="text-[13px] font-semibold uppercase tracking-[0.04em] text-gray-500">
                 Default topics
-              </span>
+              </h3>
               <span data-testid="recording-topic-count" className="font-mono text-[11.5px] text-gray-400">
                 {topics.length} topic{topics.length === 1 ? '' : 's'}
               </span>

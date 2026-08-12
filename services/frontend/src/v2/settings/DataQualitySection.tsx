@@ -66,9 +66,9 @@ export function DataQualitySection({ config }: { config: RuntimeConfig | undefin
     <div className="flex min-w-0 flex-col gap-2.5 overflow-auto lg:col-span-2 lg:min-h-0" data-testid="settings-data-quality">
       <Card className="flex min-w-0 flex-col gap-5 p-[18px]">
       <div className="flex items-center gap-2.5">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           Data quality
-        </span>
+        </h2>
         <span className="font-mono text-[13px] font-semibold text-gray-900">{robot}</span>
         <span className="text-[11px] text-gray-400">read-only</span>
       </div>

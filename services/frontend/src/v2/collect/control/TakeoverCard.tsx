@@ -64,9 +64,9 @@ export function TakeoverCard({
     >
       <div className="flex items-center gap-2">
         <span className="h-[9px] w-[9px] animate-recpulse rounded-sm bg-red-600" />
-        <span data-testid="phase-title" className="text-[15px] font-bold text-red-700">
+        <h2 data-testid="phase-title" className="text-[15px] font-bold text-red-700">
           RECORDING IN PROGRESS
-        </span>
+        </h2>
       </div>
       <span className="text-[12.5px] leading-relaxed text-gray-600">
         {machine.takeoverResumedOwn

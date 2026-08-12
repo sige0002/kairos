@@ -216,9 +216,9 @@ export function SignalsView() {
         {series.length > 0 && (
           <div className="border-t border-gray-100 px-[18px] py-2.5">
             <div className="mb-1.5 flex items-center gap-2.5">
-              <span className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400">
+              <h3 className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400">
                 Series ({series.length})
-              </span>
+              </h3>
               <button
                 type="button"
                 onClick={clearSeries}
@@ -277,9 +277,9 @@ export function SignalsView() {
 
       <Card className="flex flex-1 flex-col lg:min-h-0">
         <div className="flex items-center gap-2.5 border-b border-gray-100 px-[18px] py-3">
-          <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+          <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
             Signals
-          </span>
+          </h2>
           <div className="flex-1" />
           <span className="inline-flex items-center gap-1.5 text-[11.5px] text-gray-400">
             <span className={cn('h-[7px] w-[7px] rounded-full', STATUS_DOT[status])} />

@@ -22,6 +22,7 @@ import { episodeLabel } from './types';
 import { formatBytes } from './format';
 import { useReviewState } from './useReviewState';
 import { useRobotCopyMayRemain } from '../captures/useSplitDeploy';
+import { ScreenTitle } from '../shared/ScreenTitle';
 
 // Two complete literal grid templates (Tailwind's scanner needs full strings,
 // so we pick between them rather than interpolate a width). The two evidence
@@ -66,6 +67,7 @@ export function ReviewScreen() {
 
   return (
     <div className="flex flex-col gap-2.5 lg:h-full lg:min-h-0">
+      <ScreenTitle>Review</ScreenTitle>
       <div className="flex items-center gap-2.5">
         <div className="flex-1" />
         <button

@@ -5,6 +5,10 @@ import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
 import { useUiStore } from '../../store/uiStore';
 import { __resetPanelStore } from './panelStore';
 import { MonitorScreen } from './MonitorScreen';
+import {
+  expectHeadingSpine,
+  expectScreenHeadingOutline,
+} from '../../test/headingOutline';
 
 const CONFIG = {
   endpoints: { api: '/api/v1', events: '/api/v1/events', webrtc: 'http://localhost:8002' },
@@ -276,3 +280,26 @@ test('Topics empty-state: no topics discovered explains why instead of an empty 
     ),
   ).toBeInTheDocument();
 });
+
+// #14 — heading structure. This screen must title itself exactly once and
+// descend one heading level at a time, so a screen-reader user can navigate it
+// by heading instead of reading it as one flat run of text.
+test('titles itself with a single h1 and skips no heading level', async () => {
+  renderWithClient(<MonitorScreen />);
+  // Let the screen's cards land first — the h1 appears before them, and a
+  // spine snapshotted at that instant would pin almost nothing.
+  await screen.findByTestId('overview-record');
+  await expectScreenHeadingOutline('Monitor');
+  // The exact h1/h2 spine. The outline check above cannot see a heading that is
+  // MISSING — it walks what IS rendered — so demoting any promoted title back to
+  // a span would leave it green. This is what pins the promotions.
+  expectHeadingSpine([
+    'h1 Monitor',
+    'h2 Context',
+    'h2 Recording',
+    'h2 Topic health',
+    'h2 Active incidents',
+    'h2 System',
+    'h2 Jump to',
+  ]);
+}, 20000);

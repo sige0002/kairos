@@ -5,7 +5,7 @@
 // That way out is guarded for the card's first moments (#8): Cancel lands in
 // nearly the hit-area Start just occupied, so the second press of a real
 // double-click backed out of the take the first press had begun. While the
-// guard is closed the TITLE holds focus — the same span-with-tabIndex the
+// guard is closed the TITLE holds focus — the same heading-with-tabIndex the
 // SAVING card uses — because focus() on a disabled button is a no-op and this
 // phase would otherwise be keyboard-dead, or worse, leave focus on <body> where
 // the next Space press scrolls the page instead of reaching the flow.
@@ -25,7 +25,7 @@ export function ArmingCard({
   cancelRef: React.Ref<HTMLButtonElement>;
   /** Focus target while `machine.canCancelArming` is false. ControlCard owns
    *  the hand-off from this to the Cancel button. */
-  titleRef: React.Ref<HTMLSpanElement>;
+  titleRef: React.Ref<HTMLHeadingElement>;
 }) {
   const armed = machine.canCancelArming;
   return (
@@ -38,14 +38,14 @@ export function ArmingCard({
     >
       <div className="flex items-center gap-2">
         <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-100 border-t-amber-600" />
-        <span
+        <h2
           ref={titleRef}
           data-testid="phase-title"
           tabIndex={-1}
           className="text-[17px] font-bold text-amber-700 outline-none"
         >
           ARMING…
-        </span>
+        </h2>
       </div>
       <span className="text-[12.5px] leading-relaxed text-amber-800">
         Hold still. Recording starts automatically once the recorder confirms.

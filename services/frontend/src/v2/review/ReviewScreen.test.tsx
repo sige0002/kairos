@@ -7,6 +7,7 @@ import { setSplitMode } from '../captures/splitMode';
 import { setFiltersCollapsed } from './filtersRail';
 import { ReviewScreen } from './ReviewScreen';
 import type { Capture } from '../../api/types';
+import { expectScreenHeadingOutline } from '../../test/headingOutline';
 
 const FILTERS_KEY = 'kairos.v2.review.filtersCollapsed.v1';
 
@@ -840,3 +841,11 @@ test('a failed check does not follow the operator to the next episode', async ()
   expect(screen.queryByTestId('review-validation-error')).toBeNull();
   expect(screen.queryByTestId('review-validation-error-stale')).toBeNull();
 });
+
+// #14 — heading structure. This screen must title itself exactly once and
+// descend one heading level at a time, so a screen-reader user can navigate it
+// by heading instead of reading it as one flat run of text.
+test('titles itself with a single h1 and skips no heading level', async () => {
+  renderWithClient(<ReviewScreen />);
+  await expectScreenHeadingOutline('Review');
+}, 20000);

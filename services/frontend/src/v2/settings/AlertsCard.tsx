@@ -199,9 +199,9 @@ export function AlertsCard() {
   return (
     <div className="flex flex-col gap-3" data-testid="settings-alerts">
       <div className="flex flex-wrap items-center gap-2.5">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           Alert rules
-        </span>
+        </h2>
         <Badge tone="amber" dot>
           applies on monitor restart
         </Badge>

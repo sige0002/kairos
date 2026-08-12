@@ -25,9 +25,9 @@ export function CompletedCard({
       )}
     >
       <div className="flex items-center gap-2">
-        <span className="text-[15px] font-bold text-gray-900">
+        <h2 className="text-[15px] font-bold text-gray-900">
           Batch {machine.batchSeq ?? '—'} completed 🎉
-        </span>
+        </h2>
         <div className="flex-1" />
         <span className="rounded-chip bg-green-100 px-2 py-0.5 text-[11px] font-bold text-green-700">
           COMPLETE

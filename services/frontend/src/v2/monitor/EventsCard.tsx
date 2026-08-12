@@ -37,9 +37,9 @@ export function EventsCard() {
   return (
     <Card className="flex flex-1 flex-col lg:min-h-0">
       <div className="flex items-center gap-2.5 border-b border-gray-100 px-4 py-3">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           Events
-        </span>
+        </h2>
         <div className="flex-1" />
         <span data-testid="events-count" className="font-mono text-[11.5px] text-gray-400">
           {total > CAP ? `${CAP} of ${total}` : `${total}`} alerts

@@ -204,9 +204,9 @@ export function DatasetList({ state }: { state: DatasetsState }) {
   return (
     <div className="flex min-h-0 flex-col overflow-hidden rounded-card border border-gray-200 bg-white shadow-card">
       <div className="flex shrink-0 items-center gap-2.5 border-b border-gray-100 px-4 py-[13px]">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           Datasets
-        </span>
+        </h2>
         <div className="flex-1" />
         <button
           type="button"
