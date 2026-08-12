@@ -1,0 +1,81 @@
+# LeRobot exporter — OPT-IN overlay for the §6.2 dataset → LeRobot v3 export.
+#
+# Enable in .env with one line:
+#
+#   LEROBOT_EXPORTER=1
+#
+# `make up` appends this file by itself whenever the active env sets
+# LEROBOT_EXPORTER (the same auto-wiring as ARCHIVE_DIR). Plain `docker compose`
+# users add `-f compose/lerobot.yaml` to the command line. Without the overlay
+# the service simply does not exist and the UI's Convert control is not
+# rendered (GET /api/v1/exports/config answers enabled:false).
+#
+# Where the exports land on the HOST is a second, independent knob:
+#
+#   EXPORTS_DIR=/mnt/nas/lerobot        # optional; default ./data/exports
+#
+# The container-side path is ALWAYS /data/exports — the mount below is what
+# relocates it, so relative keys / the files API / UI links never change with
+# the location, and the "env var without a mount" trap (see archive.yaml) is
+# structurally impossible: the env var here IS the mount. `make up` creates the
+# host directory first so Docker never auto-creates it root-owned.
+#
+# The conversion itself runs as a subprocess inside this resident container, so
+# the `cpus:` cap below bounds every conversion without per-run flags — that is
+# the guardrail that lets exports run concurrently with a live recording
+# without starving the recorder.
+services:
+  lerobot-exporter:
+    build:
+      context: .
+      dockerfile: services/lerobot_exporter/Dockerfile
+      network: host
+      args:
+        http_proxy: ${http_proxy:-}
+        https_proxy: ${https_proxy:-}
+        no_proxy: ${no_proxy:-}
+    image: kairos-lerobot-exporter:${KAIROS_VERSION:-dev}
+    env_file:
+      - path: ${KAIROS_ENV_FILE:-.env}
+        required: false
+    environment:
+      LEROBOT_EXPORTER_PORT: ${LEROBOT_EXPORTER_PORT:-8040}
+      ROBOT: ${ROBOT:-airoa_hsr}
+      CONFIG_DIR: ${CONFIG_DIR:-/config}
+      CONFIG_LOCAL_DIR: ${CONFIG_LOCAL_DIR:-/config/local}
+      # Execution slots for the FIFO queue (design §3): 1 = strictly serial,
+      # which is the right default because parallel ffmpeg encoders mostly
+      # thrash each other; raise it on a strong machine — the cpus: cap below
+      # still bounds the total.
+      KAIROS_LEROBOT_MAX_CONCURRENCY: ${KAIROS_LEROBOT_MAX_CONCURRENCY:-1}
+      KAIROS_LEROBOT_WORKERS: ${KAIROS_LEROBOT_WORKERS:-1}
+    # Run as the host user so the host-owned ./data mount is writable.
+    user: "${UID:-1000}:${GID:-1000}"
+    network_mode: host
+    # The CPU cap protecting a concurrent recording (§6.2). A plain number of
+    # cores; tune per machine in .env.
+    cpus: ${LEROBOT_CPUS:-4}
+    volumes:
+      - ${DATA_DIR:-./data}:/data
+      # objects/ is read-only for this service by construction (it only ever
+      # symlinks out of it), but the mount stays read-write because staging and
+      # the outputs live under the same /data root.
+      - ./config:/config:ro
+      - ${EXPORTS_DIR:-./data/exports}:/data/exports
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:${LEROBOT_EXPORTER_PORT:-8040}/healthz', timeout=2)"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # The orchestrator serves export files (GET /api/v1/files/exports/...) and
+  # pre-checks destinations, so it must see the same exports/ the exporter
+  # writes — including when EXPORTS_DIR relocates it off the data volume.
+  orchestrator:
+    volumes:
+      - ${EXPORTS_DIR:-./data/exports}:/data/exports

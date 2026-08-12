@@ -115,3 +115,8 @@ jobs:
             echo "== $f =="
             docker compose --project-directory . -f "$f" config -q
           done
+          # The opt-in overlays are fragments (they extend services of the
+          # base), so they render only in the combination make actually runs.
+          echo "== compose.yaml + archive.yaml + lerobot.yaml =="
+          docker compose --project-directory . -f compose/compose.yaml \
+            -f compose/archive.yaml -f compose/lerobot.yaml config -q

@@ -132,7 +132,15 @@ export KAIROS_GIT_SHA
 # below. (The old COMPOSE_FILE-in-.env wiring is retired: an explicit -f
 # always overrode it, which made it a silent-breakage trap.)
 ARCHIVE_OVERRIDE_LOCAL := $(if $(wildcard .env),$(shell grep -qE '^[[:space:]]*ARCHIVE_DIR=' .env 2>/dev/null && echo -f compose/archive.yaml),)
-COMPOSE      := docker compose --project-directory . -f compose/compose.yaml $(ARCHIVE_OVERRIDE_LOCAL)
+# LeRobot exporter opt-in (capture_store §6.2): same auto-wiring as the archive
+# override — the overlay is appended whenever .env sets LEROBOT_EXPORTER.
+LEROBOT_OVERRIDE_LOCAL := $(if $(wildcard .env),$(shell grep -qE '^[[:space:]]*LEROBOT_EXPORTER=' .env 2>/dev/null && echo -f compose/lerobot.yaml),)
+# Where exports land on the host (compose/lerobot.yaml mounts it at
+# /data/exports). Resolved here so `up` can pre-create it USER-owned — a bind
+# mount Docker has to create itself comes out root-owned, which the uid-1000
+# exporter then cannot write.
+EXPORTS_DIR_LOCAL := $(if $(wildcard .env),$(shell grep -E '^[[:space:]]*EXPORTS_DIR=' .env 2>/dev/null | tail -1 | cut -d= -f2-),)
+COMPOSE      := docker compose --project-directory . -f compose/compose.yaml $(ARCHIVE_OVERRIDE_LOCAL) $(LEROBOT_OVERRIDE_LOCAL)
 # Let the replay harness read the root .env too (so BAG / ROS_DISTRO / RMW set
 # there drive `make rosbag`), when a .env exists.
 TEST_COMPOSE := docker compose $(if $(wildcard .env),--env-file .env,) -f deploy/test/compose.yaml
@@ -206,6 +214,7 @@ endef
 .PHONY: up up-nobuild down build build-pull rebuild restart logs ps stop urls msgs-build
 up: ## start the stack detached, using existing images (RECORDING_CONFIG-aware)
 	$(call require_images,$(COMPOSE),build)
+	@if [ -n "$(LEROBOT_OVERRIDE_LOCAL)" ]; then mkdir -p "$(or $(EXPORTS_DIR_LOCAL),./data/exports)"; fi
 	$(COMPOSE) up -d $(SVC)
 	@$(MAKE) --no-print-directory urls
 
@@ -248,9 +257,14 @@ stop: ## stop the stack (keep containers)
 	$(COMPOSE) stop $(SVC)
 
 build: ## build images: `make build` (all) or `make build monitor`
+	@# lerobot_exporter vendors rosbag2lerobot as a git submodule; a fresh clone
+	@# or worktree has the gitlink but not the files, and a build from that
+	@# state bakes an empty package. No-op when submodules are already there.
+	@git submodule update --init --recursive
 	$(COMPOSE) build $(SVC)
 
 rebuild: ## rebuild + recreate service(s) — the "apply my code changes" command
+	@git submodule update --init --recursive
 	$(COMPOSE) up -d --build --force-recreate $(SVC)
 
 build-pull: ## rebuild pulling FRESH base images (ros/python/node upstream). NEEDS NETWORK

@@ -17,7 +17,12 @@ config/
 │  ├─ monitoring/alerts.yaml      # topic_monitor alert definitions (optional, ALERT_CONFIG_PATH)
 │  ├─ validation/<option>.yaml    # fast_validation template
 │  ├─ validators/loss_report.yaml # validator parameters
-│  └─ flows/<flow>.yml            # full_validation's validation flows (bagflow flow.yml)
+│  ├─ flows/<flow>.yml            # full_validation's validation flows (bagflow flow.yml)
+│  └─ lerobot/<profile>.yaml      # LeRobot export profile library (§6.2.
+│                                 #   One file = one conversion recipe; the Convert
+│                                 #   dialog only picks one. The format is rosbag2lerobot's
+│                                 #   robot config verbatim — write a dummy task (it is
+│                                 #   always overridden at run time)
 ├─ airoa_hsr/               # bundled sample robot (HSR, data/airoa-moma-mcap/)
 ├─ template/                # starting point for a new robot (copy of airoa_hsr)
 └─ local/<robot>/           # your own robots (gitignored)
