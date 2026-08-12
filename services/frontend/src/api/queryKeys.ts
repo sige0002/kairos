@@ -34,6 +34,18 @@ export const queryKeys = {
   // polled every second while a run executes, and invalidating the detail
   // subtree at that rate would rerender the whole screen once a second.
   datasetArchive: (datasetId: string) => ['datasets', 'archive', datasetId] as const,
+  // The dataset's LeRobot export (§6.2). Its own key for the same reason the
+  // archive run has one: polled every second while a conversion runs.
+  datasetExport: (datasetId: string) => ['datasets', 'export', datasetId] as const,
+  // What a conversion WOULD do. Keyed by everything that changes the answer —
+  // the dataset, the profile, and the memo (it is the output name's last
+  // segment) — so the dialog's preview follows what is typed instead of
+  // showing a cached reply for a different name.
+  exportPreflight: (datasetId: string, profile: string, memo: string) =>
+    ['datasets', 'export-preflight', datasetId, profile, memo] as const,
+  // Whether this installation can convert at all (exporter overlay present +
+  // a non-empty profile library). Read before any Convert control is drawn.
+  exportsConfig: ['exports', 'config'] as const,
   // Whether this deployment offers archiving at all, and to which roots
   // (KAIROS_ARCHIVE_ROOTS). Read before any archive control is rendered.
   // Scalar, not per-capture: the endpoint is addressed by a capture id but

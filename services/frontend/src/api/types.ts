@@ -624,6 +624,149 @@ export interface DatasetArchiveProgress {
   archived_at?: string | null;
 }
 
+// ---- LeRobot export (§6.2: a dataset converted to LeRobot v3) -------------
+// A conversion READS the dataset and writes a new tree under exports/. Nothing
+// about the dataset changes — not its status, not its members — which is why
+// this is a separate surface from the archive above rather than a mode of it.
+
+/**
+ * One robot-config YAML in this installation's profile library.
+ *
+ * Every field but the name and the path is optional because the orchestrator
+ * passes the exporter's objects through UNTOUCHED (`list[dict[str, Any]]`) —
+ * the exporter owns this schema, and a second copy of it here would be a copy
+ * that drifts. The UI therefore reads each field defensively.
+ */
+export interface ExportProfile {
+  name: string;
+  path?: string;
+  /** `committed` = config/<robot>/lerobot/, `local` = the gitignored tree. */
+  source?: string;
+  /**
+   * The converter's own loader's verdict. `null`/absent is a THIRD answer —
+   * the converter is not installed in that image, so the profile was never
+   * checked — and must never be rendered as a pass.
+   */
+  valid?: boolean | null;
+  errors?: string[];
+  /** Topics the profile requires; what preflight's coverage check is against. */
+  topics?: string[];
+  fps?: number | null;
+}
+
+/** `GET /api/v1/exports/config` — the capability gate. `enabled: false` (no
+ *  exporter overlay, or an empty library) means the Convert control is not
+ *  rendered at all: never offer what can only fail. */
+export interface ExportsConfig {
+  enabled: boolean;
+  profiles: ExportProfile[];
+  /**
+   * True when the exporter is up but its bundled converter is not importable
+   * there, so every profile's `valid` comes back null. It is what lets the UI
+   * say WHY the library is unverified instead of showing a bare tri-state.
+   *
+   * `null`/absent is a third answer again: an exporter too old to report it.
+   * Only a literal `true` is a claim, so "we were not told" never renders as
+   * "the validator is missing".
+   */
+  validator_unavailable?: boolean | null;
+}
+
+/** Members an export leaves out, each list saying why. Each reason is
+ *  something the operator can act on — pull the bytes, un-exclude the take,
+ *  or wait for the recording to finish. */
+export interface ExportDropped {
+  not_local: string[];
+  excluded: string[];
+  recording: string[];
+}
+
+/** How the included captures' task labels resolve. `unlabeled > 0` is what
+ *  makes the dialog's fallback-task field appear, and required. */
+export interface ExportTaskSummary {
+  labeled: number;
+  unlabeled: number;
+  /** label -> how many captures carry it. */
+  values: Record<string, number>;
+}
+
+/** One capture missing topics the selected profile requires. */
+export interface ExportCoverageGap {
+  capture_id: string;
+  topics: string[];
+}
+
+/** `GET /api/v1/datasets/{id}/export/preflight` — every check the dialog shows
+ *  BEFORE the operator commits, so a conversion that can only fail is visible
+ *  while it still costs nothing. No side effects. */
+export interface ExportPreflight {
+  dataset_id: string;
+  profile: ExportProfile;
+  output_name: string;
+  /** `exports/<name>` — where the conversion would land, under the data dir. */
+  output: string;
+  /** The destination already holds files; the export would be refused (409). */
+  output_exists: boolean;
+  member_total: number;
+  included: number;
+  dropped: ExportDropped;
+  tasks: ExportTaskSummary;
+  missing_topics: ExportCoverageGap[];
+  /** Captures whose manifest could not be read, so coverage is UNKNOWN for
+   *  them — reported, never silently passed or failed. */
+  coverage_unknown: string[];
+}
+
+/** Body for `POST /api/v1/datasets/{id}/export`. Only what the dialog decides:
+ *  fps / split / resampling belong to the profile, and a different recipe is a
+ *  different profile rather than a request field. */
+export interface ExportRequest {
+  profile: string;
+  /** The free trailing segment of the output name `<operator>_<profile>_<memo>`. */
+  memo?: string | null;
+  /** Task for the captures that carry no label. Required when the preflight
+   *  reports `tasks.unlabeled > 0` (else 400 `task_required`). */
+  task_fallback?: string | null;
+}
+
+/** The 202 answer: the exporter took the job. */
+export interface ExportSubmitResponse {
+  export_id: string;
+  dataset_id: string;
+  output: string;
+  included: number;
+  dropped: ExportDropped;
+}
+
+export type ExportState = 'queued' | 'running' | 'complete' | 'failed' | 'canceled';
+
+/**
+ * `GET /api/v1/datasets/{id}/export` — the export as this orchestrator process
+ * remembers it, with the exporter's live counters proxied through.
+ *
+ * Volatile on both sides (a restart forgets an in-flight run, which surfaces
+ * here as `failed`), so 404 means "no export this process knows about" and is
+ * read as "there is no export", not as an error.
+ */
+export interface ExportStatus {
+  dataset_id: string;
+  export_id: string;
+  output: string;
+  state: ExportState | string;
+  /** Place in the exporter's FIFO queue, 1 = next to run. Queued only. */
+  queue_position?: number | null;
+  done: number;
+  failed: number;
+  total: number;
+  /** Progress WITHIN the episode being converted (0–100), so the bar can move
+   *  during a long episode instead of standing still between whole numbers. */
+  current_episode_pct?: number | null;
+  /** The converter has reported nothing for a while. Surfaced, never acted on:
+   *  the export keeps running. */
+  stalled?: boolean | null;
+  message?: string | null;
+}
+
 // ---- store health (§8 / §9-3) --------------------------------------------
 
 /** A sidecar that exists but cannot be read (§8 rule 4). Never "missing". */

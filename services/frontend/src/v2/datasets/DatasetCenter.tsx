@@ -21,6 +21,8 @@ import { CaptureLabelChips } from '../episodeChips';
 import { DatasetArchiveDialog } from './DatasetArchiveDialog';
 import { DatasetDetail } from './DatasetDetail';
 import { EditDatasetDialog } from './EditDatasetDialog';
+import { LeRobotExportButton } from './LeRobotExportButton';
+import { LeRobotExportDialog } from './LeRobotExportDialog';
 import { ScopeSummary } from './ScopeSummary';
 import { DatasetGoneNote, DatasetGonePane } from './SelectionGone';
 import {
@@ -128,6 +130,11 @@ function ScopeHeaderBar({ state }: { state: DatasetsState }) {
           {status === 'archiving' ? 'Archive run…' : 'Archive dataset'}
         </button>
       )}
+      {/* Renders nothing at all unless this installation has an exporter with
+          a profile library (§6.2) — the archive gate's rule, one control over.
+          Not gated on status: an archived-copy dataset is still convertible,
+          and an archived-move one preflights to zero and says so. */}
+      {scope.kind === 'dataset' && <LeRobotExportButton state={state.lerobotExport} />}
       {/* This status gate is on the BUTTON only, and the dialog it opens
           deliberately has none: a hint on a control nobody has committed to is
           cheap, but a second copy of the server's rule guarding the commitment
@@ -427,6 +434,12 @@ export function DatasetCenter({ state }: { state: DatasetsState }) {
       <DeleteDatasetDialog state={state} />
       <DatasetArchiveDialog state={state} />
       <EditDatasetDialog state={state} />
+      <LeRobotExportDialog
+        state={state.lerobotExport}
+        datasetName={
+          state.selectedDataset?.dataset.name ?? state.selectedDatasetId ?? 'This dataset'
+        }
+      />
     </>
   );
 }

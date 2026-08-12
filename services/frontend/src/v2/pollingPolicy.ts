@@ -41,6 +41,14 @@ export const DATASET_ARCHIVE_POLL_MS = 1000;
  *  202). Same cadence and same rationale as the dataset archive's. */
 export const CAPTURE_ARCHIVE_POLL_MS = 1000;
 
+/** A dataset's LeRobot export while it is queued or running (§6.2). Same
+ *  cadence and same rationale as the archive polls above — the conversion is
+ *  owned by another service and this poll is the console's only window onto
+ *  it — with one addition: the exporter's `stalled` flag is only as fresh as
+ *  this interval, and "no progress for a while" is the one thing the operator
+ *  must not learn late. Stops at a terminal state. */
+export const DATASET_EXPORT_POLL_MS = 1000;
+
 /** Validation's job hook (useJobResult), until the job reaches a terminal
  *  state. Distinct from INSPECTION_JOB_POLL_MS below purely because that is how
  *  the two were written; both watch `/jobs/{id}/status`. */

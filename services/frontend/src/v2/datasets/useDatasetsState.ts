@@ -64,6 +64,7 @@ import {
   readCaptureError,
 } from '../captures/errors';
 import { useCaptureDeletion, type CaptureDeletionState } from '../captures/useCaptureDeletion';
+import { useLeRobotExport, type LeRobotExportState } from './useLeRobotExport';
 import {
   ANY_OPERATOR,
   MEMBER_PAGE_SIZE,
@@ -367,6 +368,13 @@ export interface DatasetsState {
   datasetArchiveStartError: unknown;
   /** Live progress while the selected dataset is archiving (1 s poll). */
   datasetArchiveProgress: DatasetArchiveProgress | null;
+
+  // ---- LeRobot export (§6.2) ---------------------------------------------
+  // Converting READS the dataset and writes elsewhere, so unlike the archive
+  // above it changes nothing here — no status, no frozen member set. Its whole
+  // state lives in its own hook rather than in this file, which is already the
+  // screen's largest.
+  lerobotExport: LeRobotExportState;
 
   isLoading: boolean;
   isError: boolean;
@@ -1228,6 +1236,15 @@ export function useDatasetsState(): DatasetsState {
   };
   const cancelDatasetArchive = useCallback(() => setDatasetArchiveOpen(false), []);
 
+  // ---- LeRobot export ----------------------------------------------------
+
+  // Given the ROW rather than the id: the dialog prefills the fallback task
+  // from the dataset's own task, and the gate needs the member count.
+  const lerobotExport = useLeRobotExport({
+    dataset: selectedDatasetRecord,
+    onToast: showToast,
+  });
+
   // ---- candidates --------------------------------------------------------
 
   const memberCaptureIds = useMemo(
@@ -1468,6 +1485,8 @@ export function useDatasetsState(): DatasetsState {
       ? datasetArchiveMutation.error
       : null,
     datasetArchiveProgress,
+
+    lerobotExport,
 
     isLoading: listQuery.isPending || capturesQuery.isPending,
     isError: listQuery.isError || capturesQuery.isError,
