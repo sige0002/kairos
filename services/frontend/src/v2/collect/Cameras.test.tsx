@@ -689,40 +689,106 @@ test('a resolution group is ONE tab stop, not one per preset', async () => {
   expect(subChips.filter((c) => c.getAttribute('tabindex') === '0')).toHaveLength(1);
 });
 
-test('arrows move the selection inside the group, and wrap', async () => {
+// MANUAL activation (APG), not the automatic variant a plain radiogroup uses.
+// Selecting a resolution moves `maxWidth`/`maxHeight`, which are effect
+// dependencies in useWebRtcStream — so every selection closes the peer
+// connection and POSTs a fresh /stream/start to the robot. Under
+// selection-follows-focus, four arrow presses were four renegotiations and
+// auto-repeat was unbounded: one renegotiation per KEYSTROKE instead of per
+// intent.
+test('arrows move focus without selecting; Space or Enter commits', async () => {
   const group = await renderResGroups();
   const checked = () => within(group).getByRole('radio', { checked: true }).textContent;
+  const focused = () =>
+    within(group)
+      .getAllByRole('radio')
+      .find((c) => c.getAttribute('tabindex') === '0')?.textContent;
 
   expect(checked()).toBe('480p');
+
+  // Focus walks the ring — and the selection does not move with it.
   fireEvent.keyDown(group, { key: 'ArrowRight' });
-  expect(checked()).toBe('360p');
-  fireEvent.keyDown(group, { key: 'ArrowLeft' });
+  expect(focused()).toBe('360p');
   expect(checked()).toBe('480p');
-
-  // Home/End, and wrapping past either end — a radiogroup is a ring.
   fireEvent.keyDown(group, { key: 'Home' });
-  expect(checked()).toBe('Source');
+  expect(focused()).toBe('Source');
+  expect(checked()).toBe('480p');
+  fireEvent.keyDown(group, { key: 'ArrowLeft' });
+  expect(focused()).toBe('240p'); // wraps
+  fireEvent.keyDown(group, { key: 'End' });
+  expect(focused()).toBe('240p');
+  expect(checked()).toBe('480p');
+
+  // Enter is what chooses.
+  fireEvent.keyDown(group, { key: 'Enter' });
+  expect(checked()).toBe('240p');
+
+  // And so is Space.
   fireEvent.keyDown(group, { key: 'ArrowLeft' });
   expect(checked()).toBe('240p');
-  fireEvent.keyDown(group, { key: 'ArrowRight' });
-  expect(checked()).toBe('Source');
-  fireEvent.keyDown(group, { key: 'End' });
-  expect(checked()).toBe('240p');
+  fireEvent.keyDown(group, { key: ' ' });
+  expect(checked()).toBe('360p');
 });
 
-test('the selection follows focus, so the tab stop tracks what is on', async () => {
+// The measurement the review turned on, as a test: arrows cost the robot
+// nothing, and one commit costs it exactly one renegotiation.
+test('N arrow presses renegotiate nothing; one commit renegotiates once', async () => {
   const group = await renderResGroups();
+  const negotiations = () =>
+    (globalThis.fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls.filter(
+      ([u]) => String(u).includes('/stream/start'),
+    ).length;
 
-  fireEvent.keyDown(group, { key: 'ArrowRight' });
+  const before = negotiations();
+  for (const key of ['ArrowRight', 'ArrowRight', 'ArrowRight', 'ArrowLeft', 'End', 'Home']) {
+    fireEvent.keyDown(group, { key });
+  }
+  // The POST is fired from an effect and awaited, so asserting straight after
+  // the presses proves nothing — it just reads the counter before a
+  // renegotiation could have reached it. Give it the chance first, THEN claim
+  // it did not happen. (Asserting a negative is only worth as much as the
+  // window you allowed it.)
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 0));
+  });
+  expect(negotiations(), 'an arrow key renegotiated a live stream').toBe(before);
 
-  const inTabOrder = within(group)
-    .getAllByRole('radio')
-    .filter((c) => c.getAttribute('tabindex') === '0');
-  expect(inTabOrder).toHaveLength(1);
-  expect(inTabOrder[0]).toHaveTextContent('360p');
-  // And it holds focus, so the next arrow continues from where the operator is
-  // rather than from where they started.
-  expect(inTabOrder[0]).toHaveFocus();
+  // And the counter is live: one commit does move it.
+  fireEvent.keyDown(group, { key: 'Enter' });
+  await waitFor(() => expect(negotiations()).toBe(before + 1));
+
+  // Committing the SAME option again is a no-op, so a browser that also
+  // activates the button on keyup cannot buy a second renegotiation.
+  fireEvent.keyDown(group, { key: 'Enter' });
+  fireEvent.click(within(group).getByRole('radio', { checked: true }));
+  await waitFor(() => expect(negotiations()).toBe(before + 1));
+});
+
+// The pointer path, which is what the hit areas this PR is named after exist
+// to serve — and which nothing else here would notice breaking.
+test('clicking a resolution chip selects it', async () => {
+  const group = await renderResGroups();
+  expect(within(group).getByRole('radio', { checked: true })).toHaveTextContent('480p');
+
+  fireEvent.click(within(group).getByRole('radio', { name: '240p' }));
+
+  expect(within(group).getByRole('radio', { checked: true })).toHaveTextContent('240p');
+  expect(within(group).getByRole('radio', { name: '240p' })).toHaveAttribute(
+    'tabindex',
+    '0',
+  );
+});
+
+// Three sub tiles are on screen at once; groups called the same thing would
+// leave a screen-reader user unable to tell which stream they were changing.
+test('each sub tile names its own resolution group', async () => {
+  await renderResGroups();
+  expect(
+    screen.getByRole('radiogroup', { name: /hand camera resolution/i }),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByRole('radiogroup', { name: 'Main camera resolution' }),
+  ).toBeInTheDocument();
 });
 
 test('a key the group does not own is left alone', async () => {

@@ -221,9 +221,10 @@ export function Cameras({
             {topicLine}
           </span>
           {/* One tab stop, not five (#17): these are radio buttons in all but
-              markup, so they are a radiogroup — arrows move within it and
-              aria-checked says which resolution is on, which the background
-              colour alone never told anyone. */}
+              markup, so they are a radiogroup — aria-checked says which
+              resolution is on, which the background colour alone never told
+              anyone. Arrows move focus and Space/Enter commits (APG manual
+              activation), because each commit renegotiates the stream. */}
           <div
             ref={mainRes.groupRef}
             data-testid="main-res-group"
@@ -243,7 +244,7 @@ export function Cameras({
                 aria-checked={p.label === mainResLabel}
                 tabIndex={mainRes.itemTabIndex(p.label)}
                 {...{ [ROVING_ITEM_ATTR]: '' }}
-                onClick={() => setMainCameraRes(p.label)}
+                onClick={() => mainRes.commit(p.label)}
                 className={cn(
                   'rounded-chip px-2 py-0.5 font-mono text-[10.5px] font-bold',
                   HIT_AREA_RES_MAIN,

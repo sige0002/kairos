@@ -42,10 +42,13 @@ export const HIT_AREA_TAB = 'relative after:absolute after:inset-x-0 after:-inse
  *  expansion at all. */
 export const HIT_AREA_CHIP = 'relative after:absolute after:-inset-1.5 after:content-[""]';
 
-/** Main-tile resolution chips: 41x20, shoulder to shoulder in a segmented
- *  strip 12px above the tile's bottom edge.
+/** Main-tile resolution chips: ~54x20 as rendered (the label decides the
+ *  width; the issue's "41" was a narrower sample), shoulder to shoulder in a
+ *  segmented strip 12px above the tile's bottom edge. Measured live at 56x44
+ *  with the expansion below.
  *
- *  Vertically there is room for the full 44 (+12 each way; downward lands on
+ *  Only the HEIGHT was ever the deficit — every chip already cleared 44 wide —
+ *  and vertically there is room for all of it (+12 each way; downward lands on
  *  the tile edge, upward on video that carries no control of its own).
  *  Horizontally there is 2px between chips and a topic readout to the left, so
  *  the expansion takes half of each gap (+1px) and no more. Adjacent chips end

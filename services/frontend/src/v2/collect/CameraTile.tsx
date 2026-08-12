@@ -247,15 +247,28 @@ export function OverlayBadge({ className, children }: { className: string; child
 
 /** Compact segmented control for a sub tile's resolution (360p/240p only).
  *  Positioned by its parent (the tile's top-right overlay stack). */
-function SubResToggle({ value, onPick }: { value: SubResLabel; onPick: (l: SubResLabel) => void }) {
+function SubResToggle({
+  value,
+  onPick,
+  cameraLabel,
+}: {
+  value: SubResLabel;
+  onPick: (l: SubResLabel) => void;
+  /** Which camera this group belongs to. Up to three sub tiles are on screen at
+   *  once, so a shared label would leave a screen-reader user with three groups
+   *  called the same thing and no way to tell which stream they were changing. */
+  cameraLabel: string;
+}) {
   // One tab stop per tile, not two (#17) — with three tiles on screen those
-  // chips were six of the nine stops between Start and anything else.
+  // chips were six of the nine stops between Start and anything else. Arrows
+  // move focus and Space/Enter commits: each commit renegotiates this tile's
+  // stream.
   const res = useRovingRadio({ options: SUB_RES_LABELS, value, onPick });
   return (
     <div
       ref={res.groupRef}
       role="radiogroup"
-      aria-label="Sub camera resolution"
+      aria-label={`${cameraLabel} camera resolution`}
       onKeyDown={res.onKeyDown}
       className="flex items-center gap-0.5 rounded-chip bg-gray-900/80 p-[2px]"
     >
@@ -267,7 +280,7 @@ function SubResToggle({ value, onPick }: { value: SubResLabel; onPick: (l: SubRe
           aria-checked={label === value}
           tabIndex={res.itemTabIndex(label)}
           {...{ [ROVING_ITEM_ATTR]: '' }}
-          onClick={() => onPick(label)}
+          onClick={() => res.commit(label)}
           title={`Sub preview resolution — subs stay low-res by design (§3-2)`}
           className={cn(
             'rounded-chip px-1.5 py-0.5 font-mono text-[9.5px] font-bold',
@@ -374,7 +387,11 @@ export function SubCameraTile({
         // Don't let a res/stats click bubble to the tile's click-to-main handler.
         onClick={(e) => e.stopPropagation()}
       >
-        <SubResToggle value={pane.subResLabel} onPick={(l) => setSubCameraRes(pane.id, l)} />
+        <SubResToggle
+          value={pane.subResLabel}
+          onPick={(l) => setSubCameraRes(pane.id, l)}
+          cameraLabel={label}
+        />
         {connected && (
           <StatsBadge
             stats={stats}
