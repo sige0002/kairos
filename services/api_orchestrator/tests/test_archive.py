@@ -10,6 +10,7 @@ there is nothing else left that describes the capture.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from pathlib import Path
 
@@ -22,6 +23,7 @@ from api_orchestrator.models import Capture, CaptureState
 from conftest import FakeRecorder
 from fastapi.testclient import TestClient
 from kairos_common import ApiError, Settings, ledger_v2
+from kairos_common.capture_sidecars import RecordV2, write_record
 from kairos_common.ids import new_capture_id
 from kairos_common.rebuild import ReplicaState
 
@@ -45,7 +47,11 @@ def _archive_client(
 
 
 def _seed(
-    client: TestClient, layout: DataLayout, *, capture_id: str | None = None
+    client: TestClient,
+    layout: DataLayout,
+    *,
+    capture_id: str | None = None,
+    task: str | None = "pick",
 ) -> str:
     store = client.app.state.capture_store
     capture_id = capture_id or new_capture_id()
@@ -59,7 +65,7 @@ def _seed(
             run_id=f"run_{capture_id}",
             state=CaptureState.completed,
             operator="alice",
-            task="pick",
+            task=task,
             message_count=42,
             bytes=707,
             started_at="2026-08-01T00:00:00.000Z",
@@ -115,12 +121,14 @@ class TestArchive:
             )
             assert progress["state"] == "complete", progress
             body = progress["result"]
-            assert body["file_count"] == 2
+            # 2 copied files + the generated task.json projection.
+            assert body["file_count"] == 3
             assert body["bytes"] > 0
 
             copied = destination / capture_id
             assert (copied / "metadata.yaml").is_file()
             assert (copied / "bag_0.mcap").is_file()
+            assert (copied / "task.json").is_file()
             # The source goes through the same trash pathway as any deletion,
             # so an archive interrupted at the last step recovers identically.
             assert not layout.capture_dir(capture_id).exists()
@@ -461,9 +469,9 @@ class TestArchiveDigests:
             assert progress["state"] == "complete", progress
             body = progress["result"]
 
-        assert body["file_count"] == 2
+        assert body["file_count"] == 3
         by_path = {entry["path"]: entry for entry in body["files"]}
-        assert set(by_path) == {"metadata.yaml", "bag_0.mcap"}
+        assert set(by_path) == {"metadata.yaml", "bag_0.mcap", "task.json"}
 
         event = ledger_v2.archive_events(data_dir)[capture_id]
         # Once the source is deleted the manifest goes with it. Without these
@@ -494,4 +502,132 @@ class TestArchiveDigests:
             body = restarted.get(f"/api/v1/captures/{capture_id}").json()
             assert body["archive_destination"] == str(roots / capture_id)
         event = ledger_v2.archive_events(data_dir)[capture_id]
-        assert len(event["files"]) == 2
+        assert len(event["files"]) == 3
+
+
+class TestTaskSidecarProjection:
+    """§6: the destination gains a rosbag2lerobot ``task.json`` projection.
+
+    The archive is the boundary where the bytes stop being readable through
+    kairos, so the task label travels with them in the converter's own format —
+    and is audited like any copied file, because a self-describing tree whose
+    description is unverifiable would be worse than none.
+    """
+
+    def test_the_destination_carries_the_task_label(
+        self, data_dir: Path, tmp_path: Path, fake_recorder: FakeRecorder
+    ) -> None:
+        roots = tmp_path / "nas"
+        roots.mkdir()
+        with _archive_client(data_dir, roots, fake_recorder) as client:
+            layout = client.app.state.data_layout
+            capture_id = _seed(client, layout)
+            progress = _archive_and_wait(client, capture_id, roots)
+            assert progress["state"] == "complete", progress
+            body = progress["result"]
+
+        sidecar = roots / capture_id / "task.json"
+        assert json.loads(sidecar.read_text(encoding="utf-8")) == {"task": "pick"}
+
+        # Audited exactly like the copied bytes: the entry's digest matches
+        # what is actually on the destination disk.
+        by_path = {entry["path"]: entry for entry in body["files"]}
+        digest, size = fileops.sha256_file(sidecar)
+        assert by_path["task.json"] == {
+            "path": "task.json",
+            "size": size,
+            "sha256": digest,
+        }
+
+    def test_a_capture_without_a_task_gets_no_sidecar(
+        self, data_dir: Path, tmp_path: Path, fake_recorder: FakeRecorder
+    ) -> None:
+        # Imported bags (§3.3) have no task; an empty sidecar would only make
+        # the converter fall back anyway, so the file is omitted entirely.
+        roots = tmp_path / "nas"
+        roots.mkdir()
+        with _archive_client(data_dir, roots, fake_recorder) as client:
+            layout = client.app.state.data_layout
+            capture_id = _seed(client, layout, task=None)
+            progress = _archive_and_wait(client, capture_id, roots)
+            assert progress["state"] == "complete", progress
+            body = progress["result"]
+
+        assert not (roots / capture_id / "task.json").exists()
+        assert body["file_count"] == 2
+
+    def test_a_source_with_its_own_sidecar_keeps_it_verbatim(
+        self, data_dir: Path, tmp_path: Path, fake_recorder: FakeRecorder
+    ) -> None:
+        # An imported bag — including a re-imported archive — may already
+        # carry a task.json, possibly with subtasks that exist nowhere else.
+        # The projection must not overwrite it, and must not put a second
+        # entry in the audit list whose hash matches nothing on disk.
+        original = json.dumps(
+            {
+                "task": "from_the_bag",
+                "subtasks": [{"start": 0.0, "end": 3.5, "subtask": "reach"}],
+            }
+        )
+        roots = tmp_path / "nas"
+        roots.mkdir()
+        with _archive_client(data_dir, roots, fake_recorder) as client:
+            layout = client.app.state.data_layout
+            capture_id = _seed(client, layout)
+            (layout.capture_dir(capture_id) / "task.json").write_text(
+                original, encoding="utf-8"
+            )
+            progress = _archive_and_wait(client, capture_id, roots)
+            assert progress["state"] == "complete", progress
+            body = progress["result"]
+
+        copied = roots / capture_id / "task.json"
+        assert copied.read_text(encoding="utf-8") == original
+
+        entries = [e for e in body["files"] if e["path"] == "task.json"]
+        digest, size = fileops.sha256_file(copied)
+        assert entries == [{"path": "task.json", "size": size, "sha256": digest}]
+        assert body["file_count"] == 3
+        assert body["bytes"] == sum(e["size"] for e in body["files"])
+
+    def test_the_label_comes_from_the_sidecars_not_the_row_cache(
+        self, data_dir: Path, tmp_path: Path, fake_recorder: FakeRecorder
+    ) -> None:
+        # The row can transiently lag a §4.3 edit (adopt_manifest_facts has no
+        # record.json overlay). The projection reads the sidecars — the
+        # store's source of truth — so the frozen file carries the edit.
+        roots = tmp_path / "nas"
+        roots.mkdir()
+        with _archive_client(data_dir, roots, fake_recorder) as client:
+            layout = client.app.state.data_layout
+            capture_id = _seed(client, layout, task="stale_row_value")
+            capture_dir = layout.capture_dir(capture_id)
+            (capture_dir / "object_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "capture_id": capture_id,
+                        "source_instance_id": "inst",
+                        "run_id": f"run_{capture_id}",
+                        "state": "completed",
+                        "started_at": "2026-08-01T00:00:00.000Z",
+                        "task": "as_recorded",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            write_record(
+                capture_dir,
+                RecordV2(
+                    capture_id=capture_id,
+                    revision=1,
+                    labels={"task": "edited_after_recording"},
+                ),
+            )
+            progress = _archive_and_wait(client, capture_id, roots)
+            assert progress["state"] == "complete", progress
+
+        sidecar = roots / capture_id / "task.json"
+        assert json.loads(sidecar.read_text(encoding="utf-8")) == {
+            "task": "edited_after_recording"
+        }

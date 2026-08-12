@@ -266,12 +266,23 @@ class TestHappyPath:
             # for itself.
             assert (target / "001" / "bag_0.mcap").is_file()
             assert (target / "002" / "bag_0.mcap").is_file()
+            # Each member travels with its task projection (§6), and the
+            # manifest vouches for the generated file like any copied one.
+            for member_dir in ("001", "002"):
+                sidecar = target / member_dir / "task.json"
+                assert json.loads(sidecar.read_text(encoding="utf-8")) == {
+                    "task": "pick"
+                }
             manifest_bytes = (target / MANIFEST_NAME).read_bytes()
             manifest = json.loads(manifest_bytes)
             assert manifest["status"] == "complete"
             assert manifest["dataset_id"] == dataset_id
             assert [m["dir"] for m in manifest["members"]] == ["001", "002"]
             assert all(m["files"] for m in manifest["members"])
+            assert all(
+                "task.json" in {f["path"] for f in m["files"]}
+                for m in manifest["members"]
+            )
             assert manifest["started_event_id"]
 
             # The ledger: started → one archive per member → seal, and the
@@ -639,6 +650,8 @@ class TestCopyMode:
             # The export is complete and self-describing…
             assert (target / "001" / "bag_0.mcap").is_file()
             assert (target / "002" / "bag_0.mcap").is_file()
+            assert (target / "001" / "task.json").is_file()
+            assert (target / "002" / "task.json").is_file()
             manifest = json.loads((target / MANIFEST_NAME).read_bytes())
             assert manifest["mode"] == "copy"
             assert manifest["status"] == "complete"
@@ -656,6 +669,11 @@ class TestCopyMode:
                 row = store.get_capture(member["capture_id"])
                 assert row.archived_at is None
                 assert layout.capture_dir(member["capture_id"]).is_dir()
+                # The projection is destination-only: the live capture dir
+                # must not have gained a task.json.
+                assert not (
+                    layout.capture_dir(member["capture_id"]) / "task.json"
+                ).exists()
             assert (
                 client.get(f"/api/v1/datasets/{other['dataset_id']}").json()[
                     "member_count"

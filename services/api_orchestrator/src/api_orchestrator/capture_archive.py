@@ -10,6 +10,7 @@ place every other failure leaves them.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 from collections.abc import Awaitable, Callable
@@ -19,6 +20,11 @@ from typing import TYPE_CHECKING, Any
 
 from kairos_common import ApiError
 from kairos_common.rebuild import ReplicaState
+from kairos_common.task_sidecar import (
+    TASK_SIDECAR_FILENAME,
+    effective_task,
+    write_task_sidecar,
+)
 from kairos_common.time import utc_now_iso8601
 
 from api_orchestrator import fileops
@@ -393,9 +399,42 @@ class CaptureArchiveMixin:
 
         self._reject_overlapping_destination(target, source)
         try:
-            return await asyncio.to_thread(
+            result = await asyncio.to_thread(
                 fileops.copy_tree_verified, source, target, progress=progress
             )
+            # The destination additionally gains a generated task.json
+            # (rosbag2lerobot's per-bag sidecar), so the archived tree feeds
+            # the LeRobot converter without a kairos instance in the loop.
+            # Written only AFTER the verified copy — the destination must be
+            # empty when the copy starts — and only at the destination, never
+            # into objects/. A failure here is an OSError and lands in the
+            # handler below: the copy is not "done" until the tree it promised
+            # is complete, and the source is still untouched.
+            #
+            # A source that already carries its own task.json (imported bags —
+            # including a re-imported archive) keeps it: that file may hold
+            # subtasks that exist nowhere else, so overwriting it is the one
+            # option that loses information, and duplicating its entry would
+            # put a hash in the ledger that matches nothing on disk. kairos's
+            # own label still reaches the ledger via the event's `task` field.
+            #
+            # The label is read from the SOURCE sidecars under the caller's
+            # mutex (record.json §4.3 override, else the manifest), because
+            # the row can transiently lag them (adopt_manifest_facts has no
+            # record.json overlay); the row value is only the fallback when
+            # the sidecars cannot answer. A capture with no effective label
+            # gets no file.
+            if not any(
+                entry["path"] == TASK_SIDECAR_FILENAME for entry in result.entries
+            ):
+                task = await asyncio.to_thread(effective_task, source, capture.task)
+                if task:
+                    await asyncio.to_thread(_append_task_sidecar, result, target, task)
+                    if progress is not None:
+                        # The sidecar's bytes joined result.bytes; without
+                        # this the progress view stops just short of done.
+                        progress(result.bytes)
+            return result
         except fileops.DestinationNotEmptyError as exc:
             raise ApiError(
                 status_code=409,
@@ -497,6 +536,28 @@ def _real_path(path: Path) -> Path:
 def _overlaps(a: Path, b: Path) -> bool:
     """Whether either path contains the other, or they are the same."""
     return a == b or a.is_relative_to(b) or b.is_relative_to(a)
+
+
+def _append_task_sidecar(result: fileops.CopyResult, target: Path, task: str) -> None:
+    """Write ``<target>/task.json`` and account for it in *result*.
+
+    The entry joins ``result.entries`` in the same ``{path, size, sha256}``
+    shape as the copied files, so everything downstream of the copy — the
+    ``capture_archived`` ledger event, the archive response, the dataset
+    manifest — audits the generated file exactly like the copied bytes. The
+    digest is of the bytes read back from the destination: the hash recorded
+    is the hash of what is actually on that disk.
+    """
+    data = write_task_sidecar(target, task).read_bytes()
+    result.entries.append(
+        {
+            "path": TASK_SIDECAR_FILENAME,
+            "size": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
+        }
+    )
+    result.entries.sort(key=lambda entry: entry["path"])
+    result.bytes += len(data)
 
 
 __all__ = [
