@@ -19,7 +19,6 @@ import asyncio
 import contextlib
 import logging
 import os
-import shutil
 import signal
 import time
 from collections import deque
@@ -42,6 +41,8 @@ from lerobot_exporter.staging import (
     StagingError,
     build_staging,
     guarded_export_staging_dir,
+    remove_export_staging,
+    remove_output_dir,
     write_manifest_extra,
 )
 
@@ -283,9 +284,15 @@ class ExportRegistry:
             await self._convert(record, staging, destination)
         finally:
             # Staging is transient by contract — removed on every terminal path,
-            # including the ones that failed before the converter ever ran. Safe
-            # because `staging` came through the guard above.
-            await asyncio.to_thread(_rmtree, staging)
+            # including the ones that failed before the converter ever ran.
+            # remove_export_staging pins the root by an O_NOFOLLOW fd: the guard
+            # above ran at submit, but this removal runs after the whole
+            # conversion, so a `.staging` swapped to a symlink mid-export would
+            # otherwise be followed here and delete the capture named by
+            # export_id. The fd removal operates on the real inode regardless.
+            await asyncio.to_thread(
+                remove_export_staging, self._data_dir, record.export_id
+            )
 
     def _argv(
         self, record: ExportRecord, staging: Path, destination: Path
@@ -433,9 +440,10 @@ class ExportRegistry:
         no cause.
         """
         record.output_path = None
-        shutil.rmtree(
-            output_dir(self._data_dir, record.output_name), ignore_errors=True
-        )
+        # fd-pinned like the staging removal: this runs after the converter, so
+        # an exports/<name> swapped to a symlink at objects/ mid-export must not
+        # be followed here.
+        remove_output_dir(self._data_dir, record.output_name)
 
     async def _watch(
         self,
@@ -550,11 +558,6 @@ def _release_pipes(process: asyncio.subprocess.Process) -> None:
         return
     with contextlib.suppress(Exception):
         transport.close()
-
-
-def _rmtree(path: Path) -> None:
-    """Best-effort recursive removal (symlinks are unlinked, never followed)."""
-    shutil.rmtree(path, ignore_errors=True)
 
 
 def _killpg(pgid: int, sig: int) -> bool:

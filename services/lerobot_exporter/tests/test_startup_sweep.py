@@ -11,7 +11,13 @@ from kairos_common import Settings
 from kairos_common.ids import new_capture_id
 from lerobot_exporter.main import create_exporter_app
 from lerobot_exporter.models import ExportEpisode
-from lerobot_exporter.staging import StagingError, build_staging, sweep_staging
+from lerobot_exporter.staging import (
+    StagingError,
+    build_staging,
+    remove_export_staging,
+    remove_output_dir,
+    sweep_staging,
+)
 
 
 def test_leftover_staging_is_swept_at_startup(
@@ -97,5 +103,40 @@ def test_build_staging_refuses_a_symlinked_staging_root(
     episode = ExportEpisode(capture_id=new_capture_id(), dir="001", task=None)
     with pytest.raises(StagingError):
         build_staging(data_dir, victim, [episode])
+
+    assert (data_dir / "objects" / victim / "metadata.yaml").is_file()
+
+
+def test_remove_export_staging_does_not_follow_a_root_symlinked_after_the_guard(
+    data_dir: Path, make_capture: Callable[..., str]
+) -> None:
+    """The TOCTOU variant: .staging is a real dir at guard time and is swapped
+    to a symlink at objects/ before the removal runs (mid-export). The fd-pinned
+    removal must not follow it — the build-time path check is not enough because
+    the removal re-resolves the path minutes later."""
+    victim = make_capture()
+    staging = data_dir / "exports" / ".staging"
+    staging.mkdir(parents=True)
+    # It was a real directory when the guard ran; now it is swapped.
+    staging.rmdir()
+    os.symlink(data_dir / "objects", staging)
+
+    # Would delete objects/<victim> if the removal followed the symlink.
+    remove_export_staging(data_dir, victim)
+
+    assert (data_dir / "objects" / victim / "metadata.yaml").is_file()
+
+
+def test_remove_output_dir_does_not_follow_a_symlinked_exports(
+    data_dir: Path, make_capture: Callable[..., str]
+) -> None:
+    """The partial-output twin: exports/ swapped to a symlink at objects/ before
+    the failure-path removal runs must not have a capture deleted through it."""
+    victim = make_capture()
+    exports = data_dir / "exports"
+    exports.rmdir()
+    os.symlink(data_dir / "objects", exports)
+
+    remove_output_dir(data_dir, victim)
 
     assert (data_dir / "objects" / victim / "metadata.yaml").is_file()

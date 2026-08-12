@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
-import shutil
+import stat
 from pathlib import Path
 
 from kairos_common.atomic_io import atomic_write_json
@@ -27,6 +27,7 @@ from lerobot_exporter.models import ExportEpisode
 from lerobot_exporter.paths import (
     MANIFEST_EXTRA_FILENAME,
     export_staging_dir,
+    exports_dir,
     staging_root,
 )
 
@@ -53,6 +54,103 @@ def _symlink(link: Path, target: Path) -> None:
     looking for what an export was fed.
     """
     os.symlink(os.path.relpath(target, start=link.parent), link)
+
+
+def _rmtree_at(dir_fd: int, name: str) -> None:
+    """Recursively remove *name* under *dir_fd*, NEVER following a symlink.
+
+    Every step is relative to a directory file descriptor, and each directory
+    is descended into only after ``lstat`` proves it is a real directory
+    (opened with ``O_NOFOLLOW``), so no symlink anywhere in the tree can
+    redirect a removal outside it. A symlink entry is unlinked (the link, not
+    its target); a real subdirectory is emptied then ``rmdir``'d.
+    """
+    try:
+        info = os.lstat(name, dir_fd=dir_fd)
+    except FileNotFoundError:
+        return
+    if not stat.S_ISDIR(info.st_mode):
+        # A symlink or a plain file — unlink removes the entry itself.
+        os.unlink(name, dir_fd=dir_fd)
+        return
+    child_fd = os.open(
+        name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dir_fd
+    )
+    try:
+        for entry in os.listdir(child_fd):
+            _rmtree_at(child_fd, entry)
+    finally:
+        os.close(child_fd)
+    os.rmdir(name, dir_fd=dir_fd)
+
+
+def _open_staging_root_nofollow(data_dir: str | Path) -> int | None:
+    """A fd on the real staging root, or ``None`` when it must not be touched.
+
+    ``O_NOFOLLOW`` is the whole point: if ``.staging`` has become a symlink
+    (an attacker swapping it at ``objects/`` DURING an export — the guard at
+    build time only checked the path, and a removal minutes later re-resolves
+    it), the open fails rather than following it, and once open the fd pins the
+    real directory's inode so a later swap cannot redirect removals through it.
+    """
+    root = staging_root(data_dir)
+    try:
+        return os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        # ELOOP (now a symlink) or similar: refuse to remove through it.
+        logger.warning(
+            "refusing to remove staging: root is not a real directory (%s)", root
+        )
+        return None
+
+
+def _remove_child_nofollow(parent: Path, child: str) -> None:
+    """Remove *child* under *parent*, pinning *parent* by an ``O_NOFOLLOW`` fd.
+
+    Both the staging removal and the output removal run long after their
+    directory was checked, so either parent (``.staging`` or ``exports/``) being
+    swapped to a symlink between the check and the removal would otherwise steer
+    an rmtree at ``objects/``. Opening the parent with ``O_NOFOLLOW`` fails on a
+    symlinked parent, and once open the fd pins the real inode, so the removal
+    reaches only what genuinely lives under it.
+    """
+    try:
+        parent_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return
+    except OSError:
+        logger.warning(
+            "refusing to remove %s: %s is not a real directory", child, parent
+        )
+        return
+    try:
+        _rmtree_at(parent_fd, child)
+    finally:
+        os.close(parent_fd)
+
+
+def remove_export_staging(data_dir: str | Path, export_id: str) -> None:
+    """Remove ``exports/.staging/<export_id>`` without following a symlink.
+
+    The removal runs after the whole conversion, so a build-time path check is
+    a TOCTOU: a ``.staging`` swapped to a symlink at ``objects/`` mid-export
+    would be followed here and delete the capture whose UUID equals the
+    caller-controlled ``export_id``, silently, with the export still reporting
+    success. See :func:`_remove_child_nofollow` for how the fd pin closes it.
+    """
+    _remove_child_nofollow(staging_root(data_dir), export_id)
+
+
+def remove_output_dir(data_dir: str | Path, output_name: str) -> None:
+    """Remove ``exports/<output_name>`` without following a symlinked parent.
+
+    The partial-output twin of :func:`remove_export_staging`: it runs on the
+    failure and cancel paths after the converter ran, so an ``exports/`` swapped
+    to a symlink at ``objects/`` mid-export would otherwise be followed here.
+    """
+    _remove_child_nofollow(exports_dir(data_dir), output_name)
 
 
 def guarded_export_staging_dir(data_dir: str | Path, export_id: str) -> Path:
@@ -99,7 +197,9 @@ def build_staging(
     root = guarded_export_staging_dir(data_dir, export_id)
     # A leftover tree can only be debris from a previous attempt with this
     # export_id; the caller refuses a re-used id, so there is no live job here.
-    shutil.rmtree(root, ignore_errors=True)
+    # Removed fd-relative (never following a symlinked root), same as the
+    # removal the registry runs when the export ends.
+    remove_export_staging(data_dir, export_id)
     root.mkdir(parents=True)
     for episode in episodes:
         source = capture_dir(data_dir, episode.capture_id)
@@ -174,49 +274,25 @@ def sweep_staging(data_dir: str | Path) -> list[str]:
     """Remove every staging tree at startup; return what was removed.
 
     No conversion survives a restart (the subprocess died with the process), so
-    everything under ``.staging/`` is debris by definition. The per-episode
-    trees inside contain only symlinks, so ``shutil.rmtree`` deleting them
-    cannot reach recorded bytes — it does not follow the links it deletes.
-
-    The one thing that CAN reach recorded bytes is the staging ROOT itself
-    being a symlink: if ``exports/.staging`` pointed at ``objects/`` (a
-    relocated or attacker-writable EXPORTS_DIR), following it would iterate
-    every capture and rmtree it. So the root is required to be a real
-    directory, and every entry is required to resolve back inside it before it
-    is touched — a real capture dir reached through a symlinked root fails that
-    containment check.
+    everything under ``.staging/`` is debris by definition. Removal goes through
+    the same fd-relative path as the runtime removal: the root is opened with
+    ``O_NOFOLLOW`` (a symlinked ``.staging``, e.g. a relocated or
+    attacker-writable EXPORTS_DIR pointed at ``objects/``, fails the open rather
+    than being followed and iterated), and each entry is removed fd-relative so
+    no symlink anywhere in the tree can steer a deletion at recorded bytes.
     """
-    root = staging_root(data_dir)
-    # A symlinked staging root is refused outright — never followed into
-    # whatever it points at. is_symlink() is checked before is_dir() because
-    # is_dir() follows the link.
-    if root.is_symlink() or not root.is_dir():
+    root_fd = _open_staging_root_nofollow(data_dir)
+    if root_fd is None:
         return []
-    root_real = root.resolve()
     removed: list[str] = []
-    for entry in sorted(root.iterdir()):
-        try:
-            if entry.is_symlink():
-                # Unlinking a symlink removes the LINK, never what it points
-                # at — safe whatever it targets, so a stray link at a capture
-                # is cleaned without ever reaching the capture.
-                entry.unlink()
-            elif entry.is_dir():
-                # A real directory is rmtree'd only once it is proven to live
-                # directly under the resolved staging root. This is what stops
-                # a deletion from being steered at objects/ (or anywhere else)
-                # through a symlinked path component the checks above missed.
-                if entry.resolve().parent != root_real:
-                    logger.warning(
-                        "refusing to remove staging entry that escapes the root: %s",
-                        entry,
-                    )
-                    continue
-                shutil.rmtree(entry)
-            else:
-                entry.unlink()
-        except OSError:
-            logger.warning("could not remove leftover staging entry: %s", entry)
-            continue
-        removed.append(entry.name)
+    try:
+        for name in sorted(os.listdir(root_fd)):
+            try:
+                _rmtree_at(root_fd, name)
+            except OSError:
+                logger.warning("could not remove leftover staging entry: %s", name)
+                continue
+            removed.append(name)
+    finally:
+        os.close(root_fd)
     return removed
