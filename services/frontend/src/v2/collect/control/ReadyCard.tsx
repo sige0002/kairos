@@ -1,21 +1,36 @@
 // READY: the pre-take card. Start is the only primary action, and it is gated
 // on the two things a recording cannot be made without — at least one topic,
 // and an operator who owns it.
+//
+// Both gates explain themselves in a note under the button, and the button
+// POINTS AT the note it is blocked by (aria-describedby): a disabled control
+// with an unrelated line of amber text beneath it is only self-descriptive to
+// someone who can see both at once. Since #11 the operator gate fires on a
+// fresh install, so this is the first thing a new operator meets.
 
 import { Card, cn } from '../../../components/ui';
 import { CARD_PAD } from '../compact';
 import type { BatchMachine } from '../useBatchMachine';
+import { OPERATOR_GATE_HINT } from '../machine/types';
 import { MachineErrorBanner } from './banners';
 import { CARD_GAP_COMPACT } from './shared';
+
+const NO_SELECTION_NOTE_ID = 'ready-no-selection-note';
+const OPERATOR_NOTE_ID = 'ready-operator-note';
 
 export function ReadyCard({
   machine,
   startRef,
+  titleRef,
 }: {
   machine: BatchMachine;
   startRef: React.Ref<HTMLButtonElement>;
+  /** Focus target while Start is disabled. A disabled button refuses focus(),
+   *  and the phase would otherwise leave it on <body> (D-4). */
+  titleRef: React.Ref<HTMLSpanElement>;
 }) {
   const { stats } = machine;
+  const blocked = machine.noSelection || machine.operatorMissing;
   return (
     <Card
       className={cn(
@@ -26,7 +41,12 @@ export function ReadyCard({
     >
       <div className="flex items-center gap-2">
         <span className="h-[9px] w-[9px] animate-recpulse rounded-sm bg-teal-600" />
-        <span data-testid="phase-title" className="text-[17px] font-bold text-teal-700">
+        <span
+          ref={titleRef}
+          data-testid="phase-title"
+          tabIndex={-1}
+          className="text-[17px] font-bold text-teal-700 outline-none"
+        >
           READY
         </span>
         <div className="flex-1" />
@@ -72,10 +92,23 @@ export function ReadyCard({
         type="button"
         data-testid="start-recording"
         onClick={machine.startRecording}
-        disabled={machine.noSelection || machine.operatorMissing}
+        disabled={blocked}
+        // Names the note that says why, so the reason travels with the button
+        // rather than sitting beside it. Both ids are listed when both gates
+        // are up; a missing id is ignored by assistive tech.
+        aria-describedby={
+          blocked
+            ? [
+                machine.noSelection ? NO_SELECTION_NOTE_ID : null,
+                machine.operatorMissing ? OPERATOR_NOTE_ID : null,
+              ]
+                .filter(Boolean)
+                .join(' ')
+            : undefined
+        }
         className={cn(
           'flex h-[52px] items-center justify-center gap-2 rounded-control text-[15px] font-bold shadow-btn [@media(max-height:860px)]:h-[44px]',
-          machine.noSelection || machine.operatorMissing
+          blocked
             ? 'cursor-not-allowed bg-gray-200 text-gray-400'
             : 'bg-teal-600 text-white hover:bg-teal-700',
         )}
@@ -85,14 +118,21 @@ export function ReadyCard({
         <span className="text-[11px] font-medium opacity-70">· R</span>
       </button>
       {machine.noSelection && (
-        <span className="text-[11px] font-medium text-amber-600">
+        <span
+          id={NO_SELECTION_NOTE_ID}
+          data-testid="no-selection-note"
+          className="text-[11px] font-medium text-amber-600"
+        >
           Every topic is cleared — select at least one in Monitor to record.
         </span>
       )}
       {machine.operatorMissing && (
-        <span data-testid="operator-gate-note" className="text-[11px] font-medium text-amber-600">
-          Pick your name first (OP chip, top right) — recordings must say who
-          made them.
+        <span
+          id={OPERATOR_NOTE_ID}
+          data-testid="operator-gate-note"
+          className="text-[11px] font-medium text-amber-600"
+        >
+          {OPERATOR_GATE_HINT}
         </span>
       )}
       {machine.startError && (

@@ -132,7 +132,10 @@ beforeEach(() => {
     activeTab: '',
     sseStatus: 'closed',
     monitorBridge: null,
-    recordOperator: '',
+    // Recording requires an operator since #11, in every configuration —
+    // so a suite that records has to say who is recording. The gate itself
+    // is exercised where it is the subject, not incidentally here.
+    recordOperator: 'tester',
     recordSelected: new Set<string>(),
     recordCustomized: false,
   });

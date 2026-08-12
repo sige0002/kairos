@@ -198,3 +198,20 @@ export const COLLECT_UNSAVED_DISCARD_REASON =
 // as a take nobody meant to make (#8). The ledger says which gesture it was.
 export const CANCELLED_START_DISCARD_REASON =
   'Start cancelled during arming (Collect)';
+
+/**
+ * Why Start is refused when nobody has said who is recording (#11).
+ *
+ * One string for two surfaces — the note under the disabled Start button, and
+ * the toast when the R shortcut walks around that button — because a gate the
+ * operator meets on their very first visit cannot afford two different
+ * accounts of itself.
+ *
+ * Written for someone who has never seen this console: the condition first (so
+ * it reads as a state, not a scolding), then the control BY THE LABEL PRINTED
+ * ON IT, then why it is worth the extra step. "OP" is what the chip in the
+ * header actually says while empty, so pointing at it needs no jargon.
+ */
+export const OPERATOR_GATE_HINT =
+  'No name set yet — click OP at the top right to add yours. ' +
+  'Every recording has to say who made it.';
