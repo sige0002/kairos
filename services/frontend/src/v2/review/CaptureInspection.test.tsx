@@ -10,7 +10,12 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
-import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
+import {
+  jsonResponse,
+  makeTestClient,
+  renderWithClient,
+} from '../../test/renderWithClient';
+import { queryKeys } from '../../api/queryKeys';
 import { CaptureInspection } from './CaptureInspection';
 import type { CaptureDetail } from '../../api/types';
 
@@ -60,14 +65,33 @@ function mockApi(opts: {
      *  lease_owner, which is the whole point of its 409. */
     details?: Record<string, unknown>;
   };
+  /** A submission that never reaches the server at all: fetch rejects rather
+   *  than answering. `attempts` bounds it, so a retry can be observed
+   *  succeeding after the connection comes back. */
+  jobNetworkFailure?: { message?: string; attempts?: number };
+  /** What a re-read returns after a submission was lost — the run that got
+   *  through anyway and finished, which the panel's own poll then picks up. */
+  captureAfterFailure?: CaptureDetail;
 }) {
   let current = opts.capture;
+  let networkFailuresLeft = opts.jobNetworkFailure
+    ? (opts.jobNetworkFailure.attempts ?? Number.POSITIVE_INFINITY)
+    : 0;
   const posted: Record<string, unknown>[] = [];
   vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     const url = String(input);
     const method = (init?.method ?? 'GET').toUpperCase();
     if (url.endsWith('/jobs') && method === 'POST') {
       posted.push(JSON.parse(String(init?.body)));
+      if (networkFailuresLeft > 0) {
+        networkFailuresLeft -= 1;
+        if (opts.captureAfterFailure) current = opts.captureAfterFailure;
+        // Exactly how a browser reports a request it could not complete: a
+        // bare TypeError, no response, no envelope.
+        return Promise.reject(
+          new TypeError(opts.jobNetworkFailure?.message ?? 'Failed to fetch'),
+        );
+      }
       if (opts.jobError) {
         if (opts.captureAfterRefusal) current = opts.captureAfterRefusal;
         return Promise.resolve(
@@ -411,4 +435,311 @@ test('a FAULT with no message of its own still says something', async () => {
 
   const note = await screen.findByTestId('review-capture-error');
   expect(note).toHaveTextContent('This recording failed.');
+});
+
+// ---- #9: a failed attempt beside a stored result -------------------------
+//
+// Beta case A-05 (2026-08-12, judged FAIL): a validation run whose POST never
+// reached the server rendered "Failed to fetch" directly beside an untouched
+// PASS badge. Neither carried a time, so there was nothing on the page saying
+// which of the two was current — and the only way to try again was to find the
+// button that had just failed.
+
+const PASSED = () =>
+  detail({
+    validation: {
+      result: 'pass',
+      checked_at: '2026-08-12T11:26:03Z',
+      template: { name: 'tmpl', version: 1 },
+    },
+  });
+
+test('the stored badge is dated with the run’s own completion time', async () => {
+  mockApi({ capture: PASSED() });
+  renderWithClient(<CaptureInspection captureId={CAP} />);
+
+  const checked = await screen.findByTestId('review-validation-checked');
+  // The report's `checked_at`, rendered — not this client's clock, and not a
+  // stand-in for a time the report did not carry.
+  expect(checked).toHaveTextContent(
+    `checked ${new Date('2026-08-12T11:26:03Z').toLocaleString('en-GB', { hour12: false })}`,
+  );
+});
+
+test('a report with no time of its own is labelled, not given one', async () => {
+  // A pipeline from before `checked_at` existed. Inventing a time here would
+  // be the worst of both: a badge that looks current because the UI dated it.
+  mockApi({ capture: detail({ validation: { result: 'pass' } }) });
+  renderWithClient(<CaptureInspection captureId={CAP} />);
+
+  const checked = await screen.findByTestId('review-validation-checked');
+  expect(checked).toHaveTextContent('last completed check');
+  expect(checked.textContent).not.toMatch(/\d{4}/);
+});
+
+test('a check that never reaches the server is separated from the stored PASS', async () => {
+  mockApi({ capture: PASSED(), jobNetworkFailure: {} });
+  renderWithClient(<CaptureInspection captureId={CAP} />);
+
+  fireEvent.click(await screen.findByTestId('review-run-validation'));
+
+  const err = await screen.findByTestId('review-validation-error');
+  // The defect, asserted first so a regression names it: the browser's own
+  // string was what the operator read.
+  expect(err.textContent).not.toMatch(/failed to fetch/i);
+  expect(err).toHaveAttribute('data-error-code', 'network_unreachable');
+  expect(err.textContent).toMatch(/could not reach the server/i);
+  // Plain-language guidance, and no overclaiming: a lost connection does not
+  // establish that the run never started.
+  expect(err.textContent).toMatch(/orchestrator is running/i);
+  expect(err.textContent).toMatch(/not known/i);
+
+  // And the badge is no longer left to be read as this attempt's answer.
+  const stale = screen.getByTestId('review-validation-error-stale');
+  expect(stale.textContent).toMatch(/PASS badge above is the last completed check/i);
+  expect(stale.textContent).toMatch(/not this attempt/i);
+  // The stored verdict itself is untouched — the failure annotates it, it does
+  // not erase a real result the server still holds.
+  expect(screen.getByTestId('review-validation-checked')).toHaveTextContent('checked');
+});
+
+test('the failed attempt carries its own way to try again', async () => {
+  const { posted } = mockApi({ capture: PASSED(), jobNetworkFailure: { attempts: 1 } });
+  renderWithClient(<CaptureInspection captureId={CAP} />);
+
+  fireEvent.click(await screen.findByTestId('review-run-validation'));
+  const retry = await screen.findByTestId('review-validation-error-retry');
+  expect(retry).toBeEnabled();
+
+  fireEvent.click(retry);
+
+  // The same work, resubmitted from the note — same pipeline, same capture,
+  // same template as the run that failed.
+  await waitFor(() => expect(posted).toHaveLength(2));
+  expect(posted[1]).toEqual(posted[0]);
+  expect(posted[1]).toMatchObject({
+    pipeline: 'fast_validation',
+    capture_id: CAP,
+    params: { template: 'tmpl' },
+  });
+  // The second attempt was accepted, so the note goes.
+  await waitFor(() => expect(screen.queryByTestId('review-validation-error')).toBeNull());
+});
+
+test('a capture with no stored result claims none', async () => {
+  // The other direction of the same honesty: with nothing on file, the note
+  // must not tell the operator it is showing a last completed check.
+  mockApi({ capture: detail(), jobNetworkFailure: {} });
+  renderWithClient(<CaptureInspection captureId={CAP} />);
+
+  fireEvent.click(await screen.findByTestId('review-run-validation'));
+
+  await screen.findByTestId('review-validation-error');
+  expect(screen.queryByTestId('review-validation-error-stale')).toBeNull();
+  expect(screen.queryByTestId('review-validation-checked')).toBeNull();
+});
+
+test('a stale loss table is separated from a failed loss attempt too', async () => {
+  // The same shape, one section up: the error note sits above a table the
+  // server stored earlier.
+  mockApi({
+    capture: detail({
+      loss: { topics: [{ name: '/head_camera/image_raw', count: 900, hz: 30 }] },
+    }),
+    jobNetworkFailure: {},
+  });
+  renderWithClient(<CaptureInspection captureId={CAP} />);
+
+  fireEvent.click(await screen.findByTestId('review-run-loss'));
+
+  const stale = await screen.findByTestId('review-loss-error-stale');
+  expect(stale.textContent).toMatch(/last completed loss report, not this attempt/i);
+  expect(screen.getByTestId('review-loss-error-retry')).toBeEnabled();
+});
+
+// F1: the note points AT the stored result, the mutation error is frozen where
+// it happened, and the panel re-reads itself every CAPTURE_DETAIL_POLL_MS. So
+// the run whose ANSWER was lost while the run itself completed — the exact case
+// the guidance hedges about — used to refresh the badge underneath a note still
+// calling it the last completed check, denying the very result it pointed at.
+test('a check that lands after the attempt fails is not denied by the note', async () => {
+  const client = makeTestClient();
+  mockApi({
+    capture: PASSED(),
+    jobNetworkFailure: {},
+    // The submission reached the server after all; only its answer was lost.
+    captureAfterFailure: detail({
+      validation: {
+        result: 'fail',
+        checked_at: '2026-08-12T11:41:00Z',
+        template: { name: 'tmpl', version: 1 },
+      },
+    }),
+  });
+  renderWithClient(<CaptureInspection captureId={CAP} />, { client });
+
+  fireEvent.click(await screen.findByTestId('review-run-validation'));
+  await screen.findByTestId('review-validation-error');
+
+  // Stand in for the 10 s detail poll: the panel re-reads the capture and finds
+  // the verdict of the run that got through.
+  void client.invalidateQueries({ queryKey: queryKeys.capture(CAP) });
+  await waitFor(() =>
+    expect(screen.getByTestId('review-validation-checked')).toHaveTextContent(
+      new Date('2026-08-12T11:41:00Z').toLocaleString('en-GB', { hour12: false }),
+    ),
+  );
+
+  // The defect: the note went on calling a result that landed AFTER this
+  // attempt "the last completed check ... not this attempt".
+  const stale = screen.getByTestId('review-validation-error-stale');
+  expect(stale.textContent).not.toMatch(/not this attempt/i);
+  expect(stale.textContent).toMatch(/completed after this attempt failed/i);
+  // And it does not swing to the opposite overclaim either — another terminal
+  // could have run that check, so the attribution stays hedged.
+  expect(stale.textContent).toMatch(/possibly/i);
+});
+
+test('a result that has not moved is still named as the last completed check', async () => {
+  // The control for the test above: without this, dropping the claim entirely
+  // would pass just as well, and the note would stop saying the one thing it
+  // exists to say.
+  const client = makeTestClient();
+  mockApi({ capture: PASSED(), jobNetworkFailure: {} });
+  renderWithClient(<CaptureInspection captureId={CAP} />, { client });
+
+  fireEvent.click(await screen.findByTestId('review-run-validation'));
+  await screen.findByTestId('review-validation-error');
+
+  void client.invalidateQueries({ queryKey: queryKeys.capture(CAP) });
+  await waitFor(() => expect(screen.getByTestId('review-validation-error-stale')).toBeInTheDocument());
+  expect(screen.getByTestId('review-validation-error-stale').textContent).toMatch(
+    /PASS badge above is the last completed check.*not this attempt/i,
+  );
+});
+
+// F6: `formatWhen` echoes anything it cannot parse, so a malformed sidecar
+// rendered "checked 2026-13-45T99:99:99Z" — which still reads as a date.
+test('an unparseable checked_at is dropped, not echoed', async () => {
+  mockApi({
+    capture: detail({ validation: { result: 'pass', checked_at: '2026-13-45T99:99:99Z' } }),
+  });
+  renderWithClient(<CaptureInspection captureId={CAP} />);
+
+  const checked = await screen.findByTestId('review-validation-checked');
+  expect(checked).toHaveTextContent('last completed check');
+  expect(checked.textContent).not.toMatch(/2026-13-45/);
+});
+
+// F3: the loss table is called "the last completed loss report" by a failed
+// attempt, so it has to be datable too — loss_report stamps `checked_at` just
+// as fast_validation does.
+test('the stored loss table is dated like the validation badge', async () => {
+  mockApi({
+    capture: detail({
+      loss: {
+        topics: [{ name: '/head_camera/image_raw', count: 900, hz: 30 }],
+        checked_at: '2026-08-12T09:15:00Z',
+      },
+    }),
+  });
+  renderWithClient(<CaptureInspection captureId={CAP} />);
+
+  const checked = await screen.findByTestId('review-loss-checked');
+  expect(checked).toHaveTextContent(
+    `checked ${new Date('2026-08-12T09:15:00Z').toLocaleString('en-GB', { hour12: false })}`,
+  );
+});
+
+// ---- F2: one note, for the latest attempt --------------------------------
+//
+// The integrity section has two error channels that do not clear each other:
+// `jobError` (a job that ran and failed) is reset only when a LATER submission
+// succeeds. So a pipeline failure followed by a re-run into a dead network left
+// both set, and the section rendered two identical role="alert" boxes with two
+// identical Retry buttons, describing different attempts.
+
+/** POST /jobs answers `jobPosts` in order — 'ok' accepts, 'network' rejects —
+ *  and the accepted job then runs and fails inside the pipeline. */
+function mockSignalApi(jobPosts: ('ok' | 'network')[]) {
+  let call = 0;
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    const method = (init?.method ?? 'GET').toUpperCase();
+    if (url.endsWith('/jobs') && method === 'POST') {
+      const answer = jobPosts[call++] ?? 'ok';
+      if (answer === 'network') return Promise.reject(new TypeError('Failed to fetch'));
+      return Promise.resolve(
+        jsonResponse({ job_id: 'j1', capture_id: CAP, pipeline: 'signal_report', state: 'queued' }),
+      );
+    }
+    if (url.includes('/jobs/j1/status'))
+      return Promise.resolve(
+        jsonResponse({ job_id: 'j1', capture_id: CAP, pipeline: 'signal_report', state: 'failed' }),
+      );
+    if (url.includes('/jobs/j1/result'))
+      return Promise.resolve(
+        jsonResponse({
+          summary: { error: { code: 'pipeline_unavailable', message: 'bagflow is not bundled' } },
+        }),
+      );
+    if (url.includes('/config/options')) return Promise.resolve(jsonResponse(CONFIG_OPTIONS));
+    if (url.includes(`/captures/${CAP}`)) return Promise.resolve(jsonResponse(detail()));
+    return Promise.resolve(jsonResponse({}));
+  });
+}
+
+test('a job that ran and failed is stated, and offers its own retry', async () => {
+  // No coverage existed for this channel at all — it was a bare <p> with the
+  // raw sentence and no way forward but the button that had just failed.
+  mockSignalApi(['ok']);
+  renderWithClient(<CaptureInspection captureId={CAP} />);
+
+  fireEvent.click(await screen.findByTestId('review-run-signal'));
+
+  const err = await screen.findByTestId('review-signal-error');
+  expect(err).toHaveTextContent('bagflow is not bundled');
+  expect(screen.getByTestId('review-signal-error-retry')).toBeEnabled();
+});
+
+test('a lost re-run replaces the previous failure instead of stacking on it', async () => {
+  mockSignalApi(['ok', 'network']);
+  renderWithClient(<CaptureInspection captureId={CAP} />);
+
+  fireEvent.click(await screen.findByTestId('review-run-signal'));
+  await screen.findByTestId('review-signal-error');
+
+  // Re-run from the note itself — the second submission never lands.
+  fireEvent.click(screen.getByTestId('review-signal-error-retry'));
+
+  const submit = await screen.findByTestId('review-signal-submit-error');
+  expect(submit).toHaveAttribute('data-error-code', 'network_unreachable');
+  // The defect: two alerts, two Retry buttons, two different attempts.
+  await waitFor(() => expect(screen.queryByTestId('review-signal-error')).toBeNull());
+  expect(screen.getAllByTestId(/^review-signal-.*-retry$/)).toHaveLength(1);
+});
+
+// N3: the moved-on branch names "the badge above", but the badge is gated on a
+// `result` the note never checked. A report can move to something this panel
+// renders nothing for — vanish in a store rebuild, or land without a verdict —
+// and then the sentence points at empty space.
+test('the moved-on note is not shown when there is no badge to point at', async () => {
+  const client = makeTestClient();
+  mockApi({
+    capture: PASSED(),
+    jobNetworkFailure: {},
+    // The report moved, but to something with no verdict in it.
+    captureAfterFailure: detail({ validation: { checked_at: '2026-08-12T11:41:00Z' } }),
+  });
+  renderWithClient(<CaptureInspection captureId={CAP} />, { client });
+
+  fireEvent.click(await screen.findByTestId('review-run-validation'));
+  await screen.findByTestId('review-validation-error');
+
+  void client.invalidateQueries({ queryKey: queryKeys.capture(CAP) });
+  await waitFor(() => expect(screen.queryByTestId('review-validation-checked')).toBeNull());
+
+  // The failure is still stated — only the claim about a badge is dropped.
+  expect(screen.getByTestId('review-validation-error')).toBeInTheDocument();
+  expect(screen.queryByTestId('review-validation-error-stale')).toBeNull();
 });

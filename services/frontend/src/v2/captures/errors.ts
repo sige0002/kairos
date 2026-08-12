@@ -12,6 +12,10 @@
 // told to wait before deleting is no help to someone who was trying to run a
 // job — so the reading takes the CONTEXT of the action that failed. Callers
 // that do not pass one get the neutral wording, never another action's.
+//
+// Failures that never reached an answer at all are read here too: they have no
+// envelope, but the operator still has to be told something better than the
+// browser's own sentence (see "no envelope to read" below).
 
 import { ApiError } from '../../api/client';
 
@@ -273,6 +277,135 @@ const GUIDANCE: Record<string, { guidance: string; severity: ErrorSeverity; relo
   },
 };
 
+// ---- failures with no envelope to read ------------------------------------
+//
+// `api/client.ts` does not wrap fetch, so a request that never got an answer
+// arrives as the browser's own object rather than as an ApiError: a `TypeError`
+// when the connection could not be made or died mid-flight, and a
+// `TimeoutError` when the client's own deadline (DEFAULT_TIMEOUT_MS) fired.
+// Both used to fall straight through to the unknown degradation below and
+// render as the raw browser string. "Failed to fetch" names no subject, offers
+// no next step, and — beside a stored PASS badge — does not even say that what
+// failed was the attempt rather than the recording.
+//
+// What these readings must NOT do is claim more than is known. A connection
+// that fails says nothing about whether the request arrived: the work may have
+// started and only its answer been lost. So the guidance names the way to find
+// out instead of asserting that nothing happened.
+
+interface TransportReading {
+  code: string;
+  message: string;
+  /** Per-action guidance; `default` is what a caller with no context sees. */
+  byContext: Partial<Record<ErrorContext, string>> & { default: string };
+}
+
+const NETWORK_UNREACHABLE: TransportReading = {
+  code: 'network_unreachable',
+  message: 'Could not reach the server — the request got no answer.',
+  byContext: {
+    job:
+      'Check that the orchestrator is running and reachable, then try again. ' +
+      'Whether the run started is not known from here: if a retry comes back ' +
+      'busy, one did.',
+    review:
+      'Check that the orchestrator is running and reachable, then save again. ' +
+      'Nothing here confirms the save either way — reload the recording to see ' +
+      'what the server actually holds.',
+    delete:
+      'Check that the orchestrator is running and reachable, then try again. ' +
+      'Whether the removal started is not known from here — reload the list ' +
+      'before assuming it did not.',
+    default:
+      'Check that the orchestrator is running and reachable, then try again. ' +
+      'Whether the request arrived is not known from here — reload before ' +
+      'assuming nothing happened.',
+  },
+};
+
+const NETWORK_TIMEOUT: TransportReading = {
+  code: 'network_timeout',
+  message: 'The server did not answer in time.',
+  byContext: {
+    job:
+      'The request was sent, so the run may still be going. Give it a moment ' +
+      'and reload before starting another.',
+    review:
+      'The request was sent, so the save may still have landed. Reload the ' +
+      'recording to see what the server holds before typing it again.',
+    delete:
+      'The request was sent, so the removal may still be running. Reload the ' +
+      'list before trying again.',
+    default:
+      'The request was sent, so it may still be running. Reload before ' +
+      'assuming it did not happen.',
+  },
+};
+
+/** Message fragments the platforms use for a failed fetch. A `TypeError` that
+ *  matches none of them is far more likely a bug in our own call than a dead
+ *  network, so it is left to degrade as an unknown error rather than be
+ *  mislabelled — a wrong diagnosis sends the operator to check a cable that was
+ *  never the problem. */
+const NETWORK_FETCH_MESSAGES = [
+  'failed to fetch', // Chromium
+  'networkerror', // Firefox: "NetworkError when attempting to fetch resource."
+  'load failed', // Safari
+  'network request failed',
+  'fetch failed', // undici (Node, and the test runner)
+];
+
+/** Duck-typed rather than `instanceof`: a `TimeoutError` is a DOMException,
+ *  whose relation to `Error` differs between the browser and the test
+ *  environment, and a cross-realm `TypeError` fails `instanceof` outright. */
+function errorField(error: unknown, key: 'name' | 'message'): string {
+  if (typeof error !== 'object' || error === null) return '';
+  const value = (error as Record<string, unknown>)[key];
+  return typeof value === 'string' ? value : '';
+}
+
+/** True for the codes minted below — a request that never reached an answer,
+ *  as opposed to one the server considered and refused.
+ *
+ *  Surfaces that announce a refusal have to word themselves differently for
+ *  these: "Save refused" over "Could not reach the server" says something
+ *  nobody did. Exported so that judgement lives with the codes rather than
+ *  being re-derived from their spelling at each call site. */
+export function isTransportCode(code: string): boolean {
+  return code === NETWORK_UNREACHABLE.code || code === NETWORK_TIMEOUT.code;
+}
+
+/** The reading for a failure that never produced an HTTP answer, or null when
+ *  the thrown value is not one. */
+function readTransportError(
+  error: unknown,
+  context?: ErrorContext,
+): CaptureErrorReading | null {
+  const raw = errorField(error, 'message');
+  const name = errorField(error, 'name');
+  const kind =
+    name === 'TimeoutError'
+      ? NETWORK_TIMEOUT
+      : name === 'TypeError' &&
+          NETWORK_FETCH_MESSAGES.some((fragment) => raw.toLowerCase().includes(fragment))
+        ? NETWORK_UNREACHABLE
+        : null;
+  if (!kind) return null;
+  return {
+    code: kind.code,
+    message: kind.message,
+    guidance: (context && kind.byContext[context]) || kind.byContext.default,
+    severity: 'warning',
+    // Deliberately false: `needsReload` drives an automatic refetch, and a
+    // screen that cannot reach the server has nothing to refetch WITH. The
+    // guidance asks the operator to reload once it is back instead.
+    reload: false,
+    // The browser's own string is kept for a bug report but not shown — being
+    // shown it is the defect this mapping exists to fix.
+    details: raw ? { transport_message: raw } : {},
+  };
+}
+
 /**
  * Read an unknown thrown value as a capture-store error.
  *
@@ -286,14 +419,16 @@ export function readCaptureError(
   context?: ErrorContext,
 ): CaptureErrorReading {
   if (!(error instanceof ApiError)) {
-    return {
-      code: 'unknown',
-      message: error instanceof Error ? error.message : String(error),
-      guidance: '',
-      severity: 'warning',
-      reload: false,
-      details: {},
-    };
+    return (
+      readTransportError(error, context) ?? {
+        code: 'unknown',
+        message: error instanceof Error ? error.message : String(error),
+        guidance: '',
+        severity: 'warning',
+        reload: false,
+        details: {},
+      }
+    );
   }
   const details = error.details ?? {};
   const code = error.code ?? `http_${error.status}`;

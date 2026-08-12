@@ -70,6 +70,9 @@ interface Backend {
    *  null. The store claims a folder against the dataset ROW (§6.x), so this
    *  refusal is not something clearing the folder can fix. */
   archiveClaimedBy: string | null;
+  /** When true, every POST /jobs is lost on the way out — a rejected fetch,
+   *  as a dead connection produces, not an error response. */
+  jobsUnreachable: boolean;
   datasetArchiveCalls: {
     datasetId: string;
     destination: string | null;
@@ -182,6 +185,7 @@ function mockApi(seed: Partial<Backend> = {}): Backend {
     archiveRun: seed.archiveRun ?? null,
     sealOnPoll: seed.sealOnPoll ?? false,
     archiveClaimedBy: seed.archiveClaimedBy ?? null,
+    jobsUnreachable: seed.jobsUnreachable ?? false,
     datasetArchiveCalls: [],
     calls: [],
   };
@@ -198,6 +202,10 @@ function mockApi(seed: Partial<Backend> = {}): Backend {
     const path = url.replace(/^.*\/api\/v1/, '').split('?')[0]!;
     backend.calls.push(`${method} ${path}`);
     const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
+
+    if (method === 'POST' && path === '/jobs' && backend.jobsUnreachable) {
+      throw new TypeError('Failed to fetch');
+    }
 
     // ---- datasets --------------------------------------------------------
     const memberMatch = path.match(/^\/datasets\/([^/]+)\/members(?:\/([^/]+))?$/);
@@ -1833,4 +1841,50 @@ test('the form’s Escape does not travel on to a dialog listening on the docume
   // The Modal's Escape handler is on the DOCUMENT, which the form's keystroke
   // bubbles through. One press, one dismissal — not two.
   expect(screen.getByRole('dialog')).toBeInTheDocument();
+});
+
+// M1: the same leak Review had, in the bottom pane. DatasetDetail was rendered
+// unkeyed, so selecting another member re-rendered the SAME instance against a
+// different recording — and with the capture detail already cached there was no
+// loading state to hide it. A failed loss run then kept its note over the wrong
+// member, with a Retry aimed at the wrong capture_id.
+test('a failed loss run does not follow the operator to the next member', async () => {
+  mockApi({
+    datasets: [DS_KITCHEN],
+    captures: [CAP_A, CAP_B],
+    members: [
+      { membership_id: 'm-1', dataset_id: 'ds-kitchen', capture_id: 'cap-a', display_index: 1 },
+      { membership_id: 'm-2', dataset_id: 'ds-kitchen', capture_id: 'cap-b', display_index: 2 },
+    ],
+    jobsUnreachable: true,
+  });
+  renderWithClient(<DatasetsScreen />);
+  fireEvent.click(await screen.findByTestId(datasetTestId('ds-kitchen')));
+
+  // Visit member 1 first, so its detail is CACHED — without that, coming back
+  // to it would show a loading state and hide the leak behind it.
+  fireEvent.click(await screen.findByTestId(memberTestId('m-1')));
+  await screen.findByTestId('run-loss-report-btn', undefined, { timeout: 3000 });
+
+  // Fail a loss run on member 2.
+  fireEvent.click(screen.getByTestId(memberTestId('m-2')));
+  await waitFor(() =>
+    expect(screen.getByTestId('dataset-member-number')).toHaveTextContent('#2'),
+  );
+  fireEvent.click(await screen.findByTestId('run-loss-report-btn', undefined, { timeout: 3000 }));
+  const err = await screen.findByTestId('dataset-loss-error');
+  expect(err).toHaveAttribute('data-error-code', 'network_unreachable');
+
+  // Back to the cached member 1, which was never asked to do anything.
+  fireEvent.click(screen.getByTestId(memberTestId('m-1')));
+  await waitFor(() =>
+    expect(screen.getByTestId('dataset-member-number')).toHaveTextContent('#1'),
+  );
+  await screen.findByTestId('run-loss-report-btn', undefined, { timeout: 3000 });
+
+  // No note about an attempt that never touched this recording — and so no
+  // Retry that would submit loss_report against the wrong capture.
+  expect(screen.queryByTestId('dataset-loss-error')).toBeNull();
+  expect(screen.queryByTestId('dataset-loss-error-stale')).toBeNull();
+  expect(screen.queryByTestId('dataset-loss-error-retry')).toBeNull();
 });
