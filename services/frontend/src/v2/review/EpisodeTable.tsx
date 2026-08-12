@@ -330,6 +330,9 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
           type="text"
           value={rv.search}
           onChange={(e) => rv.setSearch(e.target.value)}
+          // The placeholder is not a name: it is gone the moment there is a
+          // query, and a screen reader announces the field as "edit, blank".
+          aria-label="Search episodes"
           placeholder="Search episodes…"
           data-testid="review-search"
           className="w-[150px] rounded-control border border-gray-200 px-2.5 py-1.5 text-[12.5px] text-gray-700 placeholder:text-gray-400"

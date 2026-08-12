@@ -25,6 +25,9 @@ const DISPLAY_ONLY_FILTERS = [
 
 // The filters region the toggle's aria-controls points at.
 const REGION_ID = 'review-filters-region';
+// The operator select's own id, so the heading above it is a real <label> for
+// it rather than a caption that only sighted users can see is attached.
+const OPERATOR_SELECT_ID = 'review-operator-filter-select';
 
 /** Chevron toggle shared by the expanded header (« collapse) and the slim rail
  *  (» expand). Forwarded ref so the caller can restore focus after the state
@@ -130,8 +133,14 @@ export const FiltersRail = forwardRef<
         </div>
 
         <div className="flex flex-col gap-1.5">
-          <span className="text-[11.5px] font-semibold text-gray-400">Operator</span>
+          <label
+            htmlFor={OPERATOR_SELECT_ID}
+            className="text-[11.5px] font-semibold text-gray-400"
+          >
+            Operator
+          </label>
           <select
+            id={OPERATOR_SELECT_ID}
             data-testid="review-operator-filter"
             value={operatorFilter}
             onChange={(e) => onOperatorChange(e.target.value)}

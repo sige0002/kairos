@@ -92,14 +92,31 @@ function DatasetListRow({ row, state }: { row: DatasetRow; state: DatasetsState 
 }
 
 /** The create form. Inline rather than a modal: it is three fields, and the
- *  list it adds to stays visible beside them. */
+ *  list it adds to stays visible beside them.
+ *
+ *  It is a dialog in the non-modal sense only — `role="dialog"` with a name, no
+ *  `aria-modal`. The page behind it stays live and reachable by design (that is
+ *  the whole reason it is not the shared overlay), and claiming `aria-modal`
+ *  would tell a screen reader the rest of the screen no longer exists while it
+ *  demonstrably still does. What it does owe the keyboard is the dismissal the
+ *  Cancel button offers the mouse: Escape leaves without creating. */
 function CreateForm({ state }: { state: DatasetsState }) {
   return (
     <form
+      role="dialog"
+      aria-label="New dataset"
       data-testid="new-dataset-form"
       onSubmit={(e) => {
         e.preventDefault();
         state.submitCreate();
+      }}
+      onKeyDown={(e) => {
+        // Mirrors Cancel, including its disabled state: once the POST is out
+        // there is nothing left to back out of, and closing would only hide the
+        // result of a write that is still going to land.
+        if (e.key !== 'Escape' || state.creating) return;
+        e.preventDefault();
+        state.cancelCreate();
       }}
       className="flex flex-col gap-1.5 border-b border-gray-100 bg-gray-50 px-3 py-2.5"
     >
@@ -107,6 +124,7 @@ function CreateForm({ state }: { state: DatasetsState }) {
         data-testid="new-dataset-name"
         value={state.newName}
         onChange={(e) => state.setNewName(e.target.value)}
+        aria-label="Dataset name"
         placeholder="Dataset name"
         maxLength={200}
         autoFocus
@@ -117,6 +135,7 @@ function CreateForm({ state }: { state: DatasetsState }) {
           data-testid="new-dataset-operator"
           value={state.newOperator}
           onChange={(e) => state.setNewOperator(e.target.value)}
+          aria-label="Operator (optional)"
           placeholder="Operator (optional)"
           className="min-w-0 flex-1 rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] text-gray-700 placeholder:text-gray-400"
         />
@@ -124,6 +143,7 @@ function CreateForm({ state }: { state: DatasetsState }) {
           data-testid="new-dataset-task"
           value={state.newTask}
           onChange={(e) => state.setNewTask(e.target.value)}
+          aria-label="Task (optional)"
           placeholder="Task (optional)"
           className="min-w-0 flex-1 rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] text-gray-700 placeholder:text-gray-400"
         />
@@ -196,6 +216,7 @@ export function DatasetList({ state }: { state: DatasetsState }) {
           data-testid="dataset-search"
           value={state.search}
           onChange={(e) => state.setSearch(e.target.value)}
+          aria-label="Search datasets"
           placeholder="Search dataset, operator, task…"
           className="w-full rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12.5px] text-gray-700 placeholder:text-gray-400"
         />
@@ -240,6 +261,7 @@ export function DatasetList({ state }: { state: DatasetsState }) {
         {state.operatorOptions.length > 0 && (
           <select
             data-testid="dataset-operator-filter"
+            aria-label="Filter datasets by operator"
             value={state.operatorFilter}
             onChange={(e) => state.setOperatorFilter(e.target.value)}
             className="w-full rounded-control border border-gray-200 bg-white px-2 py-1 text-[12px] text-gray-600"

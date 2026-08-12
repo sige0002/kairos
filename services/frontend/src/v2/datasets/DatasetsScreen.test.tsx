@@ -1631,3 +1631,83 @@ test('the archive prefill scrubs the same characters the server does', async () 
   // eslint-disable-next-line no-control-regex -- asserting their ABSENCE.
   expect(finalPath.textContent ?? '').not.toMatch(/[\x00-\x1f\x7f]/);
 });
+
+// ---- accessible names, and the create form's dismissal (#10) --------------
+//
+// Every one of these controls used to carry its purpose in a placeholder only,
+// which the accessibility tree does not read as a name — the screen offered a
+// keyboard operator three unlabelled "edit" fields and an unlabelled combo box.
+// The queries below go through the accessible name deliberately: a `data-testid`
+// would still pass with every label stripped back off.
+
+test('the list toolbar names its search field and its operator filter', async () => {
+  mockApi({ datasets: [DS_KITCHEN], captures: [CAP_A, CAP_B] });
+  renderWithClient(<DatasetsScreen />);
+
+  await screen.findByTestId(datasetTestId('ds-kitchen'));
+  expect(screen.getByRole('searchbox', { name: 'Search datasets' })).toBe(
+    screen.getByTestId('dataset-search'),
+  );
+  expect(
+    screen.getByRole('combobox', { name: 'Filter datasets by operator' }),
+  ).toBe(screen.getByTestId('dataset-operator-filter'));
+});
+
+test('the member search is named too', async () => {
+  mockApi({
+    datasets: [DS_KITCHEN],
+    captures: [CAP_A],
+    members: [
+      { membership_id: 'm-1', dataset_id: 'ds-kitchen', capture_id: 'cap-a', display_index: 1 },
+    ],
+  });
+  renderWithClient(<DatasetsScreen />);
+
+  fireEvent.click(await screen.findByTestId(datasetTestId('ds-kitchen')));
+  await waitFor(() => expect(memberRowFor('cap-a')).toBeInTheDocument());
+  expect(
+    screen.getByRole('searchbox', { name: 'Search members of this dataset' }),
+  ).toBe(screen.getByTestId('dataset-member-search'));
+});
+
+test('the create form is a named dialog whose three fields are named', async () => {
+  mockApi({ captures: [CAP_A] });
+  renderWithClient(<DatasetsScreen />);
+  await screen.findByTestId('dataset-list-empty');
+
+  fireEvent.click(screen.getByTestId('new-dataset-btn'));
+  const form = screen.getByRole('dialog', { name: 'New dataset' });
+  expect(form).toBe(screen.getByTestId('new-dataset-form'));
+  // Non-modal on purpose: the list it adds to stays live beside it, so the
+  // claim `aria-modal` would make is one the screen does not honour.
+  expect(form).not.toHaveAttribute('aria-modal');
+
+  expect(within(form).getByLabelText('Dataset name')).toBe(
+    screen.getByTestId('new-dataset-name'),
+  );
+  expect(within(form).getByLabelText('Operator (optional)')).toBe(
+    screen.getByTestId('new-dataset-operator'),
+  );
+  expect(within(form).getByLabelText('Task (optional)')).toBe(
+    screen.getByTestId('new-dataset-task'),
+  );
+});
+
+test('Escape closes the create form without creating anything', async () => {
+  const backend = mockApi({ captures: [CAP_A] });
+  renderWithClient(<DatasetsScreen />);
+  await screen.findByTestId('dataset-list-empty');
+
+  fireEvent.click(screen.getByTestId('new-dataset-btn'));
+  // A typed-in name is the case that matters: Escape must dismiss, not submit.
+  fireEvent.change(screen.getByTestId('new-dataset-name'), {
+    target: { value: 'shelf restock' },
+  });
+  fireEvent.keyDown(screen.getByTestId('new-dataset-form'), { key: 'Escape' });
+
+  await waitFor(() =>
+    expect(screen.queryByTestId('new-dataset-form')).not.toBeInTheDocument(),
+  );
+  expect(backend.calls.filter((c) => c === 'POST /datasets')).toHaveLength(0);
+  expect(backend.datasets).toHaveLength(0);
+});

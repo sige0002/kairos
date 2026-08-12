@@ -98,6 +98,7 @@ function ScopeHeaderBar({ state }: { state: DatasetsState }) {
         data-testid="dataset-member-search"
         value={state.memberSearch}
         onChange={(e) => state.setMemberSearch(e.target.value)}
+        aria-label="Search members of this dataset"
         placeholder="Find #N, capture, run, operator…"
         className="w-[190px] rounded-control border border-gray-200 bg-white px-2.5 py-1 text-[12px] text-gray-700 placeholder:text-gray-400"
       />
