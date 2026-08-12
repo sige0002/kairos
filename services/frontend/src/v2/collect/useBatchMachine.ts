@@ -30,7 +30,6 @@ import { patchBatch } from '../../api/batches';
 import { getCapture, listCaptures, saveReview } from '../../api/captures';
 import { queryKeys } from '../../api/queryKeys';
 import { useUiStore } from '../../store/uiStore';
-import { useOperators } from '../plans';
 import { useCaptureDeletion } from '../captures/useCaptureDeletion';
 import { useRobotCopyMayRemain } from '../captures/useSplitDeploy';
 import { needsReload } from '../captures/errors';
@@ -71,6 +70,7 @@ export * from './machine/contract';
 import {
   ARMING_CANCEL_GUARD_MS,
   COLLECT_DISCARD_REASON,
+  OPERATOR_GATE_HINT,
   COLLECT_UNSAVED_DISCARD_REASON,
   RETAKE_DISCARD_REASON,
   SAVED_FLASH_MS,
@@ -135,11 +135,21 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   // Resolves exactly like v1 LiveTab.tsx:940-948. The picker checkboxes live in
   // the Monitor screen (another agent) — Collect only READS the store values.
   const operator = useUiStore((s) => s.recordOperator);
-  // Attribution gate: once Settings holds a roster, a recording may not start
-  // without a picked name (that is the roster's entire point — no more
-  // unknown_operator shifts). An empty roster gates nothing.
-  const roster = useOperators();
-  const operatorMissing = roster.length > 0 && !operator.trim();
+  // Attribution gate: a recording may not start without a name, in EVERY
+  // configuration (#11).
+  //
+  // This used to read `roster.length > 0 && !operator.trim()`, so it gated only
+  // once Settings held a roster — and the roster starts empty, which is the
+  // shipped default. The result was that the gate never fired where it was
+  // needed most: the orchestrator substitutes `unknown_operator` for an absent
+  // name (record_service.py `default_meta`), and that placeholder is written
+  // into the capture's manifest, where it is nobody's to answer for. A beta
+  // capture was found carrying it (P1-1).
+  //
+  // The roster still decides HOW the name is given (a picker, so "yuki" and
+  // "Yuki" cannot both exist) — that is the chip's business, in the shell. All
+  // this decides is that there has to be one.
+  const operatorMissing = !operator.trim();
   const recordSelected = useUiStore((s) => s.recordSelected);
   const recordCustomized = useUiStore((s) => s.recordCustomized);
   const selection: RecordSelection = useMemo(() => {
@@ -502,7 +512,9 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   const startRecording = useCallback(() => {
     if (state.phase !== 'ready' || noSelection) return;
     if (operatorMissing) {
-      showToast('Pick your name first — OP chip, top right');
+      // Guarded here as well as on the control: R reaches startRecording
+      // without passing the disabled button.
+      showToast(OPERATOR_GATE_HINT);
       return;
     }
     if (startInFlightRef.current) return;

@@ -60,7 +60,11 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
   const failReasonRef = useRef<HTMLButtonElement>(null);
   const takeoverStopRef = useRef<HTMLButtonElement>(null);
   const armingTitleRef = useRef<HTMLSpanElement>(null);
+  const readyTitleRef = useRef<HTMLSpanElement>(null);
   const hasTakeover = !!takeover;
+  // Whether READY's Start can be focused at all (#11): the same two gates the
+  // button is disabled by.
+  const startBlocked = machine.noSelection || machine.operatorMissing;
   // ARMING's Cancel is guarded for its first moments (#8). The flag is the
   // machine's, not this card's, because the Escape shortcut reaches
   // `cancelArming` without passing the button.
@@ -73,7 +77,13 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
     }
     switch (phase) {
       case 'ready':
-        startRef.current?.focus();
+        // Start is disabled while a gate is up, and focus() on a disabled
+        // button is a no-op. Since #11 the operator gate fires in the shipped
+        // default, so this is the FIRST screen a new operator sees — landing
+        // focus on <body> there would mean the console opens keyboard-dead.
+        // The title holds it until Start can take it, as ARMING and SAVING do.
+        if (startBlocked) readyTitleRef.current?.focus();
+        else startRef.current?.focus();
         break;
       case 'arming':
         // Cancel is disabled for the guard window, and focus() on a disabled
@@ -104,7 +114,17 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
     // right and the deps made it read a stale world.)
     //
     // `cancelArmed` is here for exactly the same reason, one phase earlier.
-  }, [phase, machine.pendingTask, hasTakeover, machine.canStop, cancelArmed]);
+    //
+    // `startBlocked` likewise: filling in the operator name must hand focus to
+    // the Start button that just became usable.
+  }, [
+    phase,
+    machine.pendingTask,
+    hasTakeover,
+    machine.canStop,
+    cancelArmed,
+    startBlocked,
+  ]);
 
   // Quality override expander (D-2): collapsed by default; opening it reveals the
   // three chips. Auto-open once the operator has already overridden.
@@ -117,7 +137,9 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
   }
 
   if (phase === 'ready') {
-    return <ReadyCard machine={machine} startRef={startRef} />;
+    return (
+      <ReadyCard machine={machine} startRef={startRef} titleRef={readyTitleRef} />
+    );
   }
 
   if (phase === 'arming') {

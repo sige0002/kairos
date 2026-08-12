@@ -22,7 +22,9 @@ import {
   __setStopConfirmMs,
   __rehydrateBatchStore,
   EPISODES_PER_BATCH,
+  OPERATOR_GATE_HINT,
 } from './useBatchMachine';
+import { getOperators } from '../plans';
 
 const BATCH_STORAGE_KEY = 'kairos.collect.batch';
 
@@ -317,7 +319,10 @@ beforeEach(() => {
   // leak customized state into each other.
   useUiStore.setState({
     activeTab: '',
-    recordOperator: '',
+    // Recording requires an operator since #11, in every configuration —
+    // so a suite that records has to say who is recording. The gate itself
+    // is exercised where it is the subject, not incidentally here.
+    recordOperator: 'tester',
     recordSelected: new Set<string>(),
     recordCustomized: false,
   });
@@ -1241,9 +1246,8 @@ test('startRecording sends operator (trimmed) + configured topics', async () => 
   expect(body.topics).toEqual(['/a', '/b']);
 });
 
-test('startRecording omits operator when the store value is blank, defaults to all topics', async () => {
+test('startRecording defaults to all topics when nothing is configured', async () => {
   const fetchMock = startFetch();
-  // recordOperator stays '' (reset in beforeEach).
   const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
     wrapper,
   });
@@ -1252,8 +1256,46 @@ test('startRecording omits operator when the store value is blank, defaults to a
 
   const call = fetchMock.mock.calls.find(([u]) => String(u).includes('/record/start'));
   const body = JSON.parse(String((call![1] as RequestInit).body));
-  expect('operator' in body).toBe(false);
   expect(body.topics).toBe('all');
+});
+
+// REPLACES 'startRecording omits operator when the store value is blank'. That
+// test asserted the old contract — a blank name simply left `operator` out of
+// the body, and the orchestrator filled in `unknown_operator`, which is how a
+// real capture ended up owned by nobody (#11). A blank name is now refused
+// outright, so there is no such body to inspect.
+test('startRecording is refused with no operator, and says so', async () => {
+  const fetchMock = startFetch();
+  useUiStore.setState({ recordOperator: '   ' }); // whitespace is not a name
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  expect(result.current.operatorMissing).toBe(true);
+
+  act(() => result.current.startRecording());
+
+  // Nothing was sent and nothing moved: no half-started take to reconcile.
+  expect(result.current.phase).toBe('ready');
+  expect(
+    fetchMock.mock.calls.some(([u]) => String(u).includes('/record/start')),
+  ).toBe(false);
+  // And the refusal explains itself rather than reading as a dead button.
+  expect(result.current.toast).toBe(OPERATOR_GATE_HINT);
+  expect(result.current.toast).toContain('OP');
+});
+
+// The gate is not the roster's any more: it holds in the shipped default,
+// where Settings has no operator list at all.
+test('the operator gate holds with an empty roster, and lifts once a name is set', async () => {
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  expect(getOperators()).toEqual([]); // the shipped default
+  useUiStore.setState({ recordOperator: '' });
+  await waitFor(() => expect(result.current.operatorMissing).toBe(true));
+
+  useUiStore.setState({ recordOperator: 'tester' });
+  await waitFor(() => expect(result.current.operatorMissing).toBe(false));
 });
 
 test('selection resolution: customized set → explicit topics; empty customized set disables Start', () => {
@@ -3778,6 +3820,37 @@ test('pre-arms via /record/prepare while ready, mirroring the start selection', 
   expect(JSON.parse(String(call![1]!.body))).toMatchObject({
     topics: ['/tf', '/joint_states'],
   });
+});
+
+// A DECISION, pinned so it is not "fixed" later by mistake (#11): the operator
+// gate is on Start, not on pre-arm. Pre-arm is recorder readiness — spawn and
+// subscribe — and the orchestrator's own prepare/start match key deliberately
+// excludes operator and task, because they do not change what is recorded, only
+// how it is labelled. So a session armed before anyone types a name is still
+// claimed by the start that carries one. Gating prepare instead would buy
+// nothing (no capture is persisted by a prepare) and cost the operator a slow
+// full start on the very first take after naming themselves — in the flow this
+// issue makes universal.
+test('pre-arms even with no operator set — the gate is on Start, not on readiness', async () => {
+  useUiStore.setState({ recordOperator: '' });
+  const fetchMock = preArmFetch();
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: ['/tf'] }), {
+    wrapper,
+  });
+  expect(result.current.operatorMissing).toBe(true);
+
+  await waitFor(() =>
+    expect(
+      fetchMock.mock.calls.some(([u]) => String(u).includes('/record/prepare')),
+    ).toBe(true),
+  );
+  // And the nameless prepare does not smuggle a placeholder onto the wire: the
+  // body simply carries no operator, so the eventual start's name is the only
+  // one the recorder ever sees.
+  const call = fetchMock.mock.calls.find(([u]) =>
+    String(u).includes('/record/prepare'),
+  );
+  expect('operator' in JSON.parse(String(call![1]!.body))).toBe(false);
 });
 
 test('does NOT pre-arm when recording.pre_arm is off', async () => {
