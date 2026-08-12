@@ -1,0 +1,16 @@
+# Relocate LeRobot exports off the data volume — appended by `make up` only
+# when .env sets EXPORTS_DIR, on top of compose/lerobot.yaml.
+#
+# Without EXPORTS_DIR, exports land at ${DATA_DIR}/exports (inside the data
+# mount) and this file is not used. With it set, both services that touch the
+# exports tree mount it at the SAME container path /data/exports — the exporter
+# writes there, the orchestrator serves and pre-checks it — so a relocation
+# never splits their views. Kept separate from lerobot.yaml so the default has
+# no exports mount to shadow a customized DATA_DIR (capture_store §6.2).
+services:
+  lerobot-exporter:
+    volumes:
+      - ${EXPORTS_DIR:?EXPORTS_DIR must be set to use compose/lerobot-exports.yaml}:/data/exports
+  orchestrator:
+    volumes:
+      - ${EXPORTS_DIR:?EXPORTS_DIR must be set to use compose/lerobot-exports.yaml}:/data/exports

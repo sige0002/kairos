@@ -12,13 +12,16 @@
 #
 # Where the exports land on the HOST is a second, independent knob:
 #
-#   EXPORTS_DIR=/mnt/nas/lerobot        # optional; default ./data/exports
+#   EXPORTS_DIR=/mnt/nas/lerobot        # optional; default ${DATA_DIR}/exports
 #
-# The container-side path is ALWAYS /data/exports — the mount below is what
-# relocates it, so relative keys / the files API / UI links never change with
-# the location, and the "env var without a mount" trap (see archive.yaml) is
-# structurally impossible: the env var here IS the mount. `make up` creates the
-# host directory first so Docker never auto-creates it root-owned.
+# By DEFAULT exports live at /data/exports, which is already inside the data
+# mount, so they follow DATA_DIR with no extra mount. Setting EXPORTS_DIR
+# relocates them onto another disk: `make up` then also appends
+# compose/lerobot-exports.yaml, which mounts EXPORTS_DIR at /data/exports on
+# both the exporter and the orchestrator. The container-side path is ALWAYS
+# /data/exports, so relative keys / the files API / UI links never change with
+# the location. `make up` creates the host directory first so Docker never
+# auto-creates it root-owned.
 #
 # The conversion itself runs as a subprocess inside this resident container, so
 # the `cpus:` cap below bounds every conversion without per-run flags — that is
@@ -61,7 +64,13 @@ services:
       # symlinks out of it), but the mount stays read-write because staging and
       # the outputs live under the same /data root.
       - ./config:/config:ro
-      - ${EXPORTS_DIR:-./data/exports}:/data/exports
+      # No exports mount here by default: exports live at /data/exports, which
+      # is ALREADY inside the ${DATA_DIR}:/data mount above — so with no
+      # EXPORTS_DIR they land under ${DATA_DIR}/exports, wherever DATA_DIR
+      # points. Relocating them off the data volume is opt-in via
+      # compose/lerobot-exports.yaml (appended by make when EXPORTS_DIR is set);
+      # a hardcoded ./data/exports default here would shadow a customized
+      # DATA_DIR and silently write to the repo instead.
     healthcheck:
       test:
         - CMD
@@ -72,10 +81,3 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
-
-  # The orchestrator serves export files (GET /api/v1/files/exports/...) and
-  # pre-checks destinations, so it must see the same exports/ the exporter
-  # writes — including when EXPORTS_DIR relocates it off the data volume.
-  orchestrator:
-    volumes:
-      - ${EXPORTS_DIR:-./data/exports}:/data/exports

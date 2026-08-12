@@ -39,3 +39,39 @@ def test_sweep_reports_what_it_removed(data_dir: Path) -> None:
         (data_dir / "exports" / ".staging" / name).mkdir(parents=True)
 
     assert sweep_staging(data_dir) == ["export-a", "export-b"]
+
+
+def test_a_symlinked_staging_root_is_refused_not_followed(
+    data_dir: Path, make_capture: Callable[..., str]
+) -> None:
+    """The F1 case: `exports/.staging` itself is a symlink to `objects/`.
+
+    A relocated or attacker-writable EXPORTS_DIR could make the staging root a
+    link at the store's captures. Following it would iterate every capture and
+    rmtree it — destroying authoritative recordings. The sweep must refuse a
+    symlinked root outright and touch nothing behind it.
+    """
+    capture = make_capture()
+    exports = data_dir / "exports"
+    exports.mkdir(parents=True, exist_ok=True)
+    os.symlink(data_dir / "objects", exports / ".staging")
+
+    assert sweep_staging(data_dir) == []
+    # The capture the link pointed at is untouched.
+    assert (data_dir / "objects" / capture / "metadata.yaml").is_file()
+
+
+def test_a_symlinked_entry_inside_staging_is_not_followed_into_objects(
+    data_dir: Path, make_capture: Callable[..., str]
+) -> None:
+    """A real staging root holding a symlink that points at a capture dir must
+    not have that capture rmtree'd through it — only the link is removed."""
+    capture = make_capture()
+    staging = data_dir / "exports" / ".staging"
+    staging.mkdir(parents=True)
+    os.symlink(data_dir / "objects" / capture, staging / "escape")
+
+    sweep_staging(data_dir)
+
+    assert not (staging / "escape").exists()
+    assert (data_dir / "objects" / capture / "metadata.yaml").is_file()

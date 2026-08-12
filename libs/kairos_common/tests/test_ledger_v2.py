@@ -729,3 +729,43 @@ def test_the_file_record_shape_matches_the_manifest(tmp_path: Path) -> None:
         payload={"destination": "/mnt/nas", "files": [entry]},
     )
     assert event["files"] == [entry]
+
+
+class TestDatasetExported:
+    """§6.2: the output is exactly ``exports/<safe-name>`` — no traversal."""
+
+    def _payload(self, **overrides):
+        payload = {
+            "dataset_id": "ds1",
+            "export_id": "e1",
+            "output": "exports/alice_full_beta1",
+            "captures": [{"capture_id": new_capture_id(), "dir": "001"}],
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_a_well_formed_export_is_accepted(self, tmp_path: Path) -> None:
+        event = _append(tmp_path, "dataset_exported", payload=self._payload())
+        assert event["output"] == "exports/alice_full_beta1"
+
+    def test_an_absolute_output_is_rejected(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError):
+            _append(
+                tmp_path,
+                "dataset_exported",
+                payload=self._payload(output="/abs/exports/x"),
+            )
+
+    def test_traversal_in_the_output_is_rejected(self, tmp_path: Path) -> None:
+        # The old validator only rejected a leading '/', so these slipped by.
+        for bad in ("../outside", "exports/../escape", "exports/a/b", "other/x"):
+            with pytest.raises(ValueError):
+                _append(
+                    tmp_path,
+                    "dataset_exported",
+                    payload=self._payload(output=bad),
+                )
+
+    def test_a_captureless_export_is_rejected(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError):
+            _append(tmp_path, "dataset_exported", payload=self._payload(captures=[]))

@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import Any
 
 from kairos_common.atomic_io import fsync_dir
+from kairos_common.export_names import EXPORTS_DIRNAME, is_valid_export_segment
 from kairos_common.ids import new_event_id
 from kairos_common.time import utc_now_iso8601
 
@@ -328,9 +329,19 @@ def _validate_dataset_exported_payload(payload: dict[str, Any]) -> None:
         if not isinstance(value, str) or not value:
             raise ValueError(f"dataset_exported requires a non-empty {key}: {value!r}")
     output = payload["output"]
-    if output.startswith("/"):
+    # The invariant is exactly ``exports/<segment>`` — a data-root-relative path
+    # that stays inside the exports tree. Rejecting only a leading ``/`` let
+    # ``../outside`` and other traversal through: the record's own claim that it
+    # points at kairos-managed bytes would then be false.
+    parts = output.split("/")
+    if (
+        len(parts) != 2
+        or parts[0] != EXPORTS_DIRNAME
+        or not is_valid_export_segment(parts[1])
+    ):
         raise ValueError(
-            f"dataset_exported output must be data-root relative: {output!r}"
+            f"dataset_exported output must be 'exports/<name>' with a safe name: "
+            f"{output!r}"
         )
     captures = payload.get("captures")
     if not isinstance(captures, list) or not captures:

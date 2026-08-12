@@ -32,6 +32,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query, Request, status
 from kairos_common import ApiError
 from kairos_common.capture_sidecars import read_object_manifest
+from kairos_common.export_names import sanitize_export_segment
 from kairos_common.ids import new_export_id
 from kairos_common.task_sidecar import effective_task
 from kairos_common.time import utc_now_iso8601
@@ -54,7 +55,6 @@ from api_orchestrator.models import (
     ExportTaskSummary,
 )
 from api_orchestrator.store import PRESENT_REPLICA_STATES
-from api_orchestrator.views import sanitize_component
 
 logger = logging.getLogger("kairos")
 
@@ -110,10 +110,20 @@ class ExportRecord:
 
 
 class ExportRegistry:
-    """dataset_id → its latest :class:`ExportRecord` (one active per dataset)."""
+    """dataset_id → its latest :class:`ExportRecord` (one active per dataset).
+
+    ``reserve`` is the single-flight gate. The submit path has ``await`` points
+    between "is one already running?" and "remember this one", so two requests
+    for the same dataset could both pass a plain check and both start — the
+    second orphaning the first (unpollable, uncancellable, leased until TTL).
+    ``reserve`` closes that window: it is synchronous, so between the check and
+    the claim no other coroutine runs, and the claim stands until ``put``
+    commits the record or ``release`` rolls it back.
+    """
 
     def __init__(self) -> None:
         self._records: dict[str, ExportRecord] = {}
+        self._reserved: set[str] = set()
 
     def get(self, dataset_id: str) -> ExportRecord | None:
         return self._records.get(dataset_id)
@@ -124,8 +134,25 @@ class ExportRegistry:
             return record
         return None
 
+    def reserve(self, dataset_id: str) -> bool:
+        """Claim the dataset for one in-flight submission, atomically.
+
+        ``False`` when it already has a live export or another submission is
+        mid-flight. Must be paired with ``put`` (commit) or ``release``
+        (rollback) — no ``await`` may sit between this call and that pairing.
+        """
+        if dataset_id in self._reserved or self.active(dataset_id) is not None:
+            return False
+        self._reserved.add(dataset_id)
+        return True
+
+    def release(self, dataset_id: str) -> None:
+        """Drop a reservation that did not become a record (a failed submit)."""
+        self._reserved.discard(dataset_id)
+
     def put(self, record: ExportRecord) -> None:
         self._records[record.dataset_id] = record
+        self._reserved.discard(record.dataset_id)
 
 
 # ---- shared resolution ------------------------------------------------------
@@ -178,15 +205,18 @@ def _operator_segment(detail: DatasetDetail, captures: list[Capture]) -> str:
 
 
 def _compose_output_name(operator_seg: str, profile_name: str, memo: str | None) -> str:
+    # sanitize_export_segment, not views.sanitize_component: the two disagreed
+    # on spaces and non-ASCII, and it is the EXPORTER's contract that decides
+    # whether the name is accepted, so preflight must compose to that one.
     parts = [
-        sanitize_component(operator_seg, _MIXED_OPERATOR),
-        sanitize_component(profile_name, "profile"),
+        sanitize_export_segment(operator_seg, _MIXED_OPERATOR),
+        sanitize_export_segment(profile_name, "profile"),
     ]
     memo = (memo or "").strip()
     if memo:
         # Only the TRAILING segment may be omitted; a memo that sanitises to
         # nothing is treated as omitted rather than appending a junk segment.
-        cleaned = sanitize_component(memo, "")
+        cleaned = sanitize_export_segment(memo, "")
         if cleaned:
             parts.append(cleaned)
     return "_".join(parts)
@@ -404,17 +434,42 @@ async def start_export(
     """Snapshot the dataset, take the leases, and hand the exporter the job."""
     registry: ExportRegistry = request.app.state.export_registry
     detail = service.get(dataset_id)
-    active = registry.active(dataset_id)
-    if active is not None:
+    # Single-flight gate BEFORE the first await: two concurrent submits for one
+    # dataset must not both pass "is one already running?" and both start.
+    if not registry.reserve(dataset_id):
+        active = registry.active(dataset_id)
         raise ApiError(
             status_code=409,
             code="export_in_progress",
             message=(
-                f"Dataset {dataset_id} already has an export "
-                f"({active.output}) queued or running."
+                f"Dataset {dataset_id} already has an export"
+                + (f" ({active.output})" if active else "")
+                + " queued or running."
             ),
-            details={"dataset_id": dataset_id, "export_id": active.export_id},
+            details={
+                "dataset_id": dataset_id,
+                "export_id": active.export_id if active else None,
+            },
         )
+    try:
+        return await _start_export_reserved(dataset_id, body, request, service, detail)
+    except BaseException:
+        # Any non-commit exit rolls the reservation back. A committed record
+        # already cleared it in registry.put, so this only ever undoes a
+        # submission that did not take.
+        registry.release(dataset_id)
+        raise
+
+
+async def _start_export_reserved(
+    dataset_id: str,
+    body: ExportRequest,
+    request: Request,
+    service: DatasetService,
+    detail: DatasetDetail,
+) -> ExportSubmitResponse:
+    """The body of a reserved submission (see :func:`start_export`)."""
+    registry: ExportRegistry = request.app.state.export_registry
     profile_obj = await _fetch_profile(request, body.profile)
     if profile_obj.get("valid") is False:
         reasons = "; ".join(str(e) for e in profile_obj.get("errors", []))

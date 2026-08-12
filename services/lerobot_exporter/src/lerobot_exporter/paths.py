@@ -8,22 +8,17 @@ writing — the exporter reads captures through symlinks only.
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 from kairos_common import ApiError
+from kairos_common.export_names import (
+    EXPORT_SEGMENT_MAX_LEN,
+    is_valid_export_segment,
+)
 
 EXPORTS_DIRNAME = "exports"
 STAGING_DIRNAME = ".staging"
 MANIFEST_EXTRA_FILENAME = "kairos_extra.json"
-
-# One path segment: starts alphanumeric (so ".staging" and dotfiles can never be
-# addressed), no separators, no "..". The orchestrator composes and sanitises
-# the display name (`<operator>_<profile>_<memo>`); this end only REFUSES what
-# would escape the export root — a name that got here unsanitised is a bug
-# upstream, not something to silently rewrite.
-_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-_MAX_SEGMENT_LEN = 128
 
 
 def exports_dir(data_dir: str | Path) -> Path:
@@ -57,19 +52,20 @@ def relative_output_path(output_name: str) -> str:
 
 
 def validate_segment(value: str, *, field: str, code: str) -> str:
-    """Return *value* if it is a safe single path segment, else raise 400."""
-    if (
-        not isinstance(value, str)
-        or len(value) > _MAX_SEGMENT_LEN
-        or _SEGMENT.match(value) is None
-    ):
+    """Return *value* if it is a safe single path segment, else raise 400.
+
+    The contract lives in ``kairos_common.export_names`` so this refusal and the
+    orchestrator's name composition cannot drift — a name the orchestrator shows
+    in preflight is exactly one this accepts.
+    """
+    if not is_valid_export_segment(value):
         raise ApiError(
             status_code=400,
             code=code,
             message=(
                 f"{field} must be a single path segment starting with a letter or "
-                f"digit (letters, digits, '.', '_', '-'; max {_MAX_SEGMENT_LEN} "
-                "characters)."
+                f"digit (letters, digits, '.', '_', '-'; max "
+                f"{EXPORT_SEGMENT_MAX_LEN} characters)."
             ),
             details={field: value},
         )

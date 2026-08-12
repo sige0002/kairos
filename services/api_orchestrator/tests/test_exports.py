@@ -311,6 +311,39 @@ class TestSubmit:
             assert store.holds_lease(first, owner)
             assert store.holds_lease(second, owner)
 
+    def test_the_reservation_closes_the_concurrent_submit_window(self) -> None:
+        # The submit path has awaits between "is one running?" and "remember
+        # this one", so two concurrent requests for one dataset could both
+        # start, the second orphaning the first. reserve() is the synchronous
+        # gate that makes the second lose — the first claim stands until put()
+        # commits or release() rolls back.
+        from api_orchestrator.routers.exports import ExportRecord, ExportRegistry
+
+        registry = ExportRegistry()
+        assert registry.reserve("ds") is True
+        # A second submission, arriving while the first is still mid-flight
+        # (reserved but not yet a record), is refused.
+        assert registry.reserve("ds") is False
+        # A different dataset is unaffected.
+        assert registry.reserve("other") is True
+
+        # Commit the first: the reservation becomes a live record, and a new
+        # submission is still refused (now because it is active, not reserved).
+        record = ExportRecord(
+            export_id="e1",
+            dataset_id="ds",
+            output_name="n",
+            profile={},
+            config_sha256=None,
+            captures=[{"capture_id": "c", "dir": "001", "task": None}],
+        )
+        registry.put(record)
+        assert registry.reserve("ds") is False
+
+        # A failed submission releases, freeing the dataset for a retry.
+        registry.release("other")
+        assert registry.reserve("other") is True
+
     def test_a_second_export_for_the_same_dataset_is_refused(
         self, data_dir: Path, tmp_path: Path, fake_recorder: FakeRecorder
     ) -> None:

@@ -100,7 +100,18 @@ def create_exporter_app(
         status_code=status.HTTP_202_ACCEPTED,
     )
     async def create_export(body: ExportRequest) -> ExportStatus:
-        _validate_request(body)
+        # The library is scanned per request (a robot can be committed or
+        # gitignored), and the requested profile must be ONE OF ITS FILES.
+        # is_file() alone would let an unauthenticated host-network caller hand
+        # us /etc/hosts to parse and read back through the converter's error —
+        # so the check is membership in the resolved library, not existence.
+        allowed = {
+            _resolve(item.path)
+            for item in scan_profiles(
+                settings.config_dir, settings.config_local_dir, settings.robot
+            ).items
+        }
+        _validate_request(body, allowed_profiles=allowed)
         existing = registry.get(body.export_id)
         if existing is not None:
             raise ApiError(
@@ -180,7 +191,12 @@ def create_exporter_app(
     return app
 
 
-def _validate_request(body: ExportRequest) -> None:
+def _resolve(path: str | Path) -> str:
+    """A path in its canonical form for library-membership comparison."""
+    return str(Path(path).resolve())
+
+
+def _validate_request(body: ExportRequest, *, allowed_profiles: set[str]) -> None:
     """Refuse a request that could never become a valid export.
 
     Refused HERE rather than at the first path join: an id that cannot name a
@@ -201,11 +217,13 @@ def _validate_request(body: ExportRequest) -> None:
             code="no_episodes",
             message="An export needs at least one episode.",
         )
-    if not body.profile_path or not Path(body.profile_path).is_file():
+    if not body.profile_path or _resolve(body.profile_path) not in allowed_profiles:
         raise ApiError(
             status_code=400,
             code="profile_not_found",
-            message=f"Profile config not found: {body.profile_path}",
+            message=(
+                f"Profile config is not in this robot's library: {body.profile_path}"
+            ),
             details={"profile_path": body.profile_path},
         )
     seen: set[str] = set()

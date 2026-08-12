@@ -177,6 +177,23 @@ def test_a_missing_profile_is_refused_at_submit(data_dir: Path) -> None:
     assert response.json()["error"]["code"] == "profile_not_found"
 
 
+def test_an_existing_file_outside_the_library_is_refused(
+    data_dir: Path, tmp_path: Path
+) -> None:
+    """The F6 case: an unauthenticated caller cannot hand us any readable file.
+
+    ``is_file()`` alone would accept ``/etc/hosts`` (or any config the host
+    can read) and parse it through the converter, returning its content in the
+    error — an arbitrary-file-read surface. Membership in the scanned library
+    is what closes it.
+    """
+    victim = tmp_path / "secret.yaml"
+    victim.write_text("robot_type: x\n", encoding="utf-8")
+    response = _post(_client(data_dir), str(victim))
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "profile_not_found"
+
+
 def test_a_non_uuid7_capture_id_is_a_bad_request(
     data_dir: Path, profile_path: str
 ) -> None:

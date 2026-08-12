@@ -134,12 +134,15 @@ export KAIROS_GIT_SHA
 ARCHIVE_OVERRIDE_LOCAL := $(if $(wildcard .env),$(shell grep -qE '^[[:space:]]*ARCHIVE_DIR=' .env 2>/dev/null && echo -f compose/archive.yaml),)
 # LeRobot exporter opt-in (capture_store §6.2): same auto-wiring as the archive
 # override — the overlay is appended whenever .env sets LEROBOT_EXPORTER.
-LEROBOT_OVERRIDE_LOCAL := $(if $(wildcard .env),$(shell grep -qE '^[[:space:]]*LEROBOT_EXPORTER=' .env 2>/dev/null && echo -f compose/lerobot.yaml),)
-# Where exports land on the host (compose/lerobot.yaml mounts it at
-# /data/exports). Resolved here so `up` can pre-create it USER-owned — a bind
-# mount Docker has to create itself comes out root-owned, which the uid-1000
-# exporter then cannot write.
+# Where exports land on the host. EMPTY = the default ${DATA_DIR}/exports
+# (inside the data mount, no extra mount). When set, exports are relocated onto
+# another disk and compose/lerobot-exports.yaml is appended to mount it — hence
+# the second override below. Resolved here so `up` can also pre-create the dir
+# USER-owned: a bind mount Docker creates itself comes out root-owned, which the
+# uid-1000 exporter then cannot write.
 EXPORTS_DIR_LOCAL := $(if $(wildcard .env),$(shell grep -E '^[[:space:]]*EXPORTS_DIR=' .env 2>/dev/null | tail -1 | cut -d= -f2-),)
+LEROBOT_OVERRIDE_LOCAL := $(if $(wildcard .env),$(shell grep -qE '^[[:space:]]*LEROBOT_EXPORTER=' .env 2>/dev/null && echo -f compose/lerobot.yaml),)
+LEROBOT_OVERRIDE_LOCAL += $(if $(and $(LEROBOT_OVERRIDE_LOCAL),$(EXPORTS_DIR_LOCAL)),-f compose/lerobot-exports.yaml,)
 COMPOSE      := docker compose --project-directory . -f compose/compose.yaml $(ARCHIVE_OVERRIDE_LOCAL) $(LEROBOT_OVERRIDE_LOCAL)
 # Let the replay harness read the root .env too (so BAG / ROS_DISTRO / RMW set
 # there drive `make rosbag`), when a .env exists.

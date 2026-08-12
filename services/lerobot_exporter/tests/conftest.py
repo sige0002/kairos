@@ -73,10 +73,23 @@ def make_capture(data_dir: Path) -> Callable[..., str]:
 
 
 @pytest.fixture
-def profile_path(tmp_path: Path) -> str:
-    """A profile config the request validation accepts (content is not parsed)."""
-    path = tmp_path / "profile.yaml"
+def profile_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+    """A profile in the scanned library, and the env that points the scan at it.
+
+    Submission requires ``profile_path`` to be a MEMBER of the robot's library
+    (not merely an existing file), so the fixture writes it under a real
+    ``config/<robot>/lerobot/`` tree and sets the config/robot env the Settings
+    read — a bare tmp file would now be rejected, exactly as an attacker's
+    ``/etc/hosts`` is.
+    """
+    config_dir = tmp_path / "config"
+    library = config_dir / "myrobot" / "lerobot"
+    library.mkdir(parents=True)
+    path = library / "default.yaml"
     path.write_text(PROFILE_YAML, encoding="utf-8")
+    monkeypatch.setenv("CONFIG_DIR", str(config_dir))
+    monkeypatch.setenv("CONFIG_LOCAL_DIR", str(config_dir / "local"))
+    monkeypatch.setenv("ROBOT", "myrobot")
     return str(path)
 
 

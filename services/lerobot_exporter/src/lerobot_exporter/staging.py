@@ -141,17 +141,44 @@ def sweep_staging(data_dir: str | Path) -> list[str]:
     """Remove every staging tree at startup; return what was removed.
 
     No conversion survives a restart (the subprocess died with the process), so
-    everything under ``.staging/`` is debris by definition. Symlinks only, so
-    removal cannot reach recorded bytes — ``shutil.rmtree`` does not follow the
-    links it deletes.
+    everything under ``.staging/`` is debris by definition. The per-episode
+    trees inside contain only symlinks, so ``shutil.rmtree`` deleting them
+    cannot reach recorded bytes — it does not follow the links it deletes.
+
+    The one thing that CAN reach recorded bytes is the staging ROOT itself
+    being a symlink: if ``exports/.staging`` pointed at ``objects/`` (a
+    relocated or attacker-writable EXPORTS_DIR), following it would iterate
+    every capture and rmtree it. So the root is required to be a real
+    directory, and every entry is required to resolve back inside it before it
+    is touched — a real capture dir reached through a symlinked root fails that
+    containment check.
     """
     root = staging_root(data_dir)
-    if not root.is_dir():
+    # A symlinked staging root is refused outright — never followed into
+    # whatever it points at. is_symlink() is checked before is_dir() because
+    # is_dir() follows the link.
+    if root.is_symlink() or not root.is_dir():
         return []
+    root_real = root.resolve()
     removed: list[str] = []
     for entry in sorted(root.iterdir()):
         try:
-            if entry.is_dir() and not entry.is_symlink():
+            if entry.is_symlink():
+                # Unlinking a symlink removes the LINK, never what it points
+                # at — safe whatever it targets, so a stray link at a capture
+                # is cleaned without ever reaching the capture.
+                entry.unlink()
+            elif entry.is_dir():
+                # A real directory is rmtree'd only once it is proven to live
+                # directly under the resolved staging root. This is what stops
+                # a deletion from being steered at objects/ (or anywhere else)
+                # through a symlinked path component the checks above missed.
+                if entry.resolve().parent != root_real:
+                    logger.warning(
+                        "refusing to remove staging entry that escapes the root: %s",
+                        entry,
+                    )
+                    continue
                 shutil.rmtree(entry)
             else:
                 entry.unlink()

@@ -121,3 +121,9 @@ jobs:
           echo "== compose.yaml + archive.yaml + lerobot.yaml =="
           docker compose --project-directory . -f compose/compose.yaml \
             -f compose/archive.yaml -f compose/lerobot.yaml config -q
+          # The exports-relocation overlay requires EXPORTS_DIR (make appends it
+          # only when that is set), so render it with one supplied.
+          echo "== + lerobot-exports.yaml (EXPORTS_DIR set) =="
+          EXPORTS_DIR=/tmp/ci-exports docker compose --project-directory . \
+            -f compose/compose.yaml -f compose/lerobot.yaml \
+            -f compose/lerobot-exports.yaml config -q

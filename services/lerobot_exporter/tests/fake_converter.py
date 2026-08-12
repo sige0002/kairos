@@ -111,7 +111,25 @@ def main() -> int:
     if os.environ.get("FAKE_CHILD") == "1":
         # Stands in for ffmpeg: same process group, and it INHERITS this
         # process's stdout/stderr, so it holds those pipes open after we exit.
-        child = subprocess.Popen(["sleep", os.environ.get("FAKE_CHILD_SLEEP_S", "30")])
+        sleep_s = os.environ.get("FAKE_CHILD_SLEEP_S", "30")
+        if os.environ.get("FAKE_CHILD_IGNORE_TERM") == "1":
+            # The child survives SIGTERM. Paired with a parent that does NOT
+            # (the plain "hang" loop below), this is the F2 case: a cancel's
+            # group-SIGTERM kills the parent while the child keeps running.
+            # Waiting on the parent alone would call the cancel done with a
+            # live writer still going; only escalating to a group SIGKILL,
+            # which nothing can ignore, actually stops it.
+            child = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    "import signal,time;signal.signal(signal.SIGTERM,"
+                    "signal.SIG_IGN);time.sleep(float(__import__('sys').argv[1]))",
+                    sleep_s,
+                ]
+            )
+        else:
+            child = subprocess.Popen(["sleep", sleep_s])
         _write_json(meta / "fake_child.json", {"pid": child.pid})
 
     mode = os.environ.get("FAKE_MODE", "ok")

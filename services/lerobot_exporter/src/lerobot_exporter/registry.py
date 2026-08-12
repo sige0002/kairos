@@ -322,13 +322,22 @@ class ExportRegistry:
             stderr=asyncio.subprocess.PIPE,
             start_new_session=True,
         )
+        # Capture the process-group id NOW, while the leader is alive.
+        # start_new_session makes the converter its own group leader (pgid ==
+        # pid), and a cancel must reach the whole group. Read once here because
+        # once the leader is reaped its pgid can no longer be looked up — and a
+        # child that outlives the leader is exactly the case cancel must cover.
+        try:
+            pgid = os.getpgid(process.pid)
+        except ProcessLookupError:
+            pgid = process.pid
         stdout_tail, stderr_tail = _Tail(), _Tail()
         drains = [
             asyncio.ensure_future(_drain(process.stdout, stdout_tail)),
             asyncio.ensure_future(_drain(process.stderr, stderr_tail)),
         ]
         try:
-            returncode, stopped = await self._watch(record, process, destination)
+            returncode, stopped = await self._watch(record, process, pgid, destination)
         finally:
             await self._finish_drains(process, drains)
         self._settle(
@@ -414,6 +423,7 @@ class ExportRegistry:
         self,
         record: ExportRecord,
         process: asyncio.subprocess.Process,
+        pgid: int,
         destination: Path,
     ) -> tuple[int, bool]:
         """Poll progress until the converter exits; ``(exit code, stopped)``.
@@ -440,7 +450,7 @@ class ExportRegistry:
                 if process.returncode is not None:
                     break
                 if canceled.done():
-                    stopped = await self._terminate(process)
+                    stopped = await self._terminate(process, pgid)
                     break
                 self._refresh(record, destination, alive=True)
             returncode = process.returncode
@@ -453,22 +463,31 @@ class ExportRegistry:
         # than inventing a success.
         return (returncode if returncode is not None else -1), stopped
 
-    async def _terminate(self, process: asyncio.subprocess.Process) -> bool:
+    async def _terminate(self, process: asyncio.subprocess.Process, pgid: int) -> bool:
         """SIGTERM the converter's process group, then SIGKILL what survives.
 
-        ``False`` means there was nothing left to stop — the converter had
-        already exited, and whatever it produced stands on its own merits.
+        ``False`` means there was nothing left to stop — the group was already
+        empty, and whatever the converter produced stands on its own merits.
+
+        The exit condition is the whole GROUP, not just the parent. The parent
+        can hand its work to a forked ffmpeg and exit while that child keeps
+        running (and keeps writing the output we are about to delete); waiting
+        only on the parent would then report ``stopped`` with a live writer
+        still going. So the grace window watches the group, and if anything is
+        still there when it lapses the group is SIGKILLed — after which no
+        member can execute, whether or not init has reaped it yet, which is the
+        guarantee cleanup needs.
         """
-        if not _signal_group(process, signal.SIGTERM):
+        if not _killpg(pgid, signal.SIGTERM):
             return False
-        if await _await_exit(process, self._config.term_grace_s):
+        if await _await_group_exit(pgid, self._config.term_grace_s):
             return True
         logger.warning(
-            "converter ignored SIGTERM within the grace window; killing",
-            extra={"pid": process.pid},
+            "converter process group ignored SIGTERM within the grace window; killing",
+            extra={"pgid": pgid},
         )
-        _signal_group(process, signal.SIGKILL)
-        await _await_exit(process, _KILL_WAIT_S)
+        _killpg(pgid, signal.SIGKILL)
+        await _await_group_exit(pgid, _KILL_WAIT_S)
         return True
 
     def _refresh(self, record: ExportRecord, destination: Path, *, alive: bool) -> None:
@@ -515,42 +534,54 @@ def _release_pipes(process: asyncio.subprocess.Process) -> None:
         transport.close()
 
 
-async def _await_exit(process: asyncio.subprocess.Process, timeout: float) -> bool:
-    """Wait for the PROCESS to die, whether or not its pipes are closed.
-
-    ``process.wait()`` answers a different question: asyncio resolves it only
-    once the process has exited AND every pipe has disconnected, so a child the
-    converter left behind can hold it open long past the death we are waiting
-    for. ``returncode`` is set by the child watcher the moment the process
-    itself is reaped, which is the fact a kill needs to confirm.
-    """
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    while process.returncode is None:
-        if loop.time() >= deadline:
-            return False
-        await asyncio.sleep(_EXIT_POLL_S)
-    return True
-
-
 def _rmtree(path: Path) -> None:
     """Best-effort recursive removal (symlinks are unlinked, never followed)."""
     shutil.rmtree(path, ignore_errors=True)
 
 
-def _signal_group(process: asyncio.subprocess.Process, sig: int) -> bool:
-    """Signal the child's process group; ``False`` when it is already gone.
+def _killpg(pgid: int, sig: int) -> bool:
+    """Signal a process group; ``False`` when the group is already gone.
 
-    ``returncode`` is checked first so a reaped pid is never signalled: the
-    number can be reused by an unrelated process, and killing a stranger's
-    process group is a far worse bug than a converter that exited on its own.
+    *pgid* is captured once while the leader is alive, so it does not depend on
+    the leader's pid still being resolvable — which is the whole point, since a
+    surviving child can outlive the leader. The pgid-reuse window (leader
+    reaped, number recycled, all before we signal) is negligible and no worse
+    than the previous pid-based version; the payoff is that a child left behind
+    is reached rather than missed.
     """
-    if process.returncode is not None:
-        return False
     try:
-        os.killpg(os.getpgid(process.pid), sig)
+        os.killpg(pgid, sig)
     except (ProcessLookupError, PermissionError):
         return False
+    return True
+
+
+def _group_alive(pgid: int) -> bool:
+    """Whether the process group still has any member.
+
+    Signal 0 tests existence without delivering anything. A zombie member still
+    "exists" for this test until it is reaped, which is harmless: a zombie runs
+    no code, so treating it as alive only costs a little extra wait, never a
+    premature "it's gone" while a real process could still be writing.
+    """
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # The group exists but is not ours to signal — still alive.
+        return True
+    return True
+
+
+async def _await_group_exit(pgid: int, timeout: float) -> bool:
+    """Wait until the whole process group is gone, or *timeout* lapses."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while _group_alive(pgid):
+        if loop.time() >= deadline:
+            return False
+        await asyncio.sleep(_EXIT_POLL_S)
     return True
 
 

@@ -117,6 +117,51 @@ def test_canceling_a_running_export_kills_the_process_group(
     assert _process_gone(child_pid)
 
 
+def test_a_child_that_outlives_the_parent_is_still_killed(
+    data_dir: Path,
+    make_capture: Callable[..., str],
+    profile_path: str,
+    exporter_env: Callable[..., None],
+) -> None:
+    """The F2 case: the parent dies on SIGTERM, a child ignores it.
+
+    Cancel sends SIGTERM to the whole group; the parent (plain hang loop) dies,
+    but the child ignores it and keeps running (and, in production, keeps
+    writing the output about to be deleted). Waiting on the parent alone would
+    report the cancel done with that writer still alive. Only escalating to a
+    group SIGKILL — which nothing can ignore — actually stops it; the short
+    grace forces that escalation quickly.
+    """
+    exporter_env(
+        FAKE_MODE="hang",
+        FAKE_CHILD="1",
+        FAKE_CHILD_IGNORE_TERM="1",
+        KAIROS_LEROBOT_TERM_GRACE_S="0.3",
+    )
+    capture = make_capture()
+    output = data_dir / "exports" / "alice_default_orphan"
+
+    async def scenario() -> int:
+        async with exporter_client(
+            create_exporter_app(Settings(data_dir=str(data_dir)))
+        ) as client:
+            export_id = await _submit(
+                client, capture, profile_path, "alice_default_orphan"
+            )
+            await _wait_for_file(output / "meta" / "fake_child.json")
+            child_pid = json.loads(
+                (output / "meta" / "fake_child.json").read_text(encoding="utf-8")
+            )["pid"]
+            await client.post(f"/exports/{export_id}/cancel")
+            body = await wait_for_state(client, export_id, {"canceled", "failed"})
+            assert body["state"] == "canceled", body
+            return child_pid
+
+    child_pid = asyncio.run(scenario())
+    assert _process_gone(child_pid), "the orphaned child survived the cancel"
+    assert not output.exists()
+
+
 def test_a_converter_that_ignores_sigterm_is_killed(
     data_dir: Path,
     make_capture: Callable[..., str],
