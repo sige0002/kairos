@@ -250,6 +250,13 @@ export interface BatchMachine {
   // actions
   startRecording: () => void;
   cancelArming: () => void;
+  /** Whether the arming Cancel may be used yet (#8 — see
+   *  ARMING_CANCEL_GUARD_MS). False for the phase's first moments, so the tail
+   *  of a double-click on Start cannot back out of the take it just began.
+   *  Read by the control AND checked inside `cancelArming`, the same
+   *  belt-and-braces as `canStop`: a guard that only lives on the button is
+   *  walked around by the Escape shortcut. */
+  canCancelArming: boolean;
   stopRecording: () => void;
   /** Whether Stop may be used yet, and if not, why (M2 — see STOP_FLOOR_MS). */
   canStop: boolean;

@@ -126,6 +126,12 @@ test('the tail of a double-click on Start cannot cancel the arming take', async 
   fireEvent.click(cancel);
   expect(phaseTitle()).toHaveTextContent('ARMING…');
 
+  // Focus is not nowhere while the button cannot hold it. A disabled button
+  // refuses focus(), which used to drop it on <body> — where the next Space
+  // press scrolls the page instead of reaching the flow (D-4).
+  expect(document.activeElement).not.toBe(document.body);
+  expect(phaseTitle()).toHaveFocus();
+
   await act(async () => {
     held.releaseStart();
     await held.startHeld;
@@ -140,14 +146,21 @@ test('a deliberate cancel, after the guard window, still backs out', async () =>
   fireEvent.click(screen.getByRole('button', { name: /Start recording/ }));
   await waitFor(() => expect(phaseTitle()).toHaveTextContent('ARMING…'));
 
+  // The guard is shut first — asserted here as well as in the double-click test
+  // so that removing the guard fails THIS test too, rather than leaving it
+  // green on focus behaviour alone.
+  const cancel = screen.getByTestId('arming-cancel');
+  expect(cancel).toBeDisabled();
+  fireEvent.click(cancel);
+  expect(phaseTitle()).toHaveTextContent('ARMING…');
+
   // Real timers: this is the shipped delay, not a seam, so the test proves the
   // window an operator actually waits out.
-  const cancel = screen.getByTestId('arming-cancel');
   await waitFor(() => expect(cancel).toBeEnabled(), {
     timeout: ARMING_CANCEL_GUARD_MS + 2000,
   });
-  // The guard also hands focus back once it opens — a disabled button cannot
-  // take it, so without this the phase would be keyboard-dead (D-4).
+  // The guard hands focus on once it opens — a disabled button cannot take it,
+  // so without this the phase would be keyboard-dead (D-4).
   expect(cancel).toHaveFocus();
 
   fireEvent.click(cancel);

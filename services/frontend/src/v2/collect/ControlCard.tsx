@@ -14,8 +14,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { BatchMachine } from './useBatchMachine';
 import { useFailReasons } from '../plans';
-import { useActivationGuard } from './hooks/useActivationGuard';
-import { ARMING_CANCEL_GUARD_MS } from './machine/types';
 import { ArmingCard } from './control/ArmingCard';
 import { CompletedCard } from './control/CompletedCard';
 import { EndedCard } from './control/EndedCard';
@@ -61,16 +59,12 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
   const saveRef = useRef<HTMLButtonElement>(null);
   const failReasonRef = useRef<HTMLButtonElement>(null);
   const takeoverStopRef = useRef<HTMLButtonElement>(null);
+  const armingTitleRef = useRef<HTMLSpanElement>(null);
   const hasTakeover = !!takeover;
-
-  // ARMING's Cancel sits where Start just was, so the tail of a double-click
-  // used to back out of the take the first press began (#8). The guard lives
-  // here rather than in ArmingCard because the focus effect below has to know
-  // about it: focus() on a disabled button is a no-op.
-  const cancelArmed = useActivationGuard(
-    phase === 'arming' && !hasTakeover,
-    ARMING_CANCEL_GUARD_MS,
-  );
+  // ARMING's Cancel is guarded for its first moments (#8). The flag is the
+  // machine's, not this card's, because the Escape shortcut reaches
+  // `cancelArming` without passing the button.
+  const cancelArmed = machine.canCancelArming;
 
   useEffect(() => {
     if (hasTakeover) {
@@ -82,7 +76,13 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
         startRef.current?.focus();
         break;
       case 'arming':
-        cancelRef.current?.focus();
+        // Cancel is disabled for the guard window, and focus() on a disabled
+        // button is a no-op — which left focus on <body> for the whole of a
+        // fast pre-armed start (~16ms), where ARMING can come and go without
+        // the guard ever opening. The title holds focus until the button can
+        // take it.
+        if (cancelArmed) cancelRef.current?.focus();
+        else armingTitleRef.current?.focus();
         break;
       case 'recording':
         stopRef.current?.focus();
@@ -121,7 +121,9 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
   }
 
   if (phase === 'arming') {
-    return <ArmingCard machine={machine} cancelRef={cancelRef} cancelArmed={cancelArmed} />;
+    return (
+      <ArmingCard machine={machine} cancelRef={cancelRef} titleRef={armingTitleRef} />
+    );
   }
 
   if (phase === 'recording') {
