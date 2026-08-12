@@ -27,7 +27,7 @@ export function PausedCard({ machine }: { machine: BatchMachine }) {
       <button
         type="button"
         onClick={machine.resumeBatch}
-        className="h-[46px] rounded-control bg-teal-600 text-sm font-bold text-white hover:bg-teal-700"
+        className="h-[46px] rounded-control bg-teal-700 text-sm font-bold text-white hover:bg-teal-800"
       >
         Resume set
       </button>

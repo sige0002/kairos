@@ -28,7 +28,7 @@ export const ALL_CAPTURES = '__all__';
 export const BATCH_VALUE_PREFIX = 'batch:';
 
 const SELECT_CLASS =
-  'rounded-control border border-gray-200 px-2 py-1.5 font-mono text-sm focus:border-teal-500 focus:outline-none';
+  'rounded-control border border-gray-200 px-2 py-1.5 font-mono text-sm focus:border-teal-600 focus:outline-none';
 
 /** What to call a capture on screen. `run_id` is display-only (§1) and can be
  *  absent — a capture pulled from another host may have none — in which case
@@ -207,7 +207,7 @@ export function ParamsPanel({
             above is of what was fetched.
           </span>
         )}
-        <span className="text-[11px] text-gray-400">
+        <span className="text-[11px] text-gray-500">
           Validation only — reviewing and dataset membership live in their own screens.
         </span>
       </label>
@@ -225,9 +225,9 @@ export function ParamsPanel({
       <div className="flex flex-col gap-1.5">
         <span className="text-xs font-semibold text-gray-700">One-click presets</span>
         {presetsLoading ? (
-          <p className="text-[11px] text-gray-400">Loading presets…</p>
+          <p className="text-[11px] text-gray-500">Loading presets…</p>
         ) : presets.length === 0 ? (
-          <p className="text-[11px] leading-relaxed text-gray-400">
+          <p className="text-[11px] leading-relaxed text-gray-500">
             No presets configured. Add{' '}
             <span className="font-mono">
               config/&lt;robot&gt;/validation_presets.yaml
@@ -249,7 +249,7 @@ export function ParamsPanel({
                 <span className="block truncate text-[13px] font-medium text-gray-700">
                   {p.name}
                 </span>
-                <span className="block truncate font-mono text-[10.5px] text-gray-400">
+                <span className="block truncate font-mono text-[10.5px] text-gray-500">
                   {p.pipeline}
                 </span>
               </span>
@@ -333,7 +333,7 @@ export function ParamsPanel({
           type="button"
           disabled={!canRun}
           onClick={onRun}
-          className="h-[42px] rounded-[10px] bg-teal-600 text-[13.5px] font-bold text-white hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50"
+          className="h-[42px] rounded-[10px] bg-teal-700 text-[13.5px] font-bold text-white hover:bg-teal-800 disabled:cursor-not-allowed disabled:opacity-50"
         >
           Run on selection
         </button>

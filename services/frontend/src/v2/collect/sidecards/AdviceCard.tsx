@@ -34,7 +34,7 @@ export function AdviceCard({ machine }: { machine: BatchMachine }) {
             >
               ‹
             </button>
-            <span className="font-mono text-[11px] text-gray-400">
+            <span className="font-mono text-[11px] text-gray-500">
               {machine.adviceIdx + 1} / {ADVICE_ITEMS.length}
             </span>
             <button

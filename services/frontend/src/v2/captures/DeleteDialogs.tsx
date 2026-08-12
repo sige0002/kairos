@@ -369,7 +369,7 @@ export function DiscardDialog({
             kairos does not delete it.
           </p>
         )}
-        <span className="mt-3 block text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400">
+        <span className="mt-3 block text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           Reason (required)
         </span>
         <div className="mt-1.5 flex flex-wrap gap-1.5" data-testid="discard-reason-chips">
@@ -414,7 +414,7 @@ export function DiscardDialog({
             placeholder="e.g. gripper never closed — unusable takes"
             data-testid="discard-reason"
             aria-label="Reason"
-            className="mt-1.5 w-full rounded-control border border-gray-200 px-2 py-1.5 text-sm focus:border-teal-500 focus:outline-none"
+            className="mt-1.5 w-full rounded-control border border-gray-200 px-2 py-1.5 text-sm focus:border-teal-600 focus:outline-none"
           />
         )}
         <p className="mt-1 text-[11.5px] text-gray-500">
@@ -503,7 +503,7 @@ export function DeleteDialog({
         )}
         <label
           htmlFor="delete-reason"
-          className="mt-3 block text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400"
+          className="mt-3 block text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-500"
         >
           Reason (optional)
         </label>
@@ -515,7 +515,7 @@ export function DeleteDialog({
           maxLength={500}
           placeholder="e.g. superseded by a re-run"
           data-testid="delete-reason"
-          className="mt-1 w-full rounded-control border border-gray-200 px-2 py-1.5 text-sm focus:border-teal-500 focus:outline-none"
+          className="mt-1 w-full rounded-control border border-gray-200 px-2 py-1.5 text-sm focus:border-teal-600 focus:outline-none"
         />
         <FailureList failures={failures} testId="delete-failures" />
         <DialogError

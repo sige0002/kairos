@@ -23,7 +23,7 @@ export function DetailHeader({
       <h2 className="text-[15px] font-bold text-gray-900">{pipeline.id}</h2>
       <Badge tone={lifecycleTone(lifecycle)}>{lifecycle.toUpperCase()}</Badge>
       {pipeline.description && (
-        <span className="min-w-0 truncate text-xs text-gray-400" title={pipeline.description}>
+        <span className="min-w-0 truncate text-xs text-gray-500" title={pipeline.description}>
           {pipeline.description}
         </span>
       )}
@@ -32,7 +32,7 @@ export function DetailHeader({
         <button
           type="button"
           onClick={onPromote}
-          className="rounded-[9px] bg-teal-600 px-[14px] py-[7px] text-[12.5px] font-bold text-white hover:bg-teal-700"
+          className="rounded-[9px] bg-teal-700 px-[14px] py-[7px] text-[12.5px] font-bold text-white hover:bg-teal-800"
         >
           Promote to Standard…
         </button>

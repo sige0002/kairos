@@ -10,7 +10,7 @@ const CHIP_TONE: Record<Tone, string> = {
   amber: 'bg-amber-100 text-amber-800',
   red: 'bg-red-50 text-red-700 border border-red-200',
   teal: 'bg-teal-100 text-teal-700',
-  gray: 'bg-gray-100 text-gray-500',
+  gray: 'bg-gray-100 text-gray-600',
 };
 
 export function Chip({ tone, children }: { tone: Tone; children: React.ReactNode }) {

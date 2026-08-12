@@ -38,7 +38,7 @@ export function MenuRail({ settings }: { settings: SettingsState }) {
       ))}
       <div className="flex-1" />
       <div className="flex flex-col gap-0.5 border-t border-gray-100 px-3 pb-1 pt-2.5">
-        <span className="text-[11px] text-gray-400">active robot</span>
+        <span className="text-[11px] text-gray-500">active robot</span>
         <span
           data-testid="settings-active-robot"
           className="font-mono text-[12.5px] font-semibold text-teal-700"

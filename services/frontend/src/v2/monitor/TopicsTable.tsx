@@ -65,7 +65,7 @@ export function TopicsTable({
     <Card className="flex max-h-[270px] shrink-0 flex-col">
       <div
         className={cn(
-          'grid gap-2 border-b border-gray-100 px-[18px] py-2.5 text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400',
+          'grid gap-2 border-b border-gray-100 px-[18px] py-2.5 text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-500',
           GRID_COLS,
         )}
       >
@@ -87,11 +87,11 @@ export function TopicsTable({
       )}
       <div className="overflow-auto">
         {isDiscovering ? (
-          <p className="px-[18px] py-6 text-center text-xs text-gray-400">Discovering topics…</p>
+          <p className="px-[18px] py-6 text-center text-xs text-gray-500">Discovering topics…</p>
         ) : rows.length === 0 ? (
           <p
             data-testid="topics-table-empty"
-            className="px-[18px] py-6 text-center text-xs text-gray-400"
+            className="px-[18px] py-6 text-center text-xs text-gray-500"
           >
             {monitorBridge === 'down'
               ? 'Robot offline — no topics discovered (the monitor on the robot side is unreachable).'
@@ -154,7 +154,7 @@ export function TopicsTable({
                 <span className="font-mono text-[12.5px] text-gray-700">
                   {row.hz != null ? row.hz.toFixed(1) : '—'}
                 </span>
-                <span className="font-mono text-[12.5px] text-gray-400">
+                <span className="font-mono text-[12.5px] text-gray-500">
                   {row.expected_hz != null ? row.expected_hz : (formatBaseline(row) ?? '—')}
                 </span>
                 <span className="font-mono text-[12.5px] text-gray-700">

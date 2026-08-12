@@ -132,9 +132,9 @@ export function DatasetDetail({
           here.
         </p>
       ) : detailLoading ? (
-        <span className="text-sm text-gray-400">Loading capture…</span>
+        <span className="text-sm text-gray-500">Loading capture…</span>
       ) : detailError ? (
-        <span className="text-sm text-amber-600">Couldn&apos;t load this capture.</span>
+        <span className="text-sm text-amber-700">Couldn&apos;t load this capture.</span>
       ) : detail ? (
         <>
           <div className="grid grid-cols-4 gap-2" data-testid="dataset-member-stats">
@@ -170,7 +170,7 @@ function Stat({ value, label }: { value: string; label: string }) {
   return (
     <div className="flex flex-col gap-0.5 rounded-[11px] border border-gray-100 px-[14px] py-[11px]">
       <span className="font-mono text-[21px] font-semibold text-gray-900">{value}</span>
-      <span className="text-[11.5px] text-gray-400">{label}</span>
+      <span className="text-[11.5px] text-gray-500">{label}</span>
     </div>
   );
 }

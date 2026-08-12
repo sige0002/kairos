@@ -105,11 +105,11 @@ export function CoverageCard({ machine }: { machine: BatchMachine }) {
               {isFloor ? '\u2265 ' : ''}
               {recorded}
             </span>
-            <span className="shrink-0 text-[10.5px] text-gray-400">rec</span>
+            <span className="shrink-0 text-[10.5px] text-gray-500">rec</span>
           </div>
         ))}
       </div>
-      <p className="text-[10.5px] leading-snug text-gray-400">
+      <p className="text-[10.5px] leading-snug text-gray-500">
         rec counts every take reviewed into this task&apos;s sets — it never drops
         when a recording is later excluded or deleted
       </p>

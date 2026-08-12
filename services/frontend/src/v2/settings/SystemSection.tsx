@@ -53,13 +53,13 @@ export function SystemSection({ config }: { config: RuntimeConfig | undefined })
         <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           System
         </h2>
-        <span className="text-[11px] text-gray-400">read-only · GET /api/v1/config</span>
+        <span className="text-[11px] text-gray-500">read-only · GET /api/v1/config</span>
       </div>
 
       <Section title="Deployment">
         <Row label="Robot" value={config?.defaults.robot_name || '—'} />
         <Row label="ROS_DOMAIN_ID" value={domain !== undefined ? String(domain) : '—'} />
-        <p className="text-[11.5px] text-gray-400">
+        <p className="text-[11.5px] text-gray-500">
           RMW / DDS transport is not exposed by the API — check <code>RMW_IMPLEMENTATION</code> in
           the service environment.
         </p>
@@ -81,7 +81,7 @@ export function SystemSection({ config }: { config: RuntimeConfig | undefined })
             />
           </>
         ) : (
-          <p className="text-[12.5px] text-gray-400">
+          <p className="text-[12.5px] text-gray-500">
             Disk usage unavailable — the runtime data dir could not be measured.
           </p>
         )}

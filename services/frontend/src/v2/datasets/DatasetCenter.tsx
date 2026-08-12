@@ -87,7 +87,7 @@ function ScopeHeaderBar({ state }: { state: DatasetsState }) {
           <Badge tone={status === 'archived' ? 'gray' : 'amber'}>{status}</Badge>
         </span>
       )}
-      <span data-testid="dataset-scope-count" className="text-[11.5px] text-gray-400">
+      <span data-testid="dataset-scope-count" className="text-[11.5px] text-gray-500">
         {rendered === total
           ? memberCount(total)
           : `showing ${formatCount(rendered)} of ${memberCount(total)}`}
@@ -100,7 +100,7 @@ function ScopeHeaderBar({ state }: { state: DatasetsState }) {
         onChange={(e) => state.setMemberSearch(e.target.value)}
         aria-label="Search members of this dataset"
         placeholder="Find #N, capture, run, operator…"
-        className="w-[190px] rounded-control border border-gray-200 bg-white px-2.5 py-1 text-[12px] text-gray-700 placeholder:text-gray-400"
+        className="w-[190px] rounded-control border border-gray-200 bg-white px-2.5 py-1 text-[12px] text-gray-700 placeholder:text-gray-500"
       />
       {scope.kind === 'dataset' && state.canEditDataset && (
         <button
@@ -204,7 +204,7 @@ function SummaryRow({ state }: { state: DatasetsState }) {
       >
         Summary
       </span>
-      <span className="truncate text-[11.5px] text-gray-400">
+      <span className="truncate text-[11.5px] text-gray-500">
         success / failure · quality · availability for {state.scope.label}
       </span>
     </button>
@@ -249,7 +249,7 @@ function MemberTableRow({ row, state }: { row: MemberRow; state: DatasetsState }
             <span className="text-gray-500"> · {captureFacts(capture)}</span>
           )}
         </span>
-        <span className="truncate font-mono text-[10.5px] text-gray-400">
+        <span className="truncate font-mono text-[10.5px] text-gray-500">
           {capture?.run_id ?? shortCaptureId(row.captureId)}
         </span>
       </div>
@@ -262,7 +262,7 @@ function MemberTableRow({ row, state }: { row: MemberRow; state: DatasetsState }
         <span
           data-testid={`dataset-member-unresolved-${row.membershipId}`}
           title="This dataset lists a capture the loaded catalog has no row for, so nothing can be said about it here."
-          className="text-[11px] italic text-gray-400"
+          className="text-[11px] italic text-gray-500"
         >
           not in the catalog
         </span>
@@ -274,7 +274,7 @@ function MemberTableRow({ row, state }: { row: MemberRow; state: DatasetsState }
             testId={`dataset-member-labels-${row.membershipId}`}
           />
         ) : (
-          <span className="text-[11px] italic text-gray-400">—</span>
+          <span className="text-[11px] italic text-gray-500">—</span>
         )}
       </div>
       <span className="justify-self-end font-mono text-xs text-gray-500">
@@ -467,7 +467,7 @@ function SelectedDatasetPane({ state }: { state: DatasetsState }) {
         <SummaryRow state={state} />
         <div
           className={cn(
-            'grid gap-2 border-b border-gray-100 px-[18px] py-2 text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400',
+            'grid gap-2 border-b border-gray-100 px-[18px] py-2 text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-500',
             GRID_COLS,
           )}
         >
@@ -481,7 +481,7 @@ function SelectedDatasetPane({ state }: { state: DatasetsState }) {
           {memberRows.length === 0 ? (
             <p
               data-testid="dataset-member-empty"
-              className="px-[18px] py-4 text-[12.5px] text-gray-400"
+              className="px-[18px] py-4 text-[12.5px] text-gray-500"
             >
               {scopeMembers.length === 0
                 ? 'No members yet — add finished recordings from the right-hand rail.'

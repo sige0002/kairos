@@ -73,7 +73,7 @@ export function StatsBadge({
           'that arrived — the picture is not current.'
         }
         className={cn(
-          'inline-flex items-center gap-1.5 rounded-chip bg-amber-500/90 px-2.5 py-1 font-mono text-[11px] font-semibold text-white',
+          'inline-flex items-center gap-1.5 rounded-chip bg-amber-500/90 px-2.5 py-1 font-mono text-[11px] font-semibold text-gray-900',
           className,
         )}
       >
@@ -126,7 +126,7 @@ function StreamStatsBadge({ stats, className }: { stats: StreamStats; className?
           'publisher rather than a network problem.'
         }
         className={cn(
-          'inline-flex items-center gap-1.5 rounded-chip bg-amber-500/90 px-2.5 py-1 font-mono text-[11px] font-semibold text-white',
+          'inline-flex items-center gap-1.5 rounded-chip bg-amber-500/90 px-2.5 py-1 font-mono text-[11px] font-semibold text-gray-900',
           className,
         )}
       >
@@ -195,7 +195,7 @@ export function CameraPlaceholder({
             Camera preview unavailable
           </span>
           <span
-            className="max-w-full truncate font-mono text-[11px] text-gray-400"
+            className="max-w-full truncate font-mono text-[11px] text-gray-500"
             title={error ?? undefined}
           >
             {error ?? "the WebRTC stream couldn't connect"}
@@ -208,7 +208,7 @@ export function CameraPlaceholder({
               e.stopPropagation();
               onRetry();
             }}
-            className="mt-0.5 rounded-control border border-gray-500 bg-gray-900/70 px-3 py-1 text-[11.5px] font-semibold text-teal-300 hover:bg-gray-800"
+            className="mt-0.5 rounded-control border border-gray-500 bg-gray-900/70 px-3 py-1 text-[11.5px] font-semibold text-teal-200 hover:bg-gray-800"
           >
             Retry
           </button>
@@ -256,7 +256,7 @@ function SubResToggle({ value, onPick }: { value: SubResLabel; onPick: (l: SubRe
           title={`Sub preview resolution — subs stay low-res by design (§3-2)`}
           className={cn(
             'rounded-chip px-1.5 py-0.5 font-mono text-[9.5px] font-bold',
-            label === value ? 'bg-teal-300 text-gray-900' : 'text-gray-400',
+            label === value ? 'bg-teal-300 text-gray-900' : 'text-gray-300',
           )}
         >
           {label}
@@ -403,7 +403,7 @@ export function AddCameraTile({
       className="flex min-w-0 flex-col items-center justify-center gap-2 overflow-hidden rounded-card border border-dashed border-gray-300 bg-gray-50 p-3"
       style={style}
     >
-      <span className="text-xl font-semibold text-gray-400">+</span>
+      <span className="text-xl font-semibold text-gray-500">+</span>
       <span className="text-[11px] font-semibold text-gray-500">Add camera</span>
       <select
         aria-label="add camera topic"
@@ -413,7 +413,7 @@ export function AddCameraTile({
           if (e.target.value) addCameraPane(e.target.value);
           // Value stays "" (it's an action trigger, not a persistent selection).
         }}
-        className="w-full max-w-[92%] rounded-control border border-gray-200 bg-white px-2 py-1 font-mono text-[11px] text-gray-700 focus:border-teal-500 focus:outline-none"
+        className="w-full max-w-[92%] rounded-control border border-gray-200 bg-white px-2 py-1 font-mono text-[11px] text-gray-700 focus:border-teal-600 focus:outline-none"
       >
         <option value="" disabled>
           {options.length === 0 ? 'No image topics found' : 'Choose a camera…'}

@@ -192,7 +192,7 @@ export function Cameras({
           <span
             className={cn(
               'inline-flex items-center gap-1.5 rounded-chip bg-gray-900/75 px-2.5 py-1 font-mono text-[11.5px] font-bold',
-              recording ? 'text-red-300' : 'text-teal-300',
+              recording ? 'text-red-200' : 'text-teal-200',
             )}
           >
             <span
@@ -216,7 +216,7 @@ export function Cameras({
             data-testid="main-res-group"
             className="flex shrink-0 items-center gap-0.5 rounded-chip bg-gray-900/80 p-[3px]"
           >
-            <span className="px-1.5 text-[10px] font-semibold tracking-[0.04em] text-gray-400">
+            <span className="px-1.5 text-[10px] font-semibold tracking-[0.04em] text-gray-300">
               RES
             </span>
             {MAIN_RES_PRESETS.map((p) => (
@@ -226,7 +226,7 @@ export function Cameras({
                 onClick={() => setMainCameraRes(p.label)}
                 className={cn(
                   'rounded-chip px-2 py-0.5 font-mono text-[10.5px] font-bold',
-                  p.label === mainResLabel ? 'bg-teal-300 text-gray-900' : 'text-gray-400',
+                  p.label === mainResLabel ? 'bg-teal-300 text-gray-900' : 'text-gray-300',
                 )}
               >
                 {p.label}

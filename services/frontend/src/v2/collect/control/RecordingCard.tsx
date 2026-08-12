@@ -77,13 +77,13 @@ export function RecordingCard({
           data-testid="elapsed"
           className={cn(
             'font-mono text-[34px] font-semibold',
-            unreachable ? 'text-gray-400' : 'text-gray-900',
+            unreachable ? 'text-gray-500' : 'text-gray-900',
           )}
           title={unreachable ? `Frozen at the last confirmed reading (${staleText})` : undefined}
         >
           {elapsedText}
         </span>
-        <span className="font-mono text-xs text-gray-400">{writtenText}</span>
+        <span className="font-mono text-xs text-gray-500">{writtenText}</span>
       </div>
       {/* Stop occupies the position Start just vacated, so the second half
           of a double-click lands here. Refused for the first moment of a

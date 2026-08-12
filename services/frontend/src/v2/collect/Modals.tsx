@@ -71,19 +71,19 @@ function EndBatchModal({ machine }: { machine: BatchMachine }) {
           <div className="font-mono text-lg font-semibold text-gray-900">
             {stats.nRecorded}
           </div>
-          <div className="text-[11px] text-gray-400">recorded</div>
+          <div className="text-[11px] text-gray-500">recorded</div>
         </div>
         <div className="rounded-control border border-gray-100 px-3 py-2.5">
           <div className="font-mono text-lg font-semibold text-gray-500">
             {stats.nRemaining}
           </div>
-          <div className="text-[11px] text-gray-400">not recorded</div>
+          <div className="text-[11px] text-gray-500">not recorded</div>
         </div>
         <div className="rounded-control border border-gray-100 px-3 py-2.5">
-          <div className="font-mono text-lg font-semibold text-amber-600">
+          <div className="font-mono text-lg font-semibold text-amber-700">
             {stats.nReview}
           </div>
-          <div className="text-[11px] text-gray-400">needs review</div>
+          <div className="text-[11px] text-gray-500">needs review</div>
         </div>
       </div>
       <p className="mt-3 text-[12.5px] leading-relaxed text-gray-500">
@@ -191,7 +191,7 @@ function IssueModal({ machine }: { machine: BatchMachine }) {
         onChange={(e) => setNote(e.target.value)}
         placeholder="Describe what happened…"
         rows={3}
-        className="w-full resize-none rounded-control border border-gray-200 px-3 py-2.5 text-sm text-gray-700 focus:border-teal-500 focus:outline-none"
+        className="w-full resize-none rounded-control border border-gray-200 px-3 py-2.5 text-sm text-gray-700 focus:border-teal-600 focus:outline-none"
       />
     </Modal>
   );
@@ -257,7 +257,7 @@ function ConditionModal({ machine }: { machine: BatchMachine }) {
           }}
           placeholder="Custom condition…"
           data-testid="custom-condition-input"
-          className="min-w-0 flex-1 rounded-control border border-gray-200 px-3 py-2.5 text-sm text-gray-700 focus:border-teal-500 focus:outline-none"
+          className="min-w-0 flex-1 rounded-control border border-gray-200 px-3 py-2.5 text-sm text-gray-700 focus:border-teal-600 focus:outline-none"
         />
         <Button
           data-testid="custom-condition-add"
@@ -314,7 +314,7 @@ function TargetModal({ machine }: { machine: BatchMachine }) {
         placeholder={String(machine.targetEpisodes)}
         data-testid="target-input"
         autoFocus
-        className="w-full rounded-control border border-gray-200 px-3 py-2.5 font-mono text-sm text-gray-700 focus:border-teal-500 focus:outline-none"
+        className="w-full rounded-control border border-gray-200 px-3 py-2.5 font-mono text-sm text-gray-700 focus:border-teal-600 focus:outline-none"
       />
       {completesNow && (
         <p className="mt-2 text-[12px] leading-relaxed text-amber-700">

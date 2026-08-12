@@ -76,7 +76,7 @@ function UnsavedTakeBanner({ machine }: { machine: BatchMachine }) {
         <button
           type="button"
           onClick={machine.labelUnsavedTake}
-          className="h-9 [@media(max-height:860px)]:h-8 rounded-control bg-teal-600 px-3.5 text-[12.5px] font-bold text-white hover:bg-teal-700"
+          className="h-9 [@media(max-height:860px)]:h-8 rounded-control bg-teal-700 px-3.5 text-[12.5px] font-bold text-white hover:bg-teal-800"
         >
           Label it
         </button>
@@ -138,7 +138,7 @@ export function CollectScreen() {
     return (
       <>
         <ScreenTitle>Collect</ScreenTitle>
-        <div className="p-4 text-sm text-gray-400">Loading…</div>
+        <div className="p-4 text-sm text-gray-500">Loading…</div>
       </>
     );
   }

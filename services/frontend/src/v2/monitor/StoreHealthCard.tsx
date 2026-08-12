@@ -63,7 +63,7 @@ function Section({
 function SummaryRows({ summary }: { summary: Record<string, unknown> }) {
   const entries = Object.entries(summary);
   if (entries.length === 0) {
-    return <p className="text-[12.5px] text-gray-400">The summary is empty.</p>;
+    return <p className="text-[12.5px] text-gray-500">The summary is empty.</p>;
   }
   return (
     <div className="grid grid-cols-1 gap-x-6 gap-y-1 sm:grid-cols-2">
@@ -94,7 +94,7 @@ function CorruptList({ entries }: { entries: CorruptEntry[] }) {
           </span>
           <span className="text-[12px] text-red-700">{entry.reason}</span>
           {entry.capture_id && (
-            <span className="font-mono text-[11px] text-red-600">
+            <span className="font-mono text-[11px] text-red-700">
               capture {entry.capture_id}
             </span>
           )}
@@ -173,7 +173,7 @@ export function StoreHealthCard() {
               </Badge>
             )}
             {health?.instance_id && (
-              <span className="font-mono text-[11.5px] text-gray-400">{health.instance_id}</span>
+              <span className="font-mono text-[11.5px] text-gray-500">{health.instance_id}</span>
             )}
           </div>
         }
@@ -199,7 +199,7 @@ export function StoreHealthCard() {
           </p>
         </div>
       ) : !health ? (
-        <p className="px-[18px] py-6 text-[12.5px] text-gray-400">Reading store health…</p>
+        <p className="px-[18px] py-6 text-[12.5px] text-gray-500">Reading store health…</p>
       ) : (
         <>
           {/* ---- SUSPECT (§9-3) ---- */}
@@ -342,7 +342,7 @@ export function StoreHealthCard() {
                   rename into <code>.trash/</code>.
                 </p>
               ) : (
-                <p className="text-[12.5px] text-gray-400">Delete availability was not reported.</p>
+                <p className="text-[12.5px] text-gray-500">Delete availability was not reported.</p>
               )}
             </Section>
 
@@ -358,7 +358,7 @@ export function StoreHealthCard() {
               {health.rebuild_summary ? (
                 <SummaryRows summary={health.rebuild_summary} />
               ) : (
-                <p className="text-[12.5px] text-gray-400">
+                <p className="text-[12.5px] text-gray-500">
                   No rebuild has run in this process — the catalog was read from the database as it
                   stood.
                 </p>
@@ -373,7 +373,7 @@ export function StoreHealthCard() {
                   ))}
                 </ul>
               ) : (
-                <p className="text-[12px] text-gray-400" data-testid="store-health-warnings-empty">
+                <p className="text-[12px] text-gray-500" data-testid="store-health-warnings-empty">
                   No warnings were reported.
                 </p>
               )}
@@ -391,7 +391,7 @@ export function StoreHealthCard() {
               {health.last_reconcile ? (
                 <SummaryRows summary={health.last_reconcile} />
               ) : (
-                <p className="text-[12.5px] text-gray-400">
+                <p className="text-[12.5px] text-gray-500">
                   No pass has completed in this process yet.
                 </p>
               )}

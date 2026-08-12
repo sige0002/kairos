@@ -21,7 +21,7 @@ export function ChecklistCard({
     <Card className="overflow-hidden" data-testid="fast-validation-checklist">
       <div className="flex flex-wrap items-center gap-2.5 border-b border-gray-100 px-[18px] py-4">
         <SectionLabel>Validation result</SectionLabel>
-        <span className="font-mono text-[11.5px] text-gray-400">
+        <span className="font-mono text-[11.5px] text-gray-500">
           {found}/{total} required
         </span>
         <div className="flex-1" />
@@ -30,7 +30,7 @@ export function ChecklistCard({
         </Badge>
       </div>
       <div className="px-[18px] py-1.5">
-        <div className="grid grid-cols-[1fr_64px_44px] gap-3 border-b border-gray-100 py-2 text-[10px] uppercase tracking-[0.05em] text-gray-400">
+        <div className="grid grid-cols-[1fr_64px_44px] gap-3 border-b border-gray-100 py-2 text-[10px] uppercase tracking-[0.05em] text-gray-500">
           <span>Required topics</span>
           <span className="text-right">Expected</span>
           <span className="text-right">Result</span>
@@ -46,12 +46,12 @@ export function ChecklistCard({
                 {t.name}
               </span>
             </span>
-            <span className="truncate text-right font-mono text-[10.5px] text-gray-400">
+            <span className="truncate text-right font-mono text-[10.5px] text-gray-500">
               {t.type ?? 'any'}
             </span>
             <span
               className={`text-right font-mono text-[13px] font-semibold ${
-                t.found ? 'text-green-600' : 'text-red-600'
+                t.found ? 'text-green-700' : 'text-red-600'
               }`}
             >
               {t.found ? '✓' : '✕'}
@@ -60,7 +60,7 @@ export function ChecklistCard({
         ))}
       </div>
       {extraCount > 0 && (
-        <p className="px-[18px] py-2.5 font-mono text-[11px] text-gray-400">
+        <p className="px-[18px] py-2.5 font-mono text-[11px] text-gray-500">
           +{extraCount} extra topics not required
         </p>
       )}

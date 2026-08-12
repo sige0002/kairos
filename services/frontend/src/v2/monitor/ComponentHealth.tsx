@@ -69,7 +69,7 @@ export function ComponentHealth() {
         testId="health-orchestrator"
       />
       <HealthRow label="Monitor" chip={monitorChip(bridge)} testId="health-monitor" />
-      <p className="text-[11.5px] leading-relaxed text-gray-400">
+      <p className="text-[11.5px] leading-relaxed text-gray-500">
         Orchestrator health is this browser&apos;s live event stream (SSE); monitor health is
         the orchestrator&#8202;→&#8202;monitor bridge. Per-container recorder / streamer
         readiness is checked server-side by the orchestrator&apos;s <code>/readyz</code>{' '}

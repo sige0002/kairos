@@ -384,7 +384,7 @@ export function ImportBagsDialog({
               }
             }}
             placeholder="/data/incoming-bags"
-            className="w-full rounded-control border border-gray-200 px-2 py-1.5 font-mono text-sm focus:border-teal-500 focus:outline-none"
+            className="w-full rounded-control border border-gray-200 px-2 py-1.5 font-mono text-sm focus:border-teal-600 focus:outline-none"
           />
           <Button
             data-testid="import-scan"
@@ -468,7 +468,7 @@ export function ImportBagsDialog({
                       // The refusal was about what was there before.
                       setTagError(null);
                     }}
-                    className="rounded-control border border-gray-200 px-2 py-1 text-[12.5px] text-gray-800 focus:border-teal-500 focus:outline-none disabled:bg-gray-100"
+                    className="rounded-control border border-gray-200 px-2 py-1 text-[12.5px] text-gray-800 focus:border-teal-600 focus:outline-none disabled:bg-gray-100"
                   />
                 ))}
               </div>
@@ -489,7 +489,7 @@ export function ImportBagsDialog({
                   {tagError} Nothing was imported — fix the labels and run it again.
                 </span>
               ) : (
-                <span className="text-[11px] leading-snug text-gray-400">
+                <span className="text-[11px] leading-snug text-gray-500">
                   A bag recorded outside kairos carries no operator or task of its
                   own. Left blank, it arrives without them.
                 </span>
@@ -527,7 +527,7 @@ export function ImportBagsDialog({
                       onClick={() => void runScan(n.path)}
                       className="rounded-control border border-gray-300 bg-white px-2.5 py-1 font-mono text-[11.5px] text-gray-700 hover:bg-gray-100 disabled:opacity-50"
                     >
-                      {n.name} <span className="text-gray-400">({n.bags})</span>
+                      {n.name} <span className="text-gray-500">({n.bags})</span>
                     </button>
                   ))}
                 </div>

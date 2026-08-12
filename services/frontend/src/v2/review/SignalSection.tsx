@@ -218,7 +218,7 @@ export function SignalSection({
           {cameras.length > 0 && (
             <div className="flex flex-col gap-2">
               <div className="flex flex-wrap items-center gap-2">
-                <h3 className="text-[11px] font-semibold uppercase tracking-[0.04em] text-gray-400">
+                <h3 className="text-[11px] font-semibold uppercase tracking-[0.04em] text-gray-500">
                   Synced video
                 </h3>
                 <select
@@ -281,7 +281,7 @@ export function SignalSection({
             data-testid="review-topic-summary"
           >
             <thead>
-              <tr className="text-left text-[10px] uppercase tracking-[0.03em] text-gray-400">
+              <tr className="text-left text-[10px] uppercase tracking-[0.03em] text-gray-500">
                 <th className="py-0.5 pr-2 font-medium">Topic</th>
                 <th className="py-0.5 pr-2 font-medium">Messages</th>
                 <th className="py-0.5 pr-2 font-medium">Continuity</th>
@@ -318,7 +318,7 @@ export function SignalSection({
                         majors > 0
                           ? 'font-semibold text-red-600'
                           : events.length > 0
-                            ? 'text-amber-600'
+                            ? 'text-amber-700'
                             : 'text-gray-500'
                       }`}
                     >
@@ -340,7 +340,7 @@ export function SignalSection({
                 {Object.entries(report.skipped_topics).map(([t, reason]) => (
                   <li key={t} className="font-mono">
                     <span className="text-gray-600">{t}</span>
-                    <span className="text-gray-400"> — {reason}</span>
+                    <span className="text-gray-500"> — {reason}</span>
                   </li>
                 ))}
               </ul>

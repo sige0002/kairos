@@ -81,7 +81,7 @@ function toConfig(
 }
 
 const CELL =
-  'rounded-control border border-gray-200 px-1.5 py-1 text-[12px] focus:border-teal-500 focus:outline-none';
+  'rounded-control border border-gray-200 px-1.5 py-1 text-[12px] focus:border-teal-600 focus:outline-none';
 
 export function AlertsCard() {
   const queryClient = useQueryClient();
@@ -225,7 +225,7 @@ export function AlertsCard() {
           <div className="overflow-x-auto rounded-control border border-gray-200" data-testid="alerts-rules">
             <table className="w-full min-w-[720px] border-collapse text-[12px]">
               <thead>
-                <tr className="border-b border-gray-100 bg-gray-50 text-[10.5px] font-semibold uppercase tracking-[0.04em] text-gray-400">
+                <tr className="border-b border-gray-100 bg-gray-50 text-[10.5px] font-semibold uppercase tracking-[0.04em] text-gray-500">
                   <th className="px-2 py-1.5 text-left">Topic</th>
                   <th className="px-2 py-1.5 text-left">Metric</th>
                   <th className="px-2 py-1.5 text-left">Op</th>
@@ -239,7 +239,7 @@ export function AlertsCard() {
               <tbody>
                 {rules.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="px-2 py-3 text-center text-[12px] text-gray-400">
+                    <td colSpan={8} className="px-2 py-3 text-center text-[12px] text-gray-500">
                       No explicit rules — derived coverage applies. Add a rule to override a topic.
                     </td>
                   </tr>
@@ -335,7 +335,7 @@ export function AlertsCard() {
                         <button
                           type="button"
                           aria-label={`remove rule ${i}`}
-                          className="rounded-control px-2 py-1 text-[12px] text-gray-400 hover:bg-gray-50 hover:text-red-600"
+                          className="rounded-control px-2 py-1 text-[12px] text-gray-500 hover:bg-gray-50 hover:text-red-600"
                           onClick={() => setRules((rs) => rs.filter((_, j) => j !== i))}
                         >
                           ×
@@ -451,7 +451,7 @@ export function AlertsCard() {
                 discard them.
               </span>
             ) : (
-              <span className="text-[11px] text-gray-400">The server validates on save.</span>
+              <span className="text-[11px] text-gray-500">The server validates on save.</span>
             )}
           </div>
 
@@ -464,7 +464,7 @@ export function AlertsCard() {
               onClick={() => setAdvancedOpen((o) => !o)}
               className="flex w-full items-center gap-2 px-3.5 py-2.5 text-left text-[12.5px] font-semibold text-gray-700 hover:bg-gray-50"
             >
-              <span className={cn('text-gray-400 transition-transform', advancedOpen && 'rotate-90')}>
+              <span className={cn('text-gray-500 transition-transform', advancedOpen && 'rotate-90')}>
                 ▸
               </span>
               Advanced — edit raw YAML
@@ -476,13 +476,13 @@ export function AlertsCard() {
                   unsaved
                 </span>
               )}
-              {path && <span className="font-mono text-[11px] font-normal text-gray-400">{path}</span>}
+              {path && <span className="font-mono text-[11px] font-normal text-gray-500">{path}</span>}
             </button>
             {advancedOpen && (
               <div className="flex flex-col gap-2 border-t border-gray-100 p-3.5" data-testid="alerts-advanced">
                 <textarea
                   aria-label="alerts config yaml"
-                  className="h-56 w-full rounded-control border border-gray-200 p-2 font-mono text-xs focus:border-teal-500 focus:outline-none"
+                  className="h-56 w-full rounded-control border border-gray-200 p-2 font-mono text-xs focus:border-teal-600 focus:outline-none"
                   spellCheck={false}
                   value={rawText}
                   placeholder="rules: []"

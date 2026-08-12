@@ -99,7 +99,7 @@ function OutcomeDonut({
           >
             {pct}%
           </span>
-          <span className="text-[10.5px] uppercase tracking-[0.05em] text-gray-400">success</span>
+          <span className="text-[10.5px] uppercase tracking-[0.05em] text-gray-500">success</span>
         </div>
       </div>
       <figcaption className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-[11.5px] text-gray-600">
@@ -141,7 +141,7 @@ function AvailabilitySection({
       </h3>
 
       {slices.length === 0 ? (
-        <span data-testid="dataset-availability-empty" className="text-[12px] text-gray-400">
+        <span data-testid="dataset-availability-empty" className="text-[12px] text-gray-500">
           No member capture is loaded, so nothing can be said about where the bytes
           are.
         </span>
@@ -206,7 +206,7 @@ function StatTile({ value, label, title }: { value: string; label: string; title
       <span className="break-words font-mono text-[16px] font-semibold text-gray-900">
         {value}
       </span>
-      <span className="text-[11px] text-gray-400">{label}</span>
+      <span className="text-[11px] text-gray-500">{label}</span>
     </div>
   );
 }
@@ -234,7 +234,7 @@ export function ScopeSummary({ scope }: { scope: Scope }) {
         <span data-testid="dataset-summary-scope" className="text-[15px] font-bold text-gray-900">
           {scope.label}
         </span>
-        <span className="text-[11.5px] text-gray-400">
+        <span className="text-[11.5px] text-gray-500">
           {scope.kind === 'catalog'
             ? 'every member, across the datasets in view'
             : 'for this dataset'}
@@ -242,7 +242,7 @@ export function ScopeSummary({ scope }: { scope: Scope }) {
       </div>
 
       {agg.memberCount === 0 ? (
-        <p data-testid="dataset-summary-empty" className="text-[13px] text-gray-400">
+        <p data-testid="dataset-summary-empty" className="text-[13px] text-gray-500">
           No members in this scope yet.
         </p>
       ) : (
@@ -316,16 +316,16 @@ export function ScopeSummary({ scope }: { scope: Scope }) {
                 <QualityDot tone="bg-red-600" label="Not usable" count={agg.qualityNotUsable} />
               </div>
             ) : (
-              <span className="text-[12px] text-gray-400">No quality labels in this scope.</span>
+              <span className="text-[12px] text-gray-500">No quality labels in this scope.</span>
             )}
             {outcome.unlabeled > 0 && (
-              <span data-testid="dataset-summary-unlabeled" className="text-[11.5px] text-gray-400">
+              <span data-testid="dataset-summary-unlabeled" className="text-[11.5px] text-gray-500">
                 {outcome.unlabeled} without labels — excluded from the success rate (not
                 counted as successes).
               </span>
             )}
             {agg.bytes.unknown > 0 && (
-              <span data-testid="dataset-summary-sizeless" className="text-[11.5px] text-gray-400">
+              <span data-testid="dataset-summary-sizeless" className="text-[11.5px] text-gray-500">
                 {agg.bytes.unknown} report no size — {formatBytes(agg.bytes.total)} covers
                 the other {agg.bytes.known}.
               </span>

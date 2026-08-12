@@ -336,7 +336,7 @@ export function ReviewScreen() {
                     failed
                   </span>
                 ) : (
-                  <span className="shrink-0 font-mono text-gray-400">
+                  <span className="shrink-0 font-mono text-gray-500">
                     {r.reviewLane}
                   </span>
                 )}

@@ -148,7 +148,7 @@ const JOB_STATE_LABEL: Record<JobState, string> = {
 };
 
 const JOB_STATE_CLASS: Record<JobState, string> = {
-  queued: 'bg-gray-100 text-gray-500',
+  queued: 'bg-gray-100 text-gray-600',
   running: 'bg-teal-100 text-teal-700',
   succeeded: 'bg-green-100 text-green-700',
   failed: 'bg-red-50 text-red-700',
@@ -299,7 +299,7 @@ export function ResultsPanel({
           <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
             Latest run
           </h3>
-          <span className="font-mono text-xs text-gray-400">
+          <span className="font-mono text-xs text-gray-500">
             {outcome.label ?? outcome.captureId}
           </span>
         </div>
@@ -328,7 +328,7 @@ export function ResultsPanel({
         <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           Latest run
         </h3>
-        <span className="font-mono text-xs text-gray-400">
+        <span className="font-mono text-xs text-gray-500">
           {counts.total} captures
         </span>
         <div className="flex-1" />
@@ -360,7 +360,7 @@ export function ResultsPanel({
         </p>
       )}
 
-      <div className="grid grid-cols-[minmax(0,1fr)_100px_90px_1fr_60px] gap-2 border-b border-gray-100 px-1 py-1.5 text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400">
+      <div className="grid grid-cols-[minmax(0,1fr)_100px_90px_1fr_60px] gap-2 border-b border-gray-100 px-1 py-1.5 text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-500">
         <span>Capture</span>
         <span>Result</span>
         <span>Coverage</span>

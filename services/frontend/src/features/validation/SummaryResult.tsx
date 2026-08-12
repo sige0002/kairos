@@ -153,7 +153,7 @@ export function SummaryResult({
     <Card className="overflow-hidden">
       <div className="flex flex-wrap items-center gap-2.5 border-b border-gray-100 px-[18px] py-4">
         <SectionLabel>Result</SectionLabel>
-        <span className="font-mono text-[11.5px] text-gray-400">
+        <span className="font-mono text-[11.5px] text-gray-500">
           {name}
           {summary.version != null && ` · v${summary.version}`}
         </span>
@@ -179,7 +179,7 @@ export function SummaryResult({
 
       {artifacts.length > 0 && (
         <div className="border-t border-gray-100 px-[18px] py-3">
-          <p className="mb-1 text-[10px] uppercase tracking-[0.05em] text-gray-400">Artifacts</p>
+          <p className="mb-1 text-[10px] uppercase tracking-[0.05em] text-gray-500">Artifacts</p>
           {artifacts.map((path) => (
             <Artifact key={path} path={path} />
           ))}
@@ -187,7 +187,7 @@ export function SummaryResult({
       )}
 
       <details className="border-t border-gray-100 px-[18px] py-3">
-        <summary className="cursor-pointer text-[11px] text-gray-400">Raw summary.json</summary>
+        <summary className="cursor-pointer text-[11px] text-gray-500">Raw summary.json</summary>
         <pre className="mt-2 overflow-x-auto rounded-control bg-gray-50 p-2 font-mono text-[11px] text-gray-600">
           {JSON.stringify(summary, null, 2)}
         </pre>

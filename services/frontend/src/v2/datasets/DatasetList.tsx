@@ -85,7 +85,7 @@ function DatasetListRow({ row, state }: { row: DatasetRow; state: DatasetsState 
         )}
       </span>
       {subtitle && (
-        <span className="truncate text-[10.5px] text-gray-400">{subtitle}</span>
+        <span className="truncate text-[10.5px] text-gray-500">{subtitle}</span>
       )}
       <SummaryLine segments={datasetSummarySegments(row)} />
     </div>
@@ -138,7 +138,7 @@ function CreateForm({ state, onDismiss }: { state: DatasetsState; onDismiss: () 
         placeholder="Dataset name"
         maxLength={200}
         autoFocus
-        className="w-full rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12.5px] text-gray-700 placeholder:text-gray-400"
+        className="w-full rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12.5px] text-gray-700 placeholder:text-gray-500"
       />
       <div className="flex gap-1.5">
         <input
@@ -147,7 +147,7 @@ function CreateForm({ state, onDismiss }: { state: DatasetsState; onDismiss: () 
           onChange={(e) => state.setNewOperator(e.target.value)}
           aria-label="Operator (optional)"
           placeholder="Operator (optional)"
-          className="min-w-0 flex-1 rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] text-gray-700 placeholder:text-gray-400"
+          className="min-w-0 flex-1 rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] text-gray-700 placeholder:text-gray-500"
         />
         <input
           data-testid="new-dataset-task"
@@ -155,7 +155,7 @@ function CreateForm({ state, onDismiss }: { state: DatasetsState; onDismiss: () 
           onChange={(e) => state.setNewTask(e.target.value)}
           aria-label="Task (optional)"
           placeholder="Task (optional)"
-          className="min-w-0 flex-1 rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] text-gray-700 placeholder:text-gray-400"
+          className="min-w-0 flex-1 rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] text-gray-700 placeholder:text-gray-500"
         />
       </div>
       <p className="text-[10.5px] leading-relaxed text-gray-500">
@@ -169,7 +169,7 @@ function CreateForm({ state, onDismiss }: { state: DatasetsState; onDismiss: () 
           type="submit"
           data-testid="new-dataset-submit"
           disabled={state.newName.trim() === '' || state.creating}
-          className="rounded-chip bg-teal-600 px-[11px] py-[5px] text-xs font-bold text-white hover:bg-teal-700 disabled:opacity-40"
+          className="rounded-chip bg-teal-700 px-[11px] py-[5px] text-xs font-bold text-white hover:bg-teal-800 disabled:opacity-40"
         >
           {state.creating ? 'Creating…' : 'Create'}
         </button>
@@ -222,7 +222,7 @@ export function DatasetList({ state }: { state: DatasetsState }) {
           type="button"
           data-testid="new-dataset-btn"
           onClick={state.openCreate}
-          className="rounded-chip bg-teal-600 px-[11px] py-[5px] text-xs font-bold text-white hover:bg-teal-700"
+          className="rounded-chip bg-teal-700 px-[11px] py-[5px] text-xs font-bold text-white hover:bg-teal-800"
         >
           + New
         </button>
@@ -239,7 +239,7 @@ export function DatasetList({ state }: { state: DatasetsState }) {
           onChange={(e) => state.setSearch(e.target.value)}
           aria-label="Search datasets"
           placeholder="Search dataset, operator, task…"
-          className="w-full rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12.5px] text-gray-700 placeholder:text-gray-400"
+          className="w-full rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12.5px] text-gray-700 placeholder:text-gray-500"
         />
 
         <div className="flex items-center gap-1.5">
@@ -254,8 +254,8 @@ export function DatasetList({ state }: { state: DatasetsState }) {
                 className={cn(
                   'rounded-chip px-2 py-0.5 text-[11px] font-semibold',
                   state.taskResultFilter === f.id
-                    ? 'bg-teal-600 text-white'
-                    : 'bg-gray-100 text-gray-500 hover:bg-gray-200',
+                    ? 'bg-teal-700 text-white'
+                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200',
                 )}
               >
                 {f.label}
@@ -296,7 +296,7 @@ export function DatasetList({ state }: { state: DatasetsState }) {
           </select>
         )}
 
-        <span data-testid="dataset-count" className="text-[11px] text-gray-400">
+        <span data-testid="dataset-count" className="text-[11px] text-gray-500">
           showing {state.shown} of {state.total}
         </span>
         <div className="flex items-center gap-1">
@@ -308,7 +308,7 @@ export function DatasetList({ state }: { state: DatasetsState }) {
             className={cn(
               'rounded-chip px-2 py-0.5 text-[11px] font-bold',
               state.datasetView === 'active'
-                ? 'bg-teal-600 text-white'
+                ? 'bg-teal-700 text-white'
                 : 'border border-gray-200 text-gray-600 hover:bg-gray-50',
             )}
           >
@@ -333,7 +333,7 @@ export function DatasetList({ state }: { state: DatasetsState }) {
       </div>
 
       {state.isLoading ? (
-        <div className="px-4 py-6 text-sm text-gray-400">Loading datasets…</div>
+        <div className="px-4 py-6 text-sm text-gray-500">Loading datasets…</div>
       ) : (
         <div data-testid="dataset-list-scroll" className="min-h-0 flex-1 overflow-y-auto p-2.5">
           {!hasAny ? (
@@ -341,7 +341,7 @@ export function DatasetList({ state }: { state: DatasetsState }) {
               {searchActive && state.total > 0 ? (
                 <>
                   <span className="text-sm text-gray-500">No datasets match.</span>
-                  <span className="text-xs leading-relaxed text-gray-400">
+                  <span className="text-xs leading-relaxed text-gray-500">
                     {state.total} dataset(s) are hidden by the search — clear it to see
                     them.
                   </span>
@@ -349,14 +349,14 @@ export function DatasetList({ state }: { state: DatasetsState }) {
               ) : (
                 <>
                   <span className="text-sm text-gray-500">No datasets yet.</span>
-                  <span className="text-xs leading-relaxed text-gray-400">
+                  <span className="text-xs leading-relaxed text-gray-500">
                     Create one with “+ New”, then add finished recordings to it from the
                     right-hand rail.
                   </span>
                 </>
               )}
               {state.isError && (
-                <span className="text-xs text-amber-600">
+                <span className="text-xs text-amber-700">
                   Couldn&apos;t reach the backend just now.
                 </span>
               )}

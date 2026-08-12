@@ -31,7 +31,7 @@ export function OperatorsSection({ settings }: { settings: SettingsState }) {
       </div>
       <div className="flex max-w-xl flex-col gap-1.5 p-3">
         {operators.length === 0 && (
-          <p className="px-1 py-2 text-[12.5px] text-gray-400">
+          <p className="px-1 py-2 text-[12.5px] text-gray-500">
             No roster yet — recording works with a free-text name. Add the
             team&apos;s names to require a pick before every recording.
           </p>
@@ -54,7 +54,7 @@ export function OperatorsSection({ settings }: { settings: SettingsState }) {
               type="button"
               onClick={() => removeOperator(i)}
               title="Remove operator"
-              className="shrink-0 px-0.5 text-xs text-gray-300 hover:text-gray-500"
+              className="shrink-0 px-0.5 text-xs text-gray-500 hover:text-gray-500"
             >
               ✕
             </button>
