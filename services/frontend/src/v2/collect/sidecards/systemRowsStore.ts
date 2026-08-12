@@ -13,8 +13,18 @@
 // back here. The warnings card never re-derives a chip: if a row says CHECK it
 // says CHECK in both places by construction, and a row added later is carried
 // across for free.
+//
+// SINGLE PUBLISHER, by convention rather than by construction. The store holds
+// one set of rows, so exactly one mounted component may call
+// usePublishSystemRows — today that is SystemStatusCard, one per Collect
+// screen. With two, the behaviour is last-writer-wins, and EITHER of them
+// unmounting clears the rows out from under the other; the warnings card would
+// then show another card's rows or none at all. Nothing enforces this at the
+// type level, so a second publisher warns in development (below). Making the
+// store multi-publisher would mean keying rows by publisher and deciding which
+// set the warnings card speaks for — a real design question, not a patch.
 
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { create } from 'zustand';
 import type { SysRow } from './useSystemRows';
 
@@ -24,23 +34,29 @@ interface SystemRowsState {
   clear: () => void;
 }
 
+/**
+ * Every field of SysRow, so that a field added to the interface joins the
+ * comparison below instead of being silently ignored — which would show as a
+ * stuck row on screen. The `satisfies` is the guard: TypeScript fails here the
+ * moment SysRow grows a key this object does not list.
+ */
+const SYS_ROW_FIELDS = {
+  title: true,
+  label: true,
+  value: true,
+  chip: true,
+  tone: true,
+  cause: true,
+} satisfies Record<keyof SysRow, true>;
+
 /** The same rows, field for field? Every SysRow field is a primitive, so this
  *  is the whole comparison. The publisher hands us a fresh array on every one
  *  of its renders; without this guard each would notify subscribers and
  *  re-render the warnings card for news that has not changed. */
 function sameRows(a: SysRow[], b: SysRow[]): boolean {
+  const fields = Object.keys(SYS_ROW_FIELDS) as (keyof SysRow)[];
   return (
-    a.length === b.length &&
-    a.every((r, i) => {
-      const o = b[i]!;
-      return (
-        r.label === o.label &&
-        r.value === o.value &&
-        r.chip === o.chip &&
-        r.tone === o.tone &&
-        r.title === o.title
-      );
-    })
+    a.length === b.length && a.every((r, i) => fields.every((k) => r[k] === b[i]![k]))
   );
 }
 
@@ -54,6 +70,15 @@ export const useSystemRowsStore = create<SystemRowsState>((set, get) => ({
   },
 }));
 
+/** Mounted publishers, for the development-only single-publisher check. Holds
+ *  identities, never rows, and is not consulted by anything that renders. */
+const publishers = new Set<symbol>();
+
+/** Exported for tests only: the registry outlives a test file's renders. */
+export function __resetPublishers(): void {
+  publishers.clear();
+}
+
 /**
  * Publish the rows this render produced, and drop them when the publisher
  * unmounts.
@@ -61,10 +86,36 @@ export const useSystemRowsStore = create<SystemRowsState>((set, get) => ({
  * The clear matters: a warnings card outliving the system card must fall back
  * to "no rows to speak for" rather than to a frozen last set, which would be
  * the same class of stale claim this store exists to remove.
+ *
+ * Exactly one mounted component may call this — see the single-publisher note
+ * at the top of the file. A second one is a warning in development and
+ * last-writer-wins everywhere; the check adds no runtime behaviour.
  */
 export function usePublishSystemRows(rows: SysRow[]): void {
   const publish = useSystemRowsStore((s) => s.publish);
   const clear = useSystemRowsStore((s) => s.clear);
+  // Identity for this component instance. A ref, not a module counter: React
+  // may mount, unmount and remount it (StrictMode does exactly that), and the
+  // same instance must not look like a rival to itself.
+  const idRef = useRef<symbol | null>(null);
+  if (idRef.current === null) idRef.current = Symbol('systemRowsPublisher');
+  const id = idRef.current;
+
+  useEffect(() => {
+    if (import.meta.env.DEV && publishers.size > 0 && !publishers.has(id)) {
+      console.warn(
+        'systemRowsStore: a second System status publisher mounted. This store ' +
+          'holds ONE set of rows — last write wins, and either publisher ' +
+          'unmounting clears them — so the Active warnings card may end up ' +
+          "speaking for the wrong card's rows, or for none at all.",
+      );
+    }
+    publishers.add(id);
+    return () => {
+      publishers.delete(id);
+    };
+  }, [id]);
+
   useEffect(() => {
     publish(rows);
   }, [rows, publish]);

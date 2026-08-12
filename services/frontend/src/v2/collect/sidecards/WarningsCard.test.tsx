@@ -65,6 +65,7 @@ test('CHECK rows with no alerts are surfaced instead of "No active warnings"', a
       value: '27 / 29 at expected',
       chip: 'CHECK',
       tone: 'amber',
+      cause: 'rates-shortfall',
     }),
     row({
       label: 'Build',
@@ -84,7 +85,7 @@ test('CHECK rows with no alerts are surfaced instead of "No active warnings"', a
     within(block).getByText('robot abc1234 ≠ console def5678'),
   ).toBeInTheDocument();
   // …and what each means for the take, in words.
-  expect(block).toHaveTextContent(/may hold less data/i);
+  expect(block).toHaveTextContent(/below their expected rate/i);
   expect(block).toHaveTextContent(/different builds/i);
 
   // The claim that made this a bug is gone, and so is the bare "0" beside it.
@@ -167,16 +168,17 @@ test('a firing alert and an open check render as two distinct sections', async (
 
 // ---- the wiring: the rows really come from the system card ------------------
 
-function metrics(statuses: TopicStatus[]): MetricsSnapshot {
+function metrics(statuses: TopicStatus[], malformedDropped?: number): MetricsSnapshot {
   return {
     topics: statuses.map((status, i) => ({ name: `/t${i}`, status })),
+    ...(malformedDropped === undefined ? {} : { malformed_dropped: malformedDropped }),
   };
 }
 
-test('a CHECK derived by the System status card reaches the warnings card', async () => {
-  // The live repro from #13: topic rates short of expected and a build skew,
-  // with no alert of any kind in the buffer.
-  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+/** The fetch shape both integration cases below share: a healthy disk, an idle
+ *  recorder, and no topics on the graph. */
+function mockHealthyBackend(over: { git_sha?: string; console_git_sha?: string } = {}) {
+  return vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
     if (url.includes('/record/status')) {
       return Promise.resolve(
@@ -185,8 +187,7 @@ test('a CHECK derived by the System status card reaches the warnings card', asyn
           state: 'created',
           live_capture_ids: [],
           disk_free_bytes: 400 * GB,
-          git_sha: 'abc1234',
-          console_git_sha: 'def5678',
+          ...over,
         }),
       );
     }
@@ -201,12 +202,11 @@ test('a CHECK derived by the System status card reaches the warnings card', asyn
     }
     return Promise.resolve(jsonResponse({ topics: [] }));
   });
+}
 
-  const client = makeTestClient();
-  client.setQueryData(queryKeys.metrics, metrics(['ok', 'ok', 'warning']));
-  client.setQueryData(queryKeys.alerts, []);
+function renderBothCards(client: ReturnType<typeof makeTestClient>) {
   const machine = warningsMachine();
-  renderWithClient(
+  return renderWithClient(
     <>
       <SystemStatusCard
         machine={machine}
@@ -227,14 +227,40 @@ test('a CHECK derived by the System status card reaches the warnings card', asyn
     </>,
     { client },
   );
+}
+
+test('a CHECK derived by the System status card reaches the warnings card', async () => {
+  // The live repro from #13: topic rates short of expected and a build skew,
+  // with no alert of any kind in the buffer.
+  mockHealthyBackend({ git_sha: 'abc1234', console_git_sha: 'def5678' });
+  const client = makeTestClient();
+  client.setQueryData(queryKeys.metrics, metrics(['ok', 'ok', 'warning']));
+  client.setQueryData(queryKeys.alerts, []);
+  renderBothCards(client);
 
   const block = await screen.findByTestId('collect-needs-attention');
-  await waitFor(() =>
-    expect(within(block).getByText('Build')).toBeInTheDocument(),
-  );
+  await waitFor(() => expect(within(block).getByText('Build')).toBeInTheDocument());
   // The figures are the system card's own, not a second measurement.
   expect(within(block).getByText('2 / 3 at expected')).toBeInTheDocument();
   expect(within(block).getByText('robot abc1234 ≠ console def5678')).toBeInTheDocument();
+  expect(screen.queryByText('No active warnings')).not.toBeInTheDocument();
+});
+
+test('the real unreadable-only row gets the unreadable sentence, end to end', async () => {
+  // The blocker case, driven through the real useSystemRows rather than a
+  // hand-written row: every judged topic at rate, three readings the SSE ingest
+  // could not identify. The row goes CHECK, and the prose must not invent an
+  // off-rate topic to explain it.
+  mockHealthyBackend();
+  const client = makeTestClient();
+  client.setQueryData(queryKeys.metrics, metrics(['ok', 'ok', 'ok'], 3));
+  client.setQueryData(queryKeys.alerts, []);
+  renderBothCards(client);
+
+  const block = await screen.findByTestId('collect-check-topic-rates');
+  expect(within(block).getByText('3 / 3 at expected · 3 unreadable')).toBeInTheDocument();
+  expect(block).toHaveTextContent(/could not parse/i);
+  expect(block).not.toHaveTextContent(/below their expected rate/i);
   expect(screen.queryByText('No active warnings')).not.toBeInTheDocument();
 });
 
@@ -271,11 +297,74 @@ test('the start-time gap is not repeated once the arming block already names it'
   ).toEqual(['Build']);
 });
 
-test('a rate shortfall is worded as a shortfall, never as loss', () => {
-  const [item] = needsAttentionItems([
-    row({ label: 'Topic rates', value: '27 / 29 at expected', chip: 'CHECK', tone: 'amber' }),
-  ]);
-  const text = `${item!.impact} ${item!.action}`;
+// ---- Topic rates: one chip, four causes, four sentences --------------------
+//
+// useSystemRows.ts fires CHECK on this row for a genuine rate shortfall OR for
+// readings the SSE ingest could not identify (E-23) OR both. Keyed on the label
+// alone, "12 / 12 at expected · 3 unreadable" was described as "not every topic
+// is arriving at its expected rate… may hold less data" and sent the operator
+// off to find the off-rate topics — every clause of which was false.
+
+function ratesRow(value: string, cause: string): SysRow {
+  return row({ label: 'Topic rates', value, chip: 'CHECK', tone: 'amber', cause });
+}
+
+/** The whole sentence the operator reads for a row. */
+function proseFor(r: SysRow): string {
+  const [item] = needsAttentionItems([r]);
+  return `${item!.impact} ${item!.action}`;
+}
+
+test('a rate shortfall reports what the MONITOR observed, and hedges the recording', () => {
+  const text = proseFor(ratesRow('27 / 29 at expected', 'rates-shortfall'));
+  expect(text).toMatch(/monitor is receiving some topics below their expected rate/i);
+  // The monitor is an independent receive-side subscriber, so its count is a
+  // floor on what was published — never evidence about what the recorder wrote.
+  expect(text).toMatch(/subscribes separately from the recorder/i);
+  expect(text).toMatch(/does not establish what the recording holds/i);
+  // An observed shortfall is not confirmed loss.
   expect(text).not.toMatch(/\blost\b|\bloss\b|\bdropped\b/i);
-  expect(text).toMatch(/expected rate/i);
+});
+
+test('unreadable readings alone never claim a rate shortfall', () => {
+  // The probe case: 12 / 12 judged at rate, 3 readings unidentifiable.
+  const text = proseFor(ratesRow('12 / 12 at expected · 3 unreadable', 'rates-unreadable'));
+  expect(text).toMatch(/every topic the monitor could read is at its expected rate/i);
+  expect(text).toMatch(/could not parse/i);
+  expect(text).toMatch(/what was readable, not everything the robot published/i);
+  // The two false clauses of the old single sentence, gone.
+  expect(text).not.toMatch(/below (their|its) expected rate/i);
+  expect(text).not.toMatch(/which topics are below rate/i);
+});
+
+test('a shortfall AND unreadable readings are both stated', () => {
+  const text = proseFor(ratesRow('10 / 12 at expected · 3 unreadable', 'rates-mixed'));
+  expect(text).toMatch(/below their expected rate/i);
+  expect(text).toMatch(/could not parse/i);
+  // …and the ratio is explicitly not the whole picture.
+  expect(text).toMatch(/floor rather than the whole picture/i);
+});
+
+test('nothing readable at all is stated as nothing established', () => {
+  const text = proseFor(ratesRow('none readable · 3 unreadable', 'rates-none-readable'));
+  expect(text).toMatch(/no topic here is established either way/i);
+  expect(text).not.toMatch(/below (their|its) expected rate/i);
+});
+
+test('a rates row with no cause takes the honest fallback, not a guessed cause', () => {
+  // Keyed on the label there is no entry at all, deliberately: a rates CHECK
+  // this file cannot classify must not borrow one of the four sentences.
+  const text = proseFor(row({ label: 'Topic rates', value: '?', chip: 'CHECK', tone: 'amber' }));
+  expect(text).toMatch(/not passing/i);
+  expect(text).not.toMatch(/expected rate/i);
+});
+
+test('the cause outranks the label when both have wording', () => {
+  const items = needsAttentionItems([
+    ratesRow('12 / 12 at expected · 3 unreadable', 'rates-unreadable'),
+  ]);
+  // The item still presents itself as the "Topic rates" row — the cause selects
+  // the prose, it does not rename the row the operator has to go and look at.
+  expect(items[0]!.label).toBe('Topic rates');
+  expect(items[0]!.impact).toMatch(/could not parse/i);
 });
