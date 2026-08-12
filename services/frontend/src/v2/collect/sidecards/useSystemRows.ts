@@ -30,6 +30,19 @@ export interface SysRow {
   value: string;
   chip: string;
   tone: Tone;
+  /**
+   * WHICH cause put this row in its current state, when the label alone does
+   * not distinguish them. Purely a key for prose elsewhere — it does not touch
+   * this row's own chip, tone or value.
+   *
+   * The Active warnings card has to say what a CHECK means for the take, and
+   * "Topic rates · CHECK" has more than one meaning: a genuine rate shortfall,
+   * readings this console could not parse (E-23), or both at once. Keyed on the
+   * label alone, one sentence had to speak for all of them, and for the
+   * unreadable-only case it was simply false. Absent = the label is the whole
+   * story.
+   */
+  cause?: string;
 }
 
 export interface SystemRowsInput {
@@ -151,6 +164,20 @@ export function useSystemRows({
   // allowed to read as complete.
   const withheld = rates?.withheld ?? 0;
   const allJudgedOk = rates != null && rates.judged > 0 && rates.ok === rates.judged;
+  // The ways this row reaches CHECK, kept apart because the warnings card owes
+  // each a different sentence — telling an operator that topics are below rate
+  // when the ONLY finding was an unparseable reading names a problem nobody
+  // measured. Undefined while the row is passing: there is no cause to name.
+  const ratesCause =
+    rates == null || (allJudgedOk && withheld === 0)
+      ? undefined
+      : rates.judged === 0
+        ? 'rates-none-readable'
+        : withheld === 0
+          ? 'rates-shortfall'
+          : rates.ok === rates.judged
+            ? 'rates-unreadable'
+            : 'rates-mixed';
   const ratesRow: SysRow = rates
     ? {
         label: 'Topic rates',
@@ -167,6 +194,7 @@ export function useSystemRows({
               'seconds, not the moment recording started.',
         chip: allJudgedOk && withheld === 0 ? 'OK' : 'CHECK',
         tone: allJudgedOk && withheld === 0 ? 'green' : 'amber',
+        cause: ratesCause,
       }
     : { label: 'Topic rates', value: '—', chip: '—', tone: 'gray' };
 
