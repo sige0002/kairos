@@ -5,6 +5,7 @@ import { ErrorBoundary, PanelBoundary } from './components/ErrorBoundary';
 import type { RuntimeConfig } from './config';
 import { useUiStore } from './store/uiStore';
 import { jsonResponse, renderWithClient } from './test/renderWithClient';
+import { HIT_AREA_CHIP, HIT_AREA_TAB } from './v2/shared/hitArea';
 
 const STUB_CONFIG: RuntimeConfig = {
   endpoints: {
@@ -241,6 +242,38 @@ test('a legacy solo deep link (?tab=probe&solo=1) redirects and rewrites the URL
   expect(screen.getByRole('heading', { level: 1, name: 'Monitor' })).toBeInTheDocument();
   expect(window.location.search).toMatch(/tab=monitor/);
   expect(window.location.search).toMatch(/solo=1/);
+});
+
+// #17: these are tablet controls that render at 36px (tabs) and 32px (the OP
+// chip), and growing them visually would undo the density the console is
+// designed around — so the hit area grows instead, invisibly.
+//
+// jsdom measures nothing, so what is honest to assert here is that each control
+// CARRIES the expansion and the positioning context it is measured against. The
+// numbers, and the "does it actually overlap its neighbour" question, are a
+// bounding-box pass on the acceptance stack.
+test('the nav tabs and the OP chip carry hit areas bigger than they draw', async () => {
+  window.history.replaceState(null, '', '/');
+  renderWithClient(<App />);
+  await waitFor(() =>
+    expect(screen.queryByText(/Loading kairos/i)).not.toBeInTheDocument(),
+  );
+
+  for (const tab of screen.getAllByRole('tab')) {
+    expect(tab.className).toContain(HIT_AREA_TAB);
+    expect(tab.className).toContain('relative');
+  }
+  const chip = screen.getByTestId('operator-chip');
+  expect(chip.className).toContain(HIT_AREA_CHIP);
+  expect(chip.className).toContain('relative');
+
+  // The tabs expand 4px above and below, so a nav that wraps needs 8px between
+  // rows or two rows of targets would overlap — which is worse than either
+  // being small. The column gap is deliberately NOT widened: nothing expands
+  // sideways, so 3px between tabs stays as designed.
+  const tablist = screen.getByRole('tablist');
+  expect(tablist.className).toContain('gap-y-2');
+  expect(tablist.className).toContain('gap-x-[3px]');
 });
 
 test('the operator chip sets uiStore.recordOperator (sent with /record/start) and persists it', async () => {

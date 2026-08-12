@@ -23,12 +23,15 @@ import { topicLiveness, type TopicLiveness } from './warnings';
 import type { BatchMachine } from './useBatchMachine';
 import { formatElapsed } from './control/shared';
 import {
+  MAIN_RES_LABELS,
   MAIN_RES_PRESETS,
   MAX_CAMERA_PANES,
   removeCameraPane,
   setMainCameraPane,
   setMainCameraRes,
 } from './cameraStore';
+import { ROVING_ITEM_ATTR, useRovingRadio } from './hooks/useRovingRadio';
+import { HIT_AREA_RES_MAIN } from '../shared/hitArea';
 import {
   AddCameraTile,
   CameraPlaceholder,
@@ -64,6 +67,11 @@ export function Cameras({
 }) {
   const { panes, mainResLabel, mainPane, mainTopic, mainW, mainH, addOptions } =
     useCameraGrid(config);
+  const mainRes = useRovingRadio({
+    options: MAIN_RES_LABELS,
+    value: mainResLabel,
+    onPick: setMainCameraRes,
+  });
   const {
     phase,
     stream,
@@ -212,20 +220,34 @@ export function Cameras({
           <span className="min-w-0 truncate rounded-chip bg-gray-900/75 px-2.5 py-1 font-mono text-[11px] text-gray-300">
             {topicLine}
           </span>
+          {/* One tab stop, not five (#17): these are radio buttons in all but
+              markup, so they are a radiogroup — aria-checked says which
+              resolution is on, which the background colour alone never told
+              anyone. Arrows move focus and Space/Enter commits (APG manual
+              activation), because each commit renegotiates the stream. */}
           <div
+            ref={mainRes.groupRef}
             data-testid="main-res-group"
+            role="radiogroup"
+            aria-label="Main camera resolution"
+            onKeyDown={mainRes.onKeyDown}
             className="flex shrink-0 items-center gap-0.5 rounded-chip bg-gray-900/80 p-[3px]"
           >
-            <span className="px-1.5 text-[10px] font-semibold tracking-[0.04em] text-gray-300">
+            <span aria-hidden className="px-1.5 text-[10px] font-semibold tracking-[0.04em] text-gray-300">
               RES
             </span>
             {MAIN_RES_PRESETS.map((p) => (
               <button
                 key={p.label}
                 type="button"
-                onClick={() => setMainCameraRes(p.label)}
+                role="radio"
+                aria-checked={p.label === mainResLabel}
+                tabIndex={mainRes.itemTabIndex(p.label)}
+                {...{ [ROVING_ITEM_ATTR]: '' }}
+                onClick={() => mainRes.commit(p.label)}
                 className={cn(
                   'rounded-chip px-2 py-0.5 font-mono text-[10.5px] font-bold',
+                  HIT_AREA_RES_MAIN,
                   p.label === mainResLabel ? 'bg-teal-300 text-gray-900' : 'text-gray-300',
                 )}
               >

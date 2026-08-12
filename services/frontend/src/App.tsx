@@ -14,6 +14,7 @@ import { MonitorScreen } from './v2/monitor/MonitorScreen';
 import { SettingsScreen } from './v2/settings/SettingsScreen';
 import { resolveTabId, tabLabel, V2_TABS, type V2TabId } from './v2/tabs';
 import { useOnPopState } from './v2/shared/useOnPopState';
+import { HIT_AREA_CHIP, HIT_AREA_TAB } from './v2/shared/hitArea';
 import { PanelBoundary } from './components/ErrorBoundary';
 import { Hexagon, StatusDot, cn } from './components/ui';
 import type { SseStatus } from './store/uiStore';
@@ -112,7 +113,11 @@ function TabNav({ active }: { active: V2TabId }) {
     <nav
       role="tablist"
       aria-label="kairos tabs"
-      className="flex flex-wrap gap-[3px] rounded-[12px] border border-gray-200 bg-gray-100 p-1"
+      // gap-y-2 only: the tabs' hit areas reach 4px above and below each tab
+      // (HIT_AREA_TAB), so a wrapped nav at narrow widths needs 8px between
+      // ROWS or the two rows' targets would overlap. The 3px column gap is
+      // untouched — nothing expands sideways.
+      className="flex flex-wrap gap-x-[3px] gap-y-2 rounded-[12px] border border-gray-200 bg-gray-100 p-1"
     >
       {V2_TABS.map((tab) => {
         const on = tab.id === active;
@@ -126,6 +131,7 @@ function TabNav({ active }: { active: V2TabId }) {
             onClick={() => setActiveTab(tab.id)}
             className={cn(
               'rounded-[9px] px-[18px] py-2 text-[13.5px] transition-colors',
+              HIT_AREA_TAB,
               on
                 ? 'bg-teal-700 font-semibold text-white shadow-sm'
                 : 'font-medium text-gray-600 hover:text-gray-800',
@@ -324,6 +330,7 @@ function OperatorChip() {
         }}
         className={cn(
           'flex h-8 w-8 items-center justify-center rounded-full border text-xs font-semibold',
+          HIT_AREA_CHIP,
           operator.trim()
             ? 'border-teal-200 bg-teal-50 text-teal-700 hover:border-teal-400'
             : 'border-gray-200 bg-gray-100 text-gray-600 hover:border-gray-300',

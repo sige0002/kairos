@@ -22,6 +22,8 @@ import {
   type CameraPane,
   type SubResLabel,
 } from './cameraStore';
+import { ROVING_ITEM_ATTR, useRovingRadio } from './hooks/useRovingRadio';
+import { HIT_AREA_RES_SUB } from '../shared/hitArea';
 
 /** True once the decoded-frame count has stood still past the deadline. */
 export function isFramesStale(stats: StreamStats): boolean {
@@ -245,17 +247,44 @@ export function OverlayBadge({ className, children }: { className: string; child
 
 /** Compact segmented control for a sub tile's resolution (360p/240p only).
  *  Positioned by its parent (the tile's top-right overlay stack). */
-function SubResToggle({ value, onPick }: { value: SubResLabel; onPick: (l: SubResLabel) => void }) {
+function SubResToggle({
+  value,
+  onPick,
+  cameraLabel,
+}: {
+  value: SubResLabel;
+  onPick: (l: SubResLabel) => void;
+  /** Which camera this group belongs to. Up to three sub tiles are on screen at
+   *  once, so a shared label would leave a screen-reader user with three groups
+   *  called the same thing and no way to tell which stream they were changing. */
+  cameraLabel: string;
+}) {
+  // One tab stop per tile, not two (#17) — with three tiles on screen those
+  // chips were six of the nine stops between Start and anything else. Arrows
+  // move focus and Space/Enter commits: each commit renegotiates this tile's
+  // stream.
+  const res = useRovingRadio({ options: SUB_RES_LABELS, value, onPick });
   return (
-    <div className="flex items-center gap-0.5 rounded-chip bg-gray-900/80 p-[2px]">
+    <div
+      ref={res.groupRef}
+      role="radiogroup"
+      aria-label={`${cameraLabel} camera resolution`}
+      onKeyDown={res.onKeyDown}
+      className="flex items-center gap-0.5 rounded-chip bg-gray-900/80 p-[2px]"
+    >
       {SUB_RES_LABELS.map((label) => (
         <button
           key={label}
           type="button"
-          onClick={() => onPick(label)}
+          role="radio"
+          aria-checked={label === value}
+          tabIndex={res.itemTabIndex(label)}
+          {...{ [ROVING_ITEM_ATTR]: '' }}
+          onClick={() => res.commit(label)}
           title={`Sub preview resolution — subs stay low-res by design (§3-2)`}
           className={cn(
             'rounded-chip px-1.5 py-0.5 font-mono text-[9.5px] font-bold',
+            HIT_AREA_RES_SUB,
             label === value ? 'bg-teal-300 text-gray-900' : 'text-gray-300',
           )}
         >
@@ -358,7 +387,11 @@ export function SubCameraTile({
         // Don't let a res/stats click bubble to the tile's click-to-main handler.
         onClick={(e) => e.stopPropagation()}
       >
-        <SubResToggle value={pane.subResLabel} onPick={(l) => setSubCameraRes(pane.id, l)} />
+        <SubResToggle
+          value={pane.subResLabel}
+          onPick={(l) => setSubCameraRes(pane.id, l)}
+          cameraLabel={label}
+        />
         {connected && (
           <StatsBadge
             stats={stats}

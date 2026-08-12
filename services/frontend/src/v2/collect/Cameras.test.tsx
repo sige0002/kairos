@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
+import { HIT_AREA_RES_MAIN, HIT_AREA_RES_SUB } from '../shared/hitArea';
 import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
 import type { RuntimeConfig } from '../../config';
 import type { BatchMachine } from './useBatchMachine';
@@ -276,18 +277,24 @@ test('main tile offers all five presets; sub tile offers only 360p/240p', async 
 
   // Main preset group (Source + four caps) — scoped to the main tile since the
   // sub res toggle also uses 360p/240p.
+  //
+  // `radio`, not `button`, since #17: exactly one preset is on at a time, so
+  // the group is a radiogroup — which is what makes it a single tab stop and
+  // what lets it say which preset is current to something other than an eye.
   const mainRes = screen.getByTestId('main-res-group');
   for (const label of ['Source', '720p', '480p', '360p', '240p']) {
-    expect(within(mainRes).getByRole('button', { name: label })).toBeInTheDocument();
+    expect(within(mainRes).getByRole('radio', { name: label })).toBeInTheDocument();
   }
+  // The selected one says so, rather than leaving it to a background colour.
+  expect(within(mainRes).getByRole('radio', { checked: true })).toHaveTextContent('480p');
 
   // The sub tile's resolution toggle is restricted to the two lowest presets.
   const sub = screen.getByTestId('sub-camera-tile');
-  expect(within(sub).getByRole('button', { name: '360p' })).toBeInTheDocument();
-  expect(within(sub).getByRole('button', { name: '240p' })).toBeInTheDocument();
-  expect(within(sub).queryByRole('button', { name: 'Source' })).toBeNull();
-  expect(within(sub).queryByRole('button', { name: '720p' })).toBeNull();
-  expect(within(sub).queryByRole('button', { name: '480p' })).toBeNull();
+  expect(within(sub).getByRole('radio', { name: '360p' })).toBeInTheDocument();
+  expect(within(sub).getByRole('radio', { name: '240p' })).toBeInTheDocument();
+  expect(within(sub).queryByRole('radio', { name: 'Source' })).toBeNull();
+  expect(within(sub).queryByRole('radio', { name: '720p' })).toBeNull();
+  expect(within(sub).queryByRole('radio', { name: '480p' })).toBeNull();
 });
 
 test('add-camera dropdown lists discovered image topics (only), and adding opens a removable pane', async () => {
@@ -621,4 +628,175 @@ test('a sub camera with no video reaches the health report, with its cause', asy
   // And the cause is carried, so the row can say which of the three problems
   // it is instead of "down".
   expect(last.streamFault).toBe('signaling');
+});
+
+// ---------------------------------------------------------------------------
+// #17: touch targets, and the tab order that used to lead into them.
+//
+// Two halves, and only one is measurable here. jsdom computes no geometry —
+// every box is 0x0 — so the hit-area half is pinned by MECHANISM: the control
+// carries the expansion, and the constant it carries records how far and why
+// (v2/shared/hitArea.ts). The real check is a bounding-box pass on the
+// acceptance stack. The focus half IS measurable, and is asserted for real.
+// ---------------------------------------------------------------------------
+
+/** Cameras with the two config panes, settled. */
+async function renderResGroups() {
+  renderWithClient(<Cameras config={CONFIG} machine={MACHINE} />);
+  await waitFor(() => expect(screen.getByTestId('main-camera-video')).toBeInTheDocument());
+  return screen.getByTestId('main-res-group');
+}
+
+test('every resolution chip carries a hit area larger than it draws', async () => {
+  const group = await renderResGroups();
+
+  for (const chip of within(group).getAllByRole('radio')) {
+    // The overlay is what makes the target bigger than the ink …
+    expect(chip.className).toContain('after:absolute');
+    // … and `relative` is what it is measured against. Without it the overlay
+    // sizes itself to the nearest positioned ancestor and the target lands
+    // somewhere else entirely.
+    expect(chip.className).toContain('relative');
+    expect(chip.className).toContain(HIT_AREA_RES_MAIN);
+  }
+
+  const sub = screen.getByTestId('sub-camera-tile');
+  for (const chip of within(sub).getAllByRole('radio')) {
+    expect(chip.className).toContain(HIT_AREA_RES_SUB);
+  }
+  // Deliberately NOT the main tile's expansion: growing this one to 44 would
+  // either be clipped by the tile or swallow taps aimed at the stats readout.
+  // If someone unifies them later, this is the line that should stop them.
+  expect(HIT_AREA_RES_SUB).not.toBe(HIT_AREA_RES_MAIN);
+});
+
+test('a resolution group is ONE tab stop, not one per preset', async () => {
+  const group = await renderResGroups();
+  const chips = within(group).getAllByRole('radio');
+  expect(chips).toHaveLength(5);
+
+  // Exactly one of the five is in the tab order, and it is the selected one —
+  // so Tab enters the group where the operator left it and leaves after a
+  // single press instead of walking all five.
+  const inTabOrder = chips.filter((c) => c.getAttribute('tabindex') === '0');
+  expect(inTabOrder).toHaveLength(1);
+  expect(inTabOrder[0]).toHaveAttribute('aria-checked', 'true');
+  expect(inTabOrder[0]).toHaveTextContent('480p');
+
+  // Same shape on a sub tile, where the saving is 2 stops per tile.
+  const sub = screen.getByTestId('sub-camera-tile');
+  const subChips = within(sub).getAllByRole('radio');
+  expect(subChips.filter((c) => c.getAttribute('tabindex') === '0')).toHaveLength(1);
+});
+
+// MANUAL activation (APG), not the automatic variant a plain radiogroup uses.
+// Selecting a resolution moves `maxWidth`/`maxHeight`, which are effect
+// dependencies in useWebRtcStream — so every selection closes the peer
+// connection and POSTs a fresh /stream/start to the robot. Under
+// selection-follows-focus, four arrow presses were four renegotiations and
+// auto-repeat was unbounded: one renegotiation per KEYSTROKE instead of per
+// intent.
+test('arrows move focus without selecting; Space or Enter commits', async () => {
+  const group = await renderResGroups();
+  const checked = () => within(group).getByRole('radio', { checked: true }).textContent;
+  const focused = () =>
+    within(group)
+      .getAllByRole('radio')
+      .find((c) => c.getAttribute('tabindex') === '0')?.textContent;
+
+  expect(checked()).toBe('480p');
+
+  // Focus walks the ring — and the selection does not move with it.
+  fireEvent.keyDown(group, { key: 'ArrowRight' });
+  expect(focused()).toBe('360p');
+  expect(checked()).toBe('480p');
+  fireEvent.keyDown(group, { key: 'Home' });
+  expect(focused()).toBe('Source');
+  expect(checked()).toBe('480p');
+  fireEvent.keyDown(group, { key: 'ArrowLeft' });
+  expect(focused()).toBe('240p'); // wraps
+  fireEvent.keyDown(group, { key: 'End' });
+  expect(focused()).toBe('240p');
+  expect(checked()).toBe('480p');
+
+  // Enter is what chooses.
+  fireEvent.keyDown(group, { key: 'Enter' });
+  expect(checked()).toBe('240p');
+
+  // And so is Space.
+  fireEvent.keyDown(group, { key: 'ArrowLeft' });
+  expect(checked()).toBe('240p');
+  fireEvent.keyDown(group, { key: ' ' });
+  expect(checked()).toBe('360p');
+});
+
+// The measurement the review turned on, as a test: arrows cost the robot
+// nothing, and one commit costs it exactly one renegotiation.
+test('N arrow presses renegotiate nothing; one commit renegotiates once', async () => {
+  const group = await renderResGroups();
+  const negotiations = () =>
+    (globalThis.fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls.filter(
+      ([u]) => String(u).includes('/stream/start'),
+    ).length;
+
+  const before = negotiations();
+  for (const key of ['ArrowRight', 'ArrowRight', 'ArrowRight', 'ArrowLeft', 'End', 'Home']) {
+    fireEvent.keyDown(group, { key });
+  }
+  // The POST is fired from an effect and awaited, so asserting straight after
+  // the presses proves nothing — it just reads the counter before a
+  // renegotiation could have reached it. Give it the chance first, THEN claim
+  // it did not happen. (Asserting a negative is only worth as much as the
+  // window you allowed it.)
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 0));
+  });
+  expect(negotiations(), 'an arrow key renegotiated a live stream').toBe(before);
+
+  // And the counter is live: one commit does move it.
+  fireEvent.keyDown(group, { key: 'Enter' });
+  await waitFor(() => expect(negotiations()).toBe(before + 1));
+
+  // Committing the SAME option again is a no-op, so a browser that also
+  // activates the button on keyup cannot buy a second renegotiation.
+  fireEvent.keyDown(group, { key: 'Enter' });
+  fireEvent.click(within(group).getByRole('radio', { checked: true }));
+  await waitFor(() => expect(negotiations()).toBe(before + 1));
+});
+
+// The pointer path, which is what the hit areas this PR is named after exist
+// to serve — and which nothing else here would notice breaking.
+test('clicking a resolution chip selects it', async () => {
+  const group = await renderResGroups();
+  expect(within(group).getByRole('radio', { checked: true })).toHaveTextContent('480p');
+
+  fireEvent.click(within(group).getByRole('radio', { name: '240p' }));
+
+  expect(within(group).getByRole('radio', { checked: true })).toHaveTextContent('240p');
+  expect(within(group).getByRole('radio', { name: '240p' })).toHaveAttribute(
+    'tabindex',
+    '0',
+  );
+});
+
+// Three sub tiles are on screen at once; groups called the same thing would
+// leave a screen-reader user unable to tell which stream they were changing.
+test('each sub tile names its own resolution group', async () => {
+  await renderResGroups();
+  expect(
+    screen.getByRole('radiogroup', { name: /hand camera resolution/i }),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByRole('radiogroup', { name: 'Main camera resolution' }),
+  ).toBeInTheDocument();
+});
+
+test('a key the group does not own is left alone', async () => {
+  const group = await renderResGroups();
+  // Tab must still leave the group, and must not be swallowed into a trap.
+  expect(
+    fireEvent.keyDown(group, { key: 'Tab' }),
+    'Tab was swallowed — the group would be a focus trap',
+  ).toBe(true);
+  expect(within(group).getByRole('radio', { checked: true })).toHaveTextContent('480p');
 });

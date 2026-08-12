@@ -38,6 +38,9 @@ export const MAIN_RES_PRESETS: { label: string; w: number | null; h: number | nu
 // stream at a time — the main tile — so a sub's robot-side encode/egress cost
 // stays marginal). The per-tile selector is therefore restricted to the two
 // lowest presets; it never offers Source/720p/480p.
+/** The main presets' labels alone — what the radiogroup steps through (#17). */
+export const MAIN_RES_LABELS = MAIN_RES_PRESETS.map((p) => p.label);
+
 export const SUB_RES_LABELS = ['360p', '240p'] as const;
 export type SubResLabel = (typeof SUB_RES_LABELS)[number];
 
