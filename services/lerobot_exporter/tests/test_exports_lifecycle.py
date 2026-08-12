@@ -233,6 +233,51 @@ def test_a_capture_without_bytes_fails_before_the_converter_runs(
     assert _staging_entries(data_dir) == []
 
 
+def test_a_symlinked_staging_root_does_not_delete_a_capture_over_http(
+    data_dir: Path,
+    make_capture: Callable[..., str],
+    profile_path: str,
+    exporter_env: Callable[..., None],
+) -> None:
+    """N1 end to end: the worker's own staging rmtree must be guarded too.
+
+    build_staging refusing a symlinked root is not enough — the registry
+    resolves its own staging path and its finally rmtree's it on every terminal
+    path. With .staging symlinked at objects/ and export_id set to a victim
+    capture's UUIDv7 (which the API accepts), an unguarded worker deletes the
+    capture. This drives the REAL POST path; a build_staging-only test cannot
+    reach the rmtree that does the damage.
+    """
+    import os
+
+    exporter_env()
+    victim = make_capture()
+    exports = data_dir / "exports"
+    exports.mkdir(parents=True, exist_ok=True)
+    os.symlink(data_dir / "objects", exports / ".staging")
+
+    async def scenario() -> dict:
+        async with exporter_client(_app(data_dir)) as client:
+            await client.post(
+                "/exports",
+                json={
+                    "export_id": victim,  # a real UUIDv7 that also names a capture
+                    "output_name": "alice_default_symlink",
+                    "profile_path": profile_path,
+                    "task_fallback": None,
+                    "episodes": [episode(make_capture(), "001", None)],
+                },
+            )
+            return await wait_for_state(client, victim, {"complete", "failed"})
+
+    body = asyncio.run(scenario())
+
+    assert body["state"] == "failed"
+    assert (data_dir / "objects" / victim / "metadata.yaml").is_file(), (
+        "the victim capture was deleted through the symlinked staging root"
+    )
+
+
 def test_an_orphan_holding_the_pipes_does_not_hang_the_export(
     data_dir: Path,
     make_capture: Callable[..., str],

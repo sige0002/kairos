@@ -55,7 +55,7 @@ def _symlink(link: Path, target: Path) -> None:
     os.symlink(os.path.relpath(target, start=link.parent), link)
 
 
-def _guarded_export_staging_dir(data_dir: str | Path, export_id: str) -> Path:
+def guarded_export_staging_dir(data_dir: str | Path, export_id: str) -> Path:
     """``exports/.staging/<export_id>`` — refusing any path that could escape it.
 
     The ``rmtree`` + ``mkdir`` below run on this path on EVERY submit, and
@@ -66,6 +66,11 @@ def _guarded_export_staging_dir(data_dir: str | Path, export_id: str) -> Path:
     or a per-export dir that does not resolve directly under the real root is
     refused before anything is removed. (``sweep_staging`` guards the same way
     at startup; this is the write-path twin it was missing.)
+
+    The registry resolves the staging path THROUGH this function before the
+    ``try`` whose ``finally`` removes it, so the removal can never run against
+    an unguarded path — the removal is the second rmtree that reaches the same
+    tree, and it must be as guarded as the build.
     """
     root = staging_root(data_dir)
     if root.is_symlink():
@@ -91,7 +96,7 @@ def build_staging(
     Raises :class:`StagingError` naming the first capture whose bytes are not
     where the submitted snapshot said they were.
     """
-    root = _guarded_export_staging_dir(data_dir, export_id)
+    root = guarded_export_staging_dir(data_dir, export_id)
     # A leftover tree can only be debris from a previous attempt with this
     # export_id; the caller refuses a re-used id, so there is no live job here.
     shutil.rmtree(root, ignore_errors=True)

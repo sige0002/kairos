@@ -33,13 +33,17 @@ from lerobot_exporter.models import (
 )
 from lerobot_exporter.paths import (
     MANIFEST_EXTRA_FILENAME,
-    export_staging_dir,
     output_dir,
     relative_output_path,
 )
 from lerobot_exporter.progress import read_episode_counts, read_heartbeat
 from lerobot_exporter.settings import ExporterConfig
-from lerobot_exporter.staging import StagingError, build_staging, write_manifest_extra
+from lerobot_exporter.staging import (
+    StagingError,
+    build_staging,
+    guarded_export_staging_dir,
+    write_manifest_extra,
+)
 
 logger = logging.getLogger("kairos")
 
@@ -240,9 +244,22 @@ class ExportRegistry:
     # ---- execution --------------------------------------------------------
 
     async def _execute(self, record: ExportRecord) -> None:
-        staging = export_staging_dir(self._data_dir, record.export_id)
         destination = output_dir(self._data_dir, record.output_name)
         record.state = "running"
+        # Resolve the staging path through the guard BEFORE the try whose
+        # finally removes it. A symlinked staging root (a relocated or
+        # attacker-writable EXPORTS_DIR pointed at objects/) fails the export
+        # here, so `staging` never names a path outside the store and the
+        # removal below can never delete the capture whose UUID equals this
+        # caller-controlled export_id. Binding it inside the try — as this used
+        # to — left the finally rmtree'ing the unguarded path on the failure
+        # and early-cancel returns alike.
+        try:
+            staging = guarded_export_staging_dir(self._data_dir, record.export_id)
+        except StagingError as exc:
+            record.state = "failed"
+            record.message = str(exc)
+            return
         try:
             if record.cancel_event.is_set():
                 record.state = "canceled"
@@ -266,7 +283,8 @@ class ExportRegistry:
             await self._convert(record, staging, destination)
         finally:
             # Staging is transient by contract — removed on every terminal path,
-            # including the ones that failed before the converter ever ran.
+            # including the ones that failed before the converter ever ran. Safe
+            # because `staging` came through the guard above.
             await asyncio.to_thread(_rmtree, staging)
 
     def _argv(

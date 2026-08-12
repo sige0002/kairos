@@ -392,7 +392,9 @@ async def export_preflight(
     dataset_id: str,
     request: Request,
     profile: str = Query(min_length=1),
-    memo: str | None = Query(default=None),
+    # Same bound as ExportRequest.memo, so preflight and submit agree on what a
+    # memo may be — otherwise preflight would accept a memo submit then rejects.
+    memo: str | None = Query(default=None, max_length=64),
     service: DatasetService = Depends(get_dataset_service),
 ) -> ExportPreflight:
     """Everything the dialog shows before the operator commits — no side effects."""
