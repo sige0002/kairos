@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { createEvent, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { App } from './App';
 import { ErrorBoundary, PanelBoundary } from './components/ErrorBoundary';
@@ -237,6 +237,40 @@ test('the operator chip sets uiStore.recordOperator (sent with /record/start) an
   expect(useUiStore.getState().recordOperator).toBe('Sadasue Yuki');
   expect(window.localStorage.getItem('kairos.operator')).toBe('Sadasue Yuki');
   expect(chip).toHaveTextContent('SY'); // initials from the saved name
+});
+
+// #26. Committing the name lifts Collect's operator gate, and Collect hands
+// focus to the Start button it has just enabled — in this same event. An
+// uncancelled Enter then reached that button as its default action and started
+// a recording nobody asked for (a 6-minute runaway take in the acceptance run).
+//
+// jsdom does not perform default actions, so it cannot reproduce the activation
+// itself; what it CAN pin is the property the browser acts on. If this
+// assertion ever goes back to false, the real browser starts recording again.
+test('Enter in the operator field commits the name AND cancels its default action', async () => {
+  window.history.replaceState(null, '', '/');
+  window.localStorage.removeItem('kairos.operator');
+  useUiStore.setState({ recordOperator: '' });
+  renderWithClient(<App />);
+  await waitFor(() =>
+    expect(screen.queryByText(/Loading kairos/i)).not.toBeInTheDocument(),
+  );
+
+  fireEvent.click(screen.getByTestId('operator-chip'));
+  const input = screen.getByTestId('operator-input');
+  fireEvent.change(input, { target: { value: 'Sadasue Yuki' } });
+
+  const enter = createEvent.keyDown(input, { key: 'Enter' });
+  fireEvent(input, enter);
+
+  expect(enter.defaultPrevented, 'the committed Enter is still live for the next focus').toBe(
+    true,
+  );
+  // Cancelling the default must not cancel the commit: Enter is still how the
+  // name is saved, and the popover still closes.
+  expect(useUiStore.getState().recordOperator).toBe('Sadasue Yuki');
+  expect(window.localStorage.getItem('kairos.operator')).toBe('Sadasue Yuki');
+  expect(screen.queryByTestId('operator-input')).not.toBeInTheDocument();
 });
 
 test('the shell survives a browser where localStorage access throws', async () => {
