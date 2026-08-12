@@ -7,7 +7,10 @@ import { CollectScreen } from './CollectScreen';
 import { __resetBatchStore, __setStopFloorMs, __resetStopFloorMs } from './useBatchMachine';
 import { __resetCameraStore } from './cameraStore';
 import { __resetPlansStore, clonePlans, getPlans, setPlans } from '../plans';
-import { expectScreenHeadingOutline } from '../../test/headingOutline';
+import {
+  expectHeadingSpine,
+  expectScreenHeadingOutline,
+} from '../../test/headingOutline';
 
 const CONFIG = {
   endpoints: { api: '/api/v1', events: '/api/v1/events', webrtc: 'http://localhost:8002' },
@@ -1102,5 +1105,22 @@ test('Space ends the take too when the recorder died inside the stop floor', asy
 // by heading instead of reading it as one flat run of text.
 test('titles itself with a single h1 and skips no heading level', async () => {
   renderWithClient(<CollectScreen />);
+  // Let the screen's cards land first — the h1 appears before them, and a
+  // spine snapshotted at that instant would pin almost nothing.
+  await screen.findByTestId('sys-recorder');
   await expectScreenHeadingOutline('Collect');
+  // The exact h1/h2 spine. The outline check above cannot see a heading that is
+  // MISSING — it walks what IS rendered — so demoting any promoted title back to
+  // a span would leave it green. This is what pins the promotions.
+  expectHeadingSpine([
+    'h1 Collect',
+    // The control card's phase title — it changes with the phase, and it is the
+    // screen's primary card, so it belongs on the spine.
+    'h2 READY',
+    'h2 System status',
+    'h2 Active warnings',
+    'h2 Advice for next episode',
+    'h2 Batch stats',
+    'h2 Coverage — Pick and Place',
+  ]);
 }, 20000);

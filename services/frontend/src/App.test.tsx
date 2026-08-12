@@ -333,6 +333,24 @@ test('a screen that throws costs the panel, not the console — and the tab bar 
   expect(screen.getByTestId('panel-error')).toHaveTextContent(/malformed payload/);
 });
 
+// #14. The fallback REPLACES the screen, so the screen's own ScreenTitle h1
+// unmounts with it. Titling the fallback h2 would leave the document with no h1
+// at all — the precise gap the heading sweep closed — for the one state where a
+// screen-reader user most needs to know what they are looking at.
+test('a panel that has thrown still titles the document', () => {
+  const Boom = () => {
+    throw new Error('malformed payload reached render');
+  };
+  render(
+    <PanelBoundary resetKey="monitor">
+      <Boom />
+    </PanelBoundary>,
+  );
+  const h1s = screen.getAllByRole('heading', { level: 1 });
+  expect(h1s).toHaveLength(1);
+  expect(h1s[0]).toHaveTextContent('This screen stopped rendering');
+});
+
 test('switching tabs clears a panel that had thrown, with no reload', () => {
   const Boom = () => {
     throw new Error('boom');

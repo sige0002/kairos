@@ -218,9 +218,9 @@ export function SignalSection({
           {cameras.length > 0 && (
             <div className="flex flex-col gap-2">
               <div className="flex flex-wrap items-center gap-2">
-                <h2 className="text-[11px] font-semibold uppercase tracking-[0.04em] text-gray-400">
+                <h3 className="text-[11px] font-semibold uppercase tracking-[0.04em] text-gray-400">
                   Synced video
-                </h2>
+                </h3>
                 <select
                   aria-label="sync camera topic"
                   data-testid="review-signal-camera"

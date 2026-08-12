@@ -10,6 +10,23 @@
 import { screen } from '@testing-library/react';
 import { expect } from 'vitest';
 
+/**
+ * Assert the EXACT h1/h2 spine of the current screen, in DOM order, as
+ * `['h1 Collect', 'h2 System status', …]`.
+ *
+ * The outline check below cannot see a heading that is MISSING — it walks what
+ * is rendered and checks the levels are sane, so demoting an h2 back to a span
+ * would leave it perfectly happy. This pins the promotions themselves. Deeper
+ * levels are excluded on purpose: h3s come and go with the data a screen
+ * happens to have, while the h2 spine is the screen's structure.
+ */
+export function expectHeadingSpine(expected: string[]): void {
+  const spine = headingOutline()
+    .filter((h) => h.level <= 2)
+    .map((h) => `h${h.level} ${h.text}`);
+  expect(spine).toEqual(expected);
+}
+
 /** Every heading currently rendered, in DOM order. */
 export function headingOutline(): { level: number; text: string }[] {
   return screen.getAllByRole('heading').map((h) => ({

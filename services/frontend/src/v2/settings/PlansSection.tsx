@@ -90,9 +90,9 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
         {project ? (
           <>
             <div className="flex items-center gap-2.5 border-b border-gray-100 px-[18px] py-[13px]">
-              <span data-testid="plan-project-name" className="text-[15px] font-bold text-gray-900">
+              <h2 data-testid="plan-project-name" className="text-[15px] font-bold text-gray-900">
                 {project.name}
-              </span>
+              </h2>
               <button
                 type="button"
                 onClick={renameProject}
@@ -106,9 +106,9 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
 
             <div className="grid min-h-0 flex-1 grid-cols-[280px_1fr]">
               <div className="flex flex-col gap-2 overflow-auto border-r border-gray-100 p-4">
-                <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+                <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
                   Tasks
-                </h2>
+                </h3>
                 {project.tasks.map((t, i) => (
                   <div
                     key={t.name}
@@ -149,9 +149,9 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
 
               <div className="flex min-w-0 flex-col gap-2 overflow-auto px-[18px] py-[14px]">
                 <div className="flex items-center gap-2">
-                  <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+                  <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
                     Conditions — {task?.name ?? '—'}
-                  </h2>
+                  </h3>
                   <button
                     type="button"
                     onClick={renameTask}

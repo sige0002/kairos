@@ -15,7 +15,7 @@ export function SavingCard({
 }: {
   machine: BatchMachine;
   phase: 'saving' | 'quickcheck';
-  titleRef: React.Ref<HTMLSpanElement>;
+  titleRef: React.Ref<HTMLHeadingElement>;
 }) {
   const saving = phase === 'saving';
   return (
@@ -28,7 +28,7 @@ export function SavingCard({
     >
       <div className="flex items-center gap-2">
         <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-100 border-t-teal-600" />
-        <span
+        <h2
           ref={titleRef}
           data-testid="phase-title"
           tabIndex={-1}
@@ -36,7 +36,7 @@ export function SavingCard({
           className="text-[17px] font-bold text-gray-700 outline-none"
         >
           {saving ? 'SAVING…' : 'QUICK CHECK…'}
-        </span>
+        </h2>
       </div>
       <span className="text-[12.5px] leading-relaxed text-gray-500">
         {saving

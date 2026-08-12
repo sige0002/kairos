@@ -198,15 +198,15 @@ export function RobotsSection({ config }: { config: RuntimeConfig | undefined })
       <Card className="flex min-w-0 flex-col overflow-auto" data-testid="robot-form">
         <div className="flex items-center gap-2.5 border-b border-gray-100 px-[18px] py-[13px]">
           {addingRobot ? (
-            <span className="text-[15px] font-bold text-gray-900">Add robot</span>
+            <h2 className="text-[15px] font-bold text-gray-900">Add robot</h2>
           ) : (
             <>
-              <span
+              <h2
                 data-testid="robot-form-name"
                 className="font-mono text-[15px] font-bold text-gray-900"
               >
                 {selectedRobotId ?? '—'}
-              </span>
+              </h2>
               {isActive ? (
                 <Badge tone="green" dot>
                   active

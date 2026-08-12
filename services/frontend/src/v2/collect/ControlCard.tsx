@@ -55,12 +55,12 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
   const startRef = useRef<HTMLButtonElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
   const stopRef = useRef<HTMLButtonElement>(null);
-  const savingTitleRef = useRef<HTMLSpanElement>(null);
+  const savingTitleRef = useRef<HTMLHeadingElement>(null);
   const saveRef = useRef<HTMLButtonElement>(null);
   const failReasonRef = useRef<HTMLButtonElement>(null);
   const takeoverStopRef = useRef<HTMLButtonElement>(null);
-  const armingTitleRef = useRef<HTMLSpanElement>(null);
-  const readyTitleRef = useRef<HTMLSpanElement>(null);
+  const armingTitleRef = useRef<HTMLHeadingElement>(null);
+  const readyTitleRef = useRef<HTMLHeadingElement>(null);
   const hasTakeover = !!takeover;
   // Whether READY's Start can be focused at all (#11): the same two gates the
   // button is disabled by.

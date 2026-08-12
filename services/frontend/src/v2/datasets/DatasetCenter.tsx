@@ -77,9 +77,9 @@ function ScopeHeaderBar({ state }: { state: DatasetsState }) {
   const rendered = memberRows.length;
   return (
     <div className="flex flex-wrap items-center gap-2 border-b border-gray-100 px-[18px] py-[11px]">
-      <span data-testid="dataset-scope-title" className="text-[15px] font-bold text-gray-900">
+      <h2 data-testid="dataset-scope-title" className="text-[15px] font-bold text-gray-900">
         {scope.label}
-      </span>
+      </h2>
       {scope.operator && <Badge tone="gray">{scope.operator}</Badge>}
       {scope.task && <Badge tone="teal">{scope.task}</Badge>}
       {scope.kind === 'dataset' && status !== 'active' && (

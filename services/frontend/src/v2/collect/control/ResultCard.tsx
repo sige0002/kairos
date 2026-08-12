@@ -55,9 +55,9 @@ export function ResultCard({
       )}
     >
       <div className="flex items-center gap-2">
-        <span data-testid="phase-title" className="text-[15px] font-bold text-gray-900">
+        <h2 data-testid="phase-title" className="text-[15px] font-bold text-gray-900">
           Episode {stats.epNext} result
-        </span>
+        </h2>
         {/* WHICH take this panel is about. The recovery banner above can be
             describing a DIFFERENT unsaved take at the same time, each with its
             own Discard — so both have to name themselves or the two Discards

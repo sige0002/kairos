@@ -47,7 +47,7 @@ export function RecordingCard({
             unreachable ? 'bg-amber-500' : 'animate-recpulse bg-red-600',
           )}
         />
-        <span
+        <h2
           data-testid="phase-title"
           className={cn(
             'text-[17px] font-bold',
@@ -55,7 +55,7 @@ export function RecordingCard({
           )}
         >
           {unreachable ? 'RECORDER UNREACHABLE' : 'RECORDING'}
-        </span>
+        </h2>
         <div className="flex-1" />
         <span className="font-mono text-xs text-gray-500">
           Ep {stats.epNext} / {machine.targetEpisodes}

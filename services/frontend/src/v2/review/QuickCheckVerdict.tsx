@@ -24,9 +24,9 @@ export function QuickCheckVerdict({ quickCheck }: { quickCheck?: QuickCheck | nu
       className="flex flex-col gap-1.5 rounded-[10px] border border-gray-100 bg-gray-50 px-3 py-2.5"
     >
       <div className="flex items-center gap-2">
-        <h2 className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400">
+        <h3 className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400">
           Quick check
-        </h2>
+        </h3>
         {quality && (
           <Badge tone={quality === 'good' ? 'green' : 'amber'} dot>
             {quality === 'good' ? 'GOOD' : 'NEEDS REVIEW'}
