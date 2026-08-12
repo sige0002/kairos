@@ -127,6 +127,15 @@ def _remove_child_nofollow(parent: Path, child: str) -> None:
         return
     try:
         _rmtree_at(parent_fd, child)
+    except OSError as exc:
+        # Best-effort, like shutil.rmtree(ignore_errors=True) was: this runs in
+        # the worker's `finally` and on the failure/cancel paths, where a raise
+        # would REPLACE the real terminal state — flipping a succeeded or
+        # canceled export to `failed` and, via _run's except handler, deleting a
+        # good output tree — over debris the next run overwrites anyway. Left
+        # debris only ever costs a `destination_not_empty` on an identical
+        # retry, which is recoverable and named.
+        logger.warning("could not fully remove %s under %s: %s", child, parent, exc)
     finally:
         os.close(parent_fd)
 

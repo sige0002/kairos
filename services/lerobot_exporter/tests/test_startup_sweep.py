@@ -140,3 +140,19 @@ def test_remove_output_dir_does_not_follow_a_symlinked_exports(
     remove_output_dir(data_dir, victim)
 
     assert (data_dir / "objects" / victim / "metadata.yaml").is_file()
+
+
+def test_a_removal_failure_never_raises_out(data_dir: Path) -> None:
+    """The removal runs in the worker's finally and on the failure/cancel paths,
+    where a raise would REPLACE the real terminal state (flipping a succeeded
+    export to failed and deleting its output). An un-removable entry must be
+    swallowed and logged, like shutil.rmtree(ignore_errors=True) was."""
+    staging = data_dir / "exports" / ".staging" / "someid"
+    locked = staging / "locked"
+    locked.mkdir(parents=True)
+    (locked / "file").write_text("x", encoding="utf-8")
+    os.chmod(locked, 0o500)  # its contents can't be unlinked
+    try:
+        remove_export_staging(data_dir, "someid")  # must not raise
+    finally:
+        os.chmod(locked, 0o700)
