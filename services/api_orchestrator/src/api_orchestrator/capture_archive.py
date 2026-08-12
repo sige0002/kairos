@@ -20,7 +20,11 @@ from typing import TYPE_CHECKING, Any
 
 from kairos_common import ApiError
 from kairos_common.rebuild import ReplicaState
-from kairos_common.task_sidecar import TASK_SIDECAR_FILENAME, write_task_sidecar
+from kairos_common.task_sidecar import (
+    TASK_SIDECAR_FILENAME,
+    effective_task,
+    write_task_sidecar,
+)
 from kairos_common.time import utc_now_iso8601
 
 from api_orchestrator import fileops
@@ -403,15 +407,33 @@ class CaptureArchiveMixin:
             # the LeRobot converter without a kairos instance in the loop.
             # Written only AFTER the verified copy — the destination must be
             # empty when the copy starts — and only at the destination, never
-            # into objects/. ``capture.task`` is already the §4.3 effective
-            # label (override applied when the row was built); a capture
-            # without one gets no file. A failure here is an OSError and lands
-            # in the handler below: the copy is not "done" until the tree it
-            # promised is complete, and the source is still untouched.
-            if capture.task:
-                await asyncio.to_thread(
-                    _append_task_sidecar, result, target, capture.task
-                )
+            # into objects/. A failure here is an OSError and lands in the
+            # handler below: the copy is not "done" until the tree it promised
+            # is complete, and the source is still untouched.
+            #
+            # A source that already carries its own task.json (imported bags —
+            # including a re-imported archive) keeps it: that file may hold
+            # subtasks that exist nowhere else, so overwriting it is the one
+            # option that loses information, and duplicating its entry would
+            # put a hash in the ledger that matches nothing on disk. kairos's
+            # own label still reaches the ledger via the event's `task` field.
+            #
+            # The label is read from the SOURCE sidecars under the caller's
+            # mutex (record.json §4.3 override, else the manifest), because
+            # the row can transiently lag them (adopt_manifest_facts has no
+            # record.json overlay); the row value is only the fallback when
+            # the sidecars cannot answer. A capture with no effective label
+            # gets no file.
+            if not any(
+                entry["path"] == TASK_SIDECAR_FILENAME for entry in result.entries
+            ):
+                task = await asyncio.to_thread(effective_task, source, capture.task)
+                if task:
+                    await asyncio.to_thread(_append_task_sidecar, result, target, task)
+                    if progress is not None:
+                        # The sidecar's bytes joined result.bytes; without
+                        # this the progress view stops just short of done.
+                        progress(result.bytes)
             return result
         except fileops.DestinationNotEmptyError as exc:
             raise ApiError(

@@ -23,6 +23,7 @@ from api_orchestrator.models import Capture, CaptureState
 from conftest import FakeRecorder
 from fastapi.testclient import TestClient
 from kairos_common import ApiError, Settings, ledger_v2
+from kairos_common.capture_sidecars import RecordV2, write_record
 from kairos_common.ids import new_capture_id
 from kairos_common.rebuild import ReplicaState
 
@@ -554,3 +555,79 @@ class TestTaskSidecarProjection:
 
         assert not (roots / capture_id / "task.json").exists()
         assert body["file_count"] == 2
+
+    def test_a_source_with_its_own_sidecar_keeps_it_verbatim(
+        self, data_dir: Path, tmp_path: Path, fake_recorder: FakeRecorder
+    ) -> None:
+        # An imported bag — including a re-imported archive — may already
+        # carry a task.json, possibly with subtasks that exist nowhere else.
+        # The projection must not overwrite it, and must not put a second
+        # entry in the audit list whose hash matches nothing on disk.
+        original = json.dumps(
+            {
+                "task": "from_the_bag",
+                "subtasks": [{"start": 0.0, "end": 3.5, "subtask": "reach"}],
+            }
+        )
+        roots = tmp_path / "nas"
+        roots.mkdir()
+        with _archive_client(data_dir, roots, fake_recorder) as client:
+            layout = client.app.state.data_layout
+            capture_id = _seed(client, layout)
+            (layout.capture_dir(capture_id) / "task.json").write_text(
+                original, encoding="utf-8"
+            )
+            progress = _archive_and_wait(client, capture_id, roots)
+            assert progress["state"] == "complete", progress
+            body = progress["result"]
+
+        copied = roots / capture_id / "task.json"
+        assert copied.read_text(encoding="utf-8") == original
+
+        entries = [e for e in body["files"] if e["path"] == "task.json"]
+        digest, size = fileops.sha256_file(copied)
+        assert entries == [{"path": "task.json", "size": size, "sha256": digest}]
+        assert body["file_count"] == 3
+        assert body["bytes"] == sum(e["size"] for e in body["files"])
+
+    def test_the_label_comes_from_the_sidecars_not_the_row_cache(
+        self, data_dir: Path, tmp_path: Path, fake_recorder: FakeRecorder
+    ) -> None:
+        # The row can transiently lag a §4.3 edit (adopt_manifest_facts has no
+        # record.json overlay). The projection reads the sidecars — the
+        # store's source of truth — so the frozen file carries the edit.
+        roots = tmp_path / "nas"
+        roots.mkdir()
+        with _archive_client(data_dir, roots, fake_recorder) as client:
+            layout = client.app.state.data_layout
+            capture_id = _seed(client, layout, task="stale_row_value")
+            capture_dir = layout.capture_dir(capture_id)
+            (capture_dir / "object_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "capture_id": capture_id,
+                        "source_instance_id": "inst",
+                        "run_id": f"run_{capture_id}",
+                        "state": "completed",
+                        "started_at": "2026-08-01T00:00:00.000Z",
+                        "task": "as_recorded",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            write_record(
+                capture_dir,
+                RecordV2(
+                    capture_id=capture_id,
+                    revision=1,
+                    labels={"task": "edited_after_recording"},
+                ),
+            )
+            progress = _archive_and_wait(client, capture_id, roots)
+            assert progress["state"] == "complete", progress
+
+        sidecar = roots / capture_id / "task.json"
+        assert json.loads(sidecar.read_text(encoding="utf-8")) == {
+            "task": "edited_after_recording"
+        }
