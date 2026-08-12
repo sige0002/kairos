@@ -144,6 +144,15 @@ EXPORTS_DIR_LOCAL := $(if $(wildcard .env),$(shell grep -E '^[[:space:]]*EXPORTS
 LEROBOT_OVERRIDE_LOCAL := $(if $(wildcard .env),$(shell grep -qE '^[[:space:]]*LEROBOT_EXPORTER=' .env 2>/dev/null && echo -f compose/lerobot.yaml),)
 LEROBOT_OVERRIDE_LOCAL += $(if $(and $(LEROBOT_OVERRIDE_LOCAL),$(EXPORTS_DIR_LOCAL)),-f compose/lerobot-exports.yaml,)
 COMPOSE      := docker compose --project-directory . -f compose/compose.yaml $(ARCHIVE_OVERRIDE_LOCAL) $(LEROBOT_OVERRIDE_LOCAL)
+# The lerobot-exporter image installs a SITE-PROVIDED converter from
+# deploy/lerobot/converter (gitignored, optional — see deploy/lerobot/README.md).
+# For BUILD ONLY, drop the lerobot overlay when that tree is absent, so a build
+# skips the exporter (with a note) instead of failing every other image on a
+# "COPY failed". `up`/`restart` keep the full COMPOSE: a previously built
+# exporter image still runs regardless.
+_CONVERTER_PRESENT := $(wildcard deploy/lerobot/converter/pyproject.toml)
+BUILD_LEROBOT_OVERLAY := $(if $(_CONVERTER_PRESENT),$(LEROBOT_OVERRIDE_LOCAL),)
+BUILD_COMPOSE := docker compose --project-directory . -f compose/compose.yaml $(ARCHIVE_OVERRIDE_LOCAL) $(BUILD_LEROBOT_OVERLAY)
 # Let the replay harness read the root .env too (so BAG / ROS_DISTRO / RMW set
 # there drive `make rosbag`), when a .env exists.
 TEST_COMPOSE := docker compose $(if $(wildcard .env),--env-file .env,) -f deploy/test/compose.yaml
@@ -172,7 +181,7 @@ ifneq ($(strip $(MSGS_OVERLAY_DIR)),)
 export MSGS_OVERLAY_DIR
 endif
 
-SERVICES := recorder monitor streamer probe orchestrator dora_runner frontend
+SERVICES := recorder monitor streamer probe orchestrator dora_runner frontend lerobot-exporter
 # Services named on the command line (e.g. `make build monitor`). Empty = all.
 # Override explicitly with SVC=monitor if you prefer.
 SVC ?= $(filter $(SERVICES),$(MAKECMDGOALS))
@@ -263,29 +272,34 @@ down: ## stop + remove the stack
 stop: ## stop the stack (keep containers)
 	$(COMPOSE) stop $(SVC)
 
-# The lerobot_exporter image installs a SITE-PROVIDED converter from
+# The lerobot-exporter image needs a SITE-PROVIDED converter at
 # deploy/lerobot/converter (gitignored, not a submodule — see
-# deploy/lerobot/README.md). Guard the build so a missing tree fails with these
-# instructions instead of a bare "COPY failed", but ONLY when that image is
-# actually being built (no service arg = all, or the arg names the exporter).
-define _require_converter
-	@if { [ -z "$(SVC)" ] || echo " $(SVC) " | grep -q " lerobot-exporter "; } \
-	   && [ -n "$(LEROBOT_OVERRIDE_LOCAL)" ] \
-	   && [ ! -e deploy/lerobot/converter/pyproject.toml ]; then \
-	  echo "deploy/lerobot/converter is missing (the LeRobot converter is site-provided)."; \
-	  echo "  git clone https://github.com/sige0002/rosbag2lerobot deploy/lerobot/converter"; \
-	  echo "  (or your own fork). See deploy/lerobot/README.md."; \
-	  exit 1; \
-	fi
+# deploy/lerobot/README.md). When it is absent the exporter is SKIPPED (with a
+# note), never a build failure — the feature is optional and every other image
+# must still build. BUILD_COMPOSE already drops the overlay in that case (so a
+# build-all does not reference the exporter); this also strips a named
+# `lerobot-exporter` from the service list, and if that was the ONLY thing
+# asked for, it exits cleanly rather than falling through to "build all".
+define _lerobot_build
+	@svc='$(SVC)'; \
+	 if [ -n "$(LEROBOT_OVERRIDE_LOCAL)" ] && [ -z "$(_CONVERTER_PRESENT)" ]; then \
+	   echo ">>> lerobot-exporter skipped: deploy/lerobot/converter is empty (optional feature)."; \
+	   echo ">>>   provide it:  git clone https://github.com/sige0002/rosbag2lerobot deploy/lerobot/converter"; \
+	   echo ">>>   (or your own fork). See deploy/lerobot/README.md."; \
+	   svc="$$(printf '%s\n' $$svc | grep -vx lerobot-exporter | tr '\n' ' ')"; \
+	   if [ -n "$$(printf '%s' '$(SVC)' | xargs)" ] && [ -z "$$(printf '%s' \"$$svc\" | xargs)" ]; then \
+	     exit 0; \
+	   fi; \
+	 fi; \
+	 $(BUILD_COMPOSE) $(1) $$svc
+
 endef
 
 build: ## build images: `make build` (all) or `make build monitor`
-	$(call _require_converter)
-	$(COMPOSE) build $(SVC)
+	$(call _lerobot_build,build)
 
 rebuild: ## rebuild + recreate service(s) — the "apply my code changes" command
-	$(call _require_converter)
-	$(COMPOSE) up -d --build --force-recreate $(SVC)
+	$(call _lerobot_build,up -d --build --force-recreate)
 
 build-pull: ## rebuild pulling FRESH base images (ros/python/node upstream). NEEDS NETWORK
 	$(COMPOSE) build --pull $(SVC)
