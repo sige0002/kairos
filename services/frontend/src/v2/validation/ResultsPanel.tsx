@@ -181,9 +181,9 @@ function RunningJobs({
   if (jobs.length === 0) return null;
   return (
     <Card className="flex flex-col gap-1.5 p-4" data-testid="running-jobs">
-      <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+      <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
         Jobs in this run
-      </span>
+      </h2>
       {jobs.map((job) => (
         <div
           key={job.jobId}
@@ -296,9 +296,9 @@ export function ResultsPanel({
     return (
       <div className="flex min-h-0 flex-col gap-3 overflow-auto p-[18px]">
         <div className="flex items-center gap-2">
-          <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+          <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
             Latest run
-          </span>
+          </h2>
           <span className="font-mono text-xs text-gray-400">
             {outcome.label ?? outcome.captureId}
           </span>
@@ -325,9 +325,9 @@ export function ResultsPanel({
   return (
     <div className="flex min-h-0 flex-col gap-3 overflow-auto p-[18px]">
       <div className="flex items-center gap-2">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           Latest run
-        </span>
+        </h2>
         <span className="font-mono text-xs text-gray-400">
           {counts.total} captures
         </span>

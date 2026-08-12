@@ -39,9 +39,9 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
     <>
       <Card className="flex flex-col overflow-auto" data-testid="plan-projects">
         <div className="border-b border-gray-100 px-4 py-[13px]">
-          <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+          <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
             Projects
-          </span>
+          </h2>
         </div>
         <div className="flex flex-col gap-1.5 p-3">
           {plans.map((p, i) => {
@@ -106,9 +106,9 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
 
             <div className="grid min-h-0 flex-1 grid-cols-[280px_1fr]">
               <div className="flex flex-col gap-2 overflow-auto border-r border-gray-100 p-4">
-                <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+                <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
                   Tasks
-                </span>
+                </h2>
                 {project.tasks.map((t, i) => (
                   <div
                     key={t.name}
@@ -149,9 +149,9 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
 
               <div className="flex min-w-0 flex-col gap-2 overflow-auto px-[18px] py-[14px]">
                 <div className="flex items-center gap-2">
-                  <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+                  <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
                     Conditions — {task?.name ?? '—'}
-                  </span>
+                  </h2>
                   <button
                     type="button"
                     onClick={renameTask}

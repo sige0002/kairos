@@ -21,9 +21,9 @@ export function SystemStatusCard(props: SystemRowsInput) {
         SIDE_PAD,
       )}
     >
-      <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+      <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
         System status
-      </span>
+      </h2>
       {rows.map((r) => (
         <div
           key={r.label}

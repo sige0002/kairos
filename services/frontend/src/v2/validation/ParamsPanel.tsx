@@ -126,9 +126,9 @@ export function ParamsPanel({
 
   return (
     <div className="flex flex-col gap-3 overflow-auto border-r border-gray-100 px-[18px] py-4">
-      <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+      <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
         Parameters
-      </span>
+      </h2>
 
       <label className="flex flex-col gap-1 text-sm">
         <span className="flex items-center gap-2">

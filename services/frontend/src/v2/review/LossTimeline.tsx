@@ -57,9 +57,9 @@ export function LossTimeline({
   return (
     <div data-testid="review-loss-timeline" className="flex flex-col gap-1">
       <div className="flex items-center justify-between">
-        <span className="text-[10px] font-semibold uppercase tracking-[0.04em] text-gray-400">
+        <h2 className="text-[10px] font-semibold uppercase tracking-[0.04em] text-gray-400">
           Integrity timeline
-        </span>
+        </h2>
         <span className="font-mono text-[10px] text-gray-400">
           span {formatSecondsShort(spanNs)}
         </span>

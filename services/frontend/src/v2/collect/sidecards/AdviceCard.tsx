@@ -16,9 +16,9 @@ export function AdviceCard({ machine }: { machine: BatchMachine }) {
       )}
     >
       <div className="flex items-center gap-2">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           Advice for next episode
-        </span>
+        </h2>
         <div className="flex-1" />
         {/* With one tip the pager is not a disabled control, it is a costume —
             "1 / 1" plus arrows reads as a generator that happens to have one

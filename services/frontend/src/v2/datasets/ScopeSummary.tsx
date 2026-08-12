@@ -136,9 +136,9 @@ function AvailabilitySection({
 
   return (
     <div className="flex flex-col gap-1.5 border-t border-gray-100 pt-3">
-      <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+      <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
         Where the recordings are
-      </span>
+      </h2>
 
       {slices.length === 0 ? (
         <span data-testid="dataset-availability-empty" className="text-[12px] text-gray-400">
@@ -228,9 +228,9 @@ export function ScopeSummary({ scope }: { scope: Scope }) {
   return (
     <div data-testid="dataset-scope-summary" className="flex min-w-0 flex-col gap-4 px-[18px] py-4">
       <div className="flex flex-wrap items-baseline gap-2">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           Summary
-        </span>
+        </h2>
         <span data-testid="dataset-summary-scope" className="text-[15px] font-bold text-gray-900">
           {scope.label}
         </span>
@@ -299,9 +299,9 @@ export function ScopeSummary({ scope }: { scope: Scope }) {
           <AvailabilitySection agg={agg} unresolved={scope.unresolved} />
 
           <div className="flex flex-col gap-1.5 border-t border-gray-100 pt-3">
-            <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+            <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
               Quality
-            </span>
+            </h2>
             {agg.qualityLabeledCount > 0 ? (
               <div
                 data-testid="dataset-summary-quality"

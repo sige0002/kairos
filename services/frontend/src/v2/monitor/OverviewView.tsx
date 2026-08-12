@@ -39,9 +39,9 @@ function RecordContextBlock() {
 
   return (
     <Card className="flex flex-col gap-2 px-4 py-3.5" data-testid="overview-record">
-      <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+      <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
         Recording
-      </span>
+      </h2>
       {ctx.recording ? (
         <>
           <div className="flex flex-wrap items-center gap-2.5">
@@ -139,9 +139,9 @@ export function OverviewView({
         {/* Topic health tally + the topics that need attention */}
         <Card className="flex flex-col" data-testid="overview-health">
           <div className="flex items-center gap-2.5 border-b border-gray-100 px-4 py-3">
-            <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+            <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
               Topic health
-            </span>
+            </h2>
             <div className="flex-1" />
             <span className="font-mono text-[11.5px] text-gray-400">
               {measured.length} measured · {rows.length} discovered
@@ -180,9 +180,9 @@ export function OverviewView({
 
               {attention.length > 0 ? (
                 <div className="flex flex-col gap-1.5">
-                  <span className="text-[11px] font-semibold uppercase tracking-[0.04em] text-gray-500">
+                  <h3 className="text-[11px] font-semibold uppercase tracking-[0.04em] text-gray-500">
                     Needs attention
-                  </span>
+                  </h3>
                   <div className="flex flex-col gap-1" data-testid="overview-attention">
                     {attention.map((r) => (
                       <button
@@ -214,9 +214,9 @@ export function OverviewView({
         {/* Active incidents (real alert buffer) */}
         <Card className="flex flex-col" data-testid="overview-incidents">
           <div className="flex items-center gap-2.5 border-b border-gray-100 px-4 py-3">
-            <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+            <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
               Active incidents
-            </span>
+            </h2>
             <div className="flex-1" />
             <span className="font-mono text-[11.5px] text-gray-400">{firing.length} firing</span>
           </div>
@@ -259,9 +259,9 @@ export function OverviewView({
       <div className="flex flex-col gap-2.5">
         <SystemCard />
         <Card className="flex flex-col gap-2 p-4">
-          <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+          <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
             Jump to
-          </span>
+          </h2>
           <button
             type="button"
             data-testid="overview-open-topics"

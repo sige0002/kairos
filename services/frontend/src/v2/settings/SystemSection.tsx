@@ -50,9 +50,9 @@ export function SystemSection({ config }: { config: RuntimeConfig | undefined })
   return (
     <Card className="flex min-w-0 flex-col gap-5 overflow-auto p-[18px] lg:col-span-2" data-testid="settings-system">
       <div className="flex items-center gap-2.5">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           System
-        </span>
+        </h2>
         <span className="text-[11px] text-gray-400">read-only · GET /api/v1/config</span>
       </div>
 

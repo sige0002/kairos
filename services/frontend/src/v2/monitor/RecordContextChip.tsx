@@ -27,9 +27,9 @@ export function RecordContextChip() {
 
   return (
     <Card className="flex items-center gap-2.5 px-3.5 py-2" data-testid="monitor-context">
-      <span className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400">
+      <h2 className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400">
         Context
-      </span>
+      </h2>
       {ctx.recording ? (
         <>
           <span

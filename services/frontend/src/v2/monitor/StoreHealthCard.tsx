@@ -154,9 +154,9 @@ export function StoreHealthCard() {
       <CardHeader
         title={
           <div className="flex items-center gap-2.5">
-            <span className="text-[13px] font-semibold uppercase tracking-[0.04em] text-gray-500">
+            <h2 className="text-[13px] font-semibold uppercase tracking-[0.04em] text-gray-500">
               Store health
-            </span>
+            </h2>
             {state === 'ok' && (
               <Badge tone="green" dot data-testid="store-health-state">
                 ok

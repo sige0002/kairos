@@ -3,6 +3,7 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
 import { renderWithClient, jsonResponse } from '../../test/renderWithClient';
 import { ValidationScreen } from './ValidationScreen';
+import { expectScreenHeadingOutline } from '../../test/headingOutline';
 
 const PIPELINES = {
   items: [
@@ -781,3 +782,11 @@ test('leaving the Validation tab stops the polling it started', async () => {
 
   expect(statusPolls()).toBe(settled);
 });
+
+// #14 — heading structure. This screen must title itself exactly once and
+// descend one heading level at a time, so a screen-reader user can navigate it
+// by heading instead of reading it as one flat run of text.
+test('titles itself with a single h1 and skips no heading level', async () => {
+  renderWithClient(<ValidationScreen />);
+  await expectScreenHeadingOutline('Validation');
+}, 20000);

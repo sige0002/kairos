@@ -461,10 +461,10 @@ export function CaptureInspection({
           showing before the operator reaches for one. */}
       {(capture.memberships?.length ?? 0) > 0 && (
         <section data-testid="review-memberships">
-          <h4 className="mb-1.5 text-[12.5px] font-medium text-gray-700">
+          <h3 className="mb-1.5 text-[12.5px] font-medium text-gray-700">
             In {capture.memberships!.length} dataset
             {capture.memberships!.length === 1 ? '' : 's'}
-          </h4>
+          </h3>
           <ul className="rounded-control border border-gray-200 text-[11.5px]">
             {capture.memberships!.map((m) => (
               <li
@@ -517,9 +517,9 @@ export function CaptureInspection({
       )}
 
       <section>
-        <h4 className="mb-1.5 text-[12.5px] font-medium text-gray-700">
+        <h3 className="mb-1.5 text-[12.5px] font-medium text-gray-700">
           Topics ({topics.length})
-        </h4>
+        </h3>
         <ul
           data-testid="review-topics"
           className="max-h-40 overflow-auto rounded-control border border-gray-200 text-[11px]"
@@ -544,7 +544,7 @@ export function CaptureInspection({
         <section>
           <div className="mb-1.5 flex items-center justify-between gap-2">
             <span className="flex items-baseline gap-1.5">
-              <h4 className="text-[12.5px] font-medium text-gray-700">Loss report</h4>
+              <h3 className="text-[12.5px] font-medium text-gray-700">Loss report</h3>
               {/* Dated for the same reason as the validation badge: a table
                   called "the last completed report" by a failed attempt has to
                   be datable, or the operator cannot tell which run it is. */}
@@ -593,9 +593,9 @@ export function CaptureInspection({
       {completed && (
         <section>
           <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
-            <h4 className="text-[12.5px] font-medium text-gray-700">
+            <h3 className="text-[12.5px] font-medium text-gray-700">
               Standard validation
-            </h4>
+            </h3>
             <div className="flex items-center gap-2">
               {validationResult && (
                 <span className="flex items-center gap-1.5">

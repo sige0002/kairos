@@ -25,6 +25,7 @@ import { LogsView } from './LogsView';
 import { RecordContextChip } from './RecordContextChip';
 import { SignalsView } from './signals/SignalsView';
 import { setPanelTopics, usePanels } from './panelStore';
+import { ScreenTitle } from '../shared/ScreenTitle';
 
 const MON_NAV = [
   'Overview',
@@ -60,6 +61,7 @@ export function MonitorScreen() {
 
   return (
     <div className="flex flex-col gap-2.5 lg:h-full lg:min-h-0">
+      <ScreenTitle>Monitor</ScreenTitle>
       <div className="flex shrink-0 flex-wrap items-center gap-2.5">
         <RecordContextChip />
 

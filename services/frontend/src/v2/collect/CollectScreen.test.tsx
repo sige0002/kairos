@@ -7,6 +7,7 @@ import { CollectScreen } from './CollectScreen';
 import { __resetBatchStore, __setStopFloorMs, __resetStopFloorMs } from './useBatchMachine';
 import { __resetCameraStore } from './cameraStore';
 import { __resetPlansStore, clonePlans, getPlans, setPlans } from '../plans';
+import { expectScreenHeadingOutline } from '../../test/headingOutline';
 
 const CONFIG = {
   endpoints: { api: '/api/v1', events: '/api/v1/events', webrtc: 'http://localhost:8002' },
@@ -1094,4 +1095,12 @@ test('Space ends the take too when the recorder died inside the stop floor', asy
   fireEvent.keyDown(document.body, { key: ' ' });
   await waitFor(() => expect(phaseTitle()).toHaveTextContent('SAVING'));
   expect(recorder.stopAttempts()).toBeGreaterThan(0);
+}, 20000);
+
+// #14 — heading structure. This screen must title itself exactly once and
+// descend one heading level at a time, so a screen-reader user can navigate it
+// by heading instead of reading it as one flat run of text.
+test('titles itself with a single h1 and skips no heading level', async () => {
+  renderWithClient(<CollectScreen />);
+  await expectScreenHeadingOutline('Collect');
 }, 20000);

@@ -19,9 +19,9 @@ export function OperatorsSection({ settings }: { settings: SettingsState }) {
       data-testid="settings-operators"
     >
       <div className="flex flex-col gap-1 border-b border-gray-100 px-4 py-[13px]">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           Operators
-        </span>
+        </h2>
         <span className="text-[12px] leading-relaxed text-gray-500">
           Attribution, not access control: these names fill the OP picker (top
           right), and picking one is required before recording once the roster

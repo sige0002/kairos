@@ -5,6 +5,7 @@ import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
 import { useUiStore } from '../../store/uiStore';
 import { __resetPanelStore } from './panelStore';
 import { MonitorScreen } from './MonitorScreen';
+import { expectScreenHeadingOutline } from '../../test/headingOutline';
 
 const CONFIG = {
   endpoints: { api: '/api/v1', events: '/api/v1/events', webrtc: 'http://localhost:8002' },
@@ -276,3 +277,11 @@ test('Topics empty-state: no topics discovered explains why instead of an empty 
     ),
   ).toBeInTheDocument();
 });
+
+// #14 — heading structure. This screen must title itself exactly once and
+// descend one heading level at a time, so a screen-reader user can navigate it
+// by heading instead of reading it as one flat run of text.
+test('titles itself with a single h1 and skips no heading level', async () => {
+  renderWithClient(<MonitorScreen />);
+  await expectScreenHeadingOutline('Monitor');
+}, 20000);

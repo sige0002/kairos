@@ -66,12 +66,18 @@ export function CardHeader({
   );
 }
 
-/** Uppercase tracked label (10–11px / 500). */
+/** Uppercase tracked label (10–11px / 500).
+ *
+ *  An `h2` because every caller uses it to title a card or panel, which is the
+ *  level below each screen's own `h1` — this is where a screen reader's heading
+ *  list gets its entries. Tailwind's preflight zeroes heading margins and
+ *  inherits their font-size, so the tag carries no styling of its own; the
+ *  classes below remain the whole appearance. */
 export function SectionLabel({ children }: { children: ReactNode }) {
   return (
-    <span className="text-[13px] font-semibold uppercase tracking-[0.04em] text-gray-500">
+    <h2 className="text-[13px] font-semibold uppercase tracking-[0.04em] text-gray-500">
       {children}
-    </span>
+    </h2>
   );
 }
 

@@ -79,9 +79,9 @@ export function DatasetInspection({ detail }: { detail: CaptureDetail }) {
       <section>
         <div className="mb-1.5 flex items-center justify-between gap-2">
           <span className="flex items-baseline gap-1.5">
-            <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+            <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
               Loss report
-            </span>
+            </h3>
             {/* Dated for the same reason as Review's (#9): a table a failed
                 attempt calls "the last completed report" has to be datable, or
                 the operator cannot tell which run produced it. */}
@@ -138,9 +138,9 @@ export function DatasetInspection({ detail }: { detail: CaptureDetail }) {
         <VideoCheckSection topics={detail.topics ?? []} captureId={captureId} />
       ) : (
         <section>
-          <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+          <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
             Video check
-          </span>
+          </h3>
           <p className="mt-1.5 text-xs leading-relaxed text-gray-500">
             No readable copy of this recording on this machine, so there are no frames
             to decode. The membership is unaffected — a dataset may cite a capture
@@ -150,9 +150,9 @@ export function DatasetInspection({ detail }: { detail: CaptureDetail }) {
       )}
 
       <section className="flex flex-col gap-2">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           Sidecars
-        </span>
+        </h3>
         <JsonBlock label="Object manifest" value={detail.manifest} />
         <JsonBlock label="Record (review)" value={detail.record} />
         <JsonBlock label="Validation" value={detail.validation} />

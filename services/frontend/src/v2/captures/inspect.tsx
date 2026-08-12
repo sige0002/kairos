@@ -456,7 +456,7 @@ export function VideoCheckSection({
   if (cameras.length === 0)
     return (
       <section>
-        <h4 className="mb-1.5 text-sm font-medium text-gray-700">Video check</h4>
+        <h3 className="mb-1.5 text-sm font-medium text-gray-700">Video check</h3>
         <p className="text-xs text-gray-500">No camera topics.</p>
       </section>
     );
@@ -464,7 +464,7 @@ export function VideoCheckSection({
   return (
     <section>
       <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
-        <h4 className="text-sm font-medium text-gray-700">Video check</h4>
+        <h3 className="text-sm font-medium text-gray-700">Video check</h3>
         <div className="flex items-center gap-2">
           <select
             aria-label="camera topic"

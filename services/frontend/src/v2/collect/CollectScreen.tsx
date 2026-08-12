@@ -26,6 +26,7 @@ import { COL_GAP } from './compact';
 import { useBatchMachine, type BatchMachine } from './useBatchMachine';
 import { Card, cn } from '../../components/ui';
 import { formatBytes, formatHms, formatTimeOfDay } from '../review/format';
+import { ScreenTitle } from '../shared/ScreenTitle';
 
 // Recovery banner (D-3) for a take stopped but never saved (e.g. a reload
 // between Stop and Save). Sits above the control card until the operator labels,
@@ -134,7 +135,12 @@ export function CollectScreen() {
   }, []);
 
   if (!config) {
-    return <div className="p-4 text-sm text-gray-400">Loading…</div>;
+    return (
+      <>
+        <ScreenTitle>Collect</ScreenTitle>
+        <div className="p-4 text-sm text-gray-400">Loading…</div>
+      </>
+    );
   }
 
   return (
@@ -166,6 +172,7 @@ export function CollectScreen() {
         COL_GAP,
       )}
     >
+      <ScreenTitle>Collect</ScreenTitle>
       <ContextBar machine={machine} />
       <div
         className={cn(

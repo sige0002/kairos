@@ -137,7 +137,7 @@ export function SignalSection({
   return (
     <section data-testid="review-signals">
       <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
-        <h4 className="text-[12.5px] font-medium text-gray-700">Data integrity</h4>
+        <h3 className="text-[12.5px] font-medium text-gray-700">Data integrity</h3>
         <button
           type="button"
           data-testid="review-run-signal"
@@ -218,9 +218,9 @@ export function SignalSection({
           {cameras.length > 0 && (
             <div className="flex flex-col gap-2">
               <div className="flex flex-wrap items-center gap-2">
-                <span className="text-[11px] font-semibold uppercase tracking-[0.04em] text-gray-400">
+                <h2 className="text-[11px] font-semibold uppercase tracking-[0.04em] text-gray-400">
                   Synced video
-                </span>
+                </h2>
                 <select
                   aria-label="sync camera topic"
                   data-testid="review-signal-camera"

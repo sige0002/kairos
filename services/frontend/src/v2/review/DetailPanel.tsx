@@ -285,9 +285,9 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
 
         <div className="grid grid-cols-2 gap-2 border-t border-gray-100 pt-3">
           <div className="flex flex-col gap-0.5 rounded-[10px] border border-gray-100 px-3 py-2.5">
-            <span className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400">
+            <h2 className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400">
               Auto quality
-            </span>
+            </h2>
             <QualityValue quality={sel.quality} />
           </div>
           <div
@@ -307,9 +307,9 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
             )}
           >
             <div className="flex items-center gap-1.5">
-              <span className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400">
+              <h2 className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400">
                 Final quality
-              </span>
+              </h2>
               <span className="text-[10px] text-gray-400">✎</span>
             </div>
             <QualityValue quality={sel.effectiveQuality} />
@@ -327,9 +327,9 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
             )}
           >
             <div className="flex items-center gap-1.5">
-              <span className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400">
+              <h2 className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400">
                 Task result
-              </span>
+              </h2>
               <span className="text-[10px] text-gray-400">✎</span>
             </div>
             <span className="text-[12.5px] font-medium text-gray-700">
@@ -345,9 +345,9 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
             )}
           </div>
           <div className="flex flex-col gap-0.5 rounded-[10px] border border-gray-100 px-3 py-2.5">
-            <span className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400">
+            <h2 className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400">
               Issues
-            </span>
+            </h2>
             <span
               className={cn(
                 'text-[12.5px] font-medium',

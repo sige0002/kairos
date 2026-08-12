@@ -11,9 +11,9 @@ export function BatchStatsCard({ machine }: { machine: BatchMachine }) {
   const { nRecorded, nGood, nReview, nTaskFailed } = machine.stats;
   return (
     <Card className={cn('flex shrink-0 flex-col gap-1.5', SIDE_PAD)}>
-      <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+      <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
         Batch stats
-      </span>
+      </h2>
       <div className="flex gap-3.5">
         <div className="flex flex-col">
           <span

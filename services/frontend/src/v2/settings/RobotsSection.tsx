@@ -143,9 +143,9 @@ export function RobotsSection({ config }: { config: RuntimeConfig | undefined })
     <>
       <Card className="flex flex-col overflow-auto" data-testid="robots-list">
         <div className="border-b border-gray-100 px-4 py-[13px]">
-          <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+          <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
             Robots
-          </span>
+          </h2>
         </div>
         <div className="flex flex-col gap-1.5 p-3">
           {optionsQuery.isError ? (

@@ -50,9 +50,9 @@ function Meter({ label, percent, testId }: { label: string; percent: number; tes
 function Panel({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <Card className="flex flex-col gap-3 px-4 py-3.5">
-      <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+      <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
         {title}
-      </span>
+      </h2>
       {children}
     </Card>
   );

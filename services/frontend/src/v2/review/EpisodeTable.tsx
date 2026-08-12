@@ -190,9 +190,9 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
   return (
     <div className="flex min-w-0 flex-col overflow-hidden rounded-card border border-gray-200 bg-white shadow-card">
       <div className="flex flex-wrap items-center gap-2.5 border-b border-gray-100 px-[18px] py-3">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           Episodes
-        </span>
+        </h2>
         <span
           data-testid="review-episodes-count"
           className="font-mono text-xs text-gray-400"
