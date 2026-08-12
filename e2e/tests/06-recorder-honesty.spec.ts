@@ -33,7 +33,7 @@ import { expect, test, type Page } from '@playwright/test';
 import { api } from '../fixtures/api';
 import { stack } from '../fixtures/stack';
 import { store } from '../fixtures/store';
-import { elapsedSeconds, openTab, phaseTitle } from '../fixtures/ui';
+import { elapsedSeconds, ensureOperator, openTab, phaseTitle } from '../fixtures/ui';
 
 /** Seconds of real recording before the recorder is killed. Long enough that
  *  rosbag2 has flushed MCAP chunks to disk — the recovered manifest's `bytes`
@@ -89,6 +89,10 @@ test('Recorder honesty: a dead recorder stops the RECORDING claim, and a returni
   try {
     // ---- arrange: one real recording, running -------------------------------
     await openTab(page, 'collect');
+    // This scenario drives Start itself rather than through `recordThroughUi`
+    // (it has to kill the recorder mid-take), so it names the operator itself
+    // too — Start is disabled until it does.
+    await ensureOperator(page);
     await clearUnsavedTakeBacklog(page);
 
     const before = new Set((await api.allCaptures(true)).map((c) => c.capture_id));
