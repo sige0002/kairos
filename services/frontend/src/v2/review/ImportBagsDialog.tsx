@@ -384,7 +384,7 @@ export function ImportBagsDialog({
               }
             }}
             placeholder="/data/incoming-bags"
-            className="w-full rounded-control border border-gray-200 px-2 py-1.5 font-mono text-sm focus:border-teal-500 focus:outline-none"
+            className="w-full rounded-control border border-gray-200 px-2 py-1.5 font-mono text-sm focus:border-teal-600 focus:outline-none"
           />
           <Button
             data-testid="import-scan"
@@ -468,7 +468,7 @@ export function ImportBagsDialog({
                       // The refusal was about what was there before.
                       setTagError(null);
                     }}
-                    className="rounded-control border border-gray-200 px-2 py-1 text-[12.5px] text-gray-800 focus:border-teal-500 focus:outline-none disabled:bg-gray-100"
+                    className="rounded-control border border-gray-200 px-2 py-1 text-[12.5px] text-gray-800 focus:border-teal-600 focus:outline-none disabled:bg-gray-100"
                   />
                 ))}
               </div>

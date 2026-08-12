@@ -45,7 +45,7 @@ export function EndedCard({
         className={cn(
           'h-[46px] rounded-control text-sm font-bold text-white',
           confirmNextSet
-            ? 'bg-amber-600 hover:bg-amber-700'
+            ? 'bg-amber-700 hover:bg-amber-800'
             : 'bg-teal-700 hover:bg-teal-800',
         )}
       >

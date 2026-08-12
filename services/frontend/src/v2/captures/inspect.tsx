@@ -182,7 +182,7 @@ export function fmtNum(value?: number | null, digits = 1): string {
 function lossTone(loss?: number | null): { text: string; cls: string } {
   if (loss === undefined || loss === null) return { text: '—', cls: 'text-gray-500' };
   if (loss > 0) return { text: `${(loss * 100).toFixed(1)}%`, cls: 'text-amber-700' };
-  return { text: '0%', cls: 'text-green-600' };
+  return { text: '0%', cls: 'text-green-700' };
 }
 
 export function LossTable({ topics }: { topics: LossTopic[] }) {

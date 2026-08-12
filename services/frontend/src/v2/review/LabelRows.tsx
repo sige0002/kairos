@@ -136,7 +136,7 @@ export function LabelRows({
             onChange={(e) =>
               setDraft((cur) => ({ ...cur, [field.key]: e.target.value }))
             }
-            className="w-full rounded-control border border-gray-200 px-2 py-1 text-[12.5px] text-gray-800 focus:border-teal-500 focus:outline-none disabled:bg-gray-50"
+            className="w-full rounded-control border border-gray-200 px-2 py-1 text-[12.5px] text-gray-800 focus:border-teal-600 focus:outline-none disabled:bg-gray-50"
           />
         </RowFrame>
       ))}

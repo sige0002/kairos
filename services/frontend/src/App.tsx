@@ -127,7 +127,7 @@ function TabNav({ active }: { active: V2TabId }) {
             className={cn(
               'rounded-[9px] px-[18px] py-2 text-[13.5px] transition-colors',
               on
-                ? 'bg-teal-600 font-semibold text-white shadow-sm'
+                ? 'bg-teal-700 font-semibold text-white shadow-sm'
                 : 'font-medium text-gray-500 hover:text-gray-700',
             )}
           >
@@ -239,7 +239,7 @@ function DomainChip({ domainId }: { domainId?: number }) {
       title={`ROS 2 domain ${domainId} (ROS_DOMAIN_ID)`}
       className="inline-flex items-center gap-1.5 rounded-control border border-gray-200 bg-white px-3 py-2 font-mono text-[12.5px] font-semibold text-gray-600"
     >
-      <span className="uppercase tracking-[0.04em] text-gray-400">DOMAIN</span>
+      <span className="uppercase tracking-[0.04em] text-gray-500">DOMAIN</span>
       {domainId}
     </span>
   );
@@ -335,7 +335,7 @@ function OperatorChip() {
         <div className="absolute right-0 top-full z-40 mt-2 w-72 rounded-card border border-gray-200 bg-white p-3 shadow-float">
           <label
             htmlFor="operator-name"
-            className="mb-1.5 block text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400"
+            className="mb-1.5 block text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-500"
           >
             Operator — saved into each recording
           </label>
@@ -385,12 +385,12 @@ function OperatorChip() {
               placeholder="e.g. sadasue"
               autoFocus
               data-testid="operator-input"
-              className="w-full rounded-control border border-gray-200 px-2 py-1.5 text-sm focus:border-teal-500 focus:outline-none"
+              className="w-full rounded-control border border-gray-200 px-2 py-1.5 text-sm focus:border-teal-600 focus:outline-none"
             />
             <button
               type="button"
               onClick={save}
-              className="rounded-control bg-teal-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-teal-700"
+              className="rounded-control bg-teal-700 px-3 py-1.5 text-sm font-semibold text-white hover:bg-teal-800"
             >
               Save
             </button>

@@ -81,7 +81,7 @@ function toConfig(
 }
 
 const CELL =
-  'rounded-control border border-gray-200 px-1.5 py-1 text-[12px] focus:border-teal-500 focus:outline-none';
+  'rounded-control border border-gray-200 px-1.5 py-1 text-[12px] focus:border-teal-600 focus:outline-none';
 
 export function AlertsCard() {
   const queryClient = useQueryClient();
@@ -482,7 +482,7 @@ export function AlertsCard() {
               <div className="flex flex-col gap-2 border-t border-gray-100 p-3.5" data-testid="alerts-advanced">
                 <textarea
                   aria-label="alerts config yaml"
-                  className="h-56 w-full rounded-control border border-gray-200 p-2 font-mono text-xs focus:border-teal-500 focus:outline-none"
+                  className="h-56 w-full rounded-control border border-gray-200 p-2 font-mono text-xs focus:border-teal-600 focus:outline-none"
                   spellCheck={false}
                   value={rawText}
                   placeholder="rules: []"

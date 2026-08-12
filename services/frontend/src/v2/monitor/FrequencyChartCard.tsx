@@ -178,7 +178,7 @@ export function FrequencyChartCard({
           aria-label="chart metric"
           value={panel.metric}
           onChange={(e) => onMetricChange(e.target.value as MonitorMetricKey)}
-          className="rounded-control border border-gray-200 px-2 py-1 text-[12px] font-medium text-gray-700 focus:border-teal-500 focus:outline-none"
+          className="rounded-control border border-gray-200 px-2 py-1 text-[12px] font-medium text-gray-700 focus:border-teal-600 focus:outline-none"
         >
           {MONITOR_METRICS.map((m) => (
             <option key={m.key} value={m.key}>
@@ -279,7 +279,7 @@ export function FrequencyChartCard({
                 if (e.target.value) onToggleTopic(e.target.value);
               }}
               disabled={addable.length === 0}
-              className="rounded-control border border-gray-200 px-2 py-0.5 text-[11px] font-medium text-gray-600 focus:border-teal-500 focus:outline-none disabled:text-gray-300"
+              className="rounded-control border border-gray-200 px-2 py-0.5 text-[11px] font-medium text-gray-600 focus:border-teal-600 focus:outline-none disabled:text-gray-300"
             >
               <option value="">{addable.length === 0 ? 'No more topics' : '+ Add topic'}</option>
               {addable.map((t) => (

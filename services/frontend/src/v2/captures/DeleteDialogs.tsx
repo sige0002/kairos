@@ -414,7 +414,7 @@ export function DiscardDialog({
             placeholder="e.g. gripper never closed — unusable takes"
             data-testid="discard-reason"
             aria-label="Reason"
-            className="mt-1.5 w-full rounded-control border border-gray-200 px-2 py-1.5 text-sm focus:border-teal-500 focus:outline-none"
+            className="mt-1.5 w-full rounded-control border border-gray-200 px-2 py-1.5 text-sm focus:border-teal-600 focus:outline-none"
           />
         )}
         <p className="mt-1 text-[11.5px] text-gray-500">
@@ -515,7 +515,7 @@ export function DeleteDialog({
           maxLength={500}
           placeholder="e.g. superseded by a re-run"
           data-testid="delete-reason"
-          className="mt-1 w-full rounded-control border border-gray-200 px-2 py-1.5 text-sm focus:border-teal-500 focus:outline-none"
+          className="mt-1 w-full rounded-control border border-gray-200 px-2 py-1.5 text-sm focus:border-teal-600 focus:outline-none"
         />
         <FailureList failures={failures} testId="delete-failures" />
         <DialogError

@@ -175,7 +175,7 @@ export function StreamConfigEditor({ config }: { config: RuntimeConfig }) {
       <label className="mb-1 block text-sm font-medium text-gray-700">Config (JSON)</label>
       <textarea
         aria-label="stream config json"
-        className="h-48 w-full rounded-control border border-gray-200 p-2 font-mono text-xs focus:border-teal-500 focus:outline-none"
+        className="h-48 w-full rounded-control border border-gray-200 p-2 font-mono text-xs focus:border-teal-600 focus:outline-none"
         spellCheck={false}
         value={text}
         disabled={saveMutation.isPending}

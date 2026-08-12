@@ -28,7 +28,7 @@ export const ALL_CAPTURES = '__all__';
 export const BATCH_VALUE_PREFIX = 'batch:';
 
 const SELECT_CLASS =
-  'rounded-control border border-gray-200 px-2 py-1.5 font-mono text-sm focus:border-teal-500 focus:outline-none';
+  'rounded-control border border-gray-200 px-2 py-1.5 font-mono text-sm focus:border-teal-600 focus:outline-none';
 
 /** What to call a capture on screen. `run_id` is display-only (§1) and can be
  *  absent — a capture pulled from another host may have none — in which case

@@ -160,7 +160,7 @@ export function ResultCard({
             className={cn(
               'h-[42px] flex-1 rounded-control text-[13px] font-bold',
               machine.pendingTask === 'ok'
-                ? 'bg-green-600 text-white'
+                ? 'bg-green-700 text-white'
                 : 'border border-gray-200 bg-white text-gray-500',
             )}
           >

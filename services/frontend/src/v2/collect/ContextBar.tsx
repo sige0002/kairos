@@ -313,7 +313,7 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
               </span>
             )}
             {stats.nRecorded} / {machine.targetEpisodes}{' '}
-            <span className="text-teal-600">{epNextText}</span>
+            <span className="text-teal-700">{epNextText}</span>
           </>
         }
       />

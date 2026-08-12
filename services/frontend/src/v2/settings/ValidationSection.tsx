@@ -93,7 +93,7 @@ export function ValidationSection() {
                   ) : (
                     <select
                       aria-label={`${id} option`}
-                      className="rounded-control border border-gray-200 px-2 py-1.5 font-mono text-[12.5px] focus:border-teal-500 focus:outline-none disabled:opacity-50"
+                      className="rounded-control border border-gray-200 px-2 py-1.5 font-mono text-[12.5px] focus:border-teal-600 focus:outline-none disabled:opacity-50"
                       value={state.active}
                       disabled={selectMutation.isPending}
                       onChange={(e) => selectMutation.mutate({ category: id, id: e.target.value })}

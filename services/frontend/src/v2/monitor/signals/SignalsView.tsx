@@ -102,7 +102,7 @@ export function SignalsView() {
                 setAddTopic(e.target.value || null);
                 setAddField(null);
               }}
-              className="min-w-[15rem] rounded-control border border-gray-200 px-2 py-1 text-[12.5px] font-medium text-gray-700 focus:border-teal-500 focus:outline-none"
+              className="min-w-[15rem] rounded-control border border-gray-200 px-2 py-1 text-[12.5px] font-medium text-gray-700 focus:border-teal-600 focus:outline-none"
             >
               <option value="">
                 {topicsQuery.isPending ? 'Loading topics…' : 'Select a topic…'}
@@ -125,7 +125,7 @@ export function SignalsView() {
               value={addField ?? ''}
               disabled={!addTopic || fields.length === 0}
               onChange={(e) => setAddField(e.target.value || null)}
-              className="min-w-[13rem] rounded-control border border-gray-200 px-2 py-1 text-[12.5px] font-medium text-gray-700 focus:border-teal-500 focus:outline-none disabled:opacity-50"
+              className="min-w-[13rem] rounded-control border border-gray-200 px-2 py-1 text-[12.5px] font-medium text-gray-700 focus:border-teal-600 focus:outline-none disabled:opacity-50"
             >
               <option value="">
                 {!addTopic
@@ -171,7 +171,7 @@ export function SignalsView() {
                       'rounded-chip px-2.5 py-0.5 text-[11px] font-medium transition-colors',
                       w.id === windowId
                         ? 'bg-white text-teal-700 shadow-sm'
-                        : 'text-gray-500 hover:text-gray-700',
+                        : 'text-gray-600 hover:text-gray-700',
                     )}
                   >
                     {w.label}
@@ -187,7 +187,7 @@ export function SignalsView() {
                 aria-label="signal rate"
                 value={hz}
                 onChange={(e) => setHz(Number(e.target.value))}
-                className="rounded-control border border-gray-200 px-2 py-1 text-[12.5px] font-medium text-gray-700 focus:border-teal-500 focus:outline-none"
+                className="rounded-control border border-gray-200 px-2 py-1 text-[12.5px] font-medium text-gray-700 focus:border-teal-600 focus:outline-none"
               >
                 {HZ_OPTIONS.map((h) => (
                   <option key={h} value={h}>

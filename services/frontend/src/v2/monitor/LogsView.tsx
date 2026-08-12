@@ -73,7 +73,7 @@ export function LogsView() {
           placeholder="Filter…"
           aria-label="filter events"
           data-testid="logs-filter"
-          className="w-40 rounded-control border border-gray-200 px-2.5 py-1 text-[12px] focus:border-teal-500 focus:outline-none"
+          className="w-40 rounded-control border border-gray-200 px-2.5 py-1 text-[12px] focus:border-teal-600 focus:outline-none"
         />
         <div className="flex gap-[3px] rounded-control border border-gray-200 bg-gray-100 p-1">
           {TYPE_FILTERS.map((f) => (

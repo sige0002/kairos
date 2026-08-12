@@ -506,7 +506,7 @@ function AspectPickers({
               ) : (
                 <select
                   aria-label={`${aspect} option`}
-                  className="rounded-control border border-gray-200 px-2 py-1.5 font-mono text-[12.5px] focus:border-teal-500 focus:outline-none disabled:opacity-50"
+                  className="rounded-control border border-gray-200 px-2 py-1.5 font-mono text-[12.5px] focus:border-teal-600 focus:outline-none disabled:opacity-50"
                   value={state.active}
                   disabled={selecting}
                   onChange={(e) => onSelect(aspect, e.target.value)}

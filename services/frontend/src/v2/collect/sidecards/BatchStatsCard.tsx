@@ -27,7 +27,7 @@ export function BatchStatsCard({ machine }: { machine: BatchMachine }) {
         <div className="flex flex-col">
           <span
             data-testid="stat-good"
-            className="font-mono text-lg font-semibold text-green-600"
+            className="font-mono text-lg font-semibold text-green-700"
           >
             {nGood}
           </span>
