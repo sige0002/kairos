@@ -110,7 +110,7 @@ export function ReadyCard({
           'flex h-[52px] items-center justify-center gap-2 rounded-control text-[15px] font-bold shadow-btn [@media(max-height:860px)]:h-[44px]',
           blocked
             ? 'cursor-not-allowed bg-gray-200 text-gray-400'
-            : 'bg-teal-600 text-white hover:bg-teal-700',
+            : 'bg-teal-700 text-white hover:bg-teal-800',
         )}
       >
         <span className="h-2.5 w-2.5 rounded-full bg-white" />
@@ -121,7 +121,7 @@ export function ReadyCard({
         <span
           id={NO_SELECTION_NOTE_ID}
           data-testid="no-selection-note"
-          className="text-[11px] font-medium text-amber-600"
+          className="text-[11px] font-medium text-amber-700"
         >
           Every topic is cleared — select at least one in Monitor to record.
         </span>
@@ -130,7 +130,7 @@ export function ReadyCard({
         <span
           id={OPERATOR_NOTE_ID}
           data-testid="operator-gate-note"
-          className="text-[11px] font-medium text-amber-600"
+          className="text-[11px] font-medium text-amber-700"
         >
           {OPERATOR_GATE_HINT}
         </span>

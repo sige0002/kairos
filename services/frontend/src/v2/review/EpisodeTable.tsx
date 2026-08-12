@@ -140,7 +140,7 @@ function Row({
       <span className="font-mono text-xs text-gray-500">
         {formatHms(row.durationMs)}
       </span>
-      <span className="font-mono text-xs text-gray-400">
+      <span className="font-mono text-xs text-gray-500">
         {formatTimeOfDay(row.startedAt)}
       </span>
       <AvailabilityChip
@@ -167,7 +167,7 @@ function Row({
             ? 'Return to review — the exclusion is a label, not a deletion'
             : 'Exclude from training use. The recording is kept and this can be undone.'
         }
-        className="flex h-[26px] w-[26px] items-center justify-center rounded-[7px] text-gray-300 transition-colors hover:bg-amber-50 hover:text-amber-700"
+        className="flex h-[26px] w-[26px] items-center justify-center rounded-[7px] text-gray-500 transition-colors hover:bg-amber-50 hover:text-amber-700"
       >
         {row.isExcluded ? (
           <span className="text-sm text-teal-700">↺</span>
@@ -195,7 +195,7 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
         </h2>
         <span
           data-testid="review-episodes-count"
-          className="font-mono text-xs text-gray-400"
+          className="font-mono text-xs text-gray-500"
         >
           {rv.rows.length} shown
         </span>
@@ -335,7 +335,7 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
           aria-label="Search episodes"
           placeholder="Search episodes…"
           data-testid="review-search"
-          className="w-[150px] rounded-control border border-gray-200 px-2.5 py-1.5 text-[12.5px] text-gray-700 placeholder:text-gray-400"
+          className="w-[150px] rounded-control border border-gray-200 px-2.5 py-1.5 text-[12.5px] text-gray-700 placeholder:text-gray-500"
         />
       </div>
       {/* The undo for the last exclude — its own band under the toolbar, not an
@@ -390,7 +390,7 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
           exceptions. */}
       <p
         data-testid="review-adopt-explainer"
-        className="border-b border-gray-100 px-[18px] py-1.5 text-[11px] text-gray-400"
+        className="border-b border-gray-100 px-[18px] py-1.5 text-[11px] text-gray-500"
       >
         <span className="font-semibold text-teal-700">READY</span> episodes need no
         review — you only resolve the{' '}
@@ -412,7 +412,7 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
       <div className="flex min-h-0 flex-1 flex-col overflow-x-auto">
         <div
           className={cn(
-            'grid shrink-0 gap-2 border-b border-gray-100 px-[18px] py-2 text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400',
+            'grid shrink-0 gap-2 border-b border-gray-100 px-[18px] py-2 text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-500',
             rv.splitMode ? GRID_COLS_SPLIT : GRID_COLS,
           )}
         >
@@ -467,7 +467,7 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
       </div>
       <p
         data-testid="review-bridge-caption"
-        className="border-t border-gray-100 px-[18px] py-2 text-[11px] text-gray-400"
+        className="border-t border-gray-100 px-[18px] py-2 text-[11px] text-gray-500"
       >
         Quality / Task / Batch are saved on the capture itself. Data shows where this
         machine&apos;s copy stands.

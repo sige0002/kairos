@@ -76,7 +76,7 @@ export function MonitorScreen() {
               className={cn(
                 'rounded-lg px-3.5 py-1.5 text-[12.5px] font-medium transition-colors',
                 label === monView
-                  ? 'bg-teal-600 font-semibold text-white'
+                  ? 'bg-teal-700 font-semibold text-white'
                   : 'text-gray-500 hover:text-gray-700',
               )}
             >
@@ -96,7 +96,7 @@ export function MonitorScreen() {
       </div>
 
       {!config ? (
-        <div className="p-4 text-sm text-gray-400">Loading…</div>
+        <div className="p-4 text-sm text-gray-500">Loading…</div>
       ) : monView === 'Overview' ? (
         <OverviewView
           config={config}

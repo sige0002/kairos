@@ -208,7 +208,7 @@ export function FrequencyChartCard({
           className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-gray-100 px-[18px] py-2"
         >
           {topics.length === 0 ? (
-            <span className="text-[11.5px] text-gray-400">No series selected.</span>
+            <span className="text-[11.5px] text-gray-500">No series selected.</span>
           ) : (
             topics.map((t, i) => {
               const v = cols[i] ? lastValue(cols[i]!) : null;
@@ -259,7 +259,7 @@ export function FrequencyChartCard({
                   data-testid={`freq-chip-remove${sfx}-${t}`}
                   aria-label={`remove ${t} from chart`}
                   onClick={() => onToggleTopic(t)}
-                  className="ml-0.5 rounded-sm px-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+                  className="ml-0.5 rounded-sm px-1 text-gray-500 hover:bg-gray-100 hover:text-gray-700"
                 >
                   ×
                 </button>
@@ -267,7 +267,7 @@ export function FrequencyChartCard({
             );
           })}
           {atCap ? (
-            <span className="text-[10.5px] text-amber-600">
+            <span className="text-[10.5px] text-amber-700">
               {MAX_SERIES}/{MAX_SERIES} series
             </span>
           ) : (
@@ -315,7 +315,7 @@ export function FrequencyChartCard({
         ) : (
           <p
             data-testid={`freq-chart-empty${sfx}`}
-            className="flex h-full items-center justify-center text-center text-[12px] text-gray-400"
+            className="flex h-full items-center justify-center text-center text-[12px] text-gray-500"
           >
             {topics.length === 0
               ? isPrimary
@@ -348,7 +348,7 @@ export function FrequencyChartCard({
           </>
         )}
         <div className="flex-1" />
-        <span className="text-gray-400">
+        <span className="text-gray-500">
           REC markers are real · observed shortfall — no confirmed loss
         </span>
       </div>

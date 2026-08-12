@@ -70,7 +70,7 @@ export function DataQualitySection({ config }: { config: RuntimeConfig | undefin
           Data quality
         </h2>
         <span className="font-mono text-[13px] font-semibold text-gray-900">{robot}</span>
-        <span className="text-[11px] text-gray-400">read-only</span>
+        <span className="text-[11px] text-gray-500">read-only</span>
       </div>
 
       {optionsQuery.isError ? (
@@ -81,7 +81,7 @@ export function DataQualitySection({ config }: { config: RuntimeConfig | undefin
         <>
           <Section title="Expected rates (monitor reference)">
             {patterns.length === 0 ? (
-              <p className="text-[12.5px] text-gray-400">
+              <p className="text-[12.5px] text-gray-500">
                 No expected-Hz patterns configured — topics without a reference rate learn a
                 baseline after subscribe (status stays &quot;unknown&quot; while learning).
               </p>
@@ -117,7 +117,7 @@ export function DataQualitySection({ config }: { config: RuntimeConfig | undefin
 
           <Section title={`Validation — required topics (${requiredTopics.length})`}>
             {requiredTopics.length === 0 ? (
-              <p className="text-[12.5px] text-gray-400">
+              <p className="text-[12.5px] text-gray-500">
                 The active validation template lists no required topics.
               </p>
             ) : (
@@ -128,7 +128,7 @@ export function DataQualitySection({ config }: { config: RuntimeConfig | undefin
                     className="flex justify-between gap-2 border-b border-gray-50 px-3 py-1.5 last:border-b-0"
                   >
                     <span className="font-mono text-gray-800">{t.name}</span>
-                    <span className="font-mono text-gray-400">{t.type ?? 'any type'}</span>
+                    <span className="font-mono text-gray-500">{t.type ?? 'any type'}</span>
                   </li>
                 ))}
               </ul>

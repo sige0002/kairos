@@ -57,10 +57,10 @@ export function LossTimeline({
   return (
     <div data-testid="review-loss-timeline" className="flex flex-col gap-1">
       <div className="flex items-center justify-between">
-        <h3 className="text-[10px] font-semibold uppercase tracking-[0.04em] text-gray-400">
+        <h3 className="text-[10px] font-semibold uppercase tracking-[0.04em] text-gray-500">
           Integrity timeline
         </h3>
-        <span className="font-mono text-[10px] text-gray-400">
+        <span className="font-mono text-[10px] text-gray-500">
           span {formatSecondsShort(spanNs)}
         </span>
       </div>
@@ -92,7 +92,7 @@ export function LossTimeline({
           />
         )}
       </div>
-      <span className="text-[10px] text-gray-400">
+      <span className="text-[10px] text-gray-500">
         green ok · amber minor loss · red major loss / silent · gray no topic active
         {seekEnabled ? ' — click to seek the video' : ''}
       </span>

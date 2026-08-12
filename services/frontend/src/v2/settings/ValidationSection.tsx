@@ -74,7 +74,7 @@ export function ValidationSection() {
         {optionsQuery.isError ? (
           <ErrorMessage error={optionsQuery.error} />
         ) : !data ? (
-          <p className="text-sm text-gray-400">Loading options…</p>
+          <p className="text-sm text-gray-500">Loading options…</p>
         ) : (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {ASPECTS.map(({ id, label, immediate }) => {
@@ -89,7 +89,7 @@ export function ValidationSection() {
                     </Badge>
                   </span>
                   {options.length === 0 ? (
-                    <span className="text-[12.5px] text-gray-400">No options for this robot.</span>
+                    <span className="text-[12.5px] text-gray-500">No options for this robot.</span>
                   ) : (
                     <select
                       aria-label={`${id} option`}
@@ -122,9 +122,9 @@ export function ValidationSection() {
         {presetsQuery.isError ? (
           <ErrorMessage error={presetsQuery.error} />
         ) : presetsQuery.isPending ? (
-          <p className="text-sm text-gray-400">Loading presets…</p>
+          <p className="text-sm text-gray-500">Loading presets…</p>
         ) : presets.length === 0 ? (
-          <p className="text-[12.5px] text-gray-400" data-testid="validation-presets-empty">
+          <p className="text-[12.5px] text-gray-500" data-testid="validation-presets-empty">
             No presets configured — add them to <code>config/&lt;robot&gt;/validation_presets.yaml</code>.
           </p>
         ) : (
@@ -138,11 +138,11 @@ export function ValidationSection() {
                 <div className="flex min-w-0 flex-col">
                   <span className="text-[13px] font-semibold text-gray-800">{p.name}</span>
                   {p.description && (
-                    <span className="truncate text-[11.5px] text-gray-400" title={p.description}>
+                    <span className="truncate text-[11.5px] text-gray-500" title={p.description}>
                       {p.description}
                     </span>
                   )}
-                  <span className="font-mono text-[11px] text-gray-400">pipeline: {p.pipeline}</span>
+                  <span className="font-mono text-[11px] text-gray-500">pipeline: {p.pipeline}</span>
                 </div>
                 <div className="flex-1" />
                 {p.pending > 0 ? (
@@ -167,7 +167,7 @@ export function ValidationSection() {
           type="button"
           data-testid="validation-goto-tab"
           onClick={() => setActiveTab('validation')}
-          className="rounded-control bg-teal-600 px-3.5 py-1.5 text-[12.5px] font-semibold text-white hover:bg-teal-700"
+          className="rounded-control bg-teal-700 px-3.5 py-1.5 text-[12.5px] font-semibold text-white hover:bg-teal-800"
         >
           Open Validation tab →
         </button>

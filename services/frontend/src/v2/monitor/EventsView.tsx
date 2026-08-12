@@ -48,7 +48,7 @@ export function EventsView() {
         <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           Incidents
         </h2>
-        <span data-testid="events-firing-count" className="font-mono text-[11.5px] text-gray-400">
+        <span data-testid="events-firing-count" className="font-mono text-[11.5px] text-gray-500">
           {firingCount} firing · {total} total
         </span>
         <div className="flex-1" />
@@ -80,18 +80,18 @@ export function EventsView() {
         </div>
       </div>
 
-      <p className="border-b border-gray-100 px-4 py-2 text-[11px] leading-relaxed text-gray-400">
+      <p className="border-b border-gray-100 px-4 py-2 text-[11px] leading-relaxed text-gray-500">
         Incidents accumulate from when you opened Monitor (session-local). Each row is one
         (topic, metric) breach; ×N counts distinct firing episodes (refires) seen this session.
       </p>
 
       <div className="flex flex-col gap-0.5 overflow-auto p-2.5">
         {incidents.length === 0 ? (
-          <p data-testid="events-empty" className="px-1.5 py-8 text-center text-[12px] text-gray-400">
+          <p data-testid="events-empty" className="px-1.5 py-8 text-center text-[12px] text-gray-500">
             No alerts yet — threshold breaches from the monitor will appear here.
           </p>
         ) : filtered.length === 0 ? (
-          <p data-testid="events-no-match" className="px-1.5 py-8 text-center text-[12px] text-gray-400">
+          <p data-testid="events-no-match" className="px-1.5 py-8 text-center text-[12px] text-gray-500">
             No incidents match the current filter.
           </p>
         ) : (
@@ -113,15 +113,15 @@ export function EventsView() {
                     330px rail still fits. Same cause, one column wider. */}
                 <span className="break-words text-[12.5px] font-semibold text-gray-700">
                   {i.title}
-                  {i.detail && <span className="font-normal text-gray-400"> · {i.detail}</span>}
+                  {i.detail && <span className="font-normal text-gray-500"> · {i.detail}</span>}
                 </span>
-                <span className="font-mono text-[11px] text-gray-400">
+                <span className="font-mono text-[11px] text-gray-500">
                   {i.state} · since {i.time}
                 </span>
               </div>
               {i.refires > 1 && (
                 <span
-                  className="shrink-0 rounded-chip bg-gray-100 px-1.5 py-0.5 font-mono text-[10.5px] font-semibold text-gray-500"
+                  className="shrink-0 rounded-chip bg-gray-100 px-1.5 py-0.5 font-mono text-[10.5px] font-semibold text-gray-600"
                   title={`${i.refires} distinct firing episodes this session`}
                 >
                   ×{i.refires}

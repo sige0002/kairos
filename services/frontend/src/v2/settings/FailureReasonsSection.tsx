@@ -52,7 +52,7 @@ export function FailureReasonsSection({ settings }: { settings: SettingsState })
                   ? 'The last reason cannot be removed — marking a Failure requires one.'
                   : 'Remove reason'
               }
-              className="shrink-0 px-0.5 text-xs text-gray-300 enabled:hover:text-gray-500 disabled:cursor-not-allowed disabled:opacity-40"
+              className="shrink-0 px-0.5 text-xs text-gray-500 enabled:hover:text-gray-700 disabled:cursor-not-allowed disabled:opacity-40"
             >
               ✕
             </button>

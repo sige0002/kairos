@@ -38,7 +38,7 @@ export function BlockingFailure({
         <p className="text-[12.5px] leading-relaxed text-gray-600">{reading.guidance}</p>
       )}
       <div className="flex items-center gap-2">
-        <span className="font-mono text-[11px] text-gray-400">({reading.code})</span>
+        <span className="font-mono text-[11px] text-gray-500">({reading.code})</span>
         <div className="flex-1" />
         <Button variant="ghost" onClick={onDismiss} data-testid="dataset-blocking-failure-dismiss">
           Dismiss

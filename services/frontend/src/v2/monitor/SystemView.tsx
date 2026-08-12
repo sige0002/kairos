@@ -108,7 +108,7 @@ export function SystemView({ config }: { config: RuntimeConfig }) {
             {usedPct != null && <Meter label="Used" percent={usedPct} testId="sys-disk-used" />}
           </>
         ) : (
-          <p className="text-[12.5px] text-gray-400">
+          <p className="text-[12.5px] text-gray-500">
             Disk usage unavailable — the runtime data dir could not be measured.
           </p>
         )}

@@ -60,7 +60,7 @@ export function ErrorMessage({ error }: { error: unknown }) {
     >
       <p>{errorText(error)}</p>
       {detail && <p className="mt-1 font-mono text-xs text-red-600">{detail}</p>}
-      {code && <p className="mt-0.5 font-mono text-xs text-red-600 opacity-70">({code})</p>}
+      {code && <p className="mt-0.5 font-mono text-xs text-red-900 opacity-70">({code})</p>}
     </div>
   );
 }

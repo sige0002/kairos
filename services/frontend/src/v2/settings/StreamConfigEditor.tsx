@@ -188,7 +188,7 @@ export function StreamConfigEditor({ config }: { config: RuntimeConfig }) {
       {jsonError ? (
         <p className="mt-2 text-sm text-red-700">Invalid JSON — {jsonError}</p>
       ) : (
-        <p className="mt-2 text-xs text-gray-400">Valid JSON</p>
+        <p className="mt-2 text-xs text-gray-500">Valid JSON</p>
       )}
 
       {pendingServer && (
@@ -253,11 +253,11 @@ export function StreamConfigEditor({ config }: { config: RuntimeConfig }) {
           aria-label="save stream config"
           onClick={onSave}
           disabled={saveMutation.isPending || jsonError !== null}
-          className="rounded-control bg-teal-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-teal-700 disabled:opacity-50"
+          className="rounded-control bg-teal-700 px-4 py-1.5 text-sm font-medium text-white hover:bg-teal-800 disabled:opacity-50"
         >
           {saveMutation.isPending ? 'Saving…' : 'Save'}
         </button>
-        <span className="text-xs text-gray-400">
+        <span className="text-xs text-gray-500">
           Edits the active stream file; the server validates on save. Schema:{' '}
           <span className="font-mono">{'{ columns: 1–4, panes: [{ topic }] }'}</span> —
           only <span className="font-mono">panes</span> drives the console.

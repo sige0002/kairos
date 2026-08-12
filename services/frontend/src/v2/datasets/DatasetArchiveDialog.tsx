@@ -151,7 +151,7 @@ function ConfirmBody({ state }: { state: DatasetsState }) {
           spellCheck={false}
           className="rounded-control border border-gray-200 bg-white px-2 py-1.5 font-mono text-[12px] text-gray-700"
         />
-        <span className="text-[11px] text-gray-400">
+        <span className="text-[11px] text-gray-500">
           Yours to rename — the last folder is the dataset's. Prefilled with the
           views shape; a path that already holds files is refused, so two
           exports cannot land on each other.
@@ -182,7 +182,7 @@ function ConfirmBody({ state }: { state: DatasetsState }) {
 
       <label className="flex flex-col gap-1">
         <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
-          Reason <span className="font-normal normal-case text-gray-400">(optional)</span>
+          Reason <span className="font-normal normal-case text-gray-500">(optional)</span>
         </span>
         <input
           data-testid="dataset-archive-reason"

@@ -61,7 +61,7 @@ function RecordContextBlock() {
               capture list, jobs and reports are keyed by. */}
           <span
             data-testid="overview-record-capture"
-            className="font-mono text-[11px] text-gray-400"
+            className="font-mono text-[11px] text-gray-500"
           >
             capture {ctx.captureId ?? '— (the recorder did not name it)'}
           </span>
@@ -69,14 +69,14 @@ function RecordContextBlock() {
       ) : isPending ? (
         <span
           data-testid="overview-record-state"
-          className="inline-flex w-fit rounded-chip bg-gray-100 px-[7px] py-0.5 text-[10.5px] font-bold text-gray-400"
+          className="inline-flex w-fit rounded-chip bg-gray-100 px-[7px] py-0.5 text-[10.5px] font-bold text-gray-600"
         >
           CHECKING…
         </span>
       ) : ctx.liveKnown ? (
         <span
           data-testid="overview-record-state"
-          className="inline-flex w-fit rounded-chip bg-gray-100 px-[7px] py-0.5 text-[10.5px] font-bold text-gray-500"
+          className="inline-flex w-fit rounded-chip bg-gray-100 px-[7px] py-0.5 text-[10.5px] font-bold text-gray-600"
         >
           STANDBY
         </span>
@@ -143,19 +143,19 @@ export function OverviewView({
               Topic health
             </h2>
             <div className="flex-1" />
-            <span className="font-mono text-[11.5px] text-gray-400">
+            <span className="font-mono text-[11.5px] text-gray-500">
               {measured.length} measured · {rows.length} discovered
             </span>
           </div>
 
           {rows.length === 0 ? (
-            <p data-testid="overview-health-empty" className="px-4 py-8 text-center text-[12.5px] text-gray-400">
+            <p data-testid="overview-health-empty" className="px-4 py-8 text-center text-[12.5px] text-gray-500">
               {isDiscovering
                 ? 'Discovering topics on the ROS 2 graph…'
                 : 'No topics discovered on the ROS 2 graph yet.'}
             </p>
           ) : measured.length === 0 ? (
-            <p data-testid="overview-health-nometrics" className="px-4 py-8 text-center text-[12.5px] leading-relaxed text-gray-400">
+            <p data-testid="overview-health-nometrics" className="px-4 py-8 text-center text-[12.5px] leading-relaxed text-gray-500">
               Topics are discovered but the monitor has no live metrics yet — health appears once
               the monitor is measuring. If it stays empty, the active robot&apos;s configured
               topics may not match what&apos;s on the graph.
@@ -196,14 +196,14 @@ export function OverviewView({
                         <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-gray-800">
                           {r.name}
                         </span>
-                        <span className="text-[11px] font-semibold text-gray-400">{r.status}</span>
+                        <span className="text-[11px] font-semibold text-gray-500">{r.status}</span>
                         <span className="text-[11px] text-teal-700">chart →</span>
                       </button>
                     ))}
                   </div>
                 </div>
               ) : (
-                <p data-testid="overview-attention-none" className="text-[12px] text-gray-400">
+                <p data-testid="overview-attention-none" className="text-[12px] text-gray-500">
                   All measured topics are on rate — nothing needs attention.
                 </p>
               )}
@@ -218,10 +218,10 @@ export function OverviewView({
               Active incidents
             </h2>
             <div className="flex-1" />
-            <span className="font-mono text-[11.5px] text-gray-400">{firing.length} firing</span>
+            <span className="font-mono text-[11.5px] text-gray-500">{firing.length} firing</span>
           </div>
           {firing.length === 0 ? (
-            <p data-testid="overview-incidents-empty" className="px-4 py-6 text-center text-[12px] text-gray-400">
+            <p data-testid="overview-incidents-empty" className="px-4 py-6 text-center text-[12px] text-gray-500">
               No firing alerts. Threshold breaches from the monitor appear here (session-local).
             </p>
           ) : (
@@ -236,9 +236,9 @@ export function OverviewView({
                   <div className="flex min-w-0 flex-col">
                     <span className="text-[12.5px] font-semibold text-gray-700">
                       {i.title}
-                      {i.detail && <span className="font-normal text-gray-400"> · {i.detail}</span>}
+                      {i.detail && <span className="font-normal text-gray-500"> · {i.detail}</span>}
                     </span>
-                    <span className="font-mono text-[11px] text-gray-400">firing · {i.time}</span>
+                    <span className="font-mono text-[11px] text-gray-500">firing · {i.time}</span>
                   </div>
                 </div>
               ))}

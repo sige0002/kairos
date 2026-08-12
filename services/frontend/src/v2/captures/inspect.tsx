@@ -180,8 +180,8 @@ export function fmtNum(value?: number | null, digits = 1): string {
 
 // Loss tone: amber when any is lost, green when clean, gray when uncomputable.
 function lossTone(loss?: number | null): { text: string; cls: string } {
-  if (loss === undefined || loss === null) return { text: '—', cls: 'text-gray-400' };
-  if (loss > 0) return { text: `${(loss * 100).toFixed(1)}%`, cls: 'text-amber-600' };
+  if (loss === undefined || loss === null) return { text: '—', cls: 'text-gray-500' };
+  if (loss > 0) return { text: `${(loss * 100).toFixed(1)}%`, cls: 'text-amber-700' };
   return { text: '0%', cls: 'text-green-600' };
 }
 
@@ -192,7 +192,7 @@ export function LossTable({ topics }: { topics: LossTopic[] }) {
     <div className="overflow-auto rounded-control border border-gray-200">
       <table className="w-full text-xs">
         <thead>
-          <tr className="border-b border-gray-100 text-[10px] uppercase tracking-[0.05em] text-gray-400">
+          <tr className="border-b border-gray-100 text-[10px] uppercase tracking-[0.05em] text-gray-500">
             <th className="px-2 py-1.5 text-left font-medium">Topic</th>
             <th className="px-2 py-1.5 text-right font-medium">Hz</th>
             <th className="px-2 py-1.5 text-right font-medium">Loss</th>
@@ -406,7 +406,7 @@ export function VideoPlayer({
             }
             className="w-full rounded-control border border-gray-200 bg-black"
           />
-          <p className="text-[10px] text-gray-400">
+          <p className="text-[10px] text-gray-500">
             {summary.frames} frames · {fmtNum(summary.fps, 0)}fps
             {summary.truncated
               ? ` · head only (${summary.total_messages ?? '?'} msgs in the episode)`

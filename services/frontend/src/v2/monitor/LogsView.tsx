@@ -62,7 +62,7 @@ export function LogsView() {
         <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           Event log
         </h2>
-        <span data-testid="logs-count" className="font-mono text-[11.5px] text-gray-400">
+        <span data-testid="logs-count" className="font-mono text-[11.5px] text-gray-500">
           {entries.length} event{entries.length === 1 ? '' : 's'}
         </span>
         <div className="flex-1" />
@@ -94,18 +94,18 @@ export function LogsView() {
         </div>
       </div>
 
-      <p className="border-b border-gray-100 px-4 py-2 text-[11px] leading-relaxed text-gray-400">
+      <p className="border-b border-gray-100 px-4 py-2 text-[11px] leading-relaxed text-gray-500">
         Live event log — since this page opened (session-local, newest first). Full service logs
         live in <code>docker compose logs</code>.
       </p>
 
       <div className="flex flex-col overflow-auto p-2.5">
         {entries.length === 0 ? (
-          <p data-testid="logs-empty" className="px-1.5 py-8 text-center text-[12px] text-gray-400">
+          <p data-testid="logs-empty" className="px-1.5 py-8 text-center text-[12px] text-gray-500">
             No events yet — recording, alert and job events will stream in here as they happen.
           </p>
         ) : filtered.length === 0 ? (
-          <p data-testid="logs-no-match" className="px-1.5 py-8 text-center text-[12px] text-gray-400">
+          <p data-testid="logs-no-match" className="px-1.5 py-8 text-center text-[12px] text-gray-500">
             No events match the current filter.
           </p>
         ) : (
@@ -115,7 +115,7 @@ export function LogsView() {
               data-testid="logs-row"
               className="flex items-baseline gap-2.5 rounded-control px-2 py-1.5 hover:bg-gray-50"
             >
-              <span className="shrink-0 font-mono text-[11px] tabular-nums text-gray-400">
+              <span className="shrink-0 font-mono text-[11px] tabular-nums text-gray-500">
                 {formatClock(e.ts)}
               </span>
               <span

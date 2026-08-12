@@ -369,7 +369,7 @@ export function DiscardDialog({
             kairos does not delete it.
           </p>
         )}
-        <span className="mt-3 block text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400">
+        <span className="mt-3 block text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           Reason (required)
         </span>
         <div className="mt-1.5 flex flex-wrap gap-1.5" data-testid="discard-reason-chips">
@@ -503,7 +503,7 @@ export function DeleteDialog({
         )}
         <label
           htmlFor="delete-reason"
-          className="mt-3 block text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400"
+          className="mt-3 block text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-500"
         >
           Reason (optional)
         </label>

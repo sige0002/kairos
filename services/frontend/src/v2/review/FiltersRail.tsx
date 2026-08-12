@@ -47,7 +47,7 @@ const CollapseToggle = forwardRef<
       aria-label={collapsed ? 'Expand filters' : 'Collapse filters'}
       title={collapsed ? 'Expand filters' : 'Collapse filters'}
       className={cn(
-        'flex h-7 w-7 items-center justify-center rounded-control text-[15px] leading-none text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600',
+        'flex h-7 w-7 items-center justify-center rounded-control text-[15px] leading-none text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-600',
         className,
       )}
     >
@@ -135,7 +135,7 @@ export const FiltersRail = forwardRef<
         <div className="flex flex-col gap-1.5">
           <label
             htmlFor={OPERATOR_SELECT_ID}
-            className="text-[11.5px] font-semibold text-gray-400"
+            className="text-[11.5px] font-semibold text-gray-500"
           >
             Operator
           </label>
@@ -156,7 +156,7 @@ export const FiltersRail = forwardRef<
         </div>
 
         <div className="flex flex-col gap-1.5">
-          <span className="text-[11.5px] font-semibold text-gray-400">Batch</span>
+          <span className="text-[11.5px] font-semibold text-gray-500">Batch</span>
           {batchFilterLabel ? (
             <div
               data-testid="review-batch-filter-rail"
@@ -175,7 +175,7 @@ export const FiltersRail = forwardRef<
           ) : (
             <div
               title="Click a row's batch chip in the table to filter to that batch"
-              className="flex items-center rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[13px] text-gray-400"
+              className="flex items-center rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[13px] text-gray-500"
             >
               All batches — click a batch chip
             </div>
@@ -184,10 +184,10 @@ export const FiltersRail = forwardRef<
 
         {DISPLAY_ONLY_FILTERS.map((f) => (
           <div key={f.label} className="flex flex-col gap-1.5">
-            <span className="text-[11.5px] font-semibold text-gray-400">{f.label}</span>
+            <span className="text-[11.5px] font-semibold text-gray-500">{f.label}</span>
             <div
               title="Not filterable yet"
-              className="flex items-center rounded-control border border-dashed border-gray-200 bg-gray-50 px-2.5 py-1.5 text-[13px] text-gray-400"
+              className="flex items-center rounded-control border border-dashed border-gray-200 bg-gray-50 px-2.5 py-1.5 text-[13px] text-gray-500"
             >
               {f.value}
             </div>

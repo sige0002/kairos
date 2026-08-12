@@ -165,7 +165,7 @@ export function Button({
   variant?: 'primary' | 'danger' | 'ghost';
 } & React.ButtonHTMLAttributes<HTMLButtonElement>) {
   const styles: Record<string, string> = {
-    primary: 'bg-teal-600 text-white shadow-btn hover:bg-teal-700',
+    primary: 'bg-teal-700 text-white shadow-btn hover:bg-teal-800',
     danger: 'bg-red-600 text-white shadow-btn-red hover:bg-red-700',
     ghost: 'border border-gray-200 bg-white text-gray-700 hover:bg-gray-50',
   };

@@ -41,7 +41,7 @@ export function EventsCard() {
           Events
         </h2>
         <div className="flex-1" />
-        <span data-testid="events-count" className="font-mono text-[11.5px] text-gray-400">
+        <span data-testid="events-count" className="font-mono text-[11.5px] text-gray-500">
           {total > CAP ? `${CAP} of ${total}` : `${total}`} alerts
         </span>
       </div>
@@ -49,7 +49,7 @@ export function EventsCard() {
         {rows.length === 0 ? (
           <p
             data-testid="events-empty"
-            className="px-1.5 py-6 text-center text-[11.5px] leading-relaxed text-gray-400"
+            className="px-1.5 py-6 text-center text-[11.5px] leading-relaxed text-gray-500"
           >
             No alerts yet — threshold breaches from the monitor will appear here.
           </p>
@@ -74,11 +74,11 @@ export function EventsCard() {
                     titles wrap exactly as before. */}
                 <span className="break-words text-[12.5px] font-semibold text-gray-700">
                   {ev.title}
-                  {ev.detail && <span className="font-normal text-gray-400"> · {ev.detail}</span>}
+                  {ev.detail && <span className="font-normal text-gray-500"> · {ev.detail}</span>}
                 </span>
-                <span className="font-mono text-[11px] text-gray-400">
+                <span className="font-mono text-[11px] text-gray-500">
                   {ev.state === 'cleared' ? `cleared · ${ev.time}` : `firing · since ${ev.time}`}
-                  {ev.refires > 1 && <span className="text-gray-400"> · ×{ev.refires}</span>}
+                  {ev.refires > 1 && <span className="text-gray-500"> · ×{ev.refires}</span>}
                 </span>
               </div>
             </div>

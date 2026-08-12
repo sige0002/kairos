@@ -22,7 +22,7 @@ export function BatchStatsCard({ machine }: { machine: BatchMachine }) {
           >
             {nRecorded}
           </span>
-          <span className="text-[11px] text-gray-400">recorded</span>
+          <span className="text-[11px] text-gray-500">recorded</span>
         </div>
         <div className="flex flex-col">
           <span
@@ -31,16 +31,16 @@ export function BatchStatsCard({ machine }: { machine: BatchMachine }) {
           >
             {nGood}
           </span>
-          <span className="text-[11px] text-gray-400">good quality</span>
+          <span className="text-[11px] text-gray-500">good quality</span>
         </div>
         <div className="flex flex-col">
           <span
             data-testid="stat-review"
-            className="font-mono text-lg font-semibold text-amber-600"
+            className="font-mono text-lg font-semibold text-amber-700"
           >
             {nReview}
           </span>
-          <span className="text-[11px] text-gray-400">needs review</span>
+          <span className="text-[11px] text-gray-500">needs review</span>
         </div>
         <div className="flex flex-col">
           <span
@@ -49,7 +49,7 @@ export function BatchStatsCard({ machine }: { machine: BatchMachine }) {
           >
             {nTaskFailed}
           </span>
-          <span className="text-[11px] text-gray-400">task failed</span>
+          <span className="text-[11px] text-gray-500">task failed</span>
         </div>
       </div>
       {/* After a Review delete the monotone "recorded" count outruns the quality
@@ -58,7 +58,7 @@ export function BatchStatsCard({ machine }: { machine: BatchMachine }) {
       {nRecorded > nGood + nReview && (
         <p
           data-testid="stats-footnote"
-          className="text-[11px] leading-snug text-gray-400"
+          className="text-[11px] leading-snug text-gray-500"
         >
           recorded counts every take this batch; quality tallies reflect recordings
           still on disk

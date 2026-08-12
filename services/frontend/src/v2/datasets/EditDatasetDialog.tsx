@@ -88,7 +88,7 @@ function EditForm({ state }: { state: DatasetsState }) {
         <label className="flex min-w-0 flex-1 flex-col gap-1">
           <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
             Operator{' '}
-            <span className="font-normal normal-case text-gray-400">(optional)</span>
+            <span className="font-normal normal-case text-gray-500">(optional)</span>
           </span>
           <input
             data-testid="edit-dataset-operator"
@@ -100,7 +100,7 @@ function EditForm({ state }: { state: DatasetsState }) {
         <label className="flex min-w-0 flex-1 flex-col gap-1">
           <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
             Task{' '}
-            <span className="font-normal normal-case text-gray-400">(optional)</span>
+            <span className="font-normal normal-case text-gray-500">(optional)</span>
           </span>
           <input
             data-testid="edit-dataset-task"

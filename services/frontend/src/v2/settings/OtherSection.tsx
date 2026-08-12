@@ -12,7 +12,7 @@ export function OtherSection({ label, rationale }: { label: string; rationale: s
       data-testid="settings-other-placeholder"
     >
       <h2 className="text-[15px] font-bold text-gray-700">{label}</h2>
-      <p className="max-w-md text-center text-[12.5px] leading-relaxed text-gray-400">{rationale}</p>
+      <p className="max-w-md text-center text-[12.5px] leading-relaxed text-gray-500">{rationale}</p>
     </Card>
   );
 }

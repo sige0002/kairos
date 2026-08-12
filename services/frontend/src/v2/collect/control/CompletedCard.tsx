@@ -44,7 +44,7 @@ export function CompletedCard({
           'h-[46px] rounded-control text-sm font-bold text-white',
           confirmNextSet
             ? 'bg-amber-600 hover:bg-amber-700'
-            : 'bg-teal-600 hover:bg-teal-700',
+            : 'bg-teal-700 hover:bg-teal-800',
         )}
       >
         {confirmNextSet ? 'Press again to start the next set' : 'Start next set'}

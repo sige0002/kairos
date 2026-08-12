@@ -67,7 +67,7 @@ export function ResultCard({
             capture_id). */}
         <span
           data-testid="result-take-identity"
-          className="truncate font-mono text-[11px] text-gray-400"
+          className="truncate font-mono text-[11px] text-gray-500"
           title={machine.currentRunLabel ?? undefined}
         >
           {machine.currentTakeStartedAt
@@ -110,7 +110,7 @@ export function ResultCard({
             >
               {QUALITY_LABEL[effectiveQuality]}
             </span>
-            {qualityAuto && <span className="text-gray-400"> · auto</span>}
+            {qualityAuto && <span className="text-gray-500"> · auto</span>}
           </span>
           <button
             type="button"
@@ -125,7 +125,7 @@ export function ResultCard({
             carry the call, so nothing lingers here. Never a fabricated value,
             and saving is never blocked on it. */}
         {machine.quickCheck.pending && (
-          <span data-testid="quickcheck-pending" className="text-[11px] text-gray-400">
+          <span data-testid="quickcheck-pending" className="text-[11px] text-gray-500">
             Quick check running…
           </span>
         )}
@@ -234,7 +234,7 @@ export function ResultCard({
         className={cn(
           'h-[46px] rounded-control text-sm font-bold [@media(max-height:860px)]:h-[40px]',
           canConfirm
-            ? 'bg-teal-600 text-white shadow-btn'
+            ? 'bg-teal-700 text-white shadow-btn'
             : 'cursor-not-allowed bg-gray-200 text-gray-400',
         )}
       >

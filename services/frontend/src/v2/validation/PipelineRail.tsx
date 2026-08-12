@@ -26,14 +26,14 @@ export function PipelineRail({
         <button
           type="button"
           onClick={onNewRun}
-          className="rounded-lg bg-teal-600 px-[11px] py-[5px] text-xs font-bold text-white hover:bg-teal-700"
+          className="rounded-lg bg-teal-700 px-[11px] py-[5px] text-xs font-bold text-white hover:bg-teal-800"
         >
           + New run
         </button>
       </div>
       <div className="flex flex-col gap-[7px] p-3">
         {pipelines.length === 0 && (
-          <p className="px-1 py-2 text-[11.5px] text-gray-400">No pipelines available.</p>
+          <p className="px-1 py-2 text-[11.5px] text-gray-500">No pipelines available.</p>
         )}
         {pipelines.map((p, i) => {
           const lifecycle = lifecycleForIndex(i);
@@ -61,7 +61,7 @@ export function PipelineRail({
                 <Badge tone={lifecycleTone(lifecycle)}>{lifecycle.toUpperCase()}</Badge>
               </div>
               {p.description && (
-                <span className="truncate text-[11.5px] text-gray-400" title={p.description}>
+                <span className="truncate text-[11.5px] text-gray-500" title={p.description}>
                   {p.description}
                 </span>
               )}
@@ -69,7 +69,7 @@ export function PipelineRail({
           );
         })}
       </div>
-      <div className="border-t border-gray-100 px-4 py-[11px] text-[11.5px] leading-relaxed text-gray-400">
+      <div className="border-t border-gray-100 px-4 py-[11px] text-[11.5px] leading-relaxed text-gray-500">
         Experimental results never feed Review automatically. Promote a Candidate to make it
         Standard.
       </div>

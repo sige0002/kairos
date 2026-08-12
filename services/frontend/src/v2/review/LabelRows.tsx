@@ -105,13 +105,13 @@ export function LabelRows({
                 title="Edit operator, task and robot"
                 className={cn(
                   'group inline-flex items-center gap-1.5 rounded-[5px] px-1 py-0.5 text-left hover:bg-gray-50',
-                  value ? 'text-gray-700' : 'text-gray-400',
+                  value ? 'text-gray-700' : 'text-gray-500',
                 )}
               >
                 <span className={cn(!value && 'italic')}>
                   {value || field.placeholder}
                 </span>
-                <span aria-hidden="true" className="text-[11px] text-gray-300 group-hover:text-teal-600">
+                <span aria-hidden="true" className="text-[11px] text-gray-500 group-hover:text-teal-600">
                   ✎
                 </span>
               </button>
@@ -157,7 +157,7 @@ export function LabelRows({
             data-testid="label-save"
             onClick={() => void submit()}
             disabled={editing.saving}
-            className="h-8 rounded-control bg-teal-600 px-3 text-[12px] font-bold text-white hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50"
+            className="h-8 rounded-control bg-teal-700 px-3 text-[12px] font-bold text-white hover:bg-teal-800 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {editing.saving ? 'Saving…' : 'Save labels'}
           </button>
@@ -171,7 +171,7 @@ export function LabelRows({
             Cancel
           </button>
         </div>
-        <span className="text-[11px] leading-snug text-gray-400">
+        <span className="text-[11px] leading-snug text-gray-500">
           Clearing a field returns it to whatever the recording&apos;s own
           manifest said.
         </span>
@@ -184,7 +184,7 @@ export function LabelRows({
 function RowFrame({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <>
-      <dt className="text-[11.5px] text-gray-400">{label}</dt>
+      <dt className="text-[11.5px] text-gray-500">{label}</dt>
       <dd className="text-[12.5px] text-gray-700">{children}</dd>
     </>
   );

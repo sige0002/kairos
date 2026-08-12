@@ -71,19 +71,19 @@ function EndBatchModal({ machine }: { machine: BatchMachine }) {
           <div className="font-mono text-lg font-semibold text-gray-900">
             {stats.nRecorded}
           </div>
-          <div className="text-[11px] text-gray-400">recorded</div>
+          <div className="text-[11px] text-gray-500">recorded</div>
         </div>
         <div className="rounded-control border border-gray-100 px-3 py-2.5">
           <div className="font-mono text-lg font-semibold text-gray-500">
             {stats.nRemaining}
           </div>
-          <div className="text-[11px] text-gray-400">not recorded</div>
+          <div className="text-[11px] text-gray-500">not recorded</div>
         </div>
         <div className="rounded-control border border-gray-100 px-3 py-2.5">
-          <div className="font-mono text-lg font-semibold text-amber-600">
+          <div className="font-mono text-lg font-semibold text-amber-700">
             {stats.nReview}
           </div>
-          <div className="text-[11px] text-gray-400">needs review</div>
+          <div className="text-[11px] text-gray-500">needs review</div>
         </div>
       </div>
       <p className="mt-3 text-[12.5px] leading-relaxed text-gray-500">

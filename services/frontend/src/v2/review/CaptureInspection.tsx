@@ -42,7 +42,7 @@ import { formatBytes } from './format';
 function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
     <>
-      <dt className="text-[11.5px] text-gray-400">{label}</dt>
+      <dt className="text-[11.5px] text-gray-500">{label}</dt>
       <dd className="text-[12.5px] text-gray-700">{children}</dd>
     </>
   );
@@ -227,7 +227,7 @@ function ValidationVerdict({ capture }: { capture: CaptureDetail }) {
           data-testid="review-verdict-override-clear"
           disabled={overrideMutation.isPending}
           onClick={() => overrideMutation.mutate(null)}
-          className="self-start text-[11px] text-gray-400 hover:text-gray-600 disabled:opacity-50"
+          className="self-start text-[11px] text-gray-500 hover:text-gray-600 disabled:opacity-50"
         >
           Withdraw the override
         </button>
@@ -474,7 +474,7 @@ export function CaptureInspection({
                 <span className="truncate text-gray-700">
                   {m.dataset_name ?? m.dataset_id}
                 </span>
-                <span className="shrink-0 font-mono text-gray-400">
+                <span className="shrink-0 font-mono text-gray-500">
                   #{m.display_index}
                 </span>
               </li>
@@ -525,7 +525,7 @@ export function CaptureInspection({
           className="max-h-40 overflow-auto rounded-control border border-gray-200 text-[11px]"
         >
           {topics.length === 0 ? (
-            <li className="px-2 py-1 text-gray-400">No topics recorded.</li>
+            <li className="px-2 py-1 text-gray-500">No topics recorded.</li>
           ) : (
             topics.map((t) => (
               <li
@@ -533,7 +533,7 @@ export function CaptureInspection({
                 className="border-t border-gray-100 px-2 py-1 first:border-t-0"
               >
                 <span className="font-mono text-gray-700">{t.name}</span>{' '}
-                <span className="font-mono text-gray-400">{t.type}</span>
+                <span className="font-mono text-gray-500">{t.type}</span>
               </li>
             ))
           )}

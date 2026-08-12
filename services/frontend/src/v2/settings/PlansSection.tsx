@@ -61,7 +61,7 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
                   className="flex min-w-0 flex-1 flex-col gap-0.5 text-left"
                 >
                   <span className="text-[13px] font-semibold text-gray-900">{p.name}</span>
-                  <span className="text-[11.5px] text-gray-400">
+                  <span className="text-[11.5px] text-gray-500">
                     {p.tasks.length} task{p.tasks.length === 1 ? '' : 's'} · {nConditions} conditions
                   </span>
                 </button>
@@ -69,7 +69,7 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
                   type="button"
                   onClick={() => removeProject(i)}
                   title="Remove project"
-                  className="shrink-0 px-0.5 text-xs text-gray-300 hover:text-gray-500"
+                  className="shrink-0 px-0.5 text-xs text-gray-500 hover:text-gray-500"
                 >
                   ✕
                 </button>
@@ -101,7 +101,7 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
                 Rename
               </button>
               <div className="flex-1" />
-              <span className="text-xs text-gray-400">used by Collect pickers &amp; batch plans</span>
+              <span className="text-xs text-gray-500">used by Collect pickers &amp; batch plans</span>
             </div>
 
             <div className="grid min-h-0 flex-1 grid-cols-[280px_1fr]">
@@ -125,14 +125,14 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
                     >
                       {t.name}
                     </button>
-                    <span className="font-mono text-[11px] text-gray-400">
+                    <span className="font-mono text-[11px] text-gray-500">
                       {t.conditions.length} cond
                     </span>
                     <button
                       type="button"
                       onClick={() => removeTask(i)}
                       title="Remove task"
-                      className="px-0.5 text-xs text-gray-300 hover:text-gray-500"
+                      className="px-0.5 text-xs text-gray-500 hover:text-gray-500"
                     >
                       ✕
                     </button>
@@ -184,7 +184,7 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
                       type="button"
                       onClick={() => renameCondition(i)}
                       disabled={taskSelectionLost}
-                      className="text-[11.5px] font-semibold text-gray-400 hover:text-teal-700 disabled:opacity-40"
+                      className="text-[11.5px] font-semibold text-gray-500 hover:text-teal-700 disabled:opacity-40"
                     >
                       edit
                     </button>
@@ -193,7 +193,7 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
                       onClick={() => removeCondition(i)}
                       disabled={taskSelectionLost}
                       title="Remove condition"
-                      className="px-0.5 text-xs text-gray-300 hover:text-gray-500 disabled:opacity-40"
+                      className="px-0.5 text-xs text-gray-500 hover:text-gray-500 disabled:opacity-40"
                     >
                       ✕
                     </button>
@@ -231,7 +231,7 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
               type="button"
               data-testid="plan-add-first"
               onClick={addProject}
-              className="mt-1 rounded-control bg-teal-600 px-4 py-2 text-[12.5px] font-semibold text-white shadow-btn hover:bg-teal-700"
+              className="mt-1 rounded-control bg-teal-700 px-4 py-2 text-[12.5px] font-semibold text-white shadow-btn hover:bg-teal-800"
             >
               + Add the first project
             </button>

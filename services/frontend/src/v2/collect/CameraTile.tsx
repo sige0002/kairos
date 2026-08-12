@@ -195,7 +195,7 @@ export function CameraPlaceholder({
             Camera preview unavailable
           </span>
           <span
-            className="max-w-full truncate font-mono text-[11px] text-gray-400"
+            className="max-w-full truncate font-mono text-[11px] text-gray-500"
             title={error ?? undefined}
           >
             {error ?? "the WebRTC stream couldn't connect"}
@@ -256,7 +256,7 @@ function SubResToggle({ value, onPick }: { value: SubResLabel; onPick: (l: SubRe
           title={`Sub preview resolution — subs stay low-res by design (§3-2)`}
           className={cn(
             'rounded-chip px-1.5 py-0.5 font-mono text-[9.5px] font-bold',
-            label === value ? 'bg-teal-300 text-gray-900' : 'text-gray-400',
+            label === value ? 'bg-teal-300 text-gray-900' : 'text-gray-500',
           )}
         >
           {label}
@@ -403,7 +403,7 @@ export function AddCameraTile({
       className="flex min-w-0 flex-col items-center justify-center gap-2 overflow-hidden rounded-card border border-dashed border-gray-300 bg-gray-50 p-3"
       style={style}
     >
-      <span className="text-xl font-semibold text-gray-400">+</span>
+      <span className="text-xl font-semibold text-gray-500">+</span>
       <span className="text-[11px] font-semibold text-gray-500">Add camera</span>
       <select
         aria-label="add camera topic"

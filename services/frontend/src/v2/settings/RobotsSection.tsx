@@ -151,7 +151,7 @@ export function RobotsSection({ config }: { config: RuntimeConfig | undefined })
           {optionsQuery.isError ? (
             <ErrorMessage error={optionsQuery.error} />
           ) : !data ? (
-            <span className="px-1 py-2 text-[12.5px] text-gray-400">Loading robots…</span>
+            <span className="px-1 py-2 text-[12.5px] text-gray-500">Loading robots…</span>
           ) : (
             data.robots.map((r, i) => {
               const on = !addingRobot && r.id === selectedRobotId;
@@ -224,7 +224,7 @@ export function RobotsSection({ config }: { config: RuntimeConfig | undefined })
                   'h-9 rounded-control px-[18px] text-[13px] font-bold transition-colors',
                   isActive
                     ? 'cursor-default bg-gray-100 text-gray-400'
-                    : 'bg-teal-600 text-white shadow-btn hover:bg-teal-700 disabled:opacity-50',
+                    : 'bg-teal-700 text-white shadow-btn hover:bg-teal-800 disabled:opacity-50',
                 )}
               >
                 {isActive ? 'Active' : switching ? 'Activating…' : 'Use this robot'}
@@ -410,7 +410,7 @@ function ReadOnlyRobotDetail({ robot }: { robot: string }) {
               value={JSON.stringify(query.data.aspects.recording?.content ?? {}, null, 2)}
               className="h-80 w-full rounded-control border border-gray-200 bg-gray-50 p-2 font-mono text-xs text-gray-600"
             />
-            <p className="mt-1.5 text-xs text-gray-400">
+            <p className="mt-1.5 text-xs text-gray-500">
               Shown as a template. Activate {robot} to edit its recording config.
             </p>
           </div>
@@ -455,7 +455,7 @@ function TopicChips({
     <div className="flex flex-col gap-[7px]">
       <div className="flex items-center gap-2">
         <span className="text-xs font-semibold text-gray-700">Recorded topics</span>
-        <span data-testid={summaryTestId} className="font-mono text-[11.5px] text-gray-400">
+        <span data-testid={summaryTestId} className="font-mono text-[11.5px] text-gray-500">
           {topics.length
             ? `${topics.length} recorded topic${topics.length === 1 ? '' : 's'}`
             : 'none configured'}
@@ -502,7 +502,7 @@ function AspectPickers({
                 </Badge>
               </span>
               {options.length === 0 ? (
-                <span className="text-[12.5px] text-gray-400">No options for this robot.</span>
+                <span className="text-[12.5px] text-gray-500">No options for this robot.</span>
               ) : (
                 <select
                   aria-label={`${aspect} option`}

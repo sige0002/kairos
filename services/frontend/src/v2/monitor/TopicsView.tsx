@@ -131,14 +131,14 @@ export function TopicsView({ config }: { config: RuntimeConfig }) {
 
         <div className="flex shrink-0 flex-wrap items-center gap-2.5">
           <span
-            className="font-mono text-[11.5px] text-gray-400"
+            className="font-mono text-[11.5px] text-gray-500"
             title="History accumulates from when Monitor opened."
           >
             {rows.length} topics · {panels.length} chart{panels.length === 1 ? '' : 's'} · {windowId}{' '}
             window{windowNotFull ? ` (${formatElapsed(elapsedMs)} so far)` : ''}
           </span>
           {paused && (
-            <span data-testid="freeze-note" className="font-mono text-[11px] text-amber-600">
+            <span data-testid="freeze-note" className="font-mono text-[11px] text-amber-700">
               Charts frozen · table still live.
             </span>
           )}
@@ -149,7 +149,7 @@ export function TopicsView({ config }: { config: RuntimeConfig }) {
           {metricsStale && (
             <span
               data-testid="metrics-stale-note"
-              className="font-mono text-[11px] text-amber-600"
+              className="font-mono text-[11px] text-amber-700"
             >
               Live metrics unavailable — measured columns withheld.
             </span>
@@ -164,7 +164,7 @@ export function TopicsView({ config }: { config: RuntimeConfig }) {
             <span
               data-testid="malformed-note"
               title="These readings arrived in a shape this screen could not read — no usable topic name — so they were left out rather than shown under an invented one."
-              className="font-mono text-[11px] text-amber-600"
+              className="font-mono text-[11px] text-amber-700"
             >
               {malformedDropped} reading{malformedDropped === 1 ? '' : 's'} ignored
               (unreadable)
@@ -210,7 +210,7 @@ export function TopicsView({ config }: { config: RuntimeConfig }) {
             data-testid="add-chart"
             onClick={() => addPanel(availableNames[0])}
             disabled={panels.length >= MAX_PANELS}
-            className="rounded-control bg-teal-600 px-3 py-1 text-[11px] font-semibold text-white shadow-card transition-colors hover:bg-teal-700 disabled:bg-gray-300"
+            className="rounded-control bg-teal-700 px-3 py-1 text-[11px] font-semibold text-white shadow-card transition-colors hover:bg-teal-800 disabled:bg-gray-300"
           >
             + Add chart
           </button>

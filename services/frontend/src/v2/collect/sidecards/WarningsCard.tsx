@@ -112,7 +112,7 @@ export function WarningsCard({
           </div>
           <span className="pl-[15px] text-xs text-amber-700">{uncaptured.detail}</span>
           <span
-            className="truncate pl-[15px] font-mono text-[11px] text-amber-600"
+            className="truncate pl-[15px] font-mono text-[11px] text-amber-700"
             title={uncaptured.topics.join('\n')}
           >
             {shown.join(', ')}
@@ -147,14 +147,14 @@ export function WarningsCard({
                   {a.title}
                 </span>
               </div>
-              <span className="pl-[15px] font-mono text-[11px] text-red-600">
+              <span className="pl-[15px] font-mono text-[11px] text-red-700">
                 {a.detail}
                 {a.detail ? ' · ' : ''}since {a.time}
               </span>
             </div>
           ))}
           {firing.length > firingShown.length && (
-            <span className="pl-[15px] text-[11px] text-red-600">
+            <span className="pl-[15px] text-[11px] text-red-700">
               +{firing.length - firingShown.length} more in Monitor
             </span>
           )}
@@ -211,7 +211,7 @@ export function WarningsCard({
         // appear when both are empty — that pairing IS the bug in #13.
         checks.length === 0 && (
           <div className="flex items-center gap-2 py-1">
-            <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-green-100 text-xs font-bold text-green-600">
+            <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-green-100 text-xs font-bold text-green-700">
               ✓
             </span>
             <span className="text-[12.5px] text-gray-500">No active warnings</span>
