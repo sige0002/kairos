@@ -71,9 +71,7 @@ def test_get_stream_config_null_when_absent_but_path_known(
         assert body["error"] is None
 
 
-def test_get_discloses_a_present_but_broken_file(
-    tmp_path: Path, fake_recorder
-) -> None:
+def test_get_discloses_a_present_but_broken_file(tmp_path: Path, fake_recorder) -> None:
     """A file that EXISTS but fails to load is not the same as an absent one.
 
     The editor used to render both as a clean `{}` — and a save then replaced
