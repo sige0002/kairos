@@ -37,6 +37,7 @@ jobs:
           - services/webrtc_streamer
           - services/api_orchestrator
           - services/dora_runner
+          - services/lerobot_exporter
     steps:
       - uses: actions/checkout@v4
       - name: Install uv

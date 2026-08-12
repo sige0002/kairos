@@ -176,7 +176,7 @@ SVC ?= $(filter $(SERVICES),$(MAKECMDGOALS))
 
 PY_DIRS := libs/kairos_common services/rosbag2_recorder services/topic_monitor \
            services/topic_probe services/webrtc_streamer services/api_orchestrator \
-           services/dora_runner
+           services/dora_runner services/lerobot_exporter
 
 .DEFAULT_GOAL := help
 
