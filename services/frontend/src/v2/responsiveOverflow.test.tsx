@@ -69,13 +69,20 @@ test('the episode strip scrolls inside its own container', async () => {
   expect(ancestorWith(count, 'overflow-x-auto')).not.toBeNull();
 });
 
-// Monitor measured 502px at 375px. The outer row already wrapped; the
-// seven-button sub-view group inside it did not.
-test('the Monitor sub-view nav is allowed to wrap', async () => {
+// Monitor measured 502px at 375px. The outer row ALREADY wrapped before this
+// change; the seven-button sub-view group nested inside it did not, and that
+// group is the whole Monitor half of the fix.
+//
+// So this asserts on the group ITSELF, not on "some ancestor wraps". The
+// obvious `closest('.flex-wrap')` is vacuous here: strip the group's class and
+// closest() simply walks past it to the outer row and still finds one, leaving
+// the test green while the bug is back. Mutation-checked in both directions.
+test('the Monitor sub-view nav group itself is allowed to wrap', async () => {
   renderWithClient(<MonitorScreen />);
   await waitFor(() => expect(screen.getByTestId('mon-nav-Overview')).toBeInTheDocument());
-  const group = ancestorWith(screen.getByTestId('mon-nav-Overview'), 'flex-wrap');
+  const group = screen.getByTestId('mon-nav-Overview').parentElement;
   expect(group).not.toBeNull();
+  expect(group!.className).toContain('flex-wrap');
 });
 
 // The Topics table is genuinely wide — a 478px hard minimum from its fixed
@@ -87,4 +94,45 @@ test('the Monitor topics table keeps its own scroll container', async () => {
   fireEvent.click(screen.getByTestId('mon-nav-Topics'));
   const empty = await screen.findByTestId('topics-table-empty');
   expect(ancestorWith(empty, 'overflow-auto')).not.toBeNull();
+});
+
+// The popover re-anchoring is the one edit in this change that can break the
+// DESKTOP layout, and it has no other safety net: cn() is a plain concatenation
+// (no tailwind-merge), so `top-full` vs `lg:top-[58px]` is resolved purely by
+// CSS source order. If a refactor drops an lg: prefix the desktop offsets go
+// with it, silently. These pin the strings on each popover that has one.
+//
+// Each picker is gated on its own machine flag, so each is opened in turn.
+async function openedPopoverClass(trigger: HTMLElement): Promise<string> {
+  fireEvent.click(trigger);
+  const el = await waitFor(() => {
+    const found = document.querySelector<HTMLElement>('.absolute.z-40');
+    expect(found).not.toBeNull();
+    return found!;
+  });
+  return el.className;
+}
+
+test('the context-bar popovers keep BOTH their mobile and desktop anchors', async () => {
+  renderWithClient(<CollectScreen />);
+  await screen.findByTestId('rec-topics-chip');
+
+  const project = await openedPopoverClass(
+    screen.getByTitle('Change project (from plan)'),
+  );
+  // Hangs from the bar's real height below lg; keeps the measured offset at lg.
+  expect(project).toContain('top-full');
+  expect(project).toContain('lg:top-[58px]');
+  // Never wider than the viewport: 22px of main padding either side, plus the
+  // popover's own 14px left inset.
+  expect(project).toContain('max-w-[calc(100vw-58px)]');
+
+  fireEvent.click(screen.getByTitle('Change project (from plan)')); // close
+  const task = await openedPopoverClass(screen.getByTitle('Change task (from plan)'));
+  expect(task).toContain('top-full');
+  expect(task).toContain('lg:top-[58px]');
+  // The task picker is the one with a hard left offset to re-anchor: on a
+  // 375px screen its 210px offset plus 240px width overflowed by itself.
+  expect(task).toContain('left-3.5');
+  expect(task).toContain('lg:left-[210px]');
 });

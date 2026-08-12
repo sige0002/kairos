@@ -96,7 +96,7 @@ function PickerPopover({
   return (
     <div
       className={cn(
-        'absolute z-40 flex w-60 max-w-[calc(100vw-28px)] flex-col gap-0.5 rounded-card border border-gray-200 bg-white p-1.5 shadow-float',
+        'absolute z-40 flex w-60 max-w-[calc(100vw-58px)] flex-col gap-0.5 rounded-card border border-gray-200 bg-white p-1.5 shadow-float',
         className,
       )}
     >
