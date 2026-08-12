@@ -728,3 +728,23 @@ test('a catalog that fits reports nothing — the note is not decoration', async
   await screen.findByTestId('review-row-c1');
   expect(screen.queryByTestId('catalog-truncated')).not.toBeInTheDocument();
 });
+
+// ---- accessible names (#10) ----------------------------------------------
+// Both controls carried their purpose visually only: the search in a
+// placeholder, the operator filter in a caption sitting above it that nothing
+// tied to the field. Queried by name here on purpose — a testid query would go
+// on passing with the association removed again.
+
+test('the episode search and the operator filter both have accessible names', async () => {
+  mockApi([capture({ capture_id: 'c1', run_id: 'run_1', index_in_batch: 1, operator: 'op_a' })]);
+  renderWithClient(<ReviewScreen />);
+  await screen.findByTestId('review-row-c1');
+
+  expect(screen.getByRole('textbox', { name: 'Search episodes' })).toBe(
+    screen.getByTestId('review-search'),
+  );
+  // A real <label for>, so clicking the caption moves focus into the select.
+  expect(screen.getByRole('combobox', { name: 'Operator' })).toBe(
+    screen.getByTestId('review-operator-filter'),
+  );
+});

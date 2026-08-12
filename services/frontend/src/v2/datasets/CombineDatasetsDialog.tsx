@@ -80,6 +80,10 @@ export function CombineDatasetsDialog({ state }: { state: DatasetsState }) {
             data-testid="combine-datasets-operator"
             value={state.combineOperator}
             onChange={(e) => state.setCombineOperator(e.target.value)}
+            // Named for the dataset being BUILT, matching the visible "New
+            // dataset name" above — and so it is not confusable with the create
+            // panel's own operator field, which can be open behind this dialog.
+            aria-label="New dataset operator (optional)"
             placeholder="Operator (optional)"
             disabled={state.combineBusy}
             className="min-w-0 flex-1 rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] text-gray-700 placeholder:text-gray-400"
@@ -88,6 +92,7 @@ export function CombineDatasetsDialog({ state }: { state: DatasetsState }) {
             data-testid="combine-datasets-task"
             value={state.combineTask}
             onChange={(e) => state.setCombineTask(e.target.value)}
+            aria-label="New dataset task (optional)"
             placeholder="Task (optional)"
             disabled={state.combineBusy}
             className="min-w-0 flex-1 rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] text-gray-700 placeholder:text-gray-400"

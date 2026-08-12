@@ -157,6 +157,7 @@ export function BuildRail({ state }: { state: DatasetsState }) {
           data-testid="dataset-candidate-search"
           value={state.candidateSearch}
           onChange={(e) => state.setCandidateSearch(e.target.value)}
+          aria-label="Search recordings to add"
           placeholder="Find run, capture, operator, task…"
           className="w-full rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] text-gray-700 placeholder:text-gray-400"
         />

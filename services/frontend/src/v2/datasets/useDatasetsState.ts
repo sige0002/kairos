@@ -1285,7 +1285,18 @@ export function useDatasetsState(): DatasetsState {
 
     createOpen,
     openCreate: () => setCreateOpen(true),
-    cancelCreate: () => setCreateOpen(false),
+    cancelCreate: () => {
+      setCreateOpen(false);
+      // A discard, like every other dialog on this screen (openEdit and
+      // openCombine both reset their fields and their mutation). Without the
+      // reset the next "+ New" opened onto the abandoned attempt: the old text
+      // still typed in, and the error banner from a POST nobody is waiting for
+      // any more back on screen as if it had just failed.
+      setNewName('');
+      setNewOperator('');
+      setNewTask('');
+      createMutation.reset();
+    },
     newName,
     setNewName,
     newOperator,
