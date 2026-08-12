@@ -46,6 +46,17 @@ export type StopBlockedReason = 'floor' | null;
  *  no deliberate recording is a second long. */
 export const STOP_FLOOR_MS = 1000;
 
+/** The same double-click, one phase earlier (#8): ARMING replaces the Start
+ *  button with Cancel in nearly the same hit-area, so the second press landed
+ *  on Cancel and backed out of the take the first press had just begun. Cancel
+ *  therefore ignores its first this-many milliseconds on screen.
+ *
+ *  Well clear of the measured 86ms tail and far short of a deliberate press:
+ *  the operator has to read ARMING… before deciding to back out. Unlike the
+ *  Stop floor this is a property of the CONTROL, not of the take, so it is
+ *  armed by the card appearing rather than by the recorder's clock. */
+export const ARMING_CANCEL_GUARD_MS = 350;
+
 export interface EpisodeRecord {
   index: number;
   /** Recording/data quality — independent of whether the task succeeded. */
@@ -182,3 +193,8 @@ export const COLLECT_DISCARD_REASON = 'Collect one-click discard (no reason aske
 export const RETAKE_DISCARD_REASON = 'Superseded by retake (Collect)';
 export const COLLECT_UNSAVED_DISCARD_REASON =
   'Collect recovery-banner discard of an unsaved take (no reason asked)';
+// A start the operator backed out of during ARMING still reaches the recorder,
+// so the sub-second bag it wrote is discarded rather than left in the catalog
+// as a take nobody meant to make (#8). The ledger says which gesture it was.
+export const CANCELLED_START_DISCARD_REASON =
+  'Start cancelled during arming (Collect)';

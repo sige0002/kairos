@@ -14,6 +14,8 @@
 import { useEffect, useRef, useState } from 'react';
 import type { BatchMachine } from './useBatchMachine';
 import { useFailReasons } from '../plans';
+import { useActivationGuard } from './hooks/useActivationGuard';
+import { ARMING_CANCEL_GUARD_MS } from './machine/types';
 import { ArmingCard } from './control/ArmingCard';
 import { CompletedCard } from './control/CompletedCard';
 import { EndedCard } from './control/EndedCard';
@@ -60,6 +62,16 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
   const failReasonRef = useRef<HTMLButtonElement>(null);
   const takeoverStopRef = useRef<HTMLButtonElement>(null);
   const hasTakeover = !!takeover;
+
+  // ARMING's Cancel sits where Start just was, so the tail of a double-click
+  // used to back out of the take the first press began (#8). The guard lives
+  // here rather than in ArmingCard because the focus effect below has to know
+  // about it: focus() on a disabled button is a no-op.
+  const cancelArmed = useActivationGuard(
+    phase === 'arming' && !hasTakeover,
+    ARMING_CANCEL_GUARD_MS,
+  );
+
   useEffect(() => {
     if (hasTakeover) {
       takeoverStopRef.current?.focus();
@@ -90,7 +102,9 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
     // without re-running when Stop becomes enabled focus stayed on <body> for
     // the WHOLE take. (Second effect-dependency bug of this shape: the logic was
     // right and the deps made it read a stale world.)
-  }, [phase, machine.pendingTask, hasTakeover, machine.canStop]);
+    //
+    // `cancelArmed` is here for exactly the same reason, one phase earlier.
+  }, [phase, machine.pendingTask, hasTakeover, machine.canStop, cancelArmed]);
 
   // Quality override expander (D-2): collapsed by default; opening it reveals the
   // three chips. Auto-open once the operator has already overridden.
@@ -107,7 +121,7 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
   }
 
   if (phase === 'arming') {
-    return <ArmingCard machine={machine} cancelRef={cancelRef} />;
+    return <ArmingCard machine={machine} cancelRef={cancelRef} cancelArmed={cancelArmed} />;
   }
 
   if (phase === 'recording') {

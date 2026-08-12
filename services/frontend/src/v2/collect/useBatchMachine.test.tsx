@@ -437,6 +437,129 @@ test('once the floor has passed the stop goes through normally', async () => {
   expect(result.current.phase).toBe('saving');
 });
 
+// ---------------------------------------------------------------------------
+// #8: the same double-click, one phase earlier. ARMING's Cancel sits where
+// Start was, so the second press backs out of a start that is already in
+// flight — and the recorder honours it, leaving a sub-second take behind.
+// ---------------------------------------------------------------------------
+
+/** A fetch mock whose /record/start and /record/stop are released by hand, so a
+ *  test can act inside the windows this bug lives in. `deleteResponse` decides
+ *  whether the discard is accepted. */
+function cancelledStartFetch(deleteResponse: () => Response) {
+  let releaseStart!: () => void;
+  let releaseStop!: () => void;
+  const startHeld = new Promise<void>((resolve) => {
+    releaseStart = resolve;
+  });
+  const stopHeld = new Promise<void>((resolve) => {
+    releaseStop = resolve;
+  });
+  const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    const method = (init?.method ?? 'GET').toUpperCase();
+    if (url.includes('/record/start'))
+      return startHeld.then(() => jsonResponse(captureBody('cap_cancel')));
+    if (url.includes('/record/stop'))
+      return stopHeld.then(() =>
+        jsonResponse(captureBody('cap_cancel', { state: 'completed' })),
+      );
+    if (url.includes('/captures/cap_cancel/delete') && method === 'POST')
+      return Promise.resolve(deleteResponse());
+    if (url.includes('/captures'))
+      return Promise.resolve(jsonResponse({ items: [], next_cursor: null }));
+    return Promise.resolve(jsonResponse({}));
+  });
+  const calls = (fragment: string) =>
+    fetchMock.mock.calls.filter(([u]) => String(u).includes(fragment));
+  return { fetchMock, calls, releaseStart, releaseStop, startHeld, stopHeld };
+}
+
+test('a cancelled start stops the recorder and only then discards what it wrote', async () => {
+  const mock = cancelledStartFetch(() =>
+    jsonResponse(captureBody('cap_cancel', { state: 'discarded' })),
+  );
+
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  act(() => result.current.startRecording());
+  expect(result.current.phase).toBe('arming');
+
+  // The operator backs out while /record/start is still in flight.
+  act(() => result.current.cancelArming());
+  expect(result.current.phase).toBe('ready');
+
+  // The recorder answers anyway: it started, and there is now a take on disk.
+  await act(async () => {
+    mock.releaseStart();
+    await mock.startHeld;
+  });
+  await waitFor(() => expect(mock.calls('/record/stop')).toHaveLength(1));
+
+  // ORDER: the discard would be refused while the recorder still holds the
+  // capture, so nothing may be sent until the stop has RETURNED.
+  expect(mock.calls('/captures/cap_cancel/delete')).toHaveLength(0);
+
+  await act(async () => {
+    mock.releaseStop();
+    await mock.stopHeld;
+  });
+  await waitFor(() =>
+    expect(mock.calls('/captures/cap_cancel/delete')).toHaveLength(1),
+  );
+
+  // A §7 discard with a ledger reason naming the gesture — not a delete.
+  const del = mock.calls('/captures/cap_cancel/delete')[0]!;
+  expect((del[1] as RequestInit).method).toBe('POST');
+  expect(JSON.parse(String((del[1] as RequestInit).body))).toEqual({
+    kind: 'discard',
+    reason: 'Start cancelled during arming (Collect)',
+  });
+
+  // And the cancel left nothing behind locally either: no episode, no count,
+  // and the machine is back where the operator thinks it is.
+  expect(result.current.phase).toBe('ready');
+  expect(result.current.episodes).toHaveLength(0);
+  expect(result.current.stats.nRecorded).toBe(0);
+});
+
+// The one thing worse than an orphan take is an orphan take the operator was
+// told did not exist.
+test('a cancelled start whose discard is refused says so on the toast', async () => {
+  const mock = cancelledStartFetch(() =>
+    jsonResponse(
+      {
+        error: {
+          code: 'capture_recording',
+          message: 'The recording is still running.',
+          details: {},
+        },
+      },
+      409,
+    ),
+  );
+
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  act(() => result.current.startRecording());
+  act(() => result.current.cancelArming());
+
+  await act(async () => {
+    mock.releaseStart();
+    await mock.startHeld;
+  });
+  await waitFor(() => expect(mock.calls('/record/stop')).toHaveLength(1));
+  await act(async () => {
+    mock.releaseStop();
+    await mock.stopHeld;
+  });
+
+  await waitFor(() => expect(result.current.toast).toContain('still running'));
+  expect(result.current.toast).toContain('Stop the recording before deleting it.');
+});
+
 // The recorder can reject a start with HTTP 200 + state: "failed" (the row is
 // kept as an audit trail) — this must surface as an error and stay in ready,
 // never silently or incorrectly flip to recording.

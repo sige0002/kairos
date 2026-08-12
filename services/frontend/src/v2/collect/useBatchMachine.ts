@@ -48,6 +48,7 @@ import {
 } from '../../api/types';
 import { useToast } from '../shared/useToast';
 import { confirmRecorderStopped } from '../captures/stopConfirm';
+import { useCancelledStartCleanup } from './hooks/useCancelledStartCleanup';
 
 // Public surface: everything Collect (and the tests) imported from this module
 // before the machine/ split keeps resolving here.
@@ -396,6 +397,9 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   // arming/recording, so a start that lands late — or a stop that fails — is
   // reconciled instead of leaving an orphaned recorder session running.
   const cancelledStartRef = useRef(false);
+  // …and what to do about it once the start lands: stop, then discard, in that
+  // order (hooks/useCancelledStartCleanup.ts, #8).
+  const cancelledStart = useCancelledStartCleanup({ onToast: showToast });
   // Synchronous double-start guard. The phase check inside startRecording reads
   // the CLOSURE's `state.phase`, which does not update until the next render —
   // so two clicks (or two keypresses) landing in the same tick both saw
@@ -411,10 +415,11 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
       if (cancelledStartRef.current) {
         cancelledStartRef.current = false;
         // The operator already backed out locally. If the recorder actually
-        // started server-side despite that, stop it now (best-effort) so it
-        // doesn't keep running unnoticed.
+        // started server-side despite that, stop it so it doesn't keep running
+        // unnoticed — AND discard the sub-second bag it wrote, which otherwise
+        // survives the cancel as a take nobody meant to make (#8).
         if (capture && capture.state !== 'failed') {
-          void stopRecord().catch(() => {});
+          void cancelledStart.reconcile(capture.capture_id ?? null);
         }
         return;
       }
@@ -909,7 +914,9 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     if (!state.endReason) return;
     if (state.phase === 'arming') {
       // A start may still land after we've moved on — treat it like a manual
-      // cancel so it gets auto-stopped instead of orphaned.
+      // cancel, so it gets stopped and discarded instead of orphaned. Ending
+      // the set is as much a "never mind" as Cancel is; the take it would leave
+      // behind is the same sub-second one.
       cancelledStartRef.current = true;
     } else if (
       state.phase === 'recording' ||

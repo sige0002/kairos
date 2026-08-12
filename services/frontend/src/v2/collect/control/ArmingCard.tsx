@@ -11,9 +11,14 @@ import { CARD_GAP_COMPACT } from './shared';
 export function ArmingCard({
   machine,
   cancelRef,
+  cancelArmed,
 }: {
   machine: BatchMachine;
   cancelRef: React.Ref<HTMLButtonElement>;
+  /** False for the card's first ARMING_CANCEL_GUARD_MS on screen (#8): Cancel
+   *  lands where Start was, and the second press of a double-click must not
+   *  back out of the take the first one began. ControlCard owns the timer. */
+  cancelArmed: boolean;
 }) {
   return (
     <Card
@@ -35,8 +40,13 @@ export function ArmingCard({
       <button
         ref={cancelRef}
         type="button"
+        data-testid="arming-cancel"
         onClick={machine.cancelArming}
-        className="h-10 rounded-control border border-gray-200 bg-white text-[13px] font-semibold text-gray-500 hover:bg-gray-50"
+        disabled={!cancelArmed}
+        className={cn(
+          'h-10 rounded-control border border-gray-200 bg-white text-[13px] font-semibold text-gray-500',
+          cancelArmed ? 'hover:bg-gray-50' : 'cursor-not-allowed opacity-50',
+        )}
       >
         Cancel
       </button>
