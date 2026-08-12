@@ -379,6 +379,15 @@ function OperatorChip() {
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => {
+                // Mid-conversion, both of these keys belong to the IME: Enter
+                // confirms the candidate and Escape closes the candidate
+                // window. Taking either would commit or discard on a press the
+                // typist meant for neither — and, for Enter, would save the
+                // UNCONVERTED text as the operator's name while swallowing the
+                // very keystroke the IME was waiting for. Guarding the whole
+                // handler rather than one branch, because the answer is the
+                // same for both: this keystroke is not ours yet.
+                if (e.nativeEvent.isComposing) return;
                 if (e.key === 'Enter') {
                   // The save lifts Collect's operator gate, and Collect hands
                   // focus to the Start button it has just enabled — inside this

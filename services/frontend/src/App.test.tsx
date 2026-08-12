@@ -273,6 +273,57 @@ test('Enter in the operator field commits the name AND cancels its default actio
   expect(screen.queryByTestId('operator-input')).not.toBeInTheDocument();
 });
 
+// The Enter a Japanese typist presses to CONFIRM a conversion is not the Enter
+// that submits. Taking it would save the unconverted text as the operator's
+// name, and — worse — preventDefault would swallow the keystroke the IME itself
+// is waiting for, so the conversion never lands.
+test('the Enter an IME is confirming a conversion with is not a commit', async () => {
+  window.history.replaceState(null, '', '/');
+  window.localStorage.removeItem('kairos.operator');
+  useUiStore.setState({ recordOperator: '' });
+  renderWithClient(<App />);
+  await waitFor(() =>
+    expect(screen.queryByText(/Loading kairos/i)).not.toBeInTheDocument(),
+  );
+
+  fireEvent.click(screen.getByTestId('operator-chip'));
+  const input = screen.getByTestId('operator-input');
+  // What the field holds mid-conversion is the reading, not the name.
+  fireEvent.change(input, { target: { value: 'さだすえ' } });
+
+  const composing = createEvent.keyDown(input, { key: 'Enter', isComposing: true });
+  fireEvent(input, composing);
+
+  // Nothing committed, the popover is still open to go on typing in …
+  expect(useUiStore.getState().recordOperator).toBe('');
+  expect(screen.getByTestId('operator-input')).toBeInTheDocument();
+  // … and the keystroke is left for the IME. Cancelling it here is what stops
+  // the conversion from ever completing.
+  expect(composing.defaultPrevented, 'the IME never got its own keystroke').toBe(false);
+});
+
+// Same press, the other key: an IME's Escape closes its candidate window.
+test('the Escape an IME is closing its candidate window with does not close the popover', async () => {
+  window.history.replaceState(null, '', '/');
+  window.localStorage.removeItem('kairos.operator');
+  useUiStore.setState({ recordOperator: '' });
+  renderWithClient(<App />);
+  await waitFor(() =>
+    expect(screen.queryByText(/Loading kairos/i)).not.toBeInTheDocument(),
+  );
+
+  fireEvent.click(screen.getByTestId('operator-chip'));
+  fireEvent.change(screen.getByTestId('operator-input'), { target: { value: 'さだすえ' } });
+  fireEvent.keyDown(screen.getByTestId('operator-input'), {
+    key: 'Escape',
+    isComposing: true,
+  });
+
+  // The draft and the popover around it both survive — one press, meant for
+  // neither of them.
+  expect(screen.getByTestId('operator-input')).toBeInTheDocument();
+});
+
 test('the shell survives a browser where localStorage access throws', async () => {
   // Private mode / site data blocked by policy: access THROWS instead of
   // returning null. The read runs in a shell-level effect, so an unguarded throw
