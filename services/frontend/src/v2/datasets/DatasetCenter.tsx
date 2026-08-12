@@ -504,7 +504,18 @@ function SelectedDatasetPane({ state }: { state: DatasetsState }) {
         className="min-h-0 flex-1 overflow-y-auto border-t-4 border-gray-100"
       >
         {selected ? (
-          <DatasetDetail state={state} member={selected} />
+          // Keyed by CAPTURE, so selecting another member mounts a fresh
+          // detail instead of re-rendering this one against a different
+          // recording. What it holds below is per-capture — the loss job id, a
+          // frozen submission error, and the Retry that resubmits it — and a
+          // cached detail meant the pane never remounted on its own, leaving a
+          // failed run's note over the wrong member and its Retry aimed at the
+          // wrong capture_id.
+          //
+          // By capture rather than by membership on purpose: two memberships of
+          // the SAME recording are the same job and the same report, so
+          // remounting between them would discard state that is still correct.
+          <DatasetDetail key={selected.captureId} state={state} member={selected} />
         ) : (
           <ScopeSummary scope={state.scope} />
         )}
