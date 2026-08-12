@@ -296,6 +296,18 @@ recording`), which is what the operator reads anyway.
 If a scenario needs a testid the app does not have, the fix belongs in
 `services/frontend` — not in a brittle selector here.
 
+## Recording needs an operator
+
+Start is disabled until the OP chip carries a name, in every configuration, and
+every test gets a fresh browser context — so any scenario that records calls
+`ensureOperator(page)` (`fixtures/ui.ts`) first. `recordThroughUi` does it for
+its callers; a scenario that drives Start itself does it itself.
+
+The helper clicks the chip and types, rather than seeding the chip's
+localStorage key. Writing the app's private storage would keep this suite green
+after the chip stopped saving anything — the opposite of what an acceptance
+gate is for.
+
 ## Layout
 
 ```
