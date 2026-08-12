@@ -155,6 +155,17 @@ function mockServer(initial: CaptureListItem[], options: ServerOptions = {}) {
     deleteCalls,
     pullCalls,
     items: () => items,
+    /** Change what the server stores, with no client call involved — another
+     *  terminal's save, seen by this one only on the next sweep. */
+    setStored: (captureId: string, patch: Partial<CaptureListItem>) => {
+      const idx = items.findIndex((c) => c.capture_id === captureId);
+      if (idx < 0) throw new Error(`no capture ${captureId}`);
+      items[idx] = {
+        ...items[idx]!,
+        ...patch,
+        review_revision: (items[idx]!.review_revision ?? 0) + 1,
+      };
+    },
     /** Answer every held review save, oldest first. */
     releaseReviews: () => heldReviews.splice(0).forEach((r) => r()),
     setReviewError: (
@@ -1083,6 +1094,12 @@ test('a capture with no operator quality has the not_usable cleared, not kept', 
   expect(body).toMatchObject({ review_status: 'pending' });
   expect(body.quality).toBeNull();
   expect(body.quality_source).toBeNull();
+
+  // And the toast says so, in that branch only. "restored to Pending" alone
+  // would let a quality the operator did not choose arrive unannounced.
+  await waitFor(() =>
+    expect(result.current.toast).toContain('quality re-derived from quick check'),
+  );
 });
 
 test('the detail-panel Exclude takes the same path, undo and all', async () => {
@@ -1246,4 +1263,159 @@ test('a batch exclude supersedes a single capture’s undo offer', async () => {
   await act(async () => result.current.confirmExcludeBatch());
 
   await waitFor(() => expect(result.current.excludeUndo).toBeNull());
+});
+
+// ---- the offer must not outlive the exclusion it belongs to (PR #21 R1) ----
+//
+// The damage is specific and silent: exclude a PENDING capture, decide the
+// other way instead, and a stale offer writes `pending` over the new decision
+// while reporting success. Every route back out of an exclusion is covered
+// here, because the bug is not in any one of them — it is in the offer
+// outliving the state it describes.
+
+test('adopting the capture instead retires the offer — no silent demotion', async () => {
+  const server = mockServer([capture({ capture_id: 'c1', index_in_batch: 1 })]);
+  const { result } = await renderReview();
+
+  await act(async () => result.current.requestExclude('c1'));
+  await waitFor(() => expect(result.current.excludeUndo).not.toBeNull());
+
+  act(() => result.current.select('c1'));
+  await act(async () => result.current.markOk());
+  await waitFor(() => expect(server.reviewCalls).toHaveLength(2));
+
+  // Gone. Taking it would have written `pending` over the adoption just made.
+  expect(result.current.excludeUndo).toBeNull();
+  await act(async () => result.current.undoExclude());
+  expect(server.reviewCalls).toHaveLength(2);
+  expect(
+    result.current.rows.find((r) => r.captureId === 'c1')!.effectiveReviewStatus,
+  ).toBe('adopted');
+
+});
+
+test('adopting DISCARDS the memo, so a later exclusion cannot resurrect it', async () => {
+  // Kept apart from the test above, where the undo call does the clearing
+  // itself (the write-time check) and would hide whether Adopt cleared
+  // anything. Nothing here touches the offer except Adopt.
+  const server = mockServer([capture({ capture_id: 'c1', index_in_batch: 1 })]);
+  const { result } = await renderReview();
+
+  await act(async () => result.current.requestExclude('c1'));
+  await waitFor(() => expect(result.current.excludeUndo).not.toBeNull());
+  act(() => result.current.select('c1'));
+  await act(async () => result.current.markOk());
+  await waitFor(() => expect(result.current.excludeUndo).toBeNull());
+
+  // Excluded again, by another terminal. A memo merely HIDDEN comes back into
+  // view here, carrying a prior from two decisions ago.
+  await act(async () => {
+    server.setStored('c1', { review_status: 'excluded' });
+    await result.current.reviewSave.invalidateList();
+  });
+  await waitFor(() =>
+    expect(result.current.rows.find((r) => r.captureId === 'c1')).toBeUndefined(),
+  );
+  expect(result.current.excludeUndo).toBeNull();
+});
+
+test('the row Return retires the offer', async () => {
+  const server = mockServer([capture({ capture_id: 'c1', index_in_batch: 1 })]);
+  const { result } = await renderReview();
+
+  await act(async () => result.current.requestExclude('c1'));
+  await waitFor(() => expect(result.current.excludeUndo).not.toBeNull());
+  // Second call on an excluded row IS the Return.
+  await act(async () => result.current.requestExclude('c1'));
+
+  await waitFor(() => expect(server.reviewCalls).toHaveLength(2));
+  expect(result.current.excludeUndo).toBeNull();
+  // The clear is not redundant with the guard: leave the memo alive and a LATER
+  // exclusion (here, from another terminal) makes the guard show it again —
+  // an offer whose remembered prior belongs to an exclusion two decisions ago.
+  await act(async () => {
+    server.setStored('c1', { review_status: 'excluded' });
+    await result.current.reviewSave.invalidateList();
+  });
+  await waitFor(() =>
+    expect(result.current.rows.find((r) => r.captureId === 'c1')).toBeUndefined(),
+  );
+  expect(result.current.excludeUndo).toBeNull();
+});
+
+test("the detail panel's Return retires the offer", async () => {
+  const server = mockServer([capture({ capture_id: 'c1', index_in_batch: 1 })]);
+  const { result } = await renderReview();
+
+  await act(async () => result.current.requestExclude('c1'));
+  await waitFor(() => expect(result.current.excludeUndo).not.toBeNull());
+  act(() => result.current.select('c1'));
+  await act(async () => result.current.decide('review'));
+
+  await waitFor(() => expect(server.reviewCalls).toHaveLength(2));
+  expect(result.current.excludeUndo).toBeNull();
+  // The clear is not redundant with the guard: leave the memo alive and a LATER
+  // exclusion (here, from another terminal) makes the guard show it again —
+  // an offer whose remembered prior belongs to an exclusion two decisions ago.
+  await act(async () => {
+    server.setStored('c1', { review_status: 'excluded' });
+    await result.current.reviewSave.invalidateList();
+  });
+  await waitFor(() =>
+    expect(result.current.rows.find((r) => r.captureId === 'c1')).toBeUndefined(),
+  );
+  expect(result.current.excludeUndo).toBeNull();
+});
+
+test('a batch return that sweeps the capture up retires the offer', async () => {
+  const server = mockServer(batchOf3('pending'));
+  const { result } = await renderReview();
+
+  await act(async () => result.current.requestExclude('c1'));
+  await waitFor(() => expect(result.current.excludeUndo).not.toBeNull());
+
+  act(() => result.current.toggleBatchFilter('b1'));
+  await waitFor(() => expect(result.current.batchExcluded).toHaveLength(1));
+  await act(async () => result.current.returnBatchToReview());
+
+  await waitFor(() => expect(result.current.excludeUndo).toBeNull());
+
+  // As above: the memo has to be GONE, not merely hidden, or a later exclusion
+  // brings back a prior belonging to an exclusion two decisions ago.
+  await act(async () => {
+    server.setStored('c1', { review_status: 'excluded' });
+    await result.current.reviewSave.invalidateList();
+  });
+  await waitFor(() =>
+    expect(result.current.rows.find((r) => r.captureId === 'c1')).toBeUndefined(),
+  );
+  expect(result.current.excludeUndo).toBeNull();
+});
+
+test('an exclusion undone from another terminal takes the offer with it', async () => {
+  // Nothing local ran at all: the capture came back `pending` on the next
+  // sweep. The offer is derived from the capture's own state precisely so a
+  // route this screen never took cannot leave it standing.
+  const server = mockServer([capture({ capture_id: 'c1', index_in_batch: 1 })]);
+  const { result } = await renderReview();
+
+  await act(async () => result.current.requestExclude('c1'));
+  await waitFor(() => expect(result.current.excludeUndo).not.toBeNull());
+
+  await act(async () => {
+    server.setStored('c1', { review_status: 'adopted' });
+    await result.current.reviewSave.invalidateList();
+  });
+
+  await waitFor(() => expect(result.current.excludeUndo).toBeNull());
+
+  // Nothing local cleared the memo here — only the guard hid it. So this is
+  // where the write itself has to refuse: firing the undo anyway must not send
+  // `pending` over the adoption that arrived while the offer was on screen.
+  const before = server.reviewCalls.length;
+  await act(async () => result.current.undoExclude());
+  expect(server.reviewCalls).toHaveLength(before);
+  expect(
+    result.current.rows.find((r) => r.captureId === 'c1')!.effectiveReviewStatus,
+  ).toBe('adopted');
 });

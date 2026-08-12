@@ -240,8 +240,8 @@ export function ReviewScreen() {
       <Toast message={rv.toast} testId="review-toast" />
 
       {/* No exclude confirmation: excluding keeps every byte and is undoable in
-          one action from the table's own toolbar. The dialogs below guard the
-          two things that cannot be taken back. */}
+          one action from the band under the episode table's toolbar. The dialogs
+          below guard the two things that cannot be taken back. */}
 
       {/* The two removal intents (§12). Separate dialogs, separate testids:
           the operator must be able to tell which one they are about to do. */}

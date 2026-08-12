@@ -412,6 +412,18 @@ test('the excluded row is gone from the table, and the undo for it is not', asyn
   expect(undo).toHaveTextContent('Episode #1');
   expect(undo).toHaveTextContent('the recording is kept');
 
+  // Announced, and named. The band is the durable half of the announcement —
+  // the toast that fires with it is gone in seconds — and the buttons carry
+  // their subject, because the span naming the episode is not associated with
+  // them: on their own they are one of however many "Undo"s on the page.
+  expect(undo).toHaveAttribute('role', 'status');
+  expect(screen.getByRole('button', { name: 'Undo excluding Episode #1' })).toBe(
+    screen.getByTestId('review-exclude-undo-btn'),
+  );
+  expect(
+    screen.getByRole('button', { name: 'Dismiss — Episode #1 stays excluded' }),
+  ).toBe(screen.getByTestId('review-exclude-undo-dismiss'));
+
   // Undo puts it back in one click, and the offer goes with it.
   fireEvent.click(screen.getByTestId('review-exclude-undo-btn'));
   await waitFor(() => expect(screen.getByTestId('review-row-c1')).toBeInTheDocument());

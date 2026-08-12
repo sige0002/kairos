@@ -338,15 +338,21 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
           className="w-[150px] rounded-control border border-gray-200 px-2.5 py-1.5 text-[12.5px] text-gray-700 placeholder:text-gray-400"
         />
       </div>
-      {/* The undo for the last exclude. It lives HERE, and not on the excluded
-          row, because excluding a row removes it from the default view — the
-          affordance would be behind "Show excluded", which is a hunt at exactly
-          the moment the operator wants a mis-click back. Nor in the toast: that
-          clears itself after a couple of seconds, and a recovery path with a
+      {/* The undo for the last exclude — its own band under the toolbar, not an
+          affordance on the excluded row: excluding a row removes it from the
+          default view, so the button would be behind "Show excluded" at exactly
+          the moment the operator wants a mis-click back. Nor in the toast, which
+          clears itself after a couple of seconds; a recovery path with a
           countdown on it is not one. Same reasoning as the batch-return notice
-          below, which is in this toolbar for the same reason. */}
+          in the toolbar above, which is persistent for the same reason.
+
+          `role="status"`: this is the durable half of the announcement, and a
+          keyboard operator who hears the exclude has to be able to find the way
+          back. Polite, not alert — nothing here is urgent, and the toast has
+          already said what happened. */}
       {rv.excludeUndo && (
         <div
+          role="status"
           data-testid="review-exclude-undo"
           className="flex flex-wrap items-center gap-2 border-b border-gray-100 bg-amber-50 px-[18px] py-2 text-[12.5px] text-amber-900"
         >
@@ -358,6 +364,10 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
             type="button"
             data-testid="review-exclude-undo-btn"
             onClick={rv.undoExclude}
+            // Carries its subject: the sibling span naming the episode is not
+            // associated with the button, so on its own this reads as one of
+            // however many "Undo"s a screen reader has collected.
+            aria-label={`Undo excluding ${rv.excludeUndo.subject}`}
             title="Put back the status and quality this capture had before it was excluded"
             className="rounded-control border border-amber-300 bg-white px-2.5 py-1 text-[12px] font-bold text-amber-800 transition-colors hover:bg-amber-100"
           >
@@ -368,7 +378,7 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
             type="button"
             data-testid="review-exclude-undo-dismiss"
             onClick={rv.dismissExcludeUndo}
-            aria-label="Dismiss — the capture stays excluded"
+            aria-label={`Dismiss — ${rv.excludeUndo.subject} stays excluded`}
             title="Dismiss — the capture stays excluded"
             className="rounded-control px-2 py-1 text-[12px] font-semibold text-amber-700 transition-colors hover:bg-amber-100"
           >

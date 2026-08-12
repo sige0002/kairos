@@ -46,7 +46,6 @@ import {
   type ReviewSaveResult,
   type ReviewSaveState,
 } from './useReviewSave';
-import { episodeLabel } from './types';
 import type {
   DecoratedEpisode,
   Decision,
@@ -590,10 +589,10 @@ export function useReviewState(): ReviewState {
         // "restore" a capture this screen never changed.
         if (!capture) return;
         setExcludeUndo({ captureId: row.captureId, subject, prior });
-        // Names the Undo, because the toast is the live region a screen reader
-        // hears — the strip that carries the button is not announced, so
-        // without this the offer exists only for people who can see it.
-        showToast(`${subject} → Not usable · Excluded — recording kept, Undo available`);
+        // The undo band announces itself (role="status"), so this does not
+        // repeat the offer — two live regions saying "Undo available" in the
+        // same breath is noise, and the band is the one with the button in it.
+        showToast(`${subject} → Not usable · Excluded (recording kept)`);
       });
     },
     [applyReview, showToast],
@@ -604,6 +603,11 @@ export function useReviewState(): ReviewState {
       const row = decorated.find((r) => r.captureId === captureId);
       if (!row) return;
       if (row.isExcluded) {
+        // The offer is for THIS exclusion, and the operator is undoing it by
+        // another door. Dropping the memo here (the guard above already stops
+        // it being shown) keeps it from coming back if the capture is excluded
+        // again later by something that does not go through this function.
+        if (excludeUndo?.captureId === captureId) setExcludeUndo(null);
         void applyReview(row, { status: 'pending' }, { review_status: 'pending' }).then(
           ({ capture }) => {
             // Says the step that is still outstanding. "Restored" read as
@@ -619,7 +623,7 @@ export function useReviewState(): ReviewState {
       }
       excludeCapture(row);
     },
-    [decorated, applyReview, showToast, excludeCapture],
+    [decorated, applyReview, showToast, excludeCapture, excludeUndo],
   );
 
   const undoExclude = useCallback(() => {
@@ -630,6 +634,16 @@ export function useReviewState(): ReviewState {
       // The capture left the catalog (deleted or discarded from elsewhere).
       // There is nothing to restore it onto, and keeping the offer would sit
       // there failing.
+      setExcludeUndo(null);
+      return;
+    }
+    // The precondition, re-checked at the moment of the write and not only at
+    // render: an undo is only ever an undo while the exclusion it remembers is
+    // still the capture's state. Excluding a PENDING capture and then adopting
+    // it instead used to leave this offer standing, and taking it wrote
+    // `pending` over the adoption — a silent demotion, reported as a success.
+    // Whoever the second decision came from, theirs is the newer one.
+    if (!row.isExcluded) {
       setExcludeUndo(null);
       return;
     }
@@ -662,9 +676,34 @@ export function useReviewState(): ReviewState {
       // the offer is still the operator's way to try again.
       if (!capture) return;
       setExcludeUndo(null);
-      showToast(`${memo.subject} restored to ${describePrior(memo.prior)}`);
+      showToast(
+        `${memo.subject} restored to ${describePrior(memo.prior)}` +
+          // Said out loud, because the screen cannot put back a quality that
+          // was never set: the server refills an explicitly-null quality from
+          // the capture's quick check. Claiming a bare "restored to Pending"
+          // would hide a value arriving from somewhere the operator did not
+          // choose.
+          (memo.prior.quality === null ? ' — quality re-derived from quick check' : ''),
+      );
     });
   }, [excludeUndo, decorated, applyReview, showToast]);
+
+  // What the strip is allowed to offer. The memo above records what an exclude
+  // overwrote; this is whether that exclusion is STILL the capture's state.
+  //
+  // Derived rather than left to each route to remember, because the routes back
+  // out of an exclusion are many — the row's Return, the detail panel's, a
+  // batch return, Adopt, another terminal's save arriving on the poll — and
+  // every one of them that forgot left an offer whose only remaining effect was
+  // damage: excluding a PENDING capture, adopting it instead, then taking the
+  // stale offer wrote `pending` over the adoption and called it a success.
+  // A rule computed from the capture's own state cannot be forgotten by the
+  // next route somebody adds.
+  const excludeUndoOffer = useMemo(() => {
+    if (!excludeUndo) return null;
+    const row = decorated.find((r) => r.captureId === excludeUndo.captureId);
+    return row?.isExcluded ? excludeUndo : null;
+  }, [excludeUndo, decorated]);
 
   // ---- removal (§7) -------------------------------------------------------
   // Both intents run through the one shared flow, so the wording, the required
@@ -798,6 +837,10 @@ export function useReviewState(): ReviewState {
   const returnBatchToReview = useCallback(() => {
     const targets = batchExcluded;
     if (!targets.length) return;
+    // Same rule as the single Return: if this sweep is about to un-exclude the
+    // capture the offer belongs to, the offer is spent.
+    if (excludeUndo && targets.some((t) => t.captureId === excludeUndo.captureId))
+      setExcludeUndo(null);
     void (async () => {
       const outcome = await runReturnBatch({
         items: targets,
@@ -825,7 +868,7 @@ export function useReviewState(): ReviewState {
           : `Returned ${succeeded}, ${failures.length} failed`,
       );
     })();
-  }, [batchExcluded, applyReview, reviewSave, showToast, runReturnBatch]);
+  }, [batchExcluded, applyReview, reviewSave, showToast, runReturnBatch, excludeUndo]);
 
   // ---- decisions / overrides ---------------------------------------------
   const decide = useCallback(
@@ -840,6 +883,9 @@ export function useReviewState(): ReviewState {
         return;
       }
       const wasExcluded = selected.isExcluded;
+      // Every decision that is not "exclude" ends this exclusion, whichever it
+      // is: Return takes it out, Adopt overrides it. The offer goes with it.
+      if (excludeUndo?.captureId === selected.captureId) setExcludeUndo(null);
       void applyReview(
         selected,
         { status: toServerReview(d) },
@@ -857,7 +903,7 @@ export function useReviewState(): ReviewState {
         showToast(`${subjectOf(selected)} → ${d}`);
       });
     },
-    [selected, applyReview, showToast, excludeCapture],
+    [selected, applyReview, showToast, excludeCapture, excludeUndo],
   );
 
   // Adopt this capture — the one thing Datasets requires before a capture can
@@ -867,18 +913,21 @@ export function useReviewState(): ReviewState {
   const markOk = useCallback(() => {
     if (!selected) return;
     const exception = selected.reviewLane === 'needs_check';
+    // Adopting is the operator choosing the opposite of the exclusion they are
+    // being offered a way back from. Theirs is the newer decision.
+    if (excludeUndo?.captureId === selected.captureId) setExcludeUndo(null);
     void applyReview(selected, { status: 'adopted' }, { review_status: 'adopted' }).then(
       ({ capture }) => {
         if (capture) {
           showToast(
             exception
-              ? `Episode ${episodeLabel(selected.ep)} marked OK — included`
-              : `Episode ${episodeLabel(selected.ep)} adopted — datasets can use it`,
+              ? `${subjectOf(selected)} marked OK — included`
+              : `${subjectOf(selected)} adopted — datasets can use it`,
           );
         }
       },
     );
-  }, [selected, applyReview, showToast]);
+  }, [selected, applyReview, showToast, excludeUndo]);
 
   const cycleFinalQuality = useCallback(() => {
     if (!selected) return;
@@ -892,7 +941,7 @@ export function useReviewState(): ReviewState {
       { quality: next },
       { quality: toServerQuality(next), quality_source: 'operator' },
     ).then(({ capture }) => {
-      if (capture) showToast(`${episodeLabel(selected.ep)} quality → ${next}`);
+      if (capture) showToast(`${subjectOf(selected)} quality → ${next}`);
     });
   }, [selected, applyReview, showToast]);
 
@@ -903,7 +952,7 @@ export function useReviewState(): ReviewState {
       selected.effectiveTask === 'Success' ? 'Failure' : 'Success';
     void applyReview(selected, { task: next }, { task_result: toServerTask(next) }).then(
       ({ capture }) => {
-        if (capture) showToast(`${episodeLabel(selected.ep)} task result → ${next}`);
+        if (capture) showToast(`${subjectOf(selected)} task result → ${next}`);
       },
     );
   }, [selected, applyReview, showToast]);
@@ -1099,7 +1148,7 @@ export function useReviewState(): ReviewState {
     selected,
 
     requestExclude,
-    excludeUndo,
+    excludeUndo: excludeUndoOffer,
     undoExclude,
     dismissExcludeUndo,
 
