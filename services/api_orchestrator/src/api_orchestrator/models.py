@@ -663,6 +663,117 @@ class DatasetArchiveProgress(BaseModel):
     archived_at: str | None = None
 
 
+class ExportsConfig(BaseModel):
+    """``GET /api/v1/exports/config`` — the §6.2 capability gate.
+
+    ``enabled: false`` (exporter overlay absent, or no profile library) means
+    the Convert control is not rendered at all: never offer what can only fail.
+    ``profiles`` is exporter-shaped and passed through untouched — the exporter
+    owns that schema, and re-modelling it here would just be a copy that drifts.
+    """
+
+    enabled: bool
+    profiles: list[dict[str, Any]] = Field(default_factory=list)
+    # True when the exporter is up but the bundled converter is not importable
+    # there, so every profile's ``valid`` is null (present but unverified) —
+    # the UI can then say WHY instead of showing an unexplained tri-state.
+    validator_unavailable: bool | None = None
+
+
+class ExportRequest(BaseModel):
+    """Body for ``POST /api/v1/datasets/{id}/export`` (§6.2).
+
+    Only what the dialog actually decides: the profile pick, the free memo
+    segment of the output name, and the task fallback for unlabeled captures.
+    fps / split / resampling live in the profile — a different recipe is a
+    different profile, not a request field.
+    """
+
+    profile: str = Field(min_length=1, max_length=200)
+    memo: str | None = None
+    task_fallback: str | None = None
+
+
+class ExportDropped(BaseModel):
+    """Members an export leaves out, each list saying why (§6.2)."""
+
+    not_local: list[str] = Field(default_factory=list)
+    excluded: list[str] = Field(default_factory=list)
+    recording: list[str] = Field(default_factory=list)
+
+    @property
+    def count(self) -> int:
+        return len(self.not_local) + len(self.excluded) + len(self.recording)
+
+
+class ExportTaskSummary(BaseModel):
+    """How the included captures' task labels resolve (§4.3 rule)."""
+
+    labeled: int
+    unlabeled: int
+    values: dict[str, int] = Field(default_factory=dict)
+
+
+class ExportCoverageGap(BaseModel):
+    """One capture missing topics the selected profile requires."""
+
+    capture_id: str
+    topics: list[str]
+
+
+class ExportPreflight(BaseModel):
+    """``GET /api/v1/datasets/{id}/export/preflight`` — checks without starting.
+
+    The dialog shows this the moment it opens, so a conversion that can only
+    fail is visible BEFORE the operator commits — same honesty contract as the
+    archive config gate, applied per selection.
+    """
+
+    dataset_id: str
+    profile: dict[str, Any]
+    output_name: str
+    output: str
+    output_exists: bool
+    member_total: int
+    included: int
+    dropped: ExportDropped
+    tasks: ExportTaskSummary
+    missing_topics: list[ExportCoverageGap] = Field(default_factory=list)
+    coverage_unknown: list[str] = Field(default_factory=list)
+
+
+class ExportSubmitResponse(BaseModel):
+    """``POST /api/v1/datasets/{id}/export`` answer: accepted (202)."""
+
+    export_id: str
+    dataset_id: str
+    output: str
+    included: int
+    dropped: ExportDropped
+
+
+class ExportStatus(BaseModel):
+    """``GET /api/v1/datasets/{id}/export`` — proxied exporter state + identity.
+
+    Volatile on both sides: the exporter forgets in-flight exports on restart
+    (they become ``failed`` here) and this row lives in orchestrator memory.
+    The durable record is the ``dataset_exported`` ledger line written when a
+    success is first observed.
+    """
+
+    dataset_id: str
+    export_id: str
+    output: str
+    state: str
+    queue_position: int | None = None
+    done: int = 0
+    failed: int = 0
+    total: int = 0
+    current_episode_pct: float | None = None
+    stalled: bool | None = None
+    message: str | None = None
+
+
 class DatasetCreateRequest(BaseModel):
     """Body for ``POST /api/v1/datasets``."""
 

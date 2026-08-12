@@ -58,6 +58,7 @@ from api_orchestrator.dora_runner_client import DoraRunnerClient
 from api_orchestrator.events import EventHub
 from api_orchestrator.health import StoreHealth
 from api_orchestrator.importer_client import ImporterClient
+from api_orchestrator.lerobot_exporter_client import LerobotExporterClient
 from api_orchestrator.models import Capture
 from api_orchestrator.monitor_client import MonitorClient
 from api_orchestrator.reconciler import Reconciler
@@ -68,6 +69,7 @@ from api_orchestrator.routers import captures as captures_router
 from api_orchestrator.routers import config as config_router
 from api_orchestrator.routers import datasets as datasets_router
 from api_orchestrator.routers import events as events_router
+from api_orchestrator.routers import exports as exports_router
 from api_orchestrator.routers import files as files_router
 from api_orchestrator.routers import imports as imports_router
 from api_orchestrator.routers import jobs as jobs_router
@@ -201,6 +203,10 @@ def create_orchestrator_app(
     )
     importer = ImporterClient(
         f"http://{settings.importer_host}:{settings.importer_port}", client
+    )
+    lerobot_exporter = LerobotExporterClient(
+        f"http://{settings.lerobot_exporter_host}:{settings.lerobot_exporter_port}",
+        client,
     )
     event_hub = EventHub(monitor)
     config_catalog = ConfigCatalog(
@@ -377,6 +383,11 @@ def create_orchestrator_app(
     app.state.streamer_client = streamer
     app.state.dora_runner_client = dora_runner
     app.state.importer_client = importer
+    app.state.lerobot_exporter_client = lerobot_exporter
+    # In-flight LeRobot exports (§6.2). Progress only — the durable outcome is
+    # the dataset_exported ledger line plus the output tree itself, so this is
+    # safe to lose on restart (the status endpoint then reports failed).
+    app.state.export_registry = exports_router.ExportRegistry()
     # In-flight bag imports. Progress only — the capture row and the bytes on
     # disk are the durable outcome, and both appear only once an import has
     # finalised, so this is safe to lose on restart.
@@ -419,6 +430,7 @@ def create_orchestrator_app(
     app.include_router(validation_router.presets_router)
     app.include_router(files_router.router)
     app.include_router(datasets_router.router)
+    app.include_router(exports_router.router)
     app.include_router(store_router.router)
     app.include_router(store_router.views_router)
     app.include_router(retention_router.router)
