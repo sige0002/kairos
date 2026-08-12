@@ -68,7 +68,7 @@ export function ReviewScreen() {
   return (
     <div className="flex flex-col gap-2.5 lg:h-full lg:min-h-0">
       <ScreenTitle>Review</ScreenTitle>
-      <div className="flex items-center gap-2.5">
+      <div className="flex flex-wrap items-center gap-2.5">
         <div className="flex-1" />
         <button
           type="button"

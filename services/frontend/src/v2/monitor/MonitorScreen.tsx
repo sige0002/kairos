@@ -65,7 +65,7 @@ export function MonitorScreen() {
       <div className="flex shrink-0 flex-wrap items-center gap-2.5">
         <RecordContextChip />
 
-        <div className="flex gap-0.5 rounded-[11px] border border-gray-200 bg-gray-100 p-[3px]">
+        <div className="flex flex-wrap gap-0.5 rounded-[11px] border border-gray-200 bg-gray-100 p-[3px]">
           {MON_NAV.map((label) => (
             <button
               key={label}
