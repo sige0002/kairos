@@ -96,7 +96,7 @@ function PickerPopover({
   return (
     <div
       className={cn(
-        'absolute z-40 flex w-60 flex-col gap-0.5 rounded-card border border-gray-200 bg-white p-1.5 shadow-float',
+        'absolute z-40 flex w-60 max-w-[calc(100vw-58px)] flex-col gap-0.5 rounded-card border border-gray-200 bg-white p-1.5 shadow-float',
         className,
       )}
     >
@@ -261,7 +261,7 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
       : `${selection.count} configured`;
 
   return (
-    <Card className="relative flex shrink-0 items-center px-[18px] py-2.5 [@media(max-height:860px)]:py-1.5">
+    <Card className="relative flex shrink-0 flex-wrap items-center gap-y-1 px-[18px] py-2.5 [@media(max-height:860px)]:py-1.5">
       <CellButton
         label="Project"
         value={planCellValue(machine.project)}
@@ -351,7 +351,7 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
       </button>
 
       {machine.projPickerOpen && (
-        <PickerPopover className="left-3.5 top-[58px]" heading="Project (from plan)">
+        <PickerPopover className="left-3.5 top-full lg:top-[58px]" heading="Project (from plan)">
           {/* The one real dead end on an empty catalog: with nothing to pick
               this popover was a blank rectangle. (The Task picker has always
               had `Custom…`, so it is never a dead end.) */}
@@ -374,7 +374,7 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
         </PickerPopover>
       )}
       {machine.taskPickerOpen && (
-        <PickerPopover className="left-[210px] top-[58px]" heading="Task (from plan)">
+        <PickerPopover className="left-3.5 top-full lg:left-[210px] lg:top-[58px]" heading="Task (from plan)">
           {curProject.tasks.map((t) => (
             <PickItem
               key={t.name}
@@ -400,7 +400,7 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
         </PickerPopover>
       )}
       {machine.batchMenuOpen && (
-        <PickerPopover className="right-3.5 top-[58px] w-56">
+        <PickerPopover className="right-3.5 top-full w-56 lg:top-[58px]">
           <MenuItem onClick={machine.pauseBatch} disabled={phase !== 'ready'}>
             Pause set
           </MenuItem>

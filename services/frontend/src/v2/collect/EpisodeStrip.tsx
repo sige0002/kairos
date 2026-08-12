@@ -134,7 +134,7 @@ export function EpisodeStrip({ machine }: { machine: BatchMachine }) {
   });
 
   return (
-    <Card className="flex shrink-0 items-center gap-2.5 px-4 py-2.5 [@media(max-height:860px)]:py-1.5">
+    <Card className="flex shrink-0 items-center gap-2.5 overflow-x-auto px-4 py-2.5 [@media(max-height:860px)]:py-1.5">
       <span
         data-testid="episode-strip-count"
         className="font-mono text-[13px] font-semibold text-gray-900"
