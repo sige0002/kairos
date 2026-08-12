@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
+import { HIT_AREA_RES_MAIN, HIT_AREA_RES_SUB } from '../shared/hitArea';
 import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
 import type { RuntimeConfig } from '../../config';
 import type { BatchMachine } from './useBatchMachine';
@@ -276,18 +277,24 @@ test('main tile offers all five presets; sub tile offers only 360p/240p', async 
 
   // Main preset group (Source + four caps) — scoped to the main tile since the
   // sub res toggle also uses 360p/240p.
+  //
+  // `radio`, not `button`, since #17: exactly one preset is on at a time, so
+  // the group is a radiogroup — which is what makes it a single tab stop and
+  // what lets it say which preset is current to something other than an eye.
   const mainRes = screen.getByTestId('main-res-group');
   for (const label of ['Source', '720p', '480p', '360p', '240p']) {
-    expect(within(mainRes).getByRole('button', { name: label })).toBeInTheDocument();
+    expect(within(mainRes).getByRole('radio', { name: label })).toBeInTheDocument();
   }
+  // The selected one says so, rather than leaving it to a background colour.
+  expect(within(mainRes).getByRole('radio', { checked: true })).toHaveTextContent('480p');
 
   // The sub tile's resolution toggle is restricted to the two lowest presets.
   const sub = screen.getByTestId('sub-camera-tile');
-  expect(within(sub).getByRole('button', { name: '360p' })).toBeInTheDocument();
-  expect(within(sub).getByRole('button', { name: '240p' })).toBeInTheDocument();
-  expect(within(sub).queryByRole('button', { name: 'Source' })).toBeNull();
-  expect(within(sub).queryByRole('button', { name: '720p' })).toBeNull();
-  expect(within(sub).queryByRole('button', { name: '480p' })).toBeNull();
+  expect(within(sub).getByRole('radio', { name: '360p' })).toBeInTheDocument();
+  expect(within(sub).getByRole('radio', { name: '240p' })).toBeInTheDocument();
+  expect(within(sub).queryByRole('radio', { name: 'Source' })).toBeNull();
+  expect(within(sub).queryByRole('radio', { name: '720p' })).toBeNull();
+  expect(within(sub).queryByRole('radio', { name: '480p' })).toBeNull();
 });
 
 test('add-camera dropdown lists discovered image topics (only), and adding opens a removable pane', async () => {
@@ -621,4 +628,109 @@ test('a sub camera with no video reaches the health report, with its cause', asy
   // And the cause is carried, so the row can say which of the three problems
   // it is instead of "down".
   expect(last.streamFault).toBe('signaling');
+});
+
+// ---------------------------------------------------------------------------
+// #17: touch targets, and the tab order that used to lead into them.
+//
+// Two halves, and only one is measurable here. jsdom computes no geometry —
+// every box is 0x0 — so the hit-area half is pinned by MECHANISM: the control
+// carries the expansion, and the constant it carries records how far and why
+// (v2/shared/hitArea.ts). The real check is a bounding-box pass on the
+// acceptance stack. The focus half IS measurable, and is asserted for real.
+// ---------------------------------------------------------------------------
+
+/** Cameras with the two config panes, settled. */
+async function renderResGroups() {
+  renderWithClient(<Cameras config={CONFIG} machine={MACHINE} />);
+  await waitFor(() => expect(screen.getByTestId('main-camera-video')).toBeInTheDocument());
+  return screen.getByTestId('main-res-group');
+}
+
+test('every resolution chip carries a hit area larger than it draws', async () => {
+  const group = await renderResGroups();
+
+  for (const chip of within(group).getAllByRole('radio')) {
+    // The overlay is what makes the target bigger than the ink …
+    expect(chip.className).toContain('after:absolute');
+    // … and `relative` is what it is measured against. Without it the overlay
+    // sizes itself to the nearest positioned ancestor and the target lands
+    // somewhere else entirely.
+    expect(chip.className).toContain('relative');
+    expect(chip.className).toContain(HIT_AREA_RES_MAIN);
+  }
+
+  const sub = screen.getByTestId('sub-camera-tile');
+  for (const chip of within(sub).getAllByRole('radio')) {
+    expect(chip.className).toContain(HIT_AREA_RES_SUB);
+  }
+  // Deliberately NOT the main tile's expansion: growing this one to 44 would
+  // either be clipped by the tile or swallow taps aimed at the stats readout.
+  // If someone unifies them later, this is the line that should stop them.
+  expect(HIT_AREA_RES_SUB).not.toBe(HIT_AREA_RES_MAIN);
+});
+
+test('a resolution group is ONE tab stop, not one per preset', async () => {
+  const group = await renderResGroups();
+  const chips = within(group).getAllByRole('radio');
+  expect(chips).toHaveLength(5);
+
+  // Exactly one of the five is in the tab order, and it is the selected one —
+  // so Tab enters the group where the operator left it and leaves after a
+  // single press instead of walking all five.
+  const inTabOrder = chips.filter((c) => c.getAttribute('tabindex') === '0');
+  expect(inTabOrder).toHaveLength(1);
+  expect(inTabOrder[0]).toHaveAttribute('aria-checked', 'true');
+  expect(inTabOrder[0]).toHaveTextContent('480p');
+
+  // Same shape on a sub tile, where the saving is 2 stops per tile.
+  const sub = screen.getByTestId('sub-camera-tile');
+  const subChips = within(sub).getAllByRole('radio');
+  expect(subChips.filter((c) => c.getAttribute('tabindex') === '0')).toHaveLength(1);
+});
+
+test('arrows move the selection inside the group, and wrap', async () => {
+  const group = await renderResGroups();
+  const checked = () => within(group).getByRole('radio', { checked: true }).textContent;
+
+  expect(checked()).toBe('480p');
+  fireEvent.keyDown(group, { key: 'ArrowRight' });
+  expect(checked()).toBe('360p');
+  fireEvent.keyDown(group, { key: 'ArrowLeft' });
+  expect(checked()).toBe('480p');
+
+  // Home/End, and wrapping past either end — a radiogroup is a ring.
+  fireEvent.keyDown(group, { key: 'Home' });
+  expect(checked()).toBe('Source');
+  fireEvent.keyDown(group, { key: 'ArrowLeft' });
+  expect(checked()).toBe('240p');
+  fireEvent.keyDown(group, { key: 'ArrowRight' });
+  expect(checked()).toBe('Source');
+  fireEvent.keyDown(group, { key: 'End' });
+  expect(checked()).toBe('240p');
+});
+
+test('the selection follows focus, so the tab stop tracks what is on', async () => {
+  const group = await renderResGroups();
+
+  fireEvent.keyDown(group, { key: 'ArrowRight' });
+
+  const inTabOrder = within(group)
+    .getAllByRole('radio')
+    .filter((c) => c.getAttribute('tabindex') === '0');
+  expect(inTabOrder).toHaveLength(1);
+  expect(inTabOrder[0]).toHaveTextContent('360p');
+  // And it holds focus, so the next arrow continues from where the operator is
+  // rather than from where they started.
+  expect(inTabOrder[0]).toHaveFocus();
+});
+
+test('a key the group does not own is left alone', async () => {
+  const group = await renderResGroups();
+  // Tab must still leave the group, and must not be swallowed into a trap.
+  expect(
+    fireEvent.keyDown(group, { key: 'Tab' }),
+    'Tab was swallowed — the group would be a focus trap',
+  ).toBe(true);
+  expect(within(group).getByRole('radio', { checked: true })).toHaveTextContent('480p');
 });
