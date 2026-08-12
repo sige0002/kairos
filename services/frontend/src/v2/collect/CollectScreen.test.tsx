@@ -764,7 +764,14 @@ test('a status missing live_capture_ids claims no takeover and reports no answer
 
   await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
   expect(screen.queryByText('RECORDING IN PROGRESS')).toBeNull();
-  await waitFor(() => expect(screen.getByText('no answer')).toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.getByTestId('sys-recorder')).toHaveTextContent('no answer'),
+  );
+  // …and the warnings card no longer answers "no active warnings" over it (#13):
+  // the Recorder row is CHECK, so it is restated there with what to do about it.
+  const checks = await screen.findByTestId('collect-check-recorder');
+  expect(checks).toHaveTextContent(/not answering/i);
+  expect(screen.queryByText('No active warnings')).toBeNull();
 });
 
 // ---------------------------------------------------------------------------

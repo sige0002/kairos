@@ -5,10 +5,14 @@
 import { Card, cn } from '../../../components/ui';
 import { SIDE_PAD } from '../compact';
 import { Chip } from './Chip';
+import { usePublishSystemRows } from './systemRowsStore';
 import { useSystemRows, type SystemRowsInput } from './useSystemRows';
 
 export function SystemStatusCard(props: SystemRowsInput) {
   const rows = useSystemRows(props);
+  // Shared with the Active warnings card below, which must not be able to say
+  // "no active warnings" while one of these rows says CHECK (#13).
+  usePublishSystemRows(rows);
 
   return (
     <Card
