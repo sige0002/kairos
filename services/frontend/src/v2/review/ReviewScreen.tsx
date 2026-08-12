@@ -239,28 +239,9 @@ export function ReviewScreen() {
 
       <Toast message={rv.toast} testId="review-toast" />
 
-      <Modal
-        open={rv.excludePending}
-        onClose={rv.cancelExclude}
-        title={`Exclude episode ${rv.pendingExcludeLabel ?? ''}?`}
-        footer={
-          <>
-            <Button variant="ghost" onClick={rv.cancelExclude}>
-              Cancel
-            </Button>
-            <Button
-              variant="danger"
-              data-testid="review-confirm-exclude"
-              onClick={rv.confirmExclude}
-            >
-              Exclude
-            </Button>
-          </>
-        }
-      >
-        The recording itself is kept and can be restored at any time. It&apos;s
-        reclassified as Not usable / Excluded — episode numbers are never reassigned.
-      </Modal>
+      {/* No exclude confirmation: excluding keeps every byte and is undoable in
+          one action from the band under the episode table's toolbar. The dialogs
+          below guard the two things that cannot be taken back. */}
 
       {/* The two removal intents (§12). Separate dialogs, separate testids:
           the operator must be able to tell which one they are about to do. */}

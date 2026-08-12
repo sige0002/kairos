@@ -28,12 +28,14 @@ import type {
   BatchListResponse,
   CaptureListItem,
   Quality,
+  QualitySource,
   ReviewStatus,
   TaskResult,
 } from '../../api/types';
 import { useUiStore } from '../../store/uiStore';
 import { useCaptureDeletion } from '../captures/useCaptureDeletion';
 import { useBulkRun } from '../shared/useBulkRun';
+import { displayQuality } from '../episodeChips';
 import { mapCapturesToEpisodes, type BatchSeqLookup } from './mapCaptures';
 import { initialTransferSlot, transferReducer } from './transfer';
 import { setSplitMode, useSplitMode } from '../captures/splitMode';
@@ -44,7 +46,6 @@ import {
   type ReviewSaveResult,
   type ReviewSaveState,
 } from './useReviewSave';
-import { episodeLabel } from './types';
 import type {
   DecoratedEpisode,
   Decision,
@@ -85,8 +86,52 @@ function toServerReview(d: Decision): ReviewStatus {
   return 'pending';
 }
 
+/** How a capture is named in a message: its episode number when it has one,
+ *  then the run id, then the raw id. Module-level and pure so a caller holding
+ *  a row can name it without taking a dependency on the hook's render. */
+function subjectOf(row: Pick<DecoratedEpisode, 'ep' | 'runId' | 'captureId'>): string {
+  if (row.ep != null) return `Episode #${row.ep}`;
+  return row.runId ?? row.captureId;
+}
+
+/** What an undo put back, in the screen's own vocabulary ("Adopted · Good").
+ *  The toast says the state by name rather than "restored": an operator who
+ *  mis-clicked needs to see WHICH state came back, not that something did. */
+function describePrior(prior: ExcludeUndo['prior']): string {
+  const status =
+    prior.review_status === 'adopted'
+      ? 'Adopted'
+      : prior.review_status === 'excluded'
+        ? 'Excluded'
+        : 'Pending';
+  const quality = displayQuality(prior.quality);
+  return quality ? `${status} · ${quality}` : status;
+}
+
 /** Sentinel option value for "any operator" in the operator filter. */
 export const ALL_OPERATORS = '__all__';
+
+/** What an exclude overwrote, so it can be put back exactly.
+ *
+ *  Excluding writes BOTH `review_status` and `quality` (→ excluded /
+ *  not_usable), and Return only ever writes `pending` — so before this, taking
+ *  back a mis-click on an adopted capture meant Return, then Adopt, and the
+ *  quality it had been carrying was simply gone. The three fields below are the
+ *  three the exclude touches, read off the STORED capture rather than the
+ *  optimistic overlay, and `quality_source` travels with `quality` because
+ *  restoring a validator's verdict as an operator's would put a human's name on
+ *  a machine's judgement. */
+export interface ExcludeUndo {
+  captureId: string;
+  /** "Episode #3" / the run id — resolved when the exclude happened, because
+   *  the row it names is filtered out of the table the moment it is excluded. */
+  subject: string;
+  prior: {
+    review_status: ReviewStatus;
+    quality: Quality | null;
+    quality_source: QualitySource | null;
+  };
+}
 
 export interface ReviewState {
   isLoading: boolean;
@@ -143,14 +188,18 @@ export interface ReviewState {
   /** Exclude / restore one capture. Reversible — a review label, not a
    *  deletion; the recording stays exactly where it is. */
   requestExclude: (captureId: string) => void;
-  /** True while the exclude confirmation is open. Deliberately not derived
-   *  from the episode number: a capture with no `index_in_batch` has none, and
-   *  gating the dialog on it left that capture unable to be excluded at all. */
-  excludePending: boolean;
-  /** The episode label for the confirmation's title ("#3" or "—"). */
-  pendingExcludeLabel: string | null;
-  confirmExclude: () => void;
-  cancelExclude: () => void;
+  /** The last exclude that can still be taken back, or null. Session-scoped
+   *  and client-held by design: the store has no "previous review" to ask for,
+   *  and inventing one server-side would make an undo affordance out of a
+   *  schema change. Keyed by capture id, never by row identity — the detail
+   *  poll replaces row objects underneath a held reference. */
+  excludeUndo: ExcludeUndo | null;
+  /** Put the remembered {review_status, quality, quality_source} back in one
+   *  save. Kept on failure so it can be tried again; cleared only when the
+   *  restore actually lands. */
+  undoExclude: () => void;
+  /** Drop the offer without restoring anything. */
+  dismissExcludeUndo: () => void;
 
   // ---- removal (§7): two separate intents, never one control -------------
   /** Excluded captures — the set the bulk controls act on. */
@@ -476,8 +525,7 @@ export function useReviewState(): ReviewState {
   // answer from a stale one, which is the same bug wearing a cache. Read live.
   const captureSubject = (captureId: string) => {
     const row = decorated.find((r) => r.captureId === captureId);
-    if (row?.ep != null) return `Episode #${row.ep}`;
-    return row?.runId ?? captureId;
+    return row ? subjectOf(row) : captureId;
   };
 
   /** Apply one review change optimistically, then save. A refusal drops the
@@ -504,49 +552,158 @@ export function useReviewState(): ReviewState {
   );
 
   // ---- exclude / restore (a review label; the recording is untouched) -----
-  const [pendingExcludeId, setPendingExcludeId] = useState<string | null>(null);
+  //
+  // No confirmation dialog on either entry point, and one shared path for both.
+  // Excluding keeps every byte and is now undoable in one action, so a modal in
+  // front of it would be a speed bump on the most repeated action of an
+  // exception-review pass — and the kind of speed bump that teaches an operator
+  // to confirm without reading. The dialogs that remain are the ones guarding
+  // something that cannot be taken back: Discard and Delete.
+  const [excludeUndo, setExcludeUndo] = useState<ExcludeUndo | null>(null);
+  const dismissExcludeUndo = useCallback(() => setExcludeUndo(null), []);
+
+  /** Exclude one capture, remembering what it overwrote. */
+  const excludeCapture = useCallback(
+    (row: DecoratedEpisode) => {
+      // Read off the STORED capture, not `effective*`: the overlay may still be
+      // carrying an optimistic value from a save that has not been answered,
+      // and restoring that would put back something never written.
+      const prior: ExcludeUndo['prior'] = {
+        review_status: row.capture.review_status,
+        quality: row.capture.quality ?? null,
+        quality_source: row.capture.quality_source ?? null,
+      };
+      const subject = subjectOf(row);
+      void applyReview(
+        row,
+        { status: 'excluded', quality: 'Not usable' },
+        {
+          review_status: 'excluded',
+          quality: 'not_usable',
+          quality_source: 'operator',
+        },
+      ).then(({ capture }) => {
+        // Only offer to undo a write that actually landed. A refusal has
+        // already reverted the row, so there is nothing to take back — and an
+        // Undo sitting under a conflict banner would invite the operator to
+        // "restore" a capture this screen never changed.
+        if (!capture) return;
+        setExcludeUndo({ captureId: row.captureId, subject, prior });
+        // The undo band announces itself (role="status"), so this does not
+        // repeat the offer — two live regions saying "Undo available" in the
+        // same breath is noise, and the band is the one with the button in it.
+        showToast(`${subject} → Not usable · Excluded (recording kept)`);
+      });
+    },
+    [applyReview, showToast],
+  );
+
   const requestExclude = useCallback(
     (captureId: string) => {
       const row = decorated.find((r) => r.captureId === captureId);
       if (!row) return;
       if (row.isExcluded) {
+        // The offer is for THIS exclusion, and the operator is undoing it by
+        // another door. Dropping the memo here (the guard above already stops
+        // it being shown) keeps it from coming back if the capture is excluded
+        // again later by something that does not go through this function.
+        if (excludeUndo?.captureId === captureId) setExcludeUndo(null);
         void applyReview(row, { status: 'pending' }, { review_status: 'pending' }).then(
           ({ capture }) => {
+            // Says the step that is still outstanding. "Restored" read as
+            // finished, and the capture sat at `pending` — invisible to
+            // Datasets, which take adopted captures only.
             if (capture)
-              showToast(`Episode ${episodeLabel(row.ep)} restored — no longer excluded`);
+              showToast(
+                `${subjectOf(row)} returned to review — Adopt to include in datasets`,
+              );
           },
         );
         return;
       }
-      setPendingExcludeId(captureId);
+      excludeCapture(row);
     },
-    [decorated, applyReview, showToast],
+    [decorated, applyReview, showToast, excludeCapture, excludeUndo],
   );
-  const confirmExclude = useCallback(() => {
-    if (!pendingExcludeId) return;
-    const row = decorated.find((r) => r.captureId === pendingExcludeId);
-    setPendingExcludeId(null);
-    if (!row) return;
+
+  const undoExclude = useCallback(() => {
+    const memo = excludeUndo;
+    if (!memo) return;
+    const row = decorated.find((r) => r.captureId === memo.captureId);
+    if (!row) {
+      // The capture left the catalog (deleted or discarded from elsewhere).
+      // There is nothing to restore it onto, and keeping the offer would sit
+      // there failing.
+      setExcludeUndo(null);
+      return;
+    }
+    // The precondition, re-checked at the moment of the write and not only at
+    // render: an undo is only ever an undo while the exclusion it remembers is
+    // still the capture's state. Excluding a PENDING capture and then adopting
+    // it instead used to leave this offer standing, and taking it wrote
+    // `pending` over the adoption — a silent demotion, reported as a success.
+    // Whoever the second decision came from, theirs is the newer one.
+    if (!row.isExcluded) {
+      setExcludeUndo(null);
+      return;
+    }
     void applyReview(
       row,
-      { status: 'excluded', quality: 'Not usable' },
       {
-        review_status: 'excluded',
-        quality: 'not_usable',
-        quality_source: 'operator',
+        status: memo.prior.review_status,
+        // Only when there is a value to show. `undefined` leaves the overlay
+        // alone, which is right: a prior of "no quality set" cannot be drawn
+        // optimistically, and it settles on the server's answer either way.
+        ...(memo.prior.quality
+          ? { quality: displayQuality(memo.prior.quality) ?? undefined }
+          : {}),
+      },
+      {
+        review_status: memo.prior.review_status,
+        // Sent explicitly, nulls included. The server tells "omitted" from
+        // "null" by `model_fields_set`, and an omitted field means "leave it" —
+        // which is how the capture would keep the `not_usable` the exclude
+        // wrote on it. A null does NOT land as null, though: the server refills
+        // an explicitly-null quality from the capture's own quick-check verdict
+        // and marks it `quick_check`. That is the honest end state for a
+        // quality no operator ever set — machine-judged again, rather than
+        // carrying a verdict this screen put there and just took back.
+        quality: memo.prior.quality,
+        quality_source: memo.prior.quality_source,
       },
     ).then(({ capture }) => {
-      if (capture) {
-        showToast(
-          `Episode ${episodeLabel(row.ep)} → Not usable · Excluded (recording kept, restorable)`,
-        );
-      }
+      // Kept on failure. The conflict/failure banner says what went wrong, and
+      // the offer is still the operator's way to try again.
+      if (!capture) return;
+      setExcludeUndo(null);
+      showToast(
+        `${memo.subject} restored to ${describePrior(memo.prior)}` +
+          // Said out loud, because the screen cannot put back a quality that
+          // was never set: the server refills an explicitly-null quality from
+          // the capture's quick check. Claiming a bare "restored to Pending"
+          // would hide a value arriving from somewhere the operator did not
+          // choose.
+          (memo.prior.quality === null ? ' — quality re-derived from quick check' : ''),
+      );
     });
-  }, [pendingExcludeId, decorated, applyReview, showToast]);
-  const cancelExclude = useCallback(() => setPendingExcludeId(null), []);
-  const pendingExcludeLabel = pendingExcludeId
-    ? episodeLabel(decorated.find((r) => r.captureId === pendingExcludeId)?.ep ?? null)
-    : null;
+  }, [excludeUndo, decorated, applyReview, showToast]);
+
+  // What the strip is allowed to offer. The memo above records what an exclude
+  // overwrote; this is whether that exclusion is STILL the capture's state.
+  //
+  // Derived rather than left to each route to remember, because the routes back
+  // out of an exclusion are many — the row's Return, the detail panel's, a
+  // batch return, Adopt, another terminal's save arriving on the poll — and
+  // every one of them that forgot left an offer whose only remaining effect was
+  // damage: excluding a PENDING capture, adopting it instead, then taking the
+  // stale offer wrote `pending` over the adoption and called it a success.
+  // A rule computed from the capture's own state cannot be forgotten by the
+  // next route somebody adds.
+  const excludeUndoOffer = useMemo(() => {
+    if (!excludeUndo) return null;
+    const row = decorated.find((r) => r.captureId === excludeUndo.captureId);
+    return row?.isExcluded ? excludeUndo : null;
+  }, [excludeUndo, decorated]);
 
   // ---- removal (§7) -------------------------------------------------------
   // Both intents run through the one shared flow, so the wording, the required
@@ -560,6 +717,9 @@ export function useReviewState(): ReviewState {
     onDeleted: (ids) => {
       for (const id of ids) clearPending(id);
       setSelectedCaptureId((cur) => (cur && ids.includes(cur) ? null : cur));
+      // An undo for a capture that no longer exists has nothing to restore
+      // onto. Offering it would be a button whose only outcome is a failure.
+      setExcludeUndo((cur) => (cur && ids.includes(cur.captureId) ? null : cur));
     },
     onToast: showToast,
   });
@@ -626,6 +786,10 @@ export function useReviewState(): ReviewState {
     // opens: opening a dialog supersedes nothing, and the operator may still
     // be reading the notice while deciding whether to go ahead.
     resetReturnBatch();
+    // Same reason the return notice goes: a single-capture undo offer sitting
+    // over a batch that just excluded a dozen others reads as the undo for what
+    // the operator did last, and it is not.
+    setExcludeUndo(null);
     void (async () => {
       const outcome = await runExcludeBatch({
         items: targets,
@@ -673,6 +837,10 @@ export function useReviewState(): ReviewState {
   const returnBatchToReview = useCallback(() => {
     const targets = batchExcluded;
     if (!targets.length) return;
+    // Same rule as the single Return: if this sweep is about to un-exclude the
+    // capture the offer belongs to, the offer is spent.
+    if (excludeUndo && targets.some((t) => t.captureId === excludeUndo.captureId))
+      setExcludeUndo(null);
     void (async () => {
       const outcome = await runReturnBatch({
         items: targets,
@@ -696,25 +864,46 @@ export function useReviewState(): ReviewState {
       const { succeeded, failures } = outcome;
       showToast(
         failures.length === 0
-          ? `Returned ${succeeded} episode${succeeded === 1 ? '' : 's'} to review`
+          ? `Returned ${succeeded} episode${succeeded === 1 ? '' : 's'} to review — Adopt to include in datasets`
           : `Returned ${succeeded}, ${failures.length} failed`,
       );
     })();
-  }, [batchExcluded, applyReview, reviewSave, showToast, runReturnBatch]);
+  }, [batchExcluded, applyReview, reviewSave, showToast, runReturnBatch, excludeUndo]);
 
   // ---- decisions / overrides ---------------------------------------------
   const decide = useCallback(
     (d: Decision) => {
       if (!selected) return;
+      // The detail panel's Exclude is the SAME operation as the table's, down
+      // to the undo it leaves behind. It used to be a bare status write: no
+      // quality change, nothing remembered, and no confirmation either — three
+      // ways for the two entry points to disagree about what "Exclude" means.
+      if (d === 'excluded') {
+        excludeCapture(selected);
+        return;
+      }
+      const wasExcluded = selected.isExcluded;
+      // Every decision that is not "exclude" ends this exclusion, whichever it
+      // is: Return takes it out, Adopt overrides it. The offer goes with it.
+      if (excludeUndo?.captureId === selected.captureId) setExcludeUndo(null);
       void applyReview(
         selected,
         { status: toServerReview(d) },
         { review_status: toServerReview(d) },
       ).then(({ capture }) => {
-        if (capture) showToast(`Episode ${episodeLabel(selected.ep)} → ${d}`);
+        if (!capture) return;
+        if (d === 'review') {
+          // Same outstanding step as the table's Return: `pending` is not a
+          // finished state, and Datasets take adopted captures only.
+          showToast(
+            `${subjectOf(selected)} ${wasExcluded ? 'returned to review' : 'reset to needs check'} — Adopt to include in datasets`,
+          );
+          return;
+        }
+        showToast(`${subjectOf(selected)} → ${d}`);
       });
     },
-    [selected, applyReview, showToast],
+    [selected, applyReview, showToast, excludeCapture, excludeUndo],
   );
 
   // Adopt this capture — the one thing Datasets requires before a capture can
@@ -724,18 +913,21 @@ export function useReviewState(): ReviewState {
   const markOk = useCallback(() => {
     if (!selected) return;
     const exception = selected.reviewLane === 'needs_check';
+    // Adopting is the operator choosing the opposite of the exclusion they are
+    // being offered a way back from. Theirs is the newer decision.
+    if (excludeUndo?.captureId === selected.captureId) setExcludeUndo(null);
     void applyReview(selected, { status: 'adopted' }, { review_status: 'adopted' }).then(
       ({ capture }) => {
         if (capture) {
           showToast(
             exception
-              ? `Episode ${episodeLabel(selected.ep)} marked OK — included`
-              : `Episode ${episodeLabel(selected.ep)} adopted — datasets can use it`,
+              ? `${subjectOf(selected)} marked OK — included`
+              : `${subjectOf(selected)} adopted — datasets can use it`,
           );
         }
       },
     );
-  }, [selected, applyReview, showToast]);
+  }, [selected, applyReview, showToast, excludeUndo]);
 
   const cycleFinalQuality = useCallback(() => {
     if (!selected) return;
@@ -749,7 +941,7 @@ export function useReviewState(): ReviewState {
       { quality: next },
       { quality: toServerQuality(next), quality_source: 'operator' },
     ).then(({ capture }) => {
-      if (capture) showToast(`${episodeLabel(selected.ep)} quality → ${next}`);
+      if (capture) showToast(`${subjectOf(selected)} quality → ${next}`);
     });
   }, [selected, applyReview, showToast]);
 
@@ -760,7 +952,7 @@ export function useReviewState(): ReviewState {
       selected.effectiveTask === 'Success' ? 'Failure' : 'Success';
     void applyReview(selected, { task: next }, { task_result: toServerTask(next) }).then(
       ({ capture }) => {
-        if (capture) showToast(`${episodeLabel(selected.ep)} task result → ${next}`);
+        if (capture) showToast(`${subjectOf(selected)} task result → ${next}`);
       },
     );
   }, [selected, applyReview, showToast]);
@@ -956,10 +1148,9 @@ export function useReviewState(): ReviewState {
     selected,
 
     requestExclude,
-    excludePending: pendingExcludeId !== null,
-    pendingExcludeLabel,
-    confirmExclude,
-    cancelExclude,
+    excludeUndo: excludeUndoOffer,
+    undoExclude,
+    dismissExcludeUndo,
 
     excludedRows,
     requestDiscard,
