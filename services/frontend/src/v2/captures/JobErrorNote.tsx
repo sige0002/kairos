@@ -5,28 +5,68 @@
 // step is not the same for all three. errors.ts holds the per-context wording;
 // this renders it. A bare <ErrorMessage> shows only the server's sentence,
 // which for a job says nothing about what the operator should do now.
+//
+// The note also carries two things a failed ATTEMPT needs that a refusal alone
+// does not (#9). Every screen that shows one of these sits beside a result the
+// server stored earlier — a PASS badge, a loss table, an integrity report — and
+// a failed attempt neither replaces nor annotates it, so the two read as one
+// statement: a stale PASS with "Failed to fetch" under it. `staleNote` is the
+// caller's sentence saying which of the two the reader is looking at, and
+// `onRetry` puts the way forward in the same place as the news, instead of
+// leaving the operator to find the button that failed.
 
 import { readCaptureError } from './errors';
 
 export function JobErrorNote({
   error,
   testId = 'job-error',
+  staleNote,
+  onRetry,
+  retryLabel = 'Retry',
+  retryDisabled = false,
 }: {
   error: unknown;
   testId?: string;
+  /** What the result still on screen actually is, given this attempt failed.
+   *  Pass it only when there IS one — claiming a stored result that does not
+   *  exist would be the same lie in the other direction. */
+  staleNote?: string;
+  /** Re-runs the same work. Omit where a retry cannot help (no template
+   *  configured, the capture already gone) rather than offering a dead button. */
+  onRetry?: () => void;
+  retryLabel?: string;
+  retryDisabled?: boolean;
 }) {
   if (!error) return null;
   const reading = readCaptureError(error, 'job');
   return (
-    <p
+    <div
       role="alert"
       data-testid={testId}
       data-error-code={reading.code}
-      className="rounded-control border border-red-200 bg-red-50 px-3 py-2 text-[11.5px] leading-relaxed text-red-700"
+      className="flex flex-col gap-1.5 rounded-control border border-red-200 bg-red-50 px-3 py-2 text-[11.5px] leading-relaxed text-red-700"
     >
-      <span className="font-semibold">{reading.message}</span>
-      {reading.guidance && <> {reading.guidance}</>}
-    </p>
+      <p>
+        <span className="font-semibold">{reading.message}</span>
+        {reading.guidance && <> {reading.guidance}</>}
+      </p>
+      {staleNote && (
+        <p data-testid={`${testId}-stale`} className="text-red-800">
+          {staleNote}
+        </p>
+      )}
+      {onRetry && (
+        <button
+          type="button"
+          data-testid={`${testId}-retry`}
+          onClick={onRetry}
+          disabled={retryDisabled}
+          className="self-start rounded-control border border-red-300 bg-white px-2.5 py-1 font-semibold text-red-700 transition-colors hover:bg-red-100 disabled:opacity-50"
+        >
+          {retryLabel}
+        </button>
+      )}
+    </div>
   );
 }
 

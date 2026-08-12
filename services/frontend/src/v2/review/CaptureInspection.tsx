@@ -267,6 +267,23 @@ export function CaptureInspection({
     capture.validation && typeof capture.validation.result === 'string'
       ? (capture.validation.result as string)
       : null;
+  // When the stored verdict was reached. Written by the pipeline itself
+  // (fast_validation / the bagflow adapter both stamp `checked_at`), so it is
+  // the run's own completion time and not this client's clock. Absent on a
+  // report from before the field existed, in which case the badge is labelled
+  // as the last completed check with no time rather than given a made-up one.
+  const validationCheckedAt =
+    capture.validation && typeof capture.validation.checked_at === 'string'
+      ? (capture.validation.checked_at as string)
+      : null;
+  // The sentence that separates a stored result from a failed attempt (#9): a
+  // beta operator saw "Failed to fetch" beside an untouched PASS and could not
+  // tell which of the two was current. Only claims a stored result when there
+  // is one.
+  const staleValidationNote = validationResult
+    ? `The ${validationResult.toUpperCase()} badge above is the last completed check` +
+      `${validationCheckedAt ? ` (${formatWhen(validationCheckedAt)})` : ''}, not this attempt.`
+    : undefined;
 
   return (
     <div data-testid="review-inspection" className="flex flex-col gap-3">
@@ -457,7 +474,20 @@ export function CaptureInspection({
               {loss.running ? 'Analyzing…' : 'Run loss report'}
             </button>
           </div>
-          <JobErrorNote error={loss.error} testId="review-loss-error" />
+          {/* Same shape as the validation section below: a failed attempt sits
+              directly above a table the server stored earlier. */}
+          <JobErrorNote
+            error={loss.error}
+            testId="review-loss-error"
+            staleNote={
+              capture.loss?.topics
+                ? 'The table below is the last completed loss report, not this attempt.'
+                : undefined
+            }
+            onRetry={() => loss.run({})}
+            retryDisabled={loss.running || !!leaseReason}
+            retryLabel="Retry loss report"
+          />
           {capture.loss?.topics ? (
             <LossTable topics={capture.loss.topics} />
           ) : (
@@ -476,18 +506,31 @@ export function CaptureInspection({
             </h4>
             <div className="flex items-center gap-2">
               {validationResult && (
-                <Badge
-                  tone={
-                    validationResult === 'pass'
-                      ? 'green'
-                      : validationResult === 'fail'
-                        ? 'red'
-                        : 'gray'
-                  }
-                  dot
-                >
-                  {validationResult.toUpperCase()}
-                </Badge>
+                <span className="flex items-center gap-1.5">
+                  <Badge
+                    tone={
+                      validationResult === 'pass'
+                        ? 'green'
+                        : validationResult === 'fail'
+                          ? 'red'
+                          : 'gray'
+                    }
+                    dot
+                  >
+                    {validationResult.toUpperCase()}
+                  </Badge>
+                  {/* The badge is a STORED verdict, and without its time there
+                      was nothing on the page to date it against a later
+                      attempt. No time in the report ⇒ say only what is known. */}
+                  <span
+                    data-testid="review-validation-checked"
+                    className="text-[11px] text-gray-500"
+                  >
+                    {validationCheckedAt
+                      ? `checked ${formatWhen(validationCheckedAt)}`
+                      : 'last completed check'}
+                  </span>
+                </span>
               )}
               <button
                 type="button"
@@ -506,7 +549,14 @@ export function CaptureInspection({
               </button>
             </div>
           </div>
-          <JobErrorNote error={validation.error} testId="review-validation-error" />
+          <JobErrorNote
+            error={validation.error}
+            testId="review-validation-error"
+            staleNote={staleValidationNote}
+            onRetry={template ? () => validation.run({ template }) : undefined}
+            retryDisabled={validation.running || !!leaseReason}
+            retryLabel="Retry validation"
+          />
           {!template && !optionsQuery.isPending && (
             <p className="text-[11.5px] text-gray-500">
               No validation template is configured for the active robot.
