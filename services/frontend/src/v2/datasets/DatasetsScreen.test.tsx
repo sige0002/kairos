@@ -46,6 +46,11 @@ interface Backend {
   /** When true, a per-capture archive is refused because the destination
    *  already holds files (409 destination_not_empty, captures.py). */
   archiveDestinationNotEmpty: boolean;
+  /** Hold POST /datasets open. The write has left and its answer has not come
+   *  back — the window in which a dismissal must not be obeyed. */
+  holdCreate: boolean;
+  /** Let a held POST /datasets finish. */
+  releaseCreate: () => void;
   archived: { captureId: string; destination: string; reason: string | null }[];
   /** In-flight per-capture archive runs (S2-1: 202 + progress poll). One
    *  `running` read, then the run completes — which is when the server
@@ -153,6 +158,7 @@ function withMemberships(backend: Backend, c: CaptureListItem): CaptureListItem 
 }
 
 function mockApi(seed: Partial<Backend> = {}): Backend {
+  const createGate: { release: (() => void) | null } = { release: null };
   const backend: Backend = {
     // Copied, never adopted: the handlers mutate rows in place (a PATCH
     // renames, an archive seal flips status), and a shared module-level
@@ -166,6 +172,11 @@ function mockApi(seed: Partial<Backend> = {}): Backend {
     archiveVerifies: seed.archiveVerifies ?? true,
     capturesNeverEnd: seed.capturesNeverEnd ?? false,
     archiveDestinationNotEmpty: seed.archiveDestinationNotEmpty ?? false,
+    holdCreate: seed.holdCreate ?? false,
+    releaseCreate: () => {
+      createGate.release?.();
+      createGate.release = null;
+    },
     archived: [],
     captureArchiveRuns: {},
     archiveRun: seed.archiveRun ?? null,
@@ -361,6 +372,11 @@ function mockApi(seed: Partial<Backend> = {}): Backend {
 
     if (path === '/datasets') {
       if (method === 'POST') {
+        if (backend.holdCreate) {
+          await new Promise<void>((resolve) => {
+            createGate.release = resolve;
+          });
+        }
         const created: Dataset = {
           dataset_id: `ds-${nextId++}`,
           name: String(body.name),
@@ -1636,9 +1652,9 @@ test('the archive prefill scrubs the same characters the server does', async () 
 //
 // Every one of these controls used to carry its purpose in a placeholder only,
 // which the accessibility tree does not read as a name — the screen offered a
-// keyboard operator three unlabelled "edit" fields and an unlabelled combo box.
-// The queries below go through the accessible name deliberately: a `data-testid`
-// would still pass with every label stripped back off.
+// keyboard operator half a dozen unlabelled "edit" fields and an unlabelled
+// combo box. The queries below go through the accessible name deliberately: a
+// `data-testid` would still pass with every label stripped back off.
 
 test('the list toolbar names its search field and its operator filter', async () => {
   mockApi({ datasets: [DS_KITCHEN], captures: [CAP_A, CAP_B] });
@@ -1653,7 +1669,7 @@ test('the list toolbar names its search field and its operator filter', async ()
   ).toBe(screen.getByTestId('dataset-operator-filter'));
 });
 
-test('the member search is named too', async () => {
+test('the member search and the candidate search are named too', async () => {
   mockApi({
     datasets: [DS_KITCHEN],
     captures: [CAP_A],
@@ -1668,19 +1684,41 @@ test('the member search is named too', async () => {
   expect(
     screen.getByRole('searchbox', { name: 'Search members of this dataset' }),
   ).toBe(screen.getByTestId('dataset-member-search'));
+  // The build rail's own search — same defect, same screen.
+  expect(screen.getByRole('searchbox', { name: 'Search recordings to add' })).toBe(
+    screen.getByTestId('dataset-candidate-search'),
+  );
 });
 
-test('the create form is a named dialog whose three fields are named', async () => {
+test('the combine dialog names the fields of the dataset it builds', async () => {
+  mockApi({ datasets: [DS_KITCHEN], captures: [CAP_A] });
+  renderWithClient(<DatasetsScreen />);
+
+  await screen.findByTestId(datasetTestId('ds-kitchen'));
+  fireEvent.click(screen.getByTestId('combine-datasets-btn'));
+
+  const dialog = await screen.findByRole('dialog');
+  expect(
+    within(dialog).getByLabelText('New dataset operator (optional)'),
+  ).toBe(screen.getByTestId('combine-datasets-operator'));
+  expect(within(dialog).getByLabelText('New dataset task (optional)')).toBe(
+    screen.getByTestId('combine-datasets-task'),
+  );
+});
+
+test('the create form is a named form landmark whose three fields are named', async () => {
   mockApi({ captures: [CAP_A] });
   renderWithClient(<DatasetsScreen />);
   await screen.findByTestId('dataset-list-empty');
 
   fireEvent.click(screen.getByTestId('new-dataset-btn'));
-  const form = screen.getByRole('dialog', { name: 'New dataset' });
+  const form = screen.getByRole('form', { name: 'New dataset' });
   expect(form).toBe(screen.getByTestId('new-dataset-form'));
-  // Non-modal on purpose: the list it adds to stays live beside it, so the
-  // claim `aria-modal` would make is one the screen does not honour.
-  expect(form).not.toHaveAttribute('aria-modal');
+  // Not a dialog: it has no overlay, traps no focus, and leaves the list beside
+  // it live — and `role="dialog"` is not a role a <form> may carry anyway. The
+  // absence is the assertion; a role put back here would be both claims wrong.
+  expect(form).not.toHaveAttribute('role');
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
 
   expect(within(form).getByLabelText('Dataset name')).toBe(
     screen.getByTestId('new-dataset-name'),
@@ -1693,7 +1731,7 @@ test('the create form is a named dialog whose three fields are named', async () 
   );
 });
 
-test('Escape closes the create form without creating anything', async () => {
+test('Escape closes the create form without creating, and hands the cursor back', async () => {
   const backend = mockApi({ captures: [CAP_A] });
   renderWithClient(<DatasetsScreen />);
   await screen.findByTestId('dataset-list-empty');
@@ -1710,4 +1748,89 @@ test('Escape closes the create form without creating anything', async () => {
   );
   expect(backend.calls.filter((c) => c === 'POST /datasets')).toHaveLength(0);
   expect(backend.datasets).toHaveLength(0);
+  // The field the cursor was in has just unmounted. Without the restore it
+  // falls to <body> and the next Tab restarts at the top of the document.
+  expect(screen.getByTestId('new-dataset-btn')).toHaveFocus();
+});
+
+test('Cancel hands the cursor back the same way, and discards what was typed', async () => {
+  mockApi({ captures: [CAP_A] });
+  renderWithClient(<DatasetsScreen />);
+  await screen.findByTestId('dataset-list-empty');
+
+  fireEvent.click(screen.getByTestId('new-dataset-btn'));
+  fireEvent.change(screen.getByTestId('new-dataset-name'), {
+    target: { value: 'shelf restock' },
+  });
+  fireEvent.click(screen.getByTestId('new-dataset-cancel'));
+
+  await waitFor(() =>
+    expect(screen.queryByTestId('new-dataset-form')).not.toBeInTheDocument(),
+  );
+  expect(screen.getByTestId('new-dataset-btn')).toHaveFocus();
+  // Reopening gives an empty form, not the abandoned attempt — which is also
+  // what keeps a failed create's error banner from coming back with it.
+  fireEvent.click(screen.getByTestId('new-dataset-btn'));
+  expect(screen.getByTestId('new-dataset-name')).toHaveValue('');
+});
+
+test('Escape is ignored while the create POST is still in flight', async () => {
+  const backend = mockApi({ captures: [CAP_A], holdCreate: true });
+  renderWithClient(<DatasetsScreen />);
+  await screen.findByTestId('dataset-list-empty');
+
+  fireEvent.click(screen.getByTestId('new-dataset-btn'));
+  fireEvent.change(screen.getByTestId('new-dataset-name'), {
+    target: { value: 'shelf restock' },
+  });
+  fireEvent.click(screen.getByTestId('new-dataset-submit'));
+  await waitFor(() =>
+    expect(screen.getByTestId('new-dataset-submit')).toHaveTextContent('Creating…'),
+  );
+
+  fireEvent.keyDown(screen.getByTestId('new-dataset-form'), { key: 'Escape' });
+
+  // The write is already out. Closing now would only hide the result of
+  // something that is going to land regardless — so the form stays, exactly as
+  // Cancel stays disabled.
+  expect(screen.getByTestId('new-dataset-form')).toBeInTheDocument();
+  backend.releaseCreate();
+  await waitFor(() => expect(backend.datasets).toHaveLength(1));
+});
+
+test('the Escape an IME is closing its candidate window with is not a dismissal', async () => {
+  mockApi({ captures: [CAP_A] });
+  renderWithClient(<DatasetsScreen />);
+  await screen.findByTestId('dataset-list-empty');
+
+  fireEvent.click(screen.getByTestId('new-dataset-btn'));
+  // Mid-conversion. This Escape belongs to the IME; taking it as a dismissal
+  // throws away both the text being converted and the form around it.
+  fireEvent.keyDown(screen.getByTestId('new-dataset-form'), {
+    key: 'Escape',
+    isComposing: true,
+  });
+
+  expect(screen.getByTestId('new-dataset-form')).toBeInTheDocument();
+});
+
+test('the form’s Escape does not travel on to a dialog listening on the document', async () => {
+  mockApi({ datasets: [DS_KITCHEN], captures: [CAP_A] });
+  renderWithClient(<DatasetsScreen />);
+  await screen.findByTestId(datasetTestId('ds-kitchen'));
+
+  // Both open at once: the panel is inline, so opening the shared Modal over it
+  // does not close it.
+  fireEvent.click(screen.getByTestId('new-dataset-btn'));
+  fireEvent.click(screen.getByTestId('combine-datasets-btn'));
+  await screen.findByRole('dialog');
+
+  fireEvent.keyDown(screen.getByTestId('new-dataset-form'), { key: 'Escape' });
+
+  await waitFor(() =>
+    expect(screen.queryByTestId('new-dataset-form')).not.toBeInTheDocument(),
+  );
+  // The Modal's Escape handler is on the DOCUMENT, which the form's keystroke
+  // bubbles through. One press, one dismissal — not two.
+  expect(screen.getByRole('dialog')).toBeInTheDocument();
 });

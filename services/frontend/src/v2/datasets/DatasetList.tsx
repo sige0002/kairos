@@ -14,6 +14,7 @@
 // dataset" mean "move recordings into a directory", and the two must not be
 // confused while both are still in living memory.
 
+import { useRef } from 'react';
 import { Badge, cn } from '../../components/ui';
 import { ErrorMessage } from '../../components/ErrorMessage';
 import { CombineDatasetsDialog } from './CombineDatasetsDialog';
@@ -94,16 +95,16 @@ function DatasetListRow({ row, state }: { row: DatasetRow; state: DatasetsState 
 /** The create form. Inline rather than a modal: it is three fields, and the
  *  list it adds to stays visible beside them.
  *
- *  It is a dialog in the non-modal sense only — `role="dialog"` with a name, no
- *  `aria-modal`. The page behind it stays live and reachable by design (that is
- *  the whole reason it is not the shared overlay), and claiming `aria-modal`
- *  would tell a screen reader the rest of the screen no longer exists while it
- *  demonstrably still does. What it does owe the keyboard is the dismissal the
- *  Cancel button offers the mouse: Escape leaves without creating. */
-function CreateForm({ state }: { state: DatasetsState }) {
+ *  A NAMED FORM, not a dialog. It has no overlay, traps no focus, and leaves
+ *  the page behind it live and reachable — that is the whole reason it is not
+ *  the shared modal — so `role="dialog"` would be both a lie about the
+ *  behaviour and, on a `<form>`, not a role the element may carry. Named, it is
+ *  a form landmark: findable by landmark navigation, honest about what it is.
+ *  What it does owe the keyboard is the dismissal the Cancel button offers the
+ *  mouse — Escape leaves without creating, and hands the cursor back. */
+function CreateForm({ state, onDismiss }: { state: DatasetsState; onDismiss: () => void }) {
   return (
     <form
-      role="dialog"
       aria-label="New dataset"
       data-testid="new-dataset-form"
       onSubmit={(e) => {
@@ -111,12 +112,21 @@ function CreateForm({ state }: { state: DatasetsState }) {
         state.submitCreate();
       }}
       onKeyDown={(e) => {
+        if (e.key !== 'Escape') return;
+        // An IME's own Escape closes its candidate window. Taking that
+        // keystroke as well would throw away the text being converted AND the
+        // form around it, from one press the typist meant for neither.
+        if (e.nativeEvent.isComposing) return;
         // Mirrors Cancel, including its disabled state: once the POST is out
         // there is nothing left to back out of, and closing would only hide the
         // result of a write that is still going to land.
-        if (e.key !== 'Escape' || state.creating) return;
+        if (state.creating) return;
         e.preventDefault();
-        state.cancelCreate();
+        // The shared Modal listens for Escape on the DOCUMENT, so a dialog open
+        // over this panel would otherwise be dismissed by the same press that
+        // dismisses the form under it.
+        e.stopPropagation();
+        onDismiss();
       }}
       className="flex flex-col gap-1.5 border-b border-gray-100 bg-gray-50 px-3 py-2.5"
     >
@@ -166,7 +176,7 @@ function CreateForm({ state }: { state: DatasetsState }) {
         <button
           type="button"
           data-testid="new-dataset-cancel"
-          onClick={state.cancelCreate}
+          onClick={onDismiss}
           disabled={state.creating}
           className="rounded-chip border border-gray-200 px-[11px] py-[5px] text-xs font-semibold text-gray-600 hover:bg-white disabled:opacity-40"
         >
@@ -180,6 +190,16 @@ function CreateForm({ state }: { state: DatasetsState }) {
 export function DatasetList({ state }: { state: DatasetsState }) {
   const hasAny = state.rows.length > 0;
   const searchActive = state.search.trim() !== '';
+  const newBtnRef = useRef<HTMLButtonElement>(null);
+
+  // Dismissing the form unmounts the field the cursor is sitting in. Left to
+  // itself the cursor falls to <body> and Tab restarts at the top of the
+  // document — so it goes back to the control that opened the form, which is
+  // where the operator was before and is still on screen.
+  const dismissCreate = () => {
+    state.cancelCreate();
+    newBtnRef.current?.focus();
+  };
 
   return (
     <div className="flex min-h-0 flex-col overflow-hidden rounded-card border border-gray-200 bg-white shadow-card">
@@ -198,6 +218,7 @@ export function DatasetList({ state }: { state: DatasetsState }) {
           ⧉ Combine
         </button>
         <button
+          ref={newBtnRef}
           type="button"
           data-testid="new-dataset-btn"
           onClick={state.openCreate}
@@ -207,7 +228,7 @@ export function DatasetList({ state }: { state: DatasetsState }) {
         </button>
       </div>
 
-      {state.createOpen && <CreateForm state={state} />}
+      {state.createOpen && <CreateForm state={state} onDismiss={dismissCreate} />}
 
       {/* Toolbar: search, member facets + sort, operator, then the counter. */}
       <div className="flex shrink-0 flex-col gap-2 border-b border-gray-100 px-3 py-2.5">
