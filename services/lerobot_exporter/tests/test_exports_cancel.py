@@ -129,37 +129,54 @@ def test_a_child_that_outlives_the_parent_is_still_killed(
     but the child ignores it and keeps running (and, in production, keeps
     writing the output about to be deleted). Waiting on the parent alone would
     report the cancel done with that writer still alive. Only escalating to a
-    group SIGKILL — which nothing can ignore — actually stops it; the short
-    grace forces that escalation quickly.
+    group SIGKILL — which nothing can ignore — actually stops it.
+
+    The test waits for the child's READY file (written AFTER it installs
+    SIG_IGN) before cancelling, and requires the whole thing to take at least
+    the grace window — so the SIGKILL escalation MUST have run. Without those
+    two, a child that merely lost a startup race and died on the plain SIGTERM
+    would pass, and reverting the fix would not turn the test red (the vacuous
+    test the review flagged).
     """
+    grace = 0.3
     exporter_env(
         FAKE_MODE="hang",
         FAKE_CHILD="1",
         FAKE_CHILD_IGNORE_TERM="1",
-        KAIROS_LEROBOT_TERM_GRACE_S="0.3",
+        KAIROS_LEROBOT_TERM_GRACE_S=str(grace),
     )
     capture = make_capture()
     output = data_dir / "exports" / "alice_default_orphan"
 
-    async def scenario() -> int:
+    async def scenario() -> tuple[int, float]:
         async with exporter_client(
             create_exporter_app(Settings(data_dir=str(data_dir)))
         ) as client:
             export_id = await _submit(
                 client, capture, profile_path, "alice_default_orphan"
             )
-            await _wait_for_file(output / "meta" / "fake_child.json")
+            # The child has installed SIG_IGN by the time this file exists, so
+            # the cancel below cannot race the handler's installation.
+            await _wait_for_file(output / "meta" / "fake_child_ready")
             child_pid = json.loads(
                 (output / "meta" / "fake_child.json").read_text(encoding="utf-8")
             )["pid"]
+            started = asyncio.get_running_loop().time()
             await client.post(f"/exports/{export_id}/cancel")
             body = await wait_for_state(client, export_id, {"canceled", "failed"})
+            elapsed = asyncio.get_running_loop().time() - started
             assert body["state"] == "canceled", body
-            return child_pid
+            return child_pid, elapsed
 
-    child_pid = asyncio.run(scenario())
+    child_pid, elapsed = asyncio.run(scenario())
     assert _process_gone(child_pid), "the orphaned child survived the cancel"
     assert not output.exists()
+    # The child ignored SIGTERM, so reaching a terminal state at all proves the
+    # SIGKILL escalation ran — and it cannot have before the grace elapsed.
+    assert elapsed >= grace, (
+        f"cancel settled in {elapsed:.3f}s, under the {grace}s grace — the "
+        "SIGKILL escalation did not run, so this would pass without the fix"
+    )
 
 
 def test_a_converter_that_ignores_sigterm_is_killed(

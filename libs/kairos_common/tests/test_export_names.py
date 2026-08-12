@@ -4,9 +4,31 @@ from __future__ import annotations
 
 from kairos_common.export_names import (
     EXPORT_SEGMENT_MAX_LEN,
+    compose_export_name,
     is_valid_export_segment,
     sanitize_export_segment,
 )
+
+
+class TestCompose:
+    def test_a_normal_join_is_a_valid_name(self) -> None:
+        assert compose_export_name("alice", "full", "beta1") == "alice_full_beta1"
+
+    def test_empty_segments_are_dropped(self) -> None:
+        assert compose_export_name("alice", "full", "") == "alice_full"
+
+    def test_a_long_join_is_truncated_to_a_valid_name(self) -> None:
+        # Each part is valid alone, but the JOIN would exceed the bound and the
+        # exporter would reject it at submit — the F5 residual. The composed
+        # name must satisfy the same contract the exporter enforces.
+        name = compose_export_name("a" * 100, "b" * 100, "c" * 100)
+        assert len(name) <= EXPORT_SEGMENT_MAX_LEN
+        assert is_valid_export_segment(name)
+
+    def test_truncation_does_not_leave_a_trailing_separator(self) -> None:
+        name = compose_export_name("a" * 127, "bcd")
+        assert not name.endswith(("_", ".", "-"))
+        assert is_valid_export_segment(name)
 
 
 class TestIsValid:

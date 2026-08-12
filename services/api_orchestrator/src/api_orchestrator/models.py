@@ -690,7 +690,10 @@ class ExportRequest(BaseModel):
     """
 
     profile: str = Field(min_length=1, max_length=200)
-    memo: str | None = None
+    # Capped so the composed <operator>_<profile>_<memo> stays within the
+    # export-name length bound; compose_export_name also truncates the join, but
+    # rejecting an absurd memo here gives a cleaner error than a silent trim.
+    memo: str | None = Field(default=None, max_length=64)
     task_fallback: str | None = None
 
 

@@ -6,9 +6,12 @@ import os
 from collections.abc import Callable
 from pathlib import Path
 
+import pytest
 from kairos_common import Settings
+from kairos_common.ids import new_capture_id
 from lerobot_exporter.main import create_exporter_app
-from lerobot_exporter.staging import sweep_staging
+from lerobot_exporter.models import ExportEpisode
+from lerobot_exporter.staging import StagingError, build_staging, sweep_staging
 
 
 def test_leftover_staging_is_swept_at_startup(
@@ -75,3 +78,24 @@ def test_a_symlinked_entry_inside_staging_is_not_followed_into_objects(
 
     assert not (staging / "escape").exists()
     assert (data_dir / "objects" / capture / "metadata.yaml").is_file()
+
+
+def test_build_staging_refuses_a_symlinked_staging_root(
+    data_dir: Path, make_capture: Callable[..., str]
+) -> None:
+    """The F1 residual: build_staging rmtree's exports/.staging/<export_id> on
+    every submit, and export_id is caller-controlled. If .staging is a symlink
+    at objects/, that rmtree would delete the capture named by export_id — so a
+    symlinked root must be refused before anything is removed."""
+    victim = make_capture()
+    exports = data_dir / "exports"
+    exports.mkdir(parents=True, exist_ok=True)
+    os.symlink(data_dir / "objects", exports / ".staging")
+
+    # export_id is a real UUIDv7 (the API validates it) that also names the
+    # victim capture — the exact shape the review demonstrated over HTTP.
+    episode = ExportEpisode(capture_id=new_capture_id(), dir="001", task=None)
+    with pytest.raises(StagingError):
+        build_staging(data_dir, victim, [episode])
+
+    assert (data_dir / "objects" / victim / "metadata.yaml").is_file()

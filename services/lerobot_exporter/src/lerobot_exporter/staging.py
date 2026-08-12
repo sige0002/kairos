@@ -55,6 +55,34 @@ def _symlink(link: Path, target: Path) -> None:
     os.symlink(os.path.relpath(target, start=link.parent), link)
 
 
+def _guarded_export_staging_dir(data_dir: str | Path, export_id: str) -> Path:
+    """``exports/.staging/<export_id>`` — refusing any path that could escape it.
+
+    The ``rmtree`` + ``mkdir`` below run on this path on EVERY submit, and
+    ``export_id`` comes from the (unauthenticated, host-network) request body.
+    If ``.staging`` were a symlink at ``objects/`` — a relocated or
+    attacker-writable EXPORTS_DIR — following it would delete the capture named
+    by ``export_id``. So a symlinked staging root, a symlinked per-export path,
+    or a per-export dir that does not resolve directly under the real root is
+    refused before anything is removed. (``sweep_staging`` guards the same way
+    at startup; this is the write-path twin it was missing.)
+    """
+    root = staging_root(data_dir)
+    if root.is_symlink():
+        raise StagingError(
+            f"refusing to stage under a symlinked staging root ({root}); it "
+            "must be a real directory inside the data volume."
+        )
+    target = export_staging_dir(data_dir, export_id)
+    if target.is_symlink():
+        raise StagingError(f"refusing to stage into a symlinked path ({target}).")
+    if target.exists() and target.resolve().parent != root.resolve():
+        raise StagingError(
+            f"refusing to stage into {target}: it escapes the staging root."
+        )
+    return target
+
+
 def build_staging(
     data_dir: str | Path, export_id: str, episodes: list[ExportEpisode]
 ) -> Path:
@@ -63,7 +91,7 @@ def build_staging(
     Raises :class:`StagingError` naming the first capture whose bytes are not
     where the submitted snapshot said they were.
     """
-    root = export_staging_dir(data_dir, export_id)
+    root = _guarded_export_staging_dir(data_dir, export_id)
     # A leftover tree can only be debris from a previous attempt with this
     # export_id; the caller refuses a re-used id, so there is no live job here.
     shutil.rmtree(root, ignore_errors=True)

@@ -276,6 +276,7 @@ function FormBody({ state, datasetName }: { state: LeRobotExportState; datasetNa
           value={state.memo}
           onChange={(e) => state.setMemo(e.target.value)}
           spellCheck={false}
+          maxLength={64}
           placeholder="e.g. rerun2"
           className={FIELD_INPUT}
         />

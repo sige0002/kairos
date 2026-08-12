@@ -32,7 +32,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query, Request, status
 from kairos_common import ApiError
 from kairos_common.capture_sidecars import read_object_manifest
-from kairos_common.export_names import sanitize_export_segment
+from kairos_common.export_names import compose_export_name, sanitize_export_segment
 from kairos_common.ids import new_export_id
 from kairos_common.task_sidecar import effective_task
 from kairos_common.time import utc_now_iso8601
@@ -219,7 +219,10 @@ def _compose_output_name(operator_seg: str, profile_name: str, memo: str | None)
         cleaned = sanitize_export_segment(memo, "")
         if cleaned:
             parts.append(cleaned)
-    return "_".join(parts)
+    # compose_export_name caps the JOIN: each part is valid alone, but a long
+    # operator label plus a long memo could exceed the length bound and be
+    # rejected at submit — the very drift F5 was about, just at the join.
+    return compose_export_name(*parts)
 
 
 def _profiles_list(body: dict[str, Any] | list[Any]) -> list[dict[str, Any]]:

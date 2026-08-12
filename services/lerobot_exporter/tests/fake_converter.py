@@ -119,13 +119,24 @@ def main() -> int:
             # Waiting on the parent alone would call the cancel done with a
             # live writer still going; only escalating to a group SIGKILL,
             # which nothing can ignore, actually stops it.
+            #
+            # It touches a READY file AFTER installing SIG_IGN, so the test can
+            # wait for that before sending the cancel — otherwise the child
+            # races interpreter startup against the signal, and a child that
+            # dies on a plain SIGTERM would pass the test without the SIGKILL
+            # escalation ever running (the exact vacuous-test trap the review
+            # caught).
+            ready = meta / "fake_child_ready"
             child = subprocess.Popen(
                 [
                     sys.executable,
                     "-c",
-                    "import signal,time;signal.signal(signal.SIGTERM,"
-                    "signal.SIG_IGN);time.sleep(float(__import__('sys').argv[1]))",
+                    "import signal,time,sys;"
+                    "signal.signal(signal.SIGTERM,signal.SIG_IGN);"
+                    "open(sys.argv[2],'w').close();"
+                    "time.sleep(float(sys.argv[1]))",
                     sleep_s,
+                    str(ready),
                 ]
             )
         else:

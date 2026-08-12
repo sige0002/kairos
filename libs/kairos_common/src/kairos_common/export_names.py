@@ -42,6 +42,22 @@ def is_valid_export_segment(value: str) -> bool:
     )
 
 
+def compose_export_name(*segments: str) -> str:
+    """Join already-sanitised segments into one valid export name.
+
+    ``_`` is the joiner, so the whole name is itself a single segment — but the
+    JOIN can exceed the length bound that each piece satisfies alone (a long
+    operator label plus a long memo). Truncating here, to the same
+    ``is_valid_export_segment`` contract the exporter enforces, is what keeps
+    preflight from promising a name that submit then rejects. The trailing
+    trim keeps the cut from landing on a ``_``/``.``/``-``.
+    """
+    name = "_".join(s for s in segments if s)
+    if len(name) > EXPORT_SEGMENT_MAX_LEN:
+        name = name[:EXPORT_SEGMENT_MAX_LEN].rstrip("_.-")
+    return name
+
+
 def sanitize_export_segment(value: str | None, fallback: str) -> str:
     """A valid export segment derived from *value*, or *fallback* if none remains.
 

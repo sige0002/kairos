@@ -217,7 +217,11 @@ endef
 .PHONY: up up-nobuild down build build-pull rebuild restart logs ps stop urls msgs-build
 up: ## start the stack detached, using existing images (RECORDING_CONFIG-aware)
 	$(call require_images,$(COMPOSE),build)
-	@if [ -n "$(LEROBOT_OVERRIDE_LOCAL)" ]; then mkdir -p "$(or $(EXPORTS_DIR_LOCAL),./data/exports)"; fi
+	@# Pre-create the RELOCATED exports dir user-owned (a bind mount Docker makes
+	@# itself comes out root-owned). Only when EXPORTS_DIR is set: without it
+	@# exports live inside the data mount, which already exists — creating a
+	@# stray ./data/exports here would just be the stale default F7 removed.
+	@if [ -n "$(EXPORTS_DIR_LOCAL)" ]; then mkdir -p "$(EXPORTS_DIR_LOCAL)"; fi
 	$(COMPOSE) up -d $(SVC)
 	@$(MAKE) --no-print-directory urls
 
