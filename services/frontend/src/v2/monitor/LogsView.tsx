@@ -85,7 +85,7 @@ export function LogsView() {
               onClick={() => setTypeFilter(f)}
               className={cn(
                 'rounded-chip px-2.5 py-0.5 text-[11px] font-medium transition-colors',
-                f === typeFilter ? 'bg-white text-teal-700 shadow-sm' : 'text-gray-500 hover:text-gray-700',
+                f === typeFilter ? 'bg-white text-teal-700 shadow-sm' : 'text-gray-600 hover:text-gray-800',
               )}
             >
               {TYPE_LABEL[f]}

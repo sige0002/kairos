@@ -170,7 +170,7 @@ function Row({
         className="flex h-[26px] w-[26px] items-center justify-center rounded-[7px] text-gray-600 transition-colors hover:bg-amber-50 hover:text-amber-700"
       >
         {row.isExcluded ? (
-          <span className="text-sm text-teal-700">↺</span>
+          <span className="text-sm text-teal-800">↺</span>
         ) : (
           <ArchiveIcon />
         )}

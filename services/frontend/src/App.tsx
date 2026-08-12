@@ -128,7 +128,7 @@ function TabNav({ active }: { active: V2TabId }) {
               'rounded-[9px] px-[18px] py-2 text-[13.5px] transition-colors',
               on
                 ? 'bg-teal-700 font-semibold text-white shadow-sm'
-                : 'font-medium text-gray-500 hover:text-gray-700',
+                : 'font-medium text-gray-600 hover:text-gray-800',
             )}
           >
             {tab.label}
