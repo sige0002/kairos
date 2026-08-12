@@ -379,7 +379,36 @@ function OperatorChip() {
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter') save();
+                // Mid-conversion, both of these keys belong to the IME: Enter
+                // confirms the candidate and Escape closes the candidate
+                // window. Taking either would commit or discard on a press the
+                // typist meant for neither — and, for Enter, would save the
+                // UNCONVERTED text as the operator's name while swallowing the
+                // very keystroke the IME was waiting for. Guarding the whole
+                // handler rather than one branch, because the answer is the
+                // same for both: this keystroke is not ours yet.
+                if (e.nativeEvent.isComposing) return;
+                if (e.key === 'Enter') {
+                  // The save lifts Collect's operator gate, and Collect hands
+                  // focus to the Start button it has just enabled — inside this
+                  // same event. Without cancelling the default action, the
+                  // browser then activates that freshly focused button, so
+                  // typing your name and pressing Enter STARTS A RECORDING
+                  // (#26; a 6-minute runaway take in the acceptance run).
+                  //
+                  // Same rule as the arming Cancel guard (#8): a control must
+                  // not answer the press that revealed it. Collect's own
+                  // commit-on-Enter field already does this (Modals.tsx); this
+                  // one was the outlier.
+                  //
+                  // No stopPropagation: the only window-level key listener
+                  // (useCollectShortcuts) already ignores events whose target
+                  // is an input, so nothing upstream acts on this. Stopping
+                  // propagation would buy nothing and would quietly break the
+                  // next global handler that legitimately wants to see it.
+                  e.preventDefault();
+                  save();
+                }
                 if (e.key === 'Escape') setOpen(false);
               }}
               placeholder="e.g. sadasue"

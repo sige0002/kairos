@@ -8,7 +8,7 @@
 // wrong, point at the control that fixes it, and stay operable by keyboard
 // while it is up.
 
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { createEvent, fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
 import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
@@ -153,4 +153,28 @@ test('the R shortcut works once an operator is named', async () => {
       true,
     ),
   );
+});
+
+// #26, the second half. Cancelling the popover's Enter settles the press that
+// lifts the gate, but a HELD Enter auto-repeats, and by the second keydown
+// (~250-500ms later) Start has both the focus and the enablement. Those repeats
+// are not presses the operator made.
+//
+// jsdom performs no default actions, so what is pinned here is the property the
+// browser acts on — as in the App-level test for the popover.
+test('a held key cannot start a recording; a real press still can', async () => {
+  mockFetch();
+  renderWithClient(<CollectScreen />);
+  await waitFor(() => expect(start()).toBeDisabled());
+  useUiStore.setState({ recordOperator: 'tester' });
+  await waitFor(() => expect(start()).toBeEnabled());
+
+  const repeat = createEvent.keyDown(start(), { key: 'Enter', repeat: true });
+  fireEvent(start(), repeat);
+  expect(repeat.defaultPrevented, 'an auto-repeat can still activate Start').toBe(true);
+
+  // The deliberate press is untouched — this must not become a dead button.
+  const deliberate = createEvent.keyDown(start(), { key: 'Enter' });
+  fireEvent(start(), deliberate);
+  expect(deliberate.defaultPrevented, 'a real Enter on Start was swallowed').toBe(false);
 });

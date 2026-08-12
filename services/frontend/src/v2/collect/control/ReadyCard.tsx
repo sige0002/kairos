@@ -93,6 +93,21 @@ export function ReadyCard({
         data-testid="start-recording"
         onClick={machine.startRecording}
         disabled={blocked}
+        // Defence in depth for #26. The popover's Enter is cancelled at source,
+        // which settles the press that lifts the gate — but a HELD Enter
+        // auto-repeats, and by the time the OS emits the second keydown
+        // (~250-500ms) this button has both the focus and the enablement, so
+        // the repeat activates it. Those repeats are not presses the operator
+        // made; a recording should only ever start from one they did.
+        //
+        // Filtering repeats rather than adding a timed activation guard: the
+        // guard would have to outlast the OS repeat delay to help at all, and a
+        // Start button dead for half a second after every enablement is a worse
+        // trade than this. It also costs nothing legitimate — a held key was
+        // never a second deliberate press.
+        onKeyDown={(e) => {
+          if (e.repeat) e.preventDefault();
+        }}
         // Names the note that says why, so the reason travels with the button
         // rather than sitting beside it. Both ids are listed when both gates
         // are up; a missing id is ignored by assistive tech.

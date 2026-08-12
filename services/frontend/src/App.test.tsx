@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { createEvent, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { App } from './App';
 import { ErrorBoundary, PanelBoundary } from './components/ErrorBoundary';
@@ -264,6 +264,91 @@ test('the operator chip sets uiStore.recordOperator (sent with /record/start) an
   expect(useUiStore.getState().recordOperator).toBe('Sadasue Yuki');
   expect(window.localStorage.getItem('kairos.operator')).toBe('Sadasue Yuki');
   expect(chip).toHaveTextContent('SY'); // initials from the saved name
+});
+
+// #26. Committing the name lifts Collect's operator gate, and Collect hands
+// focus to the Start button it has just enabled — in this same event. An
+// uncancelled Enter then reached that button as its default action and started
+// a recording nobody asked for (a 6-minute runaway take in the acceptance run).
+//
+// jsdom does not perform default actions, so it cannot reproduce the activation
+// itself; what it CAN pin is the property the browser acts on. If this
+// assertion ever goes back to false, the real browser starts recording again.
+test('Enter in the operator field commits the name AND cancels its default action', async () => {
+  window.history.replaceState(null, '', '/');
+  window.localStorage.removeItem('kairos.operator');
+  useUiStore.setState({ recordOperator: '' });
+  renderWithClient(<App />);
+  await waitFor(() =>
+    expect(screen.queryByText(/Loading kairos/i)).not.toBeInTheDocument(),
+  );
+
+  fireEvent.click(screen.getByTestId('operator-chip'));
+  const input = screen.getByTestId('operator-input');
+  fireEvent.change(input, { target: { value: 'Sadasue Yuki' } });
+
+  const enter = createEvent.keyDown(input, { key: 'Enter' });
+  fireEvent(input, enter);
+
+  expect(enter.defaultPrevented, 'the committed Enter is still live for the next focus').toBe(
+    true,
+  );
+  // Cancelling the default must not cancel the commit: Enter is still how the
+  // name is saved, and the popover still closes.
+  expect(useUiStore.getState().recordOperator).toBe('Sadasue Yuki');
+  expect(window.localStorage.getItem('kairos.operator')).toBe('Sadasue Yuki');
+  expect(screen.queryByTestId('operator-input')).not.toBeInTheDocument();
+});
+
+// The Enter a Japanese typist presses to CONFIRM a conversion is not the Enter
+// that submits. Taking it would save the unconverted text as the operator's
+// name, and — worse — preventDefault would swallow the keystroke the IME itself
+// is waiting for, so the conversion never lands.
+test('the Enter an IME is confirming a conversion with is not a commit', async () => {
+  window.history.replaceState(null, '', '/');
+  window.localStorage.removeItem('kairos.operator');
+  useUiStore.setState({ recordOperator: '' });
+  renderWithClient(<App />);
+  await waitFor(() =>
+    expect(screen.queryByText(/Loading kairos/i)).not.toBeInTheDocument(),
+  );
+
+  fireEvent.click(screen.getByTestId('operator-chip'));
+  const input = screen.getByTestId('operator-input');
+  // What the field holds mid-conversion is the reading, not the name.
+  fireEvent.change(input, { target: { value: 'さだすえ' } });
+
+  const composing = createEvent.keyDown(input, { key: 'Enter', isComposing: true });
+  fireEvent(input, composing);
+
+  // Nothing committed, the popover is still open to go on typing in …
+  expect(useUiStore.getState().recordOperator).toBe('');
+  expect(screen.getByTestId('operator-input')).toBeInTheDocument();
+  // … and the keystroke is left for the IME. Cancelling it here is what stops
+  // the conversion from ever completing.
+  expect(composing.defaultPrevented, 'the IME never got its own keystroke').toBe(false);
+});
+
+// Same press, the other key: an IME's Escape closes its candidate window.
+test('the Escape an IME is closing its candidate window with does not close the popover', async () => {
+  window.history.replaceState(null, '', '/');
+  window.localStorage.removeItem('kairos.operator');
+  useUiStore.setState({ recordOperator: '' });
+  renderWithClient(<App />);
+  await waitFor(() =>
+    expect(screen.queryByText(/Loading kairos/i)).not.toBeInTheDocument(),
+  );
+
+  fireEvent.click(screen.getByTestId('operator-chip'));
+  fireEvent.change(screen.getByTestId('operator-input'), { target: { value: 'さだすえ' } });
+  fireEvent.keyDown(screen.getByTestId('operator-input'), {
+    key: 'Escape',
+    isComposing: true,
+  });
+
+  // The draft and the popover around it both survive — one press, meant for
+  // neither of them.
+  expect(screen.getByTestId('operator-input')).toBeInTheDocument();
 });
 
 test('the shell survives a browser where localStorage access throws', async () => {
