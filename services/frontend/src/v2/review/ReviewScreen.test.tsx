@@ -386,14 +386,53 @@ test('excluding a row is offered as a label, separately from any removal', async
   renderWithClient(<ReviewScreen />);
   await waitFor(() => expect(screen.getByTestId('review-exclude-c1')).toBeInTheDocument());
 
+  // CHANGED with #12: no confirmation step. Excluding keeps every byte and is
+  // undoable from the toolbar, so the click is the action.
   fireEvent.click(screen.getByTestId('review-exclude-c1'));
-  fireEvent.click(screen.getByTestId('review-confirm-exclude'));
 
   await waitFor(() =>
     expect(screen.getByTestId('review-discard-excluded')).toBeInTheDocument(),
   );
   // Excluding never removes anything.
   expect(api.deleteCalls).toHaveLength(0);
+});
+
+test('the excluded row is gone from the table, and the undo for it is not', async () => {
+  // The two halves of the same fact: the default view hides excluded rows, so
+  // an undo attached to the ROW would be behind "Show excluded" at exactly the
+  // moment the operator wants their mis-click back.
+  mockApi([capture({ capture_id: 'c1', run_id: 'run_1', index_in_batch: 1 })]);
+  renderWithClient(<ReviewScreen />);
+  await waitFor(() => expect(screen.getByTestId('review-exclude-c1')).toBeInTheDocument());
+
+  fireEvent.click(screen.getByTestId('review-exclude-c1'));
+
+  const undo = await screen.findByTestId('review-exclude-undo');
+  expect(screen.queryByTestId('review-row-c1')).not.toBeInTheDocument();
+  expect(undo).toHaveTextContent('Episode #1');
+  expect(undo).toHaveTextContent('the recording is kept');
+
+  // Undo puts it back in one click, and the offer goes with it.
+  fireEvent.click(screen.getByTestId('review-exclude-undo-btn'));
+  await waitFor(() => expect(screen.getByTestId('review-row-c1')).toBeInTheDocument());
+  expect(screen.queryByTestId('review-exclude-undo')).not.toBeInTheDocument();
+});
+
+test('the undo offer is dismissible, and dismissing it changes nothing else', async () => {
+  const api = mockApi([capture({ capture_id: 'c1', run_id: 'run_1', index_in_batch: 1 })]);
+  renderWithClient(<ReviewScreen />);
+  await waitFor(() => expect(screen.getByTestId('review-exclude-c1')).toBeInTheDocument());
+
+  fireEvent.click(screen.getByTestId('review-exclude-c1'));
+  await screen.findByTestId('review-exclude-undo');
+  fireEvent.click(screen.getByTestId('review-exclude-undo-dismiss'));
+
+  await waitFor(() =>
+    expect(screen.queryByTestId('review-exclude-undo')).not.toBeInTheDocument(),
+  );
+  // Dismissing is not undoing: one save happened, and it stands.
+  expect(api.reviewCalls).toHaveLength(1);
+  expect(screen.queryByTestId('review-row-c1')).not.toBeInTheDocument();
 });
 
 test('the detail panel shows the revision, which is what a conflict is about', async () => {
