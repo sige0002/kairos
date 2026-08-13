@@ -51,6 +51,8 @@
 - アラート規則（単一ファイル・アスペクト編集）: `GET/PUT /api/v1/config/alerts`（topic_monitor のアラート規則。`config/<robot>/monitoring/alerts.yaml`。monitor 再起動時に反映）。`GET` は `{ config, raw, path, warnings }`、`PUT` は body `{ config }`（フォーム）または `{ raw }`（生 YAML）。下記「アラート規則の編集」参照（旧 `GET/PUT /api/v1/config/signals` は Review 波形チャートの撤去に伴い 2026-07-15 に削除）
 - 設定カタログ: `GET /api/v1/config/options`、`POST /api/v1/config/select`（検証テンプレート等のカテゴリ別選択肢と現在の選択）、`GET /api/v1/config/robots/{robot}`（**任意のカタログ機体の設定を read-only で返す** — aspect 毎のパース済み内容+要約。ライブ系を切り替えずに他機体を雛形参照するため（Settings）。未知の機体・不正なパス成分は `404`）
 - システム情報: `GET /api/v1/system` → `{ cpu: { model, cores }, gpu, cpu_percent, disk, gpu_percent }`（ホストの読み取り専用イントロスペクション。常に `200`）
+- 手動セットアップ診断: `POST /api/v1/system/setup-check`（録画は開始せず、recorder の start 前提条件・アクティブ設定の topic pattern と ROS graph publisher の対応・monitor の受信実績 / 解決済み QoS・streamer 到達性を並列に確認）。一部サービスが失敗しても `checks[]` / `topics[]` の部分結果を返し、各項目を `pass|warning|blocker|unknown`、全体を `ready|attention|blocked` で示す。画面表示時の自動実行ではなく、Settings からユーザーが明示的に実行する。
+  - 4 本の内部 probe は並列で、各 4 秒を上限とする。半開接続を含めても応答整形の余裕を残して 5 秒以内に返す（timeout は該当項目の `warning` / `blocker` として部分結果化）。
   - `cpu` / `gpu`: 静的な情報（CPU モデル名・論理コア数は `/proc/cpuinfo`、GPU 名は `nvidia-smi`。取得不能時は各フィールド `null`）
   - `cpu_percent`: ホスト全体の CPU 使用率 `[0, 100]`（`/proc/stat` の集約 `cpu` 行を 2 スナップショット差分して算出＝真の busy%。ロードアベレージではない）。差分の基準がまだ無い初回サンプルや `/proc/stat` 不読時は `null`
   - `disk`: 収録データ用ディレクトリを含むファイルシステムの `{ path, total_bytes, free_bytes }`（`shutil.disk_usage`。app が知る `data_dir` を優先し、無ければ `/data` にフォールバック。いずれも存在しなければ `null`）

@@ -17,13 +17,12 @@ import { getConfigOptions } from '../../api/config';
 import { getCapture } from '../../api/captures';
 import { queryKeys } from '../../api/queryKeys';
 import { CAPTURE_DETAIL_POLL_MS, INSPECTION_JOB_POLL_MS } from '../pollingPolicy';
-import type { JobStatus,
-  CaptureDetail,
-} from '../../api/types';
+import type { JobStatus, CaptureDetail } from '../../api/types';
 import { Badge, cn } from '../../components/ui';
 import { ErrorMessage } from '../../components/ErrorMessage';
 import {
   JsonBlock,
+  LossEventTable,
   LossTable,
   TERMINAL,
   VideoCheckSection,
@@ -144,7 +143,6 @@ function reportSignature(report: unknown): string | null {
   return `${result}|${at}`;
 }
 
-
 /** The validation verdict, and the override that can let a failure through.
  *
  *  The verdict is the server's derived one (from the gating pipelines'
@@ -249,7 +247,9 @@ function CaptureNote({ error }: { error: NonNullable<CaptureDetail['error']> }) 
       data-severity={note.severity}
       className={cn(
         'rounded-control px-3 py-2 text-[12px]',
-        note.severity === 'notice' ? 'bg-gray-50 text-gray-600' : 'bg-red-50 text-red-700',
+        note.severity === 'notice'
+          ? 'bg-gray-50 text-gray-600'
+          : 'bg-red-50 text-red-700',
       )}
     >
       {note.label && <span className="block font-medium">{note.label}</span>}
@@ -390,8 +390,8 @@ export function CaptureInspection({
             {capture.deleted_at ? ` · ${formatWhen(capture.deleted_at)}` : ''}
           </span>
           <span className="text-[11.5px] text-amber-800">
-            Its details are kept so the record stays answerable, but nothing can
-            be run against it any more.
+            Its details are kept so the record stays answerable, but nothing can be run
+            against it any more.
           </span>
         </div>
       )}
@@ -583,7 +583,10 @@ export function CaptureInspection({
             retryLabel="Retry loss report"
           />
           {capture.loss?.topics ? (
-            <LossTable topics={capture.loss.topics} />
+            <div className="flex flex-col gap-2">
+              <LossTable topics={capture.loss.topics} />
+              {capture.loss.events && <LossEventTable events={capture.loss.events} />}
+            </div>
           ) : (
             <p className="text-[11.5px] text-gray-500">
               Computes a per-topic loss estimate (gap-based).

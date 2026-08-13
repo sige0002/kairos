@@ -113,7 +113,6 @@ export interface RecordStartRequest {
   [key: string]: unknown;
 }
 
-
 /**
  * Recorder "arming" state (OL-①.4): while start_paused is in effect the recorder
  * is subscribed-but-paused, waiting for the target topics to appear on the graph
@@ -379,7 +378,12 @@ export interface CaptureDetail extends Capture {
   manifest?: Record<string, unknown> | null;
   record?: Record<string, unknown> | null;
   validation?: Record<string, unknown> | null;
-  loss?: { capture_id?: string; topics?: LossTopic[]; checked_at?: string } | null;
+  loss?: {
+    capture_id?: string;
+    topics?: LossTopic[];
+    events?: LossEvent[];
+    checked_at?: string;
+  } | null;
   /** Validation verdict, DERIVED server-side from the gating pipelines'
    *  reports on every read. `unknown` means nothing has checked this capture —
    *  it is not a pass. Absent on an older backend. */
@@ -859,6 +863,19 @@ export interface LossTopic {
   loss_rate?: number | null;
   gap_max_ms?: number | null;
   median_interval_ms?: number | null;
+  gap_events?: LossEvent[];
+}
+
+/** One inferred cadence gap from loss_report, placed on the capture timeline. */
+export interface LossEvent {
+  topic: string;
+  start_offset_ms: number;
+  end_offset_ms: number;
+  gap_ms: number;
+  expected_interval_ms: number;
+  estimated_missing: number;
+  gap_ratio: number;
+  time_source?: 'publish_time' | 'log_time' | string;
 }
 
 /** Per-topic downsample metadata for a `signal_report` topic. */
@@ -979,6 +996,40 @@ export interface TopicInfo {
   subscriber_count?: number;
   qos?: Record<string, unknown> | string;
   last_seen?: string;
+}
+
+// ---- Manual setup check -------------------------------------------------
+
+export type SetupCheckItemStatus = 'pass' | 'warning' | 'blocker' | 'unknown';
+
+export interface SetupCheckItem {
+  id: string;
+  label: string;
+  status: SetupCheckItemStatus;
+  summary: string;
+  code?: string;
+  details?: Record<string, unknown>;
+  action?: string | null;
+}
+
+export interface SetupTopicCheck {
+  pattern: string;
+  status: SetupCheckItemStatus;
+  summary: string;
+  matched_topics: string[];
+  receiving_topics: string[];
+  qos: Record<string, Record<string, unknown> | string | null>;
+  action?: string | null;
+}
+
+export interface SetupCheckReport {
+  status: 'ready' | 'attention' | 'blocked';
+  checked_at: string;
+  duration_ms: number;
+  robot?: string | null;
+  ros_domain_id?: number | null;
+  checks: SetupCheckItem[];
+  topics: SetupTopicCheck[];
 }
 
 /**

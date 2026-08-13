@@ -148,6 +148,8 @@ class FakeRecorder:
             return self._stop()
         if path == "/record/status":
             return self._status()
+        if path == "/record/preflight":
+            return httpx.Response(200, json={"ready": True})
         if path == "/record/metadata":
             return self._metadata()
         return httpx.Response(

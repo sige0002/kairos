@@ -7,10 +7,10 @@
 // fallback is the point: a new plugin's summary.json renders here with no UI
 // change required.
 import { Card } from '../../components/ui';
-import type { JobState, LossTopic } from '../../api/types';
+import type { JobState, LossEvent, LossTopic } from '../../api/types';
 import { isCancellable } from './useJobCancel';
 import { SummaryResult, type Summary } from '../../features/validation/SummaryResult';
-import { LossTable } from '../captures/inspect';
+import { LossEventTable, LossTable } from '../captures/inspect';
 import { ChecklistCard } from './ChecklistCard';
 import {
   canceledCount,
@@ -57,18 +57,21 @@ function LossReportCard({ summary }: { summary: Summary }) {
     (a, b) => (b.loss_rate ?? 0) - (a.loss_rate ?? 0),
   );
   const flagged = (summary as Record<string, unknown>).flagged;
+  const rawEvents = (summary as Record<string, unknown>).events;
+  const events = Array.isArray(rawEvents) ? (rawEvents as LossEvent[]) : null;
   const flaggedCount = Array.isArray(flagged) ? flagged.length : null;
   const worst = topics[0];
   return (
     <div className="flex flex-col gap-2" data-testid="loss-report-table">
       {flaggedCount !== null && flaggedCount > 0 && worst && (
         <p className="rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-[12.5px] font-semibold text-amber-800">
-          ⚠ {flaggedCount} of {topics.length} topics exceeded the gap threshold —
-          worst: <span className="font-mono">{worst.name}</span>{' '}
+          ⚠ {flaggedCount} of {topics.length} topics exceeded the gap threshold — worst:{' '}
+          <span className="font-mono">{worst.name}</span>{' '}
           {worst.loss_rate != null ? `${(worst.loss_rate * 100).toFixed(1)}%` : ''}
         </p>
       )}
       <LossTable topics={topics} />
+      {events && <LossEventTable events={events} />}
     </div>
   );
 }
@@ -322,7 +325,9 @@ export function ResultsPanel({
   // Without this line the tiles would simply not add up to the capture count.
   const canceled = canceledCount(rows);
   const selected = rows.find((r) => r.captureId === selectedCaptureId) ?? null;
-  const selectedOutcome = active.outcomes.find((o) => o.captureId === selectedCaptureId);
+  const selectedOutcome = active.outcomes.find(
+    (o) => o.captureId === selectedCaptureId,
+  );
 
   return (
     <div className="flex min-h-0 flex-col gap-3 overflow-auto p-[18px]">
@@ -330,9 +335,7 @@ export function ResultsPanel({
         <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           Latest run
         </h3>
-        <span className="font-mono text-xs text-gray-500">
-          {counts.total} captures
-        </span>
+        <span className="font-mono text-xs text-gray-500">{counts.total} captures</span>
         <div className="flex-1" />
         <button
           type="button"
@@ -345,7 +348,12 @@ export function ResultsPanel({
 
       <div className="flex gap-2">
         <Tile tone="ok" count={counts.ok} pct={counts.okPct} label="OK" />
-        <Tile tone="warning" count={counts.warning} pct={counts.warningPct} label="WARNING" />
+        <Tile
+          tone="warning"
+          count={counts.warning}
+          pct={counts.warningPct}
+          label="WARNING"
+        />
         <Tile tone="fail" count={counts.fail} pct={counts.failPct} label="FAIL" />
       </div>
 
@@ -357,8 +365,8 @@ export function ResultsPanel({
 
       {canceled > 0 && (
         <p data-testid="canceled-note" className="text-[11.5px] text-gray-500">
-          {canceled} of {counts.total} canceled — stopped before finishing, so they
-          are counted in none of the three results above.
+          {canceled} of {counts.total} canceled — stopped before finishing, so they are
+          counted in none of the three results above.
         </p>
       )}
 
@@ -392,7 +400,9 @@ export function ResultsPanel({
             <div className="flex h-[14px] overflow-hidden rounded-[5px] bg-gray-100">
               <span
                 className={`opacity-75 ${BAR_TONE_CLASS[row.tone]}`}
-                style={{ width: `${row.coverage ?? (row.tone === 'OK' ? 100 : row.tone === 'WARNING' ? 50 : 20)}%` }}
+                style={{
+                  width: `${row.coverage ?? (row.tone === 'OK' ? 100 : row.tone === 'WARNING' ? 50 : 20)}%`,
+                }}
               />
             </div>
             <button
@@ -431,7 +441,9 @@ function Tile({
   label: string;
 }) {
   return (
-    <div className={`flex flex-1 flex-col gap-px rounded-[11px] border px-[14px] py-[10px] ${TILE_STYLES[tone]}`}>
+    <div
+      className={`flex flex-1 flex-col gap-px rounded-[11px] border px-[14px] py-[10px] ${TILE_STYLES[tone]}`}
+    >
       <span className="font-mono text-[19px] font-semibold">{count}</span>
       <span className="text-[11.5px]">
         {label} · {pct}%
@@ -443,7 +455,8 @@ function Tile({
 function FooterNote() {
   return (
     <div className="rounded-[10px] border border-gray-100 bg-gray-50 px-3 py-[9px] text-[11.5px] leading-relaxed text-gray-500">
-      Raw JSON, artifacts and false-positive notes live in each capture&apos;s detail view.
+      Raw JSON, artifacts and false-positive notes live in each capture&apos;s detail
+      view.
     </div>
   );
 }

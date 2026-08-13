@@ -76,6 +76,7 @@ def test_record_routes_are_sync_offloaded(client: TestClient) -> None:
     import inspect
 
     offloaded = {
+        "/record/preflight",
         "/record/start",
         "/record/stop",
         "/record/status",
@@ -97,6 +98,13 @@ def test_readyz_ok_when_writable(client: TestClient) -> None:
     resp = client.get("/readyz")
     assert resp.status_code == 200
     assert resp.json()["status"] == "ready"
+
+
+def test_record_preflight_checks_readiness_without_starting(client: TestClient) -> None:
+    resp = client.get("/record/preflight")
+    assert resp.status_code == 200
+    assert resp.json() == {"ready": True}
+    assert client.get("/record/status").json()["state"] == "created"
 
 
 def test_start_status_stop_flow(client: TestClient) -> None:

@@ -20,6 +20,7 @@ import type {
   CaptureTopic,
   JobResult,
   JobStatus,
+  LossEvent,
   LossTopic,
   VideoCheckSummary,
 } from '../../api/types';
@@ -156,7 +157,10 @@ export function formatDuration(ms?: number): string {
 }
 
 /** Milliseconds between two ISO instants (undefined when indeterminate). */
-export function spanMs(started?: string | null, ended?: string | null): number | undefined {
+export function spanMs(
+  started?: string | null,
+  ended?: string | null,
+): number | undefined {
   if (!started || !ended) return undefined;
   const start = new Date(started).getTime();
   const end = new Date(ended).getTime();
@@ -168,7 +172,9 @@ export function JsonBlock({ label, value }: { label: string; value: unknown }) {
   if (value === undefined || value === null) return null;
   return (
     <details className="rounded-control border border-gray-200 p-2">
-      <summary className="cursor-pointer text-sm font-medium text-gray-700">{label}</summary>
+      <summary className="cursor-pointer text-sm font-medium text-gray-700">
+        {label}
+      </summary>
       <pre className="mt-2 max-h-80 overflow-auto rounded-control bg-gray-50 p-2 font-mono text-xs">
         {JSON.stringify(value, null, 2)}
       </pre>
@@ -206,13 +212,18 @@ export function LossTable({ topics }: { topics: LossTopic[] }) {
             const tone = lossTone(t.loss_rate);
             return (
               <tr key={t.name} className="border-t border-gray-50">
-                <td className="truncate px-2 py-1.5 font-mono text-gray-700" title={t.name}>
+                <td
+                  className="truncate px-2 py-1.5 font-mono text-gray-700"
+                  title={t.name}
+                >
                   {t.name}
                 </td>
                 <td className="px-2 py-1.5 text-right font-mono text-gray-500">
                   {fmtNum(t.hz)}
                 </td>
-                <td className={`px-2 py-1.5 text-right font-mono font-semibold ${tone.cls}`}>
+                <td
+                  className={`px-2 py-1.5 text-right font-mono font-semibold ${tone.cls}`}
+                >
                   {tone.text}
                 </td>
                 <td className="px-2 py-1.5 text-right font-mono text-gray-500">
@@ -223,6 +234,81 @@ export function LossTable({ topics }: { topics: LossTopic[] }) {
           })}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+function formatOffset(ms: number): string {
+  const totalMs = Math.max(0, Math.round(ms));
+  const hours = Math.floor(totalMs / 3_600_000);
+  const minutes = Math.floor((totalMs % 3_600_000) / 60_000);
+  const seconds = Math.floor((totalMs % 60_000) / 1000);
+  const millis = totalMs % 1000;
+  const base = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(millis).padStart(3, '0')}`;
+  return hours > 0 ? `${String(hours).padStart(2, '0')}:${base}` : base;
+}
+
+/** Evidence-first loss events: a list, not a heatmap, so exact topics, times,
+ *  interval sizes, and the estimate behind each finding stay readable. */
+export function LossEventTable({ events }: { events: LossEvent[] }) {
+  if (events.length === 0) {
+    return (
+      <p className="rounded-control border border-green-200 bg-green-50 px-2.5 py-2 text-[11.5px] text-green-700">
+        No interval exceeded the configured gap threshold.
+      </p>
+    );
+  }
+  return (
+    <div data-testid="loss-events" className="flex flex-col gap-1.5">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h4 className="text-[12px] font-semibold text-gray-700">
+          Gap events ({events.length})
+        </h4>
+        <span className="text-[10.5px] text-gray-500">capture-relative time</span>
+      </div>
+      <div className="max-h-64 overflow-auto rounded-control border border-gray-200">
+        <table className="w-full text-[11.5px]">
+          <thead className="sticky top-0 bg-gray-50 text-[10px] uppercase tracking-[0.04em] text-gray-500">
+            <tr>
+              <th className="px-2 py-1.5 text-left font-medium">Time band</th>
+              <th className="px-2 py-1.5 text-left font-medium">Topic</th>
+              <th className="px-2 py-1.5 text-right font-medium">Gap</th>
+              <th className="px-2 py-1.5 text-right font-medium">Estimated missed</th>
+            </tr>
+          </thead>
+          <tbody>
+            {events.map((event, index) => (
+              <tr
+                key={`${event.topic}-${event.start_offset_ms}-${index}`}
+                className="border-t border-gray-100"
+              >
+                <td className="whitespace-nowrap px-2 py-1.5 font-mono text-gray-600">
+                  {formatOffset(event.start_offset_ms)}–
+                  {formatOffset(event.end_offset_ms)}
+                </td>
+                <td
+                  className="max-w-64 truncate px-2 py-1.5 font-mono text-gray-700"
+                  title={event.topic}
+                >
+                  {event.topic}
+                </td>
+                <td className="whitespace-nowrap px-2 py-1.5 text-right font-mono text-amber-700">
+                  {fmtNum(event.gap_ms, 0)} ms
+                  <span className="ml-1 text-gray-400">×{fmtNum(event.gap_ratio)}</span>
+                </td>
+                <td className="px-2 py-1.5 text-right font-mono font-semibold text-gray-700">
+                  ≈{event.estimated_missing}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-[10.5px] leading-relaxed text-gray-500">
+        Estimated from each topic&apos;s median cadence. A row proves an unusually long
+        interval between two recorded messages; it does not identify where the loss
+        occurred.
+      </p>
     </div>
   );
 }
@@ -507,7 +593,8 @@ export function VideoCheckSection({
       )}
       {players.length === 0 ? (
         <p className="text-xs text-gray-500">
-          Preview the leading frames of a camera topic as an mp4 — one camera, or all at once.
+          Preview the leading frames of a camera topic as an mp4 — one camera, or all at
+          once.
         </p>
       ) : (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">

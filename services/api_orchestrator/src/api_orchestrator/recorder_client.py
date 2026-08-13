@@ -188,6 +188,10 @@ class RecorderClient(BaseServiceClient):
         """
         return await self._request("GET", "/record/status")
 
+    async def preflight(self) -> dict[str, Any]:
+        """Run recorder start preconditions without starting a recording."""
+        return await self._request("GET", "/record/preflight")
+
     async def metadata(self) -> dict[str, Any]:
         """Call recorder ``GET /record/metadata`` (last run's metadata)."""
         return await self._request("GET", "/record/metadata")

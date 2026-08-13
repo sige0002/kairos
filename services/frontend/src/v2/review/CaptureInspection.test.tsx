@@ -109,9 +109,18 @@ function mockApi(opts: {
           ),
         );
       }
-      return Promise.resolve(jsonResponse({ job_id: 'j1', capture_id: CAP, pipeline: 'x', state: 'queued', progress: 0 }));
+      return Promise.resolve(
+        jsonResponse({
+          job_id: 'j1',
+          capture_id: CAP,
+          pipeline: 'x',
+          state: 'queued',
+          progress: 0,
+        }),
+      );
     }
-    if (url.includes('/config/options')) return Promise.resolve(jsonResponse(CONFIG_OPTIONS));
+    if (url.includes('/config/options'))
+      return Promise.resolve(jsonResponse(CONFIG_OPTIONS));
     if (url.includes(`/captures/${CAP}`)) return Promise.resolve(jsonResponse(current));
     return Promise.resolve(jsonResponse({}));
   });
@@ -259,7 +268,10 @@ test('a capture_busy 409 names the holder and says what to wait for', async () =
       status: 409,
       code: 'capture_busy',
       message: 'Another job is working on cap-1; try again in a moment',
-      details: { lease_owner: 'digest-job-7', lease_expires_at: '2026-08-03T10:00:30Z' },
+      details: {
+        lease_owner: 'digest-job-7',
+        lease_expires_at: '2026-08-03T10:00:30Z',
+      },
     },
   });
   renderWithClient(<CaptureInspection captureId={CAP} />);
@@ -289,7 +301,8 @@ test('an open detail turns terminal on its own, without a click', async () => {
   });
   vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
-    if (url.includes('/config/options')) return Promise.resolve(jsonResponse(CONFIG_OPTIONS));
+    if (url.includes('/config/options'))
+      return Promise.resolve(jsonResponse(CONFIG_OPTIONS));
     if (url.includes(`/captures/${CAP}`)) {
       const body = discardedYet ? gone : live;
       discardedYet = true; // the next poll sees what the other tab did
@@ -330,7 +343,9 @@ test('a failed capture leads with the sentence and trails the code', async () =>
   expect(note).toHaveAttribute('data-error-code', 'recorder_failed');
   // The code is still on the page — it is what a bug report needs — but the
   // sentence starts the note.
-  expect(note.textContent?.startsWith('recorder restarted while the capture')).toBe(true);
+  expect(note.textContent?.startsWith('recorder restarted while the capture')).toBe(
+    true,
+  );
   expect(note).toHaveTextContent('(recorder_failed)');
   expect(note.textContent).not.toMatch(/^recorder_failed:/);
 });
@@ -431,7 +446,10 @@ test('a notice with no message of its own is not told it failed', async () => {
 test('a FAULT with no message of its own still says something', async () => {
   // The other side of the same fallback, and the reason it was there.
   mockApi({
-    capture: detail({ state: 'failed', error: { code: 'recorder_failed', message: '' } }),
+    capture: detail({
+      state: 'failed',
+      error: { code: 'recorder_failed', message: '' },
+    }),
   });
   renderWithClient(<CaptureInspection captureId={CAP} />);
 
@@ -525,7 +543,9 @@ test('the failed attempt carries its own way to try again', async () => {
     params: { template: 'tmpl' },
   });
   // The second attempt was accepted, so the note goes.
-  await waitFor(() => expect(screen.queryByTestId('review-validation-error')).toBeNull());
+  await waitFor(() =>
+    expect(screen.queryByTestId('review-validation-error')).toBeNull(),
+  );
 });
 
 test('a capture with no stored result claims none', async () => {
@@ -614,7 +634,9 @@ test('a result that has not moved is still named as the last completed check', a
   await screen.findByTestId('review-validation-error');
 
   void client.invalidateQueries({ queryKey: queryKeys.capture(CAP) });
-  await waitFor(() => expect(screen.getByTestId('review-validation-error-stale')).toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.getByTestId('review-validation-error-stale')).toBeInTheDocument(),
+  );
   expect(screen.getByTestId('review-validation-error-stale').textContent).toMatch(
     /PASS badge above is the last completed check.*not this attempt/i,
   );
@@ -624,7 +646,9 @@ test('a result that has not moved is still named as the last completed check', a
 // rendered "checked 2026-13-45T99:99:99Z" — which still reads as a date.
 test('an unparseable checked_at is dropped, not echoed', async () => {
   mockApi({
-    capture: detail({ validation: { result: 'pass', checked_at: '2026-13-45T99:99:99Z' } }),
+    capture: detail({
+      validation: { result: 'pass', checked_at: '2026-13-45T99:99:99Z' },
+    }),
   });
   renderWithClient(<CaptureInspection captureId={CAP} />);
 
@@ -653,6 +677,43 @@ test('the stored loss table is dated like the validation badge', async () => {
   );
 });
 
+test('loss report shows exact gap time bands instead of a heatmap', async () => {
+  mockApi({
+    capture: detail({
+      loss: {
+        topics: [
+          {
+            name: '/joint_states',
+            count: 995,
+            hz: 99.5,
+            loss_rate: 0.005,
+            gap_max_ms: 60,
+          },
+        ],
+        events: [
+          {
+            topic: '/joint_states',
+            start_offset_ms: 12_340,
+            end_offset_ms: 12_400,
+            gap_ms: 60,
+            expected_interval_ms: 10,
+            estimated_missing: 5,
+            gap_ratio: 6,
+            time_source: 'publish_time',
+          },
+        ],
+      },
+    }),
+  });
+  renderWithClient(<CaptureInspection captureId={CAP} />);
+
+  const events = await screen.findByTestId('loss-events');
+  expect(events).toHaveTextContent('00:12.340–00:12.400');
+  expect(events).toHaveTextContent('/joint_states');
+  expect(events).toHaveTextContent('≈5');
+  expect(events).toHaveTextContent(/does not identify where the loss occurred/i);
+});
+
 // ---- F2: one note, for the latest attempt --------------------------------
 //
 // The integrity section has two error channels that do not clear each other:
@@ -672,21 +733,35 @@ function mockSignalApi(jobPosts: ('ok' | 'network')[]) {
       const answer = jobPosts[call++] ?? 'ok';
       if (answer === 'network') return Promise.reject(new TypeError('Failed to fetch'));
       return Promise.resolve(
-        jsonResponse({ job_id: 'j1', capture_id: CAP, pipeline: 'signal_report', state: 'queued' }),
+        jsonResponse({
+          job_id: 'j1',
+          capture_id: CAP,
+          pipeline: 'signal_report',
+          state: 'queued',
+        }),
       );
     }
     if (url.includes('/jobs/j1/status'))
       return Promise.resolve(
-        jsonResponse({ job_id: 'j1', capture_id: CAP, pipeline: 'signal_report', state: 'failed' }),
+        jsonResponse({
+          job_id: 'j1',
+          capture_id: CAP,
+          pipeline: 'signal_report',
+          state: 'failed',
+        }),
       );
     if (url.includes('/jobs/j1/result'))
       return Promise.resolve(
         jsonResponse({
-          summary: { error: { code: 'pipeline_unavailable', message: 'bagflow is not bundled' } },
+          summary: {
+            error: { code: 'pipeline_unavailable', message: 'bagflow is not bundled' },
+          },
         }),
       );
-    if (url.includes('/config/options')) return Promise.resolve(jsonResponse(CONFIG_OPTIONS));
-    if (url.includes(`/captures/${CAP}`)) return Promise.resolve(jsonResponse(detail()));
+    if (url.includes('/config/options'))
+      return Promise.resolve(jsonResponse(CONFIG_OPTIONS));
+    if (url.includes(`/captures/${CAP}`))
+      return Promise.resolve(jsonResponse(detail()));
     return Promise.resolve(jsonResponse({}));
   });
 }
@@ -739,7 +814,9 @@ test('the moved-on note is not shown when there is no badge to point at', async 
   await screen.findByTestId('review-validation-error');
 
   void client.invalidateQueries({ queryKey: queryKeys.capture(CAP) });
-  await waitFor(() => expect(screen.queryByTestId('review-validation-checked')).toBeNull());
+  await waitFor(() =>
+    expect(screen.queryByTestId('review-validation-checked')).toBeNull(),
+  );
 
   // The failure is still stated — only the claim about a badge is dropped.
   expect(screen.getByTestId('review-validation-error')).toBeInTheDocument();

@@ -35,7 +35,7 @@ never imports. The acceptance layer is a separate project with its own
 | `07-dataset-archive.spec.ts` | §6.1 | When I archive a finished dataset, the dialog shows me the exact folder it will land in, every recording is copied and hash-verified before its copy here is removed, the folder describes itself with a manifest the ledger can vouch for — and even after the database is destroyed, kairos still says the dataset is archived and where it went. |
 | `08-validation.spec.ts` | screen | I run the required-topic check on a recording from the Validation screen, and it comes back naming every topic the template demands with a tick or a cross beside it — and the report it leaves on disk says the same thing as the screen did. |
 | `09-monitor.spec.ts` | screen | The topics my robot config asks the monitor to watch show live rates on the Monitor screen; the ones it was never asked to watch say nothing rather than reading zero. |
-| `10-settings.spec.ts` | screen | Settings shows me the recording config that is actually loaded, refuses an edit that is not valid JSON before it can reach the server, and saving it back leaves what the stack reads exactly as it was. |
+| `10-settings.spec.ts` | screen | Setup check does not run on page load, runs once on explicit request, and returns structured evidence within five seconds. Settings also shows the recording config that is actually loaded, refuses an edit that is not valid JSON before it can reach the server, and saving it back leaves what the stack reads exactly as it was. |
 
 `01`–`07` are the §13 acceptance minimum. `08`–`10` are not part of it: they
 cover the three screens that minimum never enumerated — Validation, Monitor and

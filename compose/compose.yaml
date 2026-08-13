@@ -248,6 +248,8 @@ services:
     build:
       context: .
       dockerfile: services/api_orchestrator/Dockerfile
+      args:
+        <<: *build-proxy-args
     # Release-versioned tag: KAIROS_VERSION comes from the root VERSION file (the
     # Makefile exports it); it falls back to :dev for a bare `docker compose build`
     # so an unversioned local build never silently overwrites a released :latest.

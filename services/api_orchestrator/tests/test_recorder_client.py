@@ -92,6 +92,17 @@ def test_healthz_never_raises() -> None:
     assert asyncio.run(_with_client(handler, "healthz")) is False
 
 
+def test_preflight_calls_read_only_recorder_endpoint() -> None:
+    seen: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, request.url.path))
+        return httpx.Response(200, json={"ready": True})
+
+    assert asyncio.run(_with_client(handler, "preflight")) == {"ready": True}
+    assert seen == [("GET", "/record/preflight")]
+
+
 def _captured_read_timeout(call: str, *args: object) -> float | None:
     """Drive one client call and return the read timeout httpx used for it."""
     captured: dict[str, float | None] = {}

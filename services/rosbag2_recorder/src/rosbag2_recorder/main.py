@@ -97,6 +97,17 @@ def create_recorder_app() -> FastAPI:
     def record_status() -> RecordStatusResponse:
         return session.status()
 
+    @app.get("/record/preflight")
+    def record_preflight() -> dict[str, bool]:
+        """Run the same storage/RAM checks as start, without recording.
+
+        This is intentionally an explicit diagnostic endpoint rather than an
+        automatic background probe. ``ApiError`` is allowed through so the
+        orchestrator can show the exact blocker and evidence to the operator.
+        """
+        session.ensure_ready()
+        return {"ready": True}
+
     @app.get("/record/metadata")
     def record_metadata() -> dict[str, Any]:
         return session.get_metadata()
