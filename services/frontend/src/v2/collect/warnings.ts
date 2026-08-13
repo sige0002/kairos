@@ -100,6 +100,36 @@ export interface TopicRates {
   withheld: number;
 }
 
+export interface TopicRateIssue {
+  name: string;
+  currentHz: number | null;
+  expectedHz: number | null;
+  /** True when the reference is learned by the monitor, not configured. */
+  learnedReference: boolean;
+}
+
+/**
+ * Every topic the monitor judged as needing rate attention. The list is kept
+ * separate from the aggregate ratio so Collect can name every affected topic
+ * without reimplementing Monitor's expected-rate resolution.
+ */
+export function topicRateIssues(rows: MonitorRow[]): TopicRateIssue[] {
+  return rows
+    .filter(
+      (row) =>
+        row.status === 'warning' ||
+        row.status === 'danger' ||
+        row.status === 'inactive',
+    )
+    .map((row) => ({
+      name: row.name,
+      currentHz: row.hz ?? null,
+      expectedHz: row.expected_hz ?? row.baseline_hz ?? null,
+      learnedReference: row.expected_hz == null && row.baseline_hz != null,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
 /**
  * "N/M at expected rate" for the System status card: of the topics the monitor
  * actually judged (backend per-topic `status`, OL-②.2), how many are `ok`.

@@ -213,7 +213,11 @@ export function CollectScreen() {
               monitorBridge={monitorBridge}
               cameraHealth={cameraHealth}
             />
-            <WarningsCard machine={machine} defaultTopics={defaultTopics} />
+            <WarningsCard
+              machine={machine}
+              defaultTopics={defaultTopics}
+              config={config}
+            />
             <AdviceCard machine={machine} />
             <BatchStatsCard machine={machine} />
             <CoverageCard machine={machine} />

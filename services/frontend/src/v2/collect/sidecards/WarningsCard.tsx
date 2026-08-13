@@ -14,10 +14,16 @@ import { useQuery } from '@tanstack/react-query';
 import { queryKeys } from '../../../api/queryKeys';
 import { Card, cn } from '../../../components/ui';
 import type { AlertEvent } from '../../../api/types';
+import type { RuntimeConfig } from '../../../config';
 import type { BatchMachine } from '../useBatchMachine';
 import { SIDE_PAD } from '../compact';
 import { useMonitorRows } from '../../../features/monitor/useMonitorRows';
-import { armingWarning, configMismatchHint, firingAlertRows } from '../warnings';
+import {
+  armingWarning,
+  configMismatchHint,
+  firingAlertRows,
+  topicRateIssues,
+} from '../warnings';
 import { Chip } from './Chip';
 import { needsAttentionItems } from './needsAttention';
 import { useSharedSystemRows } from './systemRowsStore';
@@ -28,9 +34,11 @@ const ALERTS_SHOWN = 2;
 export function WarningsCard({
   machine,
   defaultTopics,
+  config,
 }: {
   machine: BatchMachine;
   defaultTopics: string[];
+  config: RuntimeConfig;
 }) {
   // Two REAL live signals, never a fabricated one (honesty rule):
   //  - target topics the recorder is not capturing (arming snapshot, OL-①.4 —
@@ -43,7 +51,8 @@ export function WarningsCard({
   // The same monitor data Overview already reads. `rows` is every topic on the
   // graph; the mismatch question is whether it dwarfs the configured set that
   // is sitting silent.
-  const { rows } = useMonitorRows();
+  const { rows } = useMonitorRows(config);
+  const rateIssues = topicRateIssues(rows);
   const mismatch = configMismatchHint(uncaptured?.topics.length ?? 0, rows.length);
   const shown = uncaptured?.topics.slice(0, 3) ?? [];
 
@@ -185,28 +194,62 @@ export function WarningsCard({
                 <span className="shrink-0 text-[13px] font-semibold text-gray-700">
                   {item.label}
                 </span>
-                <span
-                  className="truncate font-mono text-[11px] text-gray-500"
-                  title={item.value}
-                >
-                  {item.value}
-                </span>
+                {item.label === 'Topic rates' &&
+                (item.cause === 'rates-shortfall' || item.cause === 'rates-mixed') &&
+                rateIssues.length > 0 ? (
+                  <span className="font-mono text-[11px] text-gray-500">
+                    {rateIssues.length} topic{rateIssues.length === 1 ? '' : 's'}{' '}
+                    {rateIssues.length === 1 ? 'needs' : 'need'} attention
+                  </span>
+                ) : (
+                  <span
+                    className="truncate font-mono text-[11px] text-gray-500"
+                    title={item.value}
+                  >
+                    {item.value}
+                  </span>
+                )}
                 <div className="flex-1" />
                 <Chip tone={item.tone}>{item.chip}</Chip>
               </div>
+              {item.label === 'Topic rates' &&
+                (item.cause === 'rates-shortfall' || item.cause === 'rates-mixed') &&
+                rateIssues.length > 0 && (
+                  <div
+                    data-testid="collect-rate-topics"
+                    className="my-1 divide-y divide-gray-200 rounded-control border border-gray-200 bg-white"
+                  >
+                    {rateIssues.map((issue) => (
+                      <div
+                        key={issue.name}
+                        data-testid="collect-rate-topic"
+                        className="flex flex-col gap-0.5 px-2.5 py-2"
+                      >
+                        <span className="break-all font-mono text-[11px] font-semibold text-gray-700">
+                          {issue.name}
+                        </span>
+                        <span className="font-mono text-[11px] text-gray-500">
+                          Current {formatRateHz(issue.currentHz)} · Expected{' '}
+                          {issue.learnedReference ? '~' : ''}
+                          {formatRateHz(issue.expectedHz)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               <span className="text-xs text-gray-600">{item.impact}</span>
               <span className="text-xs font-medium text-gray-700">{item.action}</span>
             </div>
           ))}
         </div>
       )}
-      {hasWarnings ? (
+      {hasWarnings || checks.length > 0 ? (
         <button
           type="button"
           onClick={machine.goMonitor}
           className="rounded-control border border-gray-200 bg-white py-2 text-[12.5px] font-semibold text-teal-700 hover:bg-teal-50"
         >
-          Open in Monitor →
+          Open Monitor →
         </button>
       ) : (
         // The all-clear. It speaks for the checks too now, so it may only
@@ -222,4 +265,8 @@ export function WarningsCard({
       )}
     </Card>
   );
+}
+
+function formatRateHz(value: number | null): string {
+  return value == null || !Number.isFinite(value) ? '—' : `${value.toFixed(1)} Hz`;
 }

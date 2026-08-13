@@ -27,6 +27,8 @@ export interface NeedsAttentionItem {
   value: string;
   chip: string;
   tone: Tone;
+  /** Machine-readable reason supplied by the System status row. */
+  cause?: string;
   /** What it means for the take in progress. */
   impact: string;
   /** What to do about it. */
@@ -63,13 +65,10 @@ const COPY: Record<string, { impact: string; action: string }> = {
   // FALLBACK rather than any of these.
   'rates-shortfall': {
     impact:
-      'The monitor is receiving some topics below their expected rate. It ' +
-      'subscribes separately from the recorder, so this does not establish what ' +
-      'the recording holds — but a topic short here is one to check before ' +
-      'trusting the take.',
+      'Recording continues. These are live monitor readings and do not confirm ' +
+      'loss in the recorded file.',
     action:
-      'Open Monitor to see which topics are below rate, then decide whether to ' +
-      'keep this take.',
+      'Open Monitor to inspect the topics before deciding whether to keep this take.',
   },
   'rates-unreadable': {
     impact:
@@ -183,6 +182,7 @@ export function needsAttentionItems(
         value: r.value,
         chip: r.chip,
         tone: r.tone,
+        cause: r.cause,
         // The cause wins where a row has one: it is the specific thing that
         // happened, and the label is only its heading. A cause with no entry
         // falls through to FALLBACK rather than to the label's wording, which

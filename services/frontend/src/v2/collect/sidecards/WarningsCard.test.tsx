@@ -10,6 +10,8 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../../api/client';
 import { queryKeys } from '../../../api/queryKeys';
 import type { AlertEvent, MetricsSnapshot, TopicStatus } from '../../../api/types';
+import type { RuntimeConfig } from '../../../config';
+import { useUiStore } from '../../../store/uiStore';
 import {
   jsonResponse,
   makeTestClient,
@@ -23,6 +25,13 @@ import type { SysRow } from './useSystemRows';
 import { WarningsCard } from './WarningsCard';
 
 const GB = 1e9; // decimal — matches the shared formatBytes convention
+
+const TEST_CONFIG: RuntimeConfig = {
+  endpoints: { api: '/api/v1', events: '/api/v1/events', webrtc: '/webrtc' },
+  tabs: [],
+  defaults: { default_topics: [], expected_hz: {} },
+  schemas: {},
+};
 
 // WarningsCard reads machine.arming and machine.goMonitor; the rest of the
 // (large) BatchMachine is irrelevant here.
@@ -41,7 +50,9 @@ function seedRows(rows: SysRow[]): void {
 }
 
 function renderWarnings(machine: BatchMachine = warningsMachine()) {
-  return renderWithClient(<WarningsCard machine={machine} defaultTopics={[]} />);
+  return renderWithClient(
+    <WarningsCard machine={machine} defaultTopics={[]} config={TEST_CONFIG} />,
+  );
 }
 
 beforeEach(() => {
@@ -56,6 +67,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   useSystemRowsStore.setState({ rows: [] });
+  useUiStore.setState({ sseStatus: 'closed', monitorBridge: null });
 });
 
 // ---- the disagreement: CHECK rows, zero alerts ------------------------------
@@ -87,7 +99,7 @@ test('CHECK rows with no alerts are surfaced instead of "No active warnings"', a
     within(block).getByText('robot abc1234 ≠ console def5678'),
   ).toBeInTheDocument();
   // …and what each means for the take, in words.
-  expect(block).toHaveTextContent(/below their expected rate/i);
+  expect(block).toHaveTextContent(/live monitor readings/i);
   expect(block).toHaveTextContent(/different builds/i);
 
   // The claim that made this a bug is gone, and so is the bare "0" beside it.
@@ -147,9 +159,14 @@ test('a firing alert and an open check render as two distinct sections', async (
   ]);
   const client = makeTestClient();
   client.setQueryData(queryKeys.alerts, [firingAlert()]);
-  renderWithClient(<WarningsCard machine={warningsMachine()} defaultTopics={[]} />, {
-    client,
-  });
+  renderWithClient(
+    <WarningsCard
+      machine={warningsMachine()}
+      defaultTopics={[]}
+      config={TEST_CONFIG}
+    />,
+    { client },
+  );
 
   const alerts = await screen.findByTestId('collect-firing-alerts');
   const checks = screen.getByTestId('collect-needs-attention');
@@ -206,7 +223,10 @@ function mockHealthyBackend(over: { git_sha?: string; console_git_sha?: string }
   });
 }
 
-function renderBothCards(client: ReturnType<typeof makeTestClient>) {
+function renderBothCards(
+  client: ReturnType<typeof makeTestClient>,
+  config: RuntimeConfig = TEST_CONFIG,
+) {
   const machine = warningsMachine();
   return renderWithClient(
     <>
@@ -225,7 +245,7 @@ function renderBothCards(client: ReturnType<typeof makeTestClient>) {
           totalCameras: 0,
         }}
       />
-      <WarningsCard machine={machine} defaultTopics={[]} />
+      <WarningsCard machine={machine} defaultTopics={[]} config={config} />
     </>,
     { client },
   );
@@ -246,6 +266,66 @@ test('a CHECK derived by the System status card reaches the warnings card', asyn
   expect(within(block).getByText('2 / 3 at expected')).toBeInTheDocument();
   expect(within(block).getByText('robot abc1234 ≠ console def5678')).toBeInTheDocument();
   expect(screen.queryByText('No active warnings')).not.toBeInTheDocument();
+});
+
+test('every affected topic is shown in full with current and expected Hz', async () => {
+  mockHealthyBackend();
+  useUiStore.setState({ sseStatus: 'open', monitorBridge: 'up' });
+  const client = makeTestClient();
+  client.setQueryData(queryKeys.metrics, {
+    topics: [
+      {
+        name: '/zeta/camera/very_long_namespace/image_raw/compressed',
+        status: 'warning',
+        hz: 12.3,
+      },
+      {
+        name: '/alpha/joint_states/with_a_complete_topic_name',
+        status: 'danger',
+        hz: 4.2,
+      },
+      {
+        name: '/middle/sensor/that_is_currently_silent',
+        status: 'inactive',
+        hz: null,
+      },
+      { name: '/healthy/topic', status: 'ok', hz: 20 },
+    ],
+  } satisfies MetricsSnapshot);
+  client.setQueryData(queryKeys.alerts, []);
+  const config: RuntimeConfig = {
+    ...TEST_CONFIG,
+    defaults: {
+      default_topics: [],
+      expected_hz: {
+        '/alpha/joint_states/with_a_complete_topic_name': 15,
+        '/middle/sensor/that_is_currently_silent': 10,
+        '/zeta/camera/very_long_namespace/image_raw/compressed': 30,
+        '/healthy/topic': 20,
+      },
+    },
+  };
+  renderBothCards(client, config);
+
+  const list = await screen.findByTestId('collect-rate-topics');
+  expect(screen.getByText('3 topics need attention')).toBeInTheDocument();
+  const topicRows = within(list).getAllByTestId('collect-rate-topic');
+  expect(topicRows).toHaveLength(3);
+  expect(topicRows.map((topicRow) => topicRow.textContent)).toEqual([
+    '/alpha/joint_states/with_a_complete_topic_nameCurrent 4.2 Hz · Expected 15.0 Hz',
+    '/middle/sensor/that_is_currently_silentCurrent — · Expected 10.0 Hz',
+    '/zeta/camera/very_long_namespace/image_raw/compressedCurrent 12.3 Hz · Expected 30.0 Hz',
+  ]);
+  for (const name of [
+    '/alpha/joint_states/with_a_complete_topic_name',
+    '/middle/sensor/that_is_currently_silent',
+    '/zeta/camera/very_long_namespace/image_raw/compressed',
+  ]) {
+    expect(within(list).getByText(name)).not.toHaveClass('truncate');
+  }
+  expect(list).not.toHaveTextContent('%');
+  expect(list).not.toHaveTextContent(/more/i);
+  expect(list).not.toHaveTextContent('/healthy/topic');
 });
 
 test('the real unreadable-only row gets the unreadable sentence, end to end', async () => {
@@ -319,13 +399,11 @@ function proseFor(r: SysRow): string {
 
 test('a rate shortfall reports what the MONITOR observed, and hedges the recording', () => {
   const text = proseFor(ratesRow('27 / 29 at expected', 'rates-shortfall'));
-  expect(text).toMatch(/monitor is receiving some topics below their expected rate/i);
-  // The monitor is an independent receive-side subscriber, so its count is a
-  // floor on what was published — never evidence about what the recorder wrote.
-  expect(text).toMatch(/subscribes separately from the recorder/i);
-  expect(text).toMatch(/does not establish what the recording holds/i);
-  // An observed shortfall is not confirmed loss.
-  expect(text).not.toMatch(/\blost\b|\bloss\b|\bdropped\b/i);
+  expect(text).toMatch(/live monitor readings/i);
+  expect(text).toMatch(/do not confirm loss in the recorded file/i);
+  expect(text).toMatch(/inspect the topics/i);
+  // A monitor shortfall must not be promoted into a claim about the bag.
+  expect(text).not.toMatch(/recording (is|has) (missing|lost)/i);
 });
 
 test('unreadable readings alone never claim a rate shortfall', () => {
