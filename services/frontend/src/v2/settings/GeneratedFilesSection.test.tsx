@@ -113,3 +113,38 @@ test('shows the observed cleanup result', async () => {
     expect.objectContaining({ method: 'POST' }),
   );
 });
+
+test('presents partial cleanup as a recoverable warning with failure details', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation((_url) => {
+    if (String(_url).endsWith('/cleanup')) {
+      return Promise.resolve(
+        jsonResponse({
+          deleted_bytes: 600,
+          deleted_files: 6,
+          deleted_units: 3,
+          protected_active_units: 0,
+          failed_units: [
+            {
+              pipeline: 'signal_report',
+              capture_id: 'capture-locked',
+              message: 'permission denied',
+            },
+          ],
+          remaining_report_bytes: 400,
+        }),
+      );
+    }
+    return Promise.resolve(jsonResponse(PREVIEW));
+  });
+  renderWithClient(<GeneratedFilesSection />);
+  fireEvent.click(screen.getByRole('button', { name: 'Analyze storage' }));
+  await screen.findByTestId('cleanup-selected');
+  fireEvent.click(screen.getByRole('button', { name: 'Delete 800 B' }));
+
+  const warning = await screen.findByRole('alert');
+  expect(warning).toHaveTextContent('Cleanup incomplete');
+  expect(warning).toHaveTextContent('1 sets failed and remain on disk');
+  expect(screen.getByTestId('cleanup-failures')).toHaveTextContent(
+    'signal_report / capture-locked: permission denied',
+  );
+});

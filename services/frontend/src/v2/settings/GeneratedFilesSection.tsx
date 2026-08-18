@@ -86,6 +86,7 @@ export function GeneratedFilesSection() {
 
   const dirty = previewedKey !== criteriaKey(criteria);
   const validationWarning = (preview.data?.validation_resets ?? 0) > 0;
+  const cleanupIncomplete = (cleanupResult?.failed_units.length ?? 0) > 0;
   const canDelete =
     !dirty &&
     (preview.data?.selected_units ?? 0) > 0 &&
@@ -335,15 +336,32 @@ export function GeneratedFilesSection() {
 
           {cleanupResult && (
             <div
-              role="status"
-              className="rounded-control border border-green-200 bg-green-50 p-3 text-xs text-green-800"
+              role={cleanupIncomplete ? 'alert' : 'status'}
+              className={`rounded-control border p-3 text-xs ${
+                cleanupIncomplete
+                  ? 'border-amber-300 bg-amber-50 text-amber-900'
+                  : 'border-green-200 bg-green-50 text-green-800'
+              }`}
             >
-              Deleted {cleanupResult.deleted_units} report sets (
+              {cleanupIncomplete ? 'Cleanup incomplete. ' : ''}Deleted{' '}
+              {cleanupResult.deleted_units} report sets (
               {formatBytes(cleanupResult.deleted_bytes)}).
               {cleanupResult.protected_active_units > 0 &&
                 ` ${cleanupResult.protected_active_units} active sets were skipped.`}
               {cleanupResult.failed_units.length > 0 &&
                 ` ${cleanupResult.failed_units.length} sets failed and remain on disk.`}
+              {cleanupIncomplete && (
+                <ul
+                  data-testid="cleanup-failures"
+                  className="mt-2 max-h-32 list-disc space-y-1 overflow-y-auto pl-4 font-mono text-[11px]"
+                >
+                  {cleanupResult.failed_units.map((failure) => (
+                    <li key={`${failure.pipeline}:${failure.capture_id}`}>
+                      {failure.pipeline} / {failure.capture_id}: {failure.message}
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
           )}
         </div>
