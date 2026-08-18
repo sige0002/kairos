@@ -9,15 +9,14 @@ description: テスト駆動開発（TDD）で Python モジュールを実装�
 
 テスト駆動開発（TDD）で Python モジュールを新規実装するときの標準手順。テストを先に書くことで、実装の仕様が明確になり、リグレッションを防げる。
 
-SQLite で DB 層を TDD 実装する場合（FTS5 全文検索・Upsert・sqlite3 の mypy 対応）は `references/sqlite-patterns.md` を参照せよ。
+SQLite で DB 層を TDD 実装する場合（FTS5 全文検索・Upsert・sqlite3 の型付け）は `references/sqlite-patterns.md` を参照せよ。
 
 ## 手順
 
 ### Step 1: テストファイルを先に作成
 
-```
-tests/test_{module_name}.py
-```
+リポジトリの既存テスト配置に従う。kairos では各 Python パッケージの
+`tests/test_{module_name}.py` に置く。
 
 テストの構成（この順序で書くことで、正常系の理解 → 境界の把握 → 異常系の網羅と段階的に検証できる）：
 
@@ -34,24 +33,26 @@ tests/test_{module_name}.py
 実装の原則：
 
 - `from __future__ import annotations` を先頭に（型アノテーションの前方参照を有効化）
-- 型アノテーション必須（mypy strict 対応）
+- public interface に型アノテーションを付ける
 - ログ: `logger = logging.getLogger(__name__)` で統一的なログ出力
 - docstring: 全 public 関数に記述
 
-### Step 3: 検証（3段階）
+### Step 3: 検証
 
-段階的に検証する理由は、問題の切り分けを容易にするため。
+AGENTS.md、CI、pyproject.toml から正準コマンドを確認し、対象テストから
+パッケージ全体へ広げる。型チェックはプロジェクトに設定済みの場合だけ行う。
+
+kairos では対象サービスのディレクトリから次を実行する：
 
 ```bash
-# 1. 対象テストのみ（実装の正しさを確認）
-uv run pytest tests/test_{module_name}.py -v --tb=short
-
-# 2. 全テストでリグレッション確認（他モジュールへの影響がないことを確認）
-uv run pytest tests/ -v --tb=short
-
-# 3. 型チェック（型の整合性を確認）
-uv run mypy {package}/{module_name}.py --ignore-missing-imports
+uv run --extra test pytest -q tests/test_{module_name}.py
+uv run --extra test pytest -q
+# From the repository root:
+uvx ruff check <changed-python-paths>
 ```
+
+横断的な変更では `make test-py` と `uvx ruff format --check libs services`
+も実行する。kairos は mypy を導入していないため、mypy をゲートにしない。
 
 ## よく使うフィクスチャパターン
 
@@ -89,15 +90,15 @@ def test_download(mock_retrieve, tmp_path):
     mock_retrieve.side_effect = fake
 ```
 
-## カバレッジ目標
+## カバレッジ
 
-- 新規モジュール: **90% 以上**（新しいコードは十分にテストされるべき）
-- プロジェクト全体: **80% 以上**（既存コードとの総合バランス）
+リポジトリに閾値が設定されていれば従う。閾値がなければ、正常系、境界値、
+失敗・復旧経路をテストし、根拠のない一律パーセンテージを完了条件にしない。
 
 ## チェックリスト
 
 - [ ] テストが先に書かれている
 - [ ] 全テストがパスする
 - [ ] リグレッションなし（全テスト）
-- [ ] mypy 0 エラー
-- [ ] docstring 完備
+- [ ] リポジトリで設定済みの型チェックがパスする
+- [ ] public interface が既存のdocstring規約に従う

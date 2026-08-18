@@ -1,6 +1,6 @@
 ---
 name: no-confidential-names
-description: Keep a confidential robot's name out of tracked files and commit messages in kairos. Use when editing anything tracked that names a robot (test fixtures, config defaults, docs examples, Makefile variables), when writing a commit message, and as a gate before commit, push, opening a PR, or merging one. The protected names are derived at runtime from the gitignored config/local/<robot>/ and deploy/msgs_overlay/<robot>/ — this skill never stores a name itself.
+description: Keep a confidential robot's name out of tracked files and commit messages in kairos. Use when editing anything tracked that names a robot (test fixtures, config defaults, docs examples, Makefile variables), when writing a commit message, and as a gate before commit, push, opening a PR, or merging one. Protected names are derived at runtime from gitignored robot-specific config and message-overlay directories; this skill never stores a name itself.
 ---
 
 # No confidential names in tracked files
@@ -24,16 +24,17 @@ moment it is pushed.
 
 ## Why this file names no robot
 
-`.claude/skills/` is tracked. A hardcoded deny-list here would be the exact leak
+`.agents/skills/` is tracked. A hardcoded deny-list here would be the exact leak
 the check exists to prevent. So `check.sh` **derives** the list at runtime from
-the gitignored directories above — the check gets stronger when you add a robot,
-with nothing to update here.
+the gitignored directories above in every checkout reported by `git worktree
+list`. The same gate therefore works inside a linked worktree with no local
+configuration of its own.
 
 ## Run the check
 
 ```bash
-bash .claude/skills/no-confidential-names/check.sh                    # tracked tree only
-bash .claude/skills/no-confidential-names/check.sh origin/develop..HEAD   # + messages + diff
+bash .agents/skills/no-confidential-names/check.sh                    # tracked tree only
+bash .agents/skills/no-confidential-names/check.sh origin/develop..HEAD   # + messages + diff
 ```
 
 Pass a range whenever one exists — the tree can be clean while a commit message

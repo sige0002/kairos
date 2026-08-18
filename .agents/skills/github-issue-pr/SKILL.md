@@ -22,9 +22,8 @@ GitHub issue を起点に PR マージまでを一気通貫でやるときの標
 
 ## 使うツール
 
-- 基本は **`gh` CLI**（このマシンで認証済み）。**GitHub MCP server** が接続されて
-  いれば issue / PR 操作にそのツールを使ってもよい（ToolSearch で `github` を検索。
-  無ければ gh に黙ってフォールバック）。
+- 基本は認証済みの **`gh` CLI**。接続済みGitHubアプリ／MCPの利用可能なツールが
+  あればissue・PRの読み書きに使ってよい。特定環境のツール名は前提にしない。
 - リポジトリは **public**。issue・PR・コミットの全テキストが即座に公開される —
   **no-confidential-names を issue 本文・タイトル・PR・ブランチ名にも適用**する
   （機体は「the local robot」等の一般名で書く）。文章は英語（コード・コミット規約と同じ）。
@@ -52,11 +51,14 @@ gh issue create --title "..." --label bug --body "..."
 
 ### 2. worktree + ブランチ
 
-並列セッションと衝突させないため **EnterWorktree で隔離**し、ブランチを
-**origin/develop から**切り直す（EnterWorktree の既定 base は origin/main）:
+並列セッションと衝突させないため、実行環境のworktree機能または
+`git worktree add` で隔離し、ブランチを **origin/developから**作る：
 
 ```bash
-git switch -c <prefix>/<slug> origin/develop
+kairos_worktree_root=$(mktemp -d)
+kairos_worktree_path="$kairos_worktree_root/worktree"
+git worktree add -b <prefix>/<slug> "$kairos_worktree_path" origin/develop
+cd "$kairos_worktree_path"
 ```
 
 prefix はラベルに合わせる: `bug`→`fix/`、`documentation`→`docs/`、`enhancement`→`feat/`。
@@ -65,13 +67,11 @@ prefix はラベルに合わせる: `bug`→`fix/`、`documentation`→`docs/`�
 
 - AGENTS.md の規約どおり（テスト先行・変更最小・仕様は ja 正本 + `/sync-docs` で en ミラー）。
 - 該当パッケージの pytest / frontend gate / `uvx ruff check` + `format --check` を通す。
-- **worktree では no-confidential-names の名前導出ができない**（gitignored の
-  config/local が無い）。本体チェックアウト側から名前を導出して range を検査する:
+- コミット前に正規ゲートを実行する。スクリプトは全worktreeからgitignoredの
+  名前候補を導出するため、リンクworktree内からそのまま実行できる：
 
 ```bash
-ls /home/sadasue/kairos/config/local | grep -vE 'README|gitkeep|yaml$' > $SCRATCH/names.txt
-git log origin/develop..HEAD -p > $SCRATCH/range.patch
-grep -i -c -f $SCRATCH/names.txt $SCRATCH/range.patch   # 0 = clean
+bash .agents/skills/no-confidential-names/check.sh origin/develop..HEAD
 ```
 
 ### 4. PR
@@ -87,7 +87,7 @@ gh pr edit <PR> --add-label <issueと同じラベル>
 
 ### 5. 独立エージェントレビュー
 
-Agent ツールで**クリーンコンテキストのレビュワー**を spawn し、敵対レビューさせる。
+利用可能な協調ツールで**クリーンコンテキストのレビュワー**を起動し、敵対レビューさせる。
 プロンプトの骨子:
 
 - 「PR を**反証**しにいけ（褒めるな）」。worktree パスと `gh pr diff <N>` を渡す。
@@ -109,8 +109,8 @@ gh issue close <issue> --comment "Implemented in #<PR> (squash <sha>)."
 - `--delete-branch` は **base（develop）が別 worktree でチェックアウト済みだと
   ローカル操作で失敗する**（リモートのマージ自体は成功している）ので、ブランチ削除は
   API で行う。マージ状態は `gh pr view <N> --json state,mergeCommit` で確認。
-- ExitWorktree（`action: remove`。squash マージ後はコミットが非祖先になるので
-  `discard_changes: true` が要る — push 済み+マージ済みなので安全）。
+- マージ状態、push済み、worktreeがcleanであることを確認してから、実行環境の
+  worktree削除機能または `git worktree remove <path>` で作業treeを外す。
 - 本体チェックアウトで `git pull` → 必要なサービスを `make rebuild <svc>` → 可能なら
   実データ/実 UI で 1 回動かして着地を実証する。
 - CHANGELOG（ローカル・コミットしない）の `## [Unreleased]` に追記。

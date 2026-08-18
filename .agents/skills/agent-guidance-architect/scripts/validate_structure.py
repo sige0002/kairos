@@ -92,7 +92,12 @@ def parse_frontmatter(text):
 
 def walk(repo):
     for root, dirs, files in os.walk(repo, followlinks=False):
-        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+        dirs[:] = [
+            d
+            for d in dirs
+            if d not in SKIP_DIRS
+            and not (os.path.basename(root) == ".claude" and d == "worktrees")
+        ]
         yield root, dirs, files
 
 

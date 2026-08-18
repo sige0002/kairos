@@ -23,8 +23,8 @@ question, you don't have the ground truth to make the change yet.
 | # | Principle | How to verify |
 |---|-----------|----------------|
 | a | Design is based on explicit understanding of users, tasks, and environments | Can you name the persona/user group, the task they're mid-way through, and the environment (device, urgency, distraction level) this fix serves? If not, you're guessing at a UI, not designing one. |
-| b | Users are involved throughout | Is this fix driven by real user-based evidence (a persona test transcript, a support report, a prior finding) rather than only internal opinion about what "seems right"? |
-| c | Design is driven and refined by user-centred evaluation | Will you check the result against a user-facing pass (persona walkthrough or the dialogue-principles checklist below) before marking it done — not just "the code looks correct"? |
+| b | Users are involved throughout | Is the evidence from representative participants (for example an actual test transcript or support report), or from a generated/stand-in persona? Label the latter as a hypothesis or expert aid, not user evidence. |
+| c | Design is driven and refined by user-centred evaluation | What evidence comes from representative users, and what evidence is only an expert heuristic or persona walkthrough? Record the distinction instead of treating them as equivalent. |
 | d | The process is iterative | Are you prepared to revise again if evaluation surfaces a new requirement, instead of treating the first patch as final? |
 | e | Design addresses the whole user experience | Does the fix consider what happens immediately before and after this screen/state (what led here, what the user does next), not just the isolated widget? |
 | f | Design team includes multidisciplinary skills and perspectives | For judgment calls on wording, safety-critical errors, or domain terms, did you pull in the relevant context (spec docs, prior UX findings, domain conventions) rather than a solo guess? |
@@ -46,9 +46,10 @@ order, and loop back a step if a later one invalidates an earlier answer:
 3. **Design against the dialogue principles** (section 3 below). Pick the
    principle(s) the finding violates and design the fix to satisfy them,
    not just to make the symptom disappear.
-4. **Evaluate with user-based evidence before calling it done.** Re-run the
-   persona scenario that surfaced the finding, or do a heuristic pass using
-   section 3's questions, against the actual running UI — not the diff.
+4. **Evaluate against the running UI before calling it done.** Re-run the
+   original user scenario when representative-user evidence is available.
+   Otherwise perform and label a heuristic/persona walkthrough using section 3;
+   it is useful expert evidence, not a substitute for observed user evidence.
 
 ## 3. Dialogue-principles checklist (ISO 9241-110)
 
@@ -105,8 +106,9 @@ when all of these are true:
       and recovery is possible without expert knowledge.
 - [ ] The change has been checked against the section 3 dialogue-principles
       questions for the touched screen/flow.
-- [ ] It has been evaluated with user-based evidence — a persona walkthrough
-      or a heuristic pass against the running UI, not just a code read.
+- [ ] It has been evaluated against the running UI. Representative-user evidence,
+      heuristic review, and persona walkthrough are labeled separately; none is
+      presented as another kind of evidence.
 - [ ] That evidence is recorded somewhere durable (commit message, PR
       description, or a dev_docs note): what was tested, what was observed.
 

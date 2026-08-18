@@ -11,12 +11,26 @@ rosbag を使った開発テストループの定型と、頻出のハマりど�
 
 開発中の受信側（バックエンド・可視化 UI）をテストする定番構成：
 
+kairos では `data/` に rosbag2 のbagディレクトリ（`metadata.yaml` と
+1個以上の `.mcap`）を置き、正準ターゲットを使う：
+
+```bash
+make rosbag-loop BAG=<bag-directory>
+make table
+# スタック起動後の疎通判定
+make smoke
+```
+
+`make rosbag-loop` はスタックと同じ `ROS_DOMAIN_ID`、`ROS_DISTRO`、RMW設定を
+再生コンテナへ渡す。個別調査で素のROSコマンドを使う場合も、MCAPファイル単体
+ではなくbagディレクトリを指定する：
+
 ```bash
 # bag の中身を確認してから使う
-ros2 bag info data/sample.mcap
+ros2 bag info data/<bag-directory>
 
 # ループ再生（テスト用に流しっぱなしにする）
-ros2 bag play data/sample.mcap --loop
+ros2 bag play data/<bag-directory> --loop
 
 # 受信確認（別ターミナル/コンテナ）
 ros2 topic list
@@ -24,10 +38,14 @@ ros2 topic hz /camera/image_raw/compressed
 ```
 
 - コンテナ構成では、bag 再生専用コンテナを立てて `data/` を volume 共有すると再現性が高い
-- `make rosbag-loop` のような Makefile ターゲットに包んでおくと毎回のタイプが減る（docker compose + bag play + msgs ビルドを薄くラップする）
+- kairos 以外では、同等の再生処理をMakefileターゲットに包むと再現しやすい
 - カスタム msg を使う bag は、再生側・受信側の両方に msg パッケージのビルドが必要
 
 ## 記録（record）の注意点
+
+kairosでは `ros2 bag record` を直接起動せず、orchestratorのrecord APIまたは
+`make smoke-record` を使う。recorderはsubscription matchを待ってから
+start-pausedを解除するため、下記は一般的な素のrosbag2運用に対する注意である。
 
 - **開始直後のデータ欠け**: `ros2 bag record` は開始直後、全トピックの購読が完了するまでラグがあり、序盤のメッセージが欠ける。対策：
   - 記録開始から数秒間のデータは使わない前提で運用する（変換時に先頭を捨てる）
@@ -39,7 +57,9 @@ ros2 topic hz /camera/image_raw/compressed
 「トピックは流れているはずなのに受信できない/周波数が出ない」ときの確認順：
 
 1. **`ROS_DOMAIN_ID` の一致** — 全コンテナ・ホストで同一か。既定は 0
-2. **DDS 実装の統一** — CycloneDDS と FastDDS の混在を避ける。`RMW_IMPLEMENTATION=rmw_cyclonedds_cpp` で統一（迷ったら CycloneDDS）
+2. **DDS 実装の統一** — 再生側と受信側を同じRMWへ揃える。kairosの既定は
+   `rmw_fastrtps_cpp`。CycloneDDSへ切り替える場合はスタックと再生ハーネスの
+   両方を `rmw_cyclonedds_cpp` にする
 3. **QoS の不一致** — `ros2 topic info /topic -v` で配信/購読の QoS を突合。BEST_EFFORT vs RELIABLE、depth 設定を確認
 4. **TRANSIENT_LOCAL の残留** — durability が TRANSIENT_LOCAL のトピックは、購読開始時に**過去の古いメッセージが届く**。タイムスタンプ（header.stamp）で閾値フィルタして古いフレームを捨てる
 5. **コンテナ間の DDS 発見** — network_mode、`/dev/shm` 共有、マルチキャスト可否を確認

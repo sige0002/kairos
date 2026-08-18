@@ -40,7 +40,8 @@ Claude Code と OpenAI Codex の2つに限定する。
 既存ガイダンスがある場合は、生成の前に現状監査を実行して結果を提示する：
 
 ```bash
-python3 scripts/build_report.py --repo <repo> [--cwd <subdir>] [--budget 3000]
+SKILL=.agents/skills/agent-guidance-architect
+python3 "$SKILL/scripts/build_report.py" --repo <repo> [--cwd <subdir>] [--budget 3000]
 ```
 
 ### Step 2: ルールの抽出と分類
@@ -98,7 +99,8 @@ repo/
 生成後（または既存ファイルの監査依頼時）、必ず全スクリプトを通す：
 
 ```bash
-python3 scripts/build_report.py --repo <repo> --out report.md   # 統合レポート＋評決
+SKILL=.agents/skills/agent-guidance-architect
+python3 "$SKILL/scripts/build_report.py" --repo <repo> --out report.md
 ```
 
 個別実行: `measure_context.py`（実効コンテキスト量）/ `audit_guidance.py`
@@ -123,7 +125,7 @@ false positive は理由を添えて棄却してよい（黙って無視しな�
 ## マルチペルソナ査定
 
 このスキル自身の更新、または大規模リポジトリの構成刷新では、1エージェントに全判断を
-させず、独立したペルソナで査定する（`workflow/multi-agent-coordination` のパターンを併用）：
+させず、独立したペルソナで査定する（`multi-agent-coordination` のパターンを併用）：
 
 | ペルソナ | 任務 | 出力 |
 |---|---|---|

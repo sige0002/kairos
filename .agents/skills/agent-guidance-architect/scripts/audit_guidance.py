@@ -131,7 +131,12 @@ def iter_guidance_files(paths):
             yield p
         elif os.path.isdir(p):
             for root, dirs, files in os.walk(p):
-                dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+                dirs[:] = [
+                    d
+                    for d in dirs
+                    if d not in SKIP_DIRS
+                    and not (os.path.basename(root) == ".claude" and d == "worktrees")
+                ]
                 # インストールされたスキルは意図的に壊れた fixtures/templates を
                 # 同梱している — プロジェクトのガイダンスとして監査しない
                 if os.path.basename(root) in (".claude", ".agents"):

@@ -3,7 +3,11 @@
 Vetted (every `SKILL.md` reviewed; **no `scripts/` present** in any) and installed from:
 
 - Source: https://github.com/arpitg1304/robotics-agent-skills (Apache-2.0, ~289★)
-- Reviewed: 2026-06-24. Security scan: markdown-only, no executable code; content is robotics best-practice reference. `install.sh` (benign copy script) was reviewed but NOT run — skills copied manually.
+- Reviewed: 2026-08-18. Security scan: no executable code in these imported
+  skills; content is robotics best-practice reference. `install.sh` (benign copy
+  script) was reviewed but NOT run — skills were copied manually. The local
+  copies are adapted for current ROS 2/Docker APIs and kairos defaults; detailed
+  examples live under each skill's `references/` directory.
 
 Installed (high relevance to kairos):
 - `ros2-development`            (repo `skills/ros2`)            — rclpy/rclcpp, QoS, DDS, colcon, components
@@ -16,6 +20,13 @@ Reviewed but NOT installed (off-scope for this data pipeline): `ros1`, `robot-pe
 Not installed (marketplace-only — scripts unverifiable, or redundant with built-in /code-review): skills.rest `ros2-skill`, `awesome-skills/code-review-skill`, `harunkurtdev/ros2-claude-code-template` (no license).
 
 Apache-2.0 applies; see the source repo's LICENSE.
+
+## Local-only installation
+
+`ui-ux-pro-max` is installed by `uipro init` into gitignored paths. It is not a
+repository-managed dependency, is excluded from the tracked skill acceptance
+gate, and must not be assumed present by project instructions. Its source and
+update lifecycle remain the responsibility of the local installation.
 
 ---
 

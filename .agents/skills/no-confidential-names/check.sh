@@ -2,8 +2,8 @@
 # Scan for confidential names that must not reach a tracked file or a commit
 # message. See SKILL.md.
 #
-#   bash .claude/skills/no-confidential-names/check.sh                 # tree only
-#   bash .claude/skills/no-confidential-names/check.sh origin/develop..HEAD
+#   bash .agents/skills/no-confidential-names/check.sh                 # tree only
+#   bash .agents/skills/no-confidential-names/check.sh origin/develop..HEAD
 #
 # The name list is DERIVED at runtime from gitignored locations, never stored
 # here — this file is tracked, so a hardcoded list would be the very leak the
@@ -18,6 +18,20 @@ cd "$(git rev-parse --show-toplevel 2>/dev/null)" || {
 	echo "not a git repository" >&2
 	exit 2
 }
+
+DIFF_RANGE=""
+DIFF_TEXT=""
+if [ -n "$RANGE" ]; then
+	if ! git rev-list "$RANGE" >/dev/null 2>&1; then
+		echo "invalid git revision range: $RANGE" >&2
+		exit 2
+	fi
+	DIFF_RANGE=$RANGE
+	if ! DIFF_TEXT=$(git diff "$DIFF_RANGE"); then
+		echo "failed to read git diff for range: $DIFF_RANGE" >&2
+		exit 2
+	fi
+fi
 
 # Names that ARE deliberately committed: the scaffold names, the public sample
 # robot, and public third-party product names. This list is a record of judgment
@@ -35,10 +49,18 @@ ALLOW='^(robot|template|airoa_hsr|isaac_sim|myrobot)$'
 # the scan with names that are not robots at all.
 candidates() {
 	{
-		find config/local -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null
-		find deploy/msgs_overlay -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null
-		# \042 = double quote, \047 = single quote (strip either around the value)
-		sed -n 's/^[[:space:]]*ROBOT=[[:space:]]*//p' .env 2>/dev/null | tr -d '\042\047'
+		# Linked worktrees usually lack gitignored local configuration. Derive
+		# candidates from every checkout of this repository so the gate works
+		# from either the main checkout or a task worktree.
+		git worktree list --porcelain |
+			sed -n 's/^worktree //p' |
+			while IFS= read -r root; do
+				find "$root/config/local" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null
+				find "$root/deploy/msgs_overlay" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null
+				# \042 and \047 strip quotes around ROBOT values.
+				sed -n 's/^[[:space:]]*ROBOT=[[:space:]]*//p' "$root/.env" 2>/dev/null |
+					tr -d '\042\047'
+			done
 	} |
 		tr '[:upper:]' '[:lower:]' |
 		grep -vE "$ALLOW" |
@@ -69,16 +91,18 @@ done <<<"$NAMES"
 
 # --- 2 + 3. commit messages and added lines in the range ---------------------
 if [ -n "$RANGE" ]; then
-	DIFF_RANGE=${RANGE/../...}
 	while IFS= read -r name; do
-		msgs=$(git log -i --grep="$name" --format='%h %s' "$RANGE" 2>/dev/null)
+		if ! msgs=$(git log -i --grep="$name" --format='%h %s' "$RANGE"); then
+			echo "failed to read git log for range: $RANGE" >&2
+			exit 2
+		fi
 		if [ -n "$msgs" ]; then
 			echo
 			echo "COMMIT MESSAGES in $RANGE mention '$name':"
 			echo "$msgs"
 			hits=1
 		fi
-		added=$(git diff "$DIFF_RANGE" 2>/dev/null | grep -i "^+.*$name" | head -30)
+		added=$(printf '%s\n' "$DIFF_TEXT" | grep -i "^+.*$name" | head -30)
 		if [ -n "$added" ]; then
 			echo
 			echo "ADDED LINES in $DIFF_RANGE contain '$name':"

@@ -56,9 +56,10 @@ If the user is on a registry install, prefer the **0.5.0** subset (`dora run`, `
 treat `dora hub`, `restart_policy`, `_unstable_deploy`, daemon `up/start` split as *not necessarily present*.
 When something below is rewrite-only, it's marked **[v1.0-rewrite]**.
 
-> kairos note: `dora_runner` does **not** ship the Rust `dora` binary at all — it runs dataflows through its
-> own in-process interpreter (see §8). So for kairos work, the CLI surface below is background/context;
-> what actually matters is the dataflow-YAML shape and the node `process()` contract.
+> kairos note: the `dora_runner` **image** ships dora 0.5.0 plus the bundled
+> bagflow binaries. `fast_validation` and `full_validation` require that image
+> runtime. Plugin dataflows use the dora CLI when it is available and fall back
+> to the in-process interpreter on source-checkout/CI hosts; see §8.
 
 ---
 
@@ -266,11 +267,12 @@ Crate: `dora-node-api` (currently 0.5.0 on crates.io). `DoraNode::init_from_env(
 
 ## 8. kairos `dora_runner` integration (the practical part)
 
-kairos does not bundle the Rust `dora` binary. Instead `services/dora_runner` treats **dora as a contract**:
-a pipeline is a dataflow + nodes, and as long as the **I/O contract** is honored, the same graph runs either
-under `dora start` (if the CLI is ever present) **or** through kairos's own in-process interpreter — with **no
-core-code and no frontend change**. This is the design the user summarized as *"inputs and outputs just have
-to match the contract."* It's true, and here is exactly what the contract is.
+The `dora_runner` image bundles dora 0.5.0 and bagflow for the validation
+pipelines. A source checkout intentionally remains usable without those
+binaries: plugin dataflows execute with `dora start` when the CLI and private
+daemon are available, otherwise the same graph runs through kairos's in-process
+interpreter. Preserve the I/O contract so adding a plugin needs no core or
+frontend change.
 
 ### The two-level contract
 
@@ -283,13 +285,13 @@ name: My pipeline
 description: One-line summary shown in the UI.
 executor: dora                      # `dora` (dataflow) or `in_process` (a plain callable)
 version: 0.1.0
-required_inputs: [run_id]           # defaults to [run_id]
+required_inputs: [capture_id]       # defaults to [capture_id]
 params_schema:                      # JSON Schema — the frontend renders the job form from THIS
   type: object
   properties:
     min_messages: { type: integer, default: 1, minimum: 0 }
 outputs:
-  - "report/my_pipeline/<run_id>/summary.json"
+  - "report/my_pipeline/<capture_id>/summary.json"
 entrypoint:
   dataflow: dataflow.yml            # executor=dora → a dataflow file …
   # callable: module:function       # … or executor=in_process → a "<module>:<function>" callable
@@ -330,11 +332,12 @@ inputs. So your dataflow wiring must be a DAG, and node ids/output ids in `proce
 YAML edges — that's the whole contract.
 
 ### Which path runs, and how it's reported
-`dora_cli_available()` picks the path: it returns `False` when the Rust `dora` binary is absent (the normal
-kairos case) or when `KAIROS_DORA_INPROCESS` is set (forces in-process, used by tests). `effective_executor()`
-maps a declared `executor: dora` to the honest string `in-process` when no CLI is present — so `/pipelines`
-and `/readyz` never claim dora is bundled when it isn't. **Keep that honesty**: dora is a deliberate future
-bet in kairos, not a shipped dependency — label pipelines truthfully.
+`dora_cli_available()` picks the plugin path. It returns `False` when the Rust
+binary is absent or when `KAIROS_DORA_INPROCESS` forces the test fallback.
+`effective_executor()` therefore reports `dora` in the built image and
+`in-process` on a source-only host. The bundled validation pipelines separately
+check for both `dora` and bagflow and become unavailable rather than advertising
+an executor they cannot run.
 
 ### Reference implementation
 `services/dora_runner/plugins/hello_dora/` is the canonical minimal example (loader → summarize → writer,
@@ -349,11 +352,12 @@ decode-free topic counts). Copy it as the starting template for a new pipeline. 
    `summary.json`.
 4. `uv run --extra test pytest -q` in `services/dora_runner` (in-process path needs no ROS/dora), then
    `make rebuild dora`.
-5. Verify it shows up: `GET /pipelines`, then run it via `POST /jobs {pipeline, run_id, params}`.
+5. Verify it shows up: `GET /pipelines`, then run it via
+   `POST /jobs {pipeline, capture_id, params}`.
 
 ---
 
-## Sources (verified mid-2026; re-check before relying on version-specific detail)
+## Sources (verified 2026-08-18; re-check before version-specific work)
 
 - Repo: https://github.com/dora-rs/dora — `README.md`, `CLAUDE.md`, `AGENTS.md`, `docs/{cli,yaml-spec,types,ros2-bridge}.md`, `apis/python/node/dora/__init__.pyi`, `examples/{python,rust}-dataflow/`.
 - Docs site: https://dora-rs.ai — describes the **v1.0-rewrite** surface (not yet on registries).

@@ -86,7 +86,12 @@ TOPIC_KEYWORD_RE = re.compile(
 def find_guidance_files(repo):
     out = []
     for root, dirs, files in os.walk(repo):
-        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+        dirs[:] = [
+            d
+            for d in dirs
+            if d not in SKIP_DIRS
+            and not (os.path.basename(root) == ".claude" and d == "worktrees")
+        ]
         # インストールされたスキルは意図的に壊れた fixtures/templates を
         # 同梱している — プロジェクトのガイダンスとして扱わない
         if os.path.basename(root) in (".claude", ".agents"):

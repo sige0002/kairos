@@ -8,6 +8,22 @@ description: ネットワークの無い/制約された現場へ Docker Compose
 実機・工場・顧客先など、**外に出られない環境でスタックを起動する**ための型。
 開発機では起きない失敗が、現場で初めて出るのを防ぐ。
 
+## kairos の正準入口
+
+kairosではイメージ名を手で列挙せず、Makefileの対象一覧を正本にする：
+
+```bash
+# ネットワークのある側
+make images-save IMAGES_FILE=kairos-images.tar.gz
+
+# ファイルとリポジトリを搬送した後、オフライン側
+make images-load IMAGES_FILE=kairos-images.tar.gz
+make up
+```
+
+分割構成では `make robot-images-save` または `make recording-images-save` を使う。
+以下の `docker save` / `docker load` は同等の入口がない一般プロジェクト向け。
+
 ## 原則: build と up を分離する
 
 **「変更ゼロのビルド」でもネットワークを掴む。** ここが最大の落とし穴。
@@ -119,5 +135,4 @@ builder で作った venv を runtime へ丸ごと持っていく構成で頻出
 
 ## 関連
 
-- 設定の外部化（ホスト名・機体名のハードコード排除）は `layered-config`
 - ROS 2 特有の Docker 構成は `docker-ros2-development`

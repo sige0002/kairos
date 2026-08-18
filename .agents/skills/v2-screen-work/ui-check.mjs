@@ -7,8 +7,8 @@
 //     [--assert '<css-selector>']... [--click '<css-selector>']... \
 //     [--full-flow <path-to-module.mjs>] [--no-scroll]
 //
-// Run with cwd = services/frontend (or any package that has playwright in its
-// own node_modules) — the script lives under .claude/skills/, outside that
+// Run with cwd = e2e (or any package that has playwright in its own
+// node_modules) — the script lives under .agents/skills/, outside that
 // tree, so it resolves the "playwright" package relative to process.cwd()
 // via createRequire rather than its own file location.
 //
@@ -29,7 +29,7 @@ try {
 } catch (e) {
   console.error(
     `Could not load the "playwright" package from ${process.cwd()}/node_modules.\n` +
-      `Run this script with cwd set to a package that has it installed (e.g. services/frontend).\n` +
+      `Run this script with cwd set to a package that has it installed (e.g. e2e).\n` +
       `Original error: ${e.message}`,
   );
   process.exit(1);

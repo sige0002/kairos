@@ -1,6 +1,6 @@
 ---
 name: sync-docs
-description: 日本語ドキュメント（正本）から英語ミラーを再生成して同期する。日本語が正本（ルートの CLAUDE.ja.md / README.ja.md、および docs/specs/ja/ 配下）、英語は自動生成（CLAUDE.md / README.md / docs/specs/en/）。日本語docを編集した後に英語を同期・翻訳・ミラー更新したいときに使う。引数でファイルパス指定 / all / --staged を受け付ける。
+description: 日本語ドキュメント（正本）から英語ミラーを再生成して同期する。README.ja.md と docs/specs/ja/ 配下を編集した後、README.md と docs/specs/en/ を忠実に同期するときに使う。AGENTS.md と CLAUDE.md は日本語のみで同期対象外。引数でファイルパス指定 / all / --staged を受け付ける。
 ---
 
 # sync-docs
@@ -52,5 +52,5 @@ description: 日本語ドキュメント（正本）から英語ミラーを再�
 
 ## メモ
 
-- これはオンデマンド実行。Claude Code のフックは、ユーザーがエディタで直接行った編集を検知できないため、日本語を編集した後に `/sync-docs` を実行する。
-- コミット時に自動化したい場合は、git の `pre-commit` フックから `claude -p "/sync-docs --staged"` を呼ぶ（非対話の認証が必要）。
+- これはオンデマンド実行。日本語正本を編集した同じ作業内でこのスキルを実行する。
+- 自動化する場合も、日本語から英語への一方向変換と差分確認を保つ。
