@@ -222,14 +222,11 @@ def create_orchestrator_app(
     )
 
     async def on_first_review(capture: Capture) -> None:
-        """The side effects §4.1 moved off the retired ``POST /episodes``.
+        """Best-effort auto-pull after the review is durable.
 
-        Both are best-effort *after* the review is durable: the review is saved
-        whether or not the batch counter can be bumped or the robot is
-        reachable, because losing a label is worse than losing a count.
+        The batch counter is part of the review CAS transaction; only this
+        external side effect remains outside it.
         """
-        if capture.batch_id:
-            capture_store.increment_episodes_recorded(capture.batch_id)
         config = getattr(app.state, "recording_config", None)
         if config is None or not config.transfer.auto_pull_on_save:
             return

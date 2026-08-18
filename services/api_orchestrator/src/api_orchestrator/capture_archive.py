@@ -340,6 +340,13 @@ class CaptureArchiveMixin:
         ):
             if value is not None:
                 payload[key] = value
+        if capture.collection_context is not None:
+            # The source manifest is intentionally deleted after archiving.
+            # Preserve this frozen provenance in the ledger-only description,
+            # including forward-compatible fields the API model carries.
+            payload["collection_context"] = capture.collection_context.model_dump(
+                mode="json"
+            )
         if reason:
             payload["reason"] = reason
         if extra_payload:

@@ -15,6 +15,7 @@ import { expect, test } from '@playwright/test';
 import { api, until } from '../fixtures/api';
 import { store } from '../fixtures/store';
 import {
+  E2E_OPERATOR,
   availabilityKind,
   listedCaptureIds,
   openTab,
@@ -118,6 +119,17 @@ test('§13-1 Collect: a recording made in the UI appears in the UI and its diges
   // manifest the orchestrator produced must still describe the same run.
   expect(manifest.run_id).toBe(capture.run_id);
 
+  // Collection provenance is fixed at actual Start, before the review below.
+  // The API row and the recorder-owned manifest must expose the same snapshot;
+  // otherwise a reload or later Batch edit could silently relabel this take.
+  expect(manifest.collection_context).not.toBeNull();
+  expect(capture.collection_context).toEqual(manifest.collection_context);
+  expect(manifest.collection_context?.batch_id).toBeTruthy();
+  expect(manifest.collection_context?.batch_id).toBe(capture.batch_id);
+  expect(manifest.collection_context?.batch_seq).toBeGreaterThan(0);
+  expect(manifest.collection_context?.operator).toBe(E2E_OPERATOR);
+  expect(manifest.collection_context?.robot).toBeTruthy();
+
   // The Collect screen's Save is the capture's FIRST review write (§4.1), so
   // record.json exists at revision 1 with no second write behind it.
   await until(
@@ -130,4 +142,6 @@ test('§13-1 Collect: a recording made in the UI appears in the UI and its diges
   expect(record.schema_version).toBe(2);
   expect(record.capture_id).toBe(captureId);
   expect(record.revision).toBe(1);
+  expect(record.batch_id).toBe(manifest.collection_context?.batch_id);
+  expect(record.index_in_batch).toBeGreaterThan(0);
 });

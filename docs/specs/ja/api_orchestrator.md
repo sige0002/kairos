@@ -80,9 +80,9 @@ alpha 版につき互換レイヤは置かない。**どれも何もしない**�
 
 ## Capture ライフサイクル（orchestrator が一元管理）
 
-1. `POST /api/v1/record/start` → orchestrator が **`run_id`（表示名）を採番**し、recorder の `POST /record/start` を呼ぶ。**`capture_id` は recorder が発行**して応答で返す。
+1. `POST /api/v1/record/start` → orchestrator が **`run_id`（表示名）を採番**し、recorder の `POST /record/start` を呼ぶ。**`capture_id` は recorder が発行**して応答で返す。`collection_context` は `{ batch_id, batch_seq, project, task, condition, robot, operator }`（全 nullable、未知フィールド保持）の Start 時スナップショットであり、`batch_id` を指定した場合は Batch の存在・`active` 状態・context との一致を start 前に検証する。不一致・終了済み・不在は録画を始めずエラーにする。`batch_id=null` でも labels を持つ録画は許可する。
    `operator` / `task` は **255 バイト（UTF-8）を超えると `400 label_too_long`**（`prepare` も同じ）。これらはパスにならないが、dataset が自分の `operator` / `task` を未設定にしたとき **views の木が capture 側の値を借りる**（`COALESCE(d.operator, c.operator)`）ので、dataset 側だけを縛ると木を壊す経路が残る（→ capture_store §6）。
-2. 応答の `capture_id` で `captures` 行を作る（`state=recording`）。recorder が拒否した場合、**recorder が capture を名指ししていればその id で `failed` の行を返す**。名指ししていなければエラーをそのまま伝播させ、recorder が書いた失敗 start サイドカー（`objects/<capture_id>.failed.json`）を次の rebuild が行にする。
+2. 応答の `capture_id` で `captures` 行を作る（`state=recording`）。成功した capture 行は Start 時に `collection_context.batch_id` を関連付け、context は DB index と Capture API に露出する。recorder が拒否した場合、**recorder が capture を名指ししていればその id で `failed` の行を返す**。名指ししていなければエラーをそのまま伝播させ、recorder が書いた失敗 start サイドカー（`objects/<capture_id>.failed.json`）を次の rebuild が行にする。
 3. start 成功直後に recorder の `GET /record/metadata` を取得し、**確定した topics / type / QoS（`"all"` 展開結果を含む）を capture 行へ同期**する。取得失敗時は `recording` のまま `error` に理由を記録して再試行する。
 4. `POST /api/v1/record/stop` → recorder stop → 最終 metadata（`message_count` / `bytes` / `ended_at` / topics）を再同期して `state=completed`。確定後、**停止時クイックチェックを stop 応答の外で走らせ**（下記）、さらに **digest ジョブを投入**する（下記「digest ジョブ」）。
 
@@ -127,7 +127,7 @@ alpha 版につき互換レイヤは置かない。**どれも何もしない**�
 2. `record.json` を `revision = base_revision + 1` で atomic write。失敗 → **`500 review_sidecar_write_failed`、DB は無変更**（何も保存されていないので、同じ `base_revision` でそのまま再試行できる）。
 3. DB を CAS 更新。`rowcount=0` なら **`409`**。書いたサイドカーは巻き戻さない。
 
-- body: `{ base_revision, task_result?, failure_reason?, quality?, quality_source?, review_status?, batch_id?, index_in_batch?, operator?, task?, robot? }`。
+- body: `{ base_revision, task_result?, failure_reason?, quality?, quality_source?, review_status?, batch_id?, index_in_batch?, operator?, task?, robot? }`。Start 時の `collection_context.batch_id` が非 null なら、`batch_id` はその固定値と同じ場合だけ受理し、別 Batch への変更・明示 clear は `409` で拒否する。Start 時に `batch_id=null` だった capture だけは、初回 Review 保存時に snapshot の `robot` / `operator` / `project` / `task` / `condition` が完全一致する active Batch へ関連付けられる。以後は変更・clear 不可。既存の同一 `batch_id` は terminal capture の review でも保存できる。
 - **`operator` / `task` / `robot` はラベル編集**（規約は [capture_store](capture_store.md) §4.3）。主用途は
   **取り込み bag のラベル付け**（ラベルを持たずに生まれるので後から人が付けるしかない）だが、通常録画の
   訂正にも使う。CAS・mutex・サイドカー先行はすべて他の review フィールドと同一経路。
@@ -139,7 +139,7 @@ alpha 版につき互換レイヤは置かない。**どれも何もしない**�
     拒否されたリクエストは**何も適用しない**（同一 body 内の他フィールドも含む）。
   - `operator` / `task` の編集は `views/` の再生成をスケジュールする（dataset が両方を持たないとき
     `views/` は capture の値にフォールバックするため）。`robot` はパス構成要素ではないので何もしない。
-- **旧 `POST /episodes` の副作用の移設先がここ**: `batches.episodes_recorded` の単調加算と auto-pull の起動は「**その capture への初回 review 保存**」で起きる。
+- **旧 `POST /episodes` の副作用の移設先がここ**: `batches.episodes_recorded` の単調加算と auto-pull の起動は「**その capture への初回 review 保存**」で起きる。初回 review の CAS とカウンタ更新は同一 SQLite transaction で行い、sidecar 成功後に部分的な増分を残さない。
 - 墓標・非在の capture への保存は `409`（`capture_deleting` / `capture_deleted` / `capture_not_present`）。
 
 ## 削除（`POST /api/v1/captures/{id}/delete`）
@@ -164,7 +164,7 @@ capture 単位で外部ストレージへ退避する。**copy → sha256 verify
 - destination は `KAIROS_ARCHIVE_ROOTS` に対して検証してから 1 バイトもコピーしない — このエンドポイントは**最後に source を消す**ので、無制限な destination 文字列がシステム上もっとも危険な入力になる。
 - **重なりの拒否は許可リストとは別の検査**（前者を通ったことは後者の証拠にならない）。検査するのは**解決後の書き込み先**（`<destination>/<capture_id>`）で、許可ルートそのものではない — したがって **`data_dir` を含むルートを許可すること自体は禁止していない**（`KAIROS_ARCHIVE_ROOTS=/data` は operator がやりそうな設定であり、許可リストだけでは自分自身の上へコピーしてから source を消す経路が通ってしまう）。`realpath` で両側を解決し（symlink での偽装を防ぐ）、**両方向の包含**を見る。違反は `400 destination_inside_data_dir`。
 - **非空の destination は `409 destination_not_empty`**（コピーのプリミティブ側で拒否する）。
-- ledger の `capture_archived` イベントは **per-file の `{path, size, sha256}`** を持つ。source が消えた後は manifest も一緒に消えるので、これが無いと「N バイトが /mnt/nas へ行った」としか言えず、数年後に「そのコピーはまだ無事か」に答えられない。
+- ledger の `capture_archived` イベントは **per-file の `{path, size, sha256}`** と `collection_context`（未知フィールドを含む）を持つ。source が消えた後は manifest も一緒に消えるので、これが無いと「N バイトが /mnt/nas へ行った」としか言えず、数年後に「そのコピーはまだ無事か」や「その収録時の文脈は何か」に答えられない。ledger-only rebuild は同じ context を復元する。
 - **dataset member の capture は archive も拒否**（delete と同じ `400`）。`views/` の symlink が宙に浮くため、先に member から外す。唯一の免除は §6.1 の dataset archive ランナー自身（下記）で、**当該 run の dataset の membership に限る**。
 
 ## dataset archive（`POST /api/v1/datasets/{id}/archive`・§6.1）
@@ -260,10 +260,11 @@ Collect の Batch 進行を orchestrator に**永続化**し、Review が端末�
 
 - **データモデル**:
   - `batches`: `batch_id`（`batch_YYYYMMDD_HHMMSS`）/ `robot` / `project`（**nullable**）/ `task`（**nullable**） / `condition` / `operator` / `target_episodes`（既定 30）/ `status`（`active` | `completed` | `ended_early`）/ `ended_reason?` / `created_at` / `ended_at?` / `episodes_recorded`（**録画した本数の単調カウンタ。既定 0**） / `episodes_recorded_is_floor`（**その値が rebuild 由来の下限かどうか。既定 false**）/ `batch_seq`（**（ロボット, ローカル日付）ごとの人間可読なバッチ番号。nullable**）。`project` は Plan 由来の文字列（**Plan 自体のモデル化は Phase 2.5 に先送り**）。
-    - `episodes_recorded` は**その capture への初回 review 保存**ごとに +1 し、**capture の削除でも減らさない**（`episode_count` はライブの件数で削除時に減るが、Collect の「N / 30」等の表示は撮った数を正とするためこの単調値を使う）。
+    - capture の `batch_id` は Start 時の `collection_context` で関連付ける。`episodes_recorded` は**その capture への初回 review 保存**ごとに +1 し、**capture の削除でも減らさない**（`episode_count` はライブの件数で削除時に減るが、Collect の「N / 30」等の表示は撮った数を正とするためこの単調値を使う）。
   - **バッチ行は ledger から rebuild される**（[capture_store](capture_store.md) §8.2 規則 6・§5）。`batch_created` / `batch_updated` / `batch_ended` が正本で、`project` / `task` / `robot` / `condition` / `operator` / `target_episodes` / `batch_seq` / `status` はそこから戻る。replay は冪等（値はイベントから読み、行から計算し直さない）。`batch_updated` の provenance label の明示 `null` は clear として記録されるので、rebuild 後も clear のまま残る（フィールド自体が無い旧イベントは変更なし）。**このイベントより古い ledger にはこれらの行が 1 つも無い**ので、その設置ではバッチ行は戻らず、capture がその `batch_id` を名指ししたまま残る — 孤児として rebuild 時に警告で報告される。これは欠落ではなく決定（遡って埋める材料が存在しないため。→ capture_store §8.2 規則 6）。**`episodes_recorded` だけは event から戻せない**（review 保存という出来事の単調カウンタであり、ledger が記録するのは事実）。replay は代わりに**そのバッチを名指ししている capture 行を数え直し**、`episodes_recorded_is_floor: true` を立てる — これは**下限**（review 済みで後に削除された capture は数えられない）。以前は 0 に戻していたが、0 は下限ですらない誤りだった。rebuild で下限化されたバッチ数は store health の警告に出る。capture 側の `batch_id` / `index_in_batch` は `record.json` から復元されるため、「どの capture がどのバッチの何番だったか」は残る。
+    - 上記の capture 関連付けは `record.json` だけに依存しない。manifest の `collection_context.batch_id` が非 null ならそれを優先し、null の場合だけ `record.json.batch_id` へ fallback する。`record.json` は review 情報と `index_in_batch` を復元する。counter floor の再計数対象は `review_revision > 0` の capture に限る。
     - `batch_seq` は **バッチ作成時（＝初回録画時の遅延生成）に発番**する: `1 + MAX(batch_seq)`（同ロボット・同ローカル日付の既存バッチ。UTC の `created_at` を `date(created_at,'localtime')` でローカル日付に変換して突き合わせ）。**毎朝ローカル日付で 1 から／ロボットごとに独立**にリセットされ、Collect/Review/Datasets の唯一の人間可読番号になる（Collect=「Batch N」、Review/Datasets=「MM/DD · #N」。日付は `created_at` から導出＝新列不要）。空バッチは行を持たない=番号を消費しない。採番は store のロック下で read→insert が同一トランザクションのためレース安全。既存 DB へは additive migration で追加し、（ロボット, ローカル日付）グループごとに `created_at` 昇順で backfill。
-  - review 系フィールドは `captures` 行にある: `batch_id` / `index_in_batch` / `task_result`（`success` | `failure`）/ `failure_reason?` / `quality`（`good` | `needs_review` | `not_usable`）/ `quality_source`（`operator` | `quick_check` | `validator`）/ `review_status`（`pending` | `adopted` | `excluded`。既定 `pending`）/ `review_revision`（CAS 用。未 review = 0）。**正本は `record.json`**、DB はそのキャッシュ（[capture_store](capture_store.md) §4）。
+  - review 系フィールドは `captures` 行にある: `batch_id` / `index_in_batch` / `task_result`（`success` | `failure`）/ `failure_reason?` / `quality`（`good` | `needs_review` | `not_usable`）/ `quality_source`（`operator` | `quick_check` | `validator`）/ `review_status`（`pending` | `adopted` | `excluded`。既定 `pending`）/ `review_revision`（CAS 用。未 review = 0）。`collection_context` も capture の immutable な収録来歴として index する。**正本は `record.json`**、DB はそのキャッシュ（[capture_store](capture_store.md) §4）。
   - FK はコード側で担保（SQLite の FK pragma に依存しない）。capture の削除は**行を消さない**（墓標）ので、v1 の CASCADE 削除に相当する処理は無い。
   - `plan_catalog`（1 行テーブル。2026-07-14 追加）: `id`（`=1` CHECK）/ `payload`（Projects → Tasks → Conditions の JSON 全文）/ `updated_at`。`GET/PUT /api/v1/plans` の保存先（上記「公開 API」参照）。
 - **エンドポイント**:
@@ -272,7 +273,7 @@ Collect の Batch 進行を orchestrator に**永続化**し、Review が端末�
   - `GET /api/v1/batches?status=&robot=&operator=` — バッチ一覧（**新しい順**）。各要素は `batch_seq`・`episode_count`（ライブ件数）・`episodes_recorded`（単調カウンタ）を持つ。**capture ごとの行は持たない** — 以前は全バッチの全 capture のコンパクトなサマリを同梱していたが、`GET /api/v1/batches/{id}` が `captures` を完全な形で返すので二重かつ劣化したコピーだった（E-27 実測: 50 バッチ × 100 capture で 817 KiB・71.5 ms・バッチ 1 件につき 1 クエリ → 12 KiB・6.0 ms・全件 1 クエリ）。リロード時のアクティブバッチ復元は当該バッチの detail を引く。**ページングは任意**（`limit` 1–500 / `offset` 0 以上。範囲外は `422`）— **既定は全件で、省略時の応答は従来と同一**（並び順も同じ）。窓は SQL の `LIMIT`/`OFFSET` で切り、全件読んでからスライスはしない。**既定 limit は置かない**のが要点で、この一覧は絞り込み無しで集計されて coverage 表示に使われるため、既定値があると「完全な数字」として見せている総計を黙って切り詰める。小さくて完全な方が、ページングされて静かに足りないより良い — 切り詰めるかどうかは呼ぶ側が明示的に選ぶ。窓を要求した呼び出し側が続きの有無を判断できるよう、応答には**フィルタ適用後の総件数** `total` が入る（`total` は**ページではなく一覧全体**の件数。省略可能フィールドなので、既存クライアントは無視してよい）。
   - `GET /api/v1/batches/coverage?task=<必須>` — **task 単位の condition 別カバレッジを SQL で集計**して返す。応答は `{ task, rows: [{ condition, recorded, is_floor }] }`。`recorded` は該当 task・該当 condition の全バッチの `episodes_recorded`（単調カウンタ）の**和**、`is_floor` は**項に 1 つでも floor があれば true**（和は下限になる。§8.2 rule 6 — どの部分が不確かかは言えないので、フラグはバッチ単位ではなく和に載る）。`condition` が `NULL` / 空文字 / **`—`（コンソールの「未設定」表示がそのままカタログに焼き込まれた値。E-5）** のバッチは除外する。行は `condition` 昇順。**`task` 未指定（および空文字）は `422`** — 集計が使われるのは task 単位だけで、task をまたいだ合計は無関係な作業を足した数字になる。全 task の集計が必要になったら別エンドポイントを立てる。**なぜ一覧のページングで代替しないか**: Collect の Coverage カードは `GET /api/v1/batches` を絞り込み無しで引いてブラウザ側で合算していたが、E-27 実測で 5000 バッチ時に 30 秒ごと 817 KiB。既定 limit を置けば「完全な数字」として見せている総計を黙って切り詰めることになる（上記の既定 limit 不採用の理由と同じ）ので、**集計そのものをサーバへ移した**。**plan 語彙との ∪（録画ゼロの condition を 0 行として並べる）はクライアントの責務**で、サーバは**観測された集計だけ**を返す — plan カタログはクライアント側の語彙であり、サーバがそこから行を作れば「測定結果」ではなく「計画」を報告することになる。
   - `GET /api/v1/batches/{id}` — バッチ全体 ＋ **`captures`（フル capture 配列）**。不在は `404`。
-  - **保存は `PATCH /api/v1/captures/{id}/review`**（Collect の Save）。`batch_id` / `index_in_batch` / `task_result` / `failure_reason` / `quality` / `review_status` をそこに載せる。**`index_in_batch` はクライアントのヒント**で、衝突時（複数端末が同番号を採番）はサーバーがロック下で再採番し**実際に保存した値を応答で返す**（クライアントは応答値を採用する）。
+  - **保存は `PATCH /api/v1/captures/{id}/review`**（Collect の Save）。`batch_id` は Start 時関連付けを変更できず、`index_in_batch` / `task_result` / `failure_reason` / `quality` / `review_status` を保存する。**`index_in_batch` はクライアントのヒント**で、衝突時（複数端末が同番号を採番）はサーバーがロック下で再採番し**実際に保存した値を応答で返す**（クライアントは応答値を採用する）。
 - **capture への同梱**: `batch_seq` は capture 行でなくバッチ側にあるため、一覧を返すときに `batch_id → batch_seq` を一括引きして付与する（Review/Datasets が 2 度目の往復なしで番号を表示できる）。一覧はバッチ一括取得で N+1 を回避。
 - **SSE**: 既存 `record_status` / `resync` で足りるため**新イベントは追加しない**。
 - **Phase 2.5 TBD**: UX 仕様の Session > Batch > Episode のうち **Session は今回作らない**（運用実績を見て判断）。Plan（Projects/Tasks/Conditions）の DB 化・Settings からの編集保存も Phase 2.5。
@@ -345,7 +346,7 @@ Settings > Data quality から、選択式カタログ（recording / stream / va
   - `POST /api/v1/validation/templates/generate` body = `{ capture_id }` → `{ name, version, required_topics: [ ... ] }`（雛形）
 - ワンクリック検証プリセット:
   - `GET /api/v1/validation/presets` → `{ items: [ { id, name, description, pipeline, params, total, pending, pending_capture_ids: [ capture_id ] } ] }`。静的フィールド（`id` / `name` / `description` / `pipeline` / `params`）は機体の `validation_presets.yaml`（[config](config.md)）由来。動的フィールドはリクエスト毎に算出＝終端状態の capture のうち **その pipeline の `report/<pipeline>/<capture_id>/summary.json` がまだ無い**もの（`pending_capture_ids`）。UI はこれを 1 クリックで一括実行する（`POST /api/v1/jobs` を capture ごと）。読み取り専用（状態は変えない）。
-- capture（`GET /api/v1/captures/{id}` = CaptureDetail）: `{ capture_id, run_id?, source_instance_id?, state, started_at?, ended_at?, operator?, task?, robot?, topics: [ { name, type, qos } ], compression, split?, error?: { code, message }|null, message_count?, bytes?, quick_check?: object|null, task_result?, failure_reason?, quality?, quality_source?, review_status, review_revision, batch_id?, index_in_batch?, deleted_at?, delete_kind?, delete_reason?, archived_at?, archive_destination?, lease_owner?, lease_expires_at?, replica?: Replica|null, digest_state, memberships: [ { membership_id, dataset_id, dataset_name?, display_index } ], manifest?, record?, validation?, loss? }`。
+- capture（`GET /api/v1/captures/{id}` = CaptureDetail）: `{ capture_id, run_id?, source_instance_id?, state, started_at?, ended_at?, operator?, task?, robot?, collection_context?, topics: [ { name, type, qos } ], compression, split?, error?: { code, message }|null, message_count?, bytes?, quick_check?: object|null, task_result?, failure_reason?, quality?, quality_source?, review_status, review_revision, batch_id?, index_in_batch?, deleted_at?, delete_kind?, delete_reason?, archived_at?, archive_destination?, lease_owner?, lease_expires_at?, replica?: Replica|null, digest_state, memberships: [ { membership_id, dataset_id, dataset_name?, display_index } ], manifest?, record?, validation?, loss? }`。`collection_context` は Start 時に manifest へ固定した収録来歴で、一覧・detail とも同じ値を露出する。
   - `replica`: `{ instance_id, state, path?, manifest_digest?, verified_at?, updated_at? }`。`state` の語彙は [capture_store](capture_store.md) §8.1。**`null` は「このマシンにまだコピーが無い」**（split 構成の正常な状態）であって、エラーではない。
   - `digest_state`（`pending` | `complete`）は列ではなくローカル replica 行からの導出値（`present_verified` ⇔ `complete`）。
   - 末尾 4 つはディスク上サイドカー / レポート由来で、不在なら `null`。

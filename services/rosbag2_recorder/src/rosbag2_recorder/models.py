@@ -15,8 +15,12 @@ from enum import StrEnum
 from typing import Annotated, Any, Literal
 
 from kairos_common import ApiError, Compression, Durability, Reliability
+from kairos_common.capture_sidecars import (
+    CollectionContextSnapshotV1,
+    collection_context_snapshot_from_json,
+)
 from kairos_common.recording_config import TopicQosOverride
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # run_id charset guard, per the spec / config.md. Since v2 the run_id is a
 # DISPLAY NAME only — ``objects/<capture_id>`` is the path — so this no longer
@@ -110,10 +114,22 @@ class RecordStartRequest(BaseModel):
     # Which robot produced this capture. Omitted -> the recorder falls back to
     # its RECORDING_CONFIG ``robot_name``, so a standalone call still names one.
     robot: str | None = None
+    # Batch labels captured at actual start. This is intentionally separate
+    # from the top-level compatibility metadata above.
+    collection_context: CollectionContextSnapshotV1 | None = None
     # Console-side identity (orchestrator git sha etc.), stamped verbatim into
     # the capture manifest's `stamp.console` — half of the two-host provenance.
     # Absent on direct recorder calls: the stamp then honestly has no console.
     console_stamp: dict[str, Any] | None = None
+
+    @field_validator("collection_context", mode="before")
+    @classmethod
+    def _parse_collection_context(
+        cls, value: Any
+    ) -> CollectionContextSnapshotV1 | None:
+        if value is None or isinstance(value, CollectionContextSnapshotV1):
+            return value
+        return collection_context_snapshot_from_json(value)
 
 
 class TopicEntry(BaseModel):

@@ -22,6 +22,7 @@ from api_orchestrator.models import (
     Capture,
     CaptureState,
     CaptureTopic,
+    CollectionContextSnapshot,
     DatasetMember,
     JobStatus,
     QuickCheck,
@@ -80,6 +81,9 @@ def capture_columns(capture: Capture) -> dict[str, Any]:
         "review_revision": capture.review_revision,
         "batch_id": capture.batch_id,
         "index_in_batch": capture.index_in_batch,
+        "collection_context": encode_field(
+            "collection_context", capture.collection_context
+        ),
         "deleted_at": capture.deleted_at,
         "delete_kind": capture.delete_kind,
         "delete_reason": capture.delete_reason,
@@ -100,6 +104,8 @@ def capture_from_row(row: sqlite3.Row) -> Capture:
     split_raw = json.loads(row["split"]) if row["split"] else None
     error_raw = json.loads(row["error"]) if row["error"] else None
     qc_raw = json.loads(row["quick_check"]) if row["quick_check"] else None
+    context_value = _optional_column(row, "collection_context")
+    context_raw = json.loads(context_value) if context_value else None
     return Capture(
         capture_id=row["capture_id"],
         run_id=row["run_id"],
@@ -126,6 +132,11 @@ def capture_from_row(row: sqlite3.Row) -> Capture:
         validation_override=row["validation_override"],
         batch_id=row["batch_id"],
         index_in_batch=row["index_in_batch"],
+        collection_context=(
+            CollectionContextSnapshot.model_validate(context_raw)
+            if context_raw
+            else None
+        ),
         deleted_at=row["deleted_at"],
         delete_kind=row["delete_kind"],
         delete_reason=row["delete_reason"],

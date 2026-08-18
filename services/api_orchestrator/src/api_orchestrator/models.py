@@ -40,7 +40,7 @@ from kairos_common.contracts.jobs import (
     ValidationTemplateListResponse,
 )
 from kairos_common.rebuild import ReplicaState
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 __all__ = [
     "TERMINAL_STATES",
@@ -60,6 +60,7 @@ __all__ = [
     "CaptureDetail",
     "CaptureError",
     "CaptureListResponse",
+    "CollectionContextSnapshot",
     "CaptureState",
     "CaptureTopic",
     "DeleteKind",
@@ -266,6 +267,25 @@ class QuickCheck(BaseModel):
 # ---- captures --------------------------------------------------------------
 
 
+class CollectionContextSnapshot(BaseModel):
+    """The batch identity and labels frozen when a recording starts.
+
+    This API wrapper mirrors the shared sidecar model. Keeping it on each
+    capture makes a later review prove that the requested batch association is
+    the one the recorder started under rather than a mutable UI selection.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    batch_id: str | None = None
+    batch_seq: int | None = None
+    project: str | None = None
+    task: str | None = None
+    condition: str | None = None
+    robot: str | None = None
+    operator: str | None = None
+
+
 class Replica(BaseModel):
     """Where one installation's copy of a capture stands (§8).
 
@@ -341,6 +361,7 @@ class CaptureListItem(BaseModel):
     validation_override: str | None = None
     batch_id: str | None = None
     index_in_batch: int | None = None
+    collection_context: CollectionContextSnapshot | None = None
     # ---- tombstone (§7); the row survives the deletion ----
     deleted_at: str | None = None
     delete_kind: DeleteKind | None = None
@@ -832,6 +853,7 @@ class RecordStartRequest(BaseModel):
     qos_overrides: dict[str, TopicQos] | None = None
     operator: str | None = None
     task: str | None = None
+    collection_context: CollectionContextSnapshot | None = None
 
 
 class RecordPrepareResponse(BaseModel):

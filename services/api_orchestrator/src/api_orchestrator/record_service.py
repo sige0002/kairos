@@ -60,6 +60,7 @@ from api_orchestrator.models import (
     Capture,
     CaptureError,
     CaptureTopic,
+    CollectionContextSnapshot,
     Quality,
     RecordPrepareResponse,
     RecordStartRequest,
@@ -341,6 +342,7 @@ class RecordService:
         reject_unusable_labels(operator=req.operator, task=req.task)
         req.operator = default_meta(req.operator, UNKNOWN_OPERATOR)
         req.task = default_meta(req.task, UNKNOWN_TASK)
+        self._freeze_collection_context(req)
         topics = self._resolve_topics(req.topics)
         async with self._lifecycle_lock:
             await self._verify_no_active_recording()
@@ -414,6 +416,12 @@ class RecordService:
             operator=req.operator,
             task=req.task,
             robot=self._robot_name(),
+            batch_id=(
+                req.collection_context.batch_id
+                if req.collection_context is not None
+                else None
+            ),
+            collection_context=req.collection_context,
         )
         try:
             return self._store.create_capture(capture)
@@ -487,6 +495,82 @@ class RecordService:
                 state=CaptureState.failed,
                 ended_at=utc_now_iso8601(),
                 error=CaptureError(code=exc.code, message=exc.message),
+            )
+
+    def _freeze_collection_context(self, req: RecordStartRequest) -> None:
+        """Resolve and validate a batch snapshot before the recorder starts."""
+        context = req.collection_context
+        if context is None:
+            return
+        if context.operator is not None and context.operator != req.operator:
+            raise ApiError(
+                status_code=409,
+                code="collection_context_operator_mismatch",
+                message=(
+                    "The collection context operator differs from the recording "
+                    "operator; reload before recording."
+                ),
+            )
+        if context.task is not None and context.task != req.task:
+            raise ApiError(
+                status_code=409,
+                code="collection_context_task_mismatch",
+                message=(
+                    "The collection context task differs from the recording task; "
+                    "reload before recording."
+                ),
+            )
+        # The active robot is server authority. A browser cannot start a
+        # capture under the robot it displayed before a concurrent switch.
+        context.robot = self._robot_name()
+        if context.batch_id is None:
+            return
+        batch = self._store.get_batch(context.batch_id)
+        if batch is None:
+            raise ApiError(
+                status_code=409,
+                code="batch_not_found",
+                message="The requested batch does not exist; reload before recording.",
+                details={"batch_id": context.batch_id},
+            )
+        if batch.status != "active":
+            raise ApiError(
+                status_code=409,
+                code="batch_not_active",
+                message="The requested batch is not active; start a new batch first.",
+                details={"batch_id": context.batch_id, "status": batch.status},
+            )
+        expected = {
+            "batch_seq": context.batch_seq,
+            "project": context.project,
+            "task": context.task,
+            "condition": context.condition,
+            "robot": context.robot,
+            "operator": context.operator,
+        }
+        actual = {
+            "batch_seq": batch.batch_seq,
+            "project": batch.project,
+            "task": batch.task,
+            "condition": batch.condition,
+            "robot": batch.robot,
+            "operator": batch.operator,
+        }
+        if expected != actual:
+            mismatch = next(name for name in expected if expected[name] != actual[name])
+            raise ApiError(
+                status_code=409,
+                code=f"batch_{mismatch}_mismatch",
+                message=(
+                    f"The requested batch {mismatch} no longer matches the "
+                    "server; reload before recording."
+                ),
+                details={
+                    "batch_id": context.batch_id,
+                    "field": mismatch,
+                    "expected": expected[mismatch],
+                    "actual": actual[mismatch],
+                },
             )
 
     def _allocate_run_id(self) -> str:
@@ -583,6 +667,10 @@ class RecordService:
             payload["qos_overrides"] = {
                 name: qos.model_dump() for name, qos in req.qos_overrides.items()
             }
+        if req.collection_context is not None:
+            payload["collection_context"] = req.collection_context.model_dump(
+                mode="json"
+            )
         # The LIVE config's pattern QoS overrides ride along on every start:
         # the recorder's own copy was loaded at ITS startup, so after a robot
         # switch (config hot-swap, §config select) the recorder would otherwise
@@ -929,6 +1017,18 @@ class RecordService:
                 task=manifest.task,
                 robot=manifest.robot,
                 topics=[CaptureTopic.model_validate(t) for t in manifest.topics],
+                batch_id=(
+                    manifest.collection_context.batch_id
+                    if manifest.collection_context is not None
+                    else None
+                ),
+                collection_context=(
+                    CollectionContextSnapshot.model_validate(
+                        manifest.collection_context.to_json()
+                    )
+                    if manifest.collection_context is not None
+                    else None
+                ),
             )
         )
         self._store.upsert_replica(
@@ -1159,6 +1259,20 @@ class RecordService:
                 error=CaptureError(code=code, message=exc.message),
             )
         fields = self._metadata_to_fields(meta)
+        context = fields.get("collection_context")
+        if context is not None and context.batch_id is not None:
+            current = self._store.get_capture(capture_id)
+            if current is not None and current.batch_id is None:
+                fields["batch_id"] = context.batch_id
+            elif current is not None and current.batch_id != context.batch_id:
+                logger.warning(
+                    "manifest collection context disagrees with catalog batch",
+                    extra={
+                        "capture_id": capture_id,
+                        "catalog_batch_id": current.batch_id,
+                        "manifest_batch_id": context.batch_id,
+                    },
+                )
         fields["error"] = None  # a successful sync clears any prior sync error
         return self._store.update_capture(capture_id, **fields)
 
@@ -1194,6 +1308,10 @@ class RecordService:
             fields["compression"] = Compression(manifest["compression"])
         if manifest.get("split"):
             fields["split"] = Split.model_validate(manifest["split"])
+        if manifest.get("collection_context") is not None:
+            fields["collection_context"] = CollectionContextSnapshot.model_validate(
+                manifest["collection_context"]
+            )
         return fields
 
     @staticmethod

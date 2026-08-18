@@ -28,6 +28,7 @@ from fastapi.testclient import TestClient
 from kairos_common import Settings
 from kairos_common.capture_sidecars import (
     OBJECT_MANIFEST_FILENAME,
+    CollectionContextSnapshotV1,
     ObjectManifestV2,
     write_object_manifest,
 )
@@ -50,6 +51,7 @@ class FakeRecorder:
         # Stamped from the start request's optional `robot` (§10) so the
         # manifest — not the orchestrator's row — is authoritative for it.
         self.robot: str | None = None
+        self.collection_context: CollectionContextSnapshotV1 | None = None
         self.finalized: bool = False
         # Terminal state the recorder reports after stop; tests set this to
         # "failed"/"interrupted" to exercise a non-completed finalize.
@@ -207,6 +209,27 @@ class FakeRecorder:
         self.prepared_run_id = None
         self.state = "recording"
         self.robot = self.last_start_payload.get("robot")
+        context = self.last_start_payload.get("collection_context")
+        if isinstance(context, dict):
+            context_fields = {
+                "batch_id",
+                "batch_seq",
+                "project",
+                "task",
+                "condition",
+                "robot",
+                "operator",
+            }
+            self.collection_context = CollectionContextSnapshotV1(
+                **{name: context.get(name) for name in context_fields},
+                extra={
+                    name: value
+                    for name, value in context.items()
+                    if name not in context_fields
+                },
+            )
+        else:
+            self.collection_context = None
         self.started_at = "2026-08-01T00:00:00.000Z"
         self.finalized = False
         requested = self.last_start_payload["topics"]
@@ -425,6 +448,7 @@ class FakeRecorder:
                 operator=(self.last_start_payload or {}).get("operator"),
                 task=(self.last_start_payload or {}).get("task"),
                 robot=self.robot,
+                collection_context=self.collection_context,
                 topics=tuple(
                     {"name": name, "type": self.topic_type, "qos": None}
                     for name in self.topic_names

@@ -32,6 +32,7 @@ import { useRecordStatus } from '../captures/useRecordStatus';
 import {
   ACTIVE_RECORD_STATES,
   type CaptureDetail,
+  type CollectionContextSnapshot,
   type Quality as ServerQuality,
   type QuickCheckVerdict,
   type RecordArming,
@@ -93,6 +94,7 @@ import { usePreArm } from './hooks/usePreArm';
 import { useTakeClock } from './hooks/useTakeClock';
 import { useBatchLifecycle } from './hooks/useBatchLifecycle';
 import { useCollectContext } from './hooks/useCollectContext';
+import { useUnsavedTakeRecovery } from './hooks/useUnsavedTakeRecovery';
 
 /** Normalise a thrown error to a MachineError. A backend code passes through; a
  *  5xx or a transport failure (no code) is treated as an unreachable recorder so
@@ -377,6 +379,9 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
 
   // ---- toast --------------------------------------------------------------
   const { toast, showToast } = useToast();
+  const { resumeUnsavedTake, recoveredBatchIdForCapture } = useUnsavedTakeRecovery({
+    showToast,
+  });
 
   // ---- save flash ----------------------------------------------------------
   // Briefly mark the just-saved episode's strip chip (a teal ring) so the save
@@ -398,7 +403,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   // ---- batch lifecycle (server API) ----------------------------------------
   // Lazy batch creation + the once-per-load server reconcile live in
   // hooks/useBatchLifecycle.ts.
-  const { ensureBatch } = useBatchLifecycle();
+  const { ensureBatch, prepareRecordStartContext } = useBatchLifecycle();
 
   // ---- real recording API (mirrors LiveTab's start/stop wiring) -----------
   // Tracks a Cancel (during arming) or an end-batch-early confirmed while
@@ -537,16 +542,30 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     if (startInFlightRef.current) return;
     startInFlightRef.current = true;
     cancelledStartRef.current = false;
-    // Lazily create the server batch (never blocks the recording; the save
-    // awaits the same promise).
-    void ensureBatch();
     dispatch({ type: 'START_REQUESTED' });
-    // Mirror v1 LiveTab.tsx:345-350: topics from the resolved selection, plus
-    // operator (from the header input, via uiStore) and task when non-empty.
-    const body: RecordStartRequest = { topics: selection.topics };
-    if (operator.trim()) body.operator = operator.trim();
-    if (state.task?.trim()) body.task = state.task.trim();
-    const pending = startMutation.mutateAsync(body);
+    const pending = (async () => {
+      let collectionContext: CollectionContextSnapshot;
+      try {
+        collectionContext = await prepareRecordStartContext();
+      } catch (err) {
+        startInFlightRef.current = false;
+        dispatch({ type: 'START_FAILED', error: toMachineError(err) });
+        return;
+      }
+      // Cancel can land while batch creation is pending. Do not start a new
+      // recorder session after the operator has backed out of arming.
+      if (cancelledStartRef.current) {
+        startInFlightRef.current = false;
+        return;
+      }
+      const body: RecordStartRequest = {
+        topics: selection.topics,
+        collection_context: collectionContext,
+      };
+      if (collectionContext.operator) body.operator = collectionContext.operator;
+      if (collectionContext.task) body.task = collectionContext.task;
+      return startMutation.mutateAsync(body);
+    })();
     startPromiseRef.current = pending;
     void pending.then(
       () => {
@@ -558,14 +577,12 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     );
   }, [
     state.phase,
-    state.task,
     noSelection,
     operatorMissing,
     showToast,
     selection.topics,
-    operator,
     startMutation,
-    ensureBatch,
+    prepareRecordStartContext,
   ]);
 
   // The arming Cancel ignores its first moments on screen (#8): it lands where
@@ -730,7 +747,9 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
       try {
         // A batch still being created has to land first: a batch_id that arrived
         // after the save would leave this capture ungrouped for good.
-        const batchId = await ensureBatch();
+        const recoveredBatchId = recoveredBatchIdForCapture(captureId);
+        const batchId =
+          recoveredBatchId === undefined ? await ensureBatch(false) : recoveredBatchId;
         const body: ReviewSaveRequest = {
           base_revision: baseRevision,
           task_result: isFail ? 'failure' : 'success',
@@ -839,6 +858,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     autoQuality,
     operator,
     ensureBatch,
+    recoveredBatchIdForCapture,
     showToast,
     flashSaved,
     queryClient,
@@ -968,18 +988,8 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   const labelUnsavedTake = useCallback(() => {
     const capture = unsavedCapture;
     if (!capture) return;
-    dispatch({
-      type: 'RESUME_TAKE',
-      captureId: capture.capture_id,
-      runLabel: capture.run_id ?? null,
-      // The capture's own revision is the compare-and-swap token; a recovered
-      // take was scanned as never-reviewed, so this is 0 unless it changed
-      // between the scan and now — in which case the save is correctly refused.
-      reviewRevision: capture.review_revision,
-    });
-    // Make sure there's a server batch to attach the recovered episode to.
-    void ensureBatch();
-  }, [unsavedCapture, ensureBatch]);
+    void resumeUnsavedTake(capture);
+  }, [unsavedCapture, resumeUnsavedTake]);
 
   const discardUnsavedTake = useCallback(() => {
     if (!unsavedCapture) return;

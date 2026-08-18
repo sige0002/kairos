@@ -22,6 +22,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -38,6 +39,7 @@ from kairos_common import (
 from kairos_common.capture_sidecars import (
     ROSBAG2_METADATA_FILENAME,
     CaptureState,
+    CollectionContextSnapshotV1,
     DigestState,
     ObjectManifestV2,
     SidecarStatus,
@@ -305,6 +307,7 @@ class RecorderSession:
         self._stamp: dict[str, Any] | None = None
         self._task: str | None = None
         self._robot: str | None = None
+        self._collection_context: CollectionContextSnapshotV1 | None = None
 
         # MAX_RECORD_BYTES auto-stop watcher. 0 disables (default).
         self._max_record_bytes: int = settings.max_record_bytes
@@ -986,7 +989,7 @@ class RecorderSession:
                 armed.capture_id,
                 armed.run_id,
                 armed.started_at,
-                armed.request,
+                request,
                 armed.staged_topics,
                 f"arming: {exc}",
             )
@@ -1021,6 +1024,7 @@ class RecorderSession:
         self._stamp = self._build_stamp(request.console_stamp)
         self._task = default_meta(request.task, UNKNOWN_TASK)
         self._robot = self._resolve_robot(request)
+        self._collection_context = deepcopy(request.collection_context)
         self._topics = armed.staged_topics
         self._log_file = armed.log_file
         self._pending_log_path = armed.pending_log_path
@@ -1157,6 +1161,7 @@ class RecorderSession:
             self._stamp = self._build_stamp(request.console_stamp)
             self._task = default_meta(request.task, UNKNOWN_TASK)
             self._robot = self._resolve_robot(request)
+            self._collection_context = deepcopy(request.collection_context)
             self._topics = spawned.staged_topics
             # The capture dir now exists (ros2 created it), so writing the
             # manifest into it no longer races the "folder exists" check.
@@ -1886,6 +1891,7 @@ class RecorderSession:
             operator=default_meta(request.operator, UNKNOWN_OPERATOR),
             task=default_meta(request.task, UNKNOWN_TASK),
             robot=self._resolve_robot(request),
+            collection_context=deepcopy(request.collection_context),
             topics=tuple(topic.model_dump(mode="json") for topic in topics),
             compression=str(request.compression),
             split=request.split.model_dump(mode="json") if request.split else None,
@@ -2129,6 +2135,7 @@ class RecorderSession:
             operator=self._operator,
             task=self._task,
             robot=self._robot,
+            collection_context=self._collection_context,
             ended_at=ended_at,
             topics=tuple(topic.model_dump(mode="json") for topic in self._topics),
             # Finalised counters (OL-①.5): None until the bag's metadata exists.

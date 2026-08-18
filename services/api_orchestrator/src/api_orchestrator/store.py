@@ -517,6 +517,13 @@ class CaptureStore:
         if unknown:
             raise KeyError(f"Not review fields: {sorted(unknown)}")
         with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if base_revision == 0 and fields.get("batch_id"):
+                batch = conn.execute(
+                    "SELECT 1 FROM batches WHERE batch_id = ?", (fields["batch_id"],)
+                ).fetchone()
+                if batch is None:
+                    raise KeyError(fields["batch_id"])
             if renumber_index:
                 # BEGIN IMMEDIATE takes the write lock before the scan, so the
                 # number is allocated by the DATABASE rather than by this
@@ -550,6 +557,64 @@ class CaptureStore:
                     base_revision,
                 ),
             )
+            if cur.rowcount > 0 and base_revision == 0 and fields.get("batch_id"):
+                conn.execute(
+                    "UPDATE batches SET episodes_recorded = episodes_recorded + 1 "
+                    "WHERE batch_id = ?",
+                    (fields["batch_id"],),
+                )
+        return cur.rowcount > 0
+
+    def adopt_review_from_sidecar(
+        self,
+        capture_id: str,
+        *,
+        base_revision: int,
+        revision: int,
+        fields: dict[str, Any],
+    ) -> bool:
+        """Atomically adopt an ahead ``record.json`` and its first-review count.
+
+        This is the crash-recovery sibling of :meth:`save_review_cas`: a
+        sidecar can be durable while its initial database transaction was not.
+        It must increment the batch in the same transaction, exactly once.
+        """
+        unknown = set(fields) - _REVIEW_COLUMNS
+        if unknown:
+            raise KeyError(f"Not review fields: {sorted(unknown)}")
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            before = conn.execute(
+                "SELECT 1 FROM captures WHERE capture_id = ? AND review_revision = ?",
+                (capture_id, base_revision),
+            ).fetchone()
+            if before is None:
+                return False
+            if base_revision == 0 and fields.get("batch_id"):
+                batch = conn.execute(
+                    "SELECT 1 FROM batches WHERE batch_id = ?", (fields["batch_id"],)
+                ).fetchone()
+                if batch is None:
+                    raise KeyError(fields["batch_id"])
+            assignments = ", ".join(f"{name} = ?" for name in fields)
+            cur = conn.execute(
+                f"UPDATE captures SET {assignments}, review_revision = ?, "
+                "updated_at = ? "
+                "WHERE capture_id = ? AND review_revision = ?",
+                (
+                    *fields.values(),
+                    revision,
+                    utc_now_iso8601(),
+                    capture_id,
+                    base_revision,
+                ),
+            )
+            if cur.rowcount > 0 and base_revision == 0 and fields.get("batch_id"):
+                conn.execute(
+                    "UPDATE batches SET episodes_recorded = episodes_recorded + 1 "
+                    "WHERE batch_id = ?",
+                    (fields["batch_id"],),
+                )
         return cur.rowcount > 0
 
     @staticmethod
@@ -1443,8 +1508,10 @@ class CaptureStore:
         replay it from and the batch used to come back at 0 while its episodes
         sat on disk: Collect then showed ``0 / 30`` for a finished batch.
 
-        Counting the captures that name the batch is the best available answer
-        and is knowably a FLOOR, so the row is marked as one. Two things it
+        Counting reviewed captures that name the batch is the best available
+        answer and is knowably a FLOOR, so the row is marked as one. A start
+        now names its batch before a review, but that is provenance rather than
+        evidence that the first-review counter advanced. Two things it
         cannot see: a capture reviewed in and later deleted (its record.json
         went with it), and a capture reviewed more than once (which the live
         counter also only counts once). Tombstones ARE counted — the row
@@ -1453,7 +1520,8 @@ class CaptureStore:
         """
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT COUNT(*) AS n FROM captures WHERE batch_id = ?",
+                "SELECT COUNT(*) AS n FROM captures "
+                "WHERE batch_id = ? AND review_revision > 0",
                 (batch_id,),
             ).fetchone()
             counted = int(row["n"] or 0)
@@ -2014,6 +2082,7 @@ class CaptureStore:
     def _upsert_rebuilt_capture(
         conn: sqlite3.Connection, row: CaptureRow, now: str
     ) -> None:
+        collection_context = getattr(row, "collection_context", None)
         columns: dict[str, Any] = {
             "capture_id": row.capture_id,
             "run_id": row.run_id,
@@ -2035,6 +2104,15 @@ class CaptureStore:
             "delete_reason": row.delete_reason,
             "archived_at": row.archived_at,
             "archive_destination": row.archive_destination,
+            "collection_context": (
+                json.dumps(
+                    collection_context.to_json()
+                    if hasattr(collection_context, "to_json")
+                    else collection_context
+                )
+                if collection_context is not None
+                else None
+            ),
             "updated_at": now,
         }
         if row.quick_check is not None:

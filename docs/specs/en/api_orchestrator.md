@@ -101,9 +101,9 @@ This is an alpha, so no compatibility layer is provided. **None of them does any
 
 ## Capture lifecycle (centrally managed by the orchestrator)
 
-1. `POST /api/v1/record/start` → the orchestrator **assigns a `run_id` (the display name)** and calls the recorder's `POST /record/start`. **The `capture_id` is issued by the recorder** and returned in the response.
+1. `POST /api/v1/record/start` → the orchestrator **assigns a `run_id` (the display name)** and calls the recorder's `POST /record/start`. **The `capture_id` is issued by the recorder** and returned in the response. `collection_context` is the Start-time snapshot `{ batch_id, batch_seq, project, task, condition, robot, operator }` (all nullable; unknown fields preserved). When `batch_id` is present, Start verifies that the Batch exists, is `active`, and matches the context; a missing, ended, or mismatched Batch rejects recording before it begins. Recording with `batch_id=null` and context labels remains allowed.
    `operator` / `task` are **`400 label_too_long` above 255 bytes of UTF-8** (`prepare` too). They never become paths themselves, but when a dataset leaves its own `operator` / `task` unset the **views tree borrows the capture's** (`COALESCE(d.operator, c.operator)`), so capping only the dataset side leaves a route that breaks the tree (see capture_store §6).
-2. Creates the `captures` row under the returned `capture_id` (`state=recording`). If the recorder rejects, **when it names a capture, a `failed` row under that id is returned**. When it names none, the error is propagated as-is and the failed-start sidecar the recorder wrote (`objects/<capture_id>.failed.json`) is turned into a row by the next rebuild.
+2. Creates the `captures` row under the returned `capture_id` (`state=recording`). A successful row is associated with `collection_context.batch_id` at Start, and the context is exposed through the DB index and Capture API. If the recorder rejects, **when it names a capture, a `failed` row under that id is returned**. When it names none, the error is propagated as-is and the failed-start sidecar the recorder wrote (`objects/<capture_id>.failed.json`) is turned into a row by the next rebuild.
 3. Immediately after a successful start, fetches the recorder's `GET /record/metadata` and **syncs the finalized topics / type / QoS (including the result of `"all"` expansion) to the capture row**. On fetch failure, keeps it `recording`, records the reason in `error`, and retries.
 4. `POST /api/v1/record/stop` → recorder stop → re-syncs the final metadata (`message_count` / `bytes` / `ended_at` / topics) and sets `state=completed`. Once settled, it **runs the stop-time quick check off the stop response** (below) and then **enqueues the digest job** (see "digest job" below).
 
@@ -131,7 +131,7 @@ The replacement for the old `POST/PATCH /api/v1/episodes`. **Sidecar-first + CAS
 2. Atomically writes `record.json` with `revision = base_revision + 1`. On failure → **`500 review_sidecar_write_failed`, and the DB is untouched** (nothing was saved, so the same `base_revision` can simply be retried).
 3. CAS-updates the DB. `rowcount=0` → **`409`**. The sidecar that was written is not rolled back.
 
-- body: `{ base_revision, task_result?, failure_reason?, quality?, quality_source?, review_status?, batch_id?, index_in_batch?, operator?, task?, robot? }`.
+- body: `{ base_revision, task_result?, failure_reason?, quality?, quality_source?, review_status?, batch_id?, index_in_batch?, operator?, task?, robot? }`. If Start's `collection_context.batch_id` is non-null, `batch_id` is accepted only when it is that fixed value; another Batch or an explicit clear is `409`. Only a capture that started with `batch_id=null` may be associated at its first Review save with an active Batch whose snapshot `robot` / `operator` / `project` / `task` / `condition` exactly match. It is immutable thereafter. The existing same `batch_id` remains valid for review of a terminal capture.
 - **`operator` / `task` / `robot` are label edits** (rules: [capture_store](capture_store.md) §4.3). The
   main use is **labeling imported bags** (born unlabeled, so a human attaching them later is the only
   way), but they also fix an ordinary recording's wrong label. CAS, the mutex and sidecar-first are the
@@ -145,7 +145,7 @@ The replacement for the old `POST/PATCH /api/v1/episodes`. **Sidecar-first + CAS
     fields).
   - Editing `operator` / `task` schedules a `views/` regeneration (when a dataset carries neither,
     `views/` falls back to the capture's values). `robot` is not a path component and does nothing.
-- **This is where the old `POST /episodes` side effects moved to**: the monotone increment of `batches.episodes_recorded` and the auto-pull trigger fire on **the first review save for that capture**.
+- **This is where the old `POST /episodes` side effects moved to**: the monotone increment of `batches.episodes_recorded` and the auto-pull trigger fire on **the first review save for that capture**. The first-review CAS and counter update run in the same SQLite transaction, after the sidecar succeeds.
 - Saving against a tombstoned or absent capture is `409` (`capture_deleting` / `capture_deleted` / `capture_not_present`).
 
 ## Deletion (`POST /api/v1/captures/{id}/delete`)
@@ -170,7 +170,7 @@ Evacuates a capture to external storage, one capture at a time. It keeps the ord
 - Not one byte is copied before the destination has been validated against `KAIROS_ARCHIVE_ROOTS` — this endpoint **deletes the source at the end**, which makes an unconstrained destination string the most dangerous input in the system.
 - **Rejecting an overlap is a check separate from the allow-list** (passing the former is no evidence about the latter). What is checked is the **resolved write target** (`<destination>/<capture_id>`), not the permitted root itself — so **permitting a root that contains `data_dir` is not itself forbidden** (`KAIROS_ARCHIVE_ROOTS=/data` is the kind of setting an operator would plausibly choose, and on the allow-list alone the path of copying onto itself and then deleting the source would go through). Both sides are resolved with `realpath` (preventing disguise via symlinks) and containment is checked **in both directions**. A violation is `400 destination_inside_data_dir`.
 - **A non-empty destination is `409 destination_not_empty`** (rejected down in the copy primitive).
-- The ledger's `capture_archived` event carries **per-file `{path, size, sha256}`**. Once the source is gone the manifest goes with it, so without this all you could say is "N bytes went to /mnt/nas", and years later you could not answer "is that copy still intact?".
+- The ledger's `capture_archived` event carries **per-file `{path, size, sha256}`** and `collection_context` (including unknown fields). Once the source is gone the manifest goes with it, so without this all you could say is "N bytes went to /mnt/nas", and years later you could not answer "is that copy still intact?" or "what was its collection context?". Ledger-only rebuild restores the same context.
 - **A capture that is a dataset member is refused for archive too** (the same `400` as delete). It would leave the `views/` symlink dangling, so remove the membership first. The one exemption is the §6.1 dataset-archive runner itself (below), and it covers **only the membership in that run's own dataset**.
 
 ## dataset archive (`POST /api/v1/datasets/{id}/archive`, §6.1)

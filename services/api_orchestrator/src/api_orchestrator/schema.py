@@ -19,7 +19,7 @@ from __future__ import annotations
 # found in the field, not by tests, because tests only ever see fresh schemas.
 # The rebuild is the designed absorption path; refusing to bump is how it is
 # bypassed by accident.
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 SCHEMA = """
 -- One recording, merged with the operator's review of it. Replaces v1's
@@ -58,6 +58,10 @@ CREATE TABLE IF NOT EXISTS captures (
     review_revision    INTEGER NOT NULL DEFAULT 0,
     batch_id           TEXT,
     index_in_batch     INTEGER,
+    -- Context frozen at start, including the batch labels this capture may
+    -- later be reviewed into. It is a sidecar-backed JSON snapshot, not a
+    -- second mutable set of provenance columns.
+    collection_context TEXT,
     -- A human's override of a NEEDS_REVIEW validation verdict, so a dataset
     -- add can consult it in one read. The verdict itself is DERIVED from the
     -- reports on disk (see verdict.py) and deliberately not cached here; only
@@ -268,6 +272,7 @@ CAPTURE_COLUMNS: frozenset[str] = frozenset(
         "validation_override",
         "batch_id",
         "index_in_batch",
+        "collection_context",
         "deleted_at",
         "delete_kind",
         "delete_reason",
@@ -322,4 +327,6 @@ BATCH_UPDATE_FIELDS: frozenset[str] = frozenset(
     }
 )
 
-JSON_COLUMNS: frozenset[str] = frozenset({"topics", "split", "error", "quick_check"})
+JSON_COLUMNS: frozenset[str] = frozenset(
+    {"topics", "split", "error", "quick_check", "collection_context"}
+)

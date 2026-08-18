@@ -102,6 +102,17 @@ export interface ApiErrorBody {
 
 // ---- Record -------------------------------------------------------------
 
+/** Batch identity and labels frozen at the instant a recording starts. */
+export interface CollectionContextSnapshot {
+  batch_id: string | null;
+  batch_seq: number | null;
+  project: string | null;
+  task: string | null;
+  condition: string | null;
+  robot: string | null;
+  operator: string | null;
+}
+
 export interface RecordStartRequest {
   topics: string[] | 'all';
   compression?: 'none' | 'zstd';
@@ -110,6 +121,8 @@ export interface RecordStartRequest {
   operator?: string;
   /** Task / scenario being recorded (free text); saved likewise. */
   task?: string;
+  /** Immutable collection context, carried into the capture sidecar. */
+  collection_context?: CollectionContextSnapshot | null;
   [key: string]: unknown;
 }
 
@@ -311,6 +324,7 @@ export interface CaptureListItem {
    *  reason). Null = no override; the gate stands. */
   validation_override?: string | null;
   batch_id?: string | null;
+  collection_context?: CollectionContextSnapshot | null;
   index_in_batch?: number | null;
 
   // ---- tombstone (§7): the row survives the deletion ----
@@ -1446,6 +1460,9 @@ export interface BatchCreateRequest {
 export interface BatchPatchRequest {
   status?: BatchStatus;
   ended_reason?: string | null;
+  /** Empty-batch identity update after an operator or robot switch. */
+  robot?: string | null;
+  operator?: string | null;
   /** Empty-batch re-label only: Collect PATCHes project/task when the operator
    *  switches them before the batch's first recording (a batch with recordings
    *  rolls over to a new one instead). */

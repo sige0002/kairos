@@ -9,11 +9,18 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { ApiError } from '../../../api/client';
-import { createBatch, getBatch, listBatches } from '../../../api/batches';
+import { createBatch, getBatch, listBatches, patchBatch } from '../../../api/batches';
 import { getCapture, listCaptures } from '../../../api/captures';
 import { getConfigOptions } from '../../../api/config';
 import { queryKeys } from '../../../api/queryKeys';
-import type { Capture, CaptureListItem } from '../../../api/types';
+import type {
+  Batch,
+  BatchDetail,
+  BatchPatchRequest,
+  Capture,
+  CaptureListItem,
+  CollectionContextSnapshot,
+} from '../../../api/types';
 import { useUiStore } from '../../../store/uiStore';
 import { type Phase } from '../machine/types';
 import {
@@ -32,7 +39,8 @@ import {
 } from '../machine/store';
 
 export function useBatchLifecycle(): {
-  ensureBatch: () => Promise<string | null>;
+  ensureBatch: (verifyIdentity?: boolean) => Promise<string | null>;
+  prepareRecordStartContext: () => Promise<CollectionContextSnapshot>;
 } {
   const activeRobot = useQuery({
     queryKey: queryKeys.configOptions,
@@ -41,50 +49,184 @@ export function useBatchLifecycle(): {
   const operator = useUiStore((s) => s.recordOperator).trim();
   const operatorHydrated = useUiStore((s) => s.operatorHydrated);
   const setBatchRestoreIssue = useUiStore((s) => s.setBatchRestoreIssue);
+  const activeRobotRef = useRef<string | null>(null);
+  activeRobotRef.current = activeRobot.data?.active_robot?.trim() || null;
+
+  const currentContext = useCallback((): Omit<
+    CollectionContextSnapshot,
+    'batch_id' | 'batch_seq'
+  > => {
+    const state = getStoreSnapshot();
+    const textOrNull = (value: string | null | undefined) => {
+      const text = value?.trim();
+      return text && text !== '—' ? text : null;
+    };
+    return {
+      project: textOrNull(state.project),
+      task: textOrNull(state.task),
+      condition: textOrNull(state.condition),
+      robot: activeRobotRef.current,
+      operator: textOrNull(useUiStore.getState().recordOperator),
+    };
+  }, []);
 
   // ---- batch lifecycle (server API) ----------------------------------------
   // A server batch is created lazily on the first recording of a batch (and
   // after "start next batch"), not eagerly, so merely opening Collect never
-  // spawns empty batches. Recording never waits on it; the review save does
-  // await it, because a batch_id that arrives after the save would leave the
-  // capture ungrouped for good.
+  // spawns empty batches. Both recording and review await it: the recording
+  // snapshot must name exactly the batch the recorder started under.
   const batchCreateRef = useRef<Promise<string | null> | null>(null);
-  const ensureBatch = useCallback((): Promise<string | null> => {
-    const s = getStoreSnapshot();
-    if (s.batchId) return Promise.resolve(s.batchId);
-    if (batchCreateRef.current) return batchCreateRef.current;
-    const op = useUiStore.getState().recordOperator.trim();
-    const pending = createBatch({
-      // Omitted when there is no plan to name (2026-08-06: both are optional
-      // server-side and stored as null). Sending the header's placeholder wrote
-      // a label nobody chose into the shared catalog, on a row every terminal
-      // reads and with nothing downstream able to tell it from a project
-      // deliberately named "—". `condition` was already guarded this way.
-      project: s.project ?? undefined,
-      task: s.task ?? undefined,
-      condition: s.condition && s.condition !== '—' ? s.condition : undefined,
-      operator: op || undefined,
-      target_episodes: s.targetEpisodes,
-    })
-      .then((batch) => {
-        dispatch({
-          type: 'SET_BATCH',
-          batchId: batch.batch_id,
-          batchSeq: typeof batch.batch_seq === 'number' ? batch.batch_seq : null,
-        });
-        return batch.batch_id;
-      })
-      .catch(() => {
-        // API unreachable. The review still saves — a capture carries its own
-        // review (§8) — it just belongs to no batch, which the receipt says.
-        return null;
-      })
-      .finally(() => {
-        batchCreateRef.current = null;
-      });
-    batchCreateRef.current = pending;
-    return pending;
-  }, []);
+  const ensureBatch = useCallback(
+    async (verifyIdentity = true): Promise<string | null> => {
+      const normalise = (value: string | null | undefined) => value?.trim() || null;
+      const matches = (
+        desired: Omit<CollectionContextSnapshot, 'batch_id' | 'batch_seq'>,
+        existing: Batch,
+      ) =>
+        // An unresolved active robot is not evidence that this batch belongs to
+        // another robot. Leave the robot untouched until config answers.
+        (desired.robot === null || desired.robot === normalise(existing.robot)) &&
+        desired.operator === normalise(existing.operator) &&
+        desired.project === normalise(existing.project) &&
+        desired.task === normalise(existing.task) &&
+        desired.condition === normalise(existing.condition);
+      const hasContent = (localRecorded: number, existing: BatchDetail) =>
+        localRecorded > 0 ||
+        existing.episode_count > 0 ||
+        (existing.episodes_recorded ?? 0) > 0 ||
+        existing.captures.length > 0;
+
+      // A rollover changes the module state, then the next pass creates the new
+      // lazy batch. A bounded loop avoids callback self-recursion and still
+      // leaves an API failure as a null snapshot rather than a stale association.
+      for (let pass = 0; pass < 3; pass += 1) {
+        const desired = currentContext();
+        const local = getStoreSnapshot();
+        if (local.batchId) {
+          // Review-saving only needs the known batch id. The Start boundary calls
+          // the default identity-verifying path, where a stale association must
+          // never be reused for a new recorder capture.
+          if (!verifyIdentity) return local.batchId;
+          let existing: BatchDetail;
+          try {
+            existing = await getBatch(local.batchId);
+          } catch {
+            // A batch whose identity cannot be confirmed is not safe to attach
+            // to this capture. The recording may still proceed with null context.
+            return null;
+          }
+          if (existing.status === 'active' && matches(desired, existing)) {
+            dispatch({
+              type: 'SET_BATCH',
+              batchId: existing.batch_id,
+              batchSeq:
+                typeof existing.batch_seq === 'number' ? existing.batch_seq : null,
+            });
+            return local.batchId;
+          }
+          if (existing.status !== 'active') {
+            dispatch({
+              type: 'ROLLOVER_SET',
+              project: local.project,
+              task: local.task,
+              condition: local.condition,
+            });
+            continue;
+          }
+          if (hasContent(local.recordedCount, existing)) {
+            try {
+              const ended = await patchBatch(local.batchId, {
+                status: 'ended_early',
+                ended_reason: 'identity change',
+              });
+              if (ended.status !== 'ended_early') return null;
+            } catch {
+              return null;
+            }
+            dispatch({
+              type: 'ROLLOVER_SET',
+              project: local.project,
+              task: local.task,
+              condition: local.condition,
+            });
+            continue;
+          }
+          const patch: BatchPatchRequest = {
+            project: desired.project,
+            task: desired.task,
+            condition: desired.condition,
+            operator: desired.operator,
+          };
+          if (desired.robot !== null) patch.robot = desired.robot;
+          try {
+            const reused = await patchBatch(local.batchId, patch);
+            if (reused.status !== 'active') return null;
+            dispatch({
+              type: 'SET_BATCH',
+              batchId: reused.batch_id,
+              batchSeq: typeof reused.batch_seq === 'number' ? reused.batch_seq : null,
+            });
+            return reused.batch_id;
+          } catch {
+            return null;
+          }
+        }
+
+        if (batchCreateRef.current) {
+          const pendingId = await batchCreateRef.current;
+          if (!pendingId) return null;
+          continue;
+        }
+        const pending = createBatch({
+          // Omitted when there is no plan to name (2026-08-06: both are optional
+          // server-side and stored as null). Sending the header's placeholder wrote
+          // a label nobody chose into the shared catalog for good.
+          project: desired.project ?? undefined,
+          task: desired.task ?? undefined,
+          condition: desired.condition ?? undefined,
+          robot: desired.robot ?? undefined,
+          operator: desired.operator ?? undefined,
+          target_episodes: local.targetEpisodes,
+        })
+          .then((batch) => {
+            dispatch({
+              type: 'SET_BATCH',
+              batchId: batch.batch_id,
+              batchSeq: typeof batch.batch_seq === 'number' ? batch.batch_seq : null,
+            });
+            return batch.batch_id;
+          })
+          .catch(() => null)
+          .finally(() => {
+            batchCreateRef.current = null;
+          });
+        batchCreateRef.current = pending;
+        return pending;
+      }
+      return null;
+    },
+    [currentContext],
+  );
+
+  const prepareRecordStartContext =
+    useCallback(async (): Promise<CollectionContextSnapshot> => {
+      const before = currentContext();
+      let batchId = await ensureBatch();
+      // A robot picker is disabled during arming, but the shared operator can
+      // still change from another window. Reconcile once more if the identity
+      // changed while the first batch request was in flight.
+      const after = currentContext();
+      if (after.robot !== before.robot || after.operator !== before.operator) {
+        batchId = await ensureBatch();
+      }
+      const state = getStoreSnapshot();
+      const final = currentContext();
+      return {
+        batch_id: batchId,
+        batch_seq: state.batchId === batchId ? state.batchSeq : null,
+        ...final,
+      };
+    }, [currentContext, ensureBatch]);
 
   // Once-per-page-load reconcile with the server's active batch. Never on later
   // tab-switch remounts (module flag), and only while the machine is at rest, so
@@ -203,5 +345,5 @@ export function useBatchLifecycle(): {
     setBatchRestoreIssue,
   ]);
 
-  return { ensureBatch };
+  return { ensureBatch, prepareRecordStartContext };
 }

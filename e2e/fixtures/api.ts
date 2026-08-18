@@ -33,6 +33,17 @@ export interface Capture {
   quality: string | null;
   review_status: string;
   review_revision: number;
+  batch_id: string | null;
+  collection_context: {
+    batch_id: string | null;
+    batch_seq: number | null;
+    project: string | null;
+    task: string | null;
+    condition: string | null;
+    robot: string | null;
+    operator: string | null;
+    [key: string]: unknown;
+  } | null;
   digest_state: 'pending' | 'complete';
   replica: { state: ReplicaState; manifest_digest: string | null } | null;
   delete_kind?: string | null;

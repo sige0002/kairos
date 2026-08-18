@@ -130,6 +130,7 @@ class CaptureReviewMixin:
 
             merged = _merge_review(capture, request)
             _derive_quality(capture, request, merged)
+            self._validate_batch_association(capture, merged["batch_id"])
             # Read under the mutex, like everything else this save decides from:
             # the overrides already on disk are what an unsupplied label keeps,
             # and the manifest is what a cleared one falls back to.
@@ -276,6 +277,107 @@ class CaptureReviewMixin:
             )
         return saved
 
+    def _validate_batch_association(
+        self, capture: Capture, batch_id: str | None
+    ) -> None:
+        """Reject a review association that conflicts with the frozen start context."""
+        context = capture.collection_context
+        if (
+            context is not None
+            and context.batch_id is not None
+            and (context.batch_id != capture.batch_id)
+        ):
+            raise ApiError(
+                status_code=409,
+                code="batch_context_mismatch",
+                message=(
+                    "The capture batch association differs from the context "
+                    "frozen at recording start."
+                ),
+                details={"capture_id": capture.capture_id},
+            )
+        if (
+            context is not None
+            and context.batch_id is not None
+            and (batch_id != context.batch_id)
+        ):
+            raise ApiError(
+                status_code=409,
+                code="batch_context_mismatch",
+                message=(
+                    "The requested batch does not match the context frozen at "
+                    "recording start."
+                ),
+                details={"capture_id": capture.capture_id, "batch_id": batch_id},
+            )
+        if batch_id is None:
+            return
+        batch = self._store.get_batch(batch_id)
+        if batch is None:
+            raise ApiError(
+                status_code=409,
+                code="batch_not_found",
+                message=(
+                    "The requested batch no longer exists; reload and choose "
+                    "an active batch."
+                ),
+                details={"batch_id": batch_id},
+            )
+        # Editing a review for a capture already associated at start is not a
+        # new admission to a terminal batch. Only a new association requires
+        # the batch to still be active.
+        if batch.status != "active" and batch_id != capture.batch_id:
+            raise ApiError(
+                status_code=409,
+                code="batch_not_active",
+                message=(
+                    "The requested batch is not active; choose the batch that "
+                    "started this capture."
+                ),
+                details={"batch_id": batch_id, "status": batch.status},
+            )
+        if context is None:
+            return
+        if (
+            context.batch_id is None
+            and capture.batch_id is not None
+            and (batch_id != capture.batch_id)
+        ):
+            raise ApiError(
+                status_code=409,
+                code="batch_context_mismatch",
+                message="The capture is already associated with a different batch.",
+                details={"capture_id": capture.capture_id, "batch_id": batch_id},
+            )
+        expected = {
+            "batch_seq": context.batch_seq,
+            "project": context.project,
+            "task": context.task,
+            "condition": context.condition,
+            "robot": context.robot,
+            "operator": context.operator,
+        }
+        actual = {
+            "batch_seq": batch.batch_seq,
+            "project": batch.project,
+            "task": batch.task,
+            "condition": batch.condition,
+            "robot": batch.robot,
+            "operator": batch.operator,
+        }
+        if context.batch_id is None:
+            # A start can finish without a Batch. The labels remain immutable,
+            # but the later Batch is the authority that assigns its sequence.
+            expected.pop("batch_seq")
+            actual.pop("batch_seq")
+        if expected != actual:
+            raise ApiError(
+                status_code=409,
+                code="batch_context_mismatch",
+                message="The requested batch does not match the frozen context.",
+                details={"capture_id": capture.capture_id, "batch_id": batch_id},
+            )
+
     def _adopt_sidecar_if_ahead(self, capture: Capture) -> Capture:
         """Catch the row up to ``record.json`` when the file is ahead (§4.1-4).
 
@@ -293,6 +395,7 @@ class CaptureReviewMixin:
         on_disk = read_record(self._layout.capture_dir(capture.capture_id)).record
         if on_disk is None or on_disk.revision <= capture.review_revision:
             return capture
+        self._validate_batch_association(capture, on_disk.batch_id)
         logger.info(
             "adopting a record.json that is ahead of the catalog row",
             extra={
@@ -301,17 +404,21 @@ class CaptureReviewMixin:
                 "sidecar_revision": on_disk.revision,
             },
         )
-        return self._store.update_capture(
+        self._store.adopt_review_from_sidecar(
             capture.capture_id,
-            review_revision=on_disk.revision,
-            review_status=on_disk.review_status,
-            task_result=on_disk.task_result,
-            failure_reason=on_disk.failure_reason,
-            quality=on_disk.quality,
-            quality_source=on_disk.quality_source,
-            batch_id=on_disk.batch_id,
-            index_in_batch=on_disk.index_in_batch,
+            base_revision=capture.review_revision,
+            revision=on_disk.revision,
+            fields={
+                "review_status": on_disk.review_status,
+                "task_result": on_disk.task_result,
+                "failure_reason": on_disk.failure_reason,
+                "quality": on_disk.quality,
+                "quality_source": on_disk.quality_source,
+                "batch_id": on_disk.batch_id,
+                "index_in_batch": on_disk.index_in_batch,
+            },
         )
+        return self.get(capture.capture_id)
 
     @staticmethod
     def _reject_review_on_delete(capture: Capture) -> None:

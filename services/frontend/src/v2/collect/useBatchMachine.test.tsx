@@ -27,6 +27,7 @@ import {
   EPISODES_PER_BATCH,
   OPERATOR_GATE_HINT,
 } from './useBatchMachine';
+import { getStoreSnapshot } from './machine/store';
 import { getOperators } from '../plans';
 
 const BATCH_STORAGE_KEY = 'kairos.collect.batch';
@@ -831,6 +832,10 @@ test('ending the set while arming stops and discards the take too', async () => 
   });
   act(() => result.current.startRecording());
   expect(result.current.phase).toBe('arming');
+  // This exercises terminal cancellation after the recorder request has
+  // actually been issued. Batch creation makes that distinct from a cancel
+  // while its promise is still pending.
+  await waitFor(() => expect(mock.calls('/record/start')).toHaveLength(1));
 
   act(() => result.current.openEndModal());
   act(() => result.current.pickEndReason('Out of time'));
@@ -1826,6 +1831,182 @@ test('starting a recording creates a server batch with the plan context', async 
     task: 'Pick and Place',
     operator: 'yuki',
     target_episodes: EPISODES_PER_BATCH,
+  });
+  const start = calls.find((c) => c.url.includes('/record/start'))!;
+  expect(start.body?.collection_context).toEqual({
+    batch_id: 'batch_x',
+    batch_seq: null,
+    project: 'Tabletop Manipulation',
+    task: 'Pick and Place',
+    condition: 'Object: Left → Tray: Center',
+    robot: 'test-robot',
+    operator: 'yuki',
+  });
+});
+
+test('cancelling while batch creation is pending never starts recording and permits retry', async () => {
+  let releaseCreate!: () => void;
+  const createHeld = new Promise<Response>((resolve) => {
+    releaseCreate = () =>
+      resolve(
+        jsonResponse(
+          {
+            batch_id: 'batch-pending',
+            batch_seq: 9,
+            status: 'active',
+          },
+          201,
+        ),
+      );
+  });
+  let recordStarts = 0;
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    const method = (init?.method ?? 'GET').toUpperCase();
+    if (url.includes('/config/options')) {
+      return Promise.resolve(
+        jsonResponse({ active_robot: 'test-robot', robots: [], aspects: {} }),
+      );
+    }
+    if (url.endsWith('/batches') && method === 'POST') return createHeld;
+    if (url.includes('/batches/batch-pending') && method === 'GET') {
+      return Promise.resolve(
+        jsonResponse({
+          batch_id: 'batch-pending',
+          batch_seq: 9,
+          robot: 'test-robot',
+          operator: 'tester',
+          project: 'Tabletop Manipulation',
+          task: 'Pick and Place',
+          condition: 'Object: Left → Tray: Center',
+          target_episodes: 30,
+          status: 'active',
+          episode_count: 0,
+          captures: [],
+        }),
+      );
+    }
+    if (url.includes('/batches') && method === 'GET') {
+      return Promise.resolve(jsonResponse({ items: [] }));
+    }
+    if (url.includes('/record/start')) {
+      recordStarts += 1;
+      return Promise.resolve(jsonResponse(captureBody('cap-retry')));
+    }
+    if (url.includes('/captures')) {
+      return Promise.resolve(jsonResponse({ items: [], next_cursor: null }));
+    }
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  act(() => result.current.startRecording());
+  expect(result.current.phase).toBe('arming');
+  await waitFor(() => expect(result.current.canCancelArming).toBe(true));
+
+  act(() => result.current.cancelArming());
+  expect(result.current.phase).toBe('ready');
+  await act(async () => {
+    releaseCreate();
+    await createHeld;
+  });
+  await waitFor(() => expect(recordStarts).toBe(0));
+  expect(result.current.phase).toBe('ready');
+
+  act(() => result.current.startRecording());
+  await waitFor(() => expect(result.current.phase).toBe('recording'));
+  expect(recordStarts).toBe(1);
+});
+
+test('Start refreshes a restored batch sequence before freezing collection context', async () => {
+  window.localStorage.setItem(
+    BATCH_STORAGE_KEY,
+    JSON.stringify({
+      batchSeq: null,
+      recordedCount: 0,
+      batchId: 'batch-restored',
+      episodes: [],
+      project: 'Project',
+      task: 'Task',
+      condition: 'Condition',
+      lastCaptureId: null,
+    }),
+  );
+  __rehydrateBatchStore();
+  const starts: Record<string, unknown>[] = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    const method = (init?.method ?? 'GET').toUpperCase();
+    if (url.includes('/batches/batch-restored') && method === 'GET') {
+      return Promise.resolve(
+        jsonResponse({
+          batch_id: 'batch-restored',
+          batch_seq: 12,
+          robot: 'test-robot',
+          operator: 'tester',
+          project: 'Project',
+          task: 'Task',
+          condition: 'Condition',
+          status: 'active',
+          target_episodes: 30,
+          episode_count: 0,
+          captures: [],
+        }),
+      );
+    }
+    if (url.includes('/record/start')) {
+      starts.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return Promise.resolve(jsonResponse(captureBody('cap-seq')));
+    }
+    if (url.includes('/batches')) return Promise.resolve(jsonResponse({ items: [] }));
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  act(() => result.current.startRecording());
+  await waitFor(() => expect(result.current.phase).toBe('recording'));
+
+  expect(starts).toHaveLength(1);
+  expect(starts[0]?.collection_context).toMatchObject({
+    batch_id: 'batch-restored',
+    batch_seq: 12,
+    robot: 'test-robot',
+    operator: 'tester',
+  });
+});
+
+test('Start records with a null batch snapshot when batch creation fails', async () => {
+  const starts: Record<string, unknown>[] = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    const method = (init?.method ?? 'GET').toUpperCase();
+    if (url.endsWith('/batches') && method === 'POST') {
+      return Promise.reject(new Error('batch service unavailable'));
+    }
+    if (url.includes('/record/start')) {
+      starts.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return Promise.resolve(jsonResponse(captureBody('cap-unbatched')));
+    }
+    if (url.includes('/batches')) return Promise.resolve(jsonResponse({ items: [] }));
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  act(() => result.current.startRecording());
+  await waitFor(() => expect(result.current.phase).toBe('recording'));
+
+  expect(starts).toHaveLength(1);
+  expect(starts[0]?.collection_context).toMatchObject({
+    batch_id: null,
+    batch_seq: null,
+    robot: 'test-robot',
+    operator: 'tester',
   });
 });
 
@@ -3959,6 +4140,246 @@ test('detects a completed-but-unreviewed recent capture as an unsaved take, then
   expect(result.current.currentRunLabel).toBe('run_cap_unsaved');
   // The capture being labeled is no longer offered as an unsaved take.
   expect(result.current.unsavedTake).toBeNull();
+});
+
+test('recovery restores the capture’s original batch before saving its review', async () => {
+  window.localStorage.setItem(
+    BATCH_STORAGE_KEY,
+    JSON.stringify({
+      batchSeq: 2,
+      batchId: 'batch-b',
+      recordedCount: 1,
+      episodes: [{ index: 1, quality: 'good', taskResult: 'ok', captureId: 'cap-b' }],
+      project: 'Project B',
+      task: 'Task B',
+      condition: 'Condition B',
+    }),
+  );
+  __rehydrateBatchStore();
+  const reviewBodies: Record<string, unknown>[] = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    const method = (init?.method ?? 'GET').toUpperCase();
+    if (url.includes('/batches/batch-a') && method === 'GET') {
+      return Promise.resolve(
+        jsonResponse({
+          batch_id: 'batch-a',
+          batch_seq: 7,
+          robot: 'test-robot',
+          operator: 'tester',
+          project: 'Project A',
+          task: 'Task A',
+          condition: 'Condition A',
+          target_episodes: 30,
+          status: 'ended_early',
+          episode_count: 1,
+          episodes_recorded: 1,
+          captures: [
+            captureBody('cap-a', {
+              index_in_batch: 1,
+              task_result: 'success',
+              quality: 'good',
+            }),
+          ],
+        }),
+      );
+    }
+    if (url.includes('/captures/cap_unsaved/review') && method === 'PATCH') {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      reviewBodies.push(body);
+      return Promise.resolve(
+        jsonResponse(
+          captureBody('cap_unsaved', {
+            state: 'completed',
+            review_revision: 1,
+            ...body,
+          }),
+        ),
+      );
+    }
+    if (url.includes('/captures')) {
+      return Promise.resolve(
+        jsonResponse({
+          items: [
+            captureBody('cap_unsaved', {
+              state: 'completed',
+              review_revision: 0,
+              started_at: new Date(Date.now() - 60_000).toISOString(),
+              collection_context: {
+                batch_id: 'batch-a',
+                batch_seq: 7,
+                project: 'Project A',
+                task: 'Task A',
+                condition: 'Condition A',
+                robot: 'test-robot',
+                operator: 'tester',
+              },
+            }),
+          ],
+          next_cursor: null,
+        }),
+      );
+    }
+    if (url.includes('/batches')) return Promise.resolve(jsonResponse({ items: [] }));
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  await waitFor(() =>
+    expect(result.current.unsavedTake?.captureId).toBe('cap_unsaved'),
+  );
+
+  act(() => result.current.labelUnsavedTake());
+  await waitFor(() => expect(result.current.phase).toBe('result'));
+  expect(getStoreSnapshot().batchId).toBe('batch-a');
+  expect(result.current.batchSeq).toBe(7);
+  expect(result.current.project).toBe('Project A');
+  expect(result.current.task).toBe('Task A');
+  expect(result.current.condition).toBe('Condition A');
+
+  act(() => result.current.confirmEpisode());
+  await waitFor(() => expect(reviewBodies).toHaveLength(1));
+  expect(reviewBodies[0]).toMatchObject({ batch_id: 'batch-a', index_in_batch: 2 });
+});
+
+test('a failed original-batch recovery leaves the current batch and take pending', async () => {
+  window.localStorage.setItem(
+    BATCH_STORAGE_KEY,
+    JSON.stringify({
+      batchSeq: 2,
+      batchId: 'batch-b',
+      recordedCount: 1,
+      episodes: [{ index: 1, quality: 'good', taskResult: 'ok', captureId: 'cap-b' }],
+      project: 'Project B',
+      task: 'Task B',
+      condition: 'Condition B',
+    }),
+  );
+  __rehydrateBatchStore();
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/batches/batch-a')) {
+      return Promise.resolve(
+        jsonResponse(
+          { error: { code: 'unavailable', message: 'batch service unavailable' } },
+          503,
+        ),
+      );
+    }
+    if (url.includes('/captures')) {
+      return Promise.resolve(
+        jsonResponse({
+          items: [
+            captureBody('cap_unsaved', {
+              state: 'completed',
+              review_revision: 0,
+              started_at: new Date(Date.now() - 60_000).toISOString(),
+              collection_context: {
+                batch_id: 'batch-a',
+                batch_seq: 7,
+                project: 'Project A',
+                task: 'Task A',
+                condition: 'Condition A',
+                robot: 'test-robot',
+                operator: 'tester',
+              },
+            }),
+          ],
+          next_cursor: null,
+        }),
+      );
+    }
+    if (url.includes('/batches')) return Promise.resolve(jsonResponse({ items: [] }));
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  await waitFor(() =>
+    expect(result.current.unsavedTake?.captureId).toBe('cap_unsaved'),
+  );
+
+  act(() => result.current.labelUnsavedTake());
+  await waitFor(() =>
+    expect(result.current.toast).toContain(
+      'Could not restore this take’s original batch',
+    ),
+  );
+  expect(result.current.phase).toBe('ready');
+  expect(getStoreSnapshot().batchId).toBe('batch-b');
+  expect(result.current.project).toBe('Project B');
+  expect(result.current.unsavedTake?.captureId).toBe('cap_unsaved');
+});
+
+test('an unlinked recovery saves without guessing the current batch', async () => {
+  window.localStorage.setItem(
+    BATCH_STORAGE_KEY,
+    JSON.stringify({
+      batchSeq: 2,
+      batchId: 'batch-b',
+      recordedCount: 1,
+      episodes: [{ index: 1, quality: 'good', taskResult: 'ok', captureId: 'cap-b' }],
+      project: 'Project B',
+      task: 'Task B',
+      condition: 'Condition B',
+    }),
+  );
+  __rehydrateBatchStore();
+  const reviewBodies: Record<string, unknown>[] = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    const method = (init?.method ?? 'GET').toUpperCase();
+    if (url.includes('/captures/cap_unsaved/review') && method === 'PATCH') {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      reviewBodies.push(body);
+      return Promise.resolve(
+        jsonResponse(captureBody('cap_unsaved', { review_revision: 1, ...body })),
+      );
+    }
+    if (url.includes('/captures')) {
+      return Promise.resolve(
+        jsonResponse({
+          items: [
+            captureBody('cap_unsaved', {
+              state: 'completed',
+              review_revision: 0,
+              started_at: new Date(Date.now() - 60_000).toISOString(),
+              collection_context: {
+                batch_id: null,
+                batch_seq: null,
+                project: 'Project A',
+                task: 'Task A',
+                condition: 'Condition A',
+                robot: 'test-robot',
+                operator: 'tester',
+              },
+            }),
+          ],
+          next_cursor: null,
+        }),
+      );
+    }
+    if (url.includes('/batches')) return Promise.resolve(jsonResponse({ items: [] }));
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  await waitFor(() =>
+    expect(result.current.unsavedTake?.captureId).toBe('cap_unsaved'),
+  );
+
+  act(() => result.current.labelUnsavedTake());
+  await waitFor(() => expect(result.current.phase).toBe('result'));
+  expect(getStoreSnapshot().batchId).toBe('batch-b');
+
+  act(() => result.current.confirmEpisode());
+  await waitFor(() => expect(reviewBodies).toHaveLength(1));
+  expect(reviewBodies[0]).toMatchObject({ batch_id: null, index_in_batch: null });
 });
 
 test('an already-reviewed capture is NOT offered as an unsaved take', async () => {

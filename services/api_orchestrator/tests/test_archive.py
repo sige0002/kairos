@@ -21,7 +21,7 @@ import pytest
 from api_orchestrator import fileops
 from api_orchestrator.app_factory import create_orchestrator_app
 from api_orchestrator.layout import DataLayout
-from api_orchestrator.models import Capture, CaptureState
+from api_orchestrator.models import Capture, CaptureState, CollectionContextSnapshot
 from conftest import FakeRecorder
 from fastapi.testclient import TestClient
 from kairos_common import ApiError, Settings, ledger_v2
@@ -54,6 +54,7 @@ def _seed(
     *,
     capture_id: str | None = None,
     task: str | None = "pick",
+    collection_context: CollectionContextSnapshot | None = None,
 ) -> str:
     store = client.app.state.capture_store
     capture_id = capture_id or new_capture_id()
@@ -71,6 +72,10 @@ def _seed(
             message_count=42,
             bytes=707,
             started_at="2026-08-01T00:00:00.000Z",
+            batch_id=(
+                collection_context.batch_id if collection_context is not None else None
+            ),
+            collection_context=collection_context,
         )
     )
     store.upsert_replica(
@@ -159,6 +164,36 @@ class TestArchive:
         assert event["bytes"] == 707
         assert event["message_count"] == 42
         assert event["run_id"].startswith("run_")
+
+    def test_archived_context_survives_a_ledger_only_rebuild(
+        self, data_dir: Path, tmp_path: Path, fake_recorder: FakeRecorder
+    ) -> None:
+        roots = tmp_path / "nas"
+        roots.mkdir()
+        context = CollectionContextSnapshot.model_validate(
+            {
+                "batch_id": "batch_archived",
+                "batch_seq": 7,
+                "project": "project-a",
+                "task": "pick",
+                "condition": "wet",
+                "robot": "robot-a",
+                "operator": "alice",
+                "future_label": "preserved",
+            }
+        )
+        with _archive_client(data_dir, roots, fake_recorder) as client:
+            layout = client.app.state.data_layout
+            capture_id = _seed(client, layout, collection_context=context)
+            _archive_and_wait(client, capture_id, roots)
+        event = ledger_v2.archive_events(data_dir)[capture_id]
+        assert event["collection_context"] == context.model_dump(mode="json")
+        (data_dir / "kairos.db").unlink()
+
+        with _archive_client(data_dir, roots, fake_recorder) as restarted:
+            restored = restarted.get(f"/api/v1/captures/{capture_id}").json()
+        assert restored["batch_id"] == "batch_archived"
+        assert restored["collection_context"] == context.model_dump(mode="json")
 
     def test_a_destination_outside_the_allow_list_is_refused(
         self, data_dir: Path, tmp_path: Path, fake_recorder: FakeRecorder

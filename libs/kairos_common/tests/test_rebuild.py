@@ -280,6 +280,42 @@ def test_an_archived_capture_is_rebuilt_from_its_ledger_event(
     assert _replica(result, capture_id).state == ReplicaState.absent_managed
 
 
+def test_an_archived_context_is_rebuilt_from_the_ledger_event(tmp_path: Path) -> None:
+    capture_id = new_capture_id()
+    _archive(
+        tmp_path,
+        capture_id,
+        collection_context={
+            "batch_id": "batch_archived",
+            "batch_seq": 5,
+            "project": "project-a",
+            "task": "pick",
+            "condition": "wet",
+            "robot": "robot-a",
+            "operator": "op_a",
+            "future_label": "preserved",
+        },
+    )
+
+    context = _row(_run(tmp_path), capture_id).collection_context
+    assert context is not None
+    assert context.batch_id == "batch_archived"
+    assert context.condition == "wet"
+    assert context.extra == {"future_label": "preserved"}
+
+
+def test_malformed_archived_context_is_warned_and_ignored(tmp_path: Path) -> None:
+    capture_id = new_capture_id()
+    _archive(tmp_path, capture_id, collection_context="not-an-object")
+
+    result = _run(tmp_path)
+    assert _row(result, capture_id).collection_context is None
+    assert any(
+        "archived collection_context is invalid" in warning
+        for warning in result.warnings
+    )
+
+
 def test_a_dataset_annotated_archive_rebuilds_like_any_other(tmp_path: Path) -> None:
     """A dataset archive (§6.x) reuses ``capture_archived`` per member, adding
     dataset_id/membership_id/display_index to the payload. The per-capture

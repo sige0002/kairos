@@ -160,6 +160,40 @@ class ManifestFile:
 
 
 @dataclass(frozen=True)
+class CollectionContextSnapshotV1:
+    """The collection labels fixed when a recorder start is committed.
+
+    The batch is mutable while empty, but a capture must retain the labels that
+    were in effect at the instant it began. Unknown keys are carried through so
+    a newer Console can add context without an older recorder dropping it.
+    """
+
+    batch_id: str | None = None
+    batch_seq: int | None = None
+    project: str | None = None
+    task: str | None = None
+    condition: str | None = None
+    robot: str | None = None
+    operator: str | None = None
+    extra: dict[str, Any] = field(default_factory=dict)
+
+    def to_json(self) -> dict[str, Any]:
+        payload: dict[str, Any] = dict(self.extra)
+        payload.update(
+            {
+                "batch_id": self.batch_id,
+                "batch_seq": self.batch_seq,
+                "project": self.project,
+                "task": self.task,
+                "condition": self.condition,
+                "robot": self.robot,
+                "operator": self.operator,
+            }
+        )
+        return payload
+
+
+@dataclass(frozen=True)
 class ObjectManifestV2:
     """``object_manifest.json`` (§3): the recorder's record of one capture."""
 
@@ -171,6 +205,9 @@ class ObjectManifestV2:
     operator: str | None = None
     task: str | None = None
     robot: str | None = None
+    # The collection labels at actual start, separate from the recorder's
+    # top-level compatibility fields above.
+    collection_context: CollectionContextSnapshotV1 | None = None
     ended_at: str | None = None
     topics: tuple[dict[str, Any], ...] = ()
     message_count: int | None = None
@@ -219,6 +256,11 @@ class ObjectManifestV2:
                 "operator": self.operator,
                 "task": self.task,
                 "robot": self.robot,
+                "collection_context": (
+                    None
+                    if self.collection_context is None
+                    else self.collection_context.to_json()
+                ),
                 "started_at": self.started_at,
                 "ended_at": self.ended_at,
                 "topics": [dict(topic) for topic in self.topics],
@@ -459,6 +501,7 @@ _MANIFEST_KNOWN_KEYS = frozenset(
         "operator",
         "task",
         "robot",
+        "collection_context",
         "started_at",
         "ended_at",
         "topics",
@@ -475,6 +518,18 @@ _MANIFEST_KNOWN_KEYS = frozenset(
         "digest_sealed_by",
         "imported_from",
         "imported_at",
+    }
+)
+
+_COLLECTION_CONTEXT_KNOWN_KEYS = frozenset(
+    {
+        "batch_id",
+        "batch_seq",
+        "project",
+        "task",
+        "condition",
+        "robot",
+        "operator",
     }
 )
 
@@ -534,6 +589,28 @@ def _optional_dict(data: Mapping[str, Any], key: str) -> dict[str, Any] | None:
     return dict(value)
 
 
+def collection_context_snapshot_from_json(
+    data: object,
+) -> CollectionContextSnapshotV1:
+    """Validate one collection-context JSON object and preserve unknown keys."""
+    if not isinstance(data, Mapping):
+        raise ValueError(f"collection_context must be an object: {data!r}")
+    return CollectionContextSnapshotV1(
+        batch_id=_optional_str(data, "batch_id"),
+        batch_seq=_optional_int(data, "batch_seq"),
+        project=_optional_str(data, "project"),
+        task=_optional_str(data, "task"),
+        condition=_optional_str(data, "condition"),
+        robot=_optional_str(data, "robot"),
+        operator=_optional_str(data, "operator"),
+        extra={
+            field: item
+            for field, item in data.items()
+            if field not in _COLLECTION_CONTEXT_KNOWN_KEYS
+        },
+    )
+
+
 def _check_schema_version(data: Mapping[str, Any]) -> int:
     version = data.get("schema_version")
     if version != SIDECAR_SCHEMA_VERSION:
@@ -583,6 +660,8 @@ def object_manifest_from_json(data: Mapping[str, Any]) -> ObjectManifestV2:
     if not isinstance(integrity, str):
         raise ValueError(f"integrity must be a string: {integrity!r}")
 
+    raw_collection_context = data.get("collection_context")
+
     return ObjectManifestV2(
         capture_id=capture_id,
         source_instance_id=_require_str(data, "source_instance_id"),
@@ -592,6 +671,11 @@ def object_manifest_from_json(data: Mapping[str, Any]) -> ObjectManifestV2:
         operator=_optional_str(data, "operator"),
         task=_optional_str(data, "task"),
         robot=_optional_str(data, "robot"),
+        collection_context=(
+            None
+            if raw_collection_context is None
+            else collection_context_snapshot_from_json(raw_collection_context)
+        ),
         ended_at=_optional_str(data, "ended_at"),
         topics=tuple(dict(topic) for topic in raw_topics),
         message_count=_optional_int(data, "message_count"),
