@@ -1,4 +1,11 @@
-import { createEvent, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import {
+  act,
+  createEvent,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { App } from './App';
 import { ErrorBoundary, PanelBoundary } from './components/ErrorBoundary';
@@ -47,12 +54,20 @@ function routedFetch(url: string): Response {
 }
 
 beforeEach(() => {
+  window.localStorage.removeItem('kairos.operator');
   vi.stubGlobal('EventSource', FakeEventSource);
   vi.spyOn(globalThis, 'fetch').mockImplementation(
     (input: RequestInfo | URL) =>
       Promise.resolve(routedFetch(String(input))) as Promise<Response>,
   );
-  useUiStore.setState({ activeTab: '', sseStatus: 'closed' });
+  useUiStore.setState({
+    activeTab: '',
+    sseStatus: 'closed',
+    monitorBridge: null,
+    recordOperator: '',
+    operatorHydrated: false,
+    batchRestoreIssue: null,
+  });
 });
 
 afterEach(() => {
@@ -239,7 +254,9 @@ test('a legacy solo deep link (?tab=probe&solo=1) redirects and rewrites the URL
   // header's label and this heading — so the assertion names which one it
   // means, and in doing so proves the redirect landed on the Monitor SCREEN
   // rather than merely rewriting the URL.
-  expect(screen.getByRole('heading', { level: 1, name: 'Monitor' })).toBeInTheDocument();
+  expect(
+    screen.getByRole('heading', { level: 1, name: 'Monitor' }),
+  ).toBeInTheDocument();
   expect(window.location.search).toMatch(/tab=monitor/);
   expect(window.location.search).toMatch(/solo=1/);
 });
@@ -323,9 +340,10 @@ test('Enter in the operator field commits the name AND cancels its default actio
   const enter = createEvent.keyDown(input, { key: 'Enter' });
   fireEvent(input, enter);
 
-  expect(enter.defaultPrevented, 'the committed Enter is still live for the next focus').toBe(
-    true,
-  );
+  expect(
+    enter.defaultPrevented,
+    'the committed Enter is still live for the next focus',
+  ).toBe(true);
   // Cancelling the default must not cancel the commit: Enter is still how the
   // name is saved, and the popover still closes.
   expect(useUiStore.getState().recordOperator).toBe('Sadasue Yuki');
@@ -373,7 +391,9 @@ test('the Escape an IME is closing its candidate window with does not close the 
   );
 
   fireEvent.click(screen.getByTestId('operator-chip'));
-  fireEvent.change(screen.getByTestId('operator-input'), { target: { value: 'さだすえ' } });
+  fireEvent.change(screen.getByTestId('operator-input'), {
+    target: { value: 'さだすえ' },
+  });
   fireEvent.keyDown(screen.getByTestId('operator-input'), {
     key: 'Escape',
     isComposing: true,
@@ -408,7 +428,9 @@ test('the shell survives a browser where localStorage access throws', async () =
       <App />
     </ErrorBoundary>,
   );
-  await waitFor(() => expect(screen.queryByText(/Loading kairos/i)).not.toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.queryByText(/Loading kairos/i)).not.toBeInTheDocument(),
+  );
 
   const caught = errorSpy.mock.calls
     .filter((c) => String(c[0]).includes('Unhandled UI error'))
@@ -419,7 +441,9 @@ test('the shell survives a browser where localStorage access throws', async () =
   // The shell rendered at all — the mount-time read did not take it down.
   const chip = screen.getByTestId('operator-chip');
   fireEvent.click(chip);
-  fireEvent.change(screen.getByTestId('operator-input'), { target: { value: 'Sadasue Yuki' } });
+  fireEvent.change(screen.getByTestId('operator-input'), {
+    target: { value: 'Sadasue Yuki' },
+  });
   fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
   // The name applies to this session and the popover closed, even though
@@ -512,6 +536,96 @@ test('the panel error offers the recovery that exists where it is shown', () => 
       <Boom />
     </PanelBoundary>,
   );
-  expect(screen.getByTestId('panel-error')).toHaveTextContent(/reloading it is the way back/);
+  expect(screen.getByTestId('panel-error')).toHaveTextContent(
+    /reloading it is the way back/,
+  );
   expect(screen.getByTestId('panel-error')).not.toHaveTextContent(/switching tabs/);
+});
+
+test('a direct-open Solo Collect hydrates its saved operator before Start is offered', async () => {
+  window.localStorage.setItem('kairos.operator', 'Solo Operator');
+  window.history.replaceState(null, '', '/?tab=collect&solo=1');
+
+  renderWithClient(<App />);
+
+  await waitFor(() => expect(useUiStore.getState().operatorHydrated).toBe(true));
+  expect(useUiStore.getState().recordOperator).toBe('Solo Operator');
+  expect(await screen.findByTestId('operator-chip')).toHaveTextContent('SO');
+  expect(await screen.findByTestId('start-recording')).toBeEnabled();
+});
+
+test('operator changes from another window are reflected in the active app', async () => {
+  renderWithClient(<App />);
+  await screen.findByRole('tab', { name: 'Collect' });
+
+  act(() => {
+    window.dispatchEvent(
+      new StorageEvent('storage', {
+        key: 'kairos.operator',
+        newValue: 'Remote Operator',
+      }),
+    );
+  });
+
+  await waitFor(() =>
+    expect(useUiStore.getState().recordOperator).toBe('Remote Operator'),
+  );
+  expect(screen.getByTestId('operator-chip')).toHaveTextContent('RO');
+});
+
+test('Solo Collect opens Monitor in the same standalone route', async () => {
+  window.localStorage.setItem('kairos.operator', 'Solo Operator');
+  window.history.replaceState(null, '', '/?tab=collect&solo=1');
+  renderWithClient(<App />);
+
+  const topics = await screen.findByTestId('rec-topics-chip');
+  fireEvent.click(topics);
+
+  await waitFor(() => expect(window.location.search).toBe('?tab=monitor&solo=1'));
+  expect(screen.getByRole('tabpanel')).toHaveAttribute('aria-label', 'Monitor');
+});
+
+test('a direct-open non-Collect solo route wins over a stale shared active tab', async () => {
+  window.history.replaceState(null, '', '/?tab=review&solo=1');
+  useUiStore.setState({ activeTab: 'monitor' });
+
+  renderWithClient(<App />);
+
+  await waitFor(() =>
+    expect(screen.getByRole('tabpanel')).toHaveAttribute('aria-label', 'Review'),
+  );
+  expect(window.location.search).toBe('?tab=review&solo=1');
+});
+
+test('a Solo Collect window also shows an ambiguous batch restore', async () => {
+  window.localStorage.setItem('kairos.operator', 'Solo Operator');
+  window.history.replaceState(null, '', '/?tab=collect&solo=1');
+  renderWithClient(<App />);
+
+  await screen.findByTestId('operator-chip');
+  act(() => useUiStore.setState({ batchRestoreIssue: 'ambiguous' }));
+  expect(await screen.findByTestId('batch-restore-issue')).toHaveTextContent(
+    /No batch was restored/,
+  );
+});
+
+test('connection badge calls an unreported robot bridge checking, not connected', async () => {
+  renderWithClient(<App />);
+  await screen.findByRole('tab', { name: 'Collect' });
+
+  act(() => useUiStore.setState({ sseStatus: 'open', monitorBridge: null }));
+  expect(screen.getByTestId('connection-status')).toHaveTextContent('checking robot…');
+
+  act(() => useUiStore.setState({ monitorBridge: 'up' }));
+  expect(screen.getByTestId('connection-status')).toHaveTextContent('DDS connected');
+
+  act(() => useUiStore.setState({ monitorBridge: 'down' }));
+  expect(screen.getByTestId('connection-status')).toHaveTextContent('robot offline');
+});
+
+test('Collect exposes no Report issue control before a persistent receipt exists', async () => {
+  renderWithClient(<App />);
+  await screen.findByRole('tab', { name: 'Collect' });
+  fireEvent.click(screen.getByRole('button', { name: /Batch menu/ }));
+  expect(screen.queryByText(/Report issue/)).not.toBeInTheDocument();
 });

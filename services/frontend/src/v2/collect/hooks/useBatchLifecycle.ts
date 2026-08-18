@@ -7,9 +7,12 @@
 // hook takes no arguments.
 
 import { useCallback, useEffect, useRef } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { ApiError } from '../../../api/client';
 import { createBatch, getBatch, listBatches } from '../../../api/batches';
 import { getCapture, listCaptures } from '../../../api/captures';
+import { getConfigOptions } from '../../../api/config';
+import { queryKeys } from '../../../api/queryKeys';
 import type { Capture, CaptureListItem } from '../../../api/types';
 import { useUiStore } from '../../../store/uiStore';
 import { type Phase } from '../machine/types';
@@ -31,6 +34,14 @@ import {
 export function useBatchLifecycle(): {
   ensureBatch: () => Promise<string | null>;
 } {
+  const activeRobot = useQuery({
+    queryKey: queryKeys.configOptions,
+    queryFn: ({ signal }) => getConfigOptions({ signal }),
+  });
+  const operator = useUiStore((s) => s.recordOperator).trim();
+  const operatorHydrated = useUiStore((s) => s.operatorHydrated);
+  const setBatchRestoreIssue = useUiStore((s) => s.setBatchRestoreIssue);
+
   // ---- batch lifecycle (server API) ----------------------------------------
   // A server batch is created lazily on the first recording of a batch (and
   // after "start next batch"), not eagerly, so merely opening Collect never
@@ -81,22 +92,38 @@ export function useBatchLifecycle(): {
   // restore already applied at store init stands.
   useEffect(() => {
     if (isServerHydrated()) return;
+    const robot = activeRobot.data?.active_robot?.trim();
+    // Do not let the cold in-memory store race the persisted identity: an
+    // unfiltered active-batch query can attach this terminal to someone else's
+    // work. No selected operator also has no safe ownership filter, so leave
+    // local context untouched until they name themselves.
+    if (!operatorHydrated || !robot || !operator) return;
     markServerHydrated();
-    // One GET /batches serves both jobs: find the newest *active* batch (server
-    // truth over the localStorage fallback) AND predict the next batch number from
-    // today's batches (the honest pre-state before any batch exists). Restoring
-    // that active batch then costs one more request — its detail, the only place
-    // its captures are served.
+    // The active restore is deliberately constrained by every ownership axis.
+    // A second robot-only listing keeps the pre-start batch-number prediction
+    // accurate (batch_seq is per robot, not per operator) without weakening
+    // that restore boundary.
     const atRestPhase = (p: Phase) =>
       p === 'ready' || p === 'completed' || p === 'ended' || p === 'paused';
-    listBatches()
-      .then(async (resp) => {
-        const items = resp.items ?? [];
-        // The predicted pre-state is always safe to refresh from today's batches.
-        setPredictedSeq(predictNextSeq(items));
+    Promise.all([
+      listBatches({ status: 'active', robot, operator }),
+      listBatches({ robot }),
+    ])
+      .then(async ([activeResponse, predictionResponse]) => {
+        const items = activeResponse.items ?? [];
+        // The predicted pre-state is always safe to refresh from this robot's
+        // batches. It remains server-assigned when the first recording starts.
+        setPredictedSeq(predictNextSeq(predictionResponse.items ?? []));
         if (!atRestPhase(getStoreSnapshot().phase)) return;
-        const active = items.find((b) => b.status === 'active') ?? null;
+        if (items.length > 1) {
+          // Newest-first is not a user decision. Refusing to guess keeps the
+          // local context intact and makes the ambiguity visible in the shell.
+          setBatchRestoreIssue('ambiguous');
+          return;
+        }
+        const active = items[0] ?? null;
         if (active) {
+          setBatchRestoreIssue(null);
           // The list is a count per batch, not a row per capture (E-27), so the
           // batch's episodes come from its detail. A detail that cannot be read
           // leaves the localStorage restore standing: adopting the list item
@@ -135,23 +162,31 @@ export function useBatchLifecycle(): {
           }
           return;
         }
-        // Server reports NO active batch. A local batch context here may be a
-        // phantom left behind after the captures/batches were deleted
-        // server-side (Apple P0). Confirm by checking the batch's captures still
-        // exist, then discard the stale context so the hero counters never
-        // report recordings that don't exist. We keep it on any /captures
-        // failure (offline resilience) or when a capture still backs it.
-        if (!hasLocalBatchContext(getStoreSnapshot())) return;
+        setBatchRestoreIssue(null);
+        // A zero-result restore does not replace or adopt anything. The only
+        // cleanup kept here is the pre-existing P0 phantom guard, and it acts
+        // only after positive evidence that this LOCAL batch and all of its
+        // captures are gone; a just-finished or another operator's batch stays.
+        const local = getStoreSnapshot();
+        if (!hasLocalBatchContext(local) || !local.batchId) return;
+        try {
+          const localBatch = await getBatch(local.batchId);
+          // The local batch still exists. Its status/owner may differ from this
+          // filtered query, which is precisely why it must not be cleared.
+          if (localBatch) return;
+        } catch (e) {
+          if (!(e instanceof ApiError && e.status === 404)) return;
+        }
         let captures: CaptureListItem[];
         try {
           captures = (await listCaptures({ limit: 100 })).items;
         } catch {
-          return; // /captures unreachable — keep the local context.
+          return;
         }
         const after = getStoreSnapshot();
         if (
           atRestPhase(after.phase) &&
-          hasLocalBatchContext(after) &&
+          after.batchId === local.batchId &&
           localBatchIsPhantom(after, captures)
         ) {
           clearLocalBatch();
@@ -161,7 +196,12 @@ export function useBatchLifecycle(): {
         /* API unreachable — keep the localStorage fallback; the pre-state falls
          *  back to "next #1" (predictedSeq stays null). */
       });
-  }, []);
+  }, [
+    activeRobot.data?.active_robot,
+    operator,
+    operatorHydrated,
+    setBatchRestoreIssue,
+  ]);
 
   return { ensureBatch };
 }

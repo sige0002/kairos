@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Sadasue Yuki
-// Collect-scoped modals (End batch early / Report issue / Change condition)
+// Collect-scoped modals (End batch early / Change condition)
 // plus the toast. Rendered at the screen level per the design mock's MODALS
 // section. ("Set" is the operator-facing name for a batch.)
 //
@@ -157,44 +157,6 @@ function ResetBatchModal({ machine }: { machine: BatchMachine }) {
           </p>
         </>
       )}
-    </Modal>
-  );
-}
-
-function IssueModal({ machine }: { machine: BatchMachine }) {
-  const [note, setNote] = useState('');
-  return (
-    <Modal
-      open={machine.issueModalOpen}
-      onClose={machine.closeModals}
-      title="Report an issue"
-      footer={
-        <>
-          <Button variant="ghost" onClick={machine.closeModals}>
-            Cancel
-          </Button>
-          <Button
-            onClick={() => {
-              machine.submitIssue();
-              setNote('');
-            }}
-          >
-            Submit
-          </Button>
-        </>
-      }
-    >
-      <p className="mb-2">
-        Attached to Batch {machine.batchSeq ?? '—'}, Episode {machine.stats.epNext}{' '}
-        context automatically.
-      </p>
-      <textarea
-        value={note}
-        onChange={(e) => setNote(e.target.value)}
-        placeholder="Describe what happened…"
-        rows={3}
-        className="w-full resize-none rounded-control border border-gray-200 px-3 py-2.5 text-sm text-gray-700 focus:border-teal-600 focus:outline-none"
-      />
     </Modal>
   );
 }
@@ -427,7 +389,6 @@ export function CollectModals({ machine }: { machine: BatchMachine }) {
     <>
       <EndBatchModal machine={machine} />
       <ResetBatchModal machine={machine} />
-      <IssueModal machine={machine} />
       <TargetModal machine={machine} />
       <ConditionModal machine={machine} />
       <TakeoverStopModal machine={machine} />

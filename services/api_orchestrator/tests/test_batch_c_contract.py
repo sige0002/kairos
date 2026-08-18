@@ -27,6 +27,7 @@ import httpx
 import pytest
 from api_orchestrator.app_factory import create_orchestrator_app
 from api_orchestrator.layout import MAX_LABEL_BYTES, DataLayout
+from api_orchestrator.models import Capture, CaptureState
 from conftest import FakeRecorder
 from fastapi.testclient import TestClient
 from kairos_common import Settings
@@ -85,6 +86,122 @@ class TestABatchNeedNotBeLabelled:
         assert created.status_code == 201, created.text
         assert created.json()["project"] == "p"
         assert created.json()["task"] == "pick"
+
+
+class TestBatchProvenanceLabels:
+    """Labels identify recorded history once a batch is no longer empty."""
+
+    @staticmethod
+    def _create_labelled_batch(client: TestClient) -> dict:
+        response = client.post(
+            "/api/v1/batches",
+            json={
+                "robot": "robot-a",
+                "project": "project-a",
+                "task": "task-a",
+                "condition": "condition-a",
+                "operator": "operator-a",
+                "target_episodes": 3,
+            },
+        )
+        assert response.status_code == 201, response.text
+        return response.json()
+
+    def test_explicit_null_clears_empty_batch_labels_and_omitted_keeps_them(
+        self, client: TestClient
+    ) -> None:
+        batch = self._create_labelled_batch(client)
+        batch_id = batch["batch_id"]
+
+        kept = client.patch(f"/api/v1/batches/{batch_id}", json={})
+        assert kept.status_code == 200, kept.text
+        assert kept.json()["project"] == "project-a"
+
+        cleared = client.patch(
+            f"/api/v1/batches/{batch_id}",
+            json={
+                "robot": None,
+                "project": None,
+                "task": None,
+                "condition": None,
+                "operator": None,
+            },
+        )
+        assert cleared.status_code == 200, cleared.text
+        for field in ("robot", "project", "task", "condition", "operator"):
+            assert cleared.json()[field] is None
+
+    def test_explicit_null_clear_survives_batch_ledger_rebuild(
+        self,
+        client: TestClient,
+        fake_recorder: FakeRecorder,
+        settings: Settings,
+        data_dir: Path,
+    ) -> None:
+        batch_id = self._create_labelled_batch(client)["batch_id"]
+        cleared = client.patch(f"/api/v1/batches/{batch_id}", json={"condition": None})
+        assert cleared.status_code == 200, cleared.text
+        client.close()
+        (data_dir / "kairos.db").unlink()
+
+        with _reopen(settings, fake_recorder) as reopened:
+            restored = reopened.get(f"/api/v1/batches/{batch_id}")
+            assert restored.status_code == 200, restored.text
+            assert restored.json()["condition"] is None
+
+    def test_recorded_counter_freezes_changed_labels_but_not_operations(
+        self, client: TestClient
+    ) -> None:
+        batch = self._create_labelled_batch(client)
+        batch_id = batch["batch_id"]
+        client.app.state.capture_store.increment_episodes_recorded(batch_id)
+
+        for field, value in (
+            ("robot", "robot-b"),
+            ("project", "project-b"),
+            ("task", "task-b"),
+            ("condition", "condition-b"),
+            ("operator", "operator-b"),
+            ("condition", None),
+        ):
+            response = client.patch(f"/api/v1/batches/{batch_id}", json={field: value})
+            assert response.status_code == 409, response.text
+            assert response.json()["error"]["code"] == "batch_labels_frozen"
+
+        same_value = client.patch(
+            f"/api/v1/batches/{batch_id}", json={"project": "project-a"}
+        )
+        assert same_value.status_code == 200, same_value.text
+
+        target = client.patch(
+            f"/api/v1/batches/{batch_id}", json={"target_episodes": 9}
+        )
+        assert target.status_code == 200, target.text
+        assert target.json()["target_episodes"] == 9
+        ended = client.patch(
+            f"/api/v1/batches/{batch_id}", json={"status": "ended_early"}
+        )
+        assert ended.status_code == 200, ended.text
+        assert ended.json()["status"] == "ended_early"
+        assert ended.json()["ended_at"] is not None
+
+    def test_capture_reference_alone_freezes_changed_labels(
+        self, client: TestClient
+    ) -> None:
+        batch_id = self._create_labelled_batch(client)["batch_id"]
+        client.app.state.capture_store.create_capture(
+            Capture(
+                capture_id="capture-associated-batch-label-guard",
+                state=CaptureState.completed,
+                batch_id=batch_id,
+            )
+        )
+
+        response = client.patch(
+            f"/api/v1/batches/{batch_id}", json={"project": "project-b"}
+        )
+        assert response.status_code == 409, response.text
+        assert response.json()["error"]["code"] == "batch_labels_frozen"
 
 
 class TestRecordingLabelsAreBounded:

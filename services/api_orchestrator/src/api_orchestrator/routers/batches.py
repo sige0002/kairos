@@ -32,7 +32,11 @@ from api_orchestrator.models import (
     BatchSummary,
     CoverageRow,
 )
-from api_orchestrator.store import BatchExistsError, CaptureStore
+from api_orchestrator.store import (
+    BatchExistsError,
+    BatchLabelsFrozenError,
+    CaptureStore,
+)
 
 logger = logging.getLogger("kairos")
 
@@ -112,32 +116,42 @@ async def create_batch(request: Request, body: BatchCreateRequest) -> Batch:
 async def patch_batch(
     request: Request, batch_id: str, body: BatchPatchRequest
 ) -> Batch:
-    """Update a batch: early stop, or a project/task/condition relabel.
+    """Update a batch: operational fields, or an empty-batch relabel.
 
-    Entering a terminal status stamps ``ended_at`` once. ``project``/``task`` are
-    patchable for the empty-batch case: Collect relabels a not-yet-recorded
-    batch in place when the operator switches before the first recording.
+    Entering a terminal status stamps ``ended_at`` once. Recording-provenance
+    labels can be changed or explicitly cleared only before the batch has a
+    capture or a recorded-episode count. ``model_fields_set`` distinguishes an
+    omitted label from an explicit ``null`` clear.
     """
     store = _store(request)
     batch = store.get_batch(batch_id)
     if batch is None:
         raise _not_found(batch_id)
-    fields: dict[str, object] = {
-        name: value
-        for name, value in (
-            ("status", body.status),
-            ("ended_reason", body.ended_reason),
-            ("project", body.project),
-            ("task", body.task),
-            ("condition", body.condition),
-            ("target_episodes", body.target_episodes),
-        )
-        if value is not None
-    }
-    if body.status in _TERMINAL_BATCH_STATUSES and batch.ended_at is None:
+    fields = body.model_dump(exclude_unset=True)
+    # ``null`` is a meaningful clear for nullable labels, but not for the
+    # non-nullable operational columns. Keeping these absent preserves the
+    # established PATCH semantics for an accidental/null status or target.
+    for name in ("status", "target_episodes"):
+        if fields.get(name) is None:
+            fields.pop(name, None)
+    if (
+        "status" in fields
+        and body.status in _TERMINAL_BATCH_STATUSES
+        and batch.ended_at is None
+    ):
         fields["ended_at"] = utc_now_iso8601()
     try:
         return _service(request).update(batch_id, fields)
+    except BatchLabelsFrozenError as exc:
+        raise ApiError(
+            status_code=409,
+            code="batch_labels_frozen",
+            message=(
+                "Recording-provenance labels cannot change after a batch "
+                "has recorded captures."
+            ),
+            details={"fields": list(exc.fields)},
+        ) from exc
     except KeyError as exc:  # deleted between the read and the write
         raise _not_found(batch_id) from exc
 

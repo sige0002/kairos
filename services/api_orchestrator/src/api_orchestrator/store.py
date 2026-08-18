@@ -122,6 +122,18 @@ class BatchExistsError(Exception):
         self.batch_id = batch_id
 
 
+class BatchLabelsFrozenError(Exception):
+    """A non-empty batch attempted to alter recording-provenance labels."""
+
+    def __init__(self, batch_id: str, fields: Iterable[str]) -> None:
+        self.batch_id = batch_id
+        self.fields = tuple(sorted(fields))
+        super().__init__(
+            f"Batch labels are frozen after recording begins: {batch_id} "
+            f"({', '.join(self.fields)})"
+        )
+
+
 class ArchiveDestinationTakenError(Exception):
     """Another dataset already holds this archive destination.
 
@@ -1360,7 +1372,21 @@ class CaptureStore:
         current = row["m"] if row and row["m"] is not None else 0
         return int(current) + 1
 
-    def update_batch(self, batch_id: str, **fields: Any) -> Batch:
+    def update_batch(
+        self,
+        batch_id: str,
+        *,
+        enforce_label_invariant: bool = True,
+        **fields: Any,
+    ) -> Batch:
+        """Update a batch, freezing provenance labels once recording begins.
+
+        The capture-reference/count check and the update run in one immediate
+        SQLite transaction. This prevents a review save from assigning a
+        capture between an API-layer preflight check and the label update.
+        Ledger replay passes ``False`` because it faithfully reapplies history
+        after capture rows have already been rebuilt.
+        """
         if not fields:
             return self.get_batch_or_raise(batch_id)
         for name in fields:
@@ -1368,13 +1394,46 @@ class CaptureStore:
                 raise KeyError(f"Unknown batch field: {name}")
         assignments = ", ".join(f"{name} = ?" for name in fields)
         with self._conn() as conn:
+            # A deferred transaction would leave a window after this read for
+            # another writer to attach a capture. Reserve the sole SQLite
+            # writer before checking so the decision and UPDATE are atomic.
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM batches WHERE batch_id = ?", (batch_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(batch_id)
+            if enforce_label_invariant:
+                provenance_labels = (
+                    "project",
+                    "task",
+                    "condition",
+                    "robot",
+                    "operator",
+                )
+                changed_labels = [
+                    name
+                    for name in provenance_labels
+                    if name in fields and fields[name] != row[name]
+                ]
+                if changed_labels:
+                    capture_exists = conn.execute(
+                        "SELECT 1 FROM captures WHERE batch_id = ? LIMIT 1",
+                        (batch_id,),
+                    ).fetchone()
+                    if capture_exists is not None or row["episodes_recorded"] > 0:
+                        raise BatchLabelsFrozenError(batch_id, changed_labels)
             cur = conn.execute(
                 f"UPDATE batches SET {assignments} WHERE batch_id = ?",
                 (*fields.values(), batch_id),
             )
             if cur.rowcount == 0:
                 raise KeyError(batch_id)
-        return self.get_batch_or_raise(batch_id)
+            updated = conn.execute(
+                "SELECT * FROM batches WHERE batch_id = ?", (batch_id,)
+            ).fetchone()
+        assert updated is not None
+        return self._batch_from_row(updated)
 
     def rebuild_episodes_recorded(self, batch_id: str) -> int:
         """Set the counter to how many recordings name this batch. Returns it.

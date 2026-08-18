@@ -183,8 +183,7 @@ function RobotCell({
     queryFn: ({ signal }) => getConfigOptions({ signal }),
   });
   const select = useMutation({
-    mutationFn: (id: string) =>
-      selectConfig({ category: 'robot', id }),
+    mutationFn: (id: string) => selectConfig({ category: 'robot', id }),
     onSuccess: (data) => {
       queryClient.setQueryData(queryKeys.configOptions, data);
       // Same refresh set as Settings > Robots' selectMutation: a robot switch
@@ -353,7 +352,10 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
       </button>
 
       {machine.projPickerOpen && (
-        <PickerPopover className="left-3.5 top-full lg:top-[58px]" heading="Project (from plan)">
+        <PickerPopover
+          className="left-3.5 top-full lg:top-[58px]"
+          heading="Project (from plan)"
+        >
           {/* The one real dead end on an empty catalog: with nothing to pick
               this popover was a blank rectangle. (The Task picker has always
               had `Custom…`, so it is never a dead end.) */}
@@ -376,7 +378,10 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
         </PickerPopover>
       )}
       {machine.taskPickerOpen && (
-        <PickerPopover className="left-3.5 top-full lg:left-[210px] lg:top-[58px]" heading="Task (from plan)">
+        <PickerPopover
+          className="left-3.5 top-full lg:left-[210px] lg:top-[58px]"
+          heading="Task (from plan)"
+        >
           {curProject.tasks.map((t) => (
             <PickItem
               key={t.name}
@@ -411,7 +416,6 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
           </MenuItem>
           <MenuItem onClick={machine.openResetModal}>Reset batch…</MenuItem>
           <MenuItem onClick={machine.openTargetModal}>Change target…</MenuItem>
-          <MenuItem onClick={machine.openIssueModal}>Report issue…</MenuItem>
           <MenuItem onClick={machine.openCondModal} disabled={!machine.condAllowed}>
             Change condition…
           </MenuItem>

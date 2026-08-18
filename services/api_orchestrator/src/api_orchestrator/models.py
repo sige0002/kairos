@@ -979,9 +979,11 @@ class BatchPatchRequest(BaseModel):
 
     status: BatchStatus | None = None
     ended_reason: str | None = None
+    robot: str | None = None
     project: str | None = None
     task: str | None = None
     condition: str | None = None
+    operator: str | None = None
     target_episodes: int | None = Field(default=None, ge=1, le=500)
 
 

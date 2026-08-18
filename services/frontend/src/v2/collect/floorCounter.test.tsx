@@ -43,6 +43,12 @@ const CONFIG = {
   schemas: {},
 };
 
+const CONFIG_OPTIONS = {
+  active_robot: 'test-robot',
+  robots: [],
+  aspects: {},
+};
+
 const PROJECT = 'Tabletop Manipulation';
 const TASK = 'Pick and Place';
 const CONDITION = 'Object: Left → Tray: Center';
@@ -55,6 +61,8 @@ function batch(isFloor: boolean) {
     project: PROJECT,
     task: TASK,
     condition: CONDITION,
+    robot: CONFIG_OPTIONS.active_robot,
+    operator: 'tester',
     status: 'active',
     target_episodes: 30,
     episodes_recorded: 12,
@@ -67,6 +75,9 @@ function batch(isFloor: boolean) {
 function mockApi(isFloor: boolean) {
   vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
+    if (url.includes('/config/options')) {
+      return Promise.resolve(jsonResponse(CONFIG_OPTIONS));
+    }
     if (url.includes('/config')) return Promise.resolve(jsonResponse(CONFIG));
     if (url.includes('/record/status')) {
       return Promise.resolve(
@@ -120,6 +131,7 @@ beforeEach(() => {
     // so a suite that records has to say who is recording. The gate itself
     // is exercised where it is the subject, not incidentally here.
     recordOperator: 'tester',
+    operatorHydrated: true,
     recordSelected: new Set<string>(),
     recordCustomized: false,
   });
@@ -191,6 +203,9 @@ test('the floor marker survives a later save that advances the counter', async (
       review_status: 'pending',
       review_revision: 0,
     };
+    if (url.includes('/config/options')) {
+      return Promise.resolve(jsonResponse(CONFIG_OPTIONS));
+    }
     if (url.includes('/config')) return Promise.resolve(jsonResponse(CONFIG));
     if (url.includes('/record/start')) {
       started = true;

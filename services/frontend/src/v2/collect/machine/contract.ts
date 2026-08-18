@@ -208,7 +208,6 @@ export interface BatchMachine {
   projPickerOpen: boolean;
   taskPickerOpen: boolean;
   endModalOpen: boolean;
-  issueModalOpen: boolean;
   condModalOpen: boolean;
   resetModalOpen: boolean;
   targetModalOpen: boolean;
@@ -223,7 +222,6 @@ export interface BatchMachine {
    *  batch when one exists). */
   changeTarget: (target: number) => void;
   openEndModal: () => void;
-  openIssueModal: () => void;
   openResetModal: () => void;
   openShortcuts: () => void;
   closeModals: () => void;
@@ -300,7 +298,6 @@ export interface BatchMachine {
   resumeBatch: () => void;
   pickEndReason: (reason: string) => void;
   confirmEndBatch: () => void;
-  submitIssue: () => void;
   startNextBatch: () => void;
   /** Reset the batch (counts → 0/30, recordings kept in Review). */
   resetBatch: () => void;

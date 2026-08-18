@@ -32,6 +32,13 @@ export interface RecMarker {
  *  services are actually reachable". */
 export type MonitorBridge = 'up' | 'down' | null;
 
+/** The persisted operator has been read (or storage was unavailable).  Collect
+ * waits for this before asking the server which operator's active batch to
+ * restore, rather than racing an empty in-memory name against localStorage. */
+export const OPERATOR_STORAGE_KEY = 'kairos.operator';
+
+export type BatchRestoreIssue = 'ambiguous' | null;
+
 /** Max live stream previews: the Live grid maximizes up to a 2x2 (4) layout that
  *  fits the viewport without page scroll. */
 export const MAX_STREAM_PANES = 4;
@@ -60,6 +67,14 @@ interface UiState {
   // typing it and switching tabs would reset it.
   recordOperator: string;
   setRecordOperator: (v: string) => void;
+  operatorHydrated: boolean;
+  hydrateRecordOperator: (v: string) => void;
+
+  // A restore with multiple matching active batches has no safe automatic
+  // choice. This is UI state rather than server state, but must remain visible
+  // while the operator decides how to resolve it.
+  batchRestoreIssue: BatchRestoreIssue;
+  setBatchRestoreIssue: (issue: BatchRestoreIssue) => void;
   recordTask: string;
   setRecordTask: (v: string) => void;
 
@@ -99,7 +114,12 @@ interface UiState {
   // Stream camera previews: how many panes and what each shows. Seeded once from
   // config.stream.panes; add/remove/topic edits persist so opening a second
   // camera and switching tabs doesn't drop it back to the configured layout.
-  streamPanes: { id: number; topic: string; maxWidth?: number | null; maxHeight?: number | null }[];
+  streamPanes: {
+    id: number;
+    topic: string;
+    maxWidth?: number | null;
+    maxHeight?: number | null;
+  }[];
   streamPaneSeq: number;
   // Key of the config the panes were seeded from (the active robot's stream
   // config). Re-seed when it changes (e.g. a robot switch) so the panes follow
@@ -110,7 +130,11 @@ interface UiState {
   removeStreamPane: (id: number) => void;
   setStreamPaneTopic: (id: number, topic: string) => void;
   /** Per-pane preview resolution cap (null/null = Source, no downscale). */
-  setStreamPaneResolution: (id: number, maxWidth: number | null, maxHeight: number | null) => void;
+  setStreamPaneResolution: (
+    id: number,
+    maxWidth: number | null,
+    maxHeight: number | null,
+  ) => void;
 }
 
 export const useUiStore = create<UiState>((set) => ({
@@ -127,7 +151,22 @@ export const useUiStore = create<UiState>((set) => ({
   setMonitorBridge: (monitorBridge) => set({ monitorBridge }),
 
   recordOperator: '',
-  setRecordOperator: (recordOperator) => set({ recordOperator }),
+  setRecordOperator: (recordOperator) =>
+    set({ recordOperator, batchRestoreIssue: null }),
+  operatorHydrated: false,
+  hydrateRecordOperator: (recordOperator) =>
+    set((s) =>
+      s.operatorHydrated
+        ? {}
+        : {
+            // Do not overwrite an operator selected during the initial paint.
+            recordOperator: s.recordOperator || recordOperator,
+            operatorHydrated: true,
+            batchRestoreIssue: null,
+          },
+    ),
+  batchRestoreIssue: null,
+  setBatchRestoreIssue: (batchRestoreIssue) => set({ batchRestoreIssue }),
   recordTask: '',
   setRecordTask: (recordTask) => set({ recordTask }),
 
@@ -181,9 +220,7 @@ export const useUiStore = create<UiState>((set) => ({
           recMarkersPrevActive: active,
         };
       }
-      return s.recMarkersPrevActive !== active
-        ? { recMarkersPrevActive: active }
-        : {};
+      return s.recMarkersPrevActive !== active ? { recMarkersPrevActive: active } : {};
     }),
 
   probeSeries: [],
@@ -220,9 +257,15 @@ export const useUiStore = create<UiState>((set) => ({
       // that fits the viewport without page scroll.
       const init =
         configured.length > 0
-          ? configured.slice(0, MAX_STREAM_PANES).map((p, i) => ({ id: i, topic: p.topic ?? '' }))
+          ? configured
+              .slice(0, MAX_STREAM_PANES)
+              .map((p, i) => ({ id: i, topic: p.topic ?? '' }))
           : [{ id: 0, topic: '' }];
-      return { streamPanes: init, streamPaneSeq: init.length, streamPanesSeededKey: key };
+      return {
+        streamPanes: init,
+        streamPaneSeq: init.length,
+        streamPanesSeededKey: key,
+      };
     }),
   // No-op once 4 panes exist (the fit-to-viewport grid tops out at 2x2).
   addStreamPane: () =>

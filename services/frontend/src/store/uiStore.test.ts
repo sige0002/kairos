@@ -9,6 +9,9 @@ beforeEach(() => {
     recordSelected: new Set(),
     recordCustomized: false,
     recordSeededKey: null,
+    recordOperator: '',
+    operatorHydrated: false,
+    batchRestoreIssue: null,
   });
 });
 
@@ -43,6 +46,17 @@ test('a new config key re-seeds and clears a stale customized selection', () => 
   expect([...useUiStore.getState().recordSelected]).toEqual(['/other/x']);
   expect(useUiStore.getState().recordCustomized).toBe(false);
   expect(useUiStore.getState().recordSeededKey).toBe(key2);
+});
+
+test('changing or hydrating an operator clears an old ambiguous restore warning', () => {
+  useUiStore.setState({ batchRestoreIssue: 'ambiguous' });
+  useUiStore.getState().setRecordOperator('next operator');
+  expect(useUiStore.getState().batchRestoreIssue).toBeNull();
+
+  useUiStore.setState({ batchRestoreIssue: 'ambiguous', operatorHydrated: false });
+  useUiStore.getState().hydrateRecordOperator('stored operator');
+  expect(useUiStore.getState().batchRestoreIssue).toBeNull();
+  expect(useUiStore.getState().operatorHydrated).toBe(true);
 });
 
 // FE-H2: clicking the same Monitor topic twice must not create two Health
