@@ -1,6 +1,6 @@
 ---
 name: docker-ros2-development
-description: Design, build, deploy, and debug ROS 2 containers. Use for Dockerfiles and multi-stage colcon builds; Compose stacks; DDS discovery or shared-memory issues with Fast DDS or Cyclone DDS; GPU, USB, X11, or Wayland passthrough; devcontainers; container CI; and development-versus-deployment image strategy. Apply to Humble, Jazzy, Rolling, and project-supported ROS 2 distributions. Inspect the repository's chosen ROS distribution, RMW implementation, network topology, and offline-delivery rules before selecting generic defaults.
+description: Design, build, deploy, and debug ROS 2 containers. Use for Dockerfiles and multi-stage colcon builds; Compose stacks; DDS discovery or shared-memory issues with Fast DDS or Cyclone DDS; GPU, USB, X11, or Wayland passthrough; devcontainers; container CI; and development-versus-deployment image strategy. Apply to the ROS 2 distributions supported by the target project. Inspect the repository's chosen distribution, RMW implementation, network topology, and offline-delivery rules before selecting generic defaults.
 ---
 
 # Docker-based ROS 2 development
